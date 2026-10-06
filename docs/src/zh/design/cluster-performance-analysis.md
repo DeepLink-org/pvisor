@@ -65,23 +65,14 @@
 
 ## 复现与原始证据 {#reproduce}
 
-前提与受限构建方法见[Cluster 上手](../guides/cluster/index.md)。准备好 `pvisor-cluster` / `pvisor-worker` 二进制、firmware、Linux user systemd、KVM/FUSE 后，在仓库根目录运行：
+上述就绪探针与历史曲线保留原制品和输入的技术记录。当前入口测量固定总 CPU/内存预算下完成且通过校验的 Python/Git 任务；它的结果不能与就绪探针拼接。构建、输入冻结、预检与正式采样命令见[复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)。
+
+从当前完整任务报告生成加工数据（绘图需 matplotlib，`--csv-only` 只生成 CSV）：
 
 ```bash
-SCALING_PARENT=$(mktemp -d /tmp/pvisor-cluster-scaling.XXXXXX)
-python3 benchmark/pvisor/cluster_scalability.py \
-  --state "$SCALING_PARENT/state" \
-  --output "$SCALING_PARENT/vm.json" \
-  --firmware-dir target/libkrunfw/5.5.0-x86_64-unknown-linux-musl \
-  --sizes 1 2 4 --repetitions 5
-```
-
-脚本仅接受 1、2、4 三档，启动时核查硬限额和可用内存，正常结束、异常和终止信号都会停止自己的服务；私有状态留在输出目录供复核，不含在公开归档中。初次准备有一次 `trace=false` 保留配置被拒绝，没有接受任务或启动 VM；修正后全部实测成功，失败报告同样保留。
-
-从公开归档重新绘图（需要 matplotlib）：
-
-```bash
-MPLCONFIGDIR=/tmp/pvisor-plot-cache python3 benchmark/pvisor/plot_cluster_scalability.py
+python3 benchmark/pvisor/plot_cluster_scalability.py \
+  --report benchmark/.data/cluster-new/report.json \
+  --output-dir benchmark/.data/cluster-new/derived --csv-only
 ```
 
 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/vm.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/vm-summary.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/controller-summary.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/controller-provenance.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/setup-failure.tsv`

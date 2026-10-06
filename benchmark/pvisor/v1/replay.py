@@ -11,12 +11,21 @@ arguments, observations and workspace state verified.
 
 import json
 import shutil
+import random
+import traceback
 
 from .common import digest
 
 
 def trajectory(agent, task, command):
     next_command = f"cat marker-{task}.txt"
+    if agent == 'swe-agent':
+        steps=[];history=[dict(role='user',content=f'fixture {task}')]
+        for i,cmd in enumerate((command,next_command)):
+            steps.append(dict(action=cmd,observation='historical observation',thought=f'fixture-text-{task}-{i}',state={}))
+            history.extend([dict(role='assistant',content=f'fixture-text-{task}-{i}',tool_calls=[dict(id=f'call-{i}')]),
+                            dict(role='tool',content='historical observation',tool_call_id=f'call-{i}')])
+        return dict(trajectory=steps,history=history,replay_config={}),False
     if agent == "claude-code":
         events = [
             {
@@ -241,76 +250,75 @@ def trajectory(agent, task, command):
     return events, True
 
 
+def nested_strings(value):
+    if isinstance(value,dict):
+        return [s for child in value.values() for s in nested_strings(child)]
+    if isinstance(value,list):
+        return [s for child in value for s in nested_strings(child)]
+    if isinstance(value,str):
+        try:
+            parsed=json.loads(value)
+            if isinstance(parsed,(dict,list)):return [value,*nested_strings(parsed)]
+        except (ValueError,TypeError):pass
+        return [value]
+    return []
+
+
+def validate_prefix(manifest,output,agent,command,next_command,source_sha):
+    boundary=manifest['boundary']
+    if manifest['agent']['name']!=agent or manifest['source']['sha256']!=source_sha or boundary['after_step']!=1 or boundary['tool_calls']!=1 or boundary['complete_tool_batch'] is not True:
+        raise ValueError('wrong source, adapter or complete prefix boundary')
+    batches=manifest['batches']
+    if len(batches)!=1 or len(batches[0]['tool_calls'])!=1:raise ValueError('wrong prefix structure')
+    call=batches[0]['tool_calls'][0];arguments=call['arguments']
+    if arguments.get('command',arguments.get('cmd',arguments.get('raw_action')))!=command:raise ValueError('prefix tool arguments differ')
+    filename={'mini-swe-agent':'prepared-prefix.json','openhands':'prepared-replay-events.json','swe-agent':'prepared-prefix.traj'}.get(agent,'prepared-prefix.jsonl')
+    raw=(output/'native'/filename).read_text()
+    native=[json.loads(line) for line in raw.splitlines() if line.strip()] if filename.endswith('.jsonl') else json.loads(raw)
+    strings=nested_strings(native)
+    if command not in strings or 'historical observation' not in strings or next_command in strings:
+        raise ValueError('prepared native prefix lost tool/observation or included action beyond boundary')
+
+
+def replay_trial(ctx,binary,agent,task,trial):
+    command=f'printf fixture-{task} > marker-{task}.txt'
+    source,jsonl=trajectory(agent,task,command)
+    root=ctx.fresh(f'replay-{agent}-{task}');work=root/'workspace';work.mkdir()
+    (work/'existing').write_text('existing workspace must survive preparation\n')
+    path=root/('trajectory.jsonl' if jsonl else 'trajectory.json')
+    path.write_text(('\n'.join(json.dumps(item) for item in source) if jsonl else json.dumps(source))+'\n')
+    argv=[str(binary),'--agent',agent,'--trajectory',str(path),'--after-step','1','--prepare-only',
+          '--workspace',str(work),'--state-dir',str(root/'state'),'--output-dir',str(root/'output')]
+    wall,_,_=ctx.run(argv,cwd=work)
+    results=list((root/'output').glob('*/result.json'))
+    if len(results)!=1:raise ValueError('missing unique replay result')
+    result=json.loads(results[0].read_text());manifest=json.loads(results[0].with_name('manifest.json').read_text())
+    if result['failure'] is not None or result['replayed_tool_calls']!=0:raise ValueError('prepare-only executed tools or failed')
+    validate_prefix(manifest,results[0].parent,agent,command,f'cat marker-{task}.txt',digest(path))
+    if list(work.iterdir())!=[work/'existing'] or (work/'existing').read_text()!='existing workspace must survive preparation\n':
+        raise ValueError('prepare-only modified workspace or executed an operation')
+    ctx.record(dict(suite='replay',workload='prepare-only',agent=agent,profile=manifest['agent']['profile'],task=task,trial=trial,
+        wall_ms=wall,prefix_arguments_exact=True,native_observation_preserved=True,source_digest_exact=True,
+        executed_tools=0,correctness='passed',logs=str(root)))
+
+
 def run(ctx):
-    binary = ctx.output / "bin/pvisor-replay"
-    shutil.copy2(ctx.args.replay_binary.resolve(), binary)
-    ctx.metadata["replay_binary_sha256"] = digest(binary)
-    ctx.metadata["replay_protocol"] = {
-        "model": "none; no model requests",
-        "tasks": 20,
-        "repetitions": min(ctx.args.samples, 3),
-        "mode": "prepare-only",
-        "fixtures": "synthetic; not model task success",
-    }
-    for agent in ("claude-code", "codex", "opencode", "mini-swe-agent", "openhands", "pi-agent"):
-        for task in range(20):
-            command = f"printf fixture-{task} > marker-{task}.txt"
-            source, jsonl = trajectory(agent, task, command)
-            for trial in range(min(ctx.args.samples, 3)):
-                root = ctx.fresh(f"replay-{agent}-{task}")
-                work = root / "workspace"
-                work.mkdir()
-                path = root / ("trajectory.jsonl" if jsonl else "trajectory.json")
-                path.write_text(
-                    (
-                        "\n".join(json.dumps(item) for item in source)
-                        if jsonl
-                        else json.dumps(source)
-                    )
-                    + "\n"
-                )
-                argv = [
-                    str(binary),
-                    "--agent",
-                    agent,
-                    "--trajectory",
-                    str(path),
-                    "--after-step",
-                    "1",
-                    "--prepare-only",
-                    "--workspace",
-                    str(work),
-                    "--state-dir",
-                    str(root / "state"),
-                    "--output-dir",
-                    str(root / "output"),
-                ]
-                wall, _, _ = ctx.run(argv, cwd=work)
-                results = list((root / "output").glob("*/result.json"))
-                assert len(results) == 1
-                result = json.loads(results[0].read_text())
-                manifest = json.loads(results[0].with_name("manifest.json").read_text())
-                assert result["failure"] is None and result["replayed_tool_calls"] == 0
-                assert (
-                    manifest["boundary"]["after_step"] == 1
-                    and manifest["boundary"]["tool_calls"] == 1
-                )
-                call = manifest["batches"][0]["tool_calls"][0]
-                assert call["arguments"].get("command", call["arguments"].get("cmd")) == command
-                assert not list(work.iterdir()), "prepare-only executed an operation"
-                ctx.record(
-                    dict(
-                        suite="replay",
-                        workload="prepare-only",
-                        agent=agent,
-                        profile=manifest["agent"]["profile"],
-                        task=task,
-                        trial=trial,
-                        wall_ms=wall,
-                        prefix_arguments_exact=True,
-                        executed_tools=0,
-                        correctness="passed",
-                        logs=str(root),
-                    )
-                )
-        print(f"replay {agent}: 20 prefixes prepared", flush=True)
+    binary=ctx.output/'bin/pvisor-replay';shutil.copy2(ctx.args.replay_binary.resolve(),binary)
+    receipt=ctx.metadata.get('binary_build')
+    if not receipt or digest(binary)!=receipt['binaries']['pvisor-replay']['sha256']:
+        raise ValueError('replay binary must match frozen source build receipt')
+    agents=('claude-code','codex','opencode','mini-swe-agent','openhands','pi-agent','swe-agent')
+    ctx.metadata['replay_binary_sha256']=digest(binary)
+    ctx.metadata['replay_protocol']=dict(model='none; no model requests',tasks=20,repetitions=min(ctx.args.samples,3),mode='prepare-only',
+        adapters=list(agents),fixtures='synthetic native formats at adapter-declared versions; not installed CLI executions or model task success',
+        integrity='exact source digest, complete one-batch boundary, tool arguments, native historical observation and unchanged workspace',
+        order='seeded shuffled adapter/task conditions each repetition; failed fidelity excluded from timing and retained')
+    ctx.save();rng=random.Random(ctx.args.seed)
+    for trial in range(min(ctx.args.samples,3)):
+        cases=[(agent,task) for agent in agents for task in range(20)];rng.shuffle(cases)
+        for agent,task in cases:
+            try:replay_trial(ctx,binary,agent,task,trial)
+            except Exception as error:
+                failure=ctx.capabilities.setdefault('replay/'+agent,dict(state='failed',failures=[]))
+                failure['failures'].append(dict(task=task,trial=trial,error=str(error),traceback=traceback.format_exc()));ctx.save()
+        print(f'replay: repetition {trial+1} of {min(ctx.args.samples,3)} complete',flush=True)

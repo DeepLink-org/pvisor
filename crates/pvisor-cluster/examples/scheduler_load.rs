@@ -1,7 +1,13 @@
 //! A durable single-controller history load experiment, without VM execution.
-//! The scan reference is the former counts algorithm on the very same stored
-//! TaskRecords; it is not an old controller or an HTTP throughput test.
-use anyhow::{Context, ensure};
+//!
+//! Benchmark: B-CLUSTER (benchmark/README.md#b-cluster), role user-facing.
+//! Motivation: retained history consumes memory and adds restart waiting.
+//! Conclusion sought: current typed query, memory and warm-WAL replay costs by
+//! retained record count; not HTTP throughput or completed execution capacity.
+//! Design: synthetic cancelled history and checked ready tasks, current counts
+//! and durable replay; use one size per fresh process, pinned release source,
+//! and an external whole-cgroup CPU/memory monitor. RSS alone is a proxy.
+use anyhow::ensure;
 use clap::Parser;
 use pvisor_cluster::{
     scheduler::{Scheduler, SchedulerConfig},
@@ -9,12 +15,7 @@ use pvisor_cluster::{
 };
 use pvisor_core::{ExecutorKind, IsolationKind, RunInvocation, RunSpec};
 use serde_json::{Value, json};
-use std::{
-    collections::{BTreeMap, VecDeque},
-    hint::black_box,
-    path::PathBuf,
-    time::Instant,
-};
+use std::{collections::BTreeMap, hint::black_box, path::PathBuf, time::Instant};
 
 #[derive(Parser)]
 struct Args {
@@ -24,7 +25,7 @@ struct Args {
     /// Ready task count per case, or "all" for a dense live queue.
     #[arg(long, default_value = "1")]
     ready: String,
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 30)]
     samples: usize,
     #[arg(long, default_value_t = 100)]
     indexed_batch: usize,
@@ -61,14 +62,20 @@ fn task(id: &str) -> TaskSpec {
     }
 }
 
-fn full_scan(scheduler: &Scheduler) -> BTreeMap<String, usize> {
+fn validate_record_counts(
+    scheduler: &Scheduler,
+    expected: &BTreeMap<String, usize>,
+) -> anyhow::Result<()> {
+    // Independent correctness check, outside the timed query batches. Keep
+    // validating authoritative records when removing the old scan benchmark.
     let mut counts = BTreeMap::new();
-    for task in scheduler.task_records() {
+    for record in scheduler.task_records() {
         *counts
-            .entry(format!("{:?}", task.phase).to_lowercase())
+            .entry(format!("{:?}", record.phase).to_lowercase())
             .or_default() += 1;
     }
-    counts
+    ensure!(&counts == expected, "authoritative record counts differ");
+    Ok(())
 }
 
 fn sample(batch: usize, mut f: impl FnMut() -> BTreeMap<String, usize>) -> f64 {
@@ -88,7 +95,8 @@ fn distribution(mut values: Vec<f64>) -> Value {
         values[floor] + (values[ceil] - values[floor]) * (rank - floor as f64)
     };
     json!({"unit":"ns_per_call", "n":values.len(), "minimum":values[0],
-        "p50":percentile(0.5), "p95":percentile(0.95), "maximum":values[values.len()-1], "sorted_samples":values})
+        "p50":percentile(0.5), "p95_reference":(values.len() >= 30).then(|| percentile(0.95)),
+        "maximum":values[values.len()-1], "sorted_samples":values})
 }
 
 fn memory() -> Value {
@@ -151,7 +159,6 @@ fn experiment(total: usize, args: &Args) -> anyhow::Result<Value> {
         ..Default::default()
     };
     let mut scheduler = Scheduler::open(&path, config.clone())?;
-    let mut ids = Vec::with_capacity(total);
     let started = Instant::now();
     for graph in 0..history.div_ceil(256) {
         let mut nodes = Vec::new();
@@ -161,7 +168,6 @@ fn experiment(total: usize, args: &Args) -> anyhow::Result<Value> {
                 task: task(&id),
                 depends_on: vec![],
             });
-            ids.push(id);
         }
         let id = format!("history-graph-{graph}");
         scheduler.submit_graph(
@@ -183,7 +189,6 @@ fn experiment(total: usize, args: &Args) -> anyhow::Result<Value> {
                 task: task(&id),
                 depends_on: vec![],
             });
-            ids.push(id);
         }
         scheduler.submit_graph(
             TaskGraphSpec {
@@ -202,67 +207,26 @@ fn experiment(total: usize, args: &Args) -> anyhow::Result<Value> {
         .collect();
     ensure!(scheduler.counts() == expected, "prepared counts differ");
     let controller_memory = memory();
-    ensure!(full_scan(&scheduler) == expected, "scan reference differs");
+    validate_record_counts(&scheduler, &expected)?;
     let wal_bytes = std::fs::metadata(&path)?.len();
-    // Warm both implementations, then interleave their batches to reduce
-    // ordering bias. Indexed samples amortize clock overhead over many reads.
+    // Batched reads amortize clock overhead. Repetitions share one prepared
+    // controller; they are not independent restart or memory observations.
     black_box(scheduler.counts());
-    black_box(full_scan(&scheduler));
     let mut indexed = Vec::new();
-    let mut scanned = Vec::new();
-    for index in 0..args.samples {
-        if index % 2 == 0 {
-            indexed.push(sample(args.indexed_batch, || {
-                black_box(&scheduler).counts()
-            }));
-            scanned.push(sample(1, || full_scan(black_box(&scheduler))));
-        } else {
-            scanned.push(sample(1, || full_scan(black_box(&scheduler))));
-            indexed.push(sample(args.indexed_batch, || {
-                black_box(&scheduler).counts()
-            }));
-        }
+    for _ in 0..args.samples {
+        indexed.push(sample(args.indexed_batch, || {
+            black_box(&scheduler).counts()
+        }));
     }
     ensure!(
-        scheduler.counts() == expected && full_scan(&scheduler) == expected,
+        scheduler.counts() == expected,
         "counts changed during reads"
     );
+    validate_record_counts(&scheduler, &expected)?;
     ensure!(
         std::fs::metadata(&path)?.len() == wal_bytes,
         "counts wrote WAL"
     );
-    // Walk the former FIFO/lookahead algorithm on borrowed IDs from the same
-    // records. Omit WAL, renewal and admission: this is scan effort only.
-    let mut queue: VecDeque<_> = ids.iter().map(String::as_str).collect();
-    let phases: BTreeMap<_, _> = scheduler
-        .task_records()
-        .map(|task| (task.spec.id.as_str(), task.phase))
-        .collect();
-    let mut empty_windows = 0;
-    let mut skipped = 0;
-    loop {
-        let mut found = false;
-        for _ in 0..queue.len().min(config.queue_lookahead) {
-            let id = queue
-                .pop_front()
-                .context("reference queue unexpectedly empty")?;
-            if phases[id] == TaskPhase::Queued {
-                found = true;
-            } else {
-                skipped += 1;
-            }
-        }
-        if found {
-            break;
-        }
-        empty_windows += 1;
-    }
-    ensure!(
-        skipped == history,
-        "history reference did not visit every cancelled entry"
-    );
-    drop(phases);
-    drop(queue);
     scheduler.register(
         WorkerRegistration {
             version: CLUSTER_VERSION,
@@ -320,12 +284,14 @@ fn experiment(total: usize, args: &Args) -> anyhow::Result<Value> {
     .filter(|(_, count)| *count > 0)
     .collect();
     ensure!(scheduler.counts() == final_counts, "terminal counts differ");
+    validate_record_counts(&scheduler, &final_counts)?;
     let wal_bytes_after_completion = std::fs::metadata(&path)?.len();
     drop(scheduler);
     let start = Instant::now();
     let mut reopened = Scheduler::open(&path, config.clone())?;
     let reopen_us = start.elapsed().as_micros();
     ensure!(reopened.counts() == final_counts, "replay counts differ");
+    validate_record_counts(&reopened, &final_counts)?;
     ensure!(
         reopened
             .task("ready-0000000")?
@@ -373,14 +339,12 @@ fn experiment(total: usize, args: &Args) -> anyhow::Result<Value> {
         json!({"tasks":total, "cancelled_history":history, "ready_tasks_before_poll":ready,
         "prepared_us":prepared_us, "wal_bytes_before_poll":wal_bytes, "wal_bytes_after_completion":wal_bytes_after_completion,
         "wal_bytes_after_replay_probe":wal_bytes_after_replay_probe, "replay_probe_assigned_task":replay_probe_assigned_task,
-        "indexed_counts":distribution(indexed), "full_task_record_scan_reference":distribution(scanned),
-        "scan_reference_batches_per_sample":1, "indexed_counts_batches_per_sample":args.indexed_batch,
+        "indexed_counts":distribution(indexed), "indexed_counts_batches_per_sample":args.indexed_batch,
         "max_journal_bytes":config.max_journal_bytes, "queue_lookahead":config.queue_lookahead,
-        "legacy_cancelled_entries_visited":skipped, "legacy_empty_lookahead_windows":empty_windows,
         "current_polls_until_assignment":1, "current_poll_us_including_wal_and_admission":poll_us,
         "final_counts":final_counts, "reopen_us":reopen_us, "replay_fencing_verified":true,
-        "controller_plus_id_fixture_memory_before_reference":controller_memory,
-        "memory_after_replay_with_fixture":replay_memory}),
+        "controller_process_memory_before_query":controller_memory,
+        "controller_process_memory_after_replay":replay_memory}),
     )
 }
 
@@ -413,7 +377,7 @@ fn main() -> anyhow::Result<()> {
     let executable_hash = blake3::hash(&std::fs::read(std::env::current_exe()?)?)
         .to_hex()
         .to_string();
-    let report = json!({"schema":"pvisor-controller-history-load/v3", "scope":"single-controller durable typed API; synthetic task graphs; no execution",
+    let report = json!({"schema":"pvisor-controller-history-load/v4", "benchmark_id":"B-CLUSTER", "role":"user-facing", "scope":"single-controller durable typed API; synthetic task graphs; no execution",
         "protocol_version":CLUSTER_VERSION, "build_has_debug_assertions":cfg!(debug_assertions),
         "recorded_at_unix_ms":pvisor_core::unix_now_ms(), "source_blake3":sources_before, "executable_blake3":executable_hash,
         "source_identity_unchanged_during_measurement":true,
@@ -422,8 +386,8 @@ fn main() -> anyhow::Result<()> {
         "cpu_model":std::fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| text.lines().find_map(|line| line.strip_prefix("model name\t: ").map(str::to_owned))),
         "affinity":std::fs::read_to_string("/proc/self/status").ok().and_then(|text| text.lines().find_map(|line| line.strip_prefix("Cpus_allowed_list:\t").map(str::to_owned))),
         "filesystem_note":"temporary local WAL; fsync issued; storage medium and host load affect timings",
-        "reference_note":"former counts algorithm on the same authoritative TaskRecords without cloning; no former controller throughput claim; cancelled-window reference omits WAL and admission",
-        "memory_note":"whole process RSS/HWM includes controller, ID fixture, allocator retention and transient reference indexes; HWM accumulates across phases/rows; use a separate process per size and mode for comparisons; replay uses a warm local WAL",
+        "statistics_note":"query batches share one prepared controller; restart and memory have one observation per size/process; P95 descriptive only with >=30 batches, no P99 or production-tail claim",
+        "memory_note":"process RSS/HWM includes controller and allocator retention, not WAL page cache or whole-host memory; use external cgroup accounting. HWM accumulates across phases/rows; use a separate process per size and mode; replay uses a warm local WAL",
         "rows":rows});
     use std::io::Write;
     let mut output = std::fs::OpenOptions::new()

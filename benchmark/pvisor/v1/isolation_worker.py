@@ -1,10 +1,19 @@
 import json
+import os
 import socket
 import sys
 from pathlib import Path
 
-outside, lower, socket_path = sys.argv[1:4]
+outside, lower, socket_path, affinity_text = sys.argv[1:5]
+affinity = set(map(int, affinity_text.split(',')))
+os.sched_setaffinity(0, affinity)
+assert os.sched_getaffinity(0) == affinity
 result = {}
+result['inside-read'] = Path('inside').read_text() == 'benchmark-inside'
+first, second = socket.socketpair()
+with first, second:
+    first.sendall(b'allowed-inside-socket')
+    result['inside-socket'] = second.recv(64) == b'allowed-inside-socket'
 for name, path in [
     ("absolute", outside + "/secret"),
     ("symlink", "escape/secret"),
@@ -33,4 +42,6 @@ try:
 except OSError:
     result["unix-socket"] = False
 Path("staged-marker").write_text("benchmark-write")
+result['inside-write'] = Path('staged-marker').read_text() == 'benchmark-write'
+result['cpu_affinity'] = sorted(affinity)
 print(json.dumps(result))

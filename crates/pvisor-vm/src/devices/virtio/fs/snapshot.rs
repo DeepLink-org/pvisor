@@ -406,20 +406,29 @@ impl FsSnapshot {
                     }
                     #[allow(clippy::useless_conversion)]
                     // libc mode constants differ in width across hosts.
-                    let (mask, regular_mode, symlink_mode) = (
+                    let (mask, regular_mode, symlink_mode, directory_mode) = (
                         u32::from(libc::S_IFMT),
                         u32::from(libc::S_IFREG),
                         u32::from(libc::S_IFLNK),
+                        u32::from(libc::S_IFDIR),
                     );
                     let kind = identity.mode & mask;
                     let regular = kind == regular_mode;
                     let symlink = kind == symlink_mode;
+                    let directory = kind == directory_mode;
                     if identity.mode != saved.identity.mode
                         || identity.uid != saved.identity.uid
                         || identity.gid != saved.identity.gid
                         || identity.mtime != saved.identity.mtime
                         || identity.mtime_nsec != saved.identity.mtime_nsec
-                        || identity.nlink != saved.identity.nlink
+                        // A verified owned copy can cross filesystems. tmpfs
+                        // counts directory children in st_nlink, while btrfs
+                        // reports 1. Directory topology is authenticated by
+                        // the coordinator's complete tree inventory; this is
+                        // not a portable hardlink count. Files and symlinks
+                        // still require exact nlink, and retained roots above
+                        // still require their entire original identity.
+                        || (!directory && identity.nlink != saved.identity.nlink)
                         || ((regular || symlink) && identity.size != saved.identity.size)
                         || regular != saved.digest.is_some()
                         || symlink != saved.link_target.is_some()
@@ -545,5 +554,146 @@ pub(crate) fn pin_flags() -> i32 {
     #[cfg(target_os = "linux")]
     {
         libc::O_PATH | libc::O_NOFOLLOW
+    }
+}
+
+#[cfg(test)]
+mod owned_copy_tests {
+    use super::*;
+    use std::fs::FileTimes;
+
+    fn fixture(path: &Path) -> (FsSnapshot, PathBuf, PathBuf) {
+        let source = path.join("source");
+        let destination = path.join("copy");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(source.join("file"), b"content").unwrap();
+        std::fs::copy(source.join("file"), destination.join("file")).unwrap();
+        for relative in ["file", ""] {
+            let original = File::open(source.join(relative)).unwrap();
+            let copied = File::open(destination.join(relative)).unwrap();
+            copied
+                .set_times(
+                    FileTimes::new().set_modified(original.metadata().unwrap().modified().unwrap()),
+                )
+                .unwrap();
+        }
+        let mut inodes = Vec::new();
+        for (inode, relative) in [(1, ""), (2, "file")] {
+            let file = File::open(source.join(relative)).unwrap();
+            inodes.push(InodeSnapshot {
+                inode,
+                refs: 1,
+                path: Some(relative.as_bytes().to_vec()),
+                identity: FileIdentity::read(&file).unwrap(),
+                digest: (!relative.is_empty()).then(|| file_digest(&file).unwrap()),
+                link_target: None,
+            });
+        }
+        let state = FsSnapshot::Passthrough(PassthroughSnapshot {
+            root: source.as_os_str().as_bytes().to_vec(),
+            semantics: 0,
+            entry_timeout: std::time::Duration::from_secs(1),
+            attr_timeout: std::time::Duration::from_secs(1),
+            cache_policy: Default::default(),
+            xattr: false,
+            inodes,
+            handles: Vec::new(),
+            next_handle: 1,
+            submounts: false,
+        });
+        (state, source, destination)
+    }
+
+    #[test]
+    fn verified_owned_directory_copy_accepts_filesystem_link_count_conventions() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut snapshot, source, destination) = fixture(temp.path());
+        let FsSnapshot::Passthrough(state) = &mut snapshot else {
+            unreachable!()
+        };
+        // Model a directory identity captured on tmpfs and copied to btrfs.
+        // Directory size also varies by filesystem; neither describes links
+        // between regular files in the authenticated owned tree.
+        state.inodes[0].identity.nlink += 3;
+        state.inodes[0].identity.size += 128;
+        snapshot.rebind_owned_copy(&source, &destination).unwrap();
+        let FsSnapshot::Passthrough(state) = snapshot else {
+            unreachable!()
+        };
+        assert_eq!(
+            state.root,
+            destination.canonicalize().unwrap().as_os_str().as_bytes()
+        );
+        assert_eq!(
+            state.inodes[0].identity,
+            FileIdentity::read(&File::open(destination).unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn owned_copy_still_rejects_missing_regular_file_hardlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut snapshot, source, destination) = fixture(temp.path());
+        std::fs::hard_link(source.join("file"), source.join("alias")).unwrap();
+        let FsSnapshot::Passthrough(state) = &mut snapshot else {
+            unreachable!()
+        };
+        state.inodes[1].identity =
+            FileIdentity::read(&File::open(source.join("file")).unwrap()).unwrap();
+        // Restore directory mtime so the rejection tests the file's lost link.
+        File::open(&destination)
+            .unwrap()
+            .set_times(
+                FileTimes::new().set_modified(
+                    File::open(&source)
+                        .unwrap()
+                        .metadata()
+                        .unwrap()
+                        .modified()
+                        .unwrap(),
+                ),
+            )
+            .unwrap();
+        state.inodes[0].identity = FileIdentity::read(&File::open(&source).unwrap()).unwrap();
+        assert!(snapshot
+            .rebind_owned_copy(&source, &destination)
+            .unwrap_err()
+            .to_string()
+            .contains("metadata mismatch"));
+    }
+
+    #[test]
+    fn owned_copy_still_checks_contents_when_size_and_mtime_match() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut snapshot, source, destination) = fixture(temp.path());
+        std::fs::write(destination.join("file"), b"altered").unwrap();
+        let original = File::open(source.join("file")).unwrap();
+        File::open(destination.join("file"))
+            .unwrap()
+            .set_times(
+                FileTimes::new().set_modified(original.metadata().unwrap().modified().unwrap()),
+            )
+            .unwrap();
+        assert!(snapshot
+            .rebind_owned_copy(&source, &destination)
+            .unwrap_err()
+            .to_string()
+            .contains("content mismatch"));
+    }
+
+    #[test]
+    fn retained_directory_still_requires_its_exact_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut snapshot, source, _) = fixture(temp.path());
+        let FsSnapshot::Passthrough(state) = &mut snapshot else {
+            unreachable!()
+        };
+        state.inodes[0].identity.nlink += 3;
+        assert!(snapshot
+            .retain_readonly_root(&source)
+            .unwrap_err()
+            .to_string()
+            .contains("retained immutable inode identity changed"));
     }
 }

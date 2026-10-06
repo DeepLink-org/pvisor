@@ -442,12 +442,18 @@ pub fn plan_overlay_apply(
     lower_dirs: &[PathBuf],
     selection: &ApplySelection,
 ) -> Result<ApplyPlan, OverlayError> {
+    let profile = crate::profile::Profile::from_env("apply-plan");
+    let _total_span = profile.span("plan");
     crate::OverlayLayout::with_baseline(
         lower_dirs.to_vec(),
         record.target.clone(),
         record.baseline_lower.as_deref(),
     )?;
-    let changes = overlay_changes(record, lower_dirs)?;
+    let changes = {
+        let _span = profile.span("collect_changes");
+        overlay_changes(record, lower_dirs)?
+    };
+    profile.add("changes", changes.len() as u64);
     replacement_paths(&changes)?;
     let compiled = CompiledApplySelection::compile(selection)?;
     let mut selected_paths = changes
@@ -467,9 +473,25 @@ pub fn plan_overlay_apply(
         .filter(|change| change.kind == ChangeKind::Opaque)
         .map(|change| change.relative_path())
         .collect::<Vec<_>>();
-    let hard_link_groups = upper_hard_link_groups(record.upper.path())?;
+    let hard_link_groups = {
+        let _span = profile.span("hard_link_groups");
+        upper_hard_link_groups(record.upper.path())?
+    };
+    // Ancestor closure only needs directory membership. Scanning every change
+    // for each selected path makes large flat apply batches quadratic.
+    let directory_paths = {
+        let _span = profile.span("directory_index");
+        changes
+            .iter()
+            .filter(|change| change.new_type == Some(ChangeEntryType::Directory))
+            .map(ChangeEntry::relative_path)
+            .collect::<BTreeSet<_>>()
+    };
+    profile.add("changed_directories", directory_paths.len() as u64);
 
+    let closure_span = profile.span("dependency_closure");
     loop {
+        profile.add("closure_iterations", 1);
         let before = selected_paths.len();
 
         for opaque in &opaque_dirs {
@@ -522,13 +544,12 @@ pub fn plan_overlay_apply(
         }
 
         let selected_snapshot = selected_paths.iter().cloned().collect::<Vec<_>>();
+        let mut ancestor_queries = 0;
         for path in selected_snapshot {
             let mut parent = path.parent();
             while let Some(ancestor) = parent {
-                if changes.iter().any(|change| {
-                    change.relative_path() == ancestor
-                        && change.new_type == Some(ChangeEntryType::Directory)
-                }) {
+                ancestor_queries += 1;
+                if directory_paths.contains(ancestor) {
                     if compiled.excluded(ancestor) {
                         return Err(OverlayError::Apply(format!(
                             "cannot exclude ancestor {} required by selected path {}",
@@ -541,11 +562,14 @@ pub fn plan_overlay_apply(
                 parent = ancestor.parent();
             }
         }
+        profile.add("ancestor_queries", ancestor_queries);
 
         if selected_paths.len() == before {
             break;
         }
     }
+    drop(closure_span);
+    profile.add("selected_paths", selected_paths.len() as u64);
 
     let selected = changes
         .iter()
@@ -2608,6 +2632,54 @@ mod tests {
         assert_eq!(fs::read(target.join("value.txt")).unwrap(), b"concurrent");
         assert_eq!(fs::read(upper.join("value.txt")).unwrap(), b"staged");
         assert!(load_apply_records(&stage).unwrap().is_empty());
+    }
+
+    #[test]
+    fn selected_child_requires_all_new_directory_ancestors() {
+        let tmp = tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let stage = tmp.path().join("stage");
+        let upper = stage.join("upper");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(upper.join("parent/nested")).unwrap();
+        fs::write(upper.join("parent/nested/selected"), b"selected").unwrap();
+        fs::write(upper.join("parent/nested/unselected"), b"unselected").unwrap();
+        let record = OverlayRecord {
+            generation: 0,
+            id: "ancestor-closure".into(),
+            target: target.clone(),
+            baseline_lower: None,
+            upper: OverlayUpper {
+                upper_dir: upper,
+                work_dir: stage.join("work"),
+            },
+            merged_dir: stage.join("merged"),
+            stage_dir: stage,
+            excluded_paths: Vec::new(),
+            access_policy: Default::default(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        };
+        let mut selection = ApplySelection {
+            paths: vec!["parent/nested/selected".into()],
+            ..ApplySelection::default()
+        };
+        let plan = plan_overlay_apply(&record, std::slice::from_ref(&target), &selection).unwrap();
+        assert_eq!(
+            plan.selected_paths,
+            ["parent", "parent/nested", "parent/nested/selected"]
+                .into_iter()
+                .map(PathBuf::from)
+                .collect()
+        );
+        selection.excludes = vec!["parent/nested".into()];
+        let error =
+            plan_overlay_apply(&record, std::slice::from_ref(&target), &selection).unwrap_err();
+        // Exclusions cover descendants too, so initial selection rejects this
+        // child before ancestor closure. It must not reintroduce the subtree.
+        assert!(error.to_string().contains("no staged changes matched"));
     }
 
     #[test]

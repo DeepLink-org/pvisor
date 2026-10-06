@@ -2,7 +2,7 @@
 
 ## Main conclusions {#conclusions}
 
-**Creating a fresh task workspace, changing 20 of 10,000 files and retaining ten takes 141 ms at complete machine-workflow P50 with pVisor stage, 252 ms with Git worktree and 349 ms with a btrfs reflink copy. Stage suits sparse changes in large workspaces; Git costs less in a 100-file workspace.**
+**Creating a fresh task workspace, changing 20 of 10,000 files and retaining ten takes 141 ms at complete machine-workflow P50 with pVisor stage, 248 ms with Git worktree and 343 ms with a btrfs reflink copy. Stage suits sparse changes in large workspaces; Git costs less in a 100-file workspace.**
 
 | User scenario | Selection implication |
 |---|---|
@@ -30,14 +30,14 @@ This fixed file-editing task excludes inference, compilation and human reading. 
 
 ### Complete task cost {#baseline-meaning}
 
-Same host and batch, 2026-10-06; milliseconds, N=30 per cell. P95 is descriptive only. The small Git workspace has separated clusters: each cluster's count and median replaces a single P50.
+Same host and batch, 2026-10-06; milliseconds, N=30 per cell. P95 is descriptive only. No cell meets the predefined separated-cluster rule.
 
 | Workspace files | pVisor stage P50 / P95 | Git worktree P50 / P95 | btrfs reflink P50 / P95 |
 |---|---:|---:|---:|
-| 100 | 110.88 / 149.68 | 25 runs: 22.40; 5 runs: 38.91 / P95 42.68 | 24.69 / 38.36 |
-| 10,000 | 141.45 / 192.17 | 252.22 / 317.03 | 348.61 / 541.61 |
+| 100 | 109.02 / 110.56 | 22.02 / 23.14 | 23.66 / 25.28 |
+| 10,000 | 140.82 / 144.38 | 248.10 / 253.89 | 343.00 / 349.73 |
 
-For 10,000 files, the stage-minus-Git median difference is **−110.77 ms, 95% CI [−114.37, −95.53]**. Against reflink it is **−207.16 ms, 95% CI [−216.85, −193.64]**. Intervals use 5,000 bootstrap resamples paired by randomized sampling round; both support stage being faster. In the small workspace, stage costs **86.19 ms more than reflink, 95% CI [84.72, 87.54]**. The separated Git distribution has no single median-difference ranking.
+For 10,000 files, the stage-minus-Git median difference is **-107.27 ms, 95% CI [-109.02, -105.60]**; against reflink it is **-202.18 ms, 95% CI [-204.49, -199.81]**. Intervals use 5,000 bootstrap resamples paired by randomized sampling round and support stage being faster in this condition. For 100 files, stage minus Git is **+86.99 ms, 95% CI [+77.28, +87.57]** and stage minus reflink is **+85.36 ms, 95% CI [+75.45, +85.86]**; native workflows are faster in that small-workspace condition.
 
 ### Where the cost lies
 
@@ -45,11 +45,11 @@ Normal application with 10,000 files; P50 milliseconds, N=30 per cell. Step medi
 
 | Step | pVisor stage | Git worktree | btrfs reflink |
 |---|---:|---:|---:|
-| Create task view | Included in run | 86.27 | 107.19 |
-| Execute twenty edits | 84.31, including view creation | 13.64 | 13.85 |
-| Review complete content diffs | 6.76 | 73.74 | 152.76 |
-| Select, check and apply ten files | 46.43 | 4.35 | 4.12 |
-| Dispose of remaining task view | 3.43 | 74.69 | 68.25 |
+| Create task view | Included in run | 83.88 | 106.82 |
+| Execute twenty edits | 84.19, including view creation | 13.31 | 13.43 |
+| Review complete content diffs | 6.95 | 73.45 | 151.10 |
+| Select, check and apply ten files | 46.22 | 4.14 | 4.00 |
+| Dispose of remaining task view | 3.49 | 73.31 | 67.54 |
 
 Stage still adds tool-execution and application costs, but creating its private view, reviewing the changeset and discarding it do not require processing all 10,000 files. Git/reflink whole-tree work outweighs stage's additional costs in this sparse-edit workflow. This supports choosing stage for frequently created large task workspaces; it does not establish faster individual reads, writes or compilation.
 
@@ -59,8 +59,8 @@ One selected host file is changed before application. The complete workflow incl
 
 | Workspace files | pVisor stage | Git worktree | btrfs reflink | Refused with all host content preserved |
 |---|---:|---:|---:|---|
-| 100 | 96.25 | 23.08 | 24.10 | 30/30 for each backend |
-| 10,000 | 99.28 | 250.79 | 346.04 | 30/30 for each backend |
+| 100 | 95.64 | 21.66 | 23.37 | 30/30 for each backend |
+| 10,000 | 98.37 | 248.00 | 342.22 | 30/30 for each backend |
 
 No participant study was conducted. Batch review and machine timing cannot be converted into human time savings.
 

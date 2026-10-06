@@ -19,6 +19,16 @@ just test-benchmark
 
 CSV summaries are not substitutes for raw evidence: a fresh checkout can read tables and inspect derived provenance, but rerunning requires prepared tools, firmware and local raw inputs. Do not create public links to ignored `.data/` paths. Site builds explicitly exclude them.
 
+`publish_reference_campaign.py` combines derived tables from complete reference cohorts while retaining their individual batch/workload identities. It verifies retained binary/source receipts, refuses duplicate workload/backend cohorts and incomplete successful cells, and adds paired-round bootstrap confidence intervals. Separated distributions retain cluster statistics instead of receiving one median ranking.
+
+```bash
+python3 benchmark/pvisor/publish_reference_campaign.py \
+  --reports benchmark/.data/ready-new/report.json \
+            benchmark/.data/filesystem-new/report.json \
+            benchmark/.data/tools-new-report/report.json \
+  --output docs/src/en/benchmarks
+```
+
 ## Same-host runtime comparison
 
 B-STARTUP, B-FS-TOOLS and B-AGENT-TASK use `reference_baselines.py`. Native, pVisor host/staged/VM, rootless Docker, Firecracker PCI, QEMU q35 and QEMU microvm share offline tools and fixtures. The daemon and images are already prepared. Use two allowed host CPUs, 2 vCPU per VM, 128 MiB for the shell-ready probe and equal configured memory for all tool VMs. Use 16 GiB for Python/Node/Rust tools. Docker/native memory is not capped: this is a CPU-controlled comparison, not identical resource enforcement.
@@ -51,6 +61,16 @@ Run `--samples 1 --warmups 0` into a separate new directory first. Run `--modes 
 
 Tool preparation needs Linux x86_64, KVM, FUSE, user namespaces, a GNU pVisor CLI, firmware, Docker/Firecracker/QEMU, the Rust musl target, Git/rg/Python/Node/GCC and e2fsprogs. CLI modes also need their installed clients. Input copying, kernel builds, image import and downloads are outside timers. First output, result return and process exit are separate metrics. Record binary/source/harness digests, host kernel and tool identities with every run.
 
+### Rebuilding and repeating the complete matrix
+
+Freeze the actual source files, including local edits, before building release binaries. Retain the source manifest, compiler identity, build command and log beside the binaries. Pass `--build-receipt` to the reference runner: its JSON must contain `pvisor_sha256`, `source_manifest_sha256` and `source_identity.head`, with `source-manifest.json` in the same directory. The runner rejects a different binary or manifest. Without a receipt the binary source is explicitly unknown; the runner's repository HEAD does not establish binary provenance.
+
+Prepare the tool environment again and retain an input manifest for its files, symlinks, firmware, reference kernel/config, disk and image. Pin one immutable harness for all cohorts. Run startup, filesystem and fixed repair into separate short output directories under `.data/`, with 60 samples and three warmups per backend. Long job paths can exceed Unix socket path limits; a failed setup is a failed preflight, not a latency result. Run the environment and real-CLI cases separately under B-AGENT-TASK as well. Keep output correctness, Bundle isolation, untouched-original and complete staged-write checks enabled.
+
+Use a fresh private Docker data root and verify the actual storage driver with `docker info`. For the classic-driver comparison, rootless `overlay2` is supported on suitable recent Linux hosts; `fuse-overlayfs` is a fallback when kernel overlay is unavailable. VFS is intended primarily for testing and must not stand in for the usual container storage configuration. Docker Engine 29 also supports its default containerd image store; declare which store is tested. See the [Docker storage-driver documentation](https://docs.docker.com/engine/storage/drivers/select-storage-driver/).
+
+Finish all uninstrumented sampling before running profiles, kernel builds, tests or resource experiments. A complete retest also covers apply/conflict/interruption recovery, local network controls, idle and useful-task density, isolation, supervision, replay, fixed-budget cluster throughput/history, and platform-specific tools/memory tests. Do not use old rows to fill a missing condition. Physical-memory conclusions must include VM backing/cache and compression-store/pool memory, recovery must pass data-integrity checks, and completed tasks must accompany density figures. Live cold-page compression and compressed execution snapshots are different conditions. Firmware comparisons need matching current binaries, frozen configs and workload capability checks before timing.
+
 ## Complete Ubuntu controls
 
 `prepare_ubuntu_reference.py` prepares an official cloud disk with verified checksums, a generic kernel/initrd and tools. `ubuntu_baselines.py` checks systemd, networking, cloud-init, SSH readiness and workload correctness. It compares image-free pVisor with `firecracker-ubuntu`, `qemu-ubuntu` and `qemu-microvm-ubuntu`; first cloud-init boot is a separate case. This answers deployment waiting, not VMM overhead.
@@ -72,6 +92,7 @@ python3 benchmark/pvisor/review_workflow.py \
   --binary /absolute/path/to/frozen-release/pvisor \
   --binary-source-commit <actual-binary-source-commit> \
   --source-manifest /absolute/path/to/binary-source-manifest.json \
+  --build-receipt /absolute/path/to/build-receipt.json \
   --output benchmark/.data/workflow-new \
   --sizes 100,10000 --cases normal,conflict \
   --cpu-affinity 0,1 --samples 30 --warmups 3
@@ -87,7 +108,7 @@ python3 benchmark/pvisor/publish_review_workflow.py \
 
 Copy the derived CSVs to the Chinese article directory after reviewing both articles. First run a separate `--samples 1 --warmups 0` preflight. Every trial verifies all original files before application, the twenty complete content diffs, selected-only final changes or complete refusal, and the pVisor Bundle's rootless isolation and staging evidence. Reflink uses `--reflink=always`: an unsupported filesystem fails rather than silently becoming a full-copy control. All valid slow samples and failed trials are retained. Raw reports, frozen binary/harness, command logs and input manifests stay in the output `.data/` directory. Publish complete cohorts and bootstrap intervals for median differences; do not infer human review savings or VM/container performance from this test.
 
-`product_v1.py` and its active `v1/` modules serve B-APPLY, B-NETWORK, B-DENSITY, B-ISOLATION, B-SUPERVISION and B-REPLAY. The versioned module name is a report/runner contract, not a retired product feature. It pins executable inputs, validates Bundle isolation and preserves failures. Apply uses Git patches as a control; network uses native and host-network Podman; density records attempted/completed counts as well as occupancy. Unmeasured Git-review and full-rollout comparisons must stay unmeasured in user pages.
+`product_v1.py` and its active `v1/` modules serve B-APPLY, B-NETWORK, B-ISOLATION, B-SUPERVISION and B-REPLAY. The versioned module name is a report/runner contract, not a retired product feature. It pins executable inputs, validates Bundle isolation and preserves failures. Apply uses Git patches as a control; network uses native and host-network Podman; use `density.py` for fixed-budget density. That runner does not time a Git-review control or full rollouts; use B-WORKFLOW for the complete local review workflow comparison, and keep full-rollout claims unmeasured.
 
 ```bash
 python3 benchmark/pvisor/product_v1.py \
@@ -95,21 +116,130 @@ python3 benchmark/pvisor/product_v1.py \
   --firmware /absolute/path/to/libkrunfw-directory \
   --replay-binary /absolute/path/to/pvisor-replay \
   --output benchmark/pvisor/.data/tasks-new \
-  --samples 30 --warmups 3 \
-  --suites network,apply,density,isolation,replay,supervision
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --cpu-affinity 0,1 --samples 30 --warmups 3 \
+  --suites network
 ```
 
-Use `--help` for suite-specific counts and guards. Large apply jobs are capped at 3 samples, medium apply at 10, density at 5 batches and replay at 3 independent repetitions. Those do not establish tail latency. A guard is not a failure or a completed job. SIGKILL probes must hit the requested state; missed windows are retained separately. Snapshot/standalone CLI stress scripts are removed because that product entry is retired; use `just test-service-vm` for the current environment-sharing correctness gate.
+Run each registered ID in a separate invocation: `network`, `apply,baselines`, `isolation`, `replay` or `supervision`. Mixing IDs is rejected. Current host/staged jobs must report rootless isolation; staging additionally requires read/write enforcement evidence. The superseded filesystem entry is removed from this driver; the reusable fixture helper remains for the reference runner. Use `--help` for suite-specific counts and guards. Large apply jobs are capped at 3 samples, medium apply at 10 and replay at 3 independent repetitions. Those do not establish tail latency. A guard is not a failure or a completed job. SIGKILL probes must hit the requested state; missed windows are retained separately. Snapshot/standalone CLI stress scripts are removed because that product entry is retired; use `just test-service-vm` for the current environment-sharing correctness gate.
 
-B-CLUSTER uses `cluster_scalability.py`; derive figures with `plot_cluster_scalability.py --data-dir <local-.data-directory> --output-dir <public-derived-directory>`. Count validated task completions for throughput; VM-ready rate is only startup data. Increasing total CPU budget does not measure fixed-budget scaling.
+B-APPLY `apply,baselines` interleaves stage apply/drop/conflict, native copy and Git apply within seeded paired rounds, using the configured file counts. Medium/large sample caps remain explicit. Creating changes, patches and targets is outside timing; every target is fully verified. Failed measured conditions retain their evidence while unrelated conditions continue.
+
+B-DENSITY uses `density.py`, replacing the former one-second occupancy module. Each batch runs in a fresh owned systemd cgroup with a two-core quota, fixed memory.max and zero swap. Every payload installs and verifies its requested CPU affinity, including OCI runtimes that reset inherited masks. Every ready task waits on stdin before release, so startup staggering cannot masquerade as simultaneous occupancy. Idle Python and useful Python/Git tasks are separate: useful tasks touch/checksum 32 MiB, modify four of 64 committed files, run actual Git status and verify all contents. Stage/VM originals and retained changes must both pass checks. `prepare_density_env.py` prepares `/bench/density-worker.py`, Python/Git, a complete input manifest and a private Podman overlay image/store. Podman uses disabled inner cgroups and both payload/conmon membership must match the enclosing budget; see the [Podman run documentation](https://docs.podman.io/en/latest/markdown/podman-run.1.html#cgroups-how).
+
+```bash
+python3 benchmark/pvisor/density.py \
+  --binary /absolute/path/to/frozen-release/pvisor \
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --firmware /absolute/path/to/libkrunfw-directory \
+  --rootfs /absolute/path/to/prepared-density-rootfs \
+  --input-manifest /absolute/path/to/input-manifest.json \
+  --podman-root /absolute/path/to/private-podman-store \
+  --podman-image <immutable-image-id> \
+  --output benchmark/.data/density-preflight \
+  --concurrencies 1,2 --samples 1 --cpu-affinity 0,1
+```
+
+Run a separate full sweep only after the preflight passes. Keep memory/RSS sampling, attempted/ready/validated completion counts, failed batches and OOM events; a killed reporter is missing evidence, not a successful capacity result. Whole cgroup memory includes private VM backing and charged cache, while shared prepared tool/image caches may remain charged outside it. This measures capacity under the stated cgroup limit, not whole-machine net memory savings or compression. Compression requires its separate integrity-checked experiment. Root paths must remain short enough for Unix control sockets.
+
+After sampling ends, `publish_density.py --report <complete-report.json> --output <locale-benchmark-directory>` verifies retained source/binary/input receipts, the exact harness inventory and every attempted condition. Staged/VM results must match their retained ready/result output and unique successful Run/Attempt IDs; a time-based worker token alone is not globally unique. Original reports remain unchanged and the supplementary execution-evidence audit stays under `.data/`. Five complete rounds are required; lost reporters remain unknown tasks, while failed and OOM batches remain in the summary. Full-batch timing includes only complete no-OOM batches. Whole-cgroup barrier memory and observed peak ranges accompany completion counts; five observations do not establish tail latency or sustained reliability. Idle and useful cases stay separate, and a single successful batch cannot establish a supported concurrency limit.
+
+`parked_density.py` is a separate B-DENSITY cohort for dormant recoverable states, not active-task capacity. Compile `parked_memory_probe.rs` once from frozen source using `rustc --edition=2024 --target x86_64-unknown-linux-musl -C opt-level=3 -o <worker> <frozen-source>` and retain a receipt with `worker_sha256`, `source_sha256`, `target`, compiler identity and command. `prepare_density_env.py --parked-worker <worker> --parked-worker-receipt <receipt>` adds the exact static bytes before hashing/importing a fresh image. Do not alter the already prepared active-density inputs.
+
+Run the separate parked preflight after all formal timing ends:
+
+```bash
+python3 benchmark/pvisor/parked_density.py \
+  --binary /absolute/path/to/frozen/pvisor \
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --worker /absolute/path/to/frozen/parked-memory-probe \
+  --worker-receipt /absolute/path/to/worker-receipt.json \
+  --firmware /absolute/path/to/libkrunfw-directory \
+  --rootfs /absolute/path/to/fresh-parked-inputs/rootfs \
+  --input-manifest /absolute/path/to/fresh-parked-inputs/input-manifest.json \
+  --podman-root /absolute/path/to/fresh-parked-inputs/podman-store \
+  --podman-image <immutable-image-id> \
+  --output benchmark/.data/parked-preflight \
+  --concurrencies 1,2 --samples 1 --cpu-affinity 0,1
+```
+
+Every state touches/checks 64 MiB, waits for an exact stdin token, and on recovery verifies the saved identity, full data, Git status and four edits among 64 files. Admission/parking is sequential, all states must remain parked at the common barrier, and recovery uses one fixed slot. Current raw/compressed Job snapshots, native SIGSTOP and Podman pause have different portability and boundary semantics. Podman needs delegated child cgroups to freeze; payload/conmon must remain below the same 2 GiB/two-core/zero-swap parent. Unsupported stdin restoration or freezer control is a failed preflight, never a timed-sleep fallback. Only after every selected preflight condition passes, start a new five-round 1..128 capacity sweep. This does not establish tail latency, active concurrent throughput, SDK offload or automatic cold-page compression; raw backing cache may be reclaimed under the same memory pressure. Keep all failed and unknown outcomes, OOM events and private backing/cache in the accounting.
+
+B-CLUSTER uses `cluster_scalability.py` for one shared two-core, fixed-memory systemd slice containing the Controller and all Workers. Service caps remain explicit; no service may leave the total budget. A batch always submits twelve useful Python/Git tasks, checks each token/checksum/edited file set and reports validated completions per second. The Worker count (1/2/4) alternates in randomized rounds. Rootfs copying and service setup are outside task timing; service memory remains inside resource accounting. No six-second sleep or ready rate substitutes for work throughput.
+
+```bash
+python3 benchmark/pvisor/cluster_scalability.py \
+  --state /tmp/.data/cluster-state-new \
+  --output benchmark/.data/cluster-new \
+  --bin-dir /absolute/path/to/frozen-release-bins \
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --firmware-dir /absolute/path/to/libkrunfw-directory \
+  --rootfs /absolute/path/to/prepared-density-rootfs \
+  --input-manifest /absolute/path/to/input-manifest.json \
+  --sizes 1,2,4 --tasks 12 --repetitions 30 --warmups 3 \
+  --cpu-affinity 0,1 --budget-mib 2048
+```
+
+Run a separate one-repetition, zero-warmup preflight first. The runner verifies prepared rootfs inventories and current Cluster/Worker binary build receipts. It preserves failed tasks and complete shared-cgroup memory/CPU, including charged backing/cache. Prepared common caches may remain charged elsewhere. This is single-host KVM execution, not a multi-host or model-quality comparison. Measure control-plane history separately with the `scheduler_load` example built from the same frozen source; record compiler/build identity, retained record counts, restart time and memory. Legacy ready-only plotting inputs do not establish useful-task throughput.
 
 ## macOS
 
 B-STARTUP uses `vm_ready.py`; B-MACOS uses `macos_docker_tools.py` for Docker Desktop and pVisor tool comparisons. B-VM-MEMORY uses `macos_cold_ram.py` with data-integrity checks. `macos_migration.py` is a separate engineering A/B runner. Keep Apple Silicon/HVF data separate from Linux/KVM. Cold guest residency and footprint do not establish net physical savings. Do not reuse the deleted standalone snapshot harnesses with current binaries.
 
+## Linux execution-snapshot memory
+
+`vm_memory.py` serves B-VM-MEMORY through the current Job `suspend`/`resume` API. Prepare a small rootfs and compile `memory_probe.rs` into `/bench/memory-probe` with the Rust musl target. Keep the source, compiler command and rootfs manifest under `.data/`. The probe touches and checks every byte of repeated or deterministic random private memory, and verifies the same execution token and checksum after restore.
+
+```bash
+python3 benchmark/pvisor/vm_memory.py \
+  --binary /absolute/path/to/frozen-release/pvisor \
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --firmware /absolute/path/to/libkrunfw-directory \
+  --rootfs /absolute/path/to/prepared-memory-rootfs \
+  --output benchmark/.data/memory-preflight \
+  --samples 1 --warmups 0 --cpu-affinity 0,1
+```
+
+An owned systemd user service installs a 2 GiB memory limit, zero swap allowance and two-core CPU quota. Actual controls are verified before launch. Memory measurements cover the entire cgroup, including helpers, capture/restore and charged backing/file cache. Raw/compressed storage and repeated/random payloads alternate in randomized order. A failed suspension or checksum is a failed trial, never a memory-saving result. Use a fresh output for formal samples only after all four preflight conditions pass. Snapshot storage compression is different from a live cold-page pool; this single-VM experiment does not establish concurrent task density or a Docker/other-VM advantage. Host resume-to-completion includes remaining guest sleep; the guest's first complete scan is a separate metric.
+
+## Paired kernel configuration experiment
+
+B-KERNEL-ENG rebuilds both firmware configurations from a frozen libkrunfw source, the same Linux 6.12.109 tarball/patches and the same compact packaging code. The baseline config reference must precede trimming; it selects config text only, never an old binary. The candidate uses the frozen current configuration. All actual Kconfig outputs and changes, compiler/build logs, kernel/library/source digests are retained. Required SMP, KVM guest, CPU mitigations, namespaces, seccomp and virtio-fs/network features must remain enabled.
+
+```bash
+uv run --no-project --with pyelftools==0.33 python benchmark/pvisor/prepare_firmware_comparison.py \
+  --libkrunfw-root /absolute/path/to/libkrunfw \
+  --baseline-config-ref <full-commit-before-config-trimming> \
+  --output benchmark/.data/firmware-new --jobs 8
+python3 benchmark/pvisor/kernel_comparison.py \
+  --assets /absolute/path/to/prepared-reference-assets \
+  --binary /absolute/path/to/frozen-release/pvisor \
+  --build-receipt /absolute/path/to/product-build-receipt.json \
+  --firmware-receipt benchmark/.data/firmware-new/build-receipt.json \
+  --baseline benchmark/.data/firmware-new/baseline \
+  --candidate benchmark/.data/firmware-new/candidate \
+  --output benchmark/.data/kernel-preflight --samples 1 --warmups 0
+```
+
+Build only after unrelated timing ends. After all shell/tool preflight conditions pass, run into a fresh short `.data/` directory with 30 samples and three warmups. Configuration A/B is engineering evidence, separate from user runtime rankings. Report removed guest device/LSM capabilities and validate networking/suspend/restore separately; shell startup alone establishes none of those capabilities. The paired bootstrap compares matching rounds, and separated distributions remain separate.
+
 ## Engineering and diagnostics
 
 B-FS-ENG engineering runners and B-FS-DIAG diagnostic helpers remain active: `filesystem_ab.py`, `filesystem_fuse_ab.py`, `filesystem_stage_ab.py`, `filesystem_stage_durability.py`, `filesystem_lazy_ab.py`, `filesystem_kernel_probe.py` and `filesystem_diagnostic.py`. The FUSE passthrough adapter is a diagnostic control without staging semantics, not a production mode. Record each engineering run’s ID and keep raw output in `.data/`; publish only when it changes a user conclusion, after a matching user-facing comparison.
+
+After formal timing completes, `filesystem_counters.py` collects independent filesystem and fixed-repair diagnostics from the same verified current binary and inputs:
+
+```bash
+python3 benchmark/pvisor/filesystem_counters.py \
+  --assets benchmark/.data/tools-new \
+  --binary /absolute/path/to/frozen-release/pvisor \
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --firmware /absolute/path/to/libkrunfw-directory \
+  --output benchmark/.data/fs-counters-new \
+  --modes filesystem,tools --samples 3 --cpu-affinity 0,1
+```
+
+The report records startup phases, child CPU/page-fault/context-switch counters, and filesystem measurements; `counter-summary.csv` is the derived request/span inventory. Each filesystem identity includes PID, component and instance. Repeated cumulative records replace earlier snapshots rather than being added. Missing final records are explicit lower bounds; missing maximum latency is unknown, not zero. Inclusive spans and overlapping workers cannot be summed into total task time. Investigate every relevant rootfs and workspace instance before attributing a tool's delay. These results belong in technical analyses, not user latency tables.
 
 ```bash
 python3 benchmark/pvisor/filesystem_ab.py \
@@ -134,3 +264,70 @@ just benchmark-compare \
   benchmark/pvisor/.data/candidate/raw-report.json \
   benchmark/pvisor/.data/main/raw-report.json
 ```
+
+## Linux SDK live RAM offload
+
+`live_vm_memory.py` serves B-VM-MEMORY using the current public SDK `RunHandle.offload` and `resume` API, through the `vm_live_memory_bench` example. It parks the running VM with either raw or compressed RAM backing; this is a separate mechanism from execution snapshots and automatic cold-page reclaim. Build the example from frozen source and retain its build receipt (`example_sha256`, `source_manifest_sha256`) and source manifest. Prepare the same Python rootfs for all conditions.
+
+```bash
+cargo build --locked --offline --release -p pvisor --example vm_live_memory_bench --features gateway
+python3 benchmark/pvisor/live_vm_memory.py \
+  --example /absolute/path/to/frozen/vm_live_memory_bench \
+  --build-receipt /absolute/path/to/sdk-build-receipt.json \
+  --rootfs /absolute/path/to/prepared-python-rootfs \
+  --firmware /absolute/path/to/libkrunfw-directory \
+  --output benchmark/.data/live-memory-preflight --samples 1 --warmups 0
+```
+
+Every condition creates a fresh 256 MiB VM with 64 MiB fully checked private data and checked mutable state. Repeated and seeded random payloads, raw and compressed backing, alternate randomly in paired rounds. All VM/backing/FUSE helpers and the sampler inherit one verified 2 GiB, two-core, zero-swap cgroup. Complete cgroup anon/file/kernel and CPU are recorded while active, after two seconds parked, and after recovery; a 50 ms monitor retains transient memory. Restore acknowledgement, heartbeat and first complete guest scan have separate timing boundaries. All failures and OOMs remain in evidence. Use disk storage, outside tmpfs, and a new output for 30 formal samples after four preflight conditions pass. This single-VM measurement does not establish higher concurrent density or an advantage over Docker.
+
+## Prepared inputs for network and isolation controls
+
+`product_v1.py --suites network` and `--suites isolation` accept the pinned Python/Git rootfs and private OCI image produced by `prepare_density_env.py`. The runner verifies the complete rootfs inventory, content/modes/symlinks, host tool identities and immutable image ID. This excludes repeated tool copying and image import from the experiments without changing payload contents. Keep the prepared store's original runroot; use a new output per benchmark ID.
+
+```bash
+python3 benchmark/pvisor/product_v1.py \
+  --binary /absolute/path/to/frozen/pvisor \
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --firmware /absolute/path/to/libkrunfw-directory \
+  --prepared-rootfs /absolute/path/to/prepared/rootfs \
+  --input-manifest /absolute/path/to/prepared/input-manifest.json \
+  --podman-root /absolute/path/to/prepared/podman-store \
+  --podman-image <immutable-image-id> \
+  --output benchmark/.data/network-preflight \
+  --suites network --samples 1 --warmups 0 --cpu-affinity 0,1
+```
+
+B-NETWORK compares native, host policy proxy, VM and OCI host-network controls, with payload CPU affinity installed and checked. All small/bulk/stream/backend conditions alternate randomly each paired round. The local origin is outside the payload CPU budget and memory is not identically capped. Full payload checks, direct-socket denial controls and installed Bundle evidence precede publication. Failures remain separate from latency. After all available preflight conditions pass, use a fresh output with 30 samples and three warmups. For B-ISOLATION, replace the suite/output: three fresh repetitions per backend are correctness evidence, with native positive controls, inside-view read/write/socket positives and outside-view negatives; these are specific boundary tests rather than comprehensive security assurance.
+
+B-SUPERVISION uses `--suites supervision`, without OCI preparation. Stage and Git worktree conditions start with identical prepared edits; each reviews the complete content diff, applies ten files and disposes ten. The timer includes selection/extraction/check commands where needed, excluding private-view creation, task execution, fixture preparation, validation and human reading. Use a separate one-sample preflight, then 30 samples/three warmups in a new output. B-WORKFLOW separately includes view creation and execution; the two timers are not interchangeable.
+
+Complete Ubuntu sampling additionally requires `--build-receipt` and `--firmware`. Reprepare the distribution assets into a fresh directory: the preparer records the completed raw OS disks and payload hashes after provisioning, while the runner verifies those bytes, vendor kernel/initrd and current product source receipt. Old preparation manifests without these hashes do not satisfy the current input gate. Current staged controls must install rootless filesystem enforcement and retain every checked workspace write; process-only staging does not pass. A failed full-OS or workload preflight makes the experiment exit nonzero after unaffected conditions finish. Distribution and image-free environments retain their different OS/tool capabilities; their comparison answers full-environment waiting rather than a VMM speed ranking.
+
+`publish_vm_memory.py` generates derived summary, paired confidence intervals and provenance CSVs from complete memory cohorts. It verifies every condition/trial, restore integrity, source/binary receipts and OOM counters. Live offload and execution snapshots retain separate cohorts and metrics; missing, duplicated, failed or undersampled conditions cannot receive a successful timing table. CPU phase deltas include control/background work; after-completion snapshot memory is not restored live-VM residency. Use `--reports <live-report> <snapshot-report> --output <locale-benchmark-vm-memory-directory>` after sampling ends, then write the paired user articles from these summaries.
+
+B-FS-DIAG `filesystem_exec_probe.py` isolates guest loader/exec paths using the same ELF bytes and every dynamic library. It compares virtio-fs file mappings with verified executable memfd copies in separate fresh VMs; both arms perform identical copying/hashing and inherit the same fd set before measured calls. `--preparation-sources original,duplicate` alternates two preparation sources: original paths prewarm their inodes, while independent workspace copies have identical bytes in distinct inodes. Duplicate preparation preserves the first mapping opportunity for the original tool; common Python preparation still warms its interpreter and shared libraries. The first exec and subsequent calls retain separate labels. This is not completely cold startup, and a zero difference in warm repeats cannot reject a first-mapping cost. Guest `/dev/shm` remains noexec. Unsupported executable memfds are a failed capability, never a reason to remount or weaken policy. It records checked `rg --version` output, per-exec child CPU/fault/context-switch counters and all final filesystem instances. Counters include common preparation; neither source is a complete Agent latency ranking.
+
+```bash
+python3 benchmark/pvisor/filesystem_exec_probe.py \
+  --assets /absolute/path/to/prepared-reference-assets \
+  --binary /absolute/path/to/frozen/pvisor \
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --firmware /absolute/path/to/libkrunfw-directory \
+  --output benchmark/.data/exec-probe-new \
+  --samples 3 --calls 50 --cpu-affinity 0,1
+```
+
+Run only after formal timing ends. Preserve complete source/input receipts and every request identity/final span; inclusive counters cannot be summed into transport or CPU cost. Keep results in technical filesystem analysis and derived diagnostic CSVs, separate from user performance tables.
+
+`plot_cluster_scalability.py` now consumes the current completed-task JSON report through `--report`, with explicit `--output-dir`. It verifies current binary/source receipts, complete 30-batch conditions, identical total resource controls, task completion and OOM counters. It exports summary/provenance CSVs, and optionally plots validated task rate, full-batch time and whole-cgroup peak. Separated distributions retain both cluster medians; observed ranges are not confidence intervals. `--csv-only` needs no matplotlib. The ready-only TSV renderer is retired; historical charts retain their frozen evidence and cannot be inputs to the current throughput helper.
+
+The Cluster publisher also verifies the retained harness/input hashes and each unique task's completed record, expected Worker and complete workload output. `cluster-comparisons.csv` contains paired-round bootstrap intervals for complete-batch time; the per-task audit stays under `.data/` and its digest is included in processed provenance. One-slot Worker caps stay explicit: adding Workers uses resources unavailable to one capped Worker within the common total budget.
+
+For retained history, build the current release `scheduler_load` example with source/compiler/binary receipts, then run `controller_history.py --example <frozen-example> --build-receipt <receipt> --output benchmark/.data/history-new`. Use a new NVMe output directory; the runner rejects tmpfs/ramfs WAL storage. Defaults are 1,000/10,000/100,000/1,000,000 records, three independent processes per size, 30 query batches per process, two-core affinity/quota, 16 GiB and zero swap. The synthetic ready record receives a deliberate failed terminal receipt to check fencing and replay; no payload is executed. Whole-cgroup lifecycle peak includes record preparation, validation temporaries, WAL/cache and warm replay. It is not a stationary retained-state footprint. Query batches are correlated within a process; restart/memory have three observations, with no P95/P99 claim. Preserve every failed process and the last sampler point rather than counting missing output as zero memory or zero restart time.
+
+`publish_network.py --report benchmark/.data/network-new/report.json --output docs/src/en/benchmarks` requires all 17 native/host/VM/Podman/pVisor-OCI mode conditions, 30 independent batches per condition and unchanged prepared inputs. It verifies the frozen harness, input/build receipts, each retained command/output and independent Run boundary, complete response SHA-256, CPU affinity and deny-all evidence. Small-request statistics use the median within each 256-request, eight-thread batch, then distributions across batches; individual requests do not become independent samples. Transfer times exclude subsequent digest validation; job/worker times remain separate. The publisher exports same-directory summary, paired-comparison and provenance CSVs, with no P99 or public-network/model-latency claim. Failures prevent a complete comparison from being published; keep the failed report rather than replacing its cells with an older cohort.
+
+B-APPLY's `product_v1.py --suites concurrent-conflicts` is a separate correctness probe. With at least 1,000 changed files (`--crash-files`, default 10,000), it observes a real target write, stops only its owned apply process, confirms a Prepared ledger and untouched file, injects/fsyncs an external host edit, then resumes the same apply. It requires the edited bytes to survive and a conflict exit, retaining partial-apply counts and final ledger state. A missed window is untested; silently overwritten content is a failed result. This is distinct from editing before apply and from SIGKILL recovery; none can substitute for the other. Run after formal performance timing, with three fresh repetitions, and retain every failed probe.
+
+`publish_apply.py --report benchmark/.data/apply-new/report.json --output docs/src/en/benchmarks` exports the derived apply, recovery, comparison and provenance CSVs. It checks the retained binary/build receipt, source manifest, exact harness inventory, every planned operation/trial or known failure, and each requested versus durable crash state. Missing conditions are rejected; failed operations contribute no synthetic latency. Recovery times include only actual requested-state hits, while missed windows remain counted. At fewer than 30 pairs, Git comparison remains descriptive; P95 is absent below 30 samples and no P99 is generated. Conflict-before-apply and mid-apply external writes retain separate evidence. Validate the publisher before replacing both locale tables; complete reports and retained artifacts stay under `.data/`.

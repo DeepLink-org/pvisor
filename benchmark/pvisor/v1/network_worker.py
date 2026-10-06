@@ -36,6 +36,9 @@ def request(url, path, stream=False):
 
 def main():
     mode, url = sys.argv[1:3]
+    affinity = set(map(int, sys.argv[3].split(',')))
+    os.sched_setaffinity(0, affinity)
+    assert os.sched_getaffinity(0) == affinity, 'payload CPU affinity differs'
     start = time.perf_counter_ns()
     if mode == "deny":
         target = urlsplit(url)
@@ -60,12 +63,13 @@ def main():
         )
     elif mode == "stream":
         result = request(url, "/stream", True)
-        assert result["bytes"] == 10 * len(b"data: token\n\n")
+        assert result["bytes"] == 10 * len(b"data: token\n\n") and result["sha256"] == hashlib.sha256(b"data: token\n\n" * 10).hexdigest()
     else:
         raise ValueError(mode)
     print(
         json.dumps(
-            {"mode": mode, "worker_ms": (time.perf_counter_ns() - start) / 1e6, "check": result}
+            {"mode": mode, "worker_ms": (time.perf_counter_ns() - start) / 1e6, "check": result,
+             "cpu_affinity": sorted(affinity)}
         ),
         flush=True,
     )

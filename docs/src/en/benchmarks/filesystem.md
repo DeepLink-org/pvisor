@@ -1,78 +1,63 @@
-# How long do developer tools take in pVisor, Docker and lightweight VMs?
+# How long do development tools take across pVisor, Docker and lightweight VMs?
 
-## Main conclusions {#conclusions}
+## Conclusions {#conclusions}
 
-**Rootless pVisor host stays close to native tools; staged adds file-access and retained-change costs. pVisor VM takes longer than the measured Firecracker/QEMU configurations for the seven-tool task. Docker VFS creation is costly even where bind-mount tools are fast.**
+**Seven tools through exit take 0.47 s in pVisor host, 1.09 s in staged and 4.27 s in VM; Docker takes 0.82 s, Firecracker 2.29 s and QEMU microvm 1.50 s. Staging adds file-access cost for review, and VM tool costs remain substantial.**
 
 | Need | Selection implication |
-|---|---|
-| Local tools and retained edits | Evaluate rootless host/staged |
-| Independent guest kernel | Budget complete VM tool time |
-| Existing container/Git workflow | Compare costs and required review semantics |
+| --- | --- |
+| Local execution with retained changes | Evaluate host/staged and the complete review workflow |
+| Independent guest kernel | Budget both startup and VM tool waiting |
+| Concurrent or idle environments | Require fixed-budget throughput and physical-memory measurements |
 
 ## Motivation {#motivation}
 
-Repository scans, search, builds and dependency installation dominate many Agent tool loops. Choose with those costs alongside startup and review.
+Agent tool loops traverse, read, write, search, compile and install dependencies. Compare individual operations and complete waiting so that fast startup does not hide file-heavy task costs.
 
 ## Experiment design {#interpretation}
 
-Shared Linux/x86_64 host, AMD Ryzen 7 9700X, Fedora kernel 7.2.8-200.fc44.x86_64. Launch trees and the private Docker daemon are pinned to host CPUs 0,1; guests have 2 vCPU. Host/staged use rootless_process. Shell VMs use 128 MiB; tool VMs use 16 GiB. Native/Docker memory is not capped: this controls CPU and configured guest RAM, not identical resource enforcement. Tools and inputs are prepared; each run gets a fresh workspace, warm caches, three warmups and 60 measured trials, with seeded randomized backend order. Builds, downloads and input copying are excluded.
+Linux x86_64, AMD Ryzen 7 9700X, Fedora 7.2.8-200.fc44.x86_64. Launched process trees and the private Docker daemon are pinned to CPUs 0,1. VMs use 2 vCPU, 128 MiB for the shell probe and 16 GiB for tools. Native/Docker memory is uncapped: this is a CPU-controlled task comparison, not a capacity comparison under identical memory limits. Host/staged use rootless_process.
 
-Docker Engine 29.7.2 uses a private rootless VFS daemon and writable bind mounts. This does not represent overlay2 or Docker Desktop. Firecracker 1.13.1 PCI runs without jailer; QEMU 10.2.2 uses q35/microvm with private ext4. pVisor VM uses virtio-fs and a different kernel. Kernel, storage, devices and staging semantics remain configuration differences; these results do not isolate the VMM or FUSE alone.
+All backends share offline tools and fixed inputs, with a new workspace per trial. Warm caches, three warmups and 60 measured samples per cell; backends alternate in seeded randomized order. Preparation, builds, image import and fixture resets are outside timing; complete tasks include launch and exit. Docker Engine 29.7.2 uses a private rootless **overlay2** daemon, the classic image store and writable bind mounts. Firecracker 1.13.1 PCI runs without jailer; QEMU 10.2.2 uses q35/microvm and private ext4. pVisor VM uses virtio-fs and its own firmware. Kernels, storage and staging semantics differ: these are task costs for the stated configurations, not pure VMM or security rankings.
 
-Workload: 2,048 files in 32 directories; 64 MiB read with SHA256 verification; 256 × 64 KiB writes; git status; rg; 64 dependency-free Cargo modules; 32 offline npm packages. Operation timers include checks, excluding launch/exit. Completion includes all seven and exit. Large repositories, cold disks, Internet registries and concurrency throughput are unmeasured.
+The workload traverses 2,048 files in 32 directories, reads and SHA256-checks 64 MiB, writes 256 × 64 KiB, runs git status and rg, compiles 64 dependency-free Cargo modules and installs 32 offline npm packages. Operations include validation but exclude launch/exit; the complete task includes all seven and exit. Large repositories, cold disks, online registries and concurrent throughput are unmeasured.
 
 ## Data and analysis {#results}
 
-### Seven operations {#reference-fs}
+Measured on 2026-10-06: each backend/workload has 60/60 valid samples and zero measured failures. Outputs, exit and execution records must pass validation; staging also requires unchanged host originals and complete retained changes. Every valid slow sample is kept, with no timing-based exclusions. Tables normally show P50; separated distributions show cluster medians and counts. P95 is descriptive only. Raw reports, binaries and input/source manifests stay in ignored `.data/`; public CSVs retain workload, cohort and provenance associations.
 
-Measured 2026-10-05, 60/60 valid trials per backend, zero measured failures. Outputs and exits are checked; staged trials additionally check unchanged originals and complete retained edits. All valid slow samples are retained; no timing-based exclusions. P95 is descriptive. Separated clusters show each median and count out of 60 instead of one P50, using the predefined rule in [methodology](methodology.md).
+### Seven tool operations {#reference-fs}
 
-Units: ms; P50 or individual cluster medians with counts.
+Milliseconds; P50 or separated-cluster medians and counts.
 
-| Operation | Native | pVisor host | pVisor staged | pVisor VM | Docker rootless / VFS | Firecracker PCI | QEMU q35 | QEMU microvm |
-|---|---|---|---|---|---|---|---|---|
-| Traverse 2,048 files | 4.68 | 4.69 | 74.90 | 227.11 | 5.03 | 23.30 | 24.99 | 27.76 |
-| Read/verify 64 MiB | 33.28 | 32.53 | 68.85 | 154.80 | 32.48 | 81.30 | 39.16 (15/60); 106.63 (45/60) | 41.63 (13/60); 105.45 (47/60) |
-| Write 256 files | 3.69 | 3.68 | 27.10 | 159.80 | 3.69 (54/60); 6.80 (6/60) | 43.83 | 5.26 (15/60); 45.30 (45/60) | 5.45 (14/60); 45.22 (46/60) |
-| git status | 15.35 | 15.91 | 123.95 | 425.74 | 17.55 | 123.36 | 90.22 | 157.20 |
-| Ripgrep search | 8.56 | 8.81 | 91.29 | 460.88 | 9.99 | 14.39 | 14.53 | 15.11 |
-| Offline Cargo build | 57.21 (41/60); 144.26 (19/60) | 84.40 | 142.29 | 852.03 | 190.13 | 371.36 | 419.54 | 454.21 |
-| Offline npm install | 190.34 | 198.23 | 263.19 | 1662.23 | 273.68 | 565.52 | 583.35 | 619.69 |
-
-Docker bind-mount operation times exclude VFS creation. Staged/VM retain changes for review, unlike direct writable binds. Directory scans, Git and tool loading still add interactive waiting; no single-layer cause follows from this comparison.
+| Operation | Native | pVisor host | pVisor staged | pVisor VM | Docker rootless / overlay2 | Firecracker PCI | QEMU q35 | QEMU microvm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Traverse 2,048 files | 4.64 | 4.63 | 73.53 | 152.97 | 4.62 | 23.43 | 15.92 | 19.91 |
+| Read and verify 64 MiB | 32.62 | 31.73 | 66.98 | 116.45 | 32.64 | 79.79 | 37.43 | 40.19 |
+| Write 256 files | 3.62 | 3.66 | 26.23 | 135.16 | 3.82 | 43.11 | 5.02 | 4.99 |
+| git status | 14.50 | 14.30 | 120.01 | 352.11 (43/60); 665.46 (17/60) | 14.42 | 129.97 | 80.27 | 155.03 |
+| Ripgrep search | 7.35 | 7.22 | 84.81 | 434.07 | 6.86 | 15.82 | 12.57 | 13.03 |
+| Offline Cargo build | 51.00 | 50.81 | 71.76 | 482.69 | 48.14 | 373.88 | 260.34 | 296.94 |
+| Offline npm install | 170.56 | 170.22 | 226.67 | 1320.16 | 215.77 | 546.50 | 399.42 | 421.37 |
 
 ### Launch through exit {#complete-task}
 
-Units: seconds; P95 is descriptive, not an upper bound.
+| Runtime | Valid / failed | Completion P50 s | Completion P95 s |
+| --- | --- | --- | --- |
+| Native | 60 / 0 | 0.45 | 0.46 |
+| pVisor host | 60 / 0 | 0.47 | 0.48 |
+| pVisor staged | 60 / 0 | 1.09 | 1.13 |
+| pVisor VM | 60 / 0 | 4.27 | 4.60 |
+| Docker rootless / overlay2 | 60 / 0 | 0.82 | 0.85 |
+| Firecracker PCI | 60 / 0 | 2.29 | 2.33 |
+| QEMU q35 | 60 / 0 | 1.49 | 1.51 |
+| QEMU microvm | 60 / 0 | 1.50 | 1.54 |
 
-| Backend | Valid / failed | Completion P50 s | Completion P95 s |
-|---|---|---|---|
-| Native | 60 / 0 | 0.51 | 0.70 |
-| pVisor host | 60 / 0 | 0.57 | 0.79 |
-| pVisor staged | 60 / 0 | 1.29 | 1.58 |
-| pVisor VM | 60 / 0 | 6.66 | 8.00 |
-| Docker rootless / VFS | 60 / 0 | 5.68 | 6.76 |
-| Firecracker PCI | 60 / 0 | 2.16 | 2.35 |
-| QEMU q35 | 60 / 0 | 2.44 | 2.75 |
-| QEMU microvm | 60 / 0 | 2.45 | 2.79 |
+Staged minus Docker completion median is +268.81 ms, with a paired-bootstrap 95% interval of [+264.64, +271.15] ms. VM minus QEMU microvm is +2778.04 ms, interval [+2754.17, +2807.74] ms. Staging capabilities and storage configurations differ; total gaps do not identify the cost of one component.
 
-### Complete Ubuntu file operations {#full-ubuntu}
-
-Independent 2026-10-04 Firecracker/Ubuntu cohort, 2 vCPU / 16 GiB, N=10, three warmups. P50 ms; different OS/tools/storage, without pooled distributions. QEMU/Ubuntu has no seven-operation measurement.
-
-| Operation | Firecracker / Ubuntu P50 ms |
-|---|---|
-| Traverse 2,048 files | 18.64 |
-| Read/verify 64 MiB | 115.51 |
-| Write 256 files | 36.07 |
-| git status | 136.50 |
-| Ripgrep search | 20.40 |
-| Offline Cargo build | 969.09 |
-| Offline npm install | 1079.89 |
-
-[Startup](startup.md) · [Repair tasks](agent-tasks.md) · [Apply/drop](apply.md)
+<a id="full-ubuntu"></a>
+Full Ubuntu filesystem workloads have not been retested with the current artifacts.
 
 ### Downloads and reproduction {#run}
 
-[Derived table CSV](filesystem.csv) · [Runtime statistics](runtime-summary.csv) · [Sources and artifacts](runtime-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Derived statistics CSV](filesystem.csv) · [All runtime statistics](runtime-summary.csv) · [Differences and 95% confidence intervals](runtime-comparisons.csv) · [Source and artifact provenance](runtime-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

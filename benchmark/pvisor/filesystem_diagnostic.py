@@ -7,6 +7,7 @@ Design: reads profile-enabled batches only; their timings are not published.
 """
 
 import argparse
+import csv
 import json
 from pathlib import Path
 import re
@@ -25,9 +26,32 @@ STARTUP = re.compile(r"\bstage=(\S+) monotonic_us=(\d+)\b")
 PERSISTENCE = re.compile(r"\bobject=(\S+) phase=(\S+) duration_us=(\d+) outcome=(\S+)")
 
 
+def collect_profiles(lines):
+    """Keep one cumulative record per process and instance, with coverage."""
+    profiles = {}
+    for line in lines:
+        if not line.startswith("pvisor-fs-profile "):
+            continue
+        profile = json.loads(line.removeprefix("pvisor-fs-profile "))
+        if "pid" not in profile:
+            raise ValueError("profile lacks process identity; cannot safely combine instances")
+        key = (profile["pid"], profile["component"], profile["instance"])
+        previous = profiles.get(key)
+        if previous:
+            for label, measurement in previous["measurements"].items():
+                current = profile["measurements"].get(label, {})
+                if any(current.get(field, 0) < measurement.get(field, 0)
+                       for field in ("calls", "total_ns", "units")):
+                    raise ValueError(f"nonmonotonic cumulative profile {key}/{label}")
+        profiles[key] = profile
+    return list(profiles.values())
+
+
 def summarize_trial(row, directory):
-    stages, persistence, profiles = {}, {}, {}
-    for line in (directory / "stderr.log").read_text().splitlines():
+    stages, persistence = {}, {}
+    lines = (directory / "stderr.log").read_text().splitlines()
+    profiles = collect_profiles(lines)
+    for line in lines:
         if line.startswith("pvisor-startup ") and (match := STARTUP.search(line)):
             stage, timestamp = match.groups()
             stages.setdefault(stage, int(timestamp))
@@ -35,11 +59,6 @@ def summarize_trial(row, directory):
             obj, phase, duration, outcome = match.groups()
             values = persistence.setdefault(f"{obj}.{phase}", [])
             values.append(dict(duration_us=int(duration), outcome=outcome))
-        elif line.startswith("pvisor-fs-profile "):
-            profile = json.loads(line.removeprefix("pvisor-fs-profile "))
-            # Records are cumulative. Retain each instance's latest checkpoint,
-            # never sum successive checkpoints or nested inclusive spans.
-            profiles[(profile["component"], profile["instance"])] = profile
     phases, missing = {}, []
     for phase, (start, end) in PHASES.items():
         if start not in stages or end not in stages:
@@ -52,8 +71,33 @@ def summarize_trial(row, directory):
         phases=phases,
         missing_phases=missing,
         persistence=persistence,
-        filesystem=list(profiles.values()),
+        filesystem=profiles,
+        profile_coverage=dict(instances=len(profiles),
+                              final_instances=sum(p.get("final_record", False) for p in profiles),
+                              partial_instances=sum(not p.get("final_record", False) for p in profiles),
+                              meaning="final records cover completed instance spans; partial records are lower bounds, never complete-run counts"),
     )
+
+
+def write_counter_csv(rows, path):
+    fields = ["backend", "mode", "trial", "pid", "component", "instance", "schema",
+              "coverage", "label", "calls", "inclusive_total_ms", "mean_inclusive_us",
+              "max_inclusive_ms", "units", "latency_buckets"]
+    with path.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            for profile in row["filesystem"]:
+                for label, value in profile["measurements"].items():
+                    calls = value.get("calls", 0)
+                    writer.writerow(dict(backend=row.get("backend", row.get("variant", "")),
+                        mode=row.get("mode", "filesystem"), trial=row.get("trial", row.get("round", "")),
+                        **{field: profile[field] for field in ("pid", "component", "instance", "schema")},
+                        coverage="final" if profile.get("final_record") else "partial-lower-bound",
+                        label=label, calls=calls, inclusive_total_ms=value.get("total_ns", 0) / 1e6,
+                        mean_inclusive_us=value.get("total_ns", 0) / calls / 1000 if calls else "",
+                        max_inclusive_ms=value["max_ns"] / 1e6 if "max_ns" in value else "",
+                        units=value.get("units", 0), latency_buckets=json.dumps(value.get("latency_buckets"))))
 
 
 def main():

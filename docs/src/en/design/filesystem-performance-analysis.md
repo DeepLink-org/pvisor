@@ -1,5 +1,36 @@
 # Filesystem performance: technical analysis and experiment records
 
+## Independent counters for the current artifacts {#current-counters}
+
+Measured on 2026-10-06, CPUs 0,1, VM 2 vCPU/16 GiB; inputs and firmware correspond to the [user tool comparison](../benchmarks/filesystem.md). The diagnostic artifact uses the same frozen source with owned-copy directory link-count validation and profiling-exit fixes. Its source/binary digests are retained separately; samples are not pooled with the formal timing binary. Seven-tool and fixed-repair workloads each run three times in staged/VM modes: twelve valid jobs, zero failures. Profiles and startup timing are enabled; these times do not enter user performance distributions.
+
+Every staged trial has 5/5 final instances, every VM trial 13/13, covering rootfs and workspace. Records are distinguished by PID, component and instance, retaining only the last cumulative snapshot per instance. **Counts are complete, but inclusive spans nest and overlap across workers. They cannot be summed into total runtime or a bottleneck percentage.**
+
+| Workload / mode | Metric | Median calls | Median inclusive ms |
+| --- | --- | ---: | ---: |
+| Seven tools / staged | OverlayCore resolve | 14,462 | 140.53 |
+| Seven tools / staged | preimage | 5,720 | 66.93 |
+| Seven tools / staged | fingerprint_content | 2,157 | 43.58 |
+| Seven tools / VM | OverlayCore resolve | 25,019 | 447.48 |
+| Seven tools / VM | preimage | 11,367 | 83.28 |
+| Seven tools / VM | fingerprint_content | 2,157 | 48.76 |
+| Seven tools / VM | virtio-fs LOOKUP | 9,412 | 268.72 |
+| Seven tools / VM | virtio-fs READ | 10,896 | 123.26 |
+| Repair / staged | OverlayCore resolve | 3,162 | 27.69 |
+| Repair / VM | OverlayCore resolve | 14,512 | 290.70 |
+| Repair / VM | preimage | 7,472 | 11.28 |
+
+
+VM `dispatch/admission` records 1,546.67 ms for seven tools and 1,058.40 ms for repair. Its source span surrounds all of `service_queues`, including inline request execution. It is not pure queueing, transport or CPU time.
+
+Median `fingerprint_bytes` is 69,375,893 B for seven tools and 11,286 B for fixed repair, identical in staged/VM modes. The corresponding source still computes SHA256 at the first content observation of live lower files; ordinary stat/lookup does not hash regular-file content, while a frozen baseline skips read journaling. Checkpoint durability moves journal persistence to the completion boundary; it does not replace mutable-lower read fingerprints with metadata-only observations. This mutable fixture shows no content-receipt reuse and cannot quantify immutable-image gains. Read fingerprints cover little data in the repair task and need separate attribution from tool loading and path requests.
+
+Path resolution and numerous rootfs/workspace requests merit investigation; the counters do not establish per-file preimage fsync as the current dominant cost. Next, separate inline/worker service, queue waits and notifications, and compare identical ELF, loader and library bytes through virtio-fs and executable memfds. Both arms retain identical preparation and input fds; guest `/dev/shm` remains noexec. Preparation uses either original files or workspace copies in independent inodes, with the first exec separated from subsequent calls. Original preparation prewarms guest file pages; duplicate preparation preserves the first mapping opportunity for the original tool, while common Python preparation still warms its interpreter and some shared libraries. This is not completely cold startup. The probe is not yet validated or measured. Follow with metadata-cache engineering A/B preserving staging semantics. DAX, exec faults and individual functions' causal contributions remain unverified. Independent formal timing and confidence intervals must establish optimization gains.
+
+The [derived counter statistics CSV](filesystem-counters.csv) retains three-run medians, complete coverage and separate binary/source/report digests. Raw logs stay in local `.data/`; see the [counter manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#engineering-and-diagnostics).
+
+## Retained independent engineering experiments {#retained-experiments}
+
 The new default-release local VM completes at P50 **4.15 s (+3.3% versus optimized v3)**, with traversal at **157.57 ms (-6.5%)**. Warm lazy-image open/read improves **8.6%** and 64 MiB reads improve **6.6%**, but traversal slows and copy-up takes about **2.5×** as long. This batch shows no general end-to-end acceleration; see the [new-version evaluation](#filesystem-service) for complete distributions and cache conditions.
 
 ## Motivation

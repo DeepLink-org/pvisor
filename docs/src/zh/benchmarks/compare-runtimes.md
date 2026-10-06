@@ -1,66 +1,45 @@
-# 如何在 pVisor、Firecracker、QEMU 与隔离运行时之间选择？
+# 如何在 pVisor、Firecracker 和 QEMU 之间选择？
 
 ## 主要结论 {#conclusions}
 
-**pVisor VM 启动处于轻量 VM 量级，但所测修复与七项工具任务比 Firecracker、QEMU 等待更长。应结合完整执行与保留改动成本选型；gVisor/Kata 没有同条件排名。**
+**pVisor VM 的启动是百毫秒量级，但所测修复和文件密集任务慢于 Firecracker/QEMU。需要 stage/apply 时评估其额外能力；只需独立 guest 执行时，对照轻量 VM 的完整任务成本。**
 
 | 需求 | 选型含义 |
-|---|---|
-| 只需轻量 VM 执行 | 同时比较 Firecracker 和 QEMU microvm |
-| 需要统一 stage/apply | 评估 pVisor 的执行与合入总成本 |
-| 需要 gVisor 或 Kata | 没有同条件本机性能排名 |
+| --- | --- |
+| 本机执行并保留改动 | 评估 host/staged 与完整审查流程 |
+| 独立 guest 内核 | 同时预算启动和 VM 工具等待 |
+| 并发或闲置环境 | 需要固定资源下的吞吐与物理内存实测 |
 
 ## Motivation {#motivation}
 
-需要独立 guest kernel、OCI 工作流或系统调用隔离时，执行边界是选型的一部分。还需要区分 VMM 启动、操作系统启动、工具执行和 pVisor 的暂存/记录成本。
+独立 guest 内核、OCI 工作流和暂存审查是不同需求。比较完整任务可以避免仅凭启动速度选择执行环境。
 
 ## 实验设计 {#interpretation}
 
-共享 Linux/x86_64 宿主，AMD Ryzen 7 9700X，Fedora 内核 7.2.8-200.fc44.x86_64。启动进程树及专用 Docker daemon 固定到宿主 CPU 0,1；guest 为 2 vCPU。host/staged 使用 rootless_process。Shell VM 为 128 MiB，工具 VM 为 16 GiB。原生/Docker 不限内存：控制 CPU 与 guest 配置内存，不是相同资源限制的对照。工具与输入已准备，每次新建工作区、热缓存，3 次预热、60 次正式采样；按固定种子随机交错后端。构建、下载及输入复制不计时。
+Linux x86_64，AMD Ryzen 7 9700X，Fedora 7.2.8-200.fc44.x86_64。执行进程树与专用 Docker daemon 固定到 CPU 0,1；VM 为 2 vCPU，shell 探针配置 128 MiB，工具任务配置 16 GiB。原生/Docker 未限制内存，因此是 CPU 控制的任务对照，不能推导相同内存预算下的容量。host/staged 使用 rootless_process。
 
-Docker Engine 29.7.2 使用专用 rootless VFS daemon 与可写 bind mount，结果不代表 overlay2 或 Docker Desktop。Firecracker 1.13.1 PCI 不使用 jailer；QEMU 10.2.2 分别使用 q35/microvm、私有 ext4。pVisor VM 使用 virtio-fs 和不同内核。内核、存储、设备及暂存语义均有差异，不能把差距单独归因于 VMM 或 FUSE。
+同一套离线工具与固定输入，每次新建工作区；热缓存、3 次预热、每格 60 次正式采样，固定种子随机交替执行。环境准备、构建、镜像导入和输入重置不计时；启动和退出计入完整任务。Docker Engine 29.7.2 使用专用 rootless **overlay2** daemon、经典镜像存储和可写 bind mount；Firecracker 1.13.1 PCI 不使用 jailer，QEMU 10.2.2 分别使用 q35/microvm 与私有 ext4。pVisor VM 使用 virtio-fs 和自己的固件。内核、存储和暂存语义不同，结果是这些配置下的任务成本，不是纯 VMM 或安全排名。
 
-输出、暂存与退出必须校验。对照已准备环境，不是相同 OS 或安全加固程度的排名。
+复用启动、文件系统和修复三个独立注册负载，不合并其样本。镜像与工具已准备，输出、退出和暂存均须校验；这不是相同 OS 或安全加固程度的排名。
 
 ## 实验数据和分析 {#results}
 
-### 轻量 VM 等待 {#reference-comparison}
+测于 2026-10-06，每个后端/负载 60/60 有效，正式失败 0。输出、退出和执行器记录必须通过校验；暂存模式还验证宿主原文件不变和完整改动保留。保留所有有效慢样本，没有按耗时剔除。表格通常为 P50；分离分布展示各簇中位数和数量，P95 仅作观察参考。原始报告、二进制、输入与源码摘要保存在忽略的 `.data/`，公开 CSV 保留负载、批次和来源关联。
 
-启动/文件系统：2026-10-05；修复：2026-10-06。各独立负载/后端 N=60、失败 0、3 次预热。单位与计时边界见表头。通常为 P50，分离簇展示各簇中位数与数量；不跨批次合并分布。
+### 完整任务对照 {#reference-comparison}
 
-| Runtime | Valid / failed | Ready P50 ms | Repair completion P50 s | Seven-tool completion P50 s |
-|---|---|---|---|---|
-| pVisor VM | 60 / 0 | 99.76 | 3.25 | 6.66 |
-| Firecracker PCI | 60 / 0 | 74.74 | 2.06 | 2.16 |
-| QEMU q35 | 60 / 0 | 213.89 | 1.33 | 2.44 |
-| QEMU microvm | 60 / 0 | 86.60 | 1.27 | 2.45 |
+| Runtime | Ready P50 ms | Repair completion P50 s | Seven-tool completion P50 s |
+| --- | --- | --- | --- |
+| pVisor VM | 100.73 | 3.25 | 4.27 |
+| Firecracker PCI | 72.61 | 2.20 | 2.29 |
+| QEMU q35 | 213.07 | 1.46 | 1.49 |
+| QEMU microvm | 86.57 | 1.40 | 1.50 |
 
-复用环境摊薄启动后，工具时间更影响反馈速度。内核与文件系统路径有差异，不能把成本唯一归因于 libkrun。[启动](startup.md)、[文件系统](filesystem.md)与[修复/CLI 检查](agent-tasks.md)给出详细数据。
+分项、计时边界与差异置信区间见[启动](startup.md)、[文件系统](filesystem.md)和[修复任务](agent-tasks.md)。
 
-### 执行范围
-
-| 运行时 | 执行范围 | 测量状态 |
-|---|---|---|
-| pVisor / libkrun | 集成 guest VM + stage/apply | 本机对照如下 |
-| Firecracker / QEMU | 独立 VMM CLI | 对照测量，不是 pVisor 集成后端 |
-| gVisor | 应用内核 / runsc | 同条件性能未测 |
-| Kata | VM 支持容器工作流 | 同条件性能未测 |
-
-官方说明：[gVisor](https://gvisor.dev/docs/)、[Firecracker](https://firecracker-microvm.github.io/)、[Kata](https://katacontainers.io/)。pVisor 已验收后端见[执行器](../guides/executors/index.md)。
-
-### 完整 Ubuntu 部署 {#full-ubuntu}
-
-独立的 2026-10-04 数据，两核。启动：2 GiB，pVisor/Firecracker N=30、QEMU N=10；修复：16 GiB、N=10。统计 P50，OS 初始化/工具/存储不同。
-
-| Deployment | Ready P50 ms | Repair result P50 s |
-|---|---|---|
-| pVisor VM / host tools | 109.69 | 4.61 |
-| Firecracker / Ubuntu | 5644.11 | 8.51 |
-| QEMU q35 / Ubuntu | 5428.90 | 8.12 |
-| QEMU microvm / Ubuntu | 7666.69 | 10.33 |
-
-此表描述部署等待，不是纯 VMM 排名。
+<a id="full-ubuntu"></a>
+gVisor、Kata 与完整 Ubuntu 没有当前同条件实测；不提供排名。
 
 ### 数据下载与复现 {#run}
 
-[整理后的表格 CSV](compare-runtimes.csv) · [运行时统计](runtime-summary.csv) · [来源与制品](runtime-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[整理后的统计 CSV](compare-runtimes.csv) · [全部运行时统计](runtime-summary.csv) · [差异与 95% 置信区间](runtime-comparisons.csv) · [源码与制品来源](runtime-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

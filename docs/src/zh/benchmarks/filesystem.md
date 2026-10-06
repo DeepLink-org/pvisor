@@ -2,77 +2,62 @@
 
 ## 主要结论 {#conclusions}
 
-**rootless pVisor host 工具执行接近原生；staged 增加文件访问与保留改动成本。七项工具任务中，pVisor VM 比所测 Firecracker/QEMU 配置等待更长。Docker VFS 创建较贵，即使 bind mount 内工具较快。**
+**七项工具到退出，pVisor host 为 0.47 s、staged 为 1.09 s、VM 为 4.27 s；Docker 为 0.82 s，Firecracker 为 2.29 s，QEMU microvm 为 1.50 s。staged 的审查能力有文件访问成本，VM 工具成本仍明显。**
 
 | 需求 | 选型含义 |
-|---|---|
-| 本机工具与保留改动 | 评估 rootless host/staged |
-| 需要独立 guest 内核 | 预算完整 VM 工具时间 |
-| 已有容器/Git 工作流 | 比较成本与审查语义 |
+| --- | --- |
+| 本机执行并保留改动 | 评估 host/staged 与完整审查流程 |
+| 独立 guest 内核 | 同时预算启动和 VM 工具等待 |
+| 并发或闲置环境 | 需要固定资源下的吞吐与物理内存实测 |
 
 ## Motivation {#motivation}
 
-仓库遍历、搜索、编译与装依赖构成许多 Agent 工具循环。选型需同时考虑这些成本、启动和审查。
+Agent 的工具循环需要遍历、读写、搜索、编译和安装依赖。选型要同时看单项操作与完整等待，避免用快速启动估计文件密集任务。
 
 ## 实验设计 {#interpretation}
 
-共享 Linux/x86_64 宿主，AMD Ryzen 7 9700X，Fedora 内核 7.2.8-200.fc44.x86_64。启动进程树及专用 Docker daemon 固定到宿主 CPU 0,1；guest 为 2 vCPU。host/staged 使用 rootless_process。Shell VM 为 128 MiB，工具 VM 为 16 GiB。原生/Docker 不限内存：控制 CPU 与 guest 配置内存，不是相同资源限制的对照。工具与输入已准备，每次新建工作区、热缓存，3 次预热、60 次正式采样；按固定种子随机交错后端。构建、下载及输入复制不计时。
+Linux x86_64，AMD Ryzen 7 9700X，Fedora 7.2.8-200.fc44.x86_64。执行进程树与专用 Docker daemon 固定到 CPU 0,1；VM 为 2 vCPU，shell 探针配置 128 MiB，工具任务配置 16 GiB。原生/Docker 未限制内存，因此是 CPU 控制的任务对照，不能推导相同内存预算下的容量。host/staged 使用 rootless_process。
 
-Docker Engine 29.7.2 使用专用 rootless VFS daemon 与可写 bind mount，结果不代表 overlay2 或 Docker Desktop。Firecracker 1.13.1 PCI 不使用 jailer；QEMU 10.2.2 分别使用 q35/microvm、私有 ext4。pVisor VM 使用 virtio-fs 和不同内核。内核、存储、设备及暂存语义均有差异，不能把差距单独归因于 VMM 或 FUSE。
+同一套离线工具与固定输入，每次新建工作区；热缓存、3 次预热、每格 60 次正式采样，固定种子随机交替执行。环境准备、构建、镜像导入和输入重置不计时；启动和退出计入完整任务。Docker Engine 29.7.2 使用专用 rootless **overlay2** daemon、经典镜像存储和可写 bind mount；Firecracker 1.13.1 PCI 不使用 jailer，QEMU 10.2.2 分别使用 q35/microvm 与私有 ext4。pVisor VM 使用 virtio-fs 和自己的固件。内核、存储和暂存语义不同，结果是这些配置下的任务成本，不是纯 VMM 或安全排名。
 
-负载：32 个目录中 2,048 文件；64 MiB 读取及 SHA256 校验；256 × 64 KiB 写入；git status；rg；64 个无外部依赖 Cargo 模块；32 个离线 npm 包。单项含校验、不含启动/退出；Completion 包含七项及退出。大型仓库、冷磁盘、联网 registry 与并发吞吐未测。
+负载为 32 个目录中的 2,048 文件遍历、64 MiB 读取和 SHA256 校验、256 × 64 KiB 写入、git status、rg、64 个无外部依赖 Cargo 模块和 32 个离线 npm 包。单项含校验，不含启动与退出；完整任务包括七项和退出。大型仓库、冷磁盘、在线 registry 和并发吞吐未测。
 
 ## 实验数据和分析 {#results}
 
+测于 2026-10-06，每个后端/负载 60/60 有效，正式失败 0。输出、退出和执行器记录必须通过校验；暂存模式还验证宿主原文件不变和完整改动保留。保留所有有效慢样本，没有按耗时剔除。表格通常为 P50；分离分布展示各簇中位数和数量，P95 仅作观察参考。原始报告、二进制、输入与源码摘要保存在忽略的 `.data/`，公开 CSV 保留负载、批次和来源关联。
+
 ### 七项工具操作 {#reference-fs}
 
-测于 2026-10-05，每后端 60/60 有效、正式失败 0。检查输出与退出；暂存模式额外检查原文件未修改、改动完整保留。通过校验的慢样本全部保留，不按耗时剔除。P95 仅为观察参考。按[比较方法](methodology.md)中的预定规则识别出分离簇时，展示各簇中位数及占 60 次的数量，替代单个 P50。
+单位 ms；P50 或分离簇的中位数与数量。
 
-单位 ms；通常为 P50，分离簇展示各簇中位数与数量。
-
-| 操作 | Native | pVisor host | pVisor staged | pVisor VM | Docker rootless / VFS | Firecracker PCI | QEMU q35 | QEMU microvm |
-|---|---|---|---|---|---|---|---|---|
-| 遍历 2,048 文件 | 4.68 | 4.69 | 74.90 | 227.11 | 5.03 | 23.30 | 24.99 | 27.76 |
-| 读取并校验 64 MiB | 33.28 | 32.53 | 68.85 | 154.80 | 32.48 | 81.30 | 39.16 (15/60); 106.63 (45/60) | 41.63 (13/60); 105.45 (47/60) |
-| 写入 256 文件 | 3.69 | 3.68 | 27.10 | 159.80 | 3.69 (54/60); 6.80 (6/60) | 43.83 | 5.26 (15/60); 45.30 (45/60) | 5.45 (14/60); 45.22 (46/60) |
-| git status | 15.35 | 15.91 | 123.95 | 425.74 | 17.55 | 123.36 | 90.22 | 157.20 |
-| Ripgrep 搜索 | 8.56 | 8.81 | 91.29 | 460.88 | 9.99 | 14.39 | 14.53 | 15.11 |
-| 离线 Cargo 编译 | 57.21 (41/60); 144.26 (19/60) | 84.40 | 142.29 | 852.03 | 190.13 | 371.36 | 419.54 | 454.21 |
-| 离线 npm 安装 | 190.34 | 198.23 | 263.19 | 1662.23 | 273.68 | 565.52 | 583.35 | 619.69 |
-
-Docker bind mount 单项计时不含 VFS 创建。staged/VM 保留改动供审查，可写 bind 则直接修改挂载目录。目录扫描、Git 与工具加载仍增加交互等待；此对照不能确定某一层是唯一原因。
+| Operation | Native | pVisor host | pVisor staged | pVisor VM | Docker rootless / overlay2 | Firecracker PCI | QEMU q35 | QEMU microvm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 遍历 2,048 文件 | 4.64 | 4.63 | 73.53 | 152.97 | 4.62 | 23.43 | 15.92 | 19.91 |
+| 读取并校验 64 MiB | 32.62 | 31.73 | 66.98 | 116.45 | 32.64 | 79.79 | 37.43 | 40.19 |
+| 写入 256 文件 | 3.62 | 3.66 | 26.23 | 135.16 | 3.82 | 43.11 | 5.02 | 4.99 |
+| git status | 14.50 | 14.30 | 120.01 | 352.11 (43/60); 665.46 (17/60) | 14.42 | 129.97 | 80.27 | 155.03 |
+| Ripgrep 搜索 | 7.35 | 7.22 | 84.81 | 434.07 | 6.86 | 15.82 | 12.57 | 13.03 |
+| 离线 Cargo 编译 | 51.00 | 50.81 | 71.76 | 482.69 | 48.14 | 373.88 | 260.34 | 296.94 |
+| 离线 npm 安装 | 170.56 | 170.22 | 226.67 | 1320.16 | 215.77 | 546.50 | 399.42 | 421.37 |
 
 ### 启动到退出 {#complete-task}
 
-单位秒；P95 仅作观察参考，不是耗时上界。
+| Runtime | Valid / failed | Completion P50 s | Completion P95 s |
+| --- | --- | --- | --- |
+| Native | 60 / 0 | 0.45 | 0.46 |
+| pVisor host | 60 / 0 | 0.47 | 0.48 |
+| pVisor staged | 60 / 0 | 1.09 | 1.13 |
+| pVisor VM | 60 / 0 | 4.27 | 4.60 |
+| Docker rootless / overlay2 | 60 / 0 | 0.82 | 0.85 |
+| Firecracker PCI | 60 / 0 | 2.29 | 2.33 |
+| QEMU q35 | 60 / 0 | 1.49 | 1.51 |
+| QEMU microvm | 60 / 0 | 1.50 | 1.54 |
 
-| Backend | Valid / failed | Completion P50 s | Completion P95 s |
-|---|---|---|---|
-| Native | 60 / 0 | 0.51 | 0.70 |
-| pVisor host | 60 / 0 | 0.57 | 0.79 |
-| pVisor staged | 60 / 0 | 1.29 | 1.58 |
-| pVisor VM | 60 / 0 | 6.66 | 8.00 |
-| Docker rootless / VFS | 60 / 0 | 5.68 | 6.76 |
-| Firecracker PCI | 60 / 0 | 2.16 | 2.35 |
-| QEMU q35 | 60 / 0 | 2.44 | 2.75 |
-| QEMU microvm | 60 / 0 | 2.45 | 2.79 |
+staged 相对 Docker 的完整任务中位数差为 +268.81 ms，95% 配对 bootstrap 区间 [+264.64, +271.15] ms。VM 相对 QEMU microvm 为 +2778.04 ms，区间 [+2754.17, +2807.74] ms。暂存能力与存储配置均有差异，不能从总差距推断某一组件的成本。
 
-### 完整 Ubuntu 文件操作 {#full-ubuntu}
-
-独立的 2026-10-04 Firecracker/Ubuntu 样本组，2 vCPU / 16 GiB、N=10、3 次预热。单位 P50 ms；OS/工具/存储不同，不合并分布。QEMU/Ubuntu 没有七项操作实测。
-
-| Operation | Firecracker / Ubuntu P50 ms |
-|---|---|
-| 遍历 2,048 文件 | 18.64 |
-| 读取并校验 64 MiB | 115.51 |
-| 写入 256 文件 | 36.07 |
-| git status | 136.50 |
-| Ripgrep 搜索 | 20.40 |
-| 离线 Cargo 编译 | 969.09 |
-| 离线 npm 安装 | 1079.89 |
-
-[Startup](startup.md) · [Repair tasks](agent-tasks.md) · [Apply/drop](apply.md)
+<a id="full-ubuntu"></a>
+完整 Ubuntu 文件负载在当前制品下尚未复测。
 
 ### 数据下载与复现 {#run}
 
-[整理后的表格 CSV](filesystem.csv) · [运行时统计](runtime-summary.csv) · [来源与制品](runtime-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[整理后的统计 CSV](filesystem.csv) · [全部运行时统计](runtime-summary.csv) · [差异与 95% 置信区间](runtime-comparisons.csv) · [源码与制品来源](runtime-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

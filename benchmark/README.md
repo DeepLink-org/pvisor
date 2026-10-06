@@ -162,7 +162,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 定位 FUSE 传输、OverlayCore、持久化、内容指纹和缓存路径的成本。
 - **想要的结论：** 请求与 inclusive span 的成本分解，不能相加为精确归因，不作为用户性能数据。
 - **实验设计：** 独立诊断批次，直通 FUSE 仅为不含暂存语义的下限；插桩计时与正式性能采样分开。
-- **入口脚本：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_diagnostic.py`。
+- **入口脚本：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_exec_probe.py`、`filesystem_counters.py`、`filesystem_diagnostic.py`。`filesystem_exec_probe.py` 在新 VM 中比较相同可执行文件、loader 和全部动态库从 virtio-fs 与匿名 RAM 执行；两组都先复制并校验所有输入、传递相同 fd，避免将准备成本混入 exec。准备来源分为原始文件和独立副本：前者预热原 inode，后者从工作区独立 inode 读入相同字节，保留原工具文件首次映射的机会；共同的 Python 准备仍会预热解释器及部分共享库，不能称为完全冷启动。首个 exec 与后续重复 exec 分开，且不由热路径的零差异否定首次映射成本。guest `/dev/shm` 保持 noexec，使用显式 executable memfd；不重挂载或放宽策略。独立 VM 的完整计数器包含相同准备与指定次数 exec，差异用于请求归因，不能当作完整 Agent 启动水位。
 
 ### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
 
@@ -171,6 +171,14 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** 同输入就绪中位数差异及 95% bootstrap 区间。
 - **实验设计：** 相同 runner、rootfs 与 payload，随机交错实现，不作为跨产品用户对照。
 - **入口脚本：** `guest_init.py`。
+
+### B-KERNEL-ENG：裁剪固件是否缩短当前产品的启动 {#b-kernel-eng}
+
+- **角色：** engineering A/B；放入 `docs/src/*/design/vm-startup-performance-analysis.md`，不作为跨产品用户排名。
+- **Motivation：** 判断裁剪 guest 内核的收益，以及它是否仍支持工作区、开发工具和网络所需能力。
+- **想要的结论：** 相同 pVisor 二进制、相同 Linux 源码和补丁、相同打包方式，仅配置不同的两份新固件，其就绪/完整任务中位数差及 95% 配对 bootstrap 区间；列出减少的功能与未验证能力。
+- **实验设计：** 冻结固件源码、输入 tarball、补丁、配置与编译记录，分别重建通用配置和裁剪配置；不复用旧固件作为基线。先验证构建和同样负载的输出、暂存隔离与工作区内容；Linux KVM 上以相同两核/内存/工具输入，随机交替 shell-ready、七项文件工具和修复任务，每格 30 次、3 次预热。CPU 缓解、seccomp、namespaces、virtio-fs 等所需配置必须保留；网络/恢复能力需独立正确性检查，不能由 shell 启动通过推导。配置中 guest LSM/设备功能差异必须明确，不称为相同加固程度的排名。
+- **入口脚本：** `kernel_comparison.py`；`prepare_firmware_comparison.py` 是离线构建和来源准备 helper。
 
 ### B-STARTUP-DIAG：固件启动阶段诊断 {#b-startup-diag}
 
@@ -204,6 +212,22 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 中断注入：在合入的各阶段 SIGKILL，检查重新执行后的最终状态。
 - **入口脚本：** `v1/apply.py`。
 
+### B-APPLY-ENG：合入目录索引的工程 A/B {#b-apply-eng}
+
+- **角色：** engineering A/B，不进入用户页正文。
+- **Motivation：** 判断目录依赖闭包索引是否减少大批合入的等待，同时保持冲突检测和完整结果。
+- **想要的结论：** 同机配对的合入/冲突拒绝中位差及 95% 区间；只有输出和冲突保护全部通过后才比较。
+- **实验设计：** 同一冻结父源码，仅修改 apply 实现；编译器、依赖、release 配置一致。默认 1,000/10,000 文件、合入与合入前冲突、每格 30 次和三次预热，随机交替新旧二进制；每次创建独立 stage/target，准备排除在合入计时之外。诊断计数另跑，不把插桩时间混入性能结论。
+- **入口脚本：** `apply_plan_ab.py`。
+
+### B-APPLY-DIAG：合入计划的计数分解 {#b-apply-diag}
+
+- **角色：** diagnostic。
+- **Motivation：** 判断时间是否花在收集改动、硬链接分组、目录索引或依赖闭包上。
+- **想要的结论：** 完整的 plan inclusive span、改动数、目录数、闭包迭代和祖先查询数；嵌套项不可相加。
+- **实验设计：** `apply_plan_ab.py --profile` 独立插桩批次，保存所有 stderr 计数；与正式计时分开。旧实现没有某项计数时明确为缺失，不当作零。
+- **入口脚本：** `apply_plan_ab.py --profile`。
+
 ### B-NETWORK：网络代理和 VM 网络有多大开销 {#b-network}
 
 - **文档：** `network.md`
@@ -227,7 +251,8 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 对照组为 Podman 或 Docker。
   - 先测空闲探针，再测带真实工具负载的情况；两者分别报告。
   - 成功率与资源一起报告，不能只报告成功的样本。
-- **入口脚本：** `v1/density.py`。
+- **入口脚本：** `density.py`，worker 为 `density_worker.py`。每批使用独立、固定 CPU/内存预算且禁用 swap 的 cgroup；所有任务到达 readiness barrier 后才一起释放。空闲与 Python/Git 修改和校验任务分开报告。OCI 对照必须证明 payload 与 conmon 没有逃离资源预算。记录整个 cgroup、完整 VM backing、RSS、OOM、尝试与完成数量。共享的预先准备工具/镜像缓存可能由父 cgroup 计费，不能把受限 cgroup 的容量换算为整机净内存节省。
+- **暂停等待的容量另测：** `parked_density.py` 使用相同静态 worker（`parked_memory_probe.rs`）、64 MiB 完整触碰和校验的数据、64 个文件与四个恢复后改动；重复与确定性随机数据分开。逐个创建并暂停到共同 parked barrier，比较当前 Job raw/压缩执行快照、native SIGSTOP 和 Podman pause；统一包含协调器、辅助进程、backing/页缓存的两核、2 GiB、零 swap 预算。随后以固定一个恢复槽逐个恢复，校验同一执行 token、全部内存和文件结果；分别报告停驻容量、准备成本、恢复至完整结果的成本、失败/未知/OOM，不能称为活跃并发或用快照文件大小推算物理密度。先单独验证四类机制的 stdin barrier 可保存/恢复；不支持的机制明确为未测，不改用计时 sleep。OCI payload/conmon 与 pause 使用的子 cgroup 必须都处于同一总预算。完整容量扫描每格至少五个批次；共享预备工具缓存的计费范围和快照相对容器 pause 的语义差异需明确。SDK offload 与自动冷页压缩不包含在此快照对照中。
 
 ### B-ISOLATION：隔离是否真的生效 {#b-isolation}
 
@@ -278,7 +303,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 同时测回收量、恢复延迟和 CPU 开销。
   - 区分重复数据和随机数据负载。
   - 每次试验使用新的 VM，并校验数据完整性。
-- **入口脚本：** `macos_cold_ram.py`；已删除独立 snapshot CLI 的脚本与专用测试；内部 checkpoint 正确性由现有服务测试验证，不作为用户性能数据。
+- **入口脚本：** `macos_cold_ram.py`（Apple Silicon live cold-page pool）、`vm_memory.py`（当前 Job API 的 Linux raw/compressed execution suspend/resume）、`live_vm_memory.py`（当前 SDK 的 Linux whole-VM offload，使用 `vm_live_memory_bench` example）。Linux 使用独立受限 cgroup，包含 backing/cache、捕获与恢复进程；报告 active、suspended 和恢复阶段、数据完整性与 CPU 成本。SDK offload 每个样本创建新的 VM，重复数据与确定性随机数据、raw 与压缩 backing 随机配对；记录完整 cgroup 的 anon/file/kernel 与 CPU，校验恢复后的全部数据和可变状态。执行快照、whole-VM offload 与运行中自动冷页压缩分别报告；单 VM 回收量不能替代密度实验，不恢复退役的独立 snapshot CLI。
 
 ### B-CLUSTER：增加机器和资源后，能否得到更多有效结果 {#b-cluster}
 
@@ -287,11 +312,11 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 规模化运行 Agent 时，用户关心的是增加 Worker 和资源能不能线性地增加有效产出，以及控制面在长期运行后是否会成为瓶颈。
 - **想要的结论：** "在固定的总资源预算下，每秒完成的有效任务数随 Worker 数增长的曲线"；"控制面在保留 N 条历史记录时的内存和重启耗时"。
 - **实验设计：**
-  - 固定每个 Worker 的资源上限，扫描 Worker 数量。
+  - 固定包含 Controller 和全部 Worker 的总 CPU/内存预算，另保留每个 Worker 的资源上限，扫描 Worker 数量。
   - 以完成且通过校验的任务数作为产出指标。
   - 控制面的历史规模单独扫描。
   - 不能只报告就绪时间来代替吞吐。
-- **入口脚本：** `cluster_scalability.py`、`plot_cluster_scalability.py`。
+- **入口脚本：** `cluster_scalability.py`（固定总预算的 Python/Git 完成吞吐）、`cluster_worker.py`（worker）、`plot_cluster_scalability.py`（加工）；控制面历史由 `controller_history.py` 包装当前冻结源码的 `pvisor-cluster` example `scheduler_load` 单独测量。每个规模使用独立进程/cgroup，固定两核、16 GiB、零 swap、真实磁盘 WAL，默认三个独立进程；每进程内部 30 个查询批次，查询批次与独立重启样本不可混为同一采样数。物理峰值包含历史准备、校验临时分配、日志页缓存与重启；不是稳定保留态内存。
 
 ### B-MACOS：macOS 上的工具和迁移成本 {#b-macos}
 

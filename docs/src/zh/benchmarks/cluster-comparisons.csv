@@ -1,0 +1,3 @@
+candidate_workers,control_workers,metric,unit,n,difference_ms,ci95_low_ms,ci95_high_ms,conclusion,report_sha256,confidence_method
+2,1,completion_ms,ms,30,-15808.2423485,-15932.164431500001,-15030.530639000002,candidate faster,066361fc57ef0febfd20d1ecc27a3273dfe1b1d94f6cccd523af99678abddec3,"5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI"
+4,1,completion_ms,ms,30,-21350.262971999997,-21362.954132500003,-20967.9011505,candidate faster,066361fc57ef0febfd20d1ecc27a3273dfe1b1d94f6cccd523af99678abddec3,"5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI"

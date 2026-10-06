@@ -65,23 +65,14 @@ Prioritize compacting/archiving terminal records, separating historical and acti
 
 ## Reproduction and raw evidence {#reproduce}
 
-Prerequisites and bounded builds are covered in the [Cluster quickstart](../guides/cluster/index.md). With `pvisor-cluster` / `pvisor-worker` binaries, firmware, Linux user systemd and KVM/FUSE prepared, run from the repository root:
+The readiness probes and history curves above retain their original artifacts and inputs as technical evidence. The current entry measures completed, verified Python/Git tasks under fixed total CPU/memory; its results cannot be joined to readiness probes. Build, input freezing, preflight and formal sampling commands are in the [reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md).
+
+Generate derived data from a current complete task report (plotting requires matplotlib; `--csv-only` exports CSVs only):
 
 ```bash
-SCALING_PARENT=$(mktemp -d /tmp/pvisor-cluster-scaling.XXXXXX)
-python3 benchmark/pvisor/cluster_scalability.py \
-  --state "$SCALING_PARENT/state" \
-  --output "$SCALING_PARENT/vm.json" \
-  --firmware-dir target/libkrunfw/5.5.0-x86_64-unknown-linux-musl \
-  --sizes 1 2 4 --repetitions 5
-```
-
-The runner accepts only sizes 1, 2 and 4, verifies kernel caps and available memory at startup, and stops its own services on completion, exceptions and termination signals. Private state remains in the output directory for inspection and is excluded from the public archive. An initial preparation used invalid `trace=false` retention and was rejected before any task was accepted or VM started. After correcting it, every real probe succeeded; the failure report is retained too.
-
-Render the public archive again (requires matplotlib):
-
-```bash
-MPLCONFIGDIR=/tmp/pvisor-plot-cache python3 benchmark/pvisor/plot_cluster_scalability.py
+python3 benchmark/pvisor/plot_cluster_scalability.py \
+  --report benchmark/.data/cluster-new/report.json \
+  --output-dir benchmark/.data/cluster-new/derived --csv-only
 ```
 
 Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/vm.tsv` · Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/vm-summary.csv` · Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/controller-summary.csv` · Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/controller-provenance.tsv` · Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/setup-failure.tsv`

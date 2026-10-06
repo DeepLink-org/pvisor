@@ -31,12 +31,12 @@ Tables identify pinned artifacts and measurement dates. Failed or invalid sample
 
 ## Data and analysis {#results}
 
-Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.
+Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup and repair on 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.
 
 | Tool | First output P50 ms | Repair completion P50 s | Evidence status |
 |---|---:|---:|---|
-| pVisor staged | 24.99 | 0.68 | Local N=60 / failed=0 |
-| pVisor VM | 99.76 | 3.25 | Local N=60 / failed=0 |
+| pVisor staged | 25.13 | 0.64 | Local N=60 / failed=0 |
+| pVisor VM | 100.73 | 3.25 | Local N=60 / failed=0 |
 | E2B | — | — | Unmeasured |
 | Daytona | — | — | Unmeasured |
 | Modal | — | — | Unmeasured |

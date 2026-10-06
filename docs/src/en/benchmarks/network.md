@@ -1,55 +1,65 @@
-# How much waiting do network controls add compared with ordinary OCI?
+# What does network policy add compared with ordinary OCI?
 
 ## Main conclusions {#conclusions}
 
-**Local 1 KiB HTTP request P50 is 0.95 ms native, 1.24 ms through the pVisor host proxy and 3.83 ms in the VM. A 32 MiB transfer reaches about 869, 417 and 155 MiB/s, respectively. Small-request proxy overhead is modest; VM bulk-transfer overhead is more pronounced. These are not Internet model-response timings.**
+**For eight-thread local HTTP small requests, native, pVisor host proxy and VM median request times are about 0.69, 10.09 and 2.10 ms. A 32 MiB VM transfer takes about 193.62 ms. Host-proxy small-request cost warrants attention; local measurements do not establish public model-response latency.**
 
 | Need | Selection implication |
 |---|---|
-| Small local requests | Proxy overhead is modest |
-| Bulk downloads or fast local transfer | Check VM throughput |
-| Direct sockets must be blocked | Choose an enforceable boundary |
+| Frequent local small requests | Host proxy adds noticeable waiting; check your request rate |
+| Dependency downloads inside a VM | Budget transmission separately from environment startup |
+| Blocking direct TCP connections | Host/VM deny-all positive and negative controls are tested; latency is not isolation evidence |
 
 ## Motivation {#motivation}
 
-Models can stream for seconds while tools issue many short requests and downloads. Separate request latency, throughput and process startup to assess the networking cost.
+Agents request models, download dependencies and consume streams. These workloads respond differently to proxy overhead. Separate request latency, first byte, full transmission and startup to understand the waiting involved.
 
 ## Experiment design {#interpretation}
 
-Same-host IP HTTP origin; no Internet/TLS/DNS. Each path has 3 warmups and 30 batches. Small: 256×1 KiB, concurrency 8, a new connection per request, 7,680 requests per path. Bulk: 32 MiB. Stream: 10 chunks, 2 ms apart. Lengths/hashes are validated. First body byte is not model TTFT. VM uses auto TCP; host/OCI use proxy; Podman uses host networking.
+Linux/x86_64, one local HTTP origin on the same host, without Internet, TLS or DNS. Compare native, pVisor host proxy, VM auto TCP, Podman host network and pVisor OCI proxy. Every payload uses two fixed CPUs (host 0/1, two VM vCPU); memory is not identically capped and the HTTP origin sits outside the payload budget. This is not a resource-density ranking.
 
-These results are from Linux/x86_64; matching macOS workloads are unmeasured. Linked reports pin artifacts, cache conditions and samples.
+Small requests use 256 fresh TCP connections per batch, eight threads and 1 KiB responses. Take the median within each batch, then summarize 30 independent batches; 7,680 correlated requests are not independent samples. Bulk sends 32 MiB per batch in 1 KiB writes. Stream sends ten 13-byte events, 2 ms apart. First byte means the first HTTP body byte, not model TTFT. Transfer time includes connection and reading, excluding later digest validation; worker total time includes validation.
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
+Three warmups and 30 formal batches per condition; 17 conditions are randomized within each round. Full content length/SHA-256, CPU affinity, retained command output and Run boundaries must pass. Host/VM deny-all independently test direct-socket rejection and Bundle enforcement evidence. Failed batches cannot contribute latency; all slow valid samples remain without retrospective exclusions. P95 is descriptive only, with no P99.
 
 ## Data and analysis {#results}
 
-Measured on 2026-10-04; configurations retain separate samples. P50 is the median.
+Measured on 2026-10-06 local time. All 510 formal batches across 17 conditions pass; inputs remain unchanged. N=30 per performance cell. Times are ms; P50 is the median across independent batch statistics.
 
-| Network configuration | Backend | Batches | 1 KiB P50/P95 ms | 32 MiB P50 MiB/s | Stream first body P50/P95 ms |
-|---|---|---|---|---|---|
-| proxy / VM | native | 30 | 0.95/1.42 | 869.4 | 1.10/1.20 |
-| proxy / VM | host | 30 | 1.24/2.42 | 416.8 | 1.37/1.63 |
-| proxy / VM | vm | 30 | 3.83/8.63 | 154.7 | 4.57/5.19 |
-| host-network OCI | native | 30 | 0.99/1.44 | 861.4 | 1.07/1.18 |
-| host-network OCI | podman | 30 | 1.01/1.43 | 853.7 | 3.53/3.60 |
-| host-network OCI | pVisor OCI | 30 | 1.30/2.30 | 811.0 | 3.78/3.98 |
+### Small requests and streaming first byte
 
-### Analysis and denial checks
+| Mode | P50 of within-batch request medians | Difference from native, 95% interval | Stream first-byte P50 | Complete stream P50 |
+|---|---:|---:|---:|---:|
+| Native | 0.69 | — | 1.12 | 19.71 |
+| pVisor host proxy | 10.09 | +9.40 [9.36, 9.45] | 4.23 | 22.83 |
+| pVisor VM auto TCP | 2.10 | +1.40 [1.37, 1.43] | 7.88 | 26.36 |
+| Podman host network | 0.71 | +0.01 [−0.001, 0.019] | 3.79 | 22.48 |
+| pVisor OCI proxy | 10.23 | +9.54 [9.49, 9.61] | 6.87 | 25.32 |
 
-Host adds about 0.29 ms to small-request P50; VM adds about 2.88 ms. Main-batch bulk P50 is roughly 869 MiB/s native, 417 host and 155 VM. Bulk timing includes connect/read, with hashing after transfer; worker time also includes hashing. This describes a local HTTP path, not public Internet capacity.
+Differences use paired rounds and 5,000 bootstrap resamples. Podman's interval includes zero: no difference from native is detected for small requests. Other paths add waiting. Host/OCI proxy and VM auto use different network paths; their differences cannot all be attributed to virtualization or containers.
 
-Host deny-all with a private network namespace and VM deny-all each blocked direct sockets **30/30**, with non-bypassable networking confirmed in the Bundle. Ordinary host proxy enforcement is cooperative and direct sockets can bypass it. Fast denials are correctness checks rather than throughput results.
-### Read the numbers as requests and downloads {#baseline-meaning}
+### 32 MiB transfers
 
-Native HTTP is the baseline without the pVisor path; Podman/crun is a measured ordinary OCI path. Host proxy adds about 0.29 ms per small request, and VM about 2.88 ms.
+| Mode | Cluster median or P50 transfer, ms | Corresponding cluster median or P50 rate, MiB/s |
+|---|---|---|
+| Native | 32.61 (17/30); 74.90 (13/30) | 981.37; 427.21 |
+| pVisor host proxy | 35.65 (20/30); 76.28 (10/30) | 897.55; 419.50 |
+| pVisor VM auto TCP | 193.62 (30/30, unsplit) | 165.27 |
+| Podman host network | 36.45 (17/30); 76.63 (13/30) | 877.90; 417.58 |
+| pVisor OCI proxy | 38.84 (20/30); 80.02 (10/30) | 823.83; 399.94 |
 
-Bulk downloads differ: at the measured rates, transferring 32 MiB takes about 37 ms natively and 207 ms through VM. Many local requests, dependency downloads, and model streams are different workloads. The [complete Docker tool-environment comparison](agent-tasks.md#reference-env) uses network none; its task timings do not establish Docker bridge or Internet performance.
+All transfer distributions except VM have two separated clusters. Show their counts and medians rather than ranking one P50 or giving one VM/native ratio. Clustering is descriptive; its cause is unverified. The origin's 1 KiB writes and Python HTTP implementation influence throughput, so these values are not VMM bandwidth limits.
 
-### Scope {#acceptance}
+### Rejection checks and scope {#acceptance}
 
-Internet, TLS, DNS and real-model latency are unmeasured. Local first byte is not model TTFT; network paths differ from host-network OCI boundaries.
+Host deny-all and VM deny-all each block direct sockets to the same local service in 30/30 batches, with `network_non_bypassable` confirmed by the Bundle. Complete allow responses provide positive controls. This does not replace a comprehensive network-security audit.
+
+### Comparison with familiar options {#baseline-meaning}
+
+Podman host network supplies an ordinary OCI control. pVisor OCI additionally uses a policy proxy, so boundaries differ. Docker bridge, Firecracker/QEMU networking, macOS, TLS and public APIs are unmeasured and receive no numeric ranking. Complete-task Docker/Firecracker/QEMU comparisons are in the [runtime comparison](compare-runtimes.md).
 
 ### Downloads and reproduction {#run}
 
-[Derived table CSV](network.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Network statistics CSV](network-summary.csv) · [Paired comparisons CSV](network-comparisons.csv) · [Artifacts and validation summary](network-provenance.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+
+Raw reports, response timings, command logs, input/build receipts and per-invocation output audits stay in local `.data/`.

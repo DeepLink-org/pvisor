@@ -3,7 +3,7 @@ import json
 import pytest
 
 from publish_review_workflow import publish
-from review_workflow import BACKENDS, Runner
+from review_workflow import BACKENDS, Runner, validate_content_review
 
 
 def test_correctness_rejects_unselected_overwrite_and_partial_conflict(tmp_path):
@@ -41,3 +41,11 @@ def test_publication_rejects_invalid_cohort_before_writing(tmp_path, invalid):
     with pytest.raises(ValueError):
         publish(raw, public)
     assert not public.exists()
+
+
+def test_review_requires_complete_diff_not_only_path_and_prefix():
+    text = ''.join(f'f{i:06d}\n-' + Runner.original(i).decode().replace('\n', '\n-')
+                   + f'\n\\ No newline at end of file\n+new-{i}\n' for i in range(20))
+    validate_content_review(text)
+    with pytest.raises(AssertionError, match='complete content diff'):
+        validate_content_review(text.replace('x' * 4000, 'x' * 10))

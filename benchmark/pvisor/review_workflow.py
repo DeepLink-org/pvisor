@@ -19,11 +19,10 @@ import platform
 import random
 import shutil
 import subprocess
-import sys
 import time
 import traceback
 
-from reference_baselines import validate_bundle_execution
+from reference_baselines import validate_bundle_execution, verified_build_receipt
 
 BACKENDS = ('pvisor-stage', 'git-worktree', 'reflink-copy')
 WORKER = '''import json
@@ -36,6 +35,14 @@ print(json.dumps({'modified': 20}))
 '''
 
 
+def validate_content_review(text):
+    for i in range(20):
+        original = Runner.original(i).decode()
+        deleted = '-' + original.replace('\n', '\n-') + '\n\\ No newline at end of file\n'
+        if f'f{i:06d}' not in text or deleted + f'+new-{i}\n' not in text:
+            raise AssertionError(f'review omitted complete content diff for file {i}')
+
+
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -43,6 +50,10 @@ def sha(path):
 class Runner:
     def __init__(self, args):
         self.args = args
+        receipt = verified_build_receipt(args.build_receipt, args.binary) if args.build_receipt else None
+        if receipt and (receipt['source_manifest_sha256'] != sha(args.source_manifest)
+                        or receipt['source_identity']['head'] != args.binary_source_commit):
+            raise ValueError('workflow source identity disagrees with verified build receipt')
         self.output = args.output.resolve()
         self.output.mkdir(parents=True, exist_ok=False)
         (self.output / 'bin').mkdir()
@@ -52,9 +63,11 @@ class Runner:
         shutil.copy2(Path(__file__).with_name('reference_baselines.py'), self.output / 'reference_baselines.py')
         if args.source_manifest:
             shutil.copy2(args.source_manifest, self.output / 'binary-source-manifest.json')
+        if args.build_receipt:
+            shutil.copy2(args.build_receipt, self.output / 'build-receipt.json')
         self.worker = self.output / 'worker.py'
         self.worker.write_text(WORKER)
-        self.env = os.environ.copy() | {'PVISOR_STARTUP_TIMING': '0', 'GIT_CONFIG_NOSYSTEM': '1',
+        self.env = os.environ.copy() | {'PVISOR_STARTUP_TIMING': '0', 'PVISOR_FS_PROFILE': '0', 'GIT_CONFIG_NOSYSTEM': '1',
             'GIT_CONFIG_GLOBAL': '/dev/null', 'PYTHONDONTWRITEBYTECODE': '1', 'LC_ALL': 'C'}
         self.env.pop('PVISOR_TEST_ALLOW_NO_USERNS', None)
         self.report = dict(benchmark_id='B-WORKFLOW', recorded_at=dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -62,9 +75,11 @@ class Runner:
             host_kernel=platform.release(), host_platform=platform.platform(),
             cpu_model=next(x.split(':', 1)[1].strip() for x in Path('/proc/cpuinfo').read_text().splitlines() if x.startswith('model name')),
             host_load_before=os.getloadavg(), binary_sha256=sha(self.binary),
+            binary_build=receipt,
             binary_source_commit=args.binary_source_commit,
             source_manifest_sha256=sha(args.source_manifest) if args.source_manifest else None,
             harness_sha256=sha(__file__), worker_sha256=sha(self.worker),
+            helper_sha256=sha(self.output / 'reference_baselines.py'),
             git_version=subprocess.check_output(['git', '--version'], text=True).strip(),
             cp_version=subprocess.check_output(['cp', '--version'], text=True).splitlines()[0],
             filesystem=subprocess.check_output(['stat', '-f', '-c', '%T', str(self.output)], text=True).strip(),
@@ -157,8 +172,7 @@ class Runner:
         parts['review_ms'], out, _ = self.command(argv, view, root, 'review')
         text = out.decode()
         # Review must contain all changed paths and both sides of the actual content diff.
-        if any(f'f{i:06d}' not in text or f'old-{i}' not in text or f'new-{i}' not in text for i in range(20)):
-            raise AssertionError('review omitted a changed path or its content')
+        validate_content_review(text)
         if case == 'conflict':
             (work / 'files/f000000').write_text('concurrent-host-edit\n')
         selected = [f'files/f{i:06d}' for i in range(10)]
@@ -198,6 +212,7 @@ def main():
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--binary-source-commit', required=True)
     parser.add_argument('--source-manifest', type=Path, required=True)
+    parser.add_argument('--build-receipt', type=Path)
     parser.add_argument('--samples', type=int, default=30)
     parser.add_argument('--warmups', type=int, default=3)
     parser.add_argument('--sizes', default='100,10000')

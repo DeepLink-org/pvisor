@@ -1,53 +1,45 @@
-# pVisor 相比业界已有方案处于什么水位？
+# pVisor 相比已有方案，在哪些场景有优势？
 
 ## 主要结论 {#conclusions}
 
-**频繁新建大工作区、只保留少量改动时，pVisor stage 的完整机器流程比所测 Git worktree 和 btrfs reflink 更省时。小工作区 Git 较快。pVisor VM 启动处于轻量 VM 量级，但文件密集任务仍比所测 Firecracker/QEMU 配置等待更长。**
+**频繁创建大工作区、只合入少量改动时，pVisor stage 的完整机器流程更快：10,000 文件中修改 20 个、保留 10 个，stage 为 141 ms，Git worktree 为 248 ms，btrfs reflink 为 343 ms。小工作区原生流程更快；pVisor VM 的工具任务仍慢于所测 Firecracker/QEMU。**
 
-| 需求 | 选型含义 |
+| 场景 | 选型含义 |
 |---|---|
-| 大工作区的稀疏改动与选择性合入 | 评估 rootless stage 的完整流程成本 |
-| 需要独立 guest 内核 | 预算完整 VM 工具时间 |
-| 已有容器/Git 工作流 | 比较成本与审查语义 |
+| 大工作区、稀疏改动、用后丢弃 | stage 的完整流程有实测优势 |
+| 小工作区或只关心工具运行 | 比较原生流程与容器成本 |
+| VM 或高并发容量 | 需要完整工具和资源实测 |
 
 ## Motivation {#motivation}
 
-Agent 成本除了启动，还有工具、依赖、测试和审查。容器、VM、Agent 内置 sandbox 与托管云环境提供不同边界和工作流。这些测量支持按负载选型。
+选型需要知道完成同样结果的总成本，而不只是启动或单个命令。审查合入、执行边界与资源占用决定哪类 Agent 工作适合 pVisor。
 
 ## 实验设计 {#interpretation}
 
-共享 Linux/x86_64 宿主，AMD Ryzen 7 9700X，Fedora 内核 7.2.8-200.fc44.x86_64。启动进程树及专用 Docker daemon 固定到宿主 CPU 0,1；guest 为 2 vCPU。host/staged 使用 rootless_process。Shell VM 为 128 MiB，工具 VM 为 16 GiB。原生/Docker 不限内存：控制 CPU 与 guest 配置内存，不是相同资源限制的对照。工具与输入已准备，每次新建工作区、热缓存，3 次预热、60 次正式采样；按固定种子随机交错后端。构建、下载及输入复制不计时。
-
-Docker Engine 29.7.2 使用专用 rootless VFS daemon 与可写 bind mount，结果不代表 overlay2 或 Docker Desktop。Firecracker 1.13.1 PCI 不使用 jailer；QEMU 10.2.2 分别使用 q35/microvm、私有 ext4。pVisor VM 使用 virtio-fs 和不同内核。内核、存储、设备及暂存语义均有差异，不能把差距单独归因于 VMM 或 FUSE。
-
-各主题定义正确性与计时。完整 Ubuntu、macOS、apply/网络与固定版本 CLI 保留独立样本组及数量。未测云端、gVisor/Kata、内存净收益及完整 RL 吞吐，不给数值排名。
+复用[启动](startup.md)、[文件系统](filesystem.md)、[修复任务](agent-tasks.md)和[完整审查流程](supervision-cost.md)的独立注册实验。前三类每后端 60 次、3 次预热；审查流程每规模/条件/后端 30 次、3 次预热。同机 CPU 0,1、热缓存、随机交替执行，全部通过正确性校验，没有按速度剔除。各主题的负载、资源和计时边界不同，不合并其分布。Docker 使用 rootless overlay2；完整审查流程对照是原生 Git/reflink，不是容器或 VM 安全排名。
 
 ## 实验数据和分析 {#results}
 
-### 实测水位
+2026-10-06; 启动、文件系统和修复共 1,440 个有效样本，完整审查流程 360 个，失败均为 0。中位数差异和 95% 配对 bootstrap 区间见各专题。
 
-启动/文件系统：2026-10-05，修复：2026-10-06，各后端/负载 N=60、失败 0；通常为 P50，分离簇展示中位数与数量。合入：2026-10-04，10/1,000/100,000 文件分别 N=30/10/3。网络：2026-10-04、30 个批次。CLI：独立固定版本。完整审查流程：2026-10-06，每种工作区规模/合入条件/后端 N=30，共 360 个样本、失败 0；与工具任务为不同负载，不合并计时。
+| 问题 | P50 水位 |
+|---|---|
+| [Startup](startup.md) | host 12.72 ms; staged 25.13 ms; VM 100.73 ms; Docker 74.48 ms |
+| [Repair completion](agent-tasks.md) | staged 0.64 s; Docker 0.81 s; VM 3.25 s; QEMU microvm 1.40 s |
+| [Seven-tool completion](filesystem.md) | staged 1.09 s; Docker 0.82 s; VM 4.27 s; Firecracker 2.29 s |
+| [Review workflow](supervision-cost.md) | 10,000 files: stage 141 ms; Git 248 ms; reflink 343 ms |
+| [网络](network.md) | 八线程小请求：原生 0.69 ms；host proxy 10.09 ms；VM 2.10 ms |
+| [活跃容量](density.md) | 2 GiB：stage/Podman 32 路、VM 16 路通过全部五轮 |
+| [Cluster 有效任务](cluster-scalability.md) | 共同两核/2 GiB、四个单槽 Worker：1.73 个/s |
 
-| 问题 | 实测水位 | 选型含义 |
-|---|---|---|
-| [已准备环境启动](startup.md) | pVisor VM 99.76 ms; Firecracker 74.74 ms; QEMU microvm 86.60 ms | 轻量 VM 启动量级 |
-| [修复到退出](agent-tasks.md) | staged 0.68 s; VM 3.25 s; QEMU microvm 1.27 s | 关注完整工具等待 |
-| [七项工具到退出](filesystem.md) | staged 1.29 s; VM 6.66 s; Firecracker 2.16 s | VM 工具/文件成本明显 |
-| [新建工作区到审查、选择性合入和清理](supervision-cost.md) | 10,000 文件、修改 20 个：stage 141 ms；Git worktree 252 ms；reflink 349 ms | 大工作区的稀疏改动有收益；小工作区 Git 更快 |
-| [合入](apply.md) | 10: 15.01 ms; 1,000: 836.38 ms; 100,000: 330.40 s | Git patch 较快；语义不同 |
-| [网络](network.md) | host proxy 1.24 ms; native 0.95 ms / local request | 另行预算 VM 大块传输 |
-| [Agent CLI](agent-tasks.md#cli-compatibility) | 固定版本 Codex 通过；Claude/VM 初始化超时 | 核验具体客户端版本 |
+网络为 510 个有效批次；容量扫描保留全部 320 个批次，包括 57 个失败；Cluster 吞吐为 90 个正式批次、1,080 个校验完成任务。三个实验分别统计，不能合并成一种容量或速度排名。
 
-所测 Docker VFS 配置的创建较贵，但 bind mount 单项工具计时仍有参考意义。总耗时不排名 overlay2 或 Docker Desktop。完整 Ubuntu 开机属于不同部署选择。原始证据留在本地；各主题链接加工表格和来源摘要。
+内存压缩带来的净物理内存与有效任务密度、裁剪内核收益、完整 Ubuntu 和 macOS 对照尚未完成当前制品验证；没有相应优势结论。云端、gVisor/Kata 和完整 RL 吞吐没有同条件排名。合入、网络、隔离和回放的专题需按各自证据范围判断，不能由这里的短任务推导。
 
-### 测量主题
-
-[Startup](startup.md) · [Filesystem](filesystem.md) · [Agent tasks](agent-tasks.md) · [Network](network.md) · [Apply/drop](apply.md) · [VM memory](vm-memory/index.md) · [Density](density.md) · [Cluster](cluster-scalability.md) · [Review](supervision-cost.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md)
-
-### 业界方案对照
+[Network](network.md) · [Apply](apply.md) · [Density](density.md) · [VM memory](vm-memory/index.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md) · [Cluster](cluster-scalability.md)
 
 [Docker/devcontainer](compare-containers.md) · [Firecracker/QEMU/gVisor/Kata](compare-runtimes.md) · [Agent sandboxes](compare-agent-sandboxes.md) · [E2B/Daytona/Modal](compare-cloud-sandboxes.md) · [Agent RL infrastructure](compare-rl-infra.md)
 
 ### 数据下载与复现 {#run}
 
-[整理后的表格 CSV](index.csv) · [运行时统计](runtime-summary.csv) · [来源与制品](runtime-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Runtime statistics](runtime-summary.csv) · [Confidence intervals](runtime-comparisons.csv) · [Runtime provenance](runtime-provenance.csv) · [Workflow statistics](workflow-summary.csv) · [Workflow intervals](workflow-comparisons.csv) · [Workflow provenance](workflow-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

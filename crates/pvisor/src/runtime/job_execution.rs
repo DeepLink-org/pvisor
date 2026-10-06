@@ -245,9 +245,27 @@ struct ControlRequest {
     ram_storage: SnapshotRamStorage,
 }
 
+fn bind_control_endpoint(
+    stage: &Path,
+) -> anyhow::Result<(tokio::net::UnixListener, tempfile::TempDir)> {
+    use std::os::unix::fs::PermissionsExt;
+    // Attempt paths include UUIDs beneath user-selected storage. Keep the Unix
+    // address short and discover it through the private stage, as with Run control.
+    let directory = tempfile::Builder::new()
+        .prefix("pvisor-execution-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in("/tmp")?;
+    let socket = directory.path().join(SOCKET);
+    let listener = tokio::net::UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    std::os::unix::fs::symlink(&socket, stage.join(SOCKET))?;
+    Ok((listener, directory))
+}
+
 pub(crate) struct Server {
     task: tokio::task::JoinHandle<()>,
     stage: PathBuf,
+    _socket_directory: tempfile::TempDir,
 }
 impl Drop for Server {
     fn drop(&mut self) {
@@ -325,9 +343,7 @@ impl Server {
         job.stores.insert(store);
         job.write()?;
         job.link_stage(&stage)?;
-        let listener = tokio::net::UnixListener::bind(stage.join(SOCKET))?;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(stage.join(SOCKET), std::fs::Permissions::from_mode(0o600))?;
+        let (listener, socket_directory) = bind_control_endpoint(&stage)?;
         let task = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let job = job.clone();
@@ -356,7 +372,11 @@ impl Server {
                 });
             }
         });
-        Ok(Self { task, stage })
+        Ok(Self {
+            task,
+            stage,
+            _socket_directory: socket_directory,
+        })
     }
     pub async fn finish(&self, result: &pvisor_core::RunResult) -> anyhow::Result<()> {
         let job = Job::read_stage(&self.stage)?.context("execution Job missing at completion")?;
@@ -562,7 +582,9 @@ pub(crate) async fn capture(
                 "JOB_BUSY: Job execution state is {}",
                 job.state
             );
-            let stream = tokio::net::UnixStream::connect(job.active_stage.join(SOCKET))
+            let socket = std::fs::canonicalize(job.active_stage.join(SOCKET))
+                .context("EXECUTION_UNKNOWN: owning Job execution control endpoint unavailable")?;
+            let stream = tokio::net::UnixStream::connect(socket)
                 .await
                 .context("EXECUTION_UNKNOWN: owning Job execution control endpoint unavailable")?;
             let (reader, mut writer) = stream.into_split();
@@ -632,6 +654,56 @@ pub(crate) fn terminate_suspended(record: &RunRecord) -> anyhow::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn long_attempt_paths_use_a_private_short_socket_and_clean_up() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("a".repeat(80)).join("b".repeat(80));
+        std::fs::create_dir_all(&stage).unwrap();
+        let locator = stage.join(SOCKET);
+        assert!(locator.as_os_str().as_encoded_bytes().len() > 108);
+        let (listener, directory) = bind_control_endpoint(&stage).unwrap();
+        let address = std::fs::canonicalize(&locator).unwrap();
+        assert!(address.as_os_str().as_encoded_bytes().len() < 104);
+        assert_eq!(
+            std::fs::metadata(&address).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(directory.path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        let client = tokio::net::UnixStream::connect(&address).await.unwrap();
+        let (peer, _) = listener.accept().await.unwrap();
+        drop(client);
+        drop(peer);
+        let directory_path = directory.path().to_owned();
+        let server = Server {
+            task: tokio::spawn(async move { std::future::pending::<()>().await }),
+            stage,
+            _socket_directory: directory,
+        };
+        drop(server);
+        assert!(!locator.is_symlink());
+        assert!(!address.exists());
+        assert!(!directory_path.exists());
+    }
+
+    #[tokio::test]
+    async fn an_existing_stage_endpoint_is_not_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join(SOCKET), b"existing owner").unwrap();
+        assert!(bind_control_endpoint(temp.path()).is_err());
+        assert_eq!(
+            std::fs::read(temp.path().join(SOCKET)).unwrap(),
+            b"existing owner"
+        );
+    }
 
     fn fixture(root: &Path) -> (RunRecord, Job) {
         let record: RunRecord = serde_json::from_value(serde_json::json!({
@@ -776,6 +848,7 @@ mod tests {
         let server = Server {
             task: tokio::spawn(std::future::pending()),
             stage: temp.path().into(),
+            _socket_directory: tempfile::tempdir().unwrap(),
         };
         let mut result:pvisor_core::RunResult=serde_json::from_value(serde_json::json!({
             "run_id":"job","attempt_id":"attempt-original","state":"hibernated","started_at_unix_ms":1,"finished_at_unix_ms":3,

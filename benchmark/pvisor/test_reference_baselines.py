@@ -169,3 +169,26 @@ def test_one_registered_benchmark_per_invocation():
         benchmark_for_modes('ready,filesystem')
     with pytest.raises(ValueError,match='unknown'):
         benchmark_for_modes('typo')
+
+
+def test_build_receipt_cannot_label_an_unrelated_binary(tmp_path):
+    import hashlib
+    import json
+    from reference_baselines import verified_build_receipt
+
+    binary = tmp_path / 'pvisor'
+    binary.write_bytes(b'current binary')
+    manifest = tmp_path / 'source-manifest.json'
+    manifest.write_text('[]\n')
+    receipt = tmp_path / 'build-receipt.json'
+    record = dict(pvisor_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+                  source_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest())
+    receipt.write_text(json.dumps(record))
+    assert verified_build_receipt(receipt, binary) == record
+    binary.write_bytes(b'older binary')
+    with pytest.raises(ValueError, match='measured pvisor binary'):
+        verified_build_receipt(receipt, binary)
+    binary.write_bytes(b'current binary')
+    manifest.write_text('["different source"]')
+    with pytest.raises(ValueError, match='source manifest'):
+        verified_build_receipt(receipt, binary)

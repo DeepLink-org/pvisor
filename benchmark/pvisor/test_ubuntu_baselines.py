@@ -134,3 +134,18 @@ def test_qemu_uses_kvm_and_complete_vendor_boot_inputs(tmp_path, backend):
         if "microvm" in backend
         else "virtio-blk-pci,drive=root" in argv
     )
+
+
+def test_ubuntu_prepared_disk_kernel_and_initrd_receipt_rejects_tampering(tmp_path):
+    from ubuntu_baselines import verify_ubuntu_assets
+    from reference_baselines import digest
+    names=('ubuntu-stock.raw','ubuntu-agent.raw','payload.ext4','ubuntu-vmlinux','ubuntu-initrd-generic')
+    for name in names:(tmp_path/name).write_text(name)
+    assets=dict(prepared_sha256={name:digest(tmp_path/name) for name in names[:3]},kernel_elf_sha256=digest(tmp_path/'ubuntu-vmlinux'),
+                initrd=str(tmp_path/'ubuntu-initrd-generic'),assets={'ubuntu-initrd-generic':dict(sha256=digest(tmp_path/'ubuntu-initrd-generic'))})
+    (tmp_path/'assets.json').write_text(json.dumps(assets))
+    verify_ubuntu_assets(tmp_path)
+    for name in names:
+        (tmp_path/name).write_text('changed input')
+        with pytest.raises(ValueError):verify_ubuntu_assets(tmp_path)
+        (tmp_path/name).write_text(name)

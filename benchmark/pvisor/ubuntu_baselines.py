@@ -23,8 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from reference_baselines import digest, validate_guest_output
-from v1.density import snapshot
+from reference_baselines import digest, validate_guest_output, verified_build_receipt, validate_bundle_execution, validate_staged_filesystem
+from v1.common import snapshot
 
 BACKENDS = (
     "native",
@@ -174,6 +174,8 @@ def run_trial(args, backend, mode, trial):
                 "--vm",
                 "--rootfs",
                 "host",
+                "--vm-library-dir",
+                str(args.firmware),
                 "--cpu",
                 "2",
                 "--memory",
@@ -340,20 +342,16 @@ def run_trial(args, backend, mode, trial):
         if len(bundles) != 1:
             raise ValueError("Missing pVisor run bundle")
         bundle = json.loads(bundles[0].read_text())
-        if (
-            bundle["run"]["state"] != "completed"
-            or bundle["run"]["exit_code"] != 0
-            or bundle["run"]["executor"]["isolation"]
-            != ("virtual_machine" if backend == "pvisor-vm-hostroot" else "host_process")
-        ):
-            raise ValueError("pVisor did not complete in requested isolation mode")
-        if not bundle["safety"]["filesystem_changes_staged"]:
-            raise ValueError("pVisor staging was not enabled")
+        validate_bundle_execution(bundle, 'pvisor-vm' if backend == 'pvisor-vm-hostroot' else 'pvisor-staged', 'rootless_process')
+        if mode == 'filesystem':
+            validate_staged_filesystem(work,root/'stage',result['filesystem']['write']['check']['bytes'])
         if (
             mode in ("tools", "claude", "codex")
             and (work / "python/adder.py").read_text() != "def add(a, b):\n    return a - b\n"
         ):
             raise ValueError("Staged writes modified original workspace")
+        if mode in ('tools','claude','codex') and (root/'stage/upper/python/adder.py').read_text() != 'def add(a, b):\n    return a + b\n':
+            raise ValueError('staged repair missing or incomplete')
     row = {
         "backend": backend,
         "mode": mode,
@@ -379,9 +377,19 @@ def run_trial(args, backend, mode, trial):
     return row
 
 
+def verify_ubuntu_assets(directory):
+    assets=json.loads((directory/'assets.json').read_text())
+    for name in ('ubuntu-stock.raw','ubuntu-agent.raw','payload.ext4'):
+        if digest(directory/name)!=assets['prepared_sha256'][name]:raise ValueError('prepared Ubuntu image differs from input receipt')
+    kernel=directory/'ubuntu-vmlinux';initrd=Path(assets['initrd'])
+    if digest(kernel)!=assets['kernel_elf_sha256'] or digest(initrd)!=assets['assets'][initrd.name]['sha256']:
+        raise ValueError('Ubuntu kernel/initrd differs from verified artifacts')
+    return assets
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    for name in ("assets", "fixture", "binary", "output"):
+    for name in ("assets", "fixture", "binary", "output", "firmware", "build-receipt"):
         p.add_argument("--" + name, type=Path, required=True)
     p.add_argument("--toolchain", type=Path)
     p.add_argument("--samples", type=int, default=30)
@@ -392,8 +400,11 @@ def main():
     p.add_argument("--cpu-affinity", default="0,1")
     p.add_argument("--timeout", type=int, default=180)
     args = p.parse_args()
-    for key in ("assets", "fixture", "binary", "output"):
+    if args.samples<1 or args.warmups<0:
+        p.error('samples must be positive and warmups nonnegative')
+    for key in ("assets", "fixture", "binary", "output", "firmware", "build_receipt"):
         setattr(args, key, getattr(args, key).resolve())
+    build_receipt=verified_build_receipt(args.build_receipt,args.binary)
     args.toolchain = (
         args.toolchain
         or Path(subprocess.check_output(["rustc", "--print", "sysroot"], text=True).strip())
@@ -401,6 +412,9 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "bin").mkdir()
     shutil.copy2(args.binary, args.output / "bin/pvisor")
+    shutil.copy2(args.build_receipt,args.output/'build-receipt.json')
+    shutil.copy2(args.build_receipt.parent/'source-manifest.json',args.output/'source-manifest.json')
+    verify_ubuntu_assets(args.assets)
     shutil.copytree(
         Path(__file__).parent,
         args.output / "harness",
@@ -413,6 +427,9 @@ def main():
         "arguments": {k: str(v) for k, v in vars(args).items()},
         "assets": json.loads((args.assets / "assets.json").read_text()),
         "pvisor_sha256": digest(args.output / "bin/pvisor"),
+        "binary_build": build_receipt,
+        "firmware_sha256": digest(args.firmware/'libkrunfw.so.5'),
+        "input_manifest_sha256": digest(args.assets/'assets.json'),
         "driver_sha256": digest(Path(__file__)),
         "workload_sha256": digest(args.output / "harness/reference_workload.py"),
         "network_helper_sha256": digest(args.output / "harness/ubuntu_vm_network.py"),
@@ -498,6 +515,8 @@ def main():
                     )
                 save()
     print(args.output / "report.json", flush=True)
+    if any(value['state']!='available' or value.get('failures') for value in caps.values()):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

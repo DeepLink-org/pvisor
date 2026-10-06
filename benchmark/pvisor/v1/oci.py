@@ -89,3 +89,35 @@ def prepare_shell(ctx):
         rootfs_file_bytes=sum(p.stat().st_size for p in root.rglob("*") if p.is_file()),
     )
     ctx.save()
+
+
+def verify_prepared(root, manifest):
+    entries=manifest['rootfs_manifest']
+    if {str(p.relative_to(root)) for p in root.rglob('*')}!={r['path'] for r in entries}:
+        raise ValueError('prepared rootfs inventory differs')
+    for entry in entries:
+        path=root/entry['path']
+        if path.lstat().st_mode!=entry['mode'] or (entry['kind']=='file' and digest(path)!=entry['sha256']) or (entry['kind']=='symlink' and str(path.readlink())!=entry['target']):
+            raise ValueError('prepared rootfs contents/modes differ')
+
+
+def use_prepared(ctx):
+    import json
+    args=ctx.args
+    if not args.input_manifest or not args.podman_root or not args.podman_image:
+        raise ValueError('prepared rootfs requires input manifest and private Podman store/image')
+    manifest=json.loads(args.input_manifest.read_text());root=args.prepared_rootfs.resolve()
+    verify_prepared(root,manifest)
+    if digest('/usr/bin/python3')!=manifest['host_python_sha256'] or digest('/usr/bin/git')!=manifest['host_git_sha256']:
+        raise ValueError('host tools differ from prepared tools')
+    runroot=(args.podman_runroot or Path(manifest['podman_runroot'])).resolve()
+    if str(runroot)!=manifest['podman_runroot'] or args.podman_image!=manifest['podman_image']:
+        raise ValueError('prepared private Podman image/runroot differs')
+    ctx.rootfs=root;ctx.image=args.podman_image
+    ctx.podman_options=['--root',str(args.podman_root.resolve()),'--runroot',str(runroot),'--storage-driver','overlay']
+    inspected=checked(['podman',*ctx.podman_options,'image','inspect',ctx.image]).stdout
+    if json.loads(inspected)[0]['Id'].removeprefix('sha256:')!=ctx.image.removeprefix('sha256:'):raise ValueError('Podman immutable image identity differs')
+    shutil.copy2(args.input_manifest,ctx.output/'input-manifest.json')
+    ctx.metadata.update(prepared_rootfs=str(root),input_manifest_sha256=digest(args.input_manifest),
+        podman_image=ctx.image,podman_options=ctx.podman_options,oci_preparation='verified immutable existing offline Python/Git rootfs and private image; preparation excluded')
+    ctx.save()

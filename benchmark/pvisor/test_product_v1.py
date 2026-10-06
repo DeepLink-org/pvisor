@@ -72,3 +72,39 @@ def test_failed_sample_cannot_create_performance_evidence(tmp_path):
         ctx.record({"correctness": "failed", "wall_ms": 0.01})
     assert not ctx.rows
     assert not (tmp_path / "samples.jsonl").exists()
+
+
+def test_current_staging_requires_observed_rootless_read_and_write_boundaries(tmp_path):
+    ctx = object.__new__(Context)
+    stage = bundle(tmp_path)
+    with pytest.raises(RuntimeError, match='non-bypassable read/write'):
+        ctx.validate_bundle('staged', tmp_path / 'runs', stage)
+    path = stage / 'run-bundle.json'
+    value = json.loads(path.read_text())
+    value['safety'].update(filesystem_read_non_bypassable=True, filesystem_write_non_bypassable=True)
+    path.write_text(json.dumps(value))
+    assert ctx.validate_bundle('staged', tmp_path / 'runs', stage)['run']['executor']['isolation'] == 'rootless_process'
+    value['run']['executor']['isolation'] = 'host_process'
+    path.write_text(json.dumps(value))
+    with pytest.raises(RuntimeError, match='observed isolation'):
+        ctx.validate_bundle('staged', tmp_path / 'runs', stage)
+
+
+def test_product_suite_cannot_mix_benchmark_ids_or_use_superseded_filesystem():
+    from product_v1 import benchmark_for_suites
+    assert benchmark_for_suites('apply,baselines') == 'B-APPLY'
+    for suites in ('network,apply', 'filesystem', 'network,network'):
+        with pytest.raises(ValueError):
+            benchmark_for_suites(suites)
+
+
+def test_later_commands_do_not_erase_earlier_reproduction_evidence(tmp_path):
+    ctx = object.__new__(Context)
+    ctx.env = {}
+    work = tmp_path / 'workspace'
+    work.mkdir()
+    for marker in ('first-command', 'second-command'):
+        ctx.run([sys.executable, '-c', f'print({marker!r})'], cwd=work)
+    retained = {path.read_text().strip() for path in (tmp_path / 'commands').glob('*/command.stdout')}
+    assert retained == {'first-command', 'second-command'}
+    assert (tmp_path / 'command.stdout').read_text().strip() == 'second-command'

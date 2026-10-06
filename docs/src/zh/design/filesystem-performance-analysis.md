@@ -1,5 +1,36 @@
 # 文件系统性能：技术分析与实验记录
 
+## 当前制品的独立计数器诊断 {#current-counters}
+
+测于 2026-10-06，CPU 0,1，VM 2 vCPU/16 GiB，输入与固件对应[用户工具对照](../benchmarks/filesystem.md)。诊断制品来自同一冻结源码，加上独立副本的目录链接数校验修复与 profiling 退出收尾；源码和二进制摘要单独保存，没有与正式计时的二进制混合采样。七项文件工具和固定修复各测 staged/VM 三次，共十二个有效任务，失败 0；启用 profile 和启动计时，耗时不进入用户性能分布。
+
+每次 staged 有 5/5 个 final 实例，VM 有 13/13 个 final 实例，覆盖 rootfs 和工作区。以 PID、component、instance 区分累计记录，只保留每实例最后一份，不把中间快照加起来。**表中计数完整，但 inclusive span 会嵌套、跨 worker 重叠，不能相加得到总耗时或瓶颈占比。**
+
+| Workload / mode | Metric | Median calls | Median inclusive ms |
+| --- | --- | ---: | ---: |
+| Seven tools / staged | OverlayCore resolve | 14,462 | 140.53 |
+| Seven tools / staged | preimage | 5,720 | 66.93 |
+| Seven tools / staged | fingerprint_content | 2,157 | 43.58 |
+| Seven tools / VM | OverlayCore resolve | 25,019 | 447.48 |
+| Seven tools / VM | preimage | 11,367 | 83.28 |
+| Seven tools / VM | fingerprint_content | 2,157 | 48.76 |
+| Seven tools / VM | virtio-fs LOOKUP | 9,412 | 268.72 |
+| Seven tools / VM | virtio-fs READ | 10,896 | 123.26 |
+| Repair / staged | OverlayCore resolve | 3,162 | 27.69 |
+| Repair / VM | OverlayCore resolve | 14,512 | 290.70 |
+| Repair / VM | preimage | 7,472 | 11.28 |
+
+
+VM 的 `dispatch/admission` 在七项工具和修复任务中分别记录 1,546.67 ms 和 1,058.40 ms。代码中的 span 围住整个 `service_queues`，包含 inline 请求执行，不能称为纯排队、传输或 CPU 成本。
+
+七项工具的 `fingerprint_bytes` 中位数为 69,375,893 B，固定修复为 11,286 B，staged/VM 相同。对应源码仍在 live lower 的首次内容观察中计算 SHA256；普通 stat/lookup 不触发普通文件的内容哈希，frozen baseline 则跳过读取日志。Checkpoint 策略将日志持久化移到完成边界，没有将可变 lower 的读取指纹改成 metadata-only。这组可变 fixture 没有显示 content receipt 复用；计数不能量化不可变镜像的收益。修复任务中读指纹的数据量很小，应与工具加载和路径请求分别归因。
+
+路径解析与 rootfs/workspace 的大量请求值得优先调查；现有计数不支持把逐文件 preimage fsync 当作当前最大的已证实原因。下一步分开 inline/worker 服务、队列等待与通知计数，测试相同 ELF、loader 和动态库从 virtio-fs 与 executable memfd 执行的成本；两边保留相同准备与输入 fd，guest `/dev/shm` 保持 noexec。准备来源分为原始文件和独立 inode 的工作区副本，并把首个 exec 与后续重复调用分开。原始文件准备会预热其 guest 页缓存；副本准备保留原工具文件首次映射的机会，但共同的 Python 准备仍预热解释器及部分共享库，不能称为完全冷启动。探针尚未运行验证，也没有测量结果。随后对保持同样暂存语义的元数据缓存做工程 A/B。DAX、exec 缺页和单一函数的因果贡献尚未验证；优化收益需要独立正式计时和置信区间。
+
+[整理后的计数统计 CSV](filesystem-counters.csv)保留三次中位数、完整覆盖、独立制品/源码与原始报告摘要；原始日志保存在本地 `.data/`。复现见[计数器手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#engineering-and-diagnostics)。
+
+## 保留的独立工程实验 {#retained-experiments}
+
 新版默认 release 的本地 VM 整轮 P50 为 **4.15 s（较已优化 v3 +3.3%）**，遍历 **157.57 ms（-6.5%）**。lazy 镜像热缓存的打开/读取下降 **8.6%**、64 MiB 读取下降 **6.6%**，但元数据遍历变慢、copy-up 约慢 **2.5 倍**。本轮没有显示普遍端到端加速；完整分布和冷/热条件见[新版本评测](#filesystem-service)。
 
 ## Motivation

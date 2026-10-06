@@ -2220,6 +2220,20 @@ fn attach_fs_devices(
         #[cfg(target_os = "macos")]
         fs.lock().unwrap().set_map_sender(map_sender.clone());
 
+        if std::env::var("PVISOR_FS_PROFILE").as_deref() == Ok("1") {
+            let filesystem = fs.clone();
+            vmm.exit_observers.push(Arc::new(Mutex::new(move || {
+                // stop() uses _exit, so it never drops live filesystem
+                // workers. For diagnostics, drain/join before exit so the
+                // last Profile owners emit complete rather than periodic
+                // cumulative records. Uninstrumented execution is unchanged.
+                filesystem
+                    .lock()
+                    .expect("filesystem exit observer lock poisoned")
+                    .reset();
+            })));
+        }
+
         // The device mutex mustn't be locked here otherwise it will deadlock.
         attach_mmio_device(vmm, id, intc.clone(), fs).map_err(RegisterFsDevice)?;
     }

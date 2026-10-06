@@ -1,290 +1,119 @@
 #!/usr/bin/env python3
-"""Render measured Cluster scaling curves and CSV summaries; requires matplotlib."""
+"""Derived useful-task scaling charts from the current fixed-budget report.
 
+Helper for B-CLUSTER. Ready-only/legacy TSV inputs are deliberately rejected.
+Matplotlib is imported only when rendering; summary gates have no plot dependency.
+"""
 import argparse
-import csv
 import json
-import statistics
 from pathlib import Path
 
-from evidence_tsv import load as load_evidence
+from publication import distribution, write_csv
+from reference_baselines import digest
+from cluster_scalability import validate_result
+from publish_reference_campaign import paired_comparison
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-ROOT = Path(__file__).resolve().parents[2]
-MIB = 1024**2
-BLUE, GREEN, ORANGE, GRAY = "#2563eb", "#0f766e", "#d97706", "#64748b"
+MIB=1024**2
 
 
-def percentile(values, probability):
-    values = sorted(values)
-    pos = (len(values) - 1) * probability
-    lower = int(pos)
-    upper = min(lower + 1, len(values) - 1)
-    return values[lower] + (values[upper] - values[lower]) * (pos - lower)
+def verify_execution_evidence(report, directory):
+    directory=directory.resolve();sources={};identities=set()
+    for name,field in [('cluster_scalability.py','harness_sha256'),('cluster_worker.py','worker_sha256'),('cluster-quickstart.py','quickstart_sha256'),('input-manifest.json','input_manifest_sha256')]:
+        if digest(directory/name)!=report[field]:raise ValueError('retained Cluster harness/input mismatch')
+    for row in report['rows']:
+        root=Path(row['logs']).resolve()
+        if not root.is_relative_to(directory):raise ValueError('task evidence outside cohort')
+        if len(row['tasks'])!=int(report['arguments']['tasks']):raise ValueError('missing individual task evidence')
+        for task in row['tasks']:
+            path=(root/(task['id']+'.json')).resolve()
+            if not path.is_relative_to(root):raise ValueError('task evidence outside owned batch')
+            if task['id'] in identities:raise ValueError('duplicate retained task identity')
+            identities.add(task['id'])
+            result=validate_result(json.loads(path.read_text()),task['id'],task['node'])
+            if result!=task['result']:raise ValueError('task report differs from retained completion')
+            sources[str(path.relative_to(directory))]=digest(path)
+    return sources
 
 
-def summarize_execution(report):
-    if not report["passed"] or any(not row["passed"] for row in report["batches"]):
-        raise ValueError("failed/incomplete reports cannot be rendered as successful curves")
-    rows = []
-    for size in sorted(report["conditions"]["sizes"]):
-        batches = [r for r in report["batches"] if r["sandboxes"] == size and not r["warmup"]]
-        assert len(batches) == report["conditions"]["repetitions"]
-        ready = [t["ready_ms"] for b in batches for t in b["tasks"]]
-        memory = [
-            statistics.median(
-                sum(v["current_bytes"] for v in s.values()) / MIB for s in b["plateau"]
-            )
-            for b in batches
-        ]
-        rate = [b["launches_per_second"] for b in batches]
-        row = {
-            "sandboxes": size,
-            "batches": len(batches),
-            "guest_samples": len(ready),
-            "ready_p50_ms": statistics.median(ready),
-            "ready_p95_ms": percentile(ready, 0.95),
-            "ready_min_ms": min(ready),
-            "ready_max_ms": max(ready),
-            "all_ready_p50_ms": statistics.median(b["all_ready_ms"] for b in batches),
-            "cgroup_current_p50_mib": statistics.median(memory),
-            "cgroup_current_min_mib": min(memory),
-            "cgroup_current_max_mib": max(memory),
-            "cgroup_anon_p50_mib": statistics.median(
-                statistics.median(
-                    sum(v["anon_bytes"] for v in s.values()) / MIB for s in b["plateau"]
-                )
-                for b in batches
-            ),
-            "cgroup_file_p50_mib": statistics.median(
-                statistics.median(
-                    sum(v["file_bytes"] for v in s.values()) / MIB for s in b["plateau"]
-                )
-                for b in batches
-            ),
-            "native_pss_sum_p50_mib": statistics.median(
-                sum(
-                    p["pss_bytes"]
-                    for processes in b["native_identities"].values()
-                    for p in processes
-                )
-                / MIB
-                for b in batches
-            ),
-            "launch_rate_p50_per_second": statistics.median(rate),
-            "launch_rate_min_per_second": min(rate),
-            "launch_rate_max_per_second": max(rate),
-        }
-        rows.append(row)
-    return rows
+def compare_completion(report, report_sha):
+    sizes=sorted(map(int,report['arguments']['sizes'].split(',')))
+    def values(size):return [dict(trial=r['trial'],value=r['completion_ms']) for r in report['rows'] if r['workers']==size and r['trial']>=0]
+    return [dict(candidate_workers=size,control_workers=sizes[0],metric='completion_ms',unit='ms',
+        **paired_comparison(values(size),values(sizes[0])),report_sha256=report_sha,
+        confidence_method='5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI') for size in sizes[1:]]
 
 
-def summarize_controller(data):
-    rows = []
-    for size in [1000, 10000, 100000, 1000000]:
-        report = load_evidence(data / f"controller-history-{size}.tsv")
-        assert report["source_identity_unchanged_during_measurement"]
-        r = report["rows"][0]
-        assert r["tasks"] == size and r["ready_tasks_before_poll"] == 1
-        rows.append(
-            {
-                "records": size,
-                "indexed_p50_ns": r["indexed_counts"]["p50"],
-                "indexed_p95_ns": r["indexed_counts"]["p95"],
-                "scan_reference_p50_ns": r["full_task_record_scan_reference"]["p50"],
-                "process_fixture_rss_mib": r["controller_plus_id_fixture_memory_before_reference"][
-                    "VmRSS_kib"
-                ]
-                / 1024,
-                "journal_mib": r["wal_bytes_before_poll"] / MIB,
-                "warm_reopen_seconds": r["reopen_us"] / 1e6,
-                "assignment_poll_ms": r["current_poll_us_including_wal_and_admission"] / 1000,
-                "assignment_polls": r["current_polls_until_assignment"],
-            }
-        )
-    return rows
+def summarize_execution(report, report_sha):
+    if report.get('benchmark_id')!='B-CLUSTER':raise ValueError('requires current B-CLUSTER useful-task report')
+    args=report['arguments'];n=int(args['repetitions']);warmups=int(args['warmups'])
+    sizes=list(map(int,args['sizes'].split(',')));tasks=int(args['tasks'])
+    if n<30:raise ValueError('requires >=30 full batches per Worker count')
+    expected={(size,trial) for size in sizes for trial in range(-warmups,n)}
+    actual=[(row['workers'],row['trial']) for row in report['rows']]
+    if len(actual)!=len(set(actual)) or set(actual)!=expected:raise ValueError('incomplete or duplicated cluster conditions')
+    for row in report['rows']:
+        if row['correctness']!='passed' or row['completed']!=tasks or row['submitted']!=tasks or row['failed'] or row.get('monitor_error'):
+            raise ValueError('failed or incomplete useful-task batch')
+        if row['after']['events'].get('oom',0) or row['after']['events'].get('oom_kill',0):raise ValueError('OOM invalidates reliable throughput')
+        controls=row['controls'];quota,period=controls['cpu_max']
+        if controls['memory_max']!=int(args['budget_mib'])*MIB or quota/period!=2 or controls['swap_max']!=0:
+            raise ValueError('fixed total memory/CPU/swap controls differ')
+    records=[]
+    for size in sizes:
+        rows=[row for row in report['rows'] if row['workers']==size and row['trial']>=0]
+        metrics=dict(completion_ms=[r['completion_ms'] for r in rows],
+            validated_tasks_per_second=[r['validated_per_second'] for r in rows],
+            complete_cgroup_peak_mib=[max(v['peak_bytes'] for v in [r['before'],r['after'],*r['samples']])/MIB for r in rows])
+        for metric,values in metrics.items():
+            records.append(dict(benchmark_id='B-CLUSTER',workers=size,metric=metric,unit='MiB' if metric.endswith('_mib') else 'tasks/s' if metric.endswith('_second') else 'ms',
+                planned_batches=n,completed_tasks=n*tasks,failed_batches=0,warmups=warmups,total_cpu_cores=2,memory_budget_mib=args['budget_mib'],
+                cpu_affinity=args['cpu_affinity'],**distribution(values),report_sha256=report_sha))
+    return records
 
 
-def csv_write(path, rows):
-    with path.open("w") as out:
-        writer = csv.DictWriter(out, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def save(fig, output, name):
-    fig.savefig(
-        output / f"{name}.svg", bbox_inches="tight", facecolor="white", metadata={"Date": None}
-    )
-    fig.savefig(output / f"{name}.png", bbox_inches="tight", facecolor="white", dpi=160)
+def render(records,output):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    plt.rcParams.update({'font.family':'DejaVu Sans','svg.fonttype':'none','axes.spines.top':False,'axes.spines.right':False})
+    fig,axes=plt.subplots(1,3,figsize=(14,4.8))
+    for ax,metric,label in zip(axes,('validated_tasks_per_second','completion_ms','complete_cgroup_peak_mib'),('Validated tasks / second','Complete batch (ms)','Whole cgroup peak (MiB)')):
+        selected=sorted((r for r in records if r['metric']==metric),key=lambda r:r['workers'])
+        for row in selected:
+            points=[row['p50']] if row['distribution']=='unsplit' else [row['low_p50'],row['high_p50']]
+            ax.plot([row['workers']]*len(points),points,'o',color='#2563eb')
+            ax.vlines(row['workers'],row['minimum'],row['maximum'],color='#2563eb',alpha=.25)
+        ax.set_xticks([r['workers'] for r in selected]);ax.set_xlabel('One-slot Workers');ax.set_ylabel(label);ax.grid(alpha=.15);ax.set_ylim(bottom=0)
+    first=records[0]
+    fig.suptitle(f'Validated Python/Git work: fixed 2-core / {first["memory_budget_mib"]} MiB total budget')
+    fig.text(.5,.015,f'{first["planned_batches"]} full batches per condition; identical task count. Dots: medians (both clusters when separated).\nBars: observed min/max, not confidence intervals. Prepared inputs; no model inference or multi-host claim.',ha='center',fontsize=9)
+    fig.tight_layout(rect=(0,.10,1,.93))
+    for suffix in ('svg','png'):fig.savefig(output/f'cluster-throughput.{suffix}',dpi=160,bbox_inches='tight',metadata={'Date':None} if suffix=='svg' else None)
     plt.close(fig)
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--data-dir",
-        type=Path,
-        default=ROOT / "docs/src/assets/benchmarks/.data/cluster-scalability-20261005",
-    )
-    parser.add_argument("--output-dir", type=Path)
-    args = parser.parse_args()
-    output = args.output_dir or args.data_dir
-    output.mkdir(parents=True, exist_ok=True)
-    plt.rcParams.update(
-        {
-            "font.family": "DejaVu Sans",
-            "font.size": 10,
-            "svg.fonttype": "none",
-            "axes.spines.top": False,
-            "axes.spines.right": False,
-            "text.color": "#1e293b",
-            "axes.labelcolor": "#475569",
-        }
-    )
-    report = load_evidence(args.data_dir / "vm.tsv")
-    execution = summarize_execution(report)
-    control = summarize_controller(args.data_dir)
-    csv_write(output / "vm-summary.csv", execution)
-    csv_write(output / "controller-summary.csv", control)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5.1))
-    x = [r["sandboxes"] for r in execution]
-    for ax in axes:
-        ax.set_xticks(x)
-        ax.set_xlabel("Simultaneous real KVM guests")
-        ax.grid(alpha=0.18)
-        ax.set_axisbelow(True)
-    ax = axes[0]
-    ax.fill_between(
-        x,
-        [r["cgroup_current_min_mib"] for r in execution],
-        [r["cgroup_current_max_mib"] for r in execution],
-        color=BLUE,
-        alpha=0.13,
-    )
-    for field, label, color in [
-        ("cgroup_current_p50_mib", "Total cgroup charge", BLUE),
-        ("cgroup_anon_p50_mib", "Anonymous memory", GREEN),
-        ("cgroup_file_p50_mib", "File / shmem charge", GRAY),
-    ]:
-        ax.plot(x, [r[field] for r in execution], "o-", color=color, label=label)
-    ax.set(title="Live memory footprint", ylabel="Controller + Workers (MiB)", ylim=(0, None))
-    ax.legend(frameon=False, fontsize=9)
-    ax = axes[1]
-    ax.fill_between(
-        x,
-        [r["ready_min_ms"] for r in execution],
-        [r["ready_max_ms"] for r in execution],
-        color=GREEN,
-        alpha=0.13,
-        label="Observed min / max",
-    )
-    for field, label, color in [
-        ("ready_p50_ms", "Per-guest P50", GREEN),
-        ("ready_p95_ms", "Empirical P95", ORANGE),
-    ]:
-        ax.plot(x, [r[field] for r in execution], "o-", color=color, label=label)
-    ax.set(title="Submit to guest readiness", ylabel="Latency (ms)", ylim=(0, None))
-    ax.legend(frameon=False, fontsize=9)
-    ax = axes[2]
-    values = [r["launch_rate_p50_per_second"] for r in execution]
-    ax.fill_between(
-        x,
-        [r["launch_rate_min_per_second"] for r in execution],
-        [r["launch_rate_max_per_second"] for r in execution],
-        color=BLUE,
-        alpha=0.13,
-    )
-    ax.plot(x, values, "o-", color=BLUE, label="Measured launch rate")
-    ax.plot(
-        x, [values[0] * n / x[0] for n in x], "--", color=GRAY, label="Linear reference from N=1"
-    )
-    ax.set(title="Burst launch capacity", ylabel="Guests / time-to-all-ready (s)", ylim=(0, None))
-    ax.legend(frameon=False, fontsize=9)
-    fig.suptitle("Cluster execution scaling: measured N=1, 2, 4", fontsize=16, fontweight="bold")
-    fig.text(
-        0.5,
-        0.015,
-        "5 measured batches per point + excluded warmup | 128 MiB / 1 vCPU per guest | 0.5 core / 512 MiB per Worker\nShared Linux host; prepared rootfs; warm caches. Bands show observed ranges, not confidence intervals. Launch rate is not Agent throughput.",
-        ha="center",
-        fontsize=9,
-        color=GRAY,
-    )
-    fig.tight_layout(rect=(0, 0.10, 1, 0.93))
-    save(fig, output, "execution")
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5.1))
-    x = [r["records"] for r in control]
-    for ax in axes:
-        ax.set_xscale("log")
-        ax.set_xticks(x, ["1k", "10k", "100k", "1M"])
-        ax.set_xlabel("Retained task records (one ready task)")
-        ax.grid(alpha=0.18)
-        ax.set_axisbelow(True)
-    ax = axes[0]
-    ax.set_yscale("log")
-    ax.plot(
-        x, [r["indexed_p50_ns"] for r in control], "o-", color=GREEN, label="Indexed counts P50"
-    )
-    ax.plot(
-        x,
-        [r["scan_reference_p50_ns"] for r in control],
-        "o-",
-        color=ORANGE,
-        label="Full-scan algorithm P50",
-    )
-    ax.set(title="Counts query cost", ylabel="Nanoseconds / call (log scale)")
-    ax.legend(frameon=False, fontsize=9)
-    ax = axes[1]
-    ax.set_yscale("log")
-    ax.plot(
-        x,
-        [r["process_fixture_rss_mib"] for r in control],
-        "o-",
-        color=BLUE,
-        label="Process + ID fixture RSS",
-    )
-    ax.plot(
-        x, [r["journal_mib"] for r in control], "o-", color=GRAY, label="Intent / receipt journal"
-    )
-    ax.set(title="Retention still costs memory / disk", ylabel="MiB (log scale)")
-    ax.legend(frameon=False, fontsize=9)
-    ax = axes[2]
-    ax.plot(x, [r["warm_reopen_seconds"] for r in control], "o-", color=ORANGE)
-    ax.set(
-        title="Restart still scales with history",
-        ylabel="Warm local journal replay (s)",
-        ylim=(0, None),
-    )
-    for r in control:
-        ax.annotate(
-            f"{r['warm_reopen_seconds']:.2f}s",
-            (r["records"], r["warm_reopen_seconds"]),
-            xytext=(-4, 8),
-            textcoords="offset points",
-            ha="right",
-            fontsize=9,
-        )
-    fig.suptitle(
-        "Controller history scaling: archived typed-API measurements",
-        fontsize=16,
-        fontweight="bold",
-    )
-    fig.text(
-        0.5,
-        0.015,
-        "2026-10-05 v3 archive | Separate process per size; release binary; one pinned CPU | No guests or HTTP load\n20 query samples; replay/RSS are single observations. Scan is an algorithm reference on the same records, not an old-binary benchmark.",
-        ha="center",
-        fontsize=9,
-        color=GRAY,
-    )
-    fig.tight_layout(rect=(0, 0.10, 1, 0.93))
-    save(fig, output, "controller")
-    print(json.dumps({"execution": execution, "controller": control}, indent=2))
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--report',type=Path,required=True)
+    parser.add_argument('--output-dir',type=Path,required=True);parser.add_argument('--csv-only',action='store_true')
+    args=parser.parse_args();report=json.loads(args.report.read_text());receipt=report['binary_build']
+    if digest(args.report.parent/'source-manifest.json')!=receipt['source_manifest_sha256']:raise ValueError('Cluster source receipt mismatch')
+    for name in ('pvisor-cluster','pvisor-worker'):
+        if digest(args.report.parent/'bin'/name)!=receipt['binaries'][name]['sha256']:raise ValueError('Cluster binary receipt mismatch')
+    records=summarize_execution(report,digest(args.report))
+    sources=verify_execution_evidence(report,args.report.parent)
+    comparisons=compare_completion(report,digest(args.report))
+    args.output_dir.mkdir(parents=True,exist_ok=True)
+    write_csv(args.output_dir/'cluster-summary.csv',records)
+    write_csv(args.output_dir/'cluster-comparisons.csv',comparisons)
+    audit=args.report.parent/'cluster-execution-evidence-audit.json'
+    audit.write_text(json.dumps(dict(report_sha256=digest(args.report),task_evidence_sha256=sources,
+        scope='each unique task matched to retained succeeded record, expected Worker and full workload result'),indent=2)+'\n')
+    provenance=[dict(field=key,value=json.dumps(value,sort_keys=True) if isinstance(value,(dict,list)) else value) for key,value in report.items() if key!='rows']
+    provenance.extend([dict(field='report_sha256',value=digest(args.report)),dict(field='raw_location',value=str(args.report)),
+        dict(field='execution_evidence_audit_sha256',value=digest(audit)),
+        dict(field='statistics',value='warmups excluded; complete fixed-budget useful-task batches; separated clusters retain both medians; P95 descriptive, no P99; no ready-rate throughput')])
+    write_csv(args.output_dir/'cluster-provenance.csv',provenance)
+    if not args.csv_only:render(records,args.output_dir)
 
 
-if __name__ == "__main__":
-    main()
+if __name__=='__main__':main()

@@ -358,6 +358,8 @@ def main():
         "Untimed QEMU: 1 vCPU host,-rdseed,-rdrand; measured Firecracker: 2 vCPU defaults"
     )
     manifest["provision_seconds"] = time.monotonic() - start
+    manifest['prepared_sha256']={name:digest(out/name) for name in ('ubuntu-stock.raw','ubuntu-agent.raw','payload.ext4')}
+    manifest['preparation_harness_sha256']={name:digest(Path(__file__).with_name(name)) for name in ('prepare_ubuntu_reference.py','ubuntu_guest.sh','reference_workload.py')}
     (out / "assets.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps(manifest, indent=2))
 

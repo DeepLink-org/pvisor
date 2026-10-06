@@ -20,6 +20,7 @@ import json
 import os
 import random
 import re
+import resource
 import shutil
 import signal
 import subprocess
@@ -30,7 +31,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from bench import percentile
-from v1.density import snapshot
+from v1.common import snapshot
 
 
 BENCHMARK_IDS = {"ready": "B-STARTUP", "filesystem": "B-FS-TOOLS",
@@ -50,10 +51,21 @@ def benchmark_for_modes(modes):
 
 def digest(path):
     h = hashlib.sha256()
-    with path.open("rb") as f:
+    with Path(path).open("rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def verified_build_receipt(path, binary):
+    """Bind measured bytes to their build record, not the runner's HEAD."""
+    receipt = json.loads(path.read_text())
+    if receipt.get("pvisor_sha256") != digest(binary):
+        raise ValueError("build receipt does not match the measured pvisor binary")
+    manifest = path.parent / "source-manifest.json"
+    if not manifest.is_file() or digest(manifest) != receipt.get("source_manifest_sha256"):
+        raise ValueError("build receipt source manifest is missing or mismatched")
+    return receipt
 
 
 def validate_guest_output(output, mode):
@@ -198,7 +210,7 @@ def run_trial(args, metadata, backend, mode, trial):
     env.update(
         PVISOR_RUN_HOME=str(root / "runs"),
         XDG_CONFIG_HOME=str(root / "config"),
-        PVISOR_STARTUP_TIMING="0",
+        PVISOR_STARTUP_TIMING="1" if getattr(args, "diagnostic_timing", False) else "0",
         GIT_CONFIG_COUNT="1",
         GIT_CONFIG_KEY_0="safe.directory",
         GIT_CONFIG_VALUE_0="*",
@@ -373,6 +385,7 @@ def run_trial(args, metadata, backend, mode, trial):
     err = []
     peak = [0]
     stop = threading.Event()
+    usage_before = resource.getrusage(resource.RUSAGE_CHILDREN) if getattr(args, "diagnostic_timing", False) else None
     start = time.perf_counter_ns()
     proc = subprocess.Popen(
         argv,
@@ -450,6 +463,7 @@ def run_trial(args, metadata, backend, mode, trial):
         proc.stdout.close()
         proc.stderr.close()
     ended = exit_ns[0]
+    usage_after = resource.getrusage(resource.RUSAGE_CHILDREN) if usage_before else None
     output = b"".join(out).decode(errors="replace")
     error = b"".join(err).decode(errors="replace")
     (root / "stdout.log").write_text(output)
@@ -524,6 +538,12 @@ def run_trial(args, metadata, backend, mode, trial):
         "correctness": "passed",
         "logs": str(root),
     }
+    if usage_before is not None:
+        row["waited_child_resources"] = {
+            "scope": "launched process and waited descendants; excludes fixture preparation, parent collector and persistent external daemons",
+            **{field: getattr(usage_after, field) - getattr(usage_before, field) for field in
+               ("ru_utime", "ru_stime", "ru_minflt", "ru_majflt", "ru_inblock", "ru_oublock", "ru_nvcsw", "ru_nivcsw")},
+        }
     if mode == "filesystem" and backend in ("native", "pvisor-host", "pvisor-fuse"):
         validate_direct_filesystem(work, result["filesystem"]["write"]["check"]["bytes"])
     if fuse_stats is not None:
@@ -546,6 +566,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--assets", type=Path, required=True)
     p.add_argument("--binary", type=Path, required=True)
+    p.add_argument("--build-receipt", type=Path, help="Verified binary/source build record; runner HEAD is not binary provenance")
     p.add_argument("--firmware", type=Path)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--docker-host", default="unix:///tmp/pv-docker-v2/docker.sock")
@@ -567,6 +588,10 @@ def main():
         "--cpu-affinity", default="0,1", help="Common host CPU affinity; empty string disables it"
     )
     args = p.parse_args()
+    # This entry publishes uninstrumented user measurements. Diagnostic runners
+    # call run_trial directly and retain their own explicit profiling settings.
+    os.environ["PVISOR_FS_PROFILE"] = "0"
+    os.environ["PVISOR_STARTUP_TIMING"] = "0"
     try:
         benchmark_id = benchmark_for_modes(args.modes)
     except ValueError as error:
@@ -584,6 +609,10 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "bin").mkdir()
     shutil.copy2(args.binary, args.output / "bin/pvisor")
+    build_receipt = verified_build_receipt(args.build_receipt.resolve(), args.output / "bin/pvisor") if args.build_receipt else None
+    if build_receipt:
+        shutil.copy2(args.build_receipt, args.output / "build-receipt.json")
+        shutil.copy2(args.build_receipt.parent / "source-manifest.json", args.output / "source-manifest.json")
     shutil.copytree(
         Path(__file__).parent,
         args.output / "harness",
@@ -597,6 +626,12 @@ def main():
         "arguments": {k: str(v) for k, v in vars(args).items()},
         "assets": json.loads((args.assets / "assets.json").read_text()),
         "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "source_commit_scope": "runner worktree HEAD; measured binary source is recorded separately",
+        "binary_build": build_receipt,
+        "binary_source_commit": build_receipt["source_identity"]["head"] if build_receipt else "unknown",
+        "binary_source_manifest_sha256": build_receipt["source_manifest_sha256"] if build_receipt else "unknown",
+        "assets_metadata_sha256": digest(args.assets / "assets.json"),
+        "input_manifest_sha256": digest(args.assets / "input-manifest.json") if (args.assets / "input-manifest.json").is_file() else "unknown",
         "source_status": subprocess.check_output(["git", "status", "--porcelain"], text=True),
         "pvisor_sha256": digest(args.output / "bin/pvisor"),
         "kernel_sha256": digest(args.assets / "vmlinux"),

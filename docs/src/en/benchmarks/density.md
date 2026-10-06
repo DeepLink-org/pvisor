@@ -1,70 +1,77 @@
-# What do concurrent environments cost compared with Podman?
+# How many tool tasks fit in two cores and 2 GiB?
 
 ## Main conclusions {#conclusions}
 
-**In idle probes, all 128 staged jobs complete with about 1.56 GiB combined RSS; all 32 minimal-shell VM jobs complete with about 3.02 GiB. Podman also completes 128 jobs under the corresponding conditions, with longer launch delays. Some high-concurrency safe and full-tool OCI cases fail. These describe idle occupancy and reliability, not real-Agent throughput or a capacity guarantee.**
+**Under a shared two-core, 2 GiB, zero-swap budget, stage and Podman complete all five rounds at 32 concurrent Python/Git tasks. pVisor VM completes all five at 16, but only three at 32. Idle stage probes reach 128 and Podman reaches 64; idle occupancy does not establish active-task capacity.**
 
 | Need | Selection implication |
 |---|---|
-| Many idle environments | Plan with success rates and resident resources |
-| Complete OCI tool environment | Check temporary-storage quota and failures |
-| Real parallel Agents | Idle probes do not guarantee task capacity |
+| Parallel edits and Git checks | Stage and Podman reach the same tested task capacity; choose by isolation and review needs |
+| Many idle environments | Stage reaches higher tested concurrency, using a host-process boundary |
+| A VM boundary per task | Reserve more resources; do not size active tasks from idle counts |
 
 ## Motivation {#motivation}
 
-With multiple agents, memory, startup and environment preparation accumulate. Publish completion rates with resources rather than only successful fast samples.
+When multiple Agents execute together, completed work matters more than created environments. Capacity planning must include runtimes, helpers, page cache and VM backing; neither single-process RSS nor configured RAM can establish capacity.
 
 ## Experiment design {#interpretation}
 
-Each Job prints ready then holds for one second. Concurrency 1/8/128, five batches per cell, no warmups. Sample owned process-tree peak RSS every 20 ms and collect child CPU and per-Job wall time. VM uses 2 vCPU/128 MiB. This is an occupancy probe, not active agent/build throughput. Only wholly successful batches enter timing/resource summaries; completion denominators include failed batches.
+Compare native processes, pVisor stage, pVisor VM and Podman 5.8.7 on Linux/x86_64. Each batch has a fresh cgroup with a shared two-core quota, CPU 0/1 affinity, a 2 GiB memory limit and zero swap. The coordinator, payloads and helpers are inside the budget; Podman payload/conmon membership is checked. Each VM has 2 vCPU/256 MiB, still constrained by the common total budget.
 
-These results are from Linux/x86_64; matching macOS workloads are unmeasured. Linked reports pin artifacts, cache conditions and samples.
+Scan concurrency 1, 2, 4, 8, 16, 32, 64 and 128, with five fresh batches per cell and no warmups. Conditions are randomized within each round. All tasks wait at a stdin readiness barrier before release. Idle tasks use the same Python environment without private data or edits. Useful tasks touch and checksum all 32 MiB of private data, edit four files in a 64-file Git repository, run `git status` and verify all contents. Stage/VM preserve the original workspace and match results to independent Run records.
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
+The primary memory metric is whole-cgroup physical accounting, including charged page cache, kernel memory and private backing. Prepared shared tool/image caches may be charged to a parent cgroup, so this does not rank net whole-machine memory. Failed, unknown and OOM outcomes remain counted; only entirely verified, no-OOM batches enter memory/timing summaries. All slow valid samples remain. Five rounds do not establish long-term reliability or tail latency. This workload excludes inference, large builds and real Agent CLIs.
 
 ## Data and analysis {#results}
 
-Measured on 2026-10-04; configurations retain separate samples. P50 is the median.
+Measured on 2026-10-06 local time. There are 320 batches: 263 recorded as fully passed and 57 failed; all contribute to capacity statistics. Memory is readiness-barrier `memory.current` P50 in MiB, from complete no-OOM batches only. “—” denotes no such batch.
 
-| Environment | Backend | Concurrency | Completed/attempted | Full batches | RSS P50 MiB | CPU P50 ms/job | Job P50/P95 ms |
-|---|---|---|---|---|---|---|---|
-| Host workspace | native | 128 | 640/640 | 5 | 266.4 | 0.68 | 1002.2/1003.2 |
-| Host workspace | staged | 128 | 640/640 | 5 | 1597.2 | 13.96 | 1204.6/1248.6 |
-| Tool rootfs | safe | 128 | 638/640 | 3 | 3245.0 | 39.97 | 1446.3/1490.5 |
-| Tool rootfs | vm | 8 | 40/40 | 5 | 786.5 | 274.22 | 1281.2/1323.2 |
-| Tool rootfs | vm | 32 | guard | 0 | — | — | — |
-| Tool rootfs | vm | 128 | guard | 0 | — | — | — |
-| Tool rootfs | podman | 8 | 40/40 | 5 | 391.9 | 36.69 | 1114.2/1181.3 |
-| Tool rootfs | podman | 32 | 160/160 | 5 | 1570.6 | 45.42 | 1407.4/1679.2 |
-| Tool rootfs | podman | 128 | 640/640 | 5 | 6011.3 | 51.42 | 6469.9/8542.5 |
-| Tool rootfs | pVisor OCI | 8 | 40/40 | 5 | 210.1 | 493.64 | 1521.9/2512.8 |
-| Tool rootfs | pVisor OCI | 32 | 45/160 | 0 | — | — | — |
-| Tool rootfs | pVisor OCI | 128 | 55/640 | 0 | — | — | — |
-| Minimal shell | vm | 8 | 40/40 | 5 | 789.8 | 283.13 | 1292.1/1306.1 |
-| Minimal shell | vm | 32 | 160/160 | 5 | 3093.4 | 370.44 | 1939.0/2115.2 |
-| Minimal shell | vm | 128 | guard | 0 | — | — | — |
-| Minimal shell | podman | 8 | 40/40 | 5 | 389.2 | 38.50 | 1132.4/1189.4 |
-| Minimal shell | podman | 32 | 160/160 | 5 | 1559.6 | 45.99 | 1497.0/1969.4 |
-| Minimal shell | podman | 128 | 640/640 | 5 | 5929.0 | 50.74 | 6473.4/8242.6 |
-| Minimal shell | pVisor OCI | 8 | 40/40 | 5 | 208.1 | 20.36 | 1048.4/1048.9 |
-| Minimal shell | pVisor OCI | 32 | 160/160 | 5 | 834.2 | 22.05 | 1060.1/1066.9 |
-| Minimal shell | pVisor OCI | 128 | 640/640 | 5 | 3338.9 | 28.43 | 1300.2/1478.3 |
+### Python/Git tool tasks
 
-### Analysis
+| Mode | Concurrency | Fully valid batches | Verified tasks / attempted | Unknown results | OOM batches | Barrier memory P50, MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| Native process | 16 | 5/5 | 80/80 | 0 | 0 | 640.4 |
+| Native process | 32 | 5/5 | 160/160 | 0 | 0 | 1268.3 |
+| Native process | 64 | 0/5 | 233/320 | 0 | 5 | — |
+| Native process | 128 | 0/5 | 244/640 | 0 | 5 | — |
+| pVisor stage | 16 | 5/5 | 80/80 | 0 | 0 | 723.0 |
+| pVisor stage | 32 | 5/5 | 160/160 | 0 | 0 | 1434.0 |
+| pVisor stage | 64 | 0/5 | 204/320 | 0 | 5 | — |
+| pVisor stage | 128 | 0/5 | 183/640 | 0 | 5 | — |
+| pVisor VM | 16 | 5/5 | 80/80 | 0 | 0 | 2047.9 |
+| pVisor VM | 32 | 3/5 | 138/160 | 0 | 0 | 2047.8 |
+| pVisor VM | 64 | 0/5 | 1/320 | 0 | 0 | — |
+| pVisor VM | 128 | 0/5 | 0/640 | 0 | 5 | — |
+| Podman | 16 | 5/5 | 80/80 | 0 | 0 | 969.3 |
+| Podman | 32 | 5/5 | 160/160 | 0 | 0 | 1931.8 |
+| Podman | 64 | 0/5 | 120/320 | 64 | 5 | — |
+| Podman | 128 | 0/5 | 128/640 | 128 | 5 | — |
 
-Main safe concurrency 128 completed **638/640** jobs. Failures reported `Address already in use`, a race between free-port probing and actual listening. Successful samples do not establish stable concurrency 128. Idle VM tree RSS is roughly 100 MiB at one and 789 MiB at eight, not configured RAM or a maximum active working set.
+Stage and Podman each complete 160/160 tasks at concurrency 32. Both encounter OOM at 64/128; partial completions do not establish those capacities. VM completes 138/160 tasks at 32 with only 3/5 complete batches. Launch/completion failures at higher concurrency remain visible and cannot all be attributed to OOM. Unknown results lack retained verifiable completion evidence; they are neither successes nor zero-duration tasks.
 
-The tools rootfs is about 749 MiB. pVisor OCI copies a private environment per Job into default `/tmp`; concurrency 32/128 hit the tmpfs user quota (`Disk quota exceeded`). Failures remain visible. A minimal-shell follow-up is separate, distinguishing runtime from tool-environment preparation. Podman uses a prebuilt shared image rather than the same full per-Job copy.
-### Idle occupancy and complete Agent capacity differ {#baseline-meaning}
+### Idle environments
 
-Native shell and Podman/crun provide familiar occupancy baselines. Success at concurrency 128 answers whether these idle processes can be maintained together. It does not answer whether 128 tasks using Python, Node, Rust, and Agent CLIs can run together. A 2 vCPU/128 MiB idle VM does not represent the active working set of a complete tool environment.
+| Mode | Concurrency | Fully valid batches | Verified tasks / attempted | Unknown results | OOM batches | Barrier memory P50, MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| Native process | 32 | 5/5 | 160/160 | 0 | 0 | 242.0 |
+| Native process | 64 | 5/5 | 320/320 | 0 | 0 | 471.9 |
+| Native process | 128 | 5/5 | 640/640 | 0 | 0 | 931.9 |
+| pVisor stage | 32 | 5/5 | 160/160 | 0 | 0 | 407.8 |
+| pVisor stage | 64 | 5/5 | 320/320 | 0 | 0 | 804.5 |
+| pVisor stage | 128 | 5/5 | 640/640 | 0 | 0 | 1600.4 |
+| pVisor VM | 32 | 5/5 | 160/160 | 0 | 0 | 2047.9 |
+| pVisor VM | 64 | 0/5 | 7/320 | 0 | 0 | — |
+| pVisor VM | 128 | 0/5 | 0/640 | 0 | 5 | — |
+| Podman | 32 | 5/5 | 160/160 | 0 | 0 | 902.8 |
+| Podman | 64 | 5/5 | 320/320 | 0 | 0 | 1806.9 |
+| Podman | 128 | 0/5 | 141/640 | 384 | 5 | — |
 
-Single-task latency for the complete environment is in the [Agent environment comparison](agent-tasks.md#reference-env). These Podman RSS scopes may omit background processes and do not establish a total physical-memory ranking. Plan concurrency from your task working set, then measure success and completion time. No complete-Agent capacity claim at concurrency 128 is published.
+Stage passes five rounds at idle concurrency 128, but adding private data and Git work reduces its highest wholly successful tested level to 32. Plan the two workloads separately; discrete levels also do not establish an exact maximum.
 
-### Scope {#acceptance}
-
-Idle occupancy does not establish active tool capacity; process-tree RSS is not total physical memory.
+Compressed parked snapshots versus container pause have not completed validation. Snapshot file size or single-VM reclamation cannot establish capacity. Firecracker/QEMU density under this budget is unmeasured; their single-task latency is in the [runtime comparison](compare-runtimes.md). Matching macOS capacity is unmeasured.
 
 ### Downloads and reproduction {#run}
 
-[Derived table CSV](density.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Complete concurrency scan CSV](density-summary.csv) · [Artifacts, budget and evidence summary](density-provenance.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+
+Derived tables retain attempts, complete batches, failure reasons, unknowns, OOM, observed ranges and source digests for every condition. Raw reports, logs, input manifests and source/binaries stay in local `.data/`; failed batches remain in capacity denominators.

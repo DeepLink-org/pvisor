@@ -1,313 +1,313 @@
 source_document,section,source_conditions,table_context,row,metric,value
-compare-cloud-sandboxes.md,Main conclusions {#conclusions},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+compare-cloud-sandboxes.md,主要结论 {#conclusions},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","**pVisor suits existing local repositories and toolchains; E2B, Daytona and Modal suit remote environment provisioning and managed capacity.** Matching cloud latency and billing data are unavailable, so pVisor cannot be claimed faster or cheaper.",Local repository and tools are ready,Selection implication,Evaluate pVisor local feedback time
-compare-cloud-sandboxes.md,Main conclusions {#conclusions},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",**pVisor 适合直接使用本机仓库与工具链；E2B、Daytona、Modal 适合需要远端环境供应和托管容量的场景。** 没有同条件云端延迟或账单数据，无法声称 pVisor 更快或更便宜。,已有本机仓库和工具,选型含义,评估 pVisor 的本地反馈预算
+compare-cloud-sandboxes.md,主要结论 {#conclusions},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","**pVisor suits existing local repositories and toolchains; E2B, Daytona and Modal suit remote environment provisioning and managed capacity.** Matching cloud latency and billing data are unavailable, so pVisor cannot be claimed faster or cheaper.",Remote environments and managed capacity,Selection implication,"Evaluate E2B, Daytona and Modal"
-compare-cloud-sandboxes.md,Main conclusions {#conclusions},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",**pVisor 适合直接使用本机仓库与工具链；E2B、Daytona、Modal 适合需要远端环境供应和托管容量的场景。** 没有同条件云端延迟或账单数据，无法声称 pVisor 更快或更便宜。,需要远端环境与托管容量,选型含义,评估 E2B、Daytona、Modal
+compare-cloud-sandboxes.md,主要结论 {#conclusions},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","**pVisor suits existing local repositories and toolchains; E2B, Daytona and Modal suit remote environment provisioning and managed capacity.** Matching cloud latency and billing data are unavailable, so pVisor cannot be claimed faster or cheaper.",Compare costs or speed,Selection implication,Requires same-region end-to-end measurements
-compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",**pVisor 适合直接使用本机仓库与工具链；E2B、Daytona、Modal 适合需要远端环境供应和托管容量的场景。** 没有同条件云端延迟或账单数据，无法声称 pVisor 更快或更便宜。,比较成本或速度,选型含义,需要同区域端到端任务实测
+compare-cloud-sandboxes.md,实验设计 {#interpretation},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Local pVisor,Execution/preparation,"Host directories or prepared rootfs, stage/apply"
-compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。,pVisor 本地,执行与准备方式,本机目录或准备好的 rootfs，stage/apply
+compare-cloud-sandboxes.md,实验设计 {#interpretation},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Local pVisor,User workflow,"Local resources, dependencies and operations"
-compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。,pVisor 本地,用户需要承担的流程,本机资源、依赖与运维
+compare-cloud-sandboxes.md,实验设计 {#interpretation},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",E2B,Execution/preparation,"SDK-operated remote sandboxes, templates and files"
-compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。,E2B,执行与准备方式,SDK 操作远端 sandbox、准备模板与文件
+compare-cloud-sandboxes.md,实验设计 {#interpretation},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",E2B,User workflow,"Templates, uploads, result return and local application"
-compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。,E2B,用户需要承担的流程,模板、输入上传、结果回传与本地合入
+compare-cloud-sandboxes.md,实验设计 {#interpretation},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Daytona,Execution/preparation,SDK-managed remote development sandboxes
-compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。,Daytona,执行与准备方式,SDK 管理远端开发 sandbox
+compare-cloud-sandboxes.md,实验设计 {#interpretation},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Daytona,User workflow,"Preparation, synchronization and result application"
-compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。,Daytona,用户需要承担的流程,环境准备、同步和结果合入
+compare-cloud-sandboxes.md,实验设计 {#interpretation},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Modal,Execution/preparation,"SDK-created sandboxes, images and storage"
-compare-cloud-sandboxes.md,Experiment design {#interpretation},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。,Modal,执行与准备方式,SDK 创建 sandbox，使用镜像和存储
+compare-cloud-sandboxes.md,实验设计 {#interpretation},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.",Modal,User workflow,"Dependency images, data access and pipeline integration"
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。,Modal,用户需要承担的流程,依赖镜像、数据接入与流水线连接
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor staged,First output P50 ms,24.99
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,pVisor staged,首条命令 P50 ms,25.13
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor staged,Repair completion P50 s,0.68
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,pVisor staged,修复到退出 P50 s,0.64
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor staged,Evidence status,Local N=60 / failed=0
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,pVisor staged,数据状态,Local N=60 / failed=0
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor VM,First output P50 ms,99.76
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,pVisor VM,首条命令 P50 ms,100.73
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor VM,Repair completion P50 s,3.25
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,pVisor VM,修复到退出 P50 s,3.25
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",pVisor VM,Evidence status,Local N=60 / failed=0
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,pVisor VM,数据状态,Local N=60 / failed=0
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",E2B,First output P50 ms,—
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,E2B,首条命令 P50 ms,—
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",E2B,Repair completion P50 s,—
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,E2B,修复到退出 P50 s,—
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",E2B,Evidence status,Unmeasured
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,E2B,数据状态,未测
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Daytona,First output P50 ms,—
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,Daytona,首条命令 P50 ms,—
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Daytona,Repair completion P50 s,—
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,Daytona,修复到退出 P50 s,—
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Daytona,Evidence status,Unmeasured
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,Daytona,数据状态,未测
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Modal,First output P50 ms,—
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,Modal,首条命令 P50 ms,—
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Modal,Repair completion P50 s,—
-compare-cloud-sandboxes.md,Data and analysis {#results},"This compares deployment approaches. Performance evidence is local only; no cloud sandbox was created. SDK, region, account, caches, latency and bills are unmeasured. Official sources describe provisioning rather than supplying advertised numbers for rankings.
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,Modal,修复到退出 P50 s,—
+compare-cloud-sandboxes.md,实验数据和分析 {#results},"比较部署方式；性能证据仅来自本机测量，未创建云端 sandbox。云端 SDK、区域、账户、缓存、延迟和账单未测。官方资料只用于说明环境供应方式，不采用宣传值排序。
 
-| Option | Execution/preparation | User workflow |
+| 方案 | 执行与准备方式 | 用户需要承担的流程 |
 |---|---|---|
-| Local pVisor | Host directories or prepared rootfs, stage/apply | Local resources, dependencies and operations |
-| E2B | SDK-operated remote sandboxes, templates and files | Templates, uploads, result return and local application |
-| Daytona | SDK-managed remote development sandboxes | Preparation, synchronization and result application |
-| Modal | SDK-created sandboxes, images and storage | Dependency images, data access and pipeline integration |
+| pVisor 本地 | 本机目录或准备好的 rootfs，stage/apply | 本机资源、依赖与运维 |
+| E2B | SDK 操作远端 sandbox、准备模板与文件 | 模板、输入上传、结果回传与本地合入 |
+| Daytona | SDK 管理远端开发 sandbox | 环境准备、同步和结果合入 |
+| Modal | SDK 创建 sandbox，使用镜像和存储 | 依赖镜像、数据接入与流水线连接 |
 
-Official sources: [E2B](https://docs.e2b.dev/), [Daytona](https://www.daytona.io/docs/en/), [Modal Sandboxes](https://modal.com/docs/guide/sandboxes).
+官方说明：[E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal Sandboxes](https://modal.com/docs/guide/sandboxes)。
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.","Local baseline: two cores, 128 MiB shell VMs / 16 GiB repair VMs, prepared tools and warm caches, startup 2026-10-05 / repair 2026-10-06, N=60 and 3 warmups per available cell. Cloud services have no task measurements.",Modal,Evidence status,Unmeasured
+固定制品与测量日期按表注明。失败与校验不通过的样本不计入成功耗时，失败数量单列；既有数据没有事先的宿主干扰剔除规则，所有通过校验的慢样本保留。30 次及更少采样的 P95 仅为观察参考，不给 P99 或稳定尾延迟承诺。",本地基线：同工具环境、热缓存，启动与修复均为 2026-10-06，各可用格 N=60、3 次预热；云端列没有任务实测。,Modal,数据状态,未测

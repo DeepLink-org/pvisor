@@ -28,6 +28,12 @@ def publish(report_path, output):
     if any(r['correctness'] != 'passed' for r in rows):
         raise ValueError('incorrect sample')
     report_sha = hashlib.sha256(report_path.read_bytes()).hexdigest()
+    audit_path = report_path.parent / 'review-content-audit.json'
+    if audit_path.exists():
+        audit = json.loads(audit_path.read_text())
+        if audit['report_sha256'] != report_sha or audit['samples_checked'] != len(rows) or audit['correctness'] != 'passed':
+            raise ValueError('content review audit does not match report')
+
     summary, comparisons = [], []
     for size in map(int, args['sizes'].split(',')):
         for case in args['cases'].split(','):
@@ -66,6 +72,8 @@ def publish(report_path, output):
     provenance.extend([dict(field='report_sha256',value=report_sha),
         dict(field='raw_location',value=str(report_path)),dict(field='successful_measured_samples',value=len(rows)),
         dict(field='statistics',value='linear P95 descriptive; separated clusters replace P50; no P99; no pooled cohorts')])
+    if audit_path.exists():
+        provenance.append(dict(field='review_content_audit_sha256',value=hashlib.sha256(audit_path.read_bytes()).hexdigest()))
     write_csv(output / 'workflow-provenance.csv', provenance)
     return summary, comparisons
 

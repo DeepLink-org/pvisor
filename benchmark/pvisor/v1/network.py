@@ -15,6 +15,7 @@ import random
 import shutil
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -41,83 +42,63 @@ class Origin(BaseHTTPRequestHandler):
         pass
 
 
+def run_trial(ctx, target, mode, backend, trial):
+    root=ctx.fresh(f"net-{mode}-{backend}");work=root/'workspace';work.mkdir()
+    shutil.copy2(Path(__file__).with_name('network_worker.py'),work/'worker.py')
+    stage=root/'stage';runs=root/'runs'
+    options=['--overlaynet-deny-all'] if mode=='deny' else ['--overlaynet-allow',target]
+    affinity='0,1' if backend=='vm' else ctx.args.cpu_affinity
+    command=ctx.command(backend,work,stage,['/usr/bin/python3','worker.py',mode,'http://'+target,affinity],
+        network=('auto' if backend=='vm' else 'proxy',*options))
+    wall,stdout,_=ctx.run(command,cwd=work,env={'PVISOR_RUN_HOME':str(runs),'XDG_CONFIG_HOME':str(root/'config')})
+    bundle=ctx.validate_bundle(backend,runs,stage,expected_isolation='rootless_process' if backend=='host' and mode=='deny' else None)
+    if bundle:stdout=bundle['run']['output']['stdout']
+    value=json.loads(stdout.strip().splitlines()[-1])
+    if value['mode']!=mode or value['cpu_affinity']!=sorted(map(int,affinity.split(','))):raise ValueError('wrong network condition or CPU budget')
+    row=dict(suite='network',workload=mode,backend=backend,trial=trial,wall_ms=wall,worker_ms=value['worker_ms'],
+        check=value['check'],correctness='passed',logs=str(root),cpu_affinity=value['cpu_affinity'])
+    if bundle:
+        row['safety']=bundle['safety']
+        if mode=='deny' and not bundle['safety']['network_non_bypassable']:raise ValueError('deny boundary bypassable')
+    if mode=='deny' and value['check']!={'direct_socket_blocked':True}:raise ValueError('direct socket bypassed deny-all')
+    if trial>=0:ctx.record(row)
+
+
 def run(ctx):
-    addresses = json.loads(checked(["ip", "-4", "-json", "addr", "show"]).stdout)
-    host = next(
-        a["local"]
-        for item in addresses
-        for a in item["addr_info"]
-        if a["scope"] == "global" and not a["local"].startswith("198.18.")
-    )
-    ThreadingHTTPServer.request_queue_size = 128
-    server = ThreadingHTTPServer((host, 0), Origin)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    target = f"{host}:{server.server_port}"
-    ctx.metadata["network_origin"] = dict(
-        address=target, location="same host; no Internet", bytes=32 * 1024 * 1024
-    )
-    rng = random.Random(20261004)
+    addresses=json.loads(checked(['ip','-4','-json','addr','show']).stdout)
+    host=next(a['local'] for item in addresses for a in item['addr_info'] if a['scope']=='global' and not a['local'].startswith('198.18.'))
+    ThreadingHTTPServer.request_queue_size=128;server=ThreadingHTTPServer((host,0),Origin)
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    target=f'{host}:{server.server_port}'
+    modes=ctx.args.network_modes.split(',');backends=ctx.args.network_backends.split(',')
+    if len(set(modes))!=len(modes) or set(modes)-{'small','bulk','stream','deny'} or len(set(backends))!=len(backends) or set(backends)-{'native','host','vm','podman','container'}:raise ValueError('invalid network conditions')
+    conditions=[(mode,backend) for mode in modes for backend in (['host','vm'] if mode=='deny' else backends)]
+    ctx.metadata['network_origin']=dict(address=target,location='same host; no Internet',bytes=32*1024**2)
+    ctx.metadata['network_protocol']=dict(order='seeded shuffled all mode/backend conditions each paired round',samples=ctx.args.samples,warmups=ctx.args.warmups,
+        cpu='two requested host CPUs; VM has two vCPU; each payload installs and checks affinity; local HTTP origin outside payload budget',
+        controls='native, host policy proxy, VM policy, rootless Podman host-network, pVisor OCI host-network',
+        budget='CPU controlled; memory not identically capped; not a resource-capacity ranking',
+        small='256 fresh TCP requests, eight threads; per-request measurements within a batch are correlated',
+        stream='ten 13-byte events, 2 ms server delay; checks complete payload; first-byte and full transfer separate',
+        deny='host and VM direct-socket negative controls; successful allow probes are positive controls',
+        exclusions='no timing exclusions; failed preflights unavailable, measured failures retained; no public-network or model-latency claim')
+    ctx.save();available=[];rng=random.Random(ctx.args.seed)
     try:
-        for mode in ctx.args.network_modes.split(","):
-            backends = ctx.args.network_backends.split(",") if mode != "deny" else ["host", "vm"]
-            for i in range(-ctx.args.warmups, ctx.args.samples):
-                rng.shuffle(backends)
-                for backend in backends:
-                    root = ctx.fresh(f"net-{mode}-{backend}")
-                    work = root / "workspace"
-                    work.mkdir()
-                    shutil.copy2(Path(__file__).with_name("network_worker.py"), work / "worker.py")
-                    stage = root / "stage"
-                    runs = root / "runs"
-                    options = (
-                        ["--overlaynet-deny-all"]
-                        if mode == "deny"
-                        else ["--overlaynet-allow", target]
-                    )
-                    command = ctx.command(
-                        backend,
-                        work,
-                        stage,
-                        ["/usr/bin/python3", "worker.py", mode, "http://" + target],
-                        network=("auto" if backend == "vm" else "proxy", *options),
-                    )
-                    wall, stdout, _ = ctx.run(
-                        command,
-                        cwd=work,
-                        env={"PVISOR_RUN_HOME": str(runs), "XDG_CONFIG_HOME": str(root / "config")},
-                    )
-                    bundle = ctx.validate_bundle(
-                        backend,
-                        runs,
-                        stage,
-                        expected_isolation="rootless_process"
-                        if backend == "host" and mode == "deny"
-                        else None,
-                    )
-                    if bundle:
-                        stdout = bundle["run"]["output"]["stdout"]
-                    value = json.loads(stdout.strip().splitlines()[-1])
-                    row = dict(
-                        suite="network",
-                        workload=mode,
-                        backend=backend,
-                        trial=i,
-                        wall_ms=wall,
-                        worker_ms=value["worker_ms"],
-                        check=value["check"],
-                        correctness="passed",
-                        logs=str(root),
-                    )
-                    if bundle:
-                        row["safety"] = bundle["safety"]
-                        if mode == "deny":
-                            assert bundle["safety"]["network_non_bypassable"]
-                    if i >= 0:
-                        ctx.record(row)
-                if i >= 0 and (i + 1) % 5 == 0:
-                    print(f"network {mode}: {i + 1}/{ctx.args.samples}", flush=True)
+        for mode,backend in conditions:
+            key='network/'+mode+'/'+backend
+            try:
+                run_trial(ctx,target,mode,backend,-100);ctx.capabilities[key]=dict(state='available');available.append((mode,backend))
+            except Exception as error:ctx.capabilities[key]=dict(state='failed',phase='preflight',reason=str(error),traceback=traceback.format_exc())
+            ctx.save()
+        for trial in range(-ctx.args.warmups,ctx.args.samples):
+            cases=available.copy();rng.shuffle(cases)
+            for mode,backend in cases:
+                key='network/'+mode+'/'+backend
+                try:run_trial(ctx,target,mode,backend,trial)
+                except Exception as error:
+                    failure=ctx.capabilities.setdefault(key,dict(state='failed'));failure['state']='failed'
+                    failure.setdefault('failures',[]).append(dict(trial=trial,error=str(error),traceback=traceback.format_exc()));ctx.save()
+                    if trial<0:raise
+            if trial>=0 and (trial+1)%5==0:print(f'network: {trial+1}/{ctx.args.samples}',flush=True)
     finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
+        server.shutdown();server.server_close();thread.join()

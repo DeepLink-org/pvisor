@@ -10,26 +10,13 @@ import platform
 import shutil
 import subprocess
 import threading
+import tempfile
 import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from bench import percentile
-
-
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-def distribution(values):
-    return dict(
-        n=len(values),
-        p50=percentile(values, 50),
-        p95=percentile(values, 95),
-        p99=percentile(values, 99),
-        minimum=min(values),
-        maximum=max(values),
-    )
 
 
 def checked(argv, **kwargs):
@@ -41,6 +28,44 @@ def checked(argv, **kwargs):
     return result
 
 
+def retain_command(directory, stdout, stderr, details):
+    directory = Path(directory)
+    history = directory / "commands"
+    history.mkdir(exist_ok=True)
+    command = Path(tempfile.mkdtemp(prefix="command-", dir=history))
+    payloads = {"command.stdout": stdout, "command.stderr": stderr,
+                "command.json": (json.dumps(details) + "\n").encode()}
+    for name, content in payloads.items():
+        (command / name).write_bytes(content)
+        # Retain the previous reader contract while keeping every invocation.
+        (directory / name).write_bytes(content)
+
+
+def snapshot(roots):
+    """Secondary process-tree RSS proxy; shared pages may be double-counted."""
+    processes = {}
+    for path in Path("/proc").iterdir():
+        if not path.name.isdigit():
+            continue
+        try:
+            fields = (path / "stat").read_text().rsplit(") ", 1)[1].split()
+            rss = next(
+                int(line.split()[1])
+                for line in (path / "status").read_text().splitlines()
+                if line.startswith("VmRSS:")
+            )
+            processes[int(path.name)] = (int(fields[1]), rss)
+        except (OSError, ValueError, StopIteration):
+            continue
+    owned = set(roots)
+    while True:
+        additions = {pid for pid, (parent, _) in processes.items() if parent in owned} - owned
+        if not additions:
+            break
+        owned.update(additions)
+    return sum(processes[pid][1] for pid in owned if pid in processes), len(owned & processes.keys())
+
+
 class Context:
     def __init__(self, args):
         self.args = args
@@ -50,6 +75,12 @@ class Context:
         (self.output / "bin").mkdir()
         self.binary = self.output / "bin/pvisor"
         shutil.copy2(args.binary.resolve(), self.binary)
+        build_receipt = None
+        if getattr(args, "build_receipt", None):
+            from reference_baselines import verified_build_receipt
+            build_receipt = verified_build_receipt(args.build_receipt.resolve(), self.binary)
+            shutil.copy2(args.build_receipt, self.output / "build-receipt.json")
+            shutil.copy2(args.build_receipt.resolve().parent / "source-manifest.json", self.output / "source-manifest.json")
         self.firmware = self.output / "firmware"
         shutil.copytree(args.firmware.resolve(), self.firmware, symlinks=False)
         self.toolchain = Path(checked(["rustc", "--print", "sysroot"]).stdout.strip())
@@ -77,6 +108,10 @@ class Context:
         ):
             self.env.pop(key, None)
         self.env["PVISOR_STARTUP_TIMING"] = "0"
+        self.env["PVISOR_FS_PROFILE"] = "0"
+        self.env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+        self.env["GIT_CONFIG_NOSYSTEM"] = "1"
+        self.env["LC_ALL"] = "C"
         self.env.pop("PVISOR_TEST_ALLOW_NO_USERNS", None)
         self.metadata = dict(
             cli_arguments={
@@ -101,6 +136,9 @@ class Context:
             source_commit=checked(["git", "rev-parse", "HEAD"], cwd=self.repo).stdout.strip(),
             source_status=checked(["git", "status", "--porcelain"], cwd=self.repo).stdout,
             binary_sha256=digest(self.binary),
+            binary_build=build_receipt,
+            binary_source_commit=build_receipt["source_identity"]["head"] if build_receipt else "unknown",
+            source_commit_scope="runner worktree HEAD; not measured binary provenance",
             source_binary=str(args.binary.resolve()),
             firmware_sha256=digest(self.firmware / "libkrunfw.so.5"),
             python=checked(["/usr/bin/python3", "--version"]).stdout.strip(),
@@ -113,6 +151,7 @@ class Context:
                 correctness_required=True,
                 percentile="linear interpolation",
                 timing="wall includes process launch and teardown; worker_ms is workload only",
+                git_configuration="global/system config disabled; isolated fixture repository config; C locale",
             ),
             harness_sha256={
                 str(p.relative_to(self.output / "harness")): digest(p)
@@ -138,8 +177,12 @@ class Context:
         return path
 
     def run(self, argv, *, cwd, env=None, timeout=120, expected=0):
+        is_podman = argv[0] == "podman"
+        affinity = getattr(getattr(self, "args", None), "cpu_affinity", None)
+        if affinity:
+            argv = ["taskset", "--cpu-list", affinity, *argv]
         runenv = self.env | (env or {})
-        if argv[0] == "podman":
+        if is_podman:
             runenv["HOME"] = os.environ["HOME"]
         started = time.perf_counter_ns()
         try:
@@ -159,20 +202,9 @@ class Context:
 
                 os.killpg(process.pid, signal.SIGKILL)
                 stdout, stderr = process.communicate()
-                (Path(cwd).parent / "command.stdout").write_bytes(stdout)
-                (Path(cwd).parent / "command.stderr").write_bytes(stderr)
-                (Path(cwd).parent / "command.json").write_text(
-                    json.dumps(
-                        {
-                            "argv": argv,
-                            "cwd": str(cwd),
-                            "exit_code": process.returncode,
-                            "timed_out": True,
-                            "timeout_seconds": timeout,
-                        }
-                    )
-                    + "\n"
-                )
+                retain_command(Path(cwd).parent, stdout, stderr, dict(
+                    argv=argv, cwd=str(cwd), exit_code=process.returncode,
+                    timed_out=True, timeout_seconds=timeout))
                 raise TimeoutError(f"command timed out: {argv!r}")
         except BaseException:
             if "process" in locals() and process.poll() is None:
@@ -182,20 +214,9 @@ class Context:
                 process.communicate()
             raise
         elapsed = (time.perf_counter_ns() - started) / 1e6
-        (Path(cwd).parent / "command.stdout").write_bytes(stdout)
-        (Path(cwd).parent / "command.stderr").write_bytes(stderr)
-        (Path(cwd).parent / "command.json").write_text(
-            json.dumps(
-                {
-                    "argv": argv,
-                    "cwd": str(cwd),
-                    "exit_code": process.returncode,
-                    "wall_ms": elapsed,
-                    "timed_out": False,
-                }
-            )
-            + "\n"
-        )
+        retain_command(Path(cwd).parent, stdout, stderr, dict(
+            argv=argv, cwd=str(cwd), exit_code=process.returncode,
+            wall_ms=elapsed, timed_out=False))
         if process.returncode != expected:
             raise RuntimeError(
                 f"exit {process.returncode}, expected {expected}; logs in {cwd}\n{stderr.decode(errors='replace')[-2000:]}"
@@ -210,6 +231,7 @@ class Context:
                 raise RuntimeError("prepared OCI image unavailable")
             return [
                 "podman",
+                *getattr(self, "podman_options", []),
                 "run",
                 "--rm",
                 "--network",
@@ -218,8 +240,7 @@ class Context:
                 payload[0],
                 "-v",
                 f"{workspace}:/work:Z",
-                "-v",
-                f"{self.toolchain}:{self.toolchain}:ro,Z",
+                *(["-v", f"{self.toolchain}:{self.toolchain}:ro"] if self.metadata.get("benchmark_id") == "B-AGENT-TASK" else []),
                 "-w",
                 "/work",
                 self.image,
@@ -245,7 +266,7 @@ class Context:
             argv += [
                 "--vm",
                 "--rootfs",
-                "/",
+                str(self.rootfs or "/"),
                 "--vm-library-dir",
                 str(self.firmware),
                 "--cpu",
@@ -267,11 +288,11 @@ class Context:
                 "host" if network else "none",
                 "--container-mount",
                 f'source="{workspace}",target="/work",read_only=false',
-                "--container-mount",
-                f'source="{self.toolchain}",target="{self.toolchain}",read_only=true',
                 "--container-workdir",
                 "/work",
             ]
+            if self.metadata.get("benchmark_id") == "B-AGENT-TASK":
+                argv += ["--container-mount", f'source="{self.toolchain}",target="{self.toolchain}",read_only=true']
         if network:
             off = argv.index("--overlaynet")
             argv[off + 1] = network[0]
@@ -292,8 +313,8 @@ class Context:
             raise RuntimeError("completed zero-exit Run Bundle required")
         observed = bundle["run"]["executor"]["isolation"]
         expected = {
-            "host": "host_process",
-            "staged": "host_process",
+            "host": "rootless_process",
+            "staged": "rootless_process",
             "safe": "rootless_process",
             "vm": "virtual_machine",
             "container": "container",
@@ -308,6 +329,11 @@ class Context:
             raise RuntimeError("staging not observed")
         if backend == "safe" and not bundle["safety"]["filesystem_non_bypassable"]:
             raise RuntimeError("non-bypassable filesystem required")
+        if backend == "staged" and expected == "rootless_process" and not all(
+            bundle["safety"].get(field, False) for field in
+            ("filesystem_non_bypassable", "filesystem_read_non_bypassable", "filesystem_write_non_bypassable")
+        ):
+            raise RuntimeError("rootless staging requires non-bypassable read/write filesystem evidence")
         return bundle
 
     def record(self, row):
