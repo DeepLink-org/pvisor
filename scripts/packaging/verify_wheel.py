@@ -13,7 +13,15 @@ import zipfile
 from email.parser import BytesParser
 from pathlib import Path
 
-EXPECTED_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay", "pvisor-memory-pool", "pvisor-cluster", "pvisor-worker")
+EXPECTED_BINARIES = (
+    "pvisor",
+    "pvisor-cache",
+    "pvisor-tui",
+    "pvisor-replay",
+    "pvisor-memory-pool",
+    "pvisor-daemon",
+)
+COMPANION_BINARIES = EXPECTED_BINARIES[1:-1]
 FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
 
 
@@ -174,10 +182,15 @@ def install_smoke(wheel: Path, version: str) -> None:
                 )
             _run([str(executable), "--help"], env=env)
 
+        # Verify both the standalone daemon and its service passthrough.
+        _run([str(scripts / "pvisor-daemon"), "serve", "--help"], env=env)
+        _run([str(scripts / "pvisor-daemon"), "protocol"], env=env)
+        _run([str(scripts / "pvisor"), "service", "daemon", "protocol"], env=env)
         _run([str(scripts / "pvisor"), "run", "--help"], env=env)
-        for binary in EXPECTED_BINARIES[1:]:
+        for binary in COMPANION_BINARIES:
             name = binary.removeprefix("pvisor-")
-            _run([str(scripts / "pvisor"), name, "--help"], env=env)
+            prefix = ["service"] if name in {"cache", "memory-pool"} else []
+            _run([str(scripts / "pvisor"), *prefix, name, "--help"], env=env)
 
 
 def main() -> None:

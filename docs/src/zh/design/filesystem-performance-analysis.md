@@ -25,9 +25,50 @@ VM 的 `dispatch/admission` 在七项工具和修复任务中分别记录 1,546.
 
 七项工具的 `fingerprint_bytes` 中位数为 69,375,893 B，固定修复为 11,286 B，staged/VM 相同。对应源码仍在 live lower 的首次内容观察中计算 SHA256；普通 stat/lookup 不触发普通文件的内容哈希，frozen baseline 则跳过读取日志。Checkpoint 策略将日志持久化移到完成边界，没有将可变 lower 的读取指纹改成 metadata-only。这组可变 fixture 没有显示 content receipt 复用；计数不能量化不可变镜像的收益。修复任务中读指纹的数据量很小，应与工具加载和路径请求分别归因。
 
-路径解析与 rootfs/workspace 的大量请求值得优先调查；现有计数不支持把逐文件 preimage fsync 当作当前最大的已证实原因。下一步分开 inline/worker 服务、队列等待与通知计数，测试相同 ELF、loader 和动态库从 virtio-fs 与 executable memfd 执行的成本；两边保留相同准备与输入 fd，guest `/dev/shm` 保持 noexec。准备来源分为原始文件和独立 inode 的工作区副本，并把首个 exec 与后续重复调用分开。原始文件准备会预热其 guest 页缓存；副本准备保留原工具文件首次映射的机会，但共同的 Python 准备仍预热解释器及部分共享库，不能称为完全冷启动。探针尚未运行验证，也没有测量结果。随后对保持同样暂存语义的元数据缓存做工程 A/B。DAX、exec 缺页和单一函数的因果贡献尚未验证；优化收益需要独立正式计时和置信区间。
+路径解析与 rootfs/workspace 的大量请求值得优先调查；现有计数不支持把逐文件 preimage fsync 当作当前最大的已证实原因。[独立执行映射探针](#exec-mapping)显示映射路径对短进程启动有明显影响。下一步分开 inline/worker 服务、队列等待与通知计数，并对保持同样暂存语义的缓存做工程 A/B。DAX 和单一函数的因果贡献尚未验证；优化收益需要独立正式计时和置信区间。
 
 [整理后的计数统计 CSV](filesystem-counters.csv)保留三次中位数、完整覆盖、独立制品/源码与原始报告摘要；原始日志保存在本地 `.data/`。复现见[计数器手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#engineering-and-diagnostics)。
+
+## 可执行文件映射的独立诊断 {#exec-mapping}
+
+相同 `rg --version` 的 ELF、loader 和全部动态库，分别从 virtio-fs 文件与 executable memfd 执行。Linux、CPU 0,1，guest 2 vCPU/1 GiB；每种条件三个独立新 VM，每个 VM 执行 50 次，顺序随机交错。十二个 VM、600 次调用全部输出校验通过，每个 VM 的 13 个文件系统实例都有 final 记录。构建、输入、固件和原始输出摘要保留在证据目录；这是启用 profile 的诊断，不进入用户任务性能表。
+
+| 准备来源 | 执行映射 | 首次启动中位数 ms | 重复启动中位数 ms | 重复启动 major faults |
+| --- | --- | ---: | ---: | ---: |
+| 原始文件 | virtio-fs | 6.16 | 5.04 | 37 |
+| 原始文件 | memfd | 1.45 | 0.71 | 0 |
+| 独立 inode 副本 | virtio-fs | 7.54 | 5.08 | 37 |
+| 独立 inode 副本 | memfd | 1.50 | 0.72 | 0 |
+
+首次启动统计三个 VM 的第一调用；重复启动先取每 VM 后续 49 次的中位数，再取三个 VM 的中位数，不能把调用数当作独立样本数。两组都先复制并哈希校验相同输入、继承相同 fd；guest `/dev/shm` 保持 noexec。原始文件准备会预热原 inode；副本准备从不同 inode 读取相同字节，但共同的 Python 准备仍预热解释器及部分库，不能称为完全冷启动。
+
+重复启动的映射差距约 4.3 ms，同时 major faults 从 37 变为 0，支持优先调查可执行文件映射与缺页服务。major fault 计数不等于物理磁盘读取次数；这组替换同时改变了文件映射、路径访问及加载器的请求路径，不能把差距全部归因于 FUSE 传输或 DAX 缺失，也不能按完整 Agent 任务的进程数直接外推收益。生产实现需要保持访问策略、暂存观察与证据语义，再进行独立正式计时。
+
+[整理后的执行统计 CSV](filesystem-exec-summary.csv) · [来源与测量边界 CSV](filesystem-exec-provenance.csv)。原始报告、逐 VM 输出、审核和整理脚本保存在本地 `benchmark/.data/`。
+
+## 合入计划与目标持久化 {#apply-plan}
+
+相同冻结父源码的 CLI-only release 构建，仅合入实现有被执行的源码差异；编译器、292 个依赖编译单元的 features、profile 和 rustflags 一致。CPU 0,1，宿主缓存热，每格三次预热、30 次正式测量，随机交替，每次独立 target/stage；准备排除在合入计时之外。下表来自不启用 profile 或 strace 的 240 个有效样本，改动在同一个目录内。
+
+| 文件数 | 操作 | 基线 P50 ms | 目录索引 P50 ms | 差值的 95% 配对 bootstrap 区间 ms |
+| --- | --- | ---: | ---: | ---: |
+| 1,000 | 合入 | 962.12 | 944.09 | −51.16 至 −2.72 |
+| 1,000 | 合入前冲突检查 | 46.07 | 21.98 | −24.75 至 −22.98 |
+| 10,000 | 合入 | 13,130.25 | 11,031.86 | −2,461.98 至 −1,790.97 |
+| 10,000 | 合入前冲突检查 | 2,651.01 | 189.78 | −2,474.89 至 −2,448.60 |
+
+完整原始、暂存和最终内容由冻结 harness 在运行时检查，随后删除生成的 workspace/upper；独立事后审核覆盖保留的构建、命令、退出码、冲突输出和提交 ledger，不能称为再次独立校验了已删除的最终文件。合入前冲突不是合入途中外部写入的覆盖测试，也不是崩溃恢复测试。该工程 A/B 不构成 Git 或其他产品的性能对照。
+
+另一个启用 profile 和 strace 的独立诊断，每格三次，共 24 个有效命令，保留完整退出记录并按 fd 路径分类。两版的同步调用完全相同：
+
+| 合入文件数 | target 文件 fsync | target 目录 fsync | stage fsync | 其他 fsync | 合计 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 1,000 | 1,003 | 18 | 1 | 2,022 |
+| 10,000 | 10,000 | 10,003 | 18 | 1 | 20,022 |
+
+合入前冲突命令的这些调用均为零。目录索引改善了计划阶段，却没有减少目标持久化的调用数；10,000 文件合入仍约 11 秒。按唯一目录在事务边界批量同步值得另做实验，但必须先验证 Prepared、TargetApplied、Committed 的落盘顺序、崩溃恢复和途中外部编辑保护。请求计数证明调用规模，不能证明这些调用占全部剩余时间；strace 用时受插桩影响，不能与嵌套 profile span 相加或用于正式收益表。
+
+[正式统计 CSV](apply-engineering-summary.csv) · [配对差异 CSV](apply-engineering-comparisons.csv) · [同步请求统计 CSV](apply-sync-counts.csv) · [来源与审核范围 CSV](apply-engineering-provenance.csv)。原始记录和整理脚本保存在本地 `benchmark/.data/`。
 
 ## 保留的独立工程实验 {#retained-experiments}
 

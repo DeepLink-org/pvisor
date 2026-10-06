@@ -35,5 +35,7 @@ Deferring is not abandoning. Evidence carries the process facts—what was read 
 
 What ships today is this stage at single-machine scale: individual Jobs on one machine—run unattended, then review changes and evidence afterward, and merge only what you want. L2's exemption decisions and L3's cluster scale are not here yet.
 
+The [single-node daemon](../guides/daemon/index.md) adds local sandbox lifecycle, not L3 orchestration or the native Job review contract. pVisor does not provide a cluster-wide Controller/Worker control plane; external systems such as Kubernetes and Ray own cross-node scheduling. The scale target is execution semantics and checkable evidence within those systems.
+
 !!! note "Under construction"
     The entry criteria and gap list for L2/L3 are not final. See the [roadmap](../community/roadmap.md) for progress, [concurrency density](../benchmarks/density.md) for the capacity rationale, and [cluster execution](../design/research/cluster-execution.md) for the cluster direction.

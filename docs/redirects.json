@@ -51,5 +51,21 @@
   "benchmarks/cluster-questions.md": "design/cluster-benchmark-plan.md",
   "benchmarks/vm-lifecycle.md": "benchmarks/vm-memory/index.md",
   "benchmarks/vm-memory/methodology.md": "benchmarks/vm-memory/index.md",
-  "benchmarks/vm-memory/results.md": "benchmarks/vm-memory/index.md"
+  "benchmarks/vm-memory/results.md": "benchmarks/vm-memory/index.md",
+  "design/memory-sharing/index.md": "design/memory-optimization/proof-of-concept.md",
+  "design/memory-sharing/backends.md": "design/memory-optimization/index.md",
+  "design/memory-sharing/deduplication.md": "design/memory-optimization/deduplication.md",
+  "design/memory-sharing/compression.md": "design/memory-optimization/compression.md",
+  "design/cluster/index.md": "design/daemon/index.md",
+  "design/cluster/scheduling.md": "design/daemon/admission.md",
+  "design/cluster/lifecycle.md": "design/daemon/lifecycle.md",
+  "design/cluster/state-and-recovery.md": "design/daemon/state-and-recovery.md",
+  "design/cluster/storage.md": "design/daemon/storage.md",
+  "design/cluster/operations.md": "design/daemon/operations.md",
+  "design/cluster/shared-working-set.md": "design/daemon/shared-working-set.md",
+  "design/cluster/server-consolidation.md": "design/daemon/responsibility-convergence.md",
+  "guides/cluster/index.md": "guides/daemon/index.md",
+  "guides/cluster/service.md": "guides/daemon/service.md",
+  "guides/cluster/operations.md": "guides/daemon/operations.md",
+  "guides/cluster/vm-and-gateway.md": "guides/daemon/boundaries.md"
 }

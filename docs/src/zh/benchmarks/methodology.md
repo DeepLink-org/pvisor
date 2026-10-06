@@ -32,7 +32,7 @@ B-STARTUP、B-FS-TOOLS、B-AGENT-TASK 使用相同离线工具和固定输入，
 
 Docker writable bind mount 直接写宿主；pVisor staged 保留改动到 apply。Firecracker/QEMU 使用私有 ext4，pVisor VM 使用 virtio-fs，内核与设备不同；对照不是纯 VMM 或生产安全排名。独立 stage 的隔离能力以实际记录和[隔离校验](isolation-tests.md)为准。
 
-RSS 是定期采样的进程范围求和，可能重复共享页、漏掉短峰；Docker 必须包含实际容器进程与专属 daemon 并标明范围。Cluster 用互不重叠 cgroup 的内存总和。配置 RAM、RSS、macOS RAM proxy 和净物理内存不可混算。
+RSS 是定期采样的进程范围求和，可能重复共享页、漏掉短峰；Docker 必须包含实际容器进程与专属 daemon 并标明范围。整组内存必须包含全部子进程、backing 和已计费缓存，不重复相加重叠 cgroup。配置 RAM、RSS、macOS RAM proxy 和净物理内存不可混算。
 
 ## 实验数据和分析 {#results}
 
@@ -50,7 +50,7 @@ q35 和 microvm 使用同一 Ubuntu 模板；样本和百分位数与其他批�
 
 ### 任务与资源 {#product-v1}
 
-[合入](apply.md) · [网络](network.md) · [并发](density.md) · [隔离](isolation-tests.md) · [回放](replay-fidelity.md) · [审查](supervision-cost.md) · [Cluster](cluster-scalability.md)。未测的业界方案明确标记，不填入厂商宣传数字。
+[合入](apply.md) · [网络](network.md) · [并发](density.md) · [隔离](isolation-tests.md) · [回放](replay-fidelity.md) · [审查](supervision-cost.md)。未测的业界方案明确标记，不填入厂商宣传数字。
 
 ### 文件系统工程实验 {#filesystem-service}
 

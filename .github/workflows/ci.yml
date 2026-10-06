@@ -74,6 +74,26 @@ jobs:
       - run: just lint-py
       - run: just test-py
 
+  daemon:
+    name: Standalone daemon / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+        with:
+          rust: "true"
+          install-nextest: "true"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-daemon
+      # No native executor build, firmware, legacy-cluster or HVF signing.
+      - run: just daemon-build
+      - run: just test-daemon
+
   rust-test:
     name: Rust Test / ${{ matrix.platform }} / ${{ matrix.shard }}
     runs-on: ${{ matrix.os }}
@@ -89,7 +109,6 @@ jobs:
               pvisor-journal
               pvisor-guest
               pvisor-core
-              pvisor-cluster
               pvisor-overlay-core
               pvisor-overlayfs
               pvisor-overlaynet
@@ -113,7 +132,6 @@ jobs:
               pvisor-journal
               pvisor-guest
               pvisor-core
-              pvisor-cluster
               pvisor-gateway
               pvisor-overlay-core
               pvisor-overlayfs
@@ -265,7 +283,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [checks, python, rust-test, pvisor-isolation-regression, examples, semspec]
+    needs: [checks, python, daemon, rust-test, pvisor-isolation-regression, examples, semspec]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

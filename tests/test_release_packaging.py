@@ -365,12 +365,64 @@ def test_firmware_source_fetches_when_path_is_not_configured(
     assert name == firmware.name
 
 
+def test_daemon_cargo_command_is_standalone(monkeypatch):
+    monkeypatch.setattr(wheel_stage.sys, "platform", "linux")
+    monkeypatch.setattr(wheel_stage.platform, "machine", lambda: "x86_64")
+    command = wheel_stage._cargo_command(wheel_stage.BuildOptions(), daemon=True)
+    assert command[command.index("-p") + 1] == "pvisor-daemon"
+    assert command[command.index("--bin") + 1] == "pvisor-daemon"
+    assert command.count("-p") == 1
+    assert "--no-default-features" in command
+    assert "--features" not in command
+    assert "--bins" not in command
+    assert "pvisor" not in command
+    assert "nativepvisor" not in command
+
+
+def test_wheel_build_separates_daemon_from_native_components(monkeypatch, tmp_path):
+    calls = []
+
+    def build_component(options, *, shim_vm=False, daemon=False):
+        calls.append((shim_vm, daemon))
+        names = ("pvisor-daemon",) if daemon else wheel_stage.NATIVE_BINARIES
+        return {name: tmp_path / name for name in names}
+
+    monkeypatch.setattr(wheel_stage, "_build_component", build_component)
+    artifacts = wheel_stage._build(wheel_stage.BuildOptions())
+    assert calls == [(False, False), (False, True)]
+    assert set(artifacts) == set(wheel_stage.EXPECTED_BINARIES)
+    assert wheel_stage.EXPECTED_BINARIES == wheel_verify.EXPECTED_BINARIES
+    assert "pvisor-daemon" not in wheel_verify.COMPANION_BINARIES
+    assert "pvisor-cluster" not in artifacts
+    assert "pvisor-worker" not in artifacts
+
+
+def test_macos_wheel_signs_native_components_but_not_daemon(monkeypatch, tmp_path):
+    artifacts = {}
+    for name in wheel_stage.EXPECTED_BINARIES:
+        artifact = tmp_path / name
+        artifact.write_bytes(b"binary")
+        artifacts[name] = artifact
+    signed = []
+    monkeypatch.setattr(wheel_stage, "WHEEL_DATA", tmp_path / "wheel-data")
+    monkeypatch.setattr(wheel_stage, "_build", lambda options: artifacts)
+    monkeypatch.setattr(wheel_stage, "_is_macos", lambda options: True)
+    monkeypatch.setattr(wheel_stage, "_sign_macos_pvisor", lambda path: signed.append(path.name))
+    wheel_stage.stage_wheel_binaries(wheel_stage.BuildOptions(bundle_firmware=False))
+    assert signed == list(wheel_stage.NATIVE_BINARIES)
+    assert "pvisor-daemon" not in signed
+
+
 def test_cargo_command_selects_static_musl_on_linux(monkeypatch):
     monkeypatch.setattr(wheel_stage.sys, "platform", "linux")
     monkeypatch.setattr(wheel_stage.platform, "machine", lambda: "x86_64")
     command = wheel_stage._cargo_command(wheel_stage.BuildOptions())
     assert {"pvisor", "pvisor-tui", "pvisor-replay"} <= set(command)
     assert "pvisor/gateway" in command
+    assert "--bins" not in command
+    assert "pvisor-cluster" not in command
+    assert "pvisor-worker" not in command
+    assert "pvisor-daemon" not in command
     assert command[:2] == ["cargo", "zigbuild"]
     assert command[command.index("--target") + 1] == "x86_64-unknown-linux-musl"
     with pytest.raises(RuntimeError, match="unsupported wheel target"):
@@ -381,9 +433,7 @@ def test_cargo_command_selects_static_musl_on_linux(monkeypatch):
     "soft,hard,expected_soft",
     [(1024, 32_768, 16_384), (1024, 4096, 4096), (32_768, 32_768, 32_768)],
 )
-def test_zig_linker_inherits_file_limit_without_changing_callers_limit(
-    soft, hard, expected_soft
-):
+def test_zig_linker_inherits_file_limit_without_changing_callers_limit(soft, hard, expected_soft):
     resource = pytest.importorskip("resource")
     caller_limits = resource.getrlimit(resource.RLIMIT_NOFILE)
     if caller_limits[1] != resource.RLIM_INFINITY and caller_limits[1] < hard:

@@ -36,6 +36,23 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 
 `proxy` 的 deny 策略只约束经过代理的流量；这个例子不等价于强制离线。需要普通出口不可绕过地被阻止时，加上 `--overlaynet-deny-all`。暂存与文件 sandbox 也相互独立。
 
+## Daemon 配置 {#daemon}
+
+`pvisor-daemon serve` 使用命令行设置，不读取这里的原生 `RunConfig` TOML 或已解析 `RunSpec`。`OPEN_SANDBOX_API_KEY` 使用至少 32 字节的受保护秘密。见 [daemon 启动](../guides/daemon/index.md#start)与 [Service 入口](../guides/daemon/service.md)。
+
+| 选项 | 默认值 / 含义 |
+| --- | --- |
+| `--podman PATH` | 必需，可信 rootless Podman 可执行文件绝对路径 |
+| `--listen ADDRESS` | `127.0.0.1:8080` |
+| `--public-endpoint HOST:PORT` | 外部路由 authority，不带 scheme/path；反向代理、通配/零端口监听时必需 |
+| `--state PATH` | `.pvisor/daemon`；使用私有持久目录 |
+| `--max-sandboxes N` | 32 个本机沙箱 |
+| `--cpu-millis N` | 4000；准入硬 CPU 限制总和，以千分之一 CPU 为单位 |
+| `--memory-bytes N` | 8589934592；准入硬内存限制总和，不是整机物理内存 |
+| `--max-timeout-seconds N` | 86400；创建 TTL 上限，可配置范围 60 秒至一年 |
+
+旧 `[controller]`、`[[workers]]`、Worker profile 和 Cluster task JSON 都不是 daemon 输入。原生 node/cache/memory-pool 配置独立保留。daemon 没有选择原生 VM、checkpoint/fork、stage/apply、全局 DAG 或分布式 lease 的选项。
+
 ## 字段导航（当前实现）
 
 | TOML 路径 | 类型与默认值 | CLI / 用途 |
@@ -69,7 +86,7 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 - 含路径的配置没有“以配置文件目录为根”的通用承诺；从预期工作区启动，跨环境使用绝对路径。
 
 
-`[vm].memory_pool` 是实验性 macOS / Apple Silicon 共享冷页池的 socket 路径，默认未设置；CLI 对应 `--vm-memory-pool SOCKET`，Rust SDK 对应 `VmSettings.memory_pool`。见[首版内存共享](../design/memory-sharing/index.md#v1-integration)。
+`[vm].memory_pool` 是实验性 macOS / Apple Silicon 共享冷页池的 socket 路径，默认未设置；CLI 对应 `--vm-memory-pool SOCKET`，Rust SDK 对应 `VmSettings.memory_pool`。见[首版内存共享](../design/memory-optimization/proof-of-concept.md#v1-integration)。
 
 ## 常用分组的具体字段 {#settings}
 
@@ -107,9 +124,9 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 
 `container.platform` 取 `linux-amd64` 或 `linux-arm64`；`container.network` 取 `host`、`bridge` 或 `none`。Linux container 的注入二进制必须与 rootfs 的架构和 ABI 匹配。
 
-VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文件；`ram_compression` 启用相应的压缩 backing。macOS 的压缩 backing 与共享池有额外 FUSE 条件，见[内存共享设计](../design/memory-sharing/index.md)。
+VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文件；`ram_compression` 启用相应的压缩 backing。macOS 的压缩 backing 与共享池有额外 FUSE 条件，见[内存共享概念验证](../design/memory-optimization/proof-of-concept.md)。
 
-`[vm].snapshot_filesystem_pool` 为首次启动及从快照恢复的 VM capture 启用不可变 lower 引用，也覆盖不同 VM 的首次 capture。首次 seal 后，控制连接持有已验证的 owner；后续 capture 验证完整原 lower 并复用已封存的 pool 树，不扩大 runner 的访问范围。Worker 要求使用宿主管理的绝对路径，与任务 store 位于同一卷，并处于所有 VM 可写根和快照 store 之外。首次缓存未命中时，每个不可变摘要创建一棵 pool 树；并发未命中按摘要串行，命中不产生临时 lower 副本。此选项启用的原生 v5 快照以独立持有的 64 KiB 压缩块保留私有文件内容，复用未变化的内容；恢复时重建私有可写 inode，并保留完整元数据及硬链接关系。运行中的块 owner 在父快照退役和 GC 后仍然有效。封存先按解码后的内容标识查找 pool 块，命中时完整校验并直接复用，仅未命中才压缩；完整 RAM 压缩封存也使用这一路径。原生 capture 直接编码经过宿主认证的冻结私有目录，不再产生中间私有数据树；导入、恢复和暂停任务的文件导出均不打开记录中的原始私有路径。完整数据校验仍保留；延迟和密度收益需要实测。此配置不支持网络、共享内存池、普通 RAM 压缩及显式 RAM backing。备份须保留 pool 与相关 Job store，或导出完整快照。
+`[vm].snapshot_filesystem_pool` 为首次启动及从快照恢复的 VM capture 启用不可变 lower 引用，也覆盖不同 VM 的首次 capture。首次 seal 后，控制连接持有已验证的 owner；后续 capture 验证完整原 lower 并复用已封存的 pool 树，不扩大 runner 的访问范围。原生调用方应使用宿主管理的绝对路径，与 Job store 位于同一卷，并处于所有 VM 可写根和快照 store 之外。首次缓存未命中时，每个不可变摘要创建一棵 pool 树；并发未命中按摘要串行，命中不产生临时 lower 副本。此选项启用的原生 v5 快照以独立持有的 64 KiB 压缩块保留私有文件内容，复用未变化的内容；恢复时重建私有可写 inode，并保留完整元数据及硬链接关系。运行中的块 owner 在父快照退役和 GC 后仍然有效。封存先按解码后的内容标识查找 pool 块，命中时完整校验并直接复用，仅未命中才压缩；完整 RAM 压缩封存也使用这一路径。原生 capture 直接编码经过宿主认证的冻结私有目录，不再产生中间私有数据树；导入、恢复和暂停任务的文件导出均不打开记录中的原始私有路径。完整数据校验仍保留；延迟和密度收益需要实测。此配置不支持网络、共享内存池、普通 RAM 压缩及显式 RAM backing。备份须保留 pool 与相关 Job store，或导出完整快照。
 
 ### 捕获与记录
 

@@ -4,9 +4,19 @@ Read [the benchmark registry and writing rules](../README.md) before measuring o
 
 ## Data and publication
 
+Apply sampling honors `--samples` and `--warmups` at every file count, including 100,000 files. Use explicit smaller values in a separate preflight output; file count never silently reduces formal rounds. Fresh stages and Git patches are prepared outside the application timer. Large sweeps can take hours; retain failures and partial reports instead of filling conditions from previous runs.
+
 Keep raw reports, per-trial samples, stdout/stderr, failures, input hashes, binaries and frozen harnesses in `.data/`. The repository ignores that directory at every depth. A new output directory is required for every run; retain slow valid samples and failed preflights. Do not build, run other tests or sample unrelated workloads during measurement.
 
 Public Markdown contains derived comparisons. Supporting CSVs sit beside each article in `docs/src/{zh,en}/benchmarks/`, with download links. They identify cohort, resource budget, sample count, statistic and source digest. Full typed TSV reports, sample CSVs and archives stay local. Existing evidence is preserved in `docs/src/assets/benchmarks/.data/`; the verified migration inventory is in `benchmark/.data/raw-migration.json`.
+
+For large parked-capacity sweeps, `parked_density.py --archive-completed-snapshots` losslessly retains completed Job snapshot/restore trees as each batch's `snapshot-artifacts.tar.zst` and `snapshot-artifacts.json`. This happens after the measured service exits, outside all task timers, cgroup phase memory and CPU. Logs, configurations, full recovery proofs, Run Bundles and final upper changes remain directly readable. Every archive member's bytes, links, mode, numeric ownership, nanosecond timestamp and extended attributes are checked before original generated trees are removed. Failed, unknown or incomplete batches keep their complete artifacts. Archive compression is a retention operation, not a measured VM compression mechanism: zstd level 3 uses one thread and a maximum 512 MiB matching window in the outer coordinator, after the measured cgroup has exited. Restore into a new scratch directory with:
+
+```bash
+python3 benchmark/pvisor/retained_snapshot_archive.py \
+  --restore benchmark/.data/parked-new/0/snapshot-artifacts.json \
+  --destination benchmark/.data/parked-restored-new
+```
 
 `publication.py` publishes derived CSVs from a complete reference-runtime report. It rejects incorrect, duplicate and incomplete samples, keeps failures separate, never pools cohorts, omits P99 and omits P95 below 30 samples. P95 remains descriptive, not a stable tail-latency guarantee. A separated distribution replaces a single P50 with both cluster counts and medians: each cluster must contain at least `max(5, ceil(N*0.1))` samples, the largest eligible gap must be at least 20% of the overall median and more than three times the median adjacent gap, and cluster medians must differ by at least 1.5×. This is a descriptive rule, not a diagnosis.
 
@@ -69,7 +79,7 @@ Prepare the tool environment again and retain an input manifest for its files, s
 
 Use a fresh private Docker data root and verify the actual storage driver with `docker info`. For the classic-driver comparison, rootless `overlay2` is supported on suitable recent Linux hosts; `fuse-overlayfs` is a fallback when kernel overlay is unavailable. VFS is intended primarily for testing and must not stand in for the usual container storage configuration. Docker Engine 29 also supports its default containerd image store; declare which store is tested. See the [Docker storage-driver documentation](https://docs.docker.com/engine/storage/drivers/select-storage-driver/).
 
-Finish all uninstrumented sampling before running profiles, kernel builds, tests or resource experiments. A complete retest also covers apply/conflict/interruption recovery, local network controls, idle and useful-task density, isolation, supervision, replay, fixed-budget cluster throughput/history, and platform-specific tools/memory tests. Do not use old rows to fill a missing condition. Physical-memory conclusions must include VM backing/cache and compression-store/pool memory, recovery must pass data-integrity checks, and completed tasks must accompany density figures. Live cold-page compression and compressed execution snapshots are different conditions. Firmware comparisons need matching current binaries, frozen configs and workload capability checks before timing.
+Finish all uninstrumented sampling before running profiles, kernel builds, tests or resource experiments. A complete retest also covers apply/conflict/interruption recovery, local network controls, idle and useful-task density, isolation, supervision, replay, and platform-specific tools/memory tests. Do not use old rows to fill a missing condition. Physical-memory conclusions must include VM backing/cache and compression-store/pool memory, recovery must pass data-integrity checks, and completed tasks must accompany density figures. Live cold-page compression and compressed execution snapshots are different conditions. Firmware comparisons need matching current binaries, frozen configs and workload capability checks before timing.
 
 ## Complete Ubuntu controls
 
@@ -165,22 +175,9 @@ python3 benchmark/pvisor/parked_density.py \
 
 Every state touches/checks 64 MiB, waits for an exact stdin token, and on recovery verifies the saved identity, full data, Git status and four edits among 64 files. Admission/parking is sequential, all states must remain parked at the common barrier, and recovery uses one fixed slot. Current raw/compressed Job snapshots, native SIGSTOP and Podman pause have different portability and boundary semantics. Podman needs delegated child cgroups to freeze; payload/conmon must remain below the same 2 GiB/two-core/zero-swap parent. Unsupported stdin restoration or freezer control is a failed preflight, never a timed-sleep fallback. Only after every selected preflight condition passes, start a new five-round 1..128 capacity sweep. This does not establish tail latency, active concurrent throughput, SDK offload or automatic cold-page compression; raw backing cache may be reclaimed under the same memory pressure. Keep all failed and unknown outcomes, OOM events and private backing/cache in the accounting.
 
-B-CLUSTER uses `cluster_scalability.py` for one shared two-core, fixed-memory systemd slice containing the Controller and all Workers. Service caps remain explicit; no service may leave the total budget. A batch always submits twelve useful Python/Git tasks, checks each token/checksum/edited file set and reports validated completions per second. The Worker count (1/2/4) alternates in randomized rounds. Rootfs copying and service setup are outside task timing; service memory remains inside resource accounting. No six-second sleep or ready rate substitutes for work throughput.
+B-CLUSTER is retired with the Controller/Worker implementation. Removed runners are `cluster_scalability.py`, `cluster_worker.py` and `controller_history.py`; their dedicated tests, `plot_cluster_scalability.py` and `publish_controller_history.py` are also removed. There is no current reproduction, plotting or publication command for this ID. Frozen historical harnesses and reports in local `.data/` remain archival evidence, not active entry points. The locale `cluster-scalability.md` articles identify the retained CSVs as historical results; those bytes and receipts must not be relabeled as daemon measurements.
 
-```bash
-python3 benchmark/pvisor/cluster_scalability.py \
-  --state /tmp/.data/cluster-state-new \
-  --output benchmark/.data/cluster-new \
-  --bin-dir /absolute/path/to/frozen-release-bins \
-  --build-receipt /absolute/path/to/build-receipt.json \
-  --firmware-dir /absolute/path/to/libkrunfw-directory \
-  --rootfs /absolute/path/to/prepared-density-rootfs \
-  --input-manifest /absolute/path/to/input-manifest.json \
-  --sizes 1,2,4 --tasks 12 --repetitions 30 --warmups 3 \
-  --cpu-affinity 0,1 --budget-mib 2048
-```
-
-Run a separate one-repetition, zero-warmup preflight first. The runner verifies prepared rootfs inventories and current Cluster/Worker binary build receipts. It preserves failed tasks and complete shared-cgroup memory/CPU, including charged backing/cache. Prepared common caches may remain charged elsewhere. This is single-host KVM execution, not a multi-host or model-quality comparison. Measure control-plane history separately with the `scheduler_load` example built from the same frozen source; record compiler/build identity, retained record counts, restart time and memory. Legacy ready-only plotting inputs do not establish useful-task throughput.
+B-DENSITY and B-VM-MEMORY remain independent local benchmarks: `density.py`/`density_worker.py`, `parked_density.py`/`parked_memory_probe.rs`, `vm_memory.py`/`memory_probe.rs`, `live_vm_memory.py` and `macos_cold_ram.py` are not Cluster runners. Their source/binary/input receipts, integrity checks, failure accounting and resource controls remain required. None establishes daemon density, scheduling throughput or retained-history costs.
 
 ## macOS
 
@@ -320,11 +317,6 @@ python3 benchmark/pvisor/filesystem_exec_probe.py \
 
 Run only after formal timing ends. Preserve complete source/input receipts and every request identity/final span; inclusive counters cannot be summed into transport or CPU cost. Keep results in technical filesystem analysis and derived diagnostic CSVs, separate from user performance tables.
 
-`plot_cluster_scalability.py` now consumes the current completed-task JSON report through `--report`, with explicit `--output-dir`. It verifies current binary/source receipts, complete 30-batch conditions, identical total resource controls, task completion and OOM counters. It exports summary/provenance CSVs, and optionally plots validated task rate, full-batch time and whole-cgroup peak. Separated distributions retain both cluster medians; observed ranges are not confidence intervals. `--csv-only` needs no matplotlib. The ready-only TSV renderer is retired; historical charts retain their frozen evidence and cannot be inputs to the current throughput helper.
-
-The Cluster publisher also verifies the retained harness/input hashes and each unique task's completed record, expected Worker and complete workload output. `cluster-comparisons.csv` contains paired-round bootstrap intervals for complete-batch time; the per-task audit stays under `.data/` and its digest is included in processed provenance. One-slot Worker caps stay explicit: adding Workers uses resources unavailable to one capped Worker within the common total budget.
-
-For retained history, build the current release `scheduler_load` example with source/compiler/binary receipts, then run `controller_history.py --example <frozen-example> --build-receipt <receipt> --output benchmark/.data/history-new`. Use a new NVMe output directory; the runner rejects tmpfs/ramfs WAL storage. Defaults are 1,000/10,000/100,000/1,000,000 records, three independent processes per size, 30 query batches per process, two-core affinity/quota, 16 GiB and zero swap. The synthetic ready record receives a deliberate failed terminal receipt to check fencing and replay; no payload is executed. Whole-cgroup lifecycle peak includes record preparation, validation temporaries, WAL/cache and warm replay. It is not a stationary retained-state footprint. Query batches are correlated within a process; restart/memory have three observations, with no P95/P99 claim. Preserve every failed process and the last sampler point rather than counting missing output as zero memory or zero restart time.
 
 `publish_network.py --report benchmark/.data/network-new/report.json --output docs/src/en/benchmarks` requires all 17 native/host/VM/Podman/pVisor-OCI mode conditions, 30 independent batches per condition and unchanged prepared inputs. It verifies the frozen harness, input/build receipts, each retained command/output and independent Run boundary, complete response SHA-256, CPU affinity and deny-all evidence. Small-request statistics use the median within each 256-request, eight-thread batch, then distributions across batches; individual requests do not become independent samples. Transfer times exclude subsequent digest validation; job/worker times remain separate. The publisher exports same-directory summary, paired-comparison and provenance CSVs, with no P99 or public-network/model-latency claim. Failures prevent a complete comparison from being published; keep the failed report rather than replacing its cells with an older cohort.
 

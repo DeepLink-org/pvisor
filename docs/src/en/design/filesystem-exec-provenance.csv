@@ -1,0 +1,11 @@
+field,value
+benchmark_id,B-FS-DIAG
+role,diagnostic
+report_sha256,faaa26f94d7ae0c491e78ee6cae9d7cfe1141707341f8485be7cc6e4d21aca45
+audit_sha256,3a8edbed1e7ac27df7352cb41a6e7732017f811837667bd2477ff4f09d28a042
+input_manifest_sha256,1ddcf28fb142744aeb3f8c778558a276ea42bd7a51c51c1b87e02a0d920d91c9
+firmware_sha256,b61f68dac3ef20a88e1ee387733e4baed2f7c02edac940c8882e0b549dac95e4
+harness_sha256,a65c05549ee836525351624bbd8f0e7ace35a3da8e2f7ae47e4a4754faed7b34
+binary_sha256,9f7f80b7421b00ff66f7a60cb5dd2bdc6a3ea756bceec7a63b5a1d28cdbdf23a
+source_manifest_sha256,0a22adeecf92fe693a9e719613079ab0fbfa4de2b1141e43ceec6f73642c46e5
+protocol,"{""cache"": ""warm host inputs, fresh guest; original preparation warms original inodes; duplicate preparation reads distinct workspace inodes; common Python loader/libraries remain warm; first call and subsequent calls separate; not completely cold startup"", ""counters"": ""independent instrumented runs only; include identical preparation and all exec calls; inclusive spans not additive; final coverage required"", ""order"": ""seeded paired cases in independent fresh VMs"", ""preparation"": ""both arms copy/hash identical files into memfds before timed exec; pass same fd set"", ""resources"": ""same host affinity, two guest vCPU, 1 GiB guest RAM"", ""security"": ""noexec tmpfs unchanged; unavailable executable memfd reported as failure, no policy relaxation""}"

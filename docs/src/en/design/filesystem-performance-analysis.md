@@ -25,9 +25,50 @@ VM `dispatch/admission` records 1,546.67 ms for seven tools and 1,058.40 ms for 
 
 Median `fingerprint_bytes` is 69,375,893 B for seven tools and 11,286 B for fixed repair, identical in staged/VM modes. The corresponding source still computes SHA256 at the first content observation of live lower files; ordinary stat/lookup does not hash regular-file content, while a frozen baseline skips read journaling. Checkpoint durability moves journal persistence to the completion boundary; it does not replace mutable-lower read fingerprints with metadata-only observations. This mutable fixture shows no content-receipt reuse and cannot quantify immutable-image gains. Read fingerprints cover little data in the repair task and need separate attribution from tool loading and path requests.
 
-Path resolution and numerous rootfs/workspace requests merit investigation; the counters do not establish per-file preimage fsync as the current dominant cost. Next, separate inline/worker service, queue waits and notifications, and compare identical ELF, loader and library bytes through virtio-fs and executable memfds. Both arms retain identical preparation and input fds; guest `/dev/shm` remains noexec. Preparation uses either original files or workspace copies in independent inodes, with the first exec separated from subsequent calls. Original preparation prewarms guest file pages; duplicate preparation preserves the first mapping opportunity for the original tool, while common Python preparation still warms its interpreter and some shared libraries. This is not completely cold startup. The probe is not yet validated or measured. Follow with metadata-cache engineering A/B preserving staging semantics. DAX, exec faults and individual functions' causal contributions remain unverified. Independent formal timing and confidence intervals must establish optimization gains.
+Path resolution and numerous rootfs/workspace requests merit investigation; the counters do not establish per-file preimage fsync as the current dominant cost. The [independent execution-mapping probe](#exec-mapping) shows a substantial mapping-path effect on short-process startup. Next, separate inline/worker service, queue waits and notifications, and run cache engineering A/B while preserving staging semantics. DAX and individual functions' causal contributions remain unverified. Independent formal timing and confidence intervals must establish optimization gains.
 
 The [derived counter statistics CSV](filesystem-counters.csv) retains three-run medians, complete coverage and separate binary/source/report digests. Raw logs stay in local `.data/`; see the [counter manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#engineering-and-diagnostics).
+
+## Independent executable-mapping diagnostic {#exec-mapping}
+
+Identical ELF, loader and all dynamic-library bytes for `rg --version` execute through virtio-fs files or executable memfds. Linux, CPUs 0,1, guest 2 vCPU/1 GiB; each condition uses three independent fresh VMs with 50 calls per VM, in randomized interleaved order. All twelve VMs and 600 calls pass output checks; every VM has final records for all 13 filesystem instances. Build, input, firmware and raw-output digests stay in evidence. These profiled diagnostic runs do not enter user task-performance tables.
+
+| Preparation source | Execution mapping | First-exec median ms | Repeated-exec median ms | Repeated-exec major faults |
+| --- | --- | ---: | ---: | ---: |
+| Original files | virtio-fs | 6.16 | 5.04 | 37 |
+| Original files | memfd | 1.45 | 0.71 | 0 |
+| Independent-inode copies | virtio-fs | 7.54 | 5.08 | 37 |
+| Independent-inode copies | memfd | 1.50 | 0.72 | 0 |
+
+First-exec statistics use the first call in each of three VMs. Repeated-exec statistics take each VM's median over its remaining 49 calls, then the median across three VMs; calls are not independent samples. Both arms copy and hash-check identical inputs and inherit the same fds; guest `/dev/shm` remains noexec. Original preparation prewarms original inodes; duplicate preparation reads identical bytes from separate inodes. Common Python preparation still warms its interpreter and some libraries, so this is not completely cold startup.
+
+The repeated-exec mapping gap is about 4.3 ms, accompanied by major faults changing from 37 to zero. This supports investigating executable mapping and fault service first. Major faults do not equal physical disk reads. The substitution changes file mapping, path access and loader request paths together; it cannot attribute the whole gap to FUSE transport or missing DAX, or extrapolate gains by multiplying a complete Agent task's process count. Production changes need to preserve access policy, staging observations and evidence semantics before independent formal timing.
+
+[Derived execution statistics CSV](filesystem-exec-summary.csv) · [Provenance and measurement boundaries CSV](filesystem-exec-provenance.csv). Raw reports, per-VM output, audit and the publication script stay in local `benchmark/.data/`.
+
+## Apply planning and target durability {#apply-plan}
+
+CLI-only release builds share a frozen parent source; only the apply implementation differs in executed code. The compiler and features, profiles and rustflags of all 292 dependency compilation units match. CPUs 0,1, warm host caches, three warmups and 30 formal measurements per cell, randomized alternating order, independent target/stage per run; preparation is outside the apply timer. These 240 valid samples have profiling and strace disabled; changed files share one directory.
+
+| Files | Operation | Baseline P50 ms | Directory-index P50 ms | Paired-bootstrap 95% difference interval ms |
+| --- | --- | ---: | ---: | ---: |
+| 1,000 | Apply | 962.12 | 944.09 | −51.16 to −2.72 |
+| 1,000 | Conflict before apply | 46.07 | 21.98 | −24.75 to −22.98 |
+| 10,000 | Apply | 13,130.25 | 11,031.86 | −2,461.98 to −1,790.97 |
+| 10,000 | Conflict before apply | 2,651.01 | 189.78 | −2,474.89 to −2,448.60 |
+
+The frozen harness checks complete original, staged and final contents at runtime, then deletes generated workspace/upper files. Independent post-run checks cover retained builds, commands, exit codes, conflict output and committed ledgers; they do not independently recheck deleted final files. Conflict before apply does not test concurrent external writes during apply or crash recovery. This engineering A/B is not a comparison against Git or other products.
+
+A separate profile/strace diagnostic has three trials per cell and 24 valid commands, retaining complete exit records and classifying calls by fd paths. Both variants have identical synchronization counts:
+
+| Files applied | Target-file fsync | Target-directory fsync | Stage fsync | Other fsync | Total |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 1,000 | 1,003 | 18 | 1 | 2,022 |
+| 10,000 | 10,000 | 10,003 | 18 | 1 | 20,022 |
+
+All these calls are zero for conflict-before-apply commands. The directory index improves planning without reducing target-durability calls; applying 10,000 files still takes about 11 seconds. Batching synchronization per unique directory at transaction boundaries merits a separate experiment, after verifying Prepared, TargetApplied and Committed durability ordering, crash recovery and concurrent external-edit protection. Counts establish call volume, not its share of all remaining time. Tracing perturbs durations; they cannot be added to nested profile spans or used in the formal benefit table.
+
+[Formal statistics CSV](apply-engineering-summary.csv) · [Paired differences CSV](apply-engineering-comparisons.csv) · [Synchronization counts CSV](apply-sync-counts.csv) · [Provenance and audit scope CSV](apply-engineering-provenance.csv). Raw records and publication scripts stay in local `benchmark/.data/`.
 
 ## Retained independent engineering experiments {#retained-experiments}
 

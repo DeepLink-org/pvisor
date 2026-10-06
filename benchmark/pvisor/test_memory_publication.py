@@ -28,3 +28,17 @@ def test_partial_or_duplicate_live_memory_cannot_be_published():
         elif mutation=='memory':changed['rows'][0]['offloaded']['current_bytes']=1
         else:changed['rows'][0]['samples']=[dict(events=dict(oom=1,oom_kill=0))]
         with pytest.raises(ValueError):validate_cohort(changed)
+
+
+@pytest.mark.parametrize('value',[float('nan'),float('inf'),-1,True])
+def test_matching_sdk_proof_cannot_publish_invalid_numeric_metrics(value):
+    report=cohort();row=report['rows'][0]
+    row['offload_ms']=row['report']['rows'][0]['offload_ms']=value
+    with pytest.raises(ValueError):validate_cohort(report)
+
+
+@pytest.mark.parametrize('value',[float('nan'),float('inf'),-1])
+def test_memory_component_cannot_be_nonfinite_or_negative(value):
+    report=cohort();row=report['rows'][0]
+    row['offloaded']['stat']['file']=row['report']['rows'][0]['offloaded']['stat']['file']=value
+    with pytest.raises(ValueError):validate_cohort(report)

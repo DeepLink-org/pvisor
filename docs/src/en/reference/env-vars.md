@@ -23,6 +23,12 @@ The task prints its own Run ID. For network credentials, use `--pass-env` as des
 
 See [shared cache](shared-image-cache.md) for endpoint grammar, security, and failures. Host settings and agent-visible variables are separate; use `--pass-env NAME` for explicit projection.
 
+## Daemon credentials {#daemon}
+
+`OPEN_SANDBOX_API_KEY` supplies the standalone `pvisor-daemon serve` lifecycle key. Use a protected random secret of at least 32 bytes; do not pass it in argv or project it to workloads. Clients send it as the `OPEN-SANDBOX-API-KEY` HTTP header. The environment name uses underscores; the HTTP name uses hyphens.
+
+Default daemon endpoints return a sandbox-scoped `X-PVISOR-SANDBOX-TOKEN` in endpoint headers; clients must preserve it. It is not a host environment setting or a lifecycle credential. See [endpoint authentication](../guides/daemon/operations.md#endpoints). Native cache/pool credentials and Job environment projection remain separate. Retired Cluster tokens are not daemon credentials.
+
 ## Runtime injection
 
 `PVISOR_RUN_ID`, `PVISOR_RUNTIME`, `PVISOR_STORAGE`, `PVISOR_AGENT`, and `PVISOR_ROLE` identify runtime context. `PVISOR_AGENTCTL_ENDPOINT`, `PVISOR_AGENTCTL_TOKEN`, `PVISOR_AGENTCTL_TRANSPORT`, and `PVISOR_AGENTCTL_VERSION` support cooperation. The token is a credential and should not be logged.

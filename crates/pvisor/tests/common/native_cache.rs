@@ -1,6 +1,6 @@
 //! Real native-cache image fixtures shared by lifecycle and CPU experiments.
 use pvisor::cache::{CacheBackend, CacheClient, CacheConfig, Response};
-use pvisor_cluster::EnvironmentLayer;
+use pvisor_core::node::EnvironmentLayer;
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path, process::Command};
 fn sha(bytes: &[u8]) -> String {

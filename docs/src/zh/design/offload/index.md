@@ -1,5 +1,7 @@
 # VM RAM offload
 
+> 架构说明见 [VM RAM offload 架构](../memory-optimization/offload.md)；本文仍作为实现与证据附录保留。
+
 ## 1. Motivation {#motivation}
 
 Agent 执行环境经常需要在两次交互之间保留进程状态。停止 VM 可以释放资源，却也丢失了尚未持久化的内存状态；只暂停 vCPU，又会继续占用 RAM。offload 用于这段等待期：保持 VMM 和设备状态，把 RAM 同步到文件，并请求操作系统回收驻留页，下一次交互仍由原 VM 继续执行。
@@ -169,4 +171,4 @@ GC 保留 current head 及所有 `.pvpin` 所指 head 的祖先。旧 manifest �
 
 ### 与实验冷页池的关系 {#experimental-integration-boundary}
 
-未提交工作树中的 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 路径使用 Unix socket 和内存压缩对象池恢复部分冷块，与磁盘 generation 的 whole-VM offload 不同。当前接入拒绝与 FUSE compression 同开，也拒绝在实验 preparation/pager 开启时做 whole-VM offload。inventory JSON 仅用于诊断。这些实验不在上述测试与使用建议的验证范围内。其当前机制和实验结果见[内存去重与冷页压缩](../memory-sharing/index.md)。
+未提交工作树中的 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 路径使用 Unix socket 和内存压缩对象池恢复部分冷块，与磁盘 generation 的 whole-VM offload 不同。当前接入拒绝与 FUSE compression 同开，也拒绝在实验 preparation/pager 开启时做 whole-VM offload。inventory JSON 仅用于诊断。这些实验不在上述测试与使用建议的验证范围内。其当前机制和实验结果见[内存去重与冷页压缩](../memory-optimization/proof-of-concept.md)。

@@ -1,6 +1,6 @@
 # Full environment snapshots and CLI migration
 
-The standalone `pvisor snapshot` frontend has been removed. VM/Cluster and storage SDKs retain complete-state sealing, RAM encodings, base references and restoration, without exposing another independent instance workflow. Ordinary Jobs now integrate native full execution capture and restore; existing stores are not automatically converted into Job checkpoints.
+The standalone `pvisor snapshot` frontend has been removed. Native VM and storage SDKs retain complete-state sealing, RAM encodings, base references and restoration, without exposing another independent instance workflow. Ordinary Jobs now integrate native full execution capture and restore; existing stores are not automatically converted into Job checkpoints.
 
 ## Current user entries {#current-entry}
 
@@ -14,13 +14,9 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 The former save maps to suspend; resume continues the current head, while fork --state execution --checkpoint ID restores history or creates branches. Former run uses ordinary run --executor vm; list/delete/gc and base import/verification belong to Job checkpoint commands. Native VMs with no network devices, private RAM and owned complete rootfs support capture-and-continue and full restoration; ordinary run configuration is not changed automatically. See the [CLI reference](../reference/cli.md#full-vm-execution-checkpoints) for entries and limits, and [Job checkpoint design](job-checkpoint-cli.md#10-当前实现与验收边界) for handoff.
 
-Cluster tasks and VM controls use the service Cluster entry, retaining Task/Lease/control-revision identities and Worker reconciliation:
+The [single-node daemon](daemon/index.md) manages external rootless Podman sandboxes, not native VM capture/restore. Its pause/resume is container freeze/unfreeze; snapshot, checkpoint/fork, stage/apply and offload are not wired into that backend. Do not use retired Cluster controls as the current snapshot entry.
 
-```bash
-pvisor service cluster --help
-```
-
-For capped capture, branching and restoration, see the [VM and Gateway guide](../guides/cluster/vm-and-gateway.md). For node backing ownership, see the [unified service guide](../guides/cluster/service.md).
+Native node backing ownership remains separate from daemon lifecycle; see [responsibility convergence](daemon/responsibility-convergence.md).
 
 ## Storage and internal lifecycle {#storage-contract}
 

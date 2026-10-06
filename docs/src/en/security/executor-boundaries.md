@@ -18,6 +18,12 @@ Each executor provides the protection below per capability dimension. Every stat
 | Child processes | user/mount/PID namespaces; process-group cleanup | Process-group cleanup | Container process tree | Inside the guest kernel |
 | Is `--safe` available? | Yes | Yes | **Refuses to start** (missing complete enforcement boundary) | Yes, requires `auto` networking |
 
+## Single-node daemon boundary {#daemon}
+
+The table describes native `pvisor run` executors, not `pvisor-daemon`. The daemon's current external rootless Podman backend shares the host kernel, installs private namespaces/no-new-privileges/`cap-drop=ALL` and resource limits, and requires prepared execd/egress services. It has no native VM, stage/apply, checkpoint/fork or pVisor network-policy integration. Unsupported network-policy requests are rejected; rootless slirp4netns is not deny-all egress.
+
+Trust the host account, Podman configuration/hooks and prepared image. Other local users may reach native published loopback ports: daemon endpoint authentication alone does not protect those ports. Real upstream service authentication and host network controls are required for that risk. No hostile multi-user isolation or security-audit claim is made. See [daemon runtime boundaries](../guides/daemon/boundaries.md) for the image contract and current upstream egress capability conflict.
+
 ## Reading the table
 
 - **A control in one dimension does not raise another.** A staged file does not prove the network is isolated, and a captured model request does not prove no other connection exists.

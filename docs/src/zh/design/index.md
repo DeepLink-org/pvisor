@@ -3,11 +3,11 @@
 | 领域 | 文档 |
 | --- | --- |
 | 核心职责与执行路径 | [核心架构](architecture.md) |
-| 多 Worker 执行、最终一致性、调度、生命周期与存储 | [Cluster 完整设计](cluster/index.md) |
+| 单节点 sandbox 准入、生命周期、恢复与存储 | [Daemon 设计](daemon/index.md) |
 | 共享镜像缓存、S3/文件系统目录树与文件索引 | [v1：独立元数据与分页索引](shared-image-cache-storage.md) |
-| VM RAM offload、文件布局与生命周期 | [offload 完整设计](offload/index.md) · [磁盘格式与 schema](offload/disk-layout-and-schema.md) |
+| 内存优化的架构、理念与权衡 | [总体设计](memory-optimization/index.md) · [内存去重](memory-optimization/deduplication.md) · [内存卸载](memory-optimization/offload.md) · [内存压缩](memory-optimization/compression.md) |
 | 完整 VM 环境保存、独立文件副本与跨 runner 恢复 | [完整环境快照 CLI](environment-snapshot.md) |
-| 跨 VM 内容去重、共享池与冷页恢复 | [内存去重与冷页压缩](memory-sharing/index.md) |
+| 内存优化的实验机制与证据边界 | [实验性概念验证](memory-optimization/proof-of-concept.md) |
 | 操作、改写、放置与事实 | [Operation 与 Event](operations-events.md) |
 | 文件合成、首次触达与 apply 恢复 | [OverlayCore 设计](overlayfs.md) |
 | 事件追加、回执与尾部恢复 | [Journal 设计](journal.md) |

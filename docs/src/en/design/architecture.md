@@ -16,7 +16,10 @@ There are two responsibilities: **core provides definitions; pvisor provides imp
 | `pvisor-overlaynet` | Network parsing, proxy forwarding and VM networking; enforcement of core policy definitions |
 | `pvisor-guest` | VM PID 1 and command launch contract |
 | `pvisor-gateway` | Optional model protocol routing, conversion and call observation |
+| `pvisor-daemon` | Separate single-node sandbox admission, durable ownership, Podman lifecycle and endpoint proxy |
 | `pvisor-tui`, `pvisor-replay` | Terminal frontend and agent trajectory replay tools depending on pvisor |
+
+The [daemon](daemon/index.md) is a separate sandbox path through external rootless Podman, not a distributed scheduler or the native `PVisor::run` path. Native VM, stage/apply, Gateway and node-resource integration are not wired into that backend. Native node resources remain a distinct same-host service; see [responsibility convergence](daemon/responsibility-convergence.md). External orchestration owns host selection and business workflows.
 
 Core neither owns the execution loop nor starts processes or opens control sockets. pvisor implements AgentCtl clients/servers and approval sockets. Drivers implement file, network and isolation boundaries. The default core does not depend on Gateway, TUI or replay; the `gateway` feature enables capture.
 

@@ -16,9 +16,9 @@ import tomllib
 DOCS = Path(__file__).resolve().parents[1] / "docs"
 
 EN_NAV_LABELS = {
-    "Cluster 集群执行": "Cluster execution design",
-    "Cluster 上手": "Cluster quickstart",
-    "Cluster 扩展性": "Cluster scalability",
+    "Daemon 单机执行": "Daemon single-node execution",
+    "Daemon 上手": "Daemon quickstart",
+    "Cluster 扩展性（退役历史）": "Cluster scalability (retired history)",
     "Cluster 实验问题": "Cluster experiment questions",
     "任务学习路线": "Learning path",
     "首页": "Home", "为什么": "Why pVisor", "开始使用": "Get started",
@@ -26,7 +26,9 @@ EN_NAV_LABELS = {
     "执行器": "Executors", "概念": "Concepts", "基准与对比": "Benchmarks and comparisons",
     "安全": "Security", "参考": "Reference", "设计与研究": "Design and research",
     "VM 内存节约与开销": "VM memory savings and overhead",
-    "内存去重与冷页压缩": "Memory deduplication and cold blocks",
+    "内存优化": "Memory optimization",
+    "内存卸载": "RAM offload",
+    "内存压缩": "Memory compression",
     "研究方向": "Research directions", "VM RAM offload": "VM RAM offload", "社区": "Community", "对比": "Comparisons",
     "Gemini CLI": "Gemini CLI", "aider": "aider", "OpenCode": "OpenCode",
     "在 CI 中运行": "Run in CI", "并行 Agent": "Parallel agents", "RL rollout": "RL rollouts",
@@ -36,7 +38,7 @@ EN_NAV_LABELS = {
     "隔离有效性": "Isolation effectiveness", "Agent 自带沙箱": "Agent-native sandboxes",
     "Docker / devcontainer": "Docker / devcontainer", "云端沙箱": "Cloud sandboxes",
     "隔离基座": "Isolation runtimes", "RL 基础设施": "RL infrastructure",
-    "第三方审计": "Third-party audits", "集群化执行": "Cluster execution",
+    "第三方审计": "Third-party audits", "外部编排与单机执行": "External orchestration and single-node execution",
     "RL 执行基座": "RL execution substrate", "论文与报告": "Publications and reports",
     "治理": "Governance", "使用者": "Adopters",
 }

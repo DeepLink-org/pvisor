@@ -23,6 +23,12 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor run --safe \
 
 缓存的端点语法、安全要求和失败行为见[共享镜像缓存](shared-image-cache.md)。不要把宿主读取变量与 Agent 可见变量混为一谈；显式投影用 `--pass-env NAME`。
 
+## Daemon 凭据 {#daemon}
+
+`OPEN_SANDBOX_API_KEY` 为独立 `pvisor-daemon serve` 提供生命周期 key。使用至少 32 字节的受保护随机秘密，不放在 argv 中，不投影给工作负载。客户端通过 `OPEN-SANDBOX-API-KEY` HTTP header 发送它；环境变量名称使用下划线，HTTP 名称使用连字符。
+
+默认 daemon 端点在返回的 headers 中提供沙箱范围的 `X-PVISOR-SANDBOX-TOKEN`，客户端必须保留。它不是宿主环境设置，也不是生命周期凭据。见[端点认证](../guides/daemon/operations.md#endpoints)。原生 cache/pool 凭据与 Job 环境投影独立保留；已退役的 Cluster token 不是 daemon 凭据。
+
 ## 运行时注入
 
 `PVISOR_RUN_ID`、`PVISOR_RUNTIME`、`PVISOR_STORAGE`、`PVISOR_AGENT`、`PVISOR_ROLE` 标识运行环境。`PVISOR_AGENTCTL_ENDPOINT`、`PVISOR_AGENTCTL_TOKEN`、`PVISOR_AGENTCTL_TRANSPORT`、`PVISOR_AGENTCTL_VERSION` 用于协作控制通道；token 是凭据，不应写进日志。

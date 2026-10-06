@@ -1,0 +1,16 @@
+{
+  "upstream": "https://github.com/opensandbox-group/OpenSandbox",
+  "version": "1.1.0",
+  "tag": "release-1.1.0",
+  "commit": "b1a29cf93a823a95913f7943010febb3f29de05c",
+  "released_at": "2026-09-21",
+  "protocols": {
+    "specs/sandbox-lifecycle.yml": {"git_blob_sha1": "f452c39778e8d7df1da80372f398c57e21136fbd"},
+    "specs/execd-api.yaml": {"git_blob_sha1": "ecc284f3e8cdd14dfb6a551b83cc09bd526b9705"},
+    "specs/egress-api.yaml": {"git_blob_sha1": "08e4885176998e854df62b999914c5eb01855308"}
+  },
+  "profile": "partial-single-node-lifecycle-with-prepared-image-data-plane",
+  "sdk_target": "1.1.0",
+  "sdk_end_to_end_verified": false,
+  "unsupported": ["distributed-placement", "business-dag", "snapshots", "templates", "network-policy", "credential-proxy", "secure-access", "volumes", "lifecycle-hooks", "arbitrary-endpoints", "signed-endpoints", "websocket", "native-pvisor-vm", "stage-apply"]
+}

@@ -12,6 +12,10 @@ See [Trust ladder](../why/trust-ladder.md) for the levels and scale axes. The ta
 
 Before adding a public feature, provide implementation, validation scenarios, limitations and release notes. Define compatibility and acceptance before changing data contracts, boundaries or public commands.
 
+## Single-node daemon {#daemon}
+
+The [daemon](../guides/daemon/index.md) manages local image sandboxes through a partial OpenSandbox 1.1.0 profile. Controller/Worker scheduling and the Cluster task SDK are retired. Native Jobs, VM checkpoints/local forks and node/cache/memory-pool services remain separate; daemon-native VM integration is not delivered. The prepared execd/egress image contract still needs end-to-end validation, including capability-free egress under `cap-drop=ALL`.
+
 ## L2 and L3 milestones
 
 !!! note "Under construction"
@@ -32,5 +36,5 @@ Entry criteria (TBD): the boundary with schedulers is defined—pVisor provides 
 
 Acceptance criteria:
 
-- Give a gap list and staging plan for cross-node scheduling and for auditing after evidence is centralized; see [cluster execution](../design/research/cluster-execution.md).
+- Give a gap list and staging plan for integration with external cross-node schedulers and for auditing after evidence is centralized. pVisor does not provide a cluster-wide control plane; the single-node daemon has no global DAG or distributed lease.
 - The capacity rationale is shared with L2: [concurrency density](../benchmarks/density.md).

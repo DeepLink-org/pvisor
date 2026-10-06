@@ -3010,7 +3010,6 @@ dependencies = [
  "lru",
  "object_store",
  "proptest",
- "pvisor-cluster",
  "pvisor-core",
  "pvisor-gateway",
  "pvisor-guest",
@@ -3037,24 +3036,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pvisor-cluster"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "axum",
- "blake3",
- "clap",
- "fs2",
- "libc",
- "pvisor-core",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "pvisor-core"
 version = "0.3.0"
 dependencies = [
@@ -3065,6 +3046,27 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "pvisor-daemon"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "fs2",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower",
+ "url",
+ "uuid",
 ]
 
 [[package]]

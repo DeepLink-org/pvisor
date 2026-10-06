@@ -18,6 +18,12 @@
 | 子进程 | user/mount/PID namespace；进程组清理 | 进程组清理 | 容器进程树 | guest 内核内 |
 | `--safe` 是否可用 | 可用 | 可用 | **拒绝启动**（缺少完整强制边界） | 可用，要求 `auto` 网络 |
 
+## 单机 daemon 边界 {#daemon}
+
+上表描述原生 `pvisor run` 执行器，不描述 `pvisor-daemon`。daemon 当前的外部 rootless Podman 后端共享宿主内核，安装私有 namespace/no-new-privileges/`cap-drop=ALL` 和资源限制，要求 prepared execd/egress 服务。它未接入原生 VM、stage/apply、checkpoint/fork 或 pVisor 网络策略。不支持的网络策略请求被拒绝；rootless slirp4netns 不等于 deny-all egress。
+
+宿主账户、Podman 配置/hooks 与 prepared image 属于可信输入。其他本机用户可能访问原生发布的 loopback 端口，单靠 daemon 端点认证不保护这些端口；需要真实 upstream 服务认证与宿主网络控制。没有敌对多用户隔离或安全审计承诺。镜像契约及当前 upstream egress capability 冲突见 [daemon 运行时边界](../guides/daemon/boundaries.md)。
+
 ## 读表时要注意
 
 - **一个维度的控制不提升其他维度。** 暂存文件不能证明网络已隔离；捕获到模型请求也不能证明没有其他连接。

@@ -29,6 +29,7 @@ from density import cgroup, save
 from reference_baselines import digest, validate_bundle_execution, verified_build_receipt
 from v1.oci import verify_prepared
 from vm_memory import memory
+from retained_snapshot_archive import archive_completed_snapshots
 
 
 def verify_result(ready, result, pattern, seed):
@@ -239,6 +240,7 @@ def main():
     parser.add_argument('--backends',default='native-paused,podman-paused,snapshot-raw,snapshot-compressed')
     parser.add_argument('--patterns',default='repeated,random');parser.add_argument('--concurrencies',default='1,2,4,8,16,32,64,128')
     parser.add_argument('--samples',type=int,default=5);parser.add_argument('--budget-mib',type=int,default=2048);parser.add_argument('--cpu-affinity',default='0,1')
+    parser.add_argument('--archive-completed-snapshots',action='store_true',help='losslessly retain verified successful snapshot trees after measured service exits')
     args=parser.parse_args();backends=args.backends.split(',');patterns=args.patterns.split(',');levels=list(map(int,args.concurrencies.split(',')))
     if (set(backends)-{'native-paused','podman-paused','snapshot-raw','snapshot-compressed'} or set(patterns)-{'repeated','random'}
             or len(set(backends))!=len(backends) or len(set(patterns))!=len(patterns) or len(set(levels))!=len(levels)
@@ -267,10 +269,12 @@ def main():
         protocol=dict(budget='fixed two-core 2 GiB zero-swap parent, descendants included; payload/conmon membership checked',
             parked='sequential admission and parking, followed by common two-second parked barrier; not simultaneous running capacity',
             recovery='exact stdin token releases saved execution; one recovery slot, full 64 MiB checksum, Git edits and all contents',
-            timing='creation includes private-view copying and every park call; recovery includes release/launcher through checked guest output and exit, excluding subsequent host content validation',
+            timing='creation includes private-view copying and every park call; per-task recovery includes release/launcher through checked guest output and exit, excluding subsequent host content validation',
+            recovery_batch_timing='first release through all checked recoveries; includes between-task host content validation and final resource observation',
             controls='SIGSTOP and OCI pause retain processes; Job snapshots stop VM and preserve execution; portability/security differ',
             cache='warm prepared common cache may be charged outside; private backing/cache included; no net whole-machine claim',
             failures='no timing exclusions; retain failed/unknown/OOM; no sleep fallback for unsupported stdin restoration'),rows=[],failures=[])
+    report['protocol']['artifact_retention']='all original bytes retained; optional verified tar+zstd archive after measured service; failed/unknown batches untouched'
     save(args.output/'report.json',report);rng=random.Random(20261006)
     for trial in range(args.samples):
         cases=[(backend,pattern,count) for backend in backends for pattern in patterns for count in levels];rng.shuffle(cases)
@@ -291,6 +295,9 @@ def main():
             value=json.loads((root/'result.json').read_text()) if (root/'result.json').is_file() else dict(correctness='failed',error='lost reporter; task outcomes unknown',service_exit=result.returncode)
             value.update(backend=backend,pattern=pattern,concurrency=count,trial=trial,logs=str(root))
             report['rows' if value['correctness']=='passed' else 'failures'].append(value);save(args.output/'report.json',report)
+            if args.archive_completed_snapshots:
+                retention=archive_completed_snapshots(root,value,result.returncode)
+                if retention is not None:value['snapshot_retention']=retention;save(args.output/'report.json',report)
     verify_prepared(args.rootfs,inputs)
     if report['failures']:raise SystemExit(1)
 

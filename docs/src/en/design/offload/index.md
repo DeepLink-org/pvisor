@@ -1,5 +1,7 @@
 # VM RAM offload
 
+> See [VM RAM offload architecture](../memory-optimization/offload.md) for the architecture; this document remains the implementation and evidence appendix.
+
 ## 1. Motivation {#motivation}
 
 Agent environments often need to preserve process state between interactions. Stopping a VM frees resources but loses volatile state; pausing its vCPUs still retains RAM. Offload serves the waiting interval: keep the VMM and device state alive, synchronize RAM to a file, request residency reclamation, then continue the same VM on the next interaction.
@@ -169,4 +171,4 @@ To retain final RAM data, explicitly complete offload before ending the writer; 
 
 ### Experimental cold-pool boundary {#experimental-integration-boundary}
 
-The uncommitted `PVISOR_EXPERIMENTAL_MEMORY_POOL` path uses a Unix socket and in-memory compressed object pool to restore cold blocks. It is separate from disk-backed whole-VM offload. Integration currently rejects coexistence with FUSE compression and rejects whole-VM offload with experimental preparation/pager enabled. Inventory JSON is diagnostic only. These experiments are outside the evidence and recommendations above. See [memory deduplication and cold-block compression](../memory-sharing/index.md) for their mechanisms and evidence.
+The uncommitted `PVISOR_EXPERIMENTAL_MEMORY_POOL` path uses a Unix socket and in-memory compressed object pool to restore cold blocks. It is separate from disk-backed whole-VM offload. Integration currently rejects coexistence with FUSE compression and rejects whole-VM offload with experimental preparation/pager enabled. Inventory JSON is diagnostic only. These experiments are outside the evidence and recommendations above. See [memory deduplication and cold-block compression](../memory-optimization/proof-of-concept.md) for their mechanisms and evidence.

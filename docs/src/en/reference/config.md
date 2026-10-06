@@ -36,6 +36,23 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 
 Proxy deny applies to traffic reaching the proxy; this example does not establish mandatory offline execution. Add `--overlaynet-deny-all` to block ordinary egress through a mandatory boundary. Staging and filesystem sandboxing are independent.
 
+## Daemon configuration {#daemon}
+
+`pvisor-daemon serve` accepts command-line settings, not this native `RunConfig` TOML or resolved `RunSpec`. Set `OPEN_SANDBOX_API_KEY` to a protected secret of at least 32 bytes. See [daemon startup](../guides/daemon/index.md#start) and [service entry points](../guides/daemon/service.md).
+
+| Option | Default / meaning |
+| --- | --- |
+| `--podman PATH` | Required trusted absolute rootless Podman executable path |
+| `--listen ADDRESS` | `127.0.0.1:8080` |
+| `--public-endpoint HOST:PORT` | Externally routed authority without scheme/path; required behind a proxy and for wildcard/port-zero listeners |
+| `--state PATH` | `.pvisor/daemon`; use a private persistent directory |
+| `--max-sandboxes N` | 32 local sandboxes |
+| `--cpu-millis N` | 4000; sum of admitted hard CPU limits, thousandths of one CPU |
+| `--memory-bytes N` | 8589934592; sum of admitted hard memory limits, not node-wide physical memory |
+| `--max-timeout-seconds N` | 86400; maximum creation TTL, configurable from 60 seconds to one year |
+
+Old `[controller]`, `[[workers]]`, Worker profiles and Cluster task JSON are not daemon inputs. Native node/cache/memory-pool configuration remains separate. No daemon option selects native VM, checkpoint/fork, stage/apply, global DAG or distributed leases.
+
 ## Field navigation (current implementation)
 
 | TOML path | Type/default | CLI / purpose |
@@ -69,7 +86,7 @@ Definitions come from `crates/pvisor/src/config.rs`. Internally resolved and `se
 - There is no general config-directory-relative path guarantee. Start from the intended workspace and use absolute paths across environments.
 
 
-`[vm].memory_pool` is the socket path of the experimental macOS / Apple Silicon shared cold-page pool, unset by default. CLI uses `--vm-memory-pool SOCKET`; Rust SDK uses `VmSettings.memory_pool`. See [first-version memory sharing](../design/memory-sharing/index.md#v1-integration).
+`[vm].memory_pool` is the socket path of the experimental macOS / Apple Silicon shared cold-page pool, unset by default. CLI uses `--vm-memory-pool SOCKET`; Rust SDK uses `VmSettings.memory_pool`. See [first-version memory sharing](../design/memory-optimization/proof-of-concept.md#v1-integration).
 
 ## Fields in commonly used groups {#settings}
 
@@ -107,9 +124,9 @@ Enforcement depends on the executor. Check requested, effective, mechanisms, and
 
 `container.platform` accepts `linux-amd64` or `linux-arm64`; `container.network` accepts `host`, `bridge`, or `none`. The injected Linux container binary must match the rootfs architecture and ABI.
 
-VM memory is measured in MiB and CPU count is a positive integer. `ram_backing` retains a RAM file; `ram_compression` enables the corresponding compressed backing. Compressed backing and shared pools on macOS have additional FUSE requirements; see [Memory-sharing design](../design/memory-sharing/index.md).
+VM memory is measured in MiB and CPU count is a positive integer. `ram_backing` retains a RAM file; `ram_compression` enables the corresponding compressed backing. Compressed backing and shared pools on macOS have additional FUSE requirements; see [Memory-sharing proof of concept](../design/memory-optimization/proof-of-concept.md).
 
-`[vm].snapshot_filesystem_pool` opts into immutable lower references during native capture of initial and restored VMs, including the first capture of different VMs. After the first seal, the live control connection retains verified owners; subsequent captures authenticate complete original lowers and reuse their sealed pool trees without broader runner access. Workers require an absolute host-owned path on the same volume as task stores, outside all VM-writable roots and snapshot stores. The first miss creates one pool copy per immutable id; concurrent misses serialize per id and hits create no temporary lower copies. Opt-in native v5 snapshots retain private file contents as independently owned 64 KiB compressed frames, reusing unchanged content; restores rebuild private writable inodes with complete metadata and hard-link topology. Live frame owners survive parent retirement/GC. Sealing checks decoded-content identities before compression, fully verifies pool hits and encodes only misses; this also applies to full compressed RAM sealing. Native capture encodes authenticated frozen private roots directly, without an intermediate private-tree copy; import, restore and suspended artifact export never open their recorded original paths. Complete data validation remains; latency/density benefits require measurement. This profile excludes networking, shared memory pools, ordinary RAM compression and explicit RAM backing. Retain the pool with its Job stores or export complete snapshots.
+`[vm].snapshot_filesystem_pool` opts into immutable lower references during native capture of initial and restored VMs, including the first capture of different VMs. After the first seal, the live control connection retains verified owners; subsequent captures authenticate complete original lowers and reuse their sealed pool trees without broader runner access. Native callers should use an absolute host-owned path on the same volume as Job stores, outside all VM-writable roots and snapshot stores. The first miss creates one pool copy per immutable id; concurrent misses serialize per id and hits create no temporary lower copies. Opt-in native v5 snapshots retain private file contents as independently owned 64 KiB compressed frames, reusing unchanged content; restores rebuild private writable inodes with complete metadata and hard-link topology. Live frame owners survive parent retirement/GC. Sealing checks decoded-content identities before compression, fully verifies pool hits and encodes only misses; this also applies to full compressed RAM sealing. Native capture encodes authenticated frozen private roots directly, without an intermediate private-tree copy; import, restore and suspended artifact export never open their recorded original paths. Complete data validation remains; latency/density benefits require measurement. This profile excludes networking, shared memory pools, ordinary RAM compression and explicit RAM backing. Retain the pool with its Job stores or export complete snapshots.
 
 ### Capture and recording
 

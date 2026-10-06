@@ -1,33 +1,41 @@
-# Cluster execution and centralized evidence
+# Cluster-scale execution and centralized evidence
 
-pVisor implements a cluster execution path with one Controller shard and independent Workers, including capability matching, leases, DAGs, native controls, checkpoints/forks and centralized evidence. [Cluster architecture](../cluster/index.md) defines current mechanisms and failure contracts; research workloads and extension boundaries remain here.
+Scale execution across hosts through **external orchestration**, while keeping each execution's boundary and evidence explicit. Kubernetes, Ray or a training framework may own host selection and business workflows; pVisor does not replace them with a distributed product control plane.
 
-## A task's path through a Worker {#worker-flow}
+## Local execution building blocks {#execution-flow}
 
-A caller submits a native RunSpec and pinned input requirements. The Controller accepts the task and assigns an exact lease during Worker polling. After final admission, the Worker prepares an independent environment, executes, retains evidence and uploads/delivers it through a durable outbox. See the [complete task path](../cluster/index.md#task-flow).
+Ordinary `pvisor run` owns a Job/Run/Attempt through native executors, optional staging and Gateway, and produces execution records. The [single-node daemon](../daemon/index.md) instead owns local Podman sandbox admission, lifecycle, TTL and service endpoints. Its partial OpenSandbox profile does not automatically supply native Job semantics, VM restore, stage/apply, offload or centralized Run Bundles.
 
-Worker reports reconstruct the Controller runtime view, with fresh ownership confirmation required after restart. Unknown execution is never automatically rerun elsewhere. Initial task creation, low-frequency control intents and terminal receipts remain persistent. See [state and recovery](../cluster/state-and-recovery.md) for loss and replacement boundaries.
+Native node resources can retain immutable environment/backing ownership on one host, independently of the daemon. They do not share physical RAM across machines and are not integrated with the daemon backend. See [shared working sets](../daemon/shared-working-set.md).
 
-## Implementation and integration boundaries {#boundary}
+The earlier Controller/Worker implementation explored distributed execution and evidence delivery. Its archived measurements retain that historical scope; they do not describe the new daemon or validate a current distributed product.
 
-| Layer | Current mechanisms | Integration/validation remaining |
+## Product and external integration boundaries {#boundary}
+
+| Layer | Current responsibility | Integration/validation remaining |
 | --- | --- | --- |
-| pVisor Worker | Native execution, environment layers, Gateway, observations, terminal outbox | Malicious-node trust boundary, local evidence GC, long-running operations |
-| Cluster Controller | Queue, matching, reservations, DAGs, reconciliation, fencing | Multiple shards/HA, tenant identities, online history compaction |
-| Evidence/checkpoint repositories | Local CAS, verified manifests, reference protection, optional FS/S3 snapshot publication/import | Replication, tenant storage quotas, cross-host runtime compatibility/recovery |
-| Kubernetes, Ray or training frameworks | Can call task/lifecycle APIs | GPU/rollout/scaffold coordination and end-to-end recovery |
-| Review/release service | Can read retained evidence | Baseline verification, change selection, business reconciliation, merge and deployment |
+| Native pVisor execution | Job lifecycle, executor controls, staging, optional Gateway and records | Orchestrator adapters and representative workload acceptance |
+| Sandbox daemon | Local Podman admission, durable ownership, lifecycle and prepared-service proxy | Validated prepared images/SDK profile; native execution adapter if required |
+| Native node resources | Same-host immutable ownership, pins and bounded warmth | Daemon wiring, full transient accounting and workload measurements |
+| External orchestration | Host choice, queues, dependencies, retries and tenancy | Explicit execution/evidence handoff and business-effect reconciliation |
+| Evidence/checkpoint repositories | Native integrity, publication and retention contracts | Central collection, authorization, replication and cross-host compatibility |
+| Review/release services | Consume explicitly retained outputs | Baseline checks, selective acceptance, business reconciliation and publication |
 
-Local Run Bundle paths are Worker references; JSON upload does not transfer every file. Downloadable checkpoints do not establish arbitrary-node restore. Environments, snapshots and input versions need explicit compatibility contracts.
+A local record path or uploaded JSON is not a complete transfer of files. A downloadable checkpoint does not prove arbitrary-host restore compatibility. Define pinned inputs, runtime profiles, model versions and storage authorization before interpreting recovery as equivalent execution.
 
-## Next experiments {#validation}
+## Experiments to design {#validation}
 
-Preserve the scope of existing protocol, process and hardware gates, then deploy fixed workloads on independent hosts. Measure useful execution, startup/restore tails, memory density and storage costs. Extend the [concurrent-density methodology](../../benchmarks/density.md); do not extrapolate from single-host empty tasks.
+Compare external orchestration using pVisor execution boundaries against pinned Kubernetes/Ray or training-framework baselines. Fix workloads, resources, models and output checks; measure useful completion throughput, first-result/restore tails, whole-group memory and centralized-review cost. Extend [concurrent-density methodology](../../benchmarks/density.md), without extrapolating daemon gains from historical empty tasks or native sharing mechanisms.
 
-Inject permanent node loss, abrupt Controller termination, long partitions, full disks, interrupted uploads, credential revocation and parallel model waits. Each outcome must identify inputs, Task/Run/Attempt, native observations and artifacts. Check unknown side effects and explicit loss resolution; control-plane fencing is not external-effect rollback.
+Inject host loss, daemon/orchestrator downtime, partitions, full disks, interrupted collection and credential revocation. Track orchestrator work identity, local sandbox or Job/Run/Attempt identity, native observations and artifacts separately. A timeout or control identity does not prove external effects stopped; retry policy must reconcile unknown effects.
 
-## Research questions and release conditions {#research}
+No cross-host recovery, exactly-once external effects or daemon density advantage is established by this research direction. Current daemon [operations](../daemon/operations.md) define only local behavior.
 
-Further reducing Controller state requires defining reconstruction authority for upstream desired state, bounded Worker terminal inventories and retained manifests. Solve unassigned intents and acknowledged history before treating the Controller as entirely rebuildable. Multiple shards and disaster recovery require a new ownership protocol, not local file locks.
+## Research questions {#research}
 
-Production release also needs node/tenant identities, long-running representative failure/performance experiments, compatibility matrices and operational recovery. See [Cluster operations and validation](../cluster/operations.md) for mechanisms and evolution constraints, [Parallel agents](../../guides/parallel-agents.md) for local workflows, and [RL execution substrate](rl-execution-substrate.md) for training integration.
+- What minimal handoff preserves requested policy, installed controls, observed outcomes and complete evidence between execution and orchestration?
+- Which retained inputs and runtime compatibility checks make a restore portable, and which effects require business reconciliation rather than replay?
+- How much supervision does batch review save at fixed correctness and audit coverage, including collection and storage costs?
+- Does immutable sharing or bounded laziness improve first useful result and full completion under equal total resources?
+
+See [parallel agents](../../guides/parallel-agents.md) for local workflows and [RL execution substrate](rl-execution-substrate.md) for training integration. Research plans do not create a product scheduler or substitute for production acceptance.

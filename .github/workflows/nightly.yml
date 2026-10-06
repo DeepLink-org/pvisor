@@ -41,9 +41,16 @@ jobs:
       artifact_prefix: nightly-wheel
       local_version: ${{ needs.meta.outputs.local_version }}
 
+  daemon:
+    needs: meta
+    uses: ./.github/workflows/daemon-dist.yml
+    with:
+      artifact_prefix: nightly-daemon
+      local_version: ${{ needs.meta.outputs.local_version }}
+
   publish:
     name: Publish nightly release
-    needs: [meta, wheels]
+    needs: [meta, wheels, daemon]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -62,6 +69,16 @@ jobs:
           merge-multiple: true
           path: dist
 
+      - name: Download standalone daemon
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nightly-daemon-*
+          merge-multiple: true
+          path: dist
+
+      - name: Verify daemon archive checksum
+        run: sha256sum -c dist/pvisor-daemon-linux-x86_64.tar.gz.sha256
+
       - name: Verify complete nightly artifact set
         env:
           VERSION: ${{ needs.meta.outputs.version }}
@@ -78,7 +95,7 @@ jobs:
           prerelease: true
           removeArtifacts: true
           artifactErrorsFailBuild: true
-          artifacts: dist/*.whl
+          artifacts: dist/*.whl,dist/pvisor-daemon-*.tar.gz,dist/pvisor-daemon-*.sha256
           body: |
             Rolling nightly build from [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) on **${{ github.ref_name }}**.
 
@@ -88,4 +105,6 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-nightly.sh | bash
             ```
 
-            The wheel includes the matched `pvisor` entry point and all `pvisor-*` command executables. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).
+            A standalone Linux x86_64 `pvisor-daemon-linux-x86_64.tar.gz` and SHA-256 checksum are also provided; no wheel or native executor is required. Its user-service environment example documents rootless Podman and prepared-image requirements. The daemon backend is Linux-only.
+
+            The wheel includes the matched `pvisor` entry point, local companion commands and the independently built `pvisor-daemon` executable. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).

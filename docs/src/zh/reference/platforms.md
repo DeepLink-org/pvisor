@@ -17,6 +17,10 @@
 
 发布 wheel 当前面向 Linux x86_64 与 macOS arm64；有源码分支不等于有该架构的发布 wheel 或成熟度保证。先运行 `pvisor --version` 和小任务，再核对 Bundle，安装步骤见[安装指南](../start/installation.md)。
 
+## 单机 daemon {#daemon}
+
+独立 daemon 当前后端要求 Linux、可信 rootless Podman 可执行文件绝对路径、cgroup v2 和委派 CPU/memory/PID controllers。它与原生执行器矩阵独立，没有 macOS HVF 或原生 KVM 集成。镜像须预先准备在本机，包含真实 OpenSandbox 1.1.0 execd 与无 capability egress；默认 upstream egress 与 `cap-drop=ALL` 冲突，目前没有经过端到端验证的镜像配方。见 [daemon 安装](../guides/daemon/index.md)与[运行时边界](../guides/daemon/boundaries.md)，不要从原生 VM 或 wheel 支持矩阵推导 SDK 就绪。
+
 ## 能力证据怎么验证
 
 - 文件读写分别检查 `safety.filesystem_read_non_bypassable` 与 `filesystem_write_non_bypassable`，不要只看是否 staged。

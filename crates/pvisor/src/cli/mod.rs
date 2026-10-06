@@ -51,7 +51,7 @@ enum Command {
     /// Open a read-only shell or run a command against a Job filesystem view.
     Inspect(runtime::InspectArgs),
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-    /// Manage deployments, cluster tasks and shared node resources.
+    /// Manage local services, shared node resources and optional daemon tools.
     Service(crate::service::ServiceArgs),
     #[command(external_subcommand)]
     External(Vec<OsString>),

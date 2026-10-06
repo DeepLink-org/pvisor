@@ -3,7 +3,7 @@
 > CLI 更新：独立 `pvisor snapshot` 已删除。以下旧接口/测量属于记录中的历史制品，不是当前可执行指南；当前入口与能力范围见[CLI 参考](../reference/cli.md)。
 
 
-[主要结论](#conclusions) · [Motivation](#motivation) · [实验设计](#experiment-design) · [实验数据](#experiment-data) · [分析与使用建议](#analysis) · [机制设计](memory-sharing/index.md)
+[主要结论](#conclusions) · [Motivation](#motivation) · [实验设计](#experiment-design) · [实验数据](#experiment-data) · [分析与使用建议](#analysis) · [机制概念验证](memory-optimization/proof-of-concept.md)
 
 本文记录闲置 VM 的内存回收、再次访问与完整快照恢复的收益和代价。2026-10-03 的 macOS ARM64 / HVF 数据覆盖共享冷页回收；Linux x86_64 / KVM 数据覆盖 pause/resume、raw/compressed offload 和完整快照。两组环境、负载与计时边界分别说明，原始数据按平台保留。
 

@@ -2,6 +2,7 @@
 """Derived B-VM-MEMORY tables; preserve mechanisms, builds and cohorts separately."""
 import argparse
 import json
+import math
 from pathlib import Path
 
 from publication import distribution, write_csv
@@ -9,6 +10,72 @@ from publish_reference_campaign import paired_comparison
 from reference_baselines import digest
 from live_vm_memory import validate_report
 from vm_memory import validate_restore
+
+
+def evidence_file(root, path):
+    root=root.resolve();path=Path(path)
+    if not path.is_absolute():path=root/path
+    if not path.resolve().is_relative_to(root) or not path.is_file():
+        raise ValueError('missing or outside-cohort memory evidence')
+    return path
+
+
+def validate_row_evidence(root, report, row, live):
+    directory=evidence_file(root,Path(row['logs'])/'result.json').parent
+    retained=json.loads((directory/'result.json').read_text())
+    expected=row if live else {key:value for key,value in row.items() if key!='logs'}
+    if retained!=expected:raise ValueError('retained memory result differs from aggregate')
+    config_path=evidence_file(root,directory/'config.json');config=json.loads(config_path.read_text())
+    args=report['arguments']
+    if (Path(config['root']).resolve()!=directory.resolve()
+            or Path(config['result']).resolve()!=(directory/'result.json').resolve()
+            or config['trial']!=row['trial']
+            or config['budget_bytes']!=int(args['budget_mib'])*1024**2
+            or config['cpu_affinity']!=args['cpu_affinity']):
+        raise ValueError('retained memory config differs from measured condition')
+    checked=[directory/'result.json',config_path]
+    if live:
+        if (config['pattern']!=row['pattern'] or config['compressed']!=row['compressed']
+                or config['seed']!=20261006+row['trial']+int(args['warmups'])):
+            raise ValueError('retained SDK memory condition differs')
+        proof=evidence_file(root,directory/'vm/raw.json')
+        if json.loads(proof.read_text())!=row['report']:
+            raise ValueError('retained SDK proof differs from aggregate')
+        checked.append(proof)
+    else:
+        if (config['kind']!=row['kind'] or config['storage']!=row['storage']
+                or config['payload_bytes']!=64*1024**2
+                or row['ready'].get('bytes')!=64*1024**2
+                or row['restored'].get('bytes')!=64*1024**2):
+            raise ValueError('retained snapshot memory condition differs')
+        for filename,prefix,key in (('run.stdout','PVISOR_MEMORY_READY ','ready'),
+                ('resume.stdout','PVISOR_MEMORY_RESULT ','restored')):
+            output=evidence_file(root,directory/filename)
+            markers=[json.loads(line[len(prefix):]) for line in output.read_text().splitlines() if line.startswith(prefix)]
+            if markers!=[row[key]]:raise ValueError('retained snapshot output differs from aggregate')
+            checked.append(output)
+        for filename in ('suspend.stdout','suspend.json'):
+            output=evidence_file(root,directory/filename)
+            if json.loads(output.read_text()).get('state')!='suspended':
+                raise ValueError('retained snapshot suspension not confirmed')
+            checked.append(output)
+    return dict(trial=row['trial'],pattern=row['pattern'] if live else row['kind'],
+        storage=('compressed' if row['compressed'] else 'raw') if live else row['storage'],
+        files=[dict(path=str(path.relative_to(root)),sha256=digest(path)) for path in checked])
+
+
+def validate_retained_evidence(root, report, live):
+    root=root.resolve();harness=root/'harness'
+    if digest(evidence_file(root,'rootfs-manifest.json'))!=report['rootfs_manifest_sha256']:
+        raise ValueError('retained memory input manifest hash mismatch')
+    if json.loads(evidence_file(root,'build-receipt.json').read_text())!=report['binary_build']:
+        raise ValueError('retained memory build receipt differs from report')
+    inventory=report['harness_sha256']
+    actual={str(path.relative_to(harness)) for path in harness.rglob('*.py')}
+    if actual!=set(inventory):raise ValueError('incomplete retained memory harness inventory')
+    for name,sha in inventory.items():
+        if digest(evidence_file(root,harness/name))!=sha:raise ValueError('retained memory harness hash mismatch')
+    return [validate_row_evidence(root,report,row,live) for row in report['rows']]
 
 
 def validate_cohort(report):
@@ -26,19 +93,35 @@ def validate_cohort(report):
             checked=validate_report(proof,dict(pattern=row['pattern'],compressed=row['compressed'],seed=20261006+row['trial']+int(report['arguments']['warmups']),cgroup=row['active']['cgroup']))
             if any(row.get(key)!=value for key,value in checked.items()):
                 raise ValueError('published metrics differ from the SDK integrity report')
-        else:validate_restore(row['ready'],row['restored'])
+        else:
+            validate_restore(row['ready'],row['restored'])
+            if row['ready'].get('bytes')!=64*1024**2:raise ValueError('snapshot proof lacks complete private data')
         phases=('active','offloaded','restored') if live else ('active','suspended','after')
         for phase in phases:
             value=row[phase]
             if value['current_bytes']<=0 or value['events'].get('oom',0) or value['events'].get('oom_kill',0):raise ValueError('invalid cgroup memory/OOM evidence')
             if any(name not in value['stat'] for name in ('anon','file','kernel')) or 'usage_usec' not in value['cpu']:
                 raise ValueError('incomplete physical-memory or CPU accounting')
+            if any(not valid_number(number) for number in [value['current_bytes'],value['cpu']['usage_usec'],
+                    *(value['stat'][name] for name in ('anon','file','kernel'))]):
+                raise ValueError('nonfinite or negative physical-memory/CPU metric')
+        timing=('offload_ms','offload_resume_ms','baseline_read_ms','restored_read_ms') if live else ('suspend_ms','resume_completion_ms')
+        optional=('allocated_bytes','backed_bytes','pause_ms','resume_ms','wake_heartbeat_ms','resident_before_bytes',
+            'resident_after_bytes') if live else ('retained_job_bytes','retained_job_allocated_bytes')
+        if any(not valid_number(row[key]) for key in timing) or any(not valid_number(row[key]) for key in optional if key in row):
+            raise ValueError('nonfinite or negative memory/timing metric')
+        if not live and any(not valid_number(row[key][field]) for key,field in (('ready','warm_scan_ms'),('restored','restored_scan_ms'))):
+            raise ValueError('nonfinite or negative guest scan metric')
         usage=[row[phase]['cpu']['usage_usec'] for phase in phases]
         if usage!=sorted(usage):raise ValueError('nonmonotonic phase CPU accounting')
         for sample in row.get('samples',[]):
             if sample['events'].get('oom',0) or sample['events'].get('oom_kill',0):
                 raise ValueError('resource monitor recorded an OOM')
     return live
+
+
+def valid_number(value):
+    return isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value) and value>=0
 
 
 def metric_values(row, live):
@@ -78,6 +161,9 @@ def publish(paths, output):
         binary=path.parent/'bin'/('vm_live_memory_bench' if live else 'pvisor')
         binary_sha=receipt['example_sha256'] if live else receipt['pvisor_sha256']
         if digest(binary)!=binary_sha:raise ValueError('binary receipt mismatch')
+        evidence=validate_retained_evidence(path.parent,report,live)
+        audit=path.parent/'memory-output-evidence-audit.json'
+        audit.write_text(json.dumps(dict(report_sha256=digest(path),rows=evidence),indent=2)+'\n')
         sha=digest(path);args=report['arguments'];n=int(args['samples'])
         values={}
         for pattern in ('repeated','random'):
@@ -101,6 +187,7 @@ def publish(paths, output):
         provenance.extend(dict(cohort=path.parent.name,field=key,value=json.dumps(value,sort_keys=True) if isinstance(value,(dict,list)) else value)
             for key,value in report.items() if key not in ('rows','failures'))
         provenance.extend([dict(cohort=path.parent.name,field='report_sha256',value=sha),dict(cohort=path.parent.name,field='raw_location',value=str(path)),
+            dict(cohort=path.parent.name,field='memory_output_evidence_audit_sha256',value=digest(audit)),
             dict(cohort=path.parent.name,field='statistics',value='separate mechanisms/cohorts; complete 30+ paired rounds; no failures or timing exclusions; separated clusters replace P50; P95 descriptive; no P99; CPU phase deltas include background/control work')])
     output.mkdir(parents=True,exist_ok=True)
     write_csv(output/'memory-summary.csv',summary);write_csv(output/'memory-comparisons.csv',comparisons);write_csv(output/'memory-provenance.csv',provenance)

@@ -3,7 +3,7 @@
 > CLI update: the standalone `pvisor snapshot` entry is removed. Old interfaces/measurements below belong to their historical artifacts, not current executable instructions. See [CLI reference](../reference/cli.md) for current entries and capability boundaries.
 
 
-[Main conclusions](#conclusions) · [Motivation](#motivation) · [Experiment design](#experiment-design) · [Experimental data](#experiment-data) · [Analysis and usage guidance](#analysis) · [Mechanism design](memory-sharing/index.md)
+[Main conclusions](#conclusions) · [Motivation](#motivation) · [Experiment design](#experiment-design) · [Experimental data](#experiment-data) · [Analysis and usage guidance](#analysis) · [Mechanism proof of concept](memory-optimization/proof-of-concept.md)
 
 This article records the benefits and costs of idle VM memory reclamation, subsequent access and complete snapshot restoration. Measurements from 2026-10-03 cover shared cold-page reclamation on macOS ARM64 / HVF, and pause/resume, raw/compressed offload and complete snapshots on Linux x86_64 / KVM. Each dataset specifies its environment, workload and timing boundaries; raw records are retained by platform.
 

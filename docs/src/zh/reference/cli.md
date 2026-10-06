@@ -8,18 +8,18 @@ Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 
 ## Service 命令 {#service}
 
-顶层命令操作 Job；部署、集群与节点共享资源使用 `service`。`run/status/restart/stop --config FILE` 管理整套配置与角色；资源工具保留原参数形式，放在对应子命令后：
+顶层命令操作原生 Job；`service` 管理原生节点资源并派发已安装的 companion。`run/status/restart/stop --config FILE` 管理配置中的原生角色；单机沙箱 daemon 使用独立的生命周期 API 与持久状态。
 
 ```bash
 pvisor service --help
-pvisor service cluster --help
-pvisor service worker --help
+pvisor service daemon --help
 pvisor service cache --help
 pvisor service memory-pool --help
-pvisor help service cluster submit
 ```
 
-资源工具使用 `service cluster/worker/cache/memory-pool`，工具帮助与错误显示对应的嵌套命令名。当前命令以外的名称按默认执行规则处理，不保留旧命令别名或迁移处理逻辑。使用 `pvisor -- COMMAND` 显式执行程序。配置、预算与部署验收见[统一服务指南](../guides/cluster/service.md)，整体职责见[命令模型](../design/cli.md)。
+原生资源工具使用 `service cache/memory-pool`。`service daemon` 将参数原样派发到单独安装、同目录的匹配 `pvisor-daemon`；使用旧构建时以 `pvisor service --help` 为准。daemon 单独安装后也可直接调用，步骤见 [daemon 安装指南](../guides/daemon/index.md)。它不集成原生 VM、checkpoint/fork 或 stage/apply。Controller/Worker 任务工具及其配置已退役。原生 node/cache/pool 所有权与部署边界见 [Service 入口](../guides/daemon/service.md)。
+
+当前命令以外的名称按默认执行规则处理，不保留旧命令别名或迁移处理逻辑。使用 `pvisor -- COMMAND` 显式执行程序。
 
 ## 按任务查找命令
 
@@ -122,7 +122,7 @@ Filesystems:
   drop        丢弃暂存变化
 
 Extensions:
-  service     部署生命周期与 cluster/worker/cache/memory-pool
+  service     原生服务生命周期与已安装的 daemon/cache/memory-pool companion
   replay      回放 Agent 轨迹（安装后可见）
   tui         交互式 Job 终端（安装后可见）
 ```
@@ -204,7 +204,7 @@ execution fork 不接受替换命令。指定历史检查点时可以保持父 J
 
 当 stage 位于工作区内，检查点存储自动放在 guest backing 之外，并记录 Job 归属。必要时恢复副本也使用独立目录，Attempt 记录保留路径供审查和 apply 使用。捕获保存 guest 可见文件，排除 guest 已隐藏的 stage 管理目录；可见文件的内容、元数据及硬链接校验仍然完整。
 
-暂停期间拒绝 `apply/drop` 和工作区捕获；先 `kill JOB` 可撤销恢复权，保留历史检查点，再处理文件变化。execution 检查点的 `list/show/delete` 与工作区检查点共用入口；删除会检查 suspended head、分支引用及存储租约。分支引用保守保留，尚无 Job 删除/归档接口来释放它们。GC 回收本 Job 存储中的未发布事务、删除残留和未引用 RAM 内容，不删除已发布检查点，也不是跨 Job/Cluster 的全库清理。
+暂停期间拒绝 `apply/drop` 和工作区捕获；先 `kill JOB` 可撤销恢复权，保留历史检查点，再处理文件变化。execution 检查点的 `list/show/delete` 与工作区检查点共用入口；删除会检查 suspended head、分支引用及存储租约。分支引用保守保留，尚无 Job 删除/归档接口来释放它们。GC 回收本 Job 存储中的未发布事务、删除残留和未引用 RAM 内容，不删除已发布检查点，也不是跨 Job 的全库清理，不清理 daemon 沙箱状态。
 
 原不可变基底管理可通过 `checkpoint import-base JOB ROOTFS --json`、`checkpoint verify-base JOB BASE_ID --json` 使用；导入结果给出独立 rootfs 路径，后续普通 `run --rootfs` 可以使用该路径。独立 `snapshot` 前端保持删除，旧 store 不自动转换为 Job 检查点。实现与验收见[Job 检查点设计](../design/job-checkpoint-cli.md#10-当前实现与验收边界)。
 
@@ -629,4 +629,4 @@ VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像�
 完整协议、限制和 SSH 远程访问方式见 [共享镜像缓存协议](shared-image-cache.md)。
 
 
-实验性 macOS 内存池入口为 `pvisor service memory-pool SOCKET` 与 `pvisor run --vm-memory-pool SOCKET`。池需要保持运行，停止会使依赖 VM 失败；配置、预算和使用步骤见[共享内存首版接入](../design/memory-sharing/index.md#v1-integration)。
+实验性 macOS 内存池入口为 `pvisor service memory-pool SOCKET` 与 `pvisor run --vm-memory-pool SOCKET`。池需要保持运行，停止会使依赖 VM 失败；配置、预算和使用步骤见[共享内存首版接入](../design/memory-optimization/proof-of-concept.md#v1-integration)。

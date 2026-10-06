@@ -2,6 +2,8 @@
 
 Gateway is a runtime driver embedded in pVisor for model routing and recording observed traffic. It starts and stops with a Run. The public CLI has no standalone Gateway daemon.
 
+The [sandbox daemon](daemon/index.md) does not embed this Gateway. Its execd/egress endpoint proxy forwards prepared OpenSandbox services; it does not perform model routing/capture, inference-idle pause coordination or CPU-reservation release. These are distinct data paths, even though both forward HTTP.
+
 ## Data path
 
 ```text

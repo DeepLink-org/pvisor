@@ -12,6 +12,10 @@
 
 新增公开功能前，应具备实现入口、验证场景、限制说明和发布记录。改变数据契约、执行边界或公开命令时，先明确兼容策略和验收方式。
 
+## 单机 daemon {#daemon}
+
+[Daemon](../guides/daemon/index.md) 通过部分 OpenSandbox 1.1.0 profile 管理本机镜像沙箱。Controller/Worker 调度与 Cluster 任务 SDK 已退役。原生 Job、VM checkpoint/local fork 和 node/cache/memory-pool 服务独立保留；daemon 与原生 VM 的集成尚未交付。prepared execd/egress 镜像契约仍需端到端验证，包括 `cap-drop=ALL` 下的无 capability egress。
+
 ## L2 与 L3 里程碑
 
 !!! note "建设中"
@@ -32,6 +36,6 @@
 
 验收标准：
 
-- 给出跨节点调度与证据集中后的缺口清单和阶段划分，见[集群化执行](../design/research/cluster-execution.md)。
+- 给出外部跨节点调度器集成及证据集中后审计的缺口清单和阶段划分。pVisor 不提供集群总控；单机 daemon 没有全局 DAG 或分布式 lease。
 - 容量依据与 L2 共用[并发密度](../benchmarks/density.md)。
 

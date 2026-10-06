@@ -29,7 +29,7 @@ pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
 
 --location selects the new shared cache format; --image-store is local OCI download/extraction staging. These are separate directories. Existing PVISOR_IMAGE_STORE can also be reused. Reads do not depend on staging after publication, so CI can use task-local staging. Shared objects are private by default; administrators must grant read permissions for cross-UID shared disks. Read-only mode does not create a missing shared directory.
 
-### S3: a writable publisher and read-only workers
+### S3: a writable publisher and read-only consumers
 
 ```sh
 export AWS_DEFAULT_REGION=ap-southeast-1
@@ -38,7 +38,7 @@ export PVISOR_CACHE_BACKEND=s3
 export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
 pvisor service cache --image-store /tmp/pvisor-publish publish alpine:latest
 
-# Workers only need GetObject access to this prefix.
+# Native cache consumers only need GetObject access to this prefix.
 export PVISOR_CACHE_READ_ONLY=true
 pvisor service cache prepare alpine:latest
 pvisor service cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release

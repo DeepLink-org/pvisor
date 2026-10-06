@@ -11,12 +11,8 @@ pub struct Companion {
 
 const SERVICE_COMMANDS: &[Companion] = &[
     Companion {
-        name: "cluster",
-        description: "Submit tasks or serve the cluster Controller",
-    },
-    Companion {
-        name: "worker",
-        description: "Execute cluster tasks on this node",
+        name: "daemon",
+        description: "Manage node-local sandboxes through the optional daemon",
     },
     Companion {
         name: "memory-pool",

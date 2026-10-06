@@ -52,6 +52,12 @@ jobs:
     with:
       artifact_prefix: release-wheel
 
+  daemon:
+    needs: validate
+    uses: ./.github/workflows/daemon-dist.yml
+    with:
+      artifact_prefix: release-daemon
+
   verify:
     name: Verify release artifact set
     needs: [validate, wheels]
@@ -113,7 +119,7 @@ jobs:
   github-release:
     name: Publish GitHub Release
     if: github.event_name == 'push'
-    needs: [validate, pypi-publish]
+    needs: [validate, pypi-publish, daemon]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -125,16 +131,26 @@ jobs:
           name: release-wheels
           path: dist
 
+      - name: Download standalone daemon
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-daemon-*
+          merge-multiple: true
+          path: dist
+
+      - name: Verify daemon archive checksum
+        run: sha256sum -c dist/pvisor-daemon-linux-x86_64.tar.gz.sha256
+
       - name: Create or repair GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/*.whl \
+            gh release upload "$GITHUB_REF_NAME" dist/*.whl dist/pvisor-daemon-*.tar.gz dist/pvisor-daemon-*.sha256 \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/*.whl \
+            gh release create "$GITHUB_REF_NAME" dist/*.whl dist/pvisor-daemon-*.tar.gz dist/pvisor-daemon-*.sha256 \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --generate-notes \

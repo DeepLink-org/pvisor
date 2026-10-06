@@ -1,78 +1,40 @@
-# Cluster 性能：技术记录
+# 已退役的 Cluster 性能证据
 
-2026-10-05 的探索性测量观察到：**增加 Worker 和 CPU 预算后，1→4 台轻量 VM 可并行就绪、内存近似线性增长；Controller 的计数查询避免了随历史量全表扫描**。这尚未验证固定宿主预算下的有效 Agent 吞吐、密度或完整系统扩展性。
+**Controller/Worker 测量描述的是退役制品，不是当前 daemon。** B-CLUSTER 没有活动测量、绘图或发布入口。[历史 benchmark](../benchmarks/cluster-scalability.md)保留完整任务与历史成本表格及原 CSV 来源。没有新增测量，也没有 daemon 密度结论。
 
-下一轮先冻结问题、假设、对照和判定标准，再采样；详见[benchmark 应先回答的问题](cluster-benchmark-plan.md)。该协议在本次测量之后编写，不追认已有曲线为预注册验证。保留历史的内存和回放增长是待定位问题，不是某项优化已获验证的收益。
+## 历史 VM 就绪探针 {#execution}
 
-这批任务没有指定不可变环境 handle 或 checkpoint restore，且每 VM一个独立Worker，未覆盖[共享工作集与惰性加载](cluster/shared-working-set.md)的关键复用路径。后续优先验证 S1共享RAM 与 S2大环境小工作集，而不是把本图当作这些机制的性能结论。
+2026-10-05 的 shell/sleep 实验同时增加 Worker 数和 CPU 预算，每个 VM 使用独立 Worker。它观察一到四个 guest 的并行就绪，不是固定预算有效任务吞吐或单 Worker 密度。
 
-本页把新跑的真实 VM 实验与已有的 Controller 历史负载分别绘图。两组制品、负载和统计口径不同，不拼成一条曲线，也不和其他沙箱的不同条件结果排名。
+![历史退役 Worker 就绪探针](../../assets/benchmarks/cluster-scalability-20261005/execution.svg)
 
-## 真实 VM：内存、就绪延迟与启动速率 {#execution}
+| 存活 VM | 总内存 P50，MiB | 就绪 P50，s | 批量就绪速率，台/s |
+|---:|---:|---:|---:|
+| 1 | 92.93 | 3.807 | 0.261 |
+| 2 | 178.00 | 3.789 | 0.525 |
+| 4 | 342.96 | 4.383 | 0.901 |
 
-![真实 VM 的内存、启动延迟和批量启动速率曲线](../../assets/benchmarks/cluster-scalability-20261005/execution.svg)
+每档一次预热、五个测量批次。guest 为 128 MiB/一 vCPU；每个 Worker 及其子进程限制为 512 MiB/0.5 核，Controller 为 256 MiB/0.25 核，零 swap。共享 Linux/KVM 宿主使用预备最小输入和 debug 制品，其他宿主负载未停止。就绪包含提交 CLI/HTTP、持久化、调度与 VM 启动。内存是全部 guest 就绪时互不重叠服务 cgroup 之和，不是启动峰值。图中为观察范围，不是置信区间。这些观察不能证明生产容量、尾延迟、共享工作集收益或当前 daemon 性能。
 
-| 同时存活 VM | 总内存 P50 | 每 VM 就绪 P50 | 观测 P95 | 批量启动速率 |
-|---|---:|---:|---:|---:|
-| 1 | 92.93 MiB | 3.807 s | 3.893 s | 0.261 台/s |
-| 2 | 178.00 MiB | 3.789 s | 3.993 s | 0.525 台/s |
-| 4 | 342.96 MiB | 4.383 s | 4.686 s | 0.901 台/s |
+## 历史 Controller 成本 {#controller}
 
-1→4 的内存为 **3.69 倍**，就绪 P50 增加 **15.1%**，批量启动速率为 **3.45 倍**，相对从单台基准推得的理想线性速率为 **86.2%**。在这个负载和范围内，内存近似按 VM 数线性增长，没有观察到明显的超线性放大；就绪延迟没有随 VM 数同比增长。
+![历史退役 Controller 查询与恢复](../../assets/benchmarks/cluster-scalability-20261005/controller.svg)
 
-这里扩展的是 **Worker 数量与 CPU 总预算**：每台 VM 独占一个 Worker，增加 VM 时 CPU 预算同步增加。它观察了这批探针的并行就绪行为；没有固定预算、完整有用任务和对应对照，因此不能把 86.2% 称为 pVisor 的整体扩展效率，也不测试单个 Worker 的高密度或跨主机扩展。
+| 保留记录 | 索引计数 P50，ns | 全扫描参考 P50，ms | 进程与 ID fixture RSS，MiB | 日志，MiB | 热回放，s |
+|---:|---:|---:|---:|---:|---:|
+| 1,000 | 202.83 | 0.068 | 12.13 | 1.93 | 0.079 |
+| 10,000 | 286.78 | 5.254 | 70.59 | 19.33 | 0.388 |
+| 100,000 | 129.40 | 20.789 | 658.82 | 193.25 | 1.744 |
+| 1,000,000 | 169.47 | 134.204 | 6,540.58 | 1,932.55 | 16.090 |
 
-### 测量协议
+归档 `controller-indexes-20261005-v3-history-*` 每档使用一个 release 进程、一个 CPU、NVMe 和热回放。只有一个 ready 记录，其余为已取消历史，不执行 guest 或 HTTP 压测。计数使用二十个查询样本，每样本一百次索引调用；RSS 与回放每档只有一次观察。RSS 含 ID fixture 和分配器留存。热回放不包含 Worker 对账或冷磁盘恢复。全扫描是算法参考，不是另一 Controller 制品的吞吐。不能与历史 benchmark 中独立的后续历史批次合并。
 
-- 同一台共享 Linux 宿主：AMD Ryzen 7 9700X，约 30.5 GiB RAM，Linux 7.2.8，KVM/FUSE；宿主其他负载没有停止。
-- 顺序测试 1、2、4 台，每档 1 批预热、5 批测量，共 35 台测量 guest 加 7 台预热 guest，**42/42 成功**。每批结束后才启动下一批；最多 4 台并行。
-- 每 VM 为 128 MiB guest RAM / 1 vCPU；每个 Worker 连同全部子进程由 cgroup 硬限制为 512 MiB / 0.5 核，Controller 为 256 MiB / 0.25 核，swap 为 0。任务 CPU 时间限制 2,000 ms、超时 60 s。硬限制总和最大为 2.25 GiB / 2.25 核；开始前要求可用内存至少 3 GiB。
-- 使用已准备的最小 rootfs，只包含 shell、sleep 及依赖库；guest 写就绪标记后 sleep 6 s，再输出 `scale-ok`。没有模型调用、网络或真实 Agent 工具链。
-- 使用上手指南已验证的 `target/debug` 制品，开始前复制固定二进制，所有规模使用相同 SHA-256；libkrunfw 5.5.0。它不是优化发布制品的性能上限。工作树在开发，源码 revision 不等于冻结发布身份，二进制哈希是本批实际制品身份。
-- **就绪时间**从每个任务开始执行提交 CLI，到 guest 自己写出标记，包括 CLI/HTTP、意图记录落盘、调度和 VM 启动；不含服务/rootfs 准备。Worker 轮询间隔 200 ms，标记观察间隔 20 ms。不能与[纯 VM 启动](../benchmarks/startup.md)约 110 ms 的口径直接比较。
-- **总内存**为全部 guest 同时就绪后，Controller 和所有 Worker 的互不重叠 cgroup `memory.current` 之和；连续 10 次、间隔 50 ms 的中位数，再取 5 批中位数。不是启动瞬时峰值，也不是 guest RAM 配置值。
-- 图中的 `file` 包含页缓存以及 shmem/memfd/tmpfs 等内存，guest RAM 可能计入其中；**不能把这条线当成可随意扣除的缓存**。匿名内存、file 类内存和 native 进程 PSS 原样记录，cgroup 总值不重复相加共享进程 RSS。
-- 真实 KVM fd、native PID/start time 和 guest 标记一起确认实际存活的 N 台 VM；最终状态、stdout、Worker 放置及所有 cgroup OOM 计数检查全部通过。独立记录 native 进程 PSS，不把它当作全服务内存。
+## 证据边界 {#limits}
 
-阴影是观测范围，不是置信区间：内存/速率为 5 批最小到最大值，就绪为全部 guest 样本最小到最大值。P95 使用线性插值，分别只有 5、10、20 个 guest 样本，不代表生产尾延迟 SLO。宿主缓存未清空，各规模按顺序测量，仍可能存在缓存和宿主负载混杂。
+就绪和查询观察仍是冻结实现的历史描述，不提供当前优化优先级、daemon 容量建议或调度系统/运行时排名。本机[容量](../benchmarks/density.md)和[VM 内存](../benchmarks/vm-memory/index.md)拥有独立实验对象与保留证据；单 VM 内存回收不能证明并发密度。[退役计划](cluster-benchmark-plan.md)区分旧提案与已测结论。
 
-**批量启动速率 = N / 从首个提交开始到全部 guest 就绪的秒数**。它不包含后续固定 6 s 的等待，也不是 Agent 完成吞吐量。CLI 逐个提交，提交间隔也计入批量就绪时间。
+## 保留证据，不提供活动复现 {#reproduce}
 
-## Controller：查询、内存与重启成本 {#controller}
+`cluster_scalability.py`、`cluster_worker.py`、`controller_history.py`、专属测试、`plot_cluster_scalability.py` 和 `publish_controller_history.py` 已删除。退役 scheduler example 没有当前构建/运行/发布命令。原日志、样本、manifest 和冻结 harness 保留在本地 `.data/`；保留副本是归档，不是活动入口。删除旧 crate measurements 不授权改写 receipt 或将旧测量归于 daemon 源码。
 
-![Controller 历史记录规模下的查询、内存和恢复成本](../../assets/benchmarks/cluster-scalability-20261005/controller.svg)
-
-| 保留任务记录 | 索引计数 P50 | 全扫描算法参考 P50 | 进程与 ID fixture RSS | 意图/回执日志 | 热回放 |
-|---|---:|---:|---:|---:|---:|
-| 1,000 | 202.83 ns | 0.068 ms | 12.13 MiB | 1.93 MiB | 0.079 s |
-| 10,000 | 286.78 ns | 5.254 ms | 70.59 MiB | 19.33 MiB | 0.388 s |
-| 100,000 | 129.40 ns | 20.789 ms | 658.82 MiB | 193.25 MiB | 1.744 s |
-| 1,000,000 | 169.47 ns | 134.204 ms | 6,540.58 MiB | 1,932.55 MiB | 16.090 s |
-
-这组图来自仓库已有 `controller-indexes-20261005-v3-history-*` 归档，本次**没有重跑百万记录实验**。每档独立进程，release 制品、固定一个 CPU、本地 NVMe 日志和热缓存回放；每档只有一个 ready task，其余是已取消历史。没有执行 guest，也没有 HTTP 压测，因此没有增加沙箱并发。
-
-索引与全扫描都读取同一组权威 TaskRecord；全扫描是旧算法参考，**不是旧版 Controller 制品的吞吐量**。计数每档 20 个样本，索引每样本批量调用 100 次；返回已维护的计数器成本已经基本与历史规模脱钩。完整分配 poll 每档只观测一次，为 0.811–6.235 ms，均一轮分配，不能据此推算生产 QPS。
-
-内存含 Controller、ID fixture、分配器留存，不是纯 Controller 对象的净占用；RSS 和回放是每档单次观察，图中不虚构误差条。回放包含从意图/回执日志恢复控制记录，**不包含跨主机 Worker 重新对账至完整可调度状态**。这不是要求 Worker 实时状态强一致落盘的实验。
-
-**剩余瓶颈很清楚**：百万保留记录仍占约 6.39 GiB RSS、1.89 GiB 日志，热回放约 16.09 s。查询索引解决了热路径扫描，尚未解决历史保留和冷恢复的增长成本。
-
-## 能支持的判断与下一步 {#limits}
-
-这些曲线描述了小规模探针在增配资源后的并行就绪和内存增长，以及计数索引这一局部机制。它们没有测量单 Worker 多 guest 密度、固定预算的真实 Agent/Gateway 吞吐、冷镜像拉取、大规模活跃任务、故障时扩展效率或跨主机网络和存储。此前“单机执行近似线性扩展”的表述应按上述探针与资源增长条件理解，不能升级为产品整体结论。
-
-下一步优先做终态记录压缩/归档、历史与活跃状态分层及有界保留，再分别测冷恢复和 Worker 全量对账。执行面则在仍不超过 4 个沙箱的条件下，先补单 Worker、固定总 CPU 及真实 Agent 负载对照，找出资源与调度瓶颈。更大并发需要在隔离测试宿主重新授权资源预算后测量，不能用这三个点外推容量承诺。
-
-## 复现与原始证据 {#reproduce}
-
-上述就绪探针与历史曲线保留原制品和输入的技术记录。当前入口测量固定总 CPU/内存预算下完成且通过校验的 Python/Git 任务；它的结果不能与就绪探针拼接。构建、输入冻结、预检与正式采样命令见[复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)。
-
-从当前完整任务报告生成加工数据（绘图需 matplotlib，`--csv-only` 只生成 CSV）：
-
-```bash
-python3 benchmark/pvisor/plot_cluster_scalability.py \
-  --report benchmark/.data/cluster-new/report.json \
-  --output-dir benchmark/.data/cluster-new/derived --csv-only
-```
-
-本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/vm.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/vm-summary.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/controller-summary.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/controller-provenance.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/setup-failure.tsv`
+历史图表输入记录于 `docs/src/assets/benchmarks/.data/cluster-scalability-20261005/`：`vm.tsv`、`vm-summary.csv`、`controller-summary.csv`、`controller-provenance.tsv`、`manifest.tsv` 和 `setup-failure.tsv`。这些是本地来源位置，不是站点下载链接。[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)记录退役范围与独立活动 native 探针。

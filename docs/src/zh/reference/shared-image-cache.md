@@ -29,7 +29,7 @@ pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
 
 `--location` 是新的共享缓存目录，`--image-store` 是发布时用来拉取/解包 OCI 镜像的本地暂存目录；两者不同。也可以复用现有 `PVISOR_IMAGE_STORE`。发布完成后读取不依赖暂存目录，CI 可把它设为任务临时目录。共享目录中的对象默认私有，跨 UID 使用共享盘时需由存储管理员设置相应读取权限；只读模式不会创建缺失的共享目录。
 
-### S3：发布端有写权限，工作节点只读
+### S3：发布端有写权限，使用方只读
 
 ```sh
 export AWS_DEFAULT_REGION=ap-southeast-1
@@ -38,7 +38,7 @@ export PVISOR_CACHE_BACKEND=s3
 export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
 pvisor service cache --image-store /tmp/pvisor-publish publish alpine:latest
 
-# Workers only need GetObject access to this prefix.
+# Native cache consumers only need GetObject access to this prefix.
 export PVISOR_CACHE_READ_ONLY=true
 pvisor service cache prepare alpine:latest
 pvisor service cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release

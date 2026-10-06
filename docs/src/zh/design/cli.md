@@ -73,7 +73,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 ## 核心命令与服务边界
 
-顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平，部署/集群/节点资源集中在 `service`；`replay` 从轨迹创建 Job，`tui` 是可选交互前端。主帮助按 Jobs、Filesystems、Extensions 分组。Jobs 包含 `checkpoint`；Extensions 包含 `service`、`replay`、`tui`，可选伴随命令安装后显示。`extensions` 命令已删除。
+顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平，原生部署／节点资源集中在 `service`；sandbox 生命周期是独立 daemon 接口，不是 Cluster 任务提交。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。主帮助按 Jobs、Filesystems、Extensions 分组。Jobs 包含 `checkpoint`；Extensions 包含 `service`、`replay`、`tui`，可选伴随命令安装后显示。`extensions` 命令已删除。
 
 | 职责 | 入口 |
 |---|---|
@@ -82,7 +82,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 | Job 不可变检查点 | `checkpoint` |
 | 轨迹回放与交互前端 | `replay`、`tui` |
 | 部署角色生命周期 | `service run/status/restart/stop --config FILE` |
-| 集群任务/控制与执行节点 | `service cluster`、`service worker` |
+| 本机 sandbox 生命周期 | 直接 `pvisor-daemon serve` 与 OpenSandbox profile HTTP API |
 | 不可变环境与实验冷页池 | `service cache`、`service memory-pool` |
 
 `status --review` 保留为已存在的快捷形式；`review` 仍是详细审查入口。`run --tui` 是主要交互路径，顶层 `tui` 保留显式前端调用。暂不引入另一个 `job` 命令层，避免让相同 Job 操作形成两套语法。
@@ -91,16 +91,15 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 ```bash
 pvisor service --help
-pvisor service cluster --help
-pvisor service worker --help
+pvisor-daemon protocol
 pvisor service cache --help
 pvisor service memory-pool --help
-pvisor help service cluster submit
+
 ```
 
-同目录的七个制品为 `pvisor`、`pvisor-cluster`、`pvisor-worker`、`pvisor-cache`、`pvisor-memory-pool`、`pvisor-replay`、`pvisor-tui`。资源 companion 是 service 子命令的实现；单独核心仍可管理 Job，没有安装对应 companion 时服务工具明确报错。Supervisor 与数据角色保留独立进程，CLI 合并不改变故障边界。
+新 sandbox 路径直接调用 `pvisor-daemon`，或通过 `pvisor service daemon ...` 分发给可信安装目录中的可执行文件。已退役的 `pvisor-cluster`/`pvisor-worker` 服务不是当前产品流程。原生资源 companion、replay 与 TUI 仍独立于 Job 命令，缺失 companion 会明确报错。打包不合并故障边界，也不把原生 VM、暂存或 node 资源接入 daemon。
 
-工具来自静态表，只查可信安装目录，不搜索 PATH 或执行 discovery。安装目录与可执行文件归当前用户或 root 所有，不得 group/world 可写，拒绝符号链接。Unix `exec` 保留参数、stdio、信号和退出码；子命令自己的 `--help`/`--version` 原样转交，工具不能覆盖 Job 命令。部署与预算见[统一服务指南](../guides/cluster/service.md)。
+工具来自静态表，只查可信安装目录，不搜索 PATH 或执行 discovery。安装目录与可执行文件归当前用户或 root 所有，不得 group/world 可写，拒绝符号链接。Unix `exec` 保留参数、stdio、信号和退出码；子命令自己的 `--help`/`--version` 原样转交，工具不能覆盖 Job 命令。Sandbox 部署见 [daemon 运维](daemon/operations.md)，独立原生资源预算见[职责收敛](daemon/responsibility-convergence.md)。
 
 核心默认构建不包含 Gateway。启用捕获使用 `--features gateway`；wheel 构建启用该 feature。
 无捕获时，普通显式代理仍由 OverlayNet 授权与转发。请求未编译的捕获或 Gateway debug 能力会报错。

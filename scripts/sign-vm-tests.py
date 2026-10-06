@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build nextest binaries and sign pvisor-vm tests for native macOS HVF access."""
+"""Build nextest binaries and sign native executor tests for macOS HVF access."""
 
 import json
 import subprocess
@@ -17,10 +17,17 @@ def main():
         text=True,
     )
     for suite in json.loads(result.stdout)["rust-suites"].values():
-        if suite["package-name"] == "pvisor-vm":
+        if suite["package-name"] in {"pvisor-vm", "pvisor", "nativepvisor"}:
             subprocess.run(
-                ["codesign", "--force", "--sign", "-", "--entitlements",
-                 str(root / "crates/pvisor/macos-hypervisor.entitlements"), suite["binary-path"]],
+                [
+                    "codesign",
+                    "--force",
+                    "--sign",
+                    "-",
+                    "--entitlements",
+                    str(root / "crates/pvisor/macos-hypervisor.entitlements"),
+                    suite["binary-path"],
+                ],
                 check=True,
             )
 

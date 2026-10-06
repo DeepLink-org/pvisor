@@ -1,8 +1,8 @@
 # macOS 跨 pVisor RAM 共享与冷页压缩：实验设计
 
-> 首版已收敛并接入 CLI / SDK：见[当前使用与合同](src/zh/design/memory-sharing/index.md#v1-integration)。停止扩展实验矩阵，本页继续保留历史记录，完整物理验收与恢复尾延迟限制未改写为已通过。
+> 首版已收敛并接入 CLI / SDK：见[当前使用与合同](src/zh/design/memory-optimization/proof-of-concept.md#v1-integration)。停止扩展实验矩阵，本页继续保留历史记录，完整物理验收与恢复尾延迟限制未改写为已通过。
 
-当前设计说明已整理到[文档系统：内存去重与冷页压缩](src/zh/design/memory-sharing/index.md)。本页保留逐轮实验、失败记录与历史取舍；当前实现与数据适用范围见新文档。
+当前设计说明已整理到[文档系统：内存去重与冷页压缩概念验证](src/zh/design/memory-optimization/proof-of-concept.md)。本页保留逐轮实验、失败记录与历史取舍；当前实现与数据适用范围见新文档。
 
 状态：实验进行中，默认关闭。两个真实 pVisor VM 已通过自动冷页回收、
 跨进程压缩对象共享、恢复内容校验，以及真实宿主 WARN 压力下的六次匹配运行。

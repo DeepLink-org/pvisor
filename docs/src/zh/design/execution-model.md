@@ -5,6 +5,8 @@
 对应一条内部 Run 记录。为保持兼容，磁盘上的 `run-*` ID、`run.json` 和 Run Bundle
 名称保持不变。
 
+[单节点 daemon](daemon/index.md) 则通过外部 Podman 管理 OpenSandbox profile 的 `sb-*` sandbox 记录。这些 ID 不代表 Job/Run/Attempt 记录、stage/apply、检查点或 Run Bundle 证据。下列原生 Job 语义不会自动由 daemon 提供；跨主机工作流身份属于外部编排。
+
 ## Operation：核心处理对象
 
 Job 描述用户的一项工作，Operation 描述 pVisor 要处理的操作。当前生产操作是 `run.execute`，包含程序、参数和工作目录，以及有效策略决定和 Placement。pvisor 负责准入、实际改写、调度和执行；core 提供这些定义。

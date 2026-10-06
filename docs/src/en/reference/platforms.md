@@ -17,6 +17,10 @@ Prepare the environment using these prerequisites, then validate the features yo
 
 Current wheels target Linux x86_64 and macOS arm64. Source branches do not establish released artifacts or maturity. Check `pvisor --version`, run a small task, and inspect its Bundle. See [installation](../start/installation.md).
 
+## Single-node daemon {#daemon}
+
+The standalone daemon's current backend requires Linux, a trusted absolute rootless Podman executable, cgroup v2 and delegated CPU/memory/PID controllers. It is separate from the native executor matrix and has no macOS HVF or native KVM integration. Images must be locally prepared with real OpenSandbox 1.1.0 execd and capability-free egress; the default upstream egress conflicts with `cap-drop=ALL`, and no end-to-end image recipe is validated. See [daemon installation](../guides/daemon/index.md) and [runtime boundaries](../guides/daemon/boundaries.md), rather than inferring SDK readiness from the native VM or wheel support rows.
+
 ## Verify capability evidence
 
 - Check `safety.filesystem_read_non_bypassable` and `filesystem_write_non_bypassable` separately, not just whether changes are staged.

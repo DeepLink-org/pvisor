@@ -53,25 +53,18 @@ Implementations must enqueue bounded, fenced cleanup without blocking the
 Gateway's I/O thread, including when an async operation was interrupted after
 an uncertain effect.
 
-The VM Worker can install the lifecycle with `[gateway] release_cpu_on_idle = true`.
-Its [controller wait protocol](../pvisor-cluster/README.md#cooperative-inference-waits)
-keeps one current wait and four automatic control receipts per task, separately
-from manual control history. Parallel cooperative calls share a bounded group;
-the first ready call wakes the guest, and later calls in that group retain CPU
-admission. Native exit also stops cleanup before artifact delivery starts.
-A Linux KVM/FUSE Agent gate verifies released CPU admission, a competing VM,
-unchanged frozen vCPU counters, manual pause ownership and completed real tools.
-This interface does not provide RAM reclamation or networked VM hibernation.
-Protocol tests and live networked-VM gates cover controller-server restart and
-a separate CLI process receiving SIGKILL after a durable Ready response is lost.
-Within the Worker watchdog, retries preserve native executions, leases and
-held responses. Longer outages and parallel-call fault experiments remain
-to be completed.
-The controlled
-[`model_wait_http`](tests/model_wait_http.rs) tests measure HTTP ordering and
-cancellation rather than VM density. AgentENV's inference-wait lifecycle and
-DSec's independently retained rollout state remain broader implementation
-requirements, documented in the [controller matrix](../pvisor-cluster/README.md).
+The retired VM Worker/Controller adapter and its `release_cpu_on_idle`
+configuration are no longer available. Gateway retains the embedding interface,
+not distributed wait ownership or an automatic native CPU-release adapter.
+`pvisor-daemon` does not currently integrate this Gateway lifecycle; its execd
+proxy must not be described as native inference-wait coordination.
+
+The controlled [`model_wait_http`](tests/model_wait_http.rs) tests cover HTTP
+ordering and cancellation, not VM density, resource reclamation or daemon
+integration. This interface alone does not provide RAM reclamation or networked
+VM hibernation. Any future adapter must supply the ownership, admission and
+cleanup contracts above. See [Gateway design](../../docs/src/en/design/gateway.md)
+and [daemon boundaries](../../docs/src/en/guides/daemon/boundaries.md).
 
 ## Develop
 

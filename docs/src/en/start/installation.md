@@ -61,6 +61,12 @@ just install-cli
 
 Set `PVISOR_BIN` only when you are explicitly testing a specific pVisor binary. When diagnosing provider behavior, keep the Python package and CLI on the same revision.
 
+## Install the single-node daemon separately {#daemon}
+
+For an OpenSandbox-compatible lifecycle API on one Linux host, follow [daemon installation and startup](../guides/daemon/index.md). The new `pvisor-daemon` is a separate source-installed executable; do not assume an existing Python wheel ships it or any ready-to-use sandbox image. It uses external rootless Podman and a partial OpenSandbox 1.1.0 profile, not the native VM executor.
+
+A working SDK sandbox needs a locally prepared image with real execd and capability-free egress. The upstream default egress conflicts with `cap-drop=ALL`; no end-to-end image recipe has been validated. Starting the API alone does not establish SDK readiness. Controller/Worker and the Cluster task SDK are retired; cross-node orchestration belongs to external schedulers.
+
 ## 4. Enable VM or OCI execution when needed
 
 The default local workflow needs neither Docker nor Podman. To run an OCI image with the VM executor:

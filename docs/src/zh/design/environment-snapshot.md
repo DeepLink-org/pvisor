@@ -1,6 +1,6 @@
 # 完整环境快照与 CLI 迁移
 
-独立 `pvisor snapshot` 前端已删除。VM/Cluster 和存储 SDK 继续使用完整状态封存、RAM 编码、基底引用与恢复机制；这些能力不再通过另一套独立实例命令暴露。普通 Job 已接入原生完整执行捕获与恢复，旧 store 不自动转换为 Job 检查点。
+独立 `pvisor snapshot` 前端已删除。原生 VM 和存储 SDK 继续使用完整状态封存、RAM 编码、基底引用与恢复机制；这些能力不再通过另一套独立实例命令暴露。普通 Job 已接入原生完整执行捕获与恢复，旧 store 不自动转换为 Job 检查点。
 
 ## 当前用户入口 {#current-entry}
 
@@ -14,13 +14,9 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 原 `save` 对应 `suspend`；恢复当前执行点用 `resume`，恢复历史点或创建分支用 `fork --state execution --checkpoint ID`。原 `run` 使用普通 `run --executor vm`；list/delete/gc、基底导入和校验进入 Job 的 `checkpoint` 命令。无网络设备、私有 RAM、拥有完整 rootfs 的原生 VM 支持 capture-and-continue 和完整恢复；普通 `run` 的配置不会自动改变。接口和限制见 [CLI 参考](../reference/cli.md#full-vm-execution-checkpoints)，交接设计见[Job 检查点设计](job-checkpoint-cli.md#10-当前实现与验收边界)。
 
-集群任务与 VM 控制使用 service 下的 Cluster 入口，保持 Task/Lease/控制修订身份与 Worker 对账：
+[单节点 daemon](daemon/index.md) 管理外部 rootless Podman sandbox，不提供原生 VM 捕获／恢复。其 pause/resume 是容器 freeze/unfreeze；snapshot、checkpoint/fork、stage/apply 与 offload 未接入该后端。不要把已退役 Cluster 控制当作当前快照入口。
 
-```bash
-pvisor service cluster --help
-```
-
-受限资源的实际保存、分叉与恢复流程见[VM 与 Gateway 指南](../guides/cluster/vm-and-gateway.md)，节点 backing 的管理见[统一服务指南](../guides/cluster/service.md)。
+原生 node backing 归属仍独立于 daemon 生命周期，见[职责收敛](daemon/responsibility-convergence.md)。
 
 ## 存储与内部生命周期 {#storage-contract}
 

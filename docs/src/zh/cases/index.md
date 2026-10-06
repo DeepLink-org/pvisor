@@ -35,8 +35,8 @@ cat report.txt
 | 为真实模型请求路由、捕获轨迹 | `pvisor run --gateway-mode capture --gateway-route ...` | [捕获指南](../guides/capture.md)，以及 `just examples 04-gateway-llm-control` 的本地 mock 请求测试 |
 | 从原生 Agent 轨迹准备恢复 | `pvisor replay`，派发到同目录的 `pvisor-replay` | [第五章](05-tools-and-restoration.md)、[回放指南](../guides/replay.md) |
 | 选择 OCI 容器或 VM 执行 | `pvisor run --executor container` / `--executor vm` | [容器](../guides/executors/container.md)、[VM](../guides/executors/vm.md)；需要对应 runtime/rootfs |
-| 保存 CPU、RAM、设备和完整文件树 | Cluster execution profile / 存储 SDK | [完整环境快照](../design/environment-snapshot.md)；独立 snapshot CLI 已删除，普通 Job 完整 execution 能力仍有限制 |
-| 管理 OCI 文件缓存或共享冷页池 | `pvisor service cache` / `pvisor service memory-pool` | [共享镜像缓存](../reference/shared-image-cache.md)、[内存共享](../design/memory-sharing/index.md) |
+| 保存 CPU、RAM、设备和完整文件树 | 原生 VM execution checkpoint / 快照存储 SDK | [Execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)；要求兼容的独立 rootfs、无网络 Job，不是 daemon 能力 |
+| 管理 OCI 文件缓存或共享冷页池 | `pvisor service cache` / `pvisor service memory-pool` | [共享镜像缓存](../reference/shared-image-cache.md)、[内存共享](../design/memory-optimization/proof-of-concept.md) |
 
 Gateway 捕获需要启用 `gateway` feature 的构建；wheel 和 `just build release` 包含该能力。没有安装伴随二进制时，核心 Job 命令仍能使用；`pvisor --help` 按操作对象列出已安装的可选命令。完整 VM 快照需要 KVM 或 Apple Silicon Hypervisor 和可用 FUSE 后端；普通 VM Job 在兼容的独立 rootfs、无网络 profile 下支持 execution checkpoint；用 `status --json` 检查能力和拒绝原因。
 
@@ -56,6 +56,6 @@ python3 scripts/cases/run.py --subject-bin target/release/pvisor --output target
 
 规格、夹具中的 Python 断言和 Bash 词汇都参与 semspec 摘要。新规格保持 UNREVIEWED；执行成功与人工语义批准是两件事。人工完成引擎、词汇和规格审核后，可增加 `--require-reviewed`，本次不改审核账本。
 
-旧的 [DOC cases](../reference/cases.md)、[VM 控制 cases](../reference/cases-vm.md)、`just cases`、`just vm-cases` 和 `examples/pvisor` 保留原入口。CI 同时运行原有隔离回归、网络/Gateway mock 场景和新学习路线。旧独立 snapshot 的硬件记录保留作历史证据；当前受限 VM 环境共享验收使用 `just test-service-vm`，完整执行恢复按 Cluster VM 指南逐项验证；本学习路线没有把未运行的 VM/Gateway 能力算作成功。
+旧的 [DOC cases](../reference/cases.md)、[VM 控制 cases](../reference/cases-vm.md)、`just cases`、`just vm-cases` 和 `examples/pvisor` 保留原入口。CI 同时运行原有隔离回归、网络/Gateway mock 场景和新学习路线。旧独立 snapshot 的硬件记录保留作历史证据；旧 Controller/Worker 验收记录不验证新 daemon。完整原生执行恢复按 [execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)单独验证；daemon 的[运行时边界](../guides/daemon/boundaries.md)不包含 VM 恢复；本学习路线没有把未运行的 VM/Gateway 能力算作成功。
 
 全量执行门禁当前以 Linux 为目标。macOS 可以选择适用的场景运行；本机 loopback 的网络策略与 Linux namespace 不同，S-USE-014 的宿主 loopback 拒绝检查不作为 macOS 承诺。

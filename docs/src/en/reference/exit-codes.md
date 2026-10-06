@@ -21,6 +21,12 @@ A workload can return `1`, `2`, or `125` itself, so a number alone is insufficie
 
 Apply conflicts, missing Jobs, and UnsupportedPolicy do not currently have distinct numeric codes. Workloads may themselves return 1, 2, 125, or 130; numbers alone cannot distinguish agent failure from pVisor refusal.
 
+## Daemon process and API errors {#daemon}
+
+The standalone `pvisor-daemon` process returns 0 for successful `protocol` or normal server shutdown, 2 for clap argument errors, and 1 for startup/runtime errors reported on stderr. These are service process statuses, not sandbox workload exit codes. Companion dispatch preserves the companion's code when installed.
+
+Lifecycle clients must instead inspect HTTP status, `{code, message}` and `X-Request-ID`. Create returns 202 JSON; pause/resume return 202 with empty bodies; confirmed deletion returns 204. None establishes workload command success. Command results come from the prepared image's real execd data plane, not the native Job Run Bundle or retired Cluster aggregate result. Unsupported creation options are rejected rather than silently applied. See [daemon operations](../guides/daemon/operations.md).
+
 ## Automation
 
 Save stderr and the return code, then look for the Bundle at an explicit stage path. `run.state`, `run.exit_code`, and `run.failure` describe execution. Admission/preparation can fail before a complete Bundle exists; classify this as startup/infrastructure failure rather than successful no-op.

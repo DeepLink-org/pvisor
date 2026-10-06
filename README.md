@@ -70,10 +70,13 @@ of `last`.
 
 ## Where we are today
 
-The vision is L3: post-hoc audit at cluster scale. Today pVisor runs one Job at a
-time on your machine—already bounded, recoverable, and checkable, the properties
-the higher levels build on. pVisor is the semantic layer for each execution; it
-does not replace schedulers like Kubernetes or Ray.
+pVisor focuses on bounded, recoverable, checkable execution and high sandbox
+density on a single machine. Native Jobs retain the run-review-apply workflow;
+the separate `pvisor-daemon` provides a partial OpenSandbox 1.1.0 API profile
+through an external rootless Podman backend. Native VM execution and staging
+are not yet wired into that daemon, and its density has not been measured.
+Cross-node placement, workflows and retries belong to external orchestrators
+such as Kubernetes or Ray, not a pVisor Cluster control plane.
 
 For the four levels, where pVisor places its bet, and the status of L2/L3, see the
 [trust ladder](https://deeplink-org.github.io/pvisor/en/why/trust-ladder/).

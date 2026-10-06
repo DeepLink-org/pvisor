@@ -35,5 +35,7 @@ L0 已经是通用能力，不值得重复投入。pVisor 的取舍是只做执�
 
 今天交付的是这一级在单机上的形态：本机逐个 Job，放手跑完，事后审查改动和证据，只合入想要的。L2 的免审判定和 L3 的集群规模都还没到。
 
+[单机 daemon](../guides/daemon/index.md) 增加的是本机沙箱生命周期，不是 L3 编排，也不是原生 Job 审查契约。pVisor 不提供集群级 Controller/Worker 总控；Kubernetes、Ray 等外部系统负责跨节点调度。规模目标是在这些系统中保留执行语义与可检查证据。
+
 !!! note "建设中"
     L2/L3 的进入条件和缺口清单还没定稿。进度见[路线图](../community/roadmap.md)，容量依据见[并发密度](../benchmarks/density.md)，集群方向见[集群化执行](../design/research/cluster-execution.md)。

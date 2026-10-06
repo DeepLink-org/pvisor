@@ -1,22 +1,22 @@
-# 增加 Worker 能得到更多有效任务结果吗？
+# 原 Cluster 测量退役后，哪些结论仍有效？
 
 ## 主要结论 {#conclusions}
 
-**在共同两核、2 GiB 预算下，1、2、4 个 Worker 的有效任务速率分别为 0.42、0.96、1.73 个/s，三个条件全部完成并通过校验。每个 Worker 只有一个执行槽、0.5 核上限，增加 Worker 可以利用单 Worker 未用满的总预算；这不是与 Kubernetes、Ray 的吞吐排名。**
+**旧吞吐与历史成本测量只对冻结的、已退役的 Controller/Worker 实现有效，不能证明当前 daemon 的吞吐、密度或恢复成本。独立本机容量与 VM 内存 benchmark 仍保留各自的证据范围；这里没有新增测量。**
 
 | 需求 | 选型含义 |
 |---|---|
-| 在现有机器上增加执行槽 | 本负载增加到四个 Worker 后，完成等待缩短 |
-| 为控制面和执行面预留资源 | 共同预算之外，还要核对每个服务的上限 |
-| 选择 Kubernetes 或 Ray | 没有同任务对照；这些调度系统不能由此表排除 |
+| 解读旧 Cluster 结果 | 仅限下列历史负载、制品与预算 |
+| 规划本机执行或停驻状态 | 使用[容量](density.md)和[VM 内存](vm-memory/index.md)，不使用 Worker 曲线 |
+| 规划 daemon 或比较调度系统 | 未测；不能沿用旧吞吐或历史成本数字 |
 
 ## Motivation {#motivation}
 
-环境就绪不等于任务成功，规模化执行要看实际完成的有效结果。增加 Worker 还会增加常驻资源，需要把 Controller、辅助进程、VM backing 和页缓存一起计入。
+容量决策需要与实际部署实现相匹配的证据。Controller/Worker 退役后，实验对象已不再存在，把旧测量改名会掩盖这一边界。就绪、有效任务完成和可恢复停驻状态回答不同问题。
 
 ## 实验设计 {#interpretation}
 
-Linux/x86_64、单宿主 KVM、从冻结源码构建的 release 二进制。每批使用新的 Controller 和 1/2/4 个单槽 Worker；整组共同使用两核配额、CPU 0/1、2 GiB 内存和零 swap。Controller 单独限制为 0.25 核/256 MiB，每个 Worker 为 0.5 核/512 MiB；服务及其子进程都在共同父 cgroup 中。因此一个 Worker 不会单独使用整个两核预算。
+仅描述历史实验：Linux/x86_64、单宿主 KVM、从冻结 Controller/Worker 源码构建的 release 二进制。入口脚本、专属测试、绘图和发布 helper 已退役，没有活动复现命令。每批使用新的 Controller 和 1/2/4 个单槽 Worker；整组共同使用两核配额、CPU 0/1、2 GiB 内存和零 swap。Controller 单独限制为 0.25 核/256 MiB，每个 Worker 为 0.5 核/512 MiB；服务及其子进程都在共同父 cgroup 中。因此一个 Worker 不会单独使用整个两核预算。
 
 每批提交相同的 12 个任务，每个任务创建 64 文件 Git 仓库，完整校验 32 MiB 数据八次，修改四个文件并核对 Git 状态和全部内容。任务返回必须属于预期 Worker、状态成功且输出匹配；保留的每个完成记录与汇总再次核对。耗时从提交开始，到 12 个结果全部经过校验；不包含此前启动 Controller/Worker 的时间。
 
@@ -26,7 +26,7 @@ Linux/x86_64、单宿主 KVM、从冻结源码构建的 release 二进制。每�
 
 ### 完整任务吞吐和物理内存 {#execution}
 
-测量日期 2026-10-06（本地时间）。每档 N=30 个完整批次、每批 12 个任务；三个条件共校验完成 1,080 个正式任务，零失败、零 OOM。P50 为中位数；峰值内存是整个父 cgroup（含子 cgroup）的 `memory.peak`，单位 MiB。
+历史 Controller/Worker 批次，测量日期 2026-10-06（本地时间）。以下表格和下载对应退役制品，不是 daemon 测量。每档 N=30 个完整批次、每批 12 个任务；三个条件共校验完成 1,080 个正式任务，零失败、零 OOM。P50 为中位数；峰值内存是整个父 cgroup（含子 cgroup）的 `memory.peak`，单位 MiB。
 
 | Worker 数 | 完成任务 / 尝试 | 12 任务耗时 P50，s | 有效任务速率 P50，个/s | 整组峰值内存 P50，MiB |
 |---:|---:|---:|---:|---:|
@@ -34,7 +34,7 @@ Linux/x86_64、单宿主 KVM、从冻结源码构建的 release 二进制。每�
 | 2 | 360/360 | 12.47 | 0.962 | 389.0 |
 | 4 | 360/360 | 6.93 | 1.731 | 710.6 |
 
-单 Worker 上限为 0.5 核，增加执行槽会增加可用的执行资源，直到共同两核上限约束整组。结果支持在这个预算内增加 Worker 减少等待；它没有证明调度器在相同有效 CPU 使用量下变得更快。
+单 Worker 上限为 0.5 核，增加执行槽会增加可用的执行资源，直到共同两核上限约束整组。结果解释了退役实现在这个预算内减少等待的原因；它没有证明调度器在相同有效 CPU 使用量下变得更快。
 
 | 对照（候选 − 单 Worker） | 12 任务中位耗时差，s | 配对 bootstrap 95% 区间，s |
 |---|---:|---:|
@@ -56,13 +56,15 @@ N=3 个独立进程/规模，表内为 P50；括号是观察到的最小–最�
 | 100,000 | 827.9 (827.9–828.0) | 1.422 (1.410–1.435) | 196.21 |
 | 1,000,000 | 8142.4 (8127.4–8144.1) | 14.622 (14.411–14.710) | 1962.11 |
 
-百万条记录需要预留约 8 GiB 的所测生命周期峰值预算，热日志恢复约 14.62 秒；恢复不包括 Worker 对账或冷磁盘读取。类型化内存查询的各规模的进程中位数汇总约 107–110 ns，仅代表合成状态计数调用，不是 HTTP/CLI 请求延迟；详情见下载表。
+退役 Controller 的百万记录批次观察到约 8 GiB 生命周期峰值、约 14.62 秒热日志恢复；两者都不是当前容量建议。恢复不包括 Worker 对账或冷磁盘读取。类型化内存查询的各规模的进程中位数汇总约 107–110 ns，仅代表合成状态计数调用，不是 HTTP/CLI 请求延迟；详情见下载表。
 
 ### 与已有调度方案的比较边界 {#limits}
 
-Kubernetes、Ray 和云端沙箱的相同负载、共同预算对照未测，不提供数值排名。pVisor 提供任务执行、结果记录和审查语义；这些结果用于规划其 Worker 执行资源，不能作为替换通用调度平台的依据。单任务的 Docker、Firecracker、QEMU 对照见[运行时对比](compare-runtimes.md)。
+Kubernetes、Ray 和云端沙箱的相同负载、共同预算对照未测，不提供数值排名。历史测量不能规划当前 daemon 的容量，也不能作为替换通用调度平台的依据。单任务的 Docker、Firecracker、QEMU 对照见[运行时对比](compare-runtimes.md)。
 
-### 数据下载与复现 {#run}
+### 历史数据下载与来源 {#run}
+
+以下五份 CSV 原字节保留，仅作为退役 Controller/Worker 制品的历史证据。没有活动 Cluster 测量或发布入口；[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)记录退役范围，不提供新复现命令。
 
 [历史成本 CSV](controller-history-summary.csv) · [历史来源摘要](controller-history-provenance.csv) · [吞吐与内存 CSV](cluster-summary.csv) · [配对比较 CSV](cluster-comparisons.csv) · [制品与预算摘要](cluster-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 

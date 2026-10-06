@@ -225,7 +225,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **角色：** diagnostic。
 - **Motivation：** 判断时间是否花在收集改动、硬链接分组、目录索引或依赖闭包上。
 - **想要的结论：** 完整的 plan inclusive span、改动数、目录数、闭包迭代和祖先查询数；嵌套项不可相加。
-- **实验设计：** `apply_plan_ab.py --profile` 独立插桩批次，保存所有 stderr 计数；与正式计时分开。旧实现没有某项计数时明确为缺失，不当作零。
+- **实验设计：** `apply_plan_ab.py --profile` 独立插桩批次，保存所有 stderr 计数；与正式计时分开。旧实现没有某项计数时明确为缺失，不当作零。可同时指定冻结的 `--trace-syscalls` 和 `--tracer-receipt`，只对合入/冲突命令运行 strace，保留源码、编译器、tracer 二进制和逐进程原始记录；分别统计 target、stage 和其他路径的元数据、复制与同步请求。tracing 耗时不能作为正式性能收益，syscall 用时不能与嵌套 span 相加。
 - **入口脚本：** `apply_plan_ab.py --profile`。
 
 ### B-NETWORK：网络代理和 VM 网络有多大开销 {#b-network}
@@ -308,7 +308,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 ### B-CLUSTER：增加机器和资源后，能否得到更多有效结果 {#b-cluster}
 
 - **文档：** `cluster-scalability.md`
-- **角色：** user-facing
+- **状态：** 已退役；只保留历史证据，无活动测量或发布入口。旧 Controller/Worker 数据不是当前 daemon 的吞吐、密度或历史成本。
+- **角色：** user-facing（历史证据）
 - **Motivation：** 规模化运行 Agent 时，用户关心的是增加 Worker 和资源能不能线性地增加有效产出，以及控制面在长期运行后是否会成为瓶颈。
 - **想要的结论：** "在固定的总资源预算下，每秒完成的有效任务数随 Worker 数增长的曲线"；"控制面在保留 N 条历史记录时的内存和重启耗时"。
 - **实验设计：**
@@ -316,7 +317,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 以完成且通过校验的任务数作为产出指标。
   - 控制面的历史规模单独扫描。
   - 不能只报告就绪时间来代替吞吐。
-- **入口脚本：** `cluster_scalability.py`（固定总预算的 Python/Git 完成吞吐）、`cluster_worker.py`（worker）、`plot_cluster_scalability.py`（加工）；控制面历史由 `controller_history.py` 包装当前冻结源码的 `pvisor-cluster` example `scheduler_load` 单独测量。每个规模使用独立进程/cgroup，固定两核、16 GiB、零 swap、真实磁盘 WAL，默认三个独立进程；每进程内部 30 个查询批次，查询批次与独立重启样本不可混为同一采样数。物理峰值包含历史准备、校验临时分配、日志页缓存与重启；不是稳定保留态内存。
+- **入口脚本：** 无。旧 `cluster_scalability.py`、`cluster_worker.py`、`controller_history.py`、专属测试及绘图/发布 helper 随 Controller/Worker 退役而删除；不得改名为 daemon 测量。历史数据只回答冻结旧制品的问题。B-DENSITY 与 B-VM-MEMORY 的独立本机探针继续有效，但不能替代 daemon 或跨主机实验。
 
 ### B-MACOS：macOS 上的工具和迁移成本 {#b-macos}
 

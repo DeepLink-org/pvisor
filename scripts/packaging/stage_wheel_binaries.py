@@ -20,7 +20,14 @@ from typing import Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
-EXPECTED_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay", "pvisor-memory-pool", "pvisor-cluster", "pvisor-worker")
+NATIVE_BINARIES = (
+    "pvisor",
+    "pvisor-cache",
+    "pvisor-tui",
+    "pvisor-replay",
+    "pvisor-memory-pool",
+)
+EXPECTED_BINARIES = (*NATIVE_BINARIES, "pvisor-daemon")
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-musl",
     "aarch64-apple-darwin",
@@ -131,7 +138,9 @@ def options_from_build_backend(
     )
 
 
-def _cargo_command(options: BuildOptions, *, shim_vm: bool = False) -> list[str]:
+def _cargo_command(
+    options: BuildOptions, *, shim_vm: bool = False, daemon: bool = False
+) -> list[str]:
     target = (
         _normalize_target(options.target)
         if options.target is not None or sys.platform == "linux"
@@ -144,12 +153,16 @@ def _cargo_command(options: BuildOptions, *, shim_vm: bool = False) -> list[str]
         options.profile,
         "--message-format=json-render-diagnostics",
         "-p",
-        "pvisor-shim" if shim_vm else "pvisor",
+        "pvisor-daemon" if daemon else "pvisor-shim" if shim_vm else "pvisor",
     ]
-    if shim_vm:
+    if daemon:
+        command.extend(("--bin", "pvisor-daemon", "--no-default-features"))
+    elif shim_vm:
         command.extend(("--bin", "containerd-shim-pvisor-v2", "--features", "vm"))
     else:
-        command.extend(("-p", "pvisor-tui", "-p", "pvisor-replay", "-p", "pvisor-cluster", "--bins", "--features", "pvisor/gateway"))
+        command.extend(("-p", "pvisor-tui", "-p", "pvisor-replay", "--features", "pvisor/gateway"))
+        for name in NATIVE_BINARIES:
+            command.extend(("--bin", name))
     if target is not None:
         command.extend(("--target", target))
     if options.target_dir is not None:
@@ -188,14 +201,32 @@ def _prepare_zig_file_limit() -> None:
 
 
 def _build(options: BuildOptions, *, shim_vm: bool = False) -> dict[str, Path]:
-    command = _cargo_command(options, shim_vm=shim_vm)
-    expected = ("containerd-shim-pvisor-v2",) if shim_vm else EXPECTED_BINARIES
+    artifacts = _build_component(options, shim_vm=shim_vm)
+    if not shim_vm:
+        # Separate Cargo invocation prevents native legacy features reaching the daemon.
+        artifacts.update(_build_component(options, daemon=True))
+    return artifacts
+
+
+def _build_component(
+    options: BuildOptions, *, shim_vm: bool = False, daemon: bool = False
+) -> dict[str, Path]:
+    command = _cargo_command(options, shim_vm=shim_vm, daemon=daemon)
+    expected = (
+        ("pvisor-daemon",)
+        if daemon
+        else ("containerd-shim-pvisor-v2",)
+        if shim_vm
+        else NATIVE_BINARIES
+    )
     print(f"Building native CLI: {shlex.join(command)}", file=sys.stderr)
     build_env = os.environ.copy()
     if command[1] == "zigbuild":
         _prepare_zig_file_limit()
-        if not build_env.get("PVISOR_KRUNFW_KERNEL_BUNDLE") and not build_env.get(
-            "PVISOR_KRUNFW_PATH"
+        if (
+            not daemon
+            and not build_env.get("PVISOR_KRUNFW_KERNEL_BUNDLE")
+            and not build_env.get("PVISOR_KRUNFW_PATH")
         ):
             build_env["PVISOR_KRUNFW_PATH"] = str(_firmware_source(options)[0])
     process = subprocess.Popen(
@@ -383,7 +414,7 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
                 encoding="utf-8",
             )
         if _is_macos(options):
-            for name in EXPECTED_BINARIES:
+            for name in NATIVE_BINARIES:
                 _sign_macos_pvisor(staged / name)
 
         scripts = WHEEL_DATA / "scripts"

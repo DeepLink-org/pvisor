@@ -1,5 +1,8 @@
-//! One deployment entry with independently managed process/failure boundaries.
+//! Local resource owners with independently managed process/failure boundaries.
+#[path = "service_cgroup.rs"]
+mod cgroup;
 use anyhow::{Context, ensure};
+use cgroup::current_cgroup_v2;
 use clap::{Args, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -23,7 +26,7 @@ pub struct ServiceArgs {
 }
 #[derive(Debug, Subcommand)]
 enum ServiceCommand {
-    /// Launch configured roles; a failed Controller does not stop node data owners.
+    /// Launch configured local resource owners.
     Run {
         #[arg(long)]
         config: PathBuf,
@@ -39,19 +42,16 @@ enum ServiceCommand {
         config: PathBuf,
         role: String,
     },
-    /// Stop one role, or drain Workers before stopping all roles.
+    /// Stop one role, or stop all local roles after checking active pins.
     Stop {
         #[arg(long)]
         config: PathBuf,
         #[arg(long)]
         role: Option<String>,
     },
-    /// Submit/query cluster tasks or serve the Controller.
+    /// Pass arguments unchanged to the separately installed node-local daemon.
     #[command(disable_help_flag = true, disable_help_subcommand = true)]
-    Cluster(ToolArgs),
-    /// Execute cluster tasks on this node.
-    #[command(disable_help_flag = true, disable_help_subcommand = true)]
-    Worker(ToolArgs),
+    Daemon(ToolArgs),
     /// Prepare, publish or serve immutable image caches.
     #[command(disable_help_flag = true, disable_help_subcommand = true)]
     Cache(ToolArgs),
@@ -73,9 +73,7 @@ struct ToolArgs {
 #[serde(default, deny_unknown_fields)]
 struct Config {
     state: PathBuf,
-    controller: Option<Controller>,
     node: Option<crate::node::Config>,
-    workers: Vec<Worker>,
     pool: Option<Pool>,
     cgroup_root: Option<PathBuf>,
     limits: BTreeMap<String, Limits>,
@@ -84,64 +82,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             state: ".pvisor/services".into(),
-            controller: None,
             node: Some(crate::node::Config::default()),
-            workers: Vec::new(),
             pool: None,
             cgroup_root: None,
             limits: BTreeMap::new(),
-        }
-    }
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct Controller {
-    listen: std::net::SocketAddr,
-    journal: PathBuf,
-    admin_token_env: String,
-    worker_token_env: String,
-    lease_ms: u64,
-    max_journal_bytes: u64,
-    max_artifact_bytes: u64,
-}
-impl Default for Controller {
-    fn default() -> Self {
-        Self {
-            listen: "127.0.0.1:19800".parse().unwrap(),
-            journal: "controller/journal".into(),
-            admin_token_env: "PVISOR_CLUSTER_TOKEN".into(),
-            worker_token_env: "PVISOR_CLUSTER_WORKER_TOKEN".into(),
-            lease_ms: 30_000,
-            max_journal_bytes: 1024 * 1024 * 1024,
-            max_artifact_bytes: 8 * 1024 * 1024 * 1024,
-        }
-    }
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct Worker {
-    id: String,
-    url: Option<String>,
-    token_env: String,
-    backend: String,
-    profile: Option<PathBuf>,
-    slots: u32,
-    memory_bytes: u64,
-    cpu_millis: u64,
-    poll_ms: u64,
-}
-impl Default for Worker {
-    fn default() -> Self {
-        Self {
-            id: "worker".into(),
-            url: None,
-            token_env: "PVISOR_CLUSTER_WORKER_TOKEN".into(),
-            backend: "rootless".into(),
-            profile: None,
-            slots: 4,
-            memory_bytes: 512 * 1024 * 1024,
-            cpu_millis: 1000,
-            poll_ms: 200,
         }
     }
 }
@@ -193,31 +137,6 @@ impl Config {
             config.node = None;
         }
         config.state = absolute(base, &config.state);
-        if let Some(controller) = &mut config.controller {
-            controller.journal = absolute(&config.state, &controller.journal);
-        }
-        let mut ids = std::collections::BTreeSet::new();
-        for worker in &mut config.workers {
-            ensure!(
-                !worker.id.is_empty()
-                    && worker.id.len() <= 64
-                    && worker
-                        .id
-                        .bytes()
-                        .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
-                    && ids.insert(worker.id.clone()),
-                "worker IDs must be unique safe path components"
-            );
-            ensure!(
-                ["host", "rootless", "container", "vm"].contains(&worker.backend.as_str())
-                    && worker.slots > 0
-                    && worker.memory_bytes > 0
-                    && worker.cpu_millis > 0
-                    && worker.poll_ms > 0,
-                "invalid worker resources/backend"
-            );
-            worker.profile = worker.profile.as_ref().map(|path| absolute(base, path));
-        }
         if let Some(node) = &mut config.node {
             node.state = absolute(&config.state, &node.state);
             node.socket = absolute(&node.state, &node.socket);
@@ -226,12 +145,6 @@ impl Config {
                 .iter()
                 .map(|path| absolute(base, path))
                 .collect();
-            node.snapshot_roots.extend(
-                config
-                    .workers
-                    .iter()
-                    .map(|worker| config.state.join("workers").join(&worker.id)),
-            );
             if node.cache_backend == "filesystem" {
                 node.cache_location = node.cache_location.as_ref().map(|path| {
                     let path = path.strip_prefix("file://").unwrap_or(path);
@@ -250,7 +163,7 @@ impl Config {
                         cfg!(target_os = "linux"),
                         "self cgroup delegation requires Linux"
                     );
-                    pvisor_cluster::admission::current_cgroup_v2()
+                    current_cgroup_v2()
                 } else {
                     Ok(absolute(base, path))
                 }
@@ -276,11 +189,6 @@ impl Config {
     fn pool_socket(&self) -> PathBuf {
         self.node.as_ref().unwrap().state.join("pool.sock")
     }
-    fn controller_url(&self) -> Option<String> {
-        self.controller
-            .as_ref()
-            .map(|c| format!("http://{}", c.listen))
-    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
@@ -297,11 +205,6 @@ struct Role {
 struct Manager {
     config: Config,
     roles: BTreeMap<String, Role>,
-}
-fn token(name: &str) -> anyhow::Result<String> {
-    let value = std::env::var(name).with_context(|| format!("set {name}"))?;
-    ensure!(!value.is_empty(), "empty service token: {name}");
-    Ok(value)
 }
 fn companion(name: &str) -> anyhow::Result<PathBuf> {
     crate::companions::find(
@@ -324,30 +227,6 @@ impl Manager {
                 },
             );
         };
-        if let Some(controller) = &config.controller {
-            let mut command = std::process::Command::new(companion("pvisor-cluster")?);
-            command
-                .env("PVISOR_CLUSTER_TOKEN", token(&controller.admin_token_env)?)
-                .env(
-                    "PVISOR_CLUSTER_WORKER_TOKEN",
-                    token(&controller.worker_token_env)?,
-                );
-            command
-                .args([
-                    "serve",
-                    "--listen",
-                    &controller.listen.to_string(),
-                    "--lease-ms",
-                    &controller.lease_ms.to_string(),
-                    "--max-journal-bytes",
-                    &controller.max_journal_bytes.to_string(),
-                    "--max-artifact-bytes",
-                    &controller.max_artifact_bytes.to_string(),
-                ])
-                .arg("--journal")
-                .arg(&controller.journal);
-            add("controller".into(), command);
-        }
         if config.node.is_some() {
             let mut command = std::process::Command::new(std::env::current_exe()?);
             command
@@ -369,60 +248,13 @@ impl Manager {
             ]);
             add("pool".into(), command);
         }
-        for worker in &config.workers {
-            crate::node::private_directory(&config.state.join("workers").join(&worker.id))?;
-            let mut command = std::process::Command::new(companion("pvisor-worker")?);
-            command
-                .env_remove("PVISOR_CLUSTER_TOKEN")
-                .env("PVISOR_CLUSTER_WORKER_TOKEN", token(&worker.token_env)?);
-            let url = worker
-                .url
-                .clone()
-                .or_else(|| config.controller_url())
-                .context("worker needs a URL or local Controller")?;
-            command
-                .args([
-                    "--id",
-                    &worker.id,
-                    "--url",
-                    &url,
-                    "--backend",
-                    &worker.backend,
-                    "--slots",
-                    &worker.slots.to_string(),
-                    "--memory-bytes",
-                    &worker.memory_bytes.to_string(),
-                    "--cpu-millis",
-                    &worker.cpu_millis.to_string(),
-                    "--poll-ms",
-                    &worker.poll_ms.to_string(),
-                ])
-                .arg("--state")
-                .arg(config.state.join("workers").join(&worker.id));
-            if let Some(profile) = &worker.profile {
-                command.arg("--config").arg(profile);
-            }
-            if let Some(node) = &config.node {
-                command.arg("--node-socket").arg(&node.socket);
-            }
-            if config.pool.is_some() && worker.backend == "vm" {
-                command.arg("--memory-pool").arg(config.pool_socket());
-            }
-            add(format!("worker:{}", worker.id), command);
-        }
         ensure!(!roles.is_empty(), "service configuration has no roles");
         ensure!(
             config.limits.keys().all(|name| roles.contains_key(name)),
             "limits name an unconfigured role"
         );
-        for (name, role) in &mut roles {
+        for role in roles.values_mut() {
             role.command.env("TOKIO_WORKER_THREADS", "2");
-            if name != "controller" {
-                role.command.env_remove("PVISOR_CLUSTER_TOKEN");
-                if let Some(controller) = &config.controller {
-                    role.command.env_remove(&controller.admin_token_env);
-                }
-            }
         }
         Ok(Self { config, roles })
     }
@@ -440,7 +272,7 @@ impl Manager {
     fn status(&mut self) -> anyhow::Result<serde_json::Value> {
         self.refresh()?;
         Ok(
-            serde_json::json!({"kernel_limits": self.config.cgroup_root.is_some(), "roles": self.roles.iter().map(|(name, role)| (name, serde_json::json!({"pid": role.child.as_ref().and_then(Child::id), "state": if role.child.is_some() { "running" } else { "stopped" }, "exit": role.exit, "readiness": if name.starts_with("worker:") { "process_started" } else { "endpoint_checked_at_start" }}))).collect::<BTreeMap<_, _>>() }),
+            serde_json::json!({"kernel_limits": self.config.cgroup_root.is_some(), "roles": self.roles.iter().map(|(name, role)| (name, serde_json::json!({"pid": role.child.as_ref().and_then(Child::id), "state": if role.child.is_some() { "running" } else { "stopped" }, "exit": role.exit, "readiness": "endpoint_checked_at_start"}))).collect::<BTreeMap<_, _>>() }),
         )
     }
     async fn status_with_resources(&mut self) -> anyhow::Result<serde_json::Value> {
@@ -503,9 +335,6 @@ impl Manager {
         Ok(())
     }
     async fn ready(&mut self, name: &str) -> anyhow::Result<()> {
-        if name.starts_with("worker:") {
-            return Ok(());
-        }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             self.refresh()?;
@@ -514,16 +343,6 @@ impl Manager {
                 "service role {name} exited during startup; inspect its log"
             );
             let ready = match name {
-                "controller" => {
-                    let controller = self.config.controller.as_ref().unwrap();
-                    reqwest::Client::new()
-                        .get(format!("{}/health", self.config.controller_url().unwrap()))
-                        .bearer_auth(token(&controller.admin_token_env)?)
-                        .timeout(Duration::from_secs(1))
-                        .send()
-                        .await
-                        .is_ok_and(|reply| reply.status().is_success())
-                }
                 "node" => {
                     let socket = self.config.node.as_ref().unwrap().socket.clone();
                     tokio::task::spawn_blocking(move || crate::node::stats(&socket))
@@ -552,10 +371,10 @@ impl Manager {
     }
     async fn protect(&mut self, name: &str) -> anyhow::Result<()> {
         self.refresh()?;
-        if name == "node"
+        if matches!(name, "node" | "pool")
             && self
                 .roles
-                .get(name)
+                .get("node")
                 .is_some_and(|role| role.child.is_some())
         {
             let socket = self.config.node.as_ref().unwrap().socket.clone();
@@ -563,15 +382,6 @@ impl Manager {
             ensure!(
                 stats["active_pins"].as_u64() == Some(0),
                 "node has active pins; drain dependent tasks first"
-            );
-        }
-        if name == "pool" {
-            ensure!(
-                !self
-                    .roles
-                    .iter()
-                    .any(|(name, role)| name.starts_with("worker:") && role.child.is_some()),
-                "drain and stop Workers before stopping the cold pool"
             );
         }
         Ok(())
@@ -588,7 +398,7 @@ impl Manager {
                     "cannot signal service role"
                 );
             }
-            // Do not kill data owners if a Worker cannot finish native teardown.
+            // Retain data owners if graceful teardown cannot finish.
             let status = tokio::time::timeout(Duration::from_secs(30), child.wait())
                 .await
                 .context("role still draining; data owners were retained")??;
@@ -598,16 +408,7 @@ impl Manager {
         Ok(())
     }
     async fn stop_all(&mut self) -> anyhow::Result<()> {
-        let workers: Vec<_> = self
-            .roles
-            .keys()
-            .filter(|name| name.starts_with("worker:"))
-            .cloned()
-            .collect();
-        for worker in workers {
-            self.stop_role(&worker).await?;
-        }
-        for name in ["pool", "node", "controller"] {
+        for name in ["pool", "node"] {
             if self.roles.contains_key(name) {
                 self.stop_role(name).await?;
             }
@@ -723,11 +524,8 @@ fn install_limits(
 
 pub async fn run(args: ServiceArgs) -> anyhow::Result<()> {
     let (path, request) = match args.command {
-        ServiceCommand::Cluster(tool) => {
-            return crate::companions::dispatch("cluster", &tool.args);
-        }
-        ServiceCommand::Worker(tool) => {
-            return crate::companions::dispatch("worker", &tool.args);
+        ServiceCommand::Daemon(tool) => {
+            return crate::companions::dispatch("daemon", &tool.args);
         }
         ServiceCommand::Cache(tool) => {
             return crate::companions::dispatch("cache", &tool.args);
@@ -784,17 +582,10 @@ async fn supervise(path: &Path) -> anyhow::Result<()> {
     active.persist(&active_path)?;
     let (listener, _socket) = crate::node::SocketGuard::bind(&config.management_socket())?;
     let mut manager = Manager::new(config.clone(), &active_path)?;
-    let names: Vec<_> = ["controller", "node", "pool"]
+    let names: Vec<_> = ["node", "pool"]
         .into_iter()
         .filter(|name| manager.roles.contains_key(*name))
         .map(str::to_owned)
-        .chain(
-            manager
-                .roles
-                .keys()
-                .filter(|name| name.starts_with("worker:"))
-                .cloned(),
-        )
         .collect();
     for name in names {
         if let Err(error) = async {
@@ -869,12 +660,14 @@ async fn read_request(stream: &mut BufReader<UnixStream>) -> anyhow::Result<Requ
 mod tests {
     use super::*;
     #[test]
-    fn reject_unknown_fields_and_unsafe_worker_ids() {
+    fn reject_unknown_fields_and_retired_control_plane() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("service.toml");
         for text in [
             "unrecognized = true",
-            "[[workers]]\nid = '../outside'",
+            "[controller]",
+            "workers = []",
+            "worker = {}",
             "[[workers]]\nid = 'same'\n[[workers]]\nid = 'same'",
             "[[workers]]\nslots = 0",
         ] {
@@ -886,23 +679,23 @@ mod tests {
     fn configuration_paths_are_relative_to_config_and_service_state() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("service.toml");
-        fs::write(&path, "state = 'state'\n[controller]\n[node]\ncache_location = 'cache'\n[[workers]]\nid = 'one'\nprofile = 'profile.toml'\n").unwrap();
+        fs::write(
+            &path,
+            "state = 'state'\n[node]\ncache_location = 'cache'\nsnapshot_roots = ['snapshots']\n",
+        )
+        .unwrap();
         let config = Config::load(&path).unwrap();
         assert_eq!(
             config.node.as_ref().unwrap().socket,
             directory.path().join("state/node/node.sock")
         );
         assert_eq!(
+            config.node.as_ref().unwrap().snapshot_roots,
+            vec![directory.path().join("snapshots")]
+        );
+        assert_eq!(
             config.node.as_ref().unwrap().cache_location.as_deref(),
             directory.path().join("cache").to_str()
-        );
-        assert_eq!(
-            config.controller.unwrap().journal,
-            directory.path().join("state/controller/journal")
-        );
-        assert_eq!(
-            config.workers[0].profile,
-            Some(directory.path().join("profile.toml"))
         );
     }
 }

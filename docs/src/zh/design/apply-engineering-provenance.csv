@@ -1,0 +1,3 @@
+cohort,report_sha256,audit_sha256,scope
+6ab2,e7524f8e6286856677d5b3d25d9591ae8278d5176664166e479524acdc437855,5e434e21004bd2a9d7e40aa5401012cc3c30ca467574a131937e7d0f5f6d1b63,independent command/exit/conflict/ledger/build/harness checks; full original/staged/final contents checked at runtime by retained harness before generated workspace and upper cleanup
+6at2,95be94cddbe3de358c206636d4c60b5813b2dbea436f90724931ca02366f8015,af6864d6a32b1d788e653ac0d1ca68fdb72d57eae1301d251d4d0c387028cc1f,all retained traced apply/refusal processes; complete successful/refused exits; selected file/descriptor classes; tracing-perturbed durations not formal performance; profile spans inclusive

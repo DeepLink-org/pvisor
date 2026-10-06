@@ -2,6 +2,8 @@
 
 Gateway 是嵌入 pVisor 的运行时驱动，负责模型调用路由和已观察流量的记录。它随 Run 启停，公共 CLI 不提供独立 Gateway daemon。
 
+[Sandbox daemon](daemon/index.md) 未嵌入该 Gateway。它的 execd/egress 端点代理转发预制 OpenSandbox 服务，不提供模型路由／捕获、推理空闲 pause 协调或 CPU 预留释放。即使都转发 HTTP，这仍是不同数据路径。
+
 ## 数据路径
 
 ```text

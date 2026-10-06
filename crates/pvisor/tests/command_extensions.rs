@@ -160,7 +160,7 @@ fn service_tools_are_nested_and_preserve_arguments_and_exit() {
     let kernel = temporary.path().join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
     let marker = temporary.path().join("executed");
-    for tool in ["cluster", "worker", "cache", "memory-pool"] {
+    for tool in ["daemon", "cache", "memory-pool"] {
         let companion = temporary.path().join(format!("pvisor-{tool}"));
         fs::write(
             &companion,
@@ -206,15 +206,27 @@ fn service_tools_are_nested_and_preserve_arguments_and_exit() {
         "status",
         "restart",
         "stop",
-        "cluster",
-        "worker",
+        "daemon",
         "cache",
         "memory-pool",
     ] {
         assert!(help.contains(&format!("  {name} ")), "{help}");
     }
     assert!(!help.contains("  node "));
-    for tool in ["cluster", "worker", "cache", "memory-pool"] {
+    for retired in ["cluster", "worker"] {
+        assert!(!help.contains(&format!("  {retired} ")), "{help}");
+        // Even an installed old binary must not restore the retired command.
+        let companion = temporary.path().join(format!("pvisor-{retired}"));
+        fs::write(&companion, "#!/bin/sh\nexit 42\n").unwrap();
+        fs::set_permissions(companion, fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::new(&kernel)
+            .args(["service", retired])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
+    }
+    for tool in ["daemon", "cache", "memory-pool"] {
         let output = Command::new(&kernel)
             .args(["service", tool, "space argument", "--literal", ""])
             .output()

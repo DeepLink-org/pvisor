@@ -12,18 +12,18 @@ are in
 
 ## Service commands {#service}
 
-Top-level commands operate Jobs. Deployments, cluster tasks and shared node resources use `service`. `run/status/restart/stop --config FILE` manage a deployment and its roles; resource tools retain their original arguments after the corresponding subcommand:
+Top-level commands operate native Jobs. `service` manages native node resources and dispatches installed companions. `run/status/restart/stop --config FILE` manage configured native roles; the single-node sandbox daemon has its own lifecycle API and persistent state.
 
 ```bash
 pvisor service --help
-pvisor service cluster --help
-pvisor service worker --help
+pvisor service daemon --help
 pvisor service cache --help
 pvisor service memory-pool --help
-pvisor help service cluster submit
 ```
 
-Use `service cluster/worker/cache/memory-pool` for resource tools; tool help and errors show these nested invocation names. Names outside the current commands follow default execution rules, without retired-command aliases or migration handlers. Use `pvisor -- COMMAND` for explicit default execution. See the [unified service guide](../guides/cluster/service.md) for configuration, budgets and acceptance, and the [command model](../design/cli.md) for responsibilities.
+Use `service cache/memory-pool` for the native resource tools. `service daemon` passes arguments unchanged to a separately installed, matching adjacent `pvisor-daemon`; check `pvisor service --help` when using an older build. The daemon can always be invoked directly after separate installation; follow the [daemon installation guide](../guides/daemon/index.md). It does not integrate native VM, checkpoint/fork or stage/apply. Controller/Worker task tools and their configuration are retired. See [service entry points](../guides/daemon/service.md) for native node/cache/pool ownership and deployment boundaries.
+
+Names outside the current commands follow default execution rules, without retired-command aliases or migration handlers. Use `pvisor -- COMMAND` for explicit default execution.
 
 ## Find the command you need
 
@@ -174,7 +174,7 @@ Filesystems:
   drop        Discard staged changes
 
 Extensions:
-  service     Deployment lifecycle and cluster/worker/cache/memory-pool
+  service     Native service lifecycle and installed daemon/cache/memory-pool companions
   replay      Replay an Agent trajectory (when installed)
   tui         Interactive Job terminal (when installed)
 ```
@@ -284,7 +284,7 @@ The current native profile supports Linux x86_64 and macOS ARM64 with no network
 
 When the stage is inside the workspace, capture storage is placed outside guest backing roots and recorded as Job-owned. When necessary, restored file copies also use an independent directory, with their paths retained in the Attempt record for review/apply. Capture retains the guest-visible projection, excluding stage management directories already hidden from the guest. Visible content, metadata and hard-link audits remain complete.
 
-Suspended Jobs refuse apply/drop and workspace capture. `kill JOB` withdraws continuation rights while retaining checkpoint history, allowing subsequent workspace decisions. Execution checkpoints share list/show/delete entries with workspace checkpoints; deletion checks the suspended head, branch references and storage leases. Branch references are retained conservatively; Job deletion/archiving has no release interface yet. GC collects unpublished transactions, tombstones and unreferenced RAM content in this Job's stores, never published checkpoints. It is not cross-Job/Cluster store-wide collection.
+Suspended Jobs refuse apply/drop and workspace capture. `kill JOB` withdraws continuation rights while retaining checkpoint history, allowing subsequent workspace decisions. Execution checkpoints share list/show/delete entries with workspace checkpoints; deletion checks the suspended head, branch references and storage leases. Branch references are retained conservatively; Job deletion/archiving has no release interface yet. GC collects unpublished transactions, tombstones and unreferenced RAM content in this Job's stores, never published checkpoints. It is not cross-Job store-wide collection and does not clean daemon sandbox state.
 
 Immutable base management uses `checkpoint import-base JOB ROOTFS --json` and `checkpoint verify-base JOB BASE_ID --json`. Import returns an owned rootfs path usable by subsequent ordinary `run --rootfs`. The standalone snapshot frontend remains removed, and old stores are not automatically converted into Job checkpoints. See [Job checkpoint design](../design/job-checkpoint-cli.md#10-当前实现与验收边界) for implementation and acceptance.
 
@@ -801,4 +801,4 @@ and the native container executor keep their current behavior. See the
 limits and SSH remote access.
 
 
-Experimental macOS memory-pool entry points are `pvisor service memory-pool SOCKET` and `pvisor run --vm-memory-pool SOCKET`. Keep the pool running: stopping it fails dependent VMs. See [first-version memory sharing integration](../design/memory-sharing/index.md#v1-integration) for configuration, budgets and usage.
+Experimental macOS memory-pool entry points are `pvisor service memory-pool SOCKET` and `pvisor run --vm-memory-pool SOCKET`. Keep the pool running: stopping it fails dependent VMs. See [first-version memory sharing integration](../design/memory-optimization/proof-of-concept.md#v1-integration) for configuration, budgets and usage.

@@ -32,7 +32,7 @@ Separated clusters are reported with counts and individual medians. The descript
 
 Docker writable bind mounts write directly to the host; pVisor staging retains changes until apply. Firecracker/QEMU use private ext4, while pVisor VM uses virtio-fs with different kernels and devices. This is not a pure VMM or production-security ranking. Standalone staging boundaries follow actual records and [isolation checks](isolation-tests.md).
 
-RSS sums sampled process scopes and may double-count shared pages or miss short peaks. Docker must include actual container processes and identify its dedicated daemon. Cluster memory sums non-overlapping cgroups. Configured RAM, RSS, macOS RAM proxies and net physical memory are distinct metrics.
+RSS sums sampled process scopes and may double-count shared pages or miss short peaks. Docker must include actual container processes and identify its dedicated daemon. Whole-group memory must include all descendants, backing and charged cache, without double-counting overlapping cgroups. Configured RAM, RSS, macOS RAM proxies and net physical memory are distinct metrics.
 
 ## Data and analysis {#results}
 
@@ -50,7 +50,7 @@ q35 and microvm use one Ubuntu template. Their samples and percentiles remain se
 
 ### Tasks and resources {#product-v1}
 
-[Application](apply.md) · [Network](network.md) · [Concurrency](density.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md) · [Review](supervision-cost.md) · [Cluster](cluster-scalability.md). Unmeasured industry alternatives are marked explicitly, without marketing numbers filling gaps.
+[Application](apply.md) · [Network](network.md) · [Concurrency](density.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md) · [Review](supervision-cost.md). Unmeasured industry alternatives are marked explicitly, without marketing numbers filling gaps.
 
 ### Filesystem engineering experiments {#filesystem-service}
 

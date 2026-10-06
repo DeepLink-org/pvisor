@@ -51,13 +51,17 @@ def check_target(work, count, prefix):
     )
 
 
-def staged_trial(ctx, count, action, trial):
+def staged_trial(ctx, count, action, trial, *, syscall_tracer=None):
     root, work, stage = prepare(ctx, count, f"{action}-{count}")
     if action == "conflict":
         (work / "files/f000000").write_text("concurrent-host-edit\n")
     argv = [str(ctx.binary), action if action != "conflict" else "apply", str(stage)]
     if action != "drop":
         argv += ["--all"]
+    if syscall_tracer is not None:
+        argv=[str(syscall_tracer),'-ff','--decode-fds=path','-ttt','-T',
+            '-e','trace=%file,%desc',
+            '-o',str(root/'syscalls'),'--',*argv]
     wall, _, _ = ctx.run(argv, cwd=work, expected=1 if action == "conflict" else 0, timeout=600)
     if action == "apply":
         check_target(work, count, "new")
@@ -102,9 +106,8 @@ def run(ctx, *, include_git=False):
     if not sizes or min(sizes) < 1 or len(sizes) != len(set(sizes)):
         raise ValueError("apply sizes must be distinct positive file counts")
     actions = ["apply", "drop", "conflict", "copy"] + (["git-apply"] if include_git else [])
-    counts = {count: min(ctx.args.samples, 3 if count >= 100000 else 10 if count >= 1000 else 30)
-              for count in sizes}
-    warmups = {count: 0 if count >= 100000 else min(ctx.args.warmups, 1) for count in sizes}
+    counts = {count: ctx.args.samples for count in sizes}
+    warmups = {count: ctx.args.warmups for count in sizes}
     seed = ctx.args.seed
     ctx.metadata["apply_protocol"] = dict(
         sizes=sizes, actions=actions, samples_per_size=counts, warmups_per_size=warmups,

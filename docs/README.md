@@ -168,8 +168,8 @@ state the current public record and keep engineering follow-ups below.
 
 ## Core design
 
-- [Cluster quickstart](src/zh/guides/cluster/index.md): bounded host/VM/Gateway walkthroughs and an executable verifier; [English](src/en/guides/cluster/index.md).
-- [Cluster architecture](src/zh/design/cluster/index.md): Worker-reconciled runtime state, scheduling, native lifecycle, storage, APIs and operational boundaries; [English](src/en/design/cluster/index.md).
+- [Daemon quickstart](src/zh/guides/daemon/index.md): single-node sandbox management, the pinned OpenSandbox API profile and prepared-image prerequisites; [English](src/en/guides/daemon/index.md).
+- [Daemon architecture](src/zh/design/daemon/index.md): local admission, lifecycle, durable ownership, APIs and recovery boundaries; native Job/VM execution remains separate; [English](src/en/design/daemon/index.md).
 - [Core architecture](src/zh/design/architecture.md): core owns definitions; pvisor owns scheduling and execution; drivers implement actual boundaries.
 - [Operation and Event](src/zh/design/operations-events.md): requests, actual rewrites, Placement, outcomes, causal facts and reconstruction limits.
 - [Design principles](src/zh/design/principles.md): ownership, causality and evidence rules.
@@ -286,16 +286,16 @@ The original acceptance requirements remain below. Measurements, generated refer
 
 **Requirements**
 
-- Metrics: cross-node scheduling throughput, centralized-evidence audit cost, single-cluster concurrency limit.
-- Controls: native Kubernetes and Ray scheduling.
-- Workload: batch agent execution across multiple nodes.
-- Environment: multi-machine cluster; pinned scheduler versions.
+- Metrics: single-node useful-work density and execution/evidence overhead under fixed resource budgets.
+- Controls: native execution and external Kubernetes or Ray orchestration, with pinned versions.
+- Workload: independent sandboxes; cross-node placement, retries and workflows remain external.
+- Environment: one measured node first; any external multi-node experiment has a separately declared scope.
 
 **Acceptance criteria**
 
 - pVisor defines execution semantics without replacing schedulers.
-- Gaps and phases.
-- Align with density measurements.
+- Distinguish the daemon's current external Podman adapter from proposed native executor integration.
+- Align claims with measured density; retired Cluster measurements are not daemon evidence.
 
 ### design/research/publications.md
 

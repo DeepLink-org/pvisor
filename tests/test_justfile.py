@@ -28,7 +28,7 @@ def run_task(tmp_path):
         "if name == 'python3' and args[0] == 'scripts/build-pvisor.py':\n"
         "    profile = args[args.index('--profile') + 1]\n"
         "    target = Path(args[args.index('--target-dir') + 1])\n"
-        "    names = ['pvisor', 'pvisor-cluster', 'pvisor-worker', 'pvisor-cache', 'pvisor-tui', 'pvisor-replay', 'pvisor-memory-pool']\n"
+        "    names = ['pvisor', 'pvisor-daemon', 'pvisor-cache', 'pvisor-tui', 'pvisor-replay', 'pvisor-memory-pool']\n"
         "    for binary_name in names:\n"
         "        binary = target / ('debug' if profile == 'dev' else profile) / binary_name\n"
         "        binary.parent.mkdir(parents=True, exist_ok=True)\n"
@@ -100,6 +100,49 @@ def test_vm_package_signs_before_running_native_tests(run_task):
         else []
     )
     assert commands == signing + [["cargo", "nextest", "run", "--locked", "-p", "pvisor-vm"]]
+
+
+def test_daemon_build_selects_only_the_new_package_and_bin(run_task, tmp_path):
+    commands = run_task("daemon-build")
+    assert commands == [
+        [
+            "cargo",
+            "build",
+            "--locked",
+            "-p",
+            "pvisor-daemon",
+            "--bin",
+            "pvisor-daemon",
+            "--no-default-features",
+            "--target-dir",
+            str(tmp_path / "target with spaces"),
+        ]
+    ]
+    assert run_task("test-daemon") == [
+        ["cargo", "nextest", "run", "--locked", "-p", "pvisor-daemon"]
+    ]
+
+
+@pytest.mark.parametrize("package", ["pvisor", "nativepvisor"])
+def test_native_executor_package_keeps_hvf_signing(run_task, package):
+    commands = run_task("test", package)
+    signing = (
+        [["python3", "scripts/sign-vm-tests.py", "-p", package]] if sys.platform == "darwin" else []
+    )
+    assert commands == signing + [["cargo", "nextest", "run", "--locked", "-p", package]]
+
+
+def test_cluster_only_recipes_are_retired():
+    recipes = set(
+        subprocess.check_output(
+            ["just", "--justfile", str(ROOT / "justfile"), "--summary"], text=True
+        ).split()
+    )
+    assert not any("cluster" in name for name in recipes)
+    assert "test-service" not in recipes
+    assert "test-service-vm" not in recipes
+    assert {"service-build", "daemon-build", "daemon-install", "test-daemon"} <= recipes
+    assert {"test-hvf-cold-restore", "test-vm-snapshot-state", "vm-cases"} <= recipes
 
 
 def test_ci_checks_format_without_rewriting(run_task):
