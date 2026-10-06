@@ -124,8 +124,14 @@ No security audit or hostile multi-user assurance is claimed.
 
 - One daemon exclusively locks a private state directory. Owner identity and
   sandbox records are atomically persisted before native creation/control.
-- Runtime operations authenticate private IPC using same-UID peer credentials,
-  owner, sandbox ID, generation and secret token. Durable identity binds the boot
+- Runtime operations use core `AgentCtlHostRequest`/`AgentCtlHostResponse` version-1
+  envelopes over newline-delimited JSON (maximum 1 MiB payload, no length prefix).
+  Responses must correlate the request ID and echo the authenticated owner/target.
+  Private IPC authenticates same-UID peer credentials, namespace owner, sandbox Job
+  ID, explicit Attempt ID, generation and secret token. Missing generation or
+  Attempt cannot resolve to the current instance. The token remains private and
+  separate from host API, lifecycle and guest credentials; cooperative guest
+  AgentCtl never grants supervisor authority. Durable identity binds the boot
   ID and cgroup device/inode. Sandbox IDs are never reused or relaunched; lost
   IPC is uncertainty, not Missing or proof of cleanup.
 - Runtime pause/resume return the confirmed live `RuntimeState` from the
@@ -134,7 +140,9 @@ No security audit or hostile multi-user assurance is claimed.
   returned state and commits it without another inspection. Native state, cgroup
   limit, deletion-fence and resume service-readiness checks remain in the supervisor.
   Failed/lost acknowledgements retain the intention and reservation for reconciliation;
-  they do not prove the control was unapplied.
+  they do not prove the control was unapplied. A control retry that inspects the
+  desired live state commits that observation before succeeding, without requiring
+  a GET. Pending deletion, expiration and uncertain storage still fence control.
 - Delete persists monotonic intent and uses the supervisor's exclusive lock to
   fence late launch. Cleanup uses identity-bound `cgroup.kill`, never a persisted
   PID or PID-based kill, and confirms an empty cgroup plus released owner lock
@@ -161,11 +169,16 @@ No security audit or hostile multi-user assurance is claimed.
   environment HTTP proxies and automatic decompression are disabled. Repeated
   response headers/query are preserved; hop-by-hop and control secret headers
   are removed. WebSocket/CONNECT are rejected.
-- Endpoint resolution and connection establishment share the sandbox lifecycle
-  lock, preventing daemon-managed delete/port reuse during establishment. Upload
-  plus upstream-header wait is capped at 120 seconds; established response streams
-  have no total timeout. Host-side external runtime manipulation is outside this
-  coordination boundary.
+- Proxies take shared admission on the sandbox lifecycle gate; lifecycle operations
+  take exclusive access. Concurrent proxies do not serialize, and a queued lifecycle
+  writer prevents new proxies from entering. Admission retains the port-reuse fence
+  through endpoint resolution, upload and upstream headers, capped together at
+  120 seconds. Reqwest does not expose a separate connection establishment boundary,
+  so lifecycle operations can still wait up to the remaining admission timeout for
+  already-admitted proxies; shared admission does not preempt them. Established
+  response streams hold no admission and have no total timeout. Idle upstream connection pooling is disabled to avoid
+  reusing connections across recycled loopback ports. Host-side external runtime
+  manipulation is outside this coordination boundary.
 - TTL cleanup is best effort, not a hard execution deadline: native commands,
   uploads/header waits and same-sandbox controls can delay it. New proxy requests
   are rejected after expiration. Stream/output quotas remain upstream responsibilities.
@@ -206,6 +219,12 @@ staging and `.records-retired-*` directories are reclaimed only after validating
 private ownership, reserved names and regular-file types without following
 symlinks or requiring incomplete payloads to deserialize. An uncertain activation
 fails the open; the next open uses the surviving header.
+
+The supervisor wire migration is not compatible with already-running binaries using
+private length-prefixed `Request`/`Reply` frames. There is no legacy framing fallback.
+Before upgrading, delete those sandboxes through the old daemon and confirm cleanup;
+do not erase identity/registry records to bypass uncertainty. Durable identity and
+runtime state representations are unchanged.
 
 Keep the same state directory and compatible runtime configuration across restarts.
 Never delete state to fix an error: it carries native ownership and unresolved
@@ -284,8 +303,8 @@ Suggested targeted checks when execution is allowed:
 just test pvisor-daemon
 ```
 
-The retirement cleanup was checked statically only. No compilation, tests or
-product code (including native sandboxes) were run.
+These conventional tests do not launch native sandboxes or establish prepared-image,
+SDK, isolation or density validation.
 
 ## Implementation ownership
 

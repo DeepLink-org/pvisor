@@ -18,6 +18,21 @@ def test_guest_accepts_successful_task_and_shutdown():
     validate_guest_output(guest(), "tools")
 
 
+@pytest.mark.parametrize('output', [
+    guest() + 'REFERENCE_EXIT 0\n',
+    guest() + 'REFERENCE_EXIT 1\n',
+    guest().replace('REFERENCE_READY', 'REFERENCE_READY invalid'),
+    guest().replace('REFERENCE_READY\r\n', ''),
+    guest() + 'REFERENCE_READY\n',
+    guest() + 'REFERENCE_RESULT invalid\n',
+    guest() + 'kernel panic - late failure\n',
+    guest().replace('REFERENCE_READY\r\n', '') + 'REFERENCE_READY\n',
+])
+def test_guest_requires_unique_ordered_markers(output):
+    with pytest.raises(ValueError):
+        validate_guest_output(output, 'tools')
+
+
 @pytest.mark.parametrize("fault", [None, "missing-file", "truncated-file", "wrong-content", "symlink"])
 def test_direct_control_requires_writes_in_workspace(tmp_path, fault):
     written = tmp_path / "_fs/written"
@@ -357,6 +372,153 @@ def test_observed_budget_violation_cannot_be_published_as_unknown(tmp_path, monk
     assert record['unknown_observations'] == []
     assert json.loads((trial / 'command.json').read_text())['exit'] == 0
     assert (trial / 'workspace').exists()
+
+
+@pytest.mark.parametrize('backend', ['fc-system', 'fc-reference', 'firecracker'])
+@pytest.mark.parametrize('policy', ['normal', 'ready-only'])
+def test_fc_policy_keeps_generic_exit_gate_and_same_launch_config(tmp_path, monkeypatch, backend, policy):
+    import json
+    import sys
+    from types import SimpleNamespace
+    import reference_baselines as runner
+
+    assets = tmp_path / 'assets'
+    (assets / 'rootfs/work').mkdir(parents=True)
+    (assets / 'agent-env.ext4').write_bytes(b'same prepared disk')
+    (assets / 'vmlinux').write_bytes(b'legacy kernel')
+    args = SimpleNamespace(output=tmp_path / 'output', assets=assets, cpu_affinity='',
+                           docker_root_pid=None, resource_budget=None, resource_observation='off',
+                           fc_ready_policy=policy)
+    identity = {'paths': {'kernel': '/frozen/kernel', 'initrd': '/frozen/initrd'},
+                'record': {'variant': backend}}
+    monkeypatch.setattr(runner, 'fc_kernel', lambda a, b: None if b == 'firecracker' else identity)
+    original = runner.subprocess.Popen
+
+    def launch(argv, **kwargs):
+        if argv[0] == 'cp':
+            return original(argv, **kwargs)
+        assert argv[:3] == ['firecracker', '--enable-pci', '--no-api']
+        config = json.loads((args.output / f'trials/ready-{backend}-000/firecracker.json').read_text())
+        assert config['machine-config'] == {'vcpu_count': 2, 'mem_size_mib': 128}
+        assert config['boot-source']['boot_args'] == 'console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/bench/init quiet pvbench.mode=ready pvbench.scratch=executor'
+        assert config['logger']['level'] == 'Warning'
+        assert (assets / 'agent-env.ext4').read_bytes() == b'same prepared disk'
+        script = f"import os,time;os.write(1,{guest(mode='ready').encode()!r});"
+        # A normal nonzero VMM exit is always rejected, even after valid markers.
+        script += 'time.sleep(2)' if policy == 'ready-only' else 'raise SystemExit(7)'
+        return original([sys.executable, '-c', script], **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, 'Popen', launch)
+    if policy == 'normal':
+        with pytest.raises(RuntimeError, match='exit 7'):
+            runner.run_trial(args, {'assets': {'docker_image': 'unused'}}, backend, 'ready', 0)
+    else:
+        row = runner.run_trial(args, {'assets': {'docker_image': 'unused'}}, backend, 'ready', 0)
+        assert row['completion_ms'] is None
+        assert row['controlled_sigterm']
+        assert row['ready_ms'] >= 0
+        assert row['kernel_variant'] == ('legacy-reference/unknown' if backend == 'firecracker' else backend)
+
+
+@pytest.mark.parametrize('output', [
+    guest(mode='ready').replace('REFERENCE_EXIT 0', 'REFERENCE_EXIT 1'),
+    guest(mode='ready').replace('REFERENCE_READY\r\n', ''),
+    guest(mode='ready').replace('REFERENCE_READY', 'REFERENCE_READY\nREFERENCE_READY'),
+    guest(mode='ready', correctness='failed'),
+    'Kernel panic - failure\n' + guest(mode='ready'),
+    guest(mode='ready').replace('{"mode":"ready","correctness":"passed"}', '[]'),
+])
+def test_ready_only_invalid_markers_never_authorize_sigterm(tmp_path, monkeypatch, output):
+    import json
+    import sys
+    from types import SimpleNamespace
+    import reference_baselines as runner
+
+    assets = tmp_path / 'assets'
+    (assets / 'rootfs/work').mkdir(parents=True)
+    (assets / 'agent-env.ext4').write_bytes(b'disk')
+    args = SimpleNamespace(output=tmp_path / 'output', assets=assets, cpu_affinity='',
+                           docker_root_pid=None, resource_budget=None, resource_observation='off',
+                           fc_ready_policy='ready-only')
+    original = runner.subprocess.Popen
+
+    def launch(argv, **kwargs):
+        if argv[0] == 'cp':
+            return original(argv, **kwargs)
+        return original([sys.executable, '-c', f'import os;os.write(1,{output.encode()!r})'], **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, 'Popen', launch)
+    with pytest.raises((ValueError, RuntimeError, AssertionError)):
+        runner.run_trial(args, {'assets': {'docker_image': 'unused'}}, 'firecracker', 'ready', 0)
+    command = json.loads((args.output / 'trials/ready-firecracker-000/command.json').read_text())
+    assert not command['controlled_sigterm']
+
+
+@pytest.mark.parametrize('backend', ['native', 'firecracker', 'fc-system', 'fc-reference'])
+def test_ready_only_never_applies_to_other_workloads(tmp_path, backend):
+    from types import SimpleNamespace
+    from reference_baselines import run_trial
+    with pytest.raises(ValueError, match='restricted to ready'):
+        run_trial(SimpleNamespace(output=tmp_path, fc_ready_policy='ready-only'), {}, backend, 'tools', 0)
+
+
+def test_public_cli_exposes_explicit_fc_variants_and_policy():
+    import subprocess
+    import sys
+    from pathlib import Path
+    help_text = subprocess.check_output([sys.executable, str(Path(__file__).with_name('reference_baselines.py')), '--help'], text=True)
+    for option in ('--fc-system-receipt', '--fc-reference-receipt', '--fc-ready-policy', '--qemu-system-receipt'):
+        assert option in help_text
+
+
+@pytest.mark.parametrize('backend', ['qemu', 'qemu-microvm'])
+@pytest.mark.parametrize('changed', [False, True])
+def test_qemu_boots_stock_vmlinuz_and_initrd_and_rechecks_receipt(tmp_path, monkeypatch, backend, changed):
+    import json
+    import sys
+    from types import SimpleNamespace
+    import reference_baselines as runner
+
+    assets = tmp_path / 'assets'
+    (assets / 'rootfs/work').mkdir(parents=True)
+    (assets / 'agent-env.ext4').write_bytes(b'same prepared disk')
+    args = SimpleNamespace(output=tmp_path / 'output', assets=assets, cpu_affinity='',
+                           resource_budget=None, resource_observation='off',
+                           qemu_system_receipt=tmp_path / 'receipt.json')
+    identity = {'paths': {'vmlinuz': '/frozen/stock-vmlinuz', 'initrd': '/frozen/stock-initrd'},
+                'record': {'variant': 'fc-system'}}
+    calls = []
+
+    def verify(path, kind):
+        assert path == args.qemu_system_receipt and kind == 'fc-system'
+        calls.append(path)
+        if changed and len(calls) > 1:
+            raise ValueError('kernel artifact hash mismatch: vmlinuz')
+        return identity
+
+    monkeypatch.setattr(runner, 'verify_kernel_receipt', verify)
+    original = runner.subprocess.Popen
+
+    def launch(argv, **kwargs):
+        if argv[0] == 'cp':
+            return original(argv, **kwargs)
+        assert argv[0] == 'qemu-system-x86_64'
+        assert argv[argv.index('-kernel') + 1] == '/frozen/stock-vmlinuz'
+        assert argv[argv.index('-initrd') + 1] == '/frozen/stock-initrd'
+        assert argv[argv.index('-smp') + 1] == '2'
+        assert argv[argv.index('-m') + 1] == '128'
+        return original([sys.executable, '-c', f'import os;os.write(1,{guest(mode="ready").encode()!r})'], **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, 'Popen', launch)
+    if changed:
+        with pytest.raises(ValueError, match='hash mismatch'):
+            runner.run_trial(args, {'assets': {'docker_image': 'unused'}}, backend, 'ready', 0)
+    else:
+        row = runner.run_trial(args, {'assets': {'docker_image': 'unused'}}, backend, 'ready', 0)
+        assert row['kernel_variant'] == 'qemu-system'
+        assert row['kernel_provenance'] == identity
+        assert row['completion_ms'] is not None
+    assert len(calls) == 2
 
 
 def test_same_pid_later_thread_affinity_violation_is_rejected(tmp_path, monkeypatch):

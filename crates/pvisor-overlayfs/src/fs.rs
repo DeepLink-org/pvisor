@@ -16,6 +16,19 @@ use std::os::unix::fs::{FileExt, FileTypeExt, MetadataExt, OpenOptionsExt, Permi
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+fn directory_file_type(type_: u32) -> FileType {
+    match type_ as u8 {
+        libc::DT_DIR => FileType::Directory,
+        libc::DT_REG => FileType::RegularFile,
+        libc::DT_LNK => FileType::Symlink,
+        libc::DT_FIFO => FileType::NamedPipe,
+        libc::DT_SOCK => FileType::Socket,
+        libc::DT_BLK => FileType::BlockDevice,
+        libc::DT_CHR => FileType::CharDevice,
+        _ => FileType::RegularFile,
+    }
+}
+
 const TTL: Duration = Duration::from_secs(1);
 const RENAME_NOREPLACE: u32 = 1;
 const RENAME_EXCHANGE: u32 = 2;
@@ -51,7 +64,7 @@ struct DirectoryEntry {
     ino: u64,
     kind: FileType,
     name: OsString,
-    attr: FileAttr,
+    attr: Option<FileAttr>,
 }
 
 pub struct OverlayFs {
@@ -157,7 +170,7 @@ impl OverlayFs {
         let writing = flags & libc::O_ACCMODE != libc::O_RDONLY
             || flags & (libc::O_APPEND | libc::O_TRUNC) != 0;
         let path = if writing {
-            self.copy_up_inode(ino)?
+            self.copy_up_inode_for_open(ino, flags)?
         } else {
             self.node_path(ino)?
         };
@@ -300,13 +313,20 @@ impl OverlayFs {
     }
 
     fn allocate_inode(&mut self, path: PathBuf, metadata: &fs::Metadata) -> u64 {
-        if let Some(ino) = self.by_path.get(&path) {
-            return *ino;
-        }
-        let object = (!metadata.is_dir() && metadata.nlink() > 1).then_some(ObjectKey {
+        let object = (!metadata.is_dir()).then_some(ObjectKey {
             device: metadata.dev(),
             inode: metadata.ino(),
         });
+        if let Some(ino) = self.by_path.get(&path).copied() {
+            // A pathname may have been replaced since its last lookup. Track
+            // single-link objects too: a surviving hardlink can now have nlink=1.
+            if metadata.is_dir()
+                || object.and_then(|key| self.by_object.get(&key).copied()) == Some(ino)
+            {
+                return ino;
+            }
+            self.remove_inode_prefix(&path);
+        }
         if let Some(ino) = object.and_then(|key| self.by_object.get(&key).copied()) {
             self.add_inode_alias(ino, path);
             return ino;
@@ -477,6 +497,10 @@ impl OverlayFs {
     }
 
     fn copy_up_inode(&mut self, ino: u64) -> io::Result<PathBuf> {
+        self.copy_up_inode_for_open(ino, 0)
+    }
+
+    fn copy_up_inode_for_open(&mut self, ino: u64, flags: i32) -> io::Result<PathBuf> {
         let path = self.node_path(ino)?;
         let aliases = self
             .nodes
@@ -484,7 +508,11 @@ impl OverlayFs {
             .map(|node| node.paths.iter().cloned().collect::<Vec<_>>())
             .unwrap_or_else(|| vec![path.clone()]);
         for alias in aliases {
-            self.core.copy_up(&alias)?;
+            if flags & libc::O_TRUNC != 0 {
+                self.core.prepare_open(&alias, flags)?;
+            } else {
+                self.core.copy_up(&alias)?;
+            }
         }
         let upper = self.core.upper_path(&path);
         let copied = fs::symlink_metadata(&upper)?;
@@ -531,30 +559,108 @@ impl OverlayFs {
                 ino,
                 kind: FileType::Directory,
                 name: OsString::from("."),
-                attr: self.attr(ino, &path)?,
+                attr: None,
             },
             DirectoryEntry {
                 ino: parent_ino,
                 kind: FileType::Directory,
                 name: OsString::from(".."),
-                attr: self
-                    .attr(parent_ino, parent_path)
-                    .or_else(|_| self.attr(FUSE_ROOT_ID, Path::new("")))?,
+                attr: None,
             },
         ];
-        for entry in self.core.list_entries(&path)? {
-            let name = entry.name;
+        for (name, type_) in self.core.directory_candidates(&path)? {
             let child = OverlayCore::child(&path, &name)?;
-            let metadata = entry.backing.metadata;
-            let child_ino = self.allocate_inode(child, &metadata);
+            let kind = if type_ == u32::from(libc::DT_UNKNOWN) {
+                file_type(&self.core.metadata(&child)?)
+            } else {
+                directory_file_type(type_)
+            };
             entries.push(DirectoryEntry {
-                ino: child_ino,
-                kind: file_type(&metadata),
+                // FUSE permits unknown inode numbers in plain READDIR. Assign
+                // object-aware inodes only when LOOKUP/READDIRPLUS needs them.
+                ino: self.by_path.get(&child).copied().unwrap_or(0),
+                kind,
                 name,
-                attr: self.attr_from_metadata(child_ino, &metadata),
+                attr: None,
             });
         }
         Ok(entries)
+    }
+
+    fn directory_entry_attr(&mut self, fh: u64, index: usize) -> io::Result<FileAttr> {
+        let entry = &self.open_directories[&fh][index];
+        if let Some(attr) = entry.attr {
+            return Ok(attr);
+        }
+        let previous_ino = entry.ino;
+        let name = entry.name.clone();
+        // The first snapshot entry pins the handle-owning directory inode.
+        // Follow its current path after rename/exchange, never an old pathname
+        // that could now identify an unrelated replacement directory.
+        let owner = self.open_directories[&fh][0].ino;
+        let directory = self.node_path(owner)?;
+        let path = match index {
+            0 => directory,
+            1 => directory
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .to_path_buf(),
+            _ => OverlayCore::child(&directory, &name)?,
+        };
+        let metadata = self.core.metadata(&path)?;
+        let ino = if index == 0 {
+            owner
+        } else {
+            self.allocate_inode(path, &metadata)
+        };
+        let attr = self.attr_from_metadata(ino, &metadata);
+        let entry = &mut self.open_directories.get_mut(&fh).unwrap()[index];
+        entry.ino = ino;
+        entry.attr = Some(attr);
+        // Replace the entry's handle pin before attempting to reclaim the old
+        // inode; other aliases, handles and lookup references still protect it.
+        if previous_ino != ino {
+            self.reclaim_inode(previous_ino);
+        }
+        self.profile.add("directory_attrs_loaded", 1);
+        Ok(attr)
+    }
+
+    fn buffer_readdirplus(
+        &mut self,
+        fh: u64,
+        offset: i64,
+        mut add: impl FnMut(&DirectoryEntry, i64, &FileAttr) -> bool,
+    ) -> io::Result<()> {
+        if offset < 0 {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
+        let count = self
+            .open_directories
+            .get(&fh)
+            .ok_or_else(|| io::Error::from_raw_os_error(libc::EBADF))?
+            .len();
+        let mut delivered = Vec::new();
+        for index in offset as usize..count {
+            let attr = match self.directory_entry_attr(fh, index) {
+                Ok(attr) => attr,
+                Err(error) if errno(&error) == libc::ENOENT => continue,
+                // reply.error discards the entire buffer, including children
+                // added earlier. None of them acquired a kernel lookup reference.
+                Err(error) => return Err(error),
+            };
+            let entry = &self.open_directories[&fh][index];
+            if add(entry, (index + 1) as i64, &attr) {
+                break;
+            }
+            if index >= 2 {
+                delivered.push(entry.ino);
+            }
+        }
+        for ino in delivered {
+            self.retain_lookup(ino);
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -1241,34 +1347,13 @@ impl Filesystem for OverlayFs {
     ) {
         let profile = self.profile.clone();
         let _span = profile.span("readdirplus");
-        if offset < 0 {
-            reply.error(libc::EINVAL);
-            return;
+        let result = self.buffer_readdirplus(fh, offset, |entry, cookie, attr| {
+            reply.add(entry.ino, cookie, &entry.name, &TTL, attr, 0)
+        });
+        match result {
+            Ok(()) => reply.ok(),
+            Err(error) => reply.error(errno(&error)),
         }
-        let Some(entries) = self.open_directories.get(&fh) else {
-            reply.error(libc::EBADF);
-            return;
-        };
-        let mut delivered = Vec::new();
-        for (index, entry) in entries.iter().enumerate().skip(offset as usize) {
-            if reply.add(
-                entry.ino,
-                (index + 1) as i64,
-                &entry.name,
-                &TTL,
-                &entry.attr,
-                0,
-            ) {
-                break;
-            }
-            if index >= 2 {
-                delivered.push(entry.ino);
-            }
-        }
-        for ino in delivered {
-            self.retain_lookup(ino);
-        }
-        reply.ok();
     }
 
     fn releasedir(
@@ -1703,6 +1788,354 @@ mod tests {
                 .is_empty()
         );
         assert!(!stage.join("upper/allowed").exists());
+    }
+
+    fn snapshot_handle(overlay: &mut OverlayFs, ino: u64) -> u64 {
+        let entries = overlay.directory_snapshot(ino).unwrap();
+        let fh = overlay.allocate_handle();
+        overlay.open_directories.insert(fh, entries);
+        fh
+    }
+
+    #[test]
+    fn deferred_plus_rebinds_recreated_hardlink_alias_and_pins_current_inode() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("a"), b"original").unwrap();
+        fs::hard_link(lower.join("a"), lower.join("b")).unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], temp.path().join("upper"), None).unwrap();
+        let old = overlay.allocate_inode(
+            PathBuf::from("a"),
+            &overlay.core.metadata(Path::new("a")).unwrap(),
+        );
+        assert_eq!(
+            overlay.allocate_inode(
+                PathBuf::from("b"),
+                &overlay.core.metadata(Path::new("b")).unwrap()
+            ),
+            old
+        );
+        let fh = snapshot_handle(&mut overlay, FUSE_ROOT_ID);
+        overlay.core.remove(Path::new("a"), false).unwrap();
+        overlay.remove_inode_prefix(Path::new("a"));
+        overlay
+            .core
+            .create_file(Path::new("a"), 0o600, libc::O_WRONLY)
+            .unwrap()
+            .write_at(b"new", 0)
+            .unwrap();
+        let new = overlay.allocate_inode(
+            PathBuf::from("a"),
+            &overlay.core.metadata(Path::new("a")).unwrap(),
+        );
+        assert_ne!(new, old);
+        let a = overlay.directory_entry_attr(fh, 2).unwrap();
+        let b = overlay.directory_entry_attr(fh, 3).unwrap();
+        assert_eq!(a.ino, new);
+        assert_eq!(a.size, 3);
+        assert_eq!(b.ino, old);
+        assert_eq!(b.size, 8);
+        overlay.reclaim_inode(new);
+        overlay.reclaim_inode(old);
+        assert!(overlay.nodes.contains_key(&new));
+        assert!(overlay.nodes.contains_key(&old));
+        overlay.open_directories.remove(&fh);
+        overlay.reclaim_inode(new);
+        overlay.reclaim_inode(old);
+        assert!(!overlay.nodes.contains_key(&new));
+        assert!(!overlay.nodes.contains_key(&old));
+    }
+
+    #[test]
+    fn deferred_plus_validates_known_path_against_fresh_object_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("a"), b"original").unwrap();
+        fs::hard_link(lower.join("a"), lower.join("b")).unwrap();
+        let mut overlay =
+            OverlayFs::new(vec![lower.clone()], temp.path().join("upper"), None).unwrap();
+        let old = overlay.allocate_inode(
+            PathBuf::from("a"),
+            &overlay.core.metadata(Path::new("a")).unwrap(),
+        );
+        overlay.allocate_inode(
+            PathBuf::from("b"),
+            &overlay.core.metadata(Path::new("b")).unwrap(),
+        );
+        let fh = snapshot_handle(&mut overlay, FUSE_ROOT_ID);
+        // External changes do not update by_path through FUSE's unlink/create.
+        fs::remove_file(lower.join("a")).unwrap();
+        fs::write(lower.join("a"), b"new").unwrap();
+        let a = overlay.directory_entry_attr(fh, 2).unwrap();
+        let b = overlay.directory_entry_attr(fh, 3).unwrap();
+        assert_ne!(a.ino, old);
+        assert_eq!(b.ino, old);
+        assert_eq!(overlay.nodes[&old].paths, [PathBuf::from("b")].into());
+        assert_eq!(overlay.by_path[Path::new("a")], a.ino);
+        assert_eq!(a.size, 3);
+        assert_eq!(b.size, 8);
+    }
+
+    #[test]
+    fn deferred_plus_does_not_rebind_replaced_directory_handle() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir_all(lower.join("source")).unwrap();
+        fs::create_dir(lower.join("destination")).unwrap();
+        fs::write(lower.join("source/file"), b"source").unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], temp.path().join("upper"), None).unwrap();
+        let source = overlay.allocate_inode(
+            PathBuf::from("source"),
+            &overlay.core.metadata(Path::new("source")).unwrap(),
+        );
+        let destination = overlay.allocate_inode(
+            PathBuf::from("destination"),
+            &overlay.core.metadata(Path::new("destination")).unwrap(),
+        );
+        let source_fh = snapshot_handle(&mut overlay, source);
+        let destination_fh = snapshot_handle(&mut overlay, destination);
+        overlay
+            .core
+            .rename(Path::new("source"), Path::new("destination"), false)
+            .unwrap();
+        overlay.remap_inode_prefix(Path::new("source"), Path::new("destination"));
+        assert_eq!(
+            errno(&overlay.directory_entry_attr(destination_fh, 0).unwrap_err()),
+            libc::ENOENT
+        );
+        assert!(overlay.nodes.contains_key(&destination));
+        assert_eq!(
+            overlay.directory_entry_attr(source_fh, 0).unwrap().ino,
+            source
+        );
+        assert_eq!(overlay.directory_entry_attr(source_fh, 2).unwrap().size, 6);
+        overlay.open_directories.remove(&destination_fh);
+        overlay.reclaim_inode(destination);
+        assert!(!overlay.nodes.contains_key(&destination));
+    }
+
+    #[test]
+    fn deferred_plus_follows_directory_rename_not_recreated_old_path() {
+        for recreate in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let lower = temp.path().join("lower");
+            fs::create_dir_all(lower.join("dir")).unwrap();
+            fs::write(lower.join("dir/file"), b"original").unwrap();
+            let mut overlay = OverlayFs::new(vec![lower], temp.path().join("upper"), None).unwrap();
+            let ino = overlay.allocate_inode(
+                PathBuf::from("dir"),
+                &overlay.core.metadata(Path::new("dir")).unwrap(),
+            );
+            let fh = snapshot_handle(&mut overlay, ino);
+            overlay
+                .core
+                .rename(Path::new("dir"), Path::new("moved"), false)
+                .unwrap();
+            overlay.remap_inode_prefix(Path::new("dir"), Path::new("moved"));
+            if recreate {
+                overlay.core.create_dir(Path::new("dir"), 0o700).unwrap();
+                overlay
+                    .core
+                    .create_file(Path::new("dir/file"), 0o600, libc::O_WRONLY)
+                    .unwrap()
+                    .write_at(b"unrelated replacement", 0)
+                    .unwrap();
+            }
+            assert_eq!(overlay.directory_entry_attr(fh, 0).unwrap().ino, ino);
+            let attr = overlay.directory_entry_attr(fh, 2).unwrap();
+            assert_eq!(attr.size, 8);
+            assert_eq!(
+                overlay.node_path(attr.ino).unwrap(),
+                Path::new("moved/file")
+            );
+        }
+    }
+
+    #[test]
+    fn deferred_plus_follows_both_exchanged_directory_inodes() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        for (name, bytes) in [
+            ("first", b"one".as_slice()),
+            ("second", b"second contents".as_slice()),
+        ] {
+            fs::create_dir_all(lower.join(name)).unwrap();
+            fs::write(lower.join(name).join("file"), bytes).unwrap();
+        }
+        let mut overlay = OverlayFs::new(vec![lower], temp.path().join("upper"), None).unwrap();
+        let first = overlay.allocate_inode(
+            PathBuf::from("first"),
+            &overlay.core.metadata(Path::new("first")).unwrap(),
+        );
+        let second = overlay.allocate_inode(
+            PathBuf::from("second"),
+            &overlay.core.metadata(Path::new("second")).unwrap(),
+        );
+        let first_fh = snapshot_handle(&mut overlay, first);
+        let second_fh = snapshot_handle(&mut overlay, second);
+        overlay
+            .core
+            .exchange(Path::new("first"), Path::new("second"))
+            .unwrap();
+        overlay.exchange_inode_prefixes(Path::new("first"), Path::new("second"));
+        let a = overlay.directory_entry_attr(first_fh, 2).unwrap();
+        let b = overlay.directory_entry_attr(second_fh, 2).unwrap();
+        assert_eq!(a.size, 3);
+        assert_eq!(b.size, 15);
+        assert_eq!(overlay.node_path(a.ino).unwrap(), Path::new("second/file"));
+        assert_eq!(overlay.node_path(b.ino).unwrap(), Path::new("first/file"));
+    }
+
+    #[test]
+    fn deferred_plus_error_discards_buffer_without_retaining_lookups() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("a"), b"allowed").unwrap();
+        fs::write(lower.join("b"), b"later denied").unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], temp.path().join("upper"), None).unwrap();
+        let fh = snapshot_handle(&mut overlay, FUSE_ROOT_ID);
+        overlay =
+            overlay.with_access_policy(&FileAccessPolicy::new(vec!["b".into()], vec![]).unwrap());
+        let mut buffered = Vec::new();
+        let error = overlay
+            .buffer_readdirplus(fh, 2, |entry, cookie, attr| {
+                buffered.push((entry.name.clone(), cookie, attr.ino));
+                false
+            })
+            .unwrap_err();
+        assert_eq!(errno(&error), libc::EACCES);
+        assert_eq!(buffered.len(), 1);
+        let ino = buffered[0].2;
+        // The callback sends reply.error, which discards these buffered entries.
+        assert_eq!(overlay.nodes[&ino].lookups, 0);
+        overlay.open_directories.remove(&fh);
+        overlay.reclaim_inode(ino);
+        assert!(!overlay.nodes.contains_key(&ino));
+    }
+
+    #[test]
+    fn deferred_plus_success_retains_only_children_accepted_by_buffer() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("a"), b"a").unwrap();
+        fs::write(lower.join("b"), b"b").unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], temp.path().join("upper"), None).unwrap();
+        let fh = snapshot_handle(&mut overlay, FUSE_ROOT_ID);
+        let mut visited = Vec::new();
+        overlay
+            .buffer_readdirplus(fh, 0, |entry, cookie, attr| {
+                visited.push((cookie, attr.ino));
+                entry.name == OsStr::new("b")
+            })
+            .unwrap();
+        assert_eq!(
+            visited.iter().map(|e| e.0).collect::<Vec<_>>(),
+            [1, 2, 3, 4]
+        );
+        assert_eq!(overlay.nodes[&visited[0].1].lookups, 0);
+        assert_eq!(overlay.nodes[&visited[2].1].lookups, 1);
+        assert_eq!(overlay.nodes[&visited[3].1].lookups, 0);
+        overlay.buffer_readdirplus(fh, 3, |_, _, _| false).unwrap();
+        assert_eq!(overlay.nodes[&visited[3].1].lookups, 1);
+    }
+
+    #[test]
+    fn directory_snapshot_is_lazy_stable_and_pins_materialized_inodes() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("a"), b"first").unwrap();
+        fs::hard_link(lower.join("a"), lower.join("b")).unwrap();
+        fs::write(lower.join("hidden"), b"hidden").unwrap();
+        let core = OverlayCore::new(vec![lower.clone()], upper.clone(), None).unwrap();
+        core.remove(Path::new("hidden"), false).unwrap();
+        let mut overlay = OverlayFs::from_core(core).unwrap();
+        let entries = overlay.directory_snapshot(FUSE_ROOT_ID).unwrap();
+        assert_eq!(
+            entries.iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+            [".", "..", "a", "b"].map(OsString::from)
+        );
+        assert!(entries.iter().all(|e| e.attr.is_none()));
+        assert!(entries[2..].iter().all(|e| e.ino == 0));
+        assert!(!overlay.by_path.contains_key(Path::new("a")));
+        let fh = overlay.allocate_handle();
+        overlay.open_directories.insert(fh, entries);
+        fs::write(lower.join("a"), b"updated before plus").unwrap();
+        fs::write(lower.join("new"), b"new").unwrap();
+        let a = overlay.directory_entry_attr(fh, 2).unwrap();
+        let b = overlay.directory_entry_attr(fh, 3).unwrap();
+        assert_eq!(a.size, 19);
+        assert_eq!(a.ino, b.ino);
+        assert_eq!(overlay.open_directories[&fh].len(), 4);
+        overlay.reclaim_inode(a.ino);
+        assert!(overlay.nodes.contains_key(&a.ino));
+        fs::remove_file(lower.join("a")).unwrap();
+        assert_eq!(overlay.directory_entry_attr(fh, 2).unwrap().ino, a.ino);
+        overlay.open_directories.remove(&fh);
+        overlay.reclaim_inode(a.ino);
+        assert!(!overlay.nodes.contains_key(&a.ino));
+    }
+
+    #[test]
+    fn lazy_directory_snapshot_hides_denied_hardlinks_and_opaque_lower_children() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("private"), b"secret").unwrap();
+        fs::hard_link(lower.join("private"), lower.join("alias")).unwrap();
+        fs::create_dir(lower.join("dir")).unwrap();
+        fs::write(lower.join("dir/old"), b"old").unwrap();
+        let policy = FileAccessPolicy::new(vec!["private".into()], vec![]).unwrap();
+        let core = OverlayCore::new(vec![lower], upper.clone(), None)
+            .unwrap()
+            .with_access_policy(&policy);
+        fs::create_dir(upper.join("dir")).unwrap();
+        fs::write(upper.join("dir/.wh..wh..opq"), b"").unwrap();
+        fs::write(upper.join("dir/new"), b"new").unwrap();
+        let mut overlay = OverlayFs::from_core(core).unwrap();
+        let root = overlay.directory_snapshot(FUSE_ROOT_ID).unwrap();
+        assert_eq!(
+            root.iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+            [".", "..", "dir"].map(OsString::from)
+        );
+        let path = PathBuf::from("dir");
+        let ino = overlay.allocate_inode(path.clone(), &overlay.core.metadata(&path).unwrap());
+        let dir = overlay.directory_snapshot(ino).unwrap();
+        assert_eq!(
+            dir.iter().map(|e| e.name.clone()).collect::<Vec<_>>(),
+            [".", "..", "new"].map(OsString::from)
+        );
+        assert!(dir.iter().all(|e| e.attr.is_none()));
+    }
+
+    #[test]
+    fn fuse_truncate_avoids_content_copy_and_preserves_lower() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("file"), b"original").unwrap();
+        let profile = pvisor_overlay_core::profile::Profile::enabled("fuse-truncate");
+        let core = OverlayCore::new(vec![lower.clone()], temp.path().join("upper"), None)
+            .unwrap()
+            .with_profile(profile.clone());
+        let mut overlay = OverlayFs::from_core(core).unwrap();
+        let path = PathBuf::from("file");
+        let ino = overlay.allocate_inode(path.clone(), &overlay.core.metadata(&path).unwrap());
+        let file = overlay
+            .open_inode(ino, libc::O_RDWR | libc::O_TRUNC)
+            .unwrap();
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        assert_eq!(fs::read(lower.join("file")).unwrap(), b"original");
+        assert_eq!(
+            profile.report().unwrap().measurements["copy_up_truncate_skipped_bytes"].units,
+            8
+        );
     }
 
     #[test]

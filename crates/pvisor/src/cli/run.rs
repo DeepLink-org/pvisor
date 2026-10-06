@@ -15,7 +15,7 @@ fn spec_is_json(path: &Path) -> anyhow::Result<bool> {
     Ok(bytes.iter().find(|byte| !byte.is_ascii_whitespace()) == Some(&b'{'))
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct ByteSize(u64);
 
 impl FromStr for ByteSize {
@@ -56,7 +56,7 @@ fn parse_scaled(value: &str, units: &[(&str, u64)]) -> Result<u64, String> {
         .ok_or_else(|| format!("size/duration overflows u64: {value:?}"))
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(super) struct DurationMs(pub u64);
 
 impl FromStr for DurationMs {
@@ -114,7 +114,7 @@ fn announce_control_socket(handle: &crate::RunHandle) {
     if let Ok(path) = handle.control_socket() {
         let status = handle.status();
         eprintln!(
-            "pVisor VM control: --socket {} --run-id {} --attempt-id {}",
+            "pVisor live VM options: --vm-socket {} --vm-job-id {} --vm-attempt-id {} (status; suspend JOB --vm-pause/--vm-offload; resume JOB --vm-load)",
             path.display(),
             status.run_id,
             status.attempt.attempt_id
@@ -163,7 +163,7 @@ const DENY_ALL_HELP: &str = "Deny all OverlayNet egress. VM `auto` enforces this
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const DENY_ALL_HELP: &str = "Deny all OverlayNet egress; direct sockets remain outside the cooperative host/container proxy rule";
 
-#[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 pub struct RunArgs {
     /// Show a terminal with status bar; Ctrl-] opens the TUI command mode.
     #[arg(long)]
@@ -266,7 +266,7 @@ impl RunArgs {
     }
 }
 
-#[derive(Debug, Clone, Default, Args)]
+#[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
 struct RunOverrides {
     /// Require sandbox isolation and apply Agent-aware network/file presets; explicit CLI overrides win. Does not select an executor.
     #[arg(long)]
@@ -315,7 +315,7 @@ struct RunOverrides {
     max_file_size: Option<ByteSize>,
 }
 
-#[derive(Debug, Clone, Default, Args)]
+#[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
 struct ContainerOverrides {
     /// Native OCI runtime executable (`runc` or `crun`).
     #[arg(long, value_name = "PATH")]
@@ -351,7 +351,7 @@ struct ContainerOverrides {
     container_mount: Vec<ContainerMountArg>,
 }
 
-#[derive(Debug, Clone, Default, Args)]
+#[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
 struct VmOverrides {
     /// Host-only VM control socket; requires an existing private (0700) parent and a new path.
     #[arg(long = "vm-control-socket", value_name = "PATH")]
@@ -392,7 +392,7 @@ struct VmOverrides {
     vm_library_dir: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ContainerMountArg(ContainerMount);
 
 impl FromStr for ContainerMountArg {
@@ -410,7 +410,7 @@ impl FromStr for ContainerMountArg {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct FilesystemMountArg {
     source: PathBuf,
     target: PathBuf,
@@ -454,13 +454,13 @@ impl FromStr for FilesystemMountArg {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct FilesystemAccessArg {
     path: String,
     level: FilesystemLevel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum FilesystemLevel {
     Deny,
     Ask,
@@ -497,7 +497,7 @@ impl FromStr for FilesystemAccessArg {
     }
 }
 
-#[derive(Debug, Clone, Default, Args)]
+#[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
 struct OverlayFsOverrides {
     /// Stage persistence: checkpoint (default), or sync each first mutation.
     #[arg(long = "stage-durability", value_name = "checkpoint|strict")]
@@ -518,7 +518,7 @@ struct OverlayFsOverrides {
     max_size: Option<ByteSize>,
 }
 
-#[derive(Debug, Clone, Default, Args)]
+#[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
 struct OverlayNetOverrides {
     /// Network driver: auto selects VM smoltcp, proxy is host/container only, off disables it.
     #[arg(
@@ -560,7 +560,7 @@ struct OverlayNetOverrides {
     overlaynet_rule: Vec<OverlayNetRuleArg>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct OverlayNetTargetArg(NetworkAccessRule);
 
 impl FromStr for OverlayNetTargetArg {
@@ -571,7 +571,7 @@ impl FromStr for OverlayNetTargetArg {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct OverlayNetLimitArg(NetworkBandwidthLimit);
 
 impl FromStr for OverlayNetLimitArg {
@@ -676,7 +676,7 @@ fn parse_bandwidth(value: &str) -> Result<u64, String> {
     ))
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct OverlayNetRuleArg(NetworkAccessRule);
 
 impl FromStr for OverlayNetRuleArg {
@@ -694,7 +694,7 @@ impl FromStr for OverlayNetRuleArg {
     }
 }
 
-#[derive(Debug, Clone, Default, Args)]
+#[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
 struct GatewayOverrides {
     /// Adapt a supported client and enable Gateway capture.
     #[arg(long, value_enum)]
@@ -719,14 +719,14 @@ struct GatewayOverrides {
     gateway_route: Vec<GatewayRouteArg>,
 }
 
-#[derive(Debug, Clone, Default, Args)]
+#[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
 struct RecordOverrides {
     /// Local directory or file for Trace Event journal.
     #[arg(long, value_name = "PATH")]
     record_destination: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum, serde::Serialize, serde::Deserialize)]
 enum GatewayLevel {
     Summary,
     Dialogue,
@@ -743,7 +743,7 @@ impl From<GatewayLevel> for CaptureLevel {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct GatewayRouteArg(ModelRoute);
 
 impl FromStr for GatewayRouteArg {
@@ -1125,6 +1125,10 @@ async fn execute_config(
     lineage: Option<RunLineage>,
 ) -> anyhow::Result<i32> {
     normalize_filesystem_config(&mut config)?;
+    if config.run.executor == RunExecutorKind::Vm {
+        config.vm.control_socket =
+            super::host_service::vm_control_socket(config.vm.control_socket.as_deref())?;
+    }
     crate::util::startup_mark_run("cli.rootfs_begin", &run_id);
     resolve_default_vm_rootfs(&mut config)?;
     let mut _image_attachment: Option<crate::image::cache::DirectImage> = None;
@@ -1265,6 +1269,22 @@ async fn execute_config(
         .map(Path::to_path_buf)
         .unwrap_or(std::env::current_dir()?);
     let workspace = resolve_workspace(&workspace)?;
+    if config.run.executor == RunExecutorKind::Container {
+        let mut sources = vec![workspace.clone()];
+        sources.extend(
+            config
+                .container
+                .mounts
+                .iter()
+                .map(|mount| mount.source.clone()),
+        );
+        if let Some(rootfs) = &config.container.rootfs {
+            if rootfs != Path::new("/") {
+                sources.push(rootfs.clone());
+            }
+        }
+        super::host_service::reject_guest_exposure(sources)?;
+    }
     let storage = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
     config.load_policy_defaults(&workspace, personal_config_root().as_deref())?;
     if config

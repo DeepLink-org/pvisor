@@ -7,6 +7,7 @@ Known gaps are listed with their impact, source, and mitigation. Report new find
 | Limitation | Impact | Mitigation | Source |
 | --- | --- | --- | --- |
 | macOS may return EPERM after creating a symlink even though the link exists | The return value disagrees with the effect, so an agent may mistake success for failure | Trust the actual changes in the review list | Semantic spec S-STAGE-013 (XFAIL on macOS) |
+| Linux rootless host staging does not support nested mounts inside projected state roots such as HOME | Setup fails before Agent execution rather than hiding submounts or exposing writable host state | Inspect the reported mount topology; retain active mount owners and use a state layout without nested mounts | [Snapshot RAM runtime and staging boundary](../design/environment-snapshot.md#ram-runtime) |
 | Multi-file apply is not atomic against external editors | External writes during apply may interleave with the batch | Stop other writers during apply; conflict checks run before writing | [Staging and apply semantics](../concepts/staging.md) |
 | Renames appear in the review list as a deletion plus an addition | Review cannot tell that a rename happened | Judge by content | [Staging and apply semantics](../concepts/staging.md) |
 | With deny rules enabled, multi-hard-link files and new hard links are conservatively rejected | Tools that rely on hard links may fail | Disable the rule for that tool or use another execution path | [File access rules](../reference/cli.md) |

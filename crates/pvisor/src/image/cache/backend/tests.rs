@@ -197,6 +197,90 @@ fn cold_directory_batches_attributes_and_preserves_file_boundaries() {
 }
 
 #[test]
+fn directory_cookies_resume_after_eviction_without_retaining_child_nodes() {
+    let (temp, server, client, digest) = fixture();
+    let root = temp
+        .path()
+        .join("store/rootfs-v3/sha256")
+        .join(&digest[7..]);
+    for index in 0..2500 {
+        fs::write(root.join(format!("file-{index:04}")), [index as u8]).unwrap();
+    }
+    fs::hard_link(root.join("file-0000"), root.join("linked")).unwrap();
+    let mut filesystem = RemoteFs::new(client, digest, temp.path().join("blocks"), None).unwrap();
+    let first = filesystem.entries_page(1, 0).unwrap();
+    assert_eq!(first.len(), 258);
+    assert_eq!(server.lists.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        filesystem.nodes.len(),
+        1,
+        "listing must not pin child nodes"
+    );
+    let resumed = filesystem.entries_page(1, 17).unwrap();
+    assert_eq!(resumed, first[17..]);
+    assert_eq!(server.lists.load(Ordering::Relaxed), 1);
+    let mut cookie = first.len();
+    loop {
+        let page = filesystem.entries_page(1, cookie).unwrap();
+        assert!(filesystem.directories.len() <= RemoteFs::DIRECTORY_PAGES);
+        assert_eq!(filesystem.nodes.len(), 1);
+        if page.is_empty() {
+            break;
+        }
+        cookie += page.len();
+    }
+    assert_eq!(cookie, 2505);
+    let again = filesystem.entries_page(1, 0).unwrap();
+    assert_eq!(
+        again, first,
+        "inode identities and cookies survive eviction"
+    );
+    let file = filesystem.child(1, OsStr::new("file-0000")).unwrap();
+    let linked = filesystem.child(1, OsStr::new("linked")).unwrap();
+    assert_eq!(file.attr.ino, linked.attr.ino);
+    assert!(filesystem.child(1, OsStr::new("missing")).is_err());
+}
+
+#[test]
+fn directory_pages_reject_gapped_cookies_and_invalid_names() {
+    let (temp, _server, client, digest) = fixture();
+    let metadata = temp.path().join("metadata");
+    let mut filesystem = RemoteFs::new(
+        client,
+        digest.clone(),
+        temp.path().join("blocks"),
+        Some(metadata.clone()),
+    )
+    .unwrap();
+    let request = CacheRequest::List {
+        digest,
+        path: vec![],
+        offset: 0,
+    };
+    let path = metadata.join(&hash(&serde_json::to_vec(&request).unwrap())[7..]);
+    let attr = filesystem
+        .metadata_request(CacheRequest::Stat {
+            digest: filesystem.digest.clone(),
+            path: b"large".to_vec(),
+        })
+        .unwrap();
+    for (name, next_offset) in [(b"large".to_vec(), Some(9)), (b"../escape".to_vec(), None)] {
+        let bytes = serde_json::to_vec(&Response::Entries {
+            names: vec![name],
+            metadata: vec![attr.clone()],
+            next_offset,
+        })
+        .unwrap();
+        let mut encoded = Sha256::digest(&bytes).to_vec();
+        encoded.extend(bytes);
+        fs::write(&path, encoded).unwrap();
+        assert!(filesystem.entries_page(1, 0).is_err());
+        assert!(filesystem.directories.is_empty());
+        assert_eq!(filesystem.nodes.len(), 1);
+    }
+}
+
+#[test]
 fn hot_blocks_bound_memory_and_reuse_verified_buffers() {
     let mut hot = HotBlocks::default();
     let bytes: Arc<[u8]> = vec![42; MAX_READ as usize].into();

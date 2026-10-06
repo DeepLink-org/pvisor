@@ -7,6 +7,7 @@
 | 限制 | 影响 | 应对 | 出处 |
 | --- | --- | --- | --- |
 | macOS 上创建符号链接可能返回 EPERM，但链接已实际创建 | 调用返回值与效果不一致，Agent 可能误判失败 | 审查清单以实际改动为准 | 语义规格 S-STAGE-013（macOS 上 XFAIL） |
+| Linux rootless host 暂存不支持 HOME 等投影状态根中的嵌套挂载 | Setup 在 Agent 执行前失败，不隐藏子挂载，也不暴露可写宿主状态 | 检查诊断中的挂载拓扑；保留活跃挂载 owner，使用不含嵌套挂载的状态布局 | [Snapshot RAM 运行时与暂存边界](../design/environment-snapshot.md#ram-runtime) |
 | 多文件 apply 对外部编辑器不是原子的 | apply 期间外部写入可能与批次交错 | apply 期间停止其他写入者；冲突检查在写入前进行 | [暂存与 apply 语义](../concepts/staging.md) |
 | 重命名在审查清单中显示为删除加新增 | 审查时看不出是重命名 | 结合内容判断 | [暂存与 apply 语义](../concepts/staging.md) |
 | 开启 deny 规则时，多硬链接普通文件和新建硬链接被保守拒绝 | 依赖硬链接的工具可能失败 | 对该工具关闭相应规则或改用其他执行方式 | [文件访问规则](../reference/cli.md) |

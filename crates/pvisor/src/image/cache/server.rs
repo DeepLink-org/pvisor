@@ -1,7 +1,7 @@
 //! Authenticated transport for the shared immutable image reader.
 use super::portable::PortableCache;
-use super::storage::Storage;
 use super::protocol::{Envelope, read_frame, write_frame};
+use super::storage::Storage;
 use super::transport::{Endpoint, Stream, TIMEOUT, TOKEN_ENV, endpoint};
 use super::{Request, Response};
 use crate::image::oci::ImageStore;

@@ -1,13 +1,13 @@
 //! Linux metadata-preserving owned tree copies. POSIX ACLs travel as xattrs.
-use super::{native_path, store, TreeEntry, TreeInventory, TreeObject};
+use super::{TreeEntry, TreeInventory, TreeObject, native_path, store};
 use anyhow::{Context, ensure};
 use std::{
     collections::BTreeMap,
     ffi::{CString, OsStr},
     fs, io,
     os::fd::AsRawFd,
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     os::unix::ffi::OsStrExt,
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
 };
 

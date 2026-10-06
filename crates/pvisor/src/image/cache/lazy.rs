@@ -416,10 +416,10 @@ impl Filesystem for RemoteFs {
             reply.error(libc::EINVAL);
             return;
         }
-        match self.entries(ino) {
+        match self.entries_page(ino, offset as usize) {
             Ok(entries) => {
-                for (index, (ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
-                    if reply.add(*ino, (index + 1) as i64, fuse_kind(*kind), name) {
+                for (index, (ino, kind, name)) in entries.iter().enumerate() {
+                    if reply.add(*ino, offset + (index + 1) as i64, fuse_kind(*kind), name) {
                         break;
                     }
                 }

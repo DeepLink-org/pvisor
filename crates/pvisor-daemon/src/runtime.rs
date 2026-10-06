@@ -47,6 +47,12 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use fs2::FileExt;
+use pvisor_core::host_protocol::{
+    AGENTCTL_HOST_MAX_FRAME_BYTES, AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode,
+    AgentCtlHostRequest, AgentCtlHostResponse, AgentCtlTarget, HostSupervisorAuth,
+    HostSupervisorCommand as Operation, HostSupervisorRequest, HostSupervisorResult,
+    HostSupervisorState,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -59,7 +65,7 @@ use tokio::{
 
 const EXECD_PORT: u16 = 44772;
 const EGRESS_PORT: u16 = 18080;
-const IPC_LIMIT: usize = 128 * 1024;
+const IPC_LIMIT: usize = AGENTCTL_HOST_MAX_FRAME_BYTES;
 const HEALTH_LIMIT: usize = 16 * 1024;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const READY_TIMEOUT: Duration = Duration::from_secs(90);
@@ -210,32 +216,65 @@ struct RunRecord {
     attempt_id: String,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Request {
-    owner: String,
-    id: String,
-    generation: String,
-    token: String,
-    operation: Operation,
-}
-#[derive(Clone, Copy, Serialize, Deserialize)]
-enum Operation {
-    Inspect,
-    Pause,
-    Resume,
-    Delete,
-    Endpoint(u16),
-}
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+type Request = AgentCtlHostRequest<HostSupervisorRequest>;
+type Response = AgentCtlHostResponse<HostSupervisorResult>;
+
+// Local adapter preserves RuntimeState's existing persisted representation.
 struct Reply {
-    owner: String,
-    id: String,
-    generation: String,
     state: Option<RuntimeState>,
     endpoint: Option<String>,
-    error: Option<String>,
+}
+impl From<RuntimeState> for HostSupervisorState {
+    fn from(state: RuntimeState) -> Self {
+        match state {
+            RuntimeState::Running => Self::Running,
+            RuntimeState::Paused => Self::Paused,
+            RuntimeState::Stopped => Self::Stopped,
+            RuntimeState::Missing => Self::Missing,
+        }
+    }
+}
+impl From<HostSupervisorState> for RuntimeState {
+    fn from(state: HostSupervisorState) -> Self {
+        match state {
+            HostSupervisorState::Running => Self::Running,
+            HostSupervisorState::Paused => Self::Paused,
+            HostSupervisorState::Stopped => Self::Stopped,
+            HostSupervisorState::Missing => Self::Missing,
+        }
+    }
+}
+
+fn supervisor_request(identity: &Identity, attempt_id: &str, operation: Operation) -> Request {
+    Request {
+        version: AGENTCTL_HOST_VERSION,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        target: Some(AgentCtlTarget {
+            job_id: identity.spec.id.clone(),
+            attempt_id: Some(attempt_id.into()),
+            generation: Some(identity.generation.clone()),
+        }),
+        command: HostSupervisorRequest {
+            auth: HostSupervisorAuth {
+                owner: identity.owner.clone(),
+                token: identity.token.clone(),
+            },
+            operation,
+        },
+    }
+}
+
+fn validate_reply(identity: &Identity, request: &Request, response: Response) -> Result<Reply> {
+    response.validate(&request.request_id)?;
+    let result = response.result?;
+    ensure!(
+        result.owner == identity.owner && Some(&result.target) == request.target.as_ref(),
+        "supervisor identity mismatch"
+    );
+    Ok(Reply {
+        state: Some(result.state.into()),
+        endpoint: result.endpoint,
+    })
 }
 
 pub struct NativeRuntime {
@@ -413,28 +452,18 @@ impl NativeRuntime {
                 .await
                 .context("supervisor control unavailable; retain sandbox and reconcile")?;
             authenticate_peer(&stream)?;
-            send_frame(
-                &mut stream,
-                &Request {
-                    owner: identity.owner.clone(),
-                    id: identity.spec.id.clone(),
-                    generation: identity.generation.clone(),
-                    token: identity.token.clone(),
-                    operation,
-                },
-            )
-            .await?;
-            let reply: Reply = receive_frame(&mut stream).await?;
+            // Never resolve an unspecified target to the current instance.
+            // run.json is published once and binds the same Attempt across restart.
+            let record: RunRecord = read_json(&directory.join("run.json"))?;
             ensure!(
-                reply.owner == identity.owner
-                    && reply.id == identity.spec.id
-                    && reply.generation == identity.generation,
-                "supervisor identity mismatch"
+                record.generation == identity.generation,
+                "native run generation mismatch"
             );
-            if let Some(error) = &reply.error {
-                bail!("supervisor: {error}");
-            }
-            Ok(reply)
+            let request = supervisor_request(identity, &record.attempt_id, operation);
+            request.validate()?;
+            send_frame(&mut stream, &request).await?;
+            let response: Response = receive_frame(&mut stream).await?;
+            validate_reply(identity, &request, response)
         })
         .await
         .context("supervisor control timed out; retain sandbox and reconcile")?
@@ -689,7 +718,7 @@ impl Runtime for NativeRuntime {
             .context("native VM/service readiness timed out")?
         }
         .await;
-        if let Err(_) = result {
+        if result.is_err() {
             let cleanup = self.cleanup(&identity).await;
             return Err(CreateError::new(
                 if cleanup.is_ok() {
@@ -748,7 +777,7 @@ impl Runtime for NativeRuntime {
         };
         mark(&self.directory(id)?, "deleting")?;
         // A rejected/lost native acknowledgement never authorizes release.
-        let _ = self.request(&identity, Operation::Delete).await;
+        let _ = self.request(&identity, Operation::Terminate).await;
         self.cleanup(&identity).await
     }
     async fn endpoint(&self, id: &str, port: u16) -> Result<String> {
@@ -756,7 +785,9 @@ impl Runtime for NativeRuntime {
         let _lease = self.operations.lock(id).await?;
         let identity = self.identity(id)?.context("sandbox is Missing")?;
         ensure_not_deleting(&self.directory(id)?)?;
-        let reply = self.request(&identity, Operation::Endpoint(port)).await?;
+        let reply = self
+            .request(&identity, Operation::Endpoint { port })
+            .await?;
         ensure!(
             reply.state == Some(RuntimeState::Running),
             "sandbox is not running"
@@ -892,29 +923,36 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
                 if authenticate_peer(&stream).is_err() { continue; }
                 let request = timeout(Duration::from_secs(5), receive_frame::<Request>(&mut stream)).await;
                 let Ok(Ok(request)) = request else { continue; };
-                if !authorized(&identity, &request) { continue; }
-                let mut reply = Reply {
-                    owner: identity.owner.clone(), id: identity.spec.id.clone(),
-                    generation: identity.generation.clone(), state: None, endpoint: None, error: None,
-                };
-                let deleted = matches!(request.operation, Operation::Delete);
-                let result = execute_control(&handle, &identity, sandbox_dir,
-                    &client, &endpoints, request.operation).await;
-                match result {
-                    Ok((state, endpoint)) => {
-                        reply.state = Some(state); reply.endpoint = endpoint;
-                    }
-                    // Never return image env, argv, guest output or native paths.
-                    Err(_) => reply.error = Some("native control or real service readiness failed; reconcile".into()),
+                let admission = request.validate().and_then(|()| {
+                    if authorized(&identity, &handle.attempt_id().to_string(), &request) { Ok(()) }
+                    else { Err(AgentCtlHostError::new(AgentCtlHostErrorCode::Unauthorized, "supervisor authority mismatch")) }
+                });
+                if let Err(error) = admission {
+                    let reply = Response { version: AGENTCTL_HOST_VERSION,
+                        request_id: request.request_id, result: Err(error) };
+                    let _ = timeout(Duration::from_secs(5), send_frame(&mut stream, &reply)).await;
+                    continue;
                 }
-                if deleted && reply.error.is_none() {
+                let deleted = matches!(request.command.operation, Operation::Terminate);
+                let result = execute_control(&handle, &identity, sandbox_dir,
+                    &client, &endpoints, request.command.operation).await;
+                let mut reply = Response {
+                    version: AGENTCTL_HOST_VERSION, request_id: request.request_id,
+                    result: result.map(|(state, endpoint)| HostSupervisorResult {
+                        owner: identity.owner.clone(), target: request.target.expect("validated target"),
+                        state: state.into(), endpoint,
+                    }).map_err(|_| AgentCtlHostError::new(AgentCtlHostErrorCode::Unavailable,
+                        "native control or real service readiness failed; reconcile")),
+                };
+                // Never return image env, argv, guest output or native paths.
+                if deleted && reply.result.is_ok() {
                     handle.cancel();
                     // Wait for native runner teardown, NOT merely terminal status.
                     // On uncertainty the parent uses the inode-bound cgroup kill.
                     let waited = timeout(DELETE_TIMEOUT, handle.wait()).await;
                     if !matches!(waited, Ok(Ok(_))) {
-                        reply.state = None;
-                        reply.error = Some("native termination uncertain; reconcile".into());
+                        reply.result = Err(AgentCtlHostError::new(AgentCtlHostErrorCode::Unavailable,
+                            "native termination uncertain; reconcile"));
                     }
                     publications.abort_all();
                     while publications.join_next().await.is_some() {}
@@ -941,7 +979,7 @@ async fn execute_control(
     endpoints: &BTreeMap<u16, String>,
     operation: Operation,
 ) -> Result<(RuntimeState, Option<String>)> {
-    if matches!(operation, Operation::Delete) {
+    if matches!(operation, Operation::Terminate) {
         mark(directory, "deleting")?;
         return Ok((RuntimeState::Stopped, None));
     }
@@ -983,7 +1021,7 @@ async fn observe_control(
 ) -> Result<(RuntimeState, Option<String>)> {
     ensure_not_deleting(directory)?;
     let state = live_state()?;
-    let endpoint = if let Operation::Endpoint(port) = operation {
+    let endpoint = if let Operation::Endpoint { port } = operation {
         validate_port(port)?;
         ensure!(state == RuntimeState::Running, "VM is not running");
         Some(
@@ -1605,11 +1643,15 @@ fn ensure_not_deleting(directory: &Path) -> Result<()> {
     );
     Ok(())
 }
-fn authorized(identity: &Identity, request: &Request) -> bool {
-    identity.owner == request.owner
-        && identity.spec.id == request.id
-        && identity.generation == request.generation
-        && constant_time_equal(&identity.token, &request.token)
+fn authorized(identity: &Identity, attempt_id: &str, request: &Request) -> bool {
+    request.validate().is_ok()
+        && identity.owner == request.command.auth.owner
+        && constant_time_equal(&identity.token, &request.command.auth.token)
+        && request.target.as_ref().is_some_and(|target| {
+            target.job_id == identity.spec.id
+                && target.generation.as_deref() == Some(identity.generation.as_str())
+                && target.attempt_id.as_deref() == Some(attempt_id)
+        })
 }
 fn constant_time_equal(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
@@ -1637,19 +1679,24 @@ fn authenticate_peer(stream: &UnixStream) -> Result<()> {
 async fn send_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
     ensure!(bytes.len() <= IPC_LIMIT, "control frame exceeds limit");
-    stream.write_u32(u32::try_from(bytes.len())?).await?;
     stream.write_all(&bytes).await?;
+    stream.write_all(b"\n").await?;
     stream.flush().await?;
     Ok(())
 }
 async fn receive_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T> {
-    let size = stream.read_u32().await? as usize;
-    ensure!(
-        size > 0 && size <= IPC_LIMIT,
-        "invalid control frame length"
-    );
-    let mut bytes = vec![0u8; size];
-    stream.read_exact(&mut bytes).await?;
+    // Read only this frame, without buffering bytes from the next request.
+    // Growth is capped before accepting another payload byte.
+    let mut bytes = Vec::new();
+    loop {
+        let byte = stream.read_u8().await?;
+        if byte == b'\n' {
+            break;
+        }
+        ensure!(bytes.len() < IPC_LIMIT, "control frame exceeds limit");
+        bytes.push(byte);
+    }
+    ensure!(!bytes.is_empty(), "empty control frame");
     serde_json::from_slice(&bytes).map_err(|_| anyhow!("invalid control frame"))
 }
 
@@ -2376,25 +2423,50 @@ mod tests {
     fn ownership_requires_owner_id_generation_and_secret() {
         let temp = tempfile::tempdir().unwrap();
         let (identity, _) = identity_fixture(temp.path());
-        let mut request = Request {
-            owner: identity.owner.clone(),
-            id: identity.spec.id.clone(),
-            generation: identity.generation.clone(),
-            token: identity.token.clone(),
-            operation: Operation::Inspect,
+        let request = supervisor_request(&identity, "attempt", Operation::Inspect);
+        assert!(authorized(&identity, "attempt", &request));
+        for field in 0..8 {
+            let mut bad = request.clone();
+            match field {
+                0 => bad.command.auth.owner.push('x'),
+                1 => bad.command.auth.token.replace_range(0..1, "z"),
+                2 => bad.target.as_mut().unwrap().job_id.push('x'),
+                3 => bad.target.as_mut().unwrap().generation = Some("other".into()),
+                4 => bad.target.as_mut().unwrap().attempt_id = Some("other".into()),
+                5 => bad.version += 1,
+                6 => bad.target.as_mut().unwrap().generation = None,
+                _ => bad.target.as_mut().unwrap().attempt_id = None,
+            }
+            assert!(!authorized(&identity, "attempt", &bad), "field {field}");
+        }
+        let response = Response {
+            version: AGENTCTL_HOST_VERSION,
+            request_id: request.request_id.clone(),
+            result: Ok(HostSupervisorResult {
+                owner: identity.owner.clone(),
+                target: request.target.clone().unwrap(),
+                state: HostSupervisorState::Running,
+                endpoint: None,
+            }),
         };
-        assert!(authorized(&identity, &request));
-        request.owner.push('x');
-        assert!(!authorized(&identity, &request));
-        request.owner = identity.owner.clone();
-        request.id.push('x');
-        assert!(!authorized(&identity, &request));
-        request.id = identity.spec.id.clone();
-        request.generation.push('x');
-        assert!(!authorized(&identity, &request));
-        request.generation = identity.generation.clone();
-        request.token.replace_range(63..64, "b");
-        assert!(!authorized(&identity, &request));
+        assert!(validate_reply(&identity, &request, response.clone()).is_ok());
+        let mut bad = response.clone();
+        bad.request_id.push('x');
+        assert!(validate_reply(&identity, &request, bad).is_err());
+        let mut bad = response.clone();
+        bad.version += 1;
+        assert!(validate_reply(&identity, &request, bad).is_err());
+        for field in 0..4 {
+            let mut bad = response.clone();
+            let result = bad.result.as_mut().unwrap();
+            match field {
+                0 => result.owner.push('x'),
+                1 => result.target.job_id.push('x'),
+                2 => result.target.generation = None,
+                _ => result.target.attempt_id = None,
+            }
+            assert!(validate_reply(&identity, &request, bad).is_err());
+        }
     }
     #[test]
     fn bootstrap_argv_and_env_are_guest_only_and_preserved() {
@@ -2631,7 +2703,7 @@ mod tests {
             &directory,
             &client,
             &endpoints,
-            Operation::Endpoint(EXECD_PORT),
+            Operation::Endpoint { port: EXECD_PORT },
             || Ok(RuntimeState::Running),
             || panic!("Endpoint must not verify full cgroup limits"),
         )
@@ -2723,7 +2795,7 @@ mod tests {
                     &directory,
                     &client,
                     &endpoints,
-                    Operation::Endpoint(EXECD_PORT),
+                    Operation::Endpoint { port: EXECD_PORT },
                     || Ok(state),
                     || panic!("Endpoint must not verify limits"),
                 )
@@ -2736,7 +2808,7 @@ mod tests {
                 &directory,
                 &client,
                 &endpoints,
-                Operation::Endpoint(EXECD_PORT),
+                Operation::Endpoint { port: EXECD_PORT },
                 || bail!("native run is failed or transitioning"),
                 || panic!("Endpoint must not verify limits"),
             )
@@ -2750,7 +2822,7 @@ mod tests {
                     &directory,
                     &client,
                     &endpoints,
-                    Operation::Endpoint(EXECD_PORT),
+                    Operation::Endpoint { port: EXECD_PORT },
                     || panic!("deletion must fence live state resolution"),
                     || panic!("Endpoint must not verify limits"),
                 )
@@ -2790,21 +2862,21 @@ mod tests {
     #[tokio::test]
     async fn bounded_authenticated_control_frames_round_trip() {
         let (mut sender, mut receiver) = UnixStream::pair().unwrap();
-        let request = Request {
-            owner: "node".into(),
-            id: ID.into(),
-            generation: "generation".into(),
-            token: "a".repeat(64),
-            operation: Operation::Endpoint(EXECD_PORT),
-        };
+        let temp = tempfile::tempdir().unwrap();
+        let (identity, _) = identity_fixture(temp.path());
+        let request = supervisor_request(
+            &identity,
+            "attempt",
+            Operation::Endpoint { port: EXECD_PORT },
+        );
         send_frame(&mut sender, &request).await.unwrap();
         let received: Request = receive_frame(&mut receiver).await.unwrap();
-        assert_eq!(received.owner, request.owner);
-        assert_eq!(received.id, request.id);
-        assert_eq!(received.token, request.token);
+        assert_eq!(received.request_id, request.request_id);
+        assert_eq!(received.target, request.target);
+        assert_eq!(received.command.auth.token, request.command.auth.token);
         assert!(matches!(
-            received.operation,
-            Operation::Endpoint(EXECD_PORT)
+            received.command.operation,
+            Operation::Endpoint { port: EXECD_PORT }
         ));
         authenticate_peer(&receiver).unwrap();
     }
@@ -2918,10 +2990,43 @@ mod tests {
         assert!(locks.entries.lock().unwrap().is_empty());
     }
     #[tokio::test]
+    async fn newline_frames_are_bounded_and_do_not_consume_the_next_frame() {
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        sender.write_all(b"true\nfalse\n").await.unwrap();
+        assert!(receive_frame::<bool>(&mut receiver).await.unwrap());
+        assert!(!receive_frame::<bool>(&mut receiver).await.unwrap());
+        sender.write_all(b"\n").await.unwrap();
+        assert!(receive_frame::<bool>(&mut receiver).await.is_err());
+        sender.write_all(b"true").await.unwrap();
+        sender.shutdown().await.unwrap();
+        assert!(receive_frame::<bool>(&mut receiver).await.is_err());
+
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        // JSON quotes count towards the payload limit; the delimiter does not.
+        let value = "x".repeat(IPC_LIMIT - 2);
+        let sending = tokio::spawn(async move {
+            send_frame(&mut sender, &value).await.unwrap();
+            assert!(
+                send_frame(&mut sender, &"x".repeat(IPC_LIMIT - 1))
+                    .await
+                    .is_err()
+            );
+        });
+        assert_eq!(
+            receive_frame::<String>(&mut receiver).await.unwrap().len(),
+            IPC_LIMIT - 2
+        );
+        sending.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn oversized_ipc_is_rejected_before_allocation() {
         let (mut sender, mut receiver) = UnixStream::pair().unwrap();
-        sender.write_u32(IPC_LIMIT as u32 + 1).await.unwrap();
+        let sending = tokio::spawn(async move {
+            let _ = sender.write_all(&vec![b'x'; IPC_LIMIT + 1]).await;
+        });
         assert!(receive_frame::<Request>(&mut receiver).await.is_err());
+        sending.await.unwrap();
     }
     #[test]
     fn token_comparison_checks_all_bytes() {

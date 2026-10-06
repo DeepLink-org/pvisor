@@ -66,7 +66,7 @@ fn page(seed: u64, instance: u64, index: usize, random: bool) -> [u8; PAGE] {
     } else {
         let mut x =
             seed ^ instance.wrapping_mul(0xd1b54a32d192ed03) ^ (index as u64).wrapping_mul(MIX);
-        for word in out.chunks_exact_mut(8) {
+        for word in out.as_chunks_mut::<8>().0 {
             x = x
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
@@ -668,10 +668,10 @@ async fn run(a: Args) -> anyhow::Result<()> {
     let cleanup = timeout(Duration::from_secs(20), async {
         let mut errors = Vec::new();
         for w in &mut workers {
-            if w.waiter.is_some() {
-                if let Err(e) = w.reap(&root, &mut report).await {
-                    errors.push(format!("VM {}: {e:#}", w.id));
-                }
+            if w.waiter.is_some()
+                && let Err(e) = w.reap(&root, &mut report).await
+            {
+                errors.push(format!("VM {}: {e:#}", w.id));
             }
         }
         ensure!(

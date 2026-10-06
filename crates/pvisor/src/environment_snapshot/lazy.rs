@@ -1,5 +1,7 @@
 //! Read-only, authenticated snapshot RAM. Cached FUSE reads are driven by host
 //! page faults; MAP_PRIVATE guest mappings own all subsequent writes.
+#[path = "ram_runtime.rs"]
+mod ram_runtime;
 use super::{EnvironmentManifest, RamBlocks, SnapshotStore, store::valid_id};
 use crate::ram_backing::BLOCK_BYTES;
 #[cfg(target_os = "macos")]
@@ -79,6 +81,7 @@ enum Backing {
 /// snapshot deletion. Construction reads metadata only, never RAM payloads.
 pub struct SnapshotRamReader {
     backing: Backing,
+    store_root: std::path::PathBuf,
     length: u64,
     // Small bounded cache avoids repeatedly decoding a block for 4 KiB faults.
     // The kernel page cache is the primary decoded cache.
@@ -151,6 +154,11 @@ impl SnapshotRamReader {
         };
         Ok(Self {
             backing,
+            store_root: path
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| anyhow::anyhow!("missing snapshot store"))?
+                .canonicalize()?,
             length,
             cache: lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap()),
         })
@@ -260,11 +268,27 @@ impl SnapshotRamMount {
         Ok(())
     }
 
+    /// Mount in a private host runtime directory, never in durable state.
+    /// `directory` is retained for API compatibility and treated as an excluded
+    /// environment/state root, not a mount parent; it need not exist.
     pub fn new(reader: SnapshotRamReader, directory: &Path) -> io::Result<(Self, File)> {
-        let temporary = tempfile::Builder::new()
-            .prefix("ram-mount-")
-            .permissions(fs::Permissions::from_mode(0o700))
-            .tempdir_in(directory)?;
+        Self::runtime(reader, &[directory])
+    }
+
+    pub(crate) fn runtime(
+        reader: SnapshotRamReader,
+        protected: &[&Path],
+    ) -> io::Result<(Self, File)> {
+        let mut roots = protected.to_vec();
+        roots.push(&reader.store_root);
+        let temporary = ram_runtime::temporary(&roots)?;
+        Self::mount_at(reader, temporary)
+    }
+
+    fn mount_at(
+        reader: SnapshotRamReader,
+        temporary: tempfile::TempDir,
+    ) -> io::Result<(Self, File)> {
         let options = [
             MountOption::FSName("pvisor-snapshot-ram".into()),
             MountOption::RO,
@@ -315,6 +339,8 @@ impl SnapshotRamMount {
 
     /// Serve faults outside the VMM process. Its kernel teardown must never
     /// wait on a FUSE server that was killed along with its vCPUs.
+    /// The public ram_mount directory argument is an excluded state root, not
+    /// a staging or mount parent. Both spec and mount use private runtime storage.
     pub(super) fn external(
         object: &Path,
         manifest: &EnvironmentManifest,
@@ -322,13 +348,17 @@ impl SnapshotRamMount {
         executable: &Path,
     ) -> io::Result<(Self, File)> {
         use std::os::unix::{io::AsRawFd, process::CommandExt};
-        let directory = fs::canonicalize(directory)?;
         let object = fs::canonicalize(object)?;
-        let temporary = tempfile::Builder::new()
-            .prefix("ram-mount-")
-            .permissions(fs::Permissions::from_mode(0o700))
-            .tempdir_in(&directory)?;
-        let mut spec = tempfile::NamedTempFile::new_in(&directory)?;
+        let store = object
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| io::Error::other("missing snapshot store"))?;
+        let temporary = ram_runtime::temporary(&[store, directory])?;
+        // Keep the spec outside the mountpoint: mounting hides its contents,
+        // and cleanup must only remove an empty mount directory. The staging
+        // owner is released on readiness or on any startup failure.
+        let staging = ram_runtime::temporary(&[store, directory])?;
+        let mut spec = tempfile::NamedTempFile::new_in(staging.path())?;
         serde_json::to_writer(
             spec.as_file_mut(),
             &RamServerSpec {
@@ -453,6 +483,9 @@ impl Drop for SnapshotRamMount {
                     Ok(Some(status)) => {
                         if !status.success() {
                             tracing::warn!(%status, "snapshot RAM server cleanup failed");
+                            if let Err(error) = detach_mount(self.directory.path()) {
+                                tracing::warn!(%error, "cannot detach failed snapshot RAM server");
+                            }
                         }
                         break;
                     }
@@ -476,8 +509,12 @@ impl Drop for SnapshotRamMount {
 
         if let Some((mut child, pipe)) = self.watchdog.take() {
             drop(pipe);
-            if let Err(error) = child.wait() {
-                tracing::warn!(%error, "cannot wait for snapshot RAM cleanup");
+            let result = wait_for_exit(&mut child, Duration::from_secs(10));
+            if !matches!(result, Ok(status) if status.success()) {
+                tracing::warn!(?result, "snapshot RAM watchdog cleanup failed");
+                if let Err(error) = detach_mount(self.directory.path()) {
+                    tracing::warn!(%error, "cannot detach snapshot RAM after watchdog failure");
+                }
             }
         }
         if let Some(session) = self.session.take()
@@ -485,6 +522,24 @@ impl Drop for SnapshotRamMount {
         {
             tracing::warn!(%error, "cannot unmount snapshot RAM");
         }
+    }
+}
+
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> io::Result<std::process::ExitStatus> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "RAM cleanup helper timed out",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -501,6 +556,11 @@ struct RamServerSpec {
 /// owning runner closes the pipe, including during kernel process teardown.
 pub(crate) fn serve_ram(spec: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::MetadataExt;
+    ram_runtime::private(
+        spec.parent()
+            .ok_or_else(|| anyhow::anyhow!("missing RAM spec parent"))?,
+        &[],
+    )?;
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
@@ -537,6 +597,7 @@ pub(crate) fn serve_ram(spec: &Path) -> anyhow::Result<()> {
         spec.index.as_ref(),
         &spec.ram_sha256,
     )?;
+    ram_runtime::private(mount, &[&reader.store_root])?;
     let options = [
         MountOption::FSName("pvisor-snapshot-ram".into()),
         MountOption::RO,
@@ -547,26 +608,39 @@ pub(crate) fn serve_ram(spec: &Path) -> anyhow::Result<()> {
         #[cfg(target_os = "macos")]
         MountOption::CUSTOM("backend=kernel".into()),
     ];
+    #[cfg(target_os = "linux")]
+    let session = BackgroundSession::new_interruptible(fuser::Session::new(
+        RamFs { reader },
+        mount,
+        &options,
+    )?)?;
+    #[cfg(not(target_os = "linux"))]
     let session = fuser::spawn_mount2(RamFs { reader }, mount, &options)?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !mount.join("ram").try_exists()? {
-        ensure!(
-            !session.guard.is_finished(),
-            "snapshot RAM server stopped before mount readiness"
-        );
-        ensure!(
-            Instant::now() < deadline,
-            "snapshot RAM mount readiness timed out"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    io::stdout().write_all(b"ready\n")?;
-    io::stdout().flush()?;
-    io::copy(&mut io::stdin().lock(), &mut io::sink())?;
+    let result = (|| -> anyhow::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !mount.join("ram").try_exists()? {
+            ensure!(
+                !session.guard.is_finished(),
+                "snapshot RAM server stopped before mount readiness"
+            );
+            ensure!(
+                Instant::now() < deadline,
+                "snapshot RAM mount readiness timed out"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        io::stdout().write_all(b"ready\n")?;
+        io::stdout().flush()?;
+        io::copy(&mut io::stdin().lock(), &mut io::sink())?;
+        Ok(())
+    })();
     // EOF is safe even for SIGKILL/_exit: the FUSE server remains alive while
     // the owning process releases mappings, so it cannot wait on itself.
-    detach_mount(mount)?;
-    session.unmount()?;
+    let detached = detach_mount(mount);
+    let unmounted = session.unmount();
+    result?;
+    detached?;
+    unmounted?;
     Ok(())
 }
 
@@ -599,23 +673,21 @@ fn detach_mount(path: &Path) -> anyhow::Result<()> {
                 match Command::new(helper)
                     .args(["-u", "-z", "--"])
                     .arg(path)
-                    .output()
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::inherit())
+                    .spawn()
                 {
-                    Ok(output) => {
-                        result = Some(output);
+                    Ok(mut child) => {
+                        result = Some(wait_for_exit(&mut child, Duration::from_secs(5))?);
                         break;
                     }
                     Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                     Err(error) => return Err(error.into()),
                 }
             }
-            let output =
+            let status =
                 result.ok_or_else(|| anyhow::anyhow!("FUSE unmount helper unavailable"))?;
-            ensure!(
-                output.status.success(),
-                "snapshot RAM unmount failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            ensure!(status.success(), "snapshot RAM unmount failed: {status}");
         }
     }
     #[cfg(target_os = "macos")]

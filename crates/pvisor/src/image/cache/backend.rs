@@ -88,12 +88,14 @@ pub(super) struct RemoteFs {
     pub(super) digest: String,
     pub(super) cache: PathBuf,
     pub(super) metadata_cache: Option<PathBuf>,
-    // ponytail: metadata is retained for one immutable image (bounded by its
-    // entries); add reference-counted eviction if large images exceed memory.
+    // Looked-up nodes remain addressable by inode: the backend has no forget
+    // contract. Listings retain only bounded pages, not every child's Node.
+    // Lightweight object identities survive eviction to preserve hard links.
     nodes: HashMap<u64, Node>,
     paths: HashMap<Vec<u8>, u64>,
     objects: HashMap<u64, u64>,
-    directories: HashMap<u64, Vec<(u64, FileType, OsString)>>,
+    directories: HashMap<(u64, usize), Response>,
+    directory_order: VecDeque<(u64, usize)>,
     next_inode: u64,
 }
 impl RemoteFs {
@@ -122,6 +124,7 @@ impl RemoteFs {
             paths: HashMap::new(),
             objects: HashMap::new(),
             directories: HashMap::new(),
+            directory_order: VecDeque::new(),
             next_inode: 1,
         };
         let root = fs.lookup_path(Vec::new())?;
@@ -179,14 +182,43 @@ impl RemoteFs {
         if let Some(ino) = self.paths.get(&path) {
             return self.node(*ino).cloned();
         }
-        let response = self.metadata_request(CacheRequest::Stat {
-            digest: self.digest.clone(),
-            path: path.clone(),
-        })?;
+        let listed = self.directories.iter().find_map(|((ino, _), response)| {
+            let parent = self.nodes.get(ino)?;
+            let Response::Entries {
+                names, metadata, ..
+            } = response
+            else {
+                return None;
+            };
+            names.iter().zip(metadata).find_map(|(name, attr)| {
+                let mut child = parent.path.clone();
+                if !child.is_empty() {
+                    child.push(b'/');
+                }
+                child.extend_from_slice(name);
+                (child == path).then(|| attr.clone())
+            })
+        });
+        let response = match listed {
+            Some(response) => response,
+            None => self.metadata_request(CacheRequest::Stat {
+                digest: self.digest.clone(),
+                path: path.clone(),
+            })?,
+        };
         self.insert_node(path, response)
     }
 
     fn insert_node(&mut self, path: Vec<u8>, response: Response) -> anyhow::Result<Node> {
+        self.make_node(path, response, true)
+    }
+
+    fn make_node(
+        &mut self,
+        path: Vec<u8>,
+        response: Response,
+        retain: bool,
+    ) -> anyhow::Result<Node> {
         if let Some(ino) = self.paths.get(&path) {
             return self.node(*ino).cloned();
         }
@@ -206,12 +238,23 @@ impl RemoteFs {
         else {
             anyhow::bail!("expected cache metadata response");
         };
-        if let Some(ino) = self.objects.get(&inode) {
-            self.paths.insert(path, *ino);
-            return self.node(*ino).cloned();
-        }
-        let ino = self.next_inode;
-        self.next_inode += 1;
+        let ino = if let Some(ino) = self.objects.get(&inode).copied() {
+            if let Some(node) = self.nodes.get(&ino) {
+                let node = node.clone();
+                if retain {
+                    self.paths.insert(path, ino);
+                }
+                return Ok(node);
+            }
+            ino
+        } else {
+            let ino = self.next_inode;
+            self.next_inode = self
+                .next_inode
+                .checked_add(1)
+                .context("remote inode overflow")?;
+            ino
+        };
         // libc mode constants are u16 on macOS and u32 on Linux.
         #[allow(clippy::unnecessary_cast)]
         let kind = match kind.as_str() {
@@ -260,9 +303,11 @@ impl RemoteFs {
                 flags: 0,
             },
         };
-        self.paths.insert(path, ino);
         self.objects.insert(inode, ino);
-        self.nodes.insert(ino, node.clone());
+        if retain {
+            self.paths.insert(path, ino);
+            self.nodes.insert(ino, node.clone());
+        }
         Ok(node)
     }
 
@@ -289,73 +334,149 @@ impl RemoteFs {
             path.push(b'/');
         }
         path.extend_from_slice(name);
-        if self.directories.contains_key(&parent.attr.ino) && !self.paths.contains_key(&path) {
-            return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into());
+        // Absence is provable only while all contiguous pages are resident.
+        let mut offset = 0;
+        while let Some(Response::Entries {
+            names, next_offset, ..
+        }) = self.directories.get(&(parent.attr.ino, offset))
+        {
+            if names.iter().any(|entry| entry == name) {
+                break;
+            }
+            match next_offset {
+                Some(next) => offset = *next,
+                None => return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into()),
+            }
         }
         self.lookup_path(path)
     }
 
-    pub(super) fn entries(&mut self, ino: u64) -> anyhow::Result<&Vec<(u64, FileType, OsString)>> {
-        if !self.directories.contains_key(&ino) {
-            let node = self.node(ino)?.clone();
-            ensure!(node.attr.kind == FileType::Directory, "not a directory");
+    const DIRECTORY_PAGES: usize = 8;
+
+    /// Cookies are compact list offsets plus two synthetic dot entries. Fetch
+    /// at the cookie itself, so eviction never requires replaying earlier pages.
+    pub(super) fn entries_page(
+        &mut self,
+        ino: u64,
+        cookie: usize,
+    ) -> anyhow::Result<Vec<(u64, FileType, OsString)>> {
+        let node = self.node(ino)?.clone();
+        ensure!(node.attr.kind == FileType::Directory, "not a directory");
+        let mut entries = Vec::new();
+        if cookie < 2 {
             let parent = Path::new(OsStr::from_bytes(&node.path))
                 .parent()
                 .unwrap_or(Path::new(""));
             let parent = self.lookup_path(parent.as_os_str().as_bytes().to_vec())?;
-            let mut entries = vec![
-                (ino, FileType::Directory, ".".into()),
-                (parent.attr.ino, FileType::Directory, "..".into()),
-            ];
-            let mut offset = 0;
-            loop {
-                let response = self.metadata_request(CacheRequest::List {
+            if cookie == 0 {
+                entries.push((ino, FileType::Directory, ".".into()));
+            }
+            entries.push((parent.attr.ino, FileType::Directory, "..".into()));
+        }
+        let offset = cookie.saturating_sub(2);
+        let key = (ino, offset);
+        // A resumed cookie can lie inside an already cached page.
+        let cached = self
+            .directories
+            .iter()
+            .find_map(|((directory, start), response)| {
+                let Response::Entries {
+                    names, next_offset, ..
+                } = response
+                else {
+                    return None;
+                };
+                (*directory == ino
+                    && offset >= *start
+                    && (offset < start + names.len()
+                        || (offset == start + names.len() && next_offset.is_none())))
+                .then(|| (*start, response.clone()))
+            });
+        let (start, response) = match cached {
+            Some(page) => page,
+            None => (
+                offset,
+                self.metadata_request(CacheRequest::List {
                     digest: self.digest.clone(),
                     path: node.path.clone(),
                     offset,
-                })?;
-                let Response::Entries {
-                    names,
-                    metadata,
-                    next_offset,
-                } = response
-                else {
-                    anyhow::bail!("expected cache directory response");
-                };
-                ensure!(
-                    metadata.len() == names.len(),
-                    "directory metadata count mismatch"
-                );
-                let mut attributes = metadata.into_iter();
-                for name in names {
-                    // Validate untrusted directory names before using them as paths.
-                    ensure!(
-                        !name.is_empty()
-                            && name != b"."
-                            && name != b".."
-                            && !name.contains(&b'/')
-                            && !name.contains(&0),
-                        "invalid remote filename"
-                    );
-                    let mut path = node.path.clone();
-                    if !path.is_empty() {
-                        path.push(b'/');
-                    }
-                    path.extend_from_slice(&name);
-                    let child = self.insert_node(path, attributes.next().unwrap())?;
-                    entries.push((child.attr.ino, child.attr.kind, OsString::from_vec(name)));
-                }
-                match next_offset {
-                    Some(next) => {
-                        ensure!(next > offset, "invalid cache directory continuation");
-                        offset = next;
-                    }
-                    None => break,
-                }
-            }
-            self.directories.insert(ino, entries);
+                })?,
+            ),
+        };
+        let Response::Entries {
+            names,
+            metadata,
+            next_offset,
+        } = &response
+        else {
+            anyhow::bail!("expected cache directory response");
+        };
+        ensure!(
+            names.len() == metadata.len(),
+            "directory metadata count mismatch"
+        );
+        let end = start
+            .checked_add(names.len())
+            .context("directory offset overflow")?;
+        ensure!(end <= i64::MAX as usize - 2, "directory cookie overflow");
+        ensure!(
+            next_offset.is_none() || (*next_offset == Some(end) && end > start),
+            "invalid cache directory continuation"
+        );
+        ensure!(
+            serde_json::to_vec(&response)?.len() <= super::protocol::MAX_FRAME,
+            "cache directory page exceeds frame limit"
+        );
+        for (name, attr) in names.iter().zip(metadata) {
+            ensure!(
+                !name.is_empty()
+                    && name != b"."
+                    && name != b".."
+                    && !name.contains(&b'/')
+                    && !name.contains(&0),
+                "invalid remote filename"
+            );
+            ensure!(
+                matches!(attr, Response::Metadata { .. }),
+                "invalid directory metadata"
+            );
         }
-        Ok(self.directories.get(&ino).unwrap())
+        for (name, attr) in names.iter().zip(metadata).skip(offset - start) {
+            let mut path = node.path.clone();
+            if !path.is_empty() {
+                path.push(b'/');
+            }
+            path.extend_from_slice(name);
+            let child = self.make_node(path, attr.clone(), false)?;
+            entries.push((
+                child.attr.ino,
+                child.attr.kind,
+                OsString::from_vec(name.clone()),
+            ));
+        }
+        if !self.directories.contains_key(&(ino, start)) {
+            while self.directory_order.len() >= Self::DIRECTORY_PAGES {
+                self.directories
+                    .remove(&self.directory_order.pop_front().unwrap());
+            }
+            self.directory_order.push_back(key);
+            self.directories.insert(key, response);
+        }
+        Ok(entries)
+    }
+
+    /// Compatibility for direct projection: its trait requires a complete host
+    /// directory. This transient result is not a retained metadata cache.
+    pub(super) fn entries(&mut self, ino: u64) -> anyhow::Result<Vec<(u64, FileType, OsString)>> {
+        let mut entries = Vec::new();
+        loop {
+            let page = self.entries_page(ino, entries.len())?;
+            if page.is_empty() {
+                break;
+            }
+            entries.extend(page);
+        }
+        Ok(entries)
     }
 
     pub(super) fn read_range(&self, ino: u64, offset: u64, size: u32) -> anyhow::Result<Vec<u8>> {

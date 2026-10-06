@@ -233,6 +233,7 @@ impl CaptureRecord {
             .kind
             .split_once('.')
             .unwrap_or(("gateway", self.kind.as_str()));
+        crate::sink::redact_sensitive_body_in_place(&mut self.payload);
         let data = CaptureObservation {
             story,
             correlation: CaptureCorrelation {
@@ -243,7 +244,7 @@ impl CaptureRecord {
                 branch: self.branch,
                 parent_call_id: self.parent_call_id,
             },
-            content: crate::sink::redact_sensitive_body(&self.payload),
+            content: self.payload,
         };
         let event = pvisor_core::event::Event {
             version: VERSION,
@@ -277,7 +278,7 @@ impl CaptureRecord {
         else {
             anyhow::bail!("not a capture observation");
         };
-        let data: CaptureObservation = serde_json::from_value(payload.clone())?;
+        let data = CaptureObservation::deserialize(payload)?;
         Ok(Self {
             event_id: Some(event.id.clone()),
             observed_at_unix_ms: Some(event.observed_at_unix_ms),
@@ -314,7 +315,7 @@ pub fn capture_observation(
     else {
         anyhow::bail!("unsupported capture observation version");
     };
-    Ok(serde_json::from_value(payload.clone())?)
+    Ok(CaptureObservation::deserialize(payload)?)
 }
 
 #[cfg(test)]
@@ -323,6 +324,43 @@ mod timestamp_tests {
     use serde_json::Value;
 
     use super::{CaptureRecord, ensure_timestamp, unix_ms_from_rfc3339};
+
+    #[test]
+    fn final_redaction_and_borrowed_observation_roundtrip_preserve_schema() {
+        let mut record: CaptureRecord = serde_json::from_value(serde_json::json!({
+            "event_id": "fixed-event", "observed_at_unix_ms": 1767225600000u64,
+            "kind": "llm.request", "timestamp": "2026-01-01T00:00:00Z",
+            "call_id": "call", "trace_id": "trace",
+            "payload": {"body": {"api_key": "secret", "message": "visible"},
+                "http": {"request_body": {"api_key": "secret", "message": "visible"}}}
+        }))
+        .unwrap();
+        let expected_content = crate::sink::redact_sensitive_body(&record.payload);
+        let story = crate::engine::StoryContext::from_route(
+            crate::session::storage::CaptureRoute {
+                root_session: Some("run".into()),
+                session_id: "session".into(),
+                storage_session_id: "run".into(),
+                subagent_id: None,
+            },
+            "agent",
+        );
+        record.session_id = Some("session".into());
+        record.agent_id = Some("agent".into());
+        let event = record.into_event(story.clone()).unwrap();
+        let observation = super::capture_observation(&event).unwrap();
+        assert_eq!(observation.story, story);
+        assert_eq!(observation.content, expected_content);
+        assert!(!serde_json::to_string(&event).unwrap().contains("secret"));
+        let restored = CaptureRecord::from_event(&event, 0).unwrap();
+        assert_eq!(restored.payload, expected_content);
+        assert_eq!(restored.call_id.as_deref(), Some("call"));
+        let event_again = restored.into_event(story).unwrap();
+        assert_eq!(
+            serde_json::to_value(event_again).unwrap(),
+            serde_json::to_value(event).unwrap()
+        );
+    }
 
     #[test]
     fn parses_rfc3339_to_unix_milliseconds() {

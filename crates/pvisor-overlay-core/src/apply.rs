@@ -210,6 +210,36 @@ pub fn overlay_changes(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
 ) -> Result<Vec<ChangeEntry>, OverlayError> {
+    let inventory = upper_inventory(record.upper.path())?;
+    overlay_changes_from_inventory(record, lower_dirs, &inventory)
+}
+
+struct UpperEntry {
+    relative: PathBuf,
+    whiteout: bool,
+    metadata: fs::Metadata,
+}
+
+fn upper_inventory(upper: &Path) -> Result<Vec<UpperEntry>, OverlayError> {
+    let mut inventory = Vec::new();
+    if upper.is_dir() {
+        walk_upper_metadata(upper, upper, &mut |relative, whiteout, metadata| {
+            inventory.push(UpperEntry {
+                relative,
+                whiteout,
+                metadata,
+            });
+            Ok(())
+        })?;
+    }
+    Ok(inventory)
+}
+
+fn overlay_changes_from_inventory(
+    record: &OverlayRecord,
+    lower_dirs: &[PathBuf],
+    inventory: &[UpperEntry],
+) -> Result<Vec<ChangeEntry>, OverlayError> {
     let upper_dir = record.upper.path();
     let mut changes = Vec::new();
     if !upper_dir.is_dir() {
@@ -239,13 +269,14 @@ pub fn overlay_changes(
             mode: Some(metadata.mode() & 0o7777),
         });
     }
-    walk_upper(upper_dir, upper_dir, &mut |rel, is_whiteout| {
-        let upper_path = upper_dir.join(&rel);
-        if is_whiteout {
+    for entry in inventory {
+        let rel = &entry.relative;
+        let upper_path = upper_dir.join(rel);
+        if entry.whiteout {
             let name = rel.file_name().unwrap_or_default();
             let parent = rel.parent().unwrap_or_else(|| Path::new(""));
             if name == OPAQUE_WHITEOUT || name == crate::ROOT_METADATA_NAME {
-                return Ok(());
+                continue;
             }
             if let Some(victim) = whiteout_target(name) {
                 let path = parent.join(victim);
@@ -260,12 +291,12 @@ pub fn overlay_changes(
                     mode: None,
                 });
             }
-            return Ok(());
+            continue;
         }
-        let new = fs::symlink_metadata(&upper_path)?;
-        let old = lower_metadata(lower_dirs, &rel);
+        let new = &entry.metadata;
+        let old = lower_metadata(lower_dirs, rel);
         let old_type = old.as_ref().map(metadata_type);
-        let new_type = metadata_type(&new);
+        let new_type = metadata_type(new);
         let kind = match old_type {
             None => ChangeKind::Added,
             Some(old_type) if old_type != new_type => ChangeKind::TypeChanged,
@@ -273,7 +304,7 @@ pub fn overlay_changes(
         };
         changes.push(ChangeEntry {
             path: rel.display().to_string(),
-            path_bytes: raw_change_path(&rel),
+            path_bytes: raw_change_path(rel),
             kind,
             old_type,
             new_type: Some(new_type),
@@ -281,10 +312,9 @@ pub fn overlay_changes(
             mode: Some(new.permissions().mode() & 0o7777),
         });
         if new.is_dir() && crate::is_opaque_directory(&upper_path) {
-            changes.push(opaque_change(&rel));
+            changes.push(opaque_change(rel));
         }
-        Ok(())
-    })?;
+    }
     changes.sort_by(|left, right| {
         left.relative_path()
             .cmp(&right.relative_path())
@@ -449,9 +479,12 @@ pub fn plan_overlay_apply(
         record.target.clone(),
         record.baseline_lower.as_deref(),
     )?;
+    // Request-local only: never carry these observations across publication
+    // or pruning, where target/source identities must be checked again.
+    let inventory = upper_inventory(record.upper.path())?;
     let changes = {
         let _span = profile.span("collect_changes");
-        overlay_changes(record, lower_dirs)?
+        overlay_changes_from_inventory(record, lower_dirs, &inventory)?
     };
     profile.add("changes", changes.len() as u64);
     replacement_paths(&changes)?;
@@ -475,7 +508,7 @@ pub fn plan_overlay_apply(
         .collect::<Vec<_>>();
     let hard_link_groups = {
         let _span = profile.span("hard_link_groups");
-        upper_hard_link_groups(record.upper.path())?
+        upper_hard_link_groups(&inventory)
     };
     // Ancestor closure only needs directory membership. Scanning every change
     // for each selected path makes large flat apply batches quadratic.
@@ -582,27 +615,21 @@ pub fn plan_overlay_apply(
     })
 }
 
-fn upper_hard_link_groups(upper: &Path) -> Result<Vec<Vec<PathBuf>>, OverlayError> {
+fn upper_hard_link_groups(inventory: &[UpperEntry]) -> Vec<Vec<PathBuf>> {
     let mut groups = HashMap::<(u64, u64), Vec<PathBuf>>::new();
-    if !upper.is_dir() {
-        return Ok(Vec::new());
-    }
-    walk_upper(upper, upper, &mut |rel, is_whiteout| {
-        if !is_whiteout {
-            let metadata = fs::symlink_metadata(upper.join(&rel))?;
-            if metadata.is_file() && metadata.nlink() > 1 {
-                groups
-                    .entry((metadata.dev(), metadata.ino()))
-                    .or_default()
-                    .push(rel);
-            }
+    for entry in inventory {
+        let metadata = &entry.metadata;
+        if !entry.whiteout && metadata.is_file() && metadata.nlink() > 1 {
+            groups
+                .entry((metadata.dev(), metadata.ino()))
+                .or_default()
+                .push(entry.relative.clone());
         }
-        Ok(())
-    })?;
-    Ok(groups
+    }
+    groups
         .into_values()
         .filter(|paths| paths.len() > 1)
-        .collect())
+        .collect()
 }
 
 /// Apply one dependency-closed subset and retain all unselected changes for a
@@ -2131,6 +2158,16 @@ fn walk_upper(
     dir: &Path,
     visit: &mut dyn FnMut(PathBuf, bool) -> Result<(), OverlayError>,
 ) -> Result<(), OverlayError> {
+    walk_upper_metadata(root, dir, &mut |relative, whiteout, _metadata| {
+        visit(relative, whiteout)
+    })
+}
+
+fn walk_upper_metadata(
+    root: &Path,
+    dir: &Path,
+    visit: &mut dyn FnMut(PathBuf, bool, fs::Metadata) -> Result<(), OverlayError>,
+) -> Result<(), OverlayError> {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -2146,11 +2183,11 @@ fn walk_upper(
         let is_wh = path
             .file_name()
             .is_some_and(|name| name.as_bytes().starts_with(WHITEOUT_PREFIX.as_bytes()));
-        if fs::symlink_metadata(&path)?.is_dir() && !is_wh {
-            visit(rel.clone(), false)?;
-            walk_upper(root, &path, visit)?;
-        } else {
-            visit(rel, is_wh)?;
+        let metadata = fs::symlink_metadata(&path)?;
+        let recurse = metadata.is_dir() && !is_wh;
+        visit(rel, is_wh, metadata)?;
+        if recurse {
+            walk_upper_metadata(root, &path, visit)?;
         }
     }
     Ok(())
@@ -2178,6 +2215,51 @@ mod tests {
             protect_target: false,
             state: OverlayState::Staged,
         }
+    }
+
+    #[test]
+    fn request_inventory_preserves_raw_names_markers_and_hardlink_closure() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&upper).unwrap();
+        fs::create_dir(upper.join("dir")).unwrap();
+        fs::write(upper.join("dir/a"), b"staged").unwrap();
+        let raw = PathBuf::from(OsString::from_vec(vec![b'b', 0xff]));
+        fs::hard_link(upper.join("dir/a"), upper.join(&raw)).unwrap();
+        fs::write(upper.join(".wh.deleted"), b"").unwrap();
+        std::os::unix::fs::symlink("dir", upper.join("symlink")).unwrap();
+        let record = late_conflict_record(&target, &upper);
+        let inventory = upper_inventory(&upper).unwrap();
+        assert_eq!(inventory.len(), 5);
+        let groups = upper_hard_link_groups(&inventory);
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].contains(&raw));
+        let changes =
+            overlay_changes_from_inventory(&record, std::slice::from_ref(&target), &inventory)
+                .unwrap();
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.relative_path() == raw && c.path_bytes.is_some())
+        );
+        assert!(changes.iter().any(|c| c.relative_path() == Path::new("deleted") && c.kind == ChangeKind::Deleted));
+        let selection = ApplySelection {
+            paths: vec![PathBuf::from("dir/a")],
+            ..Default::default()
+        };
+        let plan = plan_overlay_apply(&record, std::slice::from_ref(&target), &selection).unwrap();
+        assert_eq!(
+            plan.selected_paths,
+            [PathBuf::from("dir"), PathBuf::from("dir/a"), raw.clone()].into()
+        );
+        // A new request must not reuse old inode grouping after replacement.
+        fs::remove_file(upper.join(&raw)).unwrap();
+        fs::write(upper.join(&raw), b"independent").unwrap();
+        let plan = plan_overlay_apply(&record, &[target], &selection).unwrap();
+        assert!(!plan.selected_paths.contains(&raw));
     }
 
     #[test]

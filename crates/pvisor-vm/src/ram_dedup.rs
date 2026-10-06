@@ -221,8 +221,8 @@ mod tests {
             json!({"accepted_bytes": report.accepted_bytes, "mappings": mappings})
         }
         fn checksum(bytes: &[u8]) -> u64 {
-            bytes.chunks_exact(8).fold(0u64, |sum, word| {
-                sum.wrapping_add(u64::from_le_bytes(word.try_into().unwrap()))
+            bytes.as_chunks::<8>().0.iter().fold(0u64, |sum, word| {
+                sum.wrapping_add(u64::from_le_bytes(*word))
             })
         }
         fn verify(memory: &GuestMemoryMmap, expected: &[u8]) -> u64 {

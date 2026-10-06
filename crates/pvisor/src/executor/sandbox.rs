@@ -549,6 +549,116 @@ impl Drop for OwnedFd {
 mod linux_tests {
     use super::*;
 
+    fn topology_fixture(root: &std::path::Path) -> StateRootTopology {
+        let bytes = b"1 0 0:1 / / rw - ext4 /dev/root rw\n2 1 0:2 / /state\\040root rw shared:1 - tmpfs state\\011source rw\n3 2 0:3 / /state\\040root/nested\\011\xff rw - tmpfs nested rw\n4 1 0:4 / /state\\040root-sibling rw - tmpfs sibling rw\n";
+        select_state_topology(root, parse_state_mounts(bytes).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn mountinfo_uses_raw_paths_and_strict_component_descendants() {
+        use std::os::unix::ffi::OsStrExt;
+        let topology = topology_fixture(std::path::Path::new("/state root"));
+        assert_eq!(topology.covering.point, PathBuf::from("/state root"));
+        assert_eq!(topology.covering.fstype, "tmpfs");
+        assert_eq!(topology.covering.source.as_bytes(), b"state\tsource");
+        assert_eq!(topology.descendants.len(), 1);
+        assert_eq!(
+            topology.descendants[0].point.as_os_str().as_bytes(),
+            b"/state root/nested\t\xff"
+        );
+        let topology = topology_fixture(std::path::Path::new("/state root-sibling"));
+        assert!(topology.descendants.is_empty(), "exact mount is allowed");
+        let topology = topology_fixture(std::path::Path::new("/state"));
+        assert!(
+            topology.descendants.is_empty(),
+            "prefix-only siblings are allowed"
+        );
+        assert_eq!(topology.covering.point, PathBuf::from("/"));
+        assert_eq!(
+            mountinfo_unescape(b"a\\134b\\012c").unwrap().as_bytes(),
+            b"a\\b\nc"
+        );
+    }
+
+    #[test]
+    fn unrelated_mount_with_literal_carriage_returns_does_not_block_staging() {
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = b"1 0 0:1 / / rw - ext4 /dev/root rw\n2 1 0:2 / /other\rdir rw - tmpfs source\rname rw\n";
+        let mounts = parse_state_mounts(bytes).unwrap();
+        assert_eq!(mounts[1].point.as_os_str().as_bytes(), b"/other\rdir");
+        assert_eq!(mounts[1].source.as_bytes(), b"source\rname");
+        let root = std::path::Path::new("/state");
+        let topology = select_state_topology(root, mounts).unwrap();
+        assert!(topology.descendants.is_empty());
+        assert!(check_state_root_mount(root, Ok(topology), Ok(())).is_ok());
+    }
+
+    #[test]
+    fn mountinfo_parser_is_bounded_and_rejects_malformed_records() {
+        for bytes in [
+            b"1 0 0:1 / / rw tmpfs source rw".as_slice(),
+            b"1 0 0:1 / /bad\\04 rw - tmpfs source rw",
+            b"1 0 0:1 / relative rw - tmpfs source rw",
+            b"1 0 0:1 / / rw - tmpfs",
+        ] {
+            assert!(parse_state_mounts(bytes).is_err(), "{bytes:?}");
+        }
+        assert!(parse_state_mounts(&vec![b'x'; MOUNTINFO_LIMIT + 1]).is_err());
+        assert!(parse_state_mounts(&vec![b'x'; 64 * 1024 + 1]).is_err());
+        for bytes in [b"\\", b"\\0".as_slice(), b"\\00", b"\\999", b"\\000"] {
+            assert!(mountinfo_unescape(bytes).is_err());
+        }
+        assert!(select_state_topology(std::path::Path::new("/state"), Vec::new()).is_err());
+    }
+
+    #[test]
+    fn state_mount_failure_preserves_errno_and_topology_without_fallback() {
+        let root = std::path::Path::new("/state root");
+        let error = check_state_root_mount(
+            root,
+            Ok(topology_fixture(root)),
+            Err(std::io::Error::from_raw_os_error(libc::EINVAL)),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(libc::EINVAL)
+        );
+        let message = format!("{error:#}");
+        assert!(message.contains(
+            "state root mountpoint=\"/state root\" fstype=\"tmpfs\" source=\"state\\tsource\""
+        ));
+        assert!(message.contains("1 strict descendants"));
+        assert!(message.contains("Invalid argument (os error 22)"));
+        assert!(check_state_root_mount(root, Ok(topology_fixture(root)), Ok(())).is_err());
+        let root = std::path::Path::new("/state root-sibling");
+        assert!(check_state_root_mount(root, Ok(topology_fixture(root)), Ok(())).is_ok());
+        let error = check_state_root_mount(
+            root,
+            Err(std::io::Error::other("unreadable mountinfo")),
+            Err(std::io::Error::from_raw_os_error(libc::EPERM)),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(libc::EPERM)
+        );
+        assert!(
+            check_state_root_mount(
+                root,
+                Err(std::io::Error::other("unreadable mountinfo")),
+                Ok(())
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn landlock_access_mask_matches_negotiated_abi() {
         assert_eq!(landlock_access_fs_for_abi(1), LANDLOCK_ACCESS_FS_V1);
@@ -962,7 +1072,7 @@ fn write_rootless_attestation(attestation: &mut std::fs::File) -> std::io::Resul
 }
 
 #[cfg(target_os = "linux")]
-fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
+fn enter_synthetic_root(plan: &SandboxPlan) -> anyhow::Result<()> {
     use std::io::{Error, ErrorKind};
     use std::os::unix::fs::PermissionsExt;
 
@@ -973,13 +1083,15 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
                 "sandbox root must be a non-root absolute path: {}",
                 plan.root.display()
             ),
-        ));
+        )
+        .into());
     }
     if !plan.root.is_dir() {
         return Err(Error::new(
             ErrorKind::NotFound,
             format!("sandbox root does not exist: {}", plan.root.display()),
-        ));
+        )
+        .into());
     }
 
     let root = path_cstring(&plan.root)?;
@@ -993,7 +1105,7 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
         )
     } != 0
     {
-        return Err(Error::last_os_error());
+        return Err(Error::last_os_error().into());
     }
 
     // Give the Agent a private temporary directory.  Binding the host /tmp
@@ -1014,7 +1126,7 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
         )
     } != 0
     {
-        return Err(Error::last_os_error());
+        return Err(Error::last_os_error().into());
     }
 
     // Chromium uses POSIX shared memory even when its own sandbox is disabled.
@@ -1032,7 +1144,7 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
         )
     } != 0
     {
-        return Err(Error::last_os_error());
+        return Err(Error::last_os_error().into());
     }
 
     // The synthetic /dev starts empty. Recreate the conventional descriptor
@@ -1100,16 +1212,182 @@ fn enter_synthetic_root(plan: &SandboxPlan) -> std::io::Result<()> {
     // no Agent code has run, every non-stdio FD is closed immediately below,
     // and all namespace capabilities are dropped before exec.
     if unsafe { libc::chroot(root.as_ptr()) } != 0 {
-        return Err(Error::last_os_error());
+        return Err(Error::last_os_error().into());
     }
     if unsafe { libc::chdir(c"/".as_ptr()) } != 0 {
-        return Err(Error::last_os_error());
+        return Err(Error::last_os_error().into());
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn mount_staged_roots(plan: &SandboxPlan) -> std::io::Result<()> {
+const MOUNTINFO_LIMIT: usize = 4 * 1024 * 1024;
+
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct StateMount {
+    point: PathBuf,
+    fstype: std::ffi::OsString,
+    source: std::ffi::OsString,
+}
+
+#[cfg(target_os = "linux")]
+fn mountinfo_unescape(field: &[u8]) -> std::io::Result<std::ffi::OsString> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut decoded = Vec::with_capacity(field.len());
+    let mut index = 0;
+    while index < field.len() {
+        if field[index] == b'\\' {
+            let escape = field.get(index + 1..index + 4);
+            decoded.push(match escape {
+                Some(b"040") => b' ',
+                Some(b"011") => b'\t',
+                Some(b"012") => b'\n',
+                Some(b"134") => b'\\',
+                _ => return Err(std::io::Error::other("invalid mountinfo escape")),
+            });
+            index += 4;
+        } else {
+            if matches!(field[index], 0 | b'\t') {
+                return Err(std::io::Error::other("invalid mountinfo field"));
+            }
+            decoded.push(field[index]);
+            index += 1;
+        }
+    }
+    Ok(std::ffi::OsString::from_vec(decoded))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_state_mounts(bytes: &[u8]) -> std::io::Result<Vec<StateMount>> {
+    if bytes.len() > MOUNTINFO_LIMIT {
+        return Err(std::io::Error::other("mountinfo exceeds 4 MiB limit"));
+    }
+    let mut mounts = Vec::new();
+    for line in bytes
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+    {
+        if line.len() > 64 * 1024 {
+            return Err(std::io::Error::other("mountinfo line exceeds 64 KiB limit"));
+        }
+        let mut fields = line.split(|byte| *byte == b' ');
+        let invalid = || std::io::Error::other("invalid mountinfo record");
+        for _ in 0..4 {
+            if fields.next().is_none_or(|field| field.is_empty()) {
+                return Err(invalid());
+            }
+        }
+        let point = PathBuf::from(mountinfo_unescape(fields.next().ok_or_else(invalid)?)?);
+        if !point.is_absolute() || fields.next().is_none_or(|field| field.is_empty()) {
+            return Err(invalid());
+        }
+        if !fields.by_ref().any(|field| field == b"-") {
+            return Err(invalid());
+        }
+        let fstype = mountinfo_unescape(fields.next().ok_or_else(invalid)?)?;
+        let source = mountinfo_unescape(fields.next().ok_or_else(invalid)?)?;
+        if fstype.is_empty() || source.is_empty() || fields.next().is_none() {
+            return Err(invalid());
+        }
+        mounts.push(StateMount {
+            point,
+            fstype,
+            source,
+        });
+    }
+    Ok(mounts)
+}
+
+#[cfg(target_os = "linux")]
+struct StateRootTopology {
+    covering: StateMount,
+    descendants: Vec<StateMount>,
+}
+
+#[cfg(target_os = "linux")]
+fn select_state_topology(
+    root: &std::path::Path,
+    mounts: Vec<StateMount>,
+) -> std::io::Result<StateRootTopology> {
+    let mut covering: Option<StateMount> = None;
+    let mut descendants = Vec::new();
+    for mount in mounts {
+        if mount.point != root && mount.point.starts_with(root) {
+            descendants.push(mount);
+        } else if root.starts_with(&mount.point)
+            && covering.as_ref().is_none_or(|previous| {
+                mount.point.components().count() >= previous.point.components().count()
+            })
+        {
+            covering = Some(mount);
+        }
+    }
+    Ok(StateRootTopology {
+        covering: covering
+            .ok_or_else(|| std::io::Error::other("state root has no covering mountinfo record"))?,
+        descendants,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn state_root_topology(root: &std::path::Path) -> std::io::Result<StateRootTopology> {
+    use std::io::Read;
+    let root = std::fs::canonicalize(root)?;
+    let mut bytes = Vec::new();
+    std::fs::File::open("/proc/self/mountinfo")?
+        .take((MOUNTINFO_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    select_state_topology(&root, parse_state_mounts(&bytes)?)
+}
+
+#[cfg(target_os = "linux")]
+fn check_state_root_mount(
+    root: &std::path::Path,
+    topology: std::io::Result<StateRootTopology>,
+    result: std::io::Result<()>,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let context = match &topology {
+        Ok(topology) => {
+            let mount = &topology.covering;
+            let mut context = format!(
+                "mount staged state OverlayFS at {root:?}; state root mountpoint={:?} fstype={:?} source={:?}",
+                mount.point, mount.fstype, mount.source,
+            );
+            if !topology.descendants.is_empty() {
+                use std::fmt::Write;
+                let _ = write!(
+                    context,
+                    "; unsupported inherited nested mounts ({} strict descendants; cannot safely stage submounts)",
+                    topology.descendants.len()
+                );
+                for mount in topology.descendants.iter().take(8) {
+                    let _ = write!(
+                        context,
+                        "; mountpoint={:?} fstype={:?} source={:?}",
+                        mount.point, mount.fstype, mount.source
+                    );
+                }
+            }
+            context
+        }
+        Err(error) => {
+            format!("mount staged state OverlayFS at {root:?}; mount topology unavailable: {error}")
+        }
+    };
+    // Do not replace the kernel error with a topology guess. A successful mount
+    // is also unsafe with submounts: OverlayFS would silently hide their data.
+    result.with_context(|| context.clone())?;
+    let topology = topology.with_context(|| context.clone())?;
+    if !topology.descendants.is_empty() {
+        anyhow::bail!("{context}");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn mount_staged_roots(plan: &SandboxPlan) -> anyhow::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
 
@@ -1130,10 +1408,9 @@ fn mount_staged_roots(plan: &SandboxPlan) -> std::io::Result<()> {
         )
     } != 0
     {
-        return Err(with_io_context(
-            "mount private state stage",
-            std::io::Error::last_os_error(),
-        ));
+        return Err(
+            with_io_context("mount private state stage", std::io::Error::last_os_error()).into(),
+        );
     }
 
     for (index, source) in plan.staged_roots.iter().enumerate() {
@@ -1157,7 +1434,8 @@ fn mount_staged_roots(plan: &SandboxPlan) -> std::io::Result<()> {
                 return Err(std::io::Error::other(format!(
                     "overlay stage path contains an unsupported separator: {}",
                     path.display()
-                )));
+                ))
+                .into());
             }
         }
         options.extend_from_slice(source.as_os_str().as_bytes());
@@ -1167,7 +1445,8 @@ fn mount_staged_roots(plan: &SandboxPlan) -> std::io::Result<()> {
         options.extend_from_slice(work.as_os_str().as_bytes());
         let options = std::ffi::CString::new(options).map_err(std::io::Error::other)?;
         let target = path_cstring(&target)?;
-        if unsafe {
+        let topology = state_root_topology(source);
+        let mounted = unsafe {
             libc::mount(
                 c"overlay".as_ptr(),
                 target.as_ptr(),
@@ -1175,13 +1454,14 @@ fn mount_staged_roots(plan: &SandboxPlan) -> std::io::Result<()> {
                 libc::MS_NOSUID | libc::MS_NODEV,
                 options.as_ptr().cast(),
             )
-        } != 0
-        {
-            return Err(with_io_context(
-                &format!("mount staged state at {}", source.display()),
-                std::io::Error::last_os_error(),
-            ));
-        }
+        };
+        // Capture errno before diagnostics perform any further I/O.
+        let result = if mounted == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        };
+        check_state_root_mount(source, topology, result)?;
     }
     Ok(())
 }

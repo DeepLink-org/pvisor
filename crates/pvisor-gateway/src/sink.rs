@@ -369,28 +369,37 @@ pub fn attach_http_wire_response(
 /// canonical store. Provider-specific policies can pre-redact additional
 /// fields; this is the non-disableable safety floor.
 pub fn redact_sensitive_body(value: &Value) -> Value {
+    let mut value = value.clone();
+    redact_sensitive_body_in_place(&mut value);
+    value
+}
+
+/// The final persistence boundary owns its payload, so redact without cloning
+/// the entire JSON tree. Keep the same non-disableable policy as borrowed callers.
+pub(crate) fn redact_sensitive_body_in_place(value: &mut Value) {
     match value {
-        Value::Object(object) => Value::Object(
-            object
-                .iter()
-                .map(|(key, value)| {
-                    let value = if is_sensitive_field_name(key) {
-                        Value::String(REDACTED_VALUE.into())
-                    } else if matches!(key.as_str(), "url" | "uri" | "upstream_url" | "path") {
-                        value
-                            .as_str()
-                            .map(|text| Value::String(redact_sensitive_url(text)))
-                            .unwrap_or_else(|| redact_sensitive_body(value))
+        Value::Object(object) => {
+            for (key, value) in object {
+                if is_sensitive_field_name(key) {
+                    *value = Value::String(REDACTED_VALUE.into());
+                } else if matches!(key.as_str(), "url" | "uri" | "upstream_url" | "path") {
+                    if let Some(text) = value.as_str() {
+                        *value = Value::String(redact_sensitive_url(text));
                     } else {
-                        redact_sensitive_body(value)
-                    };
-                    (key.clone(), value)
-                })
-                .collect(),
-        ),
-        Value::Array(values) => Value::Array(values.iter().map(redact_sensitive_body).collect()),
-        Value::String(text) => Value::String(redact_sensitive_wire_text(text)),
-        _ => value.clone(),
+                        redact_sensitive_body_in_place(value);
+                    }
+                } else {
+                    redact_sensitive_body_in_place(value);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                redact_sensitive_body_in_place(value);
+            }
+        }
+        Value::String(text) => *text = redact_sensitive_wire_text(text),
+        _ => {}
     }
 }
 
@@ -697,6 +706,27 @@ pub(crate) fn retain_capture_content(payload: &mut Value, level: crate::config::
 
 #[cfg(test)]
 mod header_tests {
+    #[test]
+    fn owned_redaction_preserves_schema_and_redacts_all_body_copies() {
+        let mut body = serde_json::json!({
+            "body": {"api_key": "secret", "messages": [{"content": "hello"}]},
+            "http": {"request_body": {"api_key": "secret", "messages": [{"content": "hello"}]}},
+            "path": "/v1/model?api_key=secret",
+            "encoded": "{\"authorization\":\"secret\",\"text\":\"hello\"}",
+            "number": 42,
+            "null": null
+        });
+        super::redact_sensitive_body_in_place(&mut body);
+        assert_eq!(body["body"]["api_key"], super::REDACTED_VALUE);
+        assert_eq!(body["body"], body["http"]["request_body"]);
+        assert_eq!(body["body"]["messages"][0]["content"], "hello");
+        assert_eq!(body["number"], 42);
+        assert!(body["null"].is_null());
+        assert!(!body.to_string().contains("secret"));
+        let once = body.clone();
+        super::redact_sensitive_body_in_place(&mut body);
+        assert_eq!(body, once);
+    }
 
     #[test]
     fn normal_wire_records_redact_url_credentials_at_all_copies() {

@@ -539,9 +539,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn native_layered_publication_retains_lower_inodes_after_complete_parent_store_deletion() {
-        use crate::environment_snapshot::{
-            CapturedFilesystemLayer, NativeLayerCapture,
-        };
+        use crate::environment_snapshot::{CapturedFilesystemLayer, NativeLayerCapture};
         for compressed in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().canonicalize().unwrap();
@@ -817,7 +815,6 @@ mod tests {
             store.delete(&id).unwrap();
             store.collect_abandoned().unwrap();
             assert_eq!(fs::read_dir(root.join("content")).unwrap().count(), 0);
-
         }
     }
 

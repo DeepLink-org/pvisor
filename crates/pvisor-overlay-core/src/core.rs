@@ -1820,6 +1820,10 @@ impl OverlayCore {
     }
 
     pub fn copy_up(&self, rel: &Path) -> io::Result<PathBuf> {
+        self.copy_up_for_open(rel, false)
+    }
+
+    pub(crate) fn copy_up_for_open(&self, rel: &Path, truncate: bool) -> io::Result<PathBuf> {
         let _span = self.profile.span("copy_up");
         self.require_visible(rel)?;
         Self::validate_rel(rel)?;
@@ -1869,13 +1873,23 @@ impl OverlayCore {
                         .create_new(true)
                         .mode(metadata.mode() & 0o7777);
                     let mut destination = options.open(&temporary)?;
-                    crate::backend::materialize_file(&resolved.path)?;
-                    let mut source = OpenOptions::new()
-                        .read(true)
-                        .custom_flags(libc::O_NOFOLLOW)
-                        .open(&resolved.path)?;
-                    let copied = io::copy(&mut source, &mut destination)?;
-                    self.profile.add("copy_up_bytes", copied);
+                    // The preimage is already ordered before upper publication.
+                    // Do not discard data shared with another lower alias: its
+                    // later copy-up must still see the original inode contents.
+                    if truncate
+                        && crate::backend::link_count(&resolved.path, metadata.nlink())? == 1
+                    {
+                        self.profile
+                            .add("copy_up_truncate_skipped_bytes", metadata.len());
+                    } else {
+                        crate::backend::materialize_file(&resolved.path)?;
+                        let mut source = OpenOptions::new()
+                            .read(true)
+                            .custom_flags(libc::O_NOFOLLOW)
+                            .open(&resolved.path)?;
+                        let copied = io::copy(&mut source, &mut destination)?;
+                        self.profile.add("copy_up_bytes", copied);
+                    }
                 }
             } else {
                 sys::mknod(&temporary, metadata.mode(), metadata.rdev() as u32)?;

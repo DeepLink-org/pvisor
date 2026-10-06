@@ -255,12 +255,29 @@ fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
         let bytes = bytes()[..3 * 65536].to_vec();
         let id = publish(&store, &source, &bytes, compressed);
         let published = store.open_for_restore(&id, &compatibility()).unwrap();
-        let (mount, file) = published
-            .ram_mount(
+        // Exercise both public entry points with a legacy state-root hint.
+        let legacy_parent = directory.path().join("ram-mounts");
+        let (mount, file) = if compressed {
+            published.ram_mount(
                 std::path::Path::new(env!("CARGO_BIN_EXE_pvisor")),
-                directory.path(),
+                &legacy_parent,
             )
-            .unwrap();
+        } else {
+            pvisor::environment_snapshot::SnapshotRamMount::new(
+                published.ram_reader().unwrap(),
+                &legacy_parent,
+            )
+        }
+        .unwrap();
+        assert!(!legacy_parent.exists());
+        #[cfg(target_os = "linux")]
+        let mount_path = {
+            use std::os::fd::AsRawFd;
+            let path = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();
+            let parent = path.parent().unwrap().to_path_buf();
+            assert!(!parent.starts_with(directory.path()));
+            parent
+        };
         let restore = MachineRestore {
             ram_file: Arc::new(file),
             state: serde_json::from_value::<MachineSnapshot>(serde_json::json!({
@@ -285,8 +302,56 @@ fn fuse_faults_restore_ram_and_private_mappings_isolate_forks() {
         drop(second);
         drop(restore);
         drop(mount);
+        #[cfg(target_os = "linux")]
+        assert!(fs::symlink_metadata(&mount_path).is_err());
         store.collect_abandoned().unwrap();
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires /dev/fuse; exercises pager SIGKILL cleanup"]
+fn fuse_mount_is_reaped_after_helper_is_killed() {
+    use std::os::fd::AsRawFd;
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let store = SnapshotStore::new(&directory.path().join("store")).unwrap();
+    let id = publish(&store, &source, &bytes(), true);
+    let published = store.open_for_restore(&id, &compatibility()).unwrap();
+    let children = || -> Vec<i32> {
+        fs::read_to_string("/proc/thread-self/children")
+            .unwrap()
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect()
+    };
+    let before = children();
+    let (mount, file) = published
+        .ram_mount(
+            std::path::Path::new(env!("CARGO_BIN_EXE_pvisor")),
+            directory.path(),
+        )
+        .unwrap();
+    let path = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();
+    let path = path.parent().unwrap();
+    assert!(!path.starts_with(directory.path()));
+    let helpers: Vec<_> = children()
+        .into_iter()
+        .filter(|pid| !before.contains(pid))
+        .collect();
+    assert_eq!(helpers.len(), 1);
+    assert_eq!(unsafe { libc::kill(helpers[0], libc::SIGKILL) }, 0);
+    drop(file);
+    drop(mount); // Must detach even when the pager cannot handle EOF.
+    assert!(fs::symlink_metadata(path).is_err());
+    assert!(
+        !fs::read_to_string("/proc/self/mountinfo")
+            .unwrap()
+            .contains(path.to_str().unwrap())
+    );
+    // Runtime cleanup must not remove the persistent publication or its RAM.
+    store.open(&id, &compatibility()).unwrap();
 }
 
 #[cfg(target_os = "linux")]
@@ -304,7 +369,8 @@ fn fuse_mount_is_reaped_after_runner_is_killed() {
         let source = directory.join("source");
         fs::create_dir(&source).unwrap();
         let store = SnapshotStore::new(&directory.join("store")).unwrap();
-        let id = publish(&store, &source, &bytes(), true);
+        // One unique block makes the exact post-exit GC count deterministic.
+        let id = publish(&store, &source, &[0; 65536], true);
         let published = store.open_for_restore(&id, &compatibility()).unwrap();
         let (_mount, file) = published
             .ram_mount(
@@ -313,6 +379,9 @@ fn fuse_mount_is_reaped_after_runner_is_killed() {
             )
             .unwrap();
         drop(published);
+        // Make content eligible for GC once the independent pager releases its
+        // pin; a still-published snapshot correctly keeps it referenced forever.
+        store.delete(&id).unwrap();
         let path = fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();
         fs::write(
             directory.join("ready"),
@@ -346,6 +415,10 @@ fn fuse_mount_is_reaped_after_runner_is_killed() {
     }
     let path =
         std::path::PathBuf::from(fs::read_to_string(directory.path().join("ready")).unwrap());
+    assert!(
+        !path.starts_with(directory.path()),
+        "RAM mount was projected with source/store state"
+    );
     child.kill().unwrap(); // SIGKILL bypasses all Rust cleanup in the runner.
     child.wait().unwrap();
     while fs::symlink_metadata(&path).is_ok()
@@ -360,6 +433,19 @@ fn fuse_mount_is_reaped_after_runner_is_killed() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let store = SnapshotStore::new(&directory.path().join("store")).unwrap();
-    // The crashed pager's content pins are now eligible for normal gc.
-    assert_eq!(store.collect_abandoned().unwrap(), 1);
+    // Detach precedes server-thread teardown and release of its content pins.
+    // Wait for that independent process, retaining the exact GC expectation.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let collected = store.collect_abandoned().unwrap();
+        if collected != 0 {
+            assert_eq!(collected, 1);
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "crashed pager retained content pins"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }

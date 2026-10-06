@@ -33,7 +33,7 @@ struct Args {
 fn generate(pattern: Pattern, blocks: usize) -> Vec<u8> {
     let mut bytes = vec![0; blocks * BLOCK];
     let mut state = SEED;
-    for (index, block) in bytes.chunks_exact_mut(BLOCK).enumerate() {
+    for (index, block) in bytes.as_chunks_mut::<BLOCK>().0.iter_mut().enumerate() {
         match pattern {
             Pattern::Fill => block.fill(0x5a),
             Pattern::Patterned => {
@@ -43,7 +43,7 @@ fn generate(pattern: Pattern, blocks: usize) -> Vec<u8> {
                 block[..8].copy_from_slice(&(index as u64).to_le_bytes());
             }
             Pattern::Random => {
-                for word in block.chunks_exact_mut(8) {
+                for word in block.as_chunks_mut::<8>().0 {
                     state ^= state << 13;
                     state ^= state >> 7;
                     state ^= state << 17;
@@ -93,7 +93,7 @@ fn run(args: Args) -> Result<serde_json::Value> {
     let mut objects = Vec::with_capacity(BLOCKS);
     let cpu = cpu_seconds()?;
     let start = Instant::now();
-    for block in input.chunks_exact(BLOCK) {
+    for block in input.as_chunks::<BLOCK>().0 {
         objects.push(pool.intern(block).context("intern block")?);
     }
     let put_wall_seconds = start.elapsed().as_secs_f64();
@@ -115,7 +115,7 @@ fn run(args: Args) -> Result<serde_json::Value> {
     for pass in 1..=2 {
         let cpu = cpu_seconds()?;
         let start = Instant::now();
-        for (object, output) in objects.iter().zip(restored.chunks_exact_mut(BLOCK)) {
+        for (object, output) in objects.iter().zip(restored.as_chunks_mut::<BLOCK>().0) {
             object.restore(output).context("restore block")?;
         }
         let wall_seconds = start.elapsed().as_secs_f64();
@@ -141,7 +141,7 @@ fn run(args: Args) -> Result<serde_json::Value> {
     let mut seen = BTreeSet::new();
     let mut encoded = Sha256::new();
     encoded.update(b"cold-storage-reconstructed-payload-v1\0");
-    for (block, object) in input.chunks_exact(BLOCK).zip(&objects) {
+    for (block, object) in input.as_chunks::<BLOCK>().0.iter().zip(&objects) {
         if !seen.insert(object.id()) {
             continue;
         }
@@ -203,11 +203,18 @@ mod tests {
         for pattern in [Pattern::Patterned, Pattern::Random] {
             let bytes = generate(pattern, BLOCKS);
             assert_eq!(bytes, generate(pattern, BLOCKS));
-            let hashes: BTreeSet<_> = bytes.chunks_exact(BLOCK).map(hash).collect();
+            let hashes: BTreeSet<_> = bytes
+                .as_chunks::<BLOCK>()
+                .0
+                .iter()
+                .map(|b| hash(b))
+                .collect();
             assert_eq!(hashes.len(), BLOCKS);
             assert!(
                 bytes
-                    .chunks_exact(BLOCK)
+                    .as_chunks::<BLOCK>()
+                    .0
+                    .iter()
                     .all(|b| b.iter().any(|v| *v != b[0]))
             );
         }

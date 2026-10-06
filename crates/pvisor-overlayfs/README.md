@@ -57,6 +57,34 @@ cargo zigbuild -p pvisor-overlayfs --release --target x86_64-unknown-linux-musl
 # → target/x86_64-unknown-linux-musl/release/pvisor-overlayfs (Linux)
 ```
 
+## Directory snapshots (R09)
+
+`opendir` snapshots merged names and types, including whiteout/opaque and denied
+hardlink filtering. Plain `readdir` uses those stable entries and index-based
+cookies without eagerly loading child attributes or allocating new inodes.
+Unknown inode numbers are returned as zero until lookup or `readdirplus` needs
+an object-aware inode. Backends returning an unknown directory-entry type still
+require metadata to determine its type; protected views retain their security
+metadata checks.
+
+`readdirplus` lazily loads and caches attributes for each visited entry. Entries
+that disappear before their first attribute request are skipped without changing
+the names/cookies snapshot. Attributes reflect the first plus request, not the
+original `opendir`; subsequent plus requests use the cached value. Known and
+lazily assigned inodes remain pinned by the directory handle, and only delivered
+plus entries acquire lookup references. Releasing the handle permits normal
+inode reclamation. Deferred resolution is anchored to the handle-owning directory
+inode's current path, so rename/exchange follows that directory rather than a
+recreated old pathname. A replaced/detached directory handle is not rebound to
+the replacement. Each first child attribute request binds fresh metadata to the
+current pathname/object inode and transfers the snapshot pin if the child was
+replaced. An error reply discards the whole buffered page without acquiring
+lookup references for any of its children; a successful page retains references
+only for entries accepted into its buffer.
+
+Copy-up and apply optimization boundaries (R07/R08) are documented in
+[`pvisor-overlay-core`](../pvisor-overlay-core/README.md).
+
 ## Links
 
 - [Isolation architecture](../../docs/src/zh/design/isolation.md)

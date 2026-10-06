@@ -16,7 +16,7 @@ use std::{
     sync::{Arc, Weak},
     time::Duration,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 pub const OPENSANDBOX_VERSION: &str = "1.1.0";
 pub const OPENSANDBOX_COMMIT: &str = "b1a29cf93a823a95913f7943010febb3f29de05c";
@@ -37,7 +37,7 @@ pub struct Daemon {
     store: Arc<store::Store>,
     registry: Mutex<Registry>,
     commits: Mutex<()>,
-    operations: Mutex<BTreeMap<String, Weak<Mutex<()>>>>,
+    operations: Mutex<BTreeMap<String, Weak<RwLock<()>>>>,
     runtime: Arc<dyn Runtime>,
     proxy: reqwest::Client,
     storage_failed: std::sync::atomic::AtomicBool,
@@ -93,6 +93,8 @@ impl Daemon {
                 .no_zstd()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(10))
+                // A recycled loopback port must not inherit another sandbox's connection.
+                .pool_max_idle_per_host(0)
                 .build()?,
         });
         // Never assume a stored Running state proves a native execution survived.
@@ -185,14 +187,14 @@ impl Daemon {
         Ok(result)
     }
 
-    async fn operation(&self, id: &str) -> Result<Arc<Mutex<()>>, ApiError> {
+    async fn operation(&self, id: &str) -> Result<Arc<RwLock<()>>, ApiError> {
         self.record(id).await?;
         let mut operations = self.operations.lock().await;
         operations.retain(|_, lock| lock.strong_count() > 0);
         if let Some(lock) = operations.get(id).and_then(Weak::upgrade) {
             return Ok(lock);
         }
-        let lock = Arc::new(Mutex::new(()));
+        let lock = Arc::new(RwLock::new(()));
         operations.insert(id.to_owned(), Arc::downgrade(&lock));
         Ok(lock)
     }
@@ -200,8 +202,9 @@ impl Daemon {
     pub async fn proxy_guard(
         &self,
         id: &str,
-    ) -> Result<tokio::sync::OwnedMutexGuard<()>, ApiError> {
-        Ok(self.operation(id).await?.lock_owned().await)
+    ) -> Result<tokio::sync::OwnedRwLockReadGuard<()>, ApiError> {
+        // Tokio's write-preferring queue prevents new proxies starving a control.
+        Ok(self.operation(id).await?.read_owned().await)
     }
 
     fn ensure_storage(&self) -> Result<(), ApiError> {
@@ -303,8 +306,8 @@ impl Daemon {
         })?;
         // Hold the lifecycle gate before exposing the Pending intention, so a
         // concurrent GET/DELETE cannot observe or remove a half-created runtime.
-        let gate = Arc::new(Mutex::new(()));
-        let _operation = gate.lock().await;
+        let gate = Arc::new(RwLock::new(()));
+        let _operation = gate.write().await;
         {
             let mut operations = self.operations.lock().await;
             operations.retain(|_, lock| lock.strong_count() > 0);
@@ -388,7 +391,7 @@ impl Daemon {
 
     async fn get_owned(&self, id: &str) -> Result<Sandbox, ApiError> {
         let gate = self.operation(id).await?;
-        let _operation = gate.lock().await;
+        let _operation = gate.write().await;
         let record = self.record(id).await?;
         if record.sandbox.status.state == "Stopping" {
             return Ok(record.sandbox);
@@ -433,7 +436,7 @@ impl Daemon {
         let id = id.to_owned();
         tokio::spawn(async move {
             let gate = this.operation(&id).await?;
-            let _operation = gate.lock().await;
+            let _operation = gate.write().await;
             let record = this.record(&id).await?;
             if !matches!(
                 record.sandbox.status.state.as_str(),
@@ -457,6 +460,12 @@ impl Daemon {
                 RuntimeState::Running
             };
             if current == desired {
+                let state = if pause { "Paused" } else { "Running" };
+                // A lost ACK may leave the durable intention behind the live state.
+                // The exclusive gate and checks above retain delete/expiry fences.
+                if record.sandbox.status.state != state {
+                    this.transition(&id, state, None).await?;
+                }
                 return Ok(());
             }
             let allowed = if pause {
@@ -508,7 +517,7 @@ impl Daemon {
         let id = id.to_owned();
         tokio::spawn(async move {
             let gate = this.operation(&id).await?;
-            let _operation = gate.lock().await;
+            let _operation = gate.write().await;
             let record = this.record(&id).await?;
             // Recheck under the same lock used by renew, not from a stale scan.
             if expired_only
@@ -559,7 +568,7 @@ impl Daemon {
 
     async fn renew_owned(&self, id: &str, request: RenewRequest) -> Result<RenewRequest, ApiError> {
         let gate = self.operation(id).await?;
-        let _operation = gate.lock().await;
+        let _operation = gate.write().await;
         let now = Utc::now();
         if request.expires_at <= now
             || request.expires_at

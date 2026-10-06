@@ -16,11 +16,139 @@ use crate::dead_letter;
 
 const APPLY_QUEUE_CAPACITY: usize = 256;
 const REJECTED_EVENT_QUEUE_CAPACITY: usize = 256;
+const MAX_RETAINED_STORIES: usize = 256;
+const MAX_EXTERNAL_JOBS: usize = 1024;
+const MAX_EXTERNAL_BYTES: usize = 64 * 1024 * 1024;
+const MAX_INTERNAL_JOBS: usize = 256;
+const MAX_INTERNAL_BYTES: usize = 32 * 1024 * 1024;
+const MAX_DIAGNOSTIC_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Default)]
+struct BudgetUsage {
+    jobs: usize,
+    bytes: usize,
+}
+
+struct JobBudget {
+    usage: Mutex<BudgetUsage>,
+    max_jobs: usize,
+    max_bytes: usize,
+}
+
+impl JobBudget {
+    fn new(max_jobs: usize, max_bytes: usize) -> Arc<Self> {
+        Arc::new(Self {
+            usage: Mutex::new(BudgetUsage::default()),
+            max_jobs,
+            max_bytes,
+        })
+    }
+
+    // Never wait for global capacity: a worker may retain its permit while
+    // awaiting a backfill. Waiting here could make admission a dependency cycle.
+    fn admit(self: &Arc<Self>, bytes: usize) -> anyhow::Result<JobPermit> {
+        let mut usage = self.usage.lock().unwrap();
+        if usage.jobs >= self.max_jobs || bytes > self.max_bytes.saturating_sub(usage.bytes) {
+            anyhow::bail!("capture global job/byte budget exhausted");
+        }
+        usage.jobs += 1;
+        usage.bytes += bytes;
+        Ok(JobPermit {
+            budget: Arc::clone(self),
+            bytes,
+        })
+    }
+}
+
+struct JobPermit {
+    budget: Arc<JobBudget>,
+    bytes: usize,
+}
+
+impl Drop for JobPermit {
+    fn drop(&mut self) {
+        let mut usage = self.budget.usage.lock().unwrap();
+        usage.jobs -= 1;
+        usage.bytes -= self.bytes;
+    }
+}
+
+// Account serialized payload bytes without allocating a temporary JSON tree or
+// buffer. A conservative multiplier covers JSON/typed node overhead; this is
+// an admission budget, not a process RSS limit (projections also retain state).
+fn payload_bytes(value: &impl serde::Serialize) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    if serde_json::to_writer(&mut counter, value).is_err() {
+        return usize::MAX;
+    }
+    counter.0.saturating_mul(16)
+}
+
+fn capture_bytes(ctx: &CallContext, event: &Event) -> usize {
+    let context = payload_bytes(&(
+        &ctx.story,
+        &ctx.call,
+        &ctx.request_headers,
+        &ctx.client_model,
+        &ctx.upstream_model,
+        &ctx.client_peer,
+        &ctx.client_meta,
+        &ctx.http_version,
+        &ctx.upstream_url,
+    ));
+    let content = match event {
+        Event::Request(e) => payload_bytes(&(
+            &e.path,
+            &e.method,
+            &e.url,
+            &e.user_content,
+            &e.body_json,
+            e.semantic.as_deref(),
+            &e.headers,
+        )),
+        Event::ResponseComplete(e) => {
+            e.resp_bytes
+                .len()
+                .saturating_mul(16)
+                .saturating_add(payload_bytes(&(
+                    &e.assistant_content,
+                    e.semantic.as_deref(),
+                    &e.headers,
+                )))
+        }
+        Event::ResponseDraft(e) => e.assistant_content.capacity(),
+        Event::Cancelled(e) => e.reason.as_ref().map_or(0, String::capacity),
+    };
+    context.saturating_add(content).saturating_add(4096)
+}
+
+struct AdmittedJob {
+    job: ApplyJob,
+    // Held through preparation, persistence and dependent backfill receipts.
+    _permit: Option<JobPermit>,
+}
+
+impl From<ApplyJob> for AdmittedJob {
+    fn from(job: ApplyJob) -> Self {
+        Self { job, _permit: None }
+    }
+}
 
 enum RejectedEventMessage {
     Event {
         ctx: Arc<CallContext>,
         event: Event,
+        _permit: JobPermit,
     },
     Barrier {
         ack: std_mpsc::SyncSender<anyhow::Result<()>>,
@@ -29,6 +157,7 @@ enum RejectedEventMessage {
 }
 
 struct RejectedEventWriter {
+    budget: Arc<JobBudget>,
     tx: std_mpsc::SyncSender<RejectedEventMessage>,
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
@@ -42,7 +171,11 @@ impl RejectedEventWriter {
                 let mut failure = None;
                 while let Ok(message) = rx.recv() {
                     match message {
-                        RejectedEventMessage::Event { ctx, event } => {
+                        RejectedEventMessage::Event {
+                            ctx,
+                            event,
+                            _permit,
+                        } => {
                             if let Err(error) = dead_letter::append_dead_letter(
                                 storage.as_path(),
                                 &ctx,
@@ -69,6 +202,7 @@ impl RejectedEventWriter {
             })
             .expect("dead-letter writer thread must start with capture runtime");
         Self {
+            budget: JobBudget::new(REJECTED_EVENT_QUEUE_CAPACITY, MAX_DIAGNOSTIC_BYTES),
             tx,
             worker: Mutex::new(Some(worker)),
         }
@@ -86,7 +220,17 @@ impl RejectedEventWriter {
     }
 
     fn try_record(&self, ctx: Arc<CallContext>, event: Event) {
-        if let Err(error) = self.tx.try_send(RejectedEventMessage::Event { ctx, event }) {
+        let Ok(permit) = self.budget.admit(capture_bytes(&ctx, &event)) else {
+            tracing::error!(
+                "dead-letter byte/job budget exhausted; rejected capture gap remains reported by flush/shutdown"
+            );
+            return;
+        };
+        if let Err(error) = self.tx.try_send(RejectedEventMessage::Event {
+            ctx,
+            event,
+            _permit: permit,
+        }) {
             tracing::warn!(
                 target: "pvisor_gateway",
                 "dead-letter queue rejected overloaded capture event: {error}"
@@ -116,7 +260,7 @@ enum ApplyJob {
     },
     Command {
         owner: Arc<SchedulingOwner>,
-        command: LocalStoryCommand,
+        command: Box<LocalStoryCommand>,
         ack: oneshot::Sender<anyhow::Result<StoryReply>>,
     },
     Stop {
@@ -125,14 +269,36 @@ enum ApplyJob {
     },
 }
 
+impl ApplyJob {
+    fn accounted_bytes(&self) -> usize {
+        match self {
+            Self::Capture { ctx, event, .. } => capture_bytes(ctx, event),
+            Self::Command { command, .. } => {
+                let bytes = match command.as_ref() {
+                    LocalStoryCommand::PersistRecord { scope, record }
+                    | LocalStoryCommand::Restore { scope, record } => {
+                        payload_bytes(&(&scope.context, record))
+                    }
+                    LocalStoryCommand::Snapshot { scope } => payload_bytes(&scope.context),
+                    LocalStoryCommand::Flush | LocalStoryCommand::LocalSnapshot => 0,
+                };
+                bytes.saturating_add(4096)
+            }
+            Self::Stop { .. } => 4096,
+        }
+    }
+}
+
 struct SchedulingState {
     accepting: bool,
     stopped: bool,
-    queues: HashMap<String, mpsc::Sender<ApplyJob>>,
+    queues: HashMap<String, mpsc::Sender<AdmittedJob>>,
     workers: Vec<tokio::task::JoinHandle<()>>,
 }
 
 struct SchedulingOwner {
+    external: Arc<JobBudget>,
+    internal: Arc<JobBudget>,
     state: Mutex<SchedulingState>,
     failure: Mutex<Option<String>>,
     rejected: RejectedEventWriter,
@@ -152,6 +318,8 @@ impl ApplyDispatcher {
         Self {
             inner,
             owner: Arc::new(SchedulingOwner {
+                external: JobBudget::new(MAX_EXTERNAL_JOBS, MAX_EXTERNAL_BYTES),
+                internal: JobBudget::new(MAX_INTERNAL_JOBS, MAX_INTERNAL_BYTES),
                 state: Mutex::new(SchedulingState {
                     accepting: true,
                     stopped: false,
@@ -165,6 +333,7 @@ impl ApplyDispatcher {
     }
 
     pub(crate) fn enqueue(&self, ctx: Arc<CallContext>, event: Event) {
+        let bytes = capture_bytes(&ctx, &event);
         let mut state = self.owner.state.lock().unwrap();
         let job = ApplyJob::Capture {
             owner: Arc::clone(&self.owner),
@@ -177,11 +346,24 @@ impl ApplyDispatcher {
             self.record_rejected_job(job);
             return;
         }
-        let tx = self.queue(&mut state, ctx.story_id().as_str());
-        let rejected = tx.try_send(job).err();
+        let admitted = self.owner.external.admit(bytes);
+        let tx = admitted.as_ref().map_err(|_| ()).and_then(|_| {
+            self.queue(&mut state, ctx.story_id().as_str())
+                .map_err(|_| ())
+        });
+        let rejected = match (admitted, tx) {
+            (Ok(permit), Ok(tx)) => tx
+                .try_send(AdmittedJob {
+                    job,
+                    _permit: Some(permit),
+                })
+                .err()
+                .map(|error| error.into_inner().job),
+            _ => Some(job),
+        };
         drop(state);
-        if let Some(error) = rejected {
-            self.record_rejected_job(error.into_inner());
+        if let Some(job) = rejected {
+            self.record_rejected_job(job);
         }
     }
 
@@ -230,7 +412,7 @@ impl ApplyDispatcher {
             story_id,
             ApplyJob::Command {
                 owner: Arc::clone(&self.owner),
-                command,
+                command: Box::new(command),
                 ack,
             },
             internal,
@@ -241,12 +423,21 @@ impl ApplyDispatcher {
     }
 
     async fn send(&self, story_id: &str, job: ApplyJob, internal: bool) -> anyhow::Result<()> {
+        let budget = if internal {
+            &self.owner.internal
+        } else {
+            &self.owner.external
+        };
+        let job_permit = budget.admit(
+            job.accounted_bytes()
+                .saturating_add(story_id.len().saturating_mul(16)),
+        )?;
         let tx = {
             let mut state = self.owner.state.lock().unwrap();
             if state.stopped || (!internal && !state.accepting) {
                 anyhow::bail!("capture scheduling owner is shutting down");
             }
-            self.queue(&mut state, story_id)
+            self.queue(&mut state, story_id)?
         };
         // Reserve outside the lock. Admission is linearized with shutdown only
         // when the reserved job is sent, not when a producer starts waiting.
@@ -258,7 +449,10 @@ impl ApplyDispatcher {
         if state.stopped || (!internal && !state.accepting) {
             anyhow::bail!("capture scheduling owner is shutting down");
         }
-        permit.send(job);
+        permit.send(AdmittedJob {
+            job,
+            _permit: Some(job_permit),
+        });
         Ok(())
     }
 
@@ -278,11 +472,14 @@ impl ApplyDispatcher {
         for tx in queues {
             let (ack, done) = oneshot::channel();
             let result = async {
-                tx.send(ApplyJob::Command {
-                    owner: Arc::clone(&self.owner),
-                    command: LocalStoryCommand::Flush,
-                    ack,
-                })
+                tx.send(
+                    ApplyJob::Command {
+                        owner: Arc::clone(&self.owner),
+                        command: Box::new(LocalStoryCommand::Flush),
+                        ack,
+                    }
+                    .into(),
+                )
                 .await
                 .map_err(|_| anyhow::anyhow!("story queue closed while flushing"))?;
                 super::coordinator::story_reply_ack(
@@ -323,10 +520,13 @@ impl ApplyDispatcher {
         for (_, tx) in queues {
             let (ack, done) = oneshot::channel();
             let stopped = async {
-                tx.send(ApplyJob::Stop {
-                    owner: Arc::clone(&self.owner),
-                    ack,
-                })
+                tx.send(
+                    ApplyJob::Stop {
+                        owner: Arc::clone(&self.owner),
+                        ack,
+                    }
+                    .into(),
+                )
                 .await
                 .map_err(|_| anyhow::anyhow!("story queue closed while stopping"))?;
                 done.await
@@ -369,15 +569,22 @@ impl ApplyDispatcher {
         (result, snapshots)
     }
 
-    fn queue(&self, state: &mut SchedulingState, story_id: &str) -> mpsc::Sender<ApplyJob> {
+    fn queue(
+        &self,
+        state: &mut SchedulingState,
+        story_id: &str,
+    ) -> anyhow::Result<mpsc::Sender<AdmittedJob>> {
         if let Some(tx) = state.queues.get(story_id) {
-            return tx.clone();
+            return Ok(tx.clone());
         }
-        let (tx, mut rx) = mpsc::channel::<ApplyJob>(APPLY_QUEUE_CAPACITY);
+        if state.queues.len() >= MAX_RETAINED_STORIES {
+            anyhow::bail!("capture retained story budget exhausted");
+        }
+        let (tx, mut rx) = mpsc::channel::<AdmittedJob>(APPLY_QUEUE_CAPACITY);
         let inner = Arc::clone(&self.inner);
         let mut story = StoryActor::new(StoryId::new(story_id), inner.story_deps.clone());
         let worker = tokio::spawn(async move {
-            while let Some(job) = rx.recv().await {
+            while let Some(AdmittedJob { job, _permit }) = rx.recv().await {
                 match job {
                     ApplyJob::Capture {
                         owner,
@@ -405,7 +612,7 @@ impl ApplyDispatcher {
                         command,
                         ack,
                     } => {
-                        let result = story.handle(command).await;
+                        let result = story.handle(*command).await;
                         if let Err(error) = &result {
                             owner
                                 .failure
@@ -424,7 +631,7 @@ impl ApplyDispatcher {
         });
         state.workers.push(worker);
         state.queues.insert(story_id.to_string(), tx.clone());
-        tx
+        Ok(tx)
     }
 
     pub(crate) fn record_failure(&self, error: &anyhow::Error) {
@@ -439,16 +646,14 @@ impl ApplyDispatcher {
         let ApplyJob::Capture { ctx, event, .. } = job else {
             return;
         };
-        self.owner
-            .failure
-            .lock()
-            .unwrap()
-            .get_or_insert_with(|| "capture apply queue rejected job".to_string());
+        self.owner.failure.lock().unwrap().get_or_insert_with(|| {
+            "capture admission rejected job (queue, global budget or shutdown)".to_string()
+        });
         self.owner.rejected.try_record(Arc::clone(&ctx), event);
         tracing::warn!(
             target: "pvisor_gateway",
             story_id = %ctx.story_id().as_str(),
-            "capture apply queue rejected job"
+            "capture admission rejected job (queue, global budget or shutdown)"
         );
     }
 }
@@ -532,6 +737,176 @@ mod tests {
                 debug_on: false,
             },
         )
+    }
+
+    fn cancelled() -> Event {
+        Event::Cancelled(crate::engine::CancelEvent {
+            reason: None,
+            status: 200,
+            bytes_received: 0,
+            streaming: false,
+        })
+    }
+
+    #[test]
+    fn global_budget_counts_active_jobs_and_releases_on_drop() {
+        let budget = JobBudget::new(2, 100);
+        let first = budget.admit(60).unwrap();
+        assert!(budget.admit(41).is_err());
+        let second = budget.admit(40).unwrap();
+        assert!(budget.admit(0).is_err());
+        drop(first);
+        let replacement = budget.admit(60).unwrap();
+        drop((second, replacement));
+        let usage = budget.usage.lock().unwrap();
+        assert_eq!((usage.jobs, usage.bytes), (0, 0));
+        drop(usage);
+        assert!(budget.admit(usize::MAX).is_err());
+    }
+
+    #[tokio::test]
+    async fn saturated_external_budget_does_not_block_cross_story_backfill() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
+        let engine = CaptureEngine::new(
+            OrderRecordingSink::new(),
+            index,
+            Arc::new(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+        let dispatcher = engine.dispatcher_for_test();
+        // Model an active child retaining the entire external byte budget while
+        // awaiting the main-story receipt. Internal work must still progress.
+        let retained = engine
+            .dispatcher_for_test()
+            .owner
+            .external
+            .admit(MAX_EXTERNAL_BYTES)
+            .unwrap();
+        assert!(
+            dispatcher
+                .apply(Arc::new(sample_ctx("overload")), cancelled())
+                .await
+                .is_err()
+        );
+        let main = sample_ctx("main-call");
+        let record = crate::subagent_link::spawn_link_backfill_record("parent", &[], &main.call);
+        let command = LocalStoryCommand::persist_record(
+            super::super::wire::StoryScope::from_context(&main),
+            record,
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            dispatcher.command_internal(main.story_id().as_str(), command),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(dispatcher.owner.internal.usage.lock().unwrap().jobs, 0);
+        let internal_retained = dispatcher.owner.internal.admit(MAX_INTERNAL_BYTES).unwrap();
+        let exhausted = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            dispatcher.command_internal(main.story_id().as_str(), LocalStoryCommand::Flush),
+        )
+        .await
+        .unwrap();
+        assert!(
+            exhausted
+                .unwrap_err()
+                .to_string()
+                .contains("budget exhausted")
+        );
+        drop(internal_retained);
+        drop(retained);
+        engine.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn retained_story_limit_rejects_without_spawning_another_worker() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
+        let engine = CaptureEngine::new(
+            OrderRecordingSink::new(),
+            index,
+            Arc::new(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+        let dispatcher = engine.dispatcher_for_test();
+        {
+            let mut state = dispatcher.owner.state.lock().unwrap();
+            for i in 0..MAX_RETAINED_STORIES {
+                dispatcher.queue(&mut state, &format!("story-{i}")).unwrap();
+            }
+            assert!(dispatcher.queue(&mut state, "overflow").is_err());
+            assert_eq!(state.queues.len(), MAX_RETAINED_STORIES);
+            assert_eq!(state.workers.len(), MAX_RETAINED_STORIES);
+        }
+        assert!(
+            dispatcher
+                .command_internal("overflow", LocalStoryCommand::Flush)
+                .await
+                .is_err()
+        );
+        assert_eq!(dispatcher.owner.internal.usage.lock().unwrap().jobs, 0);
+        engine.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn nonblocking_overload_is_reported_by_flush_and_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let index = SessionIndexStore::open(dir.path()).unwrap().clone_handle();
+        let engine = CaptureEngine::new(
+            OrderRecordingSink::new(),
+            index,
+            Arc::new(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+        let retained = engine
+            .dispatcher_for_test()
+            .owner
+            .external
+            .admit(MAX_EXTERNAL_BYTES)
+            .unwrap();
+        engine.spawn_apply(sample_ctx("rejected-budget"), cancelled());
+        assert!(
+            engine
+                .flush()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("uncommitted")
+        );
+        drop(retained);
+        assert!(engine.shutdown().await.is_err());
+        assert_eq!(
+            dead_letter::read_dead_letter_entries(dir.path())
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn diagnostic_byte_budget_does_not_retain_oversized_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = RejectedEventWriter::new(Arc::new(dir.path().to_path_buf()));
+        writer.try_record(
+            Arc::new(sample_ctx("oversized")),
+            Event::ResponseDraft(crate::engine::DraftEvent {
+                status: 200,
+                assistant_content: "x".repeat(MAX_DIAGNOSTIC_BYTES + 1),
+            }),
+        );
+        assert_eq!(writer.budget.usage.lock().unwrap().jobs, 0);
+        writer.drain().unwrap();
+        assert!(
+            dead_letter::read_dead_letter_entries(dir.path())
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

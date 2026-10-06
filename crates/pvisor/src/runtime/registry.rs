@@ -1,5 +1,8 @@
 //! Durable Run identity, project association, and liveness metadata.
 
+use super::host_transport::{
+    authorize_host_peer, read_host_frame, validate_host_target, write_host_frame,
+};
 use super::overlay::{
     OverlayRecord, ReadOnlyOverlayMount, load_overlay_record, mount_overlay_record_read_only,
     overlay_status,
@@ -17,15 +20,60 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use pvisor_core::host_protocol::{
+    AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
+    AgentCtlHostResponse, AgentCtlTarget,
+};
 pub use pvisor_core::overlay::OverlayStatus as ControlOverlayStatus;
-use pvisor_core::overlay::{RunControlRequest, RunControlResponse};
 use pvisor_core::{ExecutorIdentity, ExecutorPlan, ResourceLimits};
 
 pub const RUN_META_FILENAME: &str = "run.json";
 pub const LEASE_FILENAME: &str = "lease.lock";
 pub const CONTROL_FILENAME: &str = "control.sock";
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(2);
-const CONTROL_MAX_FRAME_BYTES: usize = 1024 * 1024;
+const CONTROL_MAX_INSPECT_MOUNTS: usize = 16;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum HostOverlayCommand {
+    Ping {},
+    OverlayStatus {},
+    Observations {},
+    MountInspect {},
+    UnmountInspect { id: String },
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostOverlayResult {
+    id: Option<String>,
+    mountpoint: Option<PathBuf>,
+    overlay_status: Option<ControlOverlayStatus>,
+    observations: Option<serde_json::Value>,
+}
+
+fn control_envelope(
+    record: &RunRecord,
+    command: HostOverlayCommand,
+) -> anyhow::Result<AgentCtlHostRequest<HostOverlayCommand>> {
+    let request = AgentCtlHostRequest {
+        version: AGENTCTL_HOST_VERSION,
+        request_id: uuid::Uuid::new_v4().to_string(),
+        target: Some(AgentCtlTarget {
+            job_id: record.run_id.clone(),
+            attempt_id: Some(
+                record
+                    .attempt_id
+                    .clone()
+                    .context("control requires an Attempt identity")?,
+            ),
+            generation: None,
+        }),
+        command,
+    };
+    request.validate()?;
+    Ok(request)
+}
 
 pub fn default_run_home() -> PathBuf {
     if let Some(root) = std::env::var_os("PVISOR_RUN_HOME") {
@@ -332,6 +380,8 @@ impl RunControlServer {
         let Some(overlay) = record.overlay.clone() else {
             return Ok(None);
         };
+        let identity = control_envelope(record, HostOverlayCommand::Ping {})?;
+        let target = identity.target.unwrap();
         let lowers = if record.overlay_lowers.is_empty() {
             vec![overlay.target.clone()]
         } else {
@@ -365,6 +415,7 @@ impl RunControlServer {
                             serve_control(
                                 stream,
                                 &stage,
+                                &target,
                                 &overlay,
                                 &lowers,
                                 &mut mounts,
@@ -401,166 +452,172 @@ impl Drop for RunControlServer {
 }
 
 fn serve_control(
-    mut stream: std::os::unix::net::UnixStream,
+    stream: std::os::unix::net::UnixStream,
     stage: &Path,
+    target: &AgentCtlTarget,
     overlay: &OverlayRecord,
     lowers: &[PathBuf],
     mounts: &mut HashMap<String, ReadOnlyOverlayMount>,
     filesystem: Option<&pvisor_overlayfs::FsMetrics>,
     network: Option<&pvisor_overlaynet::InterceptionMetrics>,
 ) {
-    use std::io::Write;
-    let request = (|| -> anyhow::Result<RunControlRequest> {
-        // macOS accept inherits O_NONBLOCK from the listener. The line-based
-        // protocol must wait for the complete request, including its newline.
-        stream.set_nonblocking(false)?;
-        stream.set_write_timeout(Some(CONTROL_TIMEOUT))?;
-        Ok(serde_json::from_slice(&read_control_frame(&mut stream)?)?)
-    })();
-    let response = match request {
-        Ok(RunControlRequest::Ping) => RunControlResponse {
-            ok: true,
-            id: None,
-            mountpoint: None,
-            error: None,
-            overlay_status: None,
-            observations: None,
-        },
-        Ok(RunControlRequest::OverlayStatus) => match overlay_status(overlay) {
-            Ok(status) => RunControlResponse {
-                ok: true,
-                id: None,
-                mountpoint: None,
-                error: None,
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return;
+    };
+    runtime.block_on(async {
+        if stream.set_nonblocking(true).is_err() {
+            return;
+        }
+        let Ok(mut stream) = tokio::net::UnixStream::from_std(stream) else {
+            return;
+        };
+        if authorize_host_peer(&stream).is_err() {
+            return;
+        }
+        // Malformed frames have no trustworthy correlation ID.
+        let Ok(Ok(request)) = tokio::time::timeout(
+            CONTROL_TIMEOUT,
+            read_host_frame::<AgentCtlHostRequest<HostOverlayCommand>>(&mut stream),
+        )
+        .await
+        else {
+            return;
+        };
+        let result = request
+            .validate()
+            .and_then(|()| {
+                validate_host_target(
+                    request.target.as_ref(),
+                    &target.job_id,
+                    target.attempt_id.as_deref().unwrap(),
+                )
+            })
+            .and_then(|()| {
+                execute_control(
+                    request.command,
+                    stage,
+                    overlay,
+                    lowers,
+                    mounts,
+                    filesystem,
+                    network,
+                )
+            });
+        let response = AgentCtlHostResponse {
+            version: AGENTCTL_HOST_VERSION,
+            request_id: request.request_id,
+            result,
+        };
+        let _ =
+            tokio::time::timeout(CONTROL_TIMEOUT, write_host_frame(&mut stream, &response)).await;
+    });
+}
+
+fn execute_control(
+    command: HostOverlayCommand,
+    stage: &Path,
+    overlay: &OverlayRecord,
+    lowers: &[PathBuf],
+    mounts: &mut HashMap<String, ReadOnlyOverlayMount>,
+    filesystem: Option<&pvisor_overlayfs::FsMetrics>,
+    network: Option<&pvisor_overlaynet::InterceptionMetrics>,
+) -> Result<HostOverlayResult, AgentCtlHostError> {
+    match command {
+        HostOverlayCommand::Ping {} => Ok(HostOverlayResult::default()),
+        HostOverlayCommand::OverlayStatus {} => overlay_status(overlay)
+            .map(|status| HostOverlayResult {
                 overlay_status: Some(status),
-                observations: None,
-            },
-            Err(error) => control_error(error),
-        },
-        Ok(RunControlRequest::Observations) => RunControlResponse {
-            ok: true,
-            id: None,
-            mountpoint: None,
-            error: None,
-            overlay_status: None,
+                ..Default::default()
+            })
+            .map_err(control_error),
+        HostOverlayCommand::Observations {} => Ok(HostOverlayResult {
             observations: Some(serde_json::json!({
                 "filesystem": filesystem.map(|metrics| metrics.snapshot()),
                 "network": network.map(|metrics| metrics.snapshot()),
             })),
-        },
-        Ok(RunControlRequest::MountInspect) => {
+            ..Default::default()
+        }),
+        HostOverlayCommand::MountInspect {} => {
+            if mounts.len() >= CONTROL_MAX_INSPECT_MOUNTS {
+                return Err(AgentCtlHostError::new(
+                    AgentCtlHostErrorCode::Unavailable,
+                    "inspect session limit reached",
+                ));
+            }
             let id = uuid::Uuid::new_v4().to_string();
             let mountpoint = stage.join("inspect").join(&id).join("merged");
             match mount_overlay_record_read_only(overlay, lowers, &mountpoint) {
                 Ok(mount) => {
                     let mountpoint = mount.mountpoint().to_path_buf();
                     mounts.insert(id.clone(), mount);
-                    RunControlResponse {
-                        ok: true,
+                    Ok(HostOverlayResult {
                         id: Some(id),
                         mountpoint: Some(mountpoint),
-                        error: None,
-                        overlay_status: None,
-                        observations: None,
-                    }
+                        ..Default::default()
+                    })
                 }
-                Err(error) => control_error(error),
+                Err(error) => Err(control_error(error)),
             }
         }
-        Ok(RunControlRequest::UnmountInspect { id }) => {
+        HostOverlayCommand::UnmountInspect { id } => {
             if let Some(mount) = mounts.remove(&id) {
                 match mount.unmount() {
-                    Ok(()) => RunControlResponse {
-                        ok: true,
-                        id: None,
-                        mountpoint: None,
-                        error: None,
-                        overlay_status: None,
-                        observations: None,
-                    },
-                    Err(error) => control_error(error),
+                    Ok(()) => Ok(HostOverlayResult::default()),
+                    Err(error) => Err(control_error(error)),
                 }
             } else {
-                control_error(anyhow::anyhow!("unknown inspect session {id}"))
+                Err(AgentCtlHostError::new(
+                    AgentCtlHostErrorCode::InvalidRequest,
+                    format!("unknown inspect session {id}"),
+                ))
             }
         }
-        Err(error) => control_error(error),
-    };
-    if let Ok(mut body) = serde_json::to_vec(&response) {
-        body.push(b'\n');
-        let _ = stream.write_all(&body);
     }
 }
 
-fn control_error(error: impl std::fmt::Display) -> RunControlResponse {
-    RunControlResponse {
-        ok: false,
-        id: None,
-        mountpoint: None,
-        error: Some(error.to_string()),
-        overlay_status: None,
-        observations: None,
-    }
+fn control_error(error: impl std::fmt::Display) -> AgentCtlHostError {
+    AgentCtlHostError::new(AgentCtlHostErrorCode::Internal, error.to_string())
 }
 
-fn control_request(
-    stage: &Path,
-    request: &RunControlRequest,
-) -> anyhow::Result<RunControlResponse> {
-    use std::io::Write;
-    let mut stream = std::os::unix::net::UnixStream::connect(stage.join(CONTROL_FILENAME))?;
-    stream.set_write_timeout(Some(CONTROL_TIMEOUT))?;
-    let mut body = serde_json::to_vec(request)?;
-    anyhow::ensure!(
-        body.len() <= CONTROL_MAX_FRAME_BYTES,
-        "control frame too large"
-    );
-    body.push(b'\n');
-    stream.write_all(&body)?;
-    let response: RunControlResponse = serde_json::from_slice(&read_control_frame(&mut stream)?)?;
-    if !response.ok {
-        anyhow::bail!(
-            "pVisor control request failed: {}",
-            response.error.as_deref().unwrap_or("unknown error")
-        );
-    }
-    Ok(response)
-}
-
-// One connection carries one frame. A total deadline also bounds slow trickle
-// clients; a timeout on each individual read would not bound teardown latency.
-fn read_control_frame(stream: &mut std::os::unix::net::UnixStream) -> anyhow::Result<Vec<u8>> {
-    use std::io::Read;
-    let deadline = std::time::Instant::now() + CONTROL_TIMEOUT;
-    let mut frame = Vec::new();
-    loop {
-        let remaining = deadline
-            .checked_duration_since(std::time::Instant::now())
-            .filter(|duration| !duration.is_zero())
-            .context("control frame deadline exceeded")?;
-        stream.set_read_timeout(Some(remaining))?;
-        let mut chunk = [0; 1024];
-        let count = stream.read(&mut chunk)?;
-        anyhow::ensure!(count != 0, "control frame ended before newline");
-        let newline = chunk[..count].iter().position(|byte| *byte == b'\n');
-        let length = newline.unwrap_or(count);
-        anyhow::ensure!(
-            frame.len() + length <= CONTROL_MAX_FRAME_BYTES,
-            "control frame too large"
-        );
-        frame.extend_from_slice(&chunk[..length]);
-        if newline.is_some() {
-            return Ok(frame);
-        }
-    }
+fn control_request(stage: &Path, command: HostOverlayCommand) -> anyhow::Result<HostOverlayResult> {
+    let request = control_envelope(&RunRecord::read(stage)?, command)?;
+    // These synchronous APIs are also called from Tokio contexts. Keep the
+    // private transport runtime on a separate thread rather than nesting it.
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| -> anyhow::Result<HostOverlayResult> {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?;
+                runtime.block_on(async {
+                    tokio::time::timeout(CONTROL_TIMEOUT, async {
+                        let mut stream =
+                            tokio::net::UnixStream::connect(stage.join(CONTROL_FILENAME)).await?;
+                        authorize_host_peer(&stream)?;
+                        write_host_frame(&mut stream, &request).await?;
+                        let response: AgentCtlHostResponse<HostOverlayResult> =
+                            read_host_frame(&mut stream).await?;
+                        response.validate(&request.request_id)?;
+                        Ok(response.result?)
+                    })
+                    .await
+                    .map_err(|_| anyhow::anyhow!("control request timed out"))?
+                })
+            })
+            .join()
+            .map_err(|_| anyhow::anyhow!("control transport thread panicked"))?
+    })
 }
 
 pub fn control_ping(stage: &Path) -> bool {
-    control_request(stage, &RunControlRequest::Ping).is_ok()
+    control_request(stage, HostOverlayCommand::Ping {}).is_ok()
 }
 
 pub fn control_mount_inspect(stage: &Path) -> anyhow::Result<(String, PathBuf)> {
-    let response = control_request(stage, &RunControlRequest::MountInspect)?;
+    let response = control_request(stage, HostOverlayCommand::MountInspect {})?;
     Ok((
         response.id.context("control response missing inspect id")?,
         response
@@ -570,19 +627,19 @@ pub fn control_mount_inspect(stage: &Path) -> anyhow::Result<(String, PathBuf)> 
 }
 
 pub fn control_overlay_status(stage: &Path) -> anyhow::Result<ControlOverlayStatus> {
-    control_request(stage, &RunControlRequest::OverlayStatus)?
+    control_request(stage, HostOverlayCommand::OverlayStatus {})?
         .overlay_status
         .context("control response missing OverlayFS status")
 }
 
 pub fn control_observations(stage: &Path) -> anyhow::Result<serde_json::Value> {
-    control_request(stage, &RunControlRequest::Observations)?
+    control_request(stage, HostOverlayCommand::Observations {})?
         .observations
         .context("control response missing observations")
 }
 
 pub fn control_unmount_inspect(stage: &Path, id: String) -> anyhow::Result<()> {
-    control_request(stage, &RunControlRequest::UnmountInspect { id })?;
+    control_request(stage, HostOverlayCommand::UnmountInspect { id })?;
     Ok(())
 }
 
@@ -908,11 +965,13 @@ mod tests {
         fs::create_dir_all(&upper).unwrap();
         fs::write(upper.join("new.txt"), b"new").unwrap();
         fs::write(upper.join(".wh.removed.txt"), b"").unwrap();
-        let record = record(temp.path(), &stage, &upper);
+        let mut record = record(temp.path(), &stage, &upper);
+        record.attempt_id = Some("attempt-test".into());
+        record.write().unwrap();
         let _server = RunControlServer::start(&record).unwrap().unwrap();
 
         assert!(control_ping(&stage));
-        let response = control_request(&stage, &RunControlRequest::OverlayStatus).unwrap();
+        let response = control_request(&stage, HostOverlayCommand::OverlayStatus {}).unwrap();
         let status: pvisor_core::overlay::OverlayStatus = response.overlay_status.unwrap();
         assert_eq!(status.changed_files, 1);
         assert_eq!(status.whiteouts, 1);
@@ -932,7 +991,9 @@ mod tests {
         use std::sync::mpsc;
 
         let temp = tempfile::tempdir().unwrap();
-        let record = record(temp.path(), temp.path(), &temp.path().join("upper"));
+        let mut record = record(temp.path(), temp.path(), &temp.path().join("upper"));
+        record.attempt_id = Some("attempt-test".into());
+        let envelope = control_envelope(&record, HostOverlayCommand::Ping {}).unwrap();
         let (mut client, server) = UnixStream::pair().unwrap();
         server.set_nonblocking(true).unwrap();
         server
@@ -941,7 +1002,7 @@ mod tests {
         client
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        let mut request = serde_json::to_vec(&RunControlRequest::Ping).unwrap();
+        let mut request = serde_json::to_vec(&envelope).unwrap();
         request.push(b'\n');
         let split = request.len() / 2;
         client.write_all(&request[..split]).unwrap();
@@ -951,6 +1012,7 @@ mod tests {
                 serve_control(
                     server,
                     temp.path(),
+                    envelope.target.as_ref().unwrap(),
                     record.overlay.as_ref().unwrap(),
                     &[],
                     &mut HashMap::new(),
@@ -969,8 +1031,10 @@ mod tests {
             std::io::BufReader::new(&client)
                 .read_line(&mut line)
                 .unwrap();
-            let response: RunControlResponse = serde_json::from_str(&line).unwrap();
-            assert!(response.ok, "{:?}", response.error);
+            let response: AgentCtlHostResponse<HostOverlayResult> =
+                serde_json::from_str(&line).unwrap();
+            response.validate(&envelope.request_id).unwrap();
+            response.result.unwrap();
             done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         });
     }
@@ -1013,28 +1077,192 @@ mod tests {
 
     #[test]
     fn control_frames_require_a_newline_and_enforce_the_size_limit() {
-        use std::io::Write;
-        let (mut reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
-        writer.write_all(b"{\"type\":\"ping\"}\n").unwrap();
+        use pvisor_core::host_protocol::AGENTCTL_HOST_MAX_FRAME_BYTES;
+        use std::io::{Read, Write};
+        let temp = tempfile::tempdir().unwrap();
+        let mut record = record(temp.path(), temp.path(), &temp.path().join("upper"));
+        record.attempt_id = Some("attempt-test".into());
+        let target = control_envelope(&record, HostOverlayCommand::Ping {})
+            .unwrap()
+            .target
+            .unwrap();
+        for variant in 0..3 {
+            let (server, mut client) = std::os::unix::net::UnixStream::pair().unwrap();
+            client
+                .set_read_timeout(Some(CONTROL_TIMEOUT + Duration::from_secs(2)))
+                .unwrap();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    serve_control(
+                        server,
+                        temp.path(),
+                        &target,
+                        record.overlay.as_ref().unwrap(),
+                        &[],
+                        &mut HashMap::new(),
+                        None,
+                        None,
+                    )
+                });
+                match variant {
+                    0 => {
+                        let request =
+                            control_envelope(&record, HostOverlayCommand::Ping {}).unwrap();
+                        client
+                            .write_all(&serde_json::to_vec(&request).unwrap())
+                            .unwrap();
+                        client.shutdown(std::net::Shutdown::Write).unwrap();
+                    }
+                    1 => {
+                        let _ = client.write_all(&vec![b'x'; AGENTCTL_HOST_MAX_FRAME_BYTES + 1]);
+                    }
+                    _ => {}
+                }
+                let started = std::time::Instant::now();
+                let mut reply = Vec::new();
+                let _ = client.read_to_end(&mut reply);
+                assert!(reply.is_empty());
+                assert!(started.elapsed() < CONTROL_TIMEOUT + Duration::from_secs(2));
+            });
+        }
+    }
+
+    #[test]
+    fn host_control_rejects_stale_targets_versions_and_guest_tokens() {
+        use std::io::{BufRead, Write};
+        let temp = tempfile::tempdir().unwrap();
+        let mut record = record(temp.path(), temp.path(), &temp.path().join("upper"));
+        assert!(RunControlServer::start(&record).is_err());
+        record.attempt_id = Some("attempt-test".into());
+        record.write().unwrap();
+        let _server = RunControlServer::start(&record).unwrap().unwrap();
+        for variant in 0..10 {
+            let request = control_envelope(&record, HostOverlayCommand::Ping {}).unwrap();
+            let mut wire = serde_json::to_value(&request).unwrap();
+            let expected = match variant {
+                0 => {
+                    wire["version"] = 99.into();
+                    Some(AgentCtlHostErrorCode::VersionMismatch)
+                }
+                1 => {
+                    wire["target"] = serde_json::Value::Null;
+                    Some(AgentCtlHostErrorCode::Conflict)
+                }
+                2 => {
+                    wire["target"]["job_id"] = "other-run".into();
+                    Some(AgentCtlHostErrorCode::Conflict)
+                }
+                3 => {
+                    wire["target"]["attempt_id"] = "old-attempt".into();
+                    Some(AgentCtlHostErrorCode::Conflict)
+                }
+                4 => {
+                    wire["target"]["attempt_id"] = serde_json::Value::Null;
+                    Some(AgentCtlHostErrorCode::Conflict)
+                }
+                5 => {
+                    wire["target"]["generation"] = "old".into();
+                    Some(AgentCtlHostErrorCode::Conflict)
+                }
+                6 => {
+                    wire["token"] = "guest-token".into();
+                    None
+                }
+                7 => {
+                    wire["command"]["token"] = "guest-token".into();
+                    None
+                }
+                8 => {
+                    wire["command"] = serde_json::json!({"op":"apply"});
+                    None
+                }
+                _ => {
+                    wire = serde_json::json!({"op":"ping"});
+                    None
+                }
+            };
+            let mut stream =
+                std::os::unix::net::UnixStream::connect(temp.path().join(CONTROL_FILENAME))
+                    .unwrap();
+            stream.set_read_timeout(Some(CONTROL_TIMEOUT)).unwrap();
+            let mut bytes = serde_json::to_vec(&wire).unwrap();
+            bytes.push(b'\n');
+            stream.write_all(&bytes).unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&stream)
+                .read_line(&mut line)
+                .unwrap();
+            if let Some(code) = expected {
+                let response: AgentCtlHostResponse<HostOverlayResult> =
+                    serde_json::from_str(&line).unwrap();
+                response.validate(&request.request_id).unwrap();
+                assert_eq!(response.result.unwrap_err().code, code);
+            } else {
+                assert!(line.is_empty());
+            }
+        }
+        assert!(control_ping(temp.path()));
         assert_eq!(
-            read_control_frame(&mut reader).unwrap(),
-            b"{\"type\":\"ping\"}"
+            control_observations(temp.path()).unwrap(),
+            serde_json::json!({"filesystem":null,"network":null})
         );
-        drop(writer);
-        assert!(read_control_frame(&mut reader).is_err());
+        // Discovery may now point at a replacement Attempt, but the old endpoint
+        // remains bound to the identity captured at startup.
+        record.attempt_id = Some("attempt-new".into());
+        record.write().unwrap();
+        assert!(!control_ping(temp.path()));
+    }
 
-        let (mut reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
-        let sending = std::thread::spawn(move || {
-            let _ = writer.write_all(&vec![b'x'; CONTROL_MAX_FRAME_BYTES + 1]);
-        });
-        assert!(read_control_frame(&mut reader).is_err());
-        drop(reader);
-        sending.join().unwrap();
-
-        let (mut reader, _idle_client) = std::os::unix::net::UnixStream::pair().unwrap();
-        let started = std::time::Instant::now();
-        assert!(read_control_frame(&mut reader).is_err());
-        assert!(started.elapsed() < CONTROL_TIMEOUT + Duration::from_secs(2));
+    #[test]
+    fn control_client_rejects_uncorrelated_and_wrong_version_responses() {
+        use std::io::{BufRead, Write};
+        for variant in 0..3 {
+            let temp = tempfile::tempdir().unwrap();
+            let mut record = record(temp.path(), temp.path(), &temp.path().join("upper"));
+            record.attempt_id = Some("attempt-test".into());
+            record.write().unwrap();
+            let listener =
+                std::os::unix::net::UnixListener::bind(temp.path().join(CONTROL_FILENAME)).unwrap();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut line = String::new();
+                    std::io::BufReader::new(&stream)
+                        .read_line(&mut line)
+                        .unwrap();
+                    let request: AgentCtlHostRequest<HostOverlayCommand> =
+                        serde_json::from_str(&line).unwrap();
+                    assert_eq!(
+                        request.target.unwrap().attempt_id.as_deref(),
+                        Some("attempt-test")
+                    );
+                    let response = AgentCtlHostResponse {
+                        version: if variant == 0 {
+                            99
+                        } else {
+                            AGENTCTL_HOST_VERSION
+                        },
+                        request_id: if variant == 1 {
+                            "wrong".into()
+                        } else {
+                            request.request_id
+                        },
+                        result: if variant == 2 {
+                            Err(AgentCtlHostError::new(
+                                AgentCtlHostErrorCode::Unavailable,
+                                "not available",
+                            ))
+                        } else {
+                            Ok(HostOverlayResult::default())
+                        },
+                    };
+                    let mut bytes = serde_json::to_vec(&response).unwrap();
+                    bytes.push(b'\n');
+                    stream.write_all(&bytes).unwrap();
+                });
+                assert!(control_request(temp.path(), HostOverlayCommand::Ping {}).is_err());
+            });
+        }
     }
 
     #[test]

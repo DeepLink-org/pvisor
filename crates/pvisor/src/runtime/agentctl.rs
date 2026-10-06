@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{BufRead, Read, Write};
+use std::net::Shutdown;
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -337,6 +340,8 @@ fn finish_checkpoint(state: &mut AgentCtlState, generation: u64) {
 /// Owns the Run-scoped Unix listener and removes it on drop.
 pub struct AgentCtlServer {
     stop: Arc<AtomicBool>,
+    wake: UnixStream,
+    active: Arc<Mutex<Option<UnixStream>>>,
     join: Option<JoinHandle<()>>,
     socket_path: PathBuf,
     token: String,
@@ -359,7 +364,10 @@ impl AgentCtlServer {
             attempt_id,
             token.clone(),
         )));
-        let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+        // Allocate the private wake channel before binding so setup failures do
+        // not leave a discovery socket behind.
+        let (wake, thread_wake) = UnixStream::pair()?;
+        let listener = UnixListener::bind(&socket_path)?;
         if let Err(error) = fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)) {
             let _ = fs::remove_file(&socket_path);
             return Err(error.into());
@@ -372,16 +380,43 @@ impl AgentCtlServer {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread_state = Arc::clone(&state);
+        let active = Arc::new(Mutex::new(None));
+        let thread_active = Arc::clone(&active);
         let thread_name = format!("pvisor-agentctl-{}", run_id.as_str());
         let join = std::thread::Builder::new()
             .name(thread_name)
             .spawn(move || {
                 while !thread_stop.load(Ordering::Acquire) {
+                    if !wait_for_connection(&listener, &thread_wake).unwrap_or(false) {
+                        break;
+                    }
                     match listener.accept() {
-                        Ok((stream, _)) => serve_connection(stream, &thread_state),
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(10));
+                        Ok((stream, _)) => {
+                            {
+                                let mut active = thread_active
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                // Registration and stop inspection share the Drop lock:
+                                // no accepted stream can miss shutdown cancellation.
+                                if thread_stop.load(Ordering::Acquire) {
+                                    break;
+                                }
+                                let Ok(cancel) = stream.try_clone() else {
+                                    continue;
+                                };
+                                *active = Some(cancel);
+                            }
+                            serve_connection(stream, &thread_state);
+                            thread_active
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .take();
                         }
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                            ) => {}
                         Err(_) => break,
                     }
                 }
@@ -400,6 +435,8 @@ impl AgentCtlServer {
         };
         Ok(Self {
             stop,
+            wake,
+            active,
             join: Some(join),
             socket_path,
             token,
@@ -432,11 +469,50 @@ impl AgentCtlServer {
 impl Drop for AgentCtlServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        let _ = std::os::unix::net::UnixStream::connect(&self.socket_path);
+        // EOF on a private descriptor wakes poll even if discovery was removed
+        // or the public listener backlog is full. It cannot block on a client.
+        let _ = self.wake.shutdown(Shutdown::Both);
+        if let Some(stream) = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
         let _ = fs::remove_file(&self.socket_path);
+    }
+}
+
+fn wait_for_connection(listener: &UnixListener, wake: &UnixStream) -> std::io::Result<bool> {
+    let mut descriptors = [
+        libc::pollfd {
+            fd: wake.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: listener.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    loop {
+        // Both descriptors remain owned by this thread throughout the blocking
+        // wait. No timeout: idle Attempts generate no periodic wakeups.
+        let result = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        // Stop wins over simultaneous listener readiness, including wake EOF.
+        return Ok(descriptors[0].revents == 0 && descriptors[1].revents & libc::POLLIN != 0);
     }
 }
 
@@ -663,6 +739,12 @@ mod tests {
 
     fn exchange(path: &Path, request: &AgentRequest) -> AgentResponse {
         let mut stream = std::os::unix::net::UnixStream::connect(path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         serde_json::to_writer(&mut stream, request).unwrap();
         stream.write_all(b"\n").unwrap();
         let mut line = String::new();
@@ -684,6 +766,124 @@ mod tests {
             AgentResponse::Welcome { session_id, .. } => session_id,
             response => panic!("unexpected response: {response:?}"),
         }
+    }
+
+    fn drop_promptly(server: AgentCtlServer) {
+        let path = server.socket_path.clone();
+        let (done, stopped) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            drop(server);
+            done.send(()).unwrap();
+        });
+        stopped
+            .recv_timeout(Duration::from_secs(1))
+            .expect("AgentCtl shutdown did not interrupt its blocking wait");
+        worker.join().unwrap();
+        assert!(!path.exists());
+    }
+
+    fn wait_until_serving(server: &AgentCtlServer) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while server.active.lock().unwrap().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "client was not accepted"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn idle_stop_wakes_without_discovery_path() {
+        let server =
+            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+        let environment = server.environment();
+        assert_eq!(
+            environment[pvisor_core::AGENTCTL_ENDPOINT_ENV],
+            server.socket_path.display().to_string()
+        );
+        assert_eq!(environment[pvisor_core::AGENTCTL_TOKEN_ENV], server.token);
+        fs::remove_file(&server.socket_path).unwrap();
+        drop_promptly(server);
+    }
+
+    #[test]
+    fn stop_interrupts_silent_and_partial_requests() {
+        for partial in [false, true] {
+            let server =
+                AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            let mut client = UnixStream::connect(&server.socket_path).unwrap();
+            if partial {
+                client.write_all(b"{\"version\":1").unwrap();
+            }
+            wait_until_serving(&server);
+            drop_promptly(server);
+            // Keep the client open until shutdown completes: EOF cannot be the
+            // reason the server's request read finished.
+            drop(client);
+        }
+    }
+
+    #[test]
+    fn stop_wins_over_listener_readiness() {
+        let directory = tempfile::tempdir().unwrap();
+        let listener = UnixListener::bind(directory.path().join("control.sock")).unwrap();
+        let (wake, receiver) = UnixStream::pair().unwrap();
+        let _client = UnixStream::connect(directory.path().join("control.sock")).unwrap();
+        wake.shutdown(Shutdown::Both).unwrap();
+        assert!(!wait_for_connection(&listener, &receiver).unwrap());
+    }
+
+    #[test]
+    fn stop_races_with_accept_and_queued_clients() {
+        for _ in 0..32 {
+            let server =
+                AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+            let first = UnixStream::connect(&server.socket_path).unwrap();
+            let queued = UnixStream::connect(&server.socket_path).unwrap();
+            drop_promptly(server);
+            drop((first, queued));
+        }
+    }
+
+    #[test]
+    fn blocking_listener_serves_repeated_hello_sync_and_malformed_requests() {
+        let server =
+            AgentCtlServer::start(&RunId::new("run-1"), &AttemptId::new("attempt-1")).unwrap();
+        let mut malformed = UnixStream::connect(&server.socket_path).unwrap();
+        malformed
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        malformed.write_all(b"not json\n").unwrap();
+        let mut response = String::new();
+        std::io::BufReader::new(malformed)
+            .read_line(&mut response)
+            .unwrap();
+        assert!(matches!(
+            serde_json::from_str::<AgentResponse>(&response).unwrap(),
+            AgentResponse::Error {
+                code: AgentErrorCode::InvalidRequest,
+                ..
+            }
+        ));
+        for index in 0..8 {
+            let session_id = connect(&server, &format!("client-{index}"));
+            assert!(matches!(
+                exchange(
+                    &server.socket_path,
+                    &AgentRequest::Sync {
+                        version: AGENTCTL_VERSION,
+                        session_id,
+                        state: AgentState::Active,
+                    }
+                ),
+                AgentResponse::Synced {
+                    directive: AgentDirective::Continue
+                }
+            ));
+        }
+        assert_eq!(server.control.snapshot().clients.len(), 8);
+        drop_promptly(server);
     }
 
     #[test]

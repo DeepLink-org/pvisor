@@ -7,6 +7,34 @@ pub const STAGE_FILE: &str = "PVISOR_UI_STAGE_FILE";
 pub const LOG_FILE: &str = "PVISOR_UI_LOG_FILE";
 pub const AUDIT_SOCKET: &str = "PVISOR_UI_AUDIT_SOCKET";
 static CHILD_CONTEXT: OnceLock<Option<PathBuf>> = OnceLock::new();
+static SERVICE_CONTEXT: OnceLock<Option<ServiceTerminalContext>> = OnceLock::new();
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ServiceTerminalContext {
+    stage_file: PathBuf,
+    log_file: Option<PathBuf>,
+    audit_socket: Option<PathBuf>,
+}
+
+pub(crate) fn service_context() -> Option<ServiceTerminalContext> {
+    SERVICE_CONTEXT.get().cloned().flatten()
+}
+
+/// Called only in the fresh, single-threaded host worker before initialization.
+pub(crate) fn restore_service_context(context: Option<ServiceTerminalContext>) {
+    if let Some(context) = context {
+        unsafe {
+            std::env::set_var(CHILD_MARKER, "1");
+            std::env::set_var(STAGE_FILE, context.stage_file);
+            if let Some(path) = context.log_file {
+                std::env::set_var(LOG_FILE, path);
+            }
+            if let Some(path) = context.audit_socket {
+                std::env::set_var(AUDIT_SOCKET, path);
+            }
+        }
+    }
+}
 
 pub fn init_child_context() {
     let path = if std::env::var_os(CHILD_MARKER).is_some() {
@@ -24,6 +52,11 @@ pub fn init_child_context() {
     } else {
         None
     };
+    let _ = SERVICE_CONTEXT.set(path.as_ref().map(|stage_file| ServiceTerminalContext {
+        stage_file: stage_file.clone(),
+        log_file: log_path.clone(),
+        audit_socket: audit_socket.clone(),
+    }));
     // This runs before the Tokio runtime and any Agent environment is built.
     unsafe {
         std::env::remove_var(CHILD_MARKER);

@@ -12,14 +12,15 @@ use std::{
     io::{self, Read},
     os::unix::{
         ffi::OsStrExt,
-        fs::{FileExt, OpenOptionsExt, symlink},
+        fs::{FileExt, MetadataExt, OpenOptionsExt, symlink},
     },
     path::Path,
 };
 
 const MAX_BLOCKS: u64 = 1_048_576;
 
-/// Encoding-stream work only; integrity inventory/verification reads are extra.
+/// Encoding-stream work (also the final inventory's content read); initial
+/// inventory and stored-frame verification reads are extra.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CaptureStats {
     pub payload_bytes: u64,
@@ -240,8 +241,6 @@ impl FilesystemBlocks {
         Ok(())
     }
 
-
-
     pub(super) fn capture_with_stats(
         pool: &Path,
         source: &Path,
@@ -256,6 +255,17 @@ impl FilesystemBlocks {
         tree: &TreeInventory,
         references: &Path,
         excluded: &[std::path::PathBuf],
+    ) -> anyhow::Result<(Self, CaptureStats)> {
+        Self::capture_projected_observed(pool, source, tree, references, excluded, |_| {})
+    }
+
+    fn capture_projected_observed(
+        pool: &Path,
+        source: &Path,
+        tree: &TreeInventory,
+        references: &Path,
+        excluded: &[std::path::PathBuf],
+        mut after_stream: impl FnMut(&Path),
     ) -> anyhow::Result<(Self, CaptureStats)> {
         super::linux::validate_tree_metadata(tree)?;
         ensure!(
@@ -284,67 +294,110 @@ impl FilesystemBlocks {
             files: Vec::new(),
         };
         let mut stats = CaptureStats::default();
-        for entry in &tree.entries {
-            let TreeObject::File {
-                bytes,
-                sha256,
-                hardlink,
-            } = &entry.object
-            else {
-                continue;
-            };
-            if *hardlink != entry.path {
-                continue;
-            }
-            let mut input = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(source.join(OsStr::from_bytes(&entry.path)))?;
-            let before = input.metadata()?;
-            ensure!(
-                before.is_file() && before.len() == *bytes,
-                "private file changed before sealing"
-            );
-            let mut hash = Sha256::new();
-            let mut file = PrivateFileBlocks {
-                path: entry.path.clone(),
-                blocks: Vec::new(),
-            };
-            let mut remaining = *bytes;
-            while remaining > 0 {
-                let mut data = vec![0; remaining.min(BLOCK_BYTES as u64) as usize];
-                input.read_exact(&mut data)?;
-                hash.update(&data);
-                remaining -= data.len() as u64;
-                stats.payload_bytes += data.len() as u64;
-                file.blocks.push(if data.iter().all(|byte| *byte == 0) {
-                    stats.zero_frames += 1;
-                    None
-                } else {
-                    let retained = blocks::retain_bytes(pool, references, &data)?;
-                    if retained.encoded {
-                        stats.encoded_frames += 1;
+        let mut fingerprints = BTreeMap::new();
+        let expected_files = tree
+            .entries
+            .iter()
+            .filter(|entry| matches!(&entry.object, TreeObject::File { hardlink, .. } if *hardlink == entry.path))
+            .map(|entry| (entry.path.as_slice(), entry))
+            .collect::<BTreeMap<_, _>>();
+        // Keep the independent final inventory, but encode its freshly read
+        // content instead of reading each file once more before that walk.
+        // The walker brackets this callback with identity/version checks and
+        // audits all metadata, exclusions and hardlink topology as before.
+        let observed = super::inventory_projected_with_hash::<true>(
+            source,
+            &mut |path| {
+                let relative = path.strip_prefix(source)?.as_os_str().as_bytes();
+                let entry = expected_files
+                    .get(relative)
+                    .context("unexpected private file during sealing")?;
+                let TreeObject::File { bytes, sha256, .. } = &entry.object else {
+                    unreachable!();
+                };
+                let mut input = OpenOptions::new()
+                    .read(true)
+                    .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                    .open(path)?;
+                let before = input.metadata()?;
+                ensure!(
+                    before.is_file() && before.len() == *bytes,
+                    "private file changed before sealing"
+                );
+                let mut hash = Sha256::new();
+                let mut file = PrivateFileBlocks {
+                    path: entry.path.clone(),
+                    blocks: Vec::new(),
+                };
+                let mut remaining = *bytes;
+                while remaining > 0 {
+                    let mut data = vec![0; remaining.min(BLOCK_BYTES as u64) as usize];
+                    input.read_exact(&mut data)?;
+                    hash.update(&data);
+                    remaining -= data.len() as u64;
+                    stats.payload_bytes += data.len() as u64;
+                    file.blocks.push(if data.iter().all(|byte| *byte == 0) {
+                        stats.zero_frames += 1;
+                        None
                     } else {
-                        stats.reused_frames += 1;
-                    }
-                    Some(retained.reference.id)
-                });
-            }
-            ensure!(
-                crate::util::encode_hex(&hash.finalize()) == *sha256
-                    && input.metadata()?.len() == *bytes,
-                "private file changed during sealing"
-            );
-            result.files.push(file);
-        }
+                        let retained = blocks::retain_bytes(pool, references, &data)?;
+                        if retained.encoded {
+                            stats.encoded_frames += 1;
+                        } else {
+                            stats.reused_frames += 1;
+                        }
+                        Some(retained.reference.id)
+                    });
+                }
+                let digest = crate::util::encode_hex(&hash.finalize());
+                ensure!(
+                    digest == *sha256
+                        && super::FileVersion::of(&before)
+                            == super::FileVersion::of(&input.metadata()?),
+                    "private file changed during sealing"
+                );
+                fingerprints.insert(
+                    path.to_owned(),
+                    (
+                        before.dev(),
+                        before.ino(),
+                        super::FileVersion::of(&before),
+                        digest.clone(),
+                    ),
+                );
+                result.files.push(file);
+                after_stream(path);
+                Ok(digest)
+            },
+            excluded,
+        )?;
+        ensure!(observed == *tree, "filesystem inventory mismatch");
         result.validate(tree)?;
         File::open(pool.join("content"))?.sync_all()?;
         File::open(references)?.sync_all()?;
-        // Unvisited metadata and hard-link topology must also remain exact.
-        ensure!(
-            super::inventory_projected(source, excluded)? == *tree,
-            "filesystem inventory mismatch"
-        );
+        // A file encoded early can change while later files are encoded. Keep
+        // the post-stream inventory, reusing a digest only for the same inode
+        // and ctime/mtime/length version observed by this capture's stream.
+        // This is request-local evidence, not a frozen-source trust shortcut.
+        let rechecked = super::inventory_projected_with_hash::<true>(
+            source,
+            &mut |path| {
+                let (dev, ino, version, digest) = fingerprints
+                    .get(path)
+                    .context("unexpected private file after sealing")?;
+                let metadata = fs::symlink_metadata(path)?;
+                ensure!(
+                    metadata.is_file()
+                        && metadata.dev() == *dev
+                        && metadata.ino() == *ino
+                        && super::FileVersion::of(&metadata) == *version,
+                    "private file changed after sealing"
+                );
+                Ok(digest.clone())
+            },
+            excluded,
+        )?;
+        ensure!(rechecked == *tree, "filesystem inventory mismatch");
         Ok((result, stats))
     }
 
@@ -655,6 +708,114 @@ mod tests {
         drop(third_owner);
         store.collect_abandoned().unwrap();
         assert_eq!(fs::read_dir(pool.join("content")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn capture_stream_is_once_per_inode_and_rejects_concurrent_mutations() {
+        for mutation in [
+            "none",
+            "content",
+            "replacement",
+            "hardlink",
+            "metadata",
+            "earlier-content",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source");
+            fs::create_dir(&source).unwrap();
+            let data = source.join("data");
+            let alias = source.join("z-alias");
+            fs::write(&data, vec![17; BLOCK_BYTES + 9]).unwrap();
+            fs::hard_link(&data, &alias).unwrap();
+            fs::write(source.join("empty"), []).unwrap();
+            let tree = super::super::inventory(&source).unwrap();
+            let pool = temp.path().join("pool");
+            let store = SnapshotStore::new(&pool).unwrap();
+            let owner = store.begin().unwrap();
+            let references = owner.directory().join("filesystem-blocks");
+            let mut streams = Vec::new();
+            let captured = FilesystemBlocks::capture_projected_observed(
+                &pool,
+                &source,
+                &tree,
+                &references,
+                &[],
+                |path| {
+                    streams.push(path.file_name().unwrap().to_owned());
+                    if path.file_name() == Some(OsStr::new("empty"))
+                        && mutation == "earlier-content"
+                    {
+                        fs::write(&data, vec![29; BLOCK_BYTES + 9]).unwrap();
+                    }
+                    if path != data {
+                        return;
+                    }
+                    // A deterministic concurrent writer at the boundary between
+                    // content encoding and the inventory's post-read checks.
+                    std::thread::scope(|scope| {
+                        scope
+                            .spawn(|| match mutation {
+                                "content" => fs::write(&data, vec![29; BLOCK_BYTES + 9]).unwrap(),
+                                "replacement" => {
+                                    fs::remove_file(&data).unwrap();
+                                    fs::write(&data, vec![17; BLOCK_BYTES + 9]).unwrap();
+                                }
+                                "hardlink" => {
+                                    fs::remove_file(&alias).unwrap();
+                                    fs::write(&alias, vec![17; BLOCK_BYTES + 9]).unwrap();
+                                }
+                                "metadata" => {
+                                    use std::os::unix::fs::PermissionsExt;
+                                    let mode = fs::metadata(&data).unwrap().mode() ^ 0o100;
+                                    fs::set_permissions(&data, fs::Permissions::from_mode(mode))
+                                        .unwrap();
+                                }
+                                "none" | "earlier-content" => {}
+                                _ => unreachable!(),
+                            })
+                            .join()
+                            .unwrap();
+                    });
+                },
+            );
+            if mutation == "none" {
+                let (index, stats) = captured.unwrap();
+                assert_eq!(streams, [OsStr::new("data"), OsStr::new("empty")]);
+                assert_eq!(index.files.len(), 2);
+                assert_eq!(stats.payload_bytes, (BLOCK_BYTES + 9) as u64);
+                index.verify(&references, &tree).unwrap();
+            } else {
+                assert!(captured.is_err(), "accepted concurrent {mutation} mutation");
+            }
+        }
+    }
+
+    #[test]
+    fn capture_rejects_corrupt_reused_frame() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("data"), vec![17; BLOCK_BYTES]).unwrap();
+        let tree = super::super::inventory(&source).unwrap();
+        let pool = temp.path().join("pool");
+        let store = SnapshotStore::new(&pool).unwrap();
+        let first = store.begin().unwrap();
+        let references = first.directory().join("filesystem-blocks");
+        let (index, _) =
+            FilesystemBlocks::capture_with_stats(&pool, &source, &tree, &references).unwrap();
+        let id = index.files[0].blocks[0].as_ref().unwrap();
+        fs::write(pool.join("content").join(id), b"corrupt frame").unwrap();
+        assert!(index.verify(&references, &tree).is_err());
+        let second = store.begin().unwrap();
+        assert!(
+            FilesystemBlocks::capture_with_stats(
+                &pool,
+                &source,
+                &tree,
+                &second.directory().join("filesystem-blocks"),
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -85,17 +85,17 @@ impl FilesystemService {
     pub fn is_write_open(flags: i32) -> bool {
         flags & libc::O_ACCMODE != libc::O_RDONLY || flags & (libc::O_APPEND | libc::O_TRUNC) != 0
     }
-    fn prepare_write_open(&self, rel: &Path) -> io::Result<PathBuf> {
+    fn prepare_write_open(&self, rel: &Path, flags: i32) -> io::Result<PathBuf> {
         if self.core.metadata(rel)?.file_type().is_symlink() {
             return Err(io::Error::from_raw_os_error(libc::ELOOP));
         }
-        self.core.copy_up(rel)
+        self.core.copy_up_for_open(rel, flags & libc::O_TRUNC != 0)
     }
     /// Resolve a no-follow open, recording reads or copying up writes.
     /// The adapter owns the native descriptor and must open it without following links.
     pub fn prepare_open(&self, rel: &Path, flags: i32) -> io::Result<PathBuf> {
         if Self::is_write_open(flags) {
-            self.prepare_write_open(rel)
+            self.prepare_write_open(rel, flags)
         } else {
             Ok(self.core.prepare_file_read(rel)?.resolved.path)
         }
@@ -107,7 +107,8 @@ impl FilesystemService {
         flags: i32,
     ) -> io::Result<OpenBacking> {
         if Self::is_write_open(flags) {
-            self.prepare_write_open(rel).map(OpenBacking::Writable)
+            self.prepare_write_open(rel, flags)
+                .map(OpenBacking::Writable)
         } else {
             self.core
                 .prepare_file_read_for_backing_lookup(rel)
@@ -217,6 +218,66 @@ impl FilesystemService {
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn fresh_truncate_skips_copy_but_preserves_preimage_and_hardlinks() {
+        for compact in [false, true] {
+            for native in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let lower = temp.path().join("lower");
+                let upper = temp.path().join("upper");
+                let journal = temp.path().join("preimages");
+                std::fs::create_dir(&lower).unwrap();
+                std::fs::write(lower.join("file"), vec![42; 131_073]).unwrap();
+                std::fs::write(lower.join("linked"), b"shared").unwrap();
+                std::fs::hard_link(lower.join("linked"), lower.join("alias")).unwrap();
+                let before = crate::fingerprint_at(&lower, Path::new("file")).unwrap();
+                let profile = crate::profile::Profile::enabled("truncate-test");
+                let mut core = OverlayCore::new_with_exclusions_and_preimages(
+                    vec![lower.clone()],
+                    upper.clone(),
+                    None,
+                    vec![],
+                    Some(journal.clone()),
+                )
+                .unwrap();
+                if compact {
+                    core = core.with_compact_preimages().unwrap();
+                }
+                let service = FilesystemService::new(core).with_profile(profile.clone());
+                let prepare = |name: &str| {
+                    let flags = libc::O_WRONLY | libc::O_TRUNC;
+                    if native {
+                        match service
+                            .prepare_open_for_backing_lookup(Path::new(name), flags)
+                            .unwrap()
+                        {
+                            OpenBacking::Writable(path) => path,
+                            _ => panic!("expected writable backing"),
+                        }
+                    } else {
+                        service.prepare_open(Path::new(name), flags).unwrap()
+                    }
+                };
+                let copied = prepare("file");
+                assert!(std::fs::read(copied).unwrap().is_empty());
+                assert_eq!(crate::load_preimages(&journal).unwrap()[0].state, before);
+                let report = profile.report().unwrap();
+                assert_eq!(
+                    report.measurements["copy_up_truncate_skipped_bytes"].units,
+                    131_073
+                );
+                assert!(!report.measurements.contains_key("copy_up_bytes"));
+                // Hardlinks stay on the normal path; the adapter truncates the
+                // shared upper inode only after alias rebinding is complete.
+                assert_eq!(std::fs::read(prepare("linked")).unwrap(), b"shared");
+                service.copy_up(Path::new("alias")).unwrap();
+                std::fs::write(upper.join("linked"), b"edited").unwrap();
+                assert_eq!(std::fs::read(upper.join("alias")).unwrap(), b"edited");
+                assert_eq!(std::fs::read(lower.join("alias")).unwrap(), b"shared");
+            }
+        }
+    }
 
     #[test]
     fn host_and_native_open_share_read_copy_up_and_no_follow_semantics() {

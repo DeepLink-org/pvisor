@@ -978,6 +978,138 @@ fn internal_launcher_reports_setup_failure_with_reserved_status() {
     );
 }
 
+// All fixture mounts are created in the child's private user/mount namespace.
+// This exercises the actual launcher without requiring workspace FUSE staging.
+#[test]
+fn inherited_nested_state_mount_fails_closed_before_agent_execution() {
+    let output = Command::new("unshare")
+        .args([
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "--fork",
+            "--propagation",
+            "private",
+        ])
+        .arg(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "inherited_nested_state_mount_fixture",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("PVISOR_NESTED_MOUNT_FIXTURE", "1")
+        .output()
+        .expect("run isolated mount fixture using util-linux unshare");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if std::env::var_os("PVISOR_TEST_ALLOW_NO_USERNS").is_some()
+        && (stderr.trim() == "unshare: unshare failed: Operation not permitted"
+            || stderr.trim() == "unshare: unshare failed: Permission denied")
+    {
+        eprintln!(
+            "skipping: isolated nested-mount fixture cannot create user/mount namespaces: {stderr}"
+        );
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "isolated fixture failed:\n{stderr}\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+#[ignore = "helper re-entered only in a private user/mount namespace"]
+fn inherited_nested_state_mount_fixture() {
+    if std::env::var_os("PVISOR_NESTED_MOUNT_FIXTURE").is_none() {
+        return;
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("state root");
+    let nested = home.join("nested mount");
+    let root = temporary.path().join("sandbox");
+    fs::create_dir_all(&nested).unwrap();
+    fs::create_dir(&root).unwrap();
+    let nested_c = std::ffi::CString::new(nested.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(
+        unsafe {
+            libc::mount(
+                c"nested-state-fixture".as_ptr(),
+                nested_c.as_ptr(),
+                c"tmpfs".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV,
+                c"size=1m".as_ptr().cast(),
+            )
+        },
+        0,
+        "fixture tmpfs mount: {}",
+        std::io::Error::last_os_error()
+    );
+    fs::write(nested.join("unchanged"), b"nested lower").unwrap();
+    fs::write(home.join("unchanged"), b"state lower").unwrap();
+    let attestation = temporary.path().join("attestation");
+    fs::write(&attestation, b"").unwrap();
+    let plan = temporary.path().join("plan.json");
+    fs::write(
+        &plan,
+        serde_json::to_vec(&serde_json::json!({
+            "root": root,
+            "cwd": home,
+            "attestation": attestation,
+            "read_only": [],
+            "read_write": [],
+            "staged_roots": [home],
+            "network": "Ambient",
+            "filesystem_isolated": true
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .env("PVISOR_INTERNAL_SANDBOX_PLAN", &plan)
+        .args([
+            "__pvisor-sandbox-exec",
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf executed > agent-executed",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(SANDBOX_SETUP_EXIT_CODE),
+        "{stderr}"
+    );
+    assert!(stderr.contains("mount staged state OverlayFS"), "{stderr}");
+    assert!(stderr.contains("state root mountpoint="), "{stderr}");
+    assert!(
+        stderr.contains("fstype=") && stderr.contains("source="),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("unsupported inherited nested mounts (1 strict descendants"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("nested mount") && stderr.contains("nested-state-fixture"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("os error"),
+        "expected original OverlayFS errno: {stderr}"
+    );
+    assert!(
+        fs::read(&attestation).unwrap().is_empty(),
+        "setup must not attest execution"
+    );
+    assert!(!home.join("agent-executed").exists());
+    assert_eq!(fs::read(home.join("unchanged")).unwrap(), b"state lower");
+    assert_eq!(fs::read(nested.join("unchanged")).unwrap(), b"nested lower");
+    // No host unmount: namespace teardown owns fixture mount cleanup.
+}
+
 #[test]
 fn namespace_setup_failure_classifier_is_narrow() {
     assert!(user_namespaces_are_unavailable(

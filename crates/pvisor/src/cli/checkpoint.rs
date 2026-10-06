@@ -8,10 +8,12 @@ use crate::runtime::{RunRecord, resolve_run};
 use anyhow::Context;
 use clap::{Args, Subcommand, ValueEnum};
 use pvisor_core::operation::SnapshotRamStorage;
-use serde::Serialize;
+
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ValueEnum)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Kind {
     #[default]
@@ -19,7 +21,7 @@ pub(super) enum Kind {
     Execution,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, ValueEnum, serde::Serialize, serde::Deserialize)]
 pub(super) enum RamStorage {
     Raw,
     Compressed,
@@ -33,7 +35,7 @@ impl From<RamStorage> for SnapshotRamStorage {
     }
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
 pub(super) struct Selection {
     /// Explicit Job id, stage path, run.json, or last.
     pub job: PathBuf,
@@ -46,14 +48,14 @@ impl Selection {
     }
 }
 
-#[derive(Debug, Args)]
-pub(super) struct CheckpointArgs {
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CheckpointArgs {
     #[command(subcommand)]
     command: CheckpointCommand,
 }
 
-#[derive(Debug, Args)]
-pub(super) struct SuspendArgs {
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SuspendArgs {
     #[command(flatten)]
     selection: Selection,
     #[arg(long, value_enum)]
@@ -67,7 +69,7 @@ pub(super) struct SuspendArgs {
     timeout: super::run::DurationMs,
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
 pub struct ResumeArgs {
     #[command(flatten)]
     selection: Selection,
@@ -78,6 +80,17 @@ pub struct ResumeArgs {
     eager_ram: bool,
     #[arg(long)]
     request_id: Option<String>,
+}
+
+impl SuspendArgs {
+    pub(super) fn job_selector(&self) -> &std::path::Path {
+        &self.selection.job
+    }
+}
+impl ResumeArgs {
+    pub(super) fn job_selector(&self) -> &std::path::Path {
+        &self.selection.job
+    }
 }
 
 pub(super) async fn suspend(args: SuspendArgs) -> anyhow::Result<()> {
@@ -107,7 +120,7 @@ pub(super) async fn resume(args: ResumeArgs) -> anyhow::Result<i32> {
     check_execution(&record)?;
     super::run::resume_execution(record, args.request_id, args.eager_ram).await
 }
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommand, serde::Serialize, serde::Deserialize)]
 enum CheckpointCommand {
     /// Save staged files, or capture a live VM's execution and continue it.
     Create {

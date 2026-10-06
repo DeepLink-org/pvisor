@@ -322,10 +322,10 @@ impl Owners {
                 // across Worker-local stores through one backing inode.
                 let key = serde_json::to_string(&("ram", &snapshot_id, &compatibility))?;
                 self.registry.acquire(key, || {
-                    let directory = self.config.state.join("ram-mounts");
-                    fs::create_dir_all(&directory)?;
+                    let mut protected = vec![self.config.state.as_path(), store.as_path()];
+                    protected.extend(self.config.snapshot_roots.iter().map(PathBuf::as_path));
                     let (mut mount, file) =
-                        SnapshotRamMount::new(published.ram_reader()?, &directory)?;
+                        SnapshotRamMount::runtime(published.ram_reader()?, &protected)?;
                     mount.watch_native_owner_exit(&std::env::current_exe()?)?;
                     let path = mount.ram_path();
                     drop(file);

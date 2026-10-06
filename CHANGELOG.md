@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Snapshot RAM mount isolation
+
+- Keep transient snapshot RAM mounts and pager specifications in validated private
+  host runtime directories, separate from snapshot stores and node state. The SDK
+  `directory` argument is retained but now identifies an excluded state root,
+  rather than the mount parent.
+- Bound RAM cleanup-helper waits and clean up owned mounts after abnormal helper
+  exits; persistent snapshot data and unrelated legacy mounts remain untouched.
+- Reject unsupported nested mounts during Linux rootless state staging with
+  topology diagnostics and the original mount error, without weakening isolation.
+
 ### ZCode CLI integration
 
 - Added Run-scoped ZCode proxy and BigModel Gateway profile support.

@@ -61,8 +61,6 @@ pub(super) fn read_object(path: &Path) -> anyhow::Result<CompressedObject> {
     Ok(CompressedObject::from_frame(&bytes)?)
 }
 impl RamBlocks {
-
-
     pub(super) fn validate(&self) -> anyhow::Result<()> {
         ensure!(
             self.length > 0 && self.blocks.len() as u64 == self.length.div_ceil(BLOCK_BYTES as u64),

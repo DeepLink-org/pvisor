@@ -13,6 +13,13 @@ Design: one offline tool environment for every runtime, seven fixed workloads,
 matched two-core budget, fresh workspace per job, warmups plus >=30 samples;
 fresh task caches under executor TMPDIR by default, workspace cache control
 separate; output, isolation and untouched-host checks gate every counted sample.
+Startup question: how does kernel source affect first correct output waiting
+under the same prepared userspace and budget? fc-system is official stock primary;
+fc-reference is independent custom supplemental; firecracker is legacy reference/
+unknown. Optional FC ready-only requires unique Ready/Result/Exit0, no panic,
+controlled SIGTERM and no completion metric; normal success-exit is unchanged.
+QEMU can consume the same stock receipt's original vmlinuz and optional initrd;
+stock QEMU/FC results retain exact kernel provenance separately from legacy assets.
 """
 
 import argparse
@@ -32,6 +39,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from firecracker_kernels import verify_kernel_receipt
 from bench import percentile
 from resource_budget import BudgetViolation, ResourceBudget, parse_cpus
 from reference_inputs import verify_reference_inputs
@@ -154,12 +162,50 @@ def validate_tool_cache(result, expected_scratch=None):
             raise ValueError('actual Node cache storage type is unknown')
 
 
+FC_BACKENDS = ('firecracker', 'fc-system', 'fc-reference')
+
+
+def fc_kernel(args, backend):
+    if backend == 'firecracker':
+        return None
+    receipt = getattr(args, backend.replace('-', '_') + '_receipt', None)
+    if receipt is None:
+        raise ValueError(f'{backend} requires --{backend}-receipt')
+    return verify_kernel_receipt(receipt, backend)
+
+
+def reference_kernel(args, backend):
+    if backend in FC_BACKENDS:
+        return fc_kernel(args, backend)
+    if backend in ('qemu', 'qemu-microvm'):
+        receipt = getattr(args, 'qemu_system_receipt', None)
+        return verify_kernel_receipt(receipt, 'fc-system') if receipt else None
+    return None
+
+
+def fc_ready_only(args, backend, mode):
+    selected = getattr(args, 'fc_ready_policy', 'normal') == 'ready-only'
+    if selected and mode != 'ready':
+        raise ValueError('FC ready-only policy is restricted to ready mode')
+    return selected and backend in FC_BACKENDS
+
+
 def validate_guest_output(output, mode):
     """VMM exit zero does not imply the guest workload or shutdown succeeded."""
-    if "Kernel panic" in output:
+    if re.search(r'kernel panic', output, re.I):
         raise ValueError("guest kernel panicked")
-    if not re.search(r"REFERENCE_EXIT 0\r?$", output, re.M):
-        raise ValueError("guest workload did not complete successfully")
+    lines = output.splitlines()
+    markers = [line for line in lines if line.startswith('REFERENCE_EXIT')]
+    if markers != ['REFERENCE_EXIT 0']:
+        raise ValueError("guest workload did not complete successfully with unique Exit0")
+    if [line for line in lines if line.startswith('REFERENCE_READY')] != ['REFERENCE_READY']:
+        raise ValueError('guest must emit exactly one Ready marker')
+    if not (lines.index('REFERENCE_READY') < next(
+            (i for i, line in enumerate(lines) if line.startswith('REFERENCE_RESULT ')), -1)
+            < lines.index('REFERENCE_EXIT 0')):
+        raise ValueError('guest markers are out of order')
+    if len([line for line in lines if line.startswith('REFERENCE_RESULT')]) != 1:
+        raise ValueError('guest must emit exactly one Result marker')
     values = [
         json.loads(line.removeprefix("REFERENCE_RESULT "))
         for line in output.splitlines()
@@ -167,6 +213,7 @@ def validate_guest_output(output, mode):
     ]
     if (
         len(values) != 1
+        or not isinstance(values[0], dict)
         or values[0].get("mode") != mode
         or values[0].get("correctness") != "passed"
     ):
@@ -286,8 +333,10 @@ def run_trial(args, metadata, backend, mode, trial):
     diagnostic_stderr = getattr(args, 'diagnostic_stderr_file', False)
     if diagnostic_stderr and not getattr(args, 'diagnostic_timing', False):
         raise ValueError('regular-file stderr capture is diagnostic only')
+    ready_only = fc_ready_only(args, backend, mode)
     root = args.output / "trials" / f"{mode}-{backend}-{trial:03d}"
     root.mkdir(parents=True)
+    kernel_identity = reference_kernel(args, backend)
     work = root / "workspace"
     prep = time.perf_counter_ns()
     subprocess.run(
@@ -320,7 +369,7 @@ def run_trial(args, metadata, backend, mode, trial):
     for prefix in (Path('/__pvisor_reference_no_pyc__'), rootfs / '__pvisor_reference_no_pyc__'):
         if prefix.exists() or prefix.is_symlink():
             raise ValueError('reference bytecode cache prefix must be absent before launch')
-    isvm = backend in ("firecracker", "qemu", "qemu-microvm")
+    isvm = backend in (*FC_BACKENDS, "qemu", "qemu-microvm")
     payload = (
         [
             "/bin/sh",
@@ -434,11 +483,11 @@ def run_trial(args, metadata, backend, mode, trial):
         )
         boot = f"console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw init=/bench/init quiet pvbench.mode={mode} pvbench.scratch={getattr(args, 'tool_scratch', 'executor')}"
         mem = 128 if mode == "ready" else args.memory_mib
-        if backend == "firecracker":
+        if backend in FC_BACKENDS:
             boot = boot.replace(" pci=off", "")
             config = {
                 "boot-source": {
-                    "kernel_image_path": str(args.assets / "vmlinux"),
+                    "kernel_image_path": kernel_identity['paths']['kernel'] if kernel_identity else str(args.assets / "vmlinux"),
                     "boot_args": boot,
                 },
                 "drives": [
@@ -451,6 +500,10 @@ def run_trial(args, metadata, backend, mode, trial):
                 ],
                 "machine-config": {"vcpu_count": 2, "mem_size_mib": mem},
             }
+            if kernel_identity and 'initrd' in kernel_identity['paths']:
+                config['boot-source']['initrd_path'] = kernel_identity['paths']['initrd']
+            config['logger'] = {'log_path': str(root / 'firecracker.log'), 'level': 'Warning',
+                                'show_level': True, 'show_log_origin': True}
             cfg = root / "firecracker.json"
             cfg.write_text(json.dumps(config))
             argv = ["firecracker", "--enable-pci", "--no-api", "--config-file", str(cfg)]
@@ -483,7 +536,7 @@ def run_trial(args, metadata, backend, mode, trial):
                 "stdio",
                 "-no-reboot",
                 "-kernel",
-                str(args.assets / "bzImage"),
+                kernel_identity['paths']['vmlinuz'] if kernel_identity else str(args.assets / "bzImage"),
                 "-append",
                 boot,
                 "-drive",
@@ -493,6 +546,8 @@ def run_trial(args, metadata, backend, mode, trial):
                 if backend == "qemu-microvm"
                 else "virtio-blk-pci,drive=root",
             ]
+            if kernel_identity and 'initrd' in kernel_identity['paths']:
+                argv += ['-initrd', kernel_identity['paths']['initrd']]
     else:
         raise ValueError(backend)
     if args.cpu_affinity:
@@ -532,6 +587,8 @@ def run_trial(args, metadata, backend, mode, trial):
             start_new_session=True,
         )
 
+    controlled_termination = []
+
     def stdout():
         for line in proc.stdout:
             out.append(line)
@@ -539,6 +596,18 @@ def run_trial(args, metadata, backend, mode, trial):
                 ready.append(time.perf_counter_ns())
             if line.startswith(b"REFERENCE_RESULT "):
                 result_times.append(time.perf_counter_ns())
+            if ready_only and line.rstrip(b'\r\n') == b'REFERENCE_EXIT 0':
+                try:
+                    validate_guest_output(b''.join(out).decode(errors='replace'), mode)
+                except (ValueError, TypeError):
+                    continue
+                if proc.poll() is None:
+                    try:
+                        os.killpg(proc.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    else:
+                        controlled_termination.append(time.perf_counter_ns())
 
     def monitor():
         while not stop.is_set():
@@ -630,11 +699,15 @@ def run_trial(args, metadata, backend, mode, trial):
         (root / "stderr.log").write_text(error)
     (root / "command.json").write_text(
         json.dumps({"argv": argv, "exit": proc.returncode, "prepare_ms": prep_ms,
-                    "stderr_capture": 'regular-file diagnostic' if diagnostic_stderr else 'pipe'}, indent=2)
+                    "stderr_capture": 'regular-file diagnostic' if diagnostic_stderr else 'pipe',
+                    "fc_ready_policy": 'ready-only' if ready_only else 'normal',
+                    "controlled_sigterm": bool(controlled_termination)}, indent=2)
     )
+    budget_after = budget.read() if budget is not None else None
+    if kernel_identity is not None and reference_kernel(args, backend) != kernel_identity:
+        raise ValueError('reference kernel provenance changed during trial')
     budget_record = None
     if budget is not None:
-        budget_after = budget.read()
         budget_record = dict(
             before=budget_before, after=budget_after,
             launch_parent=budget_parent, live_observations=budget_observations,
@@ -652,10 +725,16 @@ def run_trial(args, metadata, backend, mode, trial):
         if any(budget_record["memory_events_delta"].get(k, 0) > 0
                for k in ("oom", "oom_kill", "oom_group_kill")):
             raise RuntimeError(f"resource-budget OOM during {mode}/{backend}: {root}")
-    if proc.returncode != 0 or len(ready) != 1 or len(result_times) != 1:
+    successful_exit = proc.returncode == 0
+    if ready_only:
+        successful_exit = proc.returncode == 0 or (
+            bool(controlled_termination) and proc.returncode == -signal.SIGTERM)
+    if not successful_exit or len(ready) != 1 or len(result_times) != 1:
         raise RuntimeError(
             f"{mode}/{backend}: exit {proc.returncode}, ready={len(ready)}, result={len(result_times)}; {root}\n{error[-1000:]}\n{output[-1500:]}"
         )
+    if isvm:
+        validate_guest_output(output + '\n' + error, mode)
     result = json.loads(
         next(
             line.removeprefix("REFERENCE_RESULT ")
@@ -683,8 +762,6 @@ def run_trial(args, metadata, backend, mode, trial):
         row_stage = "overlay" if backend == "sdk-vm-overlay" else "passthrough"
     else:
         row_stage = None
-    if isvm:
-        validate_guest_output(output, mode)
     if backend.startswith("pvisor"):
         bundles = list((root / "runs").glob("*/run-bundle.json")) + list(
             stage.glob("run-bundle.json")
@@ -713,7 +790,7 @@ def run_trial(args, metadata, backend, mode, trial):
         "prepare_ms": prep_ms,
         "ready_ms": (ready[0] - start) / 1e6,
         "result_ms": (result_times[0] - start) / 1e6,
-        "completion_ms": (ended - start) / 1e6,
+        "completion_ms": None if ready_only else (ended - start) / 1e6,
         "peak_tree_rss_kib": peak[0] if observation_mode == 'sampled' else None,
         "resource_observation": observation_mode,
         "memory_scope": "not sampled; RSS unknown; cgroup before/after accounting is separate"
@@ -726,6 +803,14 @@ def run_trial(args, metadata, backend, mode, trial):
         "logs": str(root),
         "stderr_capture": 'regular-file diagnostic' if diagnostic_stderr else 'pipe',
     }
+    if backend in FC_BACKENDS:
+        row['fc_ready_policy'] = 'ready-only' if ready_only else 'normal'
+        row['controlled_sigterm'] = bool(controlled_termination)
+        row['kernel_variant'] = backend if kernel_identity else 'legacy-reference/unknown'
+        row['kernel_provenance'] = kernel_identity
+    elif backend in ('qemu', 'qemu-microvm'):
+        row['kernel_variant'] = 'qemu-system' if kernel_identity else 'legacy-reference/unknown'
+        row['kernel_provenance'] = kernel_identity
     if usage_before is not None:
         row["waited_child_resources"] = {
             "scope": "launched process and waited descendants; excludes fixture preparation, parent collector and persistent external daemons",
@@ -762,8 +847,14 @@ def main():
     p.add_argument("--docker-host", default="unix:///tmp/pv-docker-v2/docker.sock")
     p.add_argument(
         "--backends",
-        default="native,pvisor-host,pvisor-staged,pvisor-vm,docker,firecracker,qemu,qemu-microvm",
+        default=None,
+                help='Ready defaults to fc-system (stock primary); other workloads keep legacy firecracker. fc-reference is independent custom supplemental; firecracker is legacy reference/unknown',
     )
+    p.add_argument('--fc-system-receipt', type=Path, help='Frozen official stock kernel receipt from firecracker_kernels.py')
+    p.add_argument('--fc-reference-receipt', type=Path, help='Frozen independent custom kernel receipt from firecracker_kernels.py')
+    p.add_argument('--qemu-system-receipt', type=Path, help='Stock receipt shared with FC; QEMU boots its original vmlinuz and optional initrd')
+    p.add_argument('--fc-ready-policy', choices=('normal', 'ready-only'), default='normal',
+                   help='FC only: normal requires successful process exit; ready-only sends SIGTERM after valid Ready/Result/Exit0 and reports no completion')
     p.add_argument("--modes", default="filesystem")
     p.add_argument("--samples", type=int, default=30)
     p.add_argument("--seed", type=int, default=20261005)
@@ -788,6 +879,9 @@ def main():
         "--cpu-affinity", default="0,1", help="Common host CPU affinity; empty string disables it"
     )
     args = p.parse_args()
+    if args.backends is None:
+        fc_default = 'fc-system' if args.modes == 'ready' else 'firecracker'
+        args.backends = f'native,pvisor-host,pvisor-staged,pvisor-vm,docker,{fc_default},qemu,qemu-microvm'
     # This entry publishes uninstrumented user measurements. Diagnostic runners
     # call run_trial directly and retain their own explicit profiling settings.
     os.environ["PVISOR_FS_PROFILE"] = "0"
@@ -795,6 +889,13 @@ def main():
     try:
         benchmark_id = benchmark_for_modes(args.modes)
     except ValueError as error:
+        p.error(str(error))
+    if args.fc_ready_policy == 'ready-only' and args.modes != 'ready':
+        p.error('--fc-ready-policy ready-only requires --modes ready')
+    try:
+        kernel_variants = {backend: reference_kernel(args, backend) for backend in args.backends.split(',')
+                           if backend in (*FC_BACKENDS, 'qemu', 'qemu-microvm')}
+    except (OSError, ValueError, KeyError) as error:
         p.error(str(error))
     if args.samples < 1 or args.warmups < 0:
         p.error("samples must be positive and warmups nonnegative")
@@ -846,6 +947,9 @@ def main():
         "assets_metadata_sha256": digest(args.assets / "assets.json"),
         "input_manifest_sha256": digest(args.assets / "input-manifest.json") if (args.assets / "input-manifest.json").is_file() else "unknown",
         "input_verification": input_verification,
+        "firecracker_kernels": {k: v for k, v in kernel_variants.items() if k in FC_BACKENDS},
+        "reference_kernels": kernel_variants,
+        "legacy_firecracker_label": 'legacy-reference/unknown',
         "source_status": subprocess.check_output(["git", "status", "--porcelain"], text=True),
         "pvisor_sha256": digest(args.output / "bin/pvisor"),
         "kernel_sha256": digest(args.assets / "vmlinux"),
@@ -952,6 +1056,9 @@ def main():
     print("Verify prepared inputs again after all timed conditions", flush=True)
     try:
         final_inputs = verify_reference_inputs(args.assets)
+        final_kernels = {backend: reference_kernel(args, backend) for backend in kernel_variants}
+        if final_kernels != kernel_variants:
+            raise ValueError('reference kernel provenance changed during the cohort')
         if final_inputs != input_verification:
             raise ValueError("prepared input identities changed during the cohort")
     except (OSError, ValueError) as error:
@@ -977,7 +1084,7 @@ def main():
                             "completion_ms",
                             "prepare_ms",
                             "peak_tree_rss_kib",
-                        )
+                        ) if all(r[k] is not None for r in selected)
                     },
                 }
     metadata["summary"] = summary

@@ -14,7 +14,7 @@ const DEFAULT_DIFF_BYTES: usize = 256 * 1024;
 const DEFAULT_DIFF_FILE_BYTES: u64 = 1024 * 1024;
 const REVIEW_PATH_LIMIT: usize = 200;
 
-#[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 pub struct ReviewArgs {
     /// Job id, project workspace, run.json, or a path inside the Job filesystem.
     pub selector: Option<PathBuf>,

@@ -65,6 +65,7 @@ impl TurnMachine {
         }
     }
 
+    #[cfg(test)]
     pub fn turns(&self) -> &[Turn] {
         &self.turns
     }

@@ -205,6 +205,24 @@ struct Pager<S: ColdRamStore> {
     restore_total_us: u64,
     restore_max_us: u64,
 }
+fn host_sorted_pages<O>(mappings: &[Range], eligible_at: Instant) -> Vec<Page<O>> {
+    let mut pages: Vec<_> = mappings
+        .iter()
+        .flat_map(|mapping| {
+            (0..mapping.len).step_by(BLOCK).map(move |offset| Page {
+                range: Range {
+                    start: mapping.start + offset,
+                    len: (mapping.len - offset).min(BLOCK as u64),
+                },
+                cold: None,
+                eligible_at,
+            })
+        })
+        .collect();
+    pages.sort_unstable_by_key(|page| page.range.start);
+    pages
+}
+
 struct Snapshot {
     index: usize,
     bytes: Vec<u8>,
@@ -297,12 +315,24 @@ fn ranges_excluding_kernel(
     }
     Ok(result)
 }
+// The callback owns the actual VM barrier; empty work must never enter it.
+fn quiesce_nonempty<T, R>(
+    work: &mut [T],
+    action: impl FnOnce(&mut [T]) -> Result<Option<R>, String>,
+) -> Result<Option<R>, String> {
+    if work.is_empty() {
+        Ok(None)
+    } else {
+        action(work)
+    }
+}
+
 impl<S: ColdRamStore> Pager<S> {
-    fn sample(&mut self) -> Batch {
-        let mut batch = Batch(Vec::new());
+    fn candidates(&mut self) -> Vec<usize> {
+        let mut candidates = Vec::new();
         let now = Instant::now();
         for _ in 0..self.pages.len() {
-            if batch.0.len() == BATCH || now.elapsed() >= Duration::from_millis(8) {
+            if candidates.len() == BATCH || now.elapsed() >= Duration::from_millis(8) {
                 break;
             }
             let index = self.cursor;
@@ -311,8 +341,31 @@ impl<S: ColdRamStore> Pager<S> {
             if page.cold.is_some() || now < page.eligible_at {
                 continue;
             }
-            // Called only after CPUs are parked and device leases drained.
-            // All non-cold pages were prefaulted before UFFD registration.
+            candidates.push(index);
+        }
+        candidates
+    }
+
+    #[cfg(test)]
+    fn sample(&mut self) -> Batch {
+        let candidates = self.candidates();
+        self.sample_candidates(&candidates)
+    }
+
+    fn sample_candidates(&mut self, candidates: &[usize]) -> Batch {
+        let mut batch = Batch(Vec::new());
+        let now = Instant::now();
+        for &index in candidates {
+            if now.elapsed() >= Duration::from_millis(8) {
+                break;
+            }
+            let page = &self.pages[index];
+            if page.cold.is_some() || now < page.eligible_at {
+                continue;
+            }
+            // Metadata selection needs no barrier, but copying live RAM does:
+            // CPUs must be parked and device leases drained to avoid concurrent
+            // writes. All non-cold pages were prefaulted before registration.
             let bytes = unsafe {
                 std::slice::from_raw_parts(page.range.start as *const u8, page.range.len as usize)
             }
@@ -380,13 +433,19 @@ impl<S: ColdRamStore> Pager<S> {
         self.restore_max_us = self.restore_max_us.max(elapsed);
         Ok(())
     }
-    fn fault(&mut self, address: u64) -> io::Result<()> {
+    fn fault_index(&self, address: u64) -> Option<usize> {
+        // Pages are sorted by host address, not GuestMemory's guest order.
         let index = self
             .pages
-            .iter()
-            .position(|page| {
-                address >= page.range.start && address - page.range.start < page.range.len
-            })
+            .partition_point(|page| page.range.start <= address);
+        let index = index.checked_sub(1)?;
+        let range = self.pages[index].range;
+        (address - range.start < range.len).then_some(index)
+    }
+
+    fn fault(&mut self, address: u64) -> io::Result<()> {
+        let index = self
+            .fault_index(address)
             .ok_or_else(|| io::Error::other("UFFD fault outside owned RAM"))?;
         self.restore(index)
     }
@@ -481,7 +540,6 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                 // A closed idle gate guarantees every old balloon lease drained.
                 vmm.device_memory_gate()
                     .install_cold_faults(faults.clone())?;
-                let mut pages = Vec::new();
                 for mapping in &mappings {
                     // Populate before registration so snapshots never fault while
                     // holding pager state. Quiescence makes same-byte writes safe.
@@ -492,18 +550,11 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                         }
                     }
                     uffd.register(*mapping).map_err(|error| error.to_string())?;
-                    for offset in (0..mapping.len).step_by(BLOCK) {
-                        pages.push(Page {
-                            range: Range {
-                                start: mapping.start + offset,
-                                len: (mapping.len - offset).min(BLOCK as u64),
-                            },
-                            cold: None,
-                            eligible_at: Instant::now() + Duration::from_secs(1),
-                        });
-                    }
                 }
-                Ok(pages)
+                Ok(host_sorted_pages(
+                    &mappings,
+                    Instant::now() + Duration::from_secs(1),
+                ))
             })
             .map_err(io::Error::other)?
             .ok_or_else(|| {
@@ -599,7 +650,14 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         let pool = worker_pager.lock().unwrap().store.clone();
         loop {
             std::thread::sleep(Duration::from_millis(250));
-            let sampled = handle.ram_quiesced(|_| Ok(worker_pager.lock().map_err(|_| "pager poisoned")?.sample()));
+            // Empty scans still need to observe VM teardown without a barrier.
+            if handle.vmm.upgrade().is_none() {
+                break;
+            }
+            let mut candidates = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).candidates();
+            let sampled = quiesce_nonempty(&mut candidates, |candidates| handle.ram_quiesced(|_| {
+                Ok(worker_pager.lock().map_err(|_| "pager poisoned")?.sample_candidates(candidates))
+            }));
             let batch = match sampled {
                 Ok(Some(batch)) => batch,
                 Ok(None) => continue,
@@ -621,21 +679,27 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                         None
                     }
                 };
-                objects.push(object);
+                if let Some(object) = object {
+                    objects.push((snapshot, Some(object)));
+                } else {
+                    // Cooldown is pager metadata, not a live RAM operation.
+                    worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned"))
+                        .pages[snapshot.index].eligible_at = Instant::now() + Duration::from_secs(30);
+                }
             }
             worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).put_rejections += put_rejections;
-            let committed = handle.ram_quiesced(|_| {
+            let committed = quiesce_nonempty(&mut objects, |objects| handle.ram_quiesced(|_| {
                 let mut pager = worker_pager.lock().map_err(|_| "pager poisoned")?;
-                for (snapshot, object) in batch.0.iter().zip(&mut objects) {
+                for (snapshot, object) in objects {
+                    // Successful publication still needs the live-byte recheck
+                    // under the second barrier before destructive discard.
                     if let Some(published) = object.take() {
                         *object = pager.commit(snapshot, published).map_err(|error| error.to_string())?;
-                    } else {
-                        pager.pages[snapshot.index].eligible_at = Instant::now() + Duration::from_secs(30);
                     }
                 }
                 Ok(())
-            });
-            for object in objects.into_iter().flatten() {
+            }));
+            for object in objects.into_iter().filter_map(|(_, object)| object) {
                 pool.lock().unwrap_or_else(|_| fatal("store poisoned")).release(object).unwrap_or_else(|error| fatal(error));
             }
             match committed {
@@ -775,6 +839,94 @@ mod tests {
         assert!(pager.commit(snapshot, object).unwrap().is_none());
         expected
     }
+    #[test]
+    fn host_sorted_fault_lookup_handles_gaps_and_partial_tails() {
+        let mut pager = pager(1, false);
+        // Guest order can be the reverse of host mmap order.
+        pager.pages = host_sorted_pages(
+            &[
+                Range {
+                    start: 0x80000,
+                    len: BLOCK as u64 + 4096,
+                },
+                Range {
+                    start: 0x10000,
+                    len: BLOCK as u64 + 8192,
+                },
+            ],
+            Instant::now(),
+        );
+        assert_eq!(
+            pager
+                .pages
+                .iter()
+                .map(|page| page.range.start)
+                .collect::<Vec<_>>(),
+            vec![0x10000, 0x20000, 0x80000, 0x90000]
+        );
+        for (address, expected) in [
+            (0, None),
+            (0xffff, None),
+            (0x10000, Some(0)),
+            (0x1ffff, Some(0)),
+            (0x20000, Some(1)),
+            (0x21fff, Some(1)),
+            (0x22000, None),
+            (0x7ffff, None),
+            (0x80000, Some(2)),
+            (0x8ffff, Some(2)),
+            (0x90000, Some(3)),
+            (0x90fff, Some(3)),
+            (0x91000, None),
+            (u64::MAX, None),
+        ] {
+            assert_eq!(pager.fault_index(address), expected, "address {address:#x}");
+            if expected.is_none() {
+                assert_eq!(
+                    pager.fault(address).unwrap_err().to_string(),
+                    "UFFD fault outside owned RAM"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn empty_or_ineligible_work_never_enters_barriers() {
+        let mut pager = pager(2, false);
+        pager.pages[0].cold = Some((Vec::new(), [0; 32]));
+        pager.pages[1].eligible_at = Instant::now() + Duration::from_secs(30);
+        let mut candidates = pager.candidates();
+        assert!(candidates.is_empty());
+        let sampled = quiesce_nonempty(&mut candidates, |_| -> Result<Option<Batch>, String> {
+            panic!("empty scan entered sampling barrier")
+        })
+        .unwrap();
+        assert!(sampled.is_none());
+
+        // An empty batch or an all-rejected publication has no commit work.
+        let mut published: Vec<(usize, Vec<u8>)> = Vec::new();
+        let committed = quiesce_nonempty(&mut published, |_| -> Result<Option<()>, String> {
+            panic!("empty publication entered commit barrier")
+        })
+        .unwrap();
+        assert!(committed.is_none());
+
+        pager.pages[1].eligible_at = Instant::now();
+        let mut candidates = pager.candidates();
+        assert_eq!(candidates, vec![1]);
+        let sampled = quiesce_nonempty(&mut candidates, |candidates| {
+            Ok(Some(pager.sample_candidates(candidates)))
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(sampled.0.len(), 1);
+        assert_eq!(sampled.0[0].index, 1);
+
+        // A fault restore between selection and the barrier can start cooldown.
+        pager.pages[1].eligible_at = Instant::now() + Duration::from_secs(30);
+        assert!(pager.sample_candidates(&candidates).0.is_empty());
+    }
+
     #[test]
     fn publication_write_race_preserves_live_bytes_and_reference() {
         let mut pager = pager(1, false);

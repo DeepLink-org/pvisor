@@ -39,6 +39,5 @@ def test_nextest_signature_selection(monkeypatch):
     assert [command[-1] for command in commands[1:]] == [
         "/tests/pvisor-vm",
         "/tests/pvisor",
-        "/tests/nativepvisor",
     ]
     assert all("--entitlements" in command for command in commands[1:])

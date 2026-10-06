@@ -2,11 +2,11 @@ use super::store::CommitPoint;
 use super::{Config, CreateRequest, Daemon};
 use crate::runtime::{Runtime, RuntimeSpec, RuntimeState};
 use serde_json::{Value, json};
-use std::time::Duration;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
+use std::{future::Future, time::Duration};
 use tempfile::TempDir;
 use tokio::sync::{Barrier, oneshot};
 
@@ -85,6 +85,8 @@ struct FakeState {
     endpoints: usize,
     delete_outcome: DeleteOutcome,
     control_reply: Option<anyhow::Result<RuntimeState>>,
+    inspect_error: bool,
+    endpoint_override: Option<String>,
 }
 
 #[derive(Default)]
@@ -114,6 +116,7 @@ impl Runtime for FakeRuntime {
     async fn inspect(&self, id: &str) -> anyhow::Result<RuntimeState> {
         let mut state = self.state.lock().unwrap();
         state.inspections += 1;
+        anyhow::ensure!(!state.inspect_error, "inspection unavailable");
         Ok(state
             .sandboxes
             .get(id)
@@ -168,7 +171,10 @@ impl Runtime for FakeRuntime {
             state.sandboxes.get(id) == Some(&RuntimeState::Running),
             "sandbox not running"
         );
-        Ok(format!("http://127.0.0.1:{port}"))
+        Ok(state
+            .endpoint_override
+            .clone()
+            .unwrap_or_else(|| format!("http://127.0.0.1:{port}")))
     }
 }
 
@@ -260,14 +266,15 @@ async fn control_consumes_confirmation_or_retains_durable_intention() {
                     (503, "RUNTIME_UNAVAILABLE")
                 );
             }
-            let state = runtime.state.lock().unwrap();
-            assert_eq!(state.inspections, before + 1, "pre-inspect only");
-            assert_eq!(
-                state.sandboxes[&sandbox.id], desired,
-                "control applied even without confirmation"
-            );
-            assert_eq!((state.pauses, state.resumes), (1, usize::from(!pause)));
-            drop(state);
+            {
+                let state = runtime.state.lock().unwrap();
+                assert_eq!(state.inspections, before + 1, "pre-inspect only");
+                assert_eq!(
+                    state.sandboxes[&sandbox.id], desired,
+                    "control applied even without confirmation"
+                );
+                assert_eq!((state.pauses, state.resumes), (1, usize::from(!pause)));
+            }
             assert_eq!(daemon.list().await.unwrap()[0].status.state, expected);
             let calls = runtime_calls(&runtime);
             assert_eq!(
@@ -283,6 +290,271 @@ async fn control_consumes_confirmation_or_retains_durable_intention() {
             assert_eq!(restarted.list().await.unwrap()[0].status.state, confirmed);
         }
     }
+}
+
+#[tokio::test]
+async fn lost_control_ack_retry_commits_observation_without_get() {
+    for pause in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(FakeRuntime::default());
+        let daemon = open(config(&directory), &runtime).await;
+        let sandbox = create(&daemon).await;
+        if !pause {
+            daemon.pause(&sandbox.id).await.unwrap();
+        }
+        runtime.state.lock().unwrap().control_reply =
+            Some(Err(anyhow::anyhow!("ack lost after control")));
+        assert_eq!(
+            daemon.control(&sandbox.id, pause).await.unwrap_err().status,
+            503
+        );
+        let intention = if pause { "Pausing" } else { "Resuming" };
+        assert_eq!(daemon.list().await.unwrap()[0].status.state, intention);
+        let calls = runtime_calls(&runtime);
+        daemon.control(&sandbox.id, pause).await.unwrap();
+        let confirmed = if pause { "Paused" } else { "Running" };
+        assert_eq!(daemon.list().await.unwrap()[0].status.state, confirmed);
+        let after = runtime_calls(&runtime);
+        assert_eq!(after.1, calls.1 + 1, "retry inspects once");
+        assert_eq!((after.2, after.3), (calls.2, calls.3), "no second control");
+        if !pause {
+            daemon.endpoint(&sandbox.id, 44772, false).await.unwrap();
+        }
+        drop(daemon);
+        let (_store, disk) = super::store::Store::open(directory.path()).unwrap();
+        assert_eq!(disk.sandboxes[&sandbox.id].sandbox.status.state, confirmed);
+    }
+}
+
+#[tokio::test]
+async fn control_retry_preserves_uncertainty_stopping_and_storage_fences() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let sandbox = create(&daemon).await;
+    daemon.pause(&sandbox.id).await.unwrap();
+    runtime.state.lock().unwrap().control_reply = Some(Err(anyhow::anyhow!("lost ACK")));
+    daemon.resume(&sandbox.id).await.unwrap_err();
+    runtime.state.lock().unwrap().inspect_error = true;
+    daemon.resume(&sandbox.id).await.unwrap_err();
+    assert_eq!(daemon.list().await.unwrap()[0].status.state, "Resuming");
+    runtime.state.lock().unwrap().inspect_error = false;
+    runtime
+        .state
+        .lock()
+        .unwrap()
+        .sandboxes
+        .insert(sandbox.id.clone(), RuntimeState::Missing);
+    assert_eq!(daemon.resume(&sandbox.id).await.unwrap_err().status, 409);
+    assert_eq!(daemon.list().await.unwrap()[0].status.state, "Resuming");
+    runtime
+        .state
+        .lock()
+        .unwrap()
+        .sandboxes
+        .insert(sandbox.id.clone(), RuntimeState::Running);
+    daemon
+        .transition(&sandbox.id, "Stopping", None)
+        .await
+        .unwrap();
+    let calls = runtime_calls(&runtime);
+    assert_eq!(daemon.resume(&sandbox.id).await.unwrap_err().status, 409);
+    assert_eq!(
+        runtime_calls(&runtime),
+        calls,
+        "Stopping is not inspected or overwritten"
+    );
+    assert_eq!(daemon.list().await.unwrap()[0].status.state, "Stopping");
+    daemon
+        .storage_failed
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert_eq!(
+        daemon.resume(&sandbox.id).await.unwrap_err().code,
+        "STORAGE_UNAVAILABLE"
+    );
+    assert_eq!(runtime_calls(&runtime), calls);
+}
+
+#[tokio::test]
+async fn shared_proxy_admission_fences_control_and_queued_writers_block_new_proxies() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let sandbox = create(&daemon).await;
+    let first = daemon.proxy_guard(&sandbox.id).await.unwrap();
+    let second = bounded(daemon.proxy_guard(&sandbox.id)).await.unwrap();
+    let gate = daemon.operation(&sandbox.id).await.unwrap();
+    let mut writer = Box::pin(gate.write());
+    std::future::poll_fn(|cx| {
+        assert!(writer.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), daemon.proxy_guard(&sandbox.id))
+            .await
+            .is_err()
+    );
+    drop(first);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), writer.as_mut())
+            .await
+            .is_err()
+    );
+    drop(second);
+    let exclusive = bounded(writer).await;
+    assert!(gate.try_read().is_err());
+    drop(exclusive);
+    daemon.pause(&sandbox.id).await.unwrap();
+    assert_eq!(daemon.list().await.unwrap()[0].status.state, "Paused");
+}
+
+// Exercise actual reqwest send, not just lock acquisition. The listener retains
+// sockets without responding, so each proxy is stalled waiting for headers.
+#[tokio::test]
+async fn concurrent_stalled_proxy_headers_bound_delete_delay() {
+    use axum::{body::Body, http::Request};
+    use tokio::io::AsyncReadExt;
+    use tower::ServiceExt;
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let sandbox = create(&daemon).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    runtime.state.lock().unwrap().endpoint_override =
+        Some(format!("http://{}", listener.local_addr().unwrap()));
+    let app = super::api::router(daemon.clone());
+    let mut requests = Vec::new();
+    for _ in 0..2 {
+        let app = app.clone();
+        let request = Request::builder()
+            .uri(format!("/v1/sandboxes/{}/proxy/44772/ping", sandbox.id))
+            .header("open-sandbox-api-key", API_KEY)
+            .body(Body::empty())
+            .unwrap();
+        requests.push(tokio::spawn(app.oneshot(request)));
+    }
+    let (mut first, _) = bounded(listener.accept()).await.unwrap();
+    let (mut second, _) = bounded(listener.accept()).await.unwrap();
+    // Complete real connection establishment before advancing virtual time.
+    let mut buffer = [0; 4096];
+    assert!(bounded(first.read(&mut buffer)).await.unwrap() > 0);
+    assert!(bounded(second.read(&mut buffer)).await.unwrap() > 0);
+    let deleting = {
+        let daemon = daemon.clone();
+        let id = sandbox.id.clone();
+        tokio::spawn(async move { daemon.delete(&id).await })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        runtime.state.lock().unwrap().deletes,
+        0,
+        "in-flight sends retain reuse fence"
+    );
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(119)).await;
+    assert!(
+        requests.iter().all(|request| !request.is_finished()),
+        "preserve the 120-second header allowance"
+    );
+    assert_eq!(runtime.state.lock().unwrap().deletes, 0);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::time::resume();
+    for request in requests {
+        let response = bounded(request).await.unwrap().unwrap();
+        assert_eq!(response.status(), 504);
+    }
+    bounded(deleting).await.unwrap().unwrap();
+    assert!(daemon.list().await.unwrap().is_empty());
+    drop((first, second));
+}
+
+#[tokio::test]
+async fn established_proxy_response_stream_does_not_block_delete() {
+    use axum::{body::Body, http::Request};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tower::ServiceExt;
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let sandbox = create(&daemon).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    runtime.state.lock().unwrap().endpoint_override =
+        Some(format!("http://{}", listener.local_addr().unwrap()));
+    let request = Request::builder()
+        .uri(format!("/v1/sandboxes/{}/proxy/44772/events", sandbox.id))
+        .header("open-sandbox-api-key", API_KEY)
+        .body(Body::empty())
+        .unwrap();
+    let proxy = tokio::spawn(super::api::router(daemon.clone()).oneshot(request));
+    let (mut connection, _) = bounded(listener.accept()).await.unwrap();
+    let mut buffer = [0; 4096];
+    assert!(bounded(connection.read(&mut buffer)).await.unwrap() > 0);
+    bounded(connection.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+    ))
+    .await
+    .unwrap();
+    let response = bounded(proxy).await.unwrap().unwrap();
+    assert_eq!(response.status(), 200);
+    // Keep both the upstream socket and unconsumed response body alive.
+    bounded(daemon.delete(&sandbox.id)).await.unwrap();
+    drop((response, connection));
+}
+
+#[tokio::test]
+async fn proxy_connections_are_not_reused_across_sandboxes_and_cancellation_releases_admission() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tower::ServiceExt;
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    runtime.state.lock().unwrap().endpoint_override =
+        Some(format!("http://{}", listener.local_addr().unwrap()));
+    let mut connections = Vec::new();
+    for _ in 0..2 {
+        let sandbox = create(&daemon).await;
+        let request = Request::builder()
+            .uri(format!("/v1/sandboxes/{}/proxy/44772/ping", sandbox.id))
+            .header("open-sandbox-api-key", API_KEY)
+            .body(Body::empty())
+            .unwrap();
+        let proxy = tokio::spawn(super::api::router(daemon.clone()).oneshot(request));
+        // Even though the prior server socket remains open and advertises
+        // keep-alive, the next sandbox must establish a fresh connection.
+        let (mut connection, _) = bounded(listener.accept()).await.unwrap();
+        let mut buffer = [0; 4096];
+        assert!(bounded(connection.read(&mut buffer)).await.unwrap() > 0);
+        bounded(connection.write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok",
+        ))
+        .await
+        .unwrap();
+        let response = bounded(proxy).await.unwrap().unwrap();
+        assert_eq!(
+            bounded(to_bytes(response.into_body(), 16)).await.unwrap(),
+            "ok"
+        );
+        bounded(daemon.delete(&sandbox.id)).await.unwrap();
+        connections.push(connection);
+    }
+    let sandbox = create(&daemon).await;
+    let request = Request::builder()
+        .uri(format!("/v1/sandboxes/{}/proxy/44772/ping", sandbox.id))
+        .header("open-sandbox-api-key", API_KEY)
+        .body(Body::empty())
+        .unwrap();
+    let proxy = tokio::spawn(super::api::router(daemon.clone()).oneshot(request));
+    let (connection, _) = bounded(listener.accept()).await.unwrap();
+    proxy.abort();
+    assert!(bounded(proxy).await.unwrap_err().is_cancelled());
+    bounded(daemon.delete(&sandbox.id)).await.unwrap();
+    drop((connections, connection));
 }
 
 #[tokio::test]
@@ -1143,9 +1415,9 @@ async fn cancelling_an_accepted_public_create_does_not_cancel_disk_or_native_wor
     let id = pending[0].id.clone();
     // Native create is still blocked after its public waiter disappeared.
     let operation = bounded(daemon.operation(&id)).await.unwrap();
-    assert!(operation.try_lock().is_err());
+    assert!(operation.try_write().is_err());
     native_release.send(()).unwrap();
-    let finished = bounded(operation.lock()).await;
+    let finished = bounded(operation.write()).await;
     assert_eq!(
         bounded(daemon.list()).await.unwrap()[0].status.state,
         "Running"

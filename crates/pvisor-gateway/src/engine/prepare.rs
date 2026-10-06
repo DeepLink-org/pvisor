@@ -135,8 +135,6 @@ impl CapturePreparer {
         event: CompleteEvent,
     ) -> Result<PreparedCapture> {
         let resp_text = std::str::from_utf8(&event.resp_bytes).unwrap_or("<non-utf8>");
-        let usage =
-            resolve_response_usage(event.streaming, event.stream_metrics.as_ref(), resp_text);
         let resp_json = if event.streaming {
             Value::String(resp_text.to_string())
         } else {
@@ -144,6 +142,12 @@ impl CapturePreparer {
                 .unwrap_or_else(|_| Value::String(resp_text.to_string()))
         };
 
+        let usage = resolve_response_usage(
+            event.streaming,
+            event.stream_metrics.as_ref(),
+            resp_text,
+            &resp_json,
+        );
         let cost = estimate_cost_usd(&ctx.upstream_model, ctx.provider, &usage);
         if ctx.debug_on {
             debug::log_llm_response(
@@ -321,6 +325,7 @@ fn resolve_response_usage(
     streaming: bool,
     stream_metrics: Option<&StreamMetrics>,
     resp_text: &str,
+    resp_json: &Value,
 ) -> TokenUsage {
     if streaming {
         stream_metrics
@@ -328,15 +333,33 @@ fn resolve_response_usage(
             .filter(|u| u.total_tokens > 0 || u.input_tokens > 0 || u.output_tokens > 0)
             .unwrap_or_else(|| extract_usage_from_sse(resp_text))
     } else {
-        let resp_json: Value = serde_json::from_str(resp_text)
-            .unwrap_or_else(|_| Value::String(resp_text.to_string()));
-        extract_usage_from_response(&resp_json)
+        extract_usage_from_response(resp_json)
     }
 }
 
 #[cfg(test)]
 mod retention_tests {
     use super::*;
+
+    #[test]
+    fn response_usage_reuses_json_without_changing_stream_fallback() {
+        let body = serde_json::json!({"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}});
+        let usage = resolve_response_usage(false, None, "not reparsed", &body);
+        assert_eq!(usage.input_tokens, 7);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.total_tokens, 10);
+        let malformed = Value::String("not json".into());
+        assert_eq!(
+            resolve_response_usage(false, None, "not json", &malformed).total_tokens,
+            0
+        );
+        let wire = "data: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n";
+        assert_eq!(
+            resolve_response_usage(true, None, wire, &Value::Null).total_tokens,
+            10
+        );
+    }
+
     #[test]
     fn summary_omits_every_payload_copy_and_dialogue_keeps_only_visible_text() {
         let payload = serde_json::json!({"model":"m","usage":{"total_tokens":3},"user_content":"unique-prompt","assistant_content":"unique-answer","body":{"messages":["unique-prompt"]},"llm_request":{"text":"unique-prompt"},"llm_response":{"text":"unique-answer"},"http":{"request_body":"unique-prompt","response_body":"unique-answer","status":200},"spawn_links":[{"description":"unique-prompt"}]});

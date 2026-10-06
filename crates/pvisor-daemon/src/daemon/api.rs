@@ -7,8 +7,8 @@
 //!   automatic response decompression. These policies cannot be inspected here.
 //! - `upstream` MUST resolve only this sandbox's guest ports 44772/18080 to
 //!   trusted loopback listeners; the host-side mapped port can be different.
-//! - `proxy_guard` MUST acquire the same lifecycle mutex as deletion. The API
-//!   holds it through port resolution and send (bounded to 120 seconds), then
+//! - `proxy_guard` MUST acquire shared admission on deletion's exclusive gate.
+//!   The API holds it through port resolution and send (bounded to 120 seconds), then
 //!   releases it before forwarding the response body, including long-lived SSE.
 //! - `endpoint` MUST return the daemon proxy URL in both modes. In non-server
 //!   mode its headers MUST include X-PVISOR-SANDBOX-TOKEN; the SDK does not send
@@ -525,43 +525,46 @@ async fn proxy(
         path.get("port")
             .ok_or_else(|| ApiError::bad_request("Missing port"))?,
     )?;
-    // Fence port resolution and connection establishment against delete/rebind.
-    // The response stream must not retain this lifecycle lock.
+    // Shared admission permits parallel proxies; exclusive lifecycle writers
+    // fence delete/rebind and prevent new readers starving a queued control.
     let guard = daemon.proxy_guard(id).await?;
-    let upstream = daemon.upstream(id, port).await?;
-    let url = proxy_url(&upstream, request.uri())?;
-    let (mut parts, body) = request.into_parts();
-    strip_headers(&mut parts.headers, true);
-    let send = daemon
-        .proxy_client()
-        .request(parts.method, url)
-        .headers(parts.headers)
-        .body(reqwest::Body::wrap_stream(body.into_data_stream()))
-        .send();
-    // Includes request upload and waiting for response headers, but not SSE/body
-    // consumption. Cancellation or timeout also releases the lifecycle lock.
+    let send = async {
+        let upstream = daemon.upstream(id, port).await?;
+        let url = proxy_url(&upstream, request.uri())?;
+        let (mut parts, body) = request.into_parts();
+        strip_headers(&mut parts.headers, true);
+        daemon
+            .proxy_client()
+            .request(parts.method, url)
+            .headers(parts.headers)
+            .body(reqwest::Body::wrap_stream(body.into_data_stream()))
+            .send()
+            .await
+            .map_err(|error| {
+                // Do not expose internal URLs or credentials embedded in client errors.
+                if error.is_timeout() {
+                    ApiError::new(
+                        504,
+                        "UPSTREAM_TIMEOUT",
+                        "Timed out connecting to sandbox service",
+                    )
+                } else {
+                    ApiError::new(502, "BAD_GATEWAY", "Sandbox service request failed")
+                }
+            })
+    };
+    // Reqwest exposes no separate connection-established boundary. Bound the
+    // entire admission (including resolution/upload/headers), rather than
+    // releasing the reuse fence after URL lookup. SSE/body retain no admission.
     let response = tokio::time::timeout(PROXY_HEADERS_TIMEOUT, send).await;
     drop(guard);
-    let response = response
-        .map_err(|_| {
-            ApiError::new(
-                504,
-                "UPSTREAM_TIMEOUT",
-                "Sandbox upload or response headers timed out after 120 seconds",
-            )
-        })?
-        .map_err(|error| {
-            // Do not expose internal URLs or credentials embedded in client errors.
-            if error.is_timeout() {
-                ApiError::new(
-                    504,
-                    "UPSTREAM_TIMEOUT",
-                    "Timed out connecting to sandbox service",
-                )
-            } else {
-                ApiError::new(502, "BAD_GATEWAY", "Sandbox service request failed")
-            }
-        })?;
+    let response = response.map_err(|_| {
+        ApiError::new(
+            504,
+            "UPSTREAM_TIMEOUT",
+            "Sandbox endpoint, upload or response headers timed out after 120 seconds",
+        )
+    })??;
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
         return Err(ApiError::new(
             502,

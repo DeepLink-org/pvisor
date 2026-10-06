@@ -11,6 +11,7 @@ pub mod cpu;
 pub mod event;
 pub mod execution;
 mod file_access;
+pub mod host_protocol;
 pub mod memory;
 pub mod network;
 pub mod node;

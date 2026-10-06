@@ -25,7 +25,7 @@ use std::{
     sync::Arc,
 };
 
-#[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 pub struct ForkArgs {
     /// Source Job id, workspace, run.json, or path inside the source Job.
     source: PathBuf,
@@ -503,7 +503,9 @@ async fn execute_restored(
         .executors(vec![Arc::new(executor)])
         .network(network)
         .event_sink(event_sink);
-    if let Some(path) = &config.vm.control_socket {
+    let control_socket = crate::cli::host_service::vm_control_socket(None)?
+        .or_else(|| config.vm.control_socket.clone());
+    if let Some(path) = &control_socket {
         builder = builder.control_socket(path);
     }
     #[cfg(feature = "gateway")]

@@ -3,7 +3,14 @@
 //! This is not snapshot restart: `load` is an alias for `RunResume`. Endpoint
 //! discovery is process-local so no management socket is projected into a guest.
 
+use super::host_transport::{
+    authorize_host_peer, read_host_frame, validate_host_target, write_host_frame,
+};
 use super::run::{RunControlHandle, RunHandle};
+use pvisor_core::host_protocol::{
+    AGENTCTL_HOST_MAX_FRAME_BYTES, AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode,
+    AgentCtlHostRequest, AgentCtlHostResponse, AgentCtlTarget,
+};
 use pvisor_core::operation::{OperationKind, Value};
 use pvisor_core::{AttemptId, RunId, RunStatus};
 use serde::{Deserialize, Serialize};
@@ -12,15 +19,16 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+#[cfg(test)]
+use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinSet;
 
-pub const INSTANCE_CONTROL_VERSION: u32 = 1;
+pub const INSTANCE_CONTROL_VERSION: u32 = AGENTCTL_HOST_VERSION;
 /// Runtime-owned host path. Native executors must exclude it from all guest
 /// filesystem lower projections (the same way they exclude live RAM backing).
 pub const INSTANCE_CONTROL_DIRECTORY_METADATA: &str = "pvisor.instance_control.directory";
-pub const INSTANCE_CONTROL_MAX_FRAME: usize = 64 * 1024;
+pub const INSTANCE_CONTROL_MAX_FRAME: usize = AGENTCTL_HOST_MAX_FRAME_BYTES;
 const MAX_CONNECTIONS: usize = 8;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(310);
@@ -57,7 +65,32 @@ pub struct InstanceControlResponse {
     pub error: Option<String>,
 }
 
+/// Typed low-level VM command exposed through the host service envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct HostInstanceCommand {
+    pub command: InstanceControlCommand,
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+}
+
 impl InstanceControlRequest {
+    fn envelope(&self) -> AgentCtlHostRequest<HostInstanceCommand> {
+        AgentCtlHostRequest {
+            version: self.version,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            target: Some(AgentCtlTarget {
+                job_id: self.run_id.to_string(),
+                attempt_id: Some(self.attempt_id.to_string()),
+                generation: None,
+            }),
+            command: HostInstanceCommand {
+                command: self.command,
+                file: self.file.clone(),
+            },
+        }
+    }
+
     fn operation(&self, status: &RunStatus) -> anyhow::Result<Option<OperationKind>> {
         anyhow::ensure!(
             self.version == INSTANCE_CONTROL_VERSION,
@@ -246,7 +279,7 @@ impl InstanceControlServer {
                     _ = clients.join_next(), if !clients.is_empty() => {}
                     accepted = self.listener.accept() => {
                         let Ok((stream, _)) = accepted else { break; };
-                        if clients.len() >= MAX_CONNECTIONS || !same_user(&stream) { continue; }
+                        if clients.len() >= MAX_CONNECTIONS || authorize_host_peer(&stream).is_err() { continue; }
                         let controls = controls.clone();
                         let status = status.clone();
                         clients.spawn(async move { serve(stream, controls, status, OPERATION_TIMEOUT).await; });
@@ -272,38 +305,32 @@ impl Drop for InstanceControlServer {
     }
 }
 
-fn same_user(stream: &UnixStream) -> bool {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        stream
-            .peer_cred()
-            .is_ok_and(|cred| cred.uid() == unsafe { libc::geteuid() })
+fn host_operation(
+    request: &AgentCtlHostRequest<HostInstanceCommand>,
+    status: &RunStatus,
+) -> Result<Option<OperationKind>, AgentCtlHostError> {
+    request.validate()?;
+    validate_host_target(
+        request.target.as_ref(),
+        status.run_id.as_str(),
+        status.attempt.attempt_id.as_str(),
+    )?;
+    if status.attempt.executor.kind != pvisor_core::ExecutorKind::VirtualMachine {
+        return Err(AgentCtlHostError::new(
+            AgentCtlHostErrorCode::Unsupported,
+            "live VM controls require a VM executor",
+        ));
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = stream;
-        true
-    }
-}
-
-async fn frame(stream: &mut UnixStream) -> anyhow::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    // Read only through the first newline: pipelined requests never execute.
-    let mut chunk = [0; 1024];
-    loop {
-        let count = stream.read(&mut chunk).await?;
-        anyhow::ensure!(count != 0, "control connection closed before newline");
-        let newline = chunk[..count].iter().position(|byte| *byte == b'\n');
-        let length = newline.unwrap_or(count);
-        anyhow::ensure!(
-            bytes.len() + length <= INSTANCE_CONTROL_MAX_FRAME,
-            "control frame too large"
-        );
-        bytes.extend_from_slice(&chunk[..length]);
-        if newline.is_some() {
-            return Ok(bytes);
-        }
-    }
+    let adapter = InstanceControlRequest {
+        version: request.version,
+        run_id: status.run_id.clone(),
+        attempt_id: status.attempt.attempt_id.clone(),
+        command: request.command.command,
+        file: request.command.file.clone(),
+    };
+    adapter.operation(status).map_err(|error| {
+        AgentCtlHostError::new(AgentCtlHostErrorCode::InvalidRequest, error.to_string())
+    })
 }
 
 async fn serve(
@@ -312,27 +339,37 @@ async fn serve(
     status: tokio::sync::watch::Receiver<RunStatus>,
     operation_timeout: Duration,
 ) {
-    let result = async {
-        let bytes = tokio::time::timeout(IO_TIMEOUT, frame(&mut stream))
-            .await
-            .map_err(|_| anyhow::anyhow!("control request timed out"))??;
-        let request: InstanceControlRequest = serde_json::from_slice(&bytes)?;
-        request.operation(&status.borrow().clone())
+    if authorize_host_peer(&stream).is_err() {
+        return;
     }
-    .await;
+    // A malformed frame has no trustworthy correlation ID; close without a reply.
+    let Ok(Ok(request)) = tokio::time::timeout(
+        IO_TIMEOUT,
+        read_host_frame::<AgentCtlHostRequest<HostInstanceCommand>>(&mut stream),
+    )
+    .await
+    else {
+        return;
+    };
+    let request_id = request.request_id.clone();
+    let result = host_operation(&request, &status.borrow().clone());
     let result = match result {
         Ok(Some(kind)) => {
             let operation = controls.control(kind);
             tokio::pin!(operation);
             match tokio::time::timeout(operation_timeout, &mut operation).await {
-                Ok(result) => result.map(Some),
+                Ok(result) => result.map(Some).map_err(|error| {
+                    AgentCtlHostError::new(AgentCtlHostErrorCode::Unavailable, format!("{error:#}"))
+                }),
                 Err(_) => {
                     let snapshot = status.borrow().clone();
                     respond(
                         &mut stream,
                         snapshot,
-                        Err(anyhow::anyhow!(
-                            "control response timed out; accepted operation may still complete"
+                        &request_id,
+                        Err(AgentCtlHostError::new(
+                            AgentCtlHostErrorCode::Unavailable,
+                            "control response timed out; accepted operation may still complete",
                         )),
                     )
                     .await;
@@ -349,72 +386,54 @@ async fn serve(
         Err(error) => Err(error),
     };
     let snapshot = status.borrow().clone();
-    respond(&mut stream, snapshot, result).await;
+    respond(&mut stream, snapshot, &request_id, result).await;
 }
 
 async fn respond(
     stream: &mut UnixStream,
     status: RunStatus,
-    result: anyhow::Result<Option<Value>>,
+    request_id: &str,
+    result: Result<Option<Value>, AgentCtlHostError>,
 ) {
-    let (value, error) = match result {
-        Ok(value) => (value, None),
-        Err(error) => {
-            let mut text = format!("{error:#}");
-            let mut end = text.len().min(2048);
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            text.truncate(end);
-            (None, Some(text))
-        }
-    };
-    let response = InstanceControlResponse {
+    let result = result.map(|value| InstanceControlResponse {
         version: INSTANCE_CONTROL_VERSION,
         run_id: status.run_id.clone(),
         attempt_id: status.attempt.attempt_id.clone(),
-        ok: error.is_none(),
+        ok: true,
         status,
         value,
-        error,
+        error: None,
+    });
+    let response = AgentCtlHostResponse {
+        version: AGENTCTL_HOST_VERSION,
+        request_id: request_id.to_owned(),
+        result,
     };
-    if let Ok(mut bytes) = serde_json::to_vec(&response) {
-        if bytes.len() > INSTANCE_CONTROL_MAX_FRAME {
-            return;
-        }
-        bytes.push(b'\n');
-        let _ = tokio::time::timeout(IO_TIMEOUT, stream.write_all(&bytes)).await;
-    }
+    let _ = tokio::time::timeout(IO_TIMEOUT, write_host_frame(stream, &response)).await;
 }
 
 /// Bounded host client exchange; identities are required even for status.
-/// Protocol rejection is returned as an `ok: false` response, not an I/O error.
+/// Existing request/result structs remain API adapters; wire rejections are typed host errors.
 pub async fn exchange(
     path: &Path,
     request: &InstanceControlRequest,
 ) -> anyhow::Result<InstanceControlResponse> {
-    let mut bytes = serde_json::to_vec(request)?;
-    anyhow::ensure!(
-        bytes.len() <= INSTANCE_CONTROL_MAX_FRAME,
-        "control request frame too large"
-    );
-    bytes.push(b'\n');
+    let envelope = request.envelope();
     let mut stream = tokio::time::timeout(IO_TIMEOUT, UnixStream::connect(path))
         .await
         .map_err(|_| anyhow::anyhow!("control connection timed out"))??;
-    anyhow::ensure!(
-        same_user(&stream),
-        "control server must belong to the effective user"
-    );
-    tokio::time::timeout(IO_TIMEOUT, stream.write_all(&bytes))
+    authorize_host_peer(&stream)?;
+    tokio::time::timeout(IO_TIMEOUT, write_host_frame(&mut stream, &envelope))
         .await
         .map_err(|_| anyhow::anyhow!("control request write timed out"))??;
-    let bytes = tokio::time::timeout(OPERATION_TIMEOUT + IO_TIMEOUT, frame(&mut stream))
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!("control response timed out; accepted operation may still complete")
-        })??;
-    let response: InstanceControlResponse = serde_json::from_slice(&bytes)?;
+    let reply: AgentCtlHostResponse<InstanceControlResponse> =
+        tokio::time::timeout(OPERATION_TIMEOUT + IO_TIMEOUT, read_host_frame(&mut stream))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("control response timed out; accepted operation may still complete")
+            })??;
+    reply.validate(&envelope.request_id)?;
+    let response = reply.result?;
     anyhow::ensure!(
         response.version == INSTANCE_CONTROL_VERSION,
         "unsupported control response version"
@@ -495,17 +514,7 @@ mod tests {
         path: &std::path::Path,
         request: &InstanceControlRequest,
     ) -> InstanceControlResponse {
-        let mut stream = UnixStream::connect(path).await.unwrap();
-        let mut bytes = serde_json::to_vec(request).unwrap();
-        bytes.push(b'\n');
-        stream.write_all(&bytes).await.unwrap();
-        serde_json::from_slice(
-            &tokio::time::timeout(IO_TIMEOUT, frame(&mut stream))
-                .await
-                .unwrap()
-                .unwrap(),
-        )
-        .unwrap()
+        super::exchange(path, request).await.unwrap()
     }
 
     async fn removed(path: &std::path::Path) {
@@ -702,7 +711,7 @@ mod tests {
         let transition = handle.vm_control.transition.lock().await;
         let (mut client, server) = UnixStream::pair().unwrap();
         let mut bytes =
-            serde_json::to_vec(&request(&handle, InstanceControlCommand::Load)).unwrap();
+            serde_json::to_vec(&request(&handle, InstanceControlCommand::Load).envelope()).unwrap();
         bytes.push(b'\n');
         client.write_all(&bytes).await.unwrap();
         let waiter = tokio::spawn(serve(
@@ -711,15 +720,14 @@ mod tests {
             handle.status.clone(),
             Duration::from_millis(1),
         ));
-        let response: InstanceControlResponse = serde_json::from_slice(
-            &tokio::time::timeout(IO_TIMEOUT, frame(&mut client))
+        let response: AgentCtlHostResponse<InstanceControlResponse> =
+            tokio::time::timeout(IO_TIMEOUT, read_host_frame(&mut client))
                 .await
                 .unwrap()
-                .unwrap(),
-        )
-        .unwrap();
-        assert!(!response.ok);
-        assert!(response.error.unwrap().contains("timed out"));
+                .unwrap();
+        let error = response.result.unwrap_err();
+        assert_eq!(error.code, AgentCtlHostErrorCode::Unavailable);
+        assert!(error.message.contains("timed out"));
         drop(client);
         tokio::task::yield_now().await;
         assert!(!waiter.is_finished());
@@ -739,7 +747,8 @@ mod tests {
         let path = handle.control_socket().unwrap();
         let transition = handle.vm_control.transition.lock().await;
         let mut bytes =
-            serde_json::to_vec(&request(&handle, InstanceControlCommand::Pause)).unwrap();
+            serde_json::to_vec(&request(&handle, InstanceControlCommand::Pause).envelope())
+                .unwrap();
         bytes.push(b'\n');
         for _ in 0..MAX_CONNECTIONS {
             let mut client = UnixStream::connect(&path).await.unwrap();
@@ -749,7 +758,11 @@ mod tests {
         // All preceding accepted operations are blocked on the transition lock.
         // Closing their clients must not permit this ninth connection to enter.
         let mut ninth = UnixStream::connect(&path).await.unwrap();
-        let rejected = tokio::time::timeout(Duration::from_secs(1), frame(&mut ninth)).await;
+        let rejected = tokio::time::timeout(
+            Duration::from_secs(1),
+            read_host_frame::<serde_json::Value>(&mut ninth),
+        )
+        .await;
         drop(transition);
         handle.cancel();
         handle.wait().await.unwrap();
@@ -804,28 +817,28 @@ mod tests {
         let mut invalid = req.clone();
         invalid.version = 2;
         assert!(
-            exchange(&path, &invalid)
+            super::exchange(&path, &invalid)
                 .await
-                .error
-                .unwrap()
+                .unwrap_err()
+                .to_string()
                 .contains("version")
         );
         invalid = req.clone();
         invalid.attempt_id = AttemptId::from("other-attempt");
         assert!(
-            exchange(&path, &invalid)
+            super::exchange(&path, &invalid)
                 .await
-                .error
-                .unwrap()
+                .unwrap_err()
+                .to_string()
                 .contains("identity")
         );
         invalid = req.clone();
         invalid.file = Some("/tmp/unused".into());
         assert!(
-            exchange(&path, &invalid)
+            super::exchange(&path, &invalid)
                 .await
-                .error
-                .unwrap()
+                .unwrap_err()
+                .to_string()
                 .contains("offload")
         );
         for (command, kind) in [
@@ -848,8 +861,13 @@ mod tests {
         let mut events = handle.subscribe_events();
         // No native endpoint is attached to the mock. Failure is explicit and
         // still follows the existing serialized lifecycle/event path.
-        let reply = exchange(&path, &request(&handle, InstanceControlCommand::Pause)).await;
-        assert!(!reply.ok);
+        let error = super::exchange(&path, &request(&handle, InstanceControlCommand::Pause))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<AgentCtlHostError>().unwrap().code,
+            AgentCtlHostErrorCode::Unavailable
+        );
         let mut kinds = Vec::new();
         while let Ok(event) = events.try_recv() {
             if let pvisor_core::event::Fact::Observation { name, .. } = event.data {
@@ -861,17 +879,17 @@ mod tests {
         // Closing the client after submission does not cancel accepted control.
         let mut stream = UnixStream::connect(&path).await.unwrap();
         let mut bytes =
-            serde_json::to_vec(&request(&handle, InstanceControlCommand::Load)).unwrap();
+            serde_json::to_vec(&request(&handle, InstanceControlCommand::Load).envelope()).unwrap();
         bytes.push(b'\n');
         stream.write_all(&bytes).await.unwrap();
         drop(stream);
         tokio::time::timeout(IO_TIMEOUT, async {
             loop {
                 let event = events.recv().await.unwrap();
-                if let pvisor_core::event::Fact::Observation { name, .. } = event.data {
-                    if name == "vm.control_failed" {
-                        break;
-                    }
+                if let pvisor_core::event::Fact::Observation { name, .. } = event.data
+                    && name == "vm.control_failed"
+                {
+                    break;
                 }
             }
         })
@@ -892,9 +910,12 @@ mod tests {
         let path = handle.control_socket().unwrap();
         let mut stream = UnixStream::connect(&path).await.unwrap();
         stream.write_all(b"not-json\n").await.unwrap();
-        let response: InstanceControlResponse =
-            serde_json::from_slice(&frame(&mut stream).await.unwrap()).unwrap();
-        assert!(!response.ok);
+        // No envelope/correlation ID can be recovered from malformed JSON.
+        assert!(
+            read_host_frame::<serde_json::Value>(&mut stream)
+                .await
+                .is_err()
+        );
         let mut idle = Vec::new();
         for _ in 0..MAX_CONNECTIONS + 2 {
             idle.push(UnixStream::connect(&path).await.unwrap());
@@ -911,8 +932,9 @@ mod tests {
     #[tokio::test]
     async fn frame_limit_and_single_request_framing() {
         let (mut writer, mut reader) = UnixStream::pair().unwrap();
-        writer.write_all(b"first\nsecond\n").await.unwrap();
-        assert_eq!(frame(&mut reader).await.unwrap(), b"first");
+        writer.write_all(b"1\n2\n").await.unwrap();
+        assert_eq!(read_host_frame::<u32>(&mut reader).await.unwrap(), 1);
+        assert_eq!(read_host_frame::<u32>(&mut reader).await.unwrap(), 2);
         let (mut writer, mut reader) = UnixStream::pair().unwrap();
         let sender = tokio::spawn(async move {
             writer
@@ -921,13 +943,101 @@ mod tests {
                 .unwrap();
         });
         assert!(
-            frame(&mut reader)
+            read_host_frame::<serde_json::Value>(&mut reader)
                 .await
                 .unwrap_err()
                 .to_string()
                 .contains("too large")
         );
         sender.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn host_envelope_rejects_version_target_generation_and_guest_token() {
+        let handle = mock().await;
+        let path = handle.control_socket().unwrap();
+        for variant in 0..5 {
+            let mut request = request(&handle, InstanceControlCommand::Status).envelope();
+            let expected = if variant == 0 {
+                AgentCtlHostErrorCode::VersionMismatch
+            } else if variant == 4 {
+                AgentCtlHostErrorCode::InvalidRequest
+            } else {
+                AgentCtlHostErrorCode::Conflict
+            };
+            match variant {
+                0 => request.version += 1,
+                1 => request.target = None,
+                2 => request.target.as_mut().unwrap().attempt_id = Some("stale-attempt".into()),
+                3 => request.target.as_mut().unwrap().generation = Some("stale-generation".into()),
+                _ => request.request_id = "invalid\nidentity".into(),
+            }
+            let mut stream = UnixStream::connect(&path).await.unwrap();
+            write_host_frame(&mut stream, &request).await.unwrap();
+            let response: AgentCtlHostResponse<InstanceControlResponse> =
+                read_host_frame(&mut stream).await.unwrap();
+            assert_eq!(response.request_id, request.request_id);
+            assert_eq!(response.result.unwrap_err().code, expected);
+        }
+        let mut guest_request =
+            serde_json::to_value(request(&handle, InstanceControlCommand::Status).envelope())
+                .unwrap();
+        guest_request["token"] = "cooperative-guest-token".into();
+        let mut stream = UnixStream::connect(&path).await.unwrap();
+        write_host_frame(&mut stream, &guest_request).await.unwrap();
+        assert!(
+            read_host_frame::<serde_json::Value>(&mut stream)
+                .await
+                .is_err()
+        );
+        handle.cancel();
+        handle.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn adapter_rejects_wrong_response_version_correlation_and_target() {
+        let handle = mock().await;
+        let request = request(&handle, InstanceControlCommand::Status);
+        for variant in 0..3 {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("fake.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            let mut status = handle.status();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request: AgentCtlHostRequest<HostInstanceCommand> =
+                    read_host_frame(&mut stream).await.unwrap();
+                if variant == 2 {
+                    status.attempt.attempt_id = AttemptId::from("other-attempt");
+                }
+                let response = AgentCtlHostResponse {
+                    version: if variant == 0 {
+                        99
+                    } else {
+                        AGENTCTL_HOST_VERSION
+                    },
+                    request_id: if variant == 1 {
+                        "other-request".into()
+                    } else {
+                        request.request_id
+                    },
+                    result: Ok(InstanceControlResponse {
+                        version: INSTANCE_CONTROL_VERSION,
+                        run_id: status.run_id.clone(),
+                        attempt_id: status.attempt.attempt_id.clone(),
+                        ok: true,
+                        status,
+                        value: None,
+                        error: None,
+                    }),
+                };
+                write_host_frame(&mut stream, &response).await.unwrap();
+            });
+            assert!(super::exchange(&path, &request).await.is_err());
+            server.await.unwrap();
+        }
+        handle.cancel();
+        handle.wait().await.unwrap();
     }
 
     #[tokio::test]
@@ -1030,40 +1140,35 @@ mod tests {
                     native.child.try_wait().unwrap().is_none(),
                     "native CLI exited; inspect native.log"
                 );
-                if let Ok(record) = super::super::registry::RunRecord::read(&stage) {
-                    if let Some(attempt_id) = record.attempt_id {
-                        let request = InstanceControlRequest {
-                            version: INSTANCE_CONTROL_VERSION,
-                            run_id: RunId::from(record.run_id),
-                            attempt_id: AttemptId::from(attempt_id),
-                            command: InstanceControlCommand::Status,
-                            file: None,
+                if let Ok(record) = super::super::registry::RunRecord::read(&stage)
+                    && let Some(attempt_id) = record.attempt_id
+                {
+                    let request = InstanceControlRequest {
+                        version: INSTANCE_CONTROL_VERSION,
+                        run_id: RunId::from(record.run_id),
+                        attempt_id: AttemptId::from(attempt_id),
+                        command: InstanceControlCommand::Status,
+                        file: None,
+                    };
+                    // Test-only discovery: production discovery is the SDK
+                    // getter/CLI stderr, with no guest-visible stage locator.
+                    for entry in std::fs::read_dir("/tmp").unwrap().flatten() {
+                        if !entry.file_name().to_string_lossy().starts_with("pvctrl-") {
+                            continue;
+                        }
+                        let path = entry.path().join("ctrl.sock");
+                        let probe = async {
+                            let response = super::exchange(&path, &request).await.ok()?;
+                            (response.ok && response.status.state == RunState::Running)
+                                .then_some(())
                         };
-                        // Test-only discovery: production discovery is the SDK
-                        // getter/CLI stderr, with no guest-visible stage locator.
-                        for entry in std::fs::read_dir("/tmp").unwrap().flatten() {
-                            if !entry.file_name().to_string_lossy().starts_with("pvctrl-") {
-                                continue;
-                            }
-                            let path = entry.path().join("ctrl.sock");
-                            let probe = async {
-                                let mut stream = UnixStream::connect(&path).await.ok()?;
-                                let mut bytes = serde_json::to_vec(&request).ok()?;
-                                bytes.push(b'\n');
-                                stream.write_all(&bytes).await.ok()?;
-                                let response: InstanceControlResponse =
-                                    serde_json::from_slice(&frame(&mut stream).await.ok()?).ok()?;
-                                (response.ok && response.status.state == RunState::Running)
-                                    .then_some(())
-                            };
-                            if tokio::time::timeout(Duration::from_millis(200), probe)
-                                .await
-                                .ok()
-                                .flatten()
-                                .is_some()
-                            {
-                                return (path, request);
-                            }
+                        if tokio::time::timeout(Duration::from_millis(200), probe)
+                            .await
+                            .ok()
+                            .flatten()
+                            .is_some()
+                        {
+                            return (path, request);
                         }
                     }
                 }

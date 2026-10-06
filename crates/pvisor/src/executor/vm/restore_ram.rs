@@ -52,12 +52,11 @@ pub(super) fn acquire(
     MOUNTS
         .get_or_init(|| Mounts::new(4096))
         .get((store.clone(), snapshot_id.to_owned()), || {
-            // Independent of any one Attempt's directory/lifetime.
-            let directory = store.join("ram-mounts");
-            crate::util::create_dir_all_durable(&directory)?;
+            // Independent of any one Attempt's directory/lifetime, and never
+            // nested in the durable store (which may be an OverlayFS lower).
             let reader = published.ram_reader()?;
             let base = reader.compressed_base();
-            let (mut mount, file) = SnapshotRamMount::new(reader, &directory)?;
+            let (mut mount, file) = SnapshotRamMount::runtime(reader, &[&store])?;
             mount.watch_native_owner_exit(&std::env::current_exe()?)?;
             Ok(SharedRam {
                 file: Arc::new(file),

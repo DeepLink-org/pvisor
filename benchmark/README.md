@@ -122,11 +122,13 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** "已准备好环境时，pVisor host/staged 的首条命令可在 X ms 内执行，VM 在 Y ms 内执行，与 Docker、Firecracker 处于同一量级或差多少"；以及"完整发行版的启动成本为 Z 秒级，pVisor 无镜像 VM 能省掉多少"。
 - **实验设计：**
   - 指标分为首条有效输出（ready）和启动到进程退出（completion），两者分开报告。
-  - 对照组为原生进程、Docker、Firecracker、QEMU microvm，以及 pVisor 的 host、staged、VM。
+  - 对照组为原生进程、Docker、Firecracker、QEMU microvm，以及 pVisor 的 host、staged、VM。Firecracker 首选显式 `fc-system` 官方发行版 stock 内核；独立定制 `fc-reference` 为补充。旧 `firecracker` 只能标为 legacy reference/unknown，不能称为系统内核。
+  - 内核来源问题：相同已准备 userspace 与预算下，内核来源如何影响首条正确输出的等待？两个 FC variant 共用参数、rootfs/磁盘、CPU/RAM、logger 与 teardown；冻结内核、配置、来源元数据、stock vmlinuz/extractor 和可选 initrd 的精确字节并在前后校验，不使用 pVisor firmware 准备 FC 内核。来源/配置/initrd 的差异需记录，不能解释为纯 VMM 成本。
+  - 默认 normal 必须成功退出；可选 `--fc-ready-policy ready-only` 仅用于 ready，唯一且有序 Ready/Result/Exit0 与无 panic 后才受控 SIGTERM，再校验全部输出。ready-only 不报告 Completion，也不代表完整任务或正常关机；失败不能作为有效样本。新正式 cohort 不与历史用户数字合并。
   - 环境和镜像预先准备好，准备时间单独记录；热缓存与冷镜像分成两组。
   - 统一 CPU 和内存预算，随机交替执行，每格至少 30 个样本。
   - 完整 Ubuntu 只作为"完整 OS 启动成本"的对照，不与最小 VM 做 VMM 排名。
-- **入口脚本：** `startup.py`、`linux_vm_ready.py`、`vm_ready.py`、`run_all.py`、`ubuntu_baselines.py`；启动工程实验与诊断见下列独立条目。
+- **入口脚本：** `reference_baselines.py --modes ready`（`firecracker_kernels.py` 为独立制品准备 helper）、`startup.py`、`linux_vm_ready.py`、`vm_ready.py`、`run_all.py`、`ubuntu_baselines.py`；启动工程实验与诊断见下列独立条目。
 
 ### B-FS-TOOLS：开发工具在各执行模式下要多花多少时间 {#b-fs-tools}
 
@@ -329,7 +331,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 验证 Linux 内核缺页恢复、自动回收和实例内压缩存储的组合能否安全降低运行 VM 的宿主占用。
 - **想要的结论：** 明确实例内 cold off/on 的完整受限 cgroup 内存、RAM PSS、压缩 store/临时峰值、冷页和恢复计数，以及全部 payload 摘要、mutation、设备 I/O、退出；原始随机内容是否拒绝无益回收。
 - **实验设计：** 初始 1 VM 新实例 off/on、256 MiB/1vCPU、64 MiB 重复/独有随机数据，每格固定两段冷窗口和两次全量恢复；组四核/2GiB/零 swap，最多四 VM，无全局 KSM/sysctl 修改。kernel-fault userfaultfd 权限由用户授权。每条件独立新 cgroup，固定等待和 deadline，完整保留失败，不以 codec 字节当作净内存节省。初始预检每格 n=1，计时含 debug/校验边界，先正确性后扩展。
-- **入口：** `crates/pvisor/examples/vm_cold_runtime.rs` 与 `benchmark/pvisor/linux_cold_runtime.py`；报告 `LINUX_COLD_RUNTIME_REPORT.md`。
+- **入口：** `crates/pvisor/examples/vm_cold_runtime.rs` 与 `benchmark/pvisor/linux_cold_runtime.py`；报告 `LINUX_COLD_RUNTIME_REPORT.md`；同源冻结 GNU release 预检与加工 CSV 见 `benchmark/pvisor/COLD_RUNTIME_RELEASE_REPORT.md`，独立成批，不与既有 cohort 合并。
 
 ### B-COLD-STORAGE-DIAG：冷压缩存储的空间与完整性边界 {#b-cold-storage-diag}
 

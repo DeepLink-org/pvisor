@@ -66,6 +66,33 @@ VM hibernation. Any future adapter must supply the ownership, admission and
 cleanup contracts above. See [Gateway design](../../docs/src/en/design/gateway.md)
 and [daemon boundaries](../../docs/src/en/guides/daemon/boundaries.md).
 
+## Capture admission budgets
+
+Each capture runtime retains at most 256 story queues/workers until shutdown,
+with the existing 256-slot FIFO per story. External admission is also limited
+across stories to 1,024 queued, waiting-for-FIFO, or active jobs and 64 MiB of
+accounted input. Internal backfills use a separate reserved budget of 256 jobs
+and 32 MiB; rejected-event diagnostics have 256 jobs and 8 MiB. Byte accounting
+includes context, raw bodies, semantic inputs and prepared commands, using a
+conservative serialized-size multiplier plus per-job overhead. These are
+admission limits, not an RSS limit: committed story projections and the run
+registry can still grow over the lifetime of a runtime.
+
+Global job/byte/story exhaustion fails immediately rather than waiting for
+permits retained by a child awaiting a main-story backfill. Internal work still
+uses the ordered story FIFO. Oversized/exhausted internal work returns an error
+and retains the existing prepared-backfill dead-letter path; it cannot silently
+skip a required receipt. Flush/stop barriers do not consume data-job budgets,
+so overload cannot prevent draining accepted work. Existing constructors and
+persisted schemas are unchanged; limits are currently fixed defaults.
+
+`apply` returns admission errors explicitly; only per-story FIFO capacity is
+backpressured. `spawn_apply` remains nonblocking and reports a capture gap through
+`flush`/`shutdown` plus logging, with bounded best-effort dead letters. Diagnostic
+budget exhaustion is logged; it does not clear the capture gap. Story exhaustion
+also applies to replay into a runtime; opening more than 256 retained stories
+fails explicitly rather than partially succeeding unnoticed.
+
 ## Develop
 
 ```bash

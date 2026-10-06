@@ -258,8 +258,6 @@ pub(super) fn write_synced(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-
-
 fn read_environment_manifest(
     path: &Path,
     id: &str,
@@ -699,11 +697,6 @@ impl Drop for PendingEnvironment {
 }
 
 impl PendingEnvironment {
-
-
-
-
-
     pub(crate) fn directory(&self) -> &Path {
         self.staging.path()
     }
@@ -1399,6 +1392,8 @@ impl PublishedEnvironment {
     }
     /// Fault-serving process independent of the VM's kernel teardown. The
     /// published lease stays held until the server has acquired backing pins.
+    /// `directory` identifies an excluded state root, not the mount parent;
+    /// transient mount/spec storage is selected in a private host runtime area.
     pub fn ram_mount(
         &self,
         executable: &Path,
@@ -1434,10 +1429,7 @@ impl PublishedEnvironment {
                         &destination.join(std::ffi::OsStr::from_bytes(&layer.path)),
                     )?;
                 }
-                super::linux::restore_metadata(
-                    destination,
-                    &self.manifest.filesystem.entries[0],
-                )?;
+                super::linux::restore_metadata(destination, &self.manifest.filesystem.entries[0])?;
                 verify_tree(destination, &self.complete_inventory()?)
             })();
             if result.is_err() {
@@ -1614,8 +1606,6 @@ impl PublishedEnvironment {
         }
         Ok(self.path.join("rootfs").join(path))
     }
-
-
 
     fn layer(&self, relative: &Path) -> anyhow::Result<(PathBuf, TreeInventory)> {
         use super::{TreeEntry, TreeObject};

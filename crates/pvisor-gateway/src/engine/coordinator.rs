@@ -62,6 +62,11 @@ impl CaptureRuntime {
         Ok(runtime)
     }
 
+    #[cfg(test)]
+    pub(crate) fn dispatcher_for_test(&self) -> &ApplyDispatcher {
+        &self.apply_dispatcher
+    }
+
     /// Replay immutable committed facts; never re-run HTTP or prepare commands.
     async fn rebuild_projections(&self) -> Result<()> {
         let journal = self.inner.story_deps.journal.clone();
@@ -261,6 +266,24 @@ pub(crate) fn story_reply_ack(reply: StoryReply) -> Result<()> {
     }
 }
 
+fn record_dead_letter(
+    storage: &Path,
+    ctx: &CallContext,
+    event: &Event,
+    error: &anyhow::Error,
+    prepared_record_json: Option<String>,
+) {
+    if let Err(dl) = dead_letter::append_dead_letter(
+        storage,
+        ctx,
+        event,
+        &format!("{error:#}"),
+        prepared_record_json,
+    ) {
+        tracing::error!("dead letter write failed: {dl:#}");
+    }
+}
+
 #[cfg(test)]
 mod reply_tests {
     use super::*;
@@ -282,23 +305,5 @@ mod reply_tests {
             let error = story_reply_ack(reply).unwrap_err();
             assert_eq!(error.to_string(), "unexpected snapshot reply");
         }
-    }
-}
-
-fn record_dead_letter(
-    storage: &Path,
-    ctx: &CallContext,
-    event: &Event,
-    error: &anyhow::Error,
-    prepared_record_json: Option<String>,
-) {
-    if let Err(dl) = dead_letter::append_dead_letter(
-        storage,
-        ctx,
-        event,
-        &format!("{error:#}"),
-        prepared_record_json,
-    ) {
-        tracing::error!("dead letter write failed: {dl:#}");
     }
 }

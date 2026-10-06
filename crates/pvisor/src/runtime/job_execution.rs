@@ -2,10 +2,17 @@
 //! A sealed checkpoint is not suspension evidence. Only the terminal native
 //! receipt grants a new Attempt the right to resume.
 use super::RunRecord;
+use super::host_transport::{
+    authorize_host_peer, read_host_frame, validate_host_target, write_host_frame,
+};
 use super::registry::RunLease;
 use super::run::RunControlHandle;
 use crate::config::{RunConfig, RunExecutorKind};
 use anyhow::{Context, ensure};
+use pvisor_core::host_protocol::{
+    AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
+    AgentCtlHostResponse, AgentCtlTarget,
+};
 use pvisor_core::operation::{
     ExecutionCheckpoint, ExecutionSuspension, OperationKind, SnapshotRamStorage, Value,
 };
@@ -15,7 +22,6 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 pub(crate) const STORE_KEY: &str = "pvisor.orchestration.execution_snapshot_store";
 
@@ -40,7 +46,8 @@ pub(crate) fn snapshot_store(
 const STATE: &str = "execution-job.json";
 const ROOT: &str = "execution-job-root.json";
 const SOCKET: &str = "execution.sock";
-const MAX_FRAME: u64 = 1024 * 1024;
+const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONTROL_CONNECTIONS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Capture {
@@ -236,7 +243,50 @@ pub(crate) fn job(record: &RunRecord) -> anyhow::Result<Job> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+enum HostCaptureCommand {
+    Checkpoint { ram_storage: SnapshotRamStorage },
+    Suspend { ram_storage: SnapshotRamStorage },
+}
+
+fn capture_request(
+    request: AgentCtlHostRequest<HostCaptureCommand>,
+    job: &Job,
+) -> anyhow::Result<ControlRequest> {
+    request.validate()?;
+    validate_host_target(request.target.as_ref(), &job.run_id, &job.active_attempt)?;
+    let (suspend, ram_storage) = match request.command {
+        HostCaptureCommand::Checkpoint { ram_storage } => (false, ram_storage),
+        HostCaptureCommand::Suspend { ram_storage } => (true, ram_storage),
+    };
+    Ok(ControlRequest {
+        run_id: job.run_id.clone(),
+        attempt_id: job.active_attempt.clone(),
+        request_id: request.request_id,
+        suspend,
+        ram_storage,
+    })
+}
+
+fn capture_error(error: anyhow::Error) -> AgentCtlHostError {
+    if let Some(error) = error.downcast_ref::<AgentCtlHostError>() {
+        return error.clone();
+    }
+    let message = format!("{error:#}");
+    let code = if message.contains("REQUEST_ID_CONFLICT")
+        || message.contains("JOB_BUSY")
+        || message.contains("stale Job/Attempt")
+    {
+        AgentCtlHostErrorCode::Conflict
+    } else {
+        // An admitted native operation may have committed; callers must reconcile
+        // the durable request ledger rather than retrying with a new identity.
+        AgentCtlHostErrorCode::Unavailable
+    };
+    AgentCtlHostError::new(code, message)
+}
+
+#[derive(Debug)]
 struct ControlRequest {
     run_id: String,
     attempt_id: String,
@@ -345,30 +395,47 @@ impl Server {
         job.link_stage(&stage)?;
         let (listener, socket_directory) = bind_control_endpoint(&stage)?;
         let task = tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
+            let admission =
+                std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONTROL_CONNECTIONS));
+            while let Ok((mut stream, _)) = listener.accept().await {
+                if authorize_host_peer(&stream).is_err() {
+                    continue;
+                }
+                let Ok(permit) = admission.clone().try_acquire_owned() else {
+                    continue;
+                };
                 let job = job.clone();
                 let controls = controls.clone();
+                // Accepted capture handlers outlive endpoint teardown, just as
+                // before migration, so a terminal receipt cannot cancel ledger
+                // persistence. Disconnect/timeout does not release admission early.
                 tokio::spawn(async move {
-                    let (reader, mut writer) = stream.into_split();
+                    let _permit = permit;
+                    let Ok(Ok(request)) = tokio::time::timeout(
+                        CONTROL_IO_TIMEOUT,
+                        read_host_frame::<AgentCtlHostRequest<HostCaptureCommand>>(&mut stream),
+                    )
+                    .await
+                    else {
+                        return;
+                    };
+                    let request_id = request.request_id.clone();
                     let result = async {
-                        use tokio::io::AsyncReadExt;
-                        let mut line = String::new();
-                        BufReader::new(reader.take(MAX_FRAME))
-                            .read_line(&mut line)
-                            .await?;
-                        ensure!(line.ends_with('\n'), "invalid execution control frame");
-                        let request: ControlRequest = serde_json::from_str(&line)?;
+                        let request = capture_request(request, &job)?;
                         handle_request(&job, controls, request).await
                     }
-                    .await;
-                    let reply = match result {
-                        Ok(checkpoint) => serde_json::json!({"checkpoint":checkpoint}),
-                        Err(error) => serde_json::json!({"error":format!("{error:#}")}),
+                    .await
+                    .map_err(capture_error);
+                    let reply = AgentCtlHostResponse {
+                        version: AGENTCTL_HOST_VERSION,
+                        request_id,
+                        result,
                     };
-                    if let Ok(mut bytes) = serde_json::to_vec(&reply) {
-                        bytes.push(b'\n');
-                        let _ = writer.write_all(&bytes).await;
-                    }
+                    let _ = tokio::time::timeout(
+                        CONTROL_IO_TIMEOUT,
+                        write_host_frame(&mut stream, &reply),
+                    )
+                    .await;
                 });
             }
         });
@@ -409,6 +476,24 @@ impl Server {
     }
 }
 
+fn validate_capture_binding(
+    template: &Job,
+    job: &Job,
+    request: &ControlRequest,
+) -> Result<(), AgentCtlHostError> {
+    if request.run_id != job.run_id
+        || request.attempt_id != job.active_attempt
+        || template.active_attempt != job.active_attempt
+        || template.active_stage != job.active_stage
+    {
+        return Err(AgentCtlHostError::new(
+            AgentCtlHostErrorCode::Conflict,
+            "stale Job/Attempt control request",
+        ));
+    }
+    Ok(())
+}
+
 async fn handle_request(
     template: &Job,
     mut controls: RunControlHandle,
@@ -418,13 +503,11 @@ async fn handle_request(
         !request.request_id.trim().is_empty() && request.request_id.len() <= 256,
         "invalid request id"
     );
+    validate_capture_binding(template, &template.current()?, &request)?;
     controls.wait_ready().await?;
     let lease = template.lock_wait().await?;
     let mut job = template.current()?;
-    ensure!(
-        request.run_id == job.run_id && request.attempt_id == job.active_attempt,
-        "stale Job/Attempt control request"
-    );
+    validate_capture_binding(template, &job, &request)?;
     if let Some(previous) = job.requests.get(&request.request_id) {
         ensure!(
             previous.suspend == request.suspend && previous.ram_storage == request.ram_storage,
@@ -471,6 +554,7 @@ async fn handle_request(
     let result = controls.control(kind).await;
     let _lease = template.lock_wait().await?;
     let mut job = template.current()?;
+    validate_capture_binding(template, &job, &request)?;
     match result {
         Ok(Value::ExecutionCheckpoint { checkpoint }) => {
             ensure!(
@@ -520,6 +604,13 @@ pub(crate) async fn capture(
         !request_id.trim().is_empty() && request_id.len() <= 256,
         "invalid request id"
     );
+    AgentCtlHostRequest {
+        version: AGENTCTL_HOST_VERSION,
+        request_id: request_id.clone(),
+        target: None,
+        command: (),
+    }
+    .validate()?;
     let work = async {
         let checkpoint = if let Some(previous) = job.requests.get(&request_id) {
             ensure!(
@@ -584,34 +675,39 @@ pub(crate) async fn capture(
             );
             let socket = std::fs::canonicalize(job.active_stage.join(SOCKET))
                 .context("EXECUTION_UNKNOWN: owning Job execution control endpoint unavailable")?;
-            let stream = tokio::net::UnixStream::connect(socket)
+            let mut stream = tokio::net::UnixStream::connect(socket)
                 .await
                 .context("EXECUTION_UNKNOWN: owning Job execution control endpoint unavailable")?;
-            let (reader, mut writer) = stream.into_split();
-            let request = ControlRequest {
-                run_id: job.run_id.clone(),
-                attempt_id: job.active_attempt.clone(),
+            authorize_host_peer(&stream)?;
+            let request = AgentCtlHostRequest {
+                version: AGENTCTL_HOST_VERSION,
                 request_id: request_id.clone(),
-                suspend,
-                ram_storage,
+                target: Some(AgentCtlTarget {
+                    job_id: job.run_id.clone(),
+                    attempt_id: Some(job.active_attempt.clone()),
+                    generation: None,
+                }),
+                command: if suspend {
+                    HostCaptureCommand::Suspend { ram_storage }
+                } else {
+                    HostCaptureCommand::Checkpoint { ram_storage }
+                },
             };
-            let mut bytes = serde_json::to_vec(&request)?;
-            bytes.push(b'\n');
-            writer.write_all(&bytes).await?;
-            use tokio::io::AsyncReadExt;
-            let mut reply = String::new();
-            BufReader::new(reader.take(MAX_FRAME))
-                .read_line(&mut reply)
-                .await?;
+            request.validate()?;
+            write_host_frame(&mut stream, &request).await?;
+            let reply: AgentCtlHostResponse<ExecutionCheckpoint> =
+                read_host_frame(&mut stream).await.context(
+                    "EXECUTION_UNKNOWN: execution control disconnected before acknowledgement",
+                )?;
+            reply.validate(&request_id)?;
+            let checkpoint = reply.result?;
+            checkpoint.validate()?;
             ensure!(
-                reply.ends_with('\n'),
-                "execution control disconnected before acknowledgement"
+                checkpoint.source_run_id == job.run_id
+                    && checkpoint.source_attempt_id == job.active_attempt,
+                "execution control checkpoint identity mismatch"
             );
-            let value: serde_json::Value = serde_json::from_str(&reply)?;
-            if let Some(error) = value["error"].as_str() {
-                anyhow::bail!("{error}");
-            }
-            serde_json::from_value(value["checkpoint"].clone())?
+            checkpoint
         };
         if suspend {
             loop {
@@ -887,6 +983,134 @@ mod tests {
         assert!(current.head.is_none());
         assert_eq!(current.checkpoints.len(), 1);
         record.require_stopped().unwrap();
+    }
+
+    #[test]
+    fn capture_envelopes_reject_version_missing_target_and_stale_attempt() {
+        let temp = tempfile::tempdir().unwrap();
+        let (_, job) = fixture(temp.path());
+        let envelope = || AgentCtlHostRequest {
+            version: AGENTCTL_HOST_VERSION,
+            request_id: "capture".into(),
+            target: Some(AgentCtlTarget {
+                job_id: job.run_id.clone(),
+                attempt_id: Some(job.active_attempt.clone()),
+                generation: None,
+            }),
+            command: HostCaptureCommand::Checkpoint {
+                ram_storage: SnapshotRamStorage::Raw,
+            },
+        };
+        let request = capture_request(envelope(), &job).unwrap();
+        assert!(!request.suspend);
+        for variant in 0..5 {
+            let mut request = envelope();
+            match variant {
+                0 => request.version += 1,
+                1 => request.target = None,
+                2 => request.target.as_mut().unwrap().job_id = "other-job".into(),
+                3 => request.target.as_mut().unwrap().attempt_id = Some("old-attempt".into()),
+                _ => {
+                    request.target.as_mut().unwrap().generation = Some("unknown-generation".into())
+                }
+            }
+            let error = capture_error(capture_request(request, &job).unwrap_err());
+            assert_eq!(
+                error.code,
+                if variant == 0 {
+                    AgentCtlHostErrorCode::VersionMismatch
+                } else {
+                    AgentCtlHostErrorCode::Conflict
+                }
+            );
+        }
+        let mut value = serde_json::to_value(envelope()).unwrap();
+        value["command"]["operation"] = "pause".into();
+        assert!(serde_json::from_value::<AgentCtlHostRequest<HostCaptureCommand>>(value).is_err());
+        let mut value = serde_json::to_value(envelope()).unwrap();
+        value["token"] = "guest-token".into();
+        assert!(serde_json::from_value::<AgentCtlHostRequest<HostCaptureCommand>>(value).is_err());
+    }
+
+    #[test]
+    fn old_endpoint_cannot_serve_replacement_attempt_or_replay_its_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let (_, template) = fixture(temp.path());
+        let mut current = template.clone();
+        current.active_attempt = "attempt-replacement".into();
+        current.active_stage = temp.path().join("attempts/new");
+        // Even a caller naming the new durable target cannot use the old server's controls.
+        let request = ControlRequest {
+            run_id: current.run_id.clone(),
+            attempt_id: current.active_attempt.clone(),
+            request_id: "capture".into(),
+            suspend: false,
+            ram_storage: SnapshotRamStorage::Raw,
+        };
+        assert_eq!(
+            validate_capture_binding(&template, &current, &request)
+                .unwrap_err()
+                .code,
+            AgentCtlHostErrorCode::Conflict
+        );
+        let old_request = ControlRequest {
+            attempt_id: template.active_attempt.clone(),
+            ..request
+        };
+        assert!(validate_capture_binding(&current, &current, &old_request).is_err());
+        assert!(current.requests.is_empty());
+    }
+
+    #[tokio::test]
+    async fn capture_client_rejects_uncorrelated_or_wrong_version_acknowledgement() {
+        let temp = tempfile::tempdir().unwrap();
+        let (record, mut job) = fixture(temp.path());
+        job.state = JobState::Running;
+        job.write().unwrap();
+        for variant in 0..3 {
+            let (listener, directory) = bind_control_endpoint(&job.active_stage).unwrap();
+            let mut checkpoint = checkpoint(temp.path());
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request: AgentCtlHostRequest<HostCaptureCommand> =
+                    read_host_frame(&mut stream).await.unwrap();
+                assert_eq!(
+                    request.target.unwrap().attempt_id.as_deref(),
+                    Some("attempt-original")
+                );
+                if variant == 2 {
+                    checkpoint.source_attempt_id = "old-attempt".into();
+                }
+                let response = AgentCtlHostResponse {
+                    version: if variant == 0 {
+                        99
+                    } else {
+                        AGENTCTL_HOST_VERSION
+                    },
+                    request_id: if variant == 1 {
+                        "other".into()
+                    } else {
+                        request.request_id
+                    },
+                    result: Ok(checkpoint),
+                };
+                write_host_frame(&mut stream, &response).await.unwrap();
+            });
+            assert!(
+                capture(
+                    &record,
+                    false,
+                    SnapshotRamStorage::Raw,
+                    Some("capture".into()),
+                    Duration::from_secs(1)
+                )
+                .await
+                .is_err()
+            );
+            server.await.unwrap();
+            std::fs::remove_file(job.active_stage.join(SOCKET)).unwrap();
+            drop(directory);
+        }
     }
 
     #[tokio::test]

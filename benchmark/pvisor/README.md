@@ -86,6 +86,8 @@ The four-condition preflight uses one fresh 256 MiB/1-vCPU VM per cell, 64 MiB r
 
 [Linux memory compression benefits/costs and recorded reproduction commands](MEMORY_COMPRESSION_REPORT.md#recorded-commands-and-reproduction).
 
+[Frozen-source GNU release preflight](COLD_RUNTIME_RELEASE_REPORT.md) retains a separate four-cell engineering cohort with independently regenerated full-payload digests, unchanged input inventories and post-run provenance checks. Its same-directory summary/phase CSVs contain processed observations only; raw trials, smaps, guards and build receipts remain in ignored `.data/`. Each cell has n=1, so these results do not supply user-facing latency, density or industry rankings.
+
 ## Data and publication
 
 `publish_apply_concurrency.py --report benchmark/.data/concurrent-new/report.json --output docs/src/en/benchmarks` audits three planned B-APPLY mid-write probes separately from latency. It verifies retained build/harness receipts, each injection and outcome, final target contents, ledger and conflict stderr. Missing or duplicate trials are rejected; missed windows remain unknown, and silent overwrites remain failures. Run after the probe exits; publish the matching CSV beside both locale articles. This does not establish protection against every race between a final check and rename.
@@ -156,6 +158,49 @@ python3 benchmark/pvisor/reference_baselines.py \
 Run `--samples 1 --warmups 0` into a separate new directory first. Run `--modes ready`, `--modes filesystem` and `--modes tools` separately, each with its own output directory and benchmark ID. `env,tools,claude,codex` share B-AGENT-TASK and may be selected together. Every group requires valid outputs, declared isolation and complete staged writes; original host inputs must remain unchanged for staged jobs. `ready` measures first output, `filesystem` runs seven checked operations, and `tools` performs the fixed repair/test/diff plan. Each row records its benchmark ID. `claude,codex` are separate real-CLI workloads with deterministic local responses, not real inference or default nested-sandbox rankings. Failures make the runner exit nonzero after unaffected cases finish.
 
 Tool preparation needs Linux x86_64, KVM, FUSE, user namespaces, a GNU pVisor CLI, firmware, Docker/Firecracker/QEMU, the Rust musl target, Git/rg/Python/Node/GCC and e2fsprogs. CLI modes also need their installed clients. Input copying, kernel builds, image import and downloads are outside timers. First output, result return and process exit are separate metrics. Record binary/source/harness digests, host kernel and tool identities with every run.
+
+### Explicit Firecracker kernel controls
+
+The question is **how does kernel source affect first correct output waiting under the same prepared userspace and budget?** `fc-system` is the primary official distribution stock-kernel control (the default FC backend in `ready` mode); `fc-reference` is an independent custom-kernel supplemental control. Explicit `--backends firecracker` remains compatible with old assets, but its kernel is labeled **legacy-reference/unknown**, never system/stock. Existing custom-kernel preparation above is not stock-kernel evidence. Other workloads retain their historical default backend list, payloads and normal success-exit requirements. Use explicit `--backends fc-system,fc-reference` for stock/custom controls in any workload; use an explicit legacy backend list when repeating a historical ready matrix.
+
+`firecracker_kernels.py` freezes existing exact bytes, without downloading or rebuilding and without using pVisor firmware. For stock kernels supply the recorded official `/boot/vmlinuz-*`, matching `/boot/config-*`, a trusted Linux `scripts/extract-vmlinux`, and a preprepared initrd if stock drivers need one. The extractor runs with bash and its stdout is retained as the ELF kernel; original vmlinuz, extractor, config, source metadata and optional initrd are retained and SHA-256 gated. Custom reference kernels must be independent prebuilt ELF bytes with config and build provenance. Provenance is an operator assertion, not automatic signature/package authentication: independently verify official package origin and config matching before preparing. Review the extractor before executing it; it has the preparing user's authority. The helper never installs modules into, or changes, the common rootfs. An incompatible stock kernel/initrd fails preflight, not an excuse to rebuild a minimal kernel and label it stock.
+
+Stock `--provenance` JSON requires nonempty `distribution`, `package`, `package_version`, `source_url`, `origin: "official-distro-stock"` and `pvisor_firmware: false`. Custom JSON requires nonempty `source_url`, `source_revision`, `build_command`, `compiler`, `origin: "independent-custom"` and `pvisor_firmware: false`. Retain additional package checksum/signature evidence in that JSON as appropriate. `--output` must be new.
+
+```sh
+python3 benchmark/pvisor/firecracker_kernels.py --kind fc-system \
+  --vmlinuz /absolute/path/to/official/vmlinuz \
+  --config /absolute/path/to/official/config \
+  --extractor /absolute/path/to/trusted/extract-vmlinux \
+  --provenance /absolute/path/to/stock-source.json \
+  --output benchmark/.data/fc-system-new
+# Add --initrd /absolute/path/to/exact/initrd only if needed.
+python3 benchmark/pvisor/firecracker_kernels.py --kind fc-reference \
+  --kernel /absolute/path/to/independent/vmlinux \
+  --config /absolute/path/to/independent/config \
+  --provenance /absolute/path/to/reference-build.json \
+  --output benchmark/.data/fc-reference-new
+python3 benchmark/pvisor/reference_baselines.py \
+  --assets /absolute/path/to/common/prepared-assets \
+  --binary /absolute/path/to/frozen/pvisor \
+  --backends fc-system,fc-reference --modes ready \
+  --fc-system-receipt benchmark/.data/fc-system-new/kernel-receipt.json \
+  --fc-reference-receipt benchmark/.data/fc-reference-new/kernel-receipt.json \
+  --fc-ready-policy ready-only --cpu-affinity 0,1 \
+  --output benchmark/.data/fc-ready-preflight --samples 1 --warmups 0
+```
+
+Both variants use identical FC boot args, the same prepared ext4 template/fresh trial copy, two vCPUs, configured RAM, host affinity, Warning logger and termination procedure. Only kernel/required initrd and recorded provenance differ; configuration and initrd differences limit causal attribution to kernel source alone. Receipt and all artifact hashes are validated before/after each trial and the cohort, including the final gate after failures. The common prepared-input gate still applies. Declare the existing verified `--resource-budget` and matching budget options when enforcing a whole-parent budget; affinity alone is not a complete resource-enforcement claim.
+
+`--fc-ready-policy normal` is default and requires normal process exit zero plus checked guest output. `ready-only` is optional and rejected outside `--modes ready`: exactly one ordered Ready, successful matching Result and Exit0 must arrive before SIGTERM is sent to the owned FC process group. All final stdout/stderr are checked again; panic, duplicate/missing markers, timeout/SIGKILL and uncontrolled nonzero exit remain failures. Ready-only rows have `completion_ms: null` and no Completion summary. This proves checked output, not normal guest shutdown; non-FC backends retain normal completion even in an invocation with the FC policy. Keep policies in separate cohorts. Do not feed ready-only reports to existing completion-oriented publishers without a separate audit/update.
+
+Run only targeted conventional tests now; do not start preflights or formal sampling while parent builds/tests run:
+
+```sh
+python3 -m pytest -q benchmark/pvisor/test_reference_baselines.py benchmark/pvisor/test_firecracker_kernels.py
+```
+
+After parent build/test completion and capability/input review, run a separate preflight, then at least 30 seeded interleaved formal samples with three warmups in a new output. No measurements are supplied by these corrections. Formal stock/reference samples must not be merged with historical user numbers.
 
 ### Explicit whole-parent resource budget
 

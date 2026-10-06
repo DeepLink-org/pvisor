@@ -281,14 +281,20 @@ impl CompressedRam {
                 .staging
                 .as_ref()
                 .ok_or_else(|| invalid("missing RAM staging"))?;
-            for page in 0..length.div_ceil(PAGE_BYTES) {
-                if mask & (1 << page) != 0 {
-                    let start = page * PAGE_BYTES;
-                    let end = (start + PAGE_BYTES).min(length);
-                    staging
-                        .as_file()
-                        .read_exact_at(&mut output[start..end], offset + start as u64)?;
+            let mut page = 0;
+            while page < length.div_ceil(PAGE_BYTES) {
+                if mask & (1 << page) == 0 {
+                    page += 1;
+                    continue;
                 }
+                let start = page * PAGE_BYTES;
+                while page < length.div_ceil(PAGE_BYTES) && mask & (1 << page) != 0 {
+                    page += 1;
+                }
+                let end = (page * PAGE_BYTES).min(length);
+                staging
+                    .as_file()
+                    .read_exact_at(&mut output[start..end], offset + start as u64)?;
             }
         }
         Ok(output)
@@ -305,10 +311,27 @@ impl CompressedRam {
         let mut done = 0;
         while done < size {
             let position = offset + done as u64;
-            let data = self.read_block(position / BLOCK_BYTES as u64)?;
+            let block = position / BLOCK_BYTES as u64;
             let within = (position % BLOCK_BYTES as u64) as usize;
-            let length = (size - done).min(data.len() - within);
-            output[done..done + length].copy_from_slice(&data[within..within + length]);
+            let length = (size - done).min(BLOCK_BYTES - within);
+            let first = within / PAGE_BYTES;
+            let last = (within + length).div_ceil(PAGE_BYTES);
+            let needed = (((1u32 << last) - 1) ^ ((1u32 << first) - 1)) as u16;
+            if self
+                .dirty
+                .get(&block)
+                .is_some_and(|mask| mask & needed == needed)
+            {
+                // Fully staged request ranges do not depend on ancestor data.
+                self.staging
+                    .as_ref()
+                    .unwrap()
+                    .as_file()
+                    .read_exact_at(&mut output[done..done + length], position)?;
+            } else {
+                let data = self.read_block(block)?;
+                output[done..done + length].copy_from_slice(&data[within..within + length]);
+            }
             done += length;
         }
         Ok(size)
@@ -330,29 +353,53 @@ impl CompressedRam {
             while done < input.len() {
                 let position = offset + done as u64;
                 let block = position / BLOCK_BYTES as u64;
-                let page_offset = position / PAGE_BYTES as u64 * PAGE_BYTES as u64;
-                let within_page = (position - page_offset) as usize;
-                let page = (page_offset % BLOCK_BYTES as u64) as usize / PAGE_BYTES;
-                let page_length =
-                    (self.logical_bytes - page_offset).min(PAGE_BYTES as u64) as usize;
-                let length = (input.len() - done).min(page_length - within_page);
-                let bit = 1u16 << page;
-                let initialized = self.dirty.get(&block).is_some_and(|mask| mask & bit != 0);
-                if !initialized && (within_page != 0 || length != page_length) {
-                    let data = self.read_block(block)?;
-                    let start = page * PAGE_BYTES;
-                    self.staging
-                        .as_ref()
-                        .unwrap()
-                        .as_file()
-                        .write_all_at(&data[start..start + page_length], page_offset)?;
+                let block_offset = block * BLOCK_BYTES as u64;
+                let block_length =
+                    (self.logical_bytes - block_offset).min(BLOCK_BYTES as u64) as usize;
+                let within = (position - block_offset) as usize;
+                let length = (input.len() - done).min(block_length - within);
+                let first = within / PAGE_BYTES;
+                let last = (within + length).div_ceil(PAGE_BYTES);
+                let start = first * PAGE_BYTES;
+                let end = (last * PAGE_BYTES).min(block_length);
+                let mask = self.dirty.get(&block).copied().unwrap_or(0);
+                let staging = self.staging.as_ref().unwrap().as_file();
+                if within == start && within + length == end {
+                    // Complete pages need no ancestor, including corrupt blocks.
+                    staging.write_all_at(&input[done..done + length], position)?;
+                } else {
+                    let mut data = vec![0; end - start];
+                    let mut decoded = None;
+                    for page in [first, last - 1] {
+                        let page_start = page * PAGE_BYTES;
+                        let page_end = ((page + 1) * PAGE_BYTES).min(block_length);
+                        if within <= page_start && within + length >= page_end {
+                            continue;
+                        }
+                        // Only boundary pages need old bytes. Keep at most one
+                        // decoded block for this request, never across writes.
+                        if mask & (1 << page) != 0 {
+                            staging.read_exact_at(
+                                &mut data[page_start - start..page_end - start],
+                                block_offset + page_start as u64,
+                            )?;
+                        } else {
+                            if decoded.is_none() {
+                                decoded = Some(self.read_block(block)?);
+                            }
+                            data[page_start - start..page_end - start]
+                                .copy_from_slice(&decoded.as_ref().unwrap()[page_start..page_end]);
+                        }
+                        if first == last - 1 {
+                            break;
+                        }
+                    }
+                    data[within - start..within - start + length]
+                        .copy_from_slice(&input[done..done + length]);
+                    staging.write_all_at(&data, block_offset + start as u64)?;
                 }
-                self.staging
-                    .as_ref()
-                    .unwrap()
-                    .as_file()
-                    .write_all_at(&input[done..done + length], position)?;
-                *self.dirty.entry(block).or_default() |= bit;
+                let written = (((1u32 << last) - 1) ^ ((1u32 << first) - 1)) as u16;
+                *self.dirty.entry(block).or_default() |= written;
                 done += length;
             }
             Ok(())
@@ -670,6 +717,75 @@ mod tests {
         store.sync_all().unwrap();
         let reopened = CompressedRam::open(manifest).unwrap();
         assert_eq!(reopened.read_block(0).unwrap(), vec![42; BLOCK_BYTES]);
+    }
+
+    #[test]
+    fn staged_small_reads_and_partial_writes_do_not_decode_corrupt_ancestors() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = tempfile::tempfile().unwrap();
+        let mut store = CompressedRam::create(manifest, directory.path()).unwrap();
+        store.set_len(BLOCK_BYTES as u64).unwrap();
+        let input = (0..BLOCK_BYTES)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        store.write_at(0, &input).unwrap();
+        store.sync_all().unwrap();
+        let hex = store
+            .head_id()
+            .unwrap()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(directory.path().join(format!("{hex}.pvdelta")))
+            .unwrap()
+            .write_all_at(b"!", 0)
+            .unwrap();
+        store
+            .write_at(PAGE_BYTES as u64, &vec![7; 3 * PAGE_BYTES])
+            .unwrap();
+        store
+            .write_at(PAGE_BYTES as u64 + 17, b"replacement")
+            .unwrap();
+        let mut bytes = [0; 11];
+        assert_eq!(
+            store.read_at(PAGE_BYTES as u64 + 17, &mut bytes).unwrap(),
+            11
+        );
+        assert_eq!(&bytes, b"replacement");
+        assert!(
+            store.read_at(0, &mut bytes).is_err(),
+            "unstaged ancestor corruption must not become zeroes"
+        );
+    }
+
+    #[test]
+    fn coalesced_unaligned_writes_preserve_sparse_gaps_and_short_tail() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = tempfile::tempfile().unwrap();
+        let mut store =
+            CompressedRam::create(manifest.try_clone().unwrap(), directory.path()).unwrap();
+        let size = 2 * BLOCK_BYTES + PAGE_BYTES;
+        store.set_len(size as u64).unwrap();
+        let mut expected = vec![0; size];
+        for (start, length, value) in [
+            (17, 3 * PAGE_BYTES, 7),
+            (BLOCK_BYTES - 11, PAGE_BYTES + 29, 9),
+            (size - 19, 19, 11),
+        ] {
+            let input = vec![value; length];
+            store.write_at(start as u64, &input).unwrap();
+            expected[start..start + length].copy_from_slice(&input);
+        }
+        let mut actual = vec![0; size + 11];
+        assert_eq!(store.read_at(0, &mut actual).unwrap(), size);
+        assert_eq!(&actual[..size], expected);
+        assert_eq!(&actual[size..], &[0; 11]);
+        store.sync_all().unwrap();
+        let reopened = CompressedRam::open(manifest).unwrap();
+        assert_eq!(reopened.read_at(0, &mut actual).unwrap(), size);
+        assert_eq!(&actual[..size], expected);
     }
 
     #[test]

@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-axum = { workspace = true, features = ["http1", "json", "query", "tokio"] }
+axum = { workspace = true, features = ["http1", "json", "matched-path", "query", "tokio"] }
 
 chrono = { workspace = true, features = ["serde"] }
 clap = { workspace = true, features = ["derive", "env"] }
@@ -34,5 +34,6 @@ url.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 tower = { version = "0.5", features = ["util"] }

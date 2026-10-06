@@ -2,7 +2,9 @@
 mod checkpoint;
 mod commands;
 #[cfg(unix)]
-mod ctrl;
+pub(crate) mod host;
+#[cfg(unix)]
+mod host_service;
 use crate::companions;
 mod product;
 mod run;
@@ -26,15 +28,15 @@ use std::ffi::OsString;
 struct Cli {
     #[command(subcommand)]
     command: Command,
+    #[command(flatten)]
+    vm: host::VmOptions,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
     #[command(about = run::RUN_COMMAND_ABOUT, long_about = run::RUN_COMMAND_LONG_ABOUT)]
     Run(Box<run::RunArgs>),
-    /// Control a live VM attempt through its host-only socket.
-    #[cfg(unix)]
-    Ctrl(ctrl::CtrlArgs),
+
     /// Apply selected staged changes from a stopped Job.
     Apply(runtime::ApplyArgs),
     /// Discard staged changes from a stopped Job.
@@ -85,7 +87,6 @@ fn grouped_commands(command: &clap::Command) -> String {
                 "run",
                 "status",
                 "kill",
-                "ctrl",
                 "suspend",
                 "resume",
                 "fork",
@@ -135,6 +136,9 @@ fn normalize_default_run(mut args: Vec<OsString>, command: &clap::Command) -> Ve
 }
 
 pub fn main() -> anyhow::Result<()> {
+    if host_service::internal_if_requested()? {
+        return Ok(());
+    }
     crate::diagnostics::init_inherited();
     terminal::init_child_context();
     match crate::sandbox::run_internal_if_requested() {
@@ -201,6 +205,10 @@ pub fn main() -> anyhow::Result<()> {
     };
     let parsed = Cli::from_arg_matches(&command.get_matches_from(args.clone()))?;
     crate::util::startup_mark("cli.parsed");
+    if let Some(command) = parsed.vm.request(&parsed.command)? {
+        finish(host_service::call(command)?);
+        return Ok(());
+    }
     match parsed.command {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         Command::Service(args) => {
@@ -221,21 +229,17 @@ pub fn main() -> anyhow::Result<()> {
                     return companions::dispatch("tui", &args[1..]);
                 }
             }
-            let runtime = tokio::runtime::Runtime::new()?;
-            crate::util::startup_mark("cli.runtime_ready");
-            finish(runtime.block_on(run::run(*run))?);
+            finish(host_service::call(host::JobCommand::Run(run))?);
         }
-        Command::Fork(args) => finish(tokio::runtime::Runtime::new()?.block_on(run::fork(args))?),
-        Command::Apply(args) => runtime::apply(args)?,
-        Command::Drop(args) => runtime::drop_overlay(args)?,
-        Command::Status(args) => runtime::status(args)?,
-        Command::Review(args) => product::review(args)?,
+        Command::Fork(args) => finish(host_service::call(host::JobCommand::Fork(args))?),
+        Command::Apply(args) => finish(host_service::call(host::JobCommand::Apply(args))?),
+        Command::Drop(args) => finish(host_service::call(host::JobCommand::Drop(args))?),
+        Command::Status(args) => finish(host_service::call(host::JobCommand::Status(args))?),
+        Command::Review(args) => finish(host_service::call(host::JobCommand::Review(args))?),
         Command::Checkpoint(args) => {
-            tokio::runtime::Runtime::new()?.block_on(checkpoint::run(args))?
+            finish(host_service::call(host::JobCommand::Checkpoint(args))?)
         }
-        Command::Suspend(args) => {
-            tokio::runtime::Runtime::new()?.block_on(checkpoint::suspend(args))?
-        }
+        Command::Suspend(args) => finish(host_service::call(host::JobCommand::Suspend(args))?),
         Command::Resume(resume) => {
             if resume.tui && !terminal::is_child() {
                 anyhow::ensure!(
@@ -244,12 +248,10 @@ pub fn main() -> anyhow::Result<()> {
                 );
                 return companions::dispatch("tui", &args[1..]);
             }
-            finish(tokio::runtime::Runtime::new()?.block_on(checkpoint::resume(resume))?);
+            finish(host_service::call(host::JobCommand::Resume(resume))?);
         }
-        #[cfg(unix)]
-        Command::Ctrl(args) => tokio::runtime::Runtime::new()?.block_on(ctrl::run(args))?,
-        Command::Kill(args) => runtime::kill(args)?,
-        Command::Inspect(args) => finish(runtime::inspect(args)?),
+        Command::Kill(args) => finish(host_service::call(host::JobCommand::Kill(args))?),
+        Command::Inspect(args) => finish(host_service::call(host::JobCommand::Inspect(args))?),
         Command::External(args) => companions::dispatch(
             args[0]
                 .to_str()

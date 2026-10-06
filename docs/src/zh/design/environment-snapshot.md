@@ -26,6 +26,14 @@ SDK `SnapshotStore` 保留对象校验、引用与 GC；`open_for_restore`/`ram_
 
 原 CLI 的 RAM server/watchdog 已迁到 native runner 的私有启动路径，保持 EOF 排空与清理，不依赖公开 `snapshot` 命令。`run` 的参数和默认执行行为保持原合同。
 
+### 仅宿主可用的 snapshot RAM 挂载 {#ram-runtime}
+
+快照数据与临时 RAM 挂载分别管理生命周期。原生恢复和 node 共享在经过验证的私有宿主运行时目录创建 RAM 挂载，不再放进 snapshot store 或 node 状态目录。Linux 优先选择所有者正确、权限为 `0700` 的 `/run/user/<effective-UID>`，再尝试 root 所有、权限为 `1777` 的固定 `/tmp`；macOS 使用 `/private/tmp`。每个挂载目录权限为 `0700`。选择过程拒绝符号链接祖先，以及与已知 workspace、HOME/XDG、状态根的重叠；不使用 `TMPDIR` 或 `XDG_RUNTIME_DIR` 决定挂载位置。没有安全位置时准备失败，不退回持久状态目录。
+
+SDK 签名不变，但 `SnapshotRamMount::new` 和 `PublishedEnvironment::ram_mount` 的 `directory` 参数现在表示需要避开的状态根，不再表示挂载点的父目录。调用方不能通过枚举该目录发现挂载。所有 RAM 文件和 VM 映射释放之前必须保留挂载 owner。外部 pager 的 spec 使用独立私有运行时目录，文件权限为 `0600`，在 readiness 或启动失败后移除。Owner EOF 触发清理；helper 等待有上限，helper 异常退出时只清理该 owner 的私有挂载。挂载清理不删除持久快照数据，也不自动接管或卸载已有旧挂载。
+
+Linux rootless host 暂存仍不支持投影状态根中的嵌套挂载。它在 Agent 执行之前失败，不把子挂载以可写方式暴露，也不静默隐藏其内容。诊断指出状态根、覆盖该根的挂载及嵌套挂载，并保留底层 mount 错误。迁移 pVisor 自身临时挂载避免主动制造冲突，不等于已支持任意用户挂载布局。
+
 ## 历史证据 {#historical-evidence}
 
 2026-10-03/04 的独立 snapshot 正确性和时延记录属于当时的源码/制品。历史 harness 必须明确传入仍支持该旧命令的归档 binary，不能用当前 binary 复现；它们不是当前 Job execution profile 已交付的证据。原始数据保留在[VM 内存实验](../benchmarks/vm-memory/index.md)。

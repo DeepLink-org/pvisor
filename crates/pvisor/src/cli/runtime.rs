@@ -17,7 +17,7 @@ use crate::runtime::{
 
 const DEFAULT_STORAGE: &str = ".pvisor/capture";
 
-#[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 pub struct StatusArgs {
     /// Job id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
@@ -37,7 +37,7 @@ pub struct StatusArgs {
     pub max_diff_file_bytes: u64,
 }
 
-#[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 pub struct KillArgs {
     /// Live Job id, stage directory, or workspace path.
     pub selector: PathBuf,
@@ -47,7 +47,7 @@ pub struct KillArgs {
     pub json: bool,
 }
 
-#[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 pub struct InspectArgs {
     /// Job id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
@@ -61,7 +61,7 @@ pub struct InspectArgs {
     pub command: Vec<String>,
 }
 
-#[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 pub struct SelectArgs {
     /// Job id, stage directory, upper directory, or workspace path.
     pub selector: PathBuf,
@@ -69,7 +69,7 @@ pub struct SelectArgs {
     pub output_dir: PathBuf,
 }
 
-#[derive(Debug, Clone, Args)]
+#[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 pub struct ApplyArgs {
     /// Job id, stage directory, upper directory, or workspace path.
     pub selector: PathBuf,
