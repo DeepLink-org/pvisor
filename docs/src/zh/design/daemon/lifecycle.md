@@ -11,6 +11,8 @@
 | Resume | 查询 → 持久化 `Resuming` → 已确认的 vCPU resume 与就绪 → 确认 Running → 持久化 `Running` | 202 空体 |
 | Delete | 持久化 `Stopping` → 确认原生对象不存在并独占 owner 锁 → 发布 tombstone → 回收 cgroup／私有 run 存储 → 确认 Missing → 持久移除 registry 记录 | 204 |
 
+Pause/resume 在已认证的原生确认回复中返回 live 状态；daemon 消费该结果，不再发起第二次控制后 Inspect。Resume 确认包含就绪及执行约束检查。确认丢失或状态不符时保留持久转换意图以供对账，不证明控制尚未生效。
+
 已观察到目标 pause/resume 状态时，可以不重复原生控制而返回成功。原生错误不能视为控制成功。已接受生命周期操作运行于自持有的异步任务，HTTP 断开不会取消它。丢失 create 响应不构成幂等重试合同；盲目重提可能创建另一个 sandbox。
 
 私有 IPC 校验同 UID peer、owner、sandbox ID、generation 与秘密 token；持久身份绑定 boot ID 和 cgroup device/inode。ID 不复用、不重新启动。IPC 丢失表示不确定，不是 Missing 或清理证据。持久删除意图与 supervisor 独占锁阻止迟到启动；清理使用身份绑定的 `cgroup.kill`，不保存 PID 或按 PID kill，确认 cgroup 为空且 owner 锁释放后才释放容量。同一 boot 下没有持久 tombstone 证据的 cgroup 被替换或丢失不证明对象不存在。

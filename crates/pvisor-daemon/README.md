@@ -128,6 +128,13 @@ No security audit or hostile multi-user assurance is claimed.
   owner, sandbox ID, generation and secret token. Durable identity binds the boot
   ID and cgroup device/inode. Sandbox IDs are never reused or relaunched; lost
   IPC is uncertainty, not Missing or proof of cleanup.
+- Runtime pause/resume return the confirmed live `RuntimeState` from the
+  authenticated native acknowledgement, not command acceptance. The daemon keeps
+  its pre-control inspection and durable Pausing/Resuming intention, validates the
+  returned state and commits it without another inspection. Native state, cgroup
+  limit, deletion-fence and resume service-readiness checks remain in the supervisor.
+  Failed/lost acknowledgements retain the intention and reservation for reconciliation;
+  they do not prove the control was unapplied.
 - Delete persists monotonic intent and uses the supervisor's exclusive lock to
   fence late launch. Cleanup uses identity-bound `cgroup.kill`, never a persisted
   PID or PID-based kill, and confirms an empty cgroup plus released owner lock

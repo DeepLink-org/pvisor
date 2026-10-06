@@ -11,6 +11,8 @@ Confirm local native state before reporting a completed control or releasing res
 | Resume | Inspect → persist `Resuming` → acknowledged vCPU resume and readiness → confirm Running → persist `Running` | 202 empty |
 | Delete | Persist `Stopping` → confirm native absence and exclusive owner lock → publish tombstone → reclaim cgroup/private run storage → confirm Missing → durably remove registry record | 204 |
 
+Pause/resume return the confirmed live state in the authenticated native acknowledgement; the daemon consumes it without issuing a second post-control Inspect. Resume confirmation includes readiness and enforcement checks. Lost acknowledgements or unexpected states retain the durable transition intention for reconciliation and do not prove that the control was unapplied.
+
 An already observed desired pause/resume state can return success without another native control. Native errors cannot be treated as successful controls. Accepted lifecycle operations run in owned asynchronous tasks: an HTTP disconnect does not cancel them. A lost create response is not an idempotent retry contract; blindly resubmitting can create another sandbox.
 
 Private IPC authenticates same-UID peers plus owner, sandbox ID, generation and secret token; durable identity binds boot ID and cgroup device/inode. IDs are never reused or relaunched. Lost IPC is uncertainty, not Missing or cleanup proof. Durable deletion intent and the supervisor exclusive lock fence late launch; cleanup uses identity-bound `cgroup.kill`, never a persisted PID or PID-based kill, and confirms an empty cgroup plus released lock before capacity release. Replaced or missing same-boot cgroups without durable tombstone proof do not prove absence.

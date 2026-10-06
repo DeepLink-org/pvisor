@@ -474,10 +474,24 @@ impl SnapshotState for MachineSnapshot {
             all(target_os = "linux", target_arch = "x86_64")
         ))]
         {
-            let mut copy = self.clone();
-            copy.rebind(tag, |device, tag| {
-                device.verify_frozen_filesystem_backing(tag)
-            })
+            if tag.is_empty() || tag.len() > 36 || tag.contains('\0') {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid filesystem tag",
+                ));
+            }
+            let mut bytes = [0; 36];
+            bytes[..tag.len()].copy_from_slice(tag.as_bytes());
+            let internal: crate::vmm::snapshot::MachineSnapshot =
+                serde::Deserialize::deserialize(&self.state).map_err(io::Error::other)?;
+            let mut count = 0;
+            for mapping in &internal.devices {
+                if let crate::devices::snapshot::BusDeviceSnapshot::Virtio(device) = &mapping.device
+                {
+                    count += usize::from(device.verify_frozen_filesystem_backing(&bytes)?);
+                }
+            }
+            Ok(count)
         }
         #[cfg(not(any(
             all(target_os = "macos", target_arch = "aarch64"),

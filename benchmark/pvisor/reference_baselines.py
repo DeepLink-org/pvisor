@@ -274,6 +274,8 @@ def run_trial(args, metadata, backend, mode, trial):
             str(root / "container.cid"),
             "--network",
             "none",
+            "--env",
+            "PYTHONDONTWRITEBYTECODE=1",
             "--workdir",
             "/work",
             "--mount",
@@ -303,6 +305,8 @@ def run_trial(args, metadata, backend, mode, trial):
             str(args.output / "bin/pvisor"),
             "run",
             "--no-agent-defaults",
+            "--pass-env",
+            "PYTHONDONTWRITEBYTECODE",
             "--overlaynet",
             "off",
             "--stdio",
@@ -420,8 +424,10 @@ def run_trial(args, metadata, backend, mode, trial):
     budget_before = budget.read() if budget else None
     budget_parent = budget.processes([os.getpid()]) if budget else None
     budget_observations = []
+    budget_observed_scopes = set()
     budget_unknown = []
     budget_violations = []
+    print(f"Launch {mode}/{backend}, trial {trial}: {json.dumps(argv)}", flush=True)
     start = time.perf_counter_ns()
     proc = subprocess.Popen(
         argv,
@@ -468,17 +474,22 @@ def run_trial(args, metadata, backend, mode, trial):
                                 and cid in argv
                             ):
                                 roots.add(int(path.name))
-            rss, _ = snapshot(roots)
+            rss, _, tree_pids = snapshot(roots, include_pids=True)
             peak[0] = max(peak[0], rss)
             if budget is not None:
                 try:
-                    # Retain one stable live snapshot, not thousands of copies.
-                    # A missed lifetime remains explicitly unknown. This scope
-                    # includes detached siblings, not only the launcher tree.
-                    if not budget_observations:
-                        budget_observations.append(budget.witness_all_members(roots))
-                    else:
-                        budget.read()
+                    # Check every observed thread each time: an existing PID
+                    # may create a thread or change affinity. Retain distinct
+                    # scopes rather than duplicating identical live snapshots.
+                    # Missed lifetimes remain unknown; detached siblings count.
+                    observation = budget.witness_all_members(sorted(roots | tree_pids))
+                    scope = tuple((w['pid'], w['start_ticks'], w['cgroup'],
+                                   tuple((t['tid'], t['start_ticks'], t['cgroup'], tuple(t['cpus']))
+                                         for t in w.get('threads', [])))
+                                  for w in observation['witnesses'])
+                    if scope not in budget_observed_scopes:
+                        budget_observations.append(observation)
+                        budget_observed_scopes.add(scope)
                 except BudgetViolation as error:
                     budget_violations.append({"offset_ms": (time.perf_counter_ns() - start) / 1e6,
                                               "reason": str(error)})
@@ -601,9 +612,9 @@ def run_trial(args, metadata, backend, mode, trial):
         "result_ms": (result_times[0] - start) / 1e6,
         "completion_ms": (ended - start) / 1e6,
         "peak_tree_rss_kib": peak[0],
-        "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum"
+        "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS proxy may miss short/unreadable processes and double-count shared pages"
         if backend == "docker" and args.docker_root_pid
-        else "owned launcher tree; Docker daemon/container RSS excluded",
+        else "owned launcher tree; sampled RSS proxy may miss short/unreadable processes and double-count shared pages; Docker daemon/container RSS excluded",
         "result": result,
         "correctness": "passed",
         "logs": str(root),

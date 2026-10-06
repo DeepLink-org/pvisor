@@ -251,6 +251,13 @@ fn memory_quantity(value: &str) -> Result<u64, ApiError> {
     decimal(value, 1)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct EndpointResponse {
+    pub endpoint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub headers: Option<BTreeMap<String, String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenewRequest {
@@ -300,6 +307,28 @@ pub(super) struct Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn endpoint_response_preserves_wire_shape() {
+        let mut response = EndpointResponse {
+            endpoint: "localhost:8080/v1/sandboxes/sb-fixture/proxy/44772".into(),
+            headers: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            serde_json::json!({"endpoint": response.endpoint})
+        );
+        response.headers = Some(BTreeMap::from([(
+            "X-PVISOR-SANDBOX-TOKEN".into(),
+            "sandbox-token".into(),
+        )]));
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            serde_json::json!({
+                "endpoint": response.endpoint,
+                "headers": {"X-PVISOR-SANDBOX-TOKEN": "sandbox-token"}
+            })
+        );
+    }
     #[test]
     fn quantities_are_exact_and_checked() {
         assert_eq!(cpu_quantity("500m").unwrap(), 500);

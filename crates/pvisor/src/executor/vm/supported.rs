@@ -493,6 +493,10 @@ impl RunExecutor for VmExecutor {
         true
     }
 
+    fn supports_guest_workspace_overlay(&self) -> bool {
+        true
+    }
+
     fn supports_cpu_qos(&self) -> bool {
         cfg!(target_os = "linux")
     }

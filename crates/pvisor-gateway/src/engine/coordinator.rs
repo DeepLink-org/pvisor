@@ -10,7 +10,7 @@ use super::apply_queue::ApplyDispatcher;
 use super::egress::persist_story_snapshots;
 use super::prepare::CapturePreparer;
 use super::story::{Story, StoryContext};
-use super::wire::{CaptureAck, LocalStoryCommand, StoryReply, StoryScope, run_main_route};
+use super::wire::{LocalStoryCommand, StoryReply, StoryScope, run_main_route};
 use super::{CallContext, Event};
 use crate::dead_letter;
 use crate::session::index::SessionIndexHandle;
@@ -82,8 +82,7 @@ impl CaptureRuntime {
                 self.apply_dispatcher
                     .command(&story_id, LocalStoryCommand::Restore { scope, record: rec })
                     .await?,
-            )?
-            .into_result()?;
+            )?;
         }
         Ok(())
     }
@@ -112,7 +111,7 @@ impl CaptureRuntime {
     ) -> Result<()> {
         let story_id = story.story_id.as_str().to_string();
         let command = LocalStoryCommand::persist_record(StoryScope { context: story }, record);
-        story_reply_ack(self.apply_dispatcher.command(&story_id, command).await?)?.into_result()
+        story_reply_ack(self.apply_dispatcher.command(&story_id, command).await?)
     }
 
     /// Drain accepted capture work and rejected-event diagnostics queued before
@@ -162,10 +161,7 @@ impl CaptureRuntime {
             .await?;
         match reply {
             StoryReply::Snapshot { story } | StoryReply::LocalSnapshot { story, .. } => Ok(story),
-            StoryReply::Ack(ack) => Err(anyhow::anyhow!(
-                "unexpected ack for snapshot: {}",
-                ack.error.unwrap_or_else(|| "unknown".into())
-            )),
+            StoryReply::Ack => Err(anyhow::anyhow!("unexpected ack for snapshot")),
         }
     }
 }
@@ -206,10 +202,7 @@ impl CaptureRuntimeInner {
                         .await
                 };
                 // A missing receipt is a capture gap, not merely a diagnostic.
-                if let Err(error) = reply
-                    .and_then(story_reply_ack)
-                    .and_then(CaptureAck::into_result)
-                {
+                if let Err(error) = reply.and_then(story_reply_ack) {
                     dispatcher.record_failure(&error);
                     if let LocalStoryCommand::PersistRecord { scope, record } = &cmd
                         && let Err(dl) = dead_letter::append_prepared_dead_letter(
@@ -231,11 +224,7 @@ impl CaptureRuntimeInner {
         }
 
         if let Some(cmd) = prepared.take_story_command() {
-            let result = story
-                .handle(cmd.clone())
-                .await
-                .and_then(story_reply_ack)
-                .and_then(CaptureAck::into_result);
+            let result = story.handle(cmd.clone()).await.and_then(story_reply_ack);
             if let Err(e) = result {
                 // Serialize only on the diagnostic boundary, not for dispatch.
                 let record_json = match cmd {
@@ -263,11 +252,35 @@ impl CaptureRuntimeInner {
 
 pub type CaptureEngine = CaptureRuntime;
 
-pub(crate) fn story_reply_ack(reply: StoryReply) -> Result<CaptureAck> {
+pub(crate) fn story_reply_ack(reply: StoryReply) -> Result<()> {
     match reply {
-        StoryReply::Ack(ack) => Ok(ack),
+        StoryReply::Ack => Ok(()),
         StoryReply::Snapshot { .. } | StoryReply::LocalSnapshot { .. } => {
             Err(anyhow::anyhow!("unexpected snapshot reply"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+    use crate::engine::story::{StoryId, TurnMachine};
+
+    #[test]
+    fn typed_ack_requires_an_ack_reply() {
+        assert!(story_reply_ack(StoryReply::Ack).is_ok());
+        let story = TurnMachine::new(StoryId::new("s")).snapshot();
+        for reply in [
+            StoryReply::Snapshot {
+                story: story.clone(),
+            },
+            StoryReply::LocalSnapshot {
+                storage_session_id: "s".into(),
+                story,
+            },
+        ] {
+            let error = story_reply_ack(reply).unwrap_err();
+            assert_eq!(error.to_string(), "unexpected snapshot reply");
         }
     }
 }

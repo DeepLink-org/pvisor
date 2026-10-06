@@ -1,7 +1,6 @@
-//! SSE streaming upstream response: translate, forward, and capture drafts/final.
+//! SSE streaming upstream response: translate, forward, and capture the final response.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::HeaderMap;
@@ -14,13 +13,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use super::common::attach_capture_headers;
 use super::state::GatewayState;
 use crate::conversion::{MAX_STREAM_CAPTURE_BYTES, ProtocolBridge, StreamTranslator};
-use crate::engine::{
-    CallContext, CancelEvent, CaptureEngine, CompleteEvent, DraftEvent, Event, headers_to_vec,
-};
+use crate::engine::{CallContext, CancelEvent, CompleteEvent, Event, headers_to_vec};
 use crate::runtime::debug;
 use pvisor_overlaynet::headers::skip_response_header_after_reframing;
 
-const STREAM_DRAFT_MD_INTERVAL: Duration = Duration::from_millis(150);
 /// Bounded queue between upstream reader and client SSE writer (backpressure).
 const STREAM_CLIENT_QUEUE: usize = 256;
 
@@ -74,10 +70,7 @@ pub(super) async fn streaming_llm_response(
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, String>>(STREAM_CLIENT_QUEUE);
 
     let capture_engine = state.capture_engine.clone();
-    // Share a single Arc<CallContext> across the streaming task and every emitted
-    // draft / final / cancel event, so the per-chunk `spawn_apply` only does an
-    // `Arc::clone` (refcount bump) instead of a deep `CallContext::clone` (Vec<(String,String)>
-    // headers + several String fields).
+
     let ctx_bg: Arc<CallContext> = Arc::new(ctx.clone());
     let storage = Arc::clone(&state.storage);
     let reasoning_cache = Arc::clone(&state.reasoning_cache);
@@ -86,8 +79,7 @@ pub(super) async fn streaming_llm_response(
     tokio::spawn(async move {
         let mut buf = BytesMut::new();
         let mut translator = StreamTranslator::new(bridge, ctx_bg.protocol, &ctx_bg.client_model);
-        let mut last_draft_at = std::time::Instant::now();
-        let mut last_draft_content = String::new();
+
         let mut client_disconnected = false;
         let mut upstream_failed = false;
         let mut stream = byte_stream;
@@ -130,17 +122,7 @@ pub(super) async fn streaming_llm_response(
                     let out = if let Some(t) = translator.as_mut() {
                         match t.push_chunk(&chunk) {
                             Ok(bytes) if !bytes.is_empty() => bytes,
-                            Ok(_) => {
-                                maybe_emit_stream_draft(
-                                    &capture_engine,
-                                    &ctx_bg,
-                                    status.as_u16(),
-                                    t,
-                                    &mut last_draft_at,
-                                    &mut last_draft_content,
-                                );
-                                continue;
-                            }
+                            Ok(_) => continue,
                             Err(e) => {
                                 tracing::warn!("stream translate: {e:#}");
                                 upstream_failed = true;
@@ -152,16 +134,7 @@ pub(super) async fn streaming_llm_response(
                     } else {
                         chunk
                     };
-                    if let Some(t) = translator.as_ref() {
-                        maybe_emit_stream_draft(
-                            &capture_engine,
-                            &ctx_bg,
-                            status.as_u16(),
-                            t,
-                            &mut last_draft_at,
-                            &mut last_draft_content,
-                        );
-                    }
+
                     if send_stream_chunk(&tx, &mut stop, Ok(out)).await.is_err() {
                         client_disconnected = true;
                         break;
@@ -310,35 +283,6 @@ pub(super) async fn streaming_llm_response(
         .into_response())
 }
 
-fn maybe_emit_stream_draft(
-    engine: &CaptureEngine,
-    ctx: &Arc<CallContext>,
-    status: u16,
-    translator: &StreamTranslator,
-    last_draft_at: &mut std::time::Instant,
-    last_draft_content: &mut String,
-) {
-    let Some(snapshot) = translator.streaming_capture_snapshot() else {
-        return;
-    };
-    if snapshot == *last_draft_content {
-        return;
-    }
-    if !last_draft_content.is_empty() && last_draft_at.elapsed() < STREAM_DRAFT_MD_INTERVAL {
-        return;
-    }
-    // `Arc::clone` only bumps the refcount — no deep clone of headers/strings.
-    engine.spawn_apply(
-        Arc::clone(ctx),
-        Event::ResponseDraft(DraftEvent {
-            status,
-            assistant_content: snapshot.clone(),
-        }),
-    );
-    *last_draft_content = snapshot;
-    *last_draft_at = std::time::Instant::now();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,6 +316,7 @@ async fn send_stream_chunk(
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    use std::time::Duration;
     #[tokio::test]
     async fn shutdown_interrupts_a_backpressured_sender() {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);

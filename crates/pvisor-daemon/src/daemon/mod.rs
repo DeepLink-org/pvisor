@@ -8,7 +8,7 @@ mod tests;
 
 use crate::runtime::{Runtime, RuntimeSpec, RuntimeState};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-pub use models::{ApiError, CreateRequest, RenewRequest, Sandbox, SandboxStatus};
+pub use models::{ApiError, CreateRequest, EndpointResponse, RenewRequest, Sandbox, SandboxStatus};
 use models::{Record, Registry};
 use std::{
     collections::BTreeMap,
@@ -478,12 +478,8 @@ impl Daemon {
             } else {
                 this.runtime.resume(&id).await
             };
-            outcome.map_err(|e| ApiError::new(503, "RUNTIME_UNAVAILABLE", e.to_string()))?;
-            let observed = this
-                .runtime
-                .inspect(&id)
-                .await
-                .map_err(|e| ApiError::internal(e.to_string()))?;
+            let observed =
+                outcome.map_err(|e| ApiError::new(503, "RUNTIME_UNAVAILABLE", e.to_string()))?;
             if observed != desired {
                 return Err(ApiError::new(
                     503,
@@ -609,7 +605,7 @@ impl Daemon {
         id: &str,
         port: u16,
         server_proxy: bool,
-    ) -> Result<serde_json::Value, ApiError> {
+    ) -> Result<EndpointResponse, ApiError> {
         // Verify a real publication exists, but don't expose native loopback ports.
         self.upstream(id, port).await?;
         let record = self.record(id).await?;
@@ -617,12 +613,17 @@ impl Daemon {
             "{}/v1/sandboxes/{id}/proxy/{port}",
             self.config.public_endpoint
         );
-        if server_proxy {
-            Ok(serde_json::json!({"endpoint": address}))
-        } else {
-            Ok(serde_json::json!({"endpoint": address,
-            "headers": {"X-PVISOR-SANDBOX-TOKEN": record.endpoint_token}}))
-        }
+        Ok(EndpointResponse {
+            endpoint: address,
+            headers: if server_proxy {
+                None
+            } else {
+                Some(BTreeMap::from([(
+                    "X-PVISOR-SANDBOX-TOKEN".into(),
+                    record.endpoint_token,
+                )]))
+            },
+        })
     }
 
     pub async fn upstream(&self, id: &str, port: u16) -> Result<String, ApiError> {

@@ -11,10 +11,10 @@ Agent → 注入的代理或 base URL → OverlayNet HTTP 路径
       → 协议适配器 → capture engine → 按 story 的 worker/mailbox → Journal → 投影／观察者
 ```
 
-协议适配器把支持的请求和响应转换为 `pvisor-core` 共享事件词汇。引擎携带 Run、Attempt、agent、session 和 story 身份。每个 story 的准备、Journal 提交及投影 I/O 由一个 worker 和一个有界 FIFO mailbox 统一持有。直接 `apply`、异步捕获与快照／屏障命令共用此所有者，不再串接准备队列和第二个 actor mailbox。本地 story 命令与 Run enrichment 使用类型化记录／状态；序列化 actor 消息仍是边界适配器，不是进程内热路径。Run registry 锁只覆盖同步 enrichment，不跨 Journal 等待或跨 story 派发。
+协议适配器把支持的请求和响应转换为 `pvisor-core` 共享事件词汇。引擎携带 Run、Attempt、agent、session 和 story 身份。每个 story 的准备、Journal 提交及投影 I/O 由一个 worker 和一个有界 FIFO mailbox 统一持有。直接 `apply`、异步捕获与快照／屏障命令共用此所有者，不再串接准备队列和第二个 actor mailbox。本地 story 命令与 Run enrichment 使用类型化记录／状态，不再保留序列化 actor 消息适配层。Run registry 锁只覆盖同步 enrichment，不跨 Journal 等待或跨 story 派发。
 
 公开捕获输出使用 `pvisor_core::event::Event` 与共享 Journal。可变 capture 输入只用于对话投影，
-不是第二套正式事件信封。草稿不进入事实日志，Markdown 参数仍仅作兼容。
+不是第二套正式事件信封。流式捕获只发出最终响应或取消事件；公开草稿输入仍作为兼容性 no-op 接受。Markdown 参数仍仅作兼容。
 
 ## 委托凭据的动作范围 {#delegated-credential-actions}
 

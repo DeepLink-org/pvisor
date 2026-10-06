@@ -66,7 +66,6 @@ pvisor-overlayfs = { path = "crates/pvisor-overlayfs", default-features = false 
 pvisor-overlay-core = { path = "crates/pvisor-overlay-core" }
 pvisor-overlaynet = { path = "crates/pvisor-overlaynet" }
 pvisor-replay = { path = "crates/pvisor-replay" }
-pulsing-actor = { version = "0.1.2", default-features = false }
 proptest = "1"
 regex = "1"
 reqwest = { version = "0.12", default-features = false }

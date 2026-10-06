@@ -21,6 +21,8 @@ Run 标识命令、配置与执行结果，其 ID 与操作系统 PID 无关。�
 
 Attempt 标识由某个执行器完成的一次执行。当前 `PVisor::run` 每次调用创建一个 Attempt。pvisor 中的 Session 负责它的资源准备、取消、清理和终态公布；Session 是生命周期所有者。
 
+准入只解析一次驱动网络配置，应用分层策略后，将最终配置传入 Attempt 准备。Gateway、显式代理和 VM 网络消费这份配置，不重新读取原始配置。Guest workspace overlay 要求执行器显式声明支持；执行器名称是描述性记录，不是能力判断。网络不可绕过标记取决于实际 VM 网络 attachment 路径，而不是后端名称。
+
 Fork 根据逻辑检查点创建带有来源关系的新 Run，不会恢复原进程。
 
 ## Effect：执行带来的后果

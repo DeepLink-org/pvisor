@@ -628,6 +628,8 @@ pub(crate) struct PreparedRun {
     pub lineage: Option<crate::runtime::RunLineage>,
     pub environment: crate::runtime::EnvironmentProjection,
     pub workspace: Option<std::path::PathBuf>,
+    pub guest_workspace_overlay: bool,
+    pub network: pvisor_core::NetworkConfig,
 }
 
 impl PreparedRun {
@@ -635,6 +637,8 @@ impl PreparedRun {
         spec: &RunSpec,
         executor: ExecutorPlan,
         operation: pvisor_core::operation::Operation,
+        guest_workspace_overlay: bool,
+        network: pvisor_core::NetworkConfig,
     ) -> anyhow::Result<Self> {
         let lineage = spec
             .metadata
@@ -661,11 +665,9 @@ impl PreparedRun {
             lineage,
             environment,
             workspace,
+            guest_workspace_overlay,
+            network,
         })
-    }
-
-    pub(crate) fn is_krun(&self) -> bool {
-        self.executor.name.starts_with("libkrun-")
     }
 }
 
@@ -777,13 +779,13 @@ impl PVisor {
                 "Session network policy requires a configured network driver".into(),
             ));
         }
-        self.runtime.apply_network_capability(&mut spec);
-        spec.capabilities.network = spec.policies.network(spec.capabilities.network.clone());
-        let network_policy = pvisor_core::NetworkPolicy::compile(&pvisor_core::NetworkConfig {
-            capability: Some(spec.capabilities.network.clone()),
-            ..Default::default()
-        })
-        .map_err(PVisorError::Prepare)?;
+        let mut network = self.runtime.resolve_network_config(&spec);
+        spec.capabilities.network = spec
+            .policies
+            .network(pvisor_overlaynet::policy::network_capability(&network));
+        network.capability = Some(spec.capabilities.network.clone());
+        let network_policy =
+            pvisor_core::NetworkPolicy::compile(&network).map_err(PVisorError::Prepare)?;
         // Runtime preparation supplies this capability from the bound listener.
         spec.metadata
             .remove(crate::executor::sandbox::SANDBOX_PROXY_KEY);
@@ -852,8 +854,14 @@ impl PVisor {
         requested_operation.placements.clear();
         // Plans stay typed; caller metadata cannot supply trusted runtime decisions.
         descriptor.capability_plan = capability_plan;
-        let preparation = PreparedRun::new(&spec, descriptor.clone(), operation.clone())
-            .map_err(PVisorError::Prepare)?;
+        let preparation = PreparedRun::new(
+            &spec,
+            descriptor.clone(),
+            operation.clone(),
+            vm_executor && executor.supports_guest_workspace_overlay(),
+            network,
+        )
+        .map_err(PVisorError::Prepare)?;
         Ok(ResolvedRun {
             preparation,
             spec,
@@ -1012,6 +1020,105 @@ mod tests {
     };
     use std::sync::Mutex;
 
+    struct PreparationExecutor(&'static str, ExecutorKind, bool);
+    #[async_trait]
+    impl RunExecutor for PreparationExecutor {
+        fn descriptor(&self) -> ExecutorPlan {
+            let mut plan = ProcessExecutor::default().descriptor();
+            plan.name = self.0.into();
+            plan.kind = self.1;
+            if self.1 == ExecutorKind::VirtualMachine {
+                plan.isolation = IsolationKind::VirtualMachine;
+            }
+            plan
+        }
+        fn supports(&self, _: &RunInvocation) -> bool {
+            true
+        }
+        fn supports_guest_workspace_overlay(&self) -> bool {
+            self.2
+        }
+        async fn execute(&self, _: &Session) -> crate::ExecutorOutput {
+            panic!("preparation tests must not execute workloads")
+        }
+    }
+
+    #[test]
+    fn guest_workspace_overlay_requires_vm_kind_and_opt_in_not_name() {
+        for (name, kind, opt_in, expected) in [
+            ("renamed-vm", ExecutorKind::VirtualMachine, true, true),
+            ("libkrun-process", ExecutorKind::Process, false, false),
+            ("libkrun-process", ExecutorKind::Process, true, false),
+            ("libkrun-vm", ExecutorKind::VirtualMachine, false, false),
+        ] {
+            let runtime = PVisor::builder()
+                .network(NetworkDriverConfig::new(
+                    crate::config::OverlayNetMode::Off,
+                    Default::default(),
+                ))
+                .executors(vec![Arc::new(PreparationExecutor(name, kind, opt_in))])
+                .build();
+            let resolved = runtime
+                .resolve_run(RunSpec::process("overlay-preparation", "agent", "true"))
+                .unwrap();
+            assert_eq!(
+                resolved.preparation.guest_workspace_overlay, expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_network_preserves_configured_ambient_and_session_deny() {
+        use pvisor_core::{
+            NetworkAccessRequest, NetworkAccessRule, NetworkDefaultAction, NetworkPolicy,
+            NetworkPolicyLayer, NetworkTransport,
+        };
+        let runtime = PVisor::builder()
+            .network(NetworkDriverConfig::new(
+                crate::config::OverlayNetMode::Proxy,
+                pvisor_core::NetworkConfig {
+                    capability: Some(NetworkCapability::Ambient),
+                    ..Default::default()
+                },
+            ))
+            .build();
+        let mut spec = RunSpec::process("network-preparation", "agent", "true");
+        spec.capabilities.network = NetworkCapability::Deny;
+        spec.policies.session.network = Some(NetworkPolicyLayer {
+            default_action: Some(NetworkDefaultAction::Allow),
+            deny: vec![NetworkAccessRule {
+                host: "blocked.example".into(),
+                ports: vec![],
+                transports: vec![],
+                allow_private_ips: false,
+            }],
+            ..Default::default()
+        });
+        let expected = spec.policies.network(NetworkCapability::Ambient);
+        let resolved = runtime.resolve_run(spec).unwrap();
+        assert_eq!(resolved.spec.capabilities.network, expected);
+        assert_eq!(
+            resolved.preparation.network.capability.as_ref(),
+            Some(&expected)
+        );
+        let driver_config = resolved.preparation.network.clone();
+        let driver_policy = NetworkPolicy::compile(&driver_config).unwrap();
+        for policy in [&resolved.network_policy, &driver_policy] {
+            for (host, allowed) in [("blocked.example", false), ("allowed.example", true)] {
+                let request = NetworkAccessRequest {
+                    run_id: None,
+                    attempt_id: None,
+                    host: host.into(),
+                    port: Some(443),
+                    transport: NetworkTransport::Tcp,
+                    resolved_ip: None,
+                };
+                assert_eq!(policy.preflight(&request).is_ok(), allowed, "{host}");
+            }
+        }
+    }
+
     fn starting_vm_controls() -> RunControlHandle {
         let run_id = pvisor_core::RunId::from("control-readiness");
         let attempt_id = AttemptId::from("attempt-readiness");
@@ -1119,7 +1226,7 @@ mod tests {
         spec.metadata
             .insert("pvisor.operation".into(), serde_json::Value::Null);
         let resolved = PVisor::new().resolve_run(spec).unwrap();
-        assert!(!resolved.preparation.is_krun());
+        assert!(!resolved.preparation.guest_workspace_overlay);
         assert!(!resolved.spec.metadata.contains_key("pvisor.executor"));
         assert!(!resolved.spec.metadata.contains_key("pvisor.operation"));
         assert_eq!(resolved.preparation.operation, resolved.operation);

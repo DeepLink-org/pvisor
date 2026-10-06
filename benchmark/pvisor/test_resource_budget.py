@@ -26,7 +26,7 @@ def fixture(tmp_path):
         'cpu.stat': 'usage_usec 123\nuser_usec 100\nsystem_usec 23\n',
     }
     for name, value in files.items():
-        (group / name).write_text(value + '\n')
+        (group / name).write_text(value.rstrip('\n') + '\n')
     proc = tmp_path / 'proc'
     task = proc / '123'
     task.mkdir(parents=True)

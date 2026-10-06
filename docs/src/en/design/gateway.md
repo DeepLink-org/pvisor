@@ -11,9 +11,9 @@ Agent → injected proxy or base URL → OverlayNet HTTP path
       → protocol adapter → capture engine → per-story worker/mailbox → Journal → projections/observers
 ```
 
-Protocol adapters convert supported requests/responses into the shared `pvisor-core` event vocabulary. The engine carries Run, Attempt, agent, session and story identities. One worker and one bounded FIFO mailbox own each story's preparation, Journal commit and projection I/O. Direct `apply`, asynchronous capture and snapshot/barrier commands share that owner, rather than chaining a prepare queue and a second actor mailbox. Local story commands and Run enrichment use typed records/state; serialized actor messages remain boundary adapters, not the in-process hot path. The Run registry lock is held only for synchronous enrichment, never across a Journal wait or cross-story dispatch.
+Protocol adapters convert supported requests/responses into the shared `pvisor-core` event vocabulary. The engine carries Run, Attempt, agent, session and story identities. One worker and one bounded FIFO mailbox own each story's preparation, Journal commit and projection I/O. Direct `apply`, asynchronous capture and snapshot/barrier commands share that owner, rather than chaining a prepare queue and a second actor mailbox. Local story commands and Run enrichment use typed records/state, without a serialized actor-message adapter. The Run registry lock is held only for synchronous enrichment, never across a Journal wait or cross-story dispatch.
 
-Public capture uses `pvisor_core::event::Event` and the shared Journal. Mutable capture inputs serve conversation projection rather than a second formal event envelope. Drafts do not enter the fact log; Markdown parameters remain compatibility-only.
+Public capture uses `pvisor_core::event::Event` and the shared Journal. Mutable capture inputs serve conversation projection rather than a second formal event envelope. Streaming capture emits only a final response or cancellation; the public draft input remains an accepted no-op for compatibility. Markdown parameters remain compatibility-only.
 
 ## Delegated credential actions {#delegated-credential-actions}
 

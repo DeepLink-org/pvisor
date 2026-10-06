@@ -38,6 +38,11 @@ pub trait RunExecutor: Send + Sync {
     fn supports_vm_network_attachment(&self) -> bool {
         false
     }
+    /// Consumes the guest workspace overlay instead of a host-mounted merged view.
+    /// Executor names and VM isolation alone do not imply this handoff contract.
+    fn supports_guest_workspace_overlay(&self) -> bool {
+        false
+    }
     /// Explicit opt-in to native CPU QoS installation and executor observations.
     fn supports_cpu_qos(&self) -> bool {
         false

@@ -73,8 +73,12 @@ pub trait Runtime: Send + Sync {
     }
     async fn create(&self, spec: &RuntimeSpec) -> Result<()>;
     async fn inspect(&self, id: &str) -> Result<RuntimeState>;
-    async fn pause(&self, id: &str) -> Result<()>;
-    async fn resume(&self, id: &str) -> Result<()>;
+    /// Return the confirmed live state, not merely command acceptance.
+    /// An error may follow an applied control; retain ownership and reconcile.
+    async fn pause(&self, id: &str) -> Result<RuntimeState>;
+    /// Confirm Running only after runtime readiness and enforcement checks.
+    /// An error does not prove that the VM remained paused.
+    async fn resume(&self, id: &str) -> Result<RuntimeState>;
     async fn delete(&self, id: &str) -> Result<()>;
     async fn endpoint(&self, id: &str, port: u16) -> Result<String>;
 }
@@ -704,25 +708,35 @@ impl Runtime for NativeRuntime {
         let _lease = self.operations.lock(id).await?;
         self.observe(id).await
     }
-    async fn pause(&self, id: &str) -> Result<()> {
+    async fn pause(&self, id: &str) -> Result<RuntimeState> {
         let _lease = self.operations.lock(id).await?;
         let identity = self.identity(id)?.context("sandbox is Missing")?;
         ensure_not_deleting(&self.directory(id)?)?;
+        let state = self
+            .request(&identity, Operation::Pause)
+            .await?
+            .state
+            .context("supervisor omitted pause state")?;
         ensure!(
-            self.request(&identity, Operation::Pause).await?.state == Some(RuntimeState::Paused),
+            state == RuntimeState::Paused,
             "native pause was not confirmed"
         );
-        Ok(())
+        Ok(state)
     }
-    async fn resume(&self, id: &str) -> Result<()> {
+    async fn resume(&self, id: &str) -> Result<RuntimeState> {
         let _lease = self.operations.lock(id).await?;
         let identity = self.identity(id)?.context("sandbox is Missing")?;
         ensure_not_deleting(&self.directory(id)?)?;
+        let state = self
+            .request(&identity, Operation::Resume)
+            .await?
+            .state
+            .context("supervisor omitted resume state")?;
         ensure!(
-            self.request(&identity, Operation::Resume).await?.state == Some(RuntimeState::Running),
+            state == RuntimeState::Running,
             "native resume/readiness was not confirmed"
         );
-        Ok(())
+        Ok(state)
     }
     async fn delete(&self, id: &str) -> Result<()> {
         let _lease = self.operations.lock(id).await?;

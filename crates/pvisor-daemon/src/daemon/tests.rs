@@ -84,6 +84,7 @@ struct FakeState {
     deletes: usize,
     endpoints: usize,
     delete_outcome: DeleteOutcome,
+    control_reply: Option<anyhow::Result<RuntimeState>>,
 }
 
 #[derive(Default)]
@@ -120,28 +121,30 @@ impl Runtime for FakeRuntime {
             .unwrap_or(RuntimeState::Missing))
     }
 
-    async fn pause(&self, id: &str) -> anyhow::Result<()> {
+    async fn pause(&self, id: &str) -> anyhow::Result<RuntimeState> {
         let mut state = self.state.lock().unwrap();
         state.pauses += 1;
+        let reply = state.control_reply.take();
         let sandbox = state
             .sandboxes
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
         anyhow::ensure!(*sandbox == RuntimeState::Running, "sandbox not running");
         *sandbox = RuntimeState::Paused;
-        Ok(())
+        reply.unwrap_or(Ok(*sandbox))
     }
 
-    async fn resume(&self, id: &str) -> anyhow::Result<()> {
+    async fn resume(&self, id: &str) -> anyhow::Result<RuntimeState> {
         let mut state = self.state.lock().unwrap();
         state.resumes += 1;
+        let reply = state.control_reply.take();
         let sandbox = state
             .sandboxes
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
         anyhow::ensure!(*sandbox == RuntimeState::Paused, "sandbox not paused");
         *sandbox = RuntimeState::Running;
-        Ok(())
+        reply.unwrap_or(Ok(*sandbox))
     }
 
     async fn delete(&self, id: &str) -> anyhow::Result<()> {
@@ -210,6 +213,76 @@ async fn create(daemon: &Arc<Daemon>) -> super::Sandbox {
         .create(request())
         .await
         .unwrap_or_else(|error| panic!("create failed: {}", error.message))
+}
+
+#[tokio::test]
+async fn control_consumes_confirmation_or_retains_durable_intention() {
+    for pause in [true, false] {
+        let desired = if pause {
+            RuntimeState::Paused
+        } else {
+            RuntimeState::Running
+        };
+        let confirmed = if pause { "Paused" } else { "Running" };
+        for reply in [
+            Ok(desired),
+            Ok(RuntimeState::Stopped),
+            Err(anyhow::anyhow!("ack lost after control")),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let runtime = Arc::new(FakeRuntime::default());
+            let mut cfg = config(&directory);
+            cfg.max_sandboxes = 1;
+            let daemon = open(cfg, &runtime).await;
+            let sandbox = create(&daemon).await;
+            if !pause {
+                bounded(daemon.pause(&sandbox.id)).await.unwrap();
+            }
+            let expected = if reply.as_ref().is_ok_and(|state| *state == desired) {
+                confirmed
+            } else if pause {
+                "Pausing"
+            } else {
+                "Resuming"
+            };
+            let before = {
+                let mut state = runtime.state.lock().unwrap();
+                state.control_reply = Some(reply);
+                state.inspections
+            };
+            let result = bounded(daemon.control(&sandbox.id, pause)).await;
+            if expected == confirmed {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    (error.status, error.code.as_str()),
+                    (503, "RUNTIME_UNAVAILABLE")
+                );
+            }
+            let state = runtime.state.lock().unwrap();
+            assert_eq!(state.inspections, before + 1, "pre-inspect only");
+            assert_eq!(
+                state.sandboxes[&sandbox.id], desired,
+                "control applied even without confirmation"
+            );
+            assert_eq!((state.pauses, state.resumes), (1, usize::from(!pause)));
+            drop(state);
+            assert_eq!(daemon.list().await.unwrap()[0].status.state, expected);
+            let calls = runtime_calls(&runtime);
+            assert_eq!(
+                daemon.create(request()).await.unwrap_err().code,
+                "CAPACITY_EXCEEDED"
+            );
+            assert_eq!(runtime_calls(&runtime), calls);
+            drop(daemon);
+            let (store, disk) = super::store::Store::open(directory.path()).unwrap();
+            assert_eq!(disk.sandboxes[&sandbox.id].sandbox.status.state, expected);
+            drop(store);
+            let restarted = bounded(open(config(&directory), &runtime)).await;
+            assert_eq!(restarted.list().await.unwrap()[0].status.state, confirmed);
+        }
+    }
 }
 
 #[tokio::test]
@@ -478,25 +551,23 @@ async fn auth_sandbox_token_is_scoped_persistent_and_not_a_control_key() {
     let second = create(&daemon).await;
     let endpoint = daemon.endpoint(&first.id, 44772, false).await.unwrap();
     assert_eq!(
-        endpoint["endpoint"],
+        endpoint.endpoint,
         format!("localhost:8080/v1/sandboxes/{}/proxy/44772", first.id)
     );
     assert_eq!(
         daemon.upstream(&first.id, 44772).await.unwrap(),
         "http://127.0.0.1:44772"
     );
-    let token = endpoint["headers"]["X-PVISOR-SANDBOX-TOKEN"]
-        .as_str()
-        .unwrap();
+    let token = &endpoint.headers.as_ref().unwrap()["X-PVISOR-SANDBOX-TOKEN"];
     assert!(token.len() >= 32);
     let second_endpoint = daemon.endpoint(&second.id, 44772, false).await.unwrap();
-    assert_ne!(endpoint["headers"], second_endpoint["headers"]);
+    assert_ne!(endpoint.headers, second_endpoint.headers);
     assert!(
         daemon
             .endpoint(&first.id, 44772, true)
             .await
             .unwrap()
-            .get("headers")
+            .headers
             .is_none()
     );
 
@@ -535,8 +606,12 @@ async fn auth_sandbox_token_is_scoped_persistent_and_not_a_control_key() {
     assert!(daemon.authorize_proxy(&first.id, &scoped).await);
     assert!(!daemon.authorize_proxy(&second.id, &scoped).await);
     assert_eq!(
-        daemon.endpoint(&first.id, 44772, false).await.unwrap()["headers"],
-        endpoint["headers"]
+        daemon
+            .endpoint(&first.id, 44772, false)
+            .await
+            .unwrap()
+            .headers,
+        endpoint.headers
     );
     daemon.delete(&first.id).await.unwrap();
     assert!(!daemon.authorize_proxy(&first.id, &scoped).await);

@@ -29,7 +29,6 @@ tokio-stream.workspace = true
 tracing.workspace = true
 url.workspace = true
 regex.workspace = true
-pulsing-actor = { workspace = true }
 dashmap.workspace = true
 blake3.workspace = true
 hostname.workspace = true

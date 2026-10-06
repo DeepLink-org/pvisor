@@ -1,12 +1,9 @@
-//! Per-story actor commands — one variant per I/O effect.
-
-use serde::{Deserialize, Serialize};
+//! Typed per-story commands — one variant per I/O effect.
 
 use super::super::story::{Story, StoryContext};
-use super::CaptureAck;
 
 /// Routing identity for every story command.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoryScope {
     pub context: StoryContext,
 }
@@ -27,39 +24,10 @@ impl StoryScope {
     }
 }
 
-/// Commands handled by [`super::super::actors::StoryActor`].
-///
-/// Inner payloads are sent as raw JSON bytes (`Vec<u8>`) rather than `String`:
-/// - `bincode` (the actor wire format) length-prefixes both, but `String`
-///   forces a UTF-8 validation pass on every serialize/deserialize, while
-///   `Vec<u8>` is a memcpy. We're already JSON-encoding (and thus producing
-///   valid UTF-8) at the producer, so the second validation is wasted work.
-/// - The receiver does `serde_json::from_slice(&bytes)` directly without
-///   first reconstructing a `String`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum StoryCommand {
-    /// Append one record to the event sink and sync live markdown.
-    Restore {
-        scope: StoryScope,
-        record_bytes: Vec<u8>,
-    },
-    PersistRecord {
-        scope: StoryScope,
-        /// JSON-encoded [`crate::record::CaptureRecord`].
-        record_bytes: Vec<u8>,
-    },
-    /// Drain mailbox before shutdown (no I/O).
-    Flush,
-    /// Read-model snapshot (no I/O).
-    Snapshot { scope: StoryScope },
-    /// Read-model snapshot without scope (shutdown / persist).
-    LocalSnapshot,
-}
-
 /// Reply from [`super::super::actors::StoryActor`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub(crate) enum StoryReply {
-    Ack(CaptureAck),
+    Ack,
     Snapshot {
         story: Story,
     },
@@ -69,8 +37,7 @@ pub(crate) enum StoryReply {
     },
 }
 
-/// Typed commands for the in-process scheduling owner. The serialized
-/// `StoryCommand` above remains the actor wire boundary, not the hot path.
+/// Typed commands for the in-process scheduling owner.
 #[derive(Debug, Clone)]
 pub(crate) enum LocalStoryCommand {
     Restore {
@@ -107,64 +74,6 @@ impl LocalStoryCommand {
     }
 }
 
-impl TryFrom<StoryCommand> for LocalStoryCommand {
-    type Error = anyhow::Error;
-
-    fn try_from(command: StoryCommand) -> anyhow::Result<Self> {
-        Ok(match command {
-            StoryCommand::Restore {
-                scope,
-                record_bytes,
-            } => Self::Restore {
-                scope,
-                record: serde_json::from_slice(&record_bytes)?,
-            },
-            StoryCommand::PersistRecord {
-                scope,
-                record_bytes,
-            } => Self::PersistRecord {
-                scope,
-                record: serde_json::from_slice(&record_bytes)?,
-            },
-            StoryCommand::Flush => Self::Flush,
-            StoryCommand::Snapshot { scope } => Self::Snapshot { scope },
-            StoryCommand::LocalSnapshot => Self::LocalSnapshot,
-        })
-    }
-}
-
-impl StoryCommand {
-    pub fn persist_record(scope: StoryScope, record_bytes: Vec<u8>) -> Self {
-        let record_bytes = stamp_record(record_bytes);
-        Self::PersistRecord {
-            scope,
-            record_bytes,
-        }
-    }
-
-    pub fn scope(&self) -> &StoryScope {
-        match self {
-            Self::Restore { scope, .. }
-            | Self::PersistRecord { scope, .. }
-            | Self::Snapshot { scope } => scope,
-            Self::Flush | Self::LocalSnapshot => panic!("command has no scope"),
-        }
-    }
-}
-
-fn stamp_record(bytes: Vec<u8>) -> Vec<u8> {
-    // Inputs originate from typed constructors; invalid wire data is left for
-    // the receiving actor to reject, rather than panic at this boundary.
-    let Ok(mut record) = serde_json::from_slice::<crate::record::CaptureRecord>(&bytes) else {
-        return bytes;
-    };
-    crate::record::ensure_timestamp(&mut record);
-    if record.event_id.is_none() {
-        record.event_id = Some(uuid::Uuid::new_v4().to_string());
-    }
-    serde_json::to_vec(&record).unwrap_or(bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,7 +83,7 @@ mod tests {
     use crate::sink::llm_request_summary_record;
 
     #[test]
-    fn story_command_bincode_roundtrip() {
+    fn typed_persistence_stamps_once_and_preserves_record() {
         let scope = StoryScope {
             context: StoryContext::from_route(
                 CaptureRoute {
@@ -207,15 +116,18 @@ mod tests {
             &call,
             CaptureLevel::Dialogue,
         );
-        let cmd = StoryCommand::persist_record(scope, serde_json::to_vec(&rec).unwrap());
-        let packed = pulsing_actor::Message::pack(&cmd).expect("pack");
-        let back: StoryCommand = packed.unpack().expect("unpack");
-        assert!(matches!(back, StoryCommand::PersistRecord { .. }));
-        let local = LocalStoryCommand::try_from(back).unwrap();
+        let mut rec = rec;
+        rec.event_id = None;
+        rec.timestamp = None;
+        let expected_scope = scope.clone();
+        let local = LocalStoryCommand::persist_record(scope, rec.clone());
         let LocalStoryCommand::PersistRecord { scope, record } = local else {
             panic!("expected typed persistence command");
         };
+        assert_eq!(scope, expected_scope);
         assert_eq!(record.kind, rec.kind);
+        assert_eq!(record.call_id, rec.call_id);
+        assert_eq!(record.trace_id, rec.trace_id);
         assert_eq!(record.payload, rec.payload);
         assert!(record.event_id.is_some());
         assert!(record.timestamp.is_some());
@@ -230,25 +142,5 @@ mod tests {
             "typed stamping must preserve retry identity"
         );
         assert_eq!(record.timestamp, timestamp);
-    }
-
-    #[test]
-    fn malformed_external_record_is_rejected_at_the_wire_boundary() {
-        let scope = StoryScope {
-            context: StoryContext::from_route(
-                CaptureRoute {
-                    root_session: None,
-                    session_id: "s".into(),
-                    storage_session_id: "s".into(),
-                    subagent_id: None,
-                },
-                "agent",
-            ),
-        };
-        let command = StoryCommand::PersistRecord {
-            scope,
-            record_bytes: b"not JSON".to_vec(),
-        };
-        assert!(LocalStoryCommand::try_from(command).is_err());
     }
 }

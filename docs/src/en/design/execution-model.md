@@ -18,6 +18,8 @@ Run identifies a command, configuration and result independently of the OS PID. 
 
 Attempt identifies one execution by an executor. Each current `PVisor::run` creates one Attempt. Session in pvisor owns preparation, cancellation, cleanup and terminal publication; Session is the lifecycle owner.
 
+Admission resolves the driver network configuration once, applies scoped policies and carries that final configuration into Attempt preparation. Gateway, explicit proxy and VM networking consume it rather than re-reading the original configuration. Guest workspace overlays require an explicit executor opt-in; executor names are descriptive records, not capability checks. Non-bypassable network markers depend on the actual VM network attachment path, not the backend name.
+
 Fork creates a new Run with lineage from a logical checkpoint; it does not restore the original process.
 
 ## Effect: consequences of execution

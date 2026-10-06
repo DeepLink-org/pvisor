@@ -35,7 +35,7 @@ use axum::{
 use serde_json::{Value, json};
 use url::{Host, Url};
 
-use super::{ApiError, CreateRequest, Daemon, RenewRequest, Sandbox};
+use super::{ApiError, CreateRequest, Daemon, EndpointResponse, RenewRequest, Sandbox};
 
 const CONTROL_BODY_LIMIT: usize = 1024 * 1024;
 const PROXY_HEADERS_TIMEOUT: Duration = Duration::from_secs(120);
@@ -397,45 +397,12 @@ async fn endpoint(
     State(daemon): State<Arc<Daemon>>,
     path: Result<Path<(String, String)>, PathRejection>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<EndpointResponse>, ApiError> {
     let (id, port) = path_value(path)?;
     let server_proxy = parse_endpoint_query(raw.as_deref())?;
     let endpoint = daemon
         .endpoint(&id, parse_port(&port)?, server_proxy)
         .await?;
-    // Token issuance and the public proxy authority belong to the parent.
-    let object = endpoint
-        .as_object()
-        .ok_or_else(|| internal("Invalid endpoint schema"))?;
-    if !object
-        .get("endpoint")
-        .is_some_and(|value| value.as_str().is_some_and(|s| !s.is_empty()))
-        || object
-            .keys()
-            .any(|key| key != "endpoint" && key != "headers")
-        || object.get("headers").is_some_and(|value| {
-            !value
-                .as_object()
-                .is_some_and(|headers| headers.values().all(Value::is_string))
-        })
-    {
-        return Err(internal("Invalid endpoint schema"));
-    }
-    if !server_proxy
-        && !object
-            .get("headers")
-            .and_then(Value::as_object)
-            .is_some_and(|headers| {
-                headers.iter().any(|(key, value)| {
-                    key.eq_ignore_ascii_case("x-pvisor-sandbox-token")
-                        && value.as_str().is_some_and(|token| !token.is_empty())
-                })
-            })
-    {
-        return Err(internal(
-            "Non-server endpoint is missing sandbox authentication",
-        ));
-    }
     Ok(Json(endpoint))
 }
 
@@ -654,24 +621,24 @@ mod tests {
                 .unwrap_or(RuntimeState::Missing))
         }
 
-        async fn pause(&self, id: &str) -> anyhow::Result<()> {
+        async fn pause(&self, id: &str) -> anyhow::Result<RuntimeState> {
             let mut sandboxes = self.sandboxes.lock().unwrap();
             let state = sandboxes
                 .get_mut(id)
                 .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
             anyhow::ensure!(*state == RuntimeState::Running, "sandbox not running");
             *state = RuntimeState::Paused;
-            Ok(())
+            Ok(*state)
         }
 
-        async fn resume(&self, id: &str) -> anyhow::Result<()> {
+        async fn resume(&self, id: &str) -> anyhow::Result<RuntimeState> {
             let mut sandboxes = self.sandboxes.lock().unwrap();
             let state = sandboxes
                 .get_mut(id)
                 .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
             anyhow::ensure!(*state == RuntimeState::Paused, "sandbox not paused");
             *state = RuntimeState::Running;
-            Ok(())
+            Ok(*state)
         }
 
         async fn delete(&self, id: &str) -> anyhow::Result<()> {

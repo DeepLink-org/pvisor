@@ -2,94 +2,86 @@
 
 ## Main conclusions {#conclusions}
 
-**Editing an unchanged target during a 10,000-file apply produces an explicit conflict in all three valid injections, preserving every external edit. Some files may already have been applied: conflict refusal is not whole-batch rollback, and a finite probe does not establish safety for arbitrary concurrent writes.**
+**With two CPUs on Linux, warm caches and small text files, pVisor's median apply time is 17 ms for 10 files, 0.93 s for 1,000 and 14.26 s for 10,000, all higher than Git patch application. At 100,000 files the distribution has two clusters: 40% of samples have a cluster median of 109.73 s, and 60% have a median of 196.87 s.** Small changes suit interactive application; large changes need substantial waiting time.
 
-**Small changes fit interactive review: about 15 ms for ten files and 0.84 s for 1,000. Applying 100,000 files takes about 5.5 minutes, unsuitable for frequent large submissions. Git patch is substantially faster in the same comparison; pVisor adds preimage conflict checks, persistence and recovery.**
-
-| Need | Selection implication |
+| Requirement | Selection guidance |
 |---|---|
-| Interactive application of a few files | pVisor apply fits |
-| Large text updates with a Git workflow | Git patches provide a performance reference |
-| Host may edit the same files during apply | The tested window detects conflicts; still avoid overlapping writes and inspect partial application after refusal |
+| Applying reviewed changes to a few files | The ten-file case takes milliseconds |
+| Large text updates where waiting time matters most | Git patch application has a lower measured cost |
+| Preimage checks, selective application and interruption recovery | pVisor provides these workflows, with a substantial cost for large batches |
 
 ## Motivation {#motivation}
 
-Staging must eventually support safe submission: preserve concurrent host edits and recover interrupted commits, alongside acceptable performance.
+Staged changes deliver their value when you apply them. Choosing a review workflow requires knowing how that cost grows with file count, and what happens if you edit host files during application or the process is interrupted.
 
 ## Experiment design {#interpretation}
 
-Concurrent-write conflicts use a separate current frozen artifact in three independent Linux trials, each with 10,000 existing text files. After observing a real target write, the probe pauses its own apply process, confirms a Prepared ledger, writes and fsyncs external content into an unchanged file, then resumes the process. Success requires both explicit conflict refusal and preservation of the external content; missed windows do not pass. This is a correctness test, not a latency measurement, and does not cover every race between a final check and rename.
+The host is an AMD Ryzen 7 9700X running Linux 7.2.8-200.fc44 x86_64. Measured processes are pinned to CPUs 0 and 1, with no benchmark-specific host memory cap. Caches are warm and the page cache is not actively cleared. The workload updates small text files in one directory; staged changes and Git patches are generated before timing. Workspace preparation and subsequent verification are outside timing.
 
-Actual staged tasks overwrite existing text files. Lower content and upper count are verified before timing. Measurements cover only the apply/drop CLI, excluding stage generation and per-file validation. N=30/10/3 for 10/1,000/100,000 files. One warmup per action for smaller groups, none for 100,000. Three large stages are prepared concurrently; timed operations run sequentially. Conflict changes the first host file and requires refusal with all other targets unchanged.
+At 10, 1,000, 10,000 and 100,000 files, measure pVisor apply, Git apply, native copying, drop and rejection of a conflict introduced before application. Each condition has three warmups and 30 samples, totaling 600 formal timings; a fixed seed randomizes size and operation order within each round. Successful samples must pass complete target-content checks and applicable application-ledger checks. Failures are retained separately, and all valid slow samples are retained without exclusions based on duration.
 
-These results are from Linux/x86_64; matching macOS workloads are unmeasured. Linked reports pin artifacts, cache conditions and samples.
-
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
+Independent correctness checks include three actual SIGKILL hits at each of three durable states in a 10,000-file application, and three host-edit injections during application using the same binary. For the latter, pause after one file has changed while the file to be edited still has its original content, write and synchronize the external edit, then resume. These checks cover finite injection windows, not every concurrent schedule.
 
 ## Data and analysis {#results}
 
-For 10 files (N=30), the second value is descriptive P95. The 1,000-file (N=10) and 100,000-file (N=3) rows show only P50. Recovery injections (N=3) also show medians only, without tail estimates.
+Measured on 2026-10-06. Units: ms; each cell is **P50 / reference P95, N=30**, with zero failures. P95 from 30 samples describes observations rather than a stable tail-latency commitment.
 
-Measured on 2026-10-04; configurations retain separate samples. P50 is the median.
+| Files | pVisor apply | Git apply | Native copy | drop | Pre-apply conflict rejection |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 17.21 / 42.47 | 1.08 / 1.57 | 2.56 / 3.07 | 4.25 / 5.60 | 2.24 / 2.88 |
+| 1,000 | 925.96 / 1,788.33 | 14.56 / 18.26 | 16.84 / 19.79 | 26.99 / 40.03 | 21.44 / 23.33 |
+| 10,000 | 14,259.71 / 21,914.94 | 155.31 / 173.19 | 114.55 / 122.87 | 204.20 / 298.34 | 183.90 / 200.78 |
+| 100,000 | Two clusters, see below | 1,639.51 / 1,861.16 | 1,109.58 / 1,253.46 | 858.57 / 929.70 | 1,290.37 / 1,354.08 |
 
-| Files | Operation | N | P50 / P95 ms |
-|---|---|---|---|
-| 10 | apply | 30 | 15.01 / 16.75 |
-| 10 | drop | 30 | 3.38 / 3.82 |
-| 10 | conflict | 30 | 4.07 / 9.44 |
-| 10 | copy | 30 | 5.07 / 10.81 |
-| 10 | git-apply | 30 | 0.73 / 0.85 |
-| 1000 | apply | 10 | 836.38 |
-| 1000 | drop | 10 | 24.44 |
-| 1000 | conflict | 10 | 42.90 |
-| 1000 | copy | 10 | 15.84 |
-| 1000 | git-apply | 10 | 13.61 |
-| 100000 | apply | 3 | 330396.22 |
-| 100000 | drop | 3 | 996.55 |
-| 100000 | conflict | 3 | 247496.21 |
-| 100000 | copy | 3 | 1214.85 |
-| 100000 | git-apply | 3 | 1464.63 |
+Apply at 100,000 files is reported as two clusters. Units: s.
 
-### Analysis
+| Duration cluster | Samples | Share | Cluster median |
+|---|---:|---:|---:|
+| Lower duration | 12 | 40% | 109.73 |
+| Higher duration | 18 | 60% | 196.87 |
 
-Small batches fit interactive review; 1,000 files approach a second and 100,000 cost much more than copying or Git patches. The three largest applies took about 325–339 seconds; N=3 cannot establish stable tail latency. Conflict refusal at 100,000 files also takes about 247 seconds, revealing expensive validation. These costs are published without hiding the optimization gap.
-
-Copy writes into an empty directory. Git apply updates equivalent text files but lacks the pVisor stage-cleanup/preimage/ledger/recovery protocol. They are cost controls with different semantics. Small and large batches retain separate provenance.
-
-The 100,000-file stage emitted `trace append rejected: event exceeds size limit`. Target/ledger/conflict checks passed, but complete filesystem audit coverage is not claimed.
-
-### Host edits during apply {#concurrent-conflicts}
-
-Measured on 2026-10-06, with all three trials hitting real target-write windows. One file had already been applied, while the injected file still held its original content. After resuming, apply refused with an explicit conflict, preserved the external edit and left the ledger Prepared with complete upper contents retained. Each injection, final outcome, all target contents and the upper were independently checked after completion.
-
-| Check | Valid injections | Conflicts detected | External edits preserved | Silent overwrites |
-| --- | ---: | ---: | ---: | ---: |
-| Edit an unchanged file during a 10,000-file apply | 3 | 3 | 3 | 0 |
-
-This verifies edit detection after actual target writes and before the edited file is published. It does not cover every race between the final check and rename or make the whole apply atomic. Already-applied entries are not rolled back automatically; stop external writes to the same files before resolving a conflict, and inspect targets and the Prepared ledger. This independent correctness experiment is not pooled with the pinned-artifact timing table above. The [derived conflict results CSV](apply-concurrent-conflicts.csv) records current artifact, report and audit digests. Complete targets, stages, injection records and output stay in local `.data/`.
-
-### SIGKILL recovery
-
-Inject SIGKILL at prepared, target_applied or committed, then rerun and verify targets and committed ledger. The table includes actual injection hits only. Two 1,000-file committed-window attempts missed and do not count as successful injections; reports retain them. Recovery latency depends on the work already completed at interruption.
-
-| Files | Requested kill state | N | Durable state at death | Recovery P50/P95 ms |
-|---|---|---|---|---|
-| 1000 | prepared | 3 | prepared | 1587.60 |
-| 1000 | target_applied | 3 | target_applied | 120.98 |
-| 10000 | prepared | 3 | prepared | 8856.00 |
-| 10000 | target_applied | 3 | target_applied | 354.28 |
-| 10000 | committed | 3 | committed | 259.47 |
+Across all 30 samples the observed range is 107.42–205.33 s, with a reference P95 of 203.99 s. Budget for both clusters rather than using the faster cluster alone. Timing data does not establish the cause of the two clusters.
 
 ### What the Git patch baseline means {#baseline-meaning}
 
-`git apply` on the same inputs is a familiar cost baseline: about 0.73 ms for 10 files and 13.61 ms for 1,000, versus 15 ms and 836 ms for pVisor apply. Absolute budgets matter more: tens of milliseconds for a small edit, seconds for a thousand-file merge, and minutes for a hundred thousand files.
+Median differences use 5,000 bootstrap resamples of paired rounds with a fixed seed. Units: ms; 30 pairs per row.
 
-Git patch, copying, and pVisor apply have different workflows. This compares the measured cost of the same text updates, without claiming identical transactions. Consider whether preimage checks, selective merging, and crash recovery are requirements of the workflow. Large batches currently carry a clear performance cost.
+| Files | pVisor apply − Git apply | 95% confidence interval for the difference |
+|---:|---:|---:|
+| 10 | +16.13 | +15.79 to +18.63 |
+| 1,000 | +911.41 | +895.05 to +1,017.69 |
+| 10,000 | +14,104.40 | +11,179.77 to +19,418.50 |
+
+All three scales show higher pVisor latency. The separated distribution at 100,000 files is not summarized by a single median difference. Git patches also check patch context, but do not provide the same preimage checks, durable application ledger and interruption-recovery workflow. This comparison estimates waiting time for the same text updates; it does not claim identical transaction semantics.
+
+### Host edits during apply {#concurrent-conflicts}
+
+The independent injection check uses 10,000 files and N=3, without pooling these checks with the timing samples above.
+
+| Valid injections | Conflicts detected | Host edits preserved | Silent overwrites | Unknown results |
+|---:|---:|---:|---:|---:|
+| 3 | 3 | 3 | 0 | 0 |
+
+All three windows explicitly reject the conflict and retain the host edit, Prepared ledger and complete upper. Some files have already been applied before the conflict, so this does not mean whole-batch rollback, and does not cover every race between the final check and rename.
+
+### SIGKILL recovery
+
+At 10,000 files, N=3 per requested state. All nine injections hit the requested durable state, and rerunning passes target and Committed-ledger checks, with no missed injection windows. Units: ms; only medians and observed ranges are reported.
+
+| Interruption state | Recovery median | Minimum–maximum |
+|---|---:|---:|
+| prepared | 20,790.33 | 19,599.02–21,358.11 |
+| target_applied | 386.91 | 350.96–475.45 |
+| committed | 428.82 | 374.26–443.29 |
+
+Recovery waiting time depends on the work completed before interruption. This checks process SIGKILL rather than power loss or storage corruption; three observations do not establish tail latency or a reliability guarantee.
 
 ### Scope {#acceptance}
 
-SIGKILL recovery does not measure power loss, filesystem corruption or lost disk writes. All file types, symlinks and metadata combinations are not covered. Large projects should budget by submission size; ten-file results do not extrapolate to a million files.
+The data covers warm caches and small text files in one directory. It does not cover large binaries, all file types, symlinks and metadata combinations, or macOS. Full content validation ran during measurement; retained commands and ledgers were independently audited, but cleaned target directories cannot be reread byte for byte. Finite conflict injections do not prove detection of every concurrent edit.
 
 ### Downloads and reproduction {#run}
 
-[Derived table CSV](apply.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Scale timings CSV](apply.csv) · [Paired Git comparison CSV](apply-comparisons.csv) · [Recovery checks CSV](apply-recovery.csv) · [Concurrent conflicts CSV](apply-concurrent-conflicts.csv) · [Provenance CSV](apply-provenance.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+
+Provenance records binary, source, harness and raw-report digests. Timing and concurrent checks use the same binary in separate cohorts. Raw commands, reports and audit records remain in local `.data/`.

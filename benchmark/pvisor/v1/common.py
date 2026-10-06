@@ -41,19 +41,28 @@ def retain_command(directory, stdout, stderr, details):
         (directory / name).write_bytes(content)
 
 
-def snapshot(roots):
-    """Secondary process-tree RSS proxy; shared pages may be double-counted."""
+def snapshot(roots, include_pids=False):
+    """RSS proxy; optional PID discovery also retains stat-only processes.
+
+    RSS may miss short/unreadable processes or double-count shared pages.
+    A missing RSS does not remove a process from the requested scope check.
+    """
     processes = {}
     for path in Path("/proc").iterdir():
         if not path.name.isdigit():
             continue
         try:
             fields = (path / "stat").read_text().rsplit(") ", 1)[1].split()
-            rss = next(
-                int(line.split()[1])
-                for line in (path / "status").read_text().splitlines()
-                if line.startswith("VmRSS:")
-            )
+            try:
+                rss = next(
+                    int(line.split()[1])
+                    for line in (path / "status").read_text().splitlines()
+                    if line.startswith("VmRSS:")
+                )
+            except (OSError, StopIteration):
+                if not include_pids:
+                    continue
+                rss = 0  # only the RSS proxy omits it; PID coverage retains it
             processes[int(path.name)] = (int(fields[1]), rss)
         except (OSError, ValueError, StopIteration):
             continue
@@ -63,7 +72,9 @@ def snapshot(roots):
         if not additions:
             break
         owned.update(additions)
-    return sum(processes[pid][1] for pid in owned if pid in processes), len(owned & processes.keys())
+    members = owned & processes.keys()
+    result = (sum(processes[pid][1] for pid in members), len(members))
+    return (*result, members) if include_pids else result
 
 
 class Context:

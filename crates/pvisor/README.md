@@ -49,6 +49,12 @@ another location. HOME and VM rootfs writes have separate lifetimes; see
 [staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
 
+Admission carries the final network configuration into every Attempt driver;
+preparation does not re-resolve policy from mutable Run metadata or configuration.
+Guest workspace overlays require `RunExecutor::supports_guest_workspace_overlay`
+(default false), independently of VM network attachment support. Executor names
+remain persisted descriptions, not runtime capability checks.
+
 Containers use the host architecture. `--container-platform` (configuration:
 `container.platform = "linux-amd64"` or `"linux-arm64"`) optionally asserts that
 native platform; an explicit non-native selection is rejected before execution,

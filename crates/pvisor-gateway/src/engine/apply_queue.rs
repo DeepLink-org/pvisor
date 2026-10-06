@@ -288,8 +288,7 @@ impl ApplyDispatcher {
                 super::coordinator::story_reply_ack(
                     done.await
                         .map_err(|_| anyhow::anyhow!("story queue barrier dropped"))??,
-                )?
-                .into_result()
+                )
             }
             .await;
             if let Err(failure) = result {
