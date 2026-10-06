@@ -154,7 +154,7 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
                 "OCI container with injected pVisor"
             }
             Some(pvisor_core::IsolationKind::VirtualMachine) => {
-                "libkrun/KVM guest over the pVisor root OverlayFS"
+                "pvisor-vm guest (KVM on Linux, HVF on macOS) over the pVisor root OverlayFS"
             }
             _ => "host process (not a host-isolation boundary)",
         }

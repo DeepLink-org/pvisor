@@ -26,7 +26,9 @@ pvisor-daemon serve \
 
 运行时路径使用绝对路径，daemon 重启时保持不变。状态路径保持短，例如 `/run/user/1000/pvd`：逐 sandbox 的 `control.sock` 必须短于 104 字节，vsock Unix socket 也有路径长度限制。保留状态；此 `/run` 示例不保证跨注销／重启持久化，VM 不能跨宿主重启存活。`/sys/fs/cgroup/pvd` 必须是真实委派层级，不能是普通目录。
 
-已有记录的 `sandboxes.json` 若缺少原生 `owner.json` marker，会在既有 store 独占锁内被拒绝：它可能仍持有活动 Podman 容器。使用全新原生状态并保留／清理旧部署，或通过旧 Podman daemon 删除全部 sandbox、确认清理后，再用已清空的 registry 切换后端。不要删除 registry 条目、预留或所有权状态，也不要伪造原生 marker 绕过检查。原生 daemon 不会把这些容器接管为 Missing 或静默释放其预留。
+版本 1 中已有记录的 `sandboxes.json` 若缺少原生 `owner.json` marker，会在既有 store 独占锁内被拒绝：它可能仍持有活动 Podman 容器。使用全新原生状态并保留／清理旧部署，或通过旧 Podman daemon 删除全部 sandbox、确认清理后，再用已清空的 registry 切换后端。不要删除 registry 条目、预留或所有权状态，也不要伪造原生 marker 绕过检查。原生 daemon 不会把这些容器接管为 Missing 或静默释放其预留。
+
+v2 header 缺少 `owner.json` 时也会被拒绝，即使它按设计使用空 `sandboxes` map。原生 marker、header 与私有 `records/` 树须一同保留；见[存储迁移与激活](storage.md#migration)。
 
 ## 预制镜像合同 {#image-contract}
 
@@ -34,7 +36,7 @@ pvisor-daemon serve \
 
 长期运行的 guest bootstrap 必须监督工作负载、真实 OpenSandbox 1.1.0 execd 与 egress，自行初始化／鉴权服务、转发信号并回收子进程。它必须在 guest **CID 3** 的 **44772/18080** 端口提供字节透明的 AF_VSOCK listener，桥接真实服务。Supervisor 的 loopback TCP 发布经私有 Unix socket 与原生 vsock 转发连接 guest。普通 rootfs 或只运行 sleep 的进程不够。
 
-创建与 Running 观察经 bridge 要求真实 HTTP 200 的 execd `/ping`、JSON `initialized: true` 的 `/ready` 和 egress `/healthz`，响应体有界。daemon 不注入／初始化 execd，也不合成 command/SSE/file 响应。Python SDK 初始化即使没有网络策略也会解析两个端点。
+Create、对 Running VM 的 Inspect 与 resume 就绪检查经 bridge 要求真实 HTTP 200 的 execd `/ping`、JSON `initialized: true` 的 `/ready` 和 egress `/healthz`，响应体有界。端点解析认证 live Running 状态并检查删除屏障，不为每次数据请求重复完整 health/cgroup 检查。daemon 不注入／初始化 execd，也不合成 command/SSE/file 响应。Python SDK 初始化即使没有网络策略也会解析两个端点。
 
 Bootstrap 与镜像配方**未提供，也未经端到端验证**。旧容器的 `cap-drop=ALL` 限制不适用于此原生 VM 后端；upstream 镜像名称不是原生 bootstrap/vsock 适配器。不提供假就绪，也没有 SDK 兼容或密度证据。
 

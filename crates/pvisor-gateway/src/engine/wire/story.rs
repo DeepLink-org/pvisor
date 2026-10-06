@@ -69,6 +69,70 @@ pub(crate) enum StoryReply {
     },
 }
 
+/// Typed commands for the in-process scheduling owner. The serialized
+/// `StoryCommand` above remains the actor wire boundary, not the hot path.
+#[derive(Debug, Clone)]
+pub(crate) enum LocalStoryCommand {
+    Restore {
+        scope: StoryScope,
+        record: crate::record::CaptureRecord,
+    },
+    PersistRecord {
+        scope: StoryScope,
+        record: crate::record::CaptureRecord,
+    },
+    Flush,
+    Snapshot {
+        scope: StoryScope,
+    },
+    LocalSnapshot,
+}
+
+impl LocalStoryCommand {
+    pub fn persist_record(scope: StoryScope, mut record: crate::record::CaptureRecord) -> Self {
+        crate::record::ensure_timestamp(&mut record);
+        if record.event_id.is_none() {
+            record.event_id = Some(uuid::Uuid::new_v4().to_string());
+        }
+        Self::PersistRecord { scope, record }
+    }
+
+    pub fn scope(&self) -> &StoryScope {
+        match self {
+            Self::Restore { scope, .. }
+            | Self::PersistRecord { scope, .. }
+            | Self::Snapshot { scope } => scope,
+            Self::Flush | Self::LocalSnapshot => panic!("command has no scope"),
+        }
+    }
+}
+
+impl TryFrom<StoryCommand> for LocalStoryCommand {
+    type Error = anyhow::Error;
+
+    fn try_from(command: StoryCommand) -> anyhow::Result<Self> {
+        Ok(match command {
+            StoryCommand::Restore {
+                scope,
+                record_bytes,
+            } => Self::Restore {
+                scope,
+                record: serde_json::from_slice(&record_bytes)?,
+            },
+            StoryCommand::PersistRecord {
+                scope,
+                record_bytes,
+            } => Self::PersistRecord {
+                scope,
+                record: serde_json::from_slice(&record_bytes)?,
+            },
+            StoryCommand::Flush => Self::Flush,
+            StoryCommand::Snapshot { scope } => Self::Snapshot { scope },
+            StoryCommand::LocalSnapshot => Self::LocalSnapshot,
+        })
+    }
+}
+
 impl StoryCommand {
     pub fn persist_record(scope: StoryScope, record_bytes: Vec<u8>) -> Self {
         let record_bytes = stamp_record(record_bytes);
@@ -147,5 +211,44 @@ mod tests {
         let packed = pulsing_actor::Message::pack(&cmd).expect("pack");
         let back: StoryCommand = packed.unpack().expect("unpack");
         assert!(matches!(back, StoryCommand::PersistRecord { .. }));
+        let local = LocalStoryCommand::try_from(back).unwrap();
+        let LocalStoryCommand::PersistRecord { scope, record } = local else {
+            panic!("expected typed persistence command");
+        };
+        assert_eq!(record.kind, rec.kind);
+        assert_eq!(record.payload, rec.payload);
+        assert!(record.event_id.is_some());
+        assert!(record.timestamp.is_some());
+        let identity = record.event_id.clone();
+        let timestamp = record.timestamp.clone();
+        let local = LocalStoryCommand::persist_record(scope, record);
+        let LocalStoryCommand::PersistRecord { record, .. } = local else {
+            unreachable!()
+        };
+        assert_eq!(
+            record.event_id, identity,
+            "typed stamping must preserve retry identity"
+        );
+        assert_eq!(record.timestamp, timestamp);
+    }
+
+    #[test]
+    fn malformed_external_record_is_rejected_at_the_wire_boundary() {
+        let scope = StoryScope {
+            context: StoryContext::from_route(
+                CaptureRoute {
+                    root_session: None,
+                    session_id: "s".into(),
+                    storage_session_id: "s".into(),
+                    subagent_id: None,
+                },
+                "agent",
+            ),
+        };
+        let command = StoryCommand::PersistRecord {
+            scope,
+            record_bytes: b"not JSON".to_vec(),
+        };
+        assert!(LocalStoryCommand::try_from(command).is_err());
     }
 }

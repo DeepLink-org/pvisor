@@ -192,3 +192,94 @@ def test_build_receipt_cannot_label_an_unrelated_binary(tmp_path):
     manifest.write_text('["different source"]')
     with pytest.raises(ValueError, match='source manifest'):
         verified_build_receipt(receipt, binary)
+
+
+def test_budget_oom_rejects_successful_native_command_and_retains_scene(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    import reference_baselines as runner
+
+    assets = tmp_path / 'assets'
+    work = assets / 'rootfs/work'
+    work.mkdir(parents=True)
+    (work / 'retained-input').write_text('required original evidence')
+    args = SimpleNamespace(output=tmp_path / 'output', assets=assets,
+                           resource_budget=tmp_path / 'private.slice',
+                           cpu_affinity='', docker_root_pid=None)
+
+    class OomBudget:
+        reads = 0
+
+        def read(self):
+            self.reads += 1
+            return dict(cpu_stat={'usage_usec': self.reads * 100},
+                        memory_events={'oom': int(self.reads > 1), 'oom_kill': 0})
+
+        def processes(self, pids):
+            return {'witnesses': [{'pid': pid} for pid in pids]}
+
+        def witness_all_members(self, pids):
+            return self.processes(pids)
+
+    monkeypatch.setattr(runner, 'reference_budget', lambda _: OomBudget())
+    with pytest.raises(RuntimeError, match='resource-budget OOM'):
+        runner.run_trial(args, {'assets': {'docker_image': 'unused-native-control'}},
+                         'native', 'ready', 0)
+    trial = args.output / 'trials/ready-native-000'
+    assert json.loads((trial / 'command.json').read_text())['exit'] == 0
+    evidence = json.loads((trial / 'resource-budget.json').read_text())
+    assert evidence['memory_events_delta']['oom'] == 1
+    assert (trial / 'workspace/retained-input').read_text() == 'required original evidence'
+
+
+def test_budget_requires_explicit_cpu_placement_before_launch(tmp_path):
+    from types import SimpleNamespace
+    from reference_baselines import reference_budget
+
+    args = SimpleNamespace(resource_budget=tmp_path / 'private.slice', cpu_affinity='')
+    with pytest.raises(ValueError, match='explicit CPU affinity'):
+        reference_budget(args)
+
+
+def test_observed_budget_violation_cannot_be_published_as_unknown(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    import reference_baselines as runner
+    from resource_budget import BudgetViolation
+
+    assets = tmp_path / 'assets'
+    (assets / 'rootfs/work').mkdir(parents=True)
+    args = SimpleNamespace(output=tmp_path / 'output', assets=assets,
+                           resource_budget=tmp_path / 'private.slice',
+                           cpu_affinity='', docker_root_pid=None)
+
+    class EscapedBudget:
+        def read(self):
+            return dict(cpu_stat={'usage_usec': 100}, memory_events={'oom': 0})
+
+        def processes(self, pids):
+            return {'witnesses': [{'pid': pid} for pid in pids]}
+
+        def witness_all_members(self, pids):
+            raise BudgetViolation('controlled negative: shim escaped parent')
+
+    monkeypatch.setattr(runner, 'reference_budget', lambda _: EscapedBudget())
+    original = runner.subprocess.Popen
+
+    def launch(argv, *args, **kwargs):
+        # Keep the real successful child alive long enough for this observation;
+        # this test is a correctness control, not a benchmark timing sample.
+        if argv[:2] == ['/bin/sh', '-c']:
+            argv = [*argv[:-1], argv[-1] + '; sleep 0.08']
+        return original(argv, *args, **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, 'Popen', launch)
+    with pytest.raises(RuntimeError, match='resource-budget violation'):
+        runner.run_trial(args, {'assets': {'docker_image': 'unused-native-control'}},
+                         'native', 'ready', 0)
+    trial = args.output / 'trials/ready-native-000'
+    record = json.loads((trial / 'resource-budget.json').read_text())
+    assert record['violations']
+    assert record['unknown_observations'] == []
+    assert json.loads((trial / 'command.json').read_text())['exit'] == 0
+    assert (trial / 'workspace').exists()

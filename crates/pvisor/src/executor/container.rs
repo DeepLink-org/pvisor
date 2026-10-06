@@ -35,6 +35,18 @@ struct BindMount {
 
 impl ContainerExecutor {
     pub fn new(settings: ContainerSettings) -> anyhow::Result<Self> {
+        if let Some(platform) = settings.platform {
+            let native = matches!(
+                (std::env::consts::ARCH, platform),
+                ("x86_64", ContainerPlatform::LinuxAmd64)
+                    | ("aarch64", ContainerPlatform::LinuxArm64)
+            );
+            anyhow::ensure!(
+                native,
+                "container.platform={platform:?} does not match host architecture {}; cross-platform selection is not supported by the native OCI runner; omit container.platform or select the native platform",
+                std::env::consts::ARCH
+            );
+        }
         anyhow::ensure!(
             !settings.runtime.as_os_str().is_empty(),
             "container runtime must not be empty"
@@ -68,7 +80,6 @@ impl ContainerExecutor {
         &self,
         spec: &RunSpec,
         attempt_id: &str,
-        _platform: ContainerPlatform,
         pvisor_binary: &Path,
         files: &DelegatedRunFiles,
     ) -> anyhow::Result<Command> {
@@ -383,10 +394,6 @@ impl RunExecutor for ContainerExecutor {
             .await;
 
         let prepared = async {
-            let platform = self
-                .settings
-                .platform
-                .unwrap_or(ContainerPlatform::LinuxAmd64);
             let binary = resolve_pvisor_binary(self.settings.pvisor_binary.as_deref())?;
             let files = DelegatedRunFiles::new_with_stdio(&spec, true)?;
             let mut executor = self.clone();
@@ -402,13 +409,8 @@ impl RunExecutor for ContainerExecutor {
                 .await??;
                 executor.settings.rootfs = Some(prepared.rootfs);
             }
-            let command = executor.build_command(
-                &spec,
-                context.attempt_id().as_str(),
-                platform,
-                &binary,
-                &files,
-            )?;
+            let command =
+                executor.build_command(&spec, context.attempt_id().as_str(), &binary, &files)?;
             Ok::<_, anyhow::Error>((files, command))
         }
         .await;
@@ -762,9 +764,7 @@ mod tests {
         .unwrap();
         let spec = RunSpec::process("r", "a", "true");
         let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
-        executor
-            .build_command(&spec, "a", ContainerPlatform::LinuxAmd64, &binary, &files)
-            .unwrap();
+        executor.build_command(&spec, "a", &binary, &files).unwrap();
         let private = files
             .spec_path
             .parent()
@@ -809,7 +809,6 @@ mod tests {
         let executor = ContainerExecutor::new(ContainerSettings {
             image: "example/agent:latest".into(),
             pvisor_binary: Some(runtime.clone()),
-            platform: Some(ContainerPlatform::LinuxAmd64),
             network: ContainerNetwork::None,
             ..ContainerSettings::default()
         })
@@ -826,13 +825,7 @@ mod tests {
         invocation.inherit_env = false;
         let files = DelegatedRunFiles::new_with_stdio(&spec, false).unwrap();
         let command = executor
-            .build_command(
-                &spec,
-                "attempt-one",
-                ContainerPlatform::LinuxAmd64,
-                &runtime,
-                &files,
-            )
+            .build_command(&spec, "attempt-one", &runtime, &files)
             .unwrap();
         let args = command
             .as_std()
@@ -858,6 +851,36 @@ mod tests {
         assert_eq!(descriptor.kind, ExecutorKind::Container);
         assert_eq!(descriptor.isolation, IsolationKind::Container);
         assert!(descriptor.capability_plan.dimensions.is_empty());
+    }
+
+    #[test]
+    fn explicit_platform_requires_native_architecture_for_images_and_rootfs() {
+        for platform in [ContainerPlatform::LinuxAmd64, ContainerPlatform::LinuxArm64] {
+            for rootfs in [None, Some(PathBuf::from("/prepared-rootfs"))] {
+                let result = ContainerExecutor::new(ContainerSettings {
+                    image: "example/agent:latest".into(),
+                    rootfs,
+                    platform: Some(platform),
+                    pvisor_binary: Some(PathBuf::from("/custom-pvisor")),
+                    ..Default::default()
+                });
+                let native = matches!(
+                    (std::env::consts::ARCH, platform),
+                    ("x86_64", ContainerPlatform::LinuxAmd64)
+                        | ("aarch64", ContainerPlatform::LinuxArm64)
+                );
+                if native {
+                    assert_eq!(result.unwrap().settings().platform, Some(platform));
+                } else {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("cross-platform selection is not supported")
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -68,8 +68,9 @@ writes and the KVM API. Each sandbox cgroup caps the entire supervisor/VMM/helpe
 process tree: 10–8000 millicores of aggregate CPU rate, hard memory, zero swap,
 `pids.max=512` and group OOM. vCPU count is rounded up from the CPU quota (up to
 8), not equivalent to quota; guest RAM is rounded down to MiB and the enclosing
-memory cap also includes host-side overhead. Controls are rechecked during
-lifecycle/endpoint observations. Admission sums hard limits conservatively,
+memory cap also includes host-side overhead. Full controls/readiness are rechecked
+at create, Inspect and resume, not on each data-request endpoint lookup. Admission
+sums hard limits conservatively,
 including paused/failed/uncertain records; this is not a measured whole-node
 physical-memory budget.
 
@@ -91,11 +92,18 @@ It must provide byte-transparent guest AF_VSOCK listeners on **CID 3**, ports
 publications connect through private Unix sockets and native vsock forwarding.
 A stock distribution rootfs or a sleeping process does not satisfy this contract.
 
-Creation and running observations verify real execd `/ping`, `/ready` (JSON
-`initialized: true`) and egress `/healthz` through the bridges, requiring HTTP
+Create, Inspect of a Running VM and resume readiness checks verify real execd
+`/ping`, `/ready` (JSON `initialized: true`) and egress `/healthz` through the
+bridges, requiring HTTP
 200 and bounded bodies. Readiness is not manufactured. The daemon does not inject
 `/execd`, call its initialization handshake or synthesize command/SSE/file behavior. The prepared image must complete
 any runtime initialization and configure its service authentication.
+
+Endpoint lookup authenticates the live supervisor, requires the current RunHandle
+Running state, checks deletion fences and resolves a live publication. It does
+not repeat service health probes or full cgroup-limit reconciliation per data
+request; connection failures belong to the API adapter. Native `observation.json`
+caches are neither written nor used as liveness proof.
 
 **The guest bootstrap and image recipe are not supplied or end-to-end validated.**
 The old container `cap-drop=ALL` constraint does not describe this VM backend;
@@ -134,9 +142,10 @@ No security audit or hostile multi-user assurance is claimed.
 - HTTP disconnects do not cancel accepted lifecycle operations.
 - Different sandboxes have independent lifecycle locks. There is no global runtime
   mutex spanning slow creation or readiness checks.
-- The registry is bounded by configured capacity and 16 MiB, rather than an
-  unbounded retained distributed task history. Mutations currently checkpoint
-  the bounded registry; this cost has not been benchmarked.
+- The registry is bounded by configured capacity and an aggregate 16 MiB logical
+  v1-equivalent budget, excluding repeated owner envelopes. Mutations persist
+  only the target record, not a whole-registry checkpoint; performance has not
+  been benchmarked.
 - Deletion intent survives restart. A native state observation cannot overwrite
   a pending delete. Unknown deletion retains its record and reservation.
 - Expiration is rechecked under the same lock as renewal, preventing stale scans
@@ -157,13 +166,51 @@ No security audit or hostile multi-user assurance is claimed.
   Maintenance resumes after restart. It does not guarantee cleanup while the
   daemon is down; configure native host supervision for that requirement.
 
+### Incremental registry and migration
+
+The v2 `sandboxes.json` is a version/owner header with an empty `sandboxes` map,
+not an empty inventory. Private `records/` (0700) contains `meta.json` with version
+2 and the same owner, plus one owner-wrapped `sb-<uuid>.json` file (0600) per
+sandbox. Opening validates header/metadata/record ownership, IDs, resources and
+credentials; activated v2 records cannot fall back to a v1 snapshot on corruption.
+A missing header with an existing records tree is rejected.
+
+Each mutation clones/serializes only its target record. Replacement writes and
+fsyncs a private `.record-*` temporary, atomically renames it over the target and
+fsyncs `records/`; deletion unlinks the target and fsyncs the directory. Ordinary
+mutations do not rewrite the root header or metadata. A separate commit lock
+serializes admission decisions and mutations; the registry reader lock is
+released during blocking-pool disk I/O, exposing the last committed inventory.
+The in-memory target updates only after commit success. An uncertain rename/unlink
+or subsequent fsync error retains the existing fail-stop storage latch: do not
+continue from stale memory; preserve state, repair storage, restart and reconcile.
+The aggregate budget counts one header/owner, sandbox keys and record contents as
+a v1-equivalent logical snapshot, not physical directory bytes, so a valid v1
+snapshot at the limit remains migratable.
+
+V1 `sandboxes.json` remains authoritative until activation. `Daemon::open` first
+holds the exclusive store lock and asks the runtime factory to accept the owner;
+only then does Store initialize/migrate. It writes/fsyncs metadata and records in
+private `.records-*` staging, syncs the directory, renames it to `records/` and
+syncs the state directory, then atomically replaces/fsyncs the root v2 header.
+That header activates the committed records tree; native preflight follows.
+Interrupted, unactivated copies are disposable, not recovery prerequisites:
+staging and `.records-retired-*` directories are reclaimed only after validating
+private ownership, reserved names and regular-file types without following
+symlinks or requiring incomplete payloads to deserialize. An uncertain activation
+fails the open; the next open uses the surviving header.
+
 Keep the same state directory and compatible runtime configuration across restarts.
 Never delete state to fix an error: it carries native ownership and unresolved
 reservations. Missing sandboxes remain visible as Failed until explicitly deleted.
 Failed native creation with verified cleanup releases its reservation; uncertain
 creation retains its ID in the error message so callers can inspect/delete it.
 
-An occupied `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
+An occupied version-1 `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
+
+Any v2 header without the native `owner.json` marker is also rejected, even with
+its empty map. Preserve the original header, native marker and records together;
+do not erase reservations or fabricate ownership to bypass the guard.
 
 The list API reports the last durable observation; GET reconciles native state.
 The maintenance loop retries pending/expired deletion. Continuous native process
@@ -238,8 +285,8 @@ product code (including native sandboxes) were run.
 | Module | Responsibility |
 | --- | --- |
 | `daemon/models.rs` | Fixed wire models, resource quantities, unsupported feature rejection |
-| `daemon/store.rs` | Private, exclusive durable node registry |
-| `daemon/mod.rs` | Admission, lifecycle, restart reconciliation, TTL and endpoint access |
+| `daemon/store.rs` | Private per-record registry, atomic publication/unlink, logical budget and v1 activation |
+| `daemon/mod.rs` | Admission/commit serialization, lifecycle, restart reconciliation, TTL and endpoint access |
 | `daemon/api.rs` | OpenSandbox HTTP adapter, filters, streaming data-plane proxy |
 | `runtime.rs` | Runtime trait, VM-only NativeRuntime, detached supervisor, IPC/cgroup identity and vsock bridges |
 | `main.rs` | Daemon CLI/configuration, listener and maintenance lifecycle |

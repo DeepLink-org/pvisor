@@ -25,6 +25,10 @@
 //! A pre-exec callback enters the bound cgroup before supervisor/Tokio allocations.
 //! Empty-group proof is durably tombstoned before cgroup/storage reclamation;
 //! tombstones retain ownership/binding only, not image/env/control secrets.
+//! Endpoint lookup authenticates live supervisor state on every request, without
+//! service probes or full cgroup-limit reconciliation. Create, Inspect and resume
+//! retain those checks; connection failures belong to the API adapter. Native
+//! observation.json caches are neither written nor used as liveness proof.
 
 use std::{
     collections::BTreeMap,
@@ -202,16 +206,6 @@ struct RunRecord {
     attempt_id: String,
 }
 
-/// Last acknowledged observation, never a substitute for live IPC/kernel proof.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Observation {
-    generation: String,
-    run_id: String,
-    attempt_id: String,
-    state: RuntimeState,
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Request {
@@ -248,6 +242,7 @@ pub struct NativeRuntime {
 impl NativeRuntime {
     /// Called under the Store's already-held exclusive lock. An occupied registry
     /// without the native marker may belong to Podman; never adopt it as Missing.
+    /// A v2 header activates per-sandbox records and always requires the marker.
     pub fn new(config: NativeRuntimeConfig) -> Result<Self> {
         ensure!(
             cfg!(all(target_os = "linux", target_arch = "x86_64")),
@@ -893,20 +888,12 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
                     &client, &endpoints, request.operation).await;
                 match result {
                     Ok((state, endpoint)) => {
-                        if !deleted && persist_observation(sandbox_dir, &identity, &handle, state).is_err() {
-                            reply.error = Some("native observation persistence failed; reconcile".into());
-                        } else {
-                            reply.state = Some(state); reply.endpoint = endpoint;
-                        }
+                        reply.state = Some(state); reply.endpoint = endpoint;
                     }
                     // Never return image env, argv, guest output or native paths.
                     Err(_) => reply.error = Some("native control or real service readiness failed; reconcile".into()),
                 }
                 if deleted && reply.error.is_none() {
-                    let final_observation = Observation {
-                        generation: identity.generation.clone(), run_id: handle.run_id().to_string(),
-                        attempt_id: handle.attempt_id().to_string(), state: RuntimeState::Stopped,
-                    };
                     handle.cancel();
                     // Wait for native runner teardown, NOT merely terminal status.
                     // On uncertainty the parent uses the inode-bound cgroup kill.
@@ -914,9 +901,6 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
                     if !matches!(waited, Ok(Ok(_))) {
                         reply.state = None;
                         reply.error = Some("native termination uncertain; reconcile".into());
-                    } else if replace_record(&sandbox_dir.join("observation.json"), &final_observation).is_err() {
-                        reply.state = None;
-                        reply.error = Some("native termination observation persistence failed; reconcile".into());
                     }
                     publications.abort_all();
                     while publications.join_next().await.is_some() {}
@@ -957,14 +941,34 @@ async fn execute_control(
         }
         _ => {}
     }
-    let state = native_state(handle)?;
-    if state == RuntimeState::Running {
-        probe_services(client, endpoints).await?;
-    }
-    // Hard controls are checked on every lifecycle/endpoint observation.
-    Group::open(identity)?
-        .context("owned cgroup disappeared")?
-        .verify_limits(&identity.spec)?;
+    observe_control(
+        directory,
+        client,
+        endpoints,
+        operation,
+        || native_state(handle),
+        || {
+            Group::open(identity)?
+                .context("owned cgroup disappeared")?
+                .verify_limits(&identity.spec)
+        },
+    )
+    .await
+}
+
+// The supervisor authenticates each request before this path. Endpoint resolves
+// only from the current RunHandle, never a durable observation; readiness and
+// hard-limit reconciliation belong to Inspect and lifecycle controls.
+async fn observe_control(
+    directory: &Path,
+    client: &reqwest::Client,
+    endpoints: &BTreeMap<u16, String>,
+    operation: Operation,
+    live_state: impl FnOnce() -> Result<RuntimeState>,
+    verify_limits: impl FnOnce() -> Result<()>,
+) -> Result<(RuntimeState, Option<String>)> {
+    ensure_not_deleting(directory)?;
+    let state = live_state()?;
     let endpoint = if let Operation::Endpoint(port) = operation {
         validate_port(port)?;
         ensure!(state == RuntimeState::Running, "VM is not running");
@@ -975,8 +979,13 @@ async fn execute_control(
                 .clone(),
         )
     } else {
+        if state == RuntimeState::Running {
+            probe_services(client, endpoints).await?;
+        }
+        verify_limits()?;
         None
     };
+    ensure_not_deleting(directory)?;
     Ok((state, endpoint))
 }
 
@@ -1669,6 +1678,13 @@ fn reject_occupied_unclaimed_registry(directory: &Path, owner: &str) -> Result<(
     );
     let registry: Envelope = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow!("invalid registry; refusing native state adoption"))?;
+    // An empty v2 map is only a header: active records may still own native
+    // execution. Only an empty v1 registry can establish a new native marker;
+    // any records directory beside v1 is an unactivated migration, not live delta.
+    ensure!(
+        registry.version != 2,
+        "per-record sandbox registry has no native owner.json marker; native ownership is unresolved even with an empty header; restore the original ownership state, do not delete state or reservations"
+    );
     ensure!(
         registry.version == 1 && registry.owner == owner,
         "registry ownership/version mismatch; refusing native state adoption"
@@ -1761,46 +1777,7 @@ fn publish_new<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let _ = fs::remove_file(&temporary);
     result
 }
-fn persist_observation(
-    directory: &Path,
-    identity: &Identity,
-    handle: &pvisor::RunHandle,
-    state: RuntimeState,
-) -> Result<()> {
-    replace_record(
-        &directory.join("observation.json"),
-        &Observation {
-            generation: identity.generation.clone(),
-            run_id: handle.run_id().to_string(),
-            attempt_id: handle.attempt_id().to_string(),
-            state,
-        },
-    )
-}
-fn replace_record<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    let parent = path.parent().context("record parent missing")?;
-    if path.try_exists()? {
-        let _ = trusted_file(path, true)?;
-    }
-    let temporary = parent.join(format!(".observation-{}", uuid::Uuid::new_v4()));
-    let result = (|| -> Result<()> {
-        let bytes = serde_json::to_vec(value)?;
-        ensure!(bytes.len() <= IPC_LIMIT, "native observation exceeds limit");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&temporary)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    let _ = fs::remove_file(&temporary);
-    result
-}
+
 fn mark(directory: &Path, name: &str) -> Result<()> {
     let path = directory.join(name);
     if path.try_exists()? {
@@ -1940,6 +1917,7 @@ mod tests {
             operations: SandboxLocks::default(),
         }
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     fn constructor_fixture(temp: &Path) -> NativeRuntimeConfig {
         let state = temp.join("daemon");
         private_directory(&state).unwrap();
@@ -1956,6 +1934,7 @@ mod tests {
             executable,
         }
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     fn occupied_legacy_registry_is_rejected_under_existing_store_lock_without_mutation() {
         let temp = tempfile::tempdir().unwrap();
@@ -1999,6 +1978,7 @@ mod tests {
             .unwrap();
         assert!(another.try_lock_exclusive().is_err());
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     fn empty_registry_can_be_claimed_but_native_occupied_restart_keeps_its_marker() {
         let temp = tempfile::tempdir().unwrap();
@@ -2014,7 +1994,7 @@ mod tests {
             read_json::<String>(&config.state_dir.join("owner.json")).unwrap(),
             config.owner
         );
-        replace_record(&path, &serde_json::json!({"version": 1, "owner": config.owner, "sandboxes": {(ID): {"native": true}}})).unwrap();
+        fs::write(&path, serde_json::to_vec(&serde_json::json!({"version": 1, "owner": config.owner, "sandboxes": {(ID): {"native": true}}})).unwrap()).unwrap();
         let bytes = fs::read(&path).unwrap();
         NativeRuntime::new(config.clone()).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
@@ -2022,6 +2002,42 @@ mod tests {
         foreign.owner = "other-node".into();
         assert!(NativeRuntime::new(foreign).is_err());
     }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn per_record_header_without_native_marker_never_claims_or_mutates_state() {
+        for with_record in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let config = constructor_fixture(temp.path());
+            let path = config.state_dir.join("sandboxes.json");
+            publish_new(
+                &path,
+                &serde_json::json!({"version": 2, "owner": config.owner, "sandboxes": {}}),
+            )
+            .unwrap();
+            let records = config.state_dir.join("records");
+            private_directory(&records).unwrap();
+            let record = records.join(format!("{ID}.json"));
+            if with_record {
+                publish_new(&record, &serde_json::json!({"native": true})).unwrap();
+            }
+            let header_bytes = fs::read(&path).unwrap();
+            let record_bytes = with_record.then(|| fs::read(&record).unwrap());
+            let error = NativeRuntime::new(config.clone()).err().unwrap();
+            assert!(error.to_string().contains("no native owner.json marker"));
+            assert!(!config.state_dir.join("owner.json").exists());
+            assert!(!config.state_dir.join(ID).exists());
+            assert_eq!(fs::read(&path).unwrap(), header_bytes);
+            assert_eq!(record.exists(), with_record);
+            if let Some(bytes) = record_bytes {
+                assert_eq!(fs::read(&record).unwrap(), bytes);
+            }
+            // Existing native ownership still permits a v2 restart.
+            publish_new(&config.state_dir.join("owner.json"), &config.owner).unwrap();
+            NativeRuntime::new(config).unwrap();
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     fn malformed_unclaimed_registry_does_not_create_a_native_marker() {
         for json in [
@@ -2499,14 +2515,15 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let (identity, directory) = identity_fixture(temp.path());
         publish_new(&directory.join("identity.json"), &identity).unwrap();
-        replace_record(
+        // A legacy cache is deliberately left behind, but never read as proof.
+        publish_new(
             &directory.join("observation.json"),
-            &Observation {
-                generation: identity.generation.clone(),
-                run_id: "run-old".into(),
-                attempt_id: "attempt-old".into(),
-                state: RuntimeState::Running,
-            },
+            &serde_json::json!({
+                "generation": identity.generation,
+                "run_id": "run-old",
+                "attempt_id": "attempt-old",
+                "state": "Running",
+            }),
         )
         .unwrap();
         let runtime = NativeRuntime {
@@ -2522,6 +2539,240 @@ mod tests {
         assert!(runtime.inspect(ID).await.is_err());
         assert!(runtime.endpoint(ID, EXECD_PORT).await.is_err());
     }
+    #[tokio::test]
+    async fn lost_identity_with_run_record_is_not_missing_or_endpoint_proof() {
+        let temp = tempfile::tempdir().unwrap();
+        let (identity, directory) = identity_fixture(temp.path());
+        publish_new(
+            &directory.join("run.json"),
+            &RunRecord {
+                generation: identity.generation.clone(),
+                run_id: "run-old".into(),
+                attempt_id: "attempt-old".into(),
+            },
+        )
+        .unwrap();
+        let runtime = runtime_fixture(&identity, &directory);
+        assert!(runtime.identity(ID).is_err());
+        assert!(runtime.inspect(ID).await.is_err());
+        assert!(runtime.endpoint(ID, EXECD_PORT).await.is_err());
+        assert!(directory.join("run.json").exists());
+    }
+
+    #[test]
+    fn unclaimed_registry_guard_is_a_portable_contract() {
+        let temp = tempfile::tempdir().unwrap();
+        let owner = "node-owner";
+        let path = temp.path().join("sandboxes.json");
+        publish_new(
+            &path,
+            &serde_json::json!({"version": 1, "owner": owner, "sandboxes": {(ID): {}}}),
+        )
+        .unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert!(reject_occupied_unclaimed_registry(temp.path(), owner).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({"version": 1, "owner": owner, "sandboxes": {}}))
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(reject_occupied_unclaimed_registry(temp.path(), owner).is_ok());
+        assert!(reject_occupied_unclaimed_registry(temp.path(), "foreign-owner").is_err());
+        let records = temp.path().join("records");
+        private_directory(&records).unwrap();
+        let record = records.join(format!("{ID}.json"));
+        publish_new(&record, &serde_json::json!({"native": true})).unwrap();
+        let record_bytes = fs::read(&record).unwrap();
+        // Prepared records have no authority until the root header activates v2.
+        assert!(reject_occupied_unclaimed_registry(temp.path(), owner).is_ok());
+        fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({"version": 2, "owner": owner, "sandboxes": {}}))
+                .unwrap(),
+        )
+        .unwrap();
+        let header_bytes = fs::read(&path).unwrap();
+        assert!(reject_occupied_unclaimed_registry(temp.path(), owner).is_err());
+        assert_eq!(fs::read(&path).unwrap(), header_bytes);
+        assert_eq!(fs::read(&record).unwrap(), record_bytes);
+        assert!(!temp.path().join("owner.json").exists());
+    }
+
+    #[tokio::test]
+    async fn endpoint_bypasses_probes_and_limits_but_inspect_and_resume_do_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let (_, directory) = identity_fixture(temp.path());
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let endpoints = BTreeMap::from([
+            (EXECD_PORT, endpoint.clone()),
+            (EGRESS_PORT, endpoint.clone()),
+        ]);
+        let client = health_client().unwrap();
+        let result = observe_control(
+            &directory,
+            &client,
+            &endpoints,
+            Operation::Endpoint(EXECD_PORT),
+            || Ok(RuntimeState::Running),
+            || panic!("Endpoint must not verify full cgroup limits"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, (RuntimeState::Running, Some(endpoint)));
+        assert!(
+            timeout(Duration::from_millis(20), listener.accept())
+                .await
+                .is_err()
+        );
+        assert!(!directory.join("observation.json").exists());
+
+        let server = tokio::spawn(async move {
+            let mut paths = Vec::new();
+            for _ in 0..6 {
+                let (mut stream, _) = timeout(Duration::from_secs(5), listener.accept())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(
+                        timeout(Duration::from_secs(5), stream.read_u8())
+                            .await
+                            .unwrap()
+                            .unwrap(),
+                    );
+                    assert!(request.len() < HEALTH_LIMIT);
+                }
+                paths.push(
+                    String::from_utf8(request)
+                        .unwrap()
+                        .lines()
+                        .next()
+                        .unwrap()
+                        .to_owned(),
+                );
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{\"initialized\":true}").await.unwrap();
+            }
+            paths
+        });
+        for operation in [Operation::Inspect, Operation::Resume] {
+            let verified = std::cell::Cell::new(false);
+            assert!(
+                observe_control(
+                    &directory,
+                    &client,
+                    &endpoints,
+                    operation,
+                    || Ok(RuntimeState::Running),
+                    || {
+                        verified.set(true);
+                        bail!("changed hard limits")
+                    },
+                )
+                .await
+                .is_err()
+            );
+            assert!(verified.get());
+        }
+        assert_eq!(
+            server.await.unwrap(),
+            [
+                "GET /ping HTTP/1.1",
+                "GET /ready HTTP/1.1",
+                "GET /healthz HTTP/1.1",
+                "GET /ping HTTP/1.1",
+                "GET /ready HTTP/1.1",
+                "GET /healthz HTTP/1.1",
+            ]
+        );
+        assert!(!directory.join("observation.json").exists());
+    }
+
+    #[tokio::test]
+    async fn endpoint_requires_current_live_running_state_and_deletion_fence() {
+        let temp = tempfile::tempdir().unwrap();
+        let (identity, directory) = identity_fixture(temp.path());
+        let client = health_client().unwrap();
+        let endpoints = BTreeMap::from([(EXECD_PORT, "http://127.0.0.1:1".into())]);
+        for state in [
+            RuntimeState::Paused,
+            RuntimeState::Stopped,
+            RuntimeState::Missing,
+        ] {
+            assert!(
+                observe_control(
+                    &directory,
+                    &client,
+                    &endpoints,
+                    Operation::Endpoint(EXECD_PORT),
+                    || Ok(state),
+                    || panic!("Endpoint must not verify limits"),
+                )
+                .await
+                .is_err()
+            );
+        }
+        assert!(
+            observe_control(
+                &directory,
+                &client,
+                &endpoints,
+                Operation::Endpoint(EXECD_PORT),
+                || bail!("native run is failed or transitioning"),
+                || panic!("Endpoint must not verify limits"),
+            )
+            .await
+            .is_err()
+        );
+        for marker in ["deleting", "deleted"] {
+            mark(&directory, marker).unwrap();
+            assert!(
+                observe_control(
+                    &directory,
+                    &client,
+                    &endpoints,
+                    Operation::Endpoint(EXECD_PORT),
+                    || panic!("deletion must fence live state resolution"),
+                    || panic!("Endpoint must not verify limits"),
+                )
+                .await
+                .is_err()
+            );
+            fs::remove_file(directory.join(marker)).unwrap();
+        }
+        assert!(
+            runtime_fixture(&identity, &directory)
+                .endpoint(ID, EXECD_PORT)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn inspect_still_rejects_unready_services() {
+        let temp = tempfile::tempdir().unwrap();
+        let (_, directory) = identity_fixture(temp.path());
+        let client = health_client().unwrap();
+        let endpoints = BTreeMap::from([(EXECD_PORT, "http://127.0.0.1:1".into())]);
+        assert!(
+            observe_control(
+                &directory,
+                &client,
+                &endpoints,
+                Operation::Inspect,
+                || Ok(RuntimeState::Running),
+                || Ok(()),
+            )
+            .await
+            .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn bounded_authenticated_control_frames_round_trip() {
         let (mut sender, mut receiver) = UnixStream::pair().unwrap();

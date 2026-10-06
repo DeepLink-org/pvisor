@@ -43,18 +43,21 @@
 
 待删除意图跨重启保留，不会被原生观察覆盖。删除状态未知时保留预留。原生沙箱丢失后仍以 Failed 显示，直到显式删除。maintenance 重试过期/待删除项；列表不是持续的原生进程监控，查询特定沙箱时使用 GET 核对。
 
-不要删状态来修复错误，也不要让两个 daemon 共用它。状态保存原生所有权与未解决预留；把旧 Controller journal 搬进来不会迁移历史。注册表受配置容量和 16 MiB 上限约束，不是无限保留的分布式任务档案，也不是 Run Bundle/artifact store。
+不要删状态来修复错误，也不要让两个 daemon 共用它。状态保存原生所有权与未解决预留；把旧 Controller journal 搬进来不会迁移历史。注册表受配置容量和总计 16 MiB 逻辑版本 1 等价预算约束，不计逐文件重复的 owner 信封；这不是物理目录大小上限。它不是无限保留的分布式任务档案，也不是 Run Bundle/artifact store。
 
 删除／对账可在原 rootfs 或 firmware 缺失时继续基于 tombstone 的清理，回收空的所属 cgroup 和私有 run/RAM/temp/socket／秘密记录，保留最小 ID 屏障。回收错误保留预留供重试；不要自行删除 tombstone 或 registry 状态。见[存储](../../design/daemon/storage.md#gc)。
 
-已有记录的 `sandboxes.json` 若缺少原生 `owner.json` marker，会在既有 store 独占锁内被拒绝：它可能仍持有活动 Podman 容器。使用全新原生状态并保留／清理旧部署，或通过旧 Podman daemon 删除全部 sandbox、确认清理后，再用已清空的 registry 切换后端。不要删除 registry 条目、预留或所有权状态，也不要伪造原生 marker 绕过检查。原生 daemon 不会把这些容器接管为 Missing 或静默释放其预留。
+版本 1 中已有记录的 `sandboxes.json` 若缺少原生 `owner.json` marker，会在既有 store 独占锁内被拒绝：它可能仍持有活动 Podman 容器。使用全新原生状态并保留／清理旧部署，或通过旧 Podman daemon 删除全部 sandbox、确认清理后，再用已清空的 registry 切换后端。不要删除 registry 条目、预留或所有权状态，也不要伪造原生 marker 绕过检查。原生 daemon 不会把这些容器接管为 Missing 或静默释放其预留。
+
+版本 2 的 `sandboxes.json` 只保留 owner/header 与空 map；私有 `records/meta.json` 和带 owner 信封的逐 sandbox 文件持有清单。它们须与原生 `owner.json` 一同保留。修改只提交目标记录，v1 只在运行时接受 owner 后迁移；见[存储](../../design/daemon/storage.md#commit)与[激活](../../design/daemon/storage.md#migration)。
 
 ## 排障 {#troubleshooting}
 
 | 现象 | 检查 |
 | --- | --- |
 | 绑定前启动失败 | Linux x86_64/KVM、短绝对状态路径、可信 manifest 和真实委派 cgroup v2 |
-| 已有记录的 registry 缺原生 `owner.json` | 保留旧状态／容器；使用全新原生状态，或通过旧 Podman daemon 清理全部 sandbox 后切换 |
+| 已有记录的 v1 registry 缺原生 `owner.json` | 保留旧状态／容器；使用全新原生状态，或通过旧 Podman daemon 清理全部 sandbox 后切换 |
+| v2 header 缺原生 `owner.json`，即使 map 为空 | 恢复原始归属状态；不要删除 `records/`、预留或伪造 marker |
 | 状态目录忙 | 其他 daemon 持有独占锁；不要删锁或状态绕过 |
 | 镜像不可用 | 先在本机准备镜像；不支持自动 pull 或 image auth |
 | SDK 创建无法就绪 | 真实 execd 初始化与 `/ping`/`/ready`、egress `/healthz` 及 guest CID 3 的 44772/18080 vsock bridge；普通 rootfs 不够 |

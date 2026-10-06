@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from resource_budget import ResourceBudget, parse_cpus, unified_path
+from resource_budget import BudgetViolation, ObservationChanged, ResourceBudget, parse_cpus, unified_path
 
 
 def process_stat(pid=123, state='S', started=42):
@@ -213,3 +213,118 @@ def test_reject_threads_created_during_affinity_observation(fixture, monkeypatch
     monkeypatch.setattr(Path, 'read_text', read)
     with pytest.raises(ValueError):
         budget.processes([123])
+
+
+def test_reject_affinity_changed_within_thread_observation(fixture, monkeypatch):
+    budget, _, task = affinity_fixture(fixture)
+    original = Path.read_text
+
+    def read(path, *args, **kwargs):
+        text = original(path, *args, **kwargs)
+        if path == task / 'task/123/status':
+            path.write_text('Cpus_allowed_list: 0-15\n')
+        return text
+
+    monkeypatch.setattr(Path, 'read_text', read)
+    with pytest.raises(ValueError):
+        budget.processes([123])
+
+
+def test_individually_pinned_threads_remain_inside_shared_cpu_budget(fixture):
+    budget, _, task = affinity_fixture(fixture)
+    (task / 'task/124/status').write_text('Cpus_allowed_list: 0\n')
+    result = budget.processes([123])
+    assert result['before']['declared_cpu_set'] == [0, 1]
+    assert result['before']['cpu_quota'] == 200000
+    assert result['witnesses'][0]['threads'][1]['cpus'] == [0]
+
+
+def subtree_fixture(fixture):
+    budget, group, task = fixture
+    (group / 'cgroup.procs').write_text('')
+    worker = group / 'worker.service'
+    worker.mkdir()
+    (worker / 'cgroup.procs').write_text('123\n')
+    detached = group / 'detached.scope'
+    detached.mkdir()
+    (detached / 'cgroup.procs').write_text('456\n')
+    helper = task.parent / '456'
+    helper.mkdir()
+    (helper / 'stat').write_text(process_stat(pid=456, started=99))
+    (helper / 'cgroup').write_text('0::/private.slice/detached.scope\n')
+    return budget, group, worker, detached, helper
+
+
+def test_subtree_witness_includes_detached_scope(fixture):
+    budget, _, _, _, _ = subtree_fixture(fixture)
+    result = budget.witness_all_members([123, 456])
+    assert {w['pid'] for w in result['witnesses']} == {123, 456}
+    assert result['membership'][456] == '/private.slice/detached.scope'
+
+
+@pytest.mark.parametrize('required', [[], [123, 123], [True], [0]])
+def test_subtree_cannot_succeed_with_missing_required_scope(fixture, required):
+    budget, _, _, _, _ = subtree_fixture(fixture)
+    with pytest.raises(ValueError):
+        budget.witness_all_members(required)
+
+
+def test_subtree_cannot_succeed_when_required_pid_has_disappeared(fixture):
+    budget, _, _, _, _ = subtree_fixture(fixture)
+    with pytest.raises(FileNotFoundError):
+        budget.witness_all_members([789])
+
+
+def test_subtree_rejects_process_escape_from_listed_group(fixture):
+    budget, _, _, _, helper = subtree_fixture(fixture)
+    (helper / 'cgroup').write_text('0::/outside.scope\n')
+    with pytest.raises(ValueError):
+        budget.witness_all_members([123])
+
+
+def test_subtree_rejects_duplicate_membership(fixture):
+    budget, group, _, _, _ = subtree_fixture(fixture)
+    (group / 'cgroup.procs').write_text('123\n')
+    with pytest.raises(ValueError):
+        budget.witness_all_members([123])
+
+
+def test_subtree_rejects_process_that_exits_before_witness(fixture):
+    budget, _, _, _, helper = subtree_fixture(fixture)
+    (helper / 'stat').unlink()
+    with pytest.raises(FileNotFoundError):
+        budget.witness_all_members([123])
+
+
+def test_subtree_rejects_membership_change_after_process_check(fixture, monkeypatch):
+    budget, _, _, detached, _ = subtree_fixture(fixture)
+    original = Path.read_text
+    reads = 0
+
+    def read(path, *args, **kwargs):
+        nonlocal reads
+        text = original(path, *args, **kwargs)
+        if path.name == 'cpu.stat':
+            reads += 1
+            if reads == 4:
+                (detached / 'cgroup.procs').write_text('')
+        return text
+
+    monkeypatch.setattr(Path, 'read_text', read)
+    with pytest.raises(ValueError):
+        budget.witness_all_members([123])
+
+
+def test_live_required_root_outside_parent_is_violation_not_missing_observation(fixture):
+    budget, _, _, detached, helper = subtree_fixture(fixture)
+    (detached / 'cgroup.procs').write_text('')
+    (helper / 'cgroup').write_text('0::/outside.scope\n')
+    with pytest.raises(BudgetViolation):
+        budget.witness_all_members([123, 456])
+
+
+def test_exited_root_is_unknown_not_constraint_violation(fixture):
+    budget, _, _, _, helper = subtree_fixture(fixture)
+    (helper / 'stat').write_text(process_stat(pid=456, state='Z'))
+    with pytest.raises(ObservationChanged):
+        budget.witness_all_members([123, 456])

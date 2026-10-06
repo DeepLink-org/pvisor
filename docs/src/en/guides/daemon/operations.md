@@ -43,18 +43,21 @@ One daemon exclusively locks private state; owner identity persists before nativ
 
 Pending deletion survives restart and cannot be overwritten by a native observation. Unknown deletion retains its reservation. Missing native sandboxes remain visible as Failed until explicitly deleted. The maintenance loop retries expired/pending deletion; list is not continuous native process monitoring, so use GET to reconcile a specific sandbox.
 
-Never delete state to fix an error or run two daemons against it. State carries native ownership and unresolved reservations. Moving old Controller journals into this directory does not migrate history. The bounded registry has configured capacity and a 16 MiB limit; it is not an unbounded distributed task archive or a Run Bundle/artifact store.
+Never delete state to fix an error or run two daemons against it. State carries native ownership and unresolved reservations. Moving old Controller journals into this directory does not migrate history. The bounded registry has configured capacity and an aggregate 16 MiB logical version-1-equivalent budget, excluding repeated per-file owner envelopes; this is not a physical directory-size cap. It is not an unbounded distributed task archive or a Run Bundle/artifact store.
 
 Delete/reconciliation can finish tombstone-backed cleanup without the original rootfs or firmware. It reclaims the empty owned cgroup and private run/RAM/temp/socket/secret records, retaining a minimal ID fence. Reclamation errors preserve reservations for retry; do not remove tombstones or registry state yourself. See [storage](../../design/daemon/storage.md#gc).
 
-An occupied `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
+An occupied version-1 `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
+
+Version 2 keeps only the owner/header and an empty map in `sandboxes.json`; private `records/meta.json` and owner-wrapped per-sandbox files hold the inventory. Preserve those files and the native `owner.json` together. Mutations commit only the target record, and v1 migrates only after runtime owner acceptance; see [storage](../../design/daemon/storage.md#commit) and [activation](../../design/daemon/storage.md#migration).
 
 ## Troubleshooting {#troubleshooting}
 
 | Symptom | Check |
 | --- | --- |
 | Startup fails before bind | Linux x86_64/KVM, short absolute state, trusted manifests and real delegated cgroup v2 |
-| Occupied registry lacks native `owner.json` | Preserve old state/containers; use fresh native state or clean up all sandboxes through the old Podman daemon before switching |
+| Occupied v1 registry lacks native `owner.json` | Preserve old state/containers; use fresh native state or clean up all sandboxes through the old Podman daemon before switching |
+| v2 header lacks native `owner.json`, even with an empty map | Restore original ownership state; do not erase `records/`, reservations or fabricate a marker |
 | State directory is busy | Another daemon owns its exclusive lock; do not remove the lock/state to bypass it |
 | Image unavailable | Provision the prepared image locally; automatic pull and image auth are unsupported |
 | SDK creation never becomes ready | Real execd initialization and `/ping`/`/ready`, egress `/healthz`, and guest CID 3 vsock bridges on 44772/18080; stock rootfs is insufficient |

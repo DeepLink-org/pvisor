@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 from run_all import ldd_paths, prepare_rootfs
 from v1.filesystem import fixture
+from reference_inputs import create_reference_manifest
 
 
 def prepare_local_tools(root, binary, toolchain):
@@ -301,8 +302,16 @@ def main():
         ).strip(),
         "kernel_config_sha256": hashlib.sha256((out / "kernel.config").read_bytes()).hexdigest(),
         "preparation_scope": "offline copying installed tools, image import and ext4 creation; excludes package download and kernel compilation",
+        "setup_wall_ms_scope": "through image/ext4 preparation; input manifest hashing is recorded separately",
     }
     (out / "assets.json").write_text(json.dumps(metadata, indent=2) + "\n")
+    manifest_started = time.perf_counter_ns()
+    manifest = create_reference_manifest(out)
+    (out / "input-manifest-build.json").write_text(json.dumps({
+        "input_manifest": str(manifest),
+        "hashing_ms": (time.perf_counter_ns() - manifest_started) / 1e6,
+        "scope": "offline input identity generation, excluded from task timers and setup_wall_ms",
+    }, indent=2) + "\n")
     print(json.dumps(metadata, indent=2))
 
 

@@ -104,6 +104,10 @@ pub struct DeadLetterEntry {
     pub error: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepared_record_json: Option<String>,
+    /// Target of an already-prepared command, distinct from the source call.
+    /// This is retry input, not evidence that the record committed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_story: Option<crate::engine::StoryContext>,
 }
 
 pub fn dead_letter_path(storage: &Path) -> PathBuf {
@@ -190,6 +194,37 @@ pub fn append_dead_letter(
     error: &str,
     prepared_record_json: Option<String>,
 ) -> Result<()> {
+    append_dead_letter_with_story(storage, ctx, event, error, prepared_record_json, None)
+}
+
+/// Preserve a failed prepared command without reconstructing a committed event
+/// or replaying its source call through a registry that already matched the link.
+pub(crate) fn append_prepared_dead_letter(
+    storage: &Path,
+    ctx: &CallContext,
+    event: &Event,
+    error: &str,
+    story: &crate::engine::StoryContext,
+    record: &crate::record::CaptureRecord,
+) -> Result<()> {
+    append_dead_letter_with_story(
+        storage,
+        ctx,
+        event,
+        error,
+        Some(serde_json::to_string(record)?),
+        Some(story.clone()),
+    )
+}
+
+fn append_dead_letter_with_story(
+    storage: &Path,
+    ctx: &CallContext,
+    event: &Event,
+    error: &str,
+    prepared_record_json: Option<String>,
+    prepared_story: Option<crate::engine::StoryContext>,
+) -> Result<()> {
     let mut retained_event = SerializableEvent::from_event(event);
     match &mut retained_event {
         SerializableEvent::Request {
@@ -248,6 +283,7 @@ pub fn append_dead_letter(
         event: retained_event,
         error: error.to_string(),
         prepared_record_json,
+        prepared_story,
     };
     let path = dead_letter_path(storage);
     let mut file = open_private_append_file(&path)
@@ -454,9 +490,20 @@ pub async fn replay_dead_letter(
         failed: 0,
     };
     for entry in entries {
-        let ctx = entry.context.to_call_context();
-        let event = entry.event.to_event();
-        match engine.apply(&ctx, event).await {
+        let result = if let Some(story) = entry.prepared_story {
+            async {
+                let raw = entry
+                    .prepared_record_json
+                    .context("prepared dead letter missing record")?;
+                let record = serde_json::from_str(&raw).context("decode prepared dead letter")?;
+                engine.apply_prepared_record(story, record).await
+            }
+            .await
+        } else {
+            let ctx = entry.context.to_call_context();
+            engine.apply(&ctx, entry.event.to_event()).await
+        };
+        match result {
             Ok(()) => summary.succeeded += 1,
             Err(e) => {
                 summary.failed += 1;
@@ -547,6 +594,63 @@ mod tests {
         assert!(matches!(entries[0].event.to_event(), Event::Request(_)));
         assert_eq!(entries[0].context.provider, ProviderKind::OpenAi);
         assert_eq!(entries[0].context.protocol, ProtocolKind::ChatCompletions);
+        assert!(
+            entries[0].prepared_story.is_none(),
+            "legacy entries remain source-event retries"
+        );
+    }
+
+    #[test]
+    fn prepared_dead_letter_retains_scope_identity_and_applies_content_limits() {
+        for level in [
+            CaptureLevel::Summary,
+            CaptureLevel::Dialogue,
+            CaptureLevel::Full,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut ctx = sample_ctx(dir.path());
+            ctx.level = level;
+            ctx.request_headers = vec![("authorization".into(), "Bearer context-secret".into())];
+            let target = ctx.story.clone();
+            let record: crate::record::CaptureRecord = serde_json::from_value(serde_json::json!({
+                "kind": "llm.spawn_link", "event_id": "retained-retry-id",
+                "payload": {"user_content":"unique-private-prompt", "body":{"api_key":"prepared-secret"},
+                    "spawn_links":[{"subagent_id":"child", "description":"unique-private-description"}]}
+            })).unwrap();
+            append_prepared_dead_letter(
+                dir.path(),
+                &ctx,
+                &Event::Cancelled(CancelEvent {
+                    reason: None,
+                    status: 200,
+                    bytes_received: 0,
+                    streaming: true,
+                }),
+                "no receipt",
+                &target,
+                &record,
+            )
+            .unwrap();
+            let serialized = std::fs::read_to_string(dead_letter_path(dir.path())).unwrap();
+            assert!(!serialized.contains("context-secret"));
+            assert!(!serialized.contains("prepared-secret"));
+            let entries = read_dead_letter_entries(dir.path()).unwrap();
+            assert_eq!(entries[0].prepared_story.as_ref(), Some(&target));
+            let retained: crate::record::CaptureRecord =
+                serde_json::from_str(entries[0].prepared_record_json.as_ref().unwrap()).unwrap();
+            assert_eq!(retained.event_id.as_deref(), Some("retained-retry-id"));
+            assert_eq!(retained.payload["spawn_links"][0]["subagent_id"], "child");
+            if level == CaptureLevel::Summary {
+                assert!(!serialized.contains("unique-private-prompt"));
+            }
+            if level.includes_full_body() {
+                assert_eq!(retained.payload["body"]["api_key"], "<redacted>");
+                assert!(serialized.contains("unique-private-description"));
+            } else {
+                assert!(retained.payload.get("body").is_none());
+                assert!(!serialized.contains("unique-private-description"));
+            }
+        }
     }
 
     #[test]

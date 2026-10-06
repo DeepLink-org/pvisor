@@ -105,6 +105,6 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-nightly.sh | bash
             ```
 
-            A standalone Linux x86_64 `pvisor-daemon-linux-x86_64.tar.gz` and SHA-256 checksum are also provided; no wheel or native executor is required. Its user-service environment example documents rootless Podman and prepared-image requirements. The daemon backend is Linux-only.
+            A standalone Linux x86_64 `pvisor-daemon-linux-x86_64.tar.gz` and SHA-256 checksum are also provided; no wheel or separate CLI is required. The daemon embeds native `pvisor-vm` execution and requires Linux x86_64, KVM access and delegated cgroup v2. Provision a trusted prepared-image manifest and Linux rootfs with a bootstrap supervising real execd/egress services and guest vsock bridges; the bootstrap is not supplied or end-to-end validated. Docker/Podman are not used.
 
-            The wheel includes the matched `pvisor` entry point, local companion commands and the independently built `pvisor-daemon` executable. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).
+            Both wheels install native `pvisor` and local companion scripts directly; only the Linux x86_64 wheel includes the independently built `pvisor-daemon` executable. The Python package is a version marker, not a launcher. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).

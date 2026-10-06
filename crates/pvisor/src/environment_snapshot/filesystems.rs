@@ -15,7 +15,7 @@ pub struct SharedFilesystemLayer {
     pub id: String,
     root: PathBuf,
     pub(super) pool: PathBuf,
-    // The disk reference survives Worker exit and retained Run records. This
+    // The disk reference survives supervisor exit for retained Run records. This
     // lock additionally fences GC if an active Attempt's reference is removed.
     _active: File,
 }

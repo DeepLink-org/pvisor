@@ -489,8 +489,8 @@ destination = "./capture"
 大小限制在运行结束后检查，因此不限制 Agent 运行期间的峰值占用。
 
 `--container-image IMAGE` 自动选择原生 OCI container executor；
-`--executor container` 让选择显式。传输层生成标准 OCI bundle，解析匹配的静态
-`linux-amd64`/`linux-arm64` pVisor，挂进 rootfs，设置 process args，并走普通
+`--executor container` 让选择显式。传输层生成标准 OCI bundle，使用当前或显式提供的
+兼容 Linux pVisor，挂进 rootfs，设置 process args，并走普通
 `pvisor run --executor host --spec ...` 路径。Agent 命令放在 RunSpec
 内，而不是暴露在 OCI runner argv。注入的 pVisor 创建自己的 AgentCtl 并
 返回类型化 RunResult。最终 OverlayFS cwd 和会话 Gateway 配置挂在稳定路径。
@@ -508,6 +508,13 @@ pvisor run \
     'source="/host/cache", target="/cache", read_only=false' \
   -- codex
 ```
+
+上方示例假设 Linux x86_64。`--container-platform linux/amd64` 或 `linux/arm64`
+断言原生宿主架构；匹配时接受，跨架构值会被拒绝，即使提供了预制
+`--container-rootfs`。host 和 VM 配置会拒绝此选项。它不选择模拟执行，也不自动发现／下载程序。
+注入二进制默认是当前运行的 pVisor；需要时用 `--container-pvisor-binary` 指定自行准备、
+兼容原生架构和 rootfs ABI 的 Linux 构建。参见[容器准备](../guides/executors/container.md)与
+[配置取值](config.md#settings)。
 
 进程内 Gateway 和显式 OverlayNet 代理当前要求 `container.network = "host"`，
 因为它们注入的地址是 host loopback 端点。关闭这些 driver 时，`none` 模式有效；

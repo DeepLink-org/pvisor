@@ -1,4 +1,4 @@
-//! Actor wire protocol — all cross-actor messages live here.
+//! Serialized actor boundary protocol and typed in-process command helpers.
 
 mod headers;
 mod run;
@@ -6,7 +6,7 @@ mod story;
 
 pub(crate) use headers::{headers_to_header_map, headers_to_vec};
 pub(crate) use run::{RUN_ACTOR_NAME, RunCommand, RunReply, run_enrich, run_main_route};
-pub(crate) use story::{StoryCommand, StoryReply, StoryScope};
+pub(crate) use story::{LocalStoryCommand, StoryCommand, StoryReply, StoryScope};
 
 /// Unified ask/tell acknowledgement for story actors.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

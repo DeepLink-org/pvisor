@@ -36,7 +36,7 @@ Paused、Terminated、Failed 和不确定记录保留完整 CPU/内存/数量记
 
 要求 Linux x86_64、可用 `/dev/kvm`、可信绝对路径，以及可写、已委派且启用 CPU/memory/PID controller 与 `cgroup.kill` 的 cgroup v2 层级。前置检查验证真实 controller 写入和 KVM API；没有 host、OCI 命令或 registry-pull 降级。
 
-原生 supervisor 在独立、脱离 daemon 生命周期的子进程中嵌入 `pvisor::PVisor`，只配置 `VmExecutor` 并持有 RunHandle。Sandbox cgroup 限制整个 supervisor/VMM/helper 树：总 CPU 速率 **10–8000 millicores**、硬内存、零 swap、`pids.max=512` 与 group OOM。vCPU 数按 quota 向上取整（最多 8），guest RAM 向下取整到 MiB；硬内存上限还包含宿主侧开销。生命周期／端点观察会重新核对限制。Paused、Failed 和不确定记录继续保守预留资源。
+原生 supervisor 在独立、脱离 daemon 生命周期的子进程中嵌入 `pvisor::PVisor`，只配置 `VmExecutor` 并持有 RunHandle。Sandbox cgroup 限制整个 supervisor/VMM/helper 树：总 CPU 速率 **10–8000 millicores**、硬内存、零 swap、`pids.max=512` 与 group OOM。vCPU 数按 quota 向上取整（最多 8），guest RAM 向下取整到 MiB；硬内存上限还包含宿主侧开销。完整限制／就绪检查保留在 create、Inspect 和 resume；端点解析认证 live Running 状态并检查删除屏障，不为每次数据请求重复完整 health/cgroup 检查。见[服务访问](lifecycle.md#endpoints)。Paused、Failed 和不确定记录继续保守预留资源。
 
 启动 callback 在 owner 锁内检查 started／删除／tombstone marker，通过预先打开的 `cgroup.procs` FD 在 **exec 之前**加入身份绑定的 cgroup。Supervisor 启动时核验成员关系，不迁移已运行的 Tokio 进程；supervisor/Tokio 分配与后续 VM/helper 子进程均计入 sandbox 预算。直接在该 cgroup 外调用隐藏命令会失败关闭。
 

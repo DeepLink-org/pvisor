@@ -17,7 +17,7 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor run --safe \
 | `PVISOR_IMAGE_STORE` | OCI 镜像缓存目录的环境覆盖；显式 `--image-store` 优先 |
 | `PVISOR_CACHE_SERVER` | 共享镜像缓存端点；`off` 禁用，未设置使用按用户的 Unix socket 自动探测 |
 | `PVISOR_CACHE_TOKEN` | TCP 缓存端点的共享密钥；不要通过 `--pass-env` 交给 Agent |
-| `PVISOR_BIN` | Python 启动器选择的 pVisor 二进制；通常无需设置 |
+| `PVISOR_BIN` | 已废弃的 Python 启动器覆盖；安装的原生脚本不读取它。直接调用二进制路径或通过 `PATH` 选择 |
 | `XDG_CONFIG_HOME` | 用户策略根；未设置用 `~/.config` |
 | `HOME` / `PATH` | 存储、工具发现与环境投影的宿主输入；safe 下 HOME 会重定向 |
 

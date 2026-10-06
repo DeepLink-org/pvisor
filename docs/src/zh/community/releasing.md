@@ -5,9 +5,10 @@ PyPI。项目仍然以 Python wheel 交付，但不包含 PyO3 扩展，也不�
 
 每个平台 wheel 标记为 `py3-none-<platform>`，并包含：
 
-- Python `pvisor` 包；
-- 原生 `pvisor` CLI；
-- pVisor 所需的平台 libkrun firmware payload。
+- Python `pvisor` 版本标记，不是启动器；
+- 原生脚本 `pvisor`、`pvisor-cache`、`pvisor-tui`、`pvisor-replay` 与 `pvisor-memory-pool`，直接安装到环境的 bin 目录；
+- 独立构建的 `pvisor-daemon`，仅 Linux x86_64 wheel 包含；
+- `libkrunfw.5.dylib`，仅 Apple Silicon macOS 包含；Linux 在构建时内嵌内核。
 
 当前发布集包含 Linux x86_64 和 Apple Silicon macOS wheel。源码分发不是已
 发布产物的一部分。
@@ -53,7 +54,7 @@ GitHub 中不存放 PyPI API token。pending publisher 可以在首次成功上�
 
 PEP 517 backend 是 setuptools，配合仓库自有的
 `scripts/packaging/build_backend.py`。组装 wheel 之前，它会构建 `pvisor` Rust
-CLI 并暂存 firmware。`setup.py` 把 wheel 标为
+CLI 等原生组件并暂存平台载荷。`setup.py` 直接安装二进制脚本，不使用 Python console-entry-point 包装器，并把 wheel 标为
 平台相关，同时把 Python 与 ABI tag 保持为 `py3-none`。
 
 打包脚本会拉取 pinned 的 libkrun firmware 归档（Linux x86_64 与 Apple
@@ -76,10 +77,12 @@ Apple Silicon macOS 使用原生 Darwin linker 构建 CLI，签署 HVF entitleme
 对部分完成的 tagged 发布再跑一遍时，会跳过 PyPI 已经接受的文件，并补齐
 缺失的 GitHub Release 资源。
 
+Linux x86_64 daemon 使用原生 `pvisor-vm`，不是 rootless Podman。wheel／独立程序都需要 KVM 权限、委派 cgroup v2，以及可信预制镜像 manifest/rootfs；bootstrap 须监督真实 execd/egress 服务，并提供 guest CID 3、44772/18080 端口的 vsock bridge。Bootstrap／镜像配方未提供或端到端验证。分发程序不建立 SDK 兼容或密度证据。见 [daemon 准备](../guides/daemon/index.md)。
+
 ## Nightly 构建
 
 **Nightly Build** 每天 UTC 03:00（北京时间 11:00）运行，也可以在 `main` 上手动
 触发；普通 push 运行 CI，不再重复构建 nightly wheel。Nightly 与稳定发布共用
 Linux/macOS 构建矩阵、安装 smoke test 和完整产物集校验。
 Nightly 版本追加 `+g<run-number>.<commit>`，仅更新 GitHub 的 `nightly` release。
-稳定 tag 发布先上传 PyPI，再把同一组已校验 wheel 附加到 GitHub Release。
+稳定 tag 发布先上传 PyPI，再把同一组已校验 wheel 附加到 GitHub Release。Nightly 还发布独立的 `pvisor-daemon-linux-x86_64.tar.gz` 及 SHA-256 checksum；它无需 wheel 或单独 CLI，但仍需要上述原生运行时条件。

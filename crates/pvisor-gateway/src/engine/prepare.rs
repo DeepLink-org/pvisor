@@ -1,12 +1,13 @@
 //! Prepare phase — pure capture logic before story-local I/O.
 //!
-//! Runs on the runtime thread; may `ask` the run actor. Markdown I/O only via [`StoryCommand`].
+//! Runs in the story scheduling owner, before its typed persistence command.
 
+use super::actors::RunActor;
 use anyhow::Result;
-use pulsing_actor::ActorRef;
 use serde_json::Value;
+use std::sync::Mutex;
 
-use super::wire::{StoryCommand, StoryScope, run_enrich};
+use super::wire::{LocalStoryCommand as StoryCommand, StoryScope, run_enrich};
 use super::{CallContext, CancelEvent, CompleteEvent, Event, RequestEvent};
 use crate::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
 use crate::runtime::debug;
@@ -21,7 +22,7 @@ use crate::usage::{
     extract_usage_from_sse,
 };
 
-/// Index + config for the prepare phase (run actor accessed via wire client, not held here).
+/// Storage for prepare diagnostics; the shared registry is accessed as typed state.
 pub(crate) struct CapturePreparer {
     pub storage: std::sync::Arc<std::path::PathBuf>,
 }
@@ -36,7 +37,7 @@ pub(crate) struct PreparedCapture {
 impl CapturePreparer {
     pub async fn prepare(
         &self,
-        run: &ActorRef,
+        run: &Mutex<RunActor>,
         ctx: &CallContext,
         event: Event,
     ) -> Result<PreparedCapture> {
@@ -55,7 +56,7 @@ impl CapturePreparer {
 
     async fn prepare_request(
         &self,
-        run: &ActorRef,
+        run: &Mutex<RunActor>,
         ctx: &CallContext,
         event: RequestEvent,
     ) -> Result<PreparedCapture> {
@@ -116,13 +117,10 @@ impl CapturePreparer {
         if let Some(semantic) = semantic.filter(|_| ctx.level.includes_full_body()) {
             rec.payload["llm_request"] = serde_json::to_value(semantic.as_ref())?;
         }
-        let backfills = run_enrich(run, &mut rec, ctx, event.body_json.as_ref(), None).await?;
+        let backfills = run_enrich(run, &mut rec, ctx, event.body_json.as_ref(), None)?;
         retain_capture_content(&mut rec.payload, ctx.level);
         let scope = StoryScope::from_context(ctx);
-        let story_cmd = Some(StoryCommand::persist_record(
-            scope,
-            serde_json::to_vec(&rec)?,
-        ));
+        let story_cmd = Some(StoryCommand::persist_record(scope, rec));
         Ok(PreparedCapture {
             ctx: ctx.clone(),
             backfills,
@@ -132,7 +130,7 @@ impl CapturePreparer {
 
     async fn prepare_completed(
         &self,
-        run: &ActorRef,
+        run: &Mutex<RunActor>,
         ctx: &CallContext,
         event: CompleteEvent,
     ) -> Result<PreparedCapture> {
@@ -263,13 +261,10 @@ impl CapturePreparer {
             event.streaming,
             !event.headers.is_empty(),
         );
-        let backfills = run_enrich(run, &mut rec, ctx, None, assistant_content.as_deref()).await?;
+        let backfills = run_enrich(run, &mut rec, ctx, None, assistant_content.as_deref())?;
         retain_capture_content(&mut rec.payload, ctx.level);
         let scope = StoryScope::from_context(ctx);
-        let story_cmd = Some(StoryCommand::persist_record(
-            scope,
-            serde_json::to_vec(&rec)?,
-        ));
+        let story_cmd = Some(StoryCommand::persist_record(scope, rec));
         Ok(PreparedCapture {
             ctx: ctx.clone(),
             backfills,
@@ -306,7 +301,7 @@ impl CapturePreparer {
         };
         let story_cmd = Some(StoryCommand::persist_record(
             StoryScope::from_context(ctx),
-            serde_json::to_vec(&rec)?,
+            rec,
         ));
         Ok(PreparedCapture {
             ctx: ctx.clone(),

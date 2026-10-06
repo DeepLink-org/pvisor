@@ -1606,8 +1606,7 @@ fn capture_checkpoint(
                     }
                     if suspend {
                         // Acknowledgement proves sealing, not exit. The parent
-                        // reaps this process before reporting Hibernated and
-                        // the controller releases capacity only on completion.
+                        // reaps this runner before reporting Hibernated.
                         write_control_reply(
                             control,
                             &super::control::ControlReply {
@@ -1685,7 +1684,8 @@ fn guest_exit_outcome(
     )
 }
 
-/// Handle the self-exec libkrun runner.
+/// Dispatch image access, the Linux CPU QoS anchor, restore-RAM watchdog/server,
+/// and pvisor-vm runner modes before Tokio, threads, or CLI argument parsing.
 /// Returns `true` when the current process was consumed by an internal mode.
 pub fn run_internal_if_requested() -> anyhow::Result<bool> {
     if crate::image::cache::run_image_access_internal()? {

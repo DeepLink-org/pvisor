@@ -673,6 +673,19 @@ def test_daemon_ci_and_distribution_use_native_linux_pipeline():
     assert "no native executor or firmware" not in ci + dist
 
 
+def test_nightly_release_describes_native_daemon_prerequisites():
+    contents = (ROOT / ".github/workflows/nightly.yml").read_text()
+    assert "no wheel or separate CLI is required" in contents
+    assert "native `pvisor-vm` execution" in contents
+    assert "KVM access and delegated cgroup v2" in contents
+    assert "trusted prepared-image manifest" in contents
+    assert "bootstrap is not supplied or end-to-end validated" in contents
+    assert "only the Linux x86_64 wheel" in contents
+    assert "Python package is a version marker, not a launcher" in contents
+    assert "rootless Podman" not in contents
+    assert "no wheel or native executor is required" not in contents
+
+
 def test_nightly_installer_uses_platform_specific_component_set():
     contents = (ROOT / "scripts/install-nightly.sh").read_text()
     assert "== Linux-x86_64 ]]; then binaries+=(pvisor-daemon)" in contents

@@ -196,8 +196,8 @@ pub struct ContainerSettings {
     /// Target-specific pVisor injected into the container. Defaults to the
     /// running executable; set it when the guest ABI differs from the host.
     pub pvisor_binary: Option<PathBuf>,
-    /// Explicit OCI platform. Required for packaged artifact auto-discovery
-    /// when the image platform cannot be inspected locally.
+    /// Optional native OCI platform assertion. Must match the host architecture;
+    /// cross-platform selection/emulation and artifact auto-discovery are unsupported.
     pub platform: Option<ContainerPlatform>,
     /// Container network namespace mode.
     pub network: ContainerNetwork,

@@ -70,7 +70,9 @@ daemon 检查真实 execd 的 `/ping`、`/ready` 和 egress 的 `/healthz` 后�
 
 默认只监听 loopback。对外访问前，在可信反向代理上配置 TLS，并用 `--public-endpoint HOST:PORT` 指定外部路由可达的 authority，不带 scheme 或路径。通配监听与开发用的零端口绑定也要求显式正确的 public endpoint。认证见[端点认证](operations.md#endpoints)。
 
-已有记录的 `sandboxes.json` 若缺少原生 `owner.json` marker，会在既有 store 独占锁内被拒绝：它可能仍持有活动 Podman 容器。使用全新原生状态并保留／清理旧部署，或通过旧 Podman daemon 删除全部 sandbox、确认清理后，再用已清空的 registry 切换后端。不要删除 registry 条目、预留或所有权状态，也不要伪造原生 marker 绕过检查。原生 daemon 不会把这些容器接管为 Missing 或静默释放其预留。
+版本 1 中已有记录的 `sandboxes.json` 若缺少原生 `owner.json` marker，会在既有 store 独占锁内被拒绝：它可能仍持有活动 Podman 容器。使用全新原生状态并保留／清理旧部署，或通过旧 Podman daemon 删除全部 sandbox、确认清理后，再用已清空的 registry 切换后端。不要删除 registry 条目、预留或所有权状态，也不要伪造原生 marker 绕过检查。原生 daemon 不会把这些容器接管为 Missing 或静默释放其预留。
+
+当前 v2 状态使用小型 `sandboxes.json` owner/header 与空 map，加上私有逐 sandbox `records/`。缺少原生 `owner.json` 仍会拒绝 v2 启动；空 header 不证明 sandbox 不存在。归属／记录状态须一同保留。原生 v1 存储只有在运行时 factory 接受 owner 后才迁移；见[存储迁移](../../design/daemon/storage.md#migration)。
 
 ## 从 Cluster 迁移 {#migration}
 

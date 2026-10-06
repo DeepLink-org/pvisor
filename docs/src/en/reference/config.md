@@ -127,7 +127,7 @@ Enforcement depends on the executor. Check requested, effective, mechanisms, and
 | `vm` | `memory_mib = 2048`, `cpus = 2`, `rootfs_immutable = false`, `ram_compression = false`, `ram_dedup = false` |
 | Optional `vm` fields | `rootfs`, `image`, `image_store`, `library_dir`, `ram_backing`, `memory_pool`, `node_socket`, `snapshot_filesystem_pool` |
 
-`container.platform` accepts `linux-amd64` or `linux-arm64`; `container.network` accepts `host`, `bridge`, or `none`. The injected Linux container binary must match the rootfs architecture and ABI.
+`container.platform` accepts `linux-amd64` or `linux-arm64` as an optional native host architecture assertion. Matching values are accepted; cross-architecture values are rejected even with a prepared `container.rootfs`. Host and VM configurations reject a configured platform. It does not enable emulation or executable auto-discovery/download. `container.pvisor_binary` defaults to the running executable; an explicit Linux binary and rootfs must be compatible with the native architecture and guest ABI. See [container setup](../guides/executors/container.md). `container.network` accepts `host`, `bridge`, or `none`, but `bridge` is currently rejected without implemented CNI support.
 
 VM memory is measured in MiB and CPU count is a positive integer. `ram_backing` retains a RAM file; `ram_compression` enables the corresponding compressed backing. Compressed backing and shared pools on macOS have additional FUSE requirements; see [Memory-sharing proof of concept](../design/memory-optimization/proof-of-concept.md).
 
@@ -175,7 +175,7 @@ Field names and types are checked against the Rust serde structures during the d
 | `container.image` | `String` | `""` | OCI image reference; `--container-image` |
 | `container.rootfs` | `Option<PathBuf>` | `unset` | Prepared rootfs instead of image; `--container-rootfs` |
 | `container.pvisor_binary` | `Option<PathBuf>` | `unset` | Injected Linux executable; default current binary; `--container-pvisor-binary` |
-| `container.platform` | `Option<ContainerPlatform>` | `unset` | linux-amd64 or linux-arm64; `--container-platform` |
+| `container.platform` | `Option<ContainerPlatform>` | `unset` | Native architecture assertion: linux-amd64 or linux-arm64; container only; `--container-platform` |
 | `container.network` | `ContainerNetwork` | `"host"` | host, bridge, none; `--container-network` |
 | `container.workdir` | `Option<PathBuf>` | `unset` | Container cwd when no Run cwd is mounted; `--container-workdir` |
 | `container.user` | `Option<String>` | `unset` | uid, uid:gid, or name; `--container-user` |

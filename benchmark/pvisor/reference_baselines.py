@@ -31,6 +31,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from bench import percentile
+from resource_budget import BudgetViolation, ResourceBudget, parse_cpus
+from reference_inputs import verify_reference_inputs
 from v1.common import snapshot
 
 
@@ -66,6 +68,29 @@ def verified_build_receipt(path, binary):
     if not manifest.is_file() or digest(manifest) != receipt.get("source_manifest_sha256"):
         raise ValueError("build receipt source manifest is missing or mismatched")
     return receipt
+
+
+def reference_budget(args):
+    """An optional already established private parent, never a declared cap."""
+    group = getattr(args, "resource_budget", None)
+    if group is None:
+        return None
+    if not args.cpu_affinity:
+        raise ValueError("a resource budget requires explicit CPU affinity")
+    budget = ResourceBudget(Path(group), args.budget_memory_mib * 1024 * 1024,
+                            frozenset(parse_cpus(args.cpu_affinity)),
+                            cpu_placement="affinity")
+    if "docker" in args.backends.split(",") and not budget.group.name.endswith(".slice"):
+        raise ValueError("Docker's systemd cgroup parent must be a private slice")
+    required = [os.getpid()]
+    if "docker" in args.backends.split(","):
+        if not args.docker_root_pid:
+            raise ValueError("a common Docker budget requires its private daemon PID")
+        required.append(args.docker_root_pid)
+    # This also rejects a runner/daemon launched outside the parent or with
+    # unrestricted threads. Moving a live daemon is not part of this helper.
+    budget.processes(required)
+    return budget
 
 
 def validate_guest_output(output, mode):
@@ -202,6 +227,7 @@ def run_trial(args, metadata, backend, mode, trial):
         ["cp", "--reflink=auto", "-a", str(args.assets / "rootfs/work"), str(work)], check=True
     )
     stage = root / "stage"
+    budget = reference_budget(args) if getattr(args, "resource_budget", None) else None
     env = {
         k: v
         for k, v in os.environ.items()
@@ -214,6 +240,7 @@ def run_trial(args, metadata, backend, mode, trial):
         GIT_CONFIG_COUNT="1",
         GIT_CONFIG_KEY_0="safe.directory",
         GIT_CONFIG_VALUE_0="*",
+        PYTHONDONTWRITEBYTECODE="1",
     )
     env.pop("PVISOR_TEST_ALLOW_NO_USERNS", None)
     image = metadata["assets"]["docker_image"]
@@ -256,6 +283,10 @@ def run_trial(args, metadata, backend, mode, trial):
             image,
             *payload[1:],
         ]
+        if budget is not None:
+            # systemd driver resolves this explicit slice beneath the user's
+            # manager; actual payload/shim membership still needs observation.
+            argv[5:5] = ["--cgroup-parent", budget.group.name]
     elif backend.startswith("sdk-vm-"):
         launch = root / "guest.json"
         launch.write_text(json.dumps({
@@ -386,6 +417,11 @@ def run_trial(args, metadata, backend, mode, trial):
     peak = [0]
     stop = threading.Event()
     usage_before = resource.getrusage(resource.RUSAGE_CHILDREN) if getattr(args, "diagnostic_timing", False) else None
+    budget_before = budget.read() if budget else None
+    budget_parent = budget.processes([os.getpid()]) if budget else None
+    budget_observations = []
+    budget_unknown = []
+    budget_violations = []
     start = time.perf_counter_ns()
     proc = subprocess.Popen(
         argv,
@@ -434,6 +470,21 @@ def run_trial(args, metadata, backend, mode, trial):
                                 roots.add(int(path.name))
             rss, _ = snapshot(roots)
             peak[0] = max(peak[0], rss)
+            if budget is not None:
+                try:
+                    # Retain one stable live snapshot, not thousands of copies.
+                    # A missed lifetime remains explicitly unknown. This scope
+                    # includes detached siblings, not only the launcher tree.
+                    if not budget_observations:
+                        budget_observations.append(budget.witness_all_members(roots))
+                    else:
+                        budget.read()
+                except BudgetViolation as error:
+                    budget_violations.append({"offset_ms": (time.perf_counter_ns() - start) / 1e6,
+                                              "reason": str(error)})
+                except (OSError, ValueError) as error:
+                    budget_unknown.append({"offset_ms": (time.perf_counter_ns() - start) / 1e6,
+                                           "reason": str(error), "type": type(error).__name__})
             stop.wait(0.02)
 
     exit_ns = []
@@ -471,6 +522,25 @@ def run_trial(args, metadata, backend, mode, trial):
     (root / "command.json").write_text(
         json.dumps({"argv": argv, "exit": proc.returncode, "prepare_ms": prep_ms}, indent=2)
     )
+    budget_record = None
+    if budget is not None:
+        budget_after = budget.read()
+        budget_record = dict(
+            before=budget_before, after=budget_after,
+            launch_parent=budget_parent, live_observations=budget_observations,
+            unknown_observations=budget_unknown,
+            violations=budget_violations,
+            cpu_usec=budget_after["cpu_stat"]["usage_usec"] - budget_before["cpu_stat"]["usage_usec"],
+            memory_events_delta={k: v - budget_before["memory_events"].get(k, 0)
+                                 for k, v in budget_after["memory_events"].items()},
+            scope="whole private parent accounting; live membership is sampled, not proof of every short lifetime",
+        )
+        (root / "resource-budget.json").write_text(json.dumps(budget_record, indent=2) + "\n")
+        if budget_violations:
+            raise RuntimeError(f"resource-budget violation during {mode}/{backend}: {root}")
+        if any(budget_record["memory_events_delta"].get(k, 0) > 0
+               for k in ("oom", "oom_kill", "oom_group_kill")):
+            raise RuntimeError(f"resource-budget OOM during {mode}/{backend}: {root}")
     if proc.returncode != 0 or len(ready) != 1 or len(result_times) != 1:
         raise RuntimeError(
             f"{mode}/{backend}: exit {proc.returncode}, ready={len(ready)}, result={len(result_times)}; {root}\n{error[-1000:]}\n{output[-1500:]}"
@@ -544,6 +614,8 @@ def run_trial(args, metadata, backend, mode, trial):
             **{field: getattr(usage_after, field) - getattr(usage_before, field) for field in
                ("ru_utime", "ru_stime", "ru_minflt", "ru_majflt", "ru_inblock", "ru_oublock", "ru_nvcsw", "ru_nivcsw")},
         }
+    if budget_record is not None:
+        row["resource_budget"] = budget_record
     if mode == "filesystem" and backend in ("native", "pvisor-host", "pvisor-fuse"):
         validate_direct_filesystem(work, result["filesystem"]["write"]["check"]["bytes"])
     if fuse_stats is not None:
@@ -584,6 +656,10 @@ def main():
     )
     p.add_argument("--host-isolation", choices=("host_process", "rootless_process"), default="rootless_process")
     p.add_argument("--docker-root-pid", type=int)
+    p.add_argument("--resource-budget", type=Path,
+                   help="Already established private cgroup parent; actual constraints are verified")
+    p.add_argument("--budget-memory-mib", type=int, default=16384,
+                   help="Whole-parent memory cap, distinct from configured guest RAM")
     p.add_argument(
         "--cpu-affinity", default="0,1", help="Common host CPU affinity; empty string disables it"
     )
@@ -604,6 +680,7 @@ def main():
         )
     if args.cpu_affinity and args.docker_root_pid:
         pin_private_docker_tree(args.docker_root_pid, args.docker_host, args.cpu_affinity)
+    budget = reference_budget(args)
     for key in ("assets", "binary", "output"):
         setattr(args, key, getattr(args, key).resolve())
     args.output.mkdir(parents=True, exist_ok=False)
@@ -618,6 +695,18 @@ def main():
         args.output / "harness",
         ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", ".data"),
     )
+    print("Verify the complete prepared input inventory before preflight/warmups", flush=True)
+    try:
+        input_verification = verify_reference_inputs(args.assets)
+    except (OSError, ValueError) as error:
+        (args.output / "input-verification.json").write_text(json.dumps({
+            "state": "failed", "error_type": type(error).__name__, "reason": str(error),
+            "assets": str(args.assets), "timing_samples": 0,
+        }, indent=2) + "\n")
+        raise
+    (args.output / "input-verification.json").write_text(json.dumps({
+        "state": "passed", **input_verification,
+    }, indent=2) + "\n")
     metadata = {
         "schema": "pvisor-reference-environment/v1",
         "benchmark_id": benchmark_id,
@@ -632,6 +721,7 @@ def main():
         "binary_source_manifest_sha256": build_receipt["source_manifest_sha256"] if build_receipt else "unknown",
         "assets_metadata_sha256": digest(args.assets / "assets.json"),
         "input_manifest_sha256": digest(args.assets / "input-manifest.json") if (args.assets / "input-manifest.json").is_file() else "unknown",
+        "input_verification": input_verification,
         "source_status": subprocess.check_output(["git", "status", "--porcelain"], text=True),
         "pvisor_sha256": digest(args.output / "bin/pvisor"),
         "kernel_sha256": digest(args.assets / "vmlinux"),
@@ -669,6 +759,23 @@ def main():
             ["docker", "--host", args.docker_host, "info", "--format", "{{.Driver}}"],
             capture_output=True, text=True, timeout=30)
         metadata["docker_storage_driver"] = driver.stdout.strip() if driver.returncode == 0 else "unavailable"
+        if budget is not None:
+            info = subprocess.run(
+                ["docker", "--host", args.docker_host, "info", "--format", "{{json .}}"],
+                capture_output=True, text=True, timeout=30, check=True)
+            details = json.loads(info.stdout)
+            if (details.get("CgroupDriver") != "systemd" or str(details.get("CgroupVersion")) != "2"
+                    or "name=rootless" not in details.get("SecurityOptions", [])):
+                raise ValueError("budgeted Docker requires verified rootless/systemd/cgroupv2")
+            metadata["docker_cgroup_configuration"] = {
+                k: details[k] for k in ("CgroupDriver", "CgroupVersion", "SecurityOptions")}
+    if budget is not None:
+        metadata["resource_budget"] = budget.read()
+        metadata["protocol"]["resource_scope"] = (
+            "One verified private cgroup parent: all descendants share CPU quota2, "
+            f"memory cap{args.budget_memory_mib}MiB, zero swap; declared CPU IDs{args.cpu_affinity}. "
+            "Parent threads and sampled subtree members are checked; complete short-lifetime scope proof pending. "
+            "Cgroup peak is lifecycle-wide; precharged shared cache outside the parent is excluded.")
     rows = []
     caps = {}
     rng = random.Random(args.seed)
@@ -715,6 +822,19 @@ def main():
                     save()
             if trial >= 0:
                 print(mode, trial + 1, "/", args.samples, flush=True)
+    print("Verify prepared inputs again after all timed conditions", flush=True)
+    try:
+        final_inputs = verify_reference_inputs(args.assets)
+        if final_inputs != input_verification:
+            raise ValueError("prepared input identities changed during the cohort")
+    except (OSError, ValueError) as error:
+        metadata["input_final_verification"] = dict(state="failed", error_type=type(error).__name__, reason=str(error))
+        caps["prepared-inputs"] = dict(state="failed", reason=str(error))
+    else:
+        metadata["input_final_verification"] = dict(state="passed", **final_inputs)
+    (args.output / "input-final-verification.json").write_text(
+        json.dumps(metadata["input_final_verification"], indent=2) + "\n")
+    save()
     summary = {}
     for mode in args.modes.split(","):
         for backend in args.backends.split(","):

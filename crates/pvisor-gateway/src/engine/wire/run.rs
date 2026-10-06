@@ -1,7 +1,9 @@
-//! Run actor command/reply pairs + runtime-side client helpers.
+//! External run actor wire shapes and typed in-process registry helpers.
 
 use anyhow::Result;
-use pulsing_actor::ActorRef;
+use std::sync::Mutex;
+
+use super::super::actors::RunActor;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -44,49 +46,20 @@ pub(crate) enum RunReply {
     MainRoute(CaptureRoute),
 }
 
-pub(crate) async fn run_enrich(
-    run: &ActorRef,
+pub(crate) fn run_enrich(
+    run: &Mutex<RunActor>,
     rec: &mut CaptureRecord,
     ctx: &CallContext,
     body_json: Option<&Value>,
     assistant_text: Option<&str>,
 ) -> Result<Vec<SpawnLinkBackfill>> {
-    let story = ctx.story.clone();
-    let reply: RunReply = run
-        .ask(RunCommand::Enrich {
-            record_bytes: serde_json::to_vec(rec)?,
-            route: ctx.route().clone(),
-            headers: ctx.request_headers.clone(),
-            body_bytes: body_json.map(serde_json::to_vec).transpose()?,
-            assistant_text: assistant_text.map(str::to_string),
-            story_id: Some(story.story_id.clone()),
-            run_id: story.run_id.clone(),
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    match reply {
-        RunReply::Enrich {
-            record_bytes,
-            backfills,
-        } => {
-            *rec = serde_json::from_slice(&record_bytes)?;
-            Ok(backfills)
-        }
-        _ => Err(anyhow::anyhow!("unexpected run reply")),
-    }
+    run.lock()
+        .unwrap()
+        .enrich(rec, ctx, body_json, assistant_text)
 }
 
-pub(crate) async fn run_main_route(run: &ActorRef, route: &CaptureRoute) -> Result<CaptureRoute> {
-    let reply: RunReply = run
-        .ask(RunCommand::MainRoute {
-            route: route.clone(),
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    match reply {
-        RunReply::MainRoute(r) => Ok(r),
-        _ => Err(anyhow::anyhow!("unexpected run reply")),
-    }
+pub(crate) fn run_main_route(run: &Mutex<RunActor>, route: &CaptureRoute) -> CaptureRoute {
+    run.lock().unwrap().main_route(route)
 }
 
 #[cfg(test)]

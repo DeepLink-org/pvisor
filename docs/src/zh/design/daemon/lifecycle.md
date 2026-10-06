@@ -27,7 +27,7 @@ TTL 是尽力清理，不是硬执行截止时间。慢原生命令、上传／�
 
 ## 服务访问与并发 {#endpoints}
 
-只发布 execd 44772 和 egress 18080 端口。端点查询检查真实原生发布，返回 daemon 路由的 authority，不公开 supervisor loopback 地址。代理建立连接与控制／删除共用生命周期锁，避免连接期间由 daemon 管理的删除／端口复用。外部操作运行时不在此协调范围内。
+只发布 execd 44772 和 egress 18080 端口。端点发现与每次数据请求的端点解析都会认证 live supervisor，要求当前 RunHandle 为 Running，检查删除屏障并解析当前发布，不信任持久 observation 缓存。发现返回 daemon 路由的 authority，不公开 supervisor loopback 地址。解析不会为每次数据请求重复服务健康探测或完整 cgroup 额度对账。Create、Inspect 和 resume 保留完整配置／就绪检查；上游连接失败由 API adapter 处理，不作为就绪证据。代理建立连接与控制／删除共用生命周期锁，避免连接期间由 daemon 管理的删除／端口复用。外部操作运行时不在此协调范围内。
 
 代理流式转发真实上游 command/file/health/metrics 流量，包括 multipart 和 SSE。上传加等待响应头限制为 120 秒，已建立响应没有总超时。不支持 WebSocket、CONNECT 和任意应用端口。流量／输出配额属于上游服务。
 

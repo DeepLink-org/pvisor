@@ -131,7 +131,7 @@ test-rust *packages:
         capture) package=pvisor-gateway ;;
         shim) package=pvisor-shim ;;
       esac
-      if [[ "$package" == pvisor-vm || "$package" == pvisor || "$package" == nativepvisor ]]; then needs_vm_signature=1; fi
+      if [[ "$package" == pvisor-vm || "$package" == pvisor ]]; then needs_vm_signature=1; fi
       args+=(-p "$package")
     done
     if [[ $# -eq 0 ]]; then args+=(--workspace); needs_vm_signature=1; fi

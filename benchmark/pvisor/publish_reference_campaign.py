@@ -11,6 +11,24 @@ from publication import distribution, percentile, publish, write_csv
 from reference_baselines import digest
 
 
+def verify_input_records(path, report):
+    """New input gates must pass before and after a complete timing cohort."""
+    if 'input_verification' not in report:
+        return  # Legacy cohorts retain their separately stated evidence scope.
+    initial = report['input_verification']
+    expected = {'state': 'passed', **initial}
+    if (report.get('input_final_verification') != expected
+            or initial.get('input_manifest_sha256') != report.get('input_manifest_sha256')):
+        raise ValueError('prepared inputs lack matching successful before/after identities')
+    for name in ('input-verification.json', 'input-final-verification.json'):
+        try:
+            retained = json.loads((path.parent / name).read_text())
+        except (OSError, ValueError) as error:
+            raise ValueError('missing retained input verification evidence') from error
+        if retained != expected:
+            raise ValueError('retained input verification differs from report')
+
+
 def paired_comparison(candidate, control, iterations=5000):
     left = {r['trial']: r['value'] for r in candidate}
     right = {r['trial']: r['value'] for r in control}
@@ -40,6 +58,7 @@ def publish_campaign(paths, output):
     if len(identities) != 1 or any(not value or value == 'unknown' for value in next(iter(identities))):
         raise ValueError('campaign requires one verified current binary/source/input identity')
     for path, report in reports:
+        verify_input_records(path, report)
         receipt = report.get('binary_build') or {}
         if receipt.get('pvisor_sha256') != report['pvisor_sha256'] or receipt.get('source_manifest_sha256') != report['binary_source_manifest_sha256']:
             raise ValueError('report identity disagrees with binary build receipt')

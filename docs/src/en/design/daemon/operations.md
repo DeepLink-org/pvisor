@@ -26,7 +26,9 @@ Keep state and runtime configuration compatible across restarts. Use TLS termina
 
 Keep runtime paths absolute and unchanged across daemon restarts. Use short state paths such as `/run/user/1000/pvd`: per-sandbox `control.sock` must be shorter than 104 bytes, and vsock Unix sockets also have path limits. Retain state; this `/run` example does not promise persistence across logout/reboot, and VMs cannot survive host reboot. `/sys/fs/cgroup/pvd` must be a real delegated hierarchy, not an ordinary directory.
 
-An occupied `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
+An occupied version-1 `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
+
+A v2 header is also rejected without `owner.json`, even with its intentionally empty `sandboxes` map. Preserve the native marker, header and private `records/` tree together; see [storage migration and activation](storage.md#migration).
 
 ## Prepared image contract {#image-contract}
 
@@ -34,7 +36,7 @@ Images are trusted local `images_dir/<key>.json` manifests, not registry referen
 
 The long-lived guest bootstrap must supervise workload, real OpenSandbox 1.1.0 execd and egress, initialize/authenticate services, forward signals and reap children. It must expose byte-transparent AF_VSOCK listeners on guest **CID 3**, ports **44772/18080**, bridging to real services. Supervisor loopback TCP publications connect through private Unix sockets and native vsock forwarding. A stock rootfs or sleeping process is insufficient.
 
-Creation and running observations require genuine HTTP 200 execd `/ping`, `/ready` with JSON `initialized: true`, and egress `/healthz` through the bridges, with bounded bodies. The daemon does not inject/initialize execd or synthesize command/SSE/file responses. Python SDK initialization resolves both endpoints even without network policy.
+Create, Inspect of a Running VM and resume readiness checks require genuine HTTP 200 execd `/ping`, `/ready` with JSON `initialized: true`, and egress `/healthz` through the bridges, with bounded bodies. Endpoint lookup authenticates live Running state and deletion fences without repeating full health/cgroup checks per data request. The daemon does not inject/initialize execd or synthesize command/SSE/file responses. Python SDK initialization resolves both endpoints even without network policy.
 
 The bootstrap and image recipe are **not supplied or end-to-end validated**. The old container `cap-drop=ALL` restriction does not describe this native VM backend; an upstream image name is not a native bootstrap/vsock adapter. No fake readiness, SDK-conformance or density evidence is provided.
 

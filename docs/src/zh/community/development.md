@@ -4,12 +4,14 @@
 
 ## 仓库结构与代码归属
 
-Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包分发的 Rust
-二进制，不是另一套运行时实现。
+Cargo workspace 按产品职责划分。Python `pvisor/` 是可安装的版本标记，不是启动器或运行时实现。
+wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python 启动器及其二进制覆盖方式已废弃。
 
 | 目录 | 职责 |
 |---|---|
 | `crates/pvisor/` | CLI、运行编排、执行器、镜像准备和缓存服务 |
+| `crates/pvisor-vm/` | 原生 VM 运行时、跨平台 API、私有 VMM／平台实现、内嵌 guest 和内核／固件接入 |
+| `crates/pvisor-daemon/` | Linux x86_64 sandbox 生命周期 API 与独立原生 VM supervisor |
 | `crates/pvisor-core/` | Operation、Placement、策略、对外交互和 Event 契约 |
 | `crates/pvisor-gateway/` | Agent 协议转发、转换、采集与投影 |
 | `crates/pvisor-overlay-core/` | 不依赖 FUSE 的 OverlayFS 操作和文件访问控制 |
@@ -18,7 +20,7 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 | `crates/pvisor-guest/` | Linux PID 1 supervisor，以及 VM 执行器共用的启动契约 |
 | `crates/pvisor-tui/` | 独立终端前端 `pvisor-tui` |
 | `crates/pvisor-replay/` | 回放规划、原生 Agent 适配器和续跑协议桥 |
-| `pvisor/`、`setup.py`、`scripts/packaging/` | Python 启动器和 wheel 打包 |
+| `pvisor/`、`setup.py`、`scripts/packaging/` | Python 版本标记和原生脚本 wheel 打包 |
 | `crates/*/tests/` | Rust 集成测试；单元测试跟随所属模块 |
 | `tests/` | Python 打包和仓库工作流测试 |
 | `examples/`、`benchmark/` | 可运行的产品场景和性能测量 |
@@ -29,7 +31,9 @@ Cargo workspace 按产品职责划分。Python `pvisor/` 只负责启动随包�
 workspace 内的实际依赖关系：
 
 ```text
-pvisor ──> core, journal, overlaynet, overlayfs, overlay-core, guest
+pvisor ──> core, journal, overlaynet, overlayfs, overlay-core, guest, vm
+vm ──> overlay-core
+pvisor-daemon ──> pvisor, core
 pvisor --features gateway ──> gateway
 tui, replay ──> pvisor
 gateway ──> core, overlaynet
@@ -59,7 +63,7 @@ src/
 │   ├── sandbox.rs         # 宿主 OS 隔离及内部 sandbox 入口
 │   ├── artifact.rs        # 适配 guest 的可执行文件解析
 │   ├── delegated.rs       # 委派执行的 spec/result 交接
-│   └── vm/                # libkrun 执行器和固件获取
+│   └── vm/                # VM 执行器适配与 Run 资源／控制接入
 ├── image/
 │   ├── oci.rs             # Registry、准备记录、blob 和解包
 │   └── cache/             # 缓存 CLI、协议、服务端、客户端及懒加载 FUSE
@@ -82,7 +86,8 @@ src/
 ```
 
 CLI 参数与展示留在 `cli/`，具体执行机制归 `executor/`，Run 资源所有权归
-`runtime/`。固件属于 VM 执行器；OCI 准备属于 `image/`，供直接加载和缓存
+`runtime/`。VM 执行器将 Run/Attempt 生命周期适配到 `pvisor_vm::api`；VMM、平台机制、内嵌 guest
+和内核／固件接入属于 `pvisor-vm`。OCI 准备属于 `image/`，供直接加载和缓存
 服务共用。Bundle 和检查点与运行记录放在一起，不归某个执行后端。
 `PVisor`、`ProcessExecutor`、`cache` 以及内部 `sandbox` 入口等根级导出保留
 原有导入路径。
@@ -117,6 +122,7 @@ Core 公开声明数与二进制字节数。预算及统计口径由脚本维护
 | `just lint` | 运行 Clippy 和 Python 包 lint 检查 |
 | `just test` | 通过 nextest 跑工作区 Rust 测试，再跑 Python 测试 |
 | `just test core pvisor` | 测试指定 Rust 包，支持简称或 Cargo 包名 |
+| `just test pvisor-vm` | VM 所有者测试；macOS 在 nextest 前签署 Hypervisor entitlement |
 | `just test-py -k packaging` | 将选项传给 pytest |
 | `just test-benchmark` | 用 pytest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
 | `just test-py --vm-bin target/release/pvisor` | 启用真实 VM 的普通终端和 TUI 交互回归 |
@@ -198,7 +204,7 @@ CI 仅安装当前架构的 guest target，工作区工具链不再为无关 cra
 |---|---|---|
 | 宿主 CLI | 静态 Linux musl ELF | 原生 Darwin 可执行文件，签署 HVF entitlement |
 | 内嵌 guest | 静态 Linux musl ELF | 静态 Linux musl ELF |
-| libkrun | 静态链接 Rust 库 | 静态链接 Rust 库 |
+| `pvisor-vm` | 单一 Rust 运行时 crate | 单一 Rust 运行时 crate |
 | guest 内核 | 构建时内嵌 | 运行时加载 `libkrunfw.5.dylib` |
 
 `CARGO_TARGET_DIR` 指定原生构建目录，构建、安装、smoke、示例和场景任务共用此位置。

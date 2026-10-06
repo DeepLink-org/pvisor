@@ -4,5 +4,6 @@ mod events;
 mod fixtures;
 mod recovery;
 mod reliability;
+mod scheduling;
 mod story;
 mod support;

@@ -24,6 +24,33 @@ impl RunActor {
         }
     }
 
+    pub(crate) fn enrich(
+        &mut self,
+        record: &mut CaptureRecord,
+        ctx: &crate::engine::CallContext,
+        body: Option<&serde_json::Value>,
+        assistant_text: Option<&str>,
+    ) -> anyhow::Result<Vec<crate::subagent_link::SpawnLinkBackfill>> {
+        let headers = headers_to_header_map(&ctx.request_headers)?;
+        self.track_story(ctx.run_id(), ctx.story_id());
+        Ok(enrich_record(
+            record,
+            ctx.route(),
+            &headers,
+            body,
+            assistant_text,
+            &mut self.registry,
+        )
+        .spawn_link_backfills)
+    }
+
+    pub(crate) fn main_route(
+        &self,
+        route: &crate::session::storage::CaptureRoute,
+    ) -> crate::session::storage::CaptureRoute {
+        main_route_for_backfill(route, &self.registry)
+    }
+
     fn track_story(&mut self, run_id: Option<&RunId>, story_id: &StoryId) {
         let Some(run_id) = run_id else {
             return;

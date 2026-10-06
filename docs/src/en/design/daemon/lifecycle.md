@@ -27,7 +27,7 @@ TTL is best-effort cleanup, not a hard execution deadline. Slow native commands,
 
 ## Service access and concurrency {#endpoints}
 
-Only execd port 44772 and egress port 18080 are published. Endpoint discovery checks an actual native publication and returns a daemon-routed authority, not the supervisor's loopback address. Proxy establishment shares the lifecycle lock with control/deletion, preventing daemon-managed deletion/port reuse while connecting. External runtime manipulation is outside that coordination.
+Only execd port 44772 and egress port 18080 are published. Endpoint discovery and each data-request endpoint lookup authenticate the live supervisor, require current RunHandle Running state, check deletion fences and resolve a current publication; they do not trust a durable observation cache. Discovery returns a daemon-routed authority, not the supervisor's loopback address. Lookup does not repeat service health probes or full cgroup-limit reconciliation for every data request. Create, Inspect and resume retain full configuration/readiness checks; upstream connection failures are handled by the API adapter rather than treated as readiness proof. Proxy establishment shares the lifecycle lock with control/deletion, preventing daemon-managed deletion/port reuse while connecting. External runtime manipulation is outside that coordination.
 
 The proxy streams real upstream command/file/health/metrics traffic, including multipart and SSE. Upload plus response-header wait is capped at 120 seconds; established responses stream without a total timeout. WebSocket, CONNECT and arbitrary application ports are unsupported. Stream/output quotas belong to the upstream service.
 

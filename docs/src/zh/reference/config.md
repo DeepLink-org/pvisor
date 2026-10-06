@@ -127,7 +127,7 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 | `vm` | `memory_mib = 2048`，`cpus = 2`，`rootfs_immutable = false`，`ram_compression = false`，`ram_dedup = false` |
 | `vm` 可选字段 | `rootfs`、`image`、`image_store`、`library_dir`、`ram_backing`、`memory_pool`、`node_socket`、`snapshot_filesystem_pool` |
 
-`container.platform` 取 `linux-amd64` 或 `linux-arm64`；`container.network` 取 `host`、`bridge` 或 `none`。Linux container 的注入二进制必须与 rootfs 的架构和 ABI 匹配。
+`container.platform` 取 `linux-amd64` 或 `linux-arm64`，是可选的原生宿主架构断言。匹配值会被接受；跨架构值会被拒绝，即使设置了预制 `container.rootfs`。host 和 VM 配置会拒绝已配置的平台。它不启用模拟执行，也不自动发现／下载程序。`container.pvisor_binary` 默认使用当前程序；显式 Linux 二进制和 rootfs 须兼容原生架构及 guest ABI。见[容器准备](../guides/executors/container.md)。`container.network` 取 `host`、`bridge` 或 `none`，但 CNI 支持尚未实现，当前会拒绝 `bridge`。
 
 VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文件；`ram_compression` 启用相应的压缩 backing。macOS 的压缩 backing 与共享池有额外 FUSE 条件，见[内存共享概念验证](../design/memory-optimization/proof-of-concept.md)。
 
@@ -175,7 +175,7 @@ VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文�
 | `container.image` | `String` | `""` | OCI 镜像引用；`--container-image` |
 | `container.rootfs` | `Option<PathBuf>` | `未设置` | 已有 rootfs，替代镜像；`--container-rootfs` |
 | `container.pvisor_binary` | `Option<PathBuf>` | `未设置` | 注入的 Linux 程序，默认当前程序；`--container-pvisor-binary` |
-| `container.platform` | `Option<ContainerPlatform>` | `未设置` | linux-amd64 或 linux-arm64；`--container-platform` |
+| `container.platform` | `Option<ContainerPlatform>` | `未设置` | 原生架构断言：linux-amd64 或 linux-arm64；仅 container；`--container-platform` |
 | `container.network` | `ContainerNetwork` | `"host"` | host、bridge、none；`--container-network` |
 | `container.workdir` | `Option<PathBuf>` | `未设置` | 未挂载 Run cwd 时的容器目录；`--container-workdir` |
 | `container.user` | `Option<String>` | `未设置` | uid、uid:gid 或用户名；`--container-user` |

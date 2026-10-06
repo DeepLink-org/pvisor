@@ -70,7 +70,9 @@ The daemon verifies execd `/ping`, `/ready` and egress `/healthz` before treatin
 
 Bind loopback by default. Before external access, configure TLS at a trusted reverse proxy and set `--public-endpoint HOST:PORT` to the externally routed authority, without scheme or path. Wildcard listeners and port-zero development bindings also require an explicit correct public endpoint. Follow [endpoint authentication](operations.md#endpoints).
 
-An occupied `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
+An occupied version-1 `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
+
+Current v2 state stores a small `sandboxes.json` owner/header with an empty map plus private per-sandbox `records/`. A missing native `owner.json` still rejects v2 startup; the empty header is not proof that no sandbox exists. Preserve all ownership/record state together. Native v1 storage migrates only after the runtime factory accepts the owner; see [storage migration](../../design/daemon/storage.md#migration).
 
 ## Migration from Cluster {#migration}
 
