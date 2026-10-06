@@ -360,7 +360,7 @@ impl VmControl {
     }
 
     #[cfg(target_os = "linux")]
-    pub(super) fn track_native_process(&self, pid: u32, ram: &File) {
+    pub(super) fn track_native_process(&self, pid: u32, ram: Option<&File>) {
         let target = super::memory::Target::new(pid, ram).map_err(|e| format!("{e:#}"));
         *self.memory_target.lock().unwrap_or_else(|e| e.into_inner()) = Some(target);
     }

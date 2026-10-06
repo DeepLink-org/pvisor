@@ -38,7 +38,14 @@ impl RuntimeSupport for VmPlatform {
         {
             crate::cold_ram::activity()
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            crate::cold_ram_linux::activity()
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
         {
             ColdRamActivity::default()
         }
@@ -74,9 +81,150 @@ fn capabilities() -> Capabilities {
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64")
         )) && !cfg!(any(feature = "tee", feature = "aws-nitro")),
-        cold_ram_faults: cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        cold_ram_faults: cfg!(all(target_os = "macos", target_arch = "aarch64"))
+            || (cfg!(all(target_os = "linux", target_arch = "x86_64"))
+                && !cfg!(any(
+                    feature = "tee",
+                    feature = "aws-nitro",
+                    feature = "gpu",
+                    feature = "snd",
+                    feature = "input"
+                ))),
     }
 }
+#[cfg(all(test, target_os = "linux"))]
+mod cold_ram_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Mutex, Weak,
+    };
+
+    struct UnusedStore {
+        calls: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Drop for UnusedStore {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl ColdRamStore for UnusedStore {
+        type Object = ();
+
+        fn put(&mut self, _: &[u8]) -> io::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            panic!("unsupported pager must not publish RAM")
+        }
+
+        fn restore(&mut self, _: &(), _: &mut [u8]) -> io::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            panic!("unsupported pager must not restore RAM")
+        }
+
+        fn release(&mut self, _: ()) -> io::Result<()> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            panic!("unsupported pager must not release objects")
+        }
+
+        fn stats(&mut self) -> io::Result<ColdRamPoolStats> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            panic!("unsupported pager must not query storage")
+        }
+    }
+
+    fn inactive_handle() -> VmmHandle {
+        VmmHandle {
+            vmm: Weak::new(),
+            transition: Arc::new(Mutex::new(())),
+            cold_pager_started: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    #[test]
+    fn linux_cold_pager_rejects_without_storage_or_worker_activity() {
+        let handle = inactive_handle();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        for metrics in [false, true] {
+            let error = handle
+                .start_cold_pager(
+                    UnusedStore {
+                        calls: calls.clone(),
+                        drops: drops.clone(),
+                    },
+                    ColdRamOptions { metrics },
+                )
+                .unwrap_err();
+            if cfg!(all(
+                target_arch = "x86_64",
+                not(any(
+                    feature = "tee",
+                    feature = "aws-nitro",
+                    feature = "gpu",
+                    feature = "snd",
+                    feature = "input"
+                ))
+            )) {
+                assert_eq!(error.kind(), io::ErrorKind::Other);
+                assert_eq!(error.to_string(), "VMM has stopped");
+            } else {
+                assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            }
+            assert!(!handle.cold_pager_started.load(Ordering::SeqCst));
+            assert!(handle.transition.try_lock().is_ok());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            VmPlatform::capabilities().cold_ram_faults,
+            cfg!(all(
+                target_arch = "x86_64",
+                not(any(
+                    feature = "tee",
+                    feature = "aws-nitro",
+                    feature = "gpu",
+                    feature = "snd",
+                    feature = "input"
+                ))
+            ))
+        );
+        let activity = VmPlatform::cold_ram_activity();
+        assert_eq!(activity.pending_file_bytes, 0);
+        assert_eq!(activity.pending_snapshot_bytes, 0);
+    }
+
+    #[test]
+    fn linux_cold_controls_reject_without_running_callbacks() {
+        let handle = inactive_handle();
+        let error = handle
+            .with_ram_quiesced::<()>(|_| panic!("unsupported quiescence must not run callback"))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "cold RAM quiescence is unsupported by this VM backend"
+        );
+        assert_eq!(
+            handle.experimental_ram_residency().unwrap_err(),
+            "cold RAM residency is unsupported by this VM backend"
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = calls.clone();
+        let handler = Arc::new(move |_| {
+            callback_calls.fetch_add(1, Ordering::SeqCst);
+            panic!("unsupported fault handler must not be called")
+        });
+        assert_eq!(
+            handle.install_ram_fault_handler(handler).unwrap_err(),
+            "RAM fault handler is unsupported by this VM backend"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!handle.cold_pager_started.load(Ordering::SeqCst));
+    }
+}
+
 fn unsupported(operation: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
@@ -317,7 +465,14 @@ impl ColdRamControl for VmmHandle {
         {
             crate::cold_ram::start(self.clone(), store, options)
         }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            crate::cold_ram_linux::start(self.clone(), store, options)
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
         {
             let _ = (store, options);
             Err(unsupported("experimental cold RAM pager"))

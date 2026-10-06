@@ -195,6 +195,16 @@ impl Display for Error {
 /// Shorthand result type for internal VMM commands.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Identity recorded only by the fresh bundled-kernel raw-mapping path, never
+/// inferred from guest-provided topology or snapshot metadata.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[derive(Clone, Copy)]
+pub(crate) struct RawKernelMapping {
+    pub(crate) guest_address: u64,
+    pub(crate) host_address: usize,
+    pub(crate) length: usize,
+}
+
 /// Contains the state and associated methods required for the Firecracker VMM.
 pub struct Vmm {
     // Guest VM core resources.
@@ -225,6 +235,8 @@ pub struct Vmm {
         all(target_os = "linux", target_arch = "x86_64")
     ))]
     snapshot_kernel_layout: Option<crate::vmm::snapshot::KernelLayout>,
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    raw_kernel_mapping: Option<RawKernelMapping>,
     device_memory_gate: Arc<crate::devices::virtio::memory_gate::MemoryGate>,
     #[cfg(target_os = "macos")]
     ram_unmapped: bool,
@@ -420,6 +432,11 @@ impl Vmm {
         self.set_paused(false)
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn raw_kernel_mapping(&self) -> Option<RawKernelMapping> {
+        self.raw_kernel_mapping
+    }
+
     pub fn device_memory_gate(&self) -> Arc<crate::devices::virtio::memory_gate::MemoryGate> {
         self.device_memory_gate.clone()
     }
@@ -510,7 +527,19 @@ impl Vmm {
         })
     }
 
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn pause_for_ram_maintenance(&mut self) -> Result<()> {
+        // KVM may already be blocked in a missing fault when the pause kick is
+        // sent. Complete all acknowledgements before deferring that transaction;
+        // abandoning a request would poison the next transition's response queue.
+        self.set_paused_with_timeout(true, Duration::from_secs(30))
+    }
+
     fn set_paused(&mut self, paused: bool) -> Result<()> {
+        self.set_paused_with_timeout(paused, Duration::from_secs(3))
+    }
+
+    fn set_paused_with_timeout(&mut self, paused: bool, timeout: Duration) -> Result<()> {
         if self.control_failed {
             return Err(Error::VcpuControl(
                 "previous transition failed; terminate VMM".into(),
@@ -530,7 +559,7 @@ impl Vmm {
             };
             handle.send_event(event).map_err(Error::VcpuEvent)?;
         }
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + timeout;
         let expected = if paused {
             VcpuResponse::Paused
         } else {

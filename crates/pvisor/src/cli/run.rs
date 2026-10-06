@@ -109,6 +109,19 @@ macro_rules! run_log {
     }};
 }
 
+fn announce_control_socket(handle: &crate::RunHandle) {
+    #[cfg(unix)]
+    if let Ok(path) = handle.control_socket() {
+        let status = handle.status();
+        eprintln!(
+            "pVisor VM control: --socket {} --run-id {} --attempt-id {}",
+            path.display(),
+            status.run_id,
+            status.attempt.attempt_id
+        );
+    }
+}
+
 mod lifecycle;
 pub use lifecycle::ForkArgs;
 use lifecycle::execution_store_location;
@@ -339,18 +352,31 @@ struct ContainerOverrides {
 
 #[derive(Debug, Clone, Default, Args)]
 struct VmOverrides {
+    /// Host-only VM control socket; requires an existing private (0700) parent and a new path.
+    #[arg(long = "vm-control-socket", value_name = "PATH")]
+    vm_control_socket: Option<PathBuf>,
     /// Create a private file backing the VM's live RAM (must not already exist).
     #[arg(long = "vm-ram-backing", value_name = "FILE")]
     vm_ram_backing: Option<PathBuf>,
     /// Commit RAM as Seekable base/delta generations (requires FUSE/macFUSE).
-    #[arg(long = "vm-ram-compression")]
-    vm_ram_compression: bool,
+    #[arg(long = "vm-ram-compression", value_name = "BOOL", num_args = 0..=1, default_missing_value = "true", require_equals = true)]
+    vm_ram_compression: Option<bool>,
+    /// Linux x86_64 live cold RAM compression in an instance-local store (requires kernel-fault userfaultfd access; no FUSE).
+    #[arg(long = "vm-cold-ram-compression", value_name = "BOOL", num_args = 0..=1, default_missing_value = "true", require_equals = true)]
+    vm_cold_ram_compression: Option<bool>,
     /// Opt in to host RAM dedup and cross-workload sharing risks; shared live RAM is skipped, private restored COW is eligible. Advice is not merged bytes.
-    #[arg(long = "vm-ram-dedup")]
-    vm_ram_dedup: bool,
-    /// Experimental macOS cold-page sharing; pool loss fails dependent VMs.
+    #[arg(long = "vm-ram-dedup", value_name = "BOOL", num_args = 0..=1, default_missing_value = "true", require_equals = true)]
+    vm_ram_dedup: Option<bool>,
+    /// Experimental Linux x86_64 / Apple Silicon cold-page sharing; pool loss fails dependent VMs.
     #[arg(long = "vm-memory-pool", value_name = "SOCKET")]
     vm_memory_pool: Option<PathBuf>,
+    /// Same-host node resource service for shared immutable images and restored RAM.
+    #[arg(long = "vm-node-socket", value_name = "SOCKET")]
+    vm_node_socket: Option<PathBuf>,
+    /// Immutable filesystem pool for Linux x86_64 no-network native checkpoints.
+    /// Must be independent of VM-writable roots and on the Job's volume.
+    #[arg(long = "vm-snapshot-filesystem-pool", value_name = "DIR")]
+    vm_snapshot_filesystem_pool: Option<PathBuf>,
     /// Shorthand for `--executor vm`.
     #[arg(long)]
     vm: bool,
@@ -913,6 +939,10 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         config.run.workspace = process.cwd.as_deref().map(PathBuf::from);
         apply_cli(&mut config, args)?;
         anyhow::ensure!(
+            config.vm.control_socket.is_none(),
+            "vm.control_socket requires a VM executor; JSON --spec supports only host"
+        );
+        anyhow::ensure!(
             config.run.executor == RunExecutorKind::Host,
             "JSON --spec currently supports only the host executor"
         );
@@ -957,6 +987,9 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
                 )
                 .listen(&config.overlaynet.listen),
             );
+        if let Some(path) = &config.vm.control_socket {
+            builder = builder.control_socket(path);
+        }
         #[cfg(feature = "gateway")]
         if let Some(proxy) = proxy {
             builder = builder.gateway(
@@ -975,6 +1008,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         Ok(handle) => handle,
         Err(error) => return Err(error.into()),
     };
+    announce_control_socket(&handle);
     let agentctl = handle.agentctl();
     let cancellation = handle.cancellation();
     let wait = handle.wait();
@@ -1400,6 +1434,9 @@ async fn execute_config(
             )
             .listen(&config.overlaynet.listen),
         );
+    if let Some(path) = &config.vm.control_socket {
+        builder = builder.control_socket(path);
+    }
     #[cfg(feature = "gateway")]
     if let Some(proxy) = proxy {
         builder = builder.gateway(
@@ -1635,6 +1672,7 @@ async fn execute_config(
     crate::util::startup_mark_run("cli.session_begin", &run_id);
     let execution_spec = spec.clone();
     let handle = pvisor.run(spec).await?;
+    announce_control_socket(&handle);
     let execution_server = if config.run.executor == RunExecutorKind::Vm {
         let record = resolve_run(Some(Path::new(&run_id)), &storage)?;
         Some(crate::runtime::job_execution::Server::start(
@@ -2130,10 +2168,15 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
         config.run.executor = RunExecutorKind::Container;
     }
 
-    let enables_vm = rootfs_source.is_some()
-        || args.vm.vm_ram_compression
-        || args.vm.vm_ram_dedup
+    let enables_vm = config.vm.control_socket.is_some()
+        || args.vm.vm_control_socket.is_some()
+        || rootfs_source.is_some()
+        || args.vm.vm_ram_compression == Some(true)
+        || args.vm.vm_cold_ram_compression == Some(true)
+        || args.vm.vm_ram_dedup == Some(true)
         || args.vm.vm_memory_pool.is_some()
+        || args.vm.vm_node_socket.is_some()
+        || args.vm.vm_snapshot_filesystem_pool.is_some()
         || args.vm.vm_ram_backing.is_some()
         || args.vm.vm_image_store.is_some()
         || args.vm.vm_library_dir.is_some();
@@ -2154,11 +2197,23 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     if let Some(value) = args.vm.vm_memory_pool {
         config.vm.memory_pool = Some(value);
     }
-    if args.vm.vm_ram_compression {
-        config.vm.ram_compression = true;
+    if let Some(value) = args.vm.vm_control_socket {
+        config.vm.control_socket = Some(value);
     }
-    if args.vm.vm_ram_dedup {
-        config.vm.ram_dedup = true;
+    if let Some(value) = args.vm.vm_node_socket {
+        config.vm.node_socket = Some(value);
+    }
+    if let Some(value) = args.vm.vm_snapshot_filesystem_pool {
+        config.vm.snapshot_filesystem_pool = Some(value);
+    }
+    if let Some(value) = args.vm.vm_ram_compression {
+        config.vm.ram_compression = value;
+    }
+    if let Some(value) = args.vm.vm_cold_ram_compression {
+        config.vm.cold_ram_compression = value;
+    }
+    if let Some(value) = args.vm.vm_ram_dedup {
+        config.vm.ram_dedup = value;
     }
     if let Some(value) = args.run.cpu {
         config.vm.cpus = value;
@@ -2384,6 +2439,10 @@ fn validate_vm_rootfs_platform(config: &RunConfig) -> anyhow::Result<()> {
 }
 
 fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        config.vm.control_socket.is_none() || config.run.executor == RunExecutorKind::Vm,
+        "vm.control_socket requires a VM executor"
+    );
     config.vm.validate_ram_dedup()?;
     anyhow::ensure!(
         cfg!(feature = "gateway")
@@ -2833,6 +2892,230 @@ mod tests {
         assert!("unsupported".parse::<StageDurability>().is_err());
     }
     use super::*;
+
+    #[test]
+    fn control_socket_selects_vm_and_preserves_or_overrides_config() {
+        let mut config = RunConfig::default();
+        apply_cli(
+            &mut config,
+            preset_args(&["--vm-control-socket", "/private/control.sock", "--", "true"]),
+        )
+        .unwrap();
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert_eq!(
+            config.vm.control_socket,
+            Some(PathBuf::from("/private/control.sock"))
+        );
+        apply_cli(&mut config, preset_args(&["--", "true"])).unwrap();
+        assert_eq!(
+            config.vm.control_socket,
+            Some(PathBuf::from("/private/control.sock"))
+        );
+        apply_cli(
+            &mut config,
+            preset_args(&["--vm-control-socket", "/other/control.sock", "--", "true"]),
+        )
+        .unwrap();
+        assert_eq!(
+            config.vm.control_socket,
+            Some(PathBuf::from("/other/control.sock"))
+        );
+        let mut configured = RunConfig::default();
+        configured.vm.control_socket = Some(PathBuf::from("/private/control.sock"));
+        apply_cli(&mut configured, preset_args(&["--", "true"])).unwrap();
+        assert_eq!(configured.run.executor, RunExecutorKind::Vm);
+    }
+
+    #[test]
+    fn control_socket_does_not_override_explicit_non_vm_executor() {
+        for executor in ["host", "container"] {
+            let mut config = RunConfig::default();
+            apply_cli(
+                &mut config,
+                preset_args(&[
+                    "--executor",
+                    executor,
+                    "--vm-control-socket",
+                    "/private/control.sock",
+                    "--",
+                    "true",
+                ]),
+            )
+            .unwrap();
+            assert_ne!(config.run.executor, RunExecutorKind::Vm);
+            assert!(
+                validate(&config, false)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("control_socket")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prepared_host_spec_rejects_control_socket_before_launch() {
+        let directory = tempfile::tempdir().unwrap();
+        let spec_path = directory.path().join("spec.json");
+        let spec = RunSpec::process("run-prepared", "test", "true");
+        std::fs::write(&spec_path, serde_json::to_vec(&spec).unwrap()).unwrap();
+        let args = preset_args(&[
+            "--executor",
+            "host",
+            "--vm-control-socket",
+            "/private/control.sock",
+            "--spec",
+            spec_path.to_str().unwrap(),
+            "--result-file",
+            directory.path().join("result.json").to_str().unwrap(),
+        ]);
+        assert!(
+            run_prepared_spec(args)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("control_socket")
+        );
+    }
+
+    #[test]
+    fn cold_ram_compression_is_explicit_selects_vm_and_preserves_config() {
+        let mut config = RunConfig::default();
+        apply_run_options(&mut config, preset_args(&["--", "true"])).unwrap();
+        assert!(!config.vm.cold_ram_compression);
+        apply_run_options(
+            &mut config,
+            preset_args(&["--vm-cold-ram-compression", "--", "true"]),
+        )
+        .unwrap();
+        assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        assert!(config.vm.cold_ram_compression);
+        assert!(!config.vm.ram_compression);
+        assert!(config.vm.ram_backing.is_none());
+        assert!(config.vm.memory_pool.is_none());
+        apply_run_options(&mut config, preset_args(&["--", "true"])).unwrap();
+        assert!(config.vm.cold_ram_compression);
+        let decoded: RunConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(decoded.vm, config.vm);
+    }
+
+    #[test]
+    fn vm_memory_bool_overrides_parse_and_apply_without_clobbering_omissions() {
+        for (index, flag) in [
+            "--vm-ram-compression",
+            "--vm-cold-ram-compression",
+            "--vm-ram-dedup",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for (option, expected) in [
+                (None, None),
+                (Some(flag.to_owned()), Some(true)),
+                (Some(format!("{flag}=true")), Some(true)),
+                (Some(format!("{flag}=false")), Some(false)),
+            ] {
+                // No separator: a bare optional boolean must not consume the command.
+                let values = match option.as_deref() {
+                    Some(option) => vec![option, "echo", "hello"],
+                    None => vec!["echo", "hello"],
+                };
+                let args = preset_args(&values);
+                assert_eq!(
+                    [
+                        args.vm.vm_ram_compression,
+                        args.vm.vm_cold_ram_compression,
+                        args.vm.vm_ram_dedup,
+                    ][index],
+                    expected,
+                    "{flag}: {option:?}"
+                );
+                for initial in [false, true] {
+                    let mut config = RunConfig::default();
+                    match index {
+                        0 => config.vm.ram_compression = initial,
+                        1 => config.vm.cold_ram_compression = initial,
+                        2 => config.vm.ram_dedup = initial,
+                        _ => unreachable!(),
+                    }
+                    apply_run_options(&mut config, args.clone()).unwrap();
+                    assert_eq!(
+                        [
+                            config.vm.ram_compression,
+                            config.vm.cold_ram_compression,
+                            config.vm.ram_dedup,
+                        ][index],
+                        expected.unwrap_or(initial),
+                        "{flag}: {option:?}, initial={initial}"
+                    );
+                    assert_eq!(config.run.command, ["echo", "hello"]);
+                    assert_eq!(
+                        config.run.executor,
+                        if expected == Some(true) {
+                            RunExecutorKind::Vm
+                        } else {
+                            RunExecutorKind::Host
+                        }
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vm_memory_path_overrides_select_vm_and_preserve_omitted_config() {
+        for flag in ["--vm-node-socket", "--vm-snapshot-filesystem-pool"] {
+            let args = preset_args(&[flag, "relative/path with spaces", "--", "true"]);
+            let mut config: RunConfig = toml::from_str(
+                "[vm]\nnode_socket = 'configured/node.sock'\nsnapshot_filesystem_pool = 'configured/snapshots'\n",
+            )
+            .unwrap();
+            apply_run_options(&mut config, preset_args(&["--", "true"])).unwrap();
+            assert_eq!(
+                config.vm.node_socket.as_deref(),
+                Some(Path::new("configured/node.sock"))
+            );
+            assert_eq!(
+                config.vm.snapshot_filesystem_pool.as_deref(),
+                Some(Path::new("configured/snapshots"))
+            );
+            if flag == "--vm-node-socket" {
+                assert_eq!(
+                    args.vm.vm_node_socket.as_deref(),
+                    Some(Path::new("relative/path with spaces"))
+                );
+                assert!(args.vm.vm_snapshot_filesystem_pool.is_none());
+            } else {
+                assert_eq!(
+                    args.vm.vm_snapshot_filesystem_pool.as_deref(),
+                    Some(Path::new("relative/path with spaces"))
+                );
+                assert!(args.vm.vm_node_socket.is_none());
+            }
+            apply_run_options(&mut config, args).unwrap();
+            assert_eq!(config.run.executor, RunExecutorKind::Vm);
+            assert_eq!(
+                config.vm.node_socket.as_deref(),
+                Some(Path::new(if flag == "--vm-node-socket" {
+                    "relative/path with spaces"
+                } else {
+                    "configured/node.sock"
+                }))
+            );
+            assert_eq!(
+                config.vm.snapshot_filesystem_pool.as_deref(),
+                Some(Path::new(if flag == "--vm-snapshot-filesystem-pool" {
+                    "relative/path with spaces"
+                } else {
+                    "configured/snapshots"
+                }))
+            );
+            let settings = config.vm.clone();
+            apply_run_options(&mut config, preset_args(&["--", "true"])).unwrap();
+            assert_eq!(config.vm, settings);
+            let decoded: RunConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+            assert_eq!(decoded.vm, config.vm);
+        }
+    }
 
     #[test]
     fn memory_pool_is_explicit_and_selects_vm_without_fuse() {

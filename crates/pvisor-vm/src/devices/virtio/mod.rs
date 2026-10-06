@@ -52,6 +52,8 @@ pub use self::gpu::*;
 pub use self::mmio::*;
 #[cfg(feature = "net")]
 pub use self::net::Net;
+#[cfg(test)]
+pub(crate) use self::queue::tests::VirtQueue;
 pub use self::queue::{Descriptor, DescriptorChain, Queue, QueueSnapshot};
 #[cfg(not(feature = "tee"))]
 pub use self::rng::*;

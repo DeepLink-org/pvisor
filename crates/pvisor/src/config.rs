@@ -255,17 +255,24 @@ impl std::str::FromStr for ContainerPlatform {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct VmSettings {
+    /// Host-only live control endpoint; omitted uses an automatic private socket.
+    /// The existing parent must be private (0700); existing paths are never overwritten.
+    pub control_socket: Option<PathBuf>,
     /// New private live RAM backing file. Omitted: create an attempt-local file
     /// in the user's disk cache. Existing files are never overwritten.
     pub ram_backing: Option<PathBuf>,
     /// Commit RAM as Seekable base/delta generations through a cached FUSE adapter. Requires
     /// /dev/fuse on Linux or the macFUSE kernel backend on Apple Silicon.
     pub ram_compression: bool,
+    /// Linux x86_64 live cold pager over private anonymous RAM, with an
+    /// instance-local compressed store (no FUSE or external service). Requires
+    /// kernel-fault userfaultfd authority; disabled by default.
+    pub cold_ram_compression: bool,
     /// Opt in to host RAM dedup advice and its cross-workload sharing risks.
     /// Only private RAM is eligible (including restored COW); live shared RAM
     /// is skipped. Accepted advice is not evidence of merged bytes or savings.
     pub ram_dedup: bool,
-    /// Experimental macOS shared cold-page pool socket. Requires a separately
+    /// Experimental shared cold-page pool socket (Linux x86_64 / Apple Silicon). Requires a separately
     /// managed pool; loss of that pool fails dependent VMs. Disabled by default.
     pub memory_pool: Option<PathBuf>,
     /// Host-owned immutable filesystem pool for native execution checkpoints.
@@ -293,15 +300,50 @@ pub struct VmSettings {
 }
 
 impl VmSettings {
+    pub(crate) fn cold_pager_requested(&self) -> bool {
+        self.cold_ram_compression
+            || self.memory_pool.is_some()
+            || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some()
+    }
+
     pub(crate) fn validate_ram_dedup(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            !self.ram_dedup || (!self.ram_compression && self.memory_pool.is_none()),
-            "vm.ram_dedup cannot be combined with vm.memory_pool or vm.ram_compression"
+            !self.cold_ram_compression || cfg!(all(target_os = "linux", target_arch = "x86_64")),
+            "vm.cold_ram_compression requires Linux x86_64 kernel-fault userfaultfd support"
         );
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        anyhow::ensure!(
+            !self.cold_ram_compression
+                || (self.memory_pool.is_none()
+                    && std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_none()),
+            "vm.cold_ram_compression cannot be combined with an external memory pool"
+        );
+        anyhow::ensure!(
+            !self.cold_pager_requested()
+                || (!self.ram_compression
+                    && self.ram_backing.is_none()
+                    && self.snapshot_filesystem_pool.is_none()),
+            "cold pager requires private anonymous RAM, without vm.ram_backing, vm.ram_compression or snapshot capture/pool"
+        );
+        anyhow::ensure!(
+            !self.ram_dedup
+                || (!self.ram_compression
+                    && !self.cold_ram_compression
+                    && self.memory_pool.is_none()),
+            "vm.ram_dedup cannot be combined with vm.memory_pool, vm.ram_compression or vm.cold_ram_compression"
+        );
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
         anyhow::ensure!(
             !self.ram_dedup || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_none(),
             "vm.ram_dedup cannot be combined with PVISOR_EXPERIMENTAL_MEMORY_POOL"
+        );
+        #[cfg(target_os = "linux")]
+        anyhow::ensure!(
+            self.memory_pool.is_none()
+                && std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_none(),
+            "Linux cold pager currently supports bounded instance-local storage only; use vm.cold_ram_compression"
         );
         Ok(())
     }
@@ -310,8 +352,10 @@ impl VmSettings {
 impl Default for VmSettings {
     fn default() -> Self {
         Self {
+            control_socket: None,
             ram_backing: None,
             ram_compression: false,
+            cold_ram_compression: false,
             ram_dedup: false,
             memory_pool: None,
             snapshot_filesystem_pool: None,
@@ -783,6 +827,104 @@ cpus = 4
         let encoded = toml::to_string_pretty(&config).unwrap();
         let decoded: RunConfig = toml::from_str(&encoded).unwrap();
         assert_eq!(decoded.vm, config.vm);
+    }
+
+    #[test]
+    fn vm_memory_settings_parse_defaults_explicit_bools_and_paths() {
+        let omitted: RunConfig = toml::from_str("[vm]\n").unwrap();
+        assert!(!omitted.vm.ram_compression);
+        assert!(!omitted.vm.cold_ram_compression);
+        assert!(!omitted.vm.ram_dedup);
+        assert!(omitted.vm.node_socket.is_none());
+        assert!(omitted.vm.snapshot_filesystem_pool.is_none());
+        for enabled in [false, true] {
+            let config: RunConfig = toml::from_str(&format!(
+                "[vm]\nram_compression = {enabled}\ncold_ram_compression = {enabled}\nram_dedup = {enabled}\nnode_socket = 'relative/node.sock'\nsnapshot_filesystem_pool = '/tmp/snapshot pool'\n"
+            ))
+            .unwrap();
+            // Serialization is independent of runtime strategy compatibility.
+            assert_eq!(config.vm.ram_compression, enabled);
+            assert_eq!(config.vm.cold_ram_compression, enabled);
+            assert_eq!(config.vm.ram_dedup, enabled);
+            assert_eq!(
+                config.vm.node_socket.as_deref(),
+                Some(Path::new("relative/node.sock"))
+            );
+            assert_eq!(
+                config.vm.snapshot_filesystem_pool.as_deref(),
+                Some(Path::new("/tmp/snapshot pool"))
+            );
+            let decoded: RunConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+            assert_eq!(decoded.vm, config.vm);
+        }
+    }
+
+    #[test]
+    fn control_socket_defaults_to_auto_and_roundtrips() {
+        let default: RunConfig = toml::from_str("").unwrap();
+        assert_eq!(default.vm.control_socket, None);
+        let config: RunConfig =
+            toml::from_str("[vm]\ncontrol_socket = '/private/control.sock'\n").unwrap();
+        assert_eq!(
+            config.vm.control_socket,
+            Some(PathBuf::from("/private/control.sock"))
+        );
+        let decoded: RunConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(decoded.vm, config.vm);
+    }
+
+    #[test]
+    fn cold_ram_compression_defaults_off_and_roundtrips() {
+        assert!(!VmSettings::default().cold_ram_compression);
+        let legacy: RunConfig = toml::from_str("[vm]\ncpus = 1\n").unwrap();
+        assert!(!legacy.vm.cold_ram_compression);
+        let config: RunConfig = toml::from_str("[vm]\ncold_ram_compression = true\n").unwrap();
+        assert!(config.vm.cold_ram_compression);
+        assert!(!config.vm.ram_compression);
+        assert!(config.vm.memory_pool.is_none());
+        let decoded: RunConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(decoded.vm, config.vm);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn cold_ram_compression_rejects_conflicting_strategies() {
+        for conflict in [
+            VmSettings {
+                ram_dedup: true,
+                ..Default::default()
+            },
+            VmSettings {
+                ram_compression: true,
+                ..Default::default()
+            },
+            VmSettings {
+                ram_backing: Some("unused.ram".into()),
+                ..Default::default()
+            },
+            VmSettings {
+                memory_pool: Some("pool.sock".into()),
+                ..Default::default()
+            },
+            VmSettings {
+                snapshot_filesystem_pool: Some("snapshots".into()),
+                ..Default::default()
+            },
+        ] {
+            let settings = VmSettings {
+                cold_ram_compression: true,
+                ..conflict
+            };
+            assert!(settings.validate_ram_dedup().is_err());
+        }
+        assert!(
+            VmSettings {
+                cold_ram_compression: true,
+                ..Default::default()
+            }
+            .validate_ram_dedup()
+            .is_ok()
+        );
     }
 
     #[test]

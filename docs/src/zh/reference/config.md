@@ -86,7 +86,7 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 - 含路径的配置没有“以配置文件目录为根”的通用承诺；从预期工作区启动，跨环境使用绝对路径。
 
 
-`[vm].memory_pool` 是实验性 macOS / Apple Silicon 共享冷页池的 socket 路径，默认未设置；CLI 对应 `--vm-memory-pool SOCKET`，Rust SDK 对应 `VmSettings.memory_pool`。见[首版内存共享](../design/memory-optimization/proof-of-concept.md#v1-integration)。
+`[vm].memory_pool` 是实验性 macOS / Apple Silicon 共享冷页池的 socket 路径，默认未设置；CLI 对应 `--vm-memory-pool SOCKET`，Rust SDK 对应 `VmSettings.memory_pool`。Linux 有意拒绝外部池；有界实例本地存储使用 `cold_ram_compression`。见[首版内存共享](../design/memory-optimization/proof-of-concept.md#v1-integration)。
 
 ## 常用分组的具体字段 {#settings}
 
@@ -119,16 +119,81 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 | `container` | `runtime = "crun"`，`image = ""`，`network = "host"`，`read_only_rootfs = false`，`mounts = []` |
 | `container` 可选字段 | `rootfs`、`pvisor_binary`、`platform`、`workdir`、`user` |
 | `container.mounts` 每项 | `source`、`target`，`read_only = false` |
-| `vm` | `memory_mib = 2048`，`cpus = 2`，`rootfs_immutable = false`，`ram_compression = false`，`ram_dedup = false` |
-| `vm` 可选字段 | `rootfs`、`image`、`image_store`、`library_dir`、`ram_backing`、`memory_pool`、`node_socket`、`snapshot_filesystem_pool` |
+| `vm` | `memory_mib = 2048`，`cpus = 2`，`rootfs_immutable = false`，`ram_compression = false`，`cold_ram_compression = false`，`ram_dedup = false` |
+| `vm` 可选字段 | `rootfs`、`image`、`image_store`、`library_dir`、`control_socket`、`ram_backing`、`memory_pool`、`node_socket`、`snapshot_filesystem_pool` |
 
 `container.platform` 取 `linux-amd64` 或 `linux-arm64`；`container.network` 取 `host`、`bridge` 或 `none`。Linux container 的注入二进制必须与 rootfs 的架构和 ABI 匹配。
 
+#### VM 控制与内存覆盖 {#vm-control-memory}
+
+所有控制/内存字段都有 CLI 对应项，见[选项表](cli.md#vm-memory-options)。
+`--vm-ram-compression`、`--vm-cold-ram-compression` 和 `--vm-ram-dedup`
+接受裸标志（`true`）或 `=true` / `=false`。省略时保留 TOML 值；
+显式 `=false` 关闭配置的 `true`。只有 true 布尔选项推断 VM 执行，
+显式 control/backing/pool/node 路径也在省略 `--executor` 时选择 VM。
+依赖 TOML 内存设置时应设置 `[run].executor = "vm"`；仅有 `[vm]` 表
+不会选择 executor。配置 `control_socket` 也会通过 CLI 选择 VM，但
+不会覆盖显式非 VM executor；此组合被拒绝。
+
+启用去重并使用固定控制路径的 live VM：
+
+```toml
+[run]
+executor = "vm"
+command = ["/bin/sleep", "600"]
+
+[vm]
+control_socket = "/tmp/pvisor-host-control/ctrl.sock"
+ram_compression = false
+cold_ram_compression = false
+ram_dedup = true
+```
+
+```bash
+install -d -m 0700 /tmp/pvisor-host-control
+pvisor run --config vm-control.toml
+pvisor run --config vm-control.toml --vm-ram-dedup=false
+```
+
+将 TOML 保存为 `vm-control.toml`；前一个 Attempt 结束并释放 socket 后再
+依次执行命令。`vm.control_socket` 是可选的仅宿主路径，默认未设置。
+省略时，每个原生 VM Attempt 仍自动创建私有 `/tmp/pvctrl-*/ctrl.sock`。
+自定义父目录必须已存在、不是符号链接、属于有效 UID，且权限恰为 `0700`；
+socket 权限为 `0600`，仅限同 UID，已有路径绝不覆盖。
+端点绝不能从 guest 访问；宿主父进程提供 executor 排除项，包括 host-rootfs
+VM。CLI stderr 打印 socket、Run ID 和 Attempt ID，供
+[`pvisor ctrl`](cli.md#vm-instance-control) 使用；非 VM 控制明确不受支持。
+`load` 是同一 live Attempt 的 `RunResume`，不是持久快照重启，也不主动
+预触全部 RAM 页。
+
+`--vm-node-socket SOCKET` 覆盖 `vm.node_socket`；
+`--vm-snapshot-filesystem-pool DIR` 覆盖 `vm.snapshot_filesystem_pool`。
+省略路径标志保留配置。快照池必须由宿主管理，位于 VM 可写根及快照 store
+之外，并与 Job 位于同一卷；其 Linux x86_64 无网络 profile 不代表通用 VM
+快照支持。本地冷 pager 的单一选项同时启用回收与压缩，不是独立开关。
+它与 backing/FUSE 压缩、去重、外部池、快照捕获/恢复、快照文件系统池及
+整 VM offload 互斥。去重与两种压缩模式及外部池互斥。Linux 外部池仍不受
+支持。冲突针对合并后的配置，不只是 CLI 标志。
+
 VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文件；`ram_compression` 启用相应的压缩 backing。macOS 的压缩 backing 与共享池有额外 FUSE 条件，见[内存共享概念验证](../design/memory-optimization/proof-of-concept.md)。
 
-`[vm].ram_dedup = true` 在使用 VM executor 时请求尽力而为的宿主 RAM 去重建议；`--vm-ram-dedup` 还会选择该 executor。它与 `memory_pool`、`ram_compression` 及 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 互斥。Linux 建议面向普通私有匿名 RAM 与恢复的私有 COW 映射；live `MAP_SHARED` RAM 被跳过，不转换映射。macOS 对其他条件合格的映射报告不支持。runner 将安装报告写入 stderr，建议失败仍继续运行；`accepted_bytes` 不是已合并字节、节省，也不证明扫描已启用。不修改全局 KSM 参数或增设服务。启用前先核对[去重边界与共享风险](../design/memory-optimization/deduplication.md#direction)。
+`[vm].cold_ram_compression = true`（`VmSettings.cold_ram_compression`）在使用
+VM executor 时启用实验性的 Linux x86_64 实例本地 live 压缩；
+`--vm-cold-ram-compression` 还会选择该 executor。默认值为 `false`，采用
+私有匿名 RAM，没有 live backing 文件，不需要 FUSE 或外部服务，区别于
+`ram_compression`。必须具备 userfaultfd syscall 或 `/dev/userfaultfd` 的
+内核缺页权限；编译支持不代表权限，缺少权限时启动失败，不回退或修改
+全局 sysctl。准入拒绝 `ram_backing`、`ram_compression`、`ram_dedup`、
+`snapshot_filesystem_pool`、快照捕获/恢复及整 VM offload；Linux 还拒绝
+`memory_pool` 及 `PVISOR_EXPERIMENTAL_MEMORY_POOL`。ACL 命令、映射/构建
+限制、有界预算及经过校验的 refault 见
+[实例内压缩](../design/memory-optimization/compression-local.md)。这是持续
+进行且无需 guest 参与的驱逐/refault 探测，不是普通 pause 或读访问热度
+检测器，不承诺生产密度。
 
-`[vm].snapshot_filesystem_pool` 为首次启动及从快照恢复的 VM capture 启用不可变 lower 引用，也覆盖不同 VM 的首次 capture。首次 seal 后，控制连接持有已验证的 owner；后续 capture 验证完整原 lower 并复用已封存的 pool 树，不扩大 runner 的访问范围。原生调用方应使用宿主管理的绝对路径，与 Job store 位于同一卷，并处于所有 VM 可写根和快照 store 之外。首次缓存未命中时，每个不可变摘要创建一棵 pool 树；并发未命中按摘要串行，命中不产生临时 lower 副本。此选项启用的原生 v5 快照以独立持有的 64 KiB 压缩块保留私有文件内容，复用未变化的内容；恢复时重建私有可写 inode，并保留完整元数据及硬链接关系。运行中的块 owner 在父快照退役和 GC 后仍然有效。封存先按解码后的内容标识查找 pool 块，命中时完整校验并直接复用，仅未命中才压缩；完整 RAM 压缩封存也使用这一路径。原生 capture 直接编码经过宿主认证的冻结私有目录，不再产生中间私有数据树；导入、恢复和暂停任务的文件导出均不打开记录中的原始私有路径。完整数据校验仍保留；延迟和密度收益需要实测。此配置不支持网络、共享内存池、普通 RAM 压缩及显式 RAM backing。备份须保留 pool 与相关 Job store，或导出完整快照。
+`[vm].ram_dedup = true` 在使用 VM executor 时请求尽力而为的宿主 RAM 去重建议；`--vm-ram-dedup` 还会选择该 executor。它与 `memory_pool`、`ram_compression`、`cold_ram_compression` 及 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 互斥。Linux 建议面向普通私有匿名 RAM 与恢复的私有 COW 映射；live `MAP_SHARED` RAM 被跳过，不转换映射。macOS 对其他条件合格的映射报告不支持。runner 将安装报告写入 stderr，建议失败仍继续运行；`accepted_bytes` 不是已合并字节、节省，也不证明扫描已启用。不修改全局 KSM 参数或增设服务。启用前先核对[去重边界与共享风险](../design/memory-optimization/deduplication.md#direction)。
+
+`[vm].snapshot_filesystem_pool` 为首次启动及从快照恢复的 VM capture 启用不可变 lower 引用，也覆盖不同 VM 的首次 capture。首次 seal 后，控制连接持有已验证的 owner；后续 capture 验证完整原 lower 并复用已封存的 pool 树，不扩大 runner 的访问范围。原生调用方应使用宿主管理的绝对路径，与 Job store 位于同一卷，并处于所有 VM 可写根和快照 store 之外。首次缓存未命中时，每个不可变摘要创建一棵 pool 树；并发未命中按摘要串行，命中不产生临时 lower 副本。此选项启用的原生 v5 快照以独立持有的 64 KiB 压缩块保留私有文件内容，复用未变化的内容；恢复时重建私有可写 inode，并保留完整元数据及硬链接关系。运行中的块 owner 在父快照退役和 GC 后仍然有效。封存先按解码后的内容标识查找 pool 块，命中时完整校验并直接复用，仅未命中才压缩；完整 RAM 压缩封存也使用这一路径。原生 capture 直接编码经过宿主认证的冻结私有目录，不再产生中间私有数据树；导入、恢复和暂停任务的文件导出均不打开记录中的原始私有路径。完整数据校验仍保留；延迟和密度收益需要实测。此配置不支持网络、共享内存池、普通与 live 冷 RAM 压缩及显式 RAM backing。备份须保留 pool 与相关 Job store，或导出完整快照。
 
 ### 捕获与记录
 
@@ -179,12 +244,14 @@ VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文�
 | `container.mounts[].source` | `PathBuf` | `必需` | 宿主路径 |
 | `container.mounts[].target` | `PathBuf` | `必需` | 容器路径 |
 | `container.mounts[].read_only` | `bool` | `false` | 只读 bind mount |
+| `vm.control_socket` | `Option<PathBuf>` | `未设置` | 仅宿主可用的 live Attempt 端点；默认自动私有 socket；须已有同 UID 0700 父目录及新路径；`--vm-control-socket` |
 | `vm.ram_backing` | `Option<PathBuf>` | `未设置` | 新建 RAM backing 路径；拒绝已有文件；`--vm-ram-backing` |
 | `vm.ram_compression` | `bool` | `false` | Seekable 压缩 backing；`--vm-ram-compression` |
+| `vm.cold_ram_compression` | `bool` | `false` | 实验性 Linux x86_64 本地 live pager；需内核缺页 userfaultfd 权限；无 FUSE/外部池；`--vm-cold-ram-compression` 选择 VM |
 | `vm.ram_dedup` | `bool` | `false` | 显式启用尽力而为的宿主 RAM 去重建议；`--vm-ram-dedup` 选择 VM；与内存池/压缩互斥；接受建议不等于节省 |
 | `vm.memory_pool` | `Option<PathBuf>` | `未设置` | 实验性 macOS pool socket；`--vm-memory-pool` |
-| `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `未设置` | 宿主管理的不可变快照 lower 池；仅 Linux x86-64 无网络私有 RAM 配置；通过配置或 SDK 设置 |
-| `vm.node_socket` | `Option<PathBuf>` | `未设置` | 同宿主 node 资源服务 socket；恢复时保留共享只读 RAM backing 的引用，直到 native VM 退出；通过配置或 SDK 设置 |
+| `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `未设置` | 宿主管理的不可变快照 lower 池；仅 Linux x86-64 无网络私有 RAM 配置；`--vm-snapshot-filesystem-pool` |
+| `vm.node_socket` | `Option<PathBuf>` | `未设置` | 同宿主 node 资源服务 socket；恢复时保留共享只读 RAM backing 的引用，直到 native VM 退出；`--vm-node-socket` |
 | `vm.rootfs` | `Option<PathBuf>` | `未设置` | Linux 根目录；Linux CLI 默认宿主 `/`；`--rootfs` |
 | `vm.image` | `Option<String>` | `未设置` | OCI 镜像，替代 rootfs 目录；`--rootfs IMAGE` |
 | `vm.image_store` | `Option<PathBuf>` | `未设置` | OCI 缓存路径；`--vm-image-store` |

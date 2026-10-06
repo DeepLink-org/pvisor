@@ -82,6 +82,12 @@ impl Balloon {
             DeviceState::Inactive => unreachable!(),
         };
 
+        // Retain a lease through discard and used-ring publication. Cold pager
+        // startup drains this lease before changing the VM-local discard policy.
+        let access = super::super::memory_gate::balloon_access(mem);
+        let discard_allowed = access
+            .as_ref()
+            .is_none_or(|access| access.balloon_discard_allowed());
         let queues = self
             .queues
             .as_mut()
@@ -91,6 +97,11 @@ impl Balloon {
         while let Some(head) = queues[FRQ_INDEX].queue.pop(mem) {
             let index = head.index;
             for desc in head.into_iter() {
+                // Free-page reporting is advisory: acknowledge the buffer even
+                // when the cold pager owns all destructive RAM transitions.
+                if !discard_allowed {
+                    continue;
+                }
                 let host_addr = mem.get_host_address(desc.addr).unwrap();
                 debug!(
                     "balloon: should release guest_addr={:?} host_addr={:p} len={}",

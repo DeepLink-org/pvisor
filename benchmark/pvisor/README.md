@@ -15,6 +15,73 @@ cargo test -p pvisor-vm --lib ram_dedup::tests::memory_diagnostic -- \
 
 The explicit `cargo test` invocation is the special diagnostic runner, not the default conventional validation command. [The retained mechanism report](MEMORY_DIAGNOSTIC_REPORT.md) contains the actual 2026-10-06 commands, settings, derived results and limitations. Its diagnostic results do not populate B-VM-MEMORY user-facing benchmark pages.
 
+## Memory scale engineering protocol
+
+[B-MEMORY-SCALE 的完整中文协议](MEMORY_SCALE_PLAN.md)覆盖同源恢复的 baseline/KSM advice A/B、COW 与 fresh-live raw/compressed 两次卸载恢复。每轮精确 54 格；预检一轮单独保存，通过后正式五轮（270 个 sequential batch）。实际最多四个 VM，生产者 reap 后才恢复，完整组固定四核/2 GiB/零 swap。共同 inode 与 advice 需审查 smaps/FD，登记不等于合并；独立 inode 对照当前不支持/未测。KSM 全局设置只读，扫描关闭和管理员预启用分别成 cohort；当前无连续监控，debug 计时不是生产延迟。
+
+从仓库根运行以下命令；先按协议完成构建与来源冻结，确认本地 build receipt 匹配 example，且短磁盘输出目录为 NEW。完整矩阵使用脚本默认值；保留失败、日志与收据，不在 OOM 后提高预算、不用旧批补格。
+
+```sh
+python3 benchmark/pvisor/memory_scale.py \
+  --build-receipt benchmark/pvisor/.data/memory-scale-build-20261006/build-receipt.json \
+  --rootfs /home/reiase/workspace/pvisor/benchmark/.data/full-retest-20261006/density-env4/rootfs \
+  --firmware /home/reiase/workspace/pvisor/benchmark/.data/full-retest-20261006/firmware \
+  --output /home/reiase/workspace/pvisor/benchmark/.data/s4p --preflight
+
+# 仅在完整预检和协议证据审查通过后运行；不要与预检并行。
+python3 benchmark/pvisor/memory_scale.py \
+  --build-receipt benchmark/pvisor/.data/memory-scale-build-20261006/build-receipt.json \
+  --rootfs /home/reiase/workspace/pvisor/benchmark/.data/full-retest-20261006/density-env4/rootfs \
+  --firmware /home/reiase/workspace/pvisor/benchmark/.data/full-retest-20261006/firmware \
+  --output /home/reiase/workspace/pvisor/benchmark/.data/s4f --samples 5
+```
+
+协议定义了 inode/pin、全摘要和 mutable-state 门禁、恢复余量及生命周期 peak 的限制。后续父协调者报告留在本工程目录，不发布为用户 benchmark 结果；第二种 KSM cohort 必须另选新的短输出目录。
+
+### Firecracker KSM control
+
+`firecracker_ksm.py` serves B-MEMORY-SCALE engineering A/B. It boots at most four fresh Firecracker PCI VMs (256 MiB / 1 vCPU each), with a 64 MiB byte-validated payload using the pVisor page generator, a 20-second observation window, and 25/100% mutation plus peer/survivor verification. Its complete worker group uses four CPU quota / 2 GiB / zero swap. KSM configuration is read-only and must match the administrator-enabled `run=1`, `pages_to_scan=100`, `sleep_millisecs=20`. This is not a same-kernel/runtime/backing comparison or a production density measurement.
+
+```sh
+python3 -m unittest discover -s benchmark/pvisor -p test_firecracker_ksm.py -v
+python3 benchmark/pvisor/firecracker_ksm.py \
+  --assets /home/reiase/workspace/pvisor/benchmark/.data/full-retest-20261006/assets \
+  --output /home/reiase/workspace/pvisor/benchmark/.data/f4k-new
+```
+
+Use a NEW output directory. The runner freezes sources, installed Firecracker/API schema, static guest worker and receipts; retain complete smaps, cgroup counters, logs and failures. Installed v1.13.1 has no supported guest-memory-merging option: advice-on is `unsupported`, so an otherwise successful advice-off preflight returns nonzero for the incomplete matrix. No ptrace/LD_PRELOAD workaround is substituted. See [the engineering comparison](FIRECRACKER_KSM_REPORT.md) for results and the distinction between scanner enabled and RAM mergeable.
+
+## Cold runtime/storage validation
+
+`B-COLD-STORAGE-DIAG` separates codec storage gains from live VM reclaim. Its retained cohort predates the Linux pager implementation; it measured codec storage only. `cold_storage_probe` uses a fresh instance-exclusive `CompressedPool` for 64 MiB fill, unique patterned or unique random data, 64 KiB blocks, two complete restores and full-byte/SHA-256 validation. This is not a local pager implementation. Encoded bytes exclude metadata, allocator, scratch and original RAM; no VM residency gain is inferred.
+
+```sh
+CARGO_BUILD_JOBS=4 cargo build --locked -p pvisor --example cold_storage_probe
+# Freeze source/compiler/build receipts and binary before measurement.
+# Run each pattern in three fresh sequential processes, retaining stdout/stderr.
+target/debug/examples/cold_storage_probe --pattern fill --trial 1
+target/debug/examples/cold_storage_probe --pattern patterned --trial 1
+target/debug/examples/cold_storage_probe --pattern random --trial 1
+```
+
+Use a NEW ignored evidence directory, record prechosen order, affinity and complete failures, and do not build/test during sampling. The retained experiment used a frozen debug binary, seeded interleaving, CPU 0, and no cgroup cap; exact commands, source/binary receipts and all nine runs are retained under `.data/cold-storage-20261006/`. See [the historical storage verification report](COLD_RUNTIME_REPORT.md) for those observations; its pre-implementation support statements are historical. They do not substitute for live VM validation.
+
+`B-COLD-RUNTIME-ENG` now validates the experimental Linux x86_64 kernel-fault userfaultfd pager with instance-local storage. Enable `[vm].cold_ram_compression = true` or `--vm-cold-ram-compression`; it is default-off and distinct from FUSE `ram_compression`. Userfaultfd authority must be granted by the administrator. Linux deliberately rejects external pools, file/COW backing, KSM advice and snapshot/offload combinations. The policy uses eviction/refault probing, not full read-heat tracking.
+
+```sh
+python3 -m unittest discover -s benchmark/pvisor -p test_linux_cold_runtime.py -v
+CARGO_BUILD_JOBS=4 cargo build --locked -p pvisor --example vm_cold_runtime
+# Freeze source and binary receipts before measuring; use a NEW short output path.
+python3 benchmark/pvisor/linux_cold_runtime.py \
+  --example /absolute/path/to/frozen/vm_cold_runtime \
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --rootfs /absolute/path/to/prepared/rootfs \
+  --firmware /absolute/path/to/firmware \
+  --output /absolute/path/to/new/short/output
+```
+
+The four-condition preflight uses one fresh 256 MiB/1-vCPU VM per cell, 64 MiB repeated/random payloads, cold off/on, fixed 20/35-second windows, four CPU quota/2 GiB/zero swap and two full recovery/mutation/device-I/O checks. Maximum simultaneous VM count is one. It requires 30 quiet seconds per launch and rejects detected VM/build interference. Trusted startup RAM intervals must match complete smaps VMA intervals before attributing isolated PSS. Preserve failed cohorts and all receipts; no production density or small-sample tail-latency claims. See [the Linux implementation and measured effects](LINUX_COLD_RUNTIME_REPORT.md).
+
 ## Data and publication
 
 Apply sampling honors `--samples` and `--warmups` at every file count, including 100,000 files. Use explicit smaller values in a separate preflight output; file count never silently reduces formal rounds. Fresh stages and Git patches are prepared outside the application timer. Large sweeps can take hours; retain failures and partial reports instead of filling conditions from previous runs.

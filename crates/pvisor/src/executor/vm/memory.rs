@@ -16,20 +16,20 @@ pub(super) struct Target {
     proc: Arc<File>,
     pid: u32,
     start: u64,
-    ram_device: u64,
-    ram_inode: u64,
+    ram_identity: Option<(u64, u64)>,
 }
 impl Target {
-    pub fn new(pid: u32, ram: &File) -> anyhow::Result<Self> {
+    pub fn new(pid: u32, ram: Option<&File>) -> anyhow::Result<Self> {
         let proc = Arc::new(File::open(format!("/proc/{pid}"))?);
         let start = identity(&read(&proc, c"stat", 64 * 1024)?, pid)?;
-        let ram = ram.metadata()?;
+        let ram_identity = ram
+            .map(|file| file.metadata().map(|m| (m.dev(), m.ino())))
+            .transpose()?;
         Ok(Self {
             proc,
             pid,
             start,
-            ram_device: ram.dev(),
-            ram_inode: ram.ino(),
+            ram_identity,
         })
     }
     pub fn cpu_sample(&self) -> anyhow::Result<pvisor_core::cpu::ProcessCpuUsage> {
@@ -43,8 +43,11 @@ impl Target {
             identity(&read(&self.proc, c"stat", 64 * 1024)?, self.pid)? == self.start,
             "native VM process identity changed"
         );
+        let (device, inode) = self.ram_identity.context(
+            "CAPABILITY_UNSUPPORTED: anonymous cold-pager RAM has no file identity for guest/non-RAM attribution"
+        )?;
         let text = read(&self.proc, c"smaps", 16 * 1024 * 1024)?;
-        let (guest_ram, non_ram) = parse(&text, self.ram_device, self.ram_inode)?;
+        let (guest_ram, non_ram) = parse(&text, device, inode)?;
         ensure!(
             identity(&read(&self.proc, c"stat", 64 * 1024)?, self.pid)? == self.start,
             "native VM ended or changed during memory sampling"
@@ -279,7 +282,7 @@ mod tests {
             .arg("10")
             .spawn()
             .unwrap();
-        let target = Target::new(child.id(), &ram);
+        let target = Target::new(child.id(), Some(&ram));
         child.kill().unwrap();
         child.wait().unwrap();
         let target = target.unwrap();

@@ -344,6 +344,13 @@ impl RunControlHandle {
 }
 
 impl RunHandle {
+    /// Host Unix endpoint for this live VM attempt; never forwarded to the
+    /// guest. Non-VM and terminal attempts return explicit errors.
+    #[cfg(unix)]
+    pub fn control_socket(&self) -> anyhow::Result<std::path::PathBuf> {
+        super::instance_control::socket(self)
+    }
+
     /// Capture full native CPU/RAM/devices and owned filesystem copies in one
     /// freeze/publication transaction. The source resumes after durable seal.
     /// Requires a no-network VM with durable Run storage. This API does not
@@ -504,6 +511,7 @@ pub struct PVisorBuilder {
     runtime: RuntimeSupervisorBuilder,
     event_sink: Option<Arc<dyn EventSink>>,
     executors: Option<Vec<Arc<dyn RunExecutor>>>,
+    control_socket: Option<std::path::PathBuf>,
 }
 
 impl std::fmt::Debug for PVisorBuilder {
@@ -576,6 +584,13 @@ impl PVisorBuilder {
         self
     }
 
+    /// Override the VM host control endpoint. Its existing parent must be a
+    /// private, same-effective-user, non-symlink directory with mode 0700.
+    pub fn control_socket(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.control_socket = Some(path.into());
+        self
+    }
+
     pub fn executors(mut self, executors: Vec<Arc<dyn RunExecutor>>) -> Self {
         self.executors = Some(executors);
         self
@@ -604,6 +619,7 @@ impl PVisorBuilder {
             })),
             event_sink,
             runtime: runtime.build(),
+            control_socket: self.control_socket,
         }
     }
 }
@@ -617,6 +633,7 @@ pub struct PVisor {
     executors: Arc<Vec<Arc<dyn RunExecutor>>>,
     event_sink: Arc<dyn EventSink>,
     runtime: RuntimeSupervisor,
+    control_socket: Option<std::path::PathBuf>,
 }
 
 /// Typed preparation inputs resolved before any runtime side effects.
@@ -868,12 +885,45 @@ impl PVisor {
 
     /// Start one Run: resolve Operation → prepare controls → execute → teardown.
     pub async fn run(&self, spec: RunSpec) -> Result<RunHandle, PVisorError> {
-        crate::Session::start(
-            &self.runtime,
-            Arc::clone(&self.event_sink),
-            self.resolve_run(spec)?,
-        )
-        .await
+        let mut resolved = self.resolve_run(spec)?;
+        #[cfg(unix)]
+        resolved
+            .spec
+            .metadata
+            .remove(super::instance_control::INSTANCE_CONTROL_DIRECTORY_METADATA);
+        // Bind before starting any attempt task: setup errors cannot orphan a VM.
+        #[cfg(unix)]
+        let control_server =
+            if resolved.descriptor.kind == pvisor_core::ExecutorKind::VirtualMachine {
+                Some(
+                    super::instance_control::InstanceControlServer::bind(
+                        self.control_socket.as_deref(),
+                    )
+                    .map_err(PVisorError::Prepare)?,
+                )
+            } else {
+                if self.control_socket.is_some() {
+                    return Err(PVisorError::InvalidSpec(
+                        "control socket requires a VM executor".into(),
+                    ));
+                }
+                None
+            };
+        #[cfg(unix)]
+        if let Some(server) = &control_server {
+            resolved.spec.metadata.insert(
+                super::instance_control::INSTANCE_CONTROL_DIRECTORY_METADATA.into(),
+                serde_json::to_value(server.directory())
+                    .map_err(|error| PVisorError::Prepare(error.into()))?,
+            );
+        }
+        let handle =
+            crate::Session::start(&self.runtime, Arc::clone(&self.event_sink), resolved).await?;
+        #[cfg(unix)]
+        if let Some(server) = control_server {
+            server.start(&handle);
+        }
+        Ok(handle)
     }
 }
 

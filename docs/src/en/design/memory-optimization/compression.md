@@ -6,10 +6,15 @@ when sharing across instances justifies coordination.
 
 ## Target and current status {#status}
 
-The target separates [per-instance compression](compression-local.md) from
-[pooled-server compression](compression-pool.md). Neither is a production-benefit
-claim. The current macOS/HVF heap cold pool is experimental and can fail dependent
-VMs when its service is lost; client-owned immutable backing is a proposal.
+[Per-instance compression](compression-local.md) is delivered experimentally on
+Linux x86_64 through the default-off `vm.cold_ram_compression` /
+`--vm-cold-ram-compression`: a runtime-owned userfaultfd pager with bounded local
+storage, no FUSE and no external pool. It is distinct from `vm.ram_compression`
+(FUSE file backing), and is eviction/refault probing rather than a read-access
+heat detector. Neither it nor [pooled-server compression](compression-pool.md)
+is a production-benefit claim. The macOS/HVF heap pool remains experimental and
+can fail dependent VMs when its service is lost; client-owned immutable backing
+is still a proposal.
 
 ## Ownership and data flow {#architecture}
 
@@ -31,9 +36,12 @@ Both need temporary-memory and recovery headroom, CPU budgets, and acceptable ta
 
 ## Direction and evidence {#direction}
 
-Prove independent recovery before reclaiming RAM. Linux sealed `memfd` delivery is
-proposed and still requires pager validation; a macOS sealed equivalent is not
-delivered. Keep the existing cold-pool incompatibility with whole-VM
-[offload and FUSE compressed backing](offload.md). Start from the
+The Linux local pager publishes and validates objects before reclaiming RAM,
+then validates restoration through `UFFD_COPY`. Kernel-fault userfaultfd authority
+is required; compiled support does not grant permission and missing authority
+fails startup. It rejects dedup, file/FUSE backing, snapshot capture/restore,
+whole-VM [offload](offload.md), and external memory pools; see the
+[local contract](compression-local.md#direction). Linux sealed `memfd` pool
+delivery remains proposed; a macOS sealed equivalent is not delivered. Start from the
 [optimization architecture](index.md); [memory evidence](proof-of-concept.md#memory-evidence)
 establishes no known production net gains or verified net physical-memory savings.

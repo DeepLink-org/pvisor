@@ -23,7 +23,7 @@
 
 卸载的原始文件与压缩 base/delta bundle 见[卸载文件格式](offload-format.md)。压缩分别采用[实例内](compression-local.md)与[池化服务器](compression-pool.md)架构：前者独立，后者可共享编码对象但增加协调成本。
 
-不可变基线共享可以与 Linux KSM 配合：文件基线共享未修改页，KSM 处理合格的私有匿名页。同一 RAM 区域首版不叠加 KSM 与冷页回收；现有冷池与 FUSE 压缩 backing、整 VM offload 的互斥保持不变。组合是显式架构选择，不自动热切换。
+不可变基线共享可以与 Linux KSM 配合：文件基线共享未修改页，KSM 处理合格的私有匿名页。同一 RAM 区域首版不叠加 KSM 与冷页回收；本地冷 pager 与冷池仍不能与 FUSE/文件 backing、快照捕获/恢复或整 VM offload 组合；`vm.ram_dedup` 与 `vm.cold_ram_compression` 显式互斥。组合是显式架构选择，不自动热切换。
 
 ## 所有权与边界 {#ownership}
 
@@ -36,12 +36,12 @@
 
 共享默认限于明确授权的信任域；同 UID 不是完整租户隔离。共享时延可能泄露内容存在性，跨信任域去重不能仅按节省率决定。物理回收也仍受宿主内核与存储影响，API 成功不表示已释放全部目标字节。
 
-压缩后的空间不能无条件转成新的实例容量：恢复仍需原文 RAM 和工作缓冲。容量规划要保留恢复余量，避免因后台优化导致恢复无法推进。具体预算和调度属于后续实现设计。
+压缩后的空间不能无条件转成新的实例容量：恢复仍需原文 RAM 和工作缓冲。容量规划要保留恢复余量，避免因后台优化导致恢复无法推进。Linux 本地 store 将编码 payload 限制为配置 RAM 的一半，并单独限制对象数；这不是宿主总内存上限。宿主级容量与调度仍需进一步设计。
 
 ## 实现方向与证据 {#direction}
 
-架构目标以 2026-10-06 的设计为起点，不代表所有能力已交付。优先复用不可变基线与私有 COW 映射，随后引入 Linux KSM 的区域建议；完善单实例卸载后，按实际冷工作集需求发展实例内压缩，再增加池化协调。
+架构目标以 2026-10-06 的设计为起点，不代表所有能力已交付。优先复用不可变基线与私有 COW 映射，随后引入 Linux KSM 的区域建议；实验性 Linux 实例本地 live 压缩现已交付，池化协调仍是独立扩展。
 
-已有文件 offload、格式与实验性 macOS/HVF 冷页池提供实现基础；Linux/KVM 冷页恢复和客户端持有共享编码 backing 仍需验证。统一 API 不意味着平台能力相同。
+已有文件 offload、格式与实验性 macOS/HVF 冷页池提供实现基础。Linux x86_64 现已支持默认关闭的 `vm.cold_ram_compression` / `--vm-cold-ram-compression`，使用私有匿名 RAM、runtime 持有的内核缺页 userfaultfd 及有界 `LocalColdRamStore`。这是持续进行且无需 guest 参与的驱逐/refault 探测，不是普通 pause 或真正的读访问热度检测器。必须具备权限，缺少权限时启动失败；准入与恢复合同见[实例内压缩](compression-local.md)。客户端持有 sealed 共享 backing 仍是提案。统一 API 不意味着平台能力相同或宿主已经授权。
 
 [实验性概念验证](proof-of-concept.md)保留底层 COW、冷恢复、引用生命周期及历史失败样本。它说明机制的可行性和限制，不承诺新架构的生产密度、净物理收益或恢复尾延迟。完整状态保存边界见[环境快照](../environment-snapshot.md)。

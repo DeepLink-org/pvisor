@@ -1044,6 +1044,19 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
             all(target_os = "linux", target_arch = "x86_64")
         ))]
         snapshot_devices_frozen: false,
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        raw_kernel_mapping: match &payload {
+            #[cfg(not(feature = "tee"))]
+            Payload::KernelMmap if vm_resources.ram_backing.is_none() => vm_resources
+                .kernel_bundle
+                .as_ref()
+                .map(|kernel| super::RawKernelMapping {
+                    guest_address: kernel.guest_addr,
+                    host_address: kernel.host_addr as usize,
+                    length: kernel.size,
+                }),
+            _ => None,
+        },
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64")

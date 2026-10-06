@@ -1,6 +1,9 @@
 //! VM-local barrier for device RAM access, including retained descriptor slices.
 use std::collections::BTreeMap;
-use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::sync::{
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+    Arc, Condvar, Mutex, OnceLock, Weak,
+};
 use std::time::{Duration, Instant};
 use vm_memory::{GuestMemory, GuestMemoryMmap};
 
@@ -10,6 +13,8 @@ struct State {
     active: usize,
     prepare: Option<Arc<MemoryPrepare>>,
     dedup_advised: bool,
+    balloon_discard_disabled: bool,
+    cold_faults: Option<Arc<ColdFaultActivity>>,
 }
 /// Prepare RAM before any queue access, including descriptor-table reads.
 /// A preparation error terminates the isolated VMM process: queue APIs cannot
@@ -23,6 +28,31 @@ pub struct MemoryGate {
 }
 pub struct Access {
     gate: Arc<MemoryGate>,
+}
+
+/// Linux resolver activity, independent of the pager/store/VMM locks.
+#[derive(Default)]
+pub(crate) struct ColdFaultActivity {
+    pending: AtomicUsize,
+    generation: AtomicU64,
+}
+pub(crate) struct ColdFaultLease<'a>(&'a ColdFaultActivity);
+impl ColdFaultActivity {
+    pub(crate) fn begin(&self) -> ColdFaultLease<'_> {
+        self.pending.fetch_add(1, Ordering::SeqCst);
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        ColdFaultLease(self)
+    }
+    pub(crate) fn snapshot(&self) -> Option<u64> {
+        let generation = self.generation.load(Ordering::SeqCst);
+        let idle = self.pending.load(Ordering::SeqCst) == 0;
+        (idle && self.generation.load(Ordering::SeqCst) == generation).then_some(generation)
+    }
+}
+impl Drop for ColdFaultLease<'_> {
+    fn drop(&mut self) {
+        self.0.pending.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl MemoryGate {
@@ -92,6 +122,27 @@ impl MemoryGate {
     pub(crate) fn has_dedup_advice(&self) -> bool {
         self.state.lock().unwrap().dedup_advised
     }
+    /// Install before UFFD registration, under the drained CPU/device barrier.
+    /// The policy is permanent for this runner, including pager setup failure:
+    /// never re-enable an independent discarder over registered pager memory.
+    pub(crate) fn install_cold_faults(
+        &self,
+        faults: Arc<ColdFaultActivity>,
+    ) -> Result<(), &'static str> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "device memory gate poisoned")?;
+        if !state.closed || state.active != 0 {
+            return Err("cold RAM policy requires a drained gate");
+        }
+        state.balloon_discard_disabled = true;
+        state.cold_faults = Some(faults);
+        Ok(())
+    }
+    pub(crate) fn cold_faults(&self) -> Option<Arc<ColdFaultActivity>> {
+        self.state.lock().unwrap().cold_faults.clone()
+    }
     /// Hold the strategy lock across registration so prepare cannot activate
     /// between eligibility checking and the first accepted mapping. Advice is
     /// safe with live CPU/device accesses; it does not replace their mappings.
@@ -112,18 +163,23 @@ impl MemoryGate {
         self.enter_ranges(&[])
     }
     fn enter_ranges(self: &Arc<Self>, ranges: &[(u64, usize)]) -> Arc<Access> {
+        let access = self.enter_unprepared();
+        access.prepare(ranges);
+        access
+    }
+    fn enter_unprepared(self: &Arc<Self>) -> Arc<Access> {
         let mut state = self.state.lock().unwrap();
         while state.closed && state.active == 0 {
             state = self.changed.wait(state).unwrap();
         }
         state.active += 1;
-        drop(state);
-        let access = Arc::new(Access { gate: self.clone() });
-        access.prepare(ranges);
-        access
+        Arc::new(Access { gate: self.clone() })
     }
 }
 impl Access {
+    pub(crate) fn balloon_discard_allowed(&self) -> bool {
+        !self.gate.state.lock().unwrap().balloon_discard_disabled
+    }
     /// The existing lease prevents mappings changing between descriptor decode
     /// and payload preparation. The callback runs outside the gate lock.
     pub(crate) fn prepare(&self, ranges: &[(u64, usize)]) {
@@ -185,8 +241,46 @@ pub(crate) fn access_ranges(mem: &GuestMemoryMmap, ranges: &[(u64, usize)]) -> O
     gate.map(|gate| gate.enter_ranges(ranges))
 }
 
+/// Pin the entire balloon operation, not just each descriptor lookup. Policy
+/// changes require an idle gate and therefore cannot race its destructive call.
+pub(crate) fn balloon_access(mem: &GuestMemoryMmap) -> Option<Arc<Access>> {
+    let gate = registry()
+        .lock()
+        .unwrap()
+        .get(&key(mem))
+        .and_then(Weak::upgrade);
+    gate.map(|gate| gate.enter_unprepared())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cold_policy_drains_balloon_leases_and_fault_generation_detects_races() {
+        let memory = GuestMemoryMmap::from_ranges(&[(vm_memory::GuestAddress(0), 4096)]).unwrap();
+        let gate = register(&memory);
+        let faults = Arc::new(ColdFaultActivity::default());
+        let lease = balloon_access(&memory).unwrap();
+        assert!(lease.balloon_discard_allowed());
+        assert!(!gate.try_close().unwrap());
+        assert!(gate.install_cold_faults(faults.clone()).is_err());
+        drop(lease);
+        assert!(gate.try_close().unwrap());
+        gate.install_cold_faults(faults.clone()).unwrap();
+        gate.open();
+        assert!(!balloon_access(&memory).unwrap().balloon_discard_allowed());
+        let before = faults.snapshot().unwrap();
+        let active = faults.begin();
+        assert!(
+            faults.snapshot().is_none(),
+            "pending faults defer maintenance"
+        );
+        drop(active);
+        assert_ne!(
+            faults.snapshot(),
+            Some(before),
+            "completed racing faults invalidate preflight"
+        );
+    }
     #[test]
     fn optional_close_skips_live_views_and_does_not_close_the_gate() {
         let gate = Arc::new(MemoryGate::default());

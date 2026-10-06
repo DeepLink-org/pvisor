@@ -2,8 +2,8 @@
 #[cfg(feature = "gateway")]
 use super::resolve_proxy;
 use super::{
-    apply_safe_defaults, delegated_shutdown_signal, execute_config, paths_overlap,
-    resolve_workspace, select_run_storage,
+    announce_control_socket, apply_safe_defaults, delegated_shutdown_signal, execute_config,
+    paths_overlap, resolve_workspace, select_run_storage,
 };
 #[cfg(feature = "gateway")]
 use crate::GatewayDriverConfig;
@@ -503,6 +503,9 @@ async fn execute_restored(
         .executors(vec![Arc::new(executor)])
         .network(network)
         .event_sink(event_sink);
+    if let Some(path) = &config.vm.control_socket {
+        builder = builder.control_socket(path);
+    }
     #[cfg(feature = "gateway")]
     if let Some(proxy) = resolve_proxy(config)? {
         builder = builder.gateway(
@@ -528,6 +531,7 @@ async fn execute_restored(
     #[cfg(unix)]
     crate::cli::terminal::announce_stage(&stage);
     let handle = pvisor.run(spec.clone()).await?;
+    announce_control_socket(&handle);
     let record = RunRecord::read(&stage)?;
     let server = crate::runtime::job_execution::Server::start(
         &record,

@@ -49,6 +49,62 @@ another location. HOME and VM rootfs writes have separate lifetimes; see
 [staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
 
+## Per-instance VM controls and memory CLI
+
+Every native VM Attempt gets a host-only Unix control endpoint, even without
+retained Job storage. `pvisor run` prints `--socket PATH --run-id ID --attempt-id ID`
+to stderr; copy those exact values into `pvisor ctrl` in another host terminal:
+
+```bash
+pvisor run --executor vm -- /bin/sleep 600
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE status
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE pause
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE resume
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE offload --file /private/vm-ram/offloaded.ram
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE load
+```
+
+Replace example identities with the stderr values. All three identity arguments
+are required, including for `status`. Only `offload` accepts optional `--file`;
+omit it to use the current backing, or provide a new guest-inaccessible path on
+the same filesystem. `load` maps to `RunResume` of the same live Attempt, not a
+persistent snapshot restart or eager RAM prefault. Pause stops vCPUs; offload
+uses the stronger CPU/device quiescence boundary. Rejected operations produce
+JSON `ok: false` replies and nonzero exits; transport/parsing failures need not
+produce JSON. Non-VM controls are explicitly unsupported, not signal emulation.
+
+| Run CLI | `[vm]` field | Default |
+| --- | --- | --- |
+| `--vm-control-socket PATH` | `control_socket` | Unset: automatic private `/tmp/pvctrl-*/ctrl.sock` |
+| `--vm-ram-backing FILE` | `ram_backing` | Unset: attempt-local file in ordinary file-backed mode |
+| `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`; FUSE/macFUSE backing |
+| `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`; Linux x86_64 local cold pager |
+| `--vm-ram-dedup[=BOOL]` | `ram_dedup` | `false`; best-effort host advice |
+| `--vm-memory-pool SOCKET` | `memory_pool` | Unset; experimental Apple Silicon pool, unsupported on Linux |
+| `--vm-node-socket SOCKET` | `node_socket` | Unset; same-host resource service |
+| `--vm-snapshot-filesystem-pool DIR` | `snapshot_filesystem_pool` | Unset; Linux x86_64 no-network native checkpoint lower pool |
+
+Boolean flags accept bare=true or `=true` / `=false`; omission preserves config.
+True flags and explicit path options infer VM when `--executor` is omitted;
+`=false` alone does not. Explicit executors are not silently replaced. Path
+options override only their corresponding field. A custom control parent must
+already exist, be non-symlink, same-effective-UID and exactly `0700`; existing
+paths are never overwritten. The `0600` socket accepts same-UID peers and is
+removed at Attempt termination. It must never be guest-accessible, including in
+host-rootfs VMs; the host parent provides executor exclusions. It is separate
+from staged Job control and is not exported as a guest discovery file.
+
+The local cold pager has one combined reclaim/compression toggle; it conflicts
+with dedup, file/FUSE backing, external pools, snapshot capture/restore, snapshot
+filesystem pools and whole-VM offload. Dedup conflicts with both compression
+modes and external pools. The snapshot filesystem pool must be host-owned,
+outside VM-writable roots and snapshot stores, and on the Job's volume. Conflicts
+apply after config/CLI merging. Existing storage/control tests and compressed
+artifacts provide limited evidence, not end-to-end guest correctness or memory
+savings; compressed exit still does not commit writes after the last resume.
+See the [CLI commands and limits](../../docs/src/en/reference/cli.md#vm-instance-control)
+and [configuration example](../../docs/src/en/reference/config.md#vm-control-memory).
+
 ## Local service boundary
 
 `pvisor service run --config service.toml` supervises local resource owners;
@@ -57,6 +113,28 @@ Capture is a Gateway capability, not a second product.
 same-user authorization, compatibility checks and active-pin restart/stop
 fences. The optional `pool` role serves the experimental Apple Silicon cold-page
 pool. `service cache` and `service memory-pool` dispatch their installed tools.
+
+Linux x86_64 also has default-off experimental instance-local live cold
+compression: `VmSettings.cold_ram_compression` / `[vm].cold_ram_compression` or
+`pvisor run --vm-cold-ram-compression -- COMMAND`. The flag selects VM execution;
+the runner automatically starts the runtime-owned userfaultfd pager over private
+anonymous ordinary RAM using `LocalColdRamStore`, without a live backing file,
+FUSE or a service. This is separate from `vm.ram_compression` (FUSE backing).
+Kernel-fault syscall or `/dev/userfaultfd` authority is required; compiled support
+is not permission, and missing authority fails startup without fallback or global
+sysctl changes. Linux external `memory_pool` is deliberately unsupported.
+
+The store rejects raw/poorly compressed blocks, caps encoded payload at half
+configured RAM and bounds object count by the configured 64 KiB block count.
+Two quiescence windows capture/recheck bounded batches before discard; validated
+`UFFD_COPY` restores refaults. Guest execution continues between windows without
+guest application participation; this is experimental eviction/refault probing,
+not ordinary pause or a read-access heat detector. Admission rejects dedup,
+file/FUSE backing, snapshot capture/restore and whole-VM offload combinations.
+See [local compression](../../docs/src/en/design/memory-optimization/compression-local.md)
+for user-specific device ACLs, restricted mappings/build features and ownership.
+This delivers an experimental mechanism, not a production-density claim; sealed
+`memfd` pooling remains proposed.
 
 A minimal configuration is:
 

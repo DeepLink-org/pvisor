@@ -305,6 +305,15 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 每次试验使用新的 VM，并校验数据完整性。
 - **入口脚本：** `macos_cold_ram.py`（Apple Silicon live cold-page pool）、`vm_memory.py`（当前 Job API 的 Linux raw/compressed execution suspend/resume）、`live_vm_memory.py`（当前 SDK 的 Linux whole-VM offload，使用 `vm_live_memory_bench` example）。Linux 使用独立受限 cgroup，包含 backing/cache、捕获与恢复进程；报告 active、suspended 和恢复阶段、数据完整性与 CPU 成本。SDK offload 每个样本创建新的 VM，重复数据与确定性随机数据、raw 与压缩 backing 随机配对；记录完整 cgroup 的 anon/file/kernel 与 CPU，校验恢复后的全部数据和可变状态。执行快照、whole-VM offload 与运行中自动冷页压缩分别报告；单 VM 回收量不能替代密度实验，不恢复退役的独立 snapshot CLI。
 
+### B-MEMORY-SCALE：最多四个 VM 的共享、写入退化与卸载恢复 {#b-memory-scale}
+
+- **角色：** engineering A/B；实验计划与报告留在 `benchmark/pvisor/`，不填充用户 benchmark 数字。
+- **Motivation：** 验证内存去重设计在多个独立 runner 中是否保持同一基线、写入隔离和独立退出；区分基线共享、动态 KSM 合并与单实例 offload 的收益及成本。
+- **想要的结论：** 1/2/4 个 VM 的完整 cgroup 内存、每 runner PSS/KSM 和 advice 状态，0/25/100% COW 写入退化曲线、退出后剩余实例的完整性、raw/compressed 卸载后的回收与读回；不将登记字节当作节省，不外推超过四个 VM 的密度。
+- **实验设计：** 同源恢复的共同 inode与独立 inode 对照，KSM advice off/on 随机配对；重复、实例独有随机、相同随机内容分别测量。每条件创建新 VM，256 MiB RAM/1 vCPU，完整组统一四核/2 GiB/零 swap 预算，所有 VM barrier-ready 后按阶段采样。基线生产者退出后才启动最多四个恢复实例；每份 64 MiB payload 逐字节/摘要校验，固定写入比例、递增状态和退出顺序。raw/compressed whole-VM offload 使用独立 fresh-live 分组；私有 COW offload 拒绝、KSM 与冷回收互斥作为正确性门禁。读取完整 cgroup anon/file/kernel、CPU/peak/PSI/OOM 与所有 runner smaps，保留来源收据、输入清单、完整失败。预检一轮与正式至少五轮分目录；未运行条件标未测，不报告小样本尾延迟。禁止实例改变全局 KSM；扫描开启的实验仅在管理员预先配置的受控宿主执行，记录预算与扫描时间窗，deadline 到达不是产品失败。
+- **Firecracker 对照扩展：** `firecracker_ksm.py` 使用相同页面生成器、64 MiB payload、四 VM 和组预算，测量独立 fresh boot 的 RAM-VMA PSS/KSM、20 秒窗口及 25/100% 写入完整性。仅使用安装版本支持的去重接口；没有接口的 advice-on 标为 unsupported，不注入建议、不把 scanner 开启当作 guest RAM 可合并。跨内核、backing、启动方式的批次只并列展示，不作纯 VMM 排名；最小 PID-1 worker 的组计费不能直接与 SDK checkpoint/runtime 组计费比较。
+- **入口：** `memory_scale.py` 调用 SDK `vm_memory_scale` example；实验方案见 `benchmark/pvisor/MEMORY_SCALE_PLAN.md`。Firecracker 工程对照入口 `firecracker_ksm.py`，报告见 `benchmark/pvisor/FIRECRACKER_KSM_REPORT.md`。
+
 ### B-MEMORY-DIAG：去重登记、COW 与文件回收的机制验证 {#b-memory-diag}
 
 - **角色：** diagnostic；结果不进入用户 benchmark 正文。
@@ -312,6 +321,22 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** 给出当前宿主上 advice 安装状态、每映射 smaps 的 PSS/KSM 字节、COW 完整性、原始文件回收后的驻留与读回校验；缺少真实 VM 或扫描器时明确记为未测。
 - **实验设计：** 三次独立 64 MiB 映射试验；同 inode 双私有基线、相同内容双匿名映射和单共享磁盘文件分别测量。固定非零重复页、完整字节校验；记录内核、文件系统、KSM 全局状态、来源摘要及命令。禁止改变宿主全局 KSM 设置。smaps PSS 仅描述选定映射，不代表整机净节省；不报告尾延迟或生产密度。
 - **入口：** `crates/pvisor-vm/src/ram_dedup.rs` 中 Linux ignored `memory_diagnostic` 测试，使用显式 `cargo test --ignored --nocapture` 特殊诊断 runner。原始数据保留在 `benchmark/pvisor/.data/`；复现命令与机制报告见该目录的 README。
+
+### B-COLD-RUNTIME-ENG：Linux 实例内冷压缩的真实回收与恢复 {#b-cold-runtime-eng}
+
+- **角色：** engineering A/B；报告留在 `benchmark/pvisor/`，不发布生产密度结论。
+- **Motivation：** 验证 Linux 内核缺页恢复、自动回收和实例内压缩存储的组合能否安全降低运行 VM 的宿主占用。
+- **想要的结论：** 明确实例内 cold off/on 的完整受限 cgroup 内存、RAM PSS、压缩 store/临时峰值、冷页和恢复计数，以及全部 payload 摘要、mutation、设备 I/O、退出；原始随机内容是否拒绝无益回收。
+- **实验设计：** 初始 1 VM 新实例 off/on、256 MiB/1vCPU、64 MiB 重复/独有随机数据，每格固定两段冷窗口和两次全量恢复；组四核/2GiB/零 swap，最多四 VM，无全局 KSM/sysctl 修改。kernel-fault userfaultfd 权限由用户授权。每条件独立新 cgroup，固定等待和 deadline，完整保留失败，不以 codec 字节当作净内存节省。初始预检每格 n=1，计时含 debug/校验边界，先正确性后扩展。
+- **入口：** `crates/pvisor/examples/vm_cold_runtime.rs` 与 `benchmark/pvisor/linux_cold_runtime.py`；报告 `LINUX_COLD_RUNTIME_REPORT.md`。
+
+### B-COLD-STORAGE-DIAG：冷压缩存储的空间与完整性边界 {#b-cold-storage-diag}
+
+- **角色：** diagnostic；不进入用户 benchmark 正文。
+- **Motivation：** 当本机没有 live pager 或实例内后端时，验证可运行的编码存储是否保持全部内容，并区分 encoded payload 缩减与真实 VM 驻留收益。
+- **想要的结论：** 64 MiB fill、非填充可压缩和确定性随机数据的编码字节、对象数、两次完整读回及编码/恢复墙钟成本；真实自动回收和实例内 pager 明确标 unsupported/not implemented，不以存储测试替代。
+- **实验设计：** 新进程、新的实例独占 CompressedPool，每块 64 KiB，三次独立执行；填充模式允许对象复用，其他模式保持块内容唯一以分开压缩与去重。全字节检查，拒绝校验失败，记录原文/编码 SHA-256 身份、来源/制品摘要和完整失败。编码字节排除索引、allocator、scratch 和原 RAM；不宣称净物理节省或业务延迟。无 VM、无全局 KSM 修改。
+- **入口：** `crates/pvisor/examples/cold_storage_probe.rs`；运行命令与报告见 `benchmark/pvisor/README.md`、`COLD_RUNTIME_REPORT.md`。
 
 ### B-CLUSTER：增加机器和资源后，能否得到更多有效结果 {#b-cluster}
 

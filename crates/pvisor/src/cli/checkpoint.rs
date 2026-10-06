@@ -208,7 +208,7 @@ pub(crate) fn execution_blocker(record: &RunRecord) -> Option<String> {
             "native execution checkpoints require an owned rootfs; host root is unsupported".into(),
         );
     }
-    if job.config.vm.memory_pool.is_some()
+    if job.config.vm.cold_pager_requested()
         || job.config.vm.ram_backing.is_some()
         || job.config.vm.ram_compression
     {

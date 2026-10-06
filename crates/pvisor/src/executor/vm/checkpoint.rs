@@ -1193,7 +1193,7 @@ pub(super) mod native {
         use std::os::unix::ffi::OsStrExt;
         checkpoint.validate()?;
         ensure!(
-            settings.memory_pool.is_none()
+            !settings.cold_pager_requested()
                 && !settings.ram_compression
                 && settings.ram_backing.is_none(),
             "snapshot restore requires private COW RAM, without a writable backing or cold pager"

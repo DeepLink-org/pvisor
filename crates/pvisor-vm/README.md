@@ -71,7 +71,13 @@ CLI 执行器、containerd shim、暂停/恢复、快照、checkpoint、RAM page
 
 RAM 文件的 FUSE 挂载、readiness、mmap 缓存 I/O 和卸载顺序由私有 `ram_file` 模块管理。`RamFileStore` 接收宿主的暂存存储实现；`RamFileMount` 只公开所有权与挂载契约。压缩代际提交和持久化发布由宿主存储层负责。
 
-冷 RAM pager 的状态机、采样/发布窗口、回收线程及 CPU/设备缺页恢复也在本 crate 内。`ColdRamStore` 是外部存储适配契约：pVisor 只负责 pool 连接授权、存储传输和产品诊断目录，VM 指针与映射状态不越过边界。`ColdRamOptions` 在所有平台都存在；不支持的后端返回明确错误，重复启动同一 VM 的 pager 会被拒绝。
+冷 RAM pager 的状态机、采样/发布窗口、回收线程及 CPU/设备缺页恢复也在本 crate 内。`ColdRamStore` 是宿主存储适配契约：pVisor 负责实例本地 store 或受支持平台的 pool 授权、传输和诊断目录，VM 指针与映射状态不越过边界。`ColdRamOptions`、`ColdRamControl` 在所有平台都存在；不支持的后端返回明确错误，重复启动同一 VM 的 pager 会被拒绝。
+
+Linux x86_64 已交付实验性的 runtime-owned userfaultfd pager，由默认关闭的 `VmSettings.cold_ram_compression` / `--vm-cold-ram-compression` 自动启动，使用 pVisor 的 `LocalColdRamStore`，不是 FUSE `vm.ram_compression`。`ColdRamControl::start_cold_pager` 使用相同 API；Linux 的缺页与静止窗口由 runtime 内部持有，外部 `install_ram_fault_handler`、`with_ram_quiesced`、`experimental_ram_residency` 及 `FrozenMemory::experimental_ram_blocks` 返回不支持。编译能力不代表权限：必须具备 syscall 或 `/dev/userfaultfd` 的内核缺页授权，缺少授权时启动失败，不回退或修改全局 sysctl。
+
+pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro`、`gpu`、`snd`、`input` 构建及已有 device prepare/dedup advice 被拒绝。64 KiB 块每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。balloon 空闲页报告在 pager 持有映射时确认但不 discard。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
+
+快照捕获/恢复、整 VM offload、文件/FUSE backing、`ram_dedup` 与此模式互斥；Linux 外部 `memory_pool` 有意不支持，仅使用有界实例本地 store。完整权限、存储预算与剩余提案见[实例内压缩](../../docs/src/zh/design/memory-optimization/compression-local.md)。
 
 `RamDedupControl::advise_ram_dedup()` 仅显式登记适合的普通私有 RAM（匿名映射及私有文件 COW 候选），跳过 shared、hugetlb 和设备窗口，不替换映射、不更改全局 sysfs，也不自动启用。`RamDedupReport` 逐映射区分 accepted、skipped、unsupported 和 error；`accepted_bytes` 只表示本次建议被接受的区域长度，不是已合并字节或实际节省。macOS 对候选报告 unsupported。调用与 VM transition 串行化，任一登记成功后，本 VM 生命周期内拒绝启动冷 pager 或安装 device prepare；反向也跳过已启动 pager/prepare 的 VM。建议不可用不暂停或破坏健康 VM；共享信任域和侧信道授权由调用方负责。现有私有 COW RAM 的 reclaim 拒绝逻辑保持不变。
 

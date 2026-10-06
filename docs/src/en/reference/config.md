@@ -86,7 +86,7 @@ Definitions come from `crates/pvisor/src/config.rs`. Internally resolved and `se
 - There is no general config-directory-relative path guarantee. Start from the intended workspace and use absolute paths across environments.
 
 
-`[vm].memory_pool` is the socket path of the experimental macOS / Apple Silicon shared cold-page pool, unset by default. CLI uses `--vm-memory-pool SOCKET`; Rust SDK uses `VmSettings.memory_pool`. See [first-version memory sharing](../design/memory-optimization/proof-of-concept.md#v1-integration).
+`[vm].memory_pool` is the socket path of the experimental macOS / Apple Silicon shared cold-page pool, unset by default. CLI uses `--vm-memory-pool SOCKET`; Rust SDK uses `VmSettings.memory_pool`. Linux deliberately rejects external pools; use `cold_ram_compression` for bounded instance-local storage. See [first-version memory sharing](../design/memory-optimization/proof-of-concept.md#v1-integration).
 
 ## Fields in commonly used groups {#settings}
 
@@ -119,16 +119,87 @@ Enforcement depends on the executor. Check requested, effective, mechanisms, and
 | `container` | `runtime = "crun"`, `image = ""`, `network = "host"`, `read_only_rootfs = false`, `mounts = []` |
 | Optional `container` fields | `rootfs`, `pvisor_binary`, `platform`, `workdir`, `user` |
 | Each `container.mounts` entry | `source`, `target`, `read_only = false` |
-| `vm` | `memory_mib = 2048`, `cpus = 2`, `rootfs_immutable = false`, `ram_compression = false`, `ram_dedup = false` |
-| Optional `vm` fields | `rootfs`, `image`, `image_store`, `library_dir`, `ram_backing`, `memory_pool`, `node_socket`, `snapshot_filesystem_pool` |
+| `vm` | `memory_mib = 2048`, `cpus = 2`, `rootfs_immutable = false`, `ram_compression = false`, `cold_ram_compression = false`, `ram_dedup = false` |
+| Optional `vm` fields | `rootfs`, `image`, `image_store`, `library_dir`, `control_socket`, `ram_backing`, `memory_pool`, `node_socket`, `snapshot_filesystem_pool` |
 
 `container.platform` accepts `linux-amd64` or `linux-arm64`; `container.network` accepts `host`, `bridge`, or `none`. The injected Linux container binary must match the rootfs architecture and ABI.
 
+#### VM control and memory overrides {#vm-control-memory}
+
+All control/memory fields have CLI equivalents; see the [option table](cli.md#vm-memory-options).
+`--vm-ram-compression`, `--vm-cold-ram-compression` and `--vm-ram-dedup`
+accept bare flags (`true`) or `=true` / `=false`. Omitted flags preserve TOML
+values; explicit `=false` disables a configured `true`. Only true boolean
+options infer VM execution, while explicit control/backing/pool/node paths
+also select VM when `--executor` is omitted. Set `[run].executor = "vm"`
+when relying on TOML memory settings; a `[vm]` table alone is not an executor
+selection. A configured `control_socket` also selects VM through the CLI, but
+never overrides an explicit non-VM executor, which is rejected for this setting.
+
+For a live VM with dedup enabled and a fixed control path:
+
+```toml
+[run]
+executor = "vm"
+command = ["/bin/sleep", "600"]
+
+[vm]
+control_socket = "/tmp/pvisor-host-control/ctrl.sock"
+ram_compression = false
+cold_ram_compression = false
+ram_dedup = true
+```
+
+```bash
+install -d -m 0700 /tmp/pvisor-host-control
+pvisor run --config vm-control.toml
+pvisor run --config vm-control.toml --vm-ram-dedup=false
+```
+
+Save the TOML as `vm-control.toml`; run the commands sequentially, after the
+previous Attempt has ended and released its socket. `vm.control_socket` is an
+optional host-only path, unset by default. Every native VM Attempt still creates
+an automatic private `/tmp/pvctrl-*/ctrl.sock` when omitted. A custom parent must
+already exist, be a non-symlink directory owned by the effective UID and have
+mode exactly `0700`; the socket is `0600`, same-UID only, and existing paths are
+never overwritten. The endpoint must never be accessible from the guest; the
+host parent provides executor exclusions, including for host-rootfs VMs.
+CLI stderr prints the socket, Run ID and Attempt ID for
+[`pvisor ctrl`](cli.md#vm-instance-control); non-VM controls are explicitly
+unsupported. `load` is `RunResume` of the same live Attempt, not persistent
+snapshot restart or eager RAM prefaulting.
+
+`--vm-node-socket SOCKET` overrides `vm.node_socket`;
+`--vm-snapshot-filesystem-pool DIR` overrides `vm.snapshot_filesystem_pool`.
+Omitted path flags preserve config. The snapshot pool must be host-owned,
+outside VM-writable roots and snapshot stores, and on the Job's volume; its
+Linux x86_64 no-network profile is not general VM snapshot support. The local
+cold pager's single option enables both reclaim and compression, not independent
+toggles. It conflicts with backing/FUSE compression, dedup, external pools,
+snapshot capture/restore, snapshot filesystem pools and whole-VM offload.
+Dedup conflicts with both compression modes and external pools. Linux external
+pools remain unsupported. Conflicts apply to the merged config, not just CLI flags.
+
 VM memory is measured in MiB and CPU count is a positive integer. `ram_backing` retains a RAM file; `ram_compression` enables the corresponding compressed backing. Compressed backing and shared pools on macOS have additional FUSE requirements; see [Memory-sharing proof of concept](../design/memory-optimization/proof-of-concept.md).
 
-`[vm].ram_dedup = true` requests best-effort host RAM dedup advice when using the VM executor; `--vm-ram-dedup` also selects that executor. It conflicts with `memory_pool`, `ram_compression` and `PVISOR_EXPERIMENTAL_MEMORY_POOL`. Linux advice targets ordinary private anonymous RAM and restored private COW mappings; live `MAP_SHARED` RAM is skipped without conversion. macOS reports unsupported for otherwise eligible mappings. The runner reports installation to stderr and continues on advice failure; `accepted_bytes` is not merged bytes, savings or proof that scanning is enabled. No global KSM settings or services change. Review [deduplication boundaries and sharing risks](../design/memory-optimization/deduplication.md#direction) before opting in.
+`[vm].cold_ram_compression = true` (`VmSettings.cold_ram_compression`) enables
+experimental Linux x86_64 instance-local live compression when using the VM
+executor; `--vm-cold-ram-compression` also selects that executor. It defaults to
+`false` and uses private anonymous RAM, without a live backing file, FUSE or an
+external service. It is distinct from `ram_compression`. Kernel-fault
+userfaultfd syscall or `/dev/userfaultfd` authority is required; compiled support
+is not permission and missing authority fails startup without fallback or global
+sysctl changes. Admission rejects `ram_backing`, `ram_compression`, `ram_dedup`,
+`snapshot_filesystem_pool`, snapshot capture/restore and whole-VM offload;
+Linux also rejects `memory_pool` and `PVISOR_EXPERIMENTAL_MEMORY_POOL`.
+See [local compression](../design/memory-optimization/compression-local.md) for
+ACL commands, mapping/build restrictions, bounded budgets and validated refaults.
+This is ongoing guest-independent eviction/refault probing, not ordinary pause
+or a read-access heat detector, and does not promise production density.
 
-`[vm].snapshot_filesystem_pool` opts into immutable lower references during native capture of initial and restored VMs, including the first capture of different VMs. After the first seal, the live control connection retains verified owners; subsequent captures authenticate complete original lowers and reuse their sealed pool trees without broader runner access. Native callers should use an absolute host-owned path on the same volume as Job stores, outside all VM-writable roots and snapshot stores. The first miss creates one pool copy per immutable id; concurrent misses serialize per id and hits create no temporary lower copies. Opt-in native v5 snapshots retain private file contents as independently owned 64 KiB compressed frames, reusing unchanged content; restores rebuild private writable inodes with complete metadata and hard-link topology. Live frame owners survive parent retirement/GC. Sealing checks decoded-content identities before compression, fully verifies pool hits and encodes only misses; this also applies to full compressed RAM sealing. Native capture encodes authenticated frozen private roots directly, without an intermediate private-tree copy; import, restore and suspended artifact export never open their recorded original paths. Complete data validation remains; latency/density benefits require measurement. This profile excludes networking, shared memory pools, ordinary RAM compression and explicit RAM backing. Retain the pool with its Job stores or export complete snapshots.
+`[vm].ram_dedup = true` requests best-effort host RAM dedup advice when using the VM executor; `--vm-ram-dedup` also selects that executor. It conflicts with `memory_pool`, `ram_compression`, `cold_ram_compression` and `PVISOR_EXPERIMENTAL_MEMORY_POOL`. Linux advice targets ordinary private anonymous RAM and restored private COW mappings; live `MAP_SHARED` RAM is skipped without conversion. macOS reports unsupported for otherwise eligible mappings. The runner reports installation to stderr and continues on advice failure; `accepted_bytes` is not merged bytes, savings or proof that scanning is enabled. No global KSM settings or services change. Review [deduplication boundaries and sharing risks](../design/memory-optimization/deduplication.md#direction) before opting in.
+
+`[vm].snapshot_filesystem_pool` opts into immutable lower references during native capture of initial and restored VMs, including the first capture of different VMs. After the first seal, the live control connection retains verified owners; subsequent captures authenticate complete original lowers and reuse their sealed pool trees without broader runner access. Native callers should use an absolute host-owned path on the same volume as Job stores, outside all VM-writable roots and snapshot stores. The first miss creates one pool copy per immutable id; concurrent misses serialize per id and hits create no temporary lower copies. Opt-in native v5 snapshots retain private file contents as independently owned 64 KiB compressed frames, reusing unchanged content; restores rebuild private writable inodes with complete metadata and hard-link topology. Live frame owners survive parent retirement/GC. Sealing checks decoded-content identities before compression, fully verifies pool hits and encodes only misses; this also applies to full compressed RAM sealing. Native capture encodes authenticated frozen private roots directly, without an intermediate private-tree copy; import, restore and suspended artifact export never open their recorded original paths. Complete data validation remains; latency/density benefits require measurement. This profile excludes networking, shared memory pools, ordinary and live cold RAM compression, and explicit RAM backing. Retain the pool with its Job stores or export complete snapshots.
 
 ### Capture and recording
 
@@ -179,12 +250,14 @@ Field names and types are checked against the Rust serde structures during the d
 | `container.mounts[].source` | `PathBuf` | `required` | Host path |
 | `container.mounts[].target` | `PathBuf` | `required` | Container path |
 | `container.mounts[].read_only` | `bool` | `false` | Read-only bind mount |
+| `vm.control_socket` | `Option<PathBuf>` | `unset` | Host-only live Attempt endpoint; default automatic private socket; existing same-UID 0700 parent and new path required; `--vm-control-socket` |
 | `vm.ram_backing` | `Option<PathBuf>` | `unset` | New RAM backing path; existing files rejected; `--vm-ram-backing` |
 | `vm.ram_compression` | `bool` | `false` | Seekable compressed backing; `--vm-ram-compression` |
+| `vm.cold_ram_compression` | `bool` | `false` | Experimental Linux x86_64 local live pager; kernel-fault userfaultfd authority required; no FUSE/pool; `--vm-cold-ram-compression` selects VM |
 | `vm.ram_dedup` | `bool` | `false` | Opt-in best-effort host RAM dedup advice; `--vm-ram-dedup` selects VM; conflicts with memory pool/compression; accepted advice is not savings |
 | `vm.memory_pool` | `Option<PathBuf>` | `unset` | Experimental macOS pool socket; `--vm-memory-pool` |
-| `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `unset` | Host-owned immutable snapshot lower pool; Linux x86-64 no-network private-RAM profile; config/SDK only |
-| `vm.node_socket` | `Option<PathBuf>` | `unset` | Same-host node resource socket; restored shared read-only RAM stays pinned until native VM exit; config/SDK only |
+| `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `unset` | Host-owned immutable snapshot lower pool; Linux x86-64 no-network private-RAM profile; `--vm-snapshot-filesystem-pool` |
+| `vm.node_socket` | `Option<PathBuf>` | `unset` | Same-host node resource socket; restored shared read-only RAM stays pinned until native VM exit; `--vm-node-socket` |
 | `vm.rootfs` | `Option<PathBuf>` | `unset` | Linux directory; CLI defaults to host `/` on Linux; `--rootfs` |
 | `vm.image` | `Option<String>` | `unset` | OCI image instead of a rootfs directory; `--rootfs IMAGE` |
 | `vm.image_store` | `Option<PathBuf>` | `unset` | OCI cache path; `--vm-image-store` |

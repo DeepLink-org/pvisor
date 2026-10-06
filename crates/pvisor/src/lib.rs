@@ -80,6 +80,11 @@ pub use runtime::checkpoint::{
 pub use runtime::event::{
     EventAppendErrorKind, EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher,
 };
+#[cfg(unix)]
+pub use runtime::instance_control::{
+    INSTANCE_CONTROL_MAX_FRAME, INSTANCE_CONTROL_VERSION, InstanceControlCommand,
+    InstanceControlRequest, InstanceControlResponse, exchange as instance_control_exchange,
+};
 pub use runtime::run::{
     PVisor, PVisorBuilder, PVisorError, RunCancellation, RunControlHandle, RunEventStream,
     RunHandle,

@@ -5,10 +5,13 @@
 
 ## 目标与现状 {#status}
 
-目标设计区分[实例内压缩](compression-local.md)与
-[池化服务器压缩](compression-pool.md)，两者都不是生产收益承诺。
-当前 macOS/HVF 堆冷池仍属实验，服务丢失可能导致依赖它的 VM 失败；
-客户端持有不可变 backing 的方案尚属提案。
+[实例内压缩](compression-local.md) 已在 Linux x86_64 实验性交付：默认关闭的
+`vm.cold_ram_compression` / `--vm-cold-ram-compression` 使用 runtime 持有的
+userfaultfd pager 及有界本地存储，不需要 FUSE 或外部池。它区别于
+`vm.ram_compression`（FUSE 文件 backing），采用驱逐/refault 探测，而非
+读访问热度检测。它与[池化服务器压缩](compression-pool.md)都不是生产
+收益承诺。macOS/HVF 堆冷池仍属实验，服务丢失可能导致依赖它的 VM 失败；
+客户端持有不可变 backing 的方案仍属提案。
 
 ## 所有权与数据流 {#architecture}
 
@@ -28,8 +31,10 @@ VM 运行时负责冷页选择和映射变更；codec 转换字节，backing 承
 
 ## 实施方向与证据 {#direction}
 
-先证明独立恢复能力，再回收 RAM。Linux sealed `memfd` 交付仍是提案，
-尚需验证 pager；macOS 的等价 sealed 方案尚未交付。
-保留冷池与整 VM [offload、FUSE 压缩 backing](offload.md)的现有互斥。
+Linux 本地 pager 在回收 RAM 前发布并校验对象，恢复通过经过校验的
+`UFFD_COPY` 完成。必须具备内核缺页 userfaultfd 权限；编译支持不代表
+授权，缺少权限时启动失败。它拒绝去重、文件/FUSE backing、快照捕获/恢复、
+整 VM [offload](offload.md) 及外部内存池，见[本地合同](compression-local.md#direction)。
+Linux sealed `memfd` 池化交付仍是提案，macOS 的等价 sealed 方案尚未交付。
 从[优化架构](index.md)出发；[内存证据](proof-of-concept.md#memory-evidence)
 尚未建立已知的生产净收益，也未验证净物理内存节省。

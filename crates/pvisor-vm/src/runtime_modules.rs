@@ -69,5 +69,9 @@ mod firmware_store;
 #[path = "cold_ram.rs"]
 mod cold_ram;
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "cold_ram_linux.rs"]
+mod cold_ram_linux;
+
 #[path = "ram_file.rs"]
 mod ram_file;

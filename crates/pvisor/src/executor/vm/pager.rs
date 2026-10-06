@@ -1,20 +1,31 @@
 //! Product-side cold RAM pool authorization and diagnostic destinations.
 //! VM mapping transitions and fault/device recovery live in pvisor-vm.
 use crate::ram_backing::ipc::{PoolClient, RemoteObject};
-use pvisor_vm::api::{ColdRamControl, FrozenMemory, RuntimeSupport, VmPlatform};
+use pvisor_vm::api::ColdRamControl;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use pvisor_vm::api::{FrozenMemory, RuntimeSupport, VmPlatform};
+use std::io;
+#[cfg(not(target_os = "linux"))]
 use std::{
-    io,
     os::unix::{
         fs::{MetadataExt, PermissionsExt},
         net::UnixStream,
     },
     path::Path,
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+use std::time::Instant;
 
 pub const POOL_ENV: &str = "PVISOR_EXPERIMENTAL_MEMORY_POOL";
 pub const METRICS_ENV: &str = "PVISOR_EXPERIMENTAL_MEMORY_METRICS";
-pub(super) fn start_if_requested(handle: pvisor_vm::api::VmmHandle) -> io::Result<()> {
+pub(super) fn start_if_requested(
+    handle: pvisor_vm::api::VmmHandle,
+    local: bool,
+    memory_mib: u32,
+) -> io::Result<()> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     if let Some(directory) = std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_PAGE_INVENTORY") {
         let directory = std::path::PathBuf::from(directory);
         let metadata = directory.metadata()?;
@@ -90,6 +101,7 @@ pub(super) fn start_if_requested(handle: pvisor_vm::api::VmmHandle) -> io::Resul
         })?;
     }
     let metrics = std::env::var_os(METRICS_ENV).is_some();
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     if metrics {
         let measured = handle.clone();
         std::thread::Builder::new()
@@ -124,21 +136,46 @@ pub(super) fn start_if_requested(handle: pvisor_vm::api::VmmHandle) -> io::Resul
                 }
             })?;
     }
-    let Some(path) = std::env::var_os(POOL_ENV) else {
+    if local {
+        if std::env::var_os(POOL_ENV).is_some() {
+            return Err(io::Error::other(
+                "local cold RAM compression cannot use an external memory pool",
+            ));
+        }
+        // Per-instance ceilings: at most half configured RAM as encoded payload,
+        // and one object per 64 KiB RAM block. Index overhead is bounded separately.
+        let ram_bytes = usize::try_from(u64::from(memory_mib) * 1024 * 1024)
+            .map_err(|_| io::Error::other("local cold RAM budget exceeds address space"))?;
+        let store = crate::ram_backing::resident::LocalColdRamStore::new(
+            ram_bytes / 2,
+            ram_bytes.div_ceil(64 * 1024),
+        );
+        return handle.start_cold_pager(store, pvisor_vm::api::ColdRamOptions { metrics });
+    }
+    let Some(_path) = std::env::var_os(POOL_ENV) else {
         return Ok(());
     };
-    let path = Path::new(&path);
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("pool parent missing"))?;
-    let metadata = parent.metadata()?;
-    if metadata.uid() != unsafe { libc::geteuid() } || metadata.permissions().mode() & 0o077 != 0 {
-        return Err(io::Error::other(
-            "experimental pool directory must belong to this user and be private",
-        ));
+    #[cfg(target_os = "linux")]
+    return Err(io::Error::other(
+        "Linux cold pager supports bounded instance-local storage only; external pool latency is not supported",
+    ));
+    #[cfg(not(target_os = "linux"))]
+    {
+        let path = Path::new(&_path);
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("pool parent missing"))?;
+        let metadata = parent.metadata()?;
+        if metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err(io::Error::other(
+                "experimental pool directory must belong to this user and be private",
+            ));
+        }
+        let pool = PoolClient::new(UnixStream::connect(path)?, Duration::from_secs(5))?;
+        handle.start_cold_pager(pool, pvisor_vm::api::ColdRamOptions { metrics })
     }
-    let pool = PoolClient::new(UnixStream::connect(path)?, Duration::from_secs(5))?;
-    handle.start_cold_pager(pool, pvisor_vm::api::ColdRamOptions { metrics })
 }
 
 impl pvisor_vm::api::ColdRamStore for PoolClient {

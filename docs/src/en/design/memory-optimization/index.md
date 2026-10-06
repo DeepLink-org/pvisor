@@ -23,7 +23,7 @@ Instances own checkpoint saving, compression, and restoration; the VM runtime ow
 
 See [Offload file format](offload-format.md) for raw files and compressed base/delta bundles. Compression has [per-instance](compression-local.md) and [pooled-server](compression-pool.md) architectures: the former is independent; the latter can share encoded objects but adds coordination costs.
 
-Immutable baseline sharing can complement Linux KSM: file baselines share unmodified pages, while KSM handles eligible private anonymous pages. The first version does not combine KSM and cold-page reclamation on the same RAM region. The existing mutual exclusion between the cold pool, FUSE compressed backing, and whole-VM offload remains. Combinations are explicit architectural choices, not automatic runtime switching.
+Immutable baseline sharing can complement Linux KSM: file baselines share unmodified pages, while KSM handles eligible private anonymous pages. The first version does not combine KSM and cold-page reclamation on the same RAM region. The local cold pager and cold pool remain incompatible with FUSE/file backing, snapshot capture/restore and whole-VM offload; `vm.ram_dedup` is explicitly exclusive with `vm.cold_ram_compression`. Combinations are explicit architectural choices, not automatic runtime switching.
 
 ## Ownership and boundaries {#ownership}
 
@@ -36,12 +36,12 @@ Immutable baseline sharing can complement Linux KSM: file baselines share unmodi
 
 Sharing is limited by default to explicitly authorized trust domains; the same UID is not complete tenant isolation. Sharing latency can reveal content presence, so cross-domain deduplication cannot be selected solely by savings. Physical reclamation also depends on the host kernel and storage: API success does not mean all target bytes have been released.
 
-Space saved by compression cannot be converted unconditionally into capacity for new instances: restoration still needs uncompressed RAM and working buffers. Capacity planning must reserve restoration headroom so background optimization does not prevent recovery from making progress. Concrete budgets and scheduling belong to later implementation design.
+Space saved by compression cannot be converted unconditionally into capacity for new instances: restoration still needs uncompressed RAM and working buffers. Capacity planning must reserve restoration headroom so background optimization does not prevent recovery from making progress. The Linux local store bounds encoded payload to half configured RAM and object count separately; these are not total host-memory limits. Host-wide capacity and scheduling still need further design.
 
 ## Implementation direction and evidence {#direction}
 
-The architectural goals start from the 2026-10-06 design and do not imply that every capability has shipped. Reuse immutable baselines and private COW mappings first, then introduce region-level Linux KSM advice. Improve per-instance offload before developing local compression for actual cold-working-set needs and subsequently adding pooled coordination.
+The architectural goals start from the 2026-10-06 design and do not imply that every capability has shipped. Reuse immutable baselines and private COW mappings first, then introduce region-level Linux KSM advice. Experimental Linux instance-local live compression is now delivered; pooled coordination remains a separate extension.
 
-Existing file offload, formats, and the experimental macOS/HVF cold pool provide implementation foundations. Linux/KVM cold-page restoration and client-owned shared encoded backing still need validation. A uniform API does not imply equal platform capabilities.
+Existing file offload, formats, and the experimental macOS/HVF cold pool provide implementation foundations. Linux x86_64 now supports the default-off `vm.cold_ram_compression` / `--vm-cold-ram-compression` with private anonymous RAM, runtime-owned kernel-fault userfaultfd and bounded `LocalColdRamStore`. It is ongoing guest-independent eviction/refault probing, not ordinary pause or a true read-access heat detector. Permission is required and startup fails without it; see [local compression](compression-local.md) for admission and recovery. Client-owned sealed shared backing remains proposed. A uniform API does not imply equal platform capabilities or host authority.
 
 [Experimental proof of concept](proof-of-concept.md) preserves low-level COW, cold restoration, reference lifetimes, and historical failures. It establishes mechanism feasibility and limitations, not production density, net physical savings, or restoration tail latency for the new architecture. See [Environment snapshots](../environment-snapshot.md) for complete-state boundaries.

@@ -99,6 +99,8 @@ pub(super) struct RunnerSpec {
     pub(super) memory_mib: u32,
     #[serde(default)]
     pub(super) ram_dedup: bool,
+    #[serde(default)]
+    pub(super) cold_ram_compression: bool,
     pub(super) library_dir: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) checkpoint: Option<super::checkpoint::LaunchBinding>,
@@ -274,15 +276,15 @@ impl VmExecutor {
         anyhow::ensure!(
             settings.snapshot_filesystem_pool.is_none()
                 || cfg!(all(target_os = "linux", target_arch = "x86_64"))
-                    && settings.memory_pool.is_none()
+                    && !settings.cold_pager_requested()
                     && !settings.ram_compression
                     && settings.ram_backing.is_none(),
             "immutable snapshot pool requires the private-RAM native Linux x86-64 profile"
         );
         anyhow::ensure!(
-            settings.memory_pool.is_none()
-                || cfg!(all(target_os = "macos", target_arch = "aarch64")),
-            "vm.memory_pool requires macOS on Apple Silicon"
+            !settings.cold_pager_requested()
+                || pvisor_vm::api::VmPlatform::capabilities().cold_ram_faults,
+            "cold pager requires compiled Linux x86_64 or Apple Silicon fault support"
         );
         if let Some(path) = settings.memory_pool.as_ref() {
             settings.memory_pool = Some(
@@ -809,6 +811,18 @@ impl RunExecutor for VmExecutor {
             ));
         }
         let mut hidden = vec![ram_backing.path.clone()];
+        if let Some(directory) = spec
+            .metadata
+            .get(crate::runtime::instance_control::INSTANCE_CONTROL_DIRECTORY_METADATA)
+        {
+            let directory = match serde_json::from_value::<PathBuf>(directory.clone()) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    return failed_to_start(format!("invalid instance control directory: {error}"));
+                }
+            };
+            hidden.push(directory);
+        }
         if let Some(layers) = ram_backing.layer_directory() {
             hidden.push(layers.to_path_buf());
         }
@@ -833,7 +847,7 @@ impl RunExecutor for VmExecutor {
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "macos", target_arch = "aarch64")
         )) && !vm_network_enabled
-            && self.settings.memory_pool.is_none()
+            && !self.settings.cold_pager_requested()
         {
             let prepared = if let Some(drivers) = &context.drivers {
                 let store = match drivers.execution_snapshot_store() {
@@ -929,6 +943,7 @@ impl RunExecutor for VmExecutor {
             cpus: self.settings.cpus as u8,
             memory_mib,
             ram_dedup: self.settings.ram_dedup,
+            cold_ram_compression: self.settings.cold_ram_compression,
             library_dir: self.settings.library_dir.clone(),
             checkpoint,
             restore: None,
@@ -1127,9 +1142,10 @@ impl RunExecutor for VmExecutor {
         });
         #[cfg(target_os = "linux")]
         if let Some(pid) = child.id() {
-            context
-                .vm_control
-                .track_native_process(pid, &ram_backing.file);
+            context.vm_control.track_native_process(
+                pid,
+                (!self.settings.cold_pager_requested()).then_some(&ram_backing.file),
+            );
         }
         context
             .vm_control
@@ -1496,6 +1512,14 @@ fn capture_checkpoint(
     }
     let result = (|| -> Result<_, String> {
         operation.validate().map_err(|e| e.to_string())?;
+        if spec.cold_ram_compression
+            || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some()
+        {
+            return Err(
+                "CAPABILITY_UNSUPPORTED: snapshot capture is incompatible with the cold pager"
+                    .into(),
+            );
+        }
         let (OperationKind::RunCheckpoint { ram_storage, .. }
         | OperationKind::RunSuspend { ram_storage, .. }) = operation
         else {
@@ -1754,6 +1778,11 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
             read_write.extend(workspace.work.iter().cloned());
             read_write.extend(workspace.preimages.iter().cloned());
         }
+        // Only explicitly opted-in runners may open the host-authorized fault
+        // device. Landlock does not replace its administrator-granted ACL.
+        if spec.cold_ram_compression && Path::new("/dev/userfaultfd").exists() {
+            read_write.push(PathBuf::from("/dev/userfaultfd"));
+        }
         crate::executor::sandbox::restrict_krun_runner(
             read_only,
             read_write,
@@ -1849,8 +1878,18 @@ fn run_linked_krun(
     if unsafe { libc::fcntl(ram, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
         return Err(std::io::Error::last_os_error().into());
     }
-    if spec.restore.is_none() {
+    let cold_pager =
+        spec.cold_ram_compression || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some();
+    anyhow::ensure!(
+        !cold_pager || (!spec.ram_dedup && spec.restore.is_none() && spec.checkpoint.is_none()),
+        "cold pager is incompatible with dedup, snapshot restore and snapshot capture"
+    );
+    if spec.restore.is_none() && !cold_pager {
         vm.ram_backing(unsafe { std::fs::File::from_raw_fd(ram) })?;
+    } else {
+        // Bookkeeping FD is not guest RAM. Close it; the pager uses private
+        // anonymous memory and must never masquerade as shared file backing.
+        drop(unsafe { std::fs::File::from_raw_fd(ram) });
     }
     if spec.checkpoint.is_some() {
         vm.snapshot_profile()?;
@@ -1938,8 +1977,8 @@ fn run_linked_krun(
         if spec.restore.is_some() {
             handle.resume().map_err(std::io::Error::other)?;
         }
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        super::pager::start_if_requested(handle.clone())?;
+        #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), all(target_os = "macos", target_arch = "aarch64")))]
+        super::pager::start_if_requested(handle.clone(), spec.cold_ram_compression, spec.memory_mib)?;
         std::thread::Builder::new()
             .name("pvisor-vm-control".into())
             .spawn(move || {
@@ -1975,7 +2014,7 @@ fn run_linked_krun(
                             handle.resume().map(|()| (VmState::Running, None))
                         }
                         Ok(OperationKind::RunOffload { .. }) => {
-                            if cfg!(all(target_os = "macos", target_arch = "aarch64")) && std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some() {
+                            if cold_pager {
                                 rejection_state = handle.is_paused().ok().map(|paused|
                                     if paused { VmState::Paused } else { VmState::Running });
                                 Err("whole-VM offload is incompatible with the experimental cold pager".into())
@@ -2240,6 +2279,28 @@ mod tests {
     }
 
     #[test]
+    fn instance_control_directory_is_hidden_from_guest_lower_views() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("private-control");
+        std::fs::create_dir(&directory).unwrap();
+        let _listener =
+            std::os::unix::net::UnixListener::bind(directory.join("ctrl.sock")).unwrap();
+        let mut device = OverlayDeviceSpec {
+            lowers: vec![root.path().to_owned()],
+            apply_target: None,
+            baseline_lower: None,
+            upper: root.path().join("upper"),
+            work: None,
+            preimages: None,
+            excluded: vec![],
+            access_policy: Default::default(),
+        };
+        hide_ram_backing(&mut device, &directory).unwrap();
+        assert!(device.excluded.contains(&PathBuf::from("private-control")));
+        assert!(hide_ram_backing(&mut device, root.path()).is_err());
+    }
+
+    #[test]
     fn executor_rejects_conflicting_ram_dedup_strategies() {
         for settings in [
             VmSettings {
@@ -2260,6 +2321,35 @@ mod tests {
                     .contains("vm.ram_dedup")
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn executor_rejects_ineligible_memory_pool_before_socket_validation_on_linux() {
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("missing-pool.sock");
+        assert!(!socket.exists());
+        let settings = VmSettings {
+            memory_pool: Some(socket.clone()),
+            ram_backing: Some(directory.path().join("unused.ram")),
+            ram_dedup: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            VmExecutor::new(settings).unwrap_err().to_string(),
+            "cold pager requires private anonymous RAM, without vm.ram_backing, vm.ram_compression or snapshot capture/pool"
+        );
+        let eligible = VmSettings {
+            memory_pool: Some(socket.clone()),
+            ..Default::default()
+        };
+        let error = VmExecutor::new(eligible).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "Linux cold pager currently supports bounded instance-local storage only; use vm.cold_ram_compression"
+        );
+        assert!(!socket.exists());
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 
     #[test]

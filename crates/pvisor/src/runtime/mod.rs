@@ -12,6 +12,8 @@ pub(crate) mod bundle;
 pub(crate) mod checkpoint;
 pub(crate) mod event;
 mod implant;
+#[cfg(unix)]
+pub(crate) mod instance_control;
 pub(crate) mod job_execution;
 pub(crate) mod operation;
 mod overlay;

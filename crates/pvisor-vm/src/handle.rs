@@ -108,7 +108,7 @@ impl VmmHandle {
 
     /// Experimental optional mapping transaction. None skips a paused VM or
     /// busy devices without invoking action. Mapping errors park the VM.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
     pub(crate) fn ram_quiesced<T>(
         &self,
         action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
@@ -126,6 +126,38 @@ impl VmmHandle {
             if locked.is_paused() {
                 return Ok(None);
             }
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            {
+                let faults = locked.device_memory_gate().cold_faults();
+                let generation = match &faults {
+                    Some(faults) => match faults.snapshot() {
+                        Some(generation) => Some(generation),
+                        None => return Ok(None),
+                    },
+                    None => None,
+                };
+                if faults.is_some() {
+                    locked
+                        .pause_for_ram_maintenance()
+                        .map_err(|error| error.to_string())?;
+                } else {
+                    locked.pause().map_err(|error| error.to_string())?;
+                }
+                // A fault can begin after the preflight check, while KVM is
+                // entering the kernel. Never abandon outstanding pause acks.
+                // Once parked, defer if a fault raced or is still resolving.
+                if faults
+                    .as_ref()
+                    .is_some_and(|faults| faults.snapshot() != generation)
+                {
+                    if let Err(error) = locked.resume() {
+                        locked.fail_control();
+                        return Err(error.to_string());
+                    }
+                    return Ok(None);
+                }
+            }
+            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
             locked.pause().map_err(|error| error.to_string())?;
             locked.device_memory_gate()
         };

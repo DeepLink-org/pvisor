@@ -1,6 +1,8 @@
 //! Job lifecycle commands and dispatch to first-party companions.
 mod checkpoint;
 mod commands;
+#[cfg(unix)]
+mod ctrl;
 use crate::companions;
 mod product;
 mod run;
@@ -30,6 +32,9 @@ struct Cli {
 enum Command {
     #[command(about = run::RUN_COMMAND_ABOUT, long_about = run::RUN_COMMAND_LONG_ABOUT)]
     Run(Box<run::RunArgs>),
+    /// Control a live VM attempt through its host-only socket.
+    #[cfg(unix)]
+    Ctrl(ctrl::CtrlArgs),
     /// Apply selected staged changes from a stopped Job.
     Apply(runtime::ApplyArgs),
     /// Discard staged changes from a stopped Job.
@@ -80,6 +85,7 @@ fn grouped_commands(command: &clap::Command) -> String {
                 "run",
                 "status",
                 "kill",
+                "ctrl",
                 "suspend",
                 "resume",
                 "fork",
@@ -240,6 +246,8 @@ pub fn main() -> anyhow::Result<()> {
             }
             finish(tokio::runtime::Runtime::new()?.block_on(checkpoint::resume(resume))?);
         }
+        #[cfg(unix)]
+        Command::Ctrl(args) => tokio::runtime::Runtime::new()?.block_on(ctrl::run(args))?,
         Command::Kill(args) => runtime::kill(args)?,
         Command::Inspect(args) => finish(runtime::inspect(args)?),
         Command::External(args) => companions::dispatch(

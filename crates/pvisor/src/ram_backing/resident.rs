@@ -163,6 +163,14 @@ impl CompressedPool {
     }
     /// Input must come from a stable epoch; hashing does not make a VM quiescent.
     pub fn intern(&mut self, bytes: &[u8]) -> io::Result<Arc<CompressedObject>> {
+        self.intern_with_policy(bytes, false)
+    }
+
+    fn intern_with_policy(
+        &mut self,
+        bytes: &[u8],
+        compressed_only: bool,
+    ) -> io::Result<Arc<CompressedObject>> {
         if bytes.is_empty() || bytes.len() > BLOCK_BYTES {
             return Err(invalid("invalid resident block length"));
         }
@@ -187,6 +195,24 @@ impl CompressedPool {
         }
         let object = Arc::new(CompressedObject::from_bytes(bytes)?);
         let size = object.encoded_bytes();
+        // Live eviction must save space even after conservative per-object overhead.
+        // Durable images and the external pool retain their existing raw policy.
+        if compressed_only
+            && (matches!(object.payload, Payload::Raw(_))
+                || size.saturating_add(256) > bytes.len().saturating_mul(7) / 8)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "local cold RAM object provides insufficient compression savings",
+            ));
+        }
+        if compressed_only {
+            let mut decoded = vec![0; bytes.len()];
+            object.restore(&mut decoded)?;
+            if decoded != bytes {
+                return Err(invalid("local cold RAM publication content mismatch"));
+            }
+        }
         if self.objects.len() >= self.object_budget
             || size > self.payload_budget.saturating_sub(self.encoded_bytes)
         {
@@ -229,6 +255,76 @@ impl CompressedPool {
         } else {
             false
         }
+    }
+}
+
+/// Instance-local cold RAM storage. Every VM must create its own store; no
+/// socket, shared file, global pool, or background collector is involved.
+/// Budgets bound encoded payload and object count separately, not process RSS.
+/// Poorly compressible blocks return `OutOfMemory`, leaving original RAM intact
+/// under the pager's publish-before-discard contract.
+pub struct LocalColdRamStore {
+    pool: CompressedPool,
+    owner: Arc<()>,
+    references: u64,
+}
+
+/// One owned publication reference, valid only in its originating store.
+pub struct LocalColdRamObject {
+    owner: Arc<()>,
+    content: Arc<CompressedObject>,
+}
+
+impl LocalColdRamStore {
+    pub fn new(payload_budget: usize, object_budget: usize) -> Self {
+        Self {
+            pool: CompressedPool::new(payload_budget, object_budget),
+            owner: Arc::new(()),
+            references: 0,
+        }
+    }
+
+    fn check_owner(&self, object: &LocalColdRamObject) -> io::Result<()> {
+        if !Arc::ptr_eq(&self.owner, &object.owner) {
+            return Err(invalid("cold RAM reference belongs to another instance"));
+        }
+        Ok(())
+    }
+}
+
+impl pvisor_vm::api::ColdRamStore for LocalColdRamStore {
+    type Object = LocalColdRamObject;
+
+    fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object> {
+        let content = self.pool.intern_with_policy(bytes, true)?;
+        self.references += 1;
+        Ok(LocalColdRamObject {
+            owner: self.owner.clone(),
+            content,
+        })
+    }
+
+    fn restore(&mut self, object: &Self::Object, output: &mut [u8]) -> io::Result<()> {
+        self.check_owner(object)?;
+        object.content.restore(output)
+    }
+
+    fn release(&mut self, object: Self::Object) -> io::Result<()> {
+        self.check_owner(&object)?;
+        let id = object.content.id();
+        drop(object);
+        self.references -= 1;
+        self.pool.collect_one(id);
+        Ok(())
+    }
+
+    fn stats(&mut self) -> io::Result<pvisor_vm::api::ColdRamPoolStats> {
+        Ok(pvisor_vm::api::ColdRamPoolStats {
+            encoded_bytes: self.pool.encoded_bytes() as u64,
+            objects: self.pool.object_count() as u64,
+            session_references: self.references,
+            cross_session_objects: 0,
+        })
     }
 }
 
@@ -372,6 +468,98 @@ mod tests {
             assert_eq!(pool.encoded_bytes(), 0);
         }
     }
+    #[test]
+    fn local_cold_store_independent_instances_and_reference_collection() {
+        use pvisor_vm::api::ColdRamStore;
+        let bytes: Vec<_> = (0..BLOCK_BYTES).map(|n| (n % 251) as u8).collect();
+        let mut a = LocalColdRamStore::new(BLOCK_BYTES, 2);
+        let mut b = LocalColdRamStore::new(BLOCK_BYTES, 2);
+        let first = a.put(&bytes).unwrap();
+        let second = a.put(&bytes).unwrap();
+        let separate = b.put(&bytes).unwrap();
+        assert!(Arc::ptr_eq(&first.content, &second.content));
+        assert!(!Arc::ptr_eq(&first.content, &separate.content));
+        let mut output = vec![0; bytes.len()];
+        assert!(b.restore(&first, &mut output).is_err());
+        assert!(a.restore(&first, &mut output[..1]).is_err());
+        a.restore(&first, &mut output).unwrap();
+        assert_eq!(output, bytes);
+        assert_eq!(a.stats().unwrap().session_references, 2);
+        assert_eq!(a.stats().unwrap().cross_session_objects, 0);
+        a.release(first).unwrap();
+        assert_eq!(a.stats().unwrap().objects, 1);
+        a.release(second).unwrap();
+        assert_eq!(a.stats().unwrap().encoded_bytes, 0);
+        assert_eq!(a.stats().unwrap().objects, 0);
+        assert_eq!(a.stats().unwrap().session_references, 0);
+        b.restore(&separate, &mut output).unwrap();
+        assert_eq!(output, bytes);
+        b.release(separate).unwrap();
+        assert_eq!(b.stats().unwrap().objects, 0);
+    }
+
+    #[test]
+    fn local_cold_store_capacity_refusal_keeps_original_and_session_usable() {
+        use pvisor_vm::api::ColdRamStore;
+        let original = vec![42; BLOCK_BYTES];
+        for (payload, objects) in [(0, 2), (1024, 0)] {
+            let mut store = LocalColdRamStore::new(payload, objects);
+            assert_eq!(
+                store.put(&original).err().unwrap().kind(),
+                io::ErrorKind::OutOfMemory
+            );
+            assert_eq!(original, vec![42; BLOCK_BYTES]);
+            assert_eq!(store.stats().unwrap().objects, 0);
+        }
+        let mut store = LocalColdRamStore::new(1, 1);
+        let kept = store.put(&original).unwrap();
+        assert_eq!(
+            store.put(&vec![43; BLOCK_BYTES]).err().unwrap().kind(),
+            io::ErrorKind::OutOfMemory
+        );
+        let mut restored = vec![0; BLOCK_BYTES];
+        store.restore(&kept, &mut restored).unwrap();
+        assert_eq!(restored, original);
+        store.release(kept).unwrap();
+        let next = store.put(&vec![43; BLOCK_BYTES]).unwrap();
+        store.release(next).unwrap();
+        assert_eq!(store.stats().unwrap().objects, 0);
+    }
+
+    #[test]
+    fn local_cold_store_rejects_raw_and_verifies_full_identity() {
+        use pvisor_vm::api::ColdRamStore;
+        let mut seed = 123456789u64;
+        let random: Vec<_> = (0..BLOCK_BYTES)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed as u8
+            })
+            .collect();
+        let mut store = LocalColdRamStore::new(BLOCK_BYTES * 2, 4);
+        assert_eq!(
+            store.put(&random).err().unwrap().kind(),
+            io::ErrorKind::OutOfMemory
+        );
+        assert_eq!(store.stats().unwrap().encoded_bytes, 0);
+        assert_eq!(store.stats().unwrap().objects, 0);
+        // Even a compressed encoding is rejected if overhead outweighs savings.
+        assert!(store.put(&[0; 128]).is_err());
+        let object = store.put(&vec![42; BLOCK_BYTES]).unwrap();
+        let corrupt = LocalColdRamObject {
+            owner: store.owner.clone(),
+            content: Arc::new(CompressedObject {
+                id: object.content.id,
+                length: BLOCK_BYTES,
+                payload: Payload::Fill(41),
+            }),
+        };
+        assert!(store.restore(&corrupt, &mut vec![0; BLOCK_BYTES]).is_err());
+        store.release(object).unwrap();
+    }
+
     #[test]
     fn sharing_budget_lifetime_restore_and_stale_cold_candidates() {
         let mut pool = CompressedPool::new(1024, 2);

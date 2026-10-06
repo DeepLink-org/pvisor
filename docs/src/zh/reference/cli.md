@@ -114,6 +114,7 @@ Jobs:
   resume      继续暂停的 Job
   fork        从暂存文件或 VM 执行状态创建分支
   checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
+  ctrl        仅宿主可用的 live VM Attempt 控制（显式 socket 与身份）
 
 Filesystems:
   inspect     只读查看 Job 文件系统
@@ -516,17 +517,119 @@ enforcement。
 
 `--executor vm` 使用静态链接的 `pvisor-vm` 及其嵌入 init 启动最小 Linux guest。
 `--vm-ram-backing FILE`（配置 `[vm].ram_backing`）指定尚不存在的私有 RAM
-backing 文件。省略时，在用户缓存下创建并在正常退出时删除临时文件。
+backing 文件。普通文件 backing 模式省略时，在用户缓存下创建并在正常退出时
+删除临时文件；下方冷 pager 则使用匿名 RAM，没有 live backing 文件。
 `--vm-ram-compression`（`[vm].ram_compression = true`）启用 PVZRAM v2 manifest
 与不可变 Zstd Seekable base/delta sidecar 文件，
 需要 Linux FUSE 或 macFUSE kernel backend；压缩在启动时选择。
-Rust `RunHandle::pause/resume/offload` 支持 VM 控制；offload 的新目标路径
-限于当前 backing 的同一文件系统，返回实际驻留页采样。文件不是完整 VM
-快照；此实现尚未编译或运行验收。
+使用下方 `pvisor ctrl` 或 Rust `RunHandle::pause/resume/offload` 控制
+live VM。offload 的新目标路径限于当前 backing 的同一文件系统。
+回收结果是驻留页采样，不保证 RAM 全部消失。文件不是完整 VM 快照。
+已有[存储/控制测试与压缩产物](../design/offload/index.md#experiments)
+提供有限的实现证据，不证明 guest 端到端正确性或生产内存节约。
+压缩模式退出时仍不提交新 generation：最后一次 resume 后的写入可能丢弃，
+只留下最近一次 committed head。
+
+### VM 内存与控制选项 {#vm-memory-options}
+
+| Run 选项 | `[vm]` 下的 TOML 字段 | 默认值 / 用途 |
+| --- | --- | --- |
+| `--vm-control-socket PATH` | `control_socket` | 未设置：自动创建私有 `/tmp/pvctrl-*/ctrl.sock` |
+| `--vm-ram-backing FILE` | `ram_backing` | 未设置：普通文件 backing 模式使用 attempt 本地文件；只允许新文件 |
+| `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`；FUSE/macFUSE Seekable backing |
+| `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`；Linux x86_64 本地 live 冷 pager |
+| `--vm-ram-dedup[=BOOL]` | `ram_dedup` | `false`；尽力而为的宿主去重建议 |
+| `--vm-memory-pool SOCKET` | `memory_pool` | 未设置：实验性 Apple Silicon 池；Linux 外部池不受支持 |
+| `--vm-node-socket SOCKET` | `node_socket` | 未设置：同宿主 node 资源服务，提供不可变镜像/恢复 RAM |
+| `--vm-snapshot-filesystem-pool DIR` | `snapshot_filesystem_pool` | 未设置：独立副本；可选的宿主管理不可变 lower 池，用于 Linux x86_64 无网络原生 checkpoint |
+
+三个布尔选项接受裸标志（表示 `true`）、`=true` 或 `=false`；
+单独的 `false` 参数不是布尔语法。省略时保留配置值，包括 `true`。
+例如只覆盖去重，不清空其他设置：
+
+```bash
+pvisor run --config run.toml --executor vm --vm-ram-dedup=false -- /bin/sleep 600
+```
+
+省略 `--executor` 时，值为 true 的布尔选项或上述显式路径选项会选择 VM；
+仅 `=false` 不选择 VM。不会悄悄替换显式 executor。
+非 VM 执行不支持 live VM 控制；配置 control socket 且显式选择 host/container
+executor 时会被拒绝。路径选项只替换对应字段，省略的路径保持不变。
+
+本地冷 pager 用一个选项同时启用回收与实例本地压缩；没有分离的冷回收和
+本地压缩开关。它与 backing/FUSE 压缩、去重、外部池、快照捕获/恢复、
+快照文件系统池及整 VM offload 互斥。去重与任一种压缩模式及外部池互斥。
+冲突在合并配置/CLI 后检查，因此按需使用显式 `=false` 覆盖。
+文件系统池必须由宿主管理，处于 VM 可写根及快照 store 之外，并与 Job
+位于同一卷；设置 node socket 不代表服务故障后可透明恢复。
+
+### Live VM Attempt 控制 {#vm-instance-control}
+
+每个原生 VM Attempt 都自动获得仅宿主可用的控制端点，包括不保留 Job
+存储的运行。`pvisor run` 向 **stderr** 打印准确身份：
+
+```text
+pVisor VM control: --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE
+```
+
+将该行的 socket、Run ID 和 Attempt ID 复制到另一宿主终端；
+以下示例值必须替换为该 live 身份：
+
+```bash
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE status
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE pause
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE resume
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE offload --file /private/vm-ram/offloaded.ram
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE load
+```
+
+即使 `status` 也必须提供 `--socket PATH`、`--run-id ID` 和
+`--attempt-id ID`；过期或不匹配身份被拒绝。只有 `offload` 接受可选的
+`--file PATH`：省略时使用已有 backing，或指定同一文件系统上 guest
+不可访问的新路径。成功后才能使用发布的文件。`load` 映射为 `RunResume`：
+与 `resume` 一样继续同一个已 offload 的 Attempt，不主动预触全部 RAM 页。
+它既不重启进程，也不恢复持久快照；后者使用独立的 Job checkpoint/resume
+合同。`pause` 停止 vCPU，不等同于 offload 的 CPU/设备静默边界。
+
+控制响应以 JSON 写入 stdout，包含 `version`、`run_id`、`attempt_id`、
+`ok`、`status`、`value` 和 `error`。拒绝操作时输出 `ok: false` 与错误，
+并以非零状态退出；传输/连接及 CLI 解析失败也非零退出，但不一定产生 JSON
+响应。非 VM 控制明确不受支持，不回退为进程信号。Attempt 结束时移除端点；
+它与暂存 Job 的 `control.sock` 不同。
+
+需要稳定路径时，在启动 VM **之前**创建私有父目录：
+
+```bash
+install -d -m 0700 /tmp/pvisor-host-control
+pvisor run --executor vm --vm-control-socket /tmp/pvisor-host-control/ctrl.sock -- /bin/sleep 600
+```
+
+父目录必须已存在、不是符号链接、属于有效 UID，且权限恰为 `0700`；
+已有 socket 路径绝不覆盖。socket 权限为 `0600`，只接受同 UID 客户端。
+它永不导出到 guest，包括 host-rootfs VM；不要放入 guest 可访问的挂载或
+可写根。宿主父进程提供 executor 排除项；它不是 guest 可见的发现文件。
+
+### VM 本地 live 冷压缩 {#vm-cold-ram-compression}
+
+`--vm-cold-ram-compression` 设置 `[vm].cold_ram_compression = true`，
+在 Linux x86_64 选择 VM 执行。默认值为 `false`；省略参数保留配置值。
+runner 自动在私有匿名 RAM 上启动实验性 userfaultfd pager，使用有界
+实例本地 `LocalColdRamStore`。它不需要 FUSE 或池，也不是
+`--vm-ram-compression`。
+
+必须具备 userfaultfd syscall 或 `/dev/userfaultfd` 的内核缺页权限；
+编译支持不代表授权。缺少权限时启动失败，不回退，pVisor 不修改全局
+sysctl。单用户 ACL 授权/撤销示例及受限映射、构建 feature 见
+[实例内压缩](../design/memory-optimization/compression-local.md#direction)。
+它拒绝 `vm.ram_backing`、`vm.ram_compression`、`vm.ram_dedup`、
+`vm.snapshot_filesystem_pool`、快照捕获/恢复及整 VM offload。
+Linux 外部 `vm.memory_pool` 与 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 不受支持。
+guest 在短暂捕获/复核窗口之间持续运行，无需应用参与；这是驱逐/refault
+探测，不是普通 pause 或真正的读访问热度检测器，不承诺生产密度收益。
 
 ### VM RAM 去重建议 {#vm-ram-dedup}
 
-`--vm-ram-dedup` 设置 `[vm].ram_dedup = true` 并选择 VM executor。默认值为 `false`；省略该参数会保留配置值。这是对跨工作负载内容共享风险的显式启用，不承诺节省。它不能与 `--vm-memory-pool` / `vm.memory_pool`、`--vm-ram-compression` / `vm.ram_compression` 或 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 组合。
+`--vm-ram-dedup` 设置 `[vm].ram_dedup = true` 并选择 VM executor。默认值为 `false`；省略该参数会保留配置值。这是对跨工作负载内容共享风险的显式启用，不承诺节省。它不能与 `--vm-memory-pool` / `vm.memory_pool`、`--vm-ram-compression` / `vm.ram_compression`、`--vm-cold-ram-compression` / `vm.cold_ram_compression` 或 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 组合。
 
 runner 显式调用 `handle.advise_ram_dedup()`，将尽力而为的建议安装报告写入 stderr；建议失败不阻止执行。Linux 建议覆盖普通私有匿名 RAM 与恢复的私有 COW 映射。live `MAP_SHARED` RAM 被跳过，不转换映射；macOS 对其他条件合格的映射报告不支持。`accepted_bytes` 表示这些区间的建议被接受，不是已合并字节、节省或 KSM scanner 已启用。不修改宿主全局 KSM 参数，不需要新服务。资格检查、快照所有权和验证范围见[当前接入与验证基础](../design/memory-optimization/deduplication.md#direction)。
 

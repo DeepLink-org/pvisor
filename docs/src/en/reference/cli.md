@@ -166,6 +166,7 @@ Jobs:
   resume      Continue a suspended Job
   fork        Branch from staged files or VM execution state
   checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
+  ctrl        Host-only live VM Attempt controls (explicit socket and identities)
 
 Filesystems:
   inspect     Open a read-only Job filesystem view
@@ -661,20 +662,132 @@ container isolation but does not claim complete capability enforcement.
 
 `--executor vm` uses statically linked `pvisor-vm` and its embedded init to boot a
 minimal Linux guest. `--vm-ram-backing FILE` (`[vm].ram_backing`) creates a new
-private file backing live RAM. When omitted, an attempt-local file in the user
-cache is deleted on normal exit. `--vm-ram-compression`
+private file backing live RAM. In ordinary file-backed mode, omitting it creates
+an attempt-local file in the user cache, deleted on normal exit; the cold pager
+below instead uses anonymous RAM without a live backing file. `--vm-ram-compression`
 (`[vm].ram_compression = true`) selects the PVZRAM v2 manifest and immutable
 Zstd Seekable base/delta sidecar files
 at startup, requiring Linux FUSE or the macFUSE kernel backend.
-Rust `RunHandle::pause/resume/offload` controls
-the VM; a new offload destination must be on the backing's existing filesystem.
+Use `pvisor ctrl` below or Rust `RunHandle::pause/resume/offload` to control
+the live VM. A new offload destination must be on the backing's existing filesystem.
 Reclaim reports sampled residency, not guaranteed zero RAM. The file is not a
-complete VM snapshot. This implementation has not been compiled or validated at
-runtime.
+complete VM snapshot. Existing [storage/control tests and compressed artifacts](../design/offload/index.md#experiments)
+establish limited implementation evidence, not end-to-end guest correctness or
+production memory savings. Compressed exit still does not commit a new generation:
+writes after the last resume may be discarded, leaving only the last committed head.
+
+### VM memory and control options {#vm-memory-options}
+
+| Run option | TOML field under `[vm]` | Default / purpose |
+| --- | --- | --- |
+| `--vm-control-socket PATH` | `control_socket` | Unset: automatic private `/tmp/pvctrl-*/ctrl.sock` |
+| `--vm-ram-backing FILE` | `ram_backing` | Unset: attempt-local backing in ordinary file-backed mode; new files only |
+| `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`; FUSE/macFUSE Seekable backing |
+| `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`; Linux x86_64 local live cold pager |
+| `--vm-ram-dedup[=BOOL]` | `ram_dedup` | `false`; best-effort host dedup advice |
+| `--vm-memory-pool SOCKET` | `memory_pool` | Unset: experimental Apple Silicon pool; Linux external pools are unsupported |
+| `--vm-node-socket SOCKET` | `node_socket` | Unset: same-host node resource service for immutable images/restored RAM |
+| `--vm-snapshot-filesystem-pool DIR` | `snapshot_filesystem_pool` | Unset: owned copies; optional host-owned immutable lower pool for Linux x86_64 no-network native checkpoints |
+
+The three boolean options accept a bare flag (meaning `true`), `=true` or
+`=false`; a separate `false` argument is not the boolean grammar. Omission
+preserves the configured value, including `true`. For example, override dedup
+without clearing other settings:
+
+```bash
+pvisor run --config run.toml --executor vm --vm-ram-dedup=false -- /bin/sleep 600
+```
+
+A true boolean or one of these explicit path options selects VM execution when
+`--executor` is omitted; `=false` alone does not select VM. An explicit executor
+is not silently replaced. Non-VM execution does not support live VM controls;
+a configured control socket with an explicit host/container executor is rejected.
+Path options replace only their matching field and leave omitted paths intact.
+
+The local cold pager combines reclaim and instance-local compression in one
+option; there are no separate cold-reclaim and local-compression toggles. It
+conflicts with backing/FUSE compression, dedup, external pools, snapshot
+capture/restore, the snapshot filesystem pool and whole-VM offload. Dedup
+conflicts with either compression mode and external pools. These conflicts are
+checked after config/CLI merging, so use explicit `=false` overrides as needed.
+The filesystem pool must be host-owned, outside VM-writable roots and snapshot
+stores, and on the Job's volume; setting a node socket does not grant transparent
+recovery if the service fails.
+
+### Live VM Attempt controls {#vm-instance-control}
+
+Every native VM Attempt gets a host-only control endpoint automatically,
+including runs without retained Job storage. `pvisor run` prints its exact
+identity to **stderr**:
+
+```text
+pVisor VM control: --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE
+```
+
+Copy the socket, Run ID and Attempt ID from that line into another host terminal;
+the following example values must be replaced with that live identity:
+
+```bash
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE status
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE pause
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE resume
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE offload --file /private/vm-ram/offloaded.ram
+pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE load
+```
+
+`--socket PATH`, `--run-id ID` and `--attempt-id ID` are required even for
+`status`; stale or mismatched identities are rejected. `offload` accepts optional
+`--file PATH` only: omit it to use the existing backing, or choose a new,
+guest-inaccessible path on the same filesystem. Wait for success before using
+the published file. `load` maps to `RunResume`: it continues the same offloaded
+Attempt, as does `resume`, without eager RAM prefaulting. It neither restarts a
+process nor restores a persistent snapshot; use Job checkpoint/resume commands
+for that separate contract. `pause` stops vCPUs, not the stronger CPU/device
+quiescence used by offload.
+
+Control replies are JSON on stdout with `version`, `run_id`, `attempt_id`, `ok`,
+`status`, `value` and `error`. A rejected operation emits `ok: false` and an
+error and exits nonzero; transport/connect and CLI parsing failures also exit
+nonzero but need not produce a JSON reply. Non-VM controls are explicitly
+unsupported, not a process-signal fallback. The endpoint is removed when the
+Attempt ends and is separate from the staged Job's `control.sock`.
+
+To choose a stable path, create its private parent **before** starting the VM:
+
+```bash
+install -d -m 0700 /tmp/pvisor-host-control
+pvisor run --executor vm --vm-control-socket /tmp/pvisor-host-control/ctrl.sock -- /bin/sleep 600
+```
+
+The parent must be an existing non-symlink directory owned by the effective UID
+with mode exactly `0700`; existing socket paths are never overwritten. The
+socket has mode `0600` and accepts only same-UID peers. It is never exported to
+the guest, including a host-rootfs VM; do not put it in a guest-accessible mount
+or writable root. The host parent supplies executor exclusions; it is not a
+guest-visible discovery file.
+
+### VM local live cold compression {#vm-cold-ram-compression}
+
+`--vm-cold-ram-compression` sets `[vm].cold_ram_compression = true` and selects
+VM execution on Linux x86_64. The default is `false`; omitting the flag preserves
+a configured value. The runner automatically starts an experimental userfaultfd
+pager over private anonymous RAM with bounded instance-local `LocalColdRamStore`.
+It needs neither FUSE nor a pool and is not `--vm-ram-compression`.
+
+Kernel-fault userfaultfd syscall or `/dev/userfaultfd` permission is required;
+compiled support is not authorization. Missing permission fails startup without
+fallback, and pVisor changes no global sysctl. See [local compression](../design/memory-optimization/compression-local.md#direction)
+for a user-specific ACL grant/revoke example and restricted mappings/build features.
+It rejects `vm.ram_backing`, `vm.ram_compression`, `vm.ram_dedup`,
+`vm.snapshot_filesystem_pool`, snapshot capture/restore and whole-VM offload.
+Linux external `vm.memory_pool` and `PVISOR_EXPERIMENTAL_MEMORY_POOL` are
+unsupported. Guest execution continues between short capture/recheck windows
+without application participation: this is eviction/refault probing, not ordinary
+pause or a true read-access heat detector. No production-density gain is promised.
 
 ### VM RAM dedup advice {#vm-ram-dedup}
 
-`--vm-ram-dedup` sets `[vm].ram_dedup = true` and selects the VM executor. The default is `false`; omitting the flag preserves a configured value. This is an explicit opt-in to cross-workload content-sharing risks, not a promise of savings. It cannot be combined with `--vm-memory-pool` / `vm.memory_pool`, `--vm-ram-compression` / `vm.ram_compression`, or `PVISOR_EXPERIMENTAL_MEMORY_POOL`.
+`--vm-ram-dedup` sets `[vm].ram_dedup = true` and selects the VM executor. The default is `false`; omitting the flag preserves a configured value. This is an explicit opt-in to cross-workload content-sharing risks, not a promise of savings. It cannot be combined with `--vm-memory-pool` / `vm.memory_pool`, `--vm-ram-compression` / `vm.ram_compression`, `--vm-cold-ram-compression` / `vm.cold_ram_compression`, or `PVISOR_EXPERIMENTAL_MEMORY_POOL`.
 
 The runner calls `handle.advise_ram_dedup()` explicitly and writes a best-effort installation report to stderr; advice failure does not stop execution. Linux advice covers ordinary private anonymous RAM and restored private COW mappings. Live `MAP_SHARED` RAM is skipped without mapping conversion; macOS reports unsupported for otherwise eligible mappings. `accepted_bytes` means advice was accepted for those ranges, not merged bytes, savings or an enabled KSM scanner. No global KSM settings change and no new service is required. See [current integration and evidence](../design/memory-optimization/deduplication.md#direction) for eligibility, snapshot ownership and validation limits.
 

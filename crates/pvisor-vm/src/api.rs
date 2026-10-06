@@ -256,8 +256,27 @@ pub trait SnapshotCapture {
 /// Fault handlers must synchronize concurrent faults and reject unowned addresses.
 pub trait ColdRamControl: VmControl {
     /// Start one VM-owned experimental pager using caller-authorized storage.
-    /// Supported on Apple Silicon HVF. Unsupported backends reject before
-    /// spawning a worker. The store exclusively owns its session references;
+    /// Supported on Apple Silicon HVF and Linux x86_64 KVM. Linux requires
+    /// kernel-fault userfaultfd authority (permitted /dev/userfaultfd or
+    /// CAP_SYS_PTRACE); it never changes sysctls or KSM policy. Linux currently
+    /// accepts only private anonymous writable RAM, rejects file-backed/COW RAM,
+    /// and excludes only builder-identified raw bundled-kernel firmware by exact
+    /// guest address, host pointer, length and raw-region metadata (not snapshots),
+    /// and probes automatic candidates by eviction/refault, not true read-access
+    /// tracking: read-hot RAM may be evicted, then restored with a cooldown.
+    /// Linux disables balloon/free-page discard under the drained device gate
+    /// before registration; ordinary balloon behavior is unchanged without a pager.
+    /// Store calls must be bounded local operations. Known pending faults defer
+    /// maintenance; faults racing a pause are rechecked after all CPU acknowledgements.
+    /// Linux pager maintenance has a 30-second aggregate CPU-pause budget; normal
+    /// pause/resume retains its 3-second budget. Queueing, restore and release must
+    /// fit the caller's control budget. Arbitrary-latency external stores are not
+    /// supported by this latency contract; a stalled fault/transition may terminate
+    /// the runner. The generic store trait cannot identify an external transport.
+    /// Snapshot capture and whole-VM offload reject an active pager. Linux owns
+    /// its kernel resolver; external fault handlers/RAM tokens remain unsupported.
+    /// Unsupported backends reject before spawning a worker.
+    /// The store exclusively owns its session references;
     /// restore/release RPCs serialize separately from CPU/device barriers.
     /// Blocks are 64 KiB; snapshots are bounded to 4 MiB per sampling batch.
     /// The worker lives with the runner; a failed mapping transition terminates

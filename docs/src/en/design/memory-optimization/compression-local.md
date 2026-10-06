@@ -6,10 +6,16 @@ over cross-instance sharing.
 
 ## Target and current status {#status}
 
-Independent checkpoint save/compress/restore is an architectural requirement,
-not a consequence of enabling runtime compression. The local runtime path is a
-design direction, not a newly delivered Linux/KVM pager. The experimental
-macOS/HVF heap pool does not establish an independent local-compression backend.
+Linux x86_64 now has an experimental instance-local live pager. Enable the
+default-off `VmSettings.cold_ram_compression` (`[vm].cold_ram_compression`) or
+`--vm-cold-ram-compression`; the runner automatically starts it over private
+anonymous RAM with a `LocalColdRamStore`. This is not `vm.ram_compression`,
+which uses FUSE compressed file backing. The guest keeps running independently
+of guest applications; this is not ordinary pause or whole-VM offload.
+
+Independent checkpoint save/compress/restore remains a separate architectural
+requirement. Live cold compression cannot currently combine with snapshot
+capture or restore. The macOS/HVF heap pool is a separate experimental path.
 
 ## Ownership and data flow {#architecture}
 
@@ -18,24 +24,36 @@ including CPU/device state, compatibility, and persistent storage. Checkpoint
 encoding may reuse codec code without adopting runtime cold-object lifetimes or
 durability. Saving a compressed checkpoint alone does not shrink running RAM.
 
-For runtime compression, the VM selects cold content, captures a stable copy,
-and retains a validated local encoded object before discarding original pages.
-The codec owns encoding and bounded decoding; backing is only the carrier.
-`memfd` would not provide automatic compression or a pager.
+The runtime captures 64 KiB blocks with CPUs parked and device leases drained,
+retaining at most 4 MiB per publication batch. Encoding/publication happens
+outside that quiescence window while the guest runs. A second quiescence window
+rechecks the live bytes; changed blocks stay resident. Only unchanged blocks
+with a validated, instance-owned object are discarded with `MADV_DONTNEED`.
+While the pager owns the mappings, balloon free-page reports are acknowledged
+without discarding RAM, so they cannot bypass the pager's recovery ownership.
 
-CPU access or device preparation restores current bytes into private writable
-RAM. The runtime owns mappings and device access; guest applications need not
-participate. Cold objects are not persistent recovery after a host crash.
+Kernel-fault-capable userfaultfd blocks CPU/KVM and kernel/device accesses to
+missing RAM. The runtime decodes and validates length and checksums before
+`UFFD_COPY`, verifies the complete copy, then wakes access and releases the cold
+reference. Store references cannot be restored or released by another instance.
+Guest applications need not participate. Cold objects are not persistent
+recovery after a host crash; mapping or restore corruption fails the runner
+rather than silently exposing zeroed data.
 
 ## Choices and tradeoffs {#tradeoffs}
 
 Local storage removes publication IPC and service availability from recovery,
 but each instance keeps its own encoded payload and pays its own codec cost.
-[Deduplication](deduplication.md) is optional, not required for correctness.
+Cross-instance [deduplication](deduplication.md) is not required for correctness;
+`vm.ram_dedup` is explicitly incompatible with this pager.
 
 Long-lived, compressible cold content is the useful target. Hot or incompressible
 content can cost more than resident RAM once object overhead and repeated decoding
-are included. Prefer retaining original RAM when expected savings are insufficient.
+are included. The local store rejects raw blocks and encoded payloads for which
+`encoded_bytes + 256 > decoded_bytes * 7 / 8`. Budget or compression rejection
+leaves the original RAM resident. Encoded payload is capped at half configured
+RAM, with an object-count cap of `ceil(configured_ram_bytes / 65536)`; these are
+separate bounds, not a process-RSS limit.
 
 Reserve temporary memory for stable copies and encoding, and recovery headroom
 for decoded pages and scratch. Background work must yield to restoration;
@@ -43,14 +61,40 @@ compression ratio alone says nothing about CPU cost or application tail latency.
 
 ## Direction and constraints {#direction}
 
-Start with non-destructive local storage and recovery, then integrate reclamation
-with CPU/device access on real platforms. Linux pager support needs validation;
-macOS has no delivered sealed equivalent. Reuse the separation of capture,
-publication, and commit from [two-phase publication](proof-of-concept.md#two-phase-publication),
-not the old pool's service-dependent recovery contract.
+Linux requires 4 KiB host pages and ordinary private anonymous writable RAM.
+The builder-authorized immutable raw firmware mapping is excluded only after
+matching its pointer, length and guest topology; unknown raw mappings,
+file-backed/restored COW, shared and hugetlb RAM are rejected. Device/DAX windows
+are not candidates. Builds with `tee`, `aws-nitro`, `gpu`, `snd` or `input` are
+rejected, as are existing device preparation, dedup advice or a second pager.
+Compiled fault support is not proof of host permission.
 
-Keep the existing cold-pool exclusion with whole-VM [offload/FUSE backing](offload.md);
-local ownership alone does not prove those mechanisms can safely compose.
+Kernel-fault authority must come from the userfaultfd syscall or access to
+`/dev/userfaultfd`; user-mode-only faults are insufficient for KVM and kernel I/O.
+Missing authority fails startup without fallback. pVisor changes no global
+sysctl. An administrator can grant and later revoke access for just one user
+(`reiase` in this example), if the device is available:
+
+```bash
+sudo setfacl -m u:reiase:rw /dev/userfaultfd
+```
+
+After the opted-in VMs exit, revoke the grant:
+
+```bash
+sudo setfacl -x u:reiase /dev/userfaultfd
+```
+
+Admission rejects `vm.ram_backing`, `vm.ram_compression`, `vm.ram_dedup`,
+`vm.snapshot_filesystem_pool`, snapshot capture/restore and whole-VM
+[offload/FUSE backing](offload.md) combinations. Linux deliberately rejects
+`vm.memory_pool` and `PVISOR_EXPERIMENTAL_MEMORY_POOL`: only bounded local storage
+is supported. Ordinary RAM has no live backing file in this mode.
+
+Selection is experimental eviction/refault probing, not a read-access heat
+detector: unchanged bytes can still be read frequently. Rechecks protect content,
+not workload latency. Client-owned sealed `memfd` pooling remains a
+[future proposal](compression-pool.md), and macOS has no delivered sealed equivalent.
 
 ## Evidence boundary {#evidence}
 

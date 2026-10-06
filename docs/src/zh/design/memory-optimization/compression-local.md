@@ -5,10 +5,15 @@
 
 ## 目标与现状 {#status}
 
-checkpoint 保存、压缩和恢复相互独立于运行态优化，是架构要求，
-不是开启运行态压缩后的附带能力。本地运行态路径仍是设计方向，
-不是新交付的 Linux/KVM pager。实验性的 macOS/HVF 堆冷池
-不能证明已有独立的本地压缩后端。
+Linux x86_64 已交付实验性的实例本地 live pager。默认关闭的
+`VmSettings.cold_ram_compression`（`[vm].cold_ram_compression`）或
+`--vm-cold-ram-compression` 启用后，runner 自动在私有匿名 RAM 上启动
+pager，并使用 `LocalColdRamStore`。它不是采用 FUSE 压缩文件 backing 的
+`vm.ram_compression`。guest 持续运行，无需 guest 应用参与；这不是普通
+pause，也不是整 VM offload。
+
+checkpoint 的独立保存、压缩和恢复仍是单独的架构要求。live 冷压缩当前
+不能与快照捕获或恢复组合。macOS/HVF 堆冷池是另一条实验路径。
 
 ## 所有权与数据流 {#architecture}
 
@@ -17,37 +22,70 @@ checkpoint 保存、压缩和恢复相互独立于运行态优化，是架构要
 但不采用运行态冷对象的生命周期或持久性合同。
 仅保存压缩 checkpoint 不会缩减运行中的 RAM。
 
-运行态压缩由 VM 选择冷内容、捕获稳定副本，并在丢弃原页前
-持有经过校验的本地编码对象。codec 负责编码和有界解码；
-backing 只是载体。`memfd` 不提供自动压缩，也不提供 pager。
+runtime 在 CPU 停驻、设备 lease 排空的窗口中捕获 64 KiB 块，每批发布
+最多保留 4 MiB。编码与发布在此静止窗口外进行，guest 继续运行。第二次
+静止窗口重新核对 live 字节，变化的块保持驻留。只有未变化且已有经过
+校验的实例所有对象的块，才通过 `MADV_DONTNEED` 丢弃。pager 持有映射时，
+balloon 空闲页报告仍被确认，但不丢弃 RAM，避免绕过 pager 的恢复所有权。
 
-CPU 访问或设备准备将当前字节恢复到私有可写 RAM。
-运行时负责映射与设备访问，guest 应用无需参与。
-冷对象不提供宿主崩溃后的持久恢复。
+支持内核缺页的 userfaultfd 阻塞 CPU/KVM 及内核/设备对缺失 RAM 的访问。
+runtime 解码并校验长度及 checksum 后执行 `UFFD_COPY`，确认完整复制后才
+唤醒访问并释放冷引用。其他实例不能恢复或释放本实例的 store 引用。
+guest 应用无需参与。冷对象不提供宿主崩溃后的持久恢复；映射错误或恢复
+损坏会使 runner 失败，而不是静默暴露清零数据。
 
 ## 选择与取舍 {#tradeoffs}
 
 本地存储让恢复摆脱发布 IPC 和服务可用性依赖，
 但每个实例分别保留编码 payload，并承担自己的 codec 成本。
-[去重](deduplication.md)是可选优化，不是正确性的前提。
+跨实例[去重](deduplication.md)不是正确性的前提；`vm.ram_dedup`
+与此 pager 显式互斥。
 
 适合的目标是长期不访问、可压缩的冷内容。计入对象开销与反复解码后，
 热内容或不可压缩内容可能比驻留 RAM 更贵。
-预期节省不足时，优先保留原 RAM。
+本地 store 拒绝 raw 块，以及满足
+`encoded_bytes + 256 > decoded_bytes * 7 / 8` 的编码 payload。
+预算或压缩拒绝会保留原 RAM。编码 payload 上限为配置 RAM 的一半，
+对象数上限为 `ceil(configured_ram_bytes / 65536)`；这些分别有界，
+不是进程 RSS 上限。
 
 为稳定副本和编码预留临时内存，为解码页和 scratch 预留恢复余量。
 后台工作必须让恢复优先；压缩率本身不能说明 CPU 成本或业务尾延迟。
 
 ## 实施方向与约束 {#direction}
 
-先建立非破坏性的本地存储与恢复，再在真实平台上接入
-CPU/设备访问和回收。Linux pager 支持尚需验证；
-macOS 尚未交付等价 sealed 方案。复用
-[两阶段发布](proof-of-concept.md#two-phase-publication)中捕获、发布和提交的分离，
-而不是旧池依赖服务恢复的合同。
+Linux 要求 4 KiB 宿主页及普通私有匿名可写 RAM。builder 授权的不可变
+raw 固件映射只有在指针、长度及 guest 拓扑均匹配时才被排除；未知 raw、
+文件 backing/恢复 COW、shared 与 hugetlb RAM 被拒绝。设备/DAX 窗口不作为
+候选。启用 `tee`、`aws-nitro`、`gpu`、`snd` 或 `input` 的构建被拒绝，
+已有 device prepare、去重 advice 或第二个 pager 也被拒绝。
+编译具备缺页能力不代表宿主已经授权。
 
-保留冷池与整 VM [offload/FUSE backing](offload.md)的现有互斥；
-仅有本地所有权不能证明这些机制可以安全组合。
+内核缺页权限必须来自 userfaultfd syscall 或 `/dev/userfaultfd` 访问授权；
+仅用户态缺页不足以支持 KVM 与内核 I/O。缺少权限时启动失败，不回退。
+pVisor 不修改全局 sysctl。设备可用时，管理员可只为一个用户授权并撤销
+（示例用户为 `reiase`）：
+
+```bash
+sudo setfacl -m u:reiase:rw /dev/userfaultfd
+```
+
+启用此功能的 VM 退出后撤销授权：
+
+```bash
+sudo setfacl -x u:reiase /dev/userfaultfd
+```
+
+准入拒绝与 `vm.ram_backing`、`vm.ram_compression`、`vm.ram_dedup`、
+`vm.snapshot_filesystem_pool`、快照捕获/恢复及整 VM
+[offload/FUSE backing](offload.md) 组合。Linux 有意拒绝 `vm.memory_pool`
+及 `PVISOR_EXPERIMENTAL_MEMORY_POOL`，仅支持有界本地存储。
+此模式的普通 RAM 没有 live backing 文件。
+
+选择策略是实验性的驱逐/refault 探测，不是真正的读访问热度检测器：
+字节不变仍可能被频繁读取。重新核对保护内容，不保证工作负载延迟。
+客户端持有 sealed `memfd` 的池化仍是[未来提案](compression-pool.md)，
+macOS 尚未交付等价 sealed 方案。
 
 ## 证据边界 {#evidence}
 
