@@ -504,6 +504,50 @@ struct PreparedOverlay {
     lowers: Vec<std::path::PathBuf>,
 }
 
+fn initial_run_record(
+    spec: &RunSpec,
+    preparation: &super::run::PreparedRun,
+    storage: &Path,
+    attempt_id: String,
+) -> anyhow::Result<RunRecord> {
+    let RunInvocation::Process(process) = &spec.invocation;
+    let command = std::iter::once(process.program.clone())
+        .chain(process.args.iter().cloned())
+        .collect::<Vec<_>>();
+    Ok(RunRecord {
+        attempt_id: Some(attempt_id),
+        schema_version: 1,
+        run_id: spec.run_id.as_str().to_string(),
+        parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
+        task_id: spec.task_id.clone(),
+        session_id: spec.run_id.as_str().to_string(),
+        agent: spec.agent.name.clone(),
+        pid: std::process::id(),
+        command,
+        executor: Some((&preparation.executor).into()),
+        executor_plan: Some(preparation.executor.clone()),
+        state: RunRecordState::Running,
+        started_at_unix_ms: crate::util::unix_now_ms(),
+        finished_at_unix_ms: None,
+        storage: storage.to_path_buf(),
+        workspace: preparation.workspace.clone(),
+        overlaynet_listen: None,
+        network_interception: None,
+        network_interception_metrics: None,
+        filesystem_observation: None,
+        gateway_listen: None,
+        network: serde_json::to_value(&spec.capabilities.network)?,
+        network_policy: None,
+        environment: preparation.environment.clone(),
+        resource_limits: spec.runtime.resource_limits.clone(),
+        overlay: None,
+        overlay_lowers: Vec::new(),
+        lineage: preparation.lineage.clone(),
+        orchestration: orchestration_from_spec(spec),
+        operation: Some(preparation.operation.clone()),
+    })
+}
+
 /// Start pVisor's configured Gateway and OverlayFS drivers, then enrich `spec`.
 #[cfg(feature = "gateway")]
 pub(crate) fn prepare_attempt(
@@ -566,7 +610,7 @@ pub(crate) fn prepare_attempt(
         &overlay_cfg,
         &storage,
         &root_session,
-        preparation.is_krun(),
+        preparation.guest_workspace_overlay,
         opts.overlay_override.execution_snapshot.as_ref(),
     )?;
     crate::util::startup_mark_run("storage.overlay_ready", spec.run_id.as_str());
@@ -579,10 +623,6 @@ pub(crate) fn prepare_attempt(
         lowers: overlay_lowers,
     } = prepared_overlay;
 
-    let RunInvocation::Process(process) = &spec.invocation;
-    let command = std::iter::once(process.program.clone())
-        .chain(process.args.iter().cloned())
-        .collect::<Vec<_>>();
     let vm_network = opts
         .vm_network
         .then(|| {
@@ -599,42 +639,18 @@ pub(crate) fn prepare_attempt(
             )
         })
         .transpose()?;
-    let run_record = RunRecord {
-        attempt_id: Some(opts.attempt_id.to_string()),
-        schema_version: 1,
-        run_id: spec.run_id.as_str().to_string(),
-        parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
-        task_id: spec.task_id.clone(),
-        session_id: root_session.clone(),
-        agent: config.agent_id.clone(),
-        pid: std::process::id(),
-        command,
-        executor: Some((&preparation.executor).into()),
-        executor_plan: Some(preparation.executor.clone()),
-        state: RunRecordState::Running,
-        started_at_unix_ms: crate::util::unix_now_ms(),
-        finished_at_unix_ms: None,
-        storage: storage.clone(),
-        workspace: preparation.workspace.clone(),
-        overlaynet_listen: Some(gateway.listen.clone()),
-        network_interception: Some(if opts.vm_network {
-            pvisor_overlaynet::InterceptionProfile::vm_smoltcp()
-        } else {
-            pvisor_overlaynet::InterceptionProfile::explicit_proxy()
-        }),
-        network_interception_metrics: None,
-        filesystem_observation: None,
-        gateway_listen: opts.gateway_enabled.then(|| gateway.listen.clone()),
-        network: serde_json::to_value(&spec.capabilities.network)?,
-        network_policy: Some(serde_json::to_value(&config.network)?),
-        environment: preparation.environment.clone(),
-        resource_limits: spec.runtime.resource_limits.clone(),
-        overlay: overlay_record.clone(),
-        overlay_lowers,
-        lineage: preparation.lineage.clone(),
-        orchestration: orchestration_from_spec(spec),
-        operation: Some(preparation.operation.clone()),
-    };
+    let mut run_record =
+        initial_run_record(spec, preparation, &storage, opts.attempt_id.to_string())?;
+    run_record.overlaynet_listen = Some(gateway.listen.clone());
+    run_record.network_interception = Some(if opts.vm_network {
+        pvisor_overlaynet::InterceptionProfile::vm_smoltcp()
+    } else {
+        pvisor_overlaynet::InterceptionProfile::explicit_proxy()
+    });
+    run_record.gateway_listen = opts.gateway_enabled.then(|| gateway.listen.clone());
+    run_record.network_policy = Some(serde_json::to_value(&config.network)?);
+    run_record.overlay = overlay_record.clone();
+    run_record.overlay_lowers = overlay_lowers;
     let listen = gateway.listen.clone();
     let session = AttemptSession {
         proxy: None,
@@ -698,6 +714,7 @@ pub(crate) fn prepare_attempt(
                     capture_storage: &capture_storage,
                     config_path: &config_snapshot,
                     gateway_enabled: opts.gateway_enabled,
+                    vm_network: opts.vm_network,
                     local_gateway_auth: opts.gateway_enabled
                         && config
                             .models
@@ -744,7 +761,7 @@ pub(crate) fn prepare_overlay_attempt(
         &overlay_cfg,
         &storage,
         &root_session,
-        preparation.is_krun(),
+        preparation.guest_workspace_overlay,
         opts.overlay.execution_snapshot.as_ref(),
     )?;
     crate::util::startup_mark_run("storage.overlay_ready", spec.run_id.as_str());
@@ -760,10 +777,6 @@ pub(crate) fn prepare_overlay_attempt(
         anyhow::anyhow!("overlay preparation requested without a target or lower directory")
     })?;
 
-    let RunInvocation::Process(process) = &spec.invocation;
-    let command = std::iter::once(process.program.clone())
-        .chain(process.args.iter().cloned())
-        .collect::<Vec<_>>();
     let prepared_network = opts
         .vm_network
         .map(|network| prepare_vm_network(spec, network, None))
@@ -775,40 +788,14 @@ pub(crate) fn prepare_overlay_attempt(
         .as_ref()
         .map(|network| network.metrics.clone());
     let network_policy = prepared_network.map(|network| network.policy);
-    let run_record = RunRecord {
-        attempt_id: Some(opts.attempt_id.to_string()),
-        schema_version: 1,
-        run_id: spec.run_id.as_str().to_string(),
-        parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
-        task_id: spec.task_id.clone(),
-        session_id: root_session.clone(),
-        agent: spec.agent.name.clone(),
-        pid: std::process::id(),
-        command,
-        executor: Some((&preparation.executor).into()),
-        executor_plan: Some(preparation.executor.clone()),
-        state: RunRecordState::Running,
-        started_at_unix_ms: crate::util::unix_now_ms(),
-        finished_at_unix_ms: None,
-        storage: storage.clone(),
-        workspace: preparation.workspace.clone(),
-        overlaynet_listen: None,
-        network_interception: vm_network
-            .as_ref()
-            .map(|_| pvisor_overlaynet::InterceptionProfile::vm_smoltcp()),
-        network_interception_metrics: None,
-        filesystem_observation: None,
-        gateway_listen: None,
-        network: serde_json::to_value(&spec.capabilities.network)?,
-        network_policy,
-        environment: preparation.environment.clone(),
-        resource_limits: spec.runtime.resource_limits.clone(),
-        overlay: Some(overlay_record.clone()),
-        overlay_lowers,
-        lineage: preparation.lineage.clone(),
-        orchestration: orchestration_from_spec(spec),
-        operation: Some(preparation.operation.clone()),
-    };
+    let mut run_record =
+        initial_run_record(spec, preparation, &storage, opts.attempt_id.to_string())?;
+    run_record.network_interception = vm_network
+        .as_ref()
+        .map(|_| pvisor_overlaynet::InterceptionProfile::vm_smoltcp());
+    run_record.network_policy = network_policy;
+    run_record.overlay = Some(overlay_record.clone());
+    run_record.overlay_lowers = overlay_lowers;
     let session = AttemptSession {
         proxy: None,
         root_session: root_session.clone(),
@@ -901,10 +888,6 @@ pub(crate) fn prepare_storage_attempt(
         .canonicalize()
         .unwrap_or_else(|_| storage.to_path_buf());
     let root_session = spec.run_id.as_str().to_string();
-    let RunInvocation::Process(process) = &spec.invocation;
-    let command = std::iter::once(process.program.clone())
-        .chain(process.args.iter().cloned())
-        .collect::<Vec<_>>();
     let lease = RunLease::acquire_new(&storage)?;
     let prepared_network = vm_network_opts
         .map(|network| prepare_vm_network(spec, network, None))
@@ -916,40 +899,11 @@ pub(crate) fn prepare_storage_attempt(
         .as_ref()
         .map(|network| network.metrics.clone());
     let network_policy = prepared_network.map(|network| network.policy);
-    let run_record = RunRecord {
-        attempt_id: Some(attempt_id.to_string()),
-        schema_version: 1,
-        run_id: root_session.clone(),
-        parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
-        task_id: spec.task_id.clone(),
-        session_id: root_session.clone(),
-        agent: spec.agent.name.clone(),
-        pid: std::process::id(),
-        command,
-        executor: Some((&preparation.executor).into()),
-        executor_plan: Some(preparation.executor.clone()),
-        state: RunRecordState::Running,
-        started_at_unix_ms: crate::util::unix_now_ms(),
-        finished_at_unix_ms: None,
-        storage: storage.clone(),
-        workspace: preparation.workspace.clone(),
-        overlaynet_listen: None,
-        network_interception: vm_network
-            .as_ref()
-            .map(|_| pvisor_overlaynet::InterceptionProfile::vm_smoltcp()),
-        network_interception_metrics: None,
-        filesystem_observation: None,
-        gateway_listen: None,
-        network: serde_json::to_value(&spec.capabilities.network)?,
-        network_policy,
-        environment: preparation.environment.clone(),
-        resource_limits: spec.runtime.resource_limits.clone(),
-        overlay: None,
-        overlay_lowers: Vec::new(),
-        lineage: preparation.lineage.clone(),
-        orchestration: orchestration_from_spec(spec),
-        operation: Some(preparation.operation.clone()),
-    };
+    let mut run_record = initial_run_record(spec, preparation, &storage, attempt_id.to_string())?;
+    run_record.network_interception = vm_network
+        .as_ref()
+        .map(|_| pvisor_overlaynet::InterceptionProfile::vm_smoltcp());
+    run_record.network_policy = network_policy;
     let session = AttemptSession {
         proxy: None,
         root_session: root_session.clone(),
@@ -1290,7 +1244,7 @@ fn inject_krun_overlay_metadata(
     hint: &OverlayHint,
     record: Option<&OverlayRecord>,
 ) {
-    if !preparation.is_krun() {
+    if !preparation.guest_workspace_overlay {
         return;
     }
     let Some(record) = record else {
@@ -1324,6 +1278,7 @@ struct SessionImplantOpts<'a> {
     capture_storage: &'a Path,
     config_path: &'a Path,
     gateway_enabled: bool,
+    vm_network: bool,
     local_gateway_auth: bool,
 }
 
@@ -1342,6 +1297,7 @@ fn enrich_with_session(
         capture_storage,
         config_path,
         gateway_enabled,
+        vm_network,
         local_gateway_auth,
     } = opts;
     let mut plan = ImplantPlan {
@@ -1385,7 +1341,7 @@ fn enrich_with_session(
     }
     plan.notes
         .push(format!("network service: proxy env → http://{listen}"));
-    if preparation.is_krun() {
+    if vm_network {
         mark_vm_network(&mut plan);
     } else {
         plan.env
@@ -1415,7 +1371,7 @@ fn enrich_with_session(
         NetworkCapability::Deny => {
             plan.env
                 .insert("PVISOR_NETWORK_POLICY".into(), "deny".into());
-            plan.notes.push(if preparation.is_krun() {
+            plan.notes.push(if vm_network {
                 "network: deny on the non-bypassable VM data plane".into()
             } else {
                 "network: deny for traffic intercepted by the proxy".into()
@@ -1433,7 +1389,7 @@ fn enrich_with_session(
                 "network: allowlist ({} legacy hosts, {} structured rules, applied to {} traffic)",
                 hosts.len(),
                 rules.len(),
-                if preparation.is_krun() {
+                if vm_network {
                     "VM"
                 } else {
                     "intercepted proxy"
@@ -1470,7 +1426,7 @@ fn enrich_with_session(
                 allow.len(),
                 deny.len(),
                 limits.len(),
-                if preparation.is_krun() {
+                if vm_network {
                     "VM"
                 } else {
                     "intercepted proxy"
@@ -1543,7 +1499,7 @@ fn overlay_cwd(
     // Only Linux binds the merged view over the original path in a private root.
     if cfg!(target_os = "linux")
         && crate::executor::sandbox::sandbox_required(spec)
-        && !preparation.is_krun()
+        && !preparation.guest_workspace_overlay
         && overlay.merged_dir.is_some()
         && let Some(record) = record
     {

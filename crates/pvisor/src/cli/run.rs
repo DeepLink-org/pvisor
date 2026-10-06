@@ -150,9 +150,9 @@ pub(super) const RUN_COMMAND_ABOUT: &str = "Start one Agent Job under pVisor man
 pub(super) const RUN_COMMAND_LONG_ABOUT: &str = RUN_COMMAND_ABOUT;
 
 #[cfg(target_os = "linux")]
-const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; host supports optional filesystem and network isolation";
+const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the linked pvisor-vm runtime with KVM on Linux; host supports optional filesystem and network isolation";
 #[cfg(target_os = "macos")]
-const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the statically linked libkrun backend; host supports optional filesystem and network isolation";
+const EXECUTOR_HELP: &str = "Execution provider: host, container, or vm. `vm` uses the linked pvisor-vm runtime with HVF on macOS; host supports optional filesystem and network isolation";
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 const EXECUTOR_HELP: &str = "Execution provider for the Agent command";
 
@@ -330,7 +330,8 @@ struct ContainerOverrides {
     /// Set it to a statically linked build when the guest ABI differs.
     #[arg(long, value_name = "PATH")]
     container_pvisor_binary: Option<PathBuf>,
-    /// OCI target platform (`linux/amd64` or `linux/arm64`).
+    /// Assert the native OCI platform (`linux/amd64` or `linux/arm64`).
+    /// Must match the host architecture; cross-platform selection is unsupported.
     #[arg(long, value_name = "PLATFORM")]
     container_platform: Option<ContainerPlatform>,
     /// Container network mode; host keeps the in-process Gateway reachable.
@@ -1253,7 +1254,7 @@ async fn execute_config(
         && config.overlaynet.mode == OverlayNetMode::Auto
     {
         run_log!(
-            "pVisor OverlayNet boundary: non-bypassable libkrun virtio-net → smoltcp IPv4 TCP/DNS"
+            "pVisor OverlayNet boundary: non-bypassable pvisor-vm virtio-net → smoltcp IPv4 TCP/DNS"
         );
     }
 
@@ -1664,7 +1665,7 @@ async fn execute_config(
             ),
             RunExecutorKind::Vm => {
                 run_log!(
-                    "boundary: libkrun Linux virtual machine (KVM/HVF); virtio-net is owned by pVisor smoltcp and Gateway capture uses a virtual guest route"
+                    "boundary: pvisor-vm Linux guest (KVM on Linux, HVF on macOS); virtio-net is owned by pVisor smoltcp and Gateway capture uses a virtual guest route"
                 )
             }
         }
@@ -2533,6 +2534,10 @@ fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
             "filesystem workspace path must not contain .."
         );
     }
+    anyhow::ensure!(
+        config.container.platform.is_none() || config.run.executor == RunExecutorKind::Container,
+        "container.platform requires the container executor and cannot be ignored by host/VM execution"
+    );
     if config.run.executor == RunExecutorKind::Container {
         if config.overlaynet.mode == OverlayNetMode::Proxy
             && config.container.network != ContainerNetwork::Host
@@ -2560,7 +2565,7 @@ fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
         }
         anyhow::ensure!(
             config.overlaynet.mode != OverlayNetMode::Proxy,
-            "libkrun uses the smoltcp driver; choose --overlaynet auto or off"
+            "pvisor-vm uses the smoltcp driver; choose --overlaynet auto or off"
         );
     }
     if config.overlaynet.mode == OverlayNetMode::Off {
@@ -3712,8 +3717,6 @@ sandbox = "required""#
             "example/agent:latest",
             "--container-pvisor-binary",
             "/opt/artifacts/pvisor-linux-amd64",
-            "--container-platform",
-            "linux/amd64",
             "--container-network",
             "none",
             "--container-read-only-rootfs",
@@ -3731,15 +3734,84 @@ sandbox = "required""#
             config.container.pvisor_binary.as_deref(),
             Some(Path::new("/opt/artifacts/pvisor-linux-amd64"))
         );
-        assert_eq!(
-            config.container.platform,
-            Some(ContainerPlatform::LinuxAmd64)
-        );
+        assert_eq!(config.container.platform, None);
         assert_eq!(config.container.network, ContainerNetwork::None);
         assert!(config.container.read_only_rootfs);
         assert_eq!(config.container.mounts.len(), 1);
         assert!(config.container.mounts[0].read_only);
         validate(&config, false).unwrap();
+    }
+
+    #[test]
+    fn cli_and_config_platform_selection_require_native_architecture() {
+        for (cli_platform, config_platform, architecture) in [
+            ("linux/amd64", "linux-amd64", "x86_64"),
+            ("linux/arm64", "linux-arm64", "aarch64"),
+        ] {
+            let args = preset_args(&[
+                "--container-image",
+                "example/agent:latest",
+                "--container-platform",
+                cli_platform,
+                "--",
+                "agent",
+            ]);
+            let mut cli_config = RunConfig::default();
+            apply_cli(&mut cli_config, args).unwrap();
+            assert_eq!(cli_config.run.executor, RunExecutorKind::Container);
+            let file_config: RunConfig = toml::from_str(&format!(
+                "[run]\nexecutor = 'container'\ncommand = ['agent']\n[container]\nimage = 'example/agent:latest'\nplatform = '{config_platform}'\n"
+            ))
+            .unwrap();
+            for config in [cli_config, file_config] {
+                let result = validate(&config, false);
+                if std::env::consts::ARCH == architecture {
+                    result.unwrap();
+                } else {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("cross-platform selection is not supported")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn container_platform_cannot_be_ignored_by_a_host_or_vm_config() {
+        for executor in ["host", "vm"] {
+            let config: RunConfig = toml::from_str(&format!(
+                "[run]\nexecutor = '{executor}'\ncommand = ['agent']\n[container]\nplatform = 'linux-amd64'\n"
+            ))
+            .unwrap();
+            assert!(
+                validate(&config, false)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("container.platform requires the container executor")
+            );
+        }
+    }
+
+    #[test]
+    fn executor_help_names_the_rust_vm_runtime_and_platform_backend() {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            assert!(EXECUTOR_HELP.contains("pvisor-vm"));
+            assert!(!EXECUTOR_HELP.contains("libkrun"));
+            assert!(EXECUTOR_HELP.contains(if cfg!(target_os = "linux") {
+                "KVM on Linux"
+            } else {
+                "HVF on macOS"
+            }));
+        }
+        let help = Cli::try_parse_from(["pvisor", "run", "--help"])
+            .unwrap_err()
+            .to_string();
+        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(help.contains("cross-platform selection is unsupported"));
     }
 
     #[test]

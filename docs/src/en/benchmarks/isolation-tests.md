@@ -2,46 +2,48 @@
 
 ## Main conclusions {#conclusions}
 
-**Choose the isolation boundary before comparing speed. The measured host_process + `--stage` retains workspace changes while allowing access outside the view. Tested safe mode and prepared VM rootfs block outside reads/writes. An OCI writable workspace mount changes host files directly, so its speed is not a comparison with identical staging semantics.**
+**In the tested Linux configurations, pVisor staged, safe and VM allow inside-view operations, block the listed outside host accesses and retain workspace writes in stage across 3/3 checks each. pVisor OCI and Podman also block outside access, but their authorized writable workspace mounts modify host files directly. Host allows the listed host accesses.**
 
 | Need | Selection implication |
 |---|---|
-| Only stage workspace changes | Staging alone does not restrict host access |
-| Block reads/writes outside the view | Use a verified isolation configuration |
-| OCI writable workspace mount | Host writes follow the mount grant |
+| Review execution results and merge selected workspace changes | Choose a validated staged, safe or VM configuration |
+| Use an OCI writable workspace mount | Writes reach the host directly; provide review and rollback separately |
+| Allow access to host paths | Tested host keeps host paths visible and is not a workspace file sandbox |
 
 ## Motivation {#motivation}
 
-Every performance result must correspond to its actual boundary. Negative controls and final host-content checks distinguish successful requests from host mutation.
+Choosing an execution mode requires knowing both the accessible paths and where writes land. A successful command alone cannot distinguish a staged write from a host modification. The boundary also determines which performance controls offer comparable semantics.
 
 ## Experiment design {#interpretation}
 
-Fresh fixtures probe absolute paths, symlinks, /proc/self/root, traversal, Unix sockets and lower-workspace aliases. Host/staged deliberately provide negative controls. Inspect original host content and Bundle observed isolation/staging, not just syscall return values. The isolation matrix uses a prepared tool rootfs; other rootfs and path grants require their own checks.
+Seven configurations each run three fresh fixtures. A fixed seed shuffles configurations in each repetition, giving 21 attempts. Native and host provide host-accessible controls. Podman uses private overlay storage and a writable workspace mount; pVisor OCI uses crun and an explicit writable mount. VM and OCI use the same prepared Python/Git rootfs.
 
-The matrix uses pinned Linux/x86_64 artifacts and declared configurations from 2026-10-04, rather than asserting every newer default. See [executor boundaries](../security/executor-boundaries.md) for current defaults. Matching macOS workloads are unmeasured.
+Each fixture must read the inside-view file, write and read back a workspace file, and use an internal Unix socketpair. Outside probes cover absolute paths, symlinks, `/proc/self/root`, parent traversal, absolute and symlink writes, a host Unix socket connection and an absolute lower-workspace alias write. Validation checks actual output, final host bytes, staged content and the Bundle's execution boundary rather than syscall status alone.
 
-Tables identify pinned artifacts and measurement dates. Failed or invalid samples are excluded from successful timings and counted separately. Existing measurements have no predefined host-interference filter; all slow valid samples are retained. P95 from 30 or fewer samples is descriptive only; no P99 or stable tail-latency claim is made.
+The environment is Linux/x86_64 on an AMD Ryzen 7 9700X with kernel 7.2.8-200.fc44. Each payload verifies CPU affinity: CPUs 0 and 1 on the host, two guest vCPUs in VM. VM memory is configured to 1 GiB; there is no uniform host memory cap. There are no warmups or host cache eviction. These correctness repetitions do not produce a latency ranking. Prepared inputs are verified before and after execution, and an independent publication audit rechecks all retained evidence. Failures are counted separately and never filled with older samples.
 
 ## Data and analysis {#results}
 
-| Profile | Host outside readable | Host outside written | Host lower alias written | Workspace staged |
-|---|---|---|---|---|
-| host | True | True | True | False |
-| staged / host_process | True | True | True | True |
-| safe | False | False | False | True |
-| vm | False | False | False | True |
-| container | False | False | True | False |
+Measured on 2026-10-06. N=3 per mode, 21/21 conditions passing with no failures. Access/state columns report occurrences out of three, not performance statistics. Each of the four read paths is checked separately.
 
-### Analysis
+| Configuration | Checks passed | Inside read/write/socket | Four outside read paths | Outside host written | Outside Unix socket reachable | Host lower alias written | Workspace writes staged |
+|---|---:|---|---|---:|---:|---:|---:|
+| Native | 3/3 | 3/3 each | 3/3 each | 3/3 | 3/3 | 3/3 | 0/3 |
+| pVisor host | 3/3 | 3/3 each | 3/3 each | 3/3 | 3/3 | 3/3 | 0/3 |
+| pVisor staged | 3/3 | 3/3 each | 0/3 each | 0/3 | 0/3 | 0/3 | 3/3 |
+| pVisor safe | 3/3 | 3/3 each | 0/3 each | 0/3 | 0/3 | 0/3 | 3/3 |
+| pVisor vm | 3/3 | 3/3 each | 0/3 each | 0/3 | 0/3 | 0/3 | 3/3 |
+| pVisor OCI (writable mount) | 3/3 | 3/3 each | 0/3 each | 0/3 | 0/3 | 3/3 | 0/3 |
+| Podman (writable mount) | 3/3 | 3/3 each | 0/3 each | 0/3 | 0/3 | 0/3 | 0/3 |
 
-Safe/VM lower-alias writes can return success while landing in stage and leaving host lower unchanged. Syscall status alone would misclassify this. OCI writes through its explicitly writable mount; that is a declared grant, not a promise that all mounts stage changes. Host/staged can read/write outside fixture paths and connect the socket; they are not counted as safe profiles.
+Every mode passes the inside read, write and socket positives, preventing an unusable environment from being mistaken for an effective boundary. Staged, safe and VM leave host lower unchanged and retain the complete staged write. Safe and VM return success for the lower-alias write API while still leaving the host unchanged. pVisor OCI writes directly to lower through the tested alias. Podman does not resolve that absolute host alias, but its relative workspace write also reaches the host directly.
 
-Direct-socket denials appear in [network](network.md); submission/conflicts/interruption recovery in [apply](apply.md). This matrix measures correctness rather than denial speed.
+These are path and Unix socket fixture results. TCP policy is covered separately in [network](network.md), and merge conflicts/interruption recovery in [apply](apply.md).
 
 ### Scope {#acceptance}
 
-These checks cover the listed file-access and exit cases, not kernel-vulnerability or escape audits. Mounts, network and rootfs configuration determine boundaries; standalone stage is not a complete sandbox.
+Mount grants, rootfs and configuration determine the boundary; other configurations require separate validation. These checks are not a kernel-vulnerability or comprehensive escape audit and do not establish rollback of remote side effects. macOS remains unmeasured. See [executor boundaries](../security/executor-boundaries.md) for execution modes and current defaults.
 
 ### Downloads and reproduction {#run}
 
-[Derived table CSV](isolation-tests.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Derived matrix CSV](isolation-tests.csv) · [Artifact and audit provenance CSV](isolation-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

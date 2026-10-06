@@ -16,7 +16,7 @@ Check the command:
 pvisor --version
 ```
 
-The wheel installs a matching Python package and CLI in the current Python environment. If your project has other Python dependencies, use a virtual environment:
+The wheel installs a Python version marker and native CLI scripts directly in the current Python environment's bin directory; no Python launcher is involved. If your project has other Python dependencies, use a virtual environment:
 
 ```bash
 python3 -m venv .venv
@@ -29,7 +29,7 @@ Published wheels target Linux x86_64 and macOS arm64. Check release artifacts or
 
 ## 2. Check platform prerequisites
 
-The CLI supports macOS and Linux and requires Python 3.10 or newer. Ordinary host Jobs write directly to the workspace; only `--safe` or `--stage` uses filesystem staging. Install macFUSE before running a staged host Job on macOS:
+Wheel installation supports macOS and Linux and requires Python 3.10 or newer; the installed native CLI does not use a Python launcher. Ordinary host Jobs write directly to the workspace; only `--safe` or `--stage` uses filesystem staging. Install macFUSE before running a staged host Job on macOS:
 
 ```bash
 brew install --cask macfuse
@@ -59,13 +59,13 @@ Or build the CLI from source:
 just install-cli
 ```
 
-Set `PVISOR_BIN` only when you are explicitly testing a specific pVisor binary. When diagnosing provider behavior, keep the Python package and CLI on the same revision.
+To test a specific native build, invoke its path directly (for example `target/debug/pvisor`) or put its directory first on `PATH`. The old launcher's `PVISOR_BIN` override is not used by installed native scripts. Editable Python installation is not a native CLI build; use `just build` or `just install-cli`.
 
 ## Install the single-node daemon separately {#daemon}
 
-For an OpenSandbox-compatible lifecycle API on one Linux host, follow [daemon installation and startup](../guides/daemon/index.md). The new `pvisor-daemon` is a separate source-installed executable; do not assume an existing Python wheel ships it or any ready-to-use sandbox image. It uses external rootless Podman and a partial OpenSandbox 1.1.0 profile, not the native VM executor.
+For an OpenSandbox-compatible lifecycle API on one Linux host, follow [daemon installation and startup](../guides/daemon/index.md). `pvisor-daemon` is a separate executable, included only in current Linux x86_64 wheels and also available as a standalone nightly archive or source build. macOS wheels do not include it, and no artifact supplies a ready-to-use sandbox image. Its partial OpenSandbox 1.1.0 profile has VM-only NativeRuntime embedding pVisor on Linux x86_64/KVM with delegated cgroup v2; the executable is integrated with native runtime construction and synchronous internal VM dispatch before Tokio.
 
-A working SDK sandbox needs a locally prepared image with real execd and capability-free egress. The upstream default egress conflicts with `cap-drop=ALL`; no end-to-end image recipe has been validated. Starting the API alone does not establish SDK readiness. Controller/Worker and the Cluster task SDK are retired; cross-node orchestration belongs to external schedulers.
+A working sandbox needs a trusted local manifest/rootfs and genuine execd/egress through guest CID 3 vsock bridges. Bootstrap and image recipe are not supplied or end-to-end validated; starting the API does not establish SDK conformance or density. Stage/apply and checkpoint APIs are not implemented, and node sharing is not automatically acquired. Controller/Worker and the Cluster SDK are retired; external schedulers own cross-node orchestration.
 
 ## 4. Enable VM or OCI execution when needed
 

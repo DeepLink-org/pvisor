@@ -365,7 +365,7 @@ def test_firmware_source_fetches_when_path_is_not_configured(
     assert name == firmware.name
 
 
-def test_daemon_cargo_command_is_standalone(monkeypatch):
+def test_daemon_cargo_command_selects_native_static_package(monkeypatch):
     monkeypatch.setattr(wheel_stage.sys, "platform", "linux")
     monkeypatch.setattr(wheel_stage.platform, "machine", lambda: "x86_64")
     command = wheel_stage._cargo_command(wheel_stage.BuildOptions(), daemon=True)
@@ -377,9 +377,19 @@ def test_daemon_cargo_command_is_standalone(monkeypatch):
     assert "--bins" not in command
     assert "pvisor" not in command
     assert "nativepvisor" not in command
+    assert command[:2] == ["cargo", "zigbuild"]
+    assert command[command.index("--target") + 1] == "x86_64-unknown-linux-musl"
+
+
+@pytest.mark.parametrize("target", [None, "aarch64-apple-darwin"])
+def test_daemon_rejects_macos_builds(monkeypatch, target):
+    monkeypatch.setattr(wheel_stage.sys, "platform", "darwin")
+    with pytest.raises(RuntimeError, match="supported only on Linux x86_64"):
+        wheel_stage._cargo_command(wheel_stage.BuildOptions(target=target), daemon=True)
 
 
 def test_wheel_build_separates_daemon_from_native_components(monkeypatch, tmp_path):
+    monkeypatch.setattr(wheel_stage, "_is_macos", lambda options: False)
     calls = []
 
     def build_component(options, *, shim_vm=False, daemon=False):
@@ -397,9 +407,9 @@ def test_wheel_build_separates_daemon_from_native_components(monkeypatch, tmp_pa
     assert "pvisor-worker" not in artifacts
 
 
-def test_macos_wheel_signs_native_components_but_not_daemon(monkeypatch, tmp_path):
+def test_macos_wheel_signs_native_components_and_excludes_daemon(monkeypatch, tmp_path):
     artifacts = {}
-    for name in wheel_stage.EXPECTED_BINARIES:
+    for name in wheel_stage.NATIVE_BINARIES:
         artifact = tmp_path / name
         artifact.write_bytes(b"binary")
         artifacts[name] = artifact
@@ -408,9 +418,10 @@ def test_macos_wheel_signs_native_components_but_not_daemon(monkeypatch, tmp_pat
     monkeypatch.setattr(wheel_stage, "_build", lambda options: artifacts)
     monkeypatch.setattr(wheel_stage, "_is_macos", lambda options: True)
     monkeypatch.setattr(wheel_stage, "_sign_macos_pvisor", lambda path: signed.append(path.name))
-    wheel_stage.stage_wheel_binaries(wheel_stage.BuildOptions(bundle_firmware=False))
+    scripts = wheel_stage.stage_wheel_binaries(wheel_stage.BuildOptions(bundle_firmware=False))
     assert signed == list(wheel_stage.NATIVE_BINARIES)
     assert "pvisor-daemon" not in signed
+    assert {path.name for path in scripts.iterdir()} == set(wheel_stage.NATIVE_BINARIES)
 
 
 def test_cargo_command_selects_static_musl_on_linux(monkeypatch):
@@ -533,3 +544,186 @@ def test_native_macos_build_keeps_host_target(monkeypatch):
     monkeypatch.setattr(wheel_stage.platform, "machine", lambda: "x86_64")
     command = wheel_stage._cargo_command(wheel_stage.BuildOptions())
     assert command[:2] == ["cargo", "build"] and "--target" not in command
+
+
+def test_macos_build_never_invokes_daemon_pipeline(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(wheel_stage, "_is_macos", lambda options: True)
+
+    def build_component(options, *, shim_vm=False, daemon=False):
+        calls.append((shim_vm, daemon))
+        return {name: tmp_path / name for name in wheel_stage.NATIVE_BINARIES}
+
+    monkeypatch.setattr(wheel_stage, "_build_component", build_component)
+    artifacts = wheel_stage._build(wheel_stage.BuildOptions())
+    assert calls == [(False, False)]
+    assert set(artifacts) == set(wheel_stage.NATIVE_BINARIES)
+
+
+@pytest.mark.parametrize("component", ["daemon", "native", "shim"])
+@pytest.mark.parametrize("configured", [None, "PVISOR_KRUNFW_PATH", "PVISOR_KRUNFW_KERNEL_BUNDLE"])
+def test_all_native_builds_prepare_firmware_before_cargo(
+    monkeypatch, tmp_path, component, configured
+):
+    import json
+    from types import SimpleNamespace
+
+    for variable in ("PVISOR_KRUNFW_PATH", "PVISOR_KRUNFW_KERNEL_BUNDLE"):
+        monkeypatch.delenv(variable, raising=False)
+    if configured:
+        monkeypatch.setenv(configured, "/trusted/input")
+    names = (
+        ("pvisor-daemon",)
+        if component == "daemon"
+        else ("containerd-shim-pvisor-v2",)
+        if component == "shim"
+        else wheel_stage.NATIVE_BINARIES
+    )
+    events = []
+    monkeypatch.setattr(wheel_stage, "_prepare_zig_file_limit", lambda: events.append("limit"))
+
+    def firmware(options):
+        events.append("firmware")
+        return tmp_path / "libkrunfw.so.5", "libkrunfw.so.5"
+
+    def popen(command, **kwargs):
+        events.append("cargo")
+        assert command[:2] == ["cargo", "zigbuild"]
+        env = kwargs["env"]
+        if configured:
+            assert env[configured] == "/trusted/input"
+        else:
+            assert env["PVISOR_KRUNFW_PATH"] == str(tmp_path / "libkrunfw.so.5")
+        return SimpleNamespace(
+            stdout=[
+                json.dumps(
+                    {
+                        "reason": "compiler-artifact",
+                        "executable": str(tmp_path / name),
+                        "target": {"name": name, "kind": ["bin"]},
+                    }
+                )
+                for name in names
+            ],
+            wait=lambda: 0,
+        )
+
+    monkeypatch.setattr(wheel_stage, "_firmware_source", firmware)
+    monkeypatch.setattr(wheel_stage.subprocess, "Popen", popen)
+    artifacts = wheel_stage._build_component(
+        wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl"),
+        daemon=component == "daemon",
+        shim_vm=component == "shim",
+    )
+    assert set(artifacts) == set(names)
+    assert events == (["limit", "cargo"] if configured else ["limit", "firmware", "cargo"])
+
+
+def test_daemon_firmware_failure_prevents_cargo(monkeypatch):
+    monkeypatch.delenv("PVISOR_KRUNFW_PATH", raising=False)
+    monkeypatch.delenv("PVISOR_KRUNFW_KERNEL_BUNDLE", raising=False)
+    monkeypatch.setattr(wheel_stage, "_prepare_zig_file_limit", lambda: None)
+
+    def missing_firmware(options):
+        raise RuntimeError("missing firmware")
+
+    def unexpected_cargo(*args, **kwargs):
+        raise AssertionError("Cargo must not run without prepared firmware")
+
+    monkeypatch.setattr(wheel_stage, "_firmware_source", missing_firmware)
+    monkeypatch.setattr(wheel_stage.subprocess, "Popen", unexpected_cargo)
+    with pytest.raises(RuntimeError, match="missing firmware"):
+        wheel_stage._build_component(
+            wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl"),
+            daemon=True,
+        )
+
+
+def test_macos_wheel_requires_native_set_and_rejects_daemon(tmp_path):
+    wheel = tmp_path / "pvisor-1.2.3-py3-none-macosx_11_0_arm64.whl"
+    _write_wheel(wheel, "1.2.3")
+    with zipfile.ZipFile(wheel, "a") as archive:
+        for name in wheel_stage.NATIVE_BINARIES:
+            binary = zipfile.ZipInfo(f"pvisor-1.2.3.data/scripts/{name}")
+            binary.external_attr = 0o100755 << 16
+            archive.writestr(binary, b"Mach-O")
+        archive.writestr("pvisor-1.2.3.data/scripts/libkrunfw.5.dylib", b"firmware")
+    _, scripts, firmware = wheel_verify._wheel_contents(wheel)
+    assert set(scripts) == set(wheel_stage.NATIVE_BINARIES)
+    assert firmware is not None
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("pvisor-1.2.3.data/scripts/pvisor-daemon", b"unsupported")
+    with pytest.raises(RuntimeError, match="supported only in Linux x86_64"):
+        wheel_verify._wheel_contents(wheel)
+
+
+def test_daemon_ci_and_distribution_use_native_linux_pipeline():
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    daemon_job = ci.split("\n  daemon:\n", 1)[1].split("\n  rust-test:", 1)[0]
+    assert "runs-on: ubuntu-latest" in daemon_job
+    assert "macos" not in daemon_job
+    assert 'static-musl: "true"' in daemon_job
+    assert "just daemon-build" in daemon_job
+    dist = (ROOT / ".github/workflows/daemon-dist.yml").read_text()
+    assert "just daemon-build release" in dist
+    assert "cargo zigbuild" not in dist
+    assert "libkrunfw.SOURCE LICENSE NOTICE" in dist
+    assert "INSTALL.md" in dist
+    assert "INTERP" in dist and "(NEEDED)" in dist
+    assert "no native executor or firmware" not in ci + dist
+
+
+def test_nightly_release_describes_native_daemon_prerequisites():
+    contents = (ROOT / ".github/workflows/nightly.yml").read_text()
+    assert "no wheel or separate CLI is required" in contents
+    assert "native `pvisor-vm` execution" in contents
+    assert "KVM access and delegated cgroup v2" in contents
+    assert "trusted prepared-image manifest" in contents
+    assert "bootstrap is not supplied or end-to-end validated" in contents
+    assert "only the Linux x86_64 wheel" in contents
+    assert "Python package is a version marker, not a launcher" in contents
+    assert "rootless Podman" not in contents
+    assert "no wheel or native executor is required" not in contents
+
+
+def test_nightly_installer_uses_platform_specific_component_set():
+    contents = (ROOT / "scripts/install-nightly.sh").read_text()
+    assert "== Linux-x86_64 ]]; then binaries+=(pvisor-daemon)" in contents
+    assert 'for binary in "${binaries[@]}"' in contents
+    assert "Linux-aarch64)" not in contents
+
+
+def test_native_daemon_user_service_has_explicit_runtime_prerequisites():
+    unit = (ROOT / "deploy/systemd/pvisor-daemon.service").read_text()
+    env = (ROOT / "deploy/systemd/daemon.env.example").read_text()
+    guide = (ROOT / "deploy/systemd/INSTALL.md").read_text()
+    assert "--podman" not in unit and "PVISOR_DAEMON_PODMAN" not in unit + env
+    assert "--images-dir=${PVISOR_DAEMON_IMAGES_DIR}" in unit
+    assert "--cgroup-root=${PVISOR_DAEMON_CGROUP_ROOT}" in unit
+    assert "--state=${PVISOR_DAEMON_STATE}" in unit
+    assert "PVISOR_DAEMON_STATE=/var/lib/pvd" in unit + env
+    assert "PVISOR_DAEMON_CGROUP_ROOT=\n" in env
+    assert "Delegate=cpu memory pids" in unit
+    assert "KillMode=process" in unit and "UMask=0077" in unit
+    assert "104 bytes" in guide and "cgroup.kill" in guide
+    assert "/dev/kvm" in guide and "Linux x86_64 only" in guide
+    assert "not supplied" in guide and "44772/18080" in guide
+    assert "no-internal-process" in guide
+
+
+@pytest.mark.parametrize("platform", ["manylinux_2_28_aarch64", "win_amd64", "macosx_11_0_x86_64"])
+def test_wheel_verifier_rejects_unsupported_platforms(platform):
+    with pytest.raises(RuntimeError, match="unsupported wheel platform"):
+        wheel_verify.expected_binaries(Path(f"pvisor-1.2.3-py3-none-{platform}.whl"))
+
+
+def test_daemon_helper_uses_shared_component_builder_without_cli_dependency():
+    contents = (ROOT / "scripts/packaging/build_daemon.py").read_text()
+    assert 'target="x86_64-unknown-linux-musl"' in contents
+    assert '_build_component(options, daemon=True)["pvisor-daemon"]' in contents
+    assert "cargo build" not in contents and "scripts/build-pvisor.py" not in contents
+    justfile = (ROOT / "justfile").read_text()
+    assert 'daemon-install: (daemon-build "release")' in justfile
+    assert "service-build: build" in justfile
+    assert "scripts/packaging/build_daemon.py --profile" in justfile
+    assert "independently built daemon" not in justfile

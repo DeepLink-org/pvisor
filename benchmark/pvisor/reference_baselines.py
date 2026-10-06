@@ -31,6 +31,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from bench import percentile
+from resource_budget import BudgetViolation, ResourceBudget, parse_cpus
+from reference_inputs import verify_reference_inputs
 from v1.common import snapshot
 
 
@@ -66,6 +68,64 @@ def verified_build_receipt(path, binary):
     if not manifest.is_file() or digest(manifest) != receipt.get("source_manifest_sha256"):
         raise ValueError("build receipt source manifest is missing or mismatched")
     return receipt
+
+
+def reference_budget(args):
+    """An optional already established private parent, never a declared cap."""
+    group = getattr(args, "resource_budget", None)
+    if group is None:
+        return None
+    if not args.cpu_affinity:
+        raise ValueError("a resource budget requires explicit CPU affinity")
+    budget = ResourceBudget(Path(group), args.budget_memory_mib * 1024 * 1024,
+                            frozenset(parse_cpus(args.cpu_affinity)),
+                            cpu_placement=getattr(args, 'budget_cpu_placement', 'affinity'))
+    if "docker" in args.backends.split(",") and not budget.group.name.endswith(".slice"):
+        raise ValueError("Docker's systemd cgroup parent must be a private slice")
+    required = [os.getpid()]
+    if "docker" in args.backends.split(","):
+        if not args.docker_root_pid:
+            raise ValueError("a common Docker budget requires its private daemon PID")
+        required.append(args.docker_root_pid)
+    # This also rejects a runner/daemon launched outside the parent or with
+    # unrestricted threads. Moving a live daemon is not part of this helper.
+    budget.processes(required)
+    return budget
+
+
+def validate_python_cache(result):
+    def valid(value):
+        return (isinstance(value, dict)
+                and set(value) == {'dont_write_bytecode', 'prefix', 'prefix_exists'}
+                and value['dont_write_bytecode'] is True
+                and value['prefix'] == '/__pvisor_reference_no_pyc__'
+                and value['prefix_exists'] is False)
+    if not valid(result.get('python_cache')):
+        raise ValueError('Python payload did not enforce the common bytecode cache policy')
+    for operation in result.get('filesystem', {}).values():
+        if not valid(operation.get('python_cache')):
+            raise ValueError('filesystem child did not enforce the common bytecode cache policy')
+
+
+def validate_tool_cache(result):
+    """Require fresh task-local scratch, with the same child environment."""
+    workspace = result.get('workspace')
+    if not isinstance(workspace, str) or not Path(workspace).is_absolute():
+        raise ValueError('missing absolute tool workspace')
+    temporary = Path(workspace) / '_reference_tmp'
+    expected = dict(TMPDIR=str(temporary), HOME=str(temporary / 'reference-home'),
+                    CARGO_HOME=str(temporary / 'reference-cargo'),
+                    NODE_COMPILE_CACHE=str(temporary / 'node-compile-cache'),
+                    NODE_DISABLE_COMPILE_CACHE=None, NODE_OPTIONS=None)
+    if result.get('tool_cache') != expected:
+        raise ValueError('payload did not enforce task-local tool caches')
+    for operation in result.get('filesystem', {}).values():
+        if operation.get('tool_cache') != expected:
+            raise ValueError('filesystem child did not inherit task-local tool caches')
+    if result.get('mode') == 'env':
+        probe = result.get('versions', {}).get('node_compile_cache', {})
+        if probe.get('status') not in ('ENABLED', 'ALREADY_ENABLED') or probe.get('directory') != expected['NODE_COMPILE_CACHE']:
+            raise ValueError('actual Node compile cache did not use the task-local directory')
 
 
 def validate_guest_output(output, mode):
@@ -135,24 +195,27 @@ def validate_staged_filesystem(work, stage, expected_bytes):
     """Successful guest writes must stay in the staged view."""
     if (work / "_fs/written").exists():
         raise ValueError("staged filesystem writes reached the lower workspace")
-    written = stage / "upper/_fs/written"
-    if {p.name for p in written.iterdir()} != {f"{i:04d}" for i in range(256)}:
-        raise ValueError("expected all 256 written files in the stage upper")
-    if expected_bytes <= 0 or expected_bytes % 256:
-        raise ValueError("invalid workload written byte count")
-    if any(not p.is_file() or p.stat().st_size != expected_bytes // 256 for p in written.iterdir()):
-        raise ValueError("staged written file sizes differ from the workload")
+    validate_written_files(stage / "upper/_fs/written", expected_bytes)
 
 
 def validate_direct_filesystem(work, expected_bytes):
     """A direct-write control must actually publish all writes to its workspace."""
-    written = work / "_fs/written"
-    if {p.name for p in written.iterdir()} != {f"{i:04d}" for i in range(256)}:
-        raise ValueError("expected all 256 written files in the direct workspace")
-    if expected_bytes <= 0 or expected_bytes % 256:
+    validate_written_files(work / "_fs/written", expected_bytes)
+
+
+def validate_written_files(written, expected_bytes):
+    """Require the registered 256 x 64 KiB payload, not just plausible sizes."""
+    if type(expected_bytes) is not int or expected_bytes != 256 * 64 * 1024:
         raise ValueError("invalid workload written byte count")
-    if any(not p.is_file() or p.stat().st_size != expected_bytes // 256 for p in written.iterdir()):
-        raise ValueError("direct written file sizes differ from the workload")
+    if written.is_symlink() or not written.is_dir():
+        raise ValueError("written files must be in a real directory")
+    if {p.name for p in written.iterdir()} != {f"{i:04d}" for i in range(256)}:
+        raise ValueError("expected all 256 written files")
+    pattern = b"pvisor-workload\n"
+    chunk = (pattern * (64 * 1024 // len(pattern) + 1))[:64 * 1024]
+    for p in written.iterdir():
+        if p.is_symlink() or not p.is_file() or p.read_bytes() != chunk:
+            raise ValueError("written file contents differ from the registered workload")
 
 
 def validate_bundle_execution(bundle, backend, staged_isolation="host_process", host_isolation="host_process"):
@@ -202,6 +265,9 @@ def run_trial(args, metadata, backend, mode, trial):
         ["cp", "--reflink=auto", "-a", str(args.assets / "rootfs/work"), str(work)], check=True
     )
     stage = root / "stage"
+    if (work / '_reference_tmp').exists() or (work / '_reference_tmp').is_symlink():
+        raise ValueError('prepared fixture contains task-local tool cache')
+    budget = reference_budget(args) if getattr(args, "resource_budget", None) else None
     env = {
         k: v
         for k, v in os.environ.items()
@@ -214,10 +280,15 @@ def run_trial(args, metadata, backend, mode, trial):
         GIT_CONFIG_COUNT="1",
         GIT_CONFIG_KEY_0="safe.directory",
         GIT_CONFIG_VALUE_0="*",
+        PYTHONDONTWRITEBYTECODE="1",
+        PYTHONPYCACHEPREFIX="/__pvisor_reference_no_pyc__",
     )
     env.pop("PVISOR_TEST_ALLOW_NO_USERNS", None)
     image = metadata["assets"]["docker_image"]
     rootfs = args.assets / "rootfs"
+    for prefix in (Path('/__pvisor_reference_no_pyc__'), rootfs / '__pvisor_reference_no_pyc__'):
+        if prefix.exists() or prefix.is_symlink():
+            raise ValueError('reference bytecode cache prefix must be absent before launch')
     isvm = backend in ("firecracker", "qemu", "qemu-microvm")
     payload = (
         [
@@ -247,6 +318,10 @@ def run_trial(args, metadata, backend, mode, trial):
             str(root / "container.cid"),
             "--network",
             "none",
+            "--env",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "--env",
+            "PYTHONPYCACHEPREFIX=/__pvisor_reference_no_pyc__",
             "--workdir",
             "/work",
             "--mount",
@@ -256,12 +331,16 @@ def run_trial(args, metadata, backend, mode, trial):
             image,
             *payload[1:],
         ]
+        if budget is not None:
+            # systemd driver resolves this explicit slice beneath the user's
+            # manager; actual payload/shim membership still needs observation.
+            argv[5:5] = ["--cgroup-parent", budget.group.name]
     elif backend.startswith("sdk-vm-"):
         launch = root / "guest.json"
         launch.write_text(json.dumps({
             "argv": ["/usr/bin/python3", "/bench/reference_workload.py", "--mode", mode],
             "env": {"PATH": "/opt/toolchain/bin:/usr/local/bin:/usr/bin:/bin", "HOME": "/root",
-                    "PYTHONDONTWRITEBYTECODE": "1", "PVISOR_REFERENCE_TMPDIR": "/dev/shm/reference"},
+                    "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPYCACHEPREFIX": "/__pvisor_reference_no_pyc__"},
             "cwd": "/work", "workspace": "/work", "stdio_ports": [True, True, True],
         }))
         argv = [str(args.sdk_driver), backend.removeprefix("sdk-vm-"),
@@ -272,6 +351,10 @@ def run_trial(args, metadata, backend, mode, trial):
             str(args.output / "bin/pvisor"),
             "run",
             "--no-agent-defaults",
+            "--pass-env",
+            "PYTHONDONTWRITEBYTECODE",
+            "--pass-env",
+            "PYTHONPYCACHEPREFIX",
             "--overlaynet",
             "off",
             "--stdio",
@@ -386,6 +469,18 @@ def run_trial(args, metadata, backend, mode, trial):
     peak = [0]
     stop = threading.Event()
     usage_before = resource.getrusage(resource.RUSAGE_CHILDREN) if getattr(args, "diagnostic_timing", False) else None
+    budget_before = budget.read() if budget else None
+    budget_parent = budget.processes([os.getpid()]) if budget else None
+    budget_observations = []
+    budget_observed_scopes = set()
+    observation_mode = getattr(args, 'resource_observation', 'sampled')
+    if observation_mode not in ('off', 'sampled'):
+        raise ValueError('unknown timed resource observation mode')
+    budget_unknown = ([] if observation_mode == 'sampled' else [dict(
+        offset_ms=None, type='NotObserved',
+        reason='periodic process/thread observation disabled for timing; short lifetimes not proven')])
+    budget_violations = []
+    print(f"Launch {mode}/{backend}, trial {trial}: {json.dumps(argv)}", flush=True)
     start = time.perf_counter_ns()
     proc = subprocess.Popen(
         argv,
@@ -432,8 +527,28 @@ def run_trial(args, metadata, backend, mode, trial):
                                 and cid in argv
                             ):
                                 roots.add(int(path.name))
-            rss, _ = snapshot(roots)
+            rss, _, tree_pids = snapshot(roots, include_pids=True)
             peak[0] = max(peak[0], rss)
+            if budget is not None:
+                try:
+                    # Check every observed thread each time: an existing PID
+                    # may create a thread or change affinity. Retain distinct
+                    # scopes rather than duplicating identical live snapshots.
+                    # Missed lifetimes remain unknown; detached siblings count.
+                    observation = budget.witness_all_members(sorted(roots | tree_pids))
+                    scope = tuple((w['pid'], w['start_ticks'], w['cgroup'],
+                                   tuple((t['tid'], t['start_ticks'], t['cgroup'], tuple(t['cpus']))
+                                         for t in w.get('threads', [])))
+                                  for w in observation['witnesses'])
+                    if scope not in budget_observed_scopes:
+                        budget_observations.append(observation)
+                        budget_observed_scopes.add(scope)
+                except BudgetViolation as error:
+                    budget_violations.append({"offset_ms": (time.perf_counter_ns() - start) / 1e6,
+                                              "reason": str(error), "evidence": error.evidence})
+                except (OSError, ValueError) as error:
+                    budget_unknown.append({"offset_ms": (time.perf_counter_ns() - start) / 1e6,
+                                           "reason": str(error), "type": type(error).__name__})
             stop.wait(0.02)
 
     exit_ns = []
@@ -448,8 +563,9 @@ def run_trial(args, metadata, backend, mode, trial):
         threading.Thread(target=waiter),
         threading.Thread(target=stdout),
         threading.Thread(target=lambda: err.append(proc.stderr.read())),
-        threading.Thread(target=monitor),
     ]
+    if observation_mode == 'sampled':
+        threads.append(threading.Thread(target=monitor))
     for t in threads:
         t.start()
     try:
@@ -471,6 +587,26 @@ def run_trial(args, metadata, backend, mode, trial):
     (root / "command.json").write_text(
         json.dumps({"argv": argv, "exit": proc.returncode, "prepare_ms": prep_ms}, indent=2)
     )
+    budget_record = None
+    if budget is not None:
+        budget_after = budget.read()
+        budget_record = dict(
+            before=budget_before, after=budget_after,
+            launch_parent=budget_parent, live_observations=budget_observations,
+            unknown_observations=budget_unknown,
+            violations=budget_violations,
+            observation_mode=observation_mode,
+            cpu_usec=budget_after["cpu_stat"]["usage_usec"] - budget_before["cpu_stat"]["usage_usec"],
+            memory_events_delta={k: v - budget_before["memory_events"].get(k, 0)
+                                 for k, v in budget_after["memory_events"].items()},
+            scope="whole private parent accounting; live membership is sampled, not proof of every short lifetime",
+        )
+        (root / "resource-budget.json").write_text(json.dumps(budget_record, indent=2) + "\n")
+        if budget_violations:
+            raise RuntimeError(f"resource-budget violation during {mode}/{backend}: {root}")
+        if any(budget_record["memory_events_delta"].get(k, 0) > 0
+               for k in ("oom", "oom_kill", "oom_group_kill")):
+            raise RuntimeError(f"resource-budget OOM during {mode}/{backend}: {root}")
     if proc.returncode != 0 or len(ready) != 1 or len(result_times) != 1:
         raise RuntimeError(
             f"{mode}/{backend}: exit {proc.returncode}, ready={len(ready)}, result={len(result_times)}; {root}\n{error[-1000:]}\n{output[-1500:]}"
@@ -483,6 +619,9 @@ def run_trial(args, metadata, backend, mode, trial):
         )
     )
     assert result["correctness"] == "passed" and result["mode"] == mode
+    if mode != "ready":
+        validate_python_cache(result)
+        validate_tool_cache(result)
     fuse_stats = None
     if backend == "pvisor-fuse":
         fuse_stats = validate_passthrough_output(output)
@@ -530,10 +669,13 @@ def run_trial(args, metadata, backend, mode, trial):
         "ready_ms": (ready[0] - start) / 1e6,
         "result_ms": (result_times[0] - start) / 1e6,
         "completion_ms": (ended - start) / 1e6,
-        "peak_tree_rss_kib": peak[0],
-        "memory_scope": "CLI + private daemon + exact container shim/descendants; sampled RSS sum"
+        "peak_tree_rss_kib": peak[0] if observation_mode == 'sampled' else None,
+        "resource_observation": observation_mode,
+        "memory_scope": "not sampled; RSS unknown; cgroup before/after accounting is separate"
+        if observation_mode == 'off'
+        else "CLI + private daemon + exact container shim/descendants; sampled RSS proxy may miss short/unreadable processes and double-count shared pages"
         if backend == "docker" and args.docker_root_pid
-        else "owned launcher tree; Docker daemon/container RSS excluded",
+        else "owned launcher tree; sampled RSS proxy may miss short/unreadable processes and double-count shared pages; Docker daemon/container RSS excluded",
         "result": result,
         "correctness": "passed",
         "logs": str(root),
@@ -544,7 +686,9 @@ def run_trial(args, metadata, backend, mode, trial):
             **{field: getattr(usage_after, field) - getattr(usage_before, field) for field in
                ("ru_utime", "ru_stime", "ru_minflt", "ru_majflt", "ru_inblock", "ru_oublock", "ru_nvcsw", "ru_nivcsw")},
         }
-    if mode == "filesystem" and backend in ("native", "pvisor-host", "pvisor-fuse"):
+    if budget_record is not None:
+        row["resource_budget"] = budget_record
+    if mode == "filesystem" and backend in ("native", "pvisor-host", "pvisor-fuse", "docker"):
         validate_direct_filesystem(work, result["filesystem"]["write"]["check"]["bytes"])
     if fuse_stats is not None:
         row["fuse_requests"] = fuse_stats
@@ -554,11 +698,11 @@ def run_trial(args, metadata, backend, mode, trial):
         for directory in (work, stage / "upper"):
             if (directory / name).exists():
                 shutil.copy2(directory / name, root / name)
-    shutil.rmtree(work)
-    if isvm:
-        (root / "rootfs.ext4").unlink()
-    if stage.exists():
-        shutil.rmtree(stage / "upper", ignore_errors=True)
+    # Retain actual output bytes for independent publication checks, including
+    # reference VM disks. Reflink/sparse allocation is not a retention guarantee;
+    # available storage must be checked before a complete cohort starts.
+    row["retained_artifacts"] = [str(p) for p in
+        (work, root / "rootfs.ext4", stage / "upper") if p.exists()]
     return row
 
 
@@ -578,12 +722,20 @@ def main():
     p.add_argument("--samples", type=int, default=30)
     p.add_argument("--seed", type=int, default=20261005)
     p.add_argument("--warmups", type=int, default=3)
+    p.add_argument('--resource-observation', choices=('off', 'sampled'), default='off',
+                   help='Periodic PID/thread/RSS scanning changes timing; use sampled only in separate capability/resource probes')
     p.add_argument("--memory-mib", type=int, default=16384)
     p.add_argument(
         "--staged-isolation", choices=("host_process", "rootless_process"), default="host_process"
     )
     p.add_argument("--host-isolation", choices=("host_process", "rootless_process"), default="rootless_process")
     p.add_argument("--docker-root-pid", type=int)
+    p.add_argument("--resource-budget", type=Path,
+                   help="Already established private cgroup parent; actual constraints are verified")
+    p.add_argument("--budget-memory-mib", type=int, default=16384,
+                   help="Whole-parent memory cap, distinct from configured guest RAM")
+    p.add_argument('--budget-cpu-placement', choices=('affinity', 'cpuset'), default='affinity',
+                   help='Require actual delegated cpuset for complete CPU placement; affinity observations alone are diagnostic')
     p.add_argument(
         "--cpu-affinity", default="0,1", help="Common host CPU affinity; empty string disables it"
     )
@@ -604,6 +756,7 @@ def main():
         )
     if args.cpu_affinity and args.docker_root_pid:
         pin_private_docker_tree(args.docker_root_pid, args.docker_host, args.cpu_affinity)
+    budget = reference_budget(args)
     for key in ("assets", "binary", "output"):
         setattr(args, key, getattr(args, key).resolve())
     args.output.mkdir(parents=True, exist_ok=False)
@@ -618,6 +771,18 @@ def main():
         args.output / "harness",
         ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", ".data"),
     )
+    print("Verify the complete prepared input inventory before preflight/warmups", flush=True)
+    try:
+        input_verification = verify_reference_inputs(args.assets)
+    except (OSError, ValueError) as error:
+        (args.output / "input-verification.json").write_text(json.dumps({
+            "state": "failed", "error_type": type(error).__name__, "reason": str(error),
+            "assets": str(args.assets), "timing_samples": 0,
+        }, indent=2) + "\n")
+        raise
+    (args.output / "input-verification.json").write_text(json.dumps({
+        "state": "passed", **input_verification,
+    }, indent=2) + "\n")
     metadata = {
         "schema": "pvisor-reference-environment/v1",
         "benchmark_id": benchmark_id,
@@ -632,6 +797,7 @@ def main():
         "binary_source_manifest_sha256": build_receipt["source_manifest_sha256"] if build_receipt else "unknown",
         "assets_metadata_sha256": digest(args.assets / "assets.json"),
         "input_manifest_sha256": digest(args.assets / "input-manifest.json") if (args.assets / "input-manifest.json").is_file() else "unknown",
+        "input_verification": input_verification,
         "source_status": subprocess.check_output(["git", "status", "--porcelain"], text=True),
         "pvisor_sha256": digest(args.output / "bin/pvisor"),
         "kernel_sha256": digest(args.assets / "vmlinux"),
@@ -646,6 +812,9 @@ def main():
         "load_before": os.getloadavg(),
         "protocol": {
             "cache": "warm; no eviction",
+            "python_cache": "missing /__pvisor_reference_no_pyc__ prefix, no bytecode writes; actual parent/child flags required",
+            "tool_cache": "fresh task-local _reference_tmp on workspace storage; Node compile cache enabled; no cross-task Node/HOME/Cargo cache",
+            "resource_observation": args.resource_observation,
             "image_preparation": "excluded from timed job; measured separately",
             "vm_shape": f"2 vCPU; shell ready 128 MiB; complete environment {args.memory_mib} MiB configured RAM",
             "agent_model": "same-guest deterministic fixture; no real inference",
@@ -669,6 +838,23 @@ def main():
             ["docker", "--host", args.docker_host, "info", "--format", "{{.Driver}}"],
             capture_output=True, text=True, timeout=30)
         metadata["docker_storage_driver"] = driver.stdout.strip() if driver.returncode == 0 else "unavailable"
+        if budget is not None:
+            info = subprocess.run(
+                ["docker", "--host", args.docker_host, "info", "--format", "{{json .}}"],
+                capture_output=True, text=True, timeout=30, check=True)
+            details = json.loads(info.stdout)
+            if (details.get("CgroupDriver") != "systemd" or str(details.get("CgroupVersion")) != "2"
+                    or "name=rootless" not in details.get("SecurityOptions", [])):
+                raise ValueError("budgeted Docker requires verified rootless/systemd/cgroupv2")
+            metadata["docker_cgroup_configuration"] = {
+                k: details[k] for k in ("CgroupDriver", "CgroupVersion", "SecurityOptions")}
+    if budget is not None:
+        metadata["resource_budget"] = budget.read()
+        metadata["protocol"]["resource_scope"] = (
+            "One verified private cgroup parent: all descendants share CPU quota2, "
+            f"memory cap{args.budget_memory_mib}MiB, zero swap; declared CPU IDs{args.cpu_affinity}. "
+            "Parent threads and sampled subtree members are checked; complete short-lifetime scope proof pending. "
+            "Cgroup peak is lifecycle-wide; precharged shared cache outside the parent is excluded.")
     rows = []
     caps = {}
     rng = random.Random(args.seed)
@@ -715,6 +901,19 @@ def main():
                     save()
             if trial >= 0:
                 print(mode, trial + 1, "/", args.samples, flush=True)
+    print("Verify prepared inputs again after all timed conditions", flush=True)
+    try:
+        final_inputs = verify_reference_inputs(args.assets)
+        if final_inputs != input_verification:
+            raise ValueError("prepared input identities changed during the cohort")
+    except (OSError, ValueError) as error:
+        metadata["input_final_verification"] = dict(state="failed", error_type=type(error).__name__, reason=str(error))
+        caps["prepared-inputs"] = dict(state="failed", reason=str(error))
+    else:
+        metadata["input_final_verification"] = dict(state="passed", **final_inputs)
+    (args.output / "input-final-verification.json").write_text(
+        json.dumps(metadata["input_final_verification"], indent=2) + "\n")
+    save()
     summary = {}
     for mode in args.modes.split(","):
         for backend in args.backends.split(","):

@@ -25,10 +25,11 @@ def run_task(tmp_path):
         "name, args = Path(sys.argv[0]).name, sys.argv[1:]\n"
         "with open(os.environ['JUST_TEST_LOG'], 'a') as log:\n"
         "    log.write(json.dumps([name, *args]) + '\\n')\n"
-        "if name == 'python3' and args[0] == 'scripts/build-pvisor.py':\n"
+        "if name == 'python3' and args[0] in ['scripts/build-pvisor.py', 'scripts/packaging/build_daemon.py']:\n"
         "    profile = args[args.index('--profile') + 1]\n"
         "    target = Path(args[args.index('--target-dir') + 1])\n"
         "    names = ['pvisor', 'pvisor-daemon', 'pvisor-cache', 'pvisor-tui', 'pvisor-replay', 'pvisor-memory-pool']\n"
+        "    if args[0] == 'scripts/packaging/build_daemon.py': names = ['pvisor-daemon']\n"
         "    for binary_name in names:\n"
         "        binary = target / ('debug' if profile == 'dev' else profile) / binary_name\n"
         "        binary.parent.mkdir(parents=True, exist_ok=True)\n"
@@ -102,18 +103,14 @@ def test_vm_package_signs_before_running_native_tests(run_task):
     assert commands == signing + [["cargo", "nextest", "run", "--locked", "-p", "pvisor-vm"]]
 
 
-def test_daemon_build_selects_only_the_new_package_and_bin(run_task, tmp_path):
+def test_daemon_build_routes_through_native_packaging_pipeline(run_task, tmp_path):
     commands = run_task("daemon-build")
     assert commands == [
         [
-            "cargo",
-            "build",
-            "--locked",
-            "-p",
-            "pvisor-daemon",
-            "--bin",
-            "pvisor-daemon",
-            "--no-default-features",
+            "python3",
+            "scripts/packaging/build_daemon.py",
+            "--profile",
+            "dev",
             "--target-dir",
             str(tmp_path / "target with spaces"),
         ]
@@ -123,13 +120,20 @@ def test_daemon_build_selects_only_the_new_package_and_bin(run_task, tmp_path):
     ]
 
 
-@pytest.mark.parametrize("package", ["pvisor", "nativepvisor"])
-def test_native_executor_package_keeps_hvf_signing(run_task, package):
+def test_native_executor_package_keeps_hvf_signing(run_task):
+    package = "pvisor"
     commands = run_task("test", package)
     signing = (
         [["python3", "scripts/sign-vm-tests.py", "-p", package]] if sys.platform == "darwin" else []
     )
     assert commands == signing + [["cargo", "nextest", "run", "--locked", "-p", package]]
+
+
+def test_retired_nativepvisor_is_not_a_vm_signing_selector():
+    for path in (ROOT / "justfile", ROOT / "scripts/sign-vm-tests.py"):
+        contents = path.read_text()
+        assert "nativepvisor" not in contents
+        assert "pvisor-vm" in contents
 
 
 def test_cluster_only_recipes_are_retired():

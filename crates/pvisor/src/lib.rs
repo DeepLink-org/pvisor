@@ -47,6 +47,13 @@ pub use executor::process::ProcessExecutor;
 #[cfg(target_os = "linux")]
 pub use executor::vm::CpuQosGroup;
 pub use executor::vm::VmExecutor;
+/// Dispatch synchronous self-exec internal modes before creating a Tokio runtime,
+/// starting threads, or parsing CLI arguments.
+///
+/// On supported VM targets, this handles image access, the Linux CPU QoS anchor,
+/// restore-RAM watchdog/server modes, and the pvisor-vm runner. Return from `main`
+/// when it returns `true`; `false` means normal startup should continue. On Intel
+/// macOS, the VM stub returns `false` without dispatching these modes.
 pub use executor::vm::run_internal_if_requested as run_krun_internal_if_requested;
 #[cfg(target_os = "linux")]
 pub use executor::vm::sample_supervisor_memory;

@@ -20,9 +20,9 @@
 
 ## 单机 daemon 边界 {#daemon}
 
-上表描述原生 `pvisor run` 执行器，不描述 `pvisor-daemon`。daemon 当前的外部 rootless Podman 后端共享宿主内核，安装私有 namespace/no-new-privileges/`cap-drop=ALL` 和资源限制，要求 prepared execd/egress 服务。它未接入原生 VM、stage/apply、checkpoint/fork 或 pVisor 网络策略。不支持的网络策略请求被拒绝；rootless slirp4netns 不等于 deny-all egress。
+上表描述原生 Job 请求的控制，不是 daemon API。VM-only NativeRuntime 在独立 supervisor 中嵌入 pVisor，使用独立不可变 guest rootfs 与私有写入；委派 cgroup v2 限制 supervisor/VM 树。Stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node 共享。OpenSandbox 网络策略选项被拒绝；原生 OverlayNet 出口网络不构成 deny-all 声明。
 
-宿主账户、Podman 配置/hooks 与 prepared image 属于可信输入。其他本机用户可能访问原生发布的 loopback 端口，单靠 daemon 端点认证不保护这些端口；需要真实 upstream 服务认证与宿主网络控制。没有敌对多用户隔离或安全审计承诺。镜像契约及当前 upstream egress capability 冲突见 [daemon 运行时边界](../guides/daemon/boundaries.md)。
+宿主账户、daemon/firmware 与预制镜像属于可信输入。私有状态与同 UID IPC 不防御敌对宿主 UID/root 代码。其他本机用户可能访问 loopback 发布：使用真实服务鉴权与宿主控制。不承诺敌对多用户隔离或安全审计。未提供／验证的 bootstrap 与真实服务检查见 [daemon 运行时边界](../guides/daemon/boundaries.md)。
 
 ## 读表时要注意
 

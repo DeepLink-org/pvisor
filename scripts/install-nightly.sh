@@ -23,7 +23,7 @@ fi
 
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) platform_re='manylinux.*x86_64' ;;
-  Linux-aarch64) platform_re='manylinux.*aarch64' ;;
+
   Darwin-arm64) platform_re='macosx.*arm64' ;;
   *)
     echo "error: unsupported platform $(uname -s)-$(uname -m)" >&2
@@ -95,7 +95,9 @@ echo "Installing ${url}" >&2
 "$PYTHON" -c "import pvisor; print('pVisor', pvisor.__version__)"
 
 scripts_dir="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
-for binary in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool pvisor-daemon; do
+binaries=(pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool)
+if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then binaries+=(pvisor-daemon); fi
+for binary in "${binaries[@]}"; do
   if [ ! -x "$scripts_dir/$binary" ]; then
     echo "error: wheel did not install executable $scripts_dir/$binary" >&2
     exit 1

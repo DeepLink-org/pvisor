@@ -1,22 +1,25 @@
 [Unit]
-Description=pVisor single-node sandbox daemon (rootless Podman)
-
+Description=pVisor single-node native VM sandbox daemon (Linux x86_64/KVM)
 
 [Service]
 Type=exec
 WorkingDirectory=%h
-Environment=PVISOR_DAEMON_PODMAN=/usr/bin/podman
+Environment=PVISOR_DAEMON_IMAGES_DIR=/srv/pvi
+Environment=PVISOR_DAEMON_STATE=/var/lib/pvd
 Environment=PVISOR_DAEMON_LISTEN=127.0.0.1:8080
 Environment=PVISOR_DAEMON_MAX_SANDBOXES=32
 Environment=PVISOR_DAEMON_CPU_MILLIS=4000
 Environment=PVISOR_DAEMON_MEMORY_BYTES=8589934592
 EnvironmentFile=%h/.config/pvisor/daemon.env
-ExecStart=%h/.local/bin/pvisor-daemon serve --podman=${PVISOR_DAEMON_PODMAN} --listen=${PVISOR_DAEMON_LISTEN} --state=%h/.local/state/pvisor/daemon --max-sandboxes=${PVISOR_DAEMON_MAX_SANDBOXES} --cpu-millis=${PVISOR_DAEMON_CPU_MILLIS} --memory-bytes=${PVISOR_DAEMON_MEMORY_BYTES}
+ExecStart=%h/.local/bin/pvisor-daemon serve --images-dir=${PVISOR_DAEMON_IMAGES_DIR} --cgroup-root=${PVISOR_DAEMON_CGROUP_ROOT} --listen=${PVISOR_DAEMON_LISTEN} --state=${PVISOR_DAEMON_STATE} --max-sandboxes=${PVISOR_DAEMON_MAX_SANDBOXES} --cpu-millis=${PVISOR_DAEMON_CPU_MILLIS} --memory-bytes=${PVISOR_DAEMON_MEMORY_BYTES}
 UMask=0077
 Delegate=cpu memory pids
 MemoryAccounting=yes
 CPUAccounting=yes
 TasksAccounting=yes
+# Detached supervisors intentionally survive daemon stop/restart. Delete sandboxes
+# via the API before retiring the service; stopping it is not sandbox cleanup.
+KillMode=process
 Restart=on-failure
 RestartSec=5
 

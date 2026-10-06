@@ -4,11 +4,13 @@ Run commands from the repository root. `just` lists supported tasks, with one en
 
 ## Repository layout and ownership
 
-The Cargo workspace follows product responsibilities. Python `pvisor/` only launches the bundled Rust binary; it is not another runtime implementation.
+The Cargo workspace follows product responsibilities. Python `pvisor/` is an installable version marker, not a launcher or runtime implementation. Wheels install native executable scripts directly into the environment's bin directory; the old Python launcher and its binary override are obsolete.
 
 | Directory | Responsibility |
 | --- | --- |
 | `crates/pvisor/` | CLI, orchestration, executors, image preparation and cache service |
+| `crates/pvisor-vm/` | Native VM runtime, portable API, private VMM/platform implementations, embedded guest and kernel/firmware integration |
+| `crates/pvisor-daemon/` | Linux x86_64 sandbox lifecycle API and detached native VM supervisors |
 | `crates/pvisor-core/` | Operation, Placement, policies, external interactions and Event contracts |
 | `crates/pvisor-gateway/` | Agent protocol forwarding/conversion, capture and projections |
 | `crates/pvisor-overlay-core/` | FUSE-independent OverlayFS operations and file access controls |
@@ -17,7 +19,7 @@ The Cargo workspace follows product responsibilities. Python `pvisor/` only laun
 | `crates/pvisor-guest/` | Linux PID 1 supervisor and shared VM launch contract |
 | `crates/pvisor-tui/` | Standalone terminal frontend `pvisor-tui` |
 | `crates/pvisor-replay/` | Replay planning, native agent adapters and continuation protocol bridges |
-| `pvisor/`, `setup.py`, `scripts/packaging/` | Python launcher and wheel packaging |
+| `pvisor/`, `setup.py`, `scripts/packaging/` | Python version marker and native-script wheel packaging |
 | `crates/*/tests/` | Rust integration tests; unit tests stay with their modules |
 | `tests/` | Python packaging and repository workflow tests |
 | `examples/`, `benchmark/` | Executable product scenarios and performance measurements |
@@ -28,7 +30,9 @@ The Cargo workspace follows product responsibilities. Python `pvisor/` only laun
 Actual workspace dependencies:
 
 ```text
-pvisor ──> core, journal, overlaynet, overlayfs, overlay-core, guest
+pvisor ──> core, journal, overlaynet, overlayfs, overlay-core, guest, vm
+vm ──> overlay-core
+pvisor-daemon ──> pvisor, core
 pvisor --features gateway ──> gateway
 tui, replay ──> pvisor
 gateway ──> core, overlaynet
@@ -58,7 +62,7 @@ src/
 │   ├── sandbox.rs         # Host OS isolation and internal sandbox entry
 │   ├── artifact.rs        # Guest-compatible executable resolution
 │   ├── delegated.rs       # Delegated spec/result handoff
-│   └── vm/                # libkrun executor and firmware acquisition
+│   └── vm/                # VM executor adapter and Run resource/control integration
 ├── image/
 │   ├── oci.rs             # Registry, prepared records, blobs and unpacking
 │   └── cache/             # Cache CLI/protocol/server/client and lazy FUSE
@@ -80,7 +84,7 @@ src/
 └── util.rs                # Small shared file/time utilities
 ```
 
-CLI arguments/display stay in `cli/`; execution mechanisms belong in `executor/`; Run resource ownership belongs in `runtime/`. Firmware belongs to the VM executor. OCI preparation belongs in `image/` and is shared by direct loading/cache service. Bundles and checkpoints belong with run records rather than one backend. Root exports such as `PVisor`, `ProcessExecutor`, `cache` and internal `sandbox` retain their import paths.
+CLI arguments/display stay in `cli/`; execution mechanisms belong in `executor/`; Run resource ownership belongs in `runtime/`. The VM executor adapts Run/Attempt lifecycle to `pvisor_vm::api`; `pvisor-vm` owns the VMM, platform mechanisms, embedded guest and kernel/firmware integration. OCI preparation belongs in `image/` and is shared by direct loading/cache service. Bundles and checkpoints belong with run records rather than one backend. Root exports such as `PVisor`, `ProcessExecutor`, `cache` and internal `sandbox` retain their import paths.
 
 In replay, `adapter/` owns native trajectory planning and launch selection; `bridge/` owns Claude/Codex/OpenCode protocol bridges and Claude resume transport validation. Shared execution and journal remain at the crate root.
 
@@ -104,6 +108,7 @@ CI builds the default core independently before the capture-enabled distribution
 | `just lint` | Clippy and Python package lint |
 | `just test` | Workspace Rust tests via nextest, followed by Python tests |
 | `just test core pvisor` | Selected Rust packages, using aliases or Cargo package names |
+| `just test pvisor-vm` | VM-owner tests; macOS signs Hypervisor entitlement before nextest |
 | `just test-py -k packaging` | Pass options to pytest |
 | `just test-benchmark` | Benchmark tool tests via pytest; also included in default Python tests |
 | `just test-py --vm-bin target/release/pvisor` | Real VM terminal/TUI interaction regressions |
@@ -160,7 +165,7 @@ Use the stable toolchain from `rust-toolchain.toml`, default LLVM backend and pl
 | --- | --- | --- |
 | Host CLI | Static Linux musl ELF | Native Darwin executable with HVF entitlement |
 | Embedded guest | Static Linux musl ELF | Static Linux musl ELF |
-| pvisor-vm | Single Rust runtime crate | Single Rust runtime crate |
+| `pvisor-vm` | Single Rust runtime crate | Single Rust runtime crate |
 | Guest kernel | Embedded at build time | Runtime-loaded `libkrunfw.5.dylib` |
 
 `CARGO_TARGET_DIR` selects native build output shared by build/install/smoke/examples/cases. Wheel verification uses a fresh staging directory so old `dist/` packages cannot be mistaken for new artifacts. Linux CLI links musl statically and embeds the VM kernel. Building requires Zig, cargo-zigbuild and `rustup target add x86_64-unknown-linux-musl`. Linux wheels retain manylinux_2_28 for glibc Python installers.

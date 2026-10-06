@@ -17,7 +17,7 @@ pvisor service cache --help
 pvisor service memory-pool --help
 ```
 
-原生资源工具使用 `service cache/memory-pool`。`service daemon` 将参数原样派发到单独安装、同目录的匹配 `pvisor-daemon`；使用旧构建时以 `pvisor service --help` 为准。daemon 单独安装后也可直接调用，步骤见 [daemon 安装指南](../guides/daemon/index.md)。它不集成原生 VM、checkpoint/fork 或 stage/apply。Controller/Worker 任务工具及其配置已退役。原生 node/cache/pool 所有权与部署边界见 [Service 入口](../guides/daemon/service.md)。
+原生资源工具使用 `service cache/memory-pool`。`service daemon` 将参数原样派发到单独安装、同目录的匹配 `pvisor-daemon`；使用旧构建时以 `pvisor service --help` 为准。daemon 单独安装后也可直接调用，步骤见 [daemon 安装指南](../guides/daemon/index.md)。NativeRuntime 嵌入 VM 执行；daemon 可执行入口与必需原生参数已接入，checkpoint/fork 与 stage/apply API 未实现，也不自动获取 node 共享。Controller/Worker 任务工具及其配置已退役。原生 node/cache/pool 所有权与部署边界见 [Service 入口](../guides/daemon/service.md)。
 
 当前命令以外的名称按默认执行规则处理，不保留旧命令别名或迁移处理逻辑。使用 `pvisor -- COMMAND` 显式执行程序。
 
@@ -490,8 +490,8 @@ destination = "./capture"
 大小限制在运行结束后检查，因此不限制 Agent 运行期间的峰值占用。
 
 `--container-image IMAGE` 自动选择原生 OCI container executor；
-`--executor container` 让选择显式。传输层生成标准 OCI bundle，解析匹配的静态
-`linux-amd64`/`linux-arm64` pVisor，挂进 rootfs，设置 process args，并走普通
+`--executor container` 让选择显式。传输层生成标准 OCI bundle，使用当前或显式提供的
+兼容 Linux pVisor，挂进 rootfs，设置 process args，并走普通
 `pvisor run --executor host --spec ...` 路径。Agent 命令放在 RunSpec
 内，而不是暴露在 OCI runner argv。注入的 pVisor 创建自己的 AgentCtl 并
 返回类型化 RunResult。最终 OverlayFS cwd 和会话 Gateway 配置挂在稳定路径。
@@ -509,6 +509,13 @@ pvisor run \
     'source="/host/cache", target="/cache", read_only=false' \
   -- codex
 ```
+
+上方示例假设 Linux x86_64。`--container-platform linux/amd64` 或 `linux/arm64`
+断言原生宿主架构；匹配时接受，跨架构值会被拒绝，即使提供了预制
+`--container-rootfs`。host 和 VM 配置会拒绝此选项。它不选择模拟执行，也不自动发现／下载程序。
+注入二进制默认是当前运行的 pVisor；需要时用 `--container-pvisor-binary` 指定自行准备、
+兼容原生架构和 rootfs ABI 的 Linux 构建。参见[容器准备](../guides/executors/container.md)与
+[配置取值](config.md#settings)。
 
 进程内 Gateway 和显式 OverlayNet 代理当前要求 `container.network = "host"`，
 因为它们注入的地址是 host loopback 端点。关闭这些 driver 时，`none` 模式有效；

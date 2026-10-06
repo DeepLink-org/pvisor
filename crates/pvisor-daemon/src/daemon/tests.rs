@@ -1,12 +1,65 @@
+use super::store::CommitPoint;
 use super::{Config, CreateRequest, Daemon};
 use crate::runtime::{Runtime, RuntimeSpec, RuntimeState};
 use serde_json::{Value, json};
+use std::time::Duration;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
 use tempfile::TempDir;
-use tokio::sync::Barrier;
+use tokio::sync::{Barrier, oneshot};
+
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn bounded<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(IO_TIMEOUT, future)
+        .await
+        .expect("persistence test synchronization timed out")
+}
+
+// Drop releases the blocking worker even if an assertion unwinds the test.
+struct DiskGate(Arc<(Mutex<bool>, std::sync::Condvar)>);
+
+impl DiskGate {
+    fn release(&self) {
+        *self.0.0.lock().unwrap() = true;
+        self.0.1.notify_all();
+    }
+}
+
+impl Drop for DiskGate {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+fn block_disk(daemon: &Daemon) -> (DiskGate, oneshot::Receiver<()>) {
+    let gate = DiskGate(Arc::new((Mutex::new(false), std::sync::Condvar::new())));
+    let worker = gate.0.clone();
+    let (entered, receiver) = oneshot::channel();
+    let entered = Mutex::new(Some(entered));
+    daemon.store.set_commit_hook(move |point| {
+        if point == CommitPoint::BeforeDisk {
+            let sender = entered.lock().unwrap().take();
+            if let Some(sender) = sender {
+                let _ = sender.send(());
+                let (released, _) = worker
+                    .1
+                    .wait_timeout_while(worker.0.lock().unwrap(), IO_TIMEOUT, |released| !*released)
+                    .unwrap();
+                anyhow::ensure!(*released, "blocked commit was never released");
+            }
+        }
+        Ok(())
+    });
+    (gate, receiver)
+}
+
+struct NativeCreateGate {
+    entered: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
+}
 
 const API_KEY: &str = "test-api-key-at-least-thirty-two-bytes-long";
 const MIB: u64 = 1024 * 1024;
@@ -31,16 +84,23 @@ struct FakeState {
     deletes: usize,
     endpoints: usize,
     delete_outcome: DeleteOutcome,
+    control_reply: Option<anyhow::Result<RuntimeState>>,
 }
 
 #[derive(Default)]
 struct FakeRuntime {
     state: Mutex<FakeState>,
+    create_gate: Mutex<Option<NativeCreateGate>>,
 }
 
 #[async_trait::async_trait]
 impl Runtime for FakeRuntime {
     async fn create(&self, spec: &RuntimeSpec) -> anyhow::Result<()> {
+        let gate = self.create_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            let _ = gate.entered.send(());
+            tokio::time::timeout(IO_TIMEOUT, gate.release).await??;
+        }
         let mut state = self.state.lock().unwrap();
         state.creates += 1;
         anyhow::ensure!(!state.sandboxes.contains_key(&spec.id), "duplicate sandbox");
@@ -61,28 +121,30 @@ impl Runtime for FakeRuntime {
             .unwrap_or(RuntimeState::Missing))
     }
 
-    async fn pause(&self, id: &str) -> anyhow::Result<()> {
+    async fn pause(&self, id: &str) -> anyhow::Result<RuntimeState> {
         let mut state = self.state.lock().unwrap();
         state.pauses += 1;
+        let reply = state.control_reply.take();
         let sandbox = state
             .sandboxes
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
         anyhow::ensure!(*sandbox == RuntimeState::Running, "sandbox not running");
         *sandbox = RuntimeState::Paused;
-        Ok(())
+        reply.unwrap_or(Ok(*sandbox))
     }
 
-    async fn resume(&self, id: &str) -> anyhow::Result<()> {
+    async fn resume(&self, id: &str) -> anyhow::Result<RuntimeState> {
         let mut state = self.state.lock().unwrap();
         state.resumes += 1;
+        let reply = state.control_reply.take();
         let sandbox = state
             .sandboxes
             .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
         anyhow::ensure!(*sandbox == RuntimeState::Paused, "sandbox not paused");
         *sandbox = RuntimeState::Running;
-        Ok(())
+        reply.unwrap_or(Ok(*sandbox))
     }
 
     async fn delete(&self, id: &str) -> anyhow::Result<()> {
@@ -134,7 +196,7 @@ async fn open(config: Config, runtime: &Arc<FakeRuntime>) -> Arc<Daemon> {
 
 fn request_json() -> Value {
     json!({
-        "image": {"uri": "registry.example.test/opensandbox/execd:fixture"},
+        "image": {"uri": "execd-fixture"},
         "entrypoint": ["tail", "-f", "/dev/null"],
         "resourceLimits": {"cpu": "1", "memory": "64Mi"},
         "timeout": 600,
@@ -151,6 +213,76 @@ async fn create(daemon: &Arc<Daemon>) -> super::Sandbox {
         .create(request())
         .await
         .unwrap_or_else(|error| panic!("create failed: {}", error.message))
+}
+
+#[tokio::test]
+async fn control_consumes_confirmation_or_retains_durable_intention() {
+    for pause in [true, false] {
+        let desired = if pause {
+            RuntimeState::Paused
+        } else {
+            RuntimeState::Running
+        };
+        let confirmed = if pause { "Paused" } else { "Running" };
+        for reply in [
+            Ok(desired),
+            Ok(RuntimeState::Stopped),
+            Err(anyhow::anyhow!("ack lost after control")),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let runtime = Arc::new(FakeRuntime::default());
+            let mut cfg = config(&directory);
+            cfg.max_sandboxes = 1;
+            let daemon = open(cfg, &runtime).await;
+            let sandbox = create(&daemon).await;
+            if !pause {
+                bounded(daemon.pause(&sandbox.id)).await.unwrap();
+            }
+            let expected = if reply.as_ref().is_ok_and(|state| *state == desired) {
+                confirmed
+            } else if pause {
+                "Pausing"
+            } else {
+                "Resuming"
+            };
+            let before = {
+                let mut state = runtime.state.lock().unwrap();
+                state.control_reply = Some(reply);
+                state.inspections
+            };
+            let result = bounded(daemon.control(&sandbox.id, pause)).await;
+            if expected == confirmed {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    (error.status, error.code.as_str()),
+                    (503, "RUNTIME_UNAVAILABLE")
+                );
+            }
+            let state = runtime.state.lock().unwrap();
+            assert_eq!(state.inspections, before + 1, "pre-inspect only");
+            assert_eq!(
+                state.sandboxes[&sandbox.id], desired,
+                "control applied even without confirmation"
+            );
+            assert_eq!((state.pauses, state.resumes), (1, usize::from(!pause)));
+            drop(state);
+            assert_eq!(daemon.list().await.unwrap()[0].status.state, expected);
+            let calls = runtime_calls(&runtime);
+            assert_eq!(
+                daemon.create(request()).await.unwrap_err().code,
+                "CAPACITY_EXCEEDED"
+            );
+            assert_eq!(runtime_calls(&runtime), calls);
+            drop(daemon);
+            let (store, disk) = super::store::Store::open(directory.path()).unwrap();
+            assert_eq!(disk.sandboxes[&sandbox.id].sandbox.status.state, expected);
+            drop(store);
+            let restarted = bounded(open(config(&directory), &runtime)).await;
+            assert_eq!(restarted.list().await.unwrap()[0].status.state, confirmed);
+        }
+    }
 }
 
 #[tokio::test]
@@ -174,10 +306,7 @@ async fn persistent_sandbox_create_pause_resume_delete() {
         assert_eq!(state.creates, 1);
         let spec = &state.specs[0];
         assert_eq!(spec.id, sandbox.id);
-        assert_eq!(
-            spec.image,
-            "registry.example.test/opensandbox/execd:fixture"
-        );
+        assert_eq!(spec.image, "execd-fixture");
         assert_eq!(spec.entrypoint, sandbox.entrypoint);
         assert_eq!(spec.cpu_millis, 1000);
         assert_eq!(spec.memory_bytes, 64 * MIB);
@@ -422,25 +551,23 @@ async fn auth_sandbox_token_is_scoped_persistent_and_not_a_control_key() {
     let second = create(&daemon).await;
     let endpoint = daemon.endpoint(&first.id, 44772, false).await.unwrap();
     assert_eq!(
-        endpoint["endpoint"],
+        endpoint.endpoint,
         format!("localhost:8080/v1/sandboxes/{}/proxy/44772", first.id)
     );
     assert_eq!(
         daemon.upstream(&first.id, 44772).await.unwrap(),
         "http://127.0.0.1:44772"
     );
-    let token = endpoint["headers"]["X-PVISOR-SANDBOX-TOKEN"]
-        .as_str()
-        .unwrap();
+    let token = &endpoint.headers.as_ref().unwrap()["X-PVISOR-SANDBOX-TOKEN"];
     assert!(token.len() >= 32);
     let second_endpoint = daemon.endpoint(&second.id, 44772, false).await.unwrap();
-    assert_ne!(endpoint["headers"], second_endpoint["headers"]);
+    assert_ne!(endpoint.headers, second_endpoint.headers);
     assert!(
         daemon
             .endpoint(&first.id, 44772, true)
             .await
             .unwrap()
-            .get("headers")
+            .headers
             .is_none()
     );
 
@@ -479,8 +606,12 @@ async fn auth_sandbox_token_is_scoped_persistent_and_not_a_control_key() {
     assert!(daemon.authorize_proxy(&first.id, &scoped).await);
     assert!(!daemon.authorize_proxy(&second.id, &scoped).await);
     assert_eq!(
-        daemon.endpoint(&first.id, 44772, false).await.unwrap()["headers"],
-        endpoint["headers"]
+        daemon
+            .endpoint(&first.id, 44772, false)
+            .await
+            .unwrap()
+            .headers,
+        endpoint.headers
     );
     daemon.delete(&first.id).await.unwrap();
     assert!(!daemon.authorize_proxy(&first.id, &scoped).await);
@@ -617,20 +748,70 @@ async fn invalid_runtime_spec_is_rejected_before_admission_and_runtime_calls() {
     let directory = tempfile::tempdir().unwrap();
     let runtime = Arc::new(FakeRuntime::default());
     let daemon = open(config(&directory), &runtime).await;
-    let mut invalid_env = request_json();
-    invalid_env["env"] = json!({"1INVALID": "fixture-value"});
-    let mut one_byte_memory = request_json();
-    one_byte_memory["resourceLimits"]["memory"] = json!("1");
+    let mut invalid = Vec::new();
+    for image in [
+        "../host",
+        "execd/../../host",
+        "/rootfs",
+        ".hidden",
+        "registry.example.test/opensandbox/execd:fixture",
+        "https://registry.example.test/opensandbox/execd:fixture",
+    ] {
+        let mut payload = request_json();
+        payload["image"]["uri"] = json!(image);
+        invalid.push((payload, "image must be a local prepared-image key"));
+    }
+    for key in ["1INVALID", "PVISOR_KRUN_RUNNER_SPEC", "AGENTCTL_CONTROL"] {
+        let mut payload = request_json();
+        payload["env"] = json!({(key): "fixture-value"});
+        let message = if key == "1INVALID" {
+            "invalid guest environment key"
+        } else {
+            "reserved native control environment key"
+        };
+        invalid.push((payload, message));
+    }
+    for (cpu, message) in [
+        ("9m", "native CPU quota must be at least 10 millicores"),
+        ("8001m", "native profile supports at most eight CPU quotas"),
+    ] {
+        let mut payload = request_json();
+        payload["resourceLimits"]["cpu"] = json!(cpu);
+        invalid.push((payload, message));
+    }
+    for memory in ["1", "6291455", "4294967296Mi"] {
+        let mut payload = request_json();
+        payload["resourceLimits"]["memory"] = json!(memory);
+        invalid.push((payload, "native memory limit is not representable"));
+    }
 
-    for payload in [invalid_env, one_byte_memory] {
+    for (payload, message) in invalid {
         let request: CreateRequest = serde_json::from_value(payload).unwrap();
-        // Both inputs pass request parsing/validation; validate_spec must reject them.
-        request.clone().validate(86400).unwrap_or_else(|error| {
+        // These inputs pass wire validation; native validation must reject them
+        // before even oversized resource requests reach node admission.
+        let validated = request.clone().validate(86400).unwrap_or_else(|error| {
             panic!("fixture rejected before runtime spec validation: {error}")
         });
+        let spec = RuntimeSpec {
+            id: format!("sb-{}", uuid::Uuid::new_v4()),
+            image: validated.image.uri,
+            entrypoint: validated.entrypoint,
+            env: validated.env,
+            cpu_millis: validated.cpu_millis,
+            memory_bytes: validated.memory_bytes,
+        };
+        let validation_error = crate::runtime::validate_spec(&spec).unwrap_err();
+        assert!(
+            validation_error.to_string().contains(message),
+            "{validation_error}"
+        );
         let error = daemon.create(request).await.unwrap_err();
         assert_eq!(error.status, 400);
         assert_eq!(error.code, "INVALID_REQUEST");
+        assert_eq!(
+            error.message,
+            "invalid runtime image, argv, environment or resource limits"
+        );
         assert!(daemon.list().await.unwrap().is_empty());
         assert!(daemon.registry.lock().await.sandboxes.is_empty());
         assert!(daemon.operations.lock().await.is_empty());
@@ -656,4 +837,428 @@ async fn invalid_runtime_spec_is_rejected_before_admission_and_runtime_calls() {
     create(&daemon).await;
     assert_eq!(daemon.list().await.unwrap().len(), 2);
     assert_eq!(runtime.state.lock().unwrap().creates, 2);
+}
+
+fn storage_error<T: std::fmt::Debug>(result: Result<T, super::ApiError>) {
+    let error = result.unwrap_err();
+    assert_eq!(error.status, 503);
+    assert_eq!(error.code, "STORAGE_UNAVAILABLE");
+}
+
+fn runtime_calls(runtime: &FakeRuntime) -> (usize, usize, usize, usize, usize, usize) {
+    let state = runtime.state.lock().unwrap();
+    (
+        state.creates,
+        state.inspections,
+        state.pauses,
+        state.resumes,
+        state.deletes,
+        state.endpoints,
+    )
+}
+
+fn disk_inventory(directory: &TempDir) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    for name in ["sandboxes.json", "records/meta.json"] {
+        files.insert(
+            name.into(),
+            std::fs::read(directory.path().join(name)).unwrap(),
+        );
+    }
+    for entry in std::fs::read_dir(directory.path().join("records")).unwrap() {
+        let path = entry.unwrap().path();
+        files.insert(
+            path.strip_prefix(directory.path()).unwrap().to_path_buf(),
+            std::fs::read(path).unwrap(),
+        );
+    }
+    files
+}
+
+fn fail_commit(daemon: &Daemon, target: CommitPoint, skip: usize) {
+    let remaining = Mutex::new(skip);
+    daemon.store.set_commit_hook(move |point| {
+        if point == target {
+            let mut remaining = remaining.lock().unwrap();
+            if *remaining == 0 {
+                anyhow::bail!("injected commit failure at {point:?}");
+            }
+            *remaining -= 1;
+        }
+        Ok(())
+    });
+}
+
+#[derive(Clone, Copy, Debug)]
+enum UncertainCommit {
+    BeforeIntention,
+    Intention,
+    CreatedState,
+    PauseIntention,
+    PausedState,
+    DeleteIntention,
+    Unlinked,
+}
+
+#[tokio::test]
+async fn uncertain_commits_fail_stop_and_restart_uses_the_disk_winner() {
+    use UncertainCommit::*;
+    for case in [
+        BeforeIntention,
+        Intention,
+        CreatedState,
+        PauseIntention,
+        PausedState,
+        DeleteIntention,
+        Unlinked,
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(FakeRuntime::default());
+        let mut cfg = config(&directory);
+        cfg.max_sandboxes = 1;
+        let daemon = open(cfg, &runtime).await;
+        let existing = if matches!(case, BeforeIntention | Intention | CreatedState) {
+            None
+        } else {
+            Some(bounded(create(&daemon)).await)
+        };
+        let (point, skip) = match case {
+            BeforeIntention => (CommitPoint::BeforeDisk, 0),
+            CreatedState | PausedState => (CommitPoint::AfterRename, 1),
+            Unlinked => (CommitPoint::AfterUnlink, 0),
+            _ => (CommitPoint::AfterRename, 0),
+        };
+        fail_commit(&daemon, point, skip);
+        match case {
+            BeforeIntention | Intention | CreatedState => {
+                storage_error(bounded(daemon.create(request())).await)
+            }
+            PauseIntention | PausedState => {
+                storage_error(bounded(daemon.pause(&existing.as_ref().unwrap().id)).await)
+            }
+            DeleteIntention | Unlinked => {
+                storage_error(bounded(daemon.delete(&existing.as_ref().unwrap().id)).await)
+            }
+        }
+        // An uncertain disk result must never be published from stale memory.
+        {
+            let registry = bounded(daemon.registry.lock()).await;
+            let expected = match case {
+                BeforeIntention | Intention => None,
+                CreatedState => Some("Pending"),
+                PausedState => Some("Pausing"),
+                Unlinked => Some("Stopping"),
+                _ => Some("Running"),
+            };
+            assert_eq!(
+                registry
+                    .sandboxes
+                    .values()
+                    .next()
+                    .map(|r| r.sandbox.status.state.as_str()),
+                expected,
+                "{case:?}"
+            );
+        }
+        {
+            let state = runtime.state.lock().unwrap();
+            assert_eq!(
+                state.creates,
+                usize::from(!matches!(case, BeforeIntention | Intention)),
+                "no native create without a committed intention: {case:?}"
+            );
+            assert_eq!(state.pauses, usize::from(matches!(case, PausedState)));
+            assert_eq!(state.deletes, usize::from(matches!(case, Unlinked)));
+        }
+        // Disable injection: subsequent failures must come from the daemon latch,
+        // not from a fault that happens to keep rejecting later writes.
+        daemon.store.set_commit_hook(|_| Ok(()));
+        let calls = runtime_calls(&runtime);
+        let bytes = disk_inventory(&directory);
+        let id = existing
+            .as_ref()
+            .map(|s| s.id.as_str())
+            .unwrap_or("sb-12345678-1234-4234-8234-123456789abc");
+        storage_error(bounded(daemon.list()).await);
+        storage_error(bounded(daemon.create(request())).await);
+        storage_error(bounded(daemon.get(id)).await);
+        storage_error(bounded(daemon.pause(id)).await);
+        storage_error(bounded(daemon.resume(id)).await);
+        storage_error(bounded(daemon.delete(id)).await);
+        storage_error(
+            bounded(daemon.renew(
+                id,
+                super::RenewRequest {
+                    expires_at: chrono::Utc::now() + chrono::Duration::seconds(1200),
+                },
+            ))
+            .await,
+        );
+        storage_error(bounded(daemon.endpoint(id, 44772, true)).await);
+        assert_eq!(
+            runtime_calls(&runtime),
+            calls,
+            "fail-stop must not call native runtime"
+        );
+        assert_eq!(
+            disk_inventory(&directory),
+            bytes,
+            "fail-stop must not overwrite disk winner"
+        );
+        drop(daemon);
+
+        let (store, disk) = super::store::Store::open(directory.path()).unwrap();
+        let expected_disk = match case {
+            BeforeIntention | Unlinked => None,
+            Intention => Some("Pending"),
+            CreatedState => Some("Running"),
+            PauseIntention => Some("Pausing"),
+            PausedState => Some("Paused"),
+            DeleteIntention => Some("Stopping"),
+        };
+        assert_eq!(
+            disk.sandboxes
+                .values()
+                .next()
+                .map(|r| r.sandbox.status.state.as_str()),
+            expected_disk,
+            "{case:?}"
+        );
+        assert_eq!(disk.sandboxes.len(), usize::from(expected_disk.is_some()));
+        drop(store);
+        let mut cfg = config(&directory);
+        cfg.max_sandboxes = 1;
+        let restarted = bounded(open(cfg, &runtime)).await;
+        let restored = bounded(restarted.list()).await.unwrap();
+        if matches!(case, BeforeIntention | DeleteIntention | Unlinked) {
+            assert!(restored.is_empty());
+            bounded(create(&restarted)).await;
+        } else {
+            assert_eq!(restored.len(), 1);
+            let saved = disk.sandboxes.values().next().unwrap();
+            assert_eq!(restored[0].id, saved.sandbox.id);
+            assert_eq!(
+                restored[0].status.state,
+                match case {
+                    Intention => "Failed",
+                    PausedState => "Paused",
+                    _ => "Running",
+                }
+            );
+            let registry = bounded(restarted.registry.lock()).await;
+            let record = &registry.sandboxes[&saved.sandbox.id];
+            assert_eq!(
+                (record.cpu_millis, record.memory_bytes),
+                (saved.cpu_millis, saved.memory_bytes)
+            );
+            assert_eq!(record.endpoint_token, saved.endpoint_token);
+            assert_eq!(record.env, saved.env);
+            drop(registry);
+            let calls = runtime_calls(&runtime);
+            let error = bounded(restarted.create(request())).await.unwrap_err();
+            assert_eq!(
+                (error.status, error.code.as_str()),
+                (429, "CAPACITY_EXCEEDED")
+            );
+            assert_eq!(runtime_calls(&runtime), calls);
+            bounded(restarted.delete(&saved.sandbox.id)).await.unwrap();
+            bounded(create(&restarted)).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn blocked_commit_leaves_list_readable_and_serializes_second_admission() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let mut cfg = config(&directory);
+    cfg.max_sandboxes = 1;
+    let daemon = open(cfg, &runtime).await;
+    let (gate, entered) = block_disk(&daemon);
+    let first = {
+        let daemon = daemon.clone();
+        tokio::spawn(async move { daemon.create(request()).await })
+    };
+    bounded(entered).await.unwrap();
+    assert!(bounded(daemon.list()).await.unwrap().is_empty());
+    assert!(daemon.commits.try_lock().is_err());
+    let mut second = {
+        let daemon = daemon.clone();
+        tokio::spawn(async move { daemon.create(request()).await })
+    };
+    // Both owned creates reached their lifecycle gate before admission.
+    bounded(async {
+        loop {
+            if daemon.operations.lock().await.len() == 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), &mut second)
+            .await
+            .is_err()
+    );
+    assert!(bounded(daemon.list()).await.unwrap().is_empty());
+    assert_eq!(runtime.state.lock().unwrap().creates, 0);
+    gate.release();
+    let first = bounded(first).await.unwrap().unwrap();
+    let error = bounded(second).await.unwrap().unwrap_err();
+    assert_eq!(
+        (error.status, error.code.as_str()),
+        (429, "CAPACITY_EXCEEDED")
+    );
+    let listed = bounded(daemon.list()).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, first.id);
+    assert_eq!(runtime.state.lock().unwrap().creates, 1);
+}
+
+#[tokio::test]
+async fn cancelling_an_accepted_public_create_does_not_cancel_disk_or_native_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let (native_entered, native_receiver) = oneshot::channel();
+    let (native_release, release_receiver) = oneshot::channel();
+    *runtime.create_gate.lock().unwrap() = Some(NativeCreateGate {
+        entered: native_entered,
+        release: release_receiver,
+    });
+    let daemon = open(config(&directory), &runtime).await;
+    let (gate, entered) = block_disk(&daemon);
+    let caller = {
+        let daemon = daemon.clone();
+        tokio::spawn(async move { daemon.create(request()).await })
+    };
+    bounded(entered).await.unwrap();
+    caller.abort();
+    assert!(bounded(caller).await.unwrap_err().is_cancelled());
+    gate.release();
+    bounded(native_receiver).await.unwrap();
+    let pending = bounded(daemon.list()).await.unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].status.state, "Pending");
+    let id = pending[0].id.clone();
+    // Native create is still blocked after its public waiter disappeared.
+    let operation = bounded(daemon.operation(&id)).await.unwrap();
+    assert!(operation.try_lock().is_err());
+    native_release.send(()).unwrap();
+    let finished = bounded(operation.lock()).await;
+    assert_eq!(
+        bounded(daemon.list()).await.unwrap()[0].status.state,
+        "Running"
+    );
+    assert_eq!(runtime.state.lock().unwrap().creates, 1);
+    drop(finished);
+    drop(operation);
+    drop(daemon);
+    // Acquiring the store lock also proves the detached owned task released it.
+    let restarted = bounded(open(config(&directory), &runtime)).await;
+    let restored = bounded(restarted.list()).await.unwrap();
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].id, id);
+    assert_eq!(restored[0].status.state, "Running");
+    assert_eq!(runtime.state.lock().unwrap().creates, 1);
+}
+
+async fn occupied_v1(directory: &TempDir) -> (String, BTreeMap<std::path::PathBuf, Vec<u8>>) {
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(directory), &runtime).await;
+    bounded(create(&daemon)).await;
+    let mut legacy = bounded(daemon.registry.lock()).await.clone();
+    legacy.version = 1;
+    drop(daemon);
+    std::fs::write(
+        directory.path().join("sandboxes.json"),
+        serde_json::to_vec(&legacy).unwrap(),
+    )
+    .unwrap();
+    // Leave a prepared tree in place: rejecting the factory must not retire it.
+    (legacy.owner, disk_inventory(directory))
+}
+
+#[tokio::test]
+async fn rejected_factory_leaves_occupied_v1_and_prepared_records_unchanged() {
+    let directory = tempfile::tempdir().unwrap();
+    let (owner, bytes) = occupied_v1(&directory).await;
+    let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = called.clone();
+    let result = bounded(Daemon::open(config(&directory), |accepted_owner| {
+        observed.store(true, std::sync::atomic::Ordering::Release);
+        assert_eq!(accepted_owner, owner);
+        assert!(
+            super::store::Store::open(directory.path()).is_err(),
+            "factory must run under exclusive ownership"
+        );
+        assert_eq!(disk_inventory(&directory), bytes);
+        anyhow::bail!("runtime factory rejected legacy ownership")
+    }))
+    .await;
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("runtime factory rejected")
+    );
+    assert!(called.load(std::sync::atomic::Ordering::Acquire));
+    assert_eq!(disk_inventory(&directory), bytes);
+    assert!(!directory.path().join("owner.json").exists());
+    let (store, legacy) = super::store::Store::open(directory.path()).unwrap();
+    assert_eq!(legacy.version, 1);
+    assert_eq!(legacy.sandboxes.len(), 1);
+    drop(store);
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[tokio::test]
+async fn native_factory_rejects_occupied_v1_before_daemon_migration() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_, bytes) = occupied_v1(&directory).await;
+    let result = bounded(Daemon::open(config(&directory), |owner| {
+        assert!(super::store::Store::open(directory.path()).is_err());
+        // These paths deliberately do not exist. Constructor ownership rejection
+        // must precede preflight; no fake cgroup files or enforcement are involved.
+        let runtime = crate::runtime::NativeRuntime::new(crate::runtime::NativeRuntimeConfig {
+            state_dir: directory.path().to_path_buf(),
+            owner,
+            cgroup_root: directory.path().join("unused-cgroup"),
+            images_dir: directory.path().join("unused-images"),
+            executable: directory.path().join("unused-executable"),
+        })?;
+        Ok(Arc::new(runtime) as Arc<dyn Runtime>)
+    }))
+    .await;
+    let message = result.err().unwrap().to_string();
+    assert!(message.contains("occupied sandbox registry"), "{message}");
+    assert!(message.contains("no native owner.json marker"), "{message}");
+    assert_eq!(disk_inventory(&directory), bytes);
+    assert!(!directory.path().join("owner.json").exists());
+    let (_, legacy) = super::store::Store::open(directory.path()).unwrap();
+    assert_eq!(legacy.version, 1);
+    assert_eq!(legacy.sandboxes.len(), 1);
+}
+
+#[tokio::test]
+async fn native_guest_environment_is_preserved_without_container_restrictions() {
+    let directory = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(FakeRuntime::default());
+    let daemon = open(config(&directory), &runtime).await;
+    let mut payload = request_json();
+    payload["env"] = json!({
+        "PATH": "/guest/bin:/usr/bin",
+        "LD_PRELOAD": "/guest/lib/fixture.so",
+        "CONTAINER_HOST": "unix:///guest/podman.sock",
+        "GUEST_VALUE": "literal $HOME; no host expansion"
+    });
+    let request: CreateRequest = serde_json::from_value(payload).unwrap();
+    let expected_env = request.env.clone();
+    let sandbox = daemon.create(request).await.unwrap();
+    assert_eq!(sandbox.status.state, "Running");
+    let state = runtime.state.lock().unwrap();
+    assert_eq!(state.creates, 1);
+    assert_eq!(state.specs[0].image, "execd-fixture");
+    assert_eq!(state.specs[0].env, expected_env);
 }

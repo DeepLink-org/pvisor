@@ -28,7 +28,7 @@ pub(super) fn acquire(
 ) -> anyhow::Result<Arc<SharedRam>> {
     if let Some(socket) = node_socket {
         // The caller already authenticated this publication; the service also
-        // checks it before looking up its cross-Worker owner.
+        // checks it before looking up its cross-supervisor owner.
         let pin = crate::node::Pin::ram(
             socket,
             store,

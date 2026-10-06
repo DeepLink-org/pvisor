@@ -961,13 +961,15 @@ stdout_has "--vm cannot be combined with a non-vm --executor"
 
 ## F. Container
 
-需要复用 OCI rootfs、但不想运行 Docker/Podman daemon 时使用原生 OCI container。请按 F01 → F04 逐步增加复杂度；F04 适合验证跨 ABI 注入和 mount 配置。
+需要复用 OCI rootfs、但不想运行 Docker/Podman daemon 时使用原生 OCI container。请按 F01 → F04 逐步增加复杂度；F04 组合高级配置。
 
 这些例子使用原生 OCI bundle，由 pVisor 准备文件系统并调用 runc/crun，
-不依赖 Docker/Podman daemon。F01–F03 使用自动发现的 runtime，F04 显式选择 runc。
+不依赖 Docker/Podman daemon。F01–F03 使用默认 runtime，F04 显式选择 runc。
 镜像或目录需与本机架构兼容；如果当前 pVisor 是动态链接构建，guest 必须提供
 相应的动态加载器和库，否则应像 F04 一样指定兼容的静态构建。
 默认注入当前 pVisor，不需要在最小命令中显式指定 binary。
+
+F04 显式设置 `--container-platform linux/amd64`，假设 Linux x86_64。此选项接受匹配的原生架构断言，拒绝跨架构值，即使提供了预制 rootfs；host/VM 配置会拒绝它。它不是模拟执行、程序自动发现或下载选择器。现有用例检查组合启动，不是平台拒绝矩阵。见[容器准备](../guides/executors/container.md)与[配置](config.md#settings)。
 
 ### S-DOC-030：F01 最小 container Job
 

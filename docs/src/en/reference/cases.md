@@ -937,6 +937,10 @@ stdout_has "--vm cannot be combined with a non-vm --executor"
 
 Use these when an OCI runtime should launch directly. F01 is minimal; F02 changes networking; F03 selects host rootfs; F04 combines advanced settings.
 
+These examples use native OCI bundles and runc/crun, not a Docker/Podman daemon. F01–F03 use the default runtime; F04 explicitly chooses runc. Provision an image/rootfs and injected pVisor compatible with the native architecture and guest ABI; a dynamically linked build needs its loader/libraries in the guest. The injected binary defaults to the running pVisor.
+
+F04's explicit `--container-platform linux/amd64` assumes Linux x86_64. This option accepts a matching native assertion and rejects cross-architecture values, including with prepared rootfs; host/VM configurations reject it. It is not an emulation, executable auto-discovery or download selector. The existing case checks combined launch, not a platform-rejection matrix. See [container setup](../guides/executors/container.md) and [configuration](config.md#settings).
+
 ### S-DOC-030: F01 Minimal image container
 
 <!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->

@@ -1,4 +1,4 @@
-//! Native Linux VM CPU classes. A Worker shares one LS cookie; parent policy
+//! Native Linux VM CPU classes. A supervisor shares one LS cookie; parent policy
 //! stays unchanged and BE children retain their inherited, distinct group.
 use anyhow::{Context, ensure};
 use pvisor_core::{CpuQosClass, CpuQosObservation};
@@ -80,7 +80,7 @@ impl CpuQosGroup {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         // Only a syscall in the fork child. Never alter the multi-threaded
-        // Worker or take a Rust lock/allocate from the pre-exec callback.
+        // supervisor or take a Rust lock/allocate from the pre-exec callback.
         unsafe {
             command.pre_exec(|| {
                 if libc::prctl(

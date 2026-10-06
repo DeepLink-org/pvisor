@@ -663,3 +663,105 @@ fn native_jsonl_prepare_only_never_executes_tools_or_replaces_observations() {
         assert!(prepared.contains("historical observation"));
     }
 }
+
+#[test]
+fn native_json_prepare_only_preserves_complete_batch_observations() {
+    for agent in [AgentKind::MiniSweAgent, AgentKind::Openhands] {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join("existing"), "untouched workspace").unwrap();
+        let selected = "printf selected > must-not-exist";
+        let next = "printf next > must-not-exist-next";
+        let (source, expected_observations, native_name) = match agent {
+            AgentKind::MiniSweAgent => {
+                let observations = vec![
+                    json!({"role":"tool","content":"historical first\n","extra":{"returncode":0,"raw_output":{"output":"first","returncode":0}}}),
+                    json!({"role":"tool","content":"historical second","extra":{"returncode":7}}),
+                ];
+                (
+                    json!({
+                        "trajectory_format":"mini-swe-agent-1.1",
+                        "info":{"mini_version":"2.4.6","config":{"model":{},"agent":{},"environment":{}}},
+                        "messages":[
+                            {"role":"user","content":"prepare complete batch","extra":{}},
+                            {"role":"assistant","content":"selected batch","extra":{"response":{},"actions":[{"command":selected,"tool_call_id":"a"},{"command":"false","tool_call_id":"b"}]}},
+                            observations[0],observations[1],
+                            {"role":"assistant","content":"next batch","extra":{"response":{},"actions":[{"command":next,"tool_call_id":"c"}]}},
+                            {"role":"tool","content":"future observation","extra":{"returncode":0}}
+                        ]
+                    }),
+                    observations,
+                    "prepared-prefix.json",
+                )
+            }
+            AgentKind::Openhands => {
+                let observation = json!({"id":12,"source":"environment","observation":"run","cause":7,"message":"historical observation\n","args":{"command":selected,"metadata":{"exit_code":7,"extra":"preserve"}}});
+                // The selected observation may arrive after a later action.
+                // Retain the causal result without including the later action.
+                (
+                    json!([
+                        {"id":0,"source":"user","action":"message","args":{"content":"prepare complete batch"}},
+                        {"id":7,"source":"agent","action":"run","args":{"command":selected}},
+                        {"id":9,"source":"agent","action":"run","args":{"command":next}},
+                        observation,
+                        {"id":13,"source":"environment","observation":"run","cause":9,"message":"future observation","args":{"command":next,"metadata":{"exit_code":0}}}
+                    ]),
+                    vec![observation],
+                    "prepared-replay-events.json",
+                )
+            }
+            _ => unreachable!(),
+        };
+        let trajectory = temporary.path().join("trajectory.json");
+        let original = serde_json::to_vec(&source).unwrap();
+        fs::write(&trajectory, &original).unwrap();
+        let report = execute(PlaybackRequest {
+            agent,
+            trajectory: trajectory.clone(),
+            after_step: 1,
+            workspace: workspace.clone(),
+            state_dir: temporary.path().join("state"),
+            output_dir: temporary.path().join("output"),
+            agent_entrypoint: None,
+            agent_runtime: None,
+            disallowed_tools: Vec::new(),
+            trajectory_assets: None,
+            session_id: None,
+            max_steps: None,
+            mode: ReplayMode::PrepareOnly,
+            allow_stale_observations: false,
+            run_id: None,
+            disable_thinking: false,
+            boundary_user_prompt: None,
+        })
+        .unwrap();
+        assert_eq!(report.exit_code, 0);
+        assert_eq!(report.result.phase, ReplayPhase::Prepared);
+        assert_eq!(report.result.replayed_tool_calls, 0);
+        let prepared: Value = serde_json::from_slice(
+            &fs::read(report.result.output_dir.join("native").join(native_name)).unwrap(),
+        )
+        .unwrap();
+        let events = match agent {
+            AgentKind::MiniSweAgent => prepared["messages"].as_array().unwrap(),
+            AgentKind::Openhands => prepared.as_array().unwrap(),
+            _ => unreachable!(),
+        };
+        for observation in expected_observations {
+            assert!(
+                events.contains(&observation),
+                "{agent:?} lost original observation {observation}"
+            );
+        }
+        assert!(prepared.to_string().contains(selected));
+        assert!(!prepared.to_string().contains(next));
+        assert!(!prepared.to_string().contains("future observation"));
+        assert_eq!(fs::read(&trajectory).unwrap(), original);
+        assert_eq!(
+            fs::read_to_string(workspace.join("existing")).unwrap(),
+            "untouched workspace"
+        );
+        assert_eq!(fs::read_dir(&workspace).unwrap().count(), 1);
+    }
+}

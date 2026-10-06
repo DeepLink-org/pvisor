@@ -1,17 +1,16 @@
-//! Per-story I/O actor — one mailbox per `story_id`, owns turn state and [`CaptureEventObserver`] writes.
+//! Story state and I/O, owned by the per-story scheduler.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use pulsing_actor::prelude::*;
 
 use super::super::story::{StoryId, TurnMachine};
-use super::super::wire::{CaptureAck, StoryCommand, StoryReply};
+use super::super::wire::{LocalStoryCommand, StoryReply};
 use crate::sink::CaptureEventObserver;
 
-/// Injected sink for each story actor instance.
+/// Dependencies shared by story scheduling owners.
 #[derive(Clone)]
 pub(crate) struct StoryActorDeps {
     pub sink: Arc<dyn CaptureEventObserver>,
@@ -38,7 +37,7 @@ impl StoryActorDeps {
     }
 }
 
-/// Per-story actor — serializes I/O and maintains [`TurnMachine`] for the narrative index.
+/// Story state and I/O maintained by its single scheduling owner.
 pub(crate) struct StoryActor {
     story_id: StoryId,
     deps: StoryActorDeps,
@@ -86,12 +85,12 @@ impl StoryActor {
         }
     }
 
-    async fn handle(&mut self, cmd: StoryCommand) -> Result<StoryReply> {
+    pub(crate) async fn handle(&mut self, cmd: LocalStoryCommand) -> Result<StoryReply> {
         match cmd {
-            StoryCommand::Flush => {
-                return Ok(StoryReply::Ack(CaptureAck::ok()));
+            LocalStoryCommand::Flush => {
+                return Ok(StoryReply::Ack);
             }
-            StoryCommand::LocalSnapshot => {
+            LocalStoryCommand::LocalSnapshot => {
                 let storage_session_id = self
                     .storage_session_id
                     .clone()
@@ -101,7 +100,7 @@ impl StoryActor {
                     story: self.turns.snapshot(),
                 });
             }
-            StoryCommand::Snapshot { scope } => {
+            LocalStoryCommand::Snapshot { scope } => {
                 self.sync_scope(&scope);
                 return Ok(StoryReply::Snapshot {
                     story: self.turns.snapshot(),
@@ -112,8 +111,9 @@ impl StoryActor {
         let scope = cmd.scope().clone();
         self.sync_scope(&scope);
         match cmd {
-            StoryCommand::Restore { record_bytes, .. } => {
-                let mut rec: crate::record::CaptureRecord = serde_json::from_slice(&record_bytes)?;
+            LocalStoryCommand::Restore {
+                record: mut rec, ..
+            } => {
                 self.remember_request(&rec, &scope.context);
                 if self.seen.insert(
                     rec.event_id
@@ -123,8 +123,7 @@ impl StoryActor {
                     self.turns.observe_record(&mut rec);
                 }
             }
-            StoryCommand::PersistRecord { record_bytes, .. } => {
-                let rec: crate::record::CaptureRecord = serde_json::from_slice(&record_bytes)?;
+            LocalStoryCommand::PersistRecord { record: rec, .. } => {
                 let mut event = rec.clone().into_event(scope.context.clone())?;
                 let root = event.trace_id.clone();
                 let dependency = if rec.kind == "llm.request" {
@@ -149,7 +148,7 @@ impl StoryActor {
                     .await
                     .context("capture commit")?;
                 if !self.seen.insert(event.id.clone()) {
-                    return Ok(StoryReply::Ack(CaptureAck::ok()));
+                    return Ok(StoryReply::Ack);
                 }
                 let mut committed =
                     crate::record::CaptureRecord::from_event(&event, receipt.position.offset)?;
@@ -182,33 +181,12 @@ impl StoryActor {
                     tracing::warn!("post-commit observer diagnostics failed: {error:#}");
                 }
             }
-            StoryCommand::Flush | StoryCommand::Snapshot { .. } | StoryCommand::LocalSnapshot => {
+            LocalStoryCommand::Flush
+            | LocalStoryCommand::Snapshot { .. }
+            | LocalStoryCommand::LocalSnapshot => {
                 unreachable!()
             }
         }
-        Ok(StoryReply::Ack(CaptureAck::ok()))
-    }
-}
-
-#[async_trait]
-impl Actor for StoryActor {
-    fn metadata(&self) -> HashMap<String, String> {
-        HashMap::from([
-            ("story_id".into(), self.story_id.as_str().to_string()),
-            ("turns".into(), self.turns.turns().len().to_string()),
-        ])
-    }
-
-    async fn receive(
-        &mut self,
-        msg: Message,
-        _ctx: &mut ActorContext,
-    ) -> pulsing_actor::error::Result<Message> {
-        let cmd: StoryCommand = msg.unpack()?;
-        let reply = match self.handle(cmd).await {
-            Ok(r) => r,
-            Err(e) => StoryReply::Ack(CaptureAck::err(format!("{e:#}"))),
-        };
-        Message::pack(&reply)
+        Ok(StoryReply::Ack)
     }
 }

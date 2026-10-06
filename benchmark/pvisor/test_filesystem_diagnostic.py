@@ -31,7 +31,8 @@ def test_partial_counters_and_missing_maximum_are_not_reported_as_complete_or_ze
     path=tmp_path/'counters.csv'
     write_counter_csv([dict(backend='pvisor-vm',mode='filesystem',trial=0,filesystem=profiles)],path)
     import csv
-    row=next(csv.DictReader(path.open()))
+    with path.open() as stream:
+        row=next(csv.DictReader(stream))
     assert row['coverage']=='partial-lower-bound'
     assert row['max_inclusive_ms']==''
     assert row['calls']=='2'

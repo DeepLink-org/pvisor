@@ -14,7 +14,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 原 `save` 对应 `suspend`；恢复当前执行点用 `resume`，恢复历史点或创建分支用 `fork --state execution --checkpoint ID`。原 `run` 使用普通 `run --executor vm`；list/delete/gc、基底导入和校验进入 Job 的 `checkpoint` 命令。无网络设备、私有 RAM、拥有完整 rootfs 的原生 VM 支持 capture-and-continue 和完整恢复；普通 `run` 的配置不会自动改变。接口和限制见 [CLI 参考](../reference/cli.md#full-vm-execution-checkpoints)，交接设计见[Job 检查点设计](job-checkpoint-cli.md#10-当前实现与验收边界)。
 
-[单节点 daemon](daemon/index.md) 管理外部 rootless Podman sandbox，不提供原生 VM 捕获／恢复。其 pause/resume 是容器 freeze/unfreeze；snapshot、checkpoint/fork、stage/apply 与 offload 未接入该后端。不要把已退役 Cluster 控制当作当前快照入口。
+[单节点 daemon](daemon/index.md) 使用原生 VM 执行，但没有捕获／恢复 API。其 pause/resume 是同一 Attempt 上已确认的 live vCPU 控制，不是 cgroup freeze 或快照。Snapshot、checkpoint/fork、stage/apply 和 offload API 仍未实现。不要把已退役 Cluster 控制当作快照入口。
 
 原生 node backing 归属仍独立于 daemon 生命周期，见[职责收敛](daemon/responsibility-convergence.md)。
 

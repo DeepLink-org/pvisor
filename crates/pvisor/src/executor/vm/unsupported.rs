@@ -1,7 +1,7 @@
 //! Intel macOS VM stub.
 //!
-//! libkrun's macOS backend is supported only on Apple Silicon. Keeping this
-//! target out of the libkrun dependency graph lets the host/container CLI and
+//! The pvisor-vm macOS backend is supported only on Apple Silicon. Keeping this
+//! target out of the pvisor-vm runtime dependency graph lets the host/container CLI and
 //! their tests build on Intel macOS while producing a clear VM error.
 
 use crate::config::VmSettings;
@@ -39,6 +39,13 @@ impl VmExecutor {
         anyhow::bail!(UNSUPPORTED_MESSAGE)
     }
     pub fn new(_settings: VmSettings) -> anyhow::Result<Self> {
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
+
+    pub fn with_vsock_ports(
+        self,
+        _ports: std::collections::BTreeMap<u32, std::path::PathBuf>,
+    ) -> anyhow::Result<Self> {
         anyhow::bail!(UNSUPPORTED_MESSAGE)
     }
 

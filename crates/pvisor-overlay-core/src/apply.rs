@@ -16,7 +16,7 @@ use std::os::unix::{
     fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
 };
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ffi::{CString, OsStr},
     fs::{self, File},
     io,
@@ -831,6 +831,7 @@ fn back_up_replacements(
     record: &OverlayRecord,
     apply_id: &str,
     changes: &[ChangeEntry],
+    verify_target: &mut dyn FnMut(&Path, bool) -> Result<(), OverlayError>,
 ) -> Result<(), OverlayError> {
     let paths = replacement_paths(changes)?;
     if paths.is_empty() {
@@ -842,6 +843,7 @@ fn back_up_replacements(
         let destination = record.target.join(&path);
         let slot = backup.join(path_digest(&path));
         if !path_exists(&slot) && path_exists(&destination) {
+            verify_target(&path, true)?;
             fs::rename(&destination, &slot)?;
             directory.sync_all()?;
             File::open(destination.parent().unwrap())?.sync_all()?;
@@ -940,6 +942,13 @@ fn install_replacement_directories(
         remove_path(&temporary)?;
         fs::create_dir(&temporary)?;
         apply_selected_directory(&source, &temporary, path, selected, hard_links)?;
+        if path_exists(&destination) {
+            return Err(OverlayError::Apply(format!(
+                "target changed after staging at {}; refusing to overwrite concurrent changes; original data retained at {}",
+                destination.display(),
+                backup.display()
+            )));
+        }
         fs::rename(&temporary, &destination)?;
         for linked in hard_links.values_mut() {
             if let Ok(suffix) = linked.strip_prefix(&temporary) {
@@ -1032,7 +1041,25 @@ fn apply_prepared_target(
             _ => error,
         }
     })?;
-    back_up_replacements(record, apply_id, changes)?;
+    let indexed_preimages = preimages
+        .iter()
+        .map(|preimage| (preimage.relative_path(), preimage))
+        .collect::<BTreeMap<_, _>>();
+    back_up_replacements(record, apply_id, changes, &mut |path, recursive| {
+        validate_target_path(
+            record,
+            &indexed_preimages,
+            changes,
+            recovering,
+            path,
+            recursive,
+        )
+    })?;
+    let backup = apply_backup_dir(record, apply_id)?;
+    let backed_up = replacement_paths(changes)?
+        .into_iter()
+        .filter(|path| path_exists(&backup.join(path_digest(path))))
+        .collect::<BTreeSet<_>>();
     let upper_dir = record.upper.path();
     if upper_dir.is_dir() && !selected_paths.is_empty() {
         let mut hard_links = HashMap::new();
@@ -1049,12 +1076,33 @@ fn apply_prepared_target(
             .cloned()
             .collect();
         let target = fs::canonicalize(&record.target)?;
-        apply_selected_directory(
+        apply_selected_directory_checked(
             upper_dir,
             &target,
             Path::new(""),
             &remaining_paths,
             &mut hard_links,
+            &mut |path, recursive| {
+                // A replacement's original directory is in this transaction's
+                // backup. Its installation point must remain absent, unless
+                // recovery is validating an already-installed desired entry.
+                if backed_up.contains(path)
+                    && matches!(
+                        fingerprint_at(&record.target, path)?,
+                        PathFingerprint::Absent
+                    )
+                {
+                    return Ok(());
+                }
+                validate_target_path(
+                    record,
+                    &indexed_preimages,
+                    changes,
+                    recovering,
+                    path,
+                    recursive,
+                )
+            },
         )?;
         // Persist this before TargetApplied/pruning: recovery must not adopt
         // arbitrary target edits made after a crash as a new baseline.
@@ -1195,6 +1243,32 @@ fn validate_target_preimages(
     Ok(())
 }
 
+fn validate_target_path(
+    record: &OverlayRecord,
+    preimages: &BTreeMap<PathBuf, &PathPreimage>,
+    changes: &[ChangeEntry],
+    recovering: bool,
+    path: &Path,
+    recursive: bool,
+) -> Result<(), OverlayError> {
+    if recursive {
+        for (_, preimage) in preimages
+            .range(path.to_path_buf()..)
+            .take_while(|(candidate, _)| candidate.starts_with(path))
+        {
+            validate_target_preimages(
+                record,
+                std::slice::from_ref(*preimage),
+                changes,
+                recovering,
+            )?;
+        }
+    } else if let Some(preimage) = preimages.get(path) {
+        validate_target_preimages(record, std::slice::from_ref(*preimage), changes, recovering)?;
+    }
+    Ok(())
+}
+
 fn complete_target_applied(
     record: &mut OverlayRecord,
     lower_dirs: &[PathBuf],
@@ -1319,10 +1393,36 @@ fn apply_selected_directory(
     selected: &BTreeSet<PathBuf>,
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
 ) -> Result<(), OverlayError> {
+    apply_selected_directory_checked(
+        source,
+        destination,
+        relative,
+        selected,
+        hard_links,
+        &mut |_, _| Ok(()),
+    )
+}
+
+fn apply_selected_directory_checked(
+    source: &Path,
+    destination: &Path,
+    relative: &Path,
+    selected: &BTreeSet<PathBuf>,
+    hard_links: &mut HashMap<(u64, u64), PathBuf>,
+    verify_target: &mut dyn FnMut(&Path, bool) -> Result<(), OverlayError>,
+) -> Result<(), OverlayError> {
+    verify_target(relative, false)?;
     ensure_directory(destination)?;
     let durable_directory = File::open(destination)?;
+    let directory_identity = durable_directory.metadata()?;
+    let directory_fingerprint = if selected.contains(relative) {
+        Some(fingerprint_at(destination, Path::new(""))?)
+    } else {
+        None
+    };
     let opaque = crate::is_opaque_directory(source);
     if opaque && selected.contains(relative) {
+        verify_target(relative, true)?;
         for entry in fs::read_dir(destination)? {
             remove_path(&entry?.path())?;
         }
@@ -1337,6 +1437,7 @@ fn apply_selected_directory(
         if let Some(victim) = whiteout_target(&name) {
             let logical = relative.join(victim);
             if selected.contains(&logical) {
+                verify_target(&logical, true)?;
                 remove_path(&destination.join(victim))?;
             }
         }
@@ -1356,23 +1457,43 @@ fn apply_selected_directory(
                 .any(|path| path != &logical && path.starts_with(&logical));
             if selected.contains(&logical) || has_selected_descendant {
                 let target_path = destination.join(&name);
-                ensure_directory(&target_path)?;
-                apply_selected_directory(
+                apply_selected_directory_checked(
                     &source_path,
                     &target_path,
                     &logical,
                     selected,
                     hard_links,
+                    verify_target,
                 )?;
             }
         } else if selected.contains(&logical) {
-            copy_upper_entry(&source_path, &destination.join(name), hard_links)?;
+            copy_upper_entry_checked(
+                &source_path,
+                &destination.join(name),
+                hard_links,
+                &mut || verify_target(&logical, false),
+            )?;
         }
     }
     if selected.contains(relative)
         && (!relative.as_os_str().is_empty()
             || path_exists(&source.join(crate::ROOT_METADATA_NAME)))
     {
+        let current = fs::symlink_metadata(destination)?;
+        if (current.dev(), current.ino()) != (directory_identity.dev(), directory_identity.ino())
+            || directory_fingerprint.as_ref().is_some_and(|expected| {
+                // Child publication changes mtime; permissions, ownership and
+                // xattrs remain protected against concurrent metadata edits.
+                fingerprint_at(destination, Path::new(""))
+                    .map(|current| !recovery_fingerprint_matches(&current, expected))
+                    .unwrap_or(true)
+            })
+        {
+            return Err(OverlayError::Apply(format!(
+                "target changed after staging at {}; refusing to overwrite concurrent changes",
+                destination.display()
+            )));
+        }
         copy_host_metadata(source, destination)?;
     }
     // Covers pure deletes, empty directories and directory metadata, as well as files.
@@ -1608,6 +1729,15 @@ fn copy_upper_entry(
     destination: &Path,
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
 ) -> Result<(), OverlayError> {
+    copy_upper_entry_checked(source, destination, hard_links, &mut || Ok(()))
+}
+
+fn copy_upper_entry_checked(
+    source: &Path,
+    destination: &Path,
+    hard_links: &mut HashMap<(u64, u64), PathBuf>,
+    verify_target: &mut dyn FnMut() -> Result<(), OverlayError>,
+) -> Result<(), OverlayError> {
     let metadata = fs::symlink_metadata(source)?;
     let kind = metadata.file_type();
     if kind.is_dir() {
@@ -1658,6 +1788,7 @@ fn copy_upper_entry(
         if kind.is_file() {
             File::open(&temporary)?.sync_all()?;
         }
+        verify_target()?;
         if fs::symlink_metadata(destination).is_ok_and(|metadata| metadata.is_dir()) {
             remove_path(destination)?;
         }
@@ -2028,6 +2159,153 @@ fn walk_upper(
 #[cfg(test)]
 mod tests {
 
+    fn late_conflict_record(target: &Path, upper: &Path) -> OverlayRecord {
+        OverlayRecord {
+            id: "late-conflict".into(),
+            generation: 0,
+            target: target.to_path_buf(),
+            baseline_lower: None,
+            upper: OverlayUpper {
+                upper_dir: upper.to_path_buf(),
+                work_dir: upper.parent().unwrap().join("work"),
+            },
+            merged_dir: upper.parent().unwrap().join("merged"),
+            stage_dir: upper.parent().unwrap().join("stage"),
+            excluded_paths: Vec::new(),
+            access_policy: Default::default(),
+            auto_apply: false,
+            auto_discard: false,
+            protect_target: false,
+            state: OverlayState::Staged,
+        }
+    }
+
+    #[test]
+    fn apply_rechecks_a_remaining_file_after_another_file_is_published() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&upper).unwrap();
+        for name in ["a", "b"] {
+            fs::write(target.join(name), b"original").unwrap();
+            fs::write(upper.join(name), b"staged").unwrap();
+        }
+        let record = late_conflict_record(&target, &upper);
+        let preimages = ["a", "b"].map(|name| PathPreimage {
+            path: name.as_bytes().to_vec(),
+            state: fingerprint_at(&target, Path::new(name)).unwrap(),
+        });
+        let index = preimages.iter().map(|p| (p.relative_path(), p)).collect();
+        validate_target_preimages(&record, &preimages, &[], false).unwrap();
+        let selected = [PathBuf::from("a"), PathBuf::from("b")].into();
+        let mut injected = None;
+        let error = apply_selected_directory_checked(
+            &upper,
+            &target,
+            Path::new(""),
+            &selected,
+            &mut HashMap::new(),
+            &mut |path, recursive| {
+                if !path.as_os_str().is_empty()
+                    && ["a", "b"]
+                        .iter()
+                        .any(|name| fs::read(target.join(name)).unwrap() == b"staged")
+                {
+                    fs::write(target.join(path), b"late host edit").unwrap();
+                    injected = Some(path.to_path_buf());
+                }
+                validate_target_path(&record, &index, &[], false, path, recursive)
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("target changed after staging"));
+        assert_eq!(
+            fs::read(target.join(injected.unwrap())).unwrap(),
+            b"late host edit"
+        );
+        assert_eq!(
+            ["a", "b"]
+                .iter()
+                .filter(|name| fs::read(target.join(name)).unwrap() == b"staged")
+                .count(),
+            1
+        );
+        for name in ["a", "b"] {
+            assert_eq!(fs::read(upper.join(name)).unwrap(), b"staged");
+        }
+        assert!(fs::read_dir(&target).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .as_bytes()
+                .starts_with(b".pvisor-apply-")
+        }));
+    }
+
+    #[test]
+    fn apply_rechecks_a_delete_after_preflight() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&upper).unwrap();
+        fs::write(target.join("file"), b"original").unwrap();
+        fs::write(upper.join(".wh.file"), b"").unwrap();
+        let record = late_conflict_record(&target, &upper);
+        let preimage = PathPreimage {
+            path: b"file".to_vec(),
+            state: fingerprint_at(&target, Path::new("file")).unwrap(),
+        };
+        validate_target_preimages(&record, std::slice::from_ref(&preimage), &[], false).unwrap();
+        fs::write(target.join("file"), b"late host edit").unwrap();
+        let index = [(PathBuf::from("file"), &preimage)].into();
+        let error = apply_selected_directory_checked(
+            &upper,
+            &target,
+            Path::new(""),
+            &[PathBuf::from("file")].into(),
+            &mut HashMap::new(),
+            &mut |path, recursive| {
+                validate_target_path(&record, &index, &[], false, path, recursive)
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("target changed after staging"));
+        assert_eq!(fs::read(target.join("file")).unwrap(), b"late host edit");
+        assert!(upper.join(".wh.file").is_file());
+    }
+
+    #[test]
+    fn apply_preserves_directory_permissions_changed_during_child_publication() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&upper).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(upper.join("file"), b"staged").unwrap();
+        fs::write(upper.join(crate::ROOT_METADATA_NAME), b"").unwrap();
+        let selected = [PathBuf::new(), PathBuf::from("file")].into();
+        let error = apply_selected_directory_checked(
+            &upper,
+            &target,
+            Path::new(""),
+            &selected,
+            &mut HashMap::new(),
+            &mut |path, _| {
+                if path == Path::new("file") {
+                    fs::set_permissions(&target, fs::Permissions::from_mode(0o750)).unwrap();
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("target changed after staging"));
+        assert_eq!(fs::metadata(&target).unwrap().mode() & 0o777, 0o750);
+        assert_eq!(fs::read(upper.join("file")).unwrap(), b"staged");
+    }
+
     #[test]
     fn interrupted_directory_replacement_restores_the_recorded_original() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2067,11 +2345,11 @@ mod tests {
                 state: fingerprint_at(&target, Path::new("replaced/old")).unwrap(),
             },
         ];
-        back_up_replacements(&record, "interrupted", &changes).unwrap();
+        back_up_replacements(&record, "interrupted", &changes, &mut |_, _| Ok(())).unwrap();
         assert!(!target.join("replaced").exists());
         restore_interrupted_replacements(&record, "interrupted", &preimages, &changes).unwrap();
         assert_eq!(fs::read(target.join("replaced/old")).unwrap(), b"original");
-        back_up_replacements(&record, "interrupted", &changes).unwrap();
+        back_up_replacements(&record, "interrupted", &changes, &mut |_, _| Ok(())).unwrap();
         let unfinished = apply_backup_dir(&record, "interrupted")
             .unwrap()
             .join(format!("{}.new", path_digest(Path::new("replaced"))));

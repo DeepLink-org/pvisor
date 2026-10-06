@@ -42,16 +42,21 @@ Proxy deny applies to traffic reaching the proxy; this example does not establis
 
 | Option | Default / meaning |
 | --- | --- |
-| `--podman PATH` | Required trusted absolute rootless Podman executable path |
+| `--images-dir PATH` | Required: trusted directory of local `<key>.json` manifests |
+| `--cgroup-root PATH` | Required: writable delegated cgroup v2 with CPU/memory/PID enabled and `cgroup.kill` |
 | `--listen ADDRESS` | `127.0.0.1:8080` |
 | `--public-endpoint HOST:PORT` | Externally routed authority without scheme/path; required behind a proxy and for wildcard/port-zero listeners |
-| `--state PATH` | `.pvisor/daemon`; use a private persistent directory |
+| `--state PATH` | `.pvisor/daemon`; resolves to canonical runtime state. Use a short absolute private path, e.g. `/run/user/1000/pvd` |
 | `--max-sandboxes N` | 32 local sandboxes |
 | `--cpu-millis N` | 4000; sum of admitted hard CPU limits, thousandths of one CPU |
 | `--memory-bytes N` | 8589934592; sum of admitted hard memory limits, not node-wide physical memory |
 | `--max-timeout-seconds N` | 86400; maximum creation TTL, configurable from 60 seconds to one year |
 
-Old `[controller]`, `[[workers]]`, Worker profiles and Cluster task JSON are not daemon inputs. Native node/cache/memory-pool configuration remains separate. No daemon option selects native VM, checkpoint/fork, stage/apply, global DAG or distributed leases.
+Old `[controller]`, `[[workers]]`, Worker profiles and Cluster task JSON are not daemon inputs. Native node/cache/pool configuration remains separate. NativeRuntime is VM-only; checkpoint/fork, stage/apply, global DAG and distributed lease APIs are absent.
+
+`serve` constructs NativeRuntime with the required `--images-dir` and `--cgroup-root` options. Cargo links `pvisor`/`pvisor-core`, and synchronous internal VM dispatch runs before argument parsing or Tokio. The hidden supervisor command is implemented. Images/cgroup paths are canonicalized; relative state resolves against the startup working directory and runtime state is canonicalized. Use short absolute paths in deployments and keep them unchanged on restart.
+
+Keep all runtime paths absolute and unchanged on daemon restart. Per-sandbox `control.sock` must be shorter than 104 bytes; vsock Unix sockets also have path limits. `/run/user/1000/pvd` is a short state example, not a promise of persistence across logout/reboot. VMs cannot survive host reboot.
 
 ## Field navigation (current implementation)
 
@@ -122,7 +127,7 @@ Enforcement depends on the executor. Check requested, effective, mechanisms, and
 | `vm` | `memory_mib = 2048`, `cpus = 2`, `rootfs_immutable = false`, `ram_compression = false`, `cold_ram_compression = false`, `ram_dedup = false` |
 | Optional `vm` fields | `rootfs`, `image`, `image_store`, `library_dir`, `control_socket`, `ram_backing`, `memory_pool`, `node_socket`, `snapshot_filesystem_pool` |
 
-`container.platform` accepts `linux-amd64` or `linux-arm64`; `container.network` accepts `host`, `bridge`, or `none`. The injected Linux container binary must match the rootfs architecture and ABI.
+`container.platform` accepts `linux-amd64` or `linux-arm64` as an optional native host architecture assertion. Matching values are accepted; cross-architecture values are rejected even with a prepared `container.rootfs`. Host and VM configurations reject a configured platform. It does not enable emulation or executable auto-discovery/download. `container.pvisor_binary` defaults to the running executable; an explicit Linux binary and rootfs must be compatible with the native architecture and guest ABI. See [container setup](../guides/executors/container.md). `container.network` accepts `host`, `bridge`, or `none`, but `bridge` is currently rejected without implemented CNI support.
 
 #### VM control and memory overrides {#vm-control-memory}
 
@@ -241,7 +246,7 @@ Field names and types are checked against the Rust serde structures during the d
 | `container.image` | `String` | `""` | OCI image reference; `--container-image` |
 | `container.rootfs` | `Option<PathBuf>` | `unset` | Prepared rootfs instead of image; `--container-rootfs` |
 | `container.pvisor_binary` | `Option<PathBuf>` | `unset` | Injected Linux executable; default current binary; `--container-pvisor-binary` |
-| `container.platform` | `Option<ContainerPlatform>` | `unset` | linux-amd64 or linux-arm64; `--container-platform` |
+| `container.platform` | `Option<ContainerPlatform>` | `unset` | Native architecture assertion: linux-amd64 or linux-arm64; container only; `--container-platform` |
 | `container.network` | `ContainerNetwork` | `"host"` | host, bridge, none; `--container-network` |
 | `container.workdir` | `Option<PathBuf>` | `unset` | Container cwd when no Run cwd is mounted; `--container-workdir` |
 | `container.user` | `Option<String>` | `unset` | uid, uid:gid, or name; `--container-user` |

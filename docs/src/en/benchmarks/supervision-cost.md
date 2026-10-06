@@ -2,12 +2,12 @@
 
 ## Main conclusions {#conclusions}
 
-**Creating a fresh task workspace, changing 20 of 10,000 files and retaining ten takes 141 ms at complete machine-workflow P50 with pVisor stage, 248 ms with Git worktree and 343 ms with a btrfs reflink copy. Stage suits sparse changes in large workspaces; Git costs less in a 100-file workspace.**
+**Creating a fresh task workspace, changing 20 of 10,000 files and retaining ten takes 141 ms at complete machine-workflow P50 with pVisor stage, 248 ms with Git worktree and 343 ms with a btrfs reflink copy. Stage suits sparse changes in large workspaces; Git costs less in small workspaces. A separate experiment on a prepared twenty-file view measures review/application/disposal at P50 of 27.71 ms for stage and 4.69 ms for Git.**
 
 | User scenario | Selection implication |
 |---|---|
 | Large workspace, sparse changes, disposable task view | Stage reduces whole-tree creation, scanning and disposal costs |
-| Small workspace or a prepared, reused Git worktree | Git is faster for small workspaces; workspace reuse is unmeasured |
+| Small workspace or a prepared, reused Git worktree | Git is faster for small workspaces and review of a prepared twenty-file view; long-term reuse is unmeasured |
 | Estimate human supervision cost | Machine timings exclude human reading and decisions |
 
 ## Motivation {#motivation}
@@ -26,6 +26,8 @@ Normal application and a host conflict are separate conditions. Every sample mus
 
 This fixed file-editing task excludes inference, compilation and human reading. Git/reflink execute native processes with different isolation. Conflict checks do not cover races between Git's check and write, or compare crash recovery and durability guarantees. These results do not rank containers, VMs or security.
 
+A separate experiment measures only review of a prepared view: twenty small text files already contain identical edits; review every original/edited content, apply the first ten and discard the other ten. Stage timing includes `status --review --diff`, selective `apply` and `drop`. Git timing includes complete diff review, selected patch extraction, `git apply --check`, application and worktree removal. View creation, task execution, fixtures and validation are excluded. Git 2.55.0 is identified by executable digest before sampling; the frozen stage artifact has separate provenance. Each group has thirty samples and three warmups, CPUs 0 and 1, warm caches and no benchmark-specific host memory cap. All sixty formal samples pass content, selection and execution-boundary checks, with final workspaces retained for independent audit and no speed-based exclusions. These experiments are summarized separately; prepared-view review cost is not added to the complete-workflow table.
+
 ## Data and analysis {#results}
 
 ### Complete task cost {#baseline-meaning}
@@ -38,6 +40,19 @@ Same host and batch, 2026-10-06; milliseconds, N=30 per cell. P95 is descriptive
 | 10,000 | 140.82 / 144.38 | 248.10 / 253.89 | 343.00 / 349.73 |
 
 For 10,000 files, the stage-minus-Git median difference is **-107.27 ms, 95% CI [-109.02, -105.60]**; against reflink it is **-202.18 ms, 95% CI [-204.49, -199.81]**. Intervals use 5,000 bootstrap resamples paired by randomized sampling round and support stage being faster in this condition. For 100 files, stage minus Git is **+86.99 ms, 95% CI [+77.28, +87.57]** and stage minus reflink is **+85.36 ms, 95% CI [+75.45, +85.86]**; native workflows are faster in that small-workspace condition.
+
+### Review cost with a prepared view {#prepared-review}
+
+Separate matched controls measured on 2026-10-06: twenty small text files, ten applied and ten discarded, N=30 per cell, zero failures. Milliseconds; P95 is descriptive. No cell triggers the split rule.
+
+| Step | pVisor stage P50 / P95 | Git worktree P50 / P95 |
+|---|---:|---:|
+| Review complete content | 6.51 / 7.42 | 1.28 / 1.47 |
+| Select, check and apply ten files | 17.42 / 19.25 | 2.53 / 3.52 |
+| Dispose of remaining results | 3.60 / 3.87 | 0.86 / 1.07 |
+| Per-sample workflow total | 27.71 / 29.48 | 4.69 / 5.86 |
+
+The stage-minus-Git total median difference is **+23.02 ms, 95% CI [22.49, 23.49]**, using 5,000 bootstrap resamples paired by sampling round. Git is faster in this small prepared-view condition. Step medians do not sum to the workflow median; human reading is unmeasured. Stage provides execution boundaries, staging and review interfaces; this small-edit review workflow has no measured speed advantage.
 
 ### Where the cost lies
 
@@ -66,4 +81,4 @@ No participant study was conducted. Batch review and machine timing cannot be co
 
 ### Downloads and reproduction {#run}
 
-[Derived table CSV](supervision-cost.csv) · [Step statistics](workflow-summary.csv) · [Differences and confidence intervals](workflow-comparisons.csv) · [Sources and artifacts](workflow-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Derived table CSV](supervision-cost.csv) · [Step statistics](workflow-summary.csv) · [Differences and confidence intervals](workflow-comparisons.csv) · [Sources and artifacts](workflow-provenance.csv) · [Prepared-view steps](supervision-summary.csv) · [Prepared-view paired differences](supervision-comparisons.csv) · [Prepared-view provenance](supervision-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

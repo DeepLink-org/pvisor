@@ -2,7 +2,7 @@
 
 A **Job** is a persistent CLI unit of work. `pvisor run` creates it; `status`, `kill`, `inspect`, `fork`, `apply` and `drop` operate on it directly. Each current Job has one internal Run record. Disk `run-*` IDs, `run.json` and Run Bundle names remain unchanged for compatibility.
 
-The [single-node daemon](daemon/index.md) instead manages OpenSandbox-profile `sb-*` sandbox records through external Podman. Those IDs do not imply Job/Run/Attempt records, stage/apply, checkpoints or Run Bundle evidence. Native Job semantics below are not automatically provided by the daemon; external orchestration owns cross-host workflow identities.
+The [single-node daemon](daemon/index.md) manages OpenSandbox-profile `sb-*` sandboxes through VM-only NativeRuntime. Private supervisor records bind each generation to native Run/Attempt IDs; sandbox IDs are not public Job IDs. The API does not implement stage/apply, checkpoints or Run Bundle export. Native execution is embedded, but the Job workflow below is not automatically exposed; external orchestration owns cross-host identities.
 
 ## Operation: the object being processed
 
@@ -17,6 +17,8 @@ Run identifies a command, configuration and result independently of the OS PID. 
 ## Attempt: one execution
 
 Attempt identifies one execution by an executor. Each current `PVisor::run` creates one Attempt. Session in pvisor owns preparation, cancellation, cleanup and terminal publication; Session is the lifecycle owner.
+
+Admission resolves the driver network configuration once, applies scoped policies and carries that final configuration into Attempt preparation. Gateway, explicit proxy and VM networking consume it rather than re-reading the original configuration. Guest workspace overlays require an explicit executor opt-in; executor names are descriptive records, not capability checks. Non-bypassable network markers depend on the actual VM network attachment path, not the backend name.
 
 Fork creates a new Run with lineage from a logical checkpoint; it does not restore the original process.
 

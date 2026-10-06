@@ -25,7 +25,8 @@ def main():
         check = {"bytes": configuration["payload_bytes"], "sha256": value}
     elif mode == "write":
         Path("written").mkdir()
-        chunk = b"pvisor-workload\n" * 4096
+        pattern = b"pvisor-workload\n"
+        chunk = (pattern * (64 * 1024 // len(pattern) + 1))[:64 * 1024]
         for i in range(256):
             Path(f"written/{i:04d}").write_bytes(chunk)
         value = sum(p.stat().st_size for p in Path("written").iterdir())
@@ -92,6 +93,11 @@ def main():
     else:
         raise ValueError(mode)
     elapsed = (time.perf_counter_ns() - started) / 1e6
+    if mode == "write":
+        # Validate every byte after the operation timer. Completion still
+        # includes this validation equally for every reference runtime.
+        assert all(Path(f"written/{i:04d}").read_bytes() == chunk for i in range(256))
+        check["file_sha256"] = hashlib.sha256(chunk).hexdigest()
     print(
         json.dumps(
             {
@@ -99,6 +105,14 @@ def main():
                 "worker_ms": elapsed,
                 "check": check,
                 "python": sys.version.split()[0],
+                "python_cache": {
+                    "dont_write_bytecode": sys.dont_write_bytecode,
+                    "prefix": sys.pycache_prefix,
+                    "prefix_exists": bool(sys.pycache_prefix and Path(sys.pycache_prefix).exists()),
+                },
+                "tool_cache": {name: os.environ.get(name) for name in (
+                    "TMPDIR", "HOME", "CARGO_HOME", "NODE_COMPILE_CACHE", "NODE_DISABLE_COMPILE_CACHE", "NODE_OPTIONS"
+                )},
             }
         ),
         flush=True,

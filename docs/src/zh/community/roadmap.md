@@ -14,7 +14,7 @@
 
 ## 单机 daemon {#daemon}
 
-[Daemon](../guides/daemon/index.md) 通过部分 OpenSandbox 1.1.0 profile 管理本机镜像沙箱。Controller/Worker 调度与 Cluster 任务 SDK 已退役。原生 Job、VM checkpoint/local fork 和 node/cache/memory-pool 服务独立保留；daemon 与原生 VM 的集成尚未交付。prepared execd/egress 镜像契约仍需端到端验证，包括 `cap-drop=ALL` 下的无 capability egress。
+[Daemon](../guides/daemon/index.md) 的部分 OpenSandbox 1.1.0 profile 已有 VM-only `NativeRuntime`，在独立 supervisor 中嵌入 pVisor；daemon 可执行入口与必需原生参数已接入。Stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node/cache/pool 共享资源。Bootstrap／镜像未提供或端到端验证，没有 SDK 兼容或密度证据。Controller/Worker 与 Cluster 任务 SDK 已退役。
 
 ## L2 与 L3 里程碑
 

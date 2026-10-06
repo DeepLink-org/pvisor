@@ -338,7 +338,21 @@ fn run_openhands(
         .unwrap();
     let mut prepared_events = vec![initial.clone()];
     for event in events {
-        if event_id(event)? > boundary_id {
+        let id = event_id(event)?;
+        let historical_observation = context.request.mode == ReplayMode::PrepareOnly
+            && event
+                .get("observation")
+                .is_some_and(|value| !value.is_null())
+            && plan
+                .batches
+                .iter()
+                .any(|batch| batch.native["observation_id"].as_i64() == Some(id));
+        if id > boundary_id && !historical_observation {
+            if context.request.mode == ReplayMode::PrepareOnly {
+                // A causal result can arrive after a later action. Preserve
+                // that result while excluding the unselected action itself.
+                continue;
+            }
             break;
         }
         if event == &initial || event.get("action").and_then(Value::as_str) == Some("system") {
@@ -359,6 +373,8 @@ fn run_openhands(
                     openhands_reconstructed_tool_metadata(&reconstructed)?;
             }
             prepared_events.push(reconstructed);
+        } else if historical_observation {
+            prepared_events.push(event.clone());
         }
     }
     let prompt_injected = if context.request.mode == ReplayMode::ReplayAndContinue {

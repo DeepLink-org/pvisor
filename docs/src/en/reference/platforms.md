@@ -19,7 +19,7 @@ Current wheels target Linux x86_64 and macOS arm64. Source branches do not estab
 
 ## Single-node daemon {#daemon}
 
-The standalone daemon's current backend requires Linux, a trusted absolute rootless Podman executable, cgroup v2 and delegated CPU/memory/PID controllers. It is separate from the native executor matrix and has no macOS HVF or native KVM integration. Images must be locally prepared with real OpenSandbox 1.1.0 execd and capability-free egress; the default upstream egress conflicts with `cap-drop=ALL`, and no end-to-end image recipe is validated. See [daemon installation](../guides/daemon/index.md) and [runtime boundaries](../guides/daemon/boundaries.md), rather than inferring SDK readiness from the native VM or wheel support rows.
+The standalone daemon native runtime requires Linux x86_64/KVM and delegated cgroup v2; it does not support macOS HVF or Linux arm64. VM-only supervisors embed pVisor with trusted independent rootfs manifests and guest CID 3 vsock bridges to genuine execd/egress. Executable integration is implemented; bootstrap/images are neither supplied nor end-to-end validated, and SDK/density evidence is absent. See [daemon installation](../guides/daemon/index.md) and [runtime boundaries](../guides/daemon/boundaries.md); wheel/native executor support does not prove daemon readiness.
 
 ## Verify capability evidence
 

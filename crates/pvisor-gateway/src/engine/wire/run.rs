@@ -1,92 +1,31 @@
-//! Run actor command/reply pairs + runtime-side client helpers.
+//! Typed in-process registry helpers.
 
 use anyhow::Result;
-use pulsing_actor::ActorRef;
-use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
+
+use super::super::actors::RunActor;
 use serde_json::Value;
 
-use crate::engine::story::{RunId, StoryId};
 use crate::record::CaptureRecord;
 use crate::session::storage::CaptureRoute;
 use crate::subagent_link::SpawnLinkBackfill;
 
 use super::super::CallContext;
 
-/// Global run actor path (one per capture runtime / ActorSystem).
-pub(crate) const RUN_ACTOR_NAME: &str = "capture/run";
-
-/// Commands handled by [`super::super::actors::run::RunActor`].
-///
-/// `record_bytes` / `body_bytes` are JSON-encoded payloads carried as
-/// raw bytes — see [`super::story::StoryCommand`] for rationale.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum RunCommand {
-    Enrich {
-        record_bytes: Vec<u8>,
-        route: CaptureRoute,
-        headers: Vec<(String, String)>,
-        body_bytes: Option<Vec<u8>>,
-        assistant_text: Option<String>,
-        story_id: Option<StoryId>,
-        run_id: Option<RunId>,
-    },
-    MainRoute {
-        route: CaptureRoute,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum RunReply {
-    Enrich {
-        record_bytes: Vec<u8>,
-        backfills: Vec<SpawnLinkBackfill>,
-    },
-    MainRoute(CaptureRoute),
-}
-
-pub(crate) async fn run_enrich(
-    run: &ActorRef,
+pub(crate) fn run_enrich(
+    run: &Mutex<RunActor>,
     rec: &mut CaptureRecord,
     ctx: &CallContext,
     body_json: Option<&Value>,
     assistant_text: Option<&str>,
 ) -> Result<Vec<SpawnLinkBackfill>> {
-    let story = ctx.story.clone();
-    let reply: RunReply = run
-        .ask(RunCommand::Enrich {
-            record_bytes: serde_json::to_vec(rec)?,
-            route: ctx.route().clone(),
-            headers: ctx.request_headers.clone(),
-            body_bytes: body_json.map(serde_json::to_vec).transpose()?,
-            assistant_text: assistant_text.map(str::to_string),
-            story_id: Some(story.story_id.clone()),
-            run_id: story.run_id.clone(),
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    match reply {
-        RunReply::Enrich {
-            record_bytes,
-            backfills,
-        } => {
-            *rec = serde_json::from_slice(&record_bytes)?;
-            Ok(backfills)
-        }
-        _ => Err(anyhow::anyhow!("unexpected run reply")),
-    }
+    run.lock()
+        .unwrap()
+        .enrich(rec, ctx, body_json, assistant_text)
 }
 
-pub(crate) async fn run_main_route(run: &ActorRef, route: &CaptureRoute) -> Result<CaptureRoute> {
-    let reply: RunReply = run
-        .ask(RunCommand::MainRoute {
-            route: route.clone(),
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    match reply {
-        RunReply::MainRoute(r) => Ok(r),
-        _ => Err(anyhow::anyhow!("unexpected run reply")),
-    }
+pub(crate) fn run_main_route(run: &Mutex<RunActor>, route: &CaptureRoute) -> CaptureRoute {
+    run.lock().unwrap().main_route(route)
 }
 
 #[cfg(test)]
@@ -94,18 +33,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn run_command_bincode_roundtrip() {
+    fn typed_main_route_resolves_unregistered_subagent_to_root() {
         let route = CaptureRoute {
             root_session: Some("run".into()),
             session_id: "s".into(),
             storage_session_id: "s".into(),
-            subagent_id: None,
+            subagent_id: Some("child".into()),
         };
-        let cmd = RunCommand::MainRoute {
-            route: route.clone(),
-        };
-        let packed = pulsing_actor::Message::pack(&cmd).expect("pack");
-        let back: RunCommand = packed.unpack().expect("unpack");
-        assert!(matches!(back, RunCommand::MainRoute { .. }));
+        let run = Mutex::new(RunActor::new());
+        let main = run_main_route(&run, &route);
+        assert_eq!(main.root_session, route.root_session);
+        assert_eq!(main.session_id, route.session_id);
+        assert_eq!(main.storage_session_id, "run");
+        assert_eq!(main.subagent_id, None);
     }
 }

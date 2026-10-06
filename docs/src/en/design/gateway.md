@@ -8,12 +8,12 @@ The [sandbox daemon](daemon/index.md) does not embed this Gateway. Its execd/egr
 
 ```text
 Agent → injected proxy or base URL → OverlayNet HTTP path
-      → protocol adapter → capture engine → per-story serial actor → event sink
+      → protocol adapter → capture engine → per-story worker/mailbox → Journal → projections/observers
 ```
 
-Protocol adapters convert supported requests/responses into the shared `pvisor-core` event vocabulary. The engine carries Run, Attempt, agent, session and story identities. Each story actor writes to the sink serially and updates its in-memory turn index only after a successful append.
+Protocol adapters convert supported requests/responses into the shared `pvisor-core` event vocabulary. The engine carries Run, Attempt, agent, session and story identities. One worker and one bounded FIFO mailbox own each story's preparation, Journal commit and projection I/O. Direct `apply`, asynchronous capture and snapshot/barrier commands share that owner, rather than chaining a prepare queue and a second actor mailbox. Local story commands and Run enrichment use typed records/state, without a serialized actor-message adapter. The Run registry lock is held only for synchronous enrichment, never across a Journal wait or cross-story dispatch.
 
-Public capture uses `pvisor_core::event::Event` and the shared Journal. Mutable capture inputs serve conversation projection rather than a second formal event envelope. Drafts do not enter the fact log; Markdown parameters remain compatibility-only.
+Public capture uses `pvisor_core::event::Event` and the shared Journal. Mutable capture inputs serve conversation projection rather than a second formal event envelope. Streaming capture emits only a final response or cancellation; the public draft input remains an accepted no-op for compatibility. Markdown parameters remain compatibility-only.
 
 ## Delegated credential actions {#delegated-credential-actions}
 
@@ -48,9 +48,13 @@ delegated; WebSocket transport retains its explicit unsupported response.
 
 ## Order and persistence
 
-Journal positions express commit order; stable event IDs support idempotent retries; causal references express known dependencies. Run and embedded Gateway share a Journal. Story actors commit facts before updating Story/SessionIndex and notifying observers. Observer failure does not roll back committed facts.
+Journal positions express commit order; stable event IDs support idempotent retries; causal references express known dependencies. Run and embedded Gateway share a Journal. Story workers commit facts before updating Story/SessionIndex and notifying observers. Observer failure does not roll back committed facts.
 
-The command WAL has been removed. Startup reconstructs projections from committed facts without replaying HTTP requests, repeating observer notifications or rewriting logs. The bounded input queue remains best effort; only a Journal receipt proves durability. Flush reports rejected/failed work; shutdown waits for consumers to release the Journal.
+The command WAL has been removed. Startup reconstructs projections from committed facts without replaying HTTP requests, repeating observer notifications or rewriting logs. The bounded input queue remains best effort; only a Journal receipt proves durability. `spawn_apply` uses nonblocking bounded admission; direct `apply` waits for admission to the same FIFO. Acceptance is not durability, and cancellation after admission does not cancel the owned job. Flush waits behind accepted jobs and the backfills they await, reporting rejected/failed work; it neither fences producers still admitting new work nor acts as a rejected-event diagnostic-writer barrier. Subagent link backfills flow to the main story; same-story backfills execute directly under the owner instead of waiting on their own mailbox. A missing backfill receipt is a capture gap. Shutdown stops admission, drains accepted tails/backfills and persists final projections/index even when another story reports a gap; consumers then release the Journal.
+
+Failed prepared backfills retain `prepared_story` (the target StoryContext) and `prepared_record_json`, including the stamped event ID and timestamp. Recovery submits that retained record to the target story's same bounded owner, bypassing preparation and Run re-enrichment so an already-matched link is not lost or assigned a fresh identity. Capture-level filtering and sensitive-body redaction still apply to retained payloads. Entries without `prepared_story` remain legacy source-event retries through ordinary `apply`; diagnostics are retry input, not proof of a Journal commit.
+
+Shutdown explicitly awaits an ordered marker in the bounded rejected-event writer, even if other runtime clones keep it alive. The marker guarantees append attempts for diagnostics queued before it and reports writer I/O errors; it does not fsync the dead-letter file or establish durability. Diagnostics rejected by that queue or admitted after the marker are outside the guarantee. Ordinary `flush` does not wait for this marker.
 
 ## Observation boundary
 
@@ -63,7 +67,7 @@ Capture level controls retained payload. Full payloads can contain prompts, mode
 | Component | Source area | Responsibility |
 | --- | --- | --- |
 | Protocol parsing/forwarding | `pvisor-gateway` | Model protocol conversion and call observation |
-| Engine and story actors | `pvisor-gateway/src/engine` | Journal commit, causal identity and turn projections |
+| Engine and story scheduling owners | `pvisor-gateway/src/engine` | Journal commit, causal identity and turn projections |
 | Event vocabulary | `pvisor-core` | Shared serialized records; runtime components own sink implementations and integration |
 | Runtime integration | `pvisor` | Run lifecycle, routes, event sink and shutdown |
 | Network path | `pvisor-overlaynet` | Proxy transport and policy integration |

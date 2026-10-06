@@ -1,6 +1,6 @@
 # Daemon 与原生 Service 入口
 
-独立运行 `pvisor-daemon` 提供 OpenSandbox 生命周期 API。原生 node、镜像缓存和内存池服务仍服务于使用它们的原生 pVisor Job。共用 CLI 入口不代表共用运行时或状态存储。
+独立运行 `pvisor-daemon` 提供 OpenSandbox 生命周期 API。原生 node、镜像缓存和内存池服务仍服务于使用它们的原生 pVisor Job。Sandbox supervisor 嵌入原生运行时，但 API 状态与 node 资源所有权仍独立。
 
 ## 直接启动 daemon {#daemon}
 
@@ -13,7 +13,7 @@ pvisor-daemon serve --help
 
 `OPEN_SANDBOX_API_KEY` 配置生命周期认证。监听地址、public endpoint、持久状态与准入预算是 daemon 选项；`RunConfig`、`RunSpec`、原生 service TOML 和旧 Worker profile 都不是 daemon 配置。daemon 状态与原生 Job/node/cache/pool 状态分开保存。
 
-daemon 不依赖原生 executor crate，也不为 Podman 沙箱接入原生 node owner 或冷页池。pause/resume 操作容器 cgroup，不操作 VM RAM backing。正常停止保留其拥有的沙箱供重启恢复，服务重启不等于沙箱清理。
+VM-only supervisor 嵌入 pVisor，跨 daemon 重启保留 RunHandle。Pause/resume 使用同一 Attempt 上已确认的 live vCPU 控制，不是 cgroup freeze 或快照。不自动获取 node owner／冷页池。Cargo 与可执行入口已接入原生运行时构造和隐藏 supervisor 派发；同步内部 VM 派发先于 Tokio。见[启动](index.md#start)。
 
 ## 原生 node、cache 与 memory pool {#native}
 
@@ -36,6 +36,6 @@ OCI cache 发布与访问见[共享镜像缓存参考](../../reference/shared-im
 
 每个服务以其所属宿主账户运行，使用私有持久状态和受保护凭据。使用伴随派发时，把可信 companion 与匹配的原生 CLI 安装在一起，不假设 PATH 查找或 wheel 自带。服务重启策略和宿主资源上限与沙箱准入累计分别配置。
 
-daemon 要求 rootless Podman 与委派 CPU/memory/PID controllers。对外访问前在可信反向代理上配置 TLS，设置正确的 `--public-endpoint HOST:PORT`。原生 node/cache/pool 的访问控制仍遵循各自协议；daemon API key 不授权这些服务。
+要求 Linux x86_64、可用 `/dev/kvm`、可信绝对路径，以及可写、已委派且启用 CPU/memory/PID controller 与 `cgroup.kill` 的 cgroup v2 层级。前置检查验证真实 controller 写入和 KVM API；没有 host、OCI 命令或 registry-pull 降级。 对外访问使用 TLS 和正确的 `--public-endpoint HOST:PORT`。Daemon key 不授权 node/cache/pool 服务。
 
 旧 Controller/Worker 重启、drain、注册与 VM 共享验收记录描述的是已退役部署，不验证此 daemon 或新 companion 接线。当前支持范围见[运行时边界](boundaries.md)与[运维](operations.md)。

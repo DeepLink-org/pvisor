@@ -4,7 +4,7 @@ Scale execution across hosts through **external orchestration**, while keeping e
 
 ## Local execution building blocks {#execution-flow}
 
-Ordinary `pvisor run` owns a Job/Run/Attempt through native executors, optional staging and Gateway, and produces execution records. The [single-node daemon](../daemon/index.md) instead owns local Podman sandbox admission, lifecycle, TTL and service endpoints. Its partial OpenSandbox profile does not automatically supply native Job semantics, VM restore, stage/apply, offload or centralized Run Bundles.
+Ordinary `pvisor run` owns a Job/Run/Attempt through native executors, optional staging and Gateway, and produces execution records. The [single-node daemon](../daemon/index.md) instead owns local native VM sandbox admission, lifecycle, TTL and service endpoints. Its partial OpenSandbox profile does not automatically supply native Job semantics, VM restore, stage/apply, offload or centralized Run Bundles.
 
 Native node resources can retain immutable environment/backing ownership on one host, independently of the daemon. They do not share physical RAM across machines and are not integrated with the daemon backend. See [shared working sets](../daemon/shared-working-set.md).
 
@@ -15,7 +15,7 @@ The earlier Controller/Worker implementation explored distributed execution and 
 | Layer | Current responsibility | Integration/validation remaining |
 | --- | --- | --- |
 | Native pVisor execution | Job lifecycle, executor controls, staging, optional Gateway and records | Orchestrator adapters and representative workload acceptance |
-| Sandbox daemon | Local Podman admission, durable ownership, lifecycle and prepared-service proxy | Validated prepared images/SDK profile; native execution adapter if required |
+| Sandbox daemon | NativeRuntime VM admission, durable supervisor ownership, lifecycle and real-service proxy | Supplied/validated bootstrap and SDK profile; no stage/checkpoint API or density evidence |
 | Native node resources | Same-host immutable ownership, pins and bounded warmth | Daemon wiring, full transient accounting and workload measurements |
 | External orchestration | Host choice, queues, dependencies, retries and tenancy | Explicit execution/evidence handoff and business-effect reconciliation |
 | Evidence/checkpoint repositories | Native integrity, publication and retention contracts | Central collection, authorization, replication and cross-host compatibility |

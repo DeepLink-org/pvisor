@@ -234,7 +234,7 @@ impl SnapshotRamMount {
     }
 
     /// The ordinary executor owns its pager in the supervisor, whose binary
-    /// enters internal modes before parsing the worker/CLI arguments.
+    /// enters internal modes before parsing CLI arguments.
     pub(crate) fn watch_native_owner_exit(&mut self, executable: &Path) -> io::Result<()> {
         use std::os::unix::process::CommandExt;
         if self.watchdog.is_some() {

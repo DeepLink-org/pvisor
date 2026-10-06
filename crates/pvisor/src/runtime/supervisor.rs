@@ -306,7 +306,7 @@ impl RuntimeSupervisor {
             .map_or(OverlayNetMode::Auto, |network| network.mode)
     }
 
-    fn effective_network_config(&self, spec: &RunSpec) -> pvisor_overlaynet::NetworkConfig {
+    pub(crate) fn resolve_network_config(&self, spec: &RunSpec) -> pvisor_core::NetworkConfig {
         if matches!(spec.capabilities.network, NetworkCapability::Scoped { .. }) {
             return pvisor_core::NetworkConfig {
                 capability: Some(spec.capabilities.network.clone()),
@@ -345,11 +345,6 @@ impl RuntimeSupervisor {
         self.network_mode() == OverlayNetMode::Proxy
     }
 
-    pub(crate) fn apply_network_capability(&self, spec: &mut RunSpec) {
-        let network = self.effective_network_config(spec);
-        spec.capabilities.network = pvisor_overlaynet::policy::network_capability(&network);
-    }
-
     fn vm_network_options(
         &self,
         mut network: pvisor_overlaynet::NetworkConfig,
@@ -385,7 +380,7 @@ impl RuntimeSupervisor {
                 return Ok(session);
             }
             let mut network = self.network.clone().unwrap_or_default();
-            network.network = self.effective_network_config(spec);
+            network.network = preparation.network.clone();
             network.network.limits.extend_from_slice(limits);
             if session.is_none() {
                 let storage = self.storage.clone().unwrap_or_else(|| {
@@ -446,15 +441,16 @@ impl RuntimeSupervisor {
             .access_policy
             .bind_session(spec.run_id.as_str(), attempt_id.as_str(), "workspace");
         let network_mode = self.network_mode();
-        let network = self.effective_network_config(spec);
+        let network = preparation.network.clone();
         let vm_network = vm_executor && network_mode == OverlayNetMode::Auto;
-        if vm_executor && network_mode == OverlayNetMode::Proxy {
+        let is_vm = preparation.executor.kind == pvisor_core::ExecutorKind::VirtualMachine;
+        if is_vm && network_mode == OverlayNetMode::Proxy {
             anyhow::bail!(
                 "overlaynet mode `proxy` is only valid for host/container execution; use `auto` for VM smoltcp networking"
             );
         }
         #[cfg(feature = "gateway")]
-        if vm_executor && network_mode == OverlayNetMode::Off && self.proxy.is_some() {
+        if is_vm && network_mode == OverlayNetMode::Off && self.proxy.is_some() {
             anyhow::bail!(
                 "overlaynet mode `off` makes the VM offline and cannot be combined with Gateway/proxy configuration"
             );
@@ -462,7 +458,7 @@ impl RuntimeSupervisor {
         #[cfg(feature = "gateway")]
         if let Some(proxy) = &self.proxy {
             let mut proxy = proxy.clone();
-            // NetworkDriverConfig is the one Attempt policy source. ProxyConfig
+            // The admitted preparation is the one Attempt policy source. ProxyConfig
             // retains its field for standalone Gateway use only.
             if vm_network {
                 proxy.network = self
@@ -746,11 +742,14 @@ models = []
                 },
             ))
             .build();
-        let mut spec = RunSpec::process("configured-policy", "test", "true");
+        let spec = RunSpec::process("configured-policy", "test", "true");
 
-        supervisor.apply_network_capability(&mut spec);
+        let network = supervisor.resolve_network_config(&spec);
 
-        assert_eq!(spec.capabilities.network, NetworkCapability::Deny);
+        assert_eq!(
+            pvisor_overlaynet::policy::network_capability(&network),
+            NetworkCapability::Deny
+        );
     }
 
     #[test]
@@ -759,9 +758,12 @@ models = []
         let mut spec = RunSpec::process("spec-policy", "test", "true");
         spec.capabilities.network = NetworkCapability::Deny;
 
-        supervisor.apply_network_capability(&mut spec);
+        let network = supervisor.resolve_network_config(&spec);
 
-        assert_eq!(spec.capabilities.network, NetworkCapability::Deny);
+        assert_eq!(
+            pvisor_overlaynet::policy::network_capability(&network),
+            NetworkCapability::Deny
+        );
     }
 
     #[test]
@@ -791,8 +793,11 @@ models = []
             },
         ];
 
+        let supervisor = RuntimeSupervisorBuilder::new().build();
         for capability in cases {
-            let config = network_config_from_capability(&capability);
+            let mut spec = RunSpec::process("roundtrip-policy", "test", "true");
+            spec.capabilities.network = capability.clone();
+            let config = supervisor.resolve_network_config(&spec);
             assert_eq!(
                 pvisor_overlaynet::policy::network_capability(&config),
                 capability
@@ -811,10 +816,11 @@ models = []
             .gateway(GatewayDriverConfig::new(test_proxy()))
             .build();
         let mut spec = RunSpec::process("offline-vm", "test", "true");
-        let preparation = crate::PVisor::new()
+        let mut preparation = crate::PVisor::new()
             .resolve_run(spec.clone())
             .unwrap()
             .preparation;
+        preparation.executor.kind = pvisor_core::ExecutorKind::VirtualMachine;
         let error = match supervisor.prepare(
             &mut spec,
             &preparation,

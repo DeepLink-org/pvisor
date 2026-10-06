@@ -86,7 +86,7 @@ pvisor service memory-pool --help
 
 ```
 
-Use `pvisor-daemon` directly for the new sandbox path, or `pvisor service daemon ...` to dispatch to the trusted installed executable. Retired `pvisor-cluster`/`pvisor-worker` services are not the current product workflow. Native resource companions, replay and TUI remain separate from Job commands; missing companions yield an explicit tool error. Packaging does not merge failure boundaries or wire native VM, staging or node resources into the daemon.
+Use `pvisor-daemon` directly for the new sandbox path, or `pvisor service daemon ...` to dispatch to the trusted installed executable. Retired `pvisor-cluster`/`pvisor-worker` services are not the current product workflow. Native resource companions, replay and TUI remain separate from Job commands; missing companions yield an explicit tool error. The daemon CLI constructs the native VM runtime and dispatches supervisors, with synchronous internal VM dispatch before Tokio. Packaging does not expose staging/checkpoint APIs or automatically acquire node resources.
 
 Tools come from a static table and only a trusted installation directory; discovery neither searches PATH nor executes companions. The directory/executables belong to the current user or root, must not be group/world writable, and reject symlinks. Unix `exec` preserves argv, stdio, signals and exit codes. Tool `--help`/`--version` arguments pass through unchanged, and tools cannot shadow Job commands. See [daemon operations](daemon/operations.md) for sandbox deployment and [responsibility convergence](daemon/responsibility-convergence.md) for separate native resource budgets.
 

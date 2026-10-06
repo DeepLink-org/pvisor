@@ -5,7 +5,7 @@
 对应一条内部 Run 记录。为保持兼容，磁盘上的 `run-*` ID、`run.json` 和 Run Bundle
 名称保持不变。
 
-[单节点 daemon](daemon/index.md) 则通过外部 Podman 管理 OpenSandbox profile 的 `sb-*` sandbox 记录。这些 ID 不代表 Job/Run/Attempt 记录、stage/apply、检查点或 Run Bundle 证据。下列原生 Job 语义不会自动由 daemon 提供；跨主机工作流身份属于外部编排。
+[单节点 daemon](daemon/index.md) 通过 VM-only NativeRuntime 管理 OpenSandbox profile 的 `sb-*` sandbox。私有 supervisor 记录把 generation 绑定到原生 Run/Attempt ID；sandbox ID 不是公开 Job ID。API 不实现 stage/apply、checkpoint 或 Run Bundle 导出。它嵌入原生执行，但不自动暴露下列 Job 工作流；跨主机身份属于外部编排。
 
 ## Operation：核心处理对象
 
@@ -20,6 +20,8 @@ Run 标识命令、配置与执行结果，其 ID 与操作系统 PID 无关。�
 ## Attempt：一次执行
 
 Attempt 标识由某个执行器完成的一次执行。当前 `PVisor::run` 每次调用创建一个 Attempt。pvisor 中的 Session 负责它的资源准备、取消、清理和终态公布；Session 是生命周期所有者。
+
+准入只解析一次驱动网络配置，应用分层策略后，将最终配置传入 Attempt 准备。Gateway、显式代理和 VM 网络消费这份配置，不重新读取原始配置。Guest workspace overlay 要求执行器显式声明支持；执行器名称是描述性记录，不是能力判断。网络不可绕过标记取决于实际 VM 网络 attachment 路径，而不是后端名称。
 
 Fork 根据逻辑检查点创建带有来源关系的新 Run，不会恢复原进程。
 

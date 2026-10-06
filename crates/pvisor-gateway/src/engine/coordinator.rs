@@ -1,46 +1,34 @@
-//! Capture actor coordinator: prepare → run actor → story actors.
+//! Capture coordinator: one bounded scheduling owner per story.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result};
-use dashmap::DashMap;
-use dashmap::mapref::entry::Entry;
-use pulsing_actor::prelude::*;
+use anyhow::Result;
 
 use super::actors::{RunActor, StoryActor, StoryActorDeps};
 use super::apply_queue::ApplyDispatcher;
 use super::egress::persist_story_snapshots;
 use super::prepare::CapturePreparer;
-use super::story::Story;
-use super::story::{StoryContext, StoryId};
-use super::wire::{
-    CaptureAck, RUN_ACTOR_NAME, StoryCommand, StoryReply, StoryScope, run_main_route,
-};
+use super::story::{Story, StoryContext};
+use super::wire::{LocalStoryCommand, StoryReply, StoryScope, run_main_route};
 use super::{CallContext, Event};
 use crate::dead_letter;
 use crate::session::index::SessionIndexHandle;
 use crate::sink::CaptureEventObserver;
-use crate::subagent_link::{SpawnLinkBackfill, spawn_link_backfill_record};
+use crate::subagent_link::spawn_link_backfill_record;
 use pvisor_journal::Journal;
 
-const STORY_MAILBOX: usize = 256;
-
 pub(crate) struct CaptureRuntimeInner {
-    system: Arc<ActorSystem>,
-    preparer: Arc<CapturePreparer>,
-    run: ActorRef,
+    preparer: CapturePreparer,
+    // Enrichment is synchronous. Never hold this lock over a Journal wait or
+    // a cross-story dispatch; the registry cannot become a scheduling cycle.
+    run: Mutex<RunActor>,
+    shutdown: tokio::sync::Mutex<()>,
     pub(crate) story_deps: StoryActorDeps,
-    stories: Arc<DashMap<String, ActorRef>>,
 }
 
-/// Actor topology (one ActorSystem per proxy):
-///
-/// ```text
-/// CaptureRuntime
-///   ├── capture/run              RunActor (subagent registry + run story index)
-///   └── capture/story/{story_id} StoryActor (TurnMachine + sink/md I/O)
-/// ```
+/// Each story owner performs preparation, Journal commit and projection I/O in
+/// FIFO order. Direct apply, async capture and read/barrier commands share it.
 #[derive(Clone)]
 pub struct CaptureRuntime {
     inner: Arc<CaptureRuntimeInner>,
@@ -53,37 +41,23 @@ impl CaptureRuntime {
         index: SessionIndexHandle,
         storage: Arc<PathBuf>,
     ) -> Result<Self> {
-        let system = ActorSystem::builder()
-            .mailbox_capacity(STORY_MAILBOX)
-            .build()
-            .await
-            .context("capture actor system")?;
-
-        let run = system
-            .spawn_named(RUN_ACTOR_NAME, RunActor::new())
-            .await
-            .map_err(pulsing_err)?;
-
-        let sink = Arc::clone(&sink);
         let journal = match sink.journal() {
             Some(journal) => journal,
             None => Journal::open(&storage.join(".capture").join("events.trace.jsonl"))?,
         };
         let inner = Arc::new(CaptureRuntimeInner {
-            system,
-            preparer: Arc::new(CapturePreparer {
+            preparer: CapturePreparer {
                 storage: Arc::clone(&storage),
-            }),
-            run,
-            story_deps: StoryActorDeps::new(sink, Arc::clone(&storage), journal, index),
-            stories: Arc::new(DashMap::new()),
+            },
+            run: Mutex::new(RunActor::new()),
+            shutdown: tokio::sync::Mutex::new(()),
+            story_deps: StoryActorDeps::new(sink, storage, journal, index),
         });
         let apply_dispatcher = ApplyDispatcher::new(Arc::clone(&inner));
         let runtime = Self {
             inner,
             apply_dispatcher,
         };
-
         runtime.rebuild_projections().await?;
         Ok(runtime)
     }
@@ -103,242 +77,211 @@ impl CaptureRuntime {
             };
             let rec =
                 crate::record::CaptureRecord::from_event(&record.event, record.position.offset)?;
-            self.inner
-                .dispatch_story(
-                    scope.context.story_id.as_str(),
-                    StoryCommand::Restore {
-                        scope: scope.clone(),
-                        record_bytes: serde_json::to_vec(&rec)?,
-                    },
-                )
-                .await?;
+            let story_id = scope.context.story_id.as_str().to_string();
+            story_reply_ack(
+                self.apply_dispatcher
+                    .command(&story_id, LocalStoryCommand::Restore { scope, record: rec })
+                    .await?,
+            )?;
         }
         Ok(())
     }
 
-    /// Enqueue a capture event on the per-story ordered apply queue (non-blocking for callers).
-    ///
-    /// Accepts both `CallContext` (owned) and `Arc<CallContext>` so callers in the
-    /// streaming hot-path can share an `Arc` and avoid per-event clones, while
-    /// non-streaming callers can keep passing owned values.
-    ///
-    /// Queue acceptance is not durable acceptance. Only Journal receipts prove
-    /// persistence; committed facts rebuild projections after a crash.
+    /// Non-blocking, bounded admission. Queue acceptance is not durable
+    /// acceptance: only Journal receipts prove persistence. Rejection records
+    /// a capture gap, with best-effort bounded dead-letter reporting.
     pub fn spawn_apply(&self, ctx: impl Into<Arc<CallContext>>, event: Event) {
-        let ctx = ctx.into();
-        self.apply_dispatcher.enqueue(ctx, event);
+        self.apply_dispatcher.enqueue(ctx.into(), event);
     }
 
+    /// Backpressured admission to the same FIFO as `spawn_apply`. Once admitted,
+    /// dropping this future does not cancel the owned capture job.
     pub async fn apply(&self, ctx: &CallContext, event: Event) -> Result<()> {
-        self.inner.apply(ctx, event).await
+        self.apply_dispatcher
+            .apply(Arc::new(ctx.clone()), event)
+            .await
     }
 
+    /// Retry retained prepared input through the same bounded owner without
+    /// re-running enrichment. Stamping preserves the original retry identity.
+    pub(crate) async fn apply_prepared_record(
+        &self,
+        story: StoryContext,
+        record: crate::record::CaptureRecord,
+    ) -> Result<()> {
+        let story_id = story.story_id.as_str().to_string();
+        let command = LocalStoryCommand::persist_record(StoryScope { context: story }, record);
+        story_reply_ack(self.apply_dispatcher.command(&story_id, command).await?)
+    }
+
+    /// Drain accepted capture work and rejected-event diagnostics queued before
+    /// the writer marker, even with other runtime clones alive. Diagnostic
+    /// completion is not fsync durability and excludes rejected/late diagnostics.
     pub async fn shutdown(self) -> Result<()> {
-        let flushed = self.flush().await;
-        let drained = self.apply_dispatcher.shutdown().await;
-        let snapshots = async {
-            let snapshots = self.inner.collect_local_snapshots().await?;
-            persist_story_snapshots(self.inner.story_deps.storage.as_path(), &snapshots)
-        }
-        .await;
-        let stopped = self.inner.system.shutdown().await.map_err(pulsing_err);
-        flushed?;
-        drained?;
-        snapshots?;
-        stopped
+        // Once polled, shutdown owns its cleanup even if the caller cancels the
+        // wait. Dropping a JoinHandle detaches rather than aborts this drain.
+        tokio::spawn(async move {
+            let _shutdown = self.inner.shutdown.lock().await;
+            let (drained, snapshots) = self.apply_dispatcher.shutdown().await;
+            // A capture gap must not abandon another story's accepted tail or
+            // prevent final projection/index persistence.
+            let persisted =
+                persist_story_snapshots(self.inner.story_deps.storage.as_path(), &snapshots);
+            let indexed = self.inner.story_deps.index.flush_if_dirty();
+            drained?;
+            persisted?;
+            indexed?;
+            Ok(())
+        })
+        .await?
     }
 
-    /// Wait until accepted async apply jobs and story mailboxes have drained.
+    /// Barrier behind accepted jobs, including the backfills they await. This
+    /// is not a fence against producers that continue admitting new work.
+    /// Rejected-event diagnostics use a separate writer; shutdown, not this
+    /// capture barrier, explicitly drains that writer.
     pub async fn flush(&self) -> Result<()> {
+        let _shutdown = self.inner.shutdown.lock().await;
         self.apply_dispatcher.flush().await?;
-        self.inner.flush_stories().await?;
         self.inner.story_deps.index.flush_if_dirty()?;
         Ok(())
     }
 
-    /// Read-model snapshot for one story (TurnMachine state inside StoryActor).
     pub async fn story_snapshot(&self, context: &StoryContext) -> Result<Story> {
-        self.inner.story_snapshot(context).await
+        let reply = self
+            .apply_dispatcher
+            .command(
+                context.story_id.as_str(),
+                LocalStoryCommand::Snapshot {
+                    scope: StoryScope {
+                        context: context.clone(),
+                    },
+                },
+            )
+            .await?;
+        match reply {
+            StoryReply::Snapshot { story } | StoryReply::LocalSnapshot { story, .. } => Ok(story),
+            StoryReply::Ack => Err(anyhow::anyhow!("unexpected ack for snapshot")),
+        }
     }
 }
 
 impl CaptureRuntimeInner {
-    pub(crate) async fn apply(&self, ctx: &CallContext, event: Event) -> Result<()> {
-        self.apply_inner(ctx, &event).await
-    }
-
-    async fn apply_inner(&self, ctx: &CallContext, event: &Event) -> Result<()> {
+    pub(crate) async fn apply_to_story(
+        &self,
+        dispatcher: &ApplyDispatcher,
+        story: &mut StoryActor,
+        ctx: &CallContext,
+        event: Event,
+    ) -> Result<()> {
         let mut prepared = match self.preparer.prepare(&self.run, ctx, event.clone()).await {
             Ok(p) => p,
             Err(e) => {
-                record_dead_letter(self.story_deps.storage.as_path(), ctx, event, &e, None);
+                record_dead_letter(self.story_deps.storage.as_path(), ctx, &event, &e, None);
                 return Err(e);
             }
         };
 
+        let mut backfill_error = None;
         if !prepared.backfills.is_empty() {
-            let main = run_main_route(&self.run, prepared.ctx.route()).await?;
-            self.dispatch_backfills(&prepared.ctx, &main, &prepared.backfills)
-                .await?;
+            let main = run_main_route(&self.run, prepared.ctx.route());
+            let scope = StoryScope {
+                context: StoryContext::from_route(main, ctx.agent_id()),
+            };
+            for bf in &prepared.backfills {
+                let mut rec = spawn_link_backfill_record(&bf.parent_call_id, &bf.links, &ctx.call);
+                crate::sink::retain_capture_content(&mut rec.payload, ctx.level);
+                let cmd = LocalStoryCommand::persist_record(scope.clone(), rec);
+                // Backfills flow only from subagents to the main story, never
+                // the reverse. Same-owner work must not ask its own bounded FIFO.
+                let reply = if &scope.context.story_id == ctx.story_id() {
+                    story.handle(cmd.clone()).await
+                } else {
+                    dispatcher
+                        .command_internal(scope.context.story_id.as_str(), cmd.clone())
+                        .await
+                };
+                // A missing receipt is a capture gap, not merely a diagnostic.
+                if let Err(error) = reply.and_then(story_reply_ack) {
+                    dispatcher.record_failure(&error);
+                    if let LocalStoryCommand::PersistRecord { scope, record } = &cmd
+                        && let Err(dl) = dead_letter::append_prepared_dead_letter(
+                            self.story_deps.storage.as_path(),
+                            ctx,
+                            &event,
+                            &format!("{error:#}"),
+                            &scope.context,
+                            record,
+                        )
+                    {
+                        // Diagnostic failure must not abandon the child's accepted job.
+                        tracing::error!("prepared backfill dead letter write failed: {dl:#}");
+                    }
+                    tracing::warn!("spawn link backfill failed: {error:#}");
+                    backfill_error.get_or_insert(error);
+                }
+            }
         }
 
         if let Some(cmd) = prepared.take_story_command() {
-            let record_json = persist_record_json(&cmd);
-            let story_id = ctx.story_id().as_str().to_string();
-            if let Err(e) = self.dispatch_story(&story_id, cmd).await {
+            let result = story.handle(cmd.clone()).await.and_then(story_reply_ack);
+            if let Err(e) = result {
+                // Serialize only on the diagnostic boundary, not for dispatch.
+                let record_json = match cmd {
+                    LocalStoryCommand::PersistRecord { record, .. } => {
+                        serde_json::to_string(&record).ok()
+                    }
+                    _ => None,
+                };
                 record_dead_letter(
                     self.story_deps.storage.as_path(),
                     ctx,
-                    event,
+                    &event,
                     &e,
                     record_json,
                 );
                 return Err(e);
             }
         }
-
-        Ok(())
-    }
-
-    async fn flush_stories(&self) -> Result<()> {
-        for entry in self.stories.iter() {
-            let actor = entry.value().clone();
-            let reply: StoryReply = actor.ask(StoryCommand::Flush).await.map_err(pulsing_err)?;
-            story_reply_ack(reply)?.into_result()?;
-        }
-        Ok(())
-    }
-
-    async fn collect_local_snapshots(&self) -> Result<std::collections::HashMap<String, Story>> {
-        let mut out = std::collections::HashMap::new();
-        for entry in self.stories.iter() {
-            let actor = entry.value().clone();
-            let reply: StoryReply = actor
-                .ask(StoryCommand::LocalSnapshot)
-                .await
-                .map_err(pulsing_err)?;
-            if let StoryReply::LocalSnapshot {
-                storage_session_id,
-                story,
-            } = reply
-            {
-                out.insert(storage_session_id, story);
-            }
-        }
-        Ok(out)
-    }
-
-    async fn story_snapshot(&self, context: &StoryContext) -> Result<Story> {
-        let story_id = context.story_id.as_str();
-        let actor = self.story_actor(story_id).await?;
-        let scope = StoryScope {
-            context: context.clone(),
-        };
-        let reply: StoryReply = actor
-            .ask(StoryCommand::Snapshot { scope })
-            .await
-            .map_err(pulsing_err)?;
-        match reply {
-            StoryReply::Snapshot { story } => Ok(story),
-            StoryReply::LocalSnapshot { story, .. } => Ok(story),
-            StoryReply::Ack(ack) => Err(anyhow::anyhow!(
-                "unexpected ack for snapshot: {}",
-                ack.error.unwrap_or_else(|| "unknown".into())
-            )),
-        }
-    }
-
-    async fn dispatch_story(&self, story_id: &str, cmd: StoryCommand) -> Result<()> {
-        let actor = self.story_actor(story_id).await?;
-        let reply: StoryReply = actor.ask(cmd).await.map_err(pulsing_err)?;
-        story_reply_ack(reply)?.into_result()
-    }
-
-    async fn dispatch_backfills(
-        &self,
-        ctx: &CallContext,
-        main_route: &crate::session::storage::CaptureRoute,
-        backfills: &[SpawnLinkBackfill],
-    ) -> Result<()> {
-        let scope = StoryScope {
-            context: StoryContext::from_route(main_route.clone(), ctx.agent_id().to_string()),
-        };
-        let actor = self
-            .story_actor(
-                StoryContext::from_route(main_route.clone(), ctx.agent_id())
-                    .story_id()
-                    .as_str(),
-            )
-            .await?;
-        for bf in backfills {
-            let mut rec = spawn_link_backfill_record(&bf.parent_call_id, &bf.links, &ctx.call);
-            crate::sink::retain_capture_content(&mut rec.payload, ctx.level);
-            let record_bytes = serde_json::to_vec(&rec)?;
-            let cmd = StoryCommand::persist_record(scope.clone(), record_bytes);
-            let reply: StoryReply = actor.ask(cmd).await.map_err(pulsing_err)?;
-            if let Err(e) = story_reply_ack(reply)?.into_result() {
-                tracing::warn!("spawn link backfill failed: {e:#}");
-            }
-        }
-        Ok(())
-    }
-
-    async fn story_actor(&self, story_id: &str) -> Result<ActorRef> {
-        if let Some(existing) = self.stories.get(story_id) {
-            return Ok(existing.clone());
-        }
-
-        let name = story_actor_name(story_id);
-        if let Ok(actor) = self.system.resolve(name.as_str()).await {
-            self.stories
-                .entry(story_id.to_string())
-                .or_insert(actor.clone());
-            return Ok(actor);
-        }
-
-        let id = StoryId::new(story_id);
-        let actor = self
-            .system
-            .spawning()
-            .name(&name)
-            .supervision(SupervisionSpec::on_failure().with_max_restarts(3))
-            .mailbox_capacity(STORY_MAILBOX)
-            .spawn(StoryActor::new(id, self.story_deps.clone()))
-            .await
-            .map_err(pulsing_err)?;
-
-        match self.stories.entry(story_id.to_string()) {
-            Entry::Occupied(entry) => Ok(entry.get().clone()),
-            Entry::Vacant(entry) => {
-                entry.insert(actor.clone());
-                Ok(actor)
-            }
+        match backfill_error {
+            Some(error) => Err(error.context("capture backfill has no receipt")),
+            None => Ok(()),
         }
     }
 }
 
-/// Public entry type (actor-backed capture runtime).
 pub type CaptureEngine = CaptureRuntime;
 
-fn story_reply_ack(reply: StoryReply) -> Result<CaptureAck> {
+pub(crate) fn story_reply_ack(reply: StoryReply) -> Result<()> {
     match reply {
-        StoryReply::Ack(ack) => Ok(ack),
+        StoryReply::Ack => Ok(()),
         StoryReply::Snapshot { .. } | StoryReply::LocalSnapshot { .. } => {
             Err(anyhow::anyhow!("unexpected snapshot reply"))
         }
     }
 }
 
-/// Decode a `PersistRecord` command's JSON-encoded payload back to a `String` for
-/// the dead-letter file (which carries `prepared_record_json` as a textual JSON).
-/// Invalid UTF-8 should never happen — `serde_json::to_vec` always produces valid
-/// UTF-8 — but if it ever does we drop the prepared JSON rather than panic.
-fn persist_record_json(cmd: &StoryCommand) -> Option<String> {
-    match cmd {
-        StoryCommand::PersistRecord { record_bytes, .. } => {
-            String::from_utf8(record_bytes.clone()).ok()
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+    use crate::engine::story::{StoryId, TurnMachine};
+
+    #[test]
+    fn typed_ack_requires_an_ack_reply() {
+        assert!(story_reply_ack(StoryReply::Ack).is_ok());
+        let story = TurnMachine::new(StoryId::new("s")).snapshot();
+        for reply in [
+            StoryReply::Snapshot {
+                story: story.clone(),
+            },
+            StoryReply::LocalSnapshot {
+                storage_session_id: "s".into(),
+                story,
+            },
+        ] {
+            let error = story_reply_ack(reply).unwrap_err();
+            assert_eq!(error.to_string(), "unexpected snapshot reply");
         }
-        _ => None,
     }
 }
 
@@ -358,13 +301,4 @@ fn record_dead_letter(
     ) {
         tracing::error!("dead letter write failed: {dl:#}");
     }
-}
-
-fn story_actor_name(story_id: &str) -> String {
-    let sanitized = story_id.replace('|', "/");
-    format!("capture/story/{sanitized}")
-}
-
-fn pulsing_err(e: pulsing_actor::error::PulsingError) -> anyhow::Error {
-    anyhow::anyhow!("{e}")
 }

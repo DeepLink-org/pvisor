@@ -8,7 +8,7 @@ effective runtime controls, and reviewable results.
 
 Owns one Job, its internal Run record and Attempts, capability admission,
 filesystem Effects, execution placement, and the host CLI (`pvisor`). It can
-place Jobs on host, container, and libkrun VM executors while preserving one
+place Jobs on host, native OCI container, and `pvisor-vm` executors while preserving one
 Run contract.
 It is not an Agent framework, an OCI runtime, or an operating system.
 
@@ -25,7 +25,7 @@ Guest injection uses the core `pvisor` execution runtime.
 flowchart TD
     Entry[CLI / PVisor API] --> Session[Session: one Attempt]
     Core[pvisor-core contracts and policies] -.-> Session
-    Session --> Executor[Host / OCI container / libkrun VM]
+    Session --> Executor[Host / OCI container / pvisor-vm]
     Session --> Drivers[OverlayFS / OverlayNet / optional Gateway]
     Session --> Records[Run record / Run Bundle / optional Event Journal]
     Records --> Review[status / inspect / apply / drop]
@@ -38,7 +38,7 @@ flowchart TD
 | Capabilities | Models, tools, filesystem read/write, network, secrets, subprocess, and resources, with evidence recorded per dimension |
 | Filesystem effects | Copy-on-write staging, classified review, logical checkpoint/fork, repeated selective apply, terminal apply/drop, and an apply ledger |
 | Network and model access | Gateway capture plus OverlayNet policy; enforcement strength depends on executor and is never inferred from a product label |
-| Execution placement | Host process, native OCI container executor, or libkrun VM using an OCI image, prepared rootfs, or Linux host rootfs |
+| Execution placement | Host process, native OCI container executor, or `pvisor-vm` (Linux KVM / macOS HVF) using an OCI image, prepared rootfs, or Linux host rootfs |
 | Evidence | Run Bundle, lifecycle events, capability enforcement, filesystem changes, network counters, AgentCtl observations, output, and artifact references |
 
 With `--stage PATH`, the product loop is `RunSpec → admission → Attempt →
@@ -48,6 +48,20 @@ retain the workspace stage in Job storage by default; `--stage PATH` selects
 another location. HOME and VM rootfs writes have separate lifetimes; see
 [staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
+
+Admission carries the final network configuration into every Attempt driver;
+preparation does not re-resolve policy from mutable Run metadata or configuration.
+Guest workspace overlays require `RunExecutor::supports_guest_workspace_overlay`
+(default false), independently of VM network attachment support. Executor names
+remain persisted descriptions, not runtime capability checks.
+
+Containers use the host architecture. `--container-platform` (configuration:
+`container.platform = "linux-amd64"` or `"linux-arm64"`) optionally asserts that
+native platform; an explicit non-native selection is rejected before execution,
+including with a prepared rootfs or custom injected pVisor. It does not enable
+cross-platform emulation or artifact auto-discovery. A configured platform also
+requires the container executor rather than being ignored by host/VM execution.
+Without the option, native image preparation and container execution are unchanged.
 
 ## Per-instance VM controls and memory CLI
 
@@ -162,7 +176,10 @@ while retaining existing data owners.
 empty legacy sections/lists. There is no implicit migration to a new scheduler.
 `pvisor service daemon ...` passes arguments unchanged to a trusted, separately
 installed `pvisor-daemon` beside `pvisor`; it does not add a daemon role to this
-configuration, link a daemon dependency, or imply native executor integration.
+configuration or link a daemon dependency. The daemon's VM-only `NativeRuntime`
+embeds this crate in detached supervisor subprocesses. The daemon CLI is wired
+to that runtime; companion dispatch does not automatically acquire node sharing
+resources. The daemon API has no stage/apply or checkpoint/fork implementation.
 
 Cluster-only tests and fixtures are retired. Local service tests retain delegated
 limits, cleanup, shared image pins and shared RAM/COW ownership fences. The
@@ -178,9 +195,11 @@ daemon separately; the old `test-service` / `test-service-vm` recipes are absent
 The ignored local gates need explicit selection in a future root test recipe;
 their environment requirements remain in the test annotations. Install
 `pvisor-daemon` beside `pvisor` if companion dispatch is desired. The root
-Cluster alias and daemon legacy feature have been removed; the daemon builds
-independently, without a Rust dependency on this crate. Packaging includes both
-executables, but common installation does not establish native backend integration.
+Cluster alias and daemon legacy feature have been removed; the daemon remains
+a separate executable. Cargo links `pvisor` and `pvisor-core`; synchronous internal
+VM dispatch runs before Tokio, and hidden supervisor dispatch is implemented.
+Packaging includes both executables, but does
+not supply or validate the prepared-image bootstrap, SDK conformance or density.
 See the [daemon boundary](../pvisor-daemon/README.md).
 
 ## Develop
@@ -197,10 +216,11 @@ the equivalent entitlements file is `macos-hypervisor.entitlements`. The embedde
 `pvisor-guest` supervisor is built as a static Linux musl ELF
 with Rust's bundled linker. On Apple Silicon, install its stdlib once with
 `rustup target add aarch64-unknown-linux-musl`. It launches workloads directly,
-without a shell helper, and reports their exit codes through libkrun's root filesystem ioctl.
+without a shell helper, and reports their exit codes through the VM runtime's root filesystem ioctl.
 
-The vendored libkrun is built only as an `rlib` and statically linked into
-`pvisor`; no `libkrun.so` or `libkrun.dylib` is required. The separate guest
+The Rust `pvisor-vm` runtime is linked into `pvisor`, with KVM on Linux and
+HVF on macOS. Its implementation derives from libkrun components, but no separate
+vendored libkrun `rlib`, `libkrun.so` or `libkrun.dylib` is required. The separate guest
 kernel is embedded in Linux static musl builds; macOS loads `libkrunfw.5.dylib`
 at runtime. Linux source builds require Zig, `cargo-zigbuild`, and
 `rustup target add x86_64-unknown-linux-musl`. Use `just build` so target

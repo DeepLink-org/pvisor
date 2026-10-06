@@ -8,7 +8,7 @@ mod tests;
 
 use crate::runtime::{Runtime, RuntimeSpec, RuntimeState};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-pub use models::{ApiError, CreateRequest, RenewRequest, Sandbox, SandboxStatus};
+pub use models::{ApiError, CreateRequest, EndpointResponse, RenewRequest, Sandbox, SandboxStatus};
 use models::{Record, Registry};
 use std::{
     collections::BTreeMap,
@@ -36,6 +36,7 @@ pub struct Daemon {
     config: Config,
     store: Arc<store::Store>,
     registry: Mutex<Registry>,
+    commits: Mutex<()>,
     operations: Mutex<BTreeMap<String, Weak<Mutex<()>>>>,
     runtime: Arc<dyn Runtime>,
     proxy: reqwest::Client,
@@ -70,13 +71,17 @@ impl Daemon {
                 && authority.fragment().is_none(),
             "public endpoint must be a host[:port] authority"
         );
-        let (store, registry) = store::Store::open(&config.state_dir)?;
+        let (store, mut registry) = store::Store::open(&config.state_dir)?;
         let runtime = factory(registry.owner.clone())?;
+        // The native factory must accept the legacy owner before migration can
+        // replace its occupied snapshot with an incremental-store header.
+        store.initialize(&mut registry)?;
         runtime.preflight().await?;
         let daemon = Arc::new(Self {
             config,
             store: Arc::new(store),
             registry: Mutex::new(registry),
+            commits: Mutex::new(()),
             operations: Mutex::new(BTreeMap::new()),
             storage_failed: std::sync::atomic::AtomicBool::new(false),
             runtime,
@@ -139,27 +144,44 @@ impl Daemon {
 
     async fn update<T>(
         &self,
-        change: impl FnOnce(&mut Registry) -> Result<T, ApiError>,
+        id: &str,
+        change: impl FnOnce(&Registry) -> Result<(Option<Record>, T), ApiError>,
     ) -> Result<T, ApiError> {
-        let mut registry = self.registry.lock().await;
+        // Serialize admission and durable mutations, but let readers observe
+        // the last committed inventory while disk I/O is in flight.
+        let _commit = self.commits.lock().await;
         self.ensure_storage()?;
-        let mut next = registry.clone();
-        let result = change(&mut next)?;
+        let (record, result) = {
+            let registry = self.registry.lock().await;
+            change(&registry)?
+        };
         let store = self.store.clone();
-        let saved = next.clone();
-        let outcome = tokio::task::spawn_blocking(move || store.save(&saved)).await;
-        if !matches!(outcome, Ok(Ok(()))) {
-            // A rename may have committed before a directory-sync error. Never
-            // overwrite that unknown durable state from an older in-memory view.
-            self.storage_failed
-                .store(true, std::sync::atomic::Ordering::Release);
-            return Err(ApiError::new(
-                503,
-                "STORAGE_UNAVAILABLE",
-                "registry commit uncertain; restart and reconcile required",
-            ));
+        let key = id.to_owned();
+        let outcome = tokio::task::spawn_blocking(move || {
+            store.commit_record(&key, record.as_ref())?;
+            Ok::<_, anyhow::Error>(record)
+        })
+        .await;
+        let record = match outcome {
+            Ok(Ok(record)) => record,
+            _ => {
+                // Rename/unlink may have committed before directory sync failed.
+                // Never overwrite that unknown state from an older memory view.
+                self.storage_failed
+                    .store(true, std::sync::atomic::Ordering::Release);
+                return Err(ApiError::new(
+                    503,
+                    "STORAGE_UNAVAILABLE",
+                    "registry commit uncertain; restart and reconcile required",
+                ));
+            }
+        };
+        let mut registry = self.registry.lock().await;
+        if let Some(record) = record {
+            registry.sandboxes.insert(id.to_owned(), record);
+        } else {
+            registry.sandboxes.remove(id);
         }
-        *registry = next;
         Ok(result)
     }
 
@@ -214,17 +236,18 @@ impl Daemon {
         state: &str,
         message: Option<String>,
     ) -> Result<Sandbox, ApiError> {
-        self.update(|registry| {
-            let record = registry
-                .sandboxes
-                .get_mut(id)
-                .ok_or_else(|| ApiError::new(404, "SANDBOX_NOT_FOUND", "sandbox does not exist"))?;
+        self.update(id, |registry| {
+            let mut record =
+                registry.sandboxes.get(id).cloned().ok_or_else(|| {
+                    ApiError::new(404, "SANDBOX_NOT_FOUND", "sandbox does not exist")
+                })?;
             record.sandbox.status = SandboxStatus {
                 state: state.to_owned(),
                 message,
                 last_transition_at: Some(Utc::now()),
             };
-            Ok(record.sandbox.clone())
+            let sandbox = record.sandbox.clone();
+            Ok((Some(record), sandbox))
         })
         .await
     }
@@ -287,7 +310,7 @@ impl Daemon {
             operations.retain(|_, lock| lock.strong_count() > 0);
             operations.insert(id.clone(), Arc::downgrade(&gate));
         }
-        self.update(|registry| {
+        self.update(&id, |registry| {
             let cpu = registry
                 .sandboxes
                 .values()
@@ -310,8 +333,7 @@ impl Daemon {
                     "node capacity exhausted",
                 ));
             }
-            registry.sandboxes.insert(id.clone(), record.clone());
-            Ok(())
+            Ok((Some(record), ()))
         })
         .await?;
         if let Err(error) = self.runtime.create(&spec).await {
@@ -319,11 +341,7 @@ impl Daemon {
                 .downcast_ref::<crate::runtime::CreateError>()
                 .is_some_and(|error| !error.requires_reconciliation())
             {
-                self.update(|registry| {
-                    registry.sandboxes.remove(&id);
-                    Ok(())
-                })
-                .await?;
+                self.update(&id, |_| Ok((None, ()))).await?;
                 return Err(ApiError::new(
                     500,
                     "SANDBOX_CREATE_FAILED",
@@ -460,12 +478,8 @@ impl Daemon {
             } else {
                 this.runtime.resume(&id).await
             };
-            outcome.map_err(|e| ApiError::new(503, "RUNTIME_UNAVAILABLE", e.to_string()))?;
-            let observed = this
-                .runtime
-                .inspect(&id)
-                .await
-                .map_err(|e| ApiError::internal(e.to_string()))?;
+            let observed =
+                outcome.map_err(|e| ApiError::new(503, "RUNTIME_UNAVAILABLE", e.to_string()))?;
             if observed != desired {
                 return Err(ApiError::new(
                     503,
@@ -524,11 +538,7 @@ impl Daemon {
                     "native deletion not confirmed",
                 ));
             }
-            this.update(|registry| {
-                registry.sandboxes.remove(&id);
-                Ok(())
-            })
-            .await?;
+            this.update(&id, |_| Ok((None, ()))).await?;
             Ok(())
         })
         .await
@@ -559,11 +569,11 @@ impl Daemon {
                 "expiresAt must be future and within the configured timeout limit",
             ));
         }
-        self.update(|registry| {
-            let record = registry
-                .sandboxes
-                .get_mut(id)
-                .ok_or_else(|| ApiError::new(404, "SANDBOX_NOT_FOUND", "sandbox does not exist"))?;
+        self.update(id, |registry| {
+            let mut record =
+                registry.sandboxes.get(id).cloned().ok_or_else(|| {
+                    ApiError::new(404, "SANDBOX_NOT_FOUND", "sandbox does not exist")
+                })?;
             check_expiration(record.sandbox.expires_at)?;
             if matches!(
                 record.sandbox.status.state.as_str(),
@@ -585,7 +595,7 @@ impl Daemon {
                 ));
             }
             record.sandbox.expires_at = Some(request.expires_at);
-            Ok(request)
+            Ok((Some(record), request))
         })
         .await
     }
@@ -595,7 +605,7 @@ impl Daemon {
         id: &str,
         port: u16,
         server_proxy: bool,
-    ) -> Result<serde_json::Value, ApiError> {
+    ) -> Result<EndpointResponse, ApiError> {
         // Verify a real publication exists, but don't expose native loopback ports.
         self.upstream(id, port).await?;
         let record = self.record(id).await?;
@@ -603,12 +613,17 @@ impl Daemon {
             "{}/v1/sandboxes/{id}/proxy/{port}",
             self.config.public_endpoint
         );
-        if server_proxy {
-            Ok(serde_json::json!({"endpoint": address}))
-        } else {
-            Ok(serde_json::json!({"endpoint": address,
-            "headers": {"X-PVISOR-SANDBOX-TOKEN": record.endpoint_token}}))
-        }
+        Ok(EndpointResponse {
+            endpoint: address,
+            headers: if server_proxy {
+                None
+            } else {
+                Some(BTreeMap::from([(
+                    "X-PVISOR-SANDBOX-TOKEN".into(),
+                    record.endpoint_token,
+                )]))
+            },
+        })
     }
 
     pub async fn upstream(&self, id: &str, port: u16) -> Result<String, ApiError> {

@@ -1,6 +1,6 @@
 # Shared working sets and lazy loading
 
-Reuse immutable contents by identity, and keep actual access and private modification costs explicit. Native pVisor caches and node resources provide mechanisms for this direction; the external Podman daemon has **not** acquired those resources or validated their density benefits.
+Reuse immutable contents by identity, and keep actual access and private modification costs explicit. Native pVisor caches and node resources provide mechanisms for this direction; the native VM daemon has **not** acquired those resources or validated their density benefits.
 
 ## Three distinct mechanisms {#principles}
 
@@ -19,7 +19,7 @@ Anonymous-page scanning, cold-page compression and whole-VM offload remain separ
 | Native Linux RAM restore | Authorized sealed identity/compatibility and shared read-only inode, private COW guest mappings | Ordinary fresh boot bypasses RAM restore; compatible native profiles remain required |
 | Snapshot lazy reader | Validate/decode blocks on fault with bounded decoded cache | First-access costs remain; legacy raw formats can require full validation |
 | Experimental cold RAM pool | Session references and cold-page restoration | `vm.memory_pool` requires macOS/Apple Silicon; not a Linux daemon feature |
-| External Podman daemon | Locally provisioned container images | No native node socket, RAM restore, lazy snapshot or cold-pool integration |
+| NativeRuntime daemon | Independent immutable rootfs, private VM writes | No automatic node socket acquisition, RAM restore, lazy snapshot or cold-pool integration |
 
 Additional source areas: `image/cache/lazy.rs`, `image/cache/portable/binary.rs`, `executor/vm/restore_ram.rs`, `environment_snapshot/lazy.rs` and `pvisor-vm/src/memory.rs`. Native node acquisition validates authorized stores, publication and compatibility rather than accepting cache presence as authority.
 
@@ -43,13 +43,13 @@ Keep logical reservations, physical occupancy and reclaimable cache separate. Na
 
 Connection pins protect active immutable mounts/backing until native runners are reaped. Last release permits teardown or bounded warming. Preparation for the same identity is serialized without holding the global map lock across slow I/O. Refetchable decoded cache may be evicted; active owners or the only remaining copy of private cold RAM cannot be treated as cache.
 
-A future native daemon adapter would need explicit acquire/release, cancellation, compatible input handoff, cleanup, evidence and budget contracts. Packaging the node service next to the daemon does not implement that adapter. Generic warm-template Agent restoration is not already available: source command/input/environment/policy bindings and native no-network restore constraints still apply.
+Connecting the existing native runtime to node sharing would need explicit acquire/release, cancellation, compatible input handoff, cleanup, evidence and budget contracts. Packaging the node service next to the daemon does not implement that adapter. Generic warm-template Agent restoration is not already available: source command/input/environment/policy bindings and native no-network restore constraints still apply.
 
 Bounded critical-page prefetch, coalescing additional identical misses and extending complete metadata/scratch accounting remain possible work. There is no daemon host-affinity policy or placement hint protocol; external orchestration owns host choice.
 
 ## Evidence questions {#experiments}
 
-No new measurements or PASS claims are available. Separate native-path experiments from any future daemon adapter evaluation:
+No new measurements or PASS claims are available. Separate native-path experiments from daemon node-sharing integration evaluation:
 
 | Question | Required controls and observations |
 | --- | --- |

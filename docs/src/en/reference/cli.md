@@ -21,7 +21,7 @@ pvisor service cache --help
 pvisor service memory-pool --help
 ```
 
-Use `service cache/memory-pool` for the native resource tools. `service daemon` passes arguments unchanged to a separately installed, matching adjacent `pvisor-daemon`; check `pvisor service --help` when using an older build. The daemon can always be invoked directly after separate installation; follow the [daemon installation guide](../guides/daemon/index.md). It does not integrate native VM, checkpoint/fork or stage/apply. Controller/Worker task tools and their configuration are retired. See [service entry points](../guides/daemon/service.md) for native node/cache/pool ownership and deployment boundaries.
+Use `service cache/memory-pool` for the native resource tools. `service daemon` passes arguments unchanged to a separately installed, matching adjacent `pvisor-daemon`; check `pvisor service --help` when using an older build. The daemon can always be invoked directly after separate installation; follow the [daemon installation guide](../guides/daemon/index.md). NativeRuntime embeds VM execution; the daemon executable and required native flags are integrated, checkpoint/fork and stage/apply APIs are absent, and node sharing is not automatically acquired. Controller/Worker task tools and their configuration are retired. See [service entry points](../guides/daemon/service.md) for native node/cache/pool ownership and deployment boundaries.
 
 Names outside the current commands follow default execution rules, without retired-command aliases or migration handlers. Use `pvisor -- COMMAND` for explicit default execution.
 
@@ -631,8 +631,8 @@ while the Agent is running.
 
 `--container-image IMAGE` selects the native OCI container executor
 automatically; `--executor container` makes the choice explicit. The transport
-generates a standard OCI bundle, resolves a matching static
-`linux-amd64`/`linux-arm64` pVisor, mounts it into the rootfs, sets the process
+generates a standard OCI bundle, uses the current or explicitly supplied
+compatible Linux pVisor, mounts it into the rootfs, sets the process
 args, and takes the normal `pvisor run --executor host --spec ...` path. The
 Agent command is carried inside the RunSpec rather than exposed in OCI runner
 argv. The injected pVisor creates its own AgentCtl and returns a typed
@@ -653,6 +653,16 @@ pvisor run \
     'source="/host/cache", target="/cache", read_only=false' \
   -- codex
 ```
+
+The example above assumes Linux x86_64. `--container-platform linux/amd64`
+or `linux/arm64` asserts the native host architecture; a matching value is
+accepted and a cross-architecture value is rejected, even with a prepared
+`--container-rootfs`. Host and VM configurations reject this option. It does
+not select emulation or discover/download an executable. The injected binary
+defaults to the running pVisor; use `--container-pvisor-binary` for an explicitly
+provisioned Linux build compatible with the native architecture and rootfs ABI.
+See [container setup](../guides/executors/container.md) and
+[configuration values](config.md#settings).
 
 The in-process Gateway and explicit OverlayNet proxy currently require
 `container.network = "host"`, because their injected addresses are host loopback

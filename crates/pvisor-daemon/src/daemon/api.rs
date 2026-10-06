@@ -35,7 +35,7 @@ use axum::{
 use serde_json::{Value, json};
 use url::{Host, Url};
 
-use super::{ApiError, CreateRequest, Daemon, RenewRequest, Sandbox};
+use super::{ApiError, CreateRequest, Daemon, EndpointResponse, RenewRequest, Sandbox};
 
 const CONTROL_BODY_LIMIT: usize = 1024 * 1024;
 const PROXY_HEADERS_TIMEOUT: Duration = Duration::from_secs(120);
@@ -397,45 +397,12 @@ async fn endpoint(
     State(daemon): State<Arc<Daemon>>,
     path: Result<Path<(String, String)>, PathRejection>,
     RawQuery(raw): RawQuery,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<EndpointResponse>, ApiError> {
     let (id, port) = path_value(path)?;
     let server_proxy = parse_endpoint_query(raw.as_deref())?;
     let endpoint = daemon
         .endpoint(&id, parse_port(&port)?, server_proxy)
         .await?;
-    // Token issuance and the public proxy authority belong to the parent.
-    let object = endpoint
-        .as_object()
-        .ok_or_else(|| internal("Invalid endpoint schema"))?;
-    if !object
-        .get("endpoint")
-        .is_some_and(|value| value.as_str().is_some_and(|s| !s.is_empty()))
-        || object
-            .keys()
-            .any(|key| key != "endpoint" && key != "headers")
-        || object.get("headers").is_some_and(|value| {
-            !value
-                .as_object()
-                .is_some_and(|headers| headers.values().all(Value::is_string))
-        })
-    {
-        return Err(internal("Invalid endpoint schema"));
-    }
-    if !server_proxy
-        && !object
-            .get("headers")
-            .and_then(Value::as_object)
-            .is_some_and(|headers| {
-                headers.iter().any(|(key, value)| {
-                    key.eq_ignore_ascii_case("x-pvisor-sandbox-token")
-                        && value.as_str().is_some_and(|token| !token.is_empty())
-                })
-            })
-    {
-        return Err(internal(
-            "Non-server endpoint is missing sandbox authentication",
-        ));
-    }
     Ok(Json(endpoint))
 }
 
@@ -654,24 +621,24 @@ mod tests {
                 .unwrap_or(RuntimeState::Missing))
         }
 
-        async fn pause(&self, id: &str) -> anyhow::Result<()> {
+        async fn pause(&self, id: &str) -> anyhow::Result<RuntimeState> {
             let mut sandboxes = self.sandboxes.lock().unwrap();
             let state = sandboxes
                 .get_mut(id)
                 .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
             anyhow::ensure!(*state == RuntimeState::Running, "sandbox not running");
             *state = RuntimeState::Paused;
-            Ok(())
+            Ok(*state)
         }
 
-        async fn resume(&self, id: &str) -> anyhow::Result<()> {
+        async fn resume(&self, id: &str) -> anyhow::Result<RuntimeState> {
             let mut sandboxes = self.sandboxes.lock().unwrap();
             let state = sandboxes
                 .get_mut(id)
                 .ok_or_else(|| anyhow::anyhow!("sandbox missing"))?;
             anyhow::ensure!(*state == RuntimeState::Paused, "sandbox not paused");
             *state = RuntimeState::Running;
-            Ok(())
+            Ok(*state)
         }
 
         async fn delete(&self, id: &str) -> anyhow::Result<()> {
@@ -727,7 +694,7 @@ mod tests {
 
     fn create_payload(metadata: Value) -> Value {
         json!({
-            "image": {"uri": "registry.example.test/opensandbox/execd:fixture"},
+            "image": {"uri": "execd-fixture"},
             "entrypoint": ["tail", "-f", "/dev/null"],
             "resourceLimits": {"cpu": "1", "memory": "64Mi"},
             "timeout": 600,
@@ -1061,6 +1028,68 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_error(&error, "NOT_FOUND");
+    }
+
+    #[tokio::test]
+    async fn http_native_image_keys_are_rejected_before_runtime_and_capacity_admission() {
+        let fixture = RouteFixture::open().await;
+        // Invalid images remain bad requests even when every admission slot is occupied.
+        for admitted in [0, 8] {
+            if admitted == 8 {
+                for _ in 0..8 {
+                    create_over_http(&fixture.app, json!({})).await;
+                }
+                let (status, _, error) = exchange(
+                    &fixture.app,
+                    Method::POST,
+                    "/v1/sandboxes",
+                    AUTH,
+                    Body::from(create_payload(json!({})).to_string()),
+                )
+                .await;
+                assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+                assert_error(&error, "CAPACITY_EXCEEDED");
+            }
+            for image in [
+                "../host",
+                "execd/../../host",
+                "/rootfs",
+                ".hidden",
+                "registry.example.test/opensandbox/execd:fixture",
+                "https://registry.example.test/opensandbox/execd:fixture",
+            ] {
+                let mut payload = create_payload(json!({}));
+                payload["image"]["uri"] = json!(image);
+                let (status, _, error) = exchange(
+                    &fixture.app,
+                    Method::POST,
+                    "/v1/sandboxes",
+                    AUTH,
+                    Body::from(payload.to_string()),
+                )
+                .await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{image}: {error}");
+                assert_error(&error, "INVALID_REQUEST");
+                assert_eq!(
+                    error["message"],
+                    "invalid runtime image, argv, environment or resource limits"
+                );
+                assert_eq!(fixture.runtime.creates.load(Ordering::SeqCst), admitted);
+                assert_eq!(fixture.runtime.sandboxes.lock().unwrap().len(), admitted);
+                assert_eq!(fixture.runtime.endpoints.load(Ordering::SeqCst), 0);
+                let (status, _, list) = exchange(
+                    &fixture.app,
+                    Method::GET,
+                    "/v1/sandboxes",
+                    AUTH,
+                    Body::empty(),
+                )
+                .await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(list["items"].as_array().unwrap().len(), admitted);
+                assert_eq!(list["pagination"]["totalItems"], json!(admitted));
+            }
+        }
     }
 
     #[tokio::test]

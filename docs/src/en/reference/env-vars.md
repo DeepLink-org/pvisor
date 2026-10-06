@@ -17,7 +17,7 @@ The task prints its own Run ID. For network credentials, use `--pass-env` as des
 | `PVISOR_IMAGE_STORE` | OCI cache override; explicit `--image-store` wins |
 | `PVISOR_CACHE_SERVER` | Shared cache endpoint; `off` disables; unset probes the per-user Unix socket |
 | `PVISOR_CACHE_TOKEN` | Shared secret for TCP cache endpoints; do not pass it to agents with `--pass-env` |
-| `PVISOR_BIN` | Binary override for the Python launcher; usually unnecessary |
+| `PVISOR_BIN` | Obsolete Python-launcher override; installed native scripts do not read it. Invoke the binary path directly or select it through `PATH` |
 | `XDG_CONFIG_HOME` | User-policy root, default `~/.config` |
 | `HOME` / `PATH` | Host storage/tool-discovery/projection inputs; safe mode redirects HOME |
 

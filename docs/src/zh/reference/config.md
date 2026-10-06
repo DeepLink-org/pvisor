@@ -42,16 +42,21 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 
 | 选项 | 默认值 / 含义 |
 | --- | --- |
-| `--podman PATH` | 必需，可信 rootless Podman 可执行文件绝对路径 |
+| `--images-dir PATH` | 必需：存放本机 `<key>.json` manifest 的可信绝对路径目录 |
+| `--cgroup-root PATH` | 必需：可写且已委派的 cgroup v2，启用 CPU/memory/PID 与 `cgroup.kill` |
 | `--listen ADDRESS` | `127.0.0.1:8080` |
 | `--public-endpoint HOST:PORT` | 外部路由 authority，不带 scheme/path；反向代理、通配/零端口监听时必需 |
-| `--state PATH` | `.pvisor/daemon`；使用私有持久目录 |
+| `--state PATH` | `.pvisor/daemon`；解析为 canonical 运行时状态。使用短绝对路径的私有目录，如 `/run/user/1000/pvd` |
 | `--max-sandboxes N` | 32 个本机沙箱 |
 | `--cpu-millis N` | 4000；准入硬 CPU 限制总和，以千分之一 CPU 为单位 |
 | `--memory-bytes N` | 8589934592；准入硬内存限制总和，不是整机物理内存 |
 | `--max-timeout-seconds N` | 86400；创建 TTL 上限，可配置范围 60 秒至一年 |
 
-旧 `[controller]`、`[[workers]]`、Worker profile 和 Cluster task JSON 都不是 daemon 输入。原生 node/cache/memory-pool 配置独立保留。daemon 没有选择原生 VM、checkpoint/fork、stage/apply、全局 DAG 或分布式 lease 的选项。
+旧 `[controller]`、`[[workers]]`、Worker profile 和 Cluster task JSON 不是 daemon 输入。原生 node/cache/pool 配置独立。NativeRuntime 仅支持 VM；checkpoint/fork、stage/apply、全局 DAG 与分布式 lease API 未实现。
+
+`serve` 使用必需的 `--images-dir` 与 `--cgroup-root` 构造 NativeRuntime。Cargo 链接 `pvisor`/`pvisor-core`，同步内部 VM 派发先于参数解析或 Tokio。隐藏 supervisor 命令已实现。Images/cgroup 路径会 canonicalize；相对 state 按启动工作目录解析，运行时状态会 canonicalize。部署使用短绝对路径，重启时保持不变。
+
+所有运行时路径使用绝对路径，daemon 重启时保持不变。逐 sandbox 的 `control.sock` 必须短于 104 字节，vsock Unix socket 也有路径长度限制。`/run/user/1000/pvd` 是短状态路径示例，不保证跨注销／重启持久化。VM 不能跨宿主重启存活。
 
 ## 字段导航（当前实现）
 
@@ -122,7 +127,7 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 | `vm` | `memory_mib = 2048`，`cpus = 2`，`rootfs_immutable = false`，`ram_compression = false`，`cold_ram_compression = false`，`ram_dedup = false` |
 | `vm` 可选字段 | `rootfs`、`image`、`image_store`、`library_dir`、`control_socket`、`ram_backing`、`memory_pool`、`node_socket`、`snapshot_filesystem_pool` |
 
-`container.platform` 取 `linux-amd64` 或 `linux-arm64`；`container.network` 取 `host`、`bridge` 或 `none`。Linux container 的注入二进制必须与 rootfs 的架构和 ABI 匹配。
+`container.platform` 取 `linux-amd64` 或 `linux-arm64`，是可选的原生宿主架构断言。匹配值会被接受；跨架构值会被拒绝，即使设置了预制 `container.rootfs`。host 和 VM 配置会拒绝已配置的平台。它不启用模拟执行，也不自动发现／下载程序。`container.pvisor_binary` 默认使用当前程序；显式 Linux 二进制和 rootfs 须兼容原生架构及 guest ABI。见[容器准备](../guides/executors/container.md)。`container.network` 取 `host`、`bridge` 或 `none`，但 CNI 支持尚未实现，当前会拒绝 `bridge`。
 
 #### VM 控制与内存覆盖 {#vm-control-memory}
 
@@ -235,7 +240,7 @@ VM executor 时启用实验性的 Linux x86_64 实例本地 live 压缩；
 | `container.image` | `String` | `""` | OCI 镜像引用；`--container-image` |
 | `container.rootfs` | `Option<PathBuf>` | `未设置` | 已有 rootfs，替代镜像；`--container-rootfs` |
 | `container.pvisor_binary` | `Option<PathBuf>` | `未设置` | 注入的 Linux 程序，默认当前程序；`--container-pvisor-binary` |
-| `container.platform` | `Option<ContainerPlatform>` | `未设置` | linux-amd64 或 linux-arm64；`--container-platform` |
+| `container.platform` | `Option<ContainerPlatform>` | `未设置` | 原生架构断言：linux-amd64 或 linux-arm64；仅 container；`--container-platform` |
 | `container.network` | `ContainerNetwork` | `"host"` | host、bridge、none；`--container-network` |
 | `container.workdir` | `Option<PathBuf>` | `未设置` | 未挂载 Run cwd 时的容器目录；`--container-workdir` |
 | `container.user` | `Option<String>` | `未设置` | uid、uid:gid 或用户名；`--container-user` |
