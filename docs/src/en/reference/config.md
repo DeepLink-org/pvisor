@@ -149,30 +149,38 @@ executor = "vm"
 command = ["/bin/sleep", "600"]
 
 [vm]
-control_socket = "/tmp/pvisor-host-control/ctrl.sock"
+control_socket = "/tmp/pvisor-host-1000/ctrl.sock"
 ram_compression = false
 cold_ram_compression = false
 ram_dedup = true
 ```
 
 ```bash
-install -d -m 0700 /tmp/pvisor-host-control
+install -d -m 0700 /tmp/pvisor-host-1000
 pvisor run --config vm-control.toml
 pvisor run --config vm-control.toml --vm-ram-dedup=false
 ```
 
 Save the TOML as `vm-control.toml`; run the commands sequentially, after the
-previous Attempt has ended and released its socket. `vm.control_socket` is an
-optional host-only path, unset by default. Every native VM Attempt still creates
-an automatic private `/tmp/pvctrl-*/ctrl.sock` when omitted. A custom parent must
-already exist, be a non-symlink directory owned by the effective UID and have
-mode exactly `0700`; the socket is `0600`, same-UID only, and existing paths are
-never overwritten. The endpoint must never be accessible from the guest; the
-host parent provides executor exclusions, including for host-rootfs VMs.
-CLI stderr prints the socket, Run ID and Attempt ID for
-[`pvisor ctrl`](cli.md#vm-instance-control); non-VM controls are explicitly
-unsupported. `load` is `RunResume` of the same live Attempt, not persistent
-snapshot restart or eager RAM prefaulting.
+previous Attempt has ended and released its socket. This Linux example assumes
+effective UID `1000`; substitute your effective UID and canonical `/tmp`
+(usually `/private/tmp` on macOS). `vm.control_socket` is an optional host-only
+creation path, unset by default. The Host Job service creates a private
+`vm-<UUID>.sock` directly under `/tmp/pvisor-host-<effective-UID>` when omitted;
+a custom CLI path must also be directly under that canonical root. Arbitrary
+private parents accepted by the embedded API are not accepted by the CLI worker.
+The root must be non-symlink, owned by the effective UID and exactly `0700`;
+the socket is `0600`, same-UID only, and existing paths are never overwritten.
+Host authority is excluded from guest access, including host-rootfs VMs.
+
+CLI stderr prints `--vm-socket`, `--vm-job-id` and `--vm-attempt-id` for
+[normal live VM commands](cli.md#vm-instance-control): `status`,
+`suspend JOB --vm-pause` / `--vm-offload` (optional `--vm-ram-file PATH`), and
+`resume JOB --vm-load`. These global addressing/action options are not `[vm]`
+configuration fields and do not change persisted-Job defaults. The removed
+`ctrl` command has no compatibility alias. `--vm-load` continues the same live
+Attempt, not a persistent snapshot restart or eager RAM prefaulting; non-VM
+controls are explicitly unsupported.
 
 `--vm-node-socket SOCKET` overrides `vm.node_socket`;
 `--vm-snapshot-filesystem-pool DIR` overrides `vm.snapshot_filesystem_pool`.

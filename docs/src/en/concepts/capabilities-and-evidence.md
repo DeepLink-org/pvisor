@@ -47,6 +47,6 @@ Optional Event Journals record lifecycle and facts actually published by Gateway
 
 ## Guarantee scope
 
-Selective proxies on ordinary host/container execution depend on the client using them; the mechanisms for host deny-all, macOS `--safe` mode, and VM networking are described in [network boundaries](../guides/policies/network.md#网络边界). AgentCtl is a cooperation channel, not isolation evidence. See [isolation design](../design/isolation.md) for platform mechanisms and gaps.
+Selective proxies on ordinary host/container execution depend on the client using them; the mechanisms for host deny-all, macOS `--safe` mode, and VM networking are described in [network boundaries](../guides/policies/network.md#网络边界). Guest AgentCtl is a cooperation channel, not isolation evidence; Host AgentCtl is a separate host-authority path. See [isolation design](../design/isolation.md) for platform mechanisms and gaps.
 
 `apply`/`drop` manage staged files only: they cannot undo applied batches, remote APIs, database writes, or messages. Logical checkpoints store staged files and cooperative quiescent points, not process memory or external service state. Local records support review and diagnosis, not cryptographic remote attestation or hostile multi-tenancy guarantees.

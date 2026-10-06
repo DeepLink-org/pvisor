@@ -1,5 +1,7 @@
 // Lossless storage of kernel padding. Guest addresses and bytes stay unchanged.
 
+use std::{mem::MaybeUninit, sync::Arc};
+
 const MAGIC: &[u8; 8] = b"PVKRUN01";
 const MAX_KERNEL_SIZE: usize = 256 * 1024 * 1024;
 const MIN_FILL: usize = 256;
@@ -40,7 +42,7 @@ pub fn pack(kernel: &[u8]) -> Vec<u8> {
 }
 
 #[allow(dead_code)]
-pub fn unpack(mut input: &[u8]) -> Result<Vec<u8>, &'static str> {
+pub fn unpack(mut input: &[u8]) -> Result<Arc<[u8]>, &'static str> {
     fn take<'a>(input: &mut &'a [u8], count: usize) -> Result<&'a [u8], &'static str> {
         if count > input.len() {
             return Err("truncated kernel bundle");
@@ -62,7 +64,10 @@ pub fn unpack(mut input: &[u8]) -> Result<Vec<u8>, &'static str> {
     if size == 0 || size > MAX_KERNEL_SIZE {
         return Err("invalid kernel size");
     }
-    let mut kernel = vec![0; size];
+    // Decode into the final owner. Every accepted chunk initializes its entire
+    // range; errors drop MaybeUninit bytes without ever exposing them as u8.
+    let mut kernel = Arc::<[u8]>::new_uninit_slice(size);
+    let output = Arc::get_mut(&mut kernel).unwrap();
     let mut cursor = 0;
     while cursor < size {
         let tag = take(&mut input, 1)?[0];
@@ -70,18 +75,24 @@ pub fn unpack(mut input: &[u8]) -> Result<Vec<u8>, &'static str> {
         if count == 0 || count > size - cursor {
             return Err("invalid kernel chunk length");
         }
-        let destination = &mut kernel[cursor..cursor + count];
+        let destination = &mut output[cursor..cursor + count];
         match tag {
             0 => {
                 let byte = take(&mut input, 1)?[0];
-                // The allocation is already zeroed. Keep zero padding lazy on
-                // allocators backed by fresh anonymous pages instead of touching
-                // it a second time while expanding the embedded kernel.
-                if byte != 0 {
-                    destination.fill(byte);
+                destination.fill(MaybeUninit::new(byte));
+            }
+            1 => {
+                let literal = take(&mut input, count)?;
+                // SAFETY: disjoint input and newly allocated output; both ranges
+                // contain count bytes. This initializes the whole literal chunk.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        literal.as_ptr(),
+                        destination.as_mut_ptr().cast::<u8>(),
+                        count,
+                    );
                 }
             }
-            1 => destination.copy_from_slice(take(&mut input, count)?),
             _ => return Err("invalid kernel chunk tag"),
         }
         cursor += count;
@@ -89,7 +100,9 @@ pub fn unpack(mut input: &[u8]) -> Result<Vec<u8>, &'static str> {
     if !input.is_empty() {
         return Err("trailing kernel bundle bytes");
     }
-    Ok(kernel)
+    // SAFETY: cursor reached size via nonempty, bounds-checked chunks. Each
+    // chunk filled or copied every byte, and malformed/trailing data was rejected.
+    Ok(unsafe { kernel.assume_init() })
 }
 
 #[cfg(test)]
@@ -105,9 +118,9 @@ mod tests {
         kernel.extend_from_slice(&[0x90, 0xc3, 0x0f, 0x0b]);
         let packed = pack(&kernel);
         assert!(packed.len() < 1024);
-        assert_eq!(unpack(&packed).unwrap(), kernel);
+        assert_eq!(&*unpack(&packed).unwrap(), kernel.as_slice());
         for kernel in [vec![0; 256], vec![0xff; 257], vec![0xcc; 255], vec![1]] {
-            assert_eq!(unpack(&pack(&kernel)).unwrap(), kernel);
+            assert_eq!(&*unpack(&pack(&kernel)).unwrap(), kernel.as_slice());
         }
     }
 

@@ -18,6 +18,7 @@ use crate::runtime::{
 const DEFAULT_STORAGE: &str = ".pvisor/capture";
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StatusArgs {
     /// Job id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
@@ -38,6 +39,7 @@ pub struct StatusArgs {
 }
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct KillArgs {
     /// Live Job id, stage directory, or workspace path.
     pub selector: PathBuf,
@@ -48,6 +50,7 @@ pub struct KillArgs {
 }
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InspectArgs {
     /// Job id, stage directory, upper directory, or workspace path.
     pub selector: Option<PathBuf>,
@@ -62,6 +65,7 @@ pub struct InspectArgs {
 }
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SelectArgs {
     /// Job id, stage directory, upper directory, or workspace path.
     pub selector: PathBuf,
@@ -70,6 +74,7 @@ pub struct SelectArgs {
 }
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApplyArgs {
     /// Job id, stage directory, upper directory, or workspace path.
     pub selector: PathBuf,
@@ -293,6 +298,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
 
 pub fn kill(args: KillArgs) -> anyhow::Result<()> {
     let record = selected(Some(&args.selector), &args.output_dir)?;
+    super::host_service::check_record(&record)?;
     if crate::runtime::job_execution::terminate_suspended(&record)? {
         if args.json {
             println!(
@@ -305,7 +311,9 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
         return Ok(());
     }
     if record.state.is_stopped() {
+        let _job = super::host::lock_selected_job(&record)?;
         let (current, _lease) = record.lock_current()?;
+        super::host_service::check_record(&current)?;
         current.require_stopped()?;
         if args.json {
             println!(
@@ -328,30 +336,61 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
         "Job {} is not live",
         record.run_id
     );
-    let pid = libc::pid_t::try_from(record.pid).context("Job PID does not fit pid_t")?;
-    anyhow::ensure!(
-        pid > 1 && pid != std::process::id() as libc::pid_t,
-        "invalid Job PID {pid}"
-    );
-    #[cfg(target_os = "linux")]
-    anyhow::ensure!(
-        pid_holds_lease(pid, &record.stage_dir().join(LEASE_FILENAME))?,
-        "Job {} PID {} no longer owns its storage lease",
-        record.run_id,
-        pid
-    );
-    if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
-        return Err(std::io::Error::last_os_error())
-            .with_context(|| format!("terminate Job {} (PID {pid})", record.run_id));
+    let cooperative = super::host_cancel::request(&record)?;
+    if !cooperative {
+        #[cfg(target_os = "linux")]
+        {
+            // Pin before inspecting the lease, then reread the durable identity
+            // under the native Job lock. Never signal a recycled numeric PID.
+            let template = crate::runtime::job_execution::Job::read(&record)?;
+            let _job_lease = template
+                .as_ref()
+                .map(crate::runtime::job_execution::Job::lock)
+                .transpose()?;
+            if let Some(template) = template {
+                template.current()?.validate_record_target(&record)?;
+            }
+            let pid = libc::pid_t::try_from(record.pid).context("Job PID does not fit pid_t")?;
+            anyhow::ensure!(
+                pid > 1 && pid != std::process::id() as libc::pid_t,
+                "invalid Job PID {pid}"
+            );
+            let process = super::host_process::StableProcess::open(pid)?;
+            anyhow::ensure!(
+                pid_holds_lease(pid, &record.stage_dir().join(LEASE_FILENAME))?,
+                "Job {} PID {} no longer owns its exclusive storage lease",
+                record.run_id,
+                pid
+            );
+            let current = crate::RunRecord::read(&record.stage_dir())?;
+            super::host::check_selected_record(&record, &current)?;
+            super::host_service::check_record(&current)?;
+            anyhow::ensure!(
+                current.pid == record.pid
+                    && current.state == crate::RunRecordState::Running
+                    && is_live(&current.stage_dir())?
+                    && process.is_alive(),
+                "Job process ownership changed; termination refused"
+            );
+            process.signal(libc::SIGTERM)?;
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err(pvisor_core::host_protocol::AgentCtlHostError::new(
+            pvisor_core::host_protocol::AgentCtlHostErrorCode::Unsupported,
+            "no cooperative host cancellation endpoint; stable legacy process identity cannot be proven on this platform",
+        ).into());
     }
     if args.json {
         println!(
             "{}",
             serde_json::json!({"schema_version":1,"operation":"kill",
-            "job_id":record.run_id,"state":"stopping","termination_requested":true})
+            "job_id":record.run_id,"state":"stopping","termination_requested":true,"cooperative":cooperative})
         );
     } else {
-        println!("requested termination of Job {} (PID {pid})", record.run_id);
+        println!(
+            "requested termination of Job {} (PID {})",
+            record.run_id, record.pid
+        );
     }
     Ok(())
 }
@@ -360,11 +399,27 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
 fn pid_holds_lease(pid: libc::pid_t, lease: &Path) -> anyhow::Result<bool> {
     let expected = std::fs::metadata(lease)?;
     for entry in std::fs::read_dir(format!("/proc/{pid}/fd"))? {
-        if let Ok(actual) = std::fs::metadata(entry?.path())
+        let entry = entry?;
+        if let Ok(actual) = std::fs::metadata(entry.path())
             && actual.dev() == expected.dev()
             && actual.ino() == expected.ino()
         {
-            return Ok(true);
+            let name = entry.file_name();
+            let info =
+                std::fs::read_to_string(format!("/proc/{pid}/fdinfo/{}", name.to_string_lossy()))?;
+            let owner = pid.to_string();
+            if info
+                .lines()
+                .filter(|line| line.starts_with("lock:"))
+                .any(|line| {
+                    let fields: Vec<_> = line.split_whitespace().collect();
+                    fields
+                        .windows(4)
+                        .any(|fields| fields == ["FLOCK", "ADVISORY", "WRITE", owner.as_str()])
+                })
+            {
+                return Ok(true);
+            }
         }
     }
     Ok(false)
@@ -378,7 +433,9 @@ struct FsSummary {
 
 pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
     let selected = selected(args.selector.as_deref(), &args.output_dir)?;
+    let _job = super::host::lock_selected_job(&selected)?;
     let (mut record, _lease) = selected.lock_current()?;
+    super::host_service::check_record(&record)?;
     if let Some(id) = &args.checkpoint {
         let checkpoint = crate::runtime::checkpoint::resolve_checkpoint(&record, id)?;
         record = crate::runtime::checkpoint::workspace_view(&record, &checkpoint)?;
@@ -423,17 +480,58 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
         args.command
     };
     let (program, command_args) = command.split_first().context("missing inspect command")?;
-    let status = Command::new(program)
+    use std::os::unix::process::{CommandExt, ExitStatusExt};
+    super::host_service::check_cancelled()?;
+    let mut child = Command::new(program)
         .args(command_args)
         .current_dir(mount.mountpoint())
         .env("PVISOR_INSPECT", "1")
         .env("PVISOR_RUN_ID", &record.run_id)
         .env("PVISOR_OVERLAY_STAGE", &overlay.stage_dir)
-        .status()
-        .with_context(|| format!("execute inspect command `{program}`"));
+        .process_group(0)
+        .spawn()
+        .with_context(|| format!("execute inspect command `{program}`"))?;
+    let mut tree = super::host_process::OwnedTree::new(
+        child.id() as i32,
+        std::process::id() as i32,
+        false,
+        0,
+    )?;
+    let foreground = super::host_process::TerminalOwner::give_to(child.id() as i32)?;
+    let mut deadline = None;
+    let status = loop {
+        tree.refresh()?;
+        if tree.root_exited() {
+            // Keep the group leader unreaped through cleanup on platforms that
+            // use PGID ownership instead of pidfds.
+            tree.cleanup(true)?;
+            break child.wait()?;
+        }
+        if deadline.is_none()
+            && super::host_service::worker_cancellation().is_some_and(|token| token.is_cancelled())
+        {
+            tree.signal_root(libc::SIGTERM)?;
+            deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+        }
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            tree.cleanup(true)?;
+            break child.wait()?;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    tree.cleanup(true)?;
+    drop(foreground);
+    if let Some(signal) = status.signal() {
+        if [libc::SIGINT, libc::SIGTERM, libc::SIGHUP].contains(&signal) {
+            super::host_service::notify_cancel(signal);
+        }
+    }
+    // Even if this unmount hangs, the service and frontend have independently
+    // armed, bounded whole-request tree cleanup before inspect was admitted.
     mount.close()?;
-    let status = status?;
-    Ok(status.code().unwrap_or(1))
+    Ok(status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(1)))
 }
 
 enum InspectMount {
@@ -499,7 +597,9 @@ fn mutate(
     selection: Option<&ApplySelection>,
 ) -> anyhow::Result<()> {
     let selected = selected(Some(&args.selector), &args.output_dir)?;
+    let _job = super::host::lock_selected_job(&selected)?;
     let (mut record, _lease) = selected.lock_current()?;
+    super::host_service::check_record(&record)?;
     record.require_stopped()?;
     let next_generation = record
         .overlay
@@ -625,7 +725,9 @@ fn selected(selector: Option<&Path>, output_dir: &Path) -> anyhow::Result<RunRec
     let storage = output_dir
         .canonicalize()
         .unwrap_or_else(|_| output_dir.to_path_buf());
-    resolve_run(selector, &storage)
+    let record = resolve_run(selector, &storage)?;
+    super::host_service::check_record(&record)?;
+    Ok(record)
 }
 
 fn shell_join(parts: &[String]) -> String {
@@ -666,6 +768,10 @@ mod tests {
         let pid = std::process::id() as libc::pid_t;
         assert!(pid_holds_lease(pid, &path).unwrap());
         drop(lease);
-        assert!(!pid_holds_lease(pid, &path).unwrap());
+        let _merely_open = std::fs::File::open(&path).unwrap();
+        assert!(
+            !pid_holds_lease(pid, &path).unwrap(),
+            "an open descriptor is not exclusive lease ownership"
+        );
     }
 }

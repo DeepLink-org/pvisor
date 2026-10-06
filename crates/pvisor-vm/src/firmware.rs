@@ -62,9 +62,13 @@ impl KernelOwner {
         if address == libc::MAP_FAILED {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: the mapping is writable and at least bytes.len() bytes long.
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), address.cast(), bytes.len());
+        {
+            let mut span = crate::startup_profile::Span::new("kernel_owner_copy", "runner");
+            // SAFETY: the mapping is writable and at least bytes.len() bytes long.
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), address.cast(), bytes.len());
+            }
+            span.complete(Some(bytes.len()));
         }
         self.mapping = Some(Mapping { address, size });
         Ok(KernelBundle {
@@ -112,8 +116,11 @@ mod built_in {
 pub(crate) fn embedded_kernel() -> Option<crate::api::KernelImage> {
     #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
     {
+        let mut span = crate::startup_profile::Span::new("embedded_kernel_init", "runtime");
+        let bytes = built_in::KERNEL.clone();
+        span.complete(Some(bytes.len()));
         Some(crate::api::KernelImage {
-            bytes: built_in::KERNEL.clone(),
+            bytes,
             guest_address: built_in::GUEST_ADDR,
             entry_address: built_in::ENTRY_ADDR,
         })

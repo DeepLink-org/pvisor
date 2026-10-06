@@ -164,6 +164,7 @@ const DENY_ALL_HELP: &str = "Deny all OverlayNet egress. VM `auto` enforces this
 const DENY_ALL_HELP: &str = "Deny all OverlayNet egress; direct sockets remain outside the cooperative host/container proxy rule";
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunArgs {
     /// Show a terminal with status bar; Ctrl-] opens the TUI command mode.
     #[arg(long)]
@@ -267,6 +268,7 @@ impl RunArgs {
 }
 
 #[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RunOverrides {
     /// Require sandbox isolation and apply Agent-aware network/file presets; explicit CLI overrides win. Does not select an executor.
     #[arg(long)]
@@ -316,6 +318,7 @@ struct RunOverrides {
 }
 
 #[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ContainerOverrides {
     /// Native OCI runtime executable (`runc` or `crun`).
     #[arg(long, value_name = "PATH")]
@@ -352,6 +355,7 @@ struct ContainerOverrides {
 }
 
 #[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct VmOverrides {
     /// Host-only VM control socket; requires an existing private (0700) parent and a new path.
     #[arg(long = "vm-control-socket", value_name = "PATH")]
@@ -411,6 +415,7 @@ impl FromStr for ContainerMountArg {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FilesystemMountArg {
     source: PathBuf,
     target: PathBuf,
@@ -455,6 +460,7 @@ impl FromStr for FilesystemMountArg {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FilesystemAccessArg {
     path: String,
     level: FilesystemLevel,
@@ -498,6 +504,7 @@ impl FromStr for FilesystemAccessArg {
 }
 
 #[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OverlayFsOverrides {
     /// Stage persistence: checkpoint (default), or sync each first mutation.
     #[arg(long = "stage-durability", value_name = "checkpoint|strict")]
@@ -519,6 +526,7 @@ struct OverlayFsOverrides {
 }
 
 #[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct OverlayNetOverrides {
     /// Network driver: auto selects VM smoltcp, proxy is host/container only, off disables it.
     #[arg(
@@ -695,6 +703,7 @@ impl FromStr for OverlayNetRuleArg {
 }
 
 #[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GatewayOverrides {
     /// Adapt a supported client and enable Gateway capture.
     #[arg(long, value_enum)]
@@ -720,6 +729,7 @@ struct GatewayOverrides {
 }
 
 #[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RecordOverrides {
     /// Local directory or file for Trace Event journal.
     #[arg(long, value_name = "PATH")]
@@ -909,6 +919,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     )
     .context("decode delegated RunSpec")?;
     let mut stage_guard = None;
+    let registration_stage = stage_spec.clone();
     let pvisor = if let Some(stage_path) = stage_spec {
         let cleanup = args.stage.is_none();
         if cleanup {
@@ -969,7 +980,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         #[allow(unused_mut)]
         let mut builder = PVisor::builder()
             .storage(&storage)
-            .executors(vec![Arc::new(ProcessExecutor::default())])
+            .executors(vec![report_terminal(Arc::new(ProcessExecutor::default()))])
             .network(
                 NetworkDriverConfig::new(
                     config.overlaynet.mode,
@@ -1002,7 +1013,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         builder.build()
     } else {
         PVisor::builder()
-            .executors(vec![Arc::new(ProcessExecutor::default())])
+            .executors(vec![report_terminal(Arc::new(ProcessExecutor::default()))])
             .build()
     };
     let handle = match pvisor.run(spec).await {
@@ -1010,17 +1021,11 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         Err(error) => return Err(error.into()),
     };
     announce_control_socket(&handle);
+    if let Some(stage) = registration_stage {
+        super::host_cancel::register(&handle, &stage)?;
+    }
     let agentctl = handle.agentctl();
-    let cancellation = handle.cancellation();
-    let wait = handle.wait();
-    tokio::pin!(wait);
-    let result = tokio::select! {
-        result = &mut wait => result?,
-        _ = delegated_shutdown_signal() => {
-            cancellation.cancel();
-            wait.await?
-        }
-    };
+    let result = wait_cli_run(handle).await?;
     let output = crate::executor::delegated::DelegatedRunOutput {
         agentctl: agentctl.snapshot(),
         result,
@@ -1102,7 +1107,90 @@ impl Drop for TemporaryStageGuard {
     }
 }
 
+impl RunArgs {
+    pub(super) fn inherits_terminal_input(&self) -> anyhow::Result<bool> {
+        let Some(path) = &self.spec else {
+            // The normal CLI config path always constructs inherited stdin.
+            return Ok(true);
+        };
+        let spec: RunSpec = serde_json::from_slice(&std::fs::read(path)?)?;
+        let RunInvocation::Process(process) = &spec.invocation;
+        Ok(process.stdin == StdioMode::Inherit)
+    }
+}
+
+// Session publishes its final status only after driver teardown. Observe the
+// typed executor outcome at the CLI boundary first, so a terminal signal arms
+// service-owned escalation even if subsequent driver cleanup never returns.
+struct TerminalReportingExecutor(Arc<dyn RunExecutor>);
+#[async_trait::async_trait]
+impl RunExecutor for TerminalReportingExecutor {
+    fn descriptor(&self) -> pvisor_core::ExecutorPlan {
+        self.0.descriptor()
+    }
+    fn supports(&self, invocation: &pvisor_core::RunInvocation) -> bool {
+        self.0.supports(invocation)
+    }
+    fn supports_vm_network_attachment(&self) -> bool {
+        self.0.supports_vm_network_attachment()
+    }
+    fn supports_guest_workspace_overlay(&self) -> bool {
+        self.0.supports_guest_workspace_overlay()
+    }
+    fn supports_cpu_qos(&self) -> bool {
+        self.0.supports_cpu_qos()
+    }
+    async fn execute(&self, session: &crate::Session) -> crate::executor::ExecutorOutput {
+        let output = self.0.execute(session).await;
+        if output
+            .failure
+            .as_ref()
+            .is_some_and(|f| f.kind == pvisor_core::RunFailureKind::ProcessExit)
+        {
+            if let Some(signal) = output.executor_observations.termination_signal {
+                if [libc::SIGINT, libc::SIGTERM, libc::SIGHUP].contains(&signal) {
+                    super::host_service::notify_cancel(signal);
+                }
+            }
+        }
+        if output.state == RunState::Cancelled {
+            super::host_service::notify_cleanup();
+        }
+        output
+    }
+}
+
+pub(super) fn report_terminal(executor: Arc<dyn RunExecutor>) -> Arc<dyn RunExecutor> {
+    Arc::new(TerminalReportingExecutor(executor))
+}
+
+pub(super) async fn wait_cli_run(
+    handle: crate::RunHandle,
+) -> anyhow::Result<pvisor_core::RunResult> {
+    let token = handle.cancellation.clone();
+    let cancellation = handle.cancellation();
+    let wait = handle.wait();
+    tokio::pin!(wait);
+    tokio::select! {
+        result = &mut wait => Ok(result?),
+        _ = token.cancelled() => {
+            super::host_service::notify_cleanup();
+            Ok(wait.await?)
+        }
+        _ = delegated_shutdown_signal() => {
+            super::host_service::notify_cleanup();
+            cancellation.cancel();
+            Ok(wait.await?)
+        }
+    }
+}
+
 async fn delegated_shutdown_signal() {
+    #[cfg(unix)]
+    if let Some(token) = super::host_service::worker_cancellation() {
+        token.cancelled().await;
+        return;
+    }
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -1436,7 +1524,7 @@ async fn execute_config(
     let mut builder = PVisor::builder()
         .storage(&storage)
         .event_sink(event_sink)
-        .executors(vec![executor])
+        .executors(vec![report_terminal(executor)])
         .network(
             NetworkDriverConfig::new(
                 config.overlaynet.mode,
@@ -1706,16 +1794,8 @@ async fn execute_config(
         None
     };
     crate::util::startup_mark_run("cli.session_started", &run_id);
-    let cancellation = handle.cancellation();
-    let wait = handle.wait();
-    tokio::pin!(wait);
-    let result = tokio::select! {
-        result = &mut wait => result?,
-        _ = delegated_shutdown_signal() => {
-            cancellation.cancel();
-            wait.await?
-        }
-    };
+    super::host_cancel::register(&handle, &storage)?;
+    let result = wait_cli_run(handle).await?;
     crate::util::startup_mark_run("cli.run_finished", &run_id);
     if let Some(server) = execution_server {
         server.finish(&result).await?;

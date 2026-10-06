@@ -124,6 +124,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 指标分为首条有效输出（ready）和启动到进程退出（completion），两者分开报告。
   - 对照组为原生进程、Docker、Firecracker、QEMU microvm，以及 pVisor 的 host、staged、VM。Firecracker 首选显式 `fc-system` 官方发行版 stock 内核；独立定制 `fc-reference` 为补充。旧 `firecracker` 只能标为 legacy reference/unknown，不能称为系统内核。
   - 内核来源问题：相同已准备 userspace 与预算下，内核来源如何影响首条正确输出的等待？两个 FC variant 共用参数、rootfs/磁盘、CPU/RAM、logger 与 teardown；冻结内核、配置、来源元数据、stock vmlinuz/extractor 和可选 initrd 的精确字节并在前后校验，不使用 pVisor firmware 准备 FC 内核。来源/配置/initrd 的差异需记录，不能解释为纯 VMM 成本。
+  - QEMU stock 对照通过 `--qemu-system-receipt` 使用同一收据保留的原版 `/boot/vmlinuz` 和可选 initrd；FC 使用从该 vmlinuz 提取的 ELF。microvm 的模块驱动可使用 `prepare_stock_initrd.py` 准备仅加载原版模块并进入共同 rootfs 的 initrd，不能将最小 userspace 称为完整发行版启动。
   - 默认 normal 必须成功退出；可选 `--fc-ready-policy ready-only` 仅用于 ready，唯一且有序 Ready/Result/Exit0 与无 panic 后才受控 SIGTERM，再校验全部输出。ready-only 不报告 Completion，也不代表完整任务或正常关机；失败不能作为有效样本。新正式 cohort 不与历史用户数字合并。
   - 环境和镜像预先准备好，准备时间单独记录；热缓存与冷镜像分成两组。
   - 统一 CPU 和内存预算，随机交替执行，每格至少 30 个样本。

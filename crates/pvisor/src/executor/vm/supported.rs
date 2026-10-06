@@ -195,6 +195,124 @@ fn hide_ram_backing(device: &mut OverlayDeviceSpec, path: &Path) -> anyhow::Resu
     Ok(())
 }
 
+/// Apply host-only exclusions to both live lowers and their guest-visible copies.
+/// The latter matters for image roots and relocated checkpoint layers, whose host
+/// paths no longer describe the original HOME/workspace namespace.
+fn hide_host_authority(
+    root: &mut OverlayDeviceSpec,
+    workspace: Option<&mut OverlayDeviceSpec>,
+    workspace_target: Option<&Path>,
+    paths: &[PathBuf],
+) -> anyhow::Result<()> {
+    fn hide_view(
+        device: &mut OverlayDeviceSpec,
+        target: &Path,
+        paths: &[PathBuf],
+    ) -> anyhow::Result<()> {
+        for path in paths {
+            for lower in &device.lowers {
+                if let Ok(relative) = path.strip_prefix(lower.canonicalize()?) {
+                    anyhow::ensure!(
+                        !relative.as_os_str().is_empty(),
+                        "host authority directory cannot be the guest lower root"
+                    );
+                    if !device.excluded.contains(&relative.to_owned()) {
+                        device.excluded.push(relative.to_owned());
+                    }
+                }
+            }
+            if let Ok(relative) = path.strip_prefix(target) {
+                anyhow::ensure!(
+                    !relative.as_os_str().is_empty(),
+                    "host authority directory cannot be the guest projection root"
+                );
+                if !device.excluded.contains(&relative.to_owned()) {
+                    device.excluded.push(relative.to_owned());
+                }
+            }
+        }
+        Ok(())
+    }
+    hide_view(root, Path::new("/"), paths)?;
+    if let Some(workspace) = workspace {
+        hide_view(
+            workspace,
+            workspace_target.context("workspace authority exclusion needs a guest target")?,
+            paths,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn host_authority_paths(
+    metadata: &BTreeMap<String, serde_json::Value>,
+    env: &BTreeMap<String, String>,
+) -> anyhow::Result<Vec<PathBuf>> {
+    collect_host_authority_paths(
+        crate::runtime::host_transport::host_authority_root()?,
+        metadata,
+        env,
+    )
+}
+
+#[cfg(unix)]
+fn collect_host_authority_paths(
+    authority_root: PathBuf,
+    metadata: &BTreeMap<String, serde_json::Value>,
+    env: &BTreeMap<String, String>,
+) -> anyhow::Result<Vec<PathBuf>> {
+    // Always exclude siblings, even when the instance socket is custom or no
+    // host endpoint is present in the guest environment.
+    let mut paths = vec![authority_root];
+    if let Some(directory) =
+        metadata.get(crate::runtime::instance_control::INSTANCE_CONTROL_DIRECTORY_METADATA)
+    {
+        paths.push(serde_json::from_value::<PathBuf>(directory.clone())?.canonicalize()?);
+    }
+    // Stages carry discovery links, not just writable overlay backing. Resolve
+    // the directory itself rather than following a locator into the socket root.
+    for key in ["PVISOR_STORAGE", "PVISOR_OVERLAY_STAGE"] {
+        if let Some(path) = env.get(key) {
+            let path = Path::new(path);
+            let absolute = std::path::absolute(path)?;
+            anyhow::ensure!(
+                absolute.components().all(|part| matches!(
+                    part,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                )),
+                "invalid host staging directory"
+            );
+            paths.push(absolute);
+            if path.try_exists()? {
+                paths.push(path.canonicalize()?);
+            }
+        }
+    }
+    if let Some(endpoint) = env.get(crate::AGENTCTL_ENDPOINT_ENV) {
+        // Cooperative Session sockets live directly in /tmp, not in a
+        // dedicated authority directory. Hide only the endpoint, never its
+        // arbitrary parent. Keep its guest path even if a restored socket is
+        // no longer present on the host.
+        let path = Path::new(endpoint);
+        let absolute = std::path::absolute(path)?;
+        anyhow::ensure!(
+            absolute.components().all(|part| matches!(
+                part,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )),
+            "invalid cooperative endpoint path"
+        );
+        paths.push(absolute);
+        if path.try_exists()? {
+            paths.push(path.canonicalize()?);
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 impl VmExecutor {
     /// Fully read the authenticated RAM view into an Attempt-owned file.
     /// Default restore keeps its lazy shared baseline. CPU mappings remain
@@ -644,6 +762,12 @@ impl RunExecutor for VmExecutor {
             env.insert("TMPDIR".into(), "/tmp".into());
         }
         env.extend(invocation.env.clone());
+        let mut authority_paths = match host_authority_paths(&spec.metadata, &env) {
+            Ok(paths) => paths,
+            Err(error) => {
+                return failed_to_start(format!("prepare host authority exclusions: {error:#}"));
+            }
+        };
         // AgentCtl uses a host Unix socket. Runtime injection into the
         // invocation must not expose its credentials to the isolated guest.
         for key in [
@@ -853,18 +977,6 @@ impl RunExecutor for VmExecutor {
             ));
         }
         let mut hidden = vec![ram_backing.path.clone()];
-        if let Some(directory) = spec
-            .metadata
-            .get(crate::runtime::instance_control::INSTANCE_CONTROL_DIRECTORY_METADATA)
-        {
-            let directory = match serde_json::from_value::<PathBuf>(directory.clone()) {
-                Ok(directory) => directory,
-                Err(error) => {
-                    return failed_to_start(format!("invalid instance control directory: {error}"));
-                }
-            };
-            hidden.push(directory);
-        }
         if let Some(layers) = ram_backing.layer_directory() {
             hidden.push(layers.to_path_buf());
         }
@@ -996,10 +1108,26 @@ impl RunExecutor for VmExecutor {
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "macos", target_arch = "aarch64")
         ))]
-        if let Some(restore) = &self.restore
-            && let Err(error) = apply_restore(&mut runner, restore, context)
-        {
-            return failed_to_start(format!("restore launch contract: {error:#}"));
+        if let Some(restore) = &self.restore {
+            match host_authority_paths(&spec.metadata, &restore.guest.env) {
+                Ok(paths) => authority_paths.extend(paths),
+                Err(error) => {
+                    return failed_to_start(format!(
+                        "restore host authority exclusions: {error:#}"
+                    ));
+                }
+            }
+            if let Err(error) = apply_restore(&mut runner, restore, context) {
+                return failed_to_start(format!("restore launch contract: {error:#}"));
+            }
+        }
+        if let Err(error) = hide_host_authority(
+            &mut runner.root,
+            runner.workspace.as_mut(),
+            runner.workspace_target.as_deref(),
+            &authority_paths,
+        ) {
+            return failed_to_start(format!("hide host authority: {error:#}"));
         }
         #[cfg(any(
             all(target_os = "linux", target_arch = "x86_64"),
@@ -2330,6 +2458,217 @@ mod tests {
         assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
         assert_eq!(decoded.checkpoint.unwrap().attempt_id, "attempt");
         assert!(decoded.ram_dedup);
+    }
+
+    #[test]
+    fn host_authority_paths_include_common_root_custom_socket_and_locator_stages() {
+        let temporary = tempfile::tempdir().unwrap();
+        let host = temporary.path().canonicalize().unwrap();
+        let authority = host.join("authority");
+        let custom = host.join("custom");
+        let stage = host.join("stage");
+        for path in [&authority, &custom, &stage] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let metadata = BTreeMap::from([(
+            crate::runtime::instance_control::INSTANCE_CONTROL_DIRECTORY_METADATA.into(),
+            serde_json::to_value(&custom).unwrap(),
+        )]);
+        let socket = custom.join("agent.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::os::unix::fs::symlink(&socket, stage.join("control.sock")).unwrap();
+        let old_stage = host.join("old-stage");
+        let env = BTreeMap::from([
+            ("PVISOR_STORAGE".into(), stage.display().to_string()),
+            (
+                "PVISOR_OVERLAY_STAGE".into(),
+                old_stage.display().to_string(),
+            ),
+            (
+                crate::AGENTCTL_ENDPOINT_ENV.into(),
+                socket.display().to_string(),
+            ),
+        ]);
+        let paths = collect_host_authority_paths(authority.clone(), &metadata, &env).unwrap();
+        for path in [&authority, &custom, &stage, &old_stage, &socket] {
+            assert!(paths.contains(path));
+        }
+        assert_eq!(paths.len(), 5);
+        assert_eq!(
+            collect_host_authority_paths(authority.clone(), &BTreeMap::new(), &BTreeMap::new())
+                .unwrap(),
+            vec![authority]
+        );
+        let malformed = BTreeMap::from([(
+            crate::runtime::instance_control::INSTANCE_CONTROL_DIRECTORY_METADATA.into(),
+            serde_json::Value::Bool(true),
+        )]);
+        assert!(collect_host_authority_paths(host, &malformed, &env).is_err());
+    }
+
+    #[test]
+    fn cooperative_tmp_socket_exclusion_preserves_tmp_and_siblings_in_all_views() {
+        let temporary = tempfile::tempdir().unwrap();
+        let host = temporary.path().canonicalize().unwrap();
+        let authority = host.join("authority");
+        let image = host.join("image");
+        let restored = host.join("restored");
+        for path in [&authority, &image, &restored] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let socket = tempfile::Builder::new()
+            .prefix("pvisor-agent-")
+            .suffix(".sock")
+            .tempfile_in("/tmp")
+            .unwrap()
+            .into_temp_path();
+        std::fs::remove_file(&socket).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let sibling = tempfile::NamedTempFile::new_in("/tmp").unwrap();
+        let env = BTreeMap::from([(
+            crate::AGENTCTL_ENDPOINT_ENV.into(),
+            socket.display().to_string(),
+        )]);
+        let make = |lower: PathBuf| OverlayDeviceSpec {
+            lowers: vec![lower],
+            apply_target: None,
+            baseline_lower: None,
+            upper: host.join("upper"),
+            work: None,
+            preimages: None,
+            excluded: vec![],
+            access_policy: Default::default(),
+        };
+        // Exercise both a live Session socket and its now-missing captured path.
+        for live in [true, false] {
+            let paths =
+                collect_host_authority_paths(authority.clone(), &BTreeMap::new(), &env).unwrap();
+            assert!(paths.contains(&socket.to_path_buf()));
+            assert!(!paths.contains(&PathBuf::from("/tmp")));
+            assert!(!paths.contains(&std::fs::canonicalize("/tmp").unwrap()));
+            for lower in [PathBuf::from("/"), image.clone(), restored.clone()] {
+                for target in [Path::new("/tmp"), temporary.path()] {
+                    let mut root = make(lower.clone());
+                    let mut workspace = make(if lower == Path::new("/") {
+                        target.to_owned()
+                    } else {
+                        lower.clone()
+                    });
+                    hide_host_authority(&mut root, Some(&mut workspace), Some(target), &paths)
+                        .unwrap();
+                    let hidden = |device: &OverlayDeviceSpec, relative: &Path| {
+                        device
+                            .excluded
+                            .iter()
+                            .any(|path| relative.starts_with(path))
+                    };
+                    assert!(hidden(&root, socket.strip_prefix("/").unwrap()));
+                    assert!(!hidden(&root, Path::new("tmp")));
+                    assert!(!hidden(&root, Path::new("tmp/unrelated")));
+                    assert!(!hidden(&root, sibling.path().strip_prefix("/").unwrap()));
+                    assert!(!hidden(&workspace, Path::new("")));
+                    assert!(!hidden(&workspace, Path::new("unrelated")));
+                    if let Ok(relative) = socket.strip_prefix(target) {
+                        assert!(hidden(&workspace, relative));
+                    }
+                    if let Ok(relative) = sibling.path().strip_prefix(target) {
+                        assert!(!hidden(&workspace, relative));
+                    }
+                }
+            }
+            if live {
+                std::fs::remove_file(&socket).unwrap();
+            }
+        }
+        drop(listener);
+    }
+
+    #[test]
+    fn host_authority_exclusions_cover_every_projection_and_restored_copy() {
+        let temporary = tempfile::tempdir().unwrap();
+        let host = temporary.path().canonicalize().unwrap();
+        let home = host.join("home");
+        let project = home.join("project");
+        let authority = host.join("tmp/pvisor-host-test");
+        let custom = project.join("custom-control");
+        let stage = project.join("stage");
+        for path in [&home, &project, &authority, &custom, &stage] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        // The missing old stage can still contain locator data in a snapshot.
+        let old_stage = project.join("old-stage");
+        let paths = vec![authority.clone(), custom.clone(), stage.clone(), old_stage];
+        let make = |lower: PathBuf| OverlayDeviceSpec {
+            lowers: vec![lower],
+            apply_target: None,
+            baseline_lower: None,
+            upper: host.join("upper"),
+            work: None,
+            preimages: None,
+            excluded: vec!["already-hidden".into()],
+            access_policy: pvisor_core::overlay::FileAccessPolicy::new(
+                vec!["private.key".into()],
+                vec![".env".into()],
+            )
+            .unwrap(),
+        };
+        for restored in [false, true] {
+            for target in [&host, &home, &project] {
+                let lower = if restored {
+                    let copy = host.join("relocated-image");
+                    std::fs::create_dir_all(&copy).unwrap();
+                    copy
+                } else {
+                    target.clone()
+                };
+                let mut root = make(lower.clone());
+                let mut workspace = make(lower);
+                let root_policy = serde_json::to_value(&root.access_policy).unwrap();
+                let workspace_policy = serde_json::to_value(&workspace.access_policy).unwrap();
+                hide_host_authority(&mut root, Some(&mut workspace), Some(target), &paths).unwrap();
+                hide_host_authority(&mut root, Some(&mut workspace), Some(target), &paths).unwrap();
+                for path in &paths {
+                    assert!(
+                        root.excluded
+                            .contains(&path.strip_prefix("/").unwrap().to_owned())
+                    );
+                    if let Ok(relative) = path.strip_prefix(target) {
+                        assert!(workspace.excluded.contains(&relative.to_owned()));
+                    }
+                }
+                for device in [&root, &workspace] {
+                    assert!(device.excluded.contains(&PathBuf::from("already-hidden")));
+                    let unique = device
+                        .excluded
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>();
+                    assert_eq!(unique.len(), device.excluded.len());
+                }
+                assert_eq!(
+                    serde_json::to_value(&root.access_policy).unwrap(),
+                    root_policy
+                );
+                assert_eq!(
+                    serde_json::to_value(&workspace.access_policy).unwrap(),
+                    workspace_policy
+                );
+                // External common authority is not a workspace-relative path.
+                if *target != host {
+                    assert!(
+                        !workspace
+                            .excluded
+                            .contains(&PathBuf::from("tmp/pvisor-host-test"))
+                    );
+                }
+            }
+        }
+        let mut root = make(authority.clone());
+        assert!(hide_host_authority(&mut root, None, None, &paths).is_err());
+        let mut root = make(host.clone());
+        let mut workspace = make(host.clone());
+        assert!(
+            hide_host_authority(&mut root, Some(&mut workspace), Some(&custom), &paths).is_err()
+        );
     }
 
     #[test]

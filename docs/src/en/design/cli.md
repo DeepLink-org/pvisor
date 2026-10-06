@@ -76,7 +76,7 @@ Top-level commands follow the object they operate on: flat Job/workspace operati
 
 `status --review` remains an existing shortcut; `review` remains the detailed review entry. `run --tui` is the primary interactive path, with top-level `tui` retained for explicit frontend invocation. No additional `job` command layer is introduced, avoiding duplicate syntax for the same Job operations.
 
-Resource tools use `service` subcommands. Native execution capture, restoration and storage management use Job commands, with support determined by the VM profile. Names outside the current commands follow ordinary default execution rules; no retired-command aliases or migration handlers are retained.
+Resource tools use `service` subcommands. Native execution capture, restoration and storage management use Job commands, with support determined by the VM profile. Other unknown names follow ordinary default execution rules. Direct `pvisor ctrl`, `pvisor ctrl --help` and `pvisor help ctrl` explicitly reject with migration guidance instead of default-running a workload; `pvisor run -- ctrl` remains explicit workload intent, not a control API alias.
 
 ```bash
 pvisor service --help
@@ -92,9 +92,13 @@ Tools come from a static table and only a trusted installation directory; discov
 
 The default core build excludes Gateway. Use `--features gateway` for capture; wheel builds enable it. Without capture, OverlayNet still authorizes and forwards ordinary explicit proxy traffic. Requesting uncompiled capture or Gateway debug capabilities returns an error.
 
-Embedded callers use `RunHandle` for status, cancellation, checkpoints and Event subscriptions. Session owns Attempt lifecycle; AgentCtl retains workload cooperation duties. See [Core architecture](architecture.md) for execution/terminal handling and [Operation and Event](operations-events.md) for records/failures.
+Built-in Job CLI operations cross the on-demand persistent Host AgentCtl listener as typed requests; the frontend launches authorized request workers rather than reconstructing shell commands in the listener. Ordinary persisted Jobs need no endpoint arguments. Live VM addressing uses the global `--vm-socket`, `--vm-job-id` and `--vm-attempt-id` options on `status`, `suspend --vm-pause` / `--vm-offload`, and `resume --vm-load`; `ctrl` is removed. See the [CLI reference](../reference/cli.md#vm-instance-control).
+
+Embedded callers use `RunHandle` for status, cancellation, checkpoints and Event subscriptions. Session owns Attempt lifecycle; Guest AgentCtl retains workload cooperation duties, isolated from Host authority. See [Host and Guest AgentCtl](architecture.md#host-agentctl) for protocol compatibility, cancellation and upgrade limits. See [Core architecture](architecture.md) for execution/terminal handling and [Operation and Event](operations-events.md) for records/failures.
 
 ## Implementation ownership {#implementation-ownership}
+
+`cli/host.rs` owns typed Job dispatch and live VM option validation; `cli/host_service.rs` owns listener admission, compatibility and worker authorization. `cli/host_fds.rs`, `cli/host_cancel.rs` and `cli/host_process.rs` implement descriptor transfer, cancellation and process ownership; `cli/host_image.rs` implements macOS loaded/disk Mach-O UUID verification before hashing. `runtime/host_transport.rs` owns shared host-authority paths, identical bounded async/sync newline JSON framing and peer checks, including Job service/internal-worker frames; FD marker bytes remain separate, non-JSON transport records. The internal version-1 handshake checks the Job ticket schema and exact package/content-build compatibility. `JobCommand` embeds internal CLI DTOs and is not a stable public API; Core owns pure shared Host envelope/supervisor contracts and validation, not CLI DTOs or transport.
 
 `cli/run.rs` owns new Job configuration and startup. `cli/run/lifecycle.rs` owns workspace branches and native execution restoration. `runtime/job_execution.rs` owns durable Job state, request receipts and native terminal acknowledgement; it does not infer suspension from a saved filesystem.
 

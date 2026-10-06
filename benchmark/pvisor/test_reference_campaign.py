@@ -50,3 +50,24 @@ def test_input_verification_failure_cannot_publish_successful_timings(tmp_path, 
         (tmp_path / 'input-final-verification.json').write_text(json.dumps(dict(state='failed')))
     with pytest.raises(ValueError):
         verify_input_records(tmp_path / 'report.json', report)
+
+
+@pytest.mark.parametrize('fault', [None, 'artifact', 'row'])
+def test_publication_rechecks_measured_stock_kernel_bytes(tmp_path, fault):
+    from test_firecracker_kernels import prepare
+    from firecracker_kernels import verify_kernel_receipt
+    from publish_reference_campaign import verify_kernel_records
+    receipt = prepare(tmp_path, 'fc-system', True)
+    identity = verify_kernel_receipt(receipt, 'fc-system')
+    report = dict(arguments=dict(fc_system_receipt=str(receipt), qemu_system_receipt=str(receipt)),
+                  reference_kernels={b:identity for b in ('fc-system', 'qemu', 'qemu-microvm')},
+                  rows=[dict(backend=b, kernel_provenance=identity) for b in ('fc-system', 'qemu', 'qemu-microvm')])
+    if fault == 'artifact':
+        (receipt.parent / 'vmlinuz').write_bytes(b'changed stock input')
+    if fault == 'row':
+        report['rows'][1]['kernel_provenance'] = None
+    if fault:
+        with pytest.raises(ValueError):
+            verify_kernel_records(report)
+    else:
+        verify_kernel_records(report)

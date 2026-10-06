@@ -57,6 +57,8 @@ mod memory;
 mod portable;
 #[path = "ram_dedup.rs"]
 mod ram_dedup;
+#[path = "startup_profile.rs"]
+mod startup_profile;
 
 #[cfg(test)]
 #[path = "kernel_bundle.rs"]

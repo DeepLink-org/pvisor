@@ -31,6 +31,43 @@ fn removed_ctrl_is_not_a_builtin() {
         .unwrap();
     assert!(output.status.success());
     assert!(!String::from_utf8_lossy(&output.stdout).contains("  ctrl "));
+    let root = tempfile::tempdir().unwrap();
+    let tools = root.path().join("tools");
+    std::fs::create_dir(&tools).unwrap();
+    let marker = root.path().join("accidental-agent");
+    let ctrl = tools.join("ctrl");
+    std::fs::write(
+        &ctrl,
+        format!("#!/bin/sh\nprintf invoked > '{}'\n", marker.display()),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&ctrl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for args in [
+        vec!["ctrl", "--socket", "/retired.sock", "status"],
+        vec!["ctrl", "--help"],
+        vec!["help", "ctrl"],
+    ] {
+        let rejected = command(root.path())
+            .env("PATH", &tools)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert!(
+            String::from_utf8_lossy(&rejected.stderr).contains("`pvisor ctrl` has been retired"),
+            "{}",
+            String::from_utf8_lossy(&rejected.stderr)
+        );
+        assert!(
+            !marker.exists(),
+            "retired ctrl must not be normalized to an Agent execution"
+        );
+        assert!(
+            !root.path().join("runs").exists(),
+            "retired ctrl must not admit a Job"
+        );
+    }
 }
 
 #[test]

@@ -115,6 +115,44 @@ impl<R> AgentCtlHostResponse<R> {
     }
 }
 
+/// Host-only live VM controls for an explicitly addressed Attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HostVmCommand {
+    Pause,
+    Resume,
+    Offload { file: Option<std::path::PathBuf> },
+    Status,
+}
+
+impl<'de> Deserialize<'de> for HostVmCommand {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Serde's internally tagged unit variants ignore extra fields, even with
+        // deny_unknown_fields. Empty struct variants enforce the wire contract.
+        #[derive(Deserialize)]
+        #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+        enum WireCommand {
+            Pause {},
+            Resume {},
+            Offload { file: Option<std::path::PathBuf> },
+            Status {},
+        }
+        Ok(match WireCommand::deserialize(deserializer)? {
+            WireCommand::Pause {} => Self::Pause,
+            WireCommand::Resume {} => Self::Resume,
+            WireCommand::Offload { file } => Self::Offload { file },
+            WireCommand::Status {} => Self::Status,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostVmResult {
+    pub status: crate::RunStatus,
+    pub value: Option<crate::operation::Value>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HostSupervisorCommand {
@@ -211,6 +249,54 @@ mod tests {
         r.version = 2;
         assert!(r.validate("request").is_err());
     }
+    #[test]
+    fn vm_commands_use_strict_operation_tagged_wire() {
+        for (command, wire) in [
+            (
+                HostVmCommand::Pause,
+                serde_json::json!({"operation": "pause"}),
+            ),
+            (
+                HostVmCommand::Resume,
+                serde_json::json!({"operation": "resume"}),
+            ),
+            (
+                HostVmCommand::Status,
+                serde_json::json!({"operation": "status"}),
+            ),
+            (
+                HostVmCommand::Offload { file: None },
+                serde_json::json!({"operation": "offload", "file": null}),
+            ),
+            (
+                HostVmCommand::Offload {
+                    file: Some("/private/ram".into()),
+                },
+                serde_json::json!({"operation": "offload", "file": "/private/ram"}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&command).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<HostVmCommand>(wire).unwrap(),
+                command
+            );
+        }
+        assert_eq!(
+            serde_json::from_value::<HostVmCommand>(serde_json::json!({"operation": "offload"}))
+                .unwrap(),
+            HostVmCommand::Offload { file: None },
+        );
+        for wire in [
+            serde_json::json!({"operation": "load"}),
+            serde_json::json!({"operation": "pause", "file": null}),
+            serde_json::json!({"operation": "resume", "extra": true}),
+            serde_json::json!({"operation": "offload", "extra": true}),
+            serde_json::json!({"command": "status", "file": null}),
+        ] {
+            assert!(serde_json::from_value::<HostVmCommand>(wire).is_err());
+        }
+    }
+
     #[test]
     fn strict_wire_contracts() {
         let mut value = serde_json::to_value(request()).unwrap();

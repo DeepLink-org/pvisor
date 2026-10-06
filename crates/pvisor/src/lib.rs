@@ -58,6 +58,10 @@ pub use executor::vm::run_internal_if_requested as run_krun_internal_if_requeste
 #[cfg(target_os = "linux")]
 pub use executor::vm::sample_supervisor_memory;
 pub use executor::{ExecutorOutput, RunExecutor};
+pub use pvisor_core::host_protocol::{
+    AGENTCTL_HOST_MAX_FRAME_BYTES, AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode,
+    AgentCtlHostRequest, AgentCtlHostResponse, AgentCtlTarget, HostVmCommand, HostVmResult,
+};
 pub use pvisor_core::overlay::StageDurability;
 pub use pvisor_core::{
     AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
@@ -88,10 +92,7 @@ pub use runtime::event::{
     EventAppendErrorKind, EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher,
 };
 #[cfg(unix)]
-pub use runtime::instance_control::{
-    INSTANCE_CONTROL_MAX_FRAME, INSTANCE_CONTROL_VERSION, InstanceControlCommand,
-    InstanceControlRequest, InstanceControlResponse, exchange as instance_control_exchange,
-};
+pub use runtime::instance_control::exchange as host_vm_exchange;
 pub use runtime::run::{
     PVisor, PVisorBuilder, PVisorError, RunCancellation, RunControlHandle, RunEventStream,
     RunHandle,

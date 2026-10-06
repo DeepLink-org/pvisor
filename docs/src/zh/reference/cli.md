@@ -6,6 +6,32 @@ Job 是 pVisor 面向用户的核心对象；`pvisor run` 创建 Job，其余扁
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guides/executors/index.md)。
 
+## Host Job 服务 {#host-agentctl}
+
+内置 Job 命令（`run`、`status`、`kill`、`suspend`、`resume`、`fork`、
+`checkpoint`、`inspect`、`review`、`apply`、`drop`）通过 Host AgentCtl
+提交类型化请求。首次请求在 `/tmp/pvisor-host-<有效 UID>` 下启动持久的
+同用户 listener；使用规范化 `/tmp`，macOS 通常为 `/private/tmp`。
+后续请求复用 listener。普通持久 Job 无需手动启动服务或传入端点参数。
+不带参数的 `pvisor` 仍显示帮助；`pvisor -- COMMAND` 按默认执行规则
+通过同一 Job 服务运行。
+
+前端保留终端并启动经 listener 授权的 worker；stdio 与私有 worker 通道
+使用 Unix `SCM_RIGHTS` 传递描述符。Job 服务／内部 worker 的 JSON
+统一使用 `runtime/host_transport.rs` 的 async/sync 换行 framing；JSON
+上限 1 MiB，不含分隔符。FD marker 字节是独立传输记录，不是 JSON。
+listener 检查内核提供的同 UID 身份，在接纳 stdio／命令之前核对 Host
+版本 1、内部 Job ticket schema、包版本和可执行文件内容摘要。
+类型化 `JobCommand` payload 包含绑定精确 schema／构建的内部 CLI DTO，
+不是稳定公共 API。
+它不是 `pvisor service` 管理的 node/cache/pool 服务。Guest AgentCtl
+`Hello`/`Sync` 仍是独立协作通道，其 token 不能授权宿主 Job 或 VM 操作。
+
+升级前先排空活动请求，并使用旧二进制停止旧 listener。新客户端拒绝不兼容
+的 live listener，不提供 legacy fallback。响应丢失和取消可能留下已发生
+但结果不确定的副作用；请求不会自动重试。所有权、协议与验证限制见
+[Host 与 Guest AgentCtl](../design/architecture.md#host-agentctl)。
+
 ## Service 命令 {#service}
 
 顶层命令操作原生 Job；`service` 管理原生节点资源并派发已安装的 companion。`run/status/restart/stop --config FILE` 管理配置中的原生角色；单机沙箱 daemon 使用独立的生命周期 API 与持久状态。
@@ -19,7 +45,11 @@ pvisor service memory-pool --help
 
 原生资源工具使用 `service cache/memory-pool`。`service daemon` 将参数原样派发到单独安装、同目录的匹配 `pvisor-daemon`；使用旧构建时以 `pvisor service --help` 为准。daemon 单独安装后也可直接调用，步骤见 [daemon 安装指南](../guides/daemon/index.md)。NativeRuntime 嵌入 VM 执行；daemon 可执行入口与必需原生参数已接入，checkpoint/fork 与 stage/apply API 未实现，也不自动获取 node 共享。Controller/Worker 任务工具及其配置已退役。原生 node/cache/pool 所有权与部署边界见 [Service 入口](../guides/daemon/service.md)。
 
-当前命令以外的名称按默认执行规则处理，不保留旧命令别名或迁移处理逻辑。使用 `pvisor -- COMMAND` 显式执行程序。
+其他未知名称按默认执行规则处理。已退役的 `ctrl` 是明确例外：
+`pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 在 Job 准入前
+拒绝并给出迁移提示，不会按默认规则运行名为 `ctrl` 的程序。控制 VM
+使用下方 live VM 命令。`pvisor run -- ctrl` 仍表达显式工作负载意图，
+不恢复旧控制 API。使用 `pvisor -- COMMAND` 显式执行程序。
 
 ## 按任务查找命令
 
@@ -114,7 +144,7 @@ Jobs:
   resume      继续暂停的 Job
   fork        从暂存文件或 VM 执行状态创建分支
   checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
-  ctrl        仅宿主可用的 live VM Attempt 控制（显式 socket 与身份）
+
 
 Filesystems:
   inspect     只读查看 Job 文件系统
@@ -529,7 +559,7 @@ backing 文件。普通文件 backing 模式省略时，在用户缓存下创建
 `--vm-ram-compression`（`[vm].ram_compression = true`）启用 PVZRAM v2 manifest
 与不可变 Zstd Seekable base/delta sidecar 文件，
 需要 Linux FUSE 或 macFUSE kernel backend；压缩在启动时选择。
-使用下方 `pvisor ctrl` 或 Rust `RunHandle::pause/resume/offload` 控制
+使用下方 live VM 选项或 Rust `RunHandle::pause/resume/offload` 控制
 live VM。offload 的新目标路径限于当前 backing 的同一文件系统。
 回收结果是驻留页采样，不保证 RAM 全部消失。文件不是完整 VM 快照。
 已有[存储/控制测试与压缩产物](../design/offload/index.md#experiments)
@@ -541,7 +571,7 @@ live VM。offload 的新目标路径限于当前 backing 的同一文件系统�
 
 | Run 选项 | `[vm]` 下的 TOML 字段 | 默认值 / 用途 |
 | --- | --- | --- |
-| `--vm-control-socket PATH` | `control_socket` | 未设置：自动创建私有 `/tmp/pvctrl-*/ctrl.sock` |
+| `--vm-control-socket PATH` | `control_socket` | 未设置：CLI 在规范化 `/tmp` 下创建 `/tmp/pvisor-host-<有效 UID>/vm-<UUID>.sock` |
 | `--vm-ram-backing FILE` | `ram_backing` | 未设置：普通文件 backing 模式使用 attempt 本地文件；只允许新文件 |
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`；FUSE/macFUSE Seekable backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`；Linux x86_64 本地 live 冷 pager |
@@ -573,48 +603,66 @@ executor 时会被拒绝。路径选项只替换对应字段，省略的路径�
 ### Live VM Attempt 控制 {#vm-instance-control}
 
 每个原生 VM Attempt 都自动获得仅宿主可用的控制端点，包括不保留 Job
-存储的运行。`pvisor run` 向 **stderr** 打印准确身份：
+存储的嵌入式运行。CLI 端点直接位于私有 Host 服务根目录下。
+`pvisor run` 向 **stderr** 打印准确身份：
 
 ```text
-pVisor VM control: --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE
+pVisor live VM options: --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE (status; suspend JOB --vm-pause/--vm-offload; resume JOB --vm-load)
 ```
 
-将该行的 socket、Run ID 和 Attempt ID 复制到另一宿主终端；
+将该行的 socket、Job ID（内部 Run ID）和 Attempt ID 复制到另一宿主终端；
 以下示例值必须替换为该 live 身份：
 
 ```bash
-pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE status
-pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE pause
-pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE resume
-pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE offload --file /private/vm-ram/offloaded.ram
-pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE load
+pvisor status --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE
+pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-pause
+pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
+pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-offload --vm-ram-file /private/vm-ram/offloaded.ram
+pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
 ```
 
-即使 `status` 也必须提供 `--socket PATH`、`--run-id ID` 和
-`--attempt-id ID`；过期或不匹配身份被拒绝。只有 `offload` 接受可选的
-`--file PATH`：省略时使用已有 backing，或指定同一文件系统上 guest
-不可访问的新路径。成功后才能使用发布的文件。`load` 映射为 `RunResume`：
-与 `resume` 一样继续同一个已 offload 的 Attempt，不主动预触全部 RAM 页。
-它既不重启进程，也不恢复持久快照；后者使用独立的 Job checkpoint/resume
-合同。`pause` 停止 vCPU，不等同于 offload 的 CPU/设备静默边界。
+旧 `ctrl` 命令已删除。全局选项 `--vm-socket PATH`、`--vm-job-id ID`
+与 `--vm-attempt-id ID` 必须一起提供，即使 live `status` 也不例外；
+过期或不匹配身份被拒绝。`suspend` 和 `resume` 必须提供与
+`--vm-job-id` 相同的 Job 位置参数，不能用 `last` 或 stage 路径。
+仅 `status`、`suspend --vm-pause` / `--vm-offload` 和
+`resume --vm-load` 接受该 live 控制模式。pause 与 offload 互斥。
+这些参数不改变普通持久 Job 的 suspend/resume：不带它们时仍使用
+执行检查点捕获／恢复。
 
-控制响应以 JSON 写入 stdout，包含 `version`、`run_id`、`attempt_id`、
-`ok`、`status`、`value` 和 `error`。拒绝操作时输出 `ok: false` 与错误，
-并以非零状态退出；传输/连接及 CLI 解析失败也非零退出，但不一定产生 JSON
-响应。非 VM 控制明确不受支持，不回退为进程信号。Attempt 结束时移除端点；
-它与暂存 Job 的 `control.sock` 不同。
+`--vm-offload` 接受可选的 `--vm-ram-file PATH`：省略时使用已有 backing，
+或指定同一文件系统上 guest 不可访问的新路径。成功后才能使用发布的文件。
+`--vm-load` 选择 `HostVmCommand::Resume`，映射为 `RunResume`，不存在
+`Load` 线上操作。它重新加载／解除暂停同一个 live Attempt，不主动预触
+全部 RAM 页；既不重启进程，也不恢复持久快照。
+`--vm-pause` 停止 vCPU，不等同于 offload 的 CPU/设备静默边界。
 
-需要稳定路径时，在启动 VM **之前**创建私有父目录：
+成功的 live 控制响应以 JSON 写入 stdout，包含 `HostVmResult` 的
+`status` 与 `value` 字段。Core 的 `host_protocol` 拥有 `HostVmCommand`
+和 `HostVmResult`；嵌入调用方通过 `pvisor::host_vm_exchange` 交换
+`AgentCtlHostRequest<HostVmCommand>` / `AgentCtlHostResponse<HostVmResult>`。
+旧 `InstanceControl*` 适配器已删除。端点线上协议用 version-1 Host envelope
+包装结果并关联 `request_id`；类型化 Host 错误使 CLI 非零退出，不一定在
+stdout 产生 JSON。
+传输／连接及解析失败也非零退出。非 VM 控制明确不受支持，不回退为
+进程信号。Attempt 结束时移除端点；它与暂存 Job 的控制发现链接不同。
+
+需要稳定的 CLI 路径时，使用私有服务根目录。以下 Linux 示例假设有效 UID
+为 `1000`；替换为自己的有效 UID 和规范临时目录（macOS 通常是
+`/private/tmp`）：
 
 ```bash
-install -d -m 0700 /tmp/pvisor-host-control
-pvisor run --executor vm --vm-control-socket /tmp/pvisor-host-control/ctrl.sock -- /bin/sleep 600
+install -d -m 0700 /tmp/pvisor-host-1000
+pvisor run --executor vm --vm-control-socket /tmp/pvisor-host-1000/ctrl.sock -- /bin/sleep 600
 ```
 
-父目录必须已存在、不是符号链接、属于有效 UID，且权限恰为 `0700`；
-已有 socket 路径绝不覆盖。socket 权限为 `0600`，只接受同 UID 客户端。
-它永不导出到 guest，包括 host-rootfs VM；不要放入 guest 可访问的挂载或
-可写根。宿主父进程提供 executor 排除项；它不是 guest 可见的发现文件。
+CLI 自定义 socket 必须直接位于规范化私有 Host 服务根目录下；其他私有
+父目录也会被拒绝。根目录必须不是符号链接、属于有效 UID，且权限恰为
+`0700`；已有 socket 路径绝不覆盖。socket 权限为 `0600`，仅接受同 UID。
+`--vm-control-socket` 在创建 VM 时选路径，`--vm-socket` 寻址已有 live VM。
+嵌入调用方另有验证私有父目录的自定义路径 API。宿主权限端点被排除在
+guest 访问范围之外，包括 host-rootfs VM；不要通过 guest 挂载或可写根
+暴露服务根目录。它们不是 guest 发现文件。
 
 ### VM 本地 live 冷压缩 {#vm-cold-ram-compression}
 

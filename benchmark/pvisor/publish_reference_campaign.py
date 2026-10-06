@@ -9,6 +9,7 @@ import tempfile
 
 from publication import distribution, percentile, publish, write_csv
 from reference_baselines import digest
+from firecracker_kernels import verify_kernel_receipt
 
 
 def verify_input_records(path, report):
@@ -51,6 +52,21 @@ def paired_comparison(candidate, control, iterations=5000):
     return result
 
 
+def verify_kernel_records(report):
+    for backend, identity in report.get('reference_kernels', {}).items():
+        if identity is None:
+            continue
+        kind = 'fc-reference' if backend == 'fc-reference' else 'fc-system'
+        receipt = report['arguments']['fc_reference_receipt' if kind == 'fc-reference'
+                                     else 'qemu_system_receipt' if backend.startswith('qemu')
+                                     else 'fc_system_receipt']
+        if verify_kernel_receipt(receipt, kind) != identity:
+            raise ValueError('retained reference kernel differs from measured identity')
+        if any(row.get('kernel_provenance') != identity for row in report['rows']
+               if row['backend'] == backend):
+            raise ValueError('trial kernel provenance differs from cohort')
+
+
 def publish_campaign(paths, output):
     reports = [(path, json.loads(path.read_text())) for path in paths]
     identities = {(r['pvisor_sha256'], r.get('binary_source_manifest_sha256'),
@@ -59,6 +75,7 @@ def publish_campaign(paths, output):
         raise ValueError('campaign requires one verified current binary/source/input identity')
     for path, report in reports:
         verify_input_records(path, report)
+        verify_kernel_records(report)
         receipt = report.get('binary_build') or {}
         if receipt.get('pvisor_sha256') != report['pvisor_sha256'] or receipt.get('source_manifest_sha256') != report['binary_source_manifest_sha256']:
             raise ValueError('report identity disagrees with binary build receipt')
@@ -89,7 +106,7 @@ def publish_campaign(paths, output):
                 if mode == 'filesystem':
                     metrics += [op+'_worker_ms' for op in ('metadata','read','write','git','rg','cargo','npm')]
                 for candidate in ('pvisor-host','pvisor-staged','pvisor-vm'):
-                    for control in ('native','docker','firecracker','qemu','qemu-microvm'):
+                    for control in ('native','docker','firecracker','fc-system','fc-reference','qemu','qemu-microvm'):
                         if any(report['capabilities'].get(mode+'/'+backend,{}).get('state') != 'available' for backend in (candidate,control)):
                             continue
                         for metric in metrics:
@@ -97,9 +114,12 @@ def publish_campaign(paths, output):
                                 def value(row):
                                     return row['result']['filesystem'][metric.removesuffix('_worker_ms')]['worker_ms'] if metric.endswith('_worker_ms') else row[metric]
                                 return [dict(trial=row['trial'],value=value(row)) for row in report['rows'] if row['mode']==mode and row['backend']==backend]
+                            candidate_values, control_values = values(candidate), values(control)
+                            if any(row['value'] is None for row in candidate_values + control_values):
+                                continue  # Ready-only supplies no completion comparison.
                             comparisons.append(dict(batch=path.parent.name,benchmark_id=report['benchmark_id'],mode=mode,
                                 candidate=candidate,control=control,metric=metric,unit='ms',
-                                **paired_comparison(values(candidate),values(control)),
+                                **paired_comparison(candidate_values,control_values),
                                 confidence_method='5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI'))
     output.mkdir(parents=True, exist_ok=True)
     write_csv(output/'runtime-summary.csv',statistics_rows)

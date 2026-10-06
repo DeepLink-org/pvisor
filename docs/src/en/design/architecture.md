@@ -23,6 +23,125 @@ The [daemon](daemon/index.md) uses VM-only NativeRuntime: detached supervisors e
 
 Core neither owns the execution loop nor starts processes or opens control sockets. pvisor implements AgentCtl clients/servers and approval sockets. Drivers implement file, network and isolation boundaries. The default core does not depend on Gateway, TUI or replay; the `gateway` feature enables capture.
 
+## Host and Guest AgentCtl {#host-agentctl}
+
+Host AgentCtl is the authority path for built-in Job CLI operations. Guest
+AgentCtl is the per-Attempt cooperation path for workload `Hello`/`Sync`, client
+state, directives and checkpoint quiescence. They have separate schemas,
+credentials and endpoints: a guest cooperation token never authorizes host Job,
+VM, staged-file or daemon-supervisor controls. The Bundle's `agentctl` snapshot
+still describes Guest cooperation, not a Host authorization receipt.
+
+### Listener and request ownership {#host-job-service}
+
+The CLI parses a typed `JobCommand` and connects to an on-demand persistent
+listener. `JobCommand` embeds CLI DTOs: it is an internal exact-schema/build
+contract, not a stable public API. Core's shared Host envelopes and supervisor
+contracts remain pure definitions and validation, without CLI DTOs or transport. `cli/host_service.rs` serializes startup with a private lock and
+publishes a generation/capability manifest plus a generation-named Unix socket
+under canonical `/tmp/pvisor-host-<effective-UID>`. The root is same-UID,
+non-symlink and exactly `0700`; sockets and private manifest files are `0600`.
+Invalid pre-existing entries fail closed rather than being repaired with chmod.
+The listener is independent of the node/cache/pool deployment service.
+
+After kernel same-UID peer authentication and build compatibility negotiation,
+the frontend transfers stdin/stdout/stderr with `SCM_RIGHTS` and sends its typed
+command, cwd, environment, terminal context and pinned target. The listener
+returns a correlated ticket with stdio and a private worker channel. The
+frontend launches the checked executable as a child in its originating terminal
+session and a separate process group. The listener verifies registration and
+worker readiness before granting admission; the worker does not reinterpret
+shell argv. Cwd, environment, output and exit status belong to the request,
+not the persistent listener. Embedded `PVisor` calls still enter the runtime
+directly rather than requiring this CLI frontend.
+
+Persisted-Job selectors resolve without endpoint arguments. Selected records
+are pinned to Job, Attempt and execution generation where present and rechecked
+before effects; stale selection is not silently retargeted. Host live controls
+and stage discovery links also use private endpoints under the shared authority
+root. Executors exclude the authority root from guest exposure; the CLI rejects
+guest filesystem sources that expose it. Same-UID is a host trust boundary,
+not isolation from every process belonging to that user.
+
+### Wire contract and upgrades {#host-wire}
+
+Core defines `AgentCtlHostRequest<C>` (`version`, `request_id`, optional `target`,
+`command`) and `AgentCtlHostResponse<R>` (`version`, `request_id`, `result`).
+Version is currently **1**; targets contain `job_id`, optional `attempt_id` and
+optional `generation`. Endpoint owners validate authorization and target scope.
+Live Attempt endpoints require the exact Job/Attempt and reject an independent
+generation. Envelopes reject unknown fields; identities are nonempty, at most
+256 bytes, and contain no control characters. The Job service and its internal
+workers now use `runtime/host_transport.rs` for newline-delimited JSON, with the
+same async/sync framing rules and a 1 MiB JSON limit excluding the newline.
+Readers consume only through that delimiter, preserving following frames or FD
+markers. `SCM_RIGHTS` marker bytes are separate transport records, not JSON;
+`cli/host_fds.rs` owns their descriptor handling. Typed error codes are
+`invalid_request`, `unauthorized`, `version_mismatch`, `conflict`, `unsupported`,
+`internal` and `unavailable`.
+
+Core's `host_protocol` also defines live VM `HostVmCommand` (`Pause`, `Resume`,
+`Offload`, `Status`) and `HostVmResult` (`status`, `value`). `pvisor` exports
+`host_vm_exchange` for typed Host request/response exchange. The old
+`InstanceControl*` adapters are removed; `--vm-load` selects `Resume`, mapped to
+`RunResume` of the same live Attempt, not a `Load` wire operation.
+
+The internal Job handshake checks Host version **1**, the Job ticket schema,
+Cargo package version and BLAKE3 executable content digest
+before descriptor or command admission. A package version alone does not
+establish compatibility; in-place rebuilds can also be incompatible. Executable
+path, ownership, permissions, device/inode and file content are checked before
+worker launch.
+
+Linux hashes `/proc/self/exe`. On macOS, `cli/host_image.rs` checks the UUID of
+dyld's loaded main image against the on-disk Mach-O `LC_UUID` for the matching
+CPU slice before hashing that same open file. Missing, malformed, ambiguous or
+mismatched UUID metadata fails closed; admission requires a matching source
+Mach-O UUID. This implements the first-pathname-replacement identity check,
+rather than leaving that check outstanding. UUID matching is not byte-for-byte
+attestation of loaded memory or kernel-pinned exec authority. The macOS platform
+path has not been compiled or tested; parser checks do not validate dyld access,
+platform linking or actual executable replacement behavior.
+
+Daemon native supervisors now use the same version-1 newline Host envelopes
+with private owner/token credentials and Job/Attempt/generation targeting.
+They do not use Guest `Hello`/`Sync` or the CLI worker ticket mechanism. This wire
+format is incompatible with old supervisors. Drain sandboxes using the old
+binary before upgrade; similarly drain active CLI requests and stop the old
+Job listener before replacing it. A new client rejects an incompatible live
+listener before submitting descriptors or commands. There is no legacy fallback
+or transparent takeover of an old supervisor.
+
+### Cancellation and validation limits {#host-limits}
+
+The frontend latches SIGINT/SIGTERM/SIGHUP before startup and admission, sends
+correlated cancellation, and owns terminal restoration and worker reaping. The
+listener retains request cleanup ownership through worker completion and can
+escalate cleanup. Linux implements subreaper adoption, `/proc` descendant
+tracking and pidfd-based signalling, with the listener excluded from request
+cleanup. macOS tracks birth-identified descendants and known workload groups
+across ordinary process-group changes. Cleanup freezes the root and discovered
+forkers, rescans until the tracked set stabilizes, then sends individual
+birth-checked signals. It is no longer limited to the worker process group.
+Already-reparented orphans missed by discovery are not guaranteed to be owned;
+libproc identity checks followed by numeric-PID signals are not atomic pidfd
+operations. This is not Linux-equivalent containment. The macOS cleanup path has
+not been compiled or tested.
+
+Host transport and process checks do not establish guest correctness or full
+platform validation. Real-VM TUI end-to-end validation remains unavailable;
+macOS identity and cleanup paths retain the platform-specific limits above.
+
+A persistent listener is not a durable request queue. `request_id` correlates
+responses, errors, tickets and cancellation; it is not universal deduplication
+or an exactly-once contract. Some durable Job operations retain their own scoped
+receipts, but that does not cover every Host command. Disconnects, timeouts and
+cancellation can follow effects already performed; the frontend reports
+ambiguity and does not automatically retry. Reconcile Job state and artifacts
+before deciding what to submit next. Real-VM TUI end-to-end behavior has not been
+validated for this refactor; transport, process or mock checks cannot establish
+guest correctness or production durability.
+
 ## A production execution path
 
 ```text
@@ -45,9 +164,9 @@ For example, the network driver narrows requested Ambient capability to Deny. Re
 
 Each current `PVisor::run` creates one Attempt owned and managed by pvisor's `Session`. See [Execution model](execution-model.md) for Job, Run and Attempt identities.
 
-Session owns driver preparation, the AgentCtl server, cancellation/timeouts, cleanup, observation checks, Bundle storage and terminal publication. Executors return `ExecutorOutput`; they neither assign Job/Attempt identities nor publish terminal state. `RunHandle` exposes status, cancellation, checkpoints and event subscriptions. Requesting cancellation does not mean execution has stopped.
+Session owns driver preparation, the Guest AgentCtl server, cancellation/timeouts, cleanup, observation checks, Bundle storage and terminal publication. Executors return `ExecutorOutput`; they neither assign Job/Attempt identities nor publish terminal state. `RunHandle` exposes status, cancellation, checkpoints and event subscriptions. Requesting cancellation does not mean execution has stopped.
 
-Process/VM executors clean up their managed process groups; containers use the runtime termination interface. See [Isolation design](isolation.md) for descendants outside the group and platform gaps. AgentCtl provides workload cooperation and checkpoint quiescence, not mandatory enforcement.
+Process/VM executors clean up their managed process groups; containers use the runtime termination interface. See [Isolation design](isolation.md) for descendants outside the group and platform gaps. Guest AgentCtl provides workload cooperation and checkpoint quiescence, not mandatory enforcement; Host AgentCtl is the separate host-authority path described above.
 
 ## Event is the observation interface
 

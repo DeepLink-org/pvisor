@@ -192,7 +192,32 @@ python3 benchmark/pvisor/reference_baselines.py \
 
 Both variants use identical FC boot args, the same prepared ext4 template/fresh trial copy, two vCPUs, configured RAM, host affinity, Warning logger and termination procedure. Only kernel/required initrd and recorded provenance differ; configuration and initrd differences limit causal attribution to kernel source alone. Receipt and all artifact hashes are validated before/after each trial and the cohort, including the final gate after failures. The common prepared-input gate still applies. Declare the existing verified `--resource-budget` and matching budget options when enforcing a whole-parent budget; affinity alone is not a complete resource-enforcement claim.
 
-`--fc-ready-policy normal` is default and requires normal process exit zero plus checked guest output. `ready-only` is optional and rejected outside `--modes ready`: exactly one ordered Ready, successful matching Result and Exit0 must arrive before SIGTERM is sent to the owned FC process group. All final stdout/stderr are checked again; panic, duplicate/missing markers, timeout/SIGKILL and uncontrolled nonzero exit remain failures. Ready-only rows have `completion_ms: null` and no Completion summary. This proves checked output, not normal guest shutdown; non-FC backends retain normal completion even in an invocation with the FC policy. Keep policies in separate cohorts. Do not feed ready-only reports to existing completion-oriented publishers without a separate audit/update.
+For QEMU q35 and microvm add `--qemu-system-receipt` pointing to the same `fc-system` receipt. QEMU uses its retained original stock vmlinuz (Firecracker uses the extracted ELF), plus the same optional initrd. Both QEMU variants recheck all receipt artifacts before/after each trial and the cohort and record `kernel_variant: qemu-system`; without this option they remain `legacy-reference/unknown`.
+
+Stock QEMU microvm keeps CMOS RTC enabled (`rtc=on`) because distribution kernels probe it during initialization; disabling it can add timeout waits. ACPI, option ROMs, PIT and PIC stay off. Legacy custom-kernel microvm keeps its historical `rtc=off` configuration. Changed device configurations require separate complete cohorts, never pooled timing samples.
+
+Fedora stock kernels with built-in virtio PCI/block and ext4 but modular virtio MMIO can use this minimal common initrd. It compiles a static loader, retains the exact installed module and source/compiler/hash receipt, loads that module, mounts `/dev/vda`, and executes the prepared `/bench/init`. It leaves the host boot files and common userspace unchanged. This measures stock-kernel startup with minimal prepared userspace, not full systemd/SSH startup. Preparation is outside timing; use a fresh output and supply the generated image to `firecracker_kernels.py --initrd`.
+
+```sh
+python3 benchmark/pvisor/prepare_stock_initrd.py \
+  --kernel-release 7.2.8-200.fc44.x86_64 \
+  --output benchmark/.data/stock-initrd-new
+# Prepare the stock receipt above with --initrd .../initrd.cpio.gz, then:
+python3 benchmark/pvisor/reference_baselines.py \
+  --assets /absolute/path/to/common/prepared-assets \
+  --binary /absolute/path/to/frozen/pvisor \
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --firmware /absolute/path/to/frozen/firmware \
+  --backends pvisor-vm,fc-system,qemu,qemu-microvm --modes ready \
+  --fc-system-receipt benchmark/.data/fc-system-new/kernel-receipt.json \
+  --qemu-system-receipt benchmark/.data/fc-system-new/kernel-receipt.json \
+  --cpu-affinity 0,1 --samples 1 --warmups 0 \
+  --output benchmark/.data/stock-ready-preflight-new
+```
+
+Only after all selected backends pass, repeat into a new short output with at least 30 samples and three warmups. If normal FC shutdown is unsupported, keep that failed preflight and select the documented ready-only policy in a separate cohort; do not supply FC Completion numbers.
+
+`--fc-ready-policy normal` is default and requires normal process exit zero plus checked guest output. `ready-only` is optional and rejected outside `--modes ready`: exactly one ordered Ready, successful matching Result and Exit0 must arrive before SIGTERM is sent to the owned FC process group. All final stdout/stderr are checked again; panic, duplicate/missing markers, timeout/SIGKILL and uncontrolled nonzero exit remain failures. Ready-only rows have `completion_ms: null` and no Completion summary. This proves checked output, not normal guest shutdown; non-FC backends retain normal completion even in an invocation with the FC policy. Keep policies in separate cohorts. `publication.py` accepts complete controlled ready-only rows and omits FC Completion; `publish_reference_campaign.py` additionally rechecks retained stock-kernel receipts, supplies readiness comparisons against explicit FC variants, and skips absent Completion comparisons.
 
 Run only targeted conventional tests now; do not start preflights or formal sampling while parent builds/tests run:
 

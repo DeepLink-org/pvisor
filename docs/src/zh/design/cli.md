@@ -87,7 +87,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 `status --review` 保留为已存在的快捷形式；`review` 仍是详细审查入口。`run --tui` 是主要交互路径，顶层 `tui` 保留显式前端调用。暂不引入另一个 `job` 命令层，避免让相同 Job 操作形成两套语法。
 
-资源工具使用 `service` 子命令。原生执行状态捕获、恢复和存储管理使用 Job 命令，能力由实际 VM profile 决定。当前命令以外的名称按普通默认执行规则处理，不保留旧命令别名或迁移处理逻辑。
+资源工具使用 `service` 子命令。原生执行状态捕获、恢复和存储管理使用 Job 命令，能力由实际 VM profile 决定。其他未知名称按普通默认执行规则处理。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor run -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
 
 ```bash
 pvisor service --help
@@ -104,14 +104,33 @@ pvisor service memory-pool --help
 核心默认构建不包含 Gateway。启用捕获使用 `--features gateway`；wheel 构建启用该 feature。
 无捕获时，普通显式代理仍由 OverlayNet 授权与转发。请求未编译的捕获或 Gateway debug 能力会报错。
 
+内置 Job CLI 操作以类型化请求经过按需启动的持久 Host AgentCtl listener；
+前端启动授权请求 worker，listener 不重建 shell 命令。普通持久 Job 不需
+端点参数。Live VM 寻址在 `status`、`suspend --vm-pause` / `--vm-offload`
+和 `resume --vm-load` 上使用全局 `--vm-socket`、`--vm-job-id` 与
+`--vm-attempt-id`；`ctrl` 已删除。见 [CLI 参考](../reference/cli.md#vm-instance-control)。
+
 嵌入调用方通过 `RunHandle` 查询状态、请求取消、创建 checkpoint 和订阅 Event。
-Attempt 生命周期由 Session 管理；AgentCtl 保留工作负载协作职责。
+Attempt 生命周期由 Session 管理；Guest AgentCtl 保留工作负载协作职责，
+与 Host 权限隔离。协议兼容、取消与升级限制见
+[Host 与 Guest AgentCtl](architecture.md#host-agentctl)。
 具体执行与终态处理见[核心架构](architecture.md)，记录与失败语义见 [Operation 与 Event](operations-events.md)。
 
 
 完整 VM 快照接入 Job 的目标接口见[Job 检查点与分叉 CLI 设计稿](job-checkpoint-cli.md)。工作区命令和原生 VM execution 保存/恢复已接入；支持范围和验收见设计的第 10 节。独立 snapshot 已删除；[完整环境快照与迁移](environment-snapshot.md)说明存储 SDK 和历史证据的边界。
 
 ## 实现职责 {#implementation-ownership}
+
+`cli/host.rs` 负责类型化 Job 派发及 live VM 选项校验；`cli/host_service.rs`
+负责 listener 准入、兼容与 worker 授权。`cli/host_fds.rs`、`cli/host_cancel.rs`
+和 `cli/host_process.rs` 实现描述符传递、取消及进程所有权；
+`cli/host_image.rs` 在求摘要之前验证 macOS 已加载／磁盘 Mach-O UUID。
+`runtime/host_transport.rs` 负责共享宿主权限路径、相同的有界 async/sync
+换行 JSON framing 与 peer 检查，包含 Job 服务／内部 worker 的 frame；
+FD marker 字节仍是独立的非 JSON 传输记录。内部 version-1 握手检查
+Job ticket schema 及精确包版本／内容构建匹配。`JobCommand` 嵌入内部
+CLI DTO，不是稳定公共 API；Core 拥有纯共享 Host envelope／supervisor
+契约和校验，不包含 CLI DTO 或传输。
 
 `cli/run.rs` 负责新 Job 的配置与启动；`cli/run/lifecycle.rs` 负责工作区分支与原生执行状态恢复；`runtime/job_execution.rs` 负责持久化 Job 状态、请求回执和原生终态确认，不会仅凭已保存的文件系统推断暂停成功。
 

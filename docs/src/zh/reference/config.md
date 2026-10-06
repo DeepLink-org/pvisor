@@ -148,28 +148,35 @@ executor = "vm"
 command = ["/bin/sleep", "600"]
 
 [vm]
-control_socket = "/tmp/pvisor-host-control/ctrl.sock"
+control_socket = "/tmp/pvisor-host-1000/ctrl.sock"
 ram_compression = false
 cold_ram_compression = false
 ram_dedup = true
 ```
 
 ```bash
-install -d -m 0700 /tmp/pvisor-host-control
+install -d -m 0700 /tmp/pvisor-host-1000
 pvisor run --config vm-control.toml
 pvisor run --config vm-control.toml --vm-ram-dedup=false
 ```
 
 将 TOML 保存为 `vm-control.toml`；前一个 Attempt 结束并释放 socket 后再
-依次执行命令。`vm.control_socket` 是可选的仅宿主路径，默认未设置。
-省略时，每个原生 VM Attempt 仍自动创建私有 `/tmp/pvctrl-*/ctrl.sock`。
-自定义父目录必须已存在、不是符号链接、属于有效 UID，且权限恰为 `0700`；
-socket 权限为 `0600`，仅限同 UID，已有路径绝不覆盖。
-端点绝不能从 guest 访问；宿主父进程提供 executor 排除项，包括 host-rootfs
-VM。CLI stderr 打印 socket、Run ID 和 Attempt ID，供
-[`pvisor ctrl`](cli.md#vm-instance-control) 使用；非 VM 控制明确不受支持。
-`load` 是同一 live Attempt 的 `RunResume`，不是持久快照重启，也不主动
-预触全部 RAM 页。
+依次执行命令。该 Linux 示例假设有效 UID 为 `1000`；替换为自己的有效 UID
+和规范化 `/tmp`（macOS 通常是 `/private/tmp`）。`vm.control_socket`
+是可选的仅宿主创建路径，默认未设置。省略时，Host Job 服务直接在
+`/tmp/pvisor-host-<有效 UID>` 下创建私有 `vm-<UUID>.sock`；自定义 CLI
+路径也必须直接位于该规范根目录下。嵌入 API 接受的其他私有父目录不适用于
+CLI worker。根目录必须不是符号链接、属于有效 UID，且权限恰为 `0700`；
+socket 权限为 `0600`，仅限同 UID，已有路径绝不覆盖。宿主权限被排除在
+guest 访问范围之外，包括 host-rootfs VM。
+
+CLI stderr 打印 `--vm-socket`、`--vm-job-id` 和 `--vm-attempt-id`，供
+[普通 live VM 命令](cli.md#vm-instance-control) 使用：`status`、
+`suspend JOB --vm-pause` / `--vm-offload`（可选 `--vm-ram-file PATH`），
+以及 `resume JOB --vm-load`。这些全局寻址／动作选项不是 `[vm]` 配置字段，
+不改变持久 Job 的默认行为。已删除的 `ctrl` 没有兼容别名。
+`--vm-load` 继续同一个 live Attempt，不是持久快照重启，也不主动预触
+全部 RAM 页；非 VM 控制明确不受支持。
 
 `--vm-node-socket SOCKET` 覆盖 `vm.node_socket`；
 `--vm-snapshot-filesystem-pool DIR` 覆盖 `vm.snapshot_filesystem_pool`。

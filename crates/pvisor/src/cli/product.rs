@@ -15,6 +15,7 @@ const DEFAULT_DIFF_FILE_BYTES: u64 = 1024 * 1024;
 const REVIEW_PATH_LIMIT: usize = 200;
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewArgs {
     /// Job id, project workspace, run.json, or a path inside the Job filesystem.
     pub selector: Option<PathBuf>,
@@ -40,6 +41,7 @@ pub struct ReviewArgs {
 pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     let selected = selected(args.selector.as_deref(), &args.output_dir)?;
     let (mut record, _lease) = selected.lock_current()?;
+    super::host_service::check_record(&record)?;
     let bundle_stage = record.stage_dir();
     let checkpoint_id = if let Some(id) = &args.checkpoint {
         let checkpoint = crate::runtime::checkpoint::resolve_checkpoint(&record, id)?;

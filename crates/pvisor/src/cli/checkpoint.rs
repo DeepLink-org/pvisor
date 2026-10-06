@@ -1,7 +1,6 @@
 //! Job-scoped workspace and execution checkpoint management.
 use crate::runtime::checkpoint::{
-    checkpoint_branch_refs, collect_workspace_transactions, create_workspace_request,
-    delete_checkpoint, list_checkpoints, resolve_checkpoint,
+    checkpoint_branch_refs, create_stopped_checkpoint_locked, list_checkpoints, resolve_checkpoint,
 };
 use crate::runtime::job_execution::{self, Job};
 use crate::runtime::{RunRecord, resolve_run};
@@ -36,6 +35,7 @@ impl From<RamStorage> for SnapshotRamStorage {
 }
 
 #[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Selection {
     /// Explicit Job id, stage path, run.json, or last.
     pub job: PathBuf,
@@ -44,17 +44,21 @@ pub(super) struct Selection {
 }
 impl Selection {
     pub fn resolve(&self) -> anyhow::Result<RunRecord> {
-        resolve_run(Some(&self.job), &self.output_dir)
+        let record = resolve_run(Some(&self.job), &self.output_dir)?;
+        super::host_service::check_record(&record)?;
+        Ok(record)
     }
 }
 
 #[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CheckpointArgs {
     #[command(subcommand)]
     command: CheckpointCommand,
 }
 
 #[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SuspendArgs {
     #[command(flatten)]
     selection: Selection,
@@ -70,6 +74,7 @@ pub(crate) struct SuspendArgs {
 }
 
 #[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResumeArgs {
     #[command(flatten)]
     selection: Selection,
@@ -83,11 +88,23 @@ pub struct ResumeArgs {
 }
 
 impl SuspendArgs {
+    pub(super) fn selection(&self) -> &Selection {
+        &self.selection
+    }
+    pub(super) fn selection_mut(&mut self) -> &mut Selection {
+        &mut self.selection
+    }
     pub(super) fn job_selector(&self) -> &std::path::Path {
         &self.selection.job
     }
 }
 impl ResumeArgs {
+    pub(super) fn selection(&self) -> &Selection {
+        &self.selection
+    }
+    pub(super) fn selection_mut(&mut self) -> &mut Selection {
+        &mut self.selection
+    }
     pub(super) fn job_selector(&self) -> &std::path::Path {
         &self.selection.job
     }
@@ -121,6 +138,7 @@ pub(super) async fn resume(args: ResumeArgs) -> anyhow::Result<i32> {
     super::run::resume_execution(record, args.request_id, args.eager_ram).await
 }
 #[derive(Debug, Subcommand, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 enum CheckpointCommand {
     /// Save staged files, or capture a live VM's execution and continue it.
     Create {
@@ -200,6 +218,33 @@ enum CheckpointCommand {
     },
 }
 
+impl CheckpointArgs {
+    pub(super) fn selection(&self) -> &Selection {
+        match &self.command {
+            CheckpointCommand::Create { selection, .. }
+            | CheckpointCommand::List { selection, .. }
+            | CheckpointCommand::Show { selection, .. }
+            | CheckpointCommand::Delete { selection, .. }
+            | CheckpointCommand::Gc { selection, .. }
+            | CheckpointCommand::Verify { selection, .. }
+            | CheckpointCommand::ImportBase { selection, .. }
+            | CheckpointCommand::VerifyBase { selection, .. } => selection,
+        }
+    }
+    pub(super) fn selection_mut(&mut self) -> &mut Selection {
+        match &mut self.command {
+            CheckpointCommand::Create { selection, .. }
+            | CheckpointCommand::List { selection, .. }
+            | CheckpointCommand::Show { selection, .. }
+            | CheckpointCommand::Delete { selection, .. }
+            | CheckpointCommand::Gc { selection, .. }
+            | CheckpointCommand::Verify { selection, .. }
+            | CheckpointCommand::ImportBase { selection, .. }
+            | CheckpointCommand::VerifyBase { selection, .. } => selection,
+        }
+    }
+}
+
 /// Check the Job configuration before admitting native execution checkpoints.
 /// Platform support alone does not guarantee that this Job can be restored.
 pub(crate) fn execution_blocker(record: &RunRecord) -> Option<String> {
@@ -269,7 +314,8 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                     serde_json::json!({"schema_version":1,"operation":"checkpoint.create","job_id":selected.run_id,"request_id":request_id,"checkpoint_id":checkpoint.snapshot_id,"kind":"execution","checkpoint":checkpoint}),
                 );
             }
-            let (checkpoint, reused) = create_workspace_request(&selected, request_id.as_deref())?;
+            let (checkpoint, reused) =
+                create_fenced_workspace_request(&selected, request_id.as_deref())?;
             emit(
                 json,
                 serde_json::json!({
@@ -335,11 +381,18 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             json,
         } => {
             let record = selection.resolve()?;
-            if let Some(template) = Job::read(&record)?
-                && template.checkpoints.contains_key(&id)
+            let template = Job::read(&record)?;
+            let _job_lease = template.as_ref().map(Job::lock).transpose()?;
+            let job = template.map(|job| job.current()).transpose()?;
+            if let Some(job) = &job {
+                job.validate_record_target(&record)?;
+                let current = RunRecord::read(&job.active_stage)?;
+                super::host::check_selected_record(&record, &current)?;
+                super::host_service::check_record(&current)?;
+            }
+            if let Some(mut job) = job
+                && job.checkpoints.contains_key(&id)
             {
-                let _lease = template.lock()?;
-                let mut job = template.current()?;
                 let capture = job.checkpoints.get(&id).context("checkpoint disappeared")?;
                 anyhow::ensure!(
                     job.head.as_deref() != Some(&id) && capture.branches.is_empty(),
@@ -362,7 +415,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                     serde_json::json!({"schema_version":1,"operation":"checkpoint.delete","job_id":record.run_id,"kind":"execution","checkpoint_id":id,"deleted":true}),
                 );
             }
-            let id = delete_checkpoint(&record, &id)?;
+            let id = delete_workspace_checkpoint(&record, &id)?;
             emit(
                 json,
                 serde_json::json!({"schema_version":1,"operation":"checkpoint.delete",
@@ -375,7 +428,16 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             kind,
         } => {
             let record = selection.resolve()?;
-            let scope = if Job::read(&record)?.is_some() {
+            let template = Job::read(&record)?;
+            let _job_lease = template.as_ref().map(Job::lock).transpose()?;
+            let job = template.map(|job| job.current()).transpose()?;
+            if let Some(job) = &job {
+                job.validate_record_target(&record)?;
+                let current = RunRecord::read(&job.active_stage)?;
+                super::host::check_selected_record(&record, &current)?;
+                super::host_service::check_record(&current)?;
+            }
+            let scope = if job.is_some() {
                 "job_checkpoint_transactions"
             } else {
                 "job_workspace_transactions"
@@ -383,13 +445,12 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             let removed = if kind == Some(Kind::Execution) {
                 0
             } else {
-                collect_workspace_transactions(&record)?
+                collect_fenced_workspace_transactions(&record)?
             };
             let mut execution_removed = 0;
             if kind != Some(Kind::Workspace)
-                && let Some(job) = Job::read(&record)?
+                && let Some(job) = job
             {
-                let _lease = job.lock()?;
                 let mut stores = job.stores.clone();
                 stores.insert(job.active_stage.join("execution-snapshots"));
                 stores.extend(
@@ -418,6 +479,8 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             let template = job_execution::job(&record)?;
             let _lease = template.lock()?;
             let job = template.current()?;
+            job.validate_record_target(&record)?;
+            super::host_service::check_record(&RunRecord::read(&job.active_stage)?)?;
             let checkpoint = job.checkpoint(&id)?;
             let compatibility = crate::VmExecutor::checkpoint_compatibility(&job.config.vm)?;
             let object = checkpoint_store(&job, &checkpoint.store)?.open(&id, &compatibility)?;
@@ -432,9 +495,11 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             json,
         } => {
             let record = selection.resolve()?;
-            let job = job_execution::job(&record)?;
-            let base = checkpoint_store(&job, &job.primary_store()?)?
-                .import_base(&rootfs.canonicalize()?)?;
+            let (job, _lease) = super::host::lock_selected_job(&record)?
+                .context("this Job has no native execution handoff")?;
+            let rootfs = rootfs.canonicalize()?;
+            super::host_service::reject_guest_exposure([rootfs.clone()])?;
+            let base = checkpoint_store(&job, &job.primary_store()?)?.import_base(&rootfs)?;
             emit(
                 json,
                 serde_json::json!({"operation":"checkpoint.import_base","job_id":job.run_id,"base":base.reference(),"rootfs":base.root()}),
@@ -456,6 +521,122 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
         }
     }
 }
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceReceipt {
+    schema_version: u32,
+    job_id: String,
+    checkpoint_id: String,
+}
+
+fn create_fenced_workspace_request(
+    selected: &RunRecord,
+    request_id: Option<&str>,
+) -> anyhow::Result<(crate::LogicalCheckpoint, bool)> {
+    let _job = super::host::lock_selected_job(selected)?;
+    let (record, _lease) = selected.lock_current()?;
+    super::host::check_selected_record(selected, &record)?;
+    super::host_service::check_record(&record)?;
+    record.require_stopped()?;
+    let Some(key) = request_id else {
+        return Ok((create_stopped_checkpoint_locked(&record, None)?, false));
+    };
+    super::host::validate_request_id(key)?;
+    use sha2::Digest;
+    let id = format!(
+        "request-{}",
+        crate::util::encode_hex(&sha2::Sha256::digest(key.as_bytes()))
+    );
+    let requests = record
+        .stage_dir()
+        .join(crate::CHECKPOINTS_DIR)
+        .join(".requests");
+    let receipt = requests.join(format!("{id}.json"));
+    if receipt.try_exists()? {
+        let prior: WorkspaceReceipt = serde_json::from_slice(&std::fs::read(&receipt)?)?;
+        anyhow::ensure!(
+            prior.schema_version == 1 && prior.job_id == record.run_id && prior.checkpoint_id == id,
+            "workspace request receipt identity mismatch"
+        );
+        let cp = resolve_checkpoint(&record, &id).map_err(|e| anyhow::anyhow!(
+            "request already committed; its checkpoint is no longer available; use a new request id: {e}"))?;
+        return Ok((cp, true));
+    }
+    let prior = list_checkpoints(&record)?
+        .into_iter()
+        .find(|cp| cp.checkpoint_id == id);
+    let reused = prior.is_some();
+    let checkpoint = match prior {
+        Some(cp) => cp,
+        None => create_stopped_checkpoint_locked(&record, Some(&id))?,
+    };
+    crate::util::create_dir_all_durable(&requests)?;
+    crate::util::write_private_json(
+        &receipt,
+        &WorkspaceReceipt {
+            schema_version: 1,
+            job_id: record.run_id,
+            checkpoint_id: id,
+        },
+    )?;
+    Ok((checkpoint, reused))
+}
+
+// The runtime workspace helpers acquire their own lease and have no target
+// callback. Keep the host fence and transaction together under the CLI lease.
+fn delete_workspace_checkpoint(selected: &RunRecord, id: &str) -> anyhow::Result<String> {
+    let (current, _lease) = selected.lock_current()?;
+    super::host::check_selected_record(selected, &current)?;
+    super::host_service::check_record(&current)?;
+    current.require_stopped()?;
+    let checkpoint = resolve_checkpoint(&current, id)?;
+    anyhow::ensure!(
+        checkpoint_branch_refs(&checkpoint)? == 0,
+        "CHECKPOINT_REFERENCED: checkpoint {} is retained by a child Job",
+        checkpoint.checkpoint_id
+    );
+    let manifest = checkpoint.manifest_path();
+    let root = manifest.parent().context("checkpoint manifest parent")?;
+    let parent = root.parent().context("checkpoint parent")?;
+    let tombstone = parent.join(format!(".deleted-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::rename(root, &tombstone)?;
+    crate::util::sync_directory(parent)?;
+    std::fs::remove_dir_all(tombstone)?;
+    crate::util::sync_directory(parent)?;
+    Ok(checkpoint.checkpoint_id)
+}
+
+fn collect_fenced_workspace_transactions(selected: &RunRecord) -> anyhow::Result<usize> {
+    let (current, _lease) = selected.lock_current()?;
+    super::host::check_selected_record(selected, &current)?;
+    super::host_service::check_record(&current)?;
+    current.require_stopped()?;
+    let root = current.stage_dir().join(crate::CHECKPOINTS_DIR);
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0;
+    for entry in std::fs::read_dir(&root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if (name.starts_with(".pending-") || name.starts_with(".deleted-"))
+            && entry.file_type()?.is_dir()
+        {
+            if let Ok(cp) = crate::LogicalCheckpoint::read(&entry.path()) {
+                anyhow::ensure!(
+                    cp.checkpoint_id != name,
+                    "refuse to collect a legacy committed checkpoint named {name}"
+                );
+            }
+            std::fs::remove_dir_all(entry.path())?;
+            removed += 1;
+        }
+    }
+    crate::util::sync_directory(&root)?;
+    Ok(removed)
+}
+
 fn checkpoint_store(
     job: &Job,
     path: &std::path::Path,
@@ -465,6 +646,60 @@ fn checkpoint_store(
         None => crate::environment_snapshot::SnapshotStore::new(path),
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn workspace_create_delete_and_gc_recheck_generation_under_lease() {
+        let root = tempfile::tempdir().unwrap();
+        let selected: RunRecord = serde_json::from_value(serde_json::json!({
+            "schema_version":1,"run_id":"job-generation","session_id":"session-generation","agent":"sh","pid":0,
+            "command":["/bin/sh"],"state":"completed","started_at_unix_ms":1,"finished_at_unix_ms":2,
+            "storage":root.path(),"network":{},"gateway_listen":null,
+            "overlay":{"id":"job-generation","generation":7,"target":root.path().join("target"),
+                "upper":{"upper_dir":root.path().join("upper"),"work_dir":root.path().join("work")},
+                "merged_dir":root.path().join("merged"),"stage_dir":root.path(),"auto_apply":false,"state":"staged"}
+        })).unwrap();
+        let pending = root
+            .path()
+            .join(crate::CHECKPOINTS_DIR)
+            .join(".pending-owned");
+        std::fs::create_dir_all(&pending).unwrap();
+        let mut current = selected.clone();
+        current.overlay.as_mut().unwrap().generation = 8;
+        current.write().unwrap();
+        let errors = [
+            create_fenced_workspace_request(&selected, None).unwrap_err(),
+            delete_workspace_checkpoint(&selected, "missing").unwrap_err(),
+            collect_fenced_workspace_transactions(&selected).unwrap_err(),
+        ];
+        for error in errors {
+            assert_eq!(
+                error
+                    .downcast_ref::<pvisor_core::host_protocol::AgentCtlHostError>()
+                    .unwrap()
+                    .code,
+                pvisor_core::host_protocol::AgentCtlHostErrorCode::Conflict
+            );
+        }
+        assert!(pending.is_dir(), "stale GC must not collect anything");
+        assert_eq!(
+            std::fs::read_dir(root.path().join(crate::CHECKPOINTS_DIR))
+                .unwrap()
+                .count(),
+            1
+        );
+        assert_eq!(
+            RunRecord::read(root.path())
+                .unwrap()
+                .overlay
+                .unwrap()
+                .generation,
+            8
+        );
+    }
+}
+
 fn emit(json: bool, mut value: serde_json::Value) -> anyhow::Result<()> {
     value["schema_version"] = serde_json::json!(1);
     if json {

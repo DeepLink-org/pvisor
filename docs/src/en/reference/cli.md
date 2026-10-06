@@ -10,6 +10,34 @@ Full command examples for Host, OCI VM and transparent host-rootfs VM
 are in
 [Run workloads with pVisor](../guides/executors/index.md).
 
+## Host Job service {#host-agentctl}
+
+Built-in Job commands (`run`, `status`, `kill`, `suspend`, `resume`, `fork`,
+`checkpoint`, `inspect`, `review`, `apply`, `drop`) submit typed requests through
+Host AgentCtl. The first request starts a persistent same-user listener under
+`/tmp/pvisor-host-<effective-UID>` (using canonical `/tmp`, usually `/private/tmp`
+on macOS); later requests reuse it. You do not need to start a service or pass
+endpoint options for ordinary persisted Jobs. Bare `pvisor` still displays help;
+`pvisor -- COMMAND` follows default execution through the same Job service.
+
+The frontend retains its terminal and launches a listener-authorized worker;
+stdio and the private worker channel use Unix `SCM_RIGHTS` descriptor transfer.
+Job service/internal-worker JSON uses shared `runtime/host_transport.rs`
+async/sync newline framing with a 1 MiB JSON limit excluding the delimiter;
+FD marker bytes are separate transport records, not JSON. The listener checks
+same-UID kernel credentials and agrees on Host version 1, the internal Job
+ticket schema, package version and executable content digest before
+admitting stdio/commands. The typed `JobCommand` payload contains internal CLI
+DTOs tied to that exact schema/build, not a stable public API. It is not the node/cache/pool service managed by `pvisor service`.
+Guest AgentCtl `Hello`/`Sync` remains a separate cooperative channel: its token
+cannot authorize host Job or VM operations.
+
+Drain active requests and stop an old listener with its old binary before
+upgrading. A new client refuses an incompatible live listener; there is no
+legacy fallback. Lost responses and cancellation can leave effects ambiguous;
+requests are not automatically retried. See [Host and Guest AgentCtl](../design/architecture.md#host-agentctl)
+for ownership, protocol and validation limits.
+
 ## Service commands {#service}
 
 Top-level commands operate native Jobs. `service` manages native node resources and dispatches installed companions. `run/status/restart/stop --config FILE` manage configured native roles; the single-node sandbox daemon has its own lifecycle API and persistent state.
@@ -23,7 +51,13 @@ pvisor service memory-pool --help
 
 Use `service cache/memory-pool` for the native resource tools. `service daemon` passes arguments unchanged to a separately installed, matching adjacent `pvisor-daemon`; check `pvisor service --help` when using an older build. The daemon can always be invoked directly after separate installation; follow the [daemon installation guide](../guides/daemon/index.md). NativeRuntime embeds VM execution; the daemon executable and required native flags are integrated, checkpoint/fork and stage/apply APIs are absent, and node sharing is not automatically acquired. Controller/Worker task tools and their configuration are retired. See [service entry points](../guides/daemon/service.md) for native node/cache/pool ownership and deployment boundaries.
 
-Names outside the current commands follow default execution rules, without retired-command aliases or migration handlers. Use `pvisor -- COMMAND` for explicit default execution.
+Other unknown names follow default execution rules. The retired `ctrl` name
+is an explicit exception: `pvisor ctrl`, `pvisor ctrl --help` and
+`pvisor help ctrl` reject with migration guidance before Job admission, rather
+than default-running a program named `ctrl`. Use the live VM commands below.
+`pvisor run -- ctrl` still expresses explicit workload intent; it does not
+restore the retired control API. Use `pvisor -- COMMAND` for explicit default
+execution.
 
 ## Find the command you need
 
@@ -166,7 +200,7 @@ Jobs:
   resume      Continue a suspended Job
   fork        Branch from staged files or VM execution state
   checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
-  ctrl        Host-only live VM Attempt controls (explicit socket and identities)
+
 
 Filesystems:
   inspect     Open a read-only Job filesystem view
@@ -678,7 +712,7 @@ below instead uses anonymous RAM without a live backing file. `--vm-ram-compress
 (`[vm].ram_compression = true`) selects the PVZRAM v2 manifest and immutable
 Zstd Seekable base/delta sidecar files
 at startup, requiring Linux FUSE or the macFUSE kernel backend.
-Use `pvisor ctrl` below or Rust `RunHandle::pause/resume/offload` to control
+Use the live VM options below or Rust `RunHandle::pause/resume/offload` to control
 the live VM. A new offload destination must be on the backing's existing filesystem.
 Reclaim reports sampled residency, not guaranteed zero RAM. The file is not a
 complete VM snapshot. Existing [storage/control tests and compressed artifacts](../design/offload/index.md#experiments)
@@ -690,7 +724,7 @@ writes after the last resume may be discarded, leaving only the last committed h
 
 | Run option | TOML field under `[vm]` | Default / purpose |
 | --- | --- | --- |
-| `--vm-control-socket PATH` | `control_socket` | Unset: automatic private `/tmp/pvctrl-*/ctrl.sock` |
+| `--vm-control-socket PATH` | `control_socket` | Unset: CLI creates `/tmp/pvisor-host-<effective-UID>/vm-<UUID>.sock` under canonical `/tmp` |
 | `--vm-ram-backing FILE` | `ram_backing` | Unset: attempt-local backing in ordinary file-backed mode; new files only |
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`; FUSE/macFUSE Seekable backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`; Linux x86_64 local live cold pager |
@@ -727,54 +761,71 @@ recovery if the service fails.
 ### Live VM Attempt controls {#vm-instance-control}
 
 Every native VM Attempt gets a host-only control endpoint automatically,
-including runs without retained Job storage. `pvisor run` prints its exact
-identity to **stderr**:
+including embedded runs without retained Job storage. CLI endpoints live directly
+under the private Host service root. `pvisor run` prints its exact identity to
+**stderr**:
 
 ```text
-pVisor VM control: --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE
+pVisor live VM options: --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE (status; suspend JOB --vm-pause/--vm-offload; resume JOB --vm-load)
 ```
 
-Copy the socket, Run ID and Attempt ID from that line into another host terminal;
+Copy the socket, Job ID (the internal Run ID) and Attempt ID from that line into another host terminal;
 the following example values must be replaced with that live identity:
 
 ```bash
-pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE status
-pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE pause
-pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE resume
-pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE offload --file /private/vm-ram/offloaded.ram
-pvisor ctrl --socket /tmp/pvctrl-EXAMPLE/ctrl.sock --run-id run-EXAMPLE --attempt-id attempt-EXAMPLE load
+pvisor status --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE
+pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-pause
+pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
+pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-offload --vm-ram-file /private/vm-ram/offloaded.ram
+pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
 ```
 
-`--socket PATH`, `--run-id ID` and `--attempt-id ID` are required even for
-`status`; stale or mismatched identities are rejected. `offload` accepts optional
-`--file PATH` only: omit it to use the existing backing, or choose a new,
-guest-inaccessible path on the same filesystem. Wait for success before using
-the published file. `load` maps to `RunResume`: it continues the same offloaded
-Attempt, as does `resume`, without eager RAM prefaulting. It neither restarts a
-process nor restores a persistent snapshot; use Job checkpoint/resume commands
-for that separate contract. `pause` stops vCPUs, not the stronger CPU/device
-quiescence used by offload.
+The old `ctrl` command is removed. The global options `--vm-socket PATH`,
+`--vm-job-id ID` and `--vm-attempt-id ID` are required together, even for
+live `status`; stale or mismatched identities are rejected. `suspend` and
+`resume` require a positional Job selector matching `--vm-job-id`, not `last`
+or a stage path. Only `status`, `suspend --vm-pause` / `--vm-offload`, and
+`resume --vm-load` accept this live control mode. Pause and offload are mutually
+exclusive. These flags do not change ordinary persisted-Job suspend/resume:
+without them, those commands use execution checkpoint capture/restoration.
 
-Control replies are JSON on stdout with `version`, `run_id`, `attempt_id`, `ok`,
-`status`, `value` and `error`. A rejected operation emits `ok: false` and an
-error and exits nonzero; transport/connect and CLI parsing failures also exit
-nonzero but need not produce a JSON reply. Non-VM controls are explicitly
-unsupported, not a process-signal fallback. The endpoint is removed when the
-Attempt ends and is separate from the staged Job's `control.sock`.
+`--vm-offload` accepts optional `--vm-ram-file PATH`: omit it to use the existing
+backing, or choose a new, guest-inaccessible path on the same filesystem. Wait
+for success before using the published file. `--vm-load` selects
+`HostVmCommand::Resume`, mapped to `RunResume`; there is no `Load` wire operation.
+It reloads/unpauses the same live Attempt without eager RAM prefaulting. It
+neither restarts a process nor restores a persistent snapshot. `--vm-pause`
+stops vCPUs, not the stronger CPU/device quiescence used by offload.
 
-To choose a stable path, create its private parent **before** starting the VM:
+Successful live control replies are JSON on stdout containing `HostVmResult`
+fields `status` and `value`. Core's `host_protocol` owns `HostVmCommand` and
+`HostVmResult`; `pvisor::host_vm_exchange` exchanges
+`AgentCtlHostRequest<HostVmCommand>` / `AgentCtlHostResponse<HostVmResult>` for
+embedded callers. The old `InstanceControl*` adapters are removed. The endpoint
+wire wraps results in version-1 Host envelopes with a correlated `request_id`;
+typed Host errors are nonzero CLI failures, not necessarily JSON on stdout. Transport/connect and parsing failures also exit
+nonzero. Non-VM controls are explicitly unsupported, not a process-signal
+fallback. The endpoint is removed when the Attempt ends and is separate from
+the staged Job's control discovery link.
+
+To choose a stable CLI path, use the private service root. This Linux example
+assumes effective UID `1000`; replace the root with your effective UID and
+canonical temporary path (usually `/private/tmp` on macOS):
 
 ```bash
-install -d -m 0700 /tmp/pvisor-host-control
-pvisor run --executor vm --vm-control-socket /tmp/pvisor-host-control/ctrl.sock -- /bin/sleep 600
+install -d -m 0700 /tmp/pvisor-host-1000
+pvisor run --executor vm --vm-control-socket /tmp/pvisor-host-1000/ctrl.sock -- /bin/sleep 600
 ```
 
-The parent must be an existing non-symlink directory owned by the effective UID
-with mode exactly `0700`; existing socket paths are never overwritten. The
-socket has mode `0600` and accepts only same-UID peers. It is never exported to
-the guest, including a host-rootfs VM; do not put it in a guest-accessible mount
-or writable root. The host parent supplies executor exclusions; it is not a
-guest-visible discovery file.
+CLI custom sockets must be directly in the canonical private Host service
+root; arbitrary private parents are rejected. The root must be a non-symlink
+directory owned by the effective UID with mode exactly `0700`; existing socket
+paths are never overwritten. The socket has mode `0600` and accepts only
+same-UID peers. `--vm-control-socket` chooses a path when creating a VM;
+`--vm-socket` addresses an existing live VM. Embedded callers have a separate
+custom-parent API with private-parent validation. Host authority endpoints are
+excluded from guest access, including host-rootfs VMs; do not expose the service
+root through guest mounts or writable roots. These are not guest discovery files.
 
 ### VM local live cold compression {#vm-cold-ram-compression}
 

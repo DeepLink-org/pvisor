@@ -1,7 +1,8 @@
 //! Durable Run identity, project association, and liveness metadata.
 
 use super::host_transport::{
-    authorize_host_peer, read_host_frame, validate_host_target, write_host_frame,
+    allocate_host_directory, authorize_host_peer, host_authority_root, read_host_frame,
+    validate_host_target, write_host_frame,
 };
 use super::overlay::{
     OverlayRecord, ReadOnlyOverlayMount, load_overlay_record, mount_overlay_record_read_only,
@@ -13,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -362,9 +363,69 @@ impl Drop for RunLease {
 pub struct RunControlServer {
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
-    socket_path: PathBuf,
-    locator_path: PathBuf,
+    _locator: ControlLocator,
     _socket_dir: tempfile::TempDir,
+}
+
+// Retain ownership of discovery separately from the temporary socket directory.
+// A failed startup or teardown must not remove a replacement supplied by a user.
+struct ControlLocator {
+    path: PathBuf,
+    target: PathBuf,
+    metadata: fs::Metadata,
+}
+
+impl ControlLocator {
+    fn create(path: PathBuf, target: &Path) -> anyhow::Result<Self> {
+        // Do not replace even a dangling legacy symlink or a stopped socket.
+        std::os::unix::fs::symlink(target, &path)?;
+        let metadata = fs::symlink_metadata(&path)?;
+        Ok(Self {
+            path,
+            target: target.to_path_buf(),
+            metadata,
+        })
+    }
+}
+
+impl Drop for ControlLocator {
+    fn drop(&mut self) {
+        if fs::symlink_metadata(&self.path).is_ok_and(|metadata| {
+            metadata.file_type().is_symlink()
+                && metadata.dev() == self.metadata.dev()
+                && metadata.ino() == self.metadata.ino()
+        }) && fs::read_link(&self.path).is_ok_and(|target| target == self.target)
+        {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn control_socket_path(stage: &Path) -> anyhow::Result<PathBuf> {
+    let path = fs::read_link(stage.join(CONTROL_FILENAME))?;
+    let root = host_authority_root()?;
+    let directory = path.parent().context("control socket missing parent")?;
+    anyhow::ensure!(
+        path.file_name() == Some(std::ffi::OsStr::new(CONTROL_FILENAME))
+            && directory.parent() == Some(root.as_path()),
+        "control socket must be inside the host authority root"
+    );
+    let metadata = fs::symlink_metadata(directory)?;
+    anyhow::ensure!(
+        metadata.is_dir()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o7777 == 0o700
+            && directory.canonicalize()? == directory,
+        "control socket directory must be same-UID, non-symlink and 0700"
+    );
+    let metadata = fs::symlink_metadata(&path)?;
+    anyhow::ensure!(
+        metadata.file_type().is_socket()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o7777 == 0o600,
+        "control socket must be same-UID, non-symlink and 0600"
+    );
+    Ok(path)
 }
 
 impl RunControlServer {
@@ -388,20 +449,14 @@ impl RunControlServer {
             record.overlay_lowers.clone()
         };
         let locator_path = record.stage_dir().join(CONTROL_FILENAME);
-        if locator_path.exists() || locator_path.is_symlink() {
-            fs::remove_file(&locator_path)?;
-        }
-        // macOS sockaddr_un paths are short. Bind in the fixed, short `/tmp`
-        // directory rather than `std::env::temp_dir()` (which can point at a deep
-        // per-user path) and expose a stable stage-local symlink for discovery.
-        let socket_dir = tempfile::Builder::new()
-            .prefix("pvisor-")
-            .tempdir_in("/tmp")?;
+        // Keep host authority under the shared guest-excluded root, with short
+        // paths for macOS sockaddr_un. The stage contains only a discovery link.
+        let socket_dir = allocate_host_directory("overlay-")?;
         let socket_path = socket_dir.path().join("control.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
-        std::os::unix::fs::symlink(&socket_path, &locator_path)?;
         listener.set_nonblocking(true)?;
+        let locator = ControlLocator::create(locator_path, &socket_path)?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let stage = record.stage_dir();
@@ -433,8 +488,7 @@ impl RunControlServer {
         Ok(Some(Self {
             stop,
             join: Some(join),
-            socket_path,
-            locator_path,
+            _locator: locator,
             _socket_dir: socket_dir,
         }))
     }
@@ -446,8 +500,7 @@ impl Drop for RunControlServer {
         if let Some(join) = self.join.take() {
             let _ = join.join();
         }
-        let _ = fs::remove_file(&self.socket_path);
-        let _ = fs::remove_file(&self.locator_path);
+        // Field owners clean up discovery and the private socket directory.
     }
 }
 
@@ -584,6 +637,7 @@ fn control_error(error: impl std::fmt::Display) -> AgentCtlHostError {
 
 fn control_request(stage: &Path, command: HostOverlayCommand) -> anyhow::Result<HostOverlayResult> {
     let request = control_envelope(&RunRecord::read(stage)?, command)?;
+    let socket_path = control_socket_path(stage)?;
     // These synchronous APIs are also called from Tokio contexts. Keep the
     // private transport runtime on a separate thread rather than nesting it.
     std::thread::scope(|scope| {
@@ -594,8 +648,7 @@ fn control_request(stage: &Path, command: HostOverlayCommand) -> anyhow::Result<
                     .build()?;
                 runtime.block_on(async {
                     tokio::time::timeout(CONTROL_TIMEOUT, async {
-                        let mut stream =
-                            tokio::net::UnixStream::connect(stage.join(CONTROL_FILENAME)).await?;
+                        let mut stream = tokio::net::UnixStream::connect(&socket_path).await?;
                         authorize_host_peer(&stream)?;
                         write_host_frame(&mut stream, &request).await?;
                         let response: AgentCtlHostResponse<HostOverlayResult> =
@@ -1214,6 +1267,151 @@ mod tests {
     }
 
     #[test]
+    fn control_endpoint_uses_private_host_root_and_owned_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut record = record(temp.path(), temp.path(), &temp.path().join("upper"));
+        record.attempt_id = Some("attempt-test".into());
+        record.write().unwrap();
+        let server = RunControlServer::start(&record).unwrap().unwrap();
+        let locator = temp.path().join(CONTROL_FILENAME);
+        let socket = fs::read_link(&locator).unwrap();
+        let directory = socket.parent().unwrap().to_path_buf();
+        let root = host_authority_root().unwrap();
+        assert_eq!(directory.parent(), Some(root.as_path()));
+        assert_eq!(
+            root,
+            fs::canonicalize("/tmp")
+                .unwrap()
+                .join(format!("pvisor-host-{}", unsafe { libc::geteuid() }))
+        );
+        for path in [&root, &directory] {
+            let metadata = fs::symlink_metadata(path).unwrap();
+            assert!(metadata.is_dir());
+            assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+            assert_eq!(metadata.mode() & 0o7777, 0o700);
+        }
+        assert_eq!(
+            fs::symlink_metadata(&socket).unwrap().mode() & 0o7777,
+            0o600
+        );
+        assert_eq!(control_socket_path(temp.path()).unwrap(), socket);
+        assert!(control_ping(temp.path()));
+        // Discovery contains only a host path, not cooperative credentials.
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        let wire =
+            serde_json::to_value(control_envelope(&record, HostOverlayCommand::Ping {}).unwrap())
+                .unwrap();
+        assert!(wire.get("token").is_none());
+        assert!(wire["command"].get("token").is_none());
+        assert!(RunControlServer::start(&record).is_err());
+        assert_eq!(fs::read_link(&locator).unwrap(), socket);
+        assert!(control_ping(temp.path()));
+        drop(server);
+        assert!(!locator.is_symlink());
+        assert!(!directory.exists());
+        assert!(root.is_dir());
+    }
+
+    #[test]
+    fn control_discovery_denies_legacy_paths_without_deleting_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut record = record(temp.path(), temp.path(), &temp.path().join("upper"));
+        record.attempt_id = Some("attempt-test".into());
+        record.write().unwrap();
+        let legacy = tempfile::Builder::new()
+            .prefix("pvisor-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let socket = legacy.path().join(CONTROL_FILENAME);
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+        let locator = temp.path().join(CONTROL_FILENAME);
+        std::os::unix::fs::symlink(&socket, &locator).unwrap();
+        assert!(
+            control_socket_path(temp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("host authority root")
+        );
+        assert!(!control_ping(temp.path()));
+        assert!(RunControlServer::start(&record).is_err());
+        assert_eq!(fs::read_link(&locator).unwrap(), socket);
+        assert!(socket.exists());
+        // A dangling legacy link is still user-owned and must not be replaced.
+        fs::remove_file(&socket).unwrap();
+        assert!(RunControlServer::start(&record).is_err());
+        assert_eq!(fs::read_link(&locator).unwrap(), socket);
+        fs::remove_file(&locator).unwrap();
+        fs::write(&locator, b"user-owned").unwrap();
+        assert!(RunControlServer::start(&record).is_err());
+        assert_eq!(fs::read(&locator).unwrap(), b"user-owned");
+        assert!(!control_ping(temp.path()));
+    }
+
+    #[test]
+    fn control_discovery_rejects_public_and_symlinked_source_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = allocate_host_directory("overlay-test-").unwrap();
+        let socket = directory.path().join(CONTROL_FILENAME);
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+        let locator = temp.path().join(CONTROL_FILENAME);
+        std::os::unix::fs::symlink(&socket, &locator).unwrap();
+        assert_eq!(control_socket_path(temp.path()).unwrap(), socket);
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(control_socket_path(temp.path()).is_err());
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(control_socket_path(temp.path()).is_err());
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let alias_owner = allocate_host_directory("overlay-test-").unwrap();
+        let alias = alias_owner.path().join("alias");
+        std::os::unix::fs::symlink(directory.path(), &alias).unwrap();
+        fs::remove_file(&locator).unwrap();
+        std::os::unix::fs::symlink(alias.join(CONTROL_FILENAME), &locator).unwrap();
+        assert!(control_socket_path(temp.path()).is_err());
+        fs::remove_file(&locator).unwrap();
+        // A socket symlink inside the root must not redirect authority elsewhere.
+        let redirected = alias_owner.path().join(CONTROL_FILENAME);
+        std::os::unix::fs::symlink(&socket, &redirected).unwrap();
+        std::os::unix::fs::symlink(&redirected, &locator).unwrap();
+        assert!(control_socket_path(temp.path()).is_err());
+        assert!(socket.exists());
+    }
+
+    #[test]
+    fn control_teardown_preserves_replaced_discovery_and_sibling_endpoints() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut record = record(temp.path(), temp.path(), &temp.path().join("upper"));
+        record.attempt_id = Some("attempt-test".into());
+        record.write().unwrap();
+        let sibling = allocate_host_directory("overlay-test-").unwrap();
+        let marker = sibling.path().join("user-owned");
+        fs::write(&marker, b"keep").unwrap();
+        for symlink in [false, true] {
+            let server = RunControlServer::start(&record).unwrap().unwrap();
+            let locator = temp.path().join(CONTROL_FILENAME);
+            let socket = fs::read_link(&locator).unwrap();
+            fs::remove_file(&locator).unwrap();
+            if symlink {
+                std::os::unix::fs::symlink(&marker, &locator).unwrap();
+            } else {
+                fs::write(&locator, b"replacement").unwrap();
+            }
+            drop(server);
+            assert!(!socket.parent().unwrap().exists());
+            assert_eq!(fs::read(&marker).unwrap(), b"keep");
+            if symlink {
+                assert_eq!(fs::read_link(&locator).unwrap(), marker);
+            } else {
+                assert_eq!(fs::read(&locator).unwrap(), b"replacement");
+            }
+            fs::remove_file(&locator).unwrap();
+        }
+    }
+
+    #[test]
     fn control_client_rejects_uncorrelated_and_wrong_version_responses() {
         use std::io::{BufRead, Write};
         for variant in 0..3 {
@@ -1221,8 +1419,12 @@ mod tests {
             let mut record = record(temp.path(), temp.path(), &temp.path().join("upper"));
             record.attempt_id = Some("attempt-test".into());
             record.write().unwrap();
-            let listener =
-                std::os::unix::net::UnixListener::bind(temp.path().join(CONTROL_FILENAME)).unwrap();
+            let directory = allocate_host_directory("overlay-test-").unwrap();
+            let socket = directory.path().join(CONTROL_FILENAME);
+            let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+            fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+            let _locator =
+                ControlLocator::create(temp.path().join(CONTROL_FILENAME), &socket).unwrap();
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     let (mut stream, _) = listener.accept().unwrap();

@@ -70,6 +70,13 @@ def publish(report_path, output, modes=None):
             if len({r['trial'] for r in selected}) != len(selected):
                 raise ValueError('duplicate trials')
             metrics = {key: [r[key] for r in selected] for key in ['ready_ms','result_ms','completion_ms']}
+            if selected and any(v is None for v in metrics['completion_ms']):
+                if not (mode == 'ready' and backend in ('firecracker', 'fc-system', 'fc-reference')
+                        and report['arguments'].get('fc_ready_policy') == 'ready-only'
+                        and all(r['completion_ms'] is None and r.get('fc_ready_policy') == 'ready-only'
+                                and r.get('controlled_sigterm') is True for r in selected)):
+                    raise ValueError('missing completion requires checked FC ready-only evidence')
+                del metrics['completion_ms']
             if mode == 'filesystem' and selected:
                 metrics.update({op+'_worker_ms':[r['result']['filesystem'][op]['worker_ms'] for r in selected]
                                 for op in selected[0]['result']['filesystem']})
@@ -88,6 +95,9 @@ def publish(report_path, output, modes=None):
                    {'field':'arguments','value':json.dumps({k:report['arguments'][k] for k in ['modes','backends','samples','warmups','memory_mib','cpu_affinity','seed','host_isolation','staged_isolation'] if k in report['arguments']},sort_keys=True)},
                    {'field':'statistics','value':'batches separate; P95 descriptive at N>=30; no P99; separated clusters replace P50'},
                    {'field':'split_rule','value':'both clusters >=max(5,10% N); largest gap >=20% median and >3x median adjacent gap; cluster medians >=1.5x'}]
+    if 'reference_kernels' in report:
+        provenance.append({'field':'reference_kernels','value':json.dumps(report['reference_kernels'],sort_keys=True)})
+        provenance.append({'field':'fc_ready_policy','value':report['arguments'].get('fc_ready_policy','normal')})
     write_csv(output/'runtime-provenance.csv', provenance)
     return records
 

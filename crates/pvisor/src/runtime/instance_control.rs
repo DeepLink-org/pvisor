@@ -1,19 +1,23 @@
 //! Host-only, attempt-scoped live VM control. One JSON line per connection.
 //!
-//! This is not snapshot restart: `load` is an alias for `RunResume`. Endpoint
+//! This is not snapshot restart: `resume` resumes the same live Attempt. Endpoint
 //! discovery is process-local so no management socket is projected into a guest.
 
 use super::host_transport::{
-    authorize_host_peer, read_host_frame, validate_host_target, write_host_frame,
+    allocate_host_directory, authorize_host_peer, host_authority_root, read_host_frame,
+    validate_host_target, write_host_frame,
 };
 use super::run::{RunControlHandle, RunHandle};
+#[cfg(test)]
+use pvisor_core::AttemptId;
+use pvisor_core::RunStatus;
+#[cfg(test)]
+use pvisor_core::host_protocol::{AGENTCTL_HOST_MAX_FRAME_BYTES, AgentCtlTarget};
 use pvisor_core::host_protocol::{
-    AGENTCTL_HOST_MAX_FRAME_BYTES, AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode,
-    AgentCtlHostRequest, AgentCtlHostResponse, AgentCtlTarget,
+    AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
+    AgentCtlHostResponse, HostVmCommand, HostVmResult,
 };
 use pvisor_core::operation::{OperationKind, Value};
-use pvisor_core::{AttemptId, RunId, RunStatus};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -24,102 +28,12 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::task::JoinSet;
 
-pub const INSTANCE_CONTROL_VERSION: u32 = AGENTCTL_HOST_VERSION;
 /// Runtime-owned host path. Native executors must exclude it from all guest
 /// filesystem lower projections (the same way they exclude live RAM backing).
 pub const INSTANCE_CONTROL_DIRECTORY_METADATA: &str = "pvisor.instance_control.directory";
-pub const INSTANCE_CONTROL_MAX_FRAME: usize = AGENTCTL_HOST_MAX_FRAME_BYTES;
 const MAX_CONNECTIONS: usize = 8;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(310);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct InstanceControlRequest {
-    pub version: u32,
-    pub run_id: RunId,
-    pub attempt_id: AttemptId,
-    pub command: InstanceControlCommand,
-    #[serde(default)]
-    pub file: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InstanceControlCommand {
-    Pause,
-    Resume,
-    Offload,
-    Load,
-    Status,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InstanceControlResponse {
-    pub version: u32,
-    pub run_id: RunId,
-    pub attempt_id: AttemptId,
-    pub ok: bool,
-    pub status: RunStatus,
-    pub value: Option<Value>,
-    pub error: Option<String>,
-}
-
-/// Typed low-level VM command exposed through the host service envelope.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct HostInstanceCommand {
-    pub command: InstanceControlCommand,
-    #[serde(default)]
-    pub file: Option<PathBuf>,
-}
-
-impl InstanceControlRequest {
-    fn envelope(&self) -> AgentCtlHostRequest<HostInstanceCommand> {
-        AgentCtlHostRequest {
-            version: self.version,
-            request_id: uuid::Uuid::new_v4().to_string(),
-            target: Some(AgentCtlTarget {
-                job_id: self.run_id.to_string(),
-                attempt_id: Some(self.attempt_id.to_string()),
-                generation: None,
-            }),
-            command: HostInstanceCommand {
-                command: self.command,
-                file: self.file.clone(),
-            },
-        }
-    }
-
-    fn operation(&self, status: &RunStatus) -> anyhow::Result<Option<OperationKind>> {
-        anyhow::ensure!(
-            self.version == INSTANCE_CONTROL_VERSION,
-            "unsupported control protocol version"
-        );
-        anyhow::ensure!(
-            self.run_id == status.run_id && self.attempt_id == status.attempt.attempt_id,
-            "control identity mismatch"
-        );
-        anyhow::ensure!(
-            status.attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
-            "live VM controls require a VM executor"
-        );
-        anyhow::ensure!(
-            self.command == InstanceControlCommand::Offload || self.file.is_none(),
-            "file is only valid for offload"
-        );
-        Ok(match self.command {
-            InstanceControlCommand::Pause => Some(OperationKind::RunPause),
-            InstanceControlCommand::Resume | InstanceControlCommand::Load => {
-                Some(OperationKind::RunResume)
-            }
-            InstanceControlCommand::Offload => Some(OperationKind::RunOffload {
-                file: self.file.clone(),
-            }),
-            InstanceControlCommand::Status => None,
-        })
-    }
-}
 
 // RunHandle is constructed by Session outside this module. Keep only discovery
 // paths here, never control authority or backing ownership; the server guard
@@ -175,6 +89,7 @@ pub(crate) struct InstanceControlServer {
     listener: UnixListener,
     socket: OwnedSocket,
     identity: Option<(String, String)>,
+    exclusion_directory: PathBuf,
 }
 
 impl InstanceControlServer {
@@ -182,13 +97,9 @@ impl InstanceControlServer {
         // Fixed short default path also fits macOS sockaddr_un. Custom parents
         // must already exist; never create them, follow a parent symlink, or
         // unlink an existing entry to make binding succeed.
+        let authority_root = host_authority_root()?;
         let temporary = if path.is_none() {
-            Some(
-                tempfile::Builder::new()
-                    .prefix("pvctrl-")
-                    .permissions(std::fs::Permissions::from_mode(0o700))
-                    .tempdir_in("/tmp")?,
-            )
+            Some(allocate_host_directory("vm-")?)
         } else {
             None
         };
@@ -225,6 +136,13 @@ impl InstanceControlServer {
             }
             None => temporary.as_ref().unwrap().path().join("ctrl.sock"),
         };
+        // Exclude all authority siblings when this endpoint is in the common
+        // root. External custom sockets retain their checked parent exclusion.
+        let exclusion_directory = if path.starts_with(&authority_root) {
+            authority_root
+        } else {
+            path.parent().unwrap().to_owned()
+        };
         let listener = UnixListener::bind(&path)?;
         let metadata = std::fs::symlink_metadata(&path)?;
         let socket = OwnedSocket {
@@ -239,11 +157,12 @@ impl InstanceControlServer {
             listener,
             socket,
             identity: None,
+            exclusion_directory,
         })
     }
 
     pub(crate) fn directory(&self) -> &Path {
-        self.socket.path.parent().unwrap()
+        &self.exclusion_directory
     }
 
     pub(crate) fn start(mut self, handle: &RunHandle) {
@@ -306,7 +225,7 @@ impl Drop for InstanceControlServer {
 }
 
 fn host_operation(
-    request: &AgentCtlHostRequest<HostInstanceCommand>,
+    request: &AgentCtlHostRequest<HostVmCommand>,
     status: &RunStatus,
 ) -> Result<Option<OperationKind>, AgentCtlHostError> {
     request.validate()?;
@@ -321,15 +240,11 @@ fn host_operation(
             "live VM controls require a VM executor",
         ));
     }
-    let adapter = InstanceControlRequest {
-        version: request.version,
-        run_id: status.run_id.clone(),
-        attempt_id: status.attempt.attempt_id.clone(),
-        command: request.command.command,
-        file: request.command.file.clone(),
-    };
-    adapter.operation(status).map_err(|error| {
-        AgentCtlHostError::new(AgentCtlHostErrorCode::InvalidRequest, error.to_string())
+    Ok(match &request.command {
+        HostVmCommand::Pause => Some(OperationKind::RunPause),
+        HostVmCommand::Resume => Some(OperationKind::RunResume),
+        HostVmCommand::Offload { file } => Some(OperationKind::RunOffload { file: file.clone() }),
+        HostVmCommand::Status => None,
     })
 }
 
@@ -345,7 +260,7 @@ async fn serve(
     // A malformed frame has no trustworthy correlation ID; close without a reply.
     let Ok(Ok(request)) = tokio::time::timeout(
         IO_TIMEOUT,
-        read_host_frame::<AgentCtlHostRequest<HostInstanceCommand>>(&mut stream),
+        read_host_frame::<AgentCtlHostRequest<HostVmCommand>>(&mut stream),
     )
     .await
     else {
@@ -395,15 +310,7 @@ async fn respond(
     request_id: &str,
     result: Result<Option<Value>, AgentCtlHostError>,
 ) {
-    let result = result.map(|value| InstanceControlResponse {
-        version: INSTANCE_CONTROL_VERSION,
-        run_id: status.run_id.clone(),
-        attempt_id: status.attempt.attempt_id.clone(),
-        ok: true,
-        status,
-        value,
-        error: None,
-    });
+    let result = result.map(|value| HostVmResult { status, value });
     let response = AgentCtlHostResponse {
         version: AGENTCTL_HOST_VERSION,
         request_id: request_id.to_owned(),
@@ -412,42 +319,44 @@ async fn respond(
     let _ = tokio::time::timeout(IO_TIMEOUT, write_host_frame(stream, &response)).await;
 }
 
-/// Bounded host client exchange; identities are required even for status.
-/// Existing request/result structs remain API adapters; wire rejections are typed host errors.
+/// Bounded host VM exchange with caller-selected correlation and explicit target.
+/// A timeout may follow accepted effects; reconcile state before resubmitting.
 pub async fn exchange(
     path: &Path,
-    request: &InstanceControlRequest,
-) -> anyhow::Result<InstanceControlResponse> {
-    let envelope = request.envelope();
+    request: &AgentCtlHostRequest<HostVmCommand>,
+) -> anyhow::Result<AgentCtlHostResponse<HostVmResult>> {
+    request.validate()?;
+    let target = request
+        .target
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("explicit VM target is required"))?;
+    let attempt_id = target
+        .attempt_id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("explicit VM attempt is required"))?;
+    validate_host_target(Some(target), &target.job_id, attempt_id)?;
     let mut stream = tokio::time::timeout(IO_TIMEOUT, UnixStream::connect(path))
         .await
         .map_err(|_| anyhow::anyhow!("control connection timed out"))??;
     authorize_host_peer(&stream)?;
-    tokio::time::timeout(IO_TIMEOUT, write_host_frame(&mut stream, &envelope))
+    tokio::time::timeout(IO_TIMEOUT, write_host_frame(&mut stream, request))
         .await
         .map_err(|_| anyhow::anyhow!("control request write timed out"))??;
-    let reply: AgentCtlHostResponse<InstanceControlResponse> =
+    let reply: AgentCtlHostResponse<HostVmResult> =
         tokio::time::timeout(OPERATION_TIMEOUT + IO_TIMEOUT, read_host_frame(&mut stream))
             .await
             .map_err(|_| {
                 anyhow::anyhow!("control response timed out; accepted operation may still complete")
             })??;
-    reply.validate(&envelope.request_id)?;
-    let response = reply.result?;
-    anyhow::ensure!(
-        response.version == INSTANCE_CONTROL_VERSION,
-        "unsupported control response version"
-    );
-    anyhow::ensure!(
-        response.run_id == request.run_id && response.attempt_id == request.attempt_id,
-        "control response identity mismatch"
-    );
-    anyhow::ensure!(
-        response.status.run_id == response.run_id
-            && response.status.attempt.attempt_id == response.attempt_id,
-        "control status identity mismatch"
-    );
-    Ok(response)
+    reply.validate(&request.request_id)?;
+    if let Ok(response) = &reply.result {
+        anyhow::ensure!(
+            response.status.run_id.as_str() == target.job_id
+                && response.status.attempt.attempt_id.as_str() == attempt_id,
+            "control response identity mismatch"
+        );
+    }
+    Ok(reply)
 }
 
 #[cfg(test)]
@@ -500,21 +409,28 @@ mod tests {
         builder.build().run(spec).await.unwrap()
     }
 
-    fn request(handle: &RunHandle, command: InstanceControlCommand) -> InstanceControlRequest {
-        InstanceControlRequest {
-            version: INSTANCE_CONTROL_VERSION,
-            run_id: handle.run_id().clone(),
-            attempt_id: handle.attempt_id().clone(),
+    fn request(handle: &RunHandle, command: HostVmCommand) -> AgentCtlHostRequest<HostVmCommand> {
+        AgentCtlHostRequest {
+            version: AGENTCTL_HOST_VERSION,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            target: Some(AgentCtlTarget {
+                job_id: handle.run_id().to_string(),
+                attempt_id: Some(handle.attempt_id().to_string()),
+                generation: None,
+            }),
             command,
-            file: None,
         }
     }
 
     async fn exchange(
         path: &std::path::Path,
-        request: &InstanceControlRequest,
-    ) -> InstanceControlResponse {
-        super::exchange(path, request).await.unwrap()
+        request: &AgentCtlHostRequest<HostVmCommand>,
+    ) -> HostVmResult {
+        super::exchange(path, request)
+            .await
+            .unwrap()
+            .result
+            .unwrap()
     }
 
     async fn removed(path: &std::path::Path) {
@@ -582,17 +498,32 @@ mod tests {
         let path = handle.control_socket().unwrap();
         // Exercise cleanup after the server has already entered its accept
         // loop, not just an attempt that finished before the server was polled.
-        assert!(
-            super::exchange(&path, &request(&handle, InstanceControlCommand::Status))
-                .await
-                .unwrap()
-                .ok
-        );
+        exchange(&path, &request(&handle, HostVmCommand::Status)).await;
         trigger.notify_one();
         assert!(
             matches!(handle.wait().await, Err(super::super::run::PVisorError::Join(error)) if error.is_panic())
         );
         removed(&path).await;
+    }
+
+    #[tokio::test]
+    async fn automatic_and_nested_custom_endpoints_exclude_the_whole_authority_root() {
+        let root = host_authority_root().unwrap();
+        let automatic = InstanceControlServer::bind(None).unwrap();
+        assert_eq!(automatic.directory(), root);
+        assert_eq!(
+            automatic.socket.path.parent().unwrap().parent(),
+            Some(root.as_path())
+        );
+        let sibling = allocate_host_directory("exec-").unwrap();
+        let nested =
+            InstanceControlServer::bind(Some(&sibling.path().join("custom.sock"))).unwrap();
+        assert_eq!(nested.directory(), root);
+        let path = automatic.socket.path.clone();
+        drop(automatic);
+        assert!(!path.exists());
+        assert!(nested.socket.path.exists());
+        assert!(root.is_dir());
     }
 
     #[tokio::test]
@@ -681,13 +612,15 @@ mod tests {
             .join("configured.sock");
         let handle = mock_at(Some(&path)).await;
         assert_eq!(handle.control_socket().unwrap(), path);
-        let req = request(&handle, InstanceControlCommand::Status);
-        assert!(super::exchange(&path, &req).await.unwrap().ok);
+        let req = request(&handle, HostVmCommand::Status);
+        super::exchange(&path, &req).await.unwrap().result.unwrap();
         let mut invalid = req;
-        invalid.attempt_id = AttemptId::from("other-attempt");
+        invalid.target.as_mut().unwrap().attempt_id = Some("other-attempt".into());
         assert!(
             super::exchange(&path, &invalid)
                 .await
+                .unwrap()
+                .result
                 .unwrap_err()
                 .to_string()
                 .contains("identity")
@@ -710,8 +643,7 @@ mod tests {
         handle.controls().wait_ready().await.unwrap();
         let transition = handle.vm_control.transition.lock().await;
         let (mut client, server) = UnixStream::pair().unwrap();
-        let mut bytes =
-            serde_json::to_vec(&request(&handle, InstanceControlCommand::Load).envelope()).unwrap();
+        let mut bytes = serde_json::to_vec(&request(&handle, HostVmCommand::Resume)).unwrap();
         bytes.push(b'\n');
         client.write_all(&bytes).await.unwrap();
         let waiter = tokio::spawn(serve(
@@ -720,7 +652,7 @@ mod tests {
             handle.status.clone(),
             Duration::from_millis(1),
         ));
-        let response: AgentCtlHostResponse<InstanceControlResponse> =
+        let response: AgentCtlHostResponse<HostVmResult> =
             tokio::time::timeout(IO_TIMEOUT, read_host_frame(&mut client))
                 .await
                 .unwrap()
@@ -746,9 +678,7 @@ mod tests {
         handle.controls().wait_ready().await.unwrap();
         let path = handle.control_socket().unwrap();
         let transition = handle.vm_control.transition.lock().await;
-        let mut bytes =
-            serde_json::to_vec(&request(&handle, InstanceControlCommand::Pause).envelope())
-                .unwrap();
+        let mut bytes = serde_json::to_vec(&request(&handle, HostVmCommand::Pause)).unwrap();
         bytes.push(b'\n');
         for _ in 0..MAX_CONNECTIONS {
             let mut client = UnixStream::connect(&path).await.unwrap();
@@ -808,12 +738,10 @@ mod tests {
         );
         // Binding is create-only, not replacement.
         assert!(UnixListener::bind(&path).is_err());
-        let req = request(&handle, InstanceControlCommand::Status);
+        let req = request(&handle, HostVmCommand::Status);
         let reply = exchange(&path, &req).await;
-        assert!(reply.ok);
-        assert_eq!(reply.run_id, req.run_id);
-        assert_eq!(reply.attempt_id, req.attempt_id);
-        assert_eq!(reply.version, INSTANCE_CONTROL_VERSION);
+        assert_eq!(reply.status.run_id, *handle.run_id());
+        assert_eq!(reply.status.attempt.attempt_id, *handle.attempt_id());
         let mut invalid = req.clone();
         invalid.version = 2;
         assert!(
@@ -824,36 +752,26 @@ mod tests {
                 .contains("version")
         );
         invalid = req.clone();
-        invalid.attempt_id = AttemptId::from("other-attempt");
+        invalid.target.as_mut().unwrap().attempt_id = Some("other-attempt".into());
         assert!(
             super::exchange(&path, &invalid)
                 .await
+                .unwrap()
+                .result
                 .unwrap_err()
                 .to_string()
                 .contains("identity")
         );
-        invalid = req.clone();
-        invalid.file = Some("/tmp/unused".into());
-        assert!(
-            super::exchange(&path, &invalid)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("offload")
-        );
         for (command, kind) in [
-            (InstanceControlCommand::Pause, OperationKind::RunPause),
-            (InstanceControlCommand::Resume, OperationKind::RunResume),
-            (InstanceControlCommand::Load, OperationKind::RunResume),
+            (HostVmCommand::Pause, OperationKind::RunPause),
+            (HostVmCommand::Resume, OperationKind::RunResume),
             (
-                InstanceControlCommand::Offload,
+                HostVmCommand::Offload { file: None },
                 OperationKind::RunOffload { file: None },
             ),
         ] {
             assert_eq!(
-                request(&handle, command)
-                    .operation(&handle.status())
-                    .unwrap(),
+                host_operation(&request(&handle, command), &handle.status()).unwrap(),
                 Some(kind)
             );
         }
@@ -861,13 +779,12 @@ mod tests {
         let mut events = handle.subscribe_events();
         // No native endpoint is attached to the mock. Failure is explicit and
         // still follows the existing serialized lifecycle/event path.
-        let error = super::exchange(&path, &request(&handle, InstanceControlCommand::Pause))
+        let error = super::exchange(&path, &request(&handle, HostVmCommand::Pause))
             .await
+            .unwrap()
+            .result
             .unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<AgentCtlHostError>().unwrap().code,
-            AgentCtlHostErrorCode::Unavailable
-        );
+        assert_eq!(error.code, AgentCtlHostErrorCode::Unavailable);
         let mut kinds = Vec::new();
         while let Ok(event) = events.try_recv() {
             if let pvisor_core::event::Fact::Observation { name, .. } = event.data {
@@ -878,8 +795,7 @@ mod tests {
         assert!(kinds.iter().any(|kind| kind == "vm.control_failed"));
         // Closing the client after submission does not cancel accepted control.
         let mut stream = UnixStream::connect(&path).await.unwrap();
-        let mut bytes =
-            serde_json::to_vec(&request(&handle, InstanceControlCommand::Load).envelope()).unwrap();
+        let mut bytes = serde_json::to_vec(&request(&handle, HostVmCommand::Resume)).unwrap();
         bytes.push(b'\n');
         stream.write_all(&bytes).await.unwrap();
         drop(stream);
@@ -938,7 +854,7 @@ mod tests {
         let (mut writer, mut reader) = UnixStream::pair().unwrap();
         let sender = tokio::spawn(async move {
             writer
-                .write_all(&vec![b'x'; INSTANCE_CONTROL_MAX_FRAME + 1])
+                .write_all(&vec![b'x'; AGENTCTL_HOST_MAX_FRAME_BYTES + 1])
                 .await
                 .unwrap();
         });
@@ -957,7 +873,7 @@ mod tests {
         let handle = mock().await;
         let path = handle.control_socket().unwrap();
         for variant in 0..5 {
-            let mut request = request(&handle, InstanceControlCommand::Status).envelope();
+            let mut request = request(&handle, HostVmCommand::Status);
             let expected = if variant == 0 {
                 AgentCtlHostErrorCode::VersionMismatch
             } else if variant == 4 {
@@ -974,14 +890,13 @@ mod tests {
             }
             let mut stream = UnixStream::connect(&path).await.unwrap();
             write_host_frame(&mut stream, &request).await.unwrap();
-            let response: AgentCtlHostResponse<InstanceControlResponse> =
+            let response: AgentCtlHostResponse<HostVmResult> =
                 read_host_frame(&mut stream).await.unwrap();
             assert_eq!(response.request_id, request.request_id);
             assert_eq!(response.result.unwrap_err().code, expected);
         }
         let mut guest_request =
-            serde_json::to_value(request(&handle, InstanceControlCommand::Status).envelope())
-                .unwrap();
+            serde_json::to_value(request(&handle, HostVmCommand::Status)).unwrap();
         guest_request["token"] = "cooperative-guest-token".into();
         let mut stream = UnixStream::connect(&path).await.unwrap();
         write_host_frame(&mut stream, &guest_request).await.unwrap();
@@ -995,20 +910,77 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn adapter_rejects_wrong_response_version_correlation_and_target() {
+    async fn host_wire_refuses_legacy_frames_and_load_alias() {
         let handle = mock().await;
-        let request = request(&handle, InstanceControlCommand::Status);
+        let path = handle.control_socket().unwrap();
+        let envelope = serde_json::to_value(request(&handle, HostVmCommand::Status)).unwrap();
+        let mut legacy_command = envelope.clone();
+        legacy_command["command"] = serde_json::json!({"command": "status", "file": null});
+        let mut load = envelope.clone();
+        load["command"] = serde_json::json!({"operation": "load"});
+        let mut misplaced_file = envelope;
+        misplaced_file["command"] = serde_json::json!({"operation": "pause", "file": "/tmp/ram"});
+        for wire in [
+            serde_json::json!({
+                "version": AGENTCTL_HOST_VERSION,
+                "run_id": handle.run_id(),
+                "attempt_id": handle.attempt_id(),
+                "command": "status", "file": null,
+            }),
+            legacy_command,
+            load,
+            misplaced_file,
+        ] {
+            let mut stream = UnixStream::connect(&path).await.unwrap();
+            write_host_frame(&mut stream, &wire).await.unwrap();
+            assert!(
+                tokio::time::timeout(
+                    IO_TIMEOUT,
+                    read_host_frame::<serde_json::Value>(&mut stream)
+                )
+                .await
+                .unwrap()
+                .is_err()
+            );
+        }
+        handle.cancel();
+        handle.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn client_requires_explicit_attempt_target_before_connecting() {
+        let handle = mock().await;
+        let path = handle.control_socket().unwrap();
         for variant in 0..3 {
+            let mut request = request(&handle, HostVmCommand::Status);
+            match variant {
+                0 => request.target = None,
+                1 => request.target.as_mut().unwrap().attempt_id = None,
+                _ => request.target.as_mut().unwrap().generation = Some("unsupported".into()),
+            }
+            assert!(super::exchange(&path, &request).await.is_err());
+        }
+        handle.cancel();
+        handle.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn client_rejects_wrong_response_version_correlation_and_target() {
+        let handle = mock().await;
+        let request = request(&handle, HostVmCommand::Status);
+        for variant in 0..4 {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("fake.sock");
             let listener = UnixListener::bind(&path).unwrap();
             let mut status = handle.status();
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let request: AgentCtlHostRequest<HostInstanceCommand> =
+                let request: AgentCtlHostRequest<HostVmCommand> =
                     read_host_frame(&mut stream).await.unwrap();
                 if variant == 2 {
                     status.attempt.attempt_id = AttemptId::from("other-attempt");
+                } else if variant == 3 {
+                    status.run_id = pvisor_core::RunId::from("other-job");
                 }
                 let response = AgentCtlHostResponse {
                     version: if variant == 0 {
@@ -1021,14 +993,9 @@ mod tests {
                     } else {
                         request.request_id
                     },
-                    result: Ok(InstanceControlResponse {
-                        version: INSTANCE_CONTROL_VERSION,
-                        run_id: status.run_id.clone(),
-                        attempt_id: status.attempt.attempt_id.clone(),
-                        ok: true,
+                    result: Ok(HostVmResult {
                         status,
                         value: None,
-                        error: None,
                     }),
                 };
                 write_host_frame(&mut stream, &response).await.unwrap();
@@ -1059,7 +1026,7 @@ mod tests {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[tokio::test]
     #[ignore = "real KVM, static C compiler; PVISOR_TEST_BINARY and PVISOR_TEST_LIBRARY_DIR for GNU firmware"]
-    async fn native_socket_pause_resume_offload_load_same_attempt() {
+    async fn native_socket_pause_resume_offload_same_attempt() {
         let directory = tempfile::tempdir().unwrap();
         let rootfs = directory.path().join("rootfs");
         for name in ["bin", "dev", "proc", "tmp"] {
@@ -1143,24 +1110,30 @@ mod tests {
                 if let Ok(record) = super::super::registry::RunRecord::read(&stage)
                     && let Some(attempt_id) = record.attempt_id
                 {
-                    let request = InstanceControlRequest {
-                        version: INSTANCE_CONTROL_VERSION,
-                        run_id: RunId::from(record.run_id),
-                        attempt_id: AttemptId::from(attempt_id),
-                        command: InstanceControlCommand::Status,
-                        file: None,
+                    let request = AgentCtlHostRequest {
+                        version: AGENTCTL_HOST_VERSION,
+                        request_id: uuid::Uuid::new_v4().to_string(),
+                        target: Some(AgentCtlTarget {
+                            job_id: record.run_id,
+                            attempt_id: Some(attempt_id),
+                            generation: None,
+                        }),
+                        command: HostVmCommand::Status,
                     };
                     // Test-only discovery: production discovery is the SDK
                     // getter/CLI stderr, with no guest-visible stage locator.
-                    for entry in std::fs::read_dir("/tmp").unwrap().flatten() {
-                        if !entry.file_name().to_string_lossy().starts_with("pvctrl-") {
+                    for entry in std::fs::read_dir(host_authority_root().unwrap())
+                        .unwrap()
+                        .flatten()
+                    {
+                        if !entry.file_name().to_string_lossy().starts_with("vm-") {
                             continue;
                         }
                         let path = entry.path().join("ctrl.sock");
                         let probe = async {
-                            let response = super::exchange(&path, &request).await.ok()?;
-                            (response.ok && response.status.state == RunState::Running)
-                                .then_some(())
+                            let response =
+                                super::exchange(&path, &request).await.ok()?.result.ok()?;
+                            (response.status.state == RunState::Running).then_some(())
                         };
                         if tokio::time::timeout(Duration::from_millis(200), probe)
                             .await
@@ -1178,18 +1151,20 @@ mod tests {
         .await
         .unwrap();
         for command in [
-            InstanceControlCommand::Pause,
-            InstanceControlCommand::Resume,
-            InstanceControlCommand::Offload,
-            InstanceControlCommand::Load,
-            InstanceControlCommand::Status,
+            HostVmCommand::Pause,
+            HostVmCommand::Resume,
+            HostVmCommand::Offload { file: None },
+            HostVmCommand::Resume,
+            HostVmCommand::Status,
         ] {
             let mut req = base_request.clone();
-            req.command = command;
+            req.command = command.clone();
             let reply = exchange(&path, &req).await;
-            assert!(reply.ok, "{reply:?}");
-            assert_eq!(reply.attempt_id, req.attempt_id);
-            if command == InstanceControlCommand::Offload {
+            assert_eq!(
+                reply.status.attempt.attempt_id.as_str(),
+                req.target.as_ref().unwrap().attempt_id.as_deref().unwrap()
+            );
+            if command == (HostVmCommand::Offload { file: None }) {
                 assert_eq!(reply.status.state, RunState::Suspended);
                 assert!(matches!(
                     reply.value,
@@ -1199,7 +1174,7 @@ mod tests {
                     })
                 ));
             }
-            if command == InstanceControlCommand::Load {
+            if command == HostVmCommand::Resume {
                 assert_eq!(reply.status.state, RunState::Running);
             }
         }

@@ -1522,6 +1522,7 @@ fn load_payload(
                 };
 
             if _vm_resources.ram_backing.is_some() {
+                let mut span = crate::startup_profile::Span::new("kernel_backing_copy", "runner");
                 let data = unsafe {
                     std::slice::from_raw_parts(kernel_host_addr as *const u8, kernel_size)
                 };
@@ -1532,6 +1533,7 @@ fn load_payload(
                             "copy kernel to RAM backing: {e:?}"
                         ))
                     })?;
+                span.complete(Some(kernel_size));
                 return Ok((guest_mem, GuestAddress(kernel_entry_addr), None, None));
             }
             let kernel_region = unsafe {

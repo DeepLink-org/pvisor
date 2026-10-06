@@ -502,14 +502,18 @@ def run_trial(args, metadata, backend, mode, trial):
             }
             if kernel_identity and 'initrd' in kernel_identity['paths']:
                 config['boot-source']['initrd_path'] = kernel_identity['paths']['initrd']
+            (root / 'firecracker.log').touch(exist_ok=False)
             config['logger'] = {'log_path': str(root / 'firecracker.log'), 'level': 'Warning',
                                 'show_level': True, 'show_log_origin': True}
             cfg = root / "firecracker.json"
             cfg.write_text(json.dumps(config))
             argv = ["firecracker", "--enable-pci", "--no-api", "--config-file", str(cfg)]
         else:
+            # Stock kernels probe the CMOS RTC even without ACPI. Removing it
+            # introduces two timeout waits; retain RTC for stock comparisons.
+            rtc = 'on' if kernel_identity else 'off'
             machine = (
-                "microvm,acpi=off,x-option-roms=off,pit=off,pic=off,rtc=off"
+                f"microvm,acpi=off,x-option-roms=off,pit=off,pic=off,rtc={rtc}"
                 if backend == "qemu-microvm"
                 else "q35"
             )

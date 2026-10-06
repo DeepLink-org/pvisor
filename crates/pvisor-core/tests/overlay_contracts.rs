@@ -1,6 +1,5 @@
 use pvisor_core::overlay::{
-    ApplyRecord, ApplyRecordState, OverlayRecord, OverlayState, PathPreimage, RunControlRequest,
-    RunControlResponse,
+    ApplyRecord, ApplyRecordState, OverlayRecord, OverlayState, PathPreimage,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -8,41 +7,6 @@ use serde_json::{Value, json};
 fn assert_wire_roundtrip<T: Serialize + DeserializeOwned>(wire: Value) {
     let decoded: T = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(decoded).unwrap(), wire);
-}
-
-#[test]
-fn inspection_protocol_keeps_existing_json() {
-    for request in [
-        json!({"op": "ping"}),
-        json!({"op": "overlay_status"}),
-        json!({"op": "mount_inspect"}),
-        json!({"op": "unmount_inspect", "id": "inspect-1"}),
-    ] {
-        assert_wire_roundtrip::<RunControlRequest>(request);
-    }
-    for response in [
-        json!({"ok": true, "id": null, "mountpoint": null, "error": null,
-            "overlay_status": {"changed_files": 2, "whiteouts": 1, "sample_paths": ["a"]}}),
-        json!({"ok": true, "id": "inspect-1", "mountpoint": "/stage/inspect/merged",
-            "error": null, "overlay_status": null}),
-        json!({"ok": false, "id": null, "mountpoint": null,
-            "error": "unknown inspect session", "overlay_status": null}),
-    ] {
-        assert_wire_roundtrip::<RunControlResponse>(response);
-    }
-}
-
-#[test]
-fn inspection_observations_are_only_emitted_when_present() {
-    assert_wire_roundtrip::<RunControlRequest>(json!({"op": "observations"}));
-    assert_wire_roundtrip::<RunControlResponse>(json!({
-        "ok": true,
-        "id": null,
-        "mountpoint": null,
-        "error": null,
-        "overlay_status": null,
-        "observations": {"filesystem": {"hits": 2}}
-    }));
 }
 
 #[test]

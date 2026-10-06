@@ -1,4 +1,8 @@
-//! Optional, cooperative Run-scoped AgentCtl channel owned by pVisor.
+//! Optional, cooperative Run-scoped Guest AgentCtl channel owned by pVisor.
+//!
+//! Guest `Hello`/`Sync` tokens authorize workload cooperation only, not Host Job,
+//! VM or supervisor operations. Host transport and live VM exchange are owned by
+//! the separate `host_transport` and `instance_control` runtime modules.
 
 pub use pvisor_core::{
     AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_VERSION, AgentDirective, AgentErrorCode, AgentRequest,

@@ -9,7 +9,7 @@ Core definitions for pVisor operations and external interactions. pVisor owns sc
 | `execution` | Execution input, identities, capability plans and results |
 | `policy`, `network` | Shared authorization definitions and pure evaluation |
 | `protocol`, `session` | Cooperative guest AgentCtl wire messages and session identities |
-| `host_protocol` | Versioned host envelopes, target/correlation validation and typed private supervisor contracts |
+| `host_protocol` | Versioned Host envelopes, target/correlation validation, `HostVmCommand`/`HostVmResult` and typed private supervisor contracts |
 | `overlay` | Review/apply records, preimages and local inspection messages |
 | `audit` | Approval request/decision contracts and injected approval channel |
 | `cpu`, `memory` | Native CPU QoS, usage and memory observation contracts; not scheduler reservations |
@@ -19,9 +19,9 @@ The only production operation is `run.execute`. There is no text language or gen
 
 Executors, AgentCtl clients/servers, approval socket I/O and lifecycle ownership reside in `pvisor`; mount/network implementations reside in their drivers. Core does not start processes or open control sockets. Policy evaluation does not itself prove enforcement.
 
-AgentCtl has two authority endpoints in the same protocol family, not shared guest privileges. The optional authenticated cooperative guest endpoint retains `AgentRequest`: Hello opens a Session, Sync exchanges state and directives. It cannot acquire host lifecycle authority and is not enforcement evidence. See [the cooperative wire contract](src/protocol.rs). The concrete `AgentCtlClient` is exported by `pvisor`, not core.
+Host and Guest AgentCtl use isolated schemas, credentials and endpoints, not shared guest privileges. The optional authenticated cooperative guest endpoint retains `AgentRequest`: Hello opens a Session, Sync exchanges state and directives. It cannot acquire host lifecycle authority and is not enforcement evidence. See [the cooperative wire contract](src/protocol.rs). The concrete `AgentCtlClient` is exported by `pvisor`, not core.
 
-The separate host-authority endpoint uses [`host_protocol`](src/host_protocol.rs): version 1 generic request/response envelopes with request correlation, optional Job/Attempt/generation targets and a common 1 MiB JSON payload limit. Pure validation bounds correlation/target identities to 1–256 bytes and rejects control characters; it neither authenticates nor resolves a target. Private supervisor commands require explicit Job, Attempt and generation binding at the endpoint, with namespace owner and secret credentials separate from public host authentication tokens. Core defines structured states/results only; transport, peer authentication and runtime controls remain outside core.
+The separate host-authority endpoint uses [`host_protocol`](src/host_protocol.rs): version 1 generic request/response envelopes with request correlation, optional Job/Attempt/generation targets and a common 1 MiB JSON payload limit. Pure validation bounds correlation/target identities to 1–256 bytes and rejects control characters; it neither authenticates nor resolves a target. Private supervisor commands require explicit Job, Attempt and generation binding at the endpoint, with namespace owner and secret credentials separate from public host authentication tokens. Core also defines `HostVmCommand` (`Pause`, `Resume`, `Offload`, `Status`) and `HostVmResult` (`status`, `value`) for live VM controls. There is no `Load` wire operation: `--vm-load` selects `Resume`. The removed `InstanceControl*` adapters are not compatibility exports. Core defines structured commands/states/results only; transport, peer authentication and runtime controls remain outside core. `pvisor::host_vm_exchange` exchanges typed Host request/response envelopes for embedded callers.
 
 ## Retired Cluster boundary
 

@@ -2,8 +2,8 @@
 #[cfg(feature = "gateway")]
 use super::resolve_proxy;
 use super::{
-    announce_control_socket, apply_safe_defaults, delegated_shutdown_signal, execute_config,
-    paths_overlap, resolve_workspace, select_run_storage,
+    announce_control_socket, apply_safe_defaults, execute_config, paths_overlap, report_terminal,
+    resolve_workspace, select_run_storage, wait_cli_run,
 };
 #[cfg(feature = "gateway")]
 use crate::GatewayDriverConfig;
@@ -26,6 +26,7 @@ use std::{
 };
 
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ForkArgs {
     /// Source Job id, workspace, run.json, or path inside the source Job.
     source: PathBuf,
@@ -57,6 +58,18 @@ pub struct ForkArgs {
     command: Vec<String>,
 }
 
+impl ForkArgs {
+    pub(in crate::cli) fn restores_execution(&self) -> bool {
+        self.state == crate::cli::checkpoint::Kind::Execution
+    }
+    pub(in crate::cli) fn selection(&self) -> (&Path, &Path) {
+        (&self.source, &self.output_dir)
+    }
+    pub(in crate::cli) fn pin_selection(&mut self, path: PathBuf) {
+        self.source = path;
+    }
+}
+
 pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     anyhow::ensure!(
         args.state == crate::cli::checkpoint::Kind::Execution
@@ -80,12 +93,15 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         .canonicalize()
         .unwrap_or(args.output_dir.clone());
     let source = resolve_run(Some(&args.source), &storage)?;
+    crate::cli::host_service::check_record(&source)?;
     if args.state == crate::cli::checkpoint::Kind::Execution {
         return fork_execution(args, source).await;
     }
+    let source_job = crate::cli::host::lock_selected_job(&source)?;
     // Hold ownership from selection through copy and durable source retention.
     // The runner starts only after releasing the source's lease.
     let (source, source_lease) = source.lock_current()?;
+    crate::cli::host_service::check_record(&source)?;
     let checkpoint = match args.checkpoint.as_deref() {
         Some(id) => crate::runtime::checkpoint::resolve_checkpoint(&source, id)?,
         None => crate::runtime::checkpoint::create_stopped_checkpoint_locked(&source, None)?,
@@ -171,6 +187,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     config.overlayfs.as_mut().expect("configured above").stage = Some(stage);
     apply_safe_defaults(&mut config)?;
     drop(source_lease);
+    drop(source_job);
     execute_config(
         config,
         run_id,
@@ -227,11 +244,12 @@ pub(in crate::cli) async fn resume_execution(
     let template = job_execution::job(&source)?;
     let lease = template.lock()?;
     let mut job = template.current()?;
+    job.validate_record_target(&source)?;
+    let current_record = RunRecord::read(&job.active_stage)?;
+    crate::cli::host::check_selected_record(&source, &current_record)?;
+    crate::cli::host_service::check_record(&current_record)?;
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    anyhow::ensure!(
-        !request_id.trim().is_empty() && request_id.len() <= 256,
-        "invalid request id"
-    );
+    crate::cli::host::validate_request_id(&request_id)?;
     if let Some(request) = job.resumes.get(&request_id) {
         let stage = &request.stage;
         anyhow::ensure!(
@@ -252,7 +270,9 @@ pub(in crate::cli) async fn resume_execution(
         job.state
     );
     let checkpoint = job.checkpoint(job.head.as_deref().context("missing suspended head")?)?;
-    let source_lease = source.lock_current()?.1;
+    let (source, source_lease) = source.lock_current()?;
+    job.validate_record_target(&source)?;
+    crate::cli::host_service::check_record(&source)?;
     let stage = job
         .root
         .join("attempts")
@@ -268,7 +288,7 @@ pub(in crate::cli) async fn resume_execution(
     job.active_stage = stage.clone();
     job.state = JobState::Restoring;
     job.resumes.insert(
-        request_id,
+        request_id.clone(),
         job_execution::ResumeRequest {
             stage: stage.clone(),
             eager_ram,
@@ -284,12 +304,36 @@ pub(in crate::cli) async fn resume_execution(
     if result.is_err() {
         let _lease = job.lock()?;
         let current = job.current()?;
-        if current.state == JobState::Restoring {
-            // No RunHandle was accepted, hence the suspended head is retryable.
+        if owns_restore_transition(&current, &job, &request_id)
+            && !crate::runtime::is_live(&job.active_stage)?
+            && !job.active_stage.join("run.json").try_exists()?
+        {
+            // An error can occur after RunHandle acceptance too. Roll back only
+            // our unchanged transition with no durable or live successor.
             previous.write()?;
         }
     }
     result
+}
+
+fn owns_restore_transition(
+    current: &crate::runtime::job_execution::Job,
+    admitted: &crate::runtime::job_execution::Job,
+    request_id: &str,
+) -> bool {
+    current.state == JobState::Restoring
+        && current.run_id == admitted.run_id
+        && current.root == admitted.root
+        && current.active_attempt == admitted.active_attempt
+        && current.active_stage == admitted.active_stage
+        && current.previous_stage == admitted.previous_stage
+        && current.head == admitted.head
+        && matches!((serde_json::to_value(current), serde_json::to_value(admitted)),
+            (Ok(current), Ok(admitted)) if current == admitted)
+        && current
+            .resumes
+            .get(request_id)
+            .is_some_and(|request| request.stage == admitted.active_stage)
 }
 
 fn preserve_apply_target(source: &RunRecord, overlay: &mut OverlayHint) {
@@ -310,10 +354,7 @@ async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32
         .request_id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    anyhow::ensure!(
-        !request_id.trim().is_empty() && request_id.len() <= 256,
-        "invalid request id"
-    );
+    crate::cli::host::validate_request_id(&request_id)?;
     let options = job_execution::ForkOptions {
         checkpoint: args.checkpoint.clone(),
         stage: args.stage.clone(),
@@ -321,7 +362,13 @@ async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32
         ram_storage: args.ram_storage.map(SnapshotRamStorage::from),
         eager_ram: args.eager_ram,
     };
-    let selected = job_execution::job(&source)?;
+    let template = job_execution::job(&source)?;
+    let selection_lease = template.lock()?;
+    let selected = template.current()?;
+    selected.validate_record_target(&source)?;
+    let current_record = RunRecord::read(&selected.active_stage)?;
+    crate::cli::host::check_selected_record(&source, &current_record)?;
+    crate::cli::host_service::check_record(&current_record)?;
     if let Some(previous) = selected.forks.get(&request_id) {
         anyhow::ensure!(
             previous.options == options,
@@ -341,34 +388,53 @@ async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32
         return Ok(0);
     }
     let checkpoint = match args.checkpoint.as_deref() {
-        Some(id) => job_execution::job(&source)?.checkpoint(id)?,
+        Some(id) => selected.checkpoint(id)?,
+        None if selected.state == JobState::Suspended => {
+            selected.checkpoint(selected.head.as_deref().context("missing suspended head")?)?
+        }
         None => {
-            let job = job_execution::job(&source)?;
-            if job.state == JobState::Suspended {
-                job.checkpoint(job.head.as_deref().context("missing suspended head")?)?
-            } else {
-                job_execution::capture(
-                    &source,
-                    false,
-                    args.ram_storage
-                        .map(Into::into)
-                        .unwrap_or(SnapshotRamStorage::Compressed),
-                    Some({
-                        use sha2::Digest;
-                        format!(
-                            "fork-{}",
-                            crate::util::encode_hex(&sha2::Sha256::digest(request_id.as_bytes()))
-                        )
-                    }),
-                    std::time::Duration::from_secs(120),
-                )
-                .await?
-            }
+            // Capture acquires the same Job lease internally and fences the
+            // selected record there. Never await capture while holding it.
+            drop(selection_lease);
+            let captured = job_execution::capture(
+                &source,
+                false,
+                args.ram_storage
+                    .map(Into::into)
+                    .unwrap_or(SnapshotRamStorage::Compressed),
+                Some({
+                    use sha2::Digest;
+                    format!(
+                        "fork-{}",
+                        crate::util::encode_hex(&sha2::Sha256::digest(request_id.as_bytes()))
+                    )
+                }),
+                std::time::Duration::from_secs(120),
+            )
+            .await?;
+            return fork_execution_from_checkpoint(args, source, request_id, options, captured)
+                .await;
         }
     };
+    drop(selection_lease);
+    fork_execution_from_checkpoint(args, source, request_id, options, checkpoint).await
+}
+
+async fn fork_execution_from_checkpoint(
+    args: ForkArgs,
+    source: RunRecord,
+    request_id: String,
+    options: crate::runtime::job_execution::ForkOptions,
+    checkpoint: pvisor_core::operation::ExecutionCheckpoint,
+) -> anyhow::Result<i32> {
+    use crate::runtime::job_execution;
     let template = job_execution::job(&source)?;
     let _lease = template.lock()?;
     let mut parent = template.current()?;
+    parent.validate_record_target(&source)?;
+    let current_record = RunRecord::read(&parent.active_stage)?;
+    crate::cli::host::check_selected_record(&source, &current_record)?;
+    crate::cli::host_service::check_record(&current_record)?;
     if let Some(previous) = parent.forks.get(&request_id) {
         anyhow::ensure!(
             previous.options == options,
@@ -500,7 +566,7 @@ async fn execute_restored(
     let mut builder = PVisor::builder()
         .storage(&stage)
         .overlay(overlay)
-        .executors(vec![Arc::new(executor)])
+        .executors(vec![report_terminal(Arc::new(executor))])
         .network(network)
         .event_sink(event_sink);
     let control_socket = crate::cli::host_service::vm_control_socket(None)?
@@ -541,13 +607,8 @@ async fn execute_restored(
         spec,
         handle.controls(),
     )?;
-    let cancellation = handle.cancellation();
-    let wait = handle.wait();
-    tokio::pin!(wait);
-    let result = tokio::select! {
-        result = &mut wait => result?,
-        _ = delegated_shutdown_signal() => { cancellation.cancel(); wait.await? }
-    };
+    crate::cli::host_cancel::register(&handle, &stage)?;
+    let result = wait_cli_run(handle).await?;
     server.finish(&result).await?;
     if let Some(writer) = recording {
         writer.finish()?;
@@ -562,6 +623,140 @@ async fn execute_restored(
         RunState::Cancelled => 130,
         _ => result.exit_code.unwrap_or(1),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::job_execution::{
+        ForkOptions, ForkRequest, JOB_SCHEMA_VERSION, Job, ResumeRequest,
+    };
+    fn fixture(root: &Path) -> (RunRecord, Job) {
+        let record: RunRecord = serde_json::from_value(serde_json::json!({
+            "schema_version":1,"run_id":"job-fence","attempt_id":"attempt-old","session_id":"job-fence",
+            "agent":"probe","pid":0,"command":["probe"],"state":"hibernated",
+            "started_at_unix_ms":1,"finished_at_unix_ms":2,"storage":root,"network":{},"gateway_listen":null,"overlay":null
+        })).unwrap();
+        record.write().unwrap();
+        let mut config = RunConfig::default();
+        config.run.executor = RunExecutorKind::Vm;
+        config.overlaynet.mode = crate::OverlayNetMode::Off;
+        let job = Job {
+            version: JOB_SCHEMA_VERSION,
+            run_id: record.run_id.clone(),
+            root: root.into(),
+            active_stage: root.into(),
+            previous_stage: root.into(),
+            active_attempt: "attempt-current".into(),
+            config,
+            spec: pvisor_core::RunSpec::process("job-fence", "probe", "probe"),
+            state: JobState::Suspended,
+            head: None,
+            checkpoints: Default::default(),
+            requests: Default::default(),
+            resumes: Default::default(),
+            forks: Default::default(),
+            stores: [root.join("execution-snapshots")].into(),
+        };
+        (record, job)
+    }
+    fn assert_conflict(error: anyhow::Error) {
+        assert_eq!(
+            error
+                .downcast_ref::<pvisor_core::host_protocol::AgentCtlHostError>()
+                .unwrap()
+                .code,
+            pvisor_core::host_protocol::AgentCtlHostErrorCode::Conflict
+        );
+    }
+    #[tokio::test]
+    async fn cached_resume_and_fork_replays_are_fenced_under_job_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let (source, mut job) = fixture(root.path());
+        job.resumes.insert(
+            "replay".into(),
+            ResumeRequest {
+                stage: root.path().into(),
+                eager_ram: false,
+            },
+        );
+        job.forks.insert(
+            "replay".into(),
+            ForkRequest {
+                options: ForkOptions {
+                    checkpoint: None,
+                    stage: None,
+                    name: None,
+                    ram_storage: None,
+                    eager_ram: false,
+                },
+                stage: root.path().join("unconfirmed-child"),
+                job_id: "child".into(),
+                checkpoint_id: "checkpoint".into(),
+            },
+        );
+        job.write().unwrap();
+        let before = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_conflict(
+            resume_execution(source.clone(), Some("replay".into()), false)
+                .await
+                .unwrap_err(),
+        );
+        let args = ForkArgs {
+            source: root.path().into(),
+            state: crate::cli::checkpoint::Kind::Execution,
+            checkpoint: None,
+            stage: None,
+            name: None,
+            ram_storage: None,
+            eager_ram: false,
+            request_id: Some("replay".into()),
+            output_dir: root.path().into(),
+            command: vec![],
+        };
+        assert_conflict(fork_execution(args, source).await.unwrap_err());
+        assert_eq!(job.current().unwrap().active_attempt, "attempt-current");
+        // The operation lease may be created, but no branch or restore is staged.
+        assert!(!root.path().join("unconfirmed-child").exists());
+        assert!(before.iter().all(|name| root.path().join(name).exists()));
+    }
+    #[test]
+    fn rollback_only_owns_the_exact_admitted_restore_transition() {
+        let root = tempfile::tempdir().unwrap();
+        let (_, mut admitted) = fixture(root.path());
+        admitted.state = JobState::Restoring;
+        admitted.active_stage = root.path().join("attempts/restore");
+        admitted.resumes.insert(
+            "restore".into(),
+            ResumeRequest {
+                stage: admitted.active_stage.clone(),
+                eager_ram: false,
+            },
+        );
+        assert!(owns_restore_transition(&admitted, &admitted, "restore"));
+        for variant in 0..5 {
+            let mut current = admitted.clone();
+            match variant {
+                0 => current.active_stage = root.path().join("attempts/other"),
+                1 => current.active_attempt = "other-attempt".into(),
+                2 => current.head = Some("other-head".into()),
+                3 => current.resumes.get_mut("restore").unwrap().eager_ram = true,
+                _ => {
+                    current.resumes.insert(
+                        "other-request".into(),
+                        ResumeRequest {
+                            stage: current.active_stage.clone(),
+                            eager_ram: false,
+                        },
+                    );
+                }
+            }
+            assert!(!owns_restore_transition(&current, &admitted, "restore"));
+        }
+    }
 }
 
 // Stage directories can sit below a workspace that the guest sees. Keep the

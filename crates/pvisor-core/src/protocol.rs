@@ -1,15 +1,17 @@
-//! AgentCtl v1 Control-plane wire contract.
+//! Guest AgentCtl v1 cooperative wire contract.
 //!
-//! AgentCtl is an optional, cooperative channel between pVisor and runtime
+//! Guest AgentCtl is an optional, cooperative channel between pVisor and runtime
 //! clients inside one Run. A client authenticates once with [`AgentRequest::Hello`]
 //! and then periodically exchanges its [`AgentState`] for pVisor's current
 //! [`AgentDirective`] through [`AgentRequest::Sync`]. Each bounded,
 //! newline-delimited JSON connection carries exactly one request and one
-//! response.
+//! response. Host-authority envelopes and VM/supervisor commands are defined
+//! separately in [`crate::host_protocol`]; Guest tokens and Session IDs cannot
+//! authorize Host operations.
 //!
 //! # Session lifecycle and liveness
 //!
-//! `Hello` requires version 1, the Run-scoped token, and a non-empty
+//! `Hello` requires version 1, the Run-scoped Guest token, and a non-empty
 //! `client_id` that is unique among live Sessions. `Welcome` returns an opaque
 //! Session ID, the recommended Sync interval, and the directive that the
 //! client must observe before admitting work. A successful `Sync` refreshes
@@ -43,7 +45,7 @@
 //! # Errors
 //!
 //! [`AgentErrorCode::InvalidRequest`] covers malformed frames and values;
-//! [`AgentErrorCode::Unauthorized`] covers an invalid Run token or Session ID;
+//! [`AgentErrorCode::Unauthorized`] covers an invalid Guest Run token or Session ID;
 //! [`AgentErrorCode::VersionMismatch`] covers every non-v1 request; and
 //! [`AgentErrorCode::Conflict`] covers live duplicates, capacity, checkpoint
 //! admission, and state that conflicts with the active checkpoint. The

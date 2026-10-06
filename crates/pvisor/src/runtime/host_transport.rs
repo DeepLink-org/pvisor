@@ -8,6 +8,110 @@ use tokio::{
     net::UnixStream,
 };
 
+/// All host-authority sockets share this service-compatible exclusion root.
+/// Never chmod or follow a preexisting entry: an invalid root fails startup.
+pub(crate) fn host_authority_root() -> anyhow::Result<std::path::PathBuf> {
+    let root =
+        std::fs::canonicalize("/tmp")?.join(format!("pvisor-host-{}", unsafe { libc::geteuid() }));
+    create_authority_root(&root)?;
+    Ok(root)
+}
+
+fn validate_authority_directory(path: &std::path::Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)?;
+    anyhow::ensure!(
+        metadata.is_dir()
+            && !metadata.file_type().is_symlink()
+            && metadata.uid() == unsafe { libc::geteuid() }
+            && metadata.mode() & 0o7777 == 0o700,
+        "host authority directory must be same-UID, non-symlink and 0700"
+    );
+    let canonical = path.canonicalize()?;
+    let checked = std::fs::symlink_metadata(&canonical)?;
+    anyhow::ensure!(
+        canonical == path && metadata.dev() == checked.dev() && metadata.ino() == checked.ino(),
+        "host authority directory changed during validation"
+    );
+    Ok(())
+}
+
+fn create_authority_root(root: &std::path::Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    match std::fs::DirBuilder::new().mode(0o700).create(root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    validate_authority_directory(root)
+}
+
+pub(crate) fn allocate_host_directory(prefix: &str) -> anyhow::Result<tempfile::TempDir> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = host_authority_root()?;
+    let directory = tempfile::Builder::new()
+        .prefix(prefix)
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(&root)?;
+    validate_authority_directory(&root)?;
+    validate_authority_directory(directory.path())?;
+    Ok(directory)
+}
+
+fn frame_chunk_length(buffered: usize, chunk: &[u8]) -> anyhow::Result<(usize, bool)> {
+    let newline = chunk.iter().position(|byte| *byte == b'\n');
+    let length = newline.unwrap_or(chunk.len());
+    anyhow::ensure!(
+        length <= AGENTCTL_HOST_MAX_FRAME_BYTES - buffered,
+        "host frame too large"
+    );
+    Ok((length, newline.is_some()))
+}
+
+/// Synchronous counterpart of `read_host_frame`, with identical JSON/bound rules.
+/// Peek in chunks, then consume only through the newline: buffered readers can
+/// swallow the next SCM_RIGHTS marker and discard its ancillary descriptors.
+/// One reader must own the socket; callers impose deadlines and admission bounds.
+pub(crate) fn read_host_frame_sync<T: DeserializeOwned>(
+    stream: &mut std::os::unix::net::UnixStream,
+) -> anyhow::Result<T> {
+    use std::{io::Read, os::fd::AsRawFd};
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 4096];
+    loop {
+        let count = unsafe {
+            libc::recv(
+                stream.as_raw_fd(),
+                chunk.as_mut_ptr().cast(),
+                chunk.len(),
+                libc::MSG_PEEK,
+            )
+        };
+        if count < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error.into());
+        }
+        anyhow::ensure!(count != 0, "host connection closed before newline");
+        let (length, newline) = frame_chunk_length(bytes.len(), &chunk[..count as usize])?;
+        stream.read_exact(&mut chunk[..length + usize::from(newline)])?;
+        bytes.extend_from_slice(&chunk[..length]);
+        if newline {
+            return Ok(serde_json::from_slice(&bytes)?);
+        }
+    }
+}
+
+pub(crate) fn write_host_frame_sync<T: Serialize>(
+    stream: &mut std::os::unix::net::UnixStream,
+    value: &T,
+) -> anyhow::Result<()> {
+    std::io::Write::write_all(stream, &encode_host_frame(value)?)?;
+    Ok(())
+}
+
 /// Read exactly one bounded newline-delimited JSON frame, retaining pipelined bytes.
 /// Endpoint owners impose their own I/O deadlines and admission bounds.
 pub(crate) async fn read_host_frame<T: DeserializeOwned>(
@@ -38,26 +142,20 @@ pub(crate) async fn read_host_frame<T: DeserializeOwned>(
             Err(error) => return Err(error.into()),
         };
         anyhow::ensure!(count != 0, "host connection closed before newline");
-        let newline = chunk[..count].iter().position(|byte| *byte == b'\n');
-        let length = newline.unwrap_or(count);
-        anyhow::ensure!(
-            bytes.len() + length <= AGENTCTL_HOST_MAX_FRAME_BYTES,
-            "host frame too large"
-        );
+        let (length, newline) = frame_chunk_length(bytes.len(), &chunk[..count])?;
         stream
-            .read_exact(&mut chunk[..length + usize::from(newline.is_some())])
+            .read_exact(&mut chunk[..length + usize::from(newline)])
             .await?;
         bytes.extend_from_slice(&chunk[..length]);
-        if newline.is_some() {
+        if newline {
             return Ok(serde_json::from_slice(&bytes)?);
         }
     }
 }
 
-pub(crate) async fn write_host_frame<T: Serialize>(
-    stream: &mut UnixStream,
-    value: &T,
-) -> anyhow::Result<()> {
+/// Compact JSON plus one newline; the 1 MiB limit excludes that delimiter.
+/// Bound serialization before growing the output or writing any socket bytes.
+pub(crate) fn encode_host_frame<T: Serialize>(value: &T) -> anyhow::Result<Vec<u8>> {
     struct Bounded(Vec<u8>);
     impl std::io::Write for Bounded {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -77,7 +175,14 @@ pub(crate) async fn write_host_frame<T: Serialize>(
     let mut bytes = Bounded(Vec::new());
     serde_json::to_writer(&mut bytes, value)?;
     bytes.0.push(b'\n');
-    stream.write_all(&bytes.0).await?;
+    Ok(bytes.0)
+}
+
+pub(crate) async fn write_host_frame<T: Serialize>(
+    stream: &mut UnixStream,
+    value: &T,
+) -> anyhow::Result<()> {
+    stream.write_all(&encode_host_frame(value)?).await?;
     Ok(())
 }
 
@@ -124,6 +229,144 @@ mod tests {
     use pvisor_core::host_protocol::{
         AGENTCTL_HOST_VERSION, AgentCtlHostRequest, AgentCtlHostResponse,
     };
+
+    #[test]
+    fn authority_root_rejects_symlinks_public_modes_and_non_directories() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().canonicalize().unwrap();
+        let root = parent.join("authority");
+        create_authority_root(&root).unwrap();
+        validate_authority_directory(&root).unwrap();
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(create_authority_root(&root).is_err());
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o7777,
+            0o755
+        );
+        let link = parent.join("symlink");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        assert!(create_authority_root(&link).is_err());
+        let file = parent.join("file");
+        std::fs::write(&file, b"owner").unwrap();
+        assert!(create_authority_root(&file).is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"owner");
+    }
+
+    #[test]
+    fn allocations_share_service_root_and_do_not_remove_siblings() {
+        let root = host_authority_root().unwrap();
+        assert_eq!(
+            root,
+            std::fs::canonicalize("/tmp")
+                .unwrap()
+                .join(format!("pvisor-host-{}", unsafe { libc::geteuid() }))
+        );
+        let first = allocate_host_directory("vm-").unwrap();
+        let second = allocate_host_directory("exec-").unwrap();
+        assert_eq!(first.path().parent(), Some(root.as_path()));
+        assert_eq!(second.path().parent(), Some(root.as_path()));
+        drop(first);
+        assert!(second.path().is_dir());
+        assert!(root.is_dir());
+    }
+
+    #[test]
+    fn sync_frames_preserve_boundaries_null_and_reject_trailing_json_and_eof() {
+        use std::io::Write;
+        let (mut writer, mut reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        writer
+            .write_all(b"null\n42\nnull true\n7\nnull\n\n8")
+            .unwrap();
+        assert_eq!(
+            read_host_frame_sync::<serde_json::Value>(&mut reader).unwrap(),
+            serde_json::Value::Null
+        );
+        assert_eq!(read_host_frame_sync::<u32>(&mut reader).unwrap(), 42);
+        assert!(read_host_frame_sync::<serde_json::Value>(&mut reader).is_err());
+        assert_eq!(read_host_frame_sync::<u32>(&mut reader).unwrap(), 7);
+        assert!(read_host_frame_sync::<u32>(&mut reader).is_err()); // null is not a typed number
+        assert!(read_host_frame_sync::<serde_json::Value>(&mut reader).is_err()); // empty frame
+        writer.shutdown(std::net::Shutdown::Write).unwrap();
+        assert!(
+            read_host_frame_sync::<u32>(&mut reader)
+                .unwrap_err()
+                .to_string()
+                .contains("before newline")
+        );
+    }
+
+    #[test]
+    fn sync_limits_reject_before_extending_or_writing_and_accept_exact_bound() {
+        use std::io::{Read, Write};
+        // Both readers use this check before extending their bounded payload.
+        assert!(frame_chunk_length(AGENTCTL_HOST_MAX_FRAME_BYTES, b"x").is_err());
+        assert_eq!(
+            frame_chunk_length(AGENTCTL_HOST_MAX_FRAME_BYTES, b"\nmarker").unwrap(),
+            (0, true)
+        );
+        let (mut writer, mut reader) = std::os::unix::net::UnixStream::pair().unwrap();
+        reader
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        assert!(
+            write_host_frame_sync(&mut writer, &"x".repeat(AGENTCTL_HOST_MAX_FRAME_BYTES)).is_err()
+        );
+        let mut byte = [0];
+        assert!(matches!(
+            reader.read(&mut byte).unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+        reader
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let sender = std::thread::spawn(move || {
+            let exact = "x".repeat(AGENTCTL_HOST_MAX_FRAME_BYTES - 2);
+            write_host_frame_sync(&mut writer, &exact).unwrap();
+            let _ = writer.write_all(&vec![b'x'; AGENTCTL_HOST_MAX_FRAME_BYTES + 1]);
+        });
+        assert_eq!(
+            read_host_frame_sync::<String>(&mut reader).unwrap().len(),
+            AGENTCTL_HOST_MAX_FRAME_BYTES - 2
+        );
+        assert!(
+            read_host_frame_sync::<serde_json::Value>(&mut reader)
+                .unwrap_err()
+                .to_string()
+                .contains("too large")
+        );
+        drop(reader);
+        sender.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn sync_and_async_frames_interoperate_in_both_directions() {
+        let (mut sync, async_stream) = std::os::unix::net::UnixStream::pair().unwrap();
+        async_stream.set_nonblocking(true).unwrap();
+        let mut asynchronous = UnixStream::from_std(async_stream).unwrap();
+        write_host_frame_sync(&mut sync, &serde_json::Value::Null).unwrap();
+        write_host_frame_sync(&mut sync, &42).unwrap();
+        assert_eq!(
+            read_host_frame::<serde_json::Value>(&mut asynchronous)
+                .await
+                .unwrap(),
+            serde_json::Value::Null
+        );
+        assert_eq!(read_host_frame::<u32>(&mut asynchronous).await.unwrap(), 42);
+        write_host_frame(&mut asynchronous, &"embedded\nnewline")
+            .await
+            .unwrap();
+        write_host_frame(&mut asynchronous, &7).await.unwrap();
+        assert_eq!(
+            read_host_frame_sync::<String>(&mut sync).unwrap(),
+            "embedded\nnewline"
+        );
+        assert_eq!(read_host_frame_sync::<u32>(&mut sync).unwrap(), 7);
+    }
 
     #[tokio::test]
     async fn framing_preserves_next_frame_and_requires_newline_and_json() {

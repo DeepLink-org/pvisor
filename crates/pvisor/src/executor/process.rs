@@ -150,10 +150,9 @@ impl ForegroundProcessGroup {
             return Ok(None);
         };
         let terminal_fd = libc::STDIN_FILENO;
-        let original_pgrp = unsafe { libc::tcgetpgrp(terminal_fd) };
-        if original_pgrp < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
+        let Some(original_pgrp) = controlling_foreground_pgrp(terminal_fd)? else {
+            return Ok(None);
+        };
         set_terminal_pgrp(terminal_fd, pid as libc::pid_t)?;
         // The child may have attempted a terminal read between spawn and
         // tcsetpgrp and received SIGTTIN. Resume its whole process group.
@@ -165,6 +164,27 @@ impl ForegroundProcessGroup {
             original_pgrp,
         }))
     }
+}
+
+#[cfg(unix)]
+fn controlling_foreground_pgrp(fd: libc::c_int) -> std::io::Result<Option<libc::pid_t>> {
+    let foreground = unsafe { libc::tcgetpgrp(fd) };
+    if foreground < 0 {
+        let error = std::io::Error::last_os_error();
+        // A PTY can be inherited without being this session's controlling
+        // terminal. It remains usable for I/O, but has no group to hand off.
+        if error.raw_os_error() == Some(libc::ENOTTY) {
+            return Ok(None);
+        }
+        return Err(error);
+    }
+    if foreground != unsafe { libc::getpgrp() } {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "cannot hand off a terminal from a background process group",
+        ));
+    }
+    Ok(Some(foreground))
 }
 
 #[cfg(unix)]
@@ -1328,6 +1348,20 @@ fn push_runtime_directory(paths: &mut Vec<PathBuf>, directory: &Path, hidden: &[
     }
 }
 
+fn process_exit_outcome(
+    status: std::process::ExitStatus,
+) -> (RunState, Option<i32>, Option<RunFailure>) {
+    let (state, exit_code, failure) = crate::executor::exit_outcome(status);
+    // A signal is a process failure, not a requested Run cancellation, but still
+    // needs a numeric status for the frontend's exit-code contract.
+    #[cfg(unix)]
+    let exit_code = {
+        use std::os::unix::process::ExitStatusExt;
+        exit_code.or_else(|| status.signal().map(|signal| 128 + signal))
+    };
+    (state, exit_code, failure)
+}
+
 #[async_trait]
 impl RunExecutor for ProcessExecutor {
     fn descriptor(&self) -> ExecutorPlan {
@@ -1585,7 +1619,14 @@ impl RunExecutor for ProcessExecutor {
             )
         } else {
             match end {
-                End::Exited(Ok(status)) => crate::executor::exit_outcome(status),
+                End::Exited(Ok(status)) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        executor_observations.termination_signal = status.signal();
+                    }
+                    process_exit_outcome(status)
+                }
                 End::Exited(Err(error)) => (
                     RunState::Failed,
                     None,
@@ -1639,6 +1680,235 @@ mod tests {
     use std::process::Stdio;
 
     #[cfg(unix)]
+    #[test]
+    fn foreground_query_preserves_non_enotty_errors() {
+        assert_eq!(
+            controlling_foreground_pgrp(-1).unwrap_err().raw_os_error(),
+            Some(libc::EBADF)
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn process_executor_respects_pty_session_boundaries() {
+        use std::io::Write;
+        use std::os::fd::FromRawFd;
+        use std::os::unix::process::CommandExt;
+
+        const CASE_ENV: &str = "PVISOR_TEST_EXECUTOR_PTY_CASE";
+        if let Ok(case) = std::env::var(CASE_ENV) {
+            assert_eq!(unsafe { libc::isatty(libc::STDIN_FILENO) }, 1);
+            let own_pgrp = unsafe { libc::getpgrp() };
+            let mut foreground_child = if case == "background" {
+                let child = std::process::Command::new("/bin/sleep")
+                    .arg("5")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .process_group(0)
+                    .spawn()
+                    .unwrap();
+                set_terminal_pgrp(libc::STDIN_FILENO, child.id() as libc::pid_t).unwrap();
+                Some(child)
+            } else {
+                None
+            };
+            let original_foreground = unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) };
+            let foreground_error = (original_foreground < 0).then(std::io::Error::last_os_error);
+            if case == "detached" {
+                assert_eq!(original_foreground, -1);
+                assert_eq!(foreground_error.unwrap().raw_os_error(), Some(libc::ENOTTY));
+            } else if case == "foreground" {
+                assert_eq!(original_foreground, own_pgrp);
+            } else {
+                assert_ne!(original_foreground, own_pgrp);
+            }
+
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let mut spec = RunSpec::process("pty-session-boundary", "test", "/bin/sh");
+                    let RunInvocation::Process(process) = &mut spec.invocation;
+                    process.args = vec![
+                        "-c".into(),
+                        if case == "background" {
+                            "exit 0".into()
+                        } else {
+                            "read line; printf '%s' \"$line\"".into()
+                        },
+                    ];
+                    process.stdin = StdioMode::Inherit;
+                    process.stdout = StdioMode::Capture;
+                    process.stderr = StdioMode::Capture;
+                    spec.runtime.timeout_ms = Some(1000);
+                    spec.runtime.termination_grace_ms = 25;
+                    let handle = crate::PVisor::new().run(spec).await.unwrap();
+                    tokio::time::timeout(std::time::Duration::from_secs(2), handle.wait()).await
+                });
+            let final_foreground = unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) };
+            if let Some(child) = foreground_child.as_mut() {
+                set_terminal_pgrp(libc::STDIN_FILENO, own_pgrp).unwrap();
+                let _ = child.kill();
+                child.wait().unwrap();
+            }
+            assert_eq!(
+                final_foreground, original_foreground,
+                "terminal ownership changed"
+            );
+            let result = result.expect("PTY Run did not finish").unwrap();
+            if case == "background" {
+                assert_eq!(result.state, RunState::Failed);
+                assert_eq!(result.exit_code, None);
+                assert_eq!(result.executor_observations.termination_signal, None);
+                let failure = result.failure.unwrap();
+                assert_eq!(failure.kind, RunFailureKind::Infrastructure);
+                assert!(failure.message.contains("background process group"));
+            } else {
+                assert_eq!(result.state, RunState::Completed, "{:?}", result.failure);
+                assert_eq!(result.exit_code, Some(0));
+                assert_eq!(result.output.stdout.as_deref(), Some("ready"));
+            }
+            return;
+        }
+
+        // Re-exec the test after fork/setsid, rather than starting a Rust runtime
+        // in a forked multi-threaded test process or changing its shared stdin.
+        for case in ["detached", "foreground", "background"] {
+            let mut master = -1;
+            let mut slave = -1;
+            assert_eq!(
+                unsafe {
+                    libc::openpty(
+                        &mut master,
+                        &mut slave,
+                        std::ptr::null_mut(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                    )
+                },
+                0
+            );
+            // Keep only the parent holding the master across exec.
+            assert_eq!(
+                unsafe { libc::fcntl(master, libc::F_SETFD, libc::FD_CLOEXEC) },
+                0
+            );
+            let mut master = unsafe { std::fs::File::from_raw_fd(master) };
+            let slave = unsafe { std::fs::File::from_raw_fd(slave) };
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "executor::process::tests::process_executor_respects_pty_session_boundaries",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CASE_ENV, case)
+                .stdin(slave)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::setsid() < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if case != "detached" && libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) < 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let mut child = command.spawn().unwrap();
+            master.write_all(b"ready\n").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while child.try_wait().unwrap().is_none() {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let output = child.wait_with_output().unwrap();
+                    panic!("PTY case {case} timed out: {output:?}");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "PTY case {case}: {output:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn process_exit_status_preserves_signal_codes_and_failure_semantics() {
+        for (script, expected_code, expected_signal) in [
+            ("exit 0", 0, None),
+            ("exit 7", 7, None),
+            ("exit 129", 129, None),
+            ("exit 130", 130, None),
+            ("exit 143", 143, None),
+            ("kill -HUP $$", 128 + libc::SIGHUP, Some(libc::SIGHUP)),
+            ("kill -INT $$", 128 + libc::SIGINT, Some(libc::SIGINT)),
+            ("kill -TERM $$", 128 + libc::SIGTERM, Some(libc::SIGTERM)),
+            ("kill -KILL $$", 128 + libc::SIGKILL, Some(libc::SIGKILL)),
+        ] {
+            let mut spec = RunSpec::process("process-exit-status", "test", "/bin/sh");
+            let RunInvocation::Process(process) = &mut spec.invocation;
+            process.args = vec!["-c".into(), script.into()];
+            process.stdout = StdioMode::Capture;
+            process.stderr = StdioMode::Capture;
+            spec.runtime.termination_grace_ms = 25;
+            let handle = crate::PVisor::new().run(spec).await.unwrap();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle.wait())
+                .await
+                .expect("process exit status was not published")
+                .unwrap();
+            assert_eq!(result.exit_code, Some(expected_code), "{script}");
+            assert_eq!(
+                result.executor_observations.termination_signal, expected_signal,
+                "{script}"
+            );
+            if expected_code == 0 {
+                assert_eq!(result.state, RunState::Completed);
+                assert!(result.failure.is_none());
+            } else {
+                assert_eq!(result.state, RunState::Failed, "{script}");
+                assert_eq!(result.failure.unwrap().kind, RunFailureKind::ProcessExit);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn requested_cancellation_is_not_a_signal_exit_failure() {
+        let mut spec = RunSpec::process("process-cancel-status", "test", "/bin/sh");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "while :; do sleep 1; done".into()];
+        process.stdout = StdioMode::Capture;
+        process.stderr = StdioMode::Capture;
+        spec.runtime.termination_grace_ms = 25;
+        let mut handle = crate::PVisor::new().run(spec).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while handle.status().state != RunState::Running {
+                handle
+                    .status_changed()
+                    .await
+                    .expect("Run ended before startup");
+            }
+        })
+        .await
+        .expect("process did not start");
+        handle.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle.wait())
+            .await
+            .expect("cancelled process did not finish")
+            .unwrap();
+        assert_eq!(result.state, RunState::Cancelled);
+        assert_eq!(result.exit_code, None);
+        assert_eq!(result.executor_observations.termination_signal, None);
+        assert!(result.failure.is_none());
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn run_finishes_with_background_pipes_after_exit_or_deadline() {
         for (script, expected_state) in [
@@ -1661,6 +1931,7 @@ mod tests {
                 .expect("Run waited for a background pipe after leader exit")
                 .unwrap();
             assert_eq!(result.state, expected_state);
+            assert_eq!(result.executor_observations.termination_signal, None);
             assert_eq!(result.output.stdout.as_deref(), Some("ready"));
             if expected_state == RunState::Failed {
                 assert_eq!(

@@ -4,6 +4,14 @@ mod commands;
 #[cfg(unix)]
 pub(crate) mod host;
 #[cfg(unix)]
+mod host_cancel;
+#[cfg(unix)]
+mod host_fds;
+#[cfg(any(target_os = "macos", test))]
+mod host_image;
+#[cfg(unix)]
+mod host_process;
+#[cfg(unix)]
 mod host_service;
 use crate::companions;
 mod product;
@@ -128,6 +136,7 @@ fn normalize_default_run(mut args: Vec<OsString>, command: &clap::Command) -> Ve
     if let Some(first) = args.get(1).and_then(|arg| arg.to_str())
         && command.find_subcommand(first).is_none()
         && !companions::is_root_command(first)
+        && first != "ctrl"
         && !["--help", "-h", "--version", "-V"].contains(&first)
     {
         args.insert(1, "run".into());
@@ -157,6 +166,12 @@ pub fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let args: Vec<OsString> = std::env::args_os().collect();
+    anyhow::ensure!(
+        !args.get(1).is_some_and(|arg| arg == "ctrl")
+            && !(args.get(1).is_some_and(|arg| arg == "help")
+                && args.get(2).is_some_and(|arg| arg == "ctrl")),
+        "`pvisor ctrl` has been retired; use status, suspend --vm-pause/--vm-offload, or resume --vm-load with --vm-socket, --vm-job-id and --vm-attempt-id"
+    );
     let mut core_command = Cli::command();
     core_command.build();
     if let Some(name) = args.get(1).and_then(|arg| arg.to_str()) {

@@ -3,7 +3,8 @@
 //! receipt grants a new Attempt the right to resume.
 use super::RunRecord;
 use super::host_transport::{
-    authorize_host_peer, read_host_frame, validate_host_target, write_host_frame,
+    allocate_host_directory, authorize_host_peer, read_host_frame, validate_host_target,
+    write_host_frame,
 };
 use super::registry::RunLease;
 use super::run::RunControlHandle;
@@ -190,6 +191,20 @@ impl Job {
         );
         Ok(current)
     }
+    /// Call on a freshly reread Job while holding its execution-operation lease.
+    /// Selection-time validation is not a fence against a concurrent resume.
+    pub fn validate_record_target(&self, record: &RunRecord) -> Result<(), AgentCtlHostError> {
+        if self.run_id != record.run_id
+            || record.attempt_id.as_deref() != Some(self.active_attempt.as_str())
+        {
+            return Err(AgentCtlHostError::new(
+                AgentCtlHostErrorCode::Conflict,
+                "stale Job/Attempt record target",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn checkpoint(&self, id: &str) -> anyhow::Result<ExecutionCheckpoint> {
         let capture = self
             .checkpoints
@@ -301,10 +316,7 @@ fn bind_control_endpoint(
     use std::os::unix::fs::PermissionsExt;
     // Attempt paths include UUIDs beneath user-selected storage. Keep the Unix
     // address short and discover it through the private stage, as with Run control.
-    let directory = tempfile::Builder::new()
-        .prefix("pvisor-execution-")
-        .permissions(std::fs::Permissions::from_mode(0o700))
-        .tempdir_in("/tmp")?;
+    let directory = allocate_host_directory("exec-")?;
     let socket = directory.path().join(SOCKET);
     let listener = tokio::net::UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
@@ -452,7 +464,8 @@ impl Server {
         let _lease = job.lock_wait().await?;
         let mut job = job.current()?;
         ensure!(
-            job.active_attempt == result.attempt_id.as_str(),
+            job.run_id == result.run_id.as_str()
+                && job.active_attempt == result.attempt_id.as_str(),
             "terminal Attempt identity mismatch"
         );
         if result.state == pvisor_core::RunState::Hibernated {
@@ -612,13 +625,23 @@ pub(crate) async fn capture(
     }
     .validate()?;
     let work = async {
+        // Snapshot the decision under the same lease as resume/fork/termination.
+        // Never replace the caller's selected Attempt with a newly active one.
+        let job = {
+            let _lease = job.lock_wait().await?;
+            let current = job.current()?;
+            current.validate_record_target(record)?;
+            current
+        };
         let checkpoint = if let Some(previous) = job.requests.get(&request_id) {
             ensure!(
                 previous.suspend == suspend && previous.ram_storage == ram_storage,
                 "REQUEST_ID_CONFLICT: request options changed"
             );
             loop {
+                let lease = job.lock_wait().await?;
                 let current = job.current()?;
+                current.validate_record_target(record)?;
                 let previous = current
                     .requests
                     .get(&request_id)
@@ -636,11 +659,13 @@ pub(crate) async fn capture(
                     ),
                     "EXECUTION_UNKNOWN: Attempt ended before capture acknowledgement"
                 );
+                drop(lease);
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
         } else if job.state == JobState::Suspended {
             let _lease = job.lock_wait().await?;
             let mut current = job.current()?;
+            current.validate_record_target(record)?;
             ensure!(
                 current.state == JobState::Suspended,
                 "JOB_BUSY: suspended head changed during request"
@@ -683,8 +708,8 @@ pub(crate) async fn capture(
                 version: AGENTCTL_HOST_VERSION,
                 request_id: request_id.clone(),
                 target: Some(AgentCtlTarget {
-                    job_id: job.run_id.clone(),
-                    attempt_id: Some(job.active_attempt.clone()),
+                    job_id: record.run_id.clone(),
+                    attempt_id: record.attempt_id.clone(),
                     generation: None,
                 }),
                 command: if suspend {
@@ -711,7 +736,9 @@ pub(crate) async fn capture(
         };
         if suspend {
             loop {
+                let lease = job.lock_wait().await?;
                 let current = job.current()?;
+                current.validate_record_target(record)?;
                 if current.state == JobState::Suspended
                     && current.head.as_deref() == Some(&checkpoint.snapshot_id)
                     && !super::is_live(&current.active_stage)?
@@ -723,6 +750,7 @@ pub(crate) async fn capture(
                     "EXECUTION_UNKNOWN: suspend termination not confirmed ({})",
                     current.state
                 );
+                drop(lease);
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
         }
@@ -737,6 +765,7 @@ pub(crate) fn terminate_suspended(record: &RunRecord) -> anyhow::Result<bool> {
     };
     let _lease = template.lock()?;
     let mut job = template.current()?;
+    job.validate_record_target(record)?;
     if job.state != JobState::Suspended {
         return Ok(false);
     }
@@ -761,6 +790,9 @@ mod tests {
         assert!(locator.as_os_str().as_encoded_bytes().len() > 108);
         let (listener, directory) = bind_control_endpoint(&stage).unwrap();
         let address = std::fs::canonicalize(&locator).unwrap();
+        let authority_root = super::super::host_transport::host_authority_root().unwrap();
+        assert_eq!(directory.path().parent(), Some(authority_root.as_path()));
+        assert!(address.starts_with(&authority_root));
         assert!(address.as_os_str().as_encoded_bytes().len() < 104);
         assert_eq!(
             std::fs::metadata(&address).unwrap().permissions().mode() & 0o777,
@@ -983,6 +1015,87 @@ mod tests {
         assert!(current.head.is_none());
         assert_eq!(current.checkpoints.len(), 1);
         record.require_stopped().unwrap();
+    }
+
+    #[tokio::test]
+    async fn capture_rechecks_selected_attempt_after_waiting_for_operation_lock() {
+        for state in [JobState::Running, JobState::Suspended, JobState::Restoring] {
+            let temp = tempfile::tempdir().unwrap();
+            let (record, mut job) = fixture(temp.path());
+            job.state = state;
+            let checkpoint = checkpoint(temp.path());
+            job.head = Some(checkpoint.snapshot_id.clone());
+            job.checkpoints.insert(
+                checkpoint.snapshot_id.clone(),
+                Capture {
+                    checkpoint: checkpoint.clone(),
+                    branches: BTreeMap::new(),
+                },
+            );
+            // Exercise completed replay as well as a fresh suspended-head request.
+            if state != JobState::Suspended {
+                job.requests.insert(
+                    "capture".into(),
+                    Request {
+                        suspend: false,
+                        ram_storage: SnapshotRamStorage::Raw,
+                        checkpoint: Some(checkpoint.snapshot_id),
+                        error: None,
+                    },
+                );
+            }
+            job.write().unwrap();
+            let lease = job.lock().unwrap();
+            let mut pending = Box::pin(capture(
+                &record,
+                false,
+                SnapshotRamStorage::Raw,
+                Some("capture".into()),
+                Duration::from_secs(2),
+            ));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), &mut pending)
+                    .await
+                    .is_err()
+            );
+            job.active_attempt = "attempt-replacement".into();
+            job.write().unwrap();
+            let before = std::fs::read(job.root.join(STATE)).unwrap();
+            drop(lease);
+            let error = pending.await.unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<AgentCtlHostError>().unwrap().code,
+                AgentCtlHostErrorCode::Conflict
+            );
+            assert_eq!(std::fs::read(job.root.join(STATE)).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn suspended_termination_rejects_stale_or_missing_record_identity_without_mutation() {
+        let temp = tempfile::tempdir().unwrap();
+        let (record, mut job) = fixture(temp.path());
+        job.active_attempt = "attempt-replacement".into();
+        job.head = Some("retained-head".into());
+        job.write().unwrap();
+        let before = std::fs::read(job.root.join(STATE)).unwrap();
+        for variant in 0..3 {
+            let mut selected = record.clone();
+            match variant {
+                0 => {}
+                1 => selected.attempt_id = None,
+                _ => selected.run_id = "other-job".into(),
+            }
+            let error = terminate_suspended(&selected).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<AgentCtlHostError>().unwrap().code,
+                AgentCtlHostErrorCode::Conflict
+            );
+            assert_eq!(std::fs::read(job.root.join(STATE)).unwrap(), before);
+        }
+        let mut current = record;
+        current.attempt_id = Some(job.active_attempt.clone());
+        assert!(terminate_suspended(&current).unwrap());
     }
 
     #[test]

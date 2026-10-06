@@ -23,6 +23,103 @@ pVisor 是 Operation 的处理核心：接收操作请求，根据策略决定�
 
 core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor 实现 AgentCtl 客户端／服务端和审批 socket；驱动实现各自的文件、网络与隔离边界。默认核心不依赖 Gateway、TUI 或 replay，捕获通过 `gateway` feature 启用。
 
+## Host 与 Guest AgentCtl {#host-agentctl}
+
+Host AgentCtl 是内置 Job CLI 操作的权限路径。Guest AgentCtl 是每个 Attempt
+面向工作负载 `Hello`/`Sync`、客户端状态、directive 与 checkpoint 静默点的
+协作路径。两者使用独立 schema、凭据与端点：guest 协作 token 不能授权
+宿主 Job、VM、暂存文件或 daemon supervisor 控制。Bundle 的 `agentctl`
+快照仍描述 Guest 协作，不是 Host 授权回执。
+
+### Listener 与请求所有权 {#host-job-service}
+
+CLI 解析类型化 `JobCommand` 并连接按需启动的持久 listener。
+`JobCommand` 嵌入 CLI DTO，是要求精确 schema／构建匹配的内部契约，
+不是稳定公共 API。Core 的共享 Host envelope 与 supervisor 契约仍是
+纯定义和校验，不包含 CLI DTO 或传输。
+`cli/host_service.rs` 用私有锁串行化启动，在规范化
+`/tmp/pvisor-host-<有效 UID>` 下发布 generation/capability manifest 和
+以 generation 命名的 Unix socket。根目录属于同 UID、不是符号链接，
+权限恰为 `0700`；socket 与私有 manifest 文件为 `0600`。
+已有条目无效时 fail closed，不用 chmod 修复。listener 独立于
+node/cache/pool 部署服务。
+
+通过内核同 UID peer 验证和构建兼容协商后，前端用 `SCM_RIGHTS` 传递
+stdin/stdout/stderr，提交类型化命令、cwd、环境、终端上下文及固定目标。
+listener 返回关联 ticket，携带 stdio 和私有 worker 通道。前端将检查过的
+可执行文件启动为子进程，保留原终端 session，建立独立进程组。
+listener 在授予准入前校验注册和 worker readiness；worker 不重新解释
+shell argv。cwd、环境、输出与退出状态属于请求，不属于持久 listener。
+嵌入式 `PVisor` 调用仍直接进入 runtime，不要求经过该 CLI 前端。
+
+持久 Job selector 无需端点参数。选中的记录固定到 Job、Attempt 及存在时
+的执行 generation，并在产生副作用前复核；过期选择不会悄悄指向新目标。
+Host live 控制和 stage 发现链接也使用共享权限根目录下的私有端点。
+executor 将权限根目录排除在 guest 暴露范围之外；CLI 拒绝暴露它的 guest
+文件系统源。同 UID 是宿主信任边界，不是对该用户所有进程的隔离。
+
+### 线上契约与升级 {#host-wire}
+
+Core 定义 `AgentCtlHostRequest<C>`（`version`、`request_id`、可选 `target`、
+`command`）与 `AgentCtlHostResponse<R>`（`version`、`request_id`、`result`）。
+当前版本为 **1**；target 包含 `job_id`、可选 `attempt_id` 与可选
+`generation`。端点所有者验证权限与目标范围。Live Attempt 端点要求精确
+Job/Attempt，拒绝独立 generation。Envelope 拒绝未知字段；身份非空，
+至多 256 字节，不含控制字符。Job 服务及其内部 worker 现在统一使用
+`runtime/host_transport.rs` 的换行分隔 JSON；async/sync 使用相同 framing
+规则，JSON 上限为 1 MiB，不含换行分隔符。reader 只消费到该分隔符，
+保留下一个 frame 或 FD marker。`SCM_RIGHTS` marker 字节是独立传输记录，
+不是 JSON；描述符处理由 `cli/host_fds.rs` 负责。类型化错误码为 `invalid_request`、`unauthorized`、`version_mismatch`、
+`conflict`、`unsupported`、`internal` 和 `unavailable`。
+
+Core 的 `host_protocol` 还定义 live VM 的 `HostVmCommand`（`Pause`、
+`Resume`、`Offload`、`Status`）及 `HostVmResult`（`status`、`value`）。
+`pvisor` 导出 `host_vm_exchange`，用于类型化 Host 请求／响应交换。
+旧 `InstanceControl*` 适配器已删除；`--vm-load` 选择 `Resume`，映射为
+同一 live Attempt 的 `RunResume`，不是 `Load` 线上操作。
+
+内部 Job 握手在接纳描述符或命令之前检查 Host 版本 **1**、Job ticket
+schema、Cargo 包版本及可执行文件内容的 BLAKE3 摘要。
+仅包版本相同不代表兼容；原地重新构建也可能不兼容。worker 启动前检查
+程序路径、所有权、权限、device/inode 与文件内容。
+
+Linux 读取 `/proc/self/exe`。macOS 的 `cli/host_image.rs` 在对同一个
+已打开文件求摘要之前，将 dyld 已加载主映像的 UUID 与磁盘 Mach-O 中
+匹配 CPU slice 的 `LC_UUID` 比较。UUID 元数据缺失、格式错误、有歧义
+或不匹配时 fail closed；准入要求源 Mach-O UUID 匹配。首次路径替换的
+身份检查已实现，不再列为尚待实现的检查。UUID 匹配不等于已加载内存的
+逐字节认证，也不等于内核固定的 exec 权限。macOS 平台路径尚未编译或
+测试；parser 检查不能验证 dyld 访问、平台链接或真实程序替换行为。
+
+Daemon 原生 supervisor 现在使用同一 version-1 换行 Host envelope，
+配合私有 owner/token 凭据和 Job/Attempt/generation 目标。它不使用 Guest
+`Hello`/`Sync`，也不使用 CLI worker ticket 机制。该线上格式与旧 supervisor
+不兼容。升级前使用旧二进制排空 sandbox；同样先排空活动 CLI 请求并停止
+旧 Job listener，再替换程序。新客户端在提交描述符或命令之前拒绝不兼容
+的 live listener。不提供 legacy fallback，也不透明接管旧 supervisor。
+
+### 取消与验证限制 {#host-limits}
+
+前端在启动和准入之前锁存 SIGINT/SIGTERM/SIGHUP，发送关联取消，并负责
+恢复终端及回收 worker。listener 持有请求清理所有权直到 worker 完成，
+可升级清理强度。Linux 实现 subreaper 收养、`/proc` 后代跟踪及基于 pidfd
+的信号发送，并将 listener 排除在请求清理之外。macOS 跟踪出生身份已确认
+的后代及已知工作负载进程组，可跨普通进程组变化。清理先冻结 root 与发现
+的 forker，反复扫描直到跟踪集合稳定，再逐个发送经出生身份复核的信号；
+不再只清理 worker 进程组。不保证拥有发现前已 reparent、因而漏掉的孤儿；
+libproc 身份检查后按数字 PID 发信号，不是原子 pidfd 操作，也不提供
+Linux 等价的 containment。macOS 清理路径尚未编译或测试。
+
+宿主传输与进程检查不能证明 guest 正确性或完整平台验证。真实 VM TUI
+端到端验证仍不可用；macOS 身份与清理路径保留上述平台特定限制。
+
+持久 listener 不是持久请求队列。`request_id` 用于响应、错误、ticket 与
+取消的关联，不是通用去重或 exactly-once 合同。部分持久 Job 操作保留自己
+范围内的回执，但不覆盖所有 Host 命令。断连、超时和取消可能发生在副作用
+之后；前端报告不确定性，不自动重试。决定再次提交前，先核对 Job 状态和
+产物。该重构尚无真实 VM TUI 端到端验证；传输、进程或 mock 检查不能证明
+guest 正确性或生产级持久性。
+
 ## 一条生产执行路径
 
 ```text
@@ -45,9 +142,9 @@ CLI／嵌入调用方
 
 当前每次 `PVisor::run` 创建一个 Attempt，由 pvisor 中的 `Session` 统一持有和管理；Job、Run 与 Attempt 的身份区分见[执行模型](../design/execution-model.md)。
 
-Session 负责驱动准备、AgentCtl server、取消与超时、执行后清理、观察检查、Bundle 保存及终态公布。执行器返回 `ExecutorOutput`，不自行分配 Job／Attempt 身份或公布终态。`RunHandle` 提供状态、取消、checkpoint 和事件订阅；取消请求不等于执行已经停止。
+Session 负责驱动准备、Guest AgentCtl server、取消与超时、执行后清理、观察检查、Bundle 保存及终态公布。执行器返回 `ExecutorOutput`，不自行分配 Job／Attempt 身份或公布终态。`RunHandle` 提供状态、取消、checkpoint 和事件订阅；取消请求不等于执行已经停止。
 
-Process／VM 清理其受管理的进程组；容器使用 runtime 的终止接口。进程组之外的后代和各平台隔离缺口见[隔离设计](isolation.md)。AgentCtl 只负责工作负载协作和 checkpoint 静默点，本身不是强制控制。
+Process／VM 清理其受管理的进程组；容器使用 runtime 的终止接口。进程组之外的后代和各平台隔离缺口见[隔离设计](isolation.md)。Guest AgentCtl 负责工作负载协作和 checkpoint 静默点，本身不是强制控制；Host AgentCtl 则是上方描述的独立宿主权限路径。
 
 ## Event 是观察接口
 

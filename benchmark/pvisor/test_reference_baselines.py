@@ -505,6 +505,8 @@ def test_qemu_boots_stock_vmlinuz_and_initrd_and_rechecks_receipt(tmp_path, monk
         assert argv[0] == 'qemu-system-x86_64'
         assert argv[argv.index('-kernel') + 1] == '/frozen/stock-vmlinuz'
         assert argv[argv.index('-initrd') + 1] == '/frozen/stock-initrd'
+        if backend == 'qemu-microvm':
+            assert argv[argv.index('-machine') + 1] == 'microvm,acpi=off,x-option-roms=off,pit=off,pic=off,rtc=on'
         assert argv[argv.index('-smp') + 1] == '2'
         assert argv[argv.index('-m') + 1] == '128'
         return original([sys.executable, '-c', f'import os;os.write(1,{guest(mode="ready").encode()!r})'], **kwargs)

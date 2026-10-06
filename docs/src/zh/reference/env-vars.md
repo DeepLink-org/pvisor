@@ -31,7 +31,7 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor run --safe \
 
 ## 运行时注入
 
-`PVISOR_RUN_ID`、`PVISOR_RUNTIME`、`PVISOR_STORAGE`、`PVISOR_AGENT`、`PVISOR_ROLE` 标识运行环境。`PVISOR_AGENTCTL_ENDPOINT`、`PVISOR_AGENTCTL_TOKEN`、`PVISOR_AGENTCTL_TRANSPORT`、`PVISOR_AGENTCTL_VERSION` 用于协作控制通道；token 是凭据，不应写进日志。
+`PVISOR_RUN_ID`、`PVISOR_RUNTIME`、`PVISOR_STORAGE`、`PVISOR_AGENT`、`PVISOR_ROLE` 标识运行环境。`PVISOR_AGENTCTL_ENDPOINT`、`PVISOR_AGENTCTL_TOKEN`、`PVISOR_AGENTCTL_TRANSPORT`、`PVISOR_AGENTCTL_VERSION` 用于可选的协作式 Guest AgentCtl 通道；token 仅是 Guest 凭据，不能授权 Host Job、VM 或 daemon supervisor 操作，不应写进日志。
 
 启用代理时还会注入 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及小写形式。它们只为客户端指定代理，不单独提供不可绕过的网络隔离。完整投影以 Bundle 的 `environment` 变量名清单为准。
 

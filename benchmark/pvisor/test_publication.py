@@ -34,3 +34,30 @@ def test_explicit_selection_publishes_only_complete_workloads(tmp_path):
     rows=publish(raw,tmp_path/'selected',['ready'])
     assert {r['mode'] for r in rows}=={'ready'}
     assert all(r['n']==1 for r in rows)
+
+
+@pytest.mark.parametrize('fault', [None, 'uncontrolled', 'normal', 'wrong-backend', 'mixed'])
+def test_ready_only_publishes_readiness_without_inventing_completion(tmp_path, fault):
+    rows = [dict(mode='ready', backend='fc-system', trial=i, correctness='passed',
+                 ready_ms=1, result_ms=2, completion_ms=None,
+                 fc_ready_policy='ready-only', controlled_sigterm=True) for i in range(2)]
+    backend = 'native' if fault == 'wrong-backend' else 'fc-system'
+    for row in rows:
+        row['backend'] = backend
+    if fault == 'uncontrolled':
+        rows[0]['controlled_sigterm'] = False
+    if fault == 'mixed':
+        rows[0]['completion_ms'] = 3
+    report = dict(rows=rows, arguments=dict(modes='ready', backends=backend, samples='2',
+                                          fc_ready_policy='normal' if fault == 'normal' else 'ready-only'),
+                  capabilities={f'ready/{backend}':dict(state='available')},
+                  benchmark_ids=dict(ready='B-STARTUP'))
+    path = tmp_path / 'report.json'
+    path.write_text(json.dumps(report))
+    if fault:
+        with pytest.raises(ValueError, match='checked FC ready-only'):
+            publish(path, tmp_path / 'public')
+    else:
+        result = publish(path, tmp_path / 'public')
+        assert {r['metric'] for r in result} == {'ready_ms', 'result_ms'}
+        assert all(r['n'] == 2 for r in result)

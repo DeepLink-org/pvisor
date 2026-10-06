@@ -732,6 +732,14 @@ pub struct ExecutorObservations {
     pub cpu_usage: Option<crate::cpu::TerminalCpuUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_qos: Option<CpuQosObservation>,
+    /// Executor-observed Unix termination signal (1..=127), never inferred from
+    /// a numeric exit code or a runtime cancellation request.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_termination_signal"
+    )]
+    pub termination_signal: Option<i32>,
     pub origin: crate::event::Origin,
     pub enforcement: CapabilityEnforcementEvidence,
 }
@@ -740,10 +748,24 @@ impl Default for ExecutorObservations {
         Self {
             cpu_usage: None,
             cpu_qos: None,
+            termination_signal: None,
             origin: crate::event::Origin::Runtime,
             enforcement: Default::default(),
         }
     }
+}
+
+fn deserialize_termination_signal<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let signal = Option::<i32>::deserialize(deserializer)?;
+    if signal.is_some_and(|signal| !(1..=127).contains(&signal)) {
+        return Err(serde::de::Error::custom(
+            "termination_signal must be a Unix wait-status signal in 1..=127",
+        ));
+    }
+    Ok(signal)
 }
 
 /// Selection identity recorded by the runtime; contains no enforcement claim.
@@ -911,6 +933,49 @@ pub struct RunResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executor_observations_signal_is_optional_and_roundtrips() {
+        let old = serde_json::json!({"origin": "runtime", "enforcement": {}});
+        let observations: ExecutorObservations = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(observations.termination_signal, None);
+        assert_eq!(serde_json::to_value(&observations).unwrap(), old);
+
+        for signal in [1, 2, 15, 127] {
+            let mut json = old.clone();
+            json["termination_signal"] = serde_json::json!(signal);
+            let observations: ExecutorObservations = serde_json::from_value(json.clone()).unwrap();
+            assert_eq!(observations.termination_signal, Some(signal));
+            assert_eq!(serde_json::to_value(observations).unwrap(), json);
+        }
+        let mut json = old;
+        json["termination_signal"] = serde_json::Value::Null;
+        let observations: ExecutorObservations = serde_json::from_value(json).unwrap();
+        assert_eq!(observations.termination_signal, None);
+        assert!(
+            serde_json::to_value(observations)
+                .unwrap()
+                .get("termination_signal")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn executor_observations_reject_invalid_termination_signals() {
+        for signal in [
+            serde_json::json!(-1),
+            serde_json::json!(0),
+            serde_json::json!(128),
+            serde_json::json!(130),
+            serde_json::json!(2.5),
+            serde_json::json!("2"),
+        ] {
+            let json = serde_json::json!({
+                "origin": "backend", "enforcement": {}, "termination_signal": signal
+            });
+            assert!(serde_json::from_value::<ExecutorObservations>(json).is_err());
+        }
+    }
 
     #[test]
     fn process_run_spec_json_roundtrips() {

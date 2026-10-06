@@ -71,8 +71,12 @@ pub fn embed_kernel() {
     let decoder_literal = format!("{:?}", decoder_path.to_string_lossy());
     let source = format!(
         "mod packed {{ include!({decoder_literal}); }}\n\
-         pub static KERNEL: std::sync::LazyLock<std::sync::Arc<[u8]>> = std::sync::LazyLock::new(||\n\
-             std::sync::Arc::from(packed::unpack(include_bytes!({kernel_literal})).expect(\"invalid embedded kernel bundle\")));\n\
+         pub static KERNEL: std::sync::LazyLock<std::sync::Arc<[u8]>> = std::sync::LazyLock::new(|| {{\n\
+             let mut span = crate::startup_profile::Span::new("kernel_unpack", "runtime");\n\
+             let kernel = packed::unpack(include_bytes!({kernel_literal})).expect("invalid embedded kernel bundle");\n\
+             span.complete(Some(kernel.len()));\n\
+             kernel\n\
+         }});\n\
          pub const GUEST_ADDR: u64 = {guest_addr};\n\
          pub const ENTRY_ADDR: u64 = {entry_addr};\n"
     );

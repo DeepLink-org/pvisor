@@ -1,4 +1,4 @@
-//! Shared Overlay review/apply records and local Run inspection messages.
+//! Shared Overlay review/apply records.
 //!
 //! Filesystem operations, journal storage, mount ownership, and request handling
 //! remain in the Overlay drivers and pVisor. Optional fields extend old records;
@@ -30,31 +30,6 @@ impl std::str::FromStr for StageDurability {
             _ => Err("stage durability must be checkpoint or strict".into()),
         }
     }
-}
-
-/// Local Run inspection request, encoded as one JSON line on `control.sock`.
-/// This endpoint is separate from the cooperative AgentCtl protocol.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub enum RunControlRequest {
-    Ping,
-    OverlayStatus,
-    Observations,
-    MountInspect,
-    UnmountInspect { id: String },
-}
-
-/// Response to a local Run inspection request. Existing optional fields remain
-/// explicit JSON nulls; the newer observations field is absent when unused.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RunControlResponse {
-    pub ok: bool,
-    pub id: Option<String>,
-    pub mountpoint: Option<PathBuf>,
-    pub error: Option<String>,
-    pub overlay_status: Option<OverlayStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observations: Option<serde_json::Value>,
 }
 
 /// Durable record of one overlay staging workspace (survives Attempt teardown).
