@@ -1,6 +1,6 @@
 # Full environment snapshots and CLI migration
 
-The standalone `pvisor snapshot` frontend has been removed. Native VM and storage SDKs retain complete-state sealing, RAM encodings, base references and restoration, without exposing another independent instance workflow. Ordinary Jobs now integrate native full execution capture and restore; existing stores are not automatically converted into Job checkpoints.
+Native VM and storage SDKs provide complete-state sealing, RAM encodings, base references and restoration. The CLI exposes native full execution capture and restore through ordinary Jobs, not a standalone `pvisor snapshot` workflow; existing stores are not automatically converted into Job checkpoints.
 
 ## Current user entries {#current-entry}
 
@@ -24,13 +24,13 @@ Sealed objects retain compatibility bindings, CPU/device state and RAM, plus fil
 
 The `SnapshotStore` SDK retains validation, references and GC. `open_for_restore`/`ram_reader` provide leased demand reads. `open_owned_stage_for_restore` and `materialize_owned_stage` copy stages authenticated by local publication, retaining compatibility, base pins, topology checks and publication leases; externally modified payloads are unsupported. Full audits continue through `open`/`open_for_restore`.
 
-The former CLI RAM server/watchdog now enter private native-runner modes, retaining EOF drain/cleanup without a public `snapshot` command. `run` arguments and default execution keep their existing contracts.
+The RAM server/watchdog use private native-runner modes with EOF drain and cleanup. They do not require a public `snapshot` command or change `run` arguments and default execution.
 
 ### Host-only snapshot RAM mounts {#ram-runtime}
 
 Snapshot data and transient RAM mounts have separate lifetimes. Native restore and node sharing place RAM mounts in a validated private host runtime directory, never under the snapshot store or node state. On Linux, selection tries `/run/user/<effective-UID>` with verified ownership and `0700` permissions, then literal `/tmp` with verified root ownership and `1777` permissions; macOS uses `/private/tmp`. Each mount directory is `0700`. Selection rejects symlink ancestors and overlap with known workspace, HOME/XDG and state roots; it does not use `TMPDIR` or `XDG_RUNTIME_DIR` to choose the mount location. If no safe location is available, preparation fails rather than falling back into durable state.
 
-The SDK signatures remain unchanged, but `SnapshotRamMount::new` and `PublishedEnvironment::ram_mount` now treat their `directory` argument as an excluded state root, not as the parent for mountpoints. Callers must not discover mounts by enumerating that directory. Keep the mount owner alive until all RAM files and VM mappings have been released. External pager specifications use separate private runtime directories with `0600` files, removed after readiness or startup failure. Owner EOF triggers cleanup; helper waits are bounded and abnormal helper exits invoke cleanup for that owner's private mount only. Persistent snapshot data is not removed by mount cleanup, and existing legacy mounts are not automatically adopted or unmounted.
+`SnapshotRamMount::new` and `PublishedEnvironment::ram_mount` treat their `directory` argument as an excluded state root, not as the parent for mountpoints. Callers must not discover mounts by enumerating that directory. Keep the mount owner alive until all RAM files and VM mappings have been released. External pager specifications use separate private runtime directories with `0600` files, removed after readiness or startup failure. Owner EOF triggers cleanup; helper waits are bounded and abnormal helper exits invoke cleanup for that owner's private mount only. Persistent snapshot data is not removed by mount cleanup, and existing legacy mounts are not automatically adopted or unmounted.
 
 Linux rootless host staging still does not support nested mounts within a projected state root. It fails before Agent execution rather than exposing writable submounts or silently hiding their contents. Diagnostics identify the state root, covering mount and nested mounts, and preserve the underlying mount error. Moving pVisor's own transient mounts avoids creating this conflict; it does not claim support for arbitrary user mount layouts.
 

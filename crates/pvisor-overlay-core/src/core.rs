@@ -3890,8 +3890,7 @@ mod backing_resolution_tests {
         }
         let report = core.profile_report().unwrap();
         // Eight fresh final lower checks, plus the missing upper candidate
-        // and its uncached absence checks. The old prefix walk needed 36
-        // lower ancestor checks alone for this one resolution.
+        // and its uncached absence checks, must fit below the 36-check budget.
         assert!(report.measurements["layer_parent_stats"].units < 36);
         fs::write(lower.join("a/b/c/d/e/f/g/h/file"), b"changed content").unwrap();
         assert_eq!(

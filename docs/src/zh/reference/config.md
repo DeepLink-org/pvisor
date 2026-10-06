@@ -174,7 +174,7 @@ CLI stderr 打印 `--vm-socket`、`--vm-job-id` 和 `--vm-attempt-id`，供
 [普通 live VM 命令](cli.md#vm-instance-control) 使用：`status`、
 `suspend JOB --vm-pause` / `--vm-offload`（可选 `--vm-ram-file PATH`），
 以及 `resume JOB --vm-load`。这些全局寻址／动作选项不是 `[vm]` 配置字段，
-不改变持久 Job 的默认行为。已删除的 `ctrl` 没有兼容别名。
+不改变持久 Job 的默认行为。`ctrl` 不是 live VM 控制的兼容别名。
 `--vm-load` 继续同一个 live Attempt，不是持久快照重启，也不主动预触
 全部 RAM 页；非 VM 控制明确不受支持。
 
@@ -205,7 +205,7 @@ VM executor 时启用实验性的 Linux x86_64 实例本地 live 压缩；
 
 `[vm].ram_dedup = true` 在使用 VM executor 时请求尽力而为的宿主 RAM 去重建议；`--vm-ram-dedup` 还会选择该 executor。它与 `memory_pool`、`ram_compression`、`cold_ram_compression` 及 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 互斥。Linux 建议面向普通私有匿名 RAM 与恢复的私有 COW 映射；live `MAP_SHARED` RAM 被跳过，不转换映射。macOS 对其他条件合格的映射报告不支持。runner 将安装报告写入 stderr，建议失败仍继续运行；`accepted_bytes` 不是已合并字节、节省，也不证明扫描已启用。不修改全局 KSM 参数或增设服务。启用前先核对[去重边界与共享风险](../design/memory-optimization/deduplication.md#direction)。
 
-`[vm].snapshot_filesystem_pool` 为首次启动及从快照恢复的 VM capture 启用不可变 lower 引用，也覆盖不同 VM 的首次 capture。首次 seal 后，控制连接持有已验证的 owner；后续 capture 验证完整原 lower 并复用已封存的 pool 树，不扩大 runner 的访问范围。原生调用方应使用宿主管理的绝对路径，与 Job store 位于同一卷，并处于所有 VM 可写根和快照 store 之外。首次缓存未命中时，每个不可变摘要创建一棵 pool 树；并发未命中按摘要串行，命中不产生临时 lower 副本。此选项启用的原生 v5 快照以独立持有的 64 KiB 压缩块保留私有文件内容，复用未变化的内容；恢复时重建私有可写 inode，并保留完整元数据及硬链接关系。运行中的块 owner 在父快照退役和 GC 后仍然有效。封存先按解码后的内容标识查找 pool 块，命中时完整校验并直接复用，仅未命中才压缩；完整 RAM 压缩封存也使用这一路径。原生 capture 直接编码经过宿主认证的冻结私有目录，不再产生中间私有数据树；导入、恢复和暂停任务的文件导出均不打开记录中的原始私有路径。完整数据校验仍保留；延迟和密度收益需要实测。此配置不支持网络、共享内存池、普通与 live 冷 RAM 压缩及显式 RAM backing。备份须保留 pool 与相关 Job store，或导出完整快照。
+`[vm].snapshot_filesystem_pool` 为首次启动及从快照恢复的 VM capture 启用不可变 lower 引用，也覆盖不同 VM 的首次 capture。首次 seal 后，控制连接持有已验证的 owner；后续 capture 验证完整原 lower 并复用已封存的 pool 树，不扩大 runner 的访问范围。原生调用方应使用宿主管理的绝对路径，与 Job store 位于同一卷，并处于所有 VM 可写根和快照 store 之外。首次缓存未命中时，每个不可变摘要创建一棵 pool 树；并发未命中按摘要串行，命中不产生临时 lower 副本。此选项启用的原生 v5 快照以独立持有的 64 KiB 压缩块保留私有文件内容，复用未变化的内容；恢复时重建私有可写 inode，并保留完整元数据及硬链接关系。运行中的块 owner 在父快照退役和 GC 后仍然有效。封存先按解码后的内容标识查找 pool 块，命中时完整校验并直接复用，仅未命中才压缩；完整 RAM 压缩封存也使用这一路径。原生 capture 直接编码经过宿主认证的冻结私有目录，不产生中间私有数据树；导入、恢复和暂停任务的文件导出均不打开记录中的原始私有路径。完整数据校验仍保留；延迟和密度收益需要实测。此配置不支持网络、共享内存池、普通与 live 冷 RAM 压缩及显式 RAM backing。备份须保留 pool 与相关 Job store，或导出完整快照。
 
 ### 捕获与记录
 

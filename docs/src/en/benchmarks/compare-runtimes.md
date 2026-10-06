@@ -2,7 +2,7 @@
 
 ## Conclusions {#conclusions}
 
-**pVisor VM starts in roughly a hundred milliseconds, but the tested repair and file-heavy tasks take longer than Firecracker/QEMU. Evaluate stage/apply when you need those capabilities; for guest execution alone, compare complete lightweight-VM task costs.**
+**Against original `/boot` kernels, pVisor VM starts in 100.91 ms, ahead of Firecracker at 285.04 ms and QEMU microvm at 321.56 ms. In a separate custom-reference kernel cohort, pVisor VM repair and file-heavy tasks take longer. Choose using the actual kernel and complete task.**
 
 | Need | Selection implication |
 | --- | --- |
@@ -22,11 +22,28 @@ All backends share offline tools and fixed inputs, with a new workspace per tria
 
 This page reuses three separately registered startup, filesystem and repair workloads without pooling samples. Images and tools are prepared; output, exit and staging checks must pass. This is not a ranking under identical OS or security hardening.
 
+Stock startup is a separate 2026-10-07 cohort: Firecracker uses the original Fedora 7.2.8 extracted ELF and QEMU uses the same `/boot/vmlinuz`, sharing minimal initrd and userspace; microvm retains RTC. pVisor uses dedicated Linux 6.12.109 firmware. Firecracker receives controlled termination after checked output and reports Ready only; normal shutdown is unmeasured. See [startup controls](startup.md) for methods and provenance.
+
 ## Data and analysis {#results}
 
-Measured on 2026-10-06: each backend/workload has 60/60 valid samples and zero measured failures. Outputs, exit and execution records must pass validation; staging also requires unchanged host originals and complete retained changes. Every valid slow sample is kept, with no timing-based exclusions. Tables normally show P50; separated distributions show cluster medians and counts. P95 is descriptive only. Raw reports, binaries and input/source manifests stay in ignored `.data/`; public CSVs retain workload, cohort and provenance associations.
+Both independent experiments have 60/60 valid samples per cell and zero measured failures. Every valid slow sample is retained without timing-based exclusions; raw reports, binaries and input/source manifests stay in ignored `.data/`.
+
+### Original distribution kernel startup {#stock-startup}
+
+2026-10-07, one cohort at 2 vCPU / 128 MiB, Ready P50 in ms:
+
+| Runtime | Ready P50 ms |
+| --- | --- |
+| pVisor VM | 100.91 |
+| Firecracker PCI / stock | 285.04 |
+| QEMU q35 / stock | 702.98 |
+| QEMU microvm / stock | 321.56 |
+
+pVisor has shorter first-command waiting for these complete configurations. This does not establish tool-task, same-kernel VMM-cost or capacity advantages. See [startup](startup.md) for 95% intervals of the differences.
 
 ### Complete-task comparison {#reference-comparison}
+
+Independent 2026-10-06 custom-reference kernel cohort; Firecracker is legacy reference/unknown, rather than a `/boot` stock control. Stock-kernel tool tasks are unmeasured; this table is not pooled with the table above.
 
 | Runtime | Ready P50 ms | Repair completion P50 s | Seven-tool completion P50 s |
 | --- | --- | --- | --- |

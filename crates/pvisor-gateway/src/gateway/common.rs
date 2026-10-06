@@ -32,8 +32,8 @@ pub(crate) fn model_access_policy(config: &ProxyConfig) -> ModelAccessPolicy {
         .iter()
         .filter_map(|route| route.provider.clone())
         .collect();
-    // An inferred/custom provider must remain representable during migration.
-    // An empty provider list means model identity is enforced but provider is open.
+    // If any route omits an explicit provider, keep the provider policy open.
+    // An empty provider list still enforces model identity.
     let allowed_providers = if providers.len() == config.models.len() {
         providers
     } else {

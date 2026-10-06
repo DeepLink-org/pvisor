@@ -1,7 +1,7 @@
 //! The task service (ttrpc `containerd.task.v2.Task`) and the shim
 //! bootstrap (`containerd_shim::Shim`) for `io.containerd.pvisor.v2`.
 //!
-//! M4 scope: pod-level sandboxes (Sandbox API, sandboxer = "shim") plus the
+//! Pod-level sandboxes (Sandbox API, sandboxer = "shim") plus the
 //! host process path with full task IO ownership — create/
 //! start/kill/wait/delete/state/pids/connect/shutdown for init processes,
 //! exec (`Exec` -> `Start(exec_id)` -> `Wait`/`Kill`/`Delete` with

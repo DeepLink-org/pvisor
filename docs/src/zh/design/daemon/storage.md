@@ -24,7 +24,7 @@ Store 拒绝符号链接状态／记录目录，Unix 上打开 lock/registry 文
 
 运行时状态另有私有 `owner.json`，逐 sandbox 的 `preparing.json`/`identity.json`、`run.json`（generation/Run/Attempt ID）、生命周期 marker、owner 锁、`control.sock`、`ports/` bridge 与 `run/` 原生存储（含 `live-ram` backing 和作为 supervisor `TMPDIR` 的 `tmp/` scratch）；清理完成后只保留最小 tombstone／锁／marker 屏障，用于对账／清理，不是公开 stage/checkpoint/artifact API。
 
-原生 `observation.json` 缓存不再写入，也不作为存活证据。端点查询认证 live supervisor，并检查当前 Running 状态与删除屏障；完整就绪检查仍保留在 create、Inspect 和 resume。见[服务访问](lifecycle.md#endpoints)。
+原生运行时不写入 `observation.json` 缓存，也不以其作为存活证据。端点查询认证 live supervisor，并检查当前 Running 状态与删除屏障；完整就绪检查仍保留在 create、Inspect 和 resume。见[服务访问](lifecycle.md#endpoints)。
 
 ## 提交屏障 {#commit}
 

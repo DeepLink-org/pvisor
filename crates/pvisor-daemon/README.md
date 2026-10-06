@@ -54,7 +54,7 @@ Native `pvisor` forwards `pvisor service daemon ...` arguments unchanged to the
 separately installed `pvisor-daemon`; it does not depend on this crate. The
 VM-only `NativeRuntime` in `runtime.rs` embeds `pvisor::PVisor` and `VmExecutor`
 in a detached `native-supervisor` subprocess that holds the RunHandle and survives
-daemon restart. Executable integration is implemented: Cargo links `pvisor` and
+daemon restart. Cargo links `pvisor` and
 `pvisor-core`; synchronous `main` calls `pvisor::run_krun_internal_if_requested()`
 before argument parsing or Tokio, then dispatches the hidden
 `native-supervisor --sandbox-dir ABSOLUTE_PATH` command. `serve` constructs
@@ -106,8 +106,7 @@ request; connection failures belong to the API adapter. Native `observation.json
 caches are neither written nor used as liveness proof.
 
 **The guest bootstrap and image recipe are not supplied or end-to-end validated.**
-The old container `cap-drop=ALL` constraint does not describe this VM backend;
-an upstream image name alone is not a native bootstrap or vsock adapter.
+An upstream image name alone is not a native bootstrap or vsock adapter.
 Python SDK initialization resolves both endpoints even without a network policy.
 There is no full SDK-conformance or density evidence.
 
@@ -220,11 +219,12 @@ private ownership, reserved names and regular-file types without following
 symlinks or requiring incomplete payloads to deserialize. An uncertain activation
 fails the open; the next open uses the surviving header.
 
-The supervisor wire migration is not compatible with already-running binaries using
-private length-prefixed `Request`/`Reply` frames. There is no legacy framing fallback.
-Before upgrading, delete those sandboxes through the old daemon and confirm cleanup;
-do not erase identity/registry records to bypass uncertainty. Durable identity and
-runtime state representations are unchanged.
+The supervisor accepts newline-delimited version-1 Host envelopes, not private
+length-prefixed `Request`/`Reply` frames. There is no legacy framing fallback.
+Before upgrading a deployment that uses length-prefixed frames, delete its sandboxes
+through that deployment's daemon and confirm cleanup; do not erase identity/registry
+records to bypass uncertainty. Wire compatibility is separate from durable identity
+and runtime state compatibility; their persisted representations remain unchanged.
 
 Keep the same state directory and compatible runtime configuration across restarts.
 Never delete state to fix an error: it carries native ownership and unresolved
@@ -244,7 +244,7 @@ monitoring and a density-optimized event-driven reconciliation path are future w
 
 ## Run
 
-The flags below are implemented. This is a deployment example, not a validated
+This is a deployment example, not a validated
 bootstrap/image or end-to-end SDK recipe. Supply a real delegated cgroup
 hierarchy, not an ordinary filesystem directory:
 
@@ -276,28 +276,23 @@ contract above. Invoke `pvisor-daemon` directly or use the native CLI's passthro
 `pvisor service daemon serve ...`; both address the same separately installed
 daemon executable.
 
-## Completed migration and retired Cluster
+## Package and evidence scope
 
 The Cargo package/directory/library are `pvisor-daemon` / `pvisor_daemon`.
-The cross-package Cluster retirement is complete: Cluster and Worker integration,
-the old dependency alias, `legacy-cluster` feature and `pvisor-cluster` executable
-have been removed. This library exports only `daemon` and `runtime`; there is no
-legacy controller/client/scheduler/storage implementation or compatibility target.
-Legacy examples, measurements and integration tests have also been deleted from
-this package. The new daemon's in-module tests remain.
+The library exports `daemon` and `runtime` for single-node sandbox management;
+distributed scheduling belongs to external orchestrators.
 
-Historical Cluster/controller benchmarks describe the retired implementation,
-not this daemon's performance, admission behavior or resource density. They are
-not evidence for the node-local daemon.
+Cluster/controller measurements are not evidence for this node-local daemon's
+performance, admission behavior or resource density.
 
 ## Validation
 
 Conventional tests include fake-runtime lifecycle/admission/restart/TTL regressions,
 HTTP auth/schema/filter/endpoint tests and pure native identity/IPC/manifest,
 quota, readiness and cleanup regressions. Fake runtime tests are not evidence of native isolation, resource density or full SDK
-compatibility. No semspec approvals/ledgers were changed.
+compatibility.
 
-Suggested targeted checks when execution is allowed:
+Run targeted checks with:
 
 ```sh
 just test pvisor-daemon

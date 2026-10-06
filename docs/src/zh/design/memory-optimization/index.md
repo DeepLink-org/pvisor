@@ -40,8 +40,8 @@
 
 ## 实现方向与证据 {#direction}
 
-架构目标以 2026-10-06 的设计为起点，不代表所有能力已交付。优先复用不可变基线与私有 COW 映射，随后引入 Linux KSM 的区域建议；实验性 Linux 实例本地 live 压缩现已交付，池化协调仍是独立扩展。
+架构目标以 2026-10-06 的设计为起点，不代表所有能力已交付。优先复用不可变基线与私有 COW 映射，随后引入 Linux KSM 的区域建议；实验性 Linux 实例本地 live 压缩已实现，池化协调仍是独立扩展。
 
-已有文件 offload、格式与实验性 macOS/HVF 冷页池提供实现基础。Linux x86_64 现已支持默认关闭的 `vm.cold_ram_compression` / `--vm-cold-ram-compression`，使用私有匿名 RAM、runtime 持有的内核缺页 userfaultfd 及有界 `LocalColdRamStore`。这是持续进行且无需 guest 参与的驱逐/refault 探测，不是普通 pause 或真正的读访问热度检测器。必须具备权限，缺少权限时启动失败；准入与恢复合同见[实例内压缩](compression-local.md)。客户端持有 sealed 共享 backing 仍是提案。统一 API 不意味着平台能力相同或宿主已经授权。
+已有文件 offload、格式与实验性 macOS/HVF 冷页池提供实现基础。Linux x86_64 支持默认关闭的 `vm.cold_ram_compression` / `--vm-cold-ram-compression`，使用私有匿名 RAM、runtime 持有的内核缺页 userfaultfd 及有界 `LocalColdRamStore`。这是持续进行且无需 guest 参与的驱逐/refault 探测，不是普通 pause 或真正的读访问热度检测器。必须具备权限，缺少权限时启动失败；准入与恢复合同见[实例内压缩](compression-local.md)。客户端持有 sealed 共享 backing 仍是提案。统一 API 不意味着平台能力相同或宿主已经授权。
 
-[实验性概念验证](proof-of-concept.md)保留底层 COW、冷恢复、引用生命周期及历史失败样本。它说明机制的可行性和限制，不承诺新架构的生产密度、净物理收益或恢复尾延迟。完整状态保存边界见[环境快照](../environment-snapshot.md)。
+[实验性概念验证](proof-of-concept.md)保留底层 COW、冷恢复、引用生命周期及历史失败样本。它说明机制的可行性和限制，不承诺目标架构的生产密度、净物理收益或恢复尾延迟。完整状态保存边界见[环境快照](../environment-snapshot.md)。

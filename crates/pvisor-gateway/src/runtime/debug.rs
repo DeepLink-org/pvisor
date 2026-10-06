@@ -22,7 +22,7 @@ pub fn debug_log_path(storage: &Path) -> PathBuf {
     storage.join(".capture").join("debug.log")
 }
 
-/// Enable debug until flag file is removed (`capture run --debug` / CLI helper).
+/// Enable debug until the Run-local flag file is removed.
 pub fn enable_debug(storage: &Path) -> anyhow::Result<()> {
     let path = debug_flag_path(storage);
     if let Some(p) = path.parent() {

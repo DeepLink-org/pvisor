@@ -65,7 +65,7 @@ Core 定义 `AgentCtlHostRequest<C>`（`version`、`request_id`、可选 `target
 当前版本为 **1**；target 包含 `job_id`、可选 `attempt_id` 与可选
 `generation`。端点所有者验证权限与目标范围。Live Attempt 端点要求精确
 Job/Attempt，拒绝独立 generation。Envelope 拒绝未知字段；身份非空，
-至多 256 字节，不含控制字符。Job 服务及其内部 worker 现在统一使用
+至多 256 字节，不含控制字符。Job 服务及其内部 worker 使用
 `runtime/host_transport.rs` 的换行分隔 JSON；async/sync 使用相同 framing
 规则，JSON 上限为 1 MiB，不含换行分隔符。reader 只消费到该分隔符，
 保留下一个 frame 或 FD marker。`SCM_RIGHTS` marker 字节是独立传输记录，
@@ -75,7 +75,7 @@ Job/Attempt，拒绝独立 generation。Envelope 拒绝未知字段；身份非�
 Core 的 `host_protocol` 还定义 live VM 的 `HostVmCommand`（`Pause`、
 `Resume`、`Offload`、`Status`）及 `HostVmResult`（`status`、`value`）。
 `pvisor` 导出 `host_vm_exchange`，用于类型化 Host 请求／响应交换。
-旧 `InstanceControl*` 适配器已删除；`--vm-load` 选择 `Resume`，映射为
+`--vm-load` 选择 `Resume`，映射为
 同一 live Attempt 的 `RunResume`，不是 `Load` 线上操作。
 
 内部 Job 握手在接纳描述符或命令之前检查 Host 版本 **1**、Job ticket
@@ -86,12 +86,12 @@ schema、Cargo 包版本及可执行文件内容的 BLAKE3 摘要。
 Linux 读取 `/proc/self/exe`。macOS 的 `cli/host_image.rs` 在对同一个
 已打开文件求摘要之前，将 dyld 已加载主映像的 UUID 与磁盘 Mach-O 中
 匹配 CPU slice 的 `LC_UUID` 比较。UUID 元数据缺失、格式错误、有歧义
-或不匹配时 fail closed；准入要求源 Mach-O UUID 匹配。首次路径替换的
-身份检查已实现，不再列为尚待实现的检查。UUID 匹配不等于已加载内存的
+或不匹配时 fail closed；准入要求源 Mach-O UUID 匹配。该检查验证首次路径替换前后的
+可执行文件身份。UUID 匹配不等于已加载内存的
 逐字节认证，也不等于内核固定的 exec 权限。macOS 平台路径尚未编译或
 测试；parser 检查不能验证 dyld 访问、平台链接或真实程序替换行为。
 
-Daemon 原生 supervisor 现在使用同一 version-1 换行 Host envelope，
+Daemon 原生 supervisor 使用同一 version-1 换行 Host envelope，
 配合私有 owner/token 凭据和 Job/Attempt/generation 目标。它不使用 Guest
 `Hello`/`Sync`，也不使用 CLI worker ticket 机制。该线上格式与旧 supervisor
 不兼容。升级前使用旧二进制排空 sandbox；同样先排空活动 CLI 请求并停止
@@ -105,8 +105,8 @@ Daemon 原生 supervisor 现在使用同一 version-1 换行 Host envelope，
 可升级清理强度。Linux 实现 subreaper 收养、`/proc` 后代跟踪及基于 pidfd
 的信号发送，并将 listener 排除在请求清理之外。macOS 跟踪出生身份已确认
 的后代及已知工作负载进程组，可跨普通进程组变化。清理先冻结 root 与发现
-的 forker，反复扫描直到跟踪集合稳定，再逐个发送经出生身份复核的信号；
-不再只清理 worker 进程组。不保证拥有发现前已 reparent、因而漏掉的孤儿；
+的 forker，反复扫描直到跟踪集合稳定，再逐个发送经出生身份复核的信号。
+清理范围包含 worker 进程组之外跟踪到的后代。不保证拥有发现前已 reparent、因而漏掉的孤儿；
 libproc 身份检查后按数字 PID 发信号，不是原子 pidfd 操作，也不提供
 Linux 等价的 containment。macOS 清理路径尚未编译或测试。
 
@@ -117,7 +117,7 @@ Linux 等价的 containment。macOS 清理路径尚未编译或测试。
 取消的关联，不是通用去重或 exactly-once 合同。部分持久 Job 操作保留自己
 范围内的回执，但不覆盖所有 Host 命令。断连、超时和取消可能发生在副作用
 之后；前端报告不确定性，不自动重试。决定再次提交前，先核对 Job 状态和
-产物。该重构尚无真实 VM TUI 端到端验证；传输、进程或 mock 检查不能证明
+产物。Host AgentCtl 路径尚无真实 VM TUI 端到端验证；传输、进程或 mock 检查不能证明
 guest 正确性或生产级持久性。
 
 ## 一条生产执行路径

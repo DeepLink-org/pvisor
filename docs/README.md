@@ -176,7 +176,7 @@ state the current public record and keep engineering follow-ups below.
 
 These articles describe the current implementation. Keep field and sequencing contracts in the Operation/Event article rather than duplicating them in component guides.
 
-## Engineering follow-ups from former placeholder pages
+## Engineering requirements and follow-ups
 
 These requirements remain engineering or policy work. They are separate from
 publication readiness and do not authorize AI to approve semantic claims or
@@ -225,7 +225,7 @@ cargo run --locked -p pvisor --example documentation_config -- run.toml
 
 ### community/adopters.md
 
-The original acceptance requirements remain below. Measurements, generated references, or formal decisions still need completion, so the planned status remains.
+Measurements, generated references, or formal decisions still need completion. The acceptance criteria below remain required; the page retains its planned status.
 
 **Acceptance criteria**
 
@@ -247,7 +247,7 @@ The original acceptance requirements remain below. Measurements, generated refer
 
 ### community/governance.md
 
-The original acceptance requirements remain below. Measurements, generated references, or formal decisions still need completion, so the planned status remains.
+Measurements, generated references, or formal decisions still need completion. The acceptance criteria below remain required; the page retains its planned status.
 
 **Acceptance criteria**
 
@@ -294,12 +294,12 @@ The original acceptance requirements remain below. Measurements, generated refer
 **Acceptance criteria**
 
 - pVisor defines execution semantics without replacing schedulers.
-- Distinguish the daemon's current external Podman adapter from proposed native executor integration.
-- Align claims with measured density; retired Cluster measurements are not daemon evidence.
+- Distinguish the daemon's implemented VM-only `NativeRuntime` from proposed integrations; require separate prepared-image and end-to-end SDK validation.
+- Align claims with measured density; Cluster/controller measurements are not evidence for the node-local daemon.
 
 ### design/research/publications.md
 
-The original acceptance requirements remain below. Measurements, generated references, or formal decisions still need completion, so the planned status remains.
+Measurements, generated references, or formal decisions still need completion. The acceptance criteria below remain required; the page retains its planned status.
 
 **Acceptance criteria**
 

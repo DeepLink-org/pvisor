@@ -2,7 +2,7 @@
 extern crate log;
 include!("../runtime_modules.rs");
 
-// M0: persist a stopped HVF CPU and RAM, exit, restore in a fresh process.
+// Persist a stopped HVF CPU and RAM, exit, restore in a fresh process.
 // Not a Linux/pVisor VM snapshot: no GIC, virtio or filesystem devices.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn main() -> anyhow::Result<()> {

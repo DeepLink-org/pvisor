@@ -108,7 +108,7 @@ macOS 的 macFUSE 临时工作区默认以启动 pVisor 时的当前目录作为
 
 普通 host Job 默认将工作区写入直接透传到 lower。`--safe` 和 `--ask` 默认将工作区
 改动保留在 Job 存储中，退出后用 `status --review`、`apply` 或 `drop` 手动处理。
-`--stage PATH` 仅用于指定存储位置，不再是保留改动的前提。
+`--stage PATH` 仅用于指定存储位置，不是保留改动的前提。
 
 ```bash
 pvisor run --stage ../run-stage -- codex
@@ -526,7 +526,7 @@ destination = "./capture"
 内，而不是暴露在 OCI runner argv。注入的 pVisor 创建自己的 AgentCtl 并
 返回类型化 RunResult。最终 OverlayFS cwd 和会话 Gateway 配置挂在稳定路径。
 `--container-rootfs PATH` 可直接指定已有 rootfs；否则 pVisor 使用自带 OCI
-image store 准备 `--container-image`。运行时必须是 `runc` 或 `crun`，不再调用
+image store 准备 `--container-image`。运行时必须是 `runc` 或 `crun`，pVisor 不调用
 Docker/Podman。用户 mount 是可重复的 TOML inline table，例如：
 
 ```bash
@@ -621,7 +621,7 @@ pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --v
 pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
 ```
 
-旧 `ctrl` 命令已删除。全局选项 `--vm-socket PATH`、`--vm-job-id ID`
+全局选项 `--vm-socket PATH`、`--vm-job-id ID`
 与 `--vm-attempt-id ID` 必须一起提供，即使 live `status` 也不例外；
 过期或不匹配身份被拒绝。`suspend` 和 `resume` 必须提供与
 `--vm-job-id` 相同的 Job 位置参数，不能用 `last` 或 stage 路径。
@@ -641,7 +641,7 @@ pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm
 `status` 与 `value` 字段。Core 的 `host_protocol` 拥有 `HostVmCommand`
 和 `HostVmResult`；嵌入调用方通过 `pvisor::host_vm_exchange` 交换
 `AgentCtlHostRequest<HostVmCommand>` / `AgentCtlHostResponse<HostVmResult>`。
-旧 `InstanceControl*` 适配器已删除。端点线上协议用 version-1 Host envelope
+端点线上协议用 version-1 Host envelope
 包装结果并关联 `request_id`；类型化 Host 错误使 CLI 非零退出，不一定在
 stdout 产生 JSON。
 传输／连接及解析失败也非零退出。非 VM 控制明确不受支持，不回退为

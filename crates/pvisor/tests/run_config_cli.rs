@@ -588,8 +588,8 @@ fn advertised_run_options() -> std::collections::BTreeSet<String> {
 fn removed_run_options_stay_off_the_cli_surface() {
     // `run` takes a trailing var arg that allows hyphen values, so an unknown
     // `--flag` joins the Agent command instead of failing to parse. Exit codes
-    // cannot separate a removed option from a resurrected one; the rendered
-    // option list can.
+    // cannot distinguish supported options from trailing command arguments;
+    // the rendered option list can.
     let advertised = advertised_run_options();
     for option in [
         "--workspace",

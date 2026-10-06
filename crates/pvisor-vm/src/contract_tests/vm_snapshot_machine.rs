@@ -1,4 +1,4 @@
-//! Structural checks for the new whole-machine builder input. No Linux/HVF
+//! Structural checks for the whole-machine builder input. No Linux/HVF
 //! runtime is created by these tests; real guest continuation remains a gate.
 #![cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),

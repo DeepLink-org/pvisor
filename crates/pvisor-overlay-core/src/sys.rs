@@ -424,7 +424,7 @@ pub fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
 
 /// Order a preimage's data before publishing its directory entry. This is not
 /// durable completion: the caller MUST full-sync the entries directory before
-/// permitting mutation. Unsupported Apple barriers retain the old full drain.
+/// permitting mutation. Unsupported Apple barriers fall back to a full drain.
 pub fn order_before_publish(file: &File) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     loop {

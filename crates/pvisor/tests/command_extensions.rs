@@ -215,7 +215,7 @@ fn service_tools_are_nested_and_preserve_arguments_and_exit() {
     assert!(!help.contains("  node "));
     for retired in ["cluster", "worker"] {
         assert!(!help.contains(&format!("  {retired} ")), "{help}");
-        // Even an installed old binary must not restore the retired command.
+        // An installed companion cannot register an unsupported service command.
         let companion = temporary.path().join(format!("pvisor-{retired}"));
         fs::write(&companion, "#!/bin/sh\nexit 42\n").unwrap();
         fs::set_permissions(companion, fs::Permissions::from_mode(0o755)).unwrap();

@@ -53,9 +53,8 @@ Implementations must enqueue bounded, fenced cleanup without blocking the
 Gateway's I/O thread, including when an async operation was interrupted after
 an uncertain effect.
 
-The retired VM Worker/Controller adapter and its `release_cpu_on_idle`
-configuration are no longer available. Gateway retains the embedding interface,
-not distributed wait ownership or an automatic native CPU-release adapter.
+Gateway supplies the embedding interface, not distributed wait ownership or
+an automatic native CPU-release adapter.
 `pvisor-daemon` does not currently integrate this Gateway lifecycle; its execd
 proxy must not be described as native inference-wait coordination.
 

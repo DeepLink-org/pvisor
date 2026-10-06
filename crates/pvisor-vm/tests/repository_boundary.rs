@@ -1,4 +1,4 @@
-//! Guard the repository migration: external consumers use the sole Rust facade.
+//! Guard the runtime boundary: external consumers use the sole Rust facade.
 use std::path::Path;
 use syn::visit::{self, Visit};
 

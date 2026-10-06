@@ -2883,8 +2883,8 @@ mod tests {
             handles: vec![],
             next_handle: 2,
         };
-        // Previously the tagged enum stored this state directly. Box must add
-        // no wrapper to the persisted format, including when nested in layers.
+        // Box must add no wrapper to the tagged enum's persisted state format,
+        // including when nested in layers.
         let old_wire = serde_json::json!({
             "kind": "Overlay",
             "state": serde_json::to_value(&state).unwrap(),

@@ -61,7 +61,7 @@ just test-semspec
 just semspec lint
 just semspec review --strict         # intentionally fails until human review
 just semantics --case S-STAGE-001
-just cases --case S-DOC-001,S-DOC-012 # migrated documented scenarios
+just cases --case S-DOC-001,S-DOC-012 # documented DOC scenarios
 just semantics --require-reviewed --format json --output target/semantics.json
 just semspec --config tools/semspec/semantics/semspec.toml lint
 ```

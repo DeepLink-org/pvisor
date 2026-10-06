@@ -44,7 +44,7 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
 
     let mut vm = pvisor_vm::api::VmBuilder::new(config.cpus, config.ram_mib)?;
 
-    // Preserve the shim's previous default 512 MiB DAX window.
+    // Use the shim's default 512 MiB DAX window.
     vm.filesystem("/dev/root", &plan.rootfs, 1 << 29)?;
     vm.virtual_file(
         "/dev/root",

@@ -5,15 +5,15 @@ registered under the runtime type `io.containerd.pvisor.v2` (the binary name
 follows containerd's discovery rule: dots become dashes, last two
 components, `containerd-shim` prefix).
 
-This is **M2 scope**: the host process path with full task IO. The shim
+The host process path provides full task IO. The shim
 implements the lifecycle every caller needs (`create`/`start`/`kill`/
 `wait`/`delete`/`state`/`pids`/`connect`/`shutdown`), exec into running
 tasks (`Exec` -> `Start(exec_id)` with `TaskExecAdded`/`TaskExecStarted`
 events), shim-owned FIFO/PTY IO with `CloseIO` (stdin keepalive, so
 `docker run -i` sees EOF) and `ResizePty`, task events, and a cgroup v2
-subset (pids/memory/cpu). Stats, pause/resume, checkpointing, and the
-pod-level Sandbox API are not implemented yet — the generated ttrpc trait
-defaults report them as unsupported, which containerd tolerates.
+subset (pids/memory/cpu). The host pod-level Sandbox API is described below.
+Stats, pause/resume and checkpointing are not implemented — the generated
+ttrpc trait defaults report them as unsupported, which containerd tolerates.
 
 ## Registering the runtime
 
@@ -84,7 +84,7 @@ containerd ──ttrpc── PvisorTask (Task service)
   `TaskCreate/TaskStart/TaskExit/TaskDelete` events through the containerd
   event publisher.
 
-## VM executor (M3, feature `vm`)
+## VM executor (feature `vm`)
 
 Bundles annotated with `"io.pvisor.executor": "vm"` run in a libkrun
 microVM instead of host namespaces: one VM per task, rootfs shared
@@ -106,7 +106,7 @@ Cross-builds need `PVISOR_KRUNFW_KERNEL_BUNDLE` pointing to extracted
 Not mapped into VMs yet (logged as warnings): spec bind mounts and cgroup
 limits (the VM shape is the resource boundary).
 
-## Guest agent and exec-in-VM (M5, feature `vm`)
+## Guest agent and exec-in-VM (feature `vm`)
 
 VM tasks boot the shim binary itself as a guest agent: at boot the
 (statically linked) binary is copied into the rootfs and the Rust
@@ -126,21 +126,21 @@ on vsock port 0x7076; libkrun proxies host connections from
 Pod-level VM sandboxes (per-container rootfs and namespaces inside one VM
 per pod, TC/TAP pod networking) remain the open item for the VM path.
 
-## M4 status
+## Host pod-level sandboxes
 
-Pod-level sandboxes are in (host path): Create/Start/Wait/Stop/Shutdown/
+The host path implements pod-level sandboxes: Create/Start/Wait/Stop/Shutdown/
 Platform/Ping/Status on the Sandbox service, a holder process that owns the
 pod namespaces (pause replacement, including shareProcessNamespace pods),
 and containers that join the shared namespaces unless their spec overrides
-them. Pod-level **VM** sandboxes return a clear error until the guest agent
-lands (M5); per-container VMs via `io.pvisor.executor=vm` keep working.
+them. Pod-level **VM** sandboxes are unsupported and return a clear error;
+per-container VMs use `io.pvisor.executor=vm`.
 
-## M2 limitations (deliberate)
+## Limitations (deliberate)
 
 - Exec joins the init process's namespaces via `setns`; it needs `CAP_SYS_ADMIN`
   (rootful containerd). Rootless exec is not supported yet.
-- Pod-level Sandbox API and per-pod VMs are M3/M4 (Kata-style); today each
-  task runs in its own namespace set on the host.
+- Pod-level sandboxes share host namespaces as described above; per-pod VMs
+  are unsupported.
 - Seccomp profiles, OCI hooks, maskedPaths/readonlyPaths, device cgroups,
   and systemd cgroup delegation are ignored (logged as warnings).
 - Stats, pause/resume, and checkpointing are unimplemented.
@@ -182,7 +182,7 @@ Expected: the container prints `hello from pvisor`, the task exits with
 status 0, and `journalctl -u containerd` shows the four task events.
 With Docker ≥ 23: `docker run --rm --runtime=io.containerd.pvisor.v2
 busybox echo hello` (registration optional, see above); interactive and
-exec flows are the M2 additions to try: `docker run -it --rm
+exec flows to try: `docker run -it --rm
 --runtime=io.containerd.pvisor.v2 busybox sh`, `docker exec <id> ls /`,
 and `echo hi | docker run -i --rm --runtime=io.containerd.pvisor.v2 busybox cat`.
 

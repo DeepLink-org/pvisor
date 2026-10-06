@@ -1,5 +1,5 @@
-//! The sole guest-kernel ABI boundary. This is firmware data loading, not the
-//! removed libkrun VM control ABI. The owner outlives every guest mapping.
+//! The sole guest-kernel ABI boundary, responsible for firmware data loading.
+//! The owner outlives every guest mapping.
 use crate::vmm::vmm_config::kernel_bundle::KernelBundle;
 use std::io;
 

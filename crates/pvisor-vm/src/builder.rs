@@ -152,7 +152,7 @@ impl<B: Backend> Builder<B> {
         Ok(())
     }
     /// Build, invoke the ready callback, then enter the runner's event loop.
-    /// Guest shutdown exits this process, as in the previous isolated runner.
+    /// Guest shutdown exits this isolated runner process.
     pub fn run(mut self, on_ready: impl FnOnce(VmmHandle) -> io::Result<()>) -> io::Result<()> {
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),

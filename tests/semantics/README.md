@@ -32,11 +32,11 @@ DOC 继续由同一 runner 执行示例回归，不作为已审核的语义承�
 不要自动填充台账，也不要因为实现失败而削弱性质。已分配的 ID 不复用，
 差异和删除历史用 Git 审查，不维护独立退役清单。引擎执行语义变化必须升级 ENGINE_SEMANTICS。
 
-## 新 CLI 学习路线（USE）
+## CLI 学习路线（USE）
 
 [`docs/src/zh/cases/index.md`](../../docs/src/zh/cases/index.md) 将使用叙事和实际检查放在同一套文档中，
 按首次运行、文件审查、workspace checkpoint/fork、访问边界、轨迹恢复逐步展开。
-旧 DOC/STAGE 规格、词汇和入口保留；USE 使用独立的 `semspec-use.toml` 与 `journey.sh`。
+DOC/STAGE 与 USE 各自保有规格、词汇和入口；USE 使用独立的 `semspec-use.toml` 与 `journey.sh`。
 `journey.sh` 内的 Python 断言和 fixture 服务一起参与词汇摘要，不在摘要外隐藏检查。
 
 ```sh
@@ -50,16 +50,17 @@ USE 仍为 UNREVIEWED，不自动批准。`just cases-v2` 的执行门禁要求�
 CI 的 Linux 隔离 job 执行全部 USE，预检 FUSE 和 user/mount/network namespace，
 报告作为 `pvisor-learning-report` artifact 上传。
 
-## 文档场景迁移
+## 文档场景与 ID 对照
 
-VM 新增六条 DOC 场景 S-DOC-057..062，见
+VM 的六条 DOC 场景为 S-DOC-057..062，见
 [`cases-vm.md`](../../docs/src/zh/reference/cases-vm.md)。`just cases` 扫描整个 DOC
 目录；`just vm-cases` 准备 SDK 驱动并执行这六条场景。需要 Linux/KVM 或
 Apple Silicon/HVF、Linux guest rootfs；SDK 场景还需要 guest Python；S-DOC-062 还需要 FUSE/macFUSE kernel backend。
-新规格与 `vm.sh` 保持 UNREVIEWED，没有更新人工审批台账。
+这些规格与 `vm.sh` 为 UNREVIEWED；执行通过不授权更新人工审批台账。
 
-`docs/src/zh/reference/cases.md` 同时是用户文档和 DOC 规格源，覆盖原 A01–M02 中仍有效的 54 个场景，`just cases` 只运行 DOC 域。
-L01、L02 随 `env` 功能移除，S-DOC-053、S-DOC-054 的删除记录保留在 Git 中。
+`docs/src/zh/reference/cases.md` 同时是用户文档和 DOC 规格源，覆盖下表 A01–M02 对照中的 54 个有效场景，`just cases` 只运行 DOC 域。
+下表保留完整的审计映射：L01、L02 对应的 S-DOC-053、S-DOC-054 不在当前执行集合中，
+已分配 ID 不复用；相关差异由 Git 审查，不据此更改断言、审核状态或人工审批台账。
 
 ```sh
 just semspec --config semspec-doc.toml list --domain DOC
@@ -127,7 +128,7 @@ just cases
 | K02 | S-DOC-050 |
 | K03 | S-DOC-051 |
 | K04 | S-DOC-052 |
-| L01 | S-DOC-053 (env removed) |
-| L02 | S-DOC-054 (env removed) |
+| L01 | S-DOC-053（不在当前执行集合中；ID 不复用） |
+| L02 | S-DOC-054（不在当前执行集合中；ID 不复用） |
 | M01 | S-DOC-055 |
 | M02 | S-DOC-056 |

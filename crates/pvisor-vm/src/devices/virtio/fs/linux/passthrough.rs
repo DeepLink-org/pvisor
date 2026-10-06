@@ -2268,8 +2268,8 @@ mod tests {
     /// request (`ScopedUid`) and restores it on drop. When the server
     /// runs as a non-root user that holds CAP_SETUID — e.g. an
     /// unprivileged daemon granted the capability via systemd's
-    /// `AmbientCapabilities=` — restoring to a hardcoded euid 0 (the
-    /// old behavior) wedges the thread: the next switch from euid 0 to
+    /// `AmbientCapabilities=` — restoring to a hardcoded euid 0 wedges
+    /// the thread: the next switch from euid 0 to
     /// a non-zero uid clears its effective capability set, the restore
     /// after that fails EPERM, and the thread is stranded at the guest
     /// uid, failing every later request (including ones for guest
@@ -2335,8 +2335,8 @@ mod tests {
         // real regression and must fail (assert), not skip.
         //
         // The server's per-request switch: a handful as a non-zero guest
-        // uid. Two already suffice (the first restore parks euid at the
-        // old hardcoded 0, the second switch then clears the caps), but
+        // uid. Two already suffice to expose a hardcoded euid 0 restore
+        // (the second switch then clears the caps), but
         // run more so a wedge is unmistakable.
         for i in 0..4 {
             let scoped = ScopedUid::new(GUEST_UID)

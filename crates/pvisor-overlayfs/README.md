@@ -57,7 +57,7 @@ cargo zigbuild -p pvisor-overlayfs --release --target x86_64-unknown-linux-musl
 # → target/x86_64-unknown-linux-musl/release/pvisor-overlayfs (Linux)
 ```
 
-## Directory snapshots (R09)
+## Directory enumeration and snapshot lifetime
 
 `opendir` snapshots merged names and types, including whiteout/opaque and denied
 hardlink filtering. Plain `readdir` uses those stable entries and index-based
@@ -82,7 +82,7 @@ replaced. An error reply discards the whole buffered page without acquiring
 lookup references for any of its children; a successful page retains references
 only for entries accepted into its buffer.
 
-Copy-up and apply optimization boundaries (R07/R08) are documented in
+Copy-up and apply contracts are documented in
 [`pvisor-overlay-core`](../pvisor-overlay-core/README.md).
 
 ## Links

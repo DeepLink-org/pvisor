@@ -91,18 +91,24 @@ def build() -> None:
     import_module("check-docs").check_translations()
     import_module("check-reference").check()
     zensical = shutil.which("zensical") or str(Path(sys.executable).with_name("zensical"))
-    public_source = DOCS / ".data/site-source"
-    shutil.rmtree(public_source, ignore_errors=True)
-    public_source.parent.mkdir(exist_ok=True)
-    copy_public_source(DOCS / "src", public_source)
+    # The generator skips hidden .data trees. Give it a fresh visible source
+    # directory while still excluding raw evidence from the copied contents.
+    with tempfile.TemporaryDirectory(prefix="pvisor-docs-source-", dir=DOCS) as temporary:
+        public_source = Path(temporary) / "source"
+        copy_public_source(DOCS / "src", public_source)
+        build_public_source(zensical, public_source)
+
+
+def build_public_source(zensical, public_source):
     config = (DOCS / "zensical.toml").read_text().replace(
-        'docs_dir = "src"', 'docs_dir = ".data/site-source"'
+        'docs_dir = "src"', 'docs_dir = ' + json.dumps(public_source.relative_to(DOCS).as_posix())
     )
     shutil.rmtree(DOCS / "site", ignore_errors=True)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", prefix=".zensical-zh-", dir=DOCS) as zh_config:
-        zh_config.write(config)
+        zh_config.write(config.replace('[project]\n', '[project]\ncache_dir = ' +
+                                       json.dumps((public_source.parent / 'cache').relative_to(DOCS).as_posix()) + '\n', 1))
         zh_config.flush()
-        subprocess.run([zensical, "build", "--strict", "-f", zh_config.name], cwd=DOCS, check=True)
+        subprocess.run([zensical, "build", "--clean", "--strict", "-f", zh_config.name], cwd=DOCS, check=True)
     localize_search(DOCS / "site", "zh")
     # Zensical has one language/navigation per build; mirror the source navigation.
     before, nav = config.split("nav = [", 1)
@@ -122,7 +128,7 @@ def build() -> None:
             config_file.write(config)
             config_file.flush()
             subprocess.run(
-                [zensical, "build", "--strict", "-f", config_file.name], cwd=DOCS, check=True
+                [zensical, "build", "--clean", "--strict", "-f", config_file.name], cwd=DOCS, check=True
             )
         localize_search(temp / "site", "en")
         shutil.copytree(temp / "site/en", DOCS / "site/en", dirs_exist_ok=True)

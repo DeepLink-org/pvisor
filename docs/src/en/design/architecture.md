@@ -72,7 +72,7 @@ optional `generation`. Endpoint owners validate authorization and target scope.
 Live Attempt endpoints require the exact Job/Attempt and reject an independent
 generation. Envelopes reject unknown fields; identities are nonempty, at most
 256 bytes, and contain no control characters. The Job service and its internal
-workers now use `runtime/host_transport.rs` for newline-delimited JSON, with the
+workers use `runtime/host_transport.rs` for newline-delimited JSON, with the
 same async/sync framing rules and a 1 MiB JSON limit excluding the newline.
 Readers consume only through that delimiter, preserving following frames or FD
 markers. `SCM_RIGHTS` marker bytes are separate transport records, not JSON;
@@ -82,8 +82,8 @@ markers. `SCM_RIGHTS` marker bytes are separate transport records, not JSON;
 
 Core's `host_protocol` also defines live VM `HostVmCommand` (`Pause`, `Resume`,
 `Offload`, `Status`) and `HostVmResult` (`status`, `value`). `pvisor` exports
-`host_vm_exchange` for typed Host request/response exchange. The old
-`InstanceControl*` adapters are removed; `--vm-load` selects `Resume`, mapped to
+`host_vm_exchange` for typed Host request/response exchange. `--vm-load`
+selects `Resume`, mapped to
 `RunResume` of the same live Attempt, not a `Load` wire operation.
 
 The internal Job handshake checks Host version **1**, the Job ticket schema,
@@ -97,13 +97,13 @@ Linux hashes `/proc/self/exe`. On macOS, `cli/host_image.rs` checks the UUID of
 dyld's loaded main image against the on-disk Mach-O `LC_UUID` for the matching
 CPU slice before hashing that same open file. Missing, malformed, ambiguous or
 mismatched UUID metadata fails closed; admission requires a matching source
-Mach-O UUID. This implements the first-pathname-replacement identity check,
-rather than leaving that check outstanding. UUID matching is not byte-for-byte
+Mach-O UUID. This checks executable identity across the first pathname
+replacement. UUID matching is not byte-for-byte
 attestation of loaded memory or kernel-pinned exec authority. The macOS platform
 path has not been compiled or tested; parser checks do not validate dyld access,
 platform linking or actual executable replacement behavior.
 
-Daemon native supervisors now use the same version-1 newline Host envelopes
+Daemon native supervisors use the same version-1 newline Host envelopes
 with private owner/token credentials and Job/Attempt/generation targeting.
 They do not use Guest `Hello`/`Sync` or the CLI worker ticket mechanism. This wire
 format is incompatible with old supervisors. Drain sandboxes using the old
@@ -122,7 +122,8 @@ tracking and pidfd-based signalling, with the listener excluded from request
 cleanup. macOS tracks birth-identified descendants and known workload groups
 across ordinary process-group changes. Cleanup freezes the root and discovered
 forkers, rescans until the tracked set stabilizes, then sends individual
-birth-checked signals. It is no longer limited to the worker process group.
+birth-checked signals. Cleanup covers tracked descendants beyond the worker
+process group.
 Already-reparented orphans missed by discovery are not guaranteed to be owned;
 libproc identity checks followed by numeric-PID signals are not atomic pidfd
 operations. This is not Linux-equivalent containment. The macOS cleanup path has
@@ -139,7 +140,7 @@ receipts, but that does not cover every Host command. Disconnects, timeouts and
 cancellation can follow effects already performed; the frontend reports
 ambiguity and does not automatically retry. Reconcile Job state and artifacts
 before deciding what to submit next. Real-VM TUI end-to-end behavior has not been
-validated for this refactor; transport, process or mock checks cannot establish
+validated for the Host AgentCtl path; transport, process or mock checks cannot establish
 guest correctness or production durability.
 
 ## A production execution path

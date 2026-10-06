@@ -66,7 +66,7 @@ flowchart TD
 各入口在宿主执行进程内直接调用；不要求新增文件系统 RPC 或把全部 Run 串行化。
 协议编码、inode/handle 表和 descriptor/used-ring 管理仍属于各自入口。
 
-VM 的 lazy image 已直接调用远程只读后端，不再建立中间宿主 FUSE 挂载。
+VM 的 lazy image 直接调用远程只读后端，无需中间宿主 FUSE 挂载。
 `image/cache/backend.rs` 提供与 FUSE 无关的元数据、按块读取和有界缓存，
 `lazy.rs` 保留 host FUSE 适配器，`direct.rs` 将后端接入 VM lower。
 普通本地 lower 和 VM staged workspace 继续经 virtio-fs 直接服务；host
@@ -90,11 +90,11 @@ virtio-fs 文件服务入口分开，随 VM teardown 释放。
 内容读取不持有服务全局锁或元数据表锁，缓存 miss 仅锁住相应的内容块。
 测试覆盖跨块与热缓存读取、硬链接 copy-up、guest 属性、打开句柄、完整目录
 导出及 runner 接入。两套入口的协议状态尚未全部收拢；后续可以继续统一
-共同操作，但应保留平台权限和描述符语义。[重构后评测](filesystem-performance-analysis.md#filesystem-service)
+共同操作，但应保留平台权限和描述符语义。[文件系统测量](filesystem-performance-analysis.md#filesystem-service)
 已覆盖本地完整负载和 lazy 冷/热缓存：读路径有局部收益，元数据和 copy-up
 出现回归，尚未显示普遍端到端加速；并发任务容量未在这批测量中验证。
-此重构针对文件系统及 lazy image，不改变[快照 RAM lazy 恢复](environment-snapshot.md)
-的缺页加载路径。
+统一文件服务处理文件系统及 lazy image；[快照 RAM lazy 恢复](environment-snapshot.md)
+的缺页加载路径是独立机制。
 
 ### 文件布局与实际关系 {#disk-layout}
 
@@ -149,7 +149,7 @@ upper 保存完整 copy-up 文件，修改一字节也可能复制整个文件�
 
 ### 首次触达与冲突指纹 {#preimages}
 
-受 pVisor 管理的 host 与 VM stage 现在选择 compact 帧日志，默认使用 `checkpoint` 持久化策略。首次观察仍在暴露内容或修改前捕获，但首次修改不再逐项 fsync 日志。任务完成先停止所有写入者，同步完整日志，再同步 upper 数据和目录，最后发布 `preimages/sealed-v1`。`complete-v1` 表示观察覆盖完整，不是任务完成确认。没有完成标记的受管理 stage 拒绝 apply／重新使用；运行中的 workspace checkpoint 只持久化自己的副本。程序显式 fsync 时仍先同步观察记录，再同步数据。`--stage-durability strict` 保留首次修改前同步日志；没有策略文件的旧 stage 保留严格合同。下面的逐路径发布描述针对旧的严格日志；compact 记录保留同样的首个胜者和冲突规则。持久化边界见[隔离机制](isolation.md#workspace-and-lifecycle)。
+受 pVisor 管理的 host 与 VM stage 选择 compact 帧日志，默认使用 `checkpoint` 持久化策略。首次观察仍在暴露内容或修改前捕获，但首次修改不逐项 fsync 日志。任务完成先停止所有写入者，同步完整日志，再同步 upper 数据和目录，最后发布 `preimages/sealed-v1`。`complete-v1` 表示观察覆盖完整，不是任务完成确认。没有完成标记的受管理 stage 拒绝 apply／重新使用；运行中的 workspace checkpoint 只持久化自己的副本。程序显式 fsync 时仍先同步观察记录，再同步数据。`--stage-durability strict` 保留首次修改前同步日志；没有策略文件的旧 stage 保留严格合同。下面的逐路径发布描述针对旧的严格日志；compact 记录保留同样的首个胜者和冲突规则。持久化边界见[隔离机制](isolation.md#workspace-and-lifecycle)。
 
 冲突保护起点取决于布局。冻结布局从明确的 target 对应 baseline（最后一个 lower）捕获原像；最高优先级的额外 lower 仅供应可见内容。live lower 从首次实际内容打开或 symlink/xattr 读取捕获 target 原像；真实缺失 lookup 直接记录已观察到的 Absent，不能在稍后取指纹时改为宿主刚创建的文件。授权与 I/O 拒绝不是缺失，不记录也不读取被拒路径；没有先读取的 mutation 从修改前的 target 状态开始。普通成功的 stat/lookup 和目录列表不哈希每个文件，也不承诺 Run 起点完整快照或全读集串行化。FUSE 与 virtio-fs 的实际内容入口自动调用共享 Core 的 `observe_read()`；调用 Core 的外部适配器也必须这样做，`resolve()` 仅解析路径。
 
@@ -246,7 +246,7 @@ pending apply 存在时不能 drop，以免删掉恢复所需的 upper。已 Dis
 
 ## 4. 实验数据支撑 {#experiments}
 
-本轮冲突窗口修复编译并运行了 `JUST_TEMPDIR=/tmp just test pvisor-overlay-core pvisor-overlayfs`，定向测试通过，覆盖公共 Core/apply 行为以及 FUSE 的实际 `open_inode` / `open_path` 路径。`pvisor` 集成回归还通过 guest descriptor ring 驱动真实 virtio-fs worker，覆盖内容读取、写入、live/frozen 目标布局和设备状态恢复；逻辑 checkpoint 回归检查只读观察在复制/restore 后仍能约束首次修改。它们验证共享实现与适配器接线，不等同真实宿主 FUSE 挂载、KVM/HVF guest 启动或跨平台验收。以下是可复核的覆盖入口，不能将函数数量当作独立故障场景数量。
+`JUST_TEMPDIR=/tmp just test pvisor-overlay-core pvisor-overlayfs` 运行定向测试，覆盖公共 Core/apply 行为以及 FUSE 的实际 `open_inode` / `open_path` 路径。`pvisor` 集成回归还通过 guest descriptor ring 驱动真实 virtio-fs worker，覆盖内容读取、写入、live/frozen 目标布局和设备状态恢复；逻辑 checkpoint 回归检查只读观察在复制/restore 后仍能约束首次修改。它们验证共享实现与适配器接线，不等同真实宿主 FUSE 挂载、KVM/HVF guest 启动或跨平台验收。以下是可复核的覆盖入口，不能将函数数量当作独立故障场景数量。
 
 | 机制 | 现有可复核测试 |
 |---|---|

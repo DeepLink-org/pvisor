@@ -1973,7 +1973,7 @@ mod tests {
             String::from_utf8_lossy(&python.stderr)
         );
         let [interpreter, runtime]: [PathBuf; 2] = serde_json::from_slice(&python.stdout).unwrap();
-        // The old mixed deny policy failed intermittently across ephemeral ports.
+        // Repeat with fresh ephemeral ports to catch intermittent deny-policy failures.
         for _ in 0..16 {
             let temp = tempfile::tempdir().unwrap();
             let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2009,7 +2009,7 @@ mod tests {
                 command.arg("-D").arg(format!("{key}={}", value.display()));
             }
             let output = command
-                // Prove the sandboxed invocation no longer needs xcrun selection.
+                // Prove the sandboxed invocation does not require xcrun selection.
                 .env("DEVELOPER_DIR", temp.path().join("no-developer-tools"))
                 .arg(&interpreter)
                 .args([

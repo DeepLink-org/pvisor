@@ -51,12 +51,12 @@ pvisor service memory-pool --help
 
 Use `service cache/memory-pool` for the native resource tools. `service daemon` passes arguments unchanged to a separately installed, matching adjacent `pvisor-daemon`; check `pvisor service --help` when using an older build. The daemon can always be invoked directly after separate installation; follow the [daemon installation guide](../guides/daemon/index.md). NativeRuntime embeds VM execution; the daemon executable and required native flags are integrated, checkpoint/fork and stage/apply APIs are absent, and node sharing is not automatically acquired. Controller/Worker task tools and their configuration are retired. See [service entry points](../guides/daemon/service.md) for native node/cache/pool ownership and deployment boundaries.
 
-Other unknown names follow default execution rules. The retired `ctrl` name
+Other unknown names follow default execution rules. The `ctrl` name
 is an explicit exception: `pvisor ctrl`, `pvisor ctrl --help` and
 `pvisor help ctrl` reject with migration guidance before Job admission, rather
 than default-running a program named `ctrl`. Use the live VM commands below.
 `pvisor run -- ctrl` still expresses explicit workload intent; it does not
-restore the retired control API. Use `pvisor -- COMMAND` for explicit default
+invoke a control API. Use `pvisor -- COMMAND` for explicit default
 execution.
 
 ## Find the command you need
@@ -129,7 +129,7 @@ working directory or OverlayFS base takes precedence.
 An ordinary host Job writes workspace changes through to the lower by default.
 `--safe` and `--ask` retain workspace changes in Job storage by default, to be
 handled later with `status --review`, `apply` or `drop`. `--stage PATH` only
-chooses the storage location and is no longer a prerequisite for retaining
+chooses the storage location and is not a prerequisite for retaining
 changes.
 
 ```bash
@@ -321,7 +321,7 @@ When the stage is inside the workspace, capture storage is placed outside guest 
 
 Suspended Jobs refuse apply/drop and workspace capture. `kill JOB` withdraws continuation rights while retaining checkpoint history, allowing subsequent workspace decisions. Execution checkpoints share list/show/delete entries with workspace checkpoints; deletion checks the suspended head, branch references and storage leases. Branch references are retained conservatively; Job deletion/archiving has no release interface yet. GC collects unpublished transactions, tombstones and unreferenced RAM content in this Job's stores, never published checkpoints. It is not cross-Job store-wide collection and does not clean daemon sandbox state.
 
-Immutable base management uses `checkpoint import-base JOB ROOTFS --json` and `checkpoint verify-base JOB BASE_ID --json`. Import returns an owned rootfs path usable by subsequent ordinary `run --rootfs`. The standalone snapshot frontend remains removed, and old stores are not automatically converted into Job checkpoints. See [Job checkpoint design](../design/job-checkpoint-cli.md#10-当前实现与验收边界) for implementation and acceptance.
+Immutable base management uses `checkpoint import-base JOB ROOTFS --json` and `checkpoint verify-base JOB BASE_ID --json`. Import returns an owned rootfs path usable by subsequent ordinary `run --rootfs`. The CLI exposes snapshots through Job commands, not a standalone snapshot frontend; old stores are not automatically converted into Job checkpoints. See [Job checkpoint design](../design/job-checkpoint-cli.md#10-当前实现与验收边界) for implementation and acceptance.
 
 ## `--safe` parameter preset {#safe-参数预设}
 
@@ -674,7 +674,7 @@ RunResult. The final OverlayFS cwd and session Gateway configuration are mounted
 at stable paths.
 `--container-rootfs PATH` supplies an existing rootfs directly; otherwise pVisor
 prepares `--container-image` from its bundled OCI image store. The runtime must
-be `runc` or `crun`; Docker/Podman are no longer invoked. User mounts are
+be `runc` or `crun`; pVisor does not invoke Docker/Podman. User mounts are
 repeatable TOML inline tables, for example:
 
 ```bash
@@ -780,7 +780,7 @@ pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --v
 pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
 ```
 
-The old `ctrl` command is removed. The global options `--vm-socket PATH`,
+The global options `--vm-socket PATH`,
 `--vm-job-id ID` and `--vm-attempt-id ID` are required together, even for
 live `status`; stale or mismatched identities are rejected. `suspend` and
 `resume` require a positional Job selector matching `--vm-job-id`, not `last`
@@ -801,7 +801,7 @@ Successful live control replies are JSON on stdout containing `HostVmResult`
 fields `status` and `value`. Core's `host_protocol` owns `HostVmCommand` and
 `HostVmResult`; `pvisor::host_vm_exchange` exchanges
 `AgentCtlHostRequest<HostVmCommand>` / `AgentCtlHostResponse<HostVmResult>` for
-embedded callers. The old `InstanceControl*` adapters are removed. The endpoint
+embedded callers. The endpoint
 wire wraps results in version-1 Host envelopes with a correlated `request_id`;
 typed Host errors are nonzero CLI failures, not necessarily JSON on stdout. Transport/connect and parsing failures also exit
 nonzero. Non-VM controls are explicitly unsupported, not a process-signal

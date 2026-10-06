@@ -1,6 +1,6 @@
 # pvisor-vm
 
-pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在同一个 crate 中编译，替代原来分散的 libkrun 组件与 C 风格 context API。
+pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在同一个 crate 中编译，对外使用统一的 Rust API。
 
 ## 必须遵守的 API 边界
 
@@ -55,7 +55,7 @@ VM staged 和 lazy image 均不建立中间宿主文件系统 FUSE 挂载。lazy
 
 `VmConfig` 表达 CPU 与 RAM 配置；`Capabilities` 统一描述架构、虚拟化平台及可用原语。`MachineSnapshot`、`MachineRestore` 与 `RamMappingSnapshot` 表达快照边界；`OverlayConfig` 与 `PermissionSemantics` 表达文件系统输入。所有 trait 仅声明方法，不提供默认实现。
 
-`VmBuilder.inner` 仅保存内部状态，不承担对外接口定义。`VmmHandle` 直接保存私有运行状态，在 `handle.rs` 实现 `VmControl`，不再通过第二个 handle 类型逐方法转发。Rust 不支持无方法体的固有方法声明，因此接口使用 trait 声明，私有适配器使用 `impl VmConfiguration for VmBuilder` 等实现。调用方显式导入所需契约：
+`VmBuilder.inner` 仅保存内部状态，不承担对外接口定义。`VmmHandle` 直接保存私有运行状态，在 `handle.rs` 实现 `VmControl`。Rust 不支持无方法体的固有方法声明，因此接口使用 trait 声明，私有适配器使用 `impl VmConfiguration for VmBuilder` 等实现。调用方显式导入所需契约：
 
 ```rust
 use pvisor_vm::api::{VmBuilder, VmConfig, VmConfiguration};
@@ -65,15 +65,15 @@ fn configure() -> std::io::Result<VmBuilder> {
 }
 ```
 
-## 仓库迁移规则
+## 运行时与存储边界
 
-CLI 执行器、containerd shim、暂停/恢复、快照、checkpoint、RAM pager、示例和 guest-init 基准均使用本模块的契约。禁止恢复 `libkrun` / `krun-vmm` / `krun-devices` / `krun-hvf` 等独立核心运行时依赖，也不保留 C context/裸指针配置入口。内部硬件探针和设备测试归属 `pvisor-vm`，不要求外部访问私有模块。
+CLI 执行器、containerd shim、暂停/恢复、快照、checkpoint、RAM pager、示例和 guest-init 基准均使用本模块的契约。核心运行时组件只在本 crate 内编译；调用方使用 `pvisor_vm::api` 的 Rust 契约，不使用 C context/裸指针配置入口。内部硬件探针和设备测试归属 `pvisor-vm`，不要求外部访问私有模块。
 
 RAM 文件的 FUSE 挂载、readiness、mmap 缓存 I/O 和卸载顺序由私有 `ram_file` 模块管理。`RamFileStore` 接收宿主的暂存存储实现；`RamFileMount` 只公开所有权与挂载契约。压缩代际提交和持久化发布由宿主存储层负责。
 
 冷 RAM pager 的状态机、采样/发布窗口、回收线程及 CPU/设备缺页恢复也在本 crate 内。`ColdRamStore` 是宿主存储适配契约：pVisor 负责实例本地 store 或受支持平台的 pool 授权、传输和诊断目录，VM 指针与映射状态不越过边界。`ColdRamOptions`、`ColdRamControl` 在所有平台都存在；不支持的后端返回明确错误，重复启动同一 VM 的 pager 会被拒绝。
 
-Linux x86_64 已交付实验性的 runtime-owned userfaultfd pager，由默认关闭的 `VmSettings.cold_ram_compression` / `--vm-cold-ram-compression` 自动启动，使用 pVisor 的 `LocalColdRamStore`，不是 FUSE `vm.ram_compression`。`ColdRamControl::start_cold_pager` 使用相同 API；Linux 的缺页与静止窗口由 runtime 内部持有，外部 `install_ram_fault_handler`、`with_ram_quiesced`、`experimental_ram_residency` 及 `FrozenMemory::experimental_ram_blocks` 返回不支持。编译能力不代表权限：必须具备 syscall 或 `/dev/userfaultfd` 的内核缺页授权，缺少授权时启动失败，不回退或修改全局 sysctl。
+Linux x86_64 支持实验性的 runtime-owned userfaultfd pager，由默认关闭的 `VmSettings.cold_ram_compression` / `--vm-cold-ram-compression` 自动启动，使用 pVisor 的 `LocalColdRamStore`，不是 FUSE `vm.ram_compression`。`ColdRamControl::start_cold_pager` 使用相同 API；Linux 的缺页与静止窗口由 runtime 内部持有，外部 `install_ram_fault_handler`、`with_ram_quiesced`、`experimental_ram_residency` 及 `FrozenMemory::experimental_ram_blocks` 返回不支持。编译能力不代表权限：必须具备 syscall 或 `/dev/userfaultfd` 的内核缺页授权，缺少授权时启动失败，不回退或修改全局 sysctl。
 
 pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro`、`gpu`、`snd`、`input` 构建及已有 device prepare/dedup advice 被拒绝。64 KiB 块每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。balloon 空闲页报告在 pager 持有映射时确认但不 discard。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
 
@@ -89,7 +89,7 @@ Rust supervisor 的可选私有 tmpfs 契约见 [pvisor-guest](../pvisor-guest/R
 
 静态 x86_64 musl 的内核提取、无损打包、加载全部在本 crate 内完成；既有 `PVISOR_KRUNFW_PATH` / `PVISOR_KRUNFW_KERNEL_BUNDLE` 构建输入保持兼容。`VmRuntime::run` 自动安装构建内置内核；`VmPlatform::embedded_kernel` 提供不可变共享字节和启动地址用于身份绑定。固件的版本、校验、缓存、下载和平台产物处理集中在本 crate 内；调用方决定何时授权并调用阻塞的准备操作，负责宿主隔离和证据存储。
 
-为保持已有 Run/证据协议兼容，部分记录标识、trace stage、环境变量和 runner 参数保留历史 `krun` 命名；它们不再调用原 C API。既有原始基准证据保持原样，不能当成新实现的验证结果。
+为保持 Run/证据协议兼容，部分记录标识、trace stage、环境变量和 runner 参数使用 `krun` 命名；VM 控制通过 Rust API 实现。基准证据只描述其实际测量的实现，不能作为其他实现的验证结果。
 
 Clippy 清理以语义和契约为先：保留 `EAX/EBX/ECX/EDX`、`RTC` 等硬件专名以及诊断含义明确的错误名称，必要时使用带理由的局部豁免。优先删除失效豁免、整理配置与资源参数、修复实现问题，不为消除告警改变专有术语或持久化协议。生成的 ABI 定义、跨平台 libc 字段宽度和 FUSE 协议签名需单独判断。
 
@@ -97,7 +97,7 @@ Clippy 清理以语义和契约为先：保留 `EAX/EBX/ECX/EDX`、`RTC` 等硬�
 
 `just test pvisor-vm` 运行设备、快照和接口契约测试；macOS 自动使用仓库既有 Hypervisor entitlement 签署测试程序。真实 HVF/KVM 和本地 socket 测试需要宿主权限。Linux 测试中创建 VM 的用例需要可用 `/dev/kvm`。
 
-`repository_boundary` 检查所有工作区 manifest 与外部 Rust 调用者，防止重新依赖旧 VM 核心 crate。`api_contract` 保证 API 无条件编译、无方法体，并禁止私有适配器另设公开固有方法。
+`repository_boundary` 检查所有工作区 manifest 与外部 Rust 调用者，保证 VM 核心组件只在本 crate 内编译。`api_contract` 保证 API 无条件编译、无方法体，并禁止私有适配器另设公开固有方法。
 
 真实 Linux guest 的独立 rootfs/RAM 保存与恢复验证使用 `python3 scripts/check-environment-snapshot.py --report target/vm-validation/environment-linux.json`（Apple Silicon HVF）。guest 探针在 `src/probes/guest_linux.rs`，readiness 使用原子 rename 发布，避免把探针写文件的中间状态误判为恢复失败。底层 CPU/RAM 与 VMM-thread CPU/RAM/GIC 检查分别使用 `check-hvf-cold-restore.py` 和 `check-vm-snapshot-state.py`，它们的报告只描述各自覆盖的范围。
 
@@ -150,5 +150,5 @@ guest 再发 kick。正在执行的请求不序列化进入快照；超时由现
 
 设计参考 [virtiofsd 的线程池和 EVENT_IDX 处理](https://gitlab.com/virtio-fs/virtiofsd/-/blob/main/src/vhost_user.rs)
 及 [passthrough 的资源持有方式](https://gitlab.com/virtio-fs/virtiofsd/-/blob/main/src/passthrough/mod.rs)。
-本次为 pVisor 内部实现，未复制上游代码。未直接引入 vhost-user、DAX、
+并发调度使用 pVisor 内部实现，不复制上游代码，也不提供 vhost-user、DAX、
 writeback 或上游的工作目录切换；这些机制需要各自的权限、缓存和冻结契约。

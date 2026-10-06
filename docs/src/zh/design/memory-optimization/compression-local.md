@@ -5,7 +5,7 @@
 
 ## 目标与现状 {#status}
 
-Linux x86_64 已交付实验性的实例本地 live pager。默认关闭的
+Linux x86_64 支持实验性的实例本地 live pager。默认关闭的
 `VmSettings.cold_ram_compression`（`[vm].cold_ram_compression`）或
 `--vm-cold-ram-compression` 启用后，runner 自动在私有匿名 RAM 上启动
 pager，并使用 `LocalColdRamStore`。它不是采用 FUSE 压缩文件 backing 的

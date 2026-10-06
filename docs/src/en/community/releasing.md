@@ -49,7 +49,7 @@ The PEP 517 backend is setuptools with repository-owned `scripts/packaging/build
 
 Packaging fetches pinned libkrun firmware archives for Linux x86_64 and Apple Silicon macOS unless `PVISOR_LIBKRUNFW_PATH` points to an existing payload. Local wheel builds must use a supported path; missing payload is a build error rather than an incomplete wheel.
 
-Linux CLI links fully statically with `x86_64-unknown-linux-musl` and embeds the libkrunfw kernel; firmware shared libraries are no longer distributed in the wheel. The manylinux_2_28 tag remains for glibc Python installers. Building requires Zig, cargo-zigbuild and the Rust musl target; firmware is loaded only during the build.
+Linux CLI links fully statically with `x86_64-unknown-linux-musl` and embeds the libkrunfw kernel; the wheel does not include firmware shared libraries. The manylinux_2_28 tag remains for glibc Python installers. Building requires Zig, cargo-zigbuild and the Rust musl target; firmware is loaded only during the build.
 
 Apple Silicon macOS uses the native Darwin linker, signs HVF entitlement and packages `libkrunfw.5.dylib`. Both platforms embed a static Linux musl Rust guest built automatically with `rust-lld`. macOS needs the `aarch64-unknown-linux-musl` Rust standard library but not Zig to build the guest.
 

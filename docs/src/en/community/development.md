@@ -159,7 +159,7 @@ The Python package, CLI and core Rust crate use `pvisor`; companion crates use `
 
 ## Build environment
 
-Use the stable toolchain from `rust-toolchain.toml`, default LLVM backend and platform linker. Install nextest `0.9.137` or use the CI setup action. Rust's bundled linker builds the guest supervisor as a static Linux musl ELF; macOS VM builds no longer need Zig. On Apple Silicon run `rustup target add aarch64-unknown-linux-musl` before the first build. CI installs only the current architecture's guest target; workspace configuration does not download unrelated cross-compilation targets.
+Use the stable toolchain from `rust-toolchain.toml`, default LLVM backend and platform linker. Install nextest `0.9.137` or use the CI setup action. Rust's bundled linker builds the guest supervisor as a static Linux musl ELF; macOS VM builds do not require Zig. On Apple Silicon run `rustup target add aarch64-unknown-linux-musl` before the first build. CI installs only the current architecture's guest target; workspace configuration does not download unrelated cross-compilation targets.
 
 | Artifact | Linux | Apple Silicon macOS |
 | --- | --- | --- |
@@ -175,12 +175,12 @@ Documentation tasks use an isolated uv environment with the same pinned Zensical
 See [Release process](releasing.md) and [Reproducible examples](examples.md) for releases/runtime requirements.
 
 
-The merged private runtime modules use a libkrun 1.19.3 base with selected upstream backports. See the [upstream synchronization ledger](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/provenance/libkrun/UPSTREAM.md) for source commits, local adaptations and validation limits; the version number does not imply a complete 1.19.6 or 2.0 upgrade.
+The private runtime modules use a libkrun 1.19.3 base with selected upstream backports. See the [upstream synchronization ledger](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/provenance/libkrun/UPSTREAM.md) for source commits, local adaptations and validation limits; the version number does not imply a complete 1.19.6 or 2.0 upgrade.
 
 ## VM API boundary
 
 `pvisor_vm::api` is the sole external runtime interface. It declares portable structs and trait signatures with no conditional compilation or method bodies. Private modules implement the contracts; consumers import `VmConfiguration`, `VmRuntime`, `VmControl` and the snapshot/RAM traits they use. Platform services use `RuntimeSupport` on `VmPlatform`.
 
-CLI, shim, examples and the init benchmark use this interface. Low-level register/device tests and hardware probes belong inside `pvisor-vm`. Static kernel extraction/packing now lives in `crates/pvisor-vm/build_kernel.rs`; its existing build environment variables remain compatible. Firmware data ABI and OS FFI remain private. Historical trace/receipt identifiers and benchmark evidence retain their original names.
+CLI, shim, examples and the init benchmark use this interface. Low-level register/device tests and hardware probes belong inside `pvisor-vm`. Static kernel extraction/packing lives in `crates/pvisor-vm/build_kernel.rs`; its existing build environment variables remain compatible. Firmware data ABI and OS FFI remain private. Historical trace/receipt identifiers and benchmark evidence retain their original names.
 
 Run `just test pvisor-vm`; macOS signs its test executables with the existing Hypervisor entitlement. Real VM tests require host HVF/KVM access; Linux VM-creation tests require `/dev/kvm`.

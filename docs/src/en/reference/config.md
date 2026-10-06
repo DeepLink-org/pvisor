@@ -177,8 +177,8 @@ CLI stderr prints `--vm-socket`, `--vm-job-id` and `--vm-attempt-id` for
 [normal live VM commands](cli.md#vm-instance-control): `status`,
 `suspend JOB --vm-pause` / `--vm-offload` (optional `--vm-ram-file PATH`), and
 `resume JOB --vm-load`. These global addressing/action options are not `[vm]`
-configuration fields and do not change persisted-Job defaults. The removed
-`ctrl` command has no compatibility alias. `--vm-load` continues the same live
+configuration fields and do not change persisted-Job defaults. `ctrl` is not
+a compatibility alias for live VM control. `--vm-load` continues the same live
 Attempt, not a persistent snapshot restart or eager RAM prefaulting; non-VM
 controls are explicitly unsupported.
 

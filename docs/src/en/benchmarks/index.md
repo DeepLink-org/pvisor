@@ -22,11 +22,11 @@ This reuses separately registered [startup](startup.md), [filesystem](filesystem
 
 ## Data and analysis {#results}
 
-2026-10-06; 1,440 valid startup/filesystem/repair samples and 360 valid review samples, all with zero failures. Topic pages provide median differences and paired-bootstrap 95% intervals.
+The 2026-10-06 startup/filesystem/repair cohorts have 1,440 valid samples and review has 360; the separate 2026-10-07 stock-kernel startup cohort has 240 valid samples. All have zero measured failures. Cohorts are not pooled; topic pages provide median differences and paired-bootstrap 95% intervals.
 
 | Question | Measured level (timing is P50) |
 |---|---|
-| [Startup](startup.md) | host 12.72 ms; staged 25.13 ms; VM 100.73 ms; Docker 74.48 ms |
+| [Startup](startup.md) | Stock controls: VM 100.91 ms; Firecracker 285.04 ms; QEMU microvm 321.56 ms; q35 702.98 ms |
 | [Repair completion](agent-tasks.md) | staged 0.64 s; Docker 0.81 s; VM 3.25 s; QEMU microvm 1.40 s |
 | [Seven-tool completion](filesystem.md) | staged 1.09 s; Docker 0.82 s; VM 4.27 s; Firecracker 2.29 s |
 | [Review workflow](supervision-cost.md) | 10,000 files: stage 141 ms; Git 248 ms; reflink 343 ms |

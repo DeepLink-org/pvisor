@@ -71,7 +71,7 @@ inside the host execution process. It requires neither a new filesystem RPC nor 
 of all Runs. Protocol encoding, inode/handle tables and descriptor/used-ring ownership remain
 in their entry adapters.
 
-VM lazy images now call the remote read-only backend directly, without an
+VM lazy images call the remote read-only backend directly, without an
 intermediate host FUSE mount. `image/cache/backend.rs` provides transport-neutral
 metadata, block reads and bounded caches; `lazy.rs` retains the host FUSE adapter,
 and `direct.rs` attaches the backend to VM lowers. Ordinary local lowers and
@@ -108,7 +108,7 @@ be gathered while retaining platform permission and descriptor semantics.
 local workloads and lazy cold/warm caches; version A/B shows localized read gains
 and metadata/copy-up regressions, without a general end-to-end speedup. Concurrent
 task capacity has not been validated in those measurements.
-This refactor covers filesystems and lazy images, leaving the page-fault path of
+The shared filesystem service handles filesystems and lazy images; the page-fault path of
 [lazy snapshot RAM restore](environment-snapshot.md) as a separate mechanism.
 
 ### Files and their actual relationships {#disk-layout}
@@ -166,7 +166,7 @@ Recreating a whiteouted directory marks it opaque to prevent old children resurf
 
 ### First-touch and conflict fingerprints {#preimages}
 
-Owned host and VM stages now select a compact framed journal and default to `checkpoint` durability. First observations are still captured before exposure/mutation, but first mutations do not each fsync the log. Completion stops writers, syncs the complete journal, then upper data and namespace, and publishes `preimages/sealed-v1` last. `complete-v1` describes observation coverage; it is not a completion acknowledgement. An unsealed managed stage is rejected by apply/reuse; a live workspace checkpoint seals only its private copy. Explicit workload fsync orders observations before data. `--stage-durability strict` retains sync-before-first-mutation. Missing policy files retain the legacy strict contract. The following per-path publication description applies to the legacy strict journal; compact records retain the same first-winner and conflict rules. See [Isolation](isolation.md#workspace-and-lifecycle) for persistence boundaries.
+Owned host and VM stages select a compact framed journal and default to `checkpoint` durability. First observations are still captured before exposure/mutation, but first mutations do not each fsync the log. Completion stops writers, syncs the complete journal, then upper data and namespace, and publishes `preimages/sealed-v1` last. `complete-v1` describes observation coverage; it is not a completion acknowledgement. An unsealed managed stage is rejected by apply/reuse; a live workspace checkpoint seals only its private copy. Explicit workload fsync orders observations before data. `--stage-durability strict` retains sync-before-first-mutation. Missing policy files retain the legacy strict contract. The following per-path publication description applies to the legacy strict journal; compact records retain the same first-winner and conflict rules. See [Isolation](isolation.md#workspace-and-lifecycle) for persistence boundaries.
 
 The protection starting point depends on layout. A frozen layout fingerprints the explicit target-corresponding baseline (last lower); higher-precedence extra lowers supply visible content only. A live lower captures the target at first content open or symlink/xattr read. A genuine negative lookup records the observed Absent directly, rather than adopting a host file created before journal publication. Authorization and I/O failures are not absence and must not cause reads of denied paths. Mutation without a prior content observation starts from the target immediately before mutation. Successful stat/lookup and directory listing do not hash every file and do not establish a Run-start snapshot or serializable read-set transaction. Actual FUSE and virtio-fs content entry points call the shared Core's `observe_read()` automatically. External Core adapters must do the same; `resolve()` only resolves paths.
 
@@ -263,7 +263,7 @@ Shared Core does not imply identical POSIX return behavior across backends. Stag
 
 ## 4. Experimental evidence {#experiments}
 
-This conflict-window fix was compiled and validated with `JUST_TEMPDIR=/tmp just test pvisor-overlay-core pvisor-overlayfs`; the targeted tests passed, covering public Core/apply behavior and the actual FUSE `open_inode` / `open_path` entry points. The `pvisor` integration regressions also drive the real virtio-fs worker through guest descriptor rings, covering content reads/writes, live/frozen target layouts and device-state restore; logical checkpoint coverage checks that copied/restored read observations constrain later first mutation. These validate shared implementation and adapter wiring, rather than real host FUSE mounts, KVM/HVF guest boot or cross-platform acceptance. The table lists coverage entry points, not counts of independent fault cases.
+`JUST_TEMPDIR=/tmp just test pvisor-overlay-core pvisor-overlayfs` runs targeted tests covering public Core/apply behavior and the actual FUSE `open_inode` / `open_path` entry points. The `pvisor` integration regressions also drive the real virtio-fs worker through guest descriptor rings, covering content reads/writes, live/frozen target layouts and device-state restore; logical checkpoint coverage checks that copied/restored read observations constrain later first mutation. These validate shared implementation and adapter wiring, rather than real host FUSE mounts, KVM/HVF guest boot or cross-platform acceptance. The table lists coverage entry points, not counts of independent fault cases.
 
 | Mechanism | Existing tests to inspect |
 |---|---|

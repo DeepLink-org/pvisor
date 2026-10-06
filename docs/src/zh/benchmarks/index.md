@@ -22,11 +22,11 @@
 
 ## 实验数据和分析 {#results}
 
-2026-10-06; 启动、文件系统和修复共 1,440 个有效样本，完整审查流程 360 个，失败均为 0。中位数差异和 95% 配对 bootstrap 区间见各专题。
+2026-10-06 的启动、文件系统和修复共 1,440 个有效样本，完整审查流程 360 个；2026-10-07 的独立 stock 内核启动对照为 240 个有效样本，失败均为 0。各批次不合并，中位数差异和 95% 配对 bootstrap 区间见各专题。
 
 | 问题 | 实测水位（耗时为 P50） |
 |---|---|
-| [Startup](startup.md) | host 12.72 ms; staged 25.13 ms; VM 100.73 ms; Docker 74.48 ms |
+| [Startup](startup.md) | stock 对照：VM 100.91 ms；Firecracker 285.04 ms；QEMU microvm 321.56 ms；q35 702.98 ms |
 | [Repair completion](agent-tasks.md) | staged 0.64 s; Docker 0.81 s; VM 3.25 s; QEMU microvm 1.40 s |
 | [Seven-tool completion](filesystem.md) | staged 1.09 s; Docker 0.82 s; VM 4.27 s; Firecracker 2.29 s |
 | [Review workflow](supervision-cost.md) | 10,000 files: stage 141 ms; Git 248 ms; reflink 343 ms |

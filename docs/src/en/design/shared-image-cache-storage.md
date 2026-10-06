@@ -9,11 +9,11 @@ V1 keeps each image's mutable state and file indexes in its own meta directory, 
 ## Filesystem entry points and lazy reads {#filesystem-access}
 
 The v1 storage format is independent of filesystem entry points. The
-[shared service and two entry points](overlayfs.md#filesystem-service) are now
-connected: host tools retain a read-only host FUSE lower, while VMs call the same
+[shared service and two entry points](overlayfs.md#filesystem-service) provide
+filesystem access: host tools use a read-only host FUSE lower, while VMs call the same
 remote read-only backend through virtio-fs without an intermediate host FUSE mount.
 Local lowers and VM staged workspaces also serve virtio-fs directly; host staged
-retains host execution. This refactor preserves the published v1 format, pinned
+uses host execution. Both entry points use the published v1 format, pinned
 revision handles and verification contracts.
 
 `backend.rs` retains stat/list/read, paged indexes, hard-link identity and bounded

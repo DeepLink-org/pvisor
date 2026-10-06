@@ -9,10 +9,10 @@ v1 把每个镜像的可变状态与文件索引收进自己的 meta 目录，�
 ## 文件服务接入与 lazy 读取 {#filesystem-access}
 
 v1 存储格式独立于文件系统入口。[统一文件服务与双入口](overlayfs.md#filesystem-service)
-已接入：host 工具保留只读宿主 FUSE lower，VM 则通过 virtio-fs 直接调用
-同一远程只读后端，不再为 lazy image 建立中间宿主 FUSE 挂载。本地 lower
+提供文件系统访问：host 工具使用只读宿主 FUSE lower，VM 则通过 virtio-fs 直接调用
+同一远程只读后端，无需中间宿主 FUSE 挂载。本地 lower
 与 VM staged workspace 也直接通过 virtio-fs 服务；host staged 保留宿主执行。
-该重构不改变已发布的 v1 数据格式、固定 revision 句柄和校验合同。
+两个入口使用已发布的 v1 数据格式、固定 revision 句柄和校验合同。
 
 `backend.rs` 保留 stat/list/read、分页索引、硬链接身份与有界内容缓存，
 `lazy.rs` 负责 host FUSE 回调，`direct.rs` 提供 VM 私有元数据投影和 runner

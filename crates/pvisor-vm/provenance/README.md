@@ -8,13 +8,12 @@ packaged VCS records and the existing selective-backport ledger.
 
 `libkrun/UPSTREAM.md` describes the import baseline and pre-merge backports; its
 old paths are historical coordinates. It does not describe the current API or
-claim that every optional upstream feature has been validated. The C context
-registry and VM control ABI were removed. Firmware v5 data loading, Hypervisor
-FFI and its minimal SIMD shim remain private runtime boundaries.
+claim that every optional upstream feature has been validated. Firmware v5 data
+loading, Hypervisor FFI and its minimal SIMD shim are private runtime boundaries.
 
 Source: https://github.com/containers/libkrun
 
 Current first-party adapters: `api.rs`, `backend.rs`, `builder.rs`, `firmware.rs`,
 `handle.rs`, `memory.rs`, `portable.rs`, and the owned Rust guest build integration.
-Only `pvisor_vm::api` is public. There is no external dependency on the old core
-runtime crates; optional GPU/input libraries remain private optional dependencies.
+Only `pvisor_vm::api` is public. Core runtime components compile inside this
+crate; optional GPU/input libraries are private optional dependencies.

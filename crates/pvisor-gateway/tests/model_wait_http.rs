@@ -363,7 +363,7 @@ async fn absent_or_false_declarations_and_absent_lifecycle_keep_forwarding() {
         let mut fixture = Fixture::new(true, StatusCode::OK, Admission::default(), install).await;
         let response = fixture.request(true, &headers, "test-model");
         fixture.upstream_received().await;
-        // Legacy response headers do not wait for upstream tokens.
+        // Without an active inference-wait lifecycle, headers do not wait for tokens.
         let mut response = tokio::time::timeout(LIMIT, response)
             .await
             .unwrap()

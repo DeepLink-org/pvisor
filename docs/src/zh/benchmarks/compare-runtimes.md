@@ -2,7 +2,7 @@
 
 ## 主要结论 {#conclusions}
 
-**pVisor VM 的启动是百毫秒量级，但所测修复和文件密集任务慢于 Firecracker/QEMU。需要 stage/apply 时评估其额外能力；只需独立 guest 执行时，对照轻量 VM 的完整任务成本。**
+**使用 `/boot` 原版内核的启动对照中，pVisor VM 为 100.91 ms，快于 Firecracker 的 285.04 ms 和 QEMU microvm 的 321.56 ms；定制参考内核的独立工具批次中，pVisor VM 的修复和文件密集任务较慢。按实际内核和完整任务选型。**
 
 | 需求 | 选型含义 |
 | --- | --- |
@@ -22,11 +22,28 @@ Linux x86_64，AMD Ryzen 7 9700X，Fedora 7.2.8-200.fc44.x86_64。执行进程�
 
 复用启动、文件系统和修复三个独立注册负载，不合并其样本。镜像与工具已准备，输出、退出和暂存均须校验；这不是相同 OS 或安全加固程度的排名。
 
+Stock 启动为 2026-10-07 的独立批次：Firecracker 使用原版 Fedora 7.2.8 提取的 ELF，QEMU 使用同一 `/boot/vmlinuz`，共用最小 initrd 和用户态；microvm 保留 RTC。pVisor 使用专用 Linux 6.12.109 固件。Firecracker 校验输出后受控终止，只报告 Ready；正常关机未测。完整方法与来源见[启动对照](startup.md)。
+
 ## 实验数据和分析 {#results}
 
-测于 2026-10-06，每个后端/负载 60/60 有效，正式失败 0。输出、退出和执行器记录必须通过校验；暂存模式还验证宿主原文件不变和完整改动保留。保留所有有效慢样本，没有按耗时剔除。表格通常为 P50；分离分布展示各簇中位数和数量，P95 仅作观察参考。原始报告、二进制、输入与源码摘要保存在忽略的 `.data/`，公开 CSV 保留负载、批次和来源关联。
+两组独立实验每格均为 60/60 有效、正式失败 0。保留所有有效慢样本，没有按耗时剔除；原始报告、二进制、输入与源码摘要保存在忽略的 `.data/`。
+
+### 原版发行版内核启动 {#stock-startup}
+
+2026-10-07，同批 2 vCPU / 128 MiB，Ready P50，单位 ms：
+
+| Runtime | Ready P50 ms |
+| --- | --- |
+| pVisor VM | 100.91 |
+| Firecracker PCI / stock | 285.04 |
+| QEMU q35 / stock | 702.98 |
+| QEMU microvm / stock | 321.56 |
+
+在这些完整配置下，pVisor 的首条命令等待更短；不能由此推导工具任务、相同内核的 VMM 成本或容量优势。差异的 95% 区间见[启动](startup.md)。
 
 ### 完整任务对照 {#reference-comparison}
+
+2026-10-06 的独立定制参考内核批次；Firecracker 为 legacy reference/unknown，均非 `/boot` stock 对照。Stock 内核的工具任务尚未测量，下表不与上方合并。
 
 | Runtime | Ready P50 ms | Repair completion P50 s | Seven-tool completion P50 s |
 | --- | --- | --- | --- |

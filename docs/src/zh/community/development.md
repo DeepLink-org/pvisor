@@ -196,9 +196,9 @@ Python 包、CLI 和核心 Rust crate 统一使用 `pvisor`；伴随 crate 使�
 ## 构建环境
 
 仓库使用 `rust-toolchain.toml` 中的 stable 工具链、默认 LLVM backend 和平台 linker。
-请安装 nextest `0.9.137`，或使用仓库 CI setup action。guest supervisor 使用 Rust 自带 linker 构建成静态 Linux musl ELF；macOS VM 构建不再需要 Zig。
+请安装 nextest `0.9.137`，或使用仓库 CI setup action。guest supervisor 使用 Rust 自带 linker 构建成静态 Linux musl ELF；macOS VM 构建不需要 Zig。
 Apple Silicon 上首次构建前执行 `rustup target add aarch64-unknown-linux-musl`。
-CI 仅安装当前架构的 guest target，工作区工具链不再为无关 crate 下载交叉编译 target。
+CI 仅安装当前架构的 guest target，工作区工具链不为无关 crate 下载交叉编译 target。
 
 | 产物 | Linux | Apple Silicon macOS |
 |---|---|---|
@@ -213,17 +213,17 @@ Linux CLI 全静态链接 musl 并内嵌 VM 内核。构建需要 Zig、cargo-zi
 `rustup target add x86_64-unknown-linux-musl`。Linux wheel 保留 manylinux_2_28
 标签以支持 glibc Python 安装器。
 
-文档任务通过 uv 隔离环境使用与 CI 相同的锁定版 Zensical，不再要求单独维护文档虚拟环境。
+文档任务通过 uv 隔离环境使用与 CI 相同的锁定版 Zensical，无需单独维护文档虚拟环境。
 
 发布流程见[发布 PolicyVisor](releasing.md)，运行时要求见[可复现示例](examples.md)。
 
 
-合并后的私有运行时模块在 libkrun 1.19.3 基线上选择性回移植上游改进。来源提交、本地适配与验收限制见[上游同步记录](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/provenance/libkrun/UPSTREAM.md)；版本号不代表已完整升级到 1.19.6 或 2.0。
+私有运行时模块在 libkrun 1.19.3 基线上选择性回移植上游改进。来源提交、本地适配与验收限制见[上游同步记录](https://github.com/deeplink-org/pvisor/blob/main/crates/pvisor-vm/provenance/libkrun/UPSTREAM.md)；版本号不代表已完整升级到 1.19.6 或 2.0。
 
 ## VM API 边界
 
 `pvisor_vm::api` 是运行时唯一的外部接口。它声明跨平台 struct 和 trait 方法签名，不包含条件编译或方法体。私有模块实现契约；调用方导入需要的 `VmConfiguration`、`VmRuntime`、`VmControl` 以及快照/RAM trait。平台服务由 `VmPlatform` 的 `RuntimeSupport` 提供。
 
-CLI、shim、示例和 init 基准使用这套接口。寄存器/设备测试及硬件探针归属 `pvisor-vm` 内部。静态内核提取与打包已迁到 `crates/pvisor-vm/build_kernel.rs`；既有构建环境变量兼容。固件数据 ABI 和操作系统 FFI 保持私有。历史 trace/receipt 标识和基准证据保留原名。
+CLI、shim、示例和 init 基准使用这套接口。寄存器/设备测试及硬件探针归属 `pvisor-vm` 内部。静态内核提取与打包由以下文件负责： `crates/pvisor-vm/build_kernel.rs`；既有构建环境变量兼容。固件数据 ABI 和操作系统 FFI 保持私有。历史 trace/receipt 标识和基准证据保留原名。
 
 运行 `just test pvisor-vm`；macOS 使用既有 Hypervisor entitlement 签署其测试程序。真实 VM 测试需要宿主 HVF/KVM 权限；Linux 创建 VM 的测试需要 `/dev/kvm`。

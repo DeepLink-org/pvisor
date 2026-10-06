@@ -63,7 +63,7 @@ wheel 构建必须走这些受支持路径之一；缺少 payload 是构建错�
 的 wheel。
 
 Linux CLI 使用 `x86_64-unknown-linux-musl` 全静态链接，并内嵌 libkrunfw 内核，
-不再随 wheel 分发固件共享库。wheel 保留 manylinux_2_28 标签以支持 glibc Python
+wheel 不包含固件共享库。wheel 保留 manylinux_2_28 标签以支持 glibc Python
 安装器。构建需要 Zig、cargo-zigbuild 和 Rust musl target；固件只在构建时加载。
 
 Apple Silicon macOS 使用原生 Darwin linker 构建 CLI，签署 HVF entitlement，
@@ -82,7 +82,7 @@ Linux x86_64 daemon 使用原生 `pvisor-vm`，不是 rootless Podman。wheel／
 ## Nightly 构建
 
 **Nightly Build** 每天 UTC 03:00（北京时间 11:00）运行，也可以在 `main` 上手动
-触发；普通 push 运行 CI，不再重复构建 nightly wheel。Nightly 与稳定发布共用
+触发；普通 push 运行 CI，不构建 nightly wheel。Nightly 与稳定发布共用
 Linux/macOS 构建矩阵、安装 smoke test 和完整产物集校验。
 Nightly 版本追加 `+g<run-number>.<commit>`，仅更新 GitHub 的 `nightly` release。
 稳定 tag 发布先上传 PyPI，再把同一组已校验 wheel 附加到 GitHub Release。Nightly 还发布独立的 `pvisor-daemon-linux-x86_64.tar.gz` 及 SHA-256 checksum；它无需 wheel 或单独 CLI，但仍需要上述原生运行时条件。

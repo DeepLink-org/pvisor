@@ -17,8 +17,8 @@ OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 owns Session lifecycle, scheduling, policy adaptation and execution. Job lifecycle
 commands are built into `pvisor`; local node lifecycle, cache and memory-pool
 tools are grouped under `pvisor service`, while TUI and replay are optional Job
-frontends found beside it. The old Cluster Controller/Worker control plane and
-`pvisor-worker` executable have been retired from this crate.
+frontends found beside it. Cross-node placement and distributed scheduling
+belong to external orchestrators, not this crate.
 Guest injection uses the core `pvisor` execution runtime.
 
 ```mermaid
@@ -70,10 +70,7 @@ All built-in Job CLI operations (`run`, `status`, `kill`, `suspend`, `resume`,
 `cli/host.rs::JobCommand` requests through the on-demand persistent listener in
 `cli/host_service.rs`. Ordinary persisted Jobs need no endpoint options or manual
 service startup. Bare `pvisor` displays help; default execution via
-`pvisor -- COMMAND` enters the same service. Direct `pvisor ctrl`,
-`pvisor ctrl --help` and `pvisor help ctrl` reject with migration guidance before
-Job admission, not default execution; `pvisor run -- ctrl` remains explicit
-workload intent, not a retired control API alias. This listener is separate from
+`pvisor -- COMMAND` enters the same service. This listener is separate from
 the node/cache/pool deployment service below; embedded `PVisor` remains a direct API.
 
 Host authority lives under canonical `/tmp/pvisor-host-<effective-UID>`
@@ -101,11 +98,11 @@ ownership, permissions, device/inode and content are checked.
 Linux hashes `/proc/self/exe`. On macOS, `cli/host_image.rs` compares dyld's loaded
 main-image UUID with on-disk Mach-O `LC_UUID` for the matching CPU slice before
 hashing the same open file. Admission requires a matching source Mach-O UUID;
-missing, malformed, ambiguous or mismatched metadata fails closed. The first
-pathname-replacement identity check is now implemented, not outstanding. UUID
-matching does not attest loaded memory byte-for-byte or provide kernel-pinned
-exec authority. The macOS platform path remains uncompiled and untested; parser
-checks do not validate dyld access, platform linking or real replacement behavior.
+missing, malformed, ambiguous or mismatched metadata fails closed. UUID
+matching detects pathname replacement but does not attest loaded memory
+byte-for-byte or provide kernel-pinned exec authority. The macOS platform path
+remains uncompiled and untested; parser checks do not validate dyld access,
+platform linking or real replacement behavior.
 
 SIGINT/SIGTERM/SIGHUP are latched before admission; frontend and listener retain
 worker/cleanup ownership and terminal restoration. Linux implements subreaper,
@@ -128,7 +125,7 @@ exactly-once execution. Some durable Job operations have scoped receipts only.
 Lost responses, timeouts and cancellation can follow effects; the CLI reports
 ambiguity and does not automatically retry. Reconcile state before resubmitting.
 Drain active requests and stop old listeners with the old binary before upgrade.
-Daemon native supervisors now use newline-delimited version-1 Host envelopes;
+Daemon native supervisors use newline-delimited version-1 Host envelopes;
 the wire is incompatible with old supervisors, so drain their sandboxes using
 the old binary before upgrade too. There is no legacy fallback. See
 [Host and Guest AgentCtl](../../docs/src/en/design/architecture.md#host-agentctl)
@@ -151,7 +148,7 @@ pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --v
 pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
 ```
 
-`ctrl` is removed. All three global addressing options are required, including
+All three global addressing options are required, including
 for live `status`; suspend/resume's positional selector must match `--vm-job-id`.
 Only `status`, `suspend --vm-pause` / `--vm-offload` and `resume --vm-load` support
 live mode. Pause and offload are mutually exclusive. `--vm-ram-file` requires
@@ -169,7 +166,7 @@ Core's `host_protocol` defines `HostVmCommand` and `HostVmResult`; this crate
 exports them with the Host envelopes and `host_vm_exchange` for embedded callers.
 The exchange takes an `AgentCtlHostRequest<HostVmCommand>` and returns an
 `AgentCtlHostResponse<HostVmResult>`. Successful CLI output contains the result's
-`status` and `value`, not the removed `InstanceControl*` adapter response fields.
+`status` and `value` fields.
 
 | Run CLI | `[vm]` field | Default |
 | --- | --- | --- |
@@ -261,8 +258,9 @@ prove the pool has no direct VM clients. Drain those clients separately: SIGINT
 puts the pool into draining, and a stop timeout can leave it rejecting new clients
 while retaining existing data owners.
 
-`controller`, `worker` and `workers` configuration keys are rejected, including
-empty legacy sections/lists. There is no implicit migration to a new scheduler.
+The service configuration accepts local resource roles, not distributed
+scheduler roles; `controller`, `worker` and `workers` keys are rejected even
+when their sections/lists are empty.
 `pvisor service daemon ...` passes arguments unchanged to a trusted, separately
 installed `pvisor-daemon` beside `pvisor`; it does not add a daemon role to this
 configuration or link a daemon dependency. The daemon's VM-only `NativeRuntime`
@@ -270,25 +268,15 @@ embeds this crate in detached supervisor subprocesses. The daemon CLI is wired
 to that runtime; companion dispatch does not automatically acquire node sharing
 resources. The daemon API has no stage/apply or checkpoint/fork implementation.
 
-Cluster-only tests and fixtures are retired. Local service tests retain delegated
-limits, cleanup, shared image pins and shared RAM/COW ownership fences. The
-mixed service gate's two-guest private-write checks now use native local Jobs
-with retained node image pins, without a Controller or Worker. Native
-Job checkpoint/fork/suspend/resume tests and snapshot/cache/rootless tests remain;
-`native_cpu_qos` preserves the real anchor lifecycle gate using `pvisor` itself.
-
 ### Build and validation boundary
 
-The current root `service-build` already selects local binaries and builds the
-daemon separately; the old `test-service` / `test-service-vm` recipes are absent.
-The ignored local gates need explicit selection in a future root test recipe;
-their environment requirements remain in the test annotations. Install
-`pvisor-daemon` beside `pvisor` if companion dispatch is desired. The root
-Cluster alias and daemon legacy feature have been removed; the daemon remains
-a separate executable. Cargo links `pvisor` and `pvisor-core`; synchronous internal
-VM dispatch runs before Tokio, and hidden supervisor dispatch is implemented.
-Packaging includes both executables, but does
-not supply or validate the prepared-image bootstrap, SDK conformance or density.
+The root `service-build` selects local binaries and builds the daemon separately.
+Ignored local gates require explicit selection and the environment described in
+their test annotations. Install `pvisor-daemon` beside `pvisor` for companion
+dispatch. The daemon is a separate executable linking `pvisor` and `pvisor-core`;
+synchronous internal VM dispatch runs before Tokio. Packaging includes both
+executables, but does not supply or validate the prepared-image bootstrap,
+SDK conformance or density.
 See the [daemon boundary](../pvisor-daemon/README.md).
 
 ## Develop

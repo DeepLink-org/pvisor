@@ -6,7 +6,7 @@ over cross-instance sharing.
 
 ## Target and current status {#status}
 
-Linux x86_64 now has an experimental instance-local live pager. Enable the
+Linux x86_64 supports an experimental instance-local live pager. Enable the
 default-off `VmSettings.cold_ram_compression` (`[vm].cold_ram_compression`) or
 `--vm-cold-ram-compression`; the runner automatically starts it over private
 anonymous RAM with a `LocalColdRamStore`. This is not `vm.ram_compression`,

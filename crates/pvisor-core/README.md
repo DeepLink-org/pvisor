@@ -21,21 +21,15 @@ Executors, AgentCtl clients/servers, approval socket I/O and lifecycle ownership
 
 Host and Guest AgentCtl use isolated schemas, credentials and endpoints, not shared guest privileges. The optional authenticated cooperative guest endpoint retains `AgentRequest`: Hello opens a Session, Sync exchanges state and directives. It cannot acquire host lifecycle authority and is not enforcement evidence. See [the cooperative wire contract](src/protocol.rs). The concrete `AgentCtlClient` is exported by `pvisor`, not core.
 
-The separate host-authority endpoint uses [`host_protocol`](src/host_protocol.rs): version 1 generic request/response envelopes with request correlation, optional Job/Attempt/generation targets and a common 1 MiB JSON payload limit. Pure validation bounds correlation/target identities to 1–256 bytes and rejects control characters; it neither authenticates nor resolves a target. Private supervisor commands require explicit Job, Attempt and generation binding at the endpoint, with namespace owner and secret credentials separate from public host authentication tokens. Core also defines `HostVmCommand` (`Pause`, `Resume`, `Offload`, `Status`) and `HostVmResult` (`status`, `value`) for live VM controls. There is no `Load` wire operation: `--vm-load` selects `Resume`. The removed `InstanceControl*` adapters are not compatibility exports. Core defines structured commands/states/results only; transport, peer authentication and runtime controls remain outside core. `pvisor::host_vm_exchange` exchanges typed Host request/response envelopes for embedded callers.
+The separate host-authority endpoint uses [`host_protocol`](src/host_protocol.rs): version 1 generic request/response envelopes with request correlation, optional Job/Attempt/generation targets and a common 1 MiB JSON payload limit. Pure validation bounds correlation/target identities to 1–256 bytes and rejects control characters; it neither authenticates nor resolves a target. Private supervisor commands require explicit Job, Attempt and generation binding at the endpoint, with namespace owner and secret credentials separate from public host authentication tokens. Core also defines `HostVmCommand` (`Pause`, `Resume`, `Offload`, `Status`) and `HostVmResult` (`status`, `value`) for live VM controls. There is no `Load` wire operation: `--vm-load` selects `Resume`. Core defines structured commands/states/results only; transport, peer authentication and runtime controls remain outside core. `pvisor::host_vm_exchange` exchanges typed Host request/response envelopes for embedded callers.
 
-## Retired Cluster boundary
+## Local resource contracts
 
-The old `cluster` module, including leases, task graphs, distributed admission,
-worker registrations, artifact delivery and inference-wait control contracts, is
-removed. Native CPU QoS and telemetry retain their existing `cpu`, `memory` and
-execution contracts. The local image revision's `handle` / `manifest_digest`
-fields are preserved in `node::EnvironmentLayer`; node image/RAM ownership and
-snapshot implementation remain in `pvisor`.
-
-No compatibility re-export keeps the retired control plane alive. The daemon's
-legacy modules and workspace dependency alias have also been removed. The
-node-local daemon remains a separate runtime path; this contract cleanup does
-not provide native executor integration.
+Core defines native CPU QoS and telemetry through `cpu`, `memory` and execution
+contracts, not distributed scheduling or admission. `node::EnvironmentLayer`
+identifies local image revisions with `handle` / `manifest_digest`; node image/RAM
+ownership and snapshot implementation belong to `pvisor`. The separate
+`pvisor-daemon` owns node-local sandbox admission and lifecycle.
 
 ```sh
 just test core

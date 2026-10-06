@@ -418,9 +418,9 @@ impl Server {
                 };
                 let job = job.clone();
                 let controls = controls.clone();
-                // Accepted capture handlers outlive endpoint teardown, just as
-                // before migration, so a terminal receipt cannot cancel ledger
-                // persistence. Disconnect/timeout does not release admission early.
+                // Accepted capture handlers outlive endpoint teardown so a terminal
+                // receipt cannot cancel ledger persistence. Disconnect/timeout
+                // does not release admission early.
                 tokio::spawn(async move {
                     let _permit = permit;
                     let Ok(Ok(request)) = tokio::time::timeout(

@@ -24,7 +24,7 @@ Records retain image/argv, environment, metadata, CPU/memory reservation, creati
 
 Runtime state additionally retains private `owner.json`, per-sandbox `preparing.json`/`identity.json`, `run.json` (generation/Run/Attempt IDs), lifecycle markers, owner lock, `control.sock`, `ports/` bridges and `run/` native storage, including `live-ram` backing and `tmp/` scratch (set as supervisor `TMPDIR`). A completed cleanup retains only its minimal tombstone/lock/marker fence. These support reconciliation/cleanup, not a public stage/checkpoint/artifact API.
 
-Native `observation.json` caches are no longer written or used as liveness proof. Endpoint lookup authenticates the live supervisor and checks current Running state and deletion fences; full readiness checks remain at create, Inspect and resume. See [service access](lifecycle.md#endpoints).
+Native runtime does not write `observation.json` caches or use them as liveness proof. Endpoint lookup authenticates the live supervisor and checks current Running state and deletion fences; full readiness checks remain at create, Inspect and resume. See [service access](lifecycle.md#endpoints).
 
 ## Commit barrier {#commit}
 

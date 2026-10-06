@@ -640,7 +640,7 @@ fn ag_capture_usage_from_completions_response() {
     assert!(usage.total_tokens > 0 || usage.input_tokens + usage.output_tokens > 0);
 }
 
-// --- capture: multimodal (Phase 0) ---
+// --- capture: multimodal ---
 
 #[test]
 fn ag_completions_full_fixture_includes_image_placeholder() {
