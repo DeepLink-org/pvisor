@@ -2,13 +2,17 @@
 
 ## 主要结论 {#conclusions}
 
-**Linux 上，SDK offload 将单个 VM 的停驻物理内存降到约 31–32 MiB；压缩 Job 快照的停驻占用为重复数据 33 MiB、随机数据 102 MiB，但尚不能据此证明比容器支持更多环境。** SDK 压缩没有进一步降低停驻内存，且增加处理时间；Job 压缩减少了刚生成快照时的文件缓存占用，两者应分开选型。
+**Linux 上，持久保留的重复内容 Job 快照通过压缩同时减少刚捕获后的计费页缓存和保留存储，代价是 suspend 更慢；SDK offload 压缩节省 backing 存储，而不是停驻内存。** 按实际数据支持的存储/缓存收益选择压缩，不把它当作普遍的活跃 VM 内存或容量提升。
 
-| 需求 | 选型含义 |
-|---|---|
-| SDK 内的 VM 暂时不用，需要释放驻留内存 | raw offload 已有明显回收；压缩主要是存储与恢复成本的取舍 |
-| 保存可恢复的 Job 执行状态 | 比较压缩快照的缓存、磁盘占用与 suspend 成本，按实际数据选择 |
-| 希望比 Podman、Firecracker、QEMU 跑更多等待中的环境 | 相同工作集、内存压力和恢复结果的容量对照尚未完成 |
+既有冻结公开批次；每格 N=30，P50，raw → compressed。两种机制来自独立批次，不构成跨机制比较。
+
+| 使用场景 | 有证据支持的压缩收益 | 代价 / 选型含义 |
+|---|---|---|
+| 保留重复内容的 Job 执行快照 | 刚捕获后的停驻 cgroup 内存 **308.43 → 33.28 MiB**，主要减少计费页缓存；保留 Job 分配块 **122.76 → 41.04 MiB** | suspend **960.08 → 1082.81 ms**；配对差异 +122.73 ms，95% CI [+111.82, +135.54]。缓存可回收，因此这不是容量结论 |
+| 停驻重复内容的 SDK VM | backing 分配块 **181.72 → 15.65 MiB**，但停驻内存 **30.64 → 32.07 MiB** | offload **45.31 → 427.79 ms**；压缩是存储取舍，不是额外的停驻内存回收 |
+| 回收运行中 Linux VM 的冷页 | 当前实例内 live 压缩仍属实验性功能 | 尚无已完成的公开多轮批次支持内存或恢复的数值结论；见[机制与证据范围](../../design/memory-optimization/compression-local.md) |
+
+这些历史测量尚未针对新集成的产品重新验证，不衡量版本发布带来的改进，也不证明优于 Docker、Firecracker 或其他运行时。
 
 ## Motivation {#motivation}
 
@@ -18,11 +22,13 @@
 
 <a id="experiment-design"></a>
 
-B-VM-MEMORY 使用 Linux x86_64/KVM，分别测当前 SDK 的 whole-VM offload 和当前 Job API 的 raw/compressed 执行快照。每个机制有独立批次；各自在同机随机交替重复数据/确定性随机数据与 raw/压缩四种条件，每格 30 个新 VM、3 次预热。两核亲和性和总 CPU 配额、2 GiB cgroup、零 swap、256 MiB guest 保持一致。工具与固件预先准备，缓存为热态，不做全局驱逐。
+B-VM-MEMORY 的既有冻结公开批次使用 Linux x86_64/KVM，分别测 SDK 的 whole-VM offload 和 Job API 的 raw/compressed 执行快照。每个机制有独立批次；各自在同机随机交替重复数据/确定性随机数据与 raw/压缩四种条件，每格 30 个新 VM、3 次预热。两核亲和性和总 CPU 配额、2 GiB cgroup、零 swap、256 MiB guest 保持一致。工具与固件预先准备，缓存为热态，不做全局驱逐。
 
 每个 VM 完整校验 64 MiB 私有数据及恢复后的执行状态；这不是整个 guest 工作集的大小，SDK 的输入构造还会留下额外副本和可变状态。主要内存指标是整个受限 cgroup 的 `memory.current`，包含 VM、采集与恢复进程、backing 和计入该组的页缓存；anon/file/kernel 与 CPU 也保留。SDK 在活跃和 offload 后分别静置两秒再取点；Job 在确认运行/暂停后取点，不能把两种机制的绝对值组成排名。
 
-两批各 120 个正式样本全部通过完整数据校验，没有 OOM、失败或耗时剔除。SDK 的 resume 确认与首次完整扫描分别计时；Job 的 resume-to-completion 包含剩余 guest 等待，首次扫描由 guest 单独计时。CPU 是整个 cgroup 的阶段增量，包含控制与后台工作。单 VM 的回收量不回答内存压力下的停驻容量；macOS 自动冷页池、容器 pause 与 Firecracker/QEMU 的同工作集恢复对照尚未完成复测。
+每个冻结批次为 30 个样本 × 四种条件（120 个有效正式样本），全部通过完整数据校验，没有 OOM、失败或耗时剔除。SDK 的 resume 确认与首次完整扫描分别计时；Job 的 resume-to-completion 包含剩余 guest 等待，首次扫描由 guest 单独计时。CPU 是整个 cgroup 的阶段增量，包含控制与后台工作。单 VM 的回收量不回答内存压力下的停驻容量；macOS 自动冷页池、容器 pause 与 Firecracker/QEMU 的同工作集恢复对照尚未完成复测。
+
+公开证据要求批次完成预定样本数，具有冻结源码/二进制/输入来源、相同资源预算、完整恢复正确性校验，并通过预先声明的干扰门禁。受污染或未完成的批次不具备资格；工程 A/B 与诊断观察不能提供公开数字或补齐缺失条件。执行快照、SDK offload 与运行中自动冷页压缩保持为不同机制。
 
 ## 实验数据和分析 {#results}
 
@@ -87,5 +93,7 @@ Job warm scan 约 49 ms，恢复后约 152 ms。其 resume-to-completion 为 8.2
 | pVisor macOS 自动冷页池 | 尚未完成当前实现的物理内存复测 | 包含池、backing、恢复 CPU 的整机或受限组测量 |
 
 ### 数据下载与复现 {#run}
+
+同目录 CSV 分开保留既有冻结批次，通过报告和二进制摘要关联来源 CSV 中的源码/构建与输入收据。以上所有数值表仅使用这些批次，不混入新集成实现的样本。
 
 [内存与成本 CSV](memory-summary.csv) · [配对比较 CSV](memory-comparisons.csv) · [源码、输入与证据摘要](memory-provenance.csv) · [证据来源摘要](../evidence-sources.csv) · [比较方法](../methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

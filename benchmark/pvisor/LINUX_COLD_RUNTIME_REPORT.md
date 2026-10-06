@@ -142,3 +142,7 @@ cold_ram_compression = true
 或在现有 VM 命令加 `--vm-cold-ram-compression`。设备权限由管理员授权，pVisor 只在显式启用 runner 的 Landlock allowlist 加入 `/dev/userfaultfd`，不扩大普通 VM 权限。该 ACL 不替代产品沙箱和实例存储隔离。
 
 当前是实验性单 VM 预检；还未验证多 VM 正式重复、长期热点 thrashing、业务吞吐/尾延迟、复杂设备和生产密度。优先补充多轮及真实热/冷工作集，再评估是否值得默认启用。不能把第一次窗口的组内下降作为普适净收益。
+
+## 独立 optimized GNU release cohort
+
+[Linux 压缩收益与成本报告](MEMORY_COMPRESSION_REPORT.md)单独记录 GNU release（opt-level `z`、thin LTO）的四格 n=1 干净工程预检，以及 SDK whole-VM offload 的污染/未完成 cohort 资格边界。该 release cohort 不替换、合并或重新解释本页历史 `lcr1` debug 数据；第二冷窗口已经过 100% 随机 mutation，不能当作重复内容保持不变的第二次测量。

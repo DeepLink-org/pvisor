@@ -1161,7 +1161,7 @@ mod tests {
                     attempt_id: None,
                     host: host.into(),
                     port: Some(443),
-                    transport: NetworkTransport::Tcp,
+                    transport: NetworkTransport::TcpTunnel,
                     resolved_ip: None,
                 };
                 assert_eq!(policy.preflight(&request).is_ok(), allowed, "{host}");

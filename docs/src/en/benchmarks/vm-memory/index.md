@@ -2,13 +2,17 @@
 
 ## Main conclusions {#conclusions}
 
-**On Linux, SDK offload brings one VM's parked physical memory to about 31–32 MiB; compressed Job snapshots occupy 33 MiB for repeated data and 102 MiB for random data, but this does not establish greater capacity than containers.** SDK compression does not reduce parked memory further and adds processing time. Job compression reduces the file cache charged just after capture; choose between these mechanisms separately.
+**For persistent, repeated-content Job snapshots on Linux, compression reduces both charged page cache just after capture and retained storage, at the cost of longer suspension; SDK offload compression saves backing storage, not parked memory.** Choose compression for the storage/cache benefit supported by your data, not as a general live-VM memory or capacity improvement.
 
-| Need | Selection implication |
-|---|---|
-| Release residency for a temporarily unused SDK VM | Raw offload already reclaims memory; compression trades storage against recovery cost |
-| Save a recoverable Job execution state | Compare snapshot cache, allocated storage and suspend cost with your data |
-| Retain more waiting environments than Podman, Firecracker or QEMU | Matching working-set, memory-pressure and verified-recovery capacity controls are not complete |
+Existing frozen public cohorts; N=30 per condition, P50, raw → compressed. The two mechanisms are separate cohorts, not a cross-mechanism comparison.
+
+| Use case | Supported compression outcome | Cost / selection implication |
+|---|---|---|
+| Retain a repeated-content Job execution snapshot | Just-captured parked cgroup memory **308.43 → 33.28 MiB**, mainly reduced charged page cache; retained Job allocated blocks **122.76 → 41.04 MiB** | Suspend **960.08 → 1082.81 ms**; paired difference +122.73 ms, 95% CI [+111.82, +135.54]. Cache is reclaimable, so this is not a capacity result |
+| Park a repeated-content SDK VM | Backing allocated blocks **181.72 → 15.65 MiB**, but parked memory **30.64 → 32.07 MiB** | Offload **45.31 → 427.79 ms**; compression is a storage tradeoff, not additional parked-memory reclamation |
+| Reclaim cold pages from a running Linux VM | Current instance-local live compression is experimental | No completed public multi-round cohort supports a numeric memory or recovery claim; see [mechanism and evidence scope](../../design/memory-optimization/compression-local.md) |
+
+These historical measurements have not been revalidated against the newly integrated product. They do not measure a release improvement or establish an advantage over Docker, Firecracker or other runtimes.
 
 ## Motivation {#motivation}
 
@@ -18,11 +22,13 @@ VM residency limits how many environments you can retain while waiting for model
 
 <a id="experiment-design"></a>
 
-B-VM-MEMORY uses Linux x86_64/KVM to measure current SDK whole-VM offload and current Job API raw/compressed execution snapshots in separate cohorts. Within each mechanism, repeated/deterministic random data and raw/compressed storage alternate randomly on the same host: 30 fresh VMs and three warmups per condition. Each has two-core affinity/quota, a 2 GiB cgroup, zero swap and a 256 MiB guest. Tools and firmware are prepared; caches are warm without global eviction.
+B-VM-MEMORY's existing frozen public cohorts use Linux x86_64/KVM to measure SDK whole-VM offload and Job API raw/compressed execution snapshots in separate cohorts. Within each mechanism, repeated/deterministic random data and raw/compressed storage alternate randomly on the same host: 30 fresh VMs and three warmups per condition. Each has two-core affinity/quota, a 2 GiB cgroup, zero swap and a 256 MiB guest. Tools and firmware are prepared; caches are warm without global eviction.
 
 Each VM verifies all 64 MiB of private data and recovered execution state. This is not the entire guest working set: SDK input construction leaves additional copies and mutable state. The primary physical-memory metric is the complete bounded cgroup's `memory.current`, including the VM, collector/recovery processes, backing and charged page cache; anon/file/kernel and CPU counters are retained. SDK active and offloaded points each follow two seconds of settling. Job points follow confirmed running/suspended states. Do not rank the two mechanisms by their absolute values.
 
-Both cohorts have 120 valid formal samples, with no OOM, failures or timing exclusions. SDK resume acknowledgement and the first full scan are separate. Job resume-to-completion includes the remaining guest wait; the guest times its first restored scan separately. CPU is the complete cgroup's phase delta, including control/background work. Single-VM reclamation does not establish parked capacity under pressure. Current macOS automatic cold paging and matching container-pause or Firecracker/QEMU recovery controls have not completed fresh measurement.
+Each frozen cohort has 30 samples × four conditions (120 valid formal samples), with no OOM, failures or timing exclusions. SDK resume acknowledgement and the first full scan are separate. Job resume-to-completion includes the remaining guest wait; the guest times its first restored scan separately. CPU is the complete cgroup's phase delta, including control/background work. Single-VM reclamation does not establish parked capacity under pressure. Current macOS automatic cold paging and matching container-pause or Firecracker/QEMU recovery controls have not completed fresh measurement.
+
+Public evidence requires a completed cohort with the declared sample count, frozen source/binary/input provenance, matched resources, full recovery correctness and the predeclared interference gate. Contaminated or incomplete cohorts are ineligible; engineering A/B and diagnostic observations cannot supply public numbers or fill missing conditions. Execution snapshots, SDK offload and automatic live cold-page compression remain distinct mechanisms.
 
 ## Data and analysis {#results}
 
@@ -87,5 +93,7 @@ The following table contains within-mechanism, matched-condition median differen
 | pVisor macOS automatic cold-page pool | Fresh current-implementation physical-memory measurement is incomplete | Whole-system or bounded-group accounting including pool, backing and recovery CPU |
 
 ### Downloads and reproduction {#run}
+
+The same-directory CSVs retain the existing frozen cohorts separately, with report and binary digests linked to source/build and input receipts in the provenance CSV. All numeric tables above use only those cohorts; no samples from newly integrated implementations are pooled with them.
 
 [Memory and cost CSV](memory-summary.csv) · [Paired comparisons CSV](memory-comparisons.csv) · [Source, inputs and evidence summary](memory-provenance.csv) · [Evidence source summary](../evidence-sources.csv) · [Comparison method](../methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

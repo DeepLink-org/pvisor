@@ -64,8 +64,86 @@ def validate_row_evidence(root, report, row, live):
         files=[dict(path=str(path.relative_to(root)),sha256=digest(path)) for path in checked])
 
 
+def validate_publication_eligibility(root):
+    sidecar=root/'publication-eligibility.json'
+    if sidecar.exists():
+        eligibility=json.loads(evidence_file(root,sidecar).read_text())
+        if eligibility.get('eligible_for_public_causal_comparison') is not True:
+            raise ValueError('cohort ineligible for public causal comparison')
+
+
+def validate_host_attempts(report):
+    # Legacy cohorts retain their original provenance, not today's guard protocol.
+    if 'host_guard' not in report.get('protocol',{}):return False
+    if report['protocol']['host_guard'].get('enabled') is not True or 'stopped' in report:
+        raise ValueError('host guard disabled or campaign stopped')
+    n=int(report['arguments']['samples']);warmups=int(report['arguments']['warmups'])
+    attempts=report.get('attempts',[])
+    identity=lambda row:(row['pattern'],row['compressed'],row['trial'])
+    expected={(pattern,compressed,trial) for pattern in ('repeated','random')
+        for compressed in (False,True) for trial in range(-warmups,n)}
+    actual=[identity(attempt) for attempt in attempts]
+    if warmups<0 or len(actual)!=len(set(actual)) or set(actual)!=expected:
+        raise ValueError('incomplete or duplicate guarded memory attempts, including warmups')
+    rows={identity(row):row for row in report['rows']}
+    for attempt in attempts:
+        if (attempt.get('correctness')!='passed' or attempt.get('host_admitted') is not True
+                or attempt.get('unit_quiescent') is not True or attempt.get('deadline') is not False
+                or attempt.get('returncode')!=0 or attempt.get('host_interference')!=[]
+                or attempt.get('host_guard_errors')!=[]):
+            raise ValueError('host admission/interference/guard or service failure')
+        result=attempt.get('result',{})
+        if (any(result.get(key)!=attempt[key] for key in ('pattern','compressed','trial','logs'))
+                or result.get('correctness')!='passed'
+                or (attempt['trial']>=0 and result!=rows.get(identity(attempt)))):
+            raise ValueError('guarded attempt result differs from memory rows')
+        checked=validate_report(result['report'],dict(pattern=attempt['pattern'],compressed=attempt['compressed'],
+            seed=20261006+attempt['trial']+warmups,cgroup=result['active']['cgroup']))
+        if any(result.get(key)!=value for key,value in checked.items()):
+            raise ValueError('guarded attempt metrics differ from SDK integrity report')
+    return True
+
+
+def validate_host_evidence(root, attempt):
+    directory=evidence_file(root,Path(attempt['logs'])/'service-result.json').parent
+    checked=[]
+    def read(name, lines=False):
+        path=evidence_file(root,directory/name);checked.append(path)
+        return [json.loads(line) for line in path.read_text().splitlines()] if lines else json.loads(path.read_text())
+    retained=read('service-result.json')
+    expected={key:value for key,value in attempt.items() if key not in ('host_admitted','trial','pattern','compressed')}
+    if retained!=expected:raise ValueError('retained service result differs from guarded attempt')
+    launch=read('service-launch.json')
+    if any(launch.get(key)!=attempt.get(key) for key in ('unit','command','started_at','timeout_seconds','deadline','logs')):
+        raise ValueError('retained service launch differs from guarded attempt')
+    admission=read('prelaunch-wait.jsonl',True)
+    quiet=[]
+    for sample in admission:
+        if 'jobs' not in sample or not valid_number(sample.get('time_ns')):
+            raise ValueError('missing host admission proof')
+        if sample['jobs']:quiet=[]
+        else:quiet.append(sample['time_ns'])
+    if (len(quiet)<2 or quiet!=sorted(quiet) or quiet[-1]-quiet[0]<30*10**9
+            or admission[-1]['time_ns']-admission[0]['time_ns']>180*10**9):
+        raise ValueError('retained host admission lacks complete quiet window')
+    guard=read('host-guard.jsonl',True)
+    if (len(guard)<2 or any(sample.get('jobs')!=[] or 'guard_error' in sample
+            or not valid_number(sample.get('time_ns')) for sample in guard)
+            or [sample['time_ns'] for sample in guard]!=sorted(sample['time_ns'] for sample in guard)):
+        raise ValueError('retained host guard interference/failure or missing proof')
+    proof=read('service-quiescence.json');state=proof.get('state',{})
+    final=evidence_file(root,directory/'unit-final.txt');checked.append(final)
+    final_state=dict(line.split('=',1) for line in final.read_text().splitlines() if '=' in line)
+    if (proof.get('unit')!=attempt['unit'] or proof.get('unit_quiescent') is not True
+            or proof.get('show_returncode')!=0 or state!=final_state
+            or not (state.get('ActiveState') in ('inactive','failed') or state.get('LoadState')=='not-found')):
+        raise ValueError('retained service quiescence not proven')
+    return [dict(path=str(path.relative_to(root)),sha256=digest(path)) for path in checked]
+
+
 def validate_retained_evidence(root, report, live):
     root=root.resolve();harness=root/'harness'
+    validate_publication_eligibility(root)
     if digest(evidence_file(root,'rootfs-manifest.json'))!=report['rootfs_manifest_sha256']:
         raise ValueError('retained memory input manifest hash mismatch')
     if json.loads(evidence_file(root,'build-receipt.json').read_text())!=report['binary_build']:
@@ -75,6 +153,12 @@ def validate_retained_evidence(root, report, live):
     if actual!=set(inventory):raise ValueError('incomplete retained memory harness inventory')
     for name,sha in inventory.items():
         if digest(evidence_file(root,harness/name))!=sha:raise ValueError('retained memory harness hash mismatch')
+    if live and validate_host_attempts(report):
+        evidence=[]
+        for attempt in report['attempts']:
+            row=validate_row_evidence(root,report,attempt['result'],True)
+            row['files'].extend(validate_host_evidence(root,attempt));evidence.append(row)
+        return evidence
     return [validate_row_evidence(root,report,row,live) for row in report['rows']]
 
 
@@ -82,6 +166,7 @@ def validate_cohort(report):
     if report.get('benchmark_id')!='B-VM-MEMORY' or int(report['arguments']['samples'])<30 or report.get('failures'):
         raise ValueError('requires complete successful B-VM-MEMORY cohort with >=30 samples')
     live=report.get('mechanism','').startswith('current SDK')
+    if live:validate_host_attempts(report)
     n=int(report['arguments']['samples'])
     actual=[(row['pattern'] if live else row['kind'],row['compressed'] if live else row['storage']=='compressed',row['trial']) for row in report['rows']]
     expected={(kind,compressed,trial) for kind in ('repeated','random') for compressed in (False,True) for trial in range(n)}
@@ -153,6 +238,7 @@ def metric_values(row, live):
 def publish(paths, output):
     summary=[];comparisons=[];provenance=[];seen=set()
     for path in paths:
+        validate_publication_eligibility(path.parent)
         report=json.loads(path.read_text());live=validate_cohort(report)
         mechanism='sdk-live-offload' if live else 'execution-snapshot'
         if mechanism in seen:raise ValueError('multiple cohorts for one mechanism must not be pooled')

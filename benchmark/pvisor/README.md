@@ -82,6 +82,10 @@ python3 benchmark/pvisor/linux_cold_runtime.py \
 
 The four-condition preflight uses one fresh 256 MiB/1-vCPU VM per cell, 64 MiB repeated/random payloads, cold off/on, fixed 20/35-second windows, four CPU quota/2 GiB/zero swap and two full recovery/mutation/device-I/O checks. Maximum simultaneous VM count is one. It requires 30 quiet seconds per launch and rejects detected VM/build interference. Trusted startup RAM intervals must match complete smaps VMA intervals before attributing isolated PSS. Preserve failed cohorts and all receipts; no production density or small-sample tail-latency claims. See [the Linux implementation and measured effects](LINUX_COLD_RUNTIME_REPORT.md).
 
+### Linux compression reproduction evidence
+
+[Linux memory compression benefits/costs and recorded reproduction commands](MEMORY_COMPRESSION_REPORT.md#recorded-commands-and-reproduction).
+
 ## Data and publication
 
 `publish_apply_concurrency.py --report benchmark/.data/concurrent-new/report.json --output docs/src/en/benchmarks` audits three planned B-APPLY mid-write probes separately from latency. It verifies retained build/harness receipts, each injection and outcome, final target contents, ledger and conflict stderr. Missing or duplicate trials are rejected; missed windows remain unknown, and silent overwrites remain failures. Run after the probe exits; publish the matching CSV beside both locale articles. This does not establish protection against every race between a final check and rename.
@@ -375,10 +379,14 @@ python3 benchmark/pvisor/live_vm_memory.py \
   --build-receipt /absolute/path/to/sdk-build-receipt.json \
   --rootfs /absolute/path/to/prepared-python-rootfs \
   --firmware /absolute/path/to/libkrunfw-directory \
-  --output benchmark/.data/live-memory-preflight --samples 1 --warmups 0
+  --output /short/disk/lmp --samples 1 --warmups 0
 ```
 
 Every condition creates a fresh 256 MiB VM with 64 MiB fully checked private data and checked mutable state. Repeated and seeded random payloads, raw and compressed backing, alternate randomly in paired rounds. All VM/backing/FUSE helpers and the sampler inherit one verified 2 GiB, two-core, zero-swap cgroup. Complete cgroup anon/file/kernel and CPU are recorded while active, after two seconds parked, and after recovery; a 50 ms monitor retains transient memory. Restore acknowledgement, heartbeat and first complete guest scan have separate timing boundaries. All failures and OOMs remain in evidence. Use disk storage, outside tmpfs, and a new output for 30 formal samples after four preflight conditions pass. This single-VM measurement does not establish higher concurrent density or an advantage over Docker.
+
+Host quiet admission and sampling interference rejection are mandatory and recorded in `report.json` before launch. Before **every** condition, the coordinator requires 30 continuous seconds without visible same-user KVM users or build/test processes, within a 180-second admission bound; competing work resets the window. During the service attempt, a coordinator thread **outside the measured cgroup** checks every 0.5 seconds, with checks immediately before launch and after completion. Only the UUID-owned service cgroup and its descendants are excluded, never the coordinator's parent cgroup. No additional host memory observer is placed inside the product footprint. Any detected foreign VM/build during sampling rejects that condition and stops the campaign, retaining previous rows only as diagnostic evidence: do not cherry-pick, replace rejected conditions, or pool partial formal cohorts. Admission timeout or guard failure also stops the campaign; owned-service teardown remains required.
+
+Retain `prelaunch-wait.jsonl`, `host-guard.jsonl`, launch/result JSON, and final service-quiescence evidence with the raw cohort. The guard inspects same-user command lines and visible KVM FDs; inaccessible process/FD errors are logged, so this is not proof of host-wide quiet, and jobs shorter than the polling interval may be missed. Coordinate an otherwise idle host before rerunning. Use a NEW short absolute disk output path (replace `/short/disk/lmp` above); retain numeric `trials/<round>-<case>` directories and keep trial paths at most 70 characters for VM socket headroom. After all four preflight conditions pass, use another NEW short output path and omit `--samples 1 --warmups 0` for the unchanged 30-sample/3-warmup formal protocol. Run focused guard tests without hardware using `.venv/bin/python -m pytest -q benchmark/pvisor/test_live_vm_memory.py`.
 
 ## Prepared inputs for network and isolation controls
 

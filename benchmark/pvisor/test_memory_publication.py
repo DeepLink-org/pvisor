@@ -1,6 +1,7 @@
 import copy
+import json
 import pytest
-from publish_vm_memory import validate_cohort
+from publish_vm_memory import publish, validate_cohort
 
 
 def cohort():
@@ -42,3 +43,60 @@ def test_memory_component_cannot_be_nonfinite_or_negative(value):
     report=cohort();row=report['rows'][0]
     row['offloaded']['stat']['file']=row['report']['rows'][0]['offloaded']['stat']['file']=value
     with pytest.raises(ValueError):validate_cohort(report)
+
+
+def guarded_cohort():
+    report=cohort();report['arguments']['warmups']=0
+    report['protocol']={'host_guard':{'enabled':True}}
+    report['attempts']=[]
+    for row in report['rows']:
+        row['report']['seed']-=3
+        row['logs']=f"trials/{row['trial']}-{row['pattern']}-{row['compressed']}"
+        report['attempts'].append(dict(pattern=row['pattern'],compressed=row['compressed'],trial=row['trial'],
+            logs=row['logs'],result=copy.deepcopy(row),correctness='passed',host_admitted=True,
+            unit_quiescent=True,deadline=False,returncode=0,host_interference=[],host_guard_errors=[]))
+    return report
+
+
+@pytest.mark.parametrize('mutation',['missing','duplicate','warmup','interference','guard_error','admission',
+    'quiescence','stopped','result','missing_guard_status','disabled'])
+def test_guarded_cohort_requires_all_clean_attempts(mutation):
+    report=guarded_cohort();assert validate_cohort(report)
+    attempt=report['attempts'][0]
+    if mutation=='missing':report['attempts'].pop()
+    elif mutation=='duplicate':report['attempts'][-1]=copy.deepcopy(attempt)
+    elif mutation=='warmup':report['arguments']['warmups']=1
+    elif mutation=='interference':attempt['host_interference']=[{'jobs':['foreign VM']}]
+    elif mutation=='guard_error':attempt['host_guard_errors']=['guard failed']
+    elif mutation=='admission':attempt['host_admitted']=False
+    elif mutation=='quiescence':attempt['unit_quiescent']=False
+    elif mutation=='stopped':report['stopped']='interference'
+    elif mutation=='result':attempt['result']['offload_ms']=2
+    elif mutation=='missing_guard_status':del attempt['host_guard_errors']
+    else:report['protocol']['host_guard']['enabled']=False
+    with pytest.raises(ValueError):validate_cohort(report)
+
+
+def test_legacy_memory_does_not_acquire_new_guard_semantics():
+    report=cohort()
+    report['attempts']=[dict(host_admitted=False,unit_quiescent=False)]
+    assert validate_cohort(report)
+
+
+def test_thirty_sample_memory_gate_is_unchanged():
+    report=cohort();report['arguments']['samples']=29
+    report['rows']=[row for row in report['rows'] if row['trial']<29]
+    with pytest.raises(ValueError,match='>=30'):validate_cohort(report)
+
+
+@pytest.mark.parametrize('eligible',[False,'ineligible'])
+def test_sidecar_vetoes_all_passed_publication(tmp_path,eligible):
+    report=cohort();assert validate_cohort(report)
+    path=tmp_path/'report.json';path.write_text(json.dumps(report))
+    (tmp_path/'publication-eligibility.json').write_text(json.dumps(dict(
+        schema='pvisor-publication-eligibility/v1',cohort=str(tmp_path),
+        eligible_for_public_causal_comparison=eligible,reason='external VM overlap')))
+    output=tmp_path/'public'
+    with pytest.raises(ValueError,match='ineligible for public causal comparison'):publish([path],output)
+    assert not output.exists()
+    assert not (tmp_path/'memory-output-evidence-audit.json').exists()
