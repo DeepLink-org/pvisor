@@ -76,6 +76,29 @@ jobs:
           merge-multiple: true
           path: dist
 
+      - name: Download corresponding firmware sources
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-source-nightly-wheel-*
+          merge-multiple: true
+          path: dist
+
+      - name: Download daemon firmware sources
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-source-nightly-daemon-*
+          merge-multiple: true
+          path: daemon-sources
+
+      - name: Preserve the daemon's exact build source receipt
+        run: cp daemon-sources/pvisor-firmware-source-linux-x86_64.tar.gz dist/pvisor-firmware-source-daemon-linux-x86_64.tar.gz
+
+      - name: Require complete corresponding firmware source set
+        run: |
+          test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz
+          test -s dist/pvisor-firmware-source-macos-arm64.tar.gz
+          test -s dist/pvisor-firmware-source-daemon-linux-x86_64.tar.gz
+
       - name: Verify daemon archive checksum
         run: sha256sum -c dist/pvisor-daemon-linux-x86_64.tar.gz.sha256
 
@@ -95,7 +118,7 @@ jobs:
           prerelease: true
           removeArtifacts: true
           artifactErrorsFailBuild: true
-          artifacts: dist/*.whl,dist/pvisor-daemon-*.tar.gz,dist/pvisor-daemon-*.sha256
+          artifacts: dist/*.whl,dist/pvisor-daemon-*.tar.gz,dist/pvisor-daemon-*.sha256,dist/pvisor-firmware-source-*.tar.gz
           body: |
             Rolling nightly build from [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) on **${{ github.ref_name }}**.
 

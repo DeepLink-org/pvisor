@@ -57,7 +57,8 @@ def validate(raw,condition,args,binary,worker):
             if not processes or any(smaps_text(p,worker) is None or 'Pss' not in p['smaps_totals_bytes'] for p in processes):
                 raise ValueError('missing complete resident physical memory')
             for process in processes:
-                observed=sum(int(line.split()[1])*1024 for line in smaps_text(process,worker).splitlines() if line.startswith('Pss:'))
+                text=process['smaps_rollup']['raw'] if 'smaps_rollup' in process else smaps_text(process,worker)
+                observed=sum(int(line.split()[1])*1024 for line in text.splitlines() if line.startswith('Pss:'))
                 if observed!=process['smaps_totals_bytes']['Pss']:raise ValueError('resident PSS evidence mismatch')
     if result.get('scanner_state') != '1':
         # Validate the actual read-only sysfs evidence, regardless of helper keys.

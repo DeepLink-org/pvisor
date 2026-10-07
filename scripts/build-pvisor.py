@@ -23,13 +23,23 @@ def main() -> None:
         profile=args.profile,
         target_dir=args.target_dir,
     )
-    for name, source in _build(options, shim_vm=args.shim_vm).items():
+    artifacts = _build(options, shim_vm=args.shim_vm)
+    for name, source in artifacts.items():
         destination = (
             Path(args.target_dir) / ("debug" if args.profile == "dev" else args.profile) / name
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         if source.resolve() != destination.resolve():
             shutil.copy2(source, destination)
+    if sys.platform == "darwin":
+        directory = artifacts["pvisor"].parent
+        for name in ("libkrunfw.5.dylib", "libkrunfw.SOURCE"):
+            source = directory / name
+            destination = (
+                Path(args.target_dir) / ("debug" if args.profile == "dev" else args.profile) / name
+            )
+            if source.resolve() != destination.resolve():
+                shutil.copy2(source, destination)
 
 
 if __name__ == "__main__":

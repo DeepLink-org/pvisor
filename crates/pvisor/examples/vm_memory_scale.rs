@@ -654,6 +654,22 @@ fn accounting() -> anyhow::Result<Value> {
             Ok(sample) => sample,
             Err(error) => (json!({"error":format!("{error:#}")}), BTreeMap::new()),
         };
+        // Sum kernel fixed-point PSS before rounding, rather than summing
+        // thousands of individually truncated 4 KiB VMA readings.
+        let rollup = evidence_file(&proc.join("smaps_rollup"));
+        let vma_sums = sums.clone();
+        let mut sums = BTreeMap::new();
+        if let Some(text) = rollup["raw"].as_str() {
+            for line in text.lines() {
+                let mut words = line.split_whitespace();
+                if let Some(key) = words.next()
+                    && ["Rss:", "Pss:", "KSM:", "Private_Dirty:", "Shared_Clean:"].contains(&key)
+                    && let Some(n) = words.next().and_then(|n| n.parse::<u64>().ok())
+                {
+                    sums.insert(key.trim_end_matches(':').to_string(), n * 1024);
+                }
+            }
+        }
         let mut fds = Vec::new();
         let entries = fs::read_dir(proc.join("fd"));
         let fd_error = entries.as_ref().err().map(|e| e.to_string());
@@ -667,7 +683,7 @@ fn accounting() -> anyhow::Result<Value> {
                 }
             }
         }
-        processes.push(json!({"pid":pid,"cmdline":evidence_file(&proc.join("cmdline")),"status":evidence_file(&proc.join("status")),"smaps":smaps,"smaps_totals_bytes":sums,"large_file_fds":fds,"fd_inspection_error":fd_error}));
+        processes.push(json!({"pid":pid,"cmdline":evidence_file(&proc.join("cmdline")),"status":evidence_file(&proc.join("status")),"smaps":smaps,"smaps_vma_totals_bytes":vma_sums,"smaps_rollup":rollup,"smaps_totals_bytes":sums,"large_file_fds":fds,"fd_inspection_error":fd_error}));
     }
     let mut ksm = serde_json::Map::new();
     for name in [

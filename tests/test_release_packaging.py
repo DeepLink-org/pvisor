@@ -34,7 +34,11 @@ def _load_wheel_stage():
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
     return module
 
 
@@ -58,7 +62,7 @@ wheel_verify = _load_wheel_verify()
 def test_python_wheel_uses_setuptools_and_platform_builds() -> None:
     contents = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert 'requires = ["setuptools>=77"]' in contents
+    assert 'requires = ["setuptools>=77", "pyelftools==0.33"]' in contents
     assert 'build-backend = "build_backend"' in contents
     assert 'build = "cp312-*"' in contents
     assert 'manylinux-x86_64-image = "manylinux_2_28"' in contents
@@ -348,14 +352,14 @@ def test_firmware_source_prefers_explicit_path(
     assert name == firmware.name
 
 
-def test_firmware_source_fetches_when_path_is_not_configured(
+def test_firmware_source_builds_in_tree_when_path_is_not_configured(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     firmware = tmp_path / "libkrunfw.5.dylib"
     firmware.write_bytes(b"firmware")
     monkeypatch.delenv("PVISOR_LIBKRUNFW_PATH", raising=False)
-    monkeypatch.setattr(wheel_stage, "_fetch_firmware", lambda _options, _name: firmware)
+    monkeypatch.setattr(wheel_stage, "_build_firmware", lambda _options, _name: firmware)
 
     source, name = wheel_stage._firmware_source(
         wheel_stage.BuildOptions(target="aarch64-apple-darwin")
@@ -494,6 +498,9 @@ def test_static_linux_accepts_static_pie(monkeypatch):
 
 
 def test_linux_wheel_embeds_firmware(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        wheel_stage, "firmware_source_record", lambda options: '{"origin": "pvisor/fw"}\n'
+    )
     artifact = tmp_path / "pvisor"
     artifact.write_bytes(b"static pvisor with embedded kernel")
     monkeypatch.setattr(wheel_stage, "WHEEL_DATA", tmp_path / "wheel-data")
@@ -617,6 +624,48 @@ def test_all_native_builds_prepare_firmware_before_cargo(
     )
     assert set(artifacts) == set(names)
     assert events == (["limit", "cargo"] if configured else ["limit", "firmware", "cargo"])
+
+
+def test_macos_build_prepares_and_bundles_firmware_before_cargo(monkeypatch, tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    source = tmp_path / "firmware" / "libkrunfw.5.dylib"
+    source.parent.mkdir()
+    source.write_bytes(b"custom firmware")
+    binaries = tmp_path / "binaries"
+    binaries.mkdir()
+    events = []
+
+    def firmware(options):
+        events.append("firmware")
+        return source, source.name
+
+    def popen(command, **kwargs):
+        events.append("cargo")
+        assert command[:2] == ["cargo", "build"]
+        return SimpleNamespace(
+            stdout=[
+                json.dumps(
+                    {
+                        "reason": "compiler-artifact",
+                        "executable": str(binaries / name),
+                        "target": {"name": name, "kind": ["bin"]},
+                    }
+                )
+                for name in wheel_stage.NATIVE_BINARIES
+            ],
+            wait=lambda: 0,
+        )
+
+    monkeypatch.setattr(wheel_stage, "_firmware_source", firmware)
+    monkeypatch.setattr(wheel_stage.subprocess, "Popen", popen)
+    wheel_stage._build_component(wheel_stage.BuildOptions(target="aarch64-apple-darwin"))
+    assert events == ["firmware", "cargo"]
+    assert (binaries / source.name).read_bytes() == source.read_bytes()
+    record = json.loads((binaries / "libkrunfw.SOURCE").read_text())
+    assert record["origin"] == "explicit-firmware-input"
+    assert record["firmware_sha256"] == wheel_stage.firmware_build.sha256(source)
 
 
 def test_daemon_firmware_failure_prevents_cargo(monkeypatch):

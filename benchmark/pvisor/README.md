@@ -606,8 +606,9 @@ The worker streams complete `/proc/PID/smaps` into SHA-256-bound sidecars under
 the trial `smaps/` directory, retaining only totals and file references in RAM.
 It flushes, syncs and requests cache discard for every MiB of evidence, bounding
 the measurement tool's own memory contribution when page sharing creates many
-VMAs. Validators reopen all sidecars and verify bytes, hashes, PSS totals and
-KSM flags; retirement preserves them. Do not mix earlier in-memory-smaps samples
+VMAs. Process PSS comes from `smaps_rollup`, avoiding per-VMA KiB rounding;
+per-VMA totals remain separate evidence. Validators reopen all sidecars and
+verify bytes, hashes, rollup/per-VMA totals and KSM flags; retirement preserves them. Do not mix earlier in-memory-smaps samples
 with this complete rerun. The external cgroup/host observer remains outside
 the measured group.
 

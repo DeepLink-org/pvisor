@@ -33,7 +33,7 @@ build profile="debug":
 
 # Build the in-tree guest firmware; requires the platform Linux kernel toolchain.
 fw-build *args:
-    uv run --no-project --with pyelftools==0.33 make -C "{{ repo }}/fw" "$@"
+    python3 scripts/build-firmware.py --target-dir "{{ target_dir }}" "$@"
 
 # Verify compact firmware storage and the compiled libkrunfw ABI roundtrip.
 test-fw:
@@ -50,6 +50,10 @@ install-cli: (build "release")
     for binary in "${binaries[@]}"; do
       install -m 755 "{{ target_dir }}/release/$binary" "$install_root/bin/$binary"
     done
+    if [[ "$(uname -s)" == Darwin ]]; then
+      install -m 755 "{{ target_dir }}/release/libkrunfw.5.dylib" "$install_root/bin/libkrunfw.5.dylib"
+      install -m 644 "{{ target_dir }}/release/libkrunfw.SOURCE" "$install_root/bin/libkrunfw.SOURCE"
+    fi
 
 # Build and verify a fresh wheel before placing it in dist/ (release or debug).
 wheel profile="release":

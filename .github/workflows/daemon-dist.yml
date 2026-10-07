@@ -17,7 +17,7 @@ jobs:
   build:
     name: Daemon / Linux x86_64 (static musl)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
@@ -55,7 +55,8 @@ jobs:
           mkdir -p dist target/daemon-dist
           install -m 755 target/x86_64-unknown-linux-musl/release/pvisor-daemon target/daemon-dist/pvisor-daemon
           cp deploy/systemd/pvisor-daemon.service deploy/systemd/daemon.env.example deploy/systemd/INSTALL.md target/daemon-dist/
-          printf '%s\n' 'Embedded libkrunfw 5.5.0 kernel' 'source: https://github.com/libkrun/libkrunfw/releases/download/v5.5.0/libkrunfw-x86_64.tgz' 'licenses: GPL-2.0-only (Linux kernel), LGPL-2.1-only (library)' > target/daemon-dist/libkrunfw.SOURCE
+          uv run --no-project --with pyelftools==0.33 python scripts/build-firmware.py --source-output target/libkrunfw.SOURCE --source-archive dist/pvisor-firmware-source-linux-x86_64.tar.gz
+          cp target/libkrunfw.SOURCE target/daemon-dist/libkrunfw.SOURCE
           cp LICENSE NOTICE target/daemon-dist/
           tar -C target/daemon-dist -czf dist/pvisor-daemon-linux-x86_64.tar.gz pvisor-daemon pvisor-daemon.service daemon.env.example INSTALL.md libkrunfw.SOURCE LICENSE NOTICE
           sha256sum dist/pvisor-daemon-linux-x86_64.tar.gz > dist/pvisor-daemon-linux-x86_64.tar.gz.sha256
@@ -63,5 +64,12 @@ jobs:
         with:
           name: ${{ inputs.artifact_prefix }}-linux-x86_64
           path: dist/pvisor-daemon-*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload corresponding firmware source
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-source-${{ inputs.artifact_prefix }}-linux-x86_64
+          path: dist/pvisor-firmware-source-linux-x86_64.tar.gz
           if-no-files-found: error
           retention-days: 14

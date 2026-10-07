@@ -88,7 +88,7 @@ jobs:
   daemon:
     name: Native daemon / Linux x86_64
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
@@ -107,7 +107,7 @@ jobs:
   rust-test:
     name: Rust Test / ${{ matrix.platform }} / ${{ matrix.shard }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -185,7 +185,7 @@ jobs:
   pvisor-isolation-regression:
     name: pVisor isolation and documented cases / Linux
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -268,7 +268,7 @@ jobs:
   examples:
     name: pVisor network and Gateway examples
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 

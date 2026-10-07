@@ -95,7 +95,8 @@ jobs:
   pypi-publish:
     name: Publish to PyPI
     if: github.event_name == 'push'
-    needs: [validate, verify]
+    # Publish binaries to PyPI only after their corresponding sources are public.
+    needs: [validate, verify, github-release]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -119,7 +120,7 @@ jobs:
   github-release:
     name: Publish GitHub Release
     if: github.event_name == 'push'
-    needs: [validate, pypi-publish, daemon]
+    needs: [validate, verify, daemon]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -138,6 +139,29 @@ jobs:
           merge-multiple: true
           path: dist
 
+      - name: Download corresponding firmware sources
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-source-release-wheel-*
+          merge-multiple: true
+          path: dist
+
+      - name: Download daemon firmware sources
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-source-release-daemon-*
+          merge-multiple: true
+          path: daemon-sources
+
+      - name: Preserve the daemon's exact build source receipt
+        run: cp daemon-sources/pvisor-firmware-source-linux-x86_64.tar.gz dist/pvisor-firmware-source-daemon-linux-x86_64.tar.gz
+
+      - name: Require complete corresponding firmware source set
+        run: |
+          test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz
+          test -s dist/pvisor-firmware-source-macos-arm64.tar.gz
+          test -s dist/pvisor-firmware-source-daemon-linux-x86_64.tar.gz
+
       - name: Verify daemon archive checksum
         run: sha256sum -c dist/pvisor-daemon-linux-x86_64.tar.gz.sha256
 
@@ -147,10 +171,10 @@ jobs:
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/*.whl dist/pvisor-daemon-*.tar.gz dist/pvisor-daemon-*.sha256 \
+            gh release upload "$GITHUB_REF_NAME" dist/*.whl dist/pvisor-daemon-*.tar.gz dist/pvisor-daemon-*.sha256 dist/pvisor-firmware-source-*.tar.gz \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/*.whl dist/pvisor-daemon-*.tar.gz dist/pvisor-daemon-*.sha256 \
+            gh release create "$GITHUB_REF_NAME" dist/*.whl dist/pvisor-daemon-*.tar.gz dist/pvisor-daemon-*.sha256 dist/pvisor-firmware-source-*.tar.gz \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --generate-notes \

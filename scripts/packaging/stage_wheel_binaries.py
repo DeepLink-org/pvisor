@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import platform
@@ -12,11 +11,11 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+
+import firmware as firmware_build
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
@@ -33,21 +32,6 @@ SUPPORTED_TARGETS = {
     "aarch64-apple-darwin",
 }
 MACOS_ENTITLEMENTS = ROOT / "crates" / "pvisor" / "macos-hypervisor.entitlements"
-LIBKRUNFW_VERSION = "5.5.0"
-MACOS_DEPLOYMENT_TARGET = "11.0"
-LIBKRUNFW_RELEASE = f"https://github.com/libkrun/libkrunfw/releases/download/v{LIBKRUNFW_VERSION}"
-LIBKRUNFW_ARCHIVES = {
-    "x86_64-unknown-linux-musl": (
-        "libkrunfw-x86_64.tgz",
-        "c169206b01c89fbe134f1728bf4f988702bc7f73b4cf73e6fdece447d6fceca1",
-        "lib64/libkrunfw.so.5.5.0",
-    ),
-    "aarch64-apple-darwin": (
-        "libkrunfw-prebuilt-aarch64.tgz",
-        "5bfae6efee63dbdf04a8fac2a69d772d9f900af2f54c4429b4acdfd6d86b9979",
-        "libkrunfw/kernel.c",
-    ),
-}
 
 
 @dataclass(frozen=True)
@@ -228,6 +212,7 @@ def _build_component(
     )
     print(f"Building native CLI: {shlex.join(command)}", file=sys.stderr)
     build_env = os.environ.copy()
+    macos_firmware = _firmware_source(options) if _is_macos(options) else None
     if command[1] == "zigbuild":
         _prepare_zig_file_limit()
         if not build_env.get("PVISOR_KRUNFW_KERNEL_BUNDLE") and not build_env.get(
@@ -267,6 +252,11 @@ def _build_component(
     missing = sorted(set(expected) - artifacts.keys())
     if missing:
         raise RuntimeError(f"Cargo did not report expected wheel binaries: {', '.join(missing)}")
+    if macos_firmware is not None:
+        source, name = macos_firmware
+        for directory in {path.parent for path in artifacts.values()}:
+            shutil.copy2(source, directory / name)
+            (directory / "libkrunfw.SOURCE").write_text(firmware_build.source_record(source))
     return artifacts
 
 
@@ -282,12 +272,43 @@ def _firmware_source(options: BuildOptions) -> tuple[Path, str]:
     if configured:
         source = Path(configured).expanduser()
         if source.is_dir():
-            source = source / name
+            directory = source
+            source = directory / name
+            if not source.is_file() and not _is_macos(options):
+                candidates = sorted(directory.glob("libkrunfw.so.5.*"))
+                if len(candidates) == 1:
+                    source = candidates[0]
         source = source.resolve()
         if not source.is_file():
             raise RuntimeError(f"libkrunfw payload does not exist: {source}")
         return source, name
-    return _fetch_firmware(options, name), name
+    return _build_firmware(options, name), name
+
+
+def firmware_source_record(options: BuildOptions) -> str:
+    if not _is_macos(options):
+        bundle = os.getenv("PVISOR_KRUNFW_KERNEL_BUNDLE")
+        if bundle:
+            directory = Path(bundle).expanduser().resolve()
+            return (
+                json.dumps(
+                    {
+                        "origin": "explicit-kernel-bundle",
+                        "path": str(directory),
+                        "files": {
+                            name: firmware_build.sha256(directory / name)
+                            for name in ("kernel.bin", "kernel.json")
+                        },
+                        "licenses": "GPL-2.0-only (Linux kernel)",
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+        path = os.getenv("PVISOR_KRUNFW_PATH")
+        if path:
+            return firmware_build.source_record(Path(path).expanduser().resolve())
+    return firmware_build.source_record(_firmware_source(options)[0])
 
 
 def _host_target() -> str:
@@ -300,65 +321,13 @@ def _host_target() -> str:
     )
 
 
-def _fetch_firmware(options: BuildOptions, name: str) -> Path:
-    target = options.target or _host_target()
-    try:
-        archive_name, expected_sha256, archive_member = LIBKRUNFW_ARCHIVES[target]
-    except KeyError as error:
-        raise RuntimeError(f"no downloadable libkrunfw payload for {target}") from error
-    cache_key = f"{LIBKRUNFW_VERSION}-{target}"
-    if _is_macos(options):
-        cache_key += f"-macos{MACOS_DEPLOYMENT_TARGET}"
-    build_root = ROOT / "target" / "libkrunfw" / cache_key
-    destination = build_root / name
-    if destination.is_file():
-        return destination
-    archive = build_root.parent / archive_name
-    build_root.parent.mkdir(parents=True, exist_ok=True)
-    if not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest() != expected_sha256:
-        archive.unlink(missing_ok=True)
-        print(f"Downloading wheel firmware: {LIBKRUNFW_RELEASE}/{archive_name}", file=sys.stderr)
-        urllib.request.urlretrieve(f"{LIBKRUNFW_RELEASE}/{archive_name}", archive)
-    actual_sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
-    if actual_sha256 != expected_sha256:
-        archive.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"libkrunfw checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
-        )
-    build_root.mkdir(parents=True, exist_ok=True)
-    source_path = build_root / "kernel.c"
-    with tarfile.open(archive, "r:gz") as source:
-        try:
-            member = source.getmember(archive_member)
-        except KeyError as error:
-            raise RuntimeError(f"libkrunfw archive is missing {archive_member}") from error
-        if not member.isfile():
-            raise RuntimeError(f"libkrunfw archive member is not a file: {archive_member}")
-        payload = source.extractfile(member)
-        if payload is None:
-            raise RuntimeError(f"could not read libkrunfw archive member: {archive_member}")
-        extracted = source_path if _is_macos(options) else destination
-        with extracted.open("wb") as output:
-            shutil.copyfileobj(payload, output)
-
-    if _is_macos(options):
-        subprocess.run(
-            [
-                "/usr/bin/cc",
-                "-fPIC",
-                "-DABI_VERSION=5",
-                f"-mmacosx-version-min={MACOS_DEPLOYMENT_TARGET}",
-                "-shared",
-                "-Wl,-install_name,@rpath/libkrunfw.5.dylib",
-                "-o",
-                str(destination),
-                str(source_path),
-            ],
-            check=True,
-        )
-        source_path.unlink(missing_ok=True)
-    destination.chmod(0o755)
-    return destination
+def _build_firmware(options: BuildOptions, name: str) -> Path:
+    return firmware_build.build_firmware(
+        options.target or _host_target(),
+        target_dir=options.target_dir,
+        jobs=options.jobs,
+        offline=options.offline or options.frozen,
+    )
 
 
 def _sign_macos_pvisor(path: Path) -> None:
@@ -402,10 +371,7 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
             firmware_destination = staged / firmware_name
             shutil.copy2(firmware_source, firmware_destination)
             (staged / "libkrunfw.SOURCE").write_text(
-                f"libkrunfw {LIBKRUNFW_VERSION}\n"
-                f"source: {LIBKRUNFW_RELEASE}/libkrunfw-<architecture>.tgz\n"
-                "licenses: GPL-2.0-only (Linux kernel), LGPL-2.1-only (library)\n",
-                encoding="utf-8",
+                firmware_build.source_record(firmware_source), encoding="utf-8"
             )
             print(
                 f"Staged libkrunfw: {firmware_source} -> {firmware_destination}",
@@ -413,10 +379,7 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
             )
         if options.bundle_firmware and not _is_macos(options):
             (staged / "libkrunfw.SOURCE").write_text(
-                f"Embedded libkrunfw {LIBKRUNFW_VERSION} kernel\n"
-                f"source: {LIBKRUNFW_RELEASE}/libkrunfw-x86_64.tgz\n"
-                "licenses: GPL-2.0-only (Linux kernel), LGPL-2.1-only (library)\n",
-                encoding="utf-8",
+                firmware_source_record(options), encoding="utf-8"
             )
         if _is_macos(options):
             for name in NATIVE_BINARIES:

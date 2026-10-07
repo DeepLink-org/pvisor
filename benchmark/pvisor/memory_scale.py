@@ -189,9 +189,16 @@ def validate_accounting(accounting, group, memory_max=MEMORY_MAX, worker=None):
             raise ValueError('missing smaps evidence (raw or explicit error required)')
         text=smaps_text(process,worker)
         if text is not None:
-            for field,value in process['smaps_totals_bytes'].items():
+            for field,value in process.get('smaps_vma_totals_bytes',process['smaps_totals_bytes']).items():
                 observed=sum(int(line.split()[1])*1024 for line in text.splitlines() if line.startswith(field+':'))
                 if observed!=value:raise ValueError('smaps totals evidence mismatch')
+        if 'smaps_rollup' in process:
+            rollup=process['smaps_rollup'].get('raw')
+            if not isinstance(rollup,str) or 'Pss' not in process['smaps_totals_bytes']:
+                raise ValueError('missing process PSS rollup')
+            for field,value in process['smaps_totals_bytes'].items():
+                observed=sum(int(line.split()[1])*1024 for line in rollup.splitlines() if line.startswith(field+':'))
+                if observed!=value:raise ValueError('PSS rollup evidence mismatch')
     return cpu['usage_usec']
 
 

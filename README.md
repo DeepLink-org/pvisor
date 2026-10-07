@@ -110,10 +110,12 @@ Security issues: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTIN
 ## Guest firmware
 
 The customized libkrunfw sources, guest kernel configurations, patches and
-bundle tests are maintained in [`fw/`](fw/README.md). Use `just fw-build` to
-build the firmware and `just test-fw` to run its bundle/ABI regression tests.
-See the directory README for toolchain requirements and how to select the
-built firmware when building the CLI or single wheel.
+bundle tests are maintained in [`fw/`](fw/README.md). CLI, daemon and single-wheel
+builds use this source-built firmware by default, with verified kernel downloads
+and input-keyed build caching. Use `just fw-build` to build it independently and
+`just test-fw` to run its bundle/ABI regression tests. See the directory README
+for toolchain requirements, cache settings and corresponding-source export.
+Published wheels remain ready to install without a kernel build toolchain.
 
 ## License
 

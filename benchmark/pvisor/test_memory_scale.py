@@ -719,3 +719,17 @@ def test_streamed_smaps_keeps_full_evidence_and_rejects_tampering(tmp_path):
     process['smaps']['file'] = '../escape'
     with pytest.raises(ValueError, match='unsafe smaps'):
         scale.smaps_text(process, tmp_path / 'w')
+
+
+def test_process_rollup_retains_fractional_pss_lost_in_per_vma_text():
+    raw, config = valid()
+    accounting = raw['before']
+    process = accounting['processes'][0]
+    process['smaps'] = {'raw':'Pss: 0 kB\nPss: 0 kB\n'}
+    process['smaps_vma_totals_bytes'] = {'Pss':0}
+    process['smaps_rollup'] = {'raw':'Pss: 1 kB\n'}
+    process['smaps_totals_bytes'] = {'Pss':1024}
+    scale.validate_accounting(accounting, config['cgroup'])
+    process['smaps_totals_bytes']['Pss'] = 0
+    with pytest.raises(ValueError,match='rollup evidence'):
+        scale.validate_accounting(accounting, config['cgroup'])

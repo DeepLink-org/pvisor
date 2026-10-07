@@ -1,0 +1,16 @@
+include Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml NOTICE LICENSE
+recursive-include crates *
+recursive-include vendor *
+recursive-include scripts *.py *.sh
+include fw/Makefile fw/README.md fw/IMPORT.md fw/LICENSE-* fw/config-libkrunfw* fw/build_on_krunvm*.sh fw/bin2cbundle.py
+recursive-include fw/patches *.patch
+recursive-include fw/patches-tee *.patch
+recursive-include fw/include *
+recursive-include fw/initrd *
+recursive-include fw/qboot *
+recursive-include fw/tests *.py
+recursive-include fw/utils *
+global-exclude *.pyc *.pyo
+prune target
+prune fw/linux-*
+prune fw/tarballs

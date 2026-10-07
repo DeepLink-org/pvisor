@@ -17,28 +17,50 @@ just fw-build -j4
 just test-fw
 ```
 
-`fw-build` uses the native host's default firmware target; additional Make
-arguments can select the existing cross-build or variant targets. It supplies
-`pyelftools`, but the platform kernel toolchain must be installed separately.
-Downloaded Linux sources, tarballs, generated C bundles and shared libraries
-are local build outputs and are not committed.
+CLI, daemon and single-wheel builds use firmware compiled from this directory
+by default; no prebuilt upstream firmware is downloaded by the build pipeline.
+Linux x86-64 builds embed the kernel in the executable. macOS ARM64 builds ship
+the built dylib beside the executables. Installing a published wheel does not
+require a kernel compiler.
 
-To explicitly use the built firmware in the native CLI or wheel pipeline:
+`fw-build` uses the native host's default firmware target and supplies
+`pyelftools`; the platform kernel toolchain must be installed separately.
+The first build downloads the pinned Linux source archive and verifies its
+SHA-256 checksum. Build snapshots and outputs live under `target/fw/` (or
+`PVISOR_FW_BUILD_DIR`), not in this source directory. Sources, configurations,
+patches, generator and toolchain identities determine the cache key; changed
+inputs build in a fresh tree. `just fw-build -j4 --offline` requires cached
+verified kernel sources and locally available Python dependencies.
+
+On macOS, install Homebrew `llvm`, `lld`, `make`, `gnu-sed` and `gnu-tar`, put their
+LLVM/GNU executables on `PATH`, and set `PVISOR_FW_BUILD_DIR` to a directory on a
+case-sensitive filesystem. CI provisions a case-sensitive APFS image. The native
+macOS kernel build path remains experimental; it does not bootstrap with a
+prebuilt firmware or a VM.
+
+An explicit `PVISOR_LIBKRUNFW_PATH` can select a library file or directory instead.
+This is optional, not required for normal builds. Cross-build and SEV/TDX variants
+remain available through the standalone Makefile, not `just fw-build`.
+
+Each default build retains a `libkrunfw.SOURCE` receipt with artifact, input and
+actual kernel configuration hashes. To export the matching sources:
 
 ```sh
-PVISOR_LIBKRUNFW_PATH="$PWD/fw" just build release
-PVISOR_LIBKRUNFW_PATH="$PWD/fw" just wheel
+python3 scripts/build-firmware.py --source-output target/libkrunfw.SOURCE \
+  --source-archive target/pvisor-firmware-source.tar.gz
 ```
 
-The wheel remains a single package. Importing these sources does not change the
-packaging pipeline's default upstream 5.5.0 firmware download. The commands above
-select this directory explicitly; release source attribution and source delivery
-must be updated before switching the default release firmware.
+Release CI publishes corresponding-source archives alongside the wheels and
+daemon distribution. They contain the original kernel archive, firmware sources,
+patches, licenses, actual configuration and build receipt. Extract an archive and
+run the recorded Make command with `-C` changed to its `fw/` directory and `PYTHON`
+changed to a local Python with `pyelftools` installed; use the recorded toolchain.
+An external firmware override must supply its own corresponding sources.
 
-When changing patches, rebuild from a fresh Linux source tree: the inherited
-Makefile applies patches when it first extracts the sources, not whenever a
-patch changes. `make -C fw clean` removes the extracted tree and generated
-firmware (but keeps downloaded tarballs).
+For manual `make -C fw` builds only, changing patches requires a fresh Linux
+source tree: the inherited Makefile applies patches at extraction time.
+`make -C fw clean` removes that extracted tree and generated firmware but keeps
+downloaded tarballs. Default pVisor builds handle this through isolated snapshots.
 
 The standalone upstream GitHub workflows and CODEOWNERS were not imported;
 pVisor's root CI runs the firmware bundle regression tests.

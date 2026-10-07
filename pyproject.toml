@@ -24,7 +24,7 @@ dev = [
 include = ["pvisor*"]
 
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=77", "pyelftools==0.33"]
 build-backend = "build_backend"
 backend-path = ["scripts/packaging"]
 
@@ -39,7 +39,7 @@ build-frontend = "build"
 archs = ["x86_64"]
 manylinux-x86_64-image = "manylinux_2_28"
 before-all = [
-    "yum install -y curl",
+    "yum install -y gcc gcc-c++ make flex bison elfutils-libelf-devel openssl-devel curl bc perl patch tar gzip xz",
     "/opt/python/cp312-cp312/bin/python -m pip install ziglang==0.13.0",
     "ln -sf $(/opt/python/cp312-cp312/bin/python -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent / \"zig\")') /usr/local/bin/zig",
     "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
@@ -48,11 +48,24 @@ before-all = [
 ]
 # Static musl CLI, with its kernel embedded. Keep the manylinux wheel tag
 # for glibc Python installers; the CLI has no glibc runtime dependency.
-environment = { PATH = "$HOME/.cargo/bin:$PATH" }
+environment = { PATH = "$HOME/.cargo/bin:$PATH", PVISOR_FW_BUILD_DIR = "/project/target/fw" }
 
 [tool.cibuildwheel.macos]
 archs = ["arm64"]
-environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+before-all = '''
+set -eu
+brew install llvm lld make gnu-sed gnu-tar
+image="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/pvisor-fw.sparseimage"
+volume="/Volumes/pvisor-fw-${GITHUB_RUN_ID:-}-${GITHUB_RUN_ATTEMPT:-}"
+if ! mount | grep -Fq " on $volume ("; then
+    if [ ! -f "$image" ]; then
+        hdiutil create -size 32g -type SPARSE -fs APFSX -volname pvisor-fw "$image"
+    fi
+    hdiutil attach -nobrowse -mountpoint "$volume" "$image"
+fi
+mkdir -p "$volume/build"
+'''
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0", PVISOR_FW_BUILD_DIR = "/Volumes/pvisor-fw-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/build", PATH = "$(brew --prefix)/opt/llvm/bin:$(brew --prefix)/opt/lld/bin:$(brew --prefix)/opt/make/libexec/gnubin:$(brew --prefix)/opt/gnu-sed/libexec/gnubin:$(brew --prefix)/opt/gnu-tar/libexec/gnubin:$PATH" }
 repair-wheel-command = "cp {wheel} {dest_dir}"
 
 [tool.ruff]

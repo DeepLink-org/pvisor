@@ -10,9 +10,9 @@
 | Compressed offload | Saves 78.0–78.1% resident memory per instance; saves more disk backing, with parked residency about 40 MiB |
 | Idle release | Saves 31.7–34.7% residency per instance while the host retains file cache |
 | Memory compression | Repeated contents save 18.9% per instance; random contents increase residency by 18.2%, depending on compressibility |
-| Shared snapshot + COW | Identical contents save 68.4–69.0% per instance; unique random contents save 30.6%. Savings after complete rewrites remain 31.0–31.8% |
-| KSM | After 60 seconds, savings are 63.7% for repeated contents, 50.8% for identical random contents and 16.3% for unique random contents |
-| Daemon memory pool | About 117–139 MiB resident per instance; repeated / identical random / unique random savings are 12.4% / 11.0% / Increase 4.6% |
+| Shared snapshot + COW | Identical contents save 67.9–68.6% per instance; unique random contents save 31.2%. Savings after complete rewrites remain 30.4–31.7% |
+| KSM | After 60 seconds, savings are 63.6% for repeated contents, 51.7% for identical random contents and 16.0% for unique random contents |
+| Daemon memory pool | About 61–124 MiB resident per instance; repeated / identical random / unique random savings are 53.7% / 39.6% / 6.5% |
 
 ## Motivation {#motivation}
 
@@ -30,7 +30,7 @@ Every VM has **512 MiB guest RAM, 2 vCPU and 64 MiB application data**. Working 
 - Multiple instances compare unshared VMs, shared snapshot + COW, KSM and the daemon memory pool. The unshared arm boots four independent VMs with private anonymous RAM; the shared arm restores from one sealed snapshot; the KSM arm uses the same RAM mappings with dedup advice enabled. The pool arm boots independent VMs, with cross-instance duplicate physical pages held by the daemon. Reads retain sharing and writes create instance-private pages. Unique candidates are not copied into the pool, and scanning reclaims old references after writes. Working sets match, with 25%/100% writes and independent termination checks.
 - One fresh VM or group per condition, no warmups. Single instances have a five-second observation window. KSM waits 60 seconds before its initial reading; the other multi-instance strategies wait two seconds. No P50/P95, confidence interval or eventual-convergence claim.
 
-**Resident physical memory** covers the complete product group's VM, management processes, compressed store and helpers, using summed process PSS with shared pages counted proportionally. **Host-group memory** uses complete cgroup physical-memory charging, including unmapped file cache and kernel costs charged to that group. These metrics cannot be added: residency describes actual mapped physical pages, while group usage keeps retained cache visible; shared-page attribution also differs. Neither establishes exclusive incremental whole-host cost or production capacity.
+**Resident physical memory** covers the complete product group's VM, management processes, compression/shared stores and helpers, using summed process PSS with shared pages counted proportionally. Cross-instance readings use the kernel's process aggregate to avoid rounding every individual mapping; see [Linux memory accounting](https://www.kernel.org/doc/html/latest/filesystems/proc.html). **Host-group memory** uses complete cgroup physical-memory charging, including unmapped file cache and kernel costs charged to that group. These metrics cannot be added: residency describes actual mapped physical pages, while group usage keeps retained cache visible; shared-page attribution also differs. Neither establishes exclusive incremental whole-host cost or production capacity.
 
 Linux x86_64/KVM on an AMD Ryzen 7 9700X, host kernel 7.2.8-200.fc44.x86_64. The complete group uses logical CPUs 0–3, a four-core quota and zero swap. Single-instance groups have a 2 GiB ceiling; all four multi-instance strategies use the same 4 GiB ceiling. Coordinator, observer and global KSM thread remain outside it. Inputs are prepared without global cache eviction; background compilation is recorded, so durations are single observations. The 16 single-instance conditions and 12 new multi-instance conditions come from separate static cohorts. All passed data, write-isolation, termination and provenance checks without OOM.
 
@@ -104,26 +104,26 @@ Per-instance residency = complete-product group PSS divided by four, including a
 
 | Working set | Strategy | Residency per instance MiB | Per-instance savings | Residency per instance after 100% writes MiB | Post-write per-instance savings |
 |---|---|---:|---:|---:|---:|
-| Identical repeated data | Unshared | 133.1 | Baseline | 134.8 | Baseline |
-| Identical repeated data | Shared snapshot + COW | 42.1 | 68.4% | 91.9 | 31.8% |
-| Identical repeated data | KSM | 48.4 | 63.7% | 112.8 | 16.3% |
-| Identical repeated data | Daemon memory pool | 116.6 | 12.4% | 119.0 | 11.7% |
-| Identical random data | Unshared | 132.6 | Baseline | 133.8 | Baseline |
-| Identical random data | Shared snapshot + COW | 41.1 | 69.0% | 91.5 | 31.6% |
-| Identical random data | KSM | 65.2 | 50.8% | 113.2 | 15.4% |
-| Identical random data | Daemon memory pool | 118.0 | 11.0% | 119.4 | 10.8% |
-| Unique random data per VM | Unshared | 132.6 | Baseline | 133.4 | Baseline |
-| Unique random data per VM | Shared snapshot + COW | 92.0 | 30.6% | 92.0 | 31.0% |
-| Unique random data per VM | KSM | 111.0 | 16.3% | 111.7 | 16.3% |
-| Unique random data per VM | Daemon memory pool | 138.7 | Increase 4.6% | 140.5 | Increase 5.3% |
+| Identical repeated data | Unshared | 132.8 | Baseline | 132.9 | Baseline |
+| Identical repeated data | Shared snapshot + COW | 41.7 | 68.6% | 91.2 | 31.3% |
+| Identical repeated data | KSM | 48.4 | 63.6% | 112.6 | 15.3% |
+| Identical repeated data | Daemon memory pool | 61.4 | 53.7% | 128.2 | 3.5% |
+| Identical random data | Unshared | 132.3 | Baseline | 132.4 | Baseline |
+| Identical random data | Shared snapshot + COW | 42.4 | 67.9% | 92.2 | 30.4% |
+| Identical random data | KSM | 64.0 | 51.7% | 112.3 | 15.2% |
+| Identical random data | Daemon memory pool | 80.0 | 39.6% | 128.9 | 2.7% |
+| Unique random data per VM | Unshared | 132.3 | Baseline | 133.7 | Baseline |
+| Unique random data per VM | Shared snapshot + COW | 91.0 | 31.2% | 91.3 | 31.7% |
+| Unique random data per VM | KSM | 111.1 | 16.0% | 111.2 | 16.9% |
+| Unique random data per VM | Daemon memory pool | 123.7 | 6.5% | 125.6 | 6.1% |
 
 Shared snapshot + COW retains both common system state and unchanged application pages. After completely rewriting the 64 MiB application working set, system pages may still remain shared. Unique random contents already create private pages during preparation, reducing initial savings.
 
-KSM produces actual merged pages during the 60-second window. Repeated, identical random and unique random contents use 48.4/65.2/111.0 MiB resident per instance. It merges identical pages within and across instances; unique random data remains separately stored. Complete rewrites break existing sharing. Post-write readings do not wait another 60 seconds and do not establish reconverged savings. Every VM passes private-RAM, accepted-advice and mergeable-mapping checks.
+KSM produces actual merged pages during the 60-second window. Repeated, identical random and unique random contents use 48.4/64.0/111.1 MiB resident per instance. It merges identical pages within and across instances; unique random data remains separately stored. Complete rewrites break existing sharing. Post-write readings do not wait another 60 seconds and do not establish reconverged savings. Every VM passes private-RAM, accepted-advice and mergeable-mapping checks.
 
-**The daemon pool scans, deduplicates and reclaims independent 4 KiB cold pages.** Per-instance residency for the three workloads is 116.6/118.0/138.7 MiB, including pool and helper overhead; complete-group startup peaks are 561–650 MiB. Scanning skips nonresident pages, and object references and checksum metadata are allocated only for reclaimed pages, preserving physical allocation on demand. Access restores only the requested page while adjacent cold pages remain in the pool.
+**The daemon pool scans cross-instance duplicate 4 KiB pages: reads retain physical sharing and writes use COW.** Per-instance residency for the three workloads is 61.4/80.0/123.7 MiB, including pool and helper overhead; observed complete-group peaks are 537–546 MiB. Scanning skips nonresident pages, and object references and checksum metadata are allocated only for reclaimed pages, preserving physical allocation on demand. Unique candidates retain bounded hashes without moving payloads into the pool; scanning releases obsolete references after writes.
 
-The pool holds identical cold-page objects, restoring VM-private pages on access. Continuously read pages therefore do not retain pool sharing. It serves cold-page reclamation, with savings depending on the scan window, compressibility and access patterns. KSM and shared snapshot + COW can retain sharing during reads. Scanning, encoding, object transport and fault restoration consume CPU; pool-process loss fails dependent VMs.
+The physical pool does not compress unique pages and does not require userfaultfd. Reading identical contents retains sharing; writes create private pages and subsequent scanning reclaims old references. Scanning, verification, page transport, mappings and metadata still consume CPU and memory, so a specialized scheme does not guarantee an advantage over every control. Shared snapshots restore one system state, while pool controls boot independently: system pages share only when their actual bytes match. Post-write short-window readings describe occupancy at that point; pool-process loss fails dependent VMs.
 
 Append `--memory-pool` to `pvisor-daemon serve` to enable it; the default is off. The pool runs separately from the API process and retains objects across API restart. See [the daemon guide](../../guides/daemon/index.md#memory-pool) for configuration and budgets. This run measures the real daemon pool component and VM path; it does not start the complete OpenSandbox API/SDK data plane or establish long-term stability, real Agent latency or production density.
 

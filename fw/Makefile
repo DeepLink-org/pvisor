@@ -1,4 +1,7 @@
 KERNEL_VERSION = linux-6.12.109
+KERNEL_SHA256 = 5484e552a334e15019f4aeba89e5b58f04651cf2f4e24e04de9f152f1c38e3fa
+PYTHON ?= python3
+LIBRARY_FLAGS ?=
 KERNEL_REMOTE = https://cdn.kernel.org/pub/linux/kernel/v6.x/$(KERNEL_VERSION).tar.xz
 KERNEL_TARBALL = tarballs/$(KERNEL_VERSION).tar.xz
 KERNEL_SOURCES = $(KERNEL_VERSION)
@@ -89,7 +92,7 @@ SONAME_Linux = -Wl,-soname,$(KRUNFW_SONAME_Linux)
 KRUNFW_BINARY_Darwin = libkrunfw.$(ABI_VERSION).dylib
 KRUNFW_SONAME_Darwin = libkrunfw.$(ABI_VERSION).dylib
 KRUNFW_BASE_Darwin = libkrunfw.dylib
-SONAME_Darwin =
+SONAME_Darwin = -Wl,-install_name,@rpath/$(KRUNFW_SONAME_Darwin)
 
 KRUNFW_BINARY_Windows = libkrunfw.dll
 KRUNFW_SONAME_Windows = libkrunfw.dll
@@ -147,11 +150,13 @@ all: $(KRUNFW_BINARY_$(OS))
 
 $(KERNEL_TARBALL):
 	@mkdir -p tarballs
-	curl $(KERNEL_REMOTE) -o $(KERNEL_TARBALL)
+	curl --fail --location $(KERNEL_REMOTE) -o $(KERNEL_TARBALL).download
+	$(PYTHON) -c 'import hashlib, pathlib; p = pathlib.Path("$(KERNEL_TARBALL).download"); actual = hashlib.sha256(p.read_bytes()).hexdigest(); assert actual == "$(KERNEL_SHA256)", "kernel source checksum mismatch: " + actual'
+	mv $(KERNEL_TARBALL).download $(KERNEL_TARBALL)
 
 $(KERNEL_SOURCES): $(KERNEL_TARBALL)
 	tar xf $(KERNEL_TARBALL)
-	for patch in $(KERNEL_PATCHES); do patch -p1 -d $(KERNEL_SOURCES) < "$$patch"; done
+	set -e; for patch in $(KERNEL_PATCHES); do patch -p1 -d $(KERNEL_SOURCES) < "$$patch"; done
 
 # Reconfigure existing trees when the selected firmware configuration changes.
 $(KERNEL_SOURCES)/.config: config-libkrunfw$(VARIANT)_$(GUESTARCH) | $(KERNEL_SOURCES)
@@ -169,7 +174,7 @@ endif
 $(KERNEL_BINARY_$(GUESTARCH)): $(KERNEL_SOURCES)/.config
 ifeq ($(OS),Darwin)
 ifeq ($(MACOS_BUILDER),native)
-	cd $(KERNEL_SOURCES) && rm -f .version && $(KERNEL_MAKE) $(MAKEFLAGS) $(KERNEL_KBUILD_FLAGS) $(KERNEL_HOSTFLAGS)
+	cd $(KERNEL_SOURCES) && rm -f .version && $(KERNEL_MAKE) $(MAKEFLAGS) $(KERNEL_KBUILD_FLAGS) $(KERNEL_HOSTFLAGS) $(KERNEL_BUILD_TARGET)
 else
 	cd $(KERNEL_SOURCES) ; rm -f .version ; $(MAKE) $(MAKEFLAGS) $(KERNEL_FLAGS)
 endif
@@ -185,39 +190,39 @@ $(KERNEL_C_BUNDLE):
 else
 $(KERNEL_C_BUNDLE): $(KERNEL_BINARY_$(GUESTARCH)) bin2cbundle.py Makefile
 	@echo "Generating $(KERNEL_C_BUNDLE) from $(KERNEL_BINARY_$(GUESTARCH))..."
-	@python3 bin2cbundle.py $(KERNEL_BUNDLE_FLAGS) --os $(OS) -t $(KBUNDLE_TYPE_$(GUESTARCH)) $(KERNEL_BINARY_$(GUESTARCH)) kernel.c
+	@$(PYTHON) bin2cbundle.py $(KERNEL_BUNDLE_FLAGS) --os $(OS) -t $(KBUNDLE_TYPE_$(GUESTARCH)) $(KERNEL_BINARY_$(GUESTARCH)) kernel.c
 endif
 else
 $(KERNEL_C_BUNDLE): $(KERNEL_BINARY_$(GUESTARCH)) bin2cbundle.py Makefile
 	@echo "Generating $(KERNEL_C_BUNDLE) from $(KERNEL_BINARY_$(GUESTARCH))..."
-	@python3 bin2cbundle.py $(KERNEL_BUNDLE_FLAGS) --os $(OS) -t $(KBUNDLE_TYPE_$(GUESTARCH)) $(KERNEL_BINARY_$(GUESTARCH)) kernel.c
+	@$(PYTHON) bin2cbundle.py $(KERNEL_BUNDLE_FLAGS) --os $(OS) -t $(KBUNDLE_TYPE_$(GUESTARCH)) $(KERNEL_BINARY_$(GUESTARCH)) kernel.c
 endif
 
 ifeq ($(SEV),1)
 $(QBOOT_C_BUNDLE): $(QBOOT_BINARY)
 	@echo "Generating $(QBOOT_C_BUNDLE) from $(QBOOT_BINARY)..."
-	@python3 bin2cbundle.py -t qboot $(QBOOT_BINARY) qboot.c
+	@$(PYTHON) bin2cbundle.py -t qboot $(QBOOT_BINARY) qboot.c
 
 $(INITRD_C_BUNDLE): $(INITRD_BINARY)
 	@echo "Generating $(INITRD_C_BUNDLE) from $(INITRD_BINARY)..."
-	@python3 bin2cbundle.py -t initrd $(INITRD_BINARY) initrd.c
+	@$(PYTHON) bin2cbundle.py -t initrd $(INITRD_BINARY) initrd.c
 endif
 
 ifeq ($(TDX),1)
 $(QBOOT_C_BUNDLE): $(QBOOT_BINARY)
 	@echo "Generating $(QBOOT_C_BUNDLE) from $(QBOOT_BINARY)..."
-	@python3 bin2cbundle.py -t qboot $(QBOOT_BINARY) qboot.c
+	@$(PYTHON) bin2cbundle.py -t qboot $(QBOOT_BINARY) qboot.c
 
 $(INITRD_C_BUNDLE): $(INITRD_BINARY)
 	@echo "Generating $(INITRD_C_BUNDLE) from $(INITRD_BINARY)..."
-	@python3 bin2cbundle.py -t initrd $(INITRD_BINARY) initrd.c
+	@$(PYTHON) bin2cbundle.py -t initrd $(INITRD_BINARY) initrd.c
 endif
 
 $(KRUNFW_BINARY_$(OS)): $(KERNEL_C_BUNDLE) $(QBOOT_C_BUNDLE) $(INITRD_C_BUNDLE)
 ifeq ($(OS),Windows)
 	$(CC) -shared -DABI_VERSION=$(ABI_VERSION) -O2 -o $@ $(KERNEL_C_BUNDLE) $(QBOOT_C_BUNDLE) $(INITRD_C_BUNDLE) -Wl,--kill-at -Wl,--nxcompat
 else
-	$(CC) -fPIC -DABI_VERSION=$(ABI_VERSION) -shared $(SONAME_$(OS)) -o $@ $(KERNEL_C_BUNDLE) $(QBOOT_C_BUNDLE) $(INITRD_C_BUNDLE)
+	$(CC) -fPIC -DABI_VERSION=$(ABI_VERSION) -shared $(LIBRARY_FLAGS) $(SONAME_$(OS)) -o $@ $(KERNEL_C_BUNDLE) $(QBOOT_C_BUNDLE) $(INITRD_C_BUNDLE)
 ifeq ($(OS),Linux)
 	$(STRIP) $(KRUNFW_BINARY_$(OS))
 endif

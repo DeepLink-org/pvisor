@@ -64,6 +64,7 @@ def run_task(tmp_path):
         )
         return [json.loads(line) for line in log.read_text().splitlines()]
 
+    run.target_dir = tmp_path / "target with spaces"
     return run
 
 
@@ -94,18 +95,14 @@ def test_test_routes_packages_and_python(run_task):
 
 
 def test_firmware_tasks_use_in_tree_sources_and_forward_make_arguments(run_task):
-    assert run_task("fw-build", "-j4", "ARCH=arm64") == [
+    assert run_task("fw-build", "-j4", "--offline") == [
         [
-            "uv",
-            "run",
-            "--no-project",
-            "--with",
-            "pyelftools==0.33",
-            "make",
-            "-C",
-            str(ROOT / "fw"),
+            "python3",
+            "scripts/build-firmware.py",
+            "--target-dir",
+            str(run_task.target_dir),
             "-j4",
-            "ARCH=arm64",
+            "--offline",
         ]
     ]
     assert run_task("test-fw") == [
