@@ -32,6 +32,7 @@ static OWNS_OUTPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 #[serde(rename_all = "kebab-case")]
 enum Mode {
     Fresh,
+    Pool,
     Baseline,
     Ksm,
     Raw,
@@ -49,6 +50,11 @@ enum Pattern {
     about = "B-MEMORY-SCALE: bounded real-VM SDK worker; parent must supply a disk output and delegated cgroup"
 )]
 struct Args {
+    /// Frozen pvisor-daemon executable for the daemon-owned pool arm.
+    #[arg(long)]
+    pool_daemon: Option<PathBuf>,
+    #[arg(skip)]
+    pool_socket: Option<PathBuf>,
     #[arg(long, default_value_t = 256, value_parser = clap::value_parser!(u32).range(256..=512))]
     memory_mib: u32,
     #[arg(long)]
@@ -151,7 +157,10 @@ fn expected(a: &Args) -> BTreeMap<(usize, usize), String> {
     let baseline = hex(&baseline.finalize());
     result.insert((0, 0), baseline.clone());
     for id in 1..=a.vms {
-        for &percent in if matches!(a.mode, Mode::Fresh | Mode::Baseline | Mode::Ksm) {
+        for &percent in if matches!(
+            a.mode,
+            Mode::Fresh | Mode::Pool | Mode::Baseline | Mode::Ksm
+        ) {
             &[0, 25, 100][..]
         } else {
             &[0][..]
@@ -438,8 +447,9 @@ async fn start(
     let settings = VmSettings {
         rootfs: Some(a.rootfs.canonicalize()?),
         library_dir: Some(a.firmware.canonicalize()?),
-        ram_backing: (checkpoint.is_none() && a.mode != Mode::Fresh)
+        ram_backing: (checkpoint.is_none() && !matches!(a.mode, Mode::Fresh | Mode::Pool))
             .then(|| root.join(format!("r{id}.ram"))),
+        memory_pool: a.pool_socket.clone(),
         ram_compression: a.mode == Mode::Compressed,
         ram_dedup: a.dedup,
         memory_mib: a.memory_mib,
@@ -639,6 +649,16 @@ async fn phase(
             w.id
         );
         w.heartbeat = n;
+    }
+    if let Some(socket) = &a.pool_socket {
+        let mut client = pvisor::ram_backing::ipc::PoolClient::new(
+            std::os::unix::net::UnixStream::connect(socket)?,
+            Duration::from_secs(5),
+        )?;
+        let stats = client.stats()?;
+        report["pool_observations"].as_array_mut().unwrap().push(
+            json!({"phase":name,"encoded_bytes":stats.encoded_bytes,"objects":stats.objects}),
+        );
     }
     let sample = accounting()?;
     report["phases"].as_array_mut().unwrap().push(json!({"name":name,"elapsed_ms":start.elapsed().as_millis(),"paused":true,"offloaded":offloaded,"instances":group.iter().map(|w|w.id).collect::<Vec<_>>(),"heartbeat":before,"heartbeat_stable":true,"accounting":sample}));
@@ -860,7 +880,10 @@ async fn experiment(
             );
         }
     }
-    if matches!(a.mode, Mode::Fresh | Mode::Baseline | Mode::Ksm) {
+    if matches!(
+        a.mode,
+        Mode::Fresh | Mode::Pool | Mode::Baseline | Mode::Ksm
+    ) {
         for percent in [25, 100] {
             // Verify untouched peers while each preceding peer is already dirty.
             for index in 0..group.len() {
@@ -969,7 +992,10 @@ async fn experiment(
         json!({"instance":group[0].id}),
     );
     let survivors = &mut group[1..];
-    let percent = if matches!(a.mode, Mode::Fresh | Mode::Baseline | Mode::Ksm) {
+    let percent = if matches!(
+        a.mode,
+        Mode::Fresh | Mode::Pool | Mode::Baseline | Mode::Ksm
+    ) {
         100
     } else {
         0
@@ -1022,15 +1048,16 @@ fn copy_store(source: &Path, destination: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run(a: Args) -> anyhow::Result<()> {
+async fn run(mut a: Args) -> anyhow::Result<()> {
     let start = Instant::now();
     fs::create_dir(&a.output).context("--output must be a NEW directory")?;
     OWNS_OUTPUT.store(true, std::sync::atomic::Ordering::Release);
     let root = a.output.canonicalize()?;
-    let mut report = json!({"schema":"pvisor-memory-scale/v1","conditions":a,"profile":{"memory_mib":a.memory_mib,"cpus":a.cpus,"payload_bytes":BYTES,"page_bytes":PAGE,"max_live_vms":4,"deadline_seconds":180,"overlaynet_mode":"off","network_policy":"no-network"},"correctness":"failed","phases":[],"checks":[],"guests":[],"gaps":["independent-inode controls copy identical sealed bytes; independent native captures remain unsupported", "KSM scan results are observations, not guaranteed merging", "random-unique restored preparation dirties all payload pages before ready; only repeated/random-shared ready are unchanged shared payloads", "large_file_fds and smaps expose identities/advice when proc permissions permit; missing reads are explicit", "parent owns group budgets, randomized pairing, repetitions and continuous resource accounting"]});
+    let mut report = json!({"schema":"pvisor-memory-scale/v1","conditions":a,"profile":{"memory_mib":a.memory_mib,"cpus":a.cpus,"payload_bytes":BYTES,"page_bytes":PAGE,"max_live_vms":4,"deadline_seconds":180,"overlaynet_mode":"off","network_policy":"no-network"},"correctness":"failed","phases":[],"checks":[],"guests":[],"pool_observations":[],"gaps":["independent-inode controls copy identical sealed bytes; independent native captures remain unsupported", "KSM scan results are observations, not guaranteed merging", "random-unique restored preparation dirties all payload pages before ready; only repeated/random-shared ready are unchanged shared payloads", "large_file_fds and smaps expose identities/advice when proc permissions permit; missing reads are explicit", "parent owns group budgets, randomized pairing, repetitions and continuous resource accounting"]});
     // Persist failure evidence even if validation, startup or capture fails.
     persist(&root, &report)?;
     let mut workers = Vec::new();
+    let mut pool_child: Option<tokio::process::Child> = None;
     let result = timeout(Duration::from_secs(150), async {
         validate(&a)?;
         ensure!(root.as_os_str().len() <= 70, "output path must be short (<=70 bytes) for native control sockets");
@@ -1046,6 +1073,25 @@ async fn run(a: Args) -> anyhow::Result<()> {
         let parts: Vec<_> = cpu.split_whitespace().collect();
         ensure!(parts.len() == 2 && parts[0].parse::<u64>().ok().zip(parts[1].parse::<u64>().ok()).is_some_and(|(quota, period)| period > 0 && quota == period.saturating_mul(4)), "parent must set cpu.max to exactly four cores");
         check(&mut report, "group_budget", json!({"memory_max":2147483648u64,"swap_max":0,"cpu_max":cpu}));
+        if a.mode == Mode::Pool {
+            use std::os::unix::fs::DirBuilderExt;
+            let daemon = a.pool_daemon.as_ref().context("pool arm requires --pool-daemon")?.canonicalize()?;
+            let directory = root.join("pool");
+            fs::DirBuilder::new().mode(0o700).create(&directory)?;
+            fs::write(directory.join("config.json"), serde_json::to_vec(&json!({"max_bytes":536870912,"max_objects":32768,"max_connections":32,"max_references":32768}))?)?;
+            let log = fs::File::create(root.join("pool.log"))?;
+            pool_child = Some(tokio::process::Command::new(&daemon).args(["memory-pool", "--directory"]).arg(&directory)
+                .stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log).kill_on_drop(true).spawn()?);
+            let socket = directory.join("pool.sock");
+            for _ in 0..100 {
+                ensure!(pool_child.as_mut().unwrap().try_wait()?.is_none(), "daemon pool exited during startup");
+                if socket.exists() { break; }
+                sleep(Duration::from_millis(20)).await;
+            }
+            ensure!(socket.exists(), "daemon pool readiness timed out");
+            a.pool_socket = Some(socket);
+            report["pool_daemon_sha256"] = json!(pvisor::environment_snapshot::file_hash(&daemon)?);
+        }
         report["source"] = json!({"binary_sha256":pvisor::environment_snapshot::file_hash(&std::env::current_exe()?)?,"rootfs":a.rootfs.canonicalize()?,"firmware":a.firmware.canonicalize()?,"compatibility":VmExecutor::checkpoint_compatibility(&VmSettings { library_dir:Some(a.firmware.canonicalize()?), ..Default::default() })?,"guest_sha256":hex(&Sha256::digest(GUEST.as_bytes())),"payload_algorithm":"page-local LCG64 little-endian v1; repeated=bytes(range(256))*16; mutations instance|(1<<32)"});
         // Hash work must yield to the deadline, not block the async supervisor.
         let hash_args = a.clone();
@@ -1086,6 +1132,11 @@ async fn run(a: Args) -> anyhow::Result<()> {
         Ok::<_, anyhow::Error>(())
     })
     .await;
+    if let Some(mut child) = pool_child {
+        child.start_kill()?;
+        let status = timeout(Duration::from_secs(5), child.wait()).await??;
+        report["pool_cleanup"] = json!({"reaped":true,"status":status.to_string()});
+    }
     let cleanup_ok = matches!(cleanup, Ok(Ok(())));
     report["cleanup"] = json!({"all_reaped":cleanup_ok,"error":match cleanup { Ok(Ok(())) => None, Ok(Err(e)) => Some(format!("{e:#}")), Err(e) => Some(e.to_string()) }});
     let cleanup_evidence = report["cleanup"].clone();

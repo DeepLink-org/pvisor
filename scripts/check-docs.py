@@ -7,7 +7,7 @@ import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 import tomllib
 
@@ -110,23 +110,65 @@ def check(strict=False):
             for child in node.values():
                 yield from nav_pages(child)
 
-    config = tomllib.loads((ROOT.parent / "zensical.toml").read_text())
-    root_source = ROOT.parent / config["project"].get("docs_dir", "src")
-    navigation = list(nav_pages(config["project"]["nav"]))
-    for page in navigation:
-        if page.startswith("/") or urlsplit(page).scheme:
-            continue
-        if not (root_source / page).is_file():
-            issues.append(f"navigation page missing: {page}")
-    if len(navigation) != len(set(navigation)):
-        issues.append("navigation lists the same article more than once")
-    for old, new in config["project"]["plugins"]["redirects"]["redirect_maps"].items():
-        target = urlsplit(new)
-        relative = target.path.removeprefix("/pvisor/").rstrip("/")
-        exists = ((source / relative / "index.md").is_file()
-                  or (source / (relative + ".md")).is_file()) if target.scheme else (source / new).is_file()
-        if not exists:
-            issues.append(f"redirect target missing: {old} -> {new}")
+    def has_redirect_maps(node):
+        if isinstance(node, dict):
+            return "redirect_maps" in node or any(has_redirect_maps(value) for value in node.values())
+        if isinstance(node, list):
+            return any(has_redirect_maps(value) for value in node)
+        return False
+
+    configs = {
+        locale: tomllib.loads((ROOT.parent / f"zensical.{locale}.toml").read_text())["project"]
+        for locale in ("en", "zh")
+    }
+    if {path.name for path in ROOT.parent.glob("zensical*.toml")} != {
+        "zensical.en.toml", "zensical.zh.toml"
+    }:
+        issues.append("only the two native locale configurations are allowed")
+    navigation = {}
+    published_sites = {}
+    for locale, config in configs.items():
+        locale_source = ROOT.parent / config["docs_dir"]
+        navigation[locale] = list(nav_pages(config["nav"]))
+        for page in navigation[locale]:
+            if page.startswith("/") or urlsplit(page).scheme:
+                continue
+            if not (locale_source / page).is_file():
+                issues.append(f"{locale}: navigation page missing: {page}")
+        if len(navigation[locale]) != len(set(navigation[locale])):
+            issues.append(f"{locale}: navigation lists the same article more than once")
+        if "redirects" in config.get("plugins", {}) or has_redirect_maps(config):
+            issues.append(f"{locale}: legacy redirect plugin is forbidden")
+        published_sites[locale] = urlsplit(config["site_url"])
+        url = published_sites[locale]
+        if url.scheme not in ("http", "https") or not url.netloc or not url.path.endswith(f"/{locale}/"):
+            issues.append(f"{locale}: site_url must be an absolute published locale URL")
+    if navigation["en"] != navigation["zh"]:
+        issues.append("locale navigation article paths do not match")
+    published = published_sites["en"]._replace(path=published_sites["en"].path.removesuffix("en/"))
+    for locale, config in configs.items():
+        if published_sites[locale] != published._replace(path=published.path + locale + "/"):
+            issues.append(f"{locale}: site_url does not share the published site root")
+        if {alt["lang"]: alt["link"] for alt in config["extra"]["alternate"]} != {
+            lang: published._replace(path=published.path + lang + "/").geturl()
+            for lang in ("en", "zh")
+        }:
+            issues.append(f"{locale}: alternate links must use absolute published locale URLs")
+    entry = ROOT / "index.html"
+    entry_source = ROOT.parent / "index.html"
+    if not entry_source.is_file() or not entry.is_file() or entry.read_bytes() != entry_source.read_bytes():
+        issues.append("root index.html must be copied from docs/index.html")
+    if entry.resolve() in pages:
+        entry_links = {
+            urljoin(published.geturl(), href)
+            for tag, href, _ in pages[entry.resolve()].links if tag == "a"
+        }
+        for locale in ("en", "zh"):
+            if published._replace(path=published.path + locale + "/").geturl() not in entry_links:
+                issues.append(f"root index.html: missing current {locale} language entry")
+    for path, page in pages.items():
+        if page.redirect:
+            issues.append(f"{path.relative_to(ROOT)}: meta refresh redirect is forbidden")
     article_paths = set()
     for locale in ("en", "zh"):
         for article in (source / locale).rglob("*.md"):
@@ -141,7 +183,7 @@ def check(strict=False):
         issues.append("raw .data evidence included in generated site")
     if issues:
         raise SystemExit("\n".join(sorted(set(issues))))
-    published = urlsplit(tomllib.loads((ROOT.parent / "zensical.toml").read_text())["project"]["site_url"])
+
     for locale in ("en", "zh"):
         index = json.loads((ROOT / locale / "search.json").read_text())
         if index["config"]["lang"] != [locale] or not index["items"]:
@@ -156,11 +198,12 @@ def check(strict=False):
     for path, page in pages.items():
         rel = path.relative_to(ROOT)
         locale = rel.parts[0] if rel.parts[0] in ("en", "zh") else None
-        # Native redirect pages have English boilerplate; articles use the locale theme.
-        if locale and not page.redirect and page.language != locale:
+        if locale and page.language != locale:
             issues.append(f"{rel}: html lang={page.language}, expected {locale}")
         for tag, href, classes in page.links:
             url = urlsplit(href)
+            if "md-select__link" in classes and not (url.scheme and url.netloc):
+                issues.append(f"{rel}: language selector must use an absolute published URL: {href}")
             if url.scheme or url.netloc:
                 # Language links use the published origin so single-locale previews
                 # can switch languages. Still validate their generated counterparts.
@@ -170,8 +213,8 @@ def check(strict=False):
                     issues.append(f"{rel}: language selector leaves published site: {href}")
                     continue
             target = unquote(url.path)
-            if target.startswith("/pvisor/"):
-                target = target[len("/pvisor") :]
+            if target.startswith(published.path):
+                target = "/" + target[len(published.path) :]
             dest = (
                 (
                     (ROOT / target.lstrip("/"))

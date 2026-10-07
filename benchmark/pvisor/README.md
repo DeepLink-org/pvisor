@@ -543,6 +543,16 @@ differences against the running default with 5,000 bootstrap resamples. Publish
 these aggregate CSVs with the provenance CSV only after reviewing both locales.
 Separated clusters replace a single P50, P95 is descriptive, and no P99 is emitted.
 
+The user strategy comparison uses `memory_sharing.py --static --strategies
+--memory-mib 512` with the frozen `vm_memory_scale` example and its build receipt.
+It measures nine conditions: three content patterns, each with four independent
+fresh VMs, four shared-snapshot COW restores, and four independent fresh VMs with
+KSM advice. All use private RAM, matching guest/workload budgets, two-second
+scan windows and N=1. Compare ready and post-write phases separately against the
+fresh unshared arm. KSM advice is not a guaranteed merge; retain actual RAM KSM
+bytes. This protocol does not substitute the older independent-snapshot-copy
+control or restored dynamic-private KSM observations.
+
 `memory_sharing.py` is the separate B-VM-MEMORY user protocol for shared
 baselines and KSM. It uses `vm_memory_scale` with 2 vCPU per VM and genuine
 independent-inode controls, preserving the original engineering runner's

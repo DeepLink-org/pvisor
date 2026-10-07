@@ -339,12 +339,6 @@ impl VmSettings {
             !self.ram_dedup || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_none(),
             "vm.ram_dedup cannot be combined with PVISOR_EXPERIMENTAL_MEMORY_POOL"
         );
-        #[cfg(target_os = "linux")]
-        anyhow::ensure!(
-            self.memory_pool.is_none()
-                && std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_none(),
-            "Linux cold pager currently supports bounded instance-local storage only; use vm.cold_ram_compression"
-        );
         Ok(())
     }
 }

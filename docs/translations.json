@@ -15,7 +15,7 @@
   "benchmarks/replay-fidelity.md": "3a67f6ba2abfa4f7c014ca661ac2cc6a3a08296594abe29a97f3761a295f27f1",
   "benchmarks/startup.md": "6d0dcf78fcad89991455051143544b79ba719b21eb3790461ed20f0b0f229918",
   "benchmarks/supervision-cost.md": "b491c32520377c62d6f07fe503ccbd7f1c99563fa9ce917420a0a4f7ab1a534f",
-  "benchmarks/vm-memory/index.md": "5cf585707dccf6c769f062b16f83c00637623c29d317080442517806360f761e",
+  "benchmarks/vm-memory/index.md": "f821ee9c74b1518451b9f8397cae635fc030a4888c7026913d36e17a43bda306",
   "cases/01-first-job.md": "c8a67f2bc7195a5b26c6f08983400b71a1ea374004f9f7848581ec8ae60e96aa",
   "cases/02-review-and-decide.md": "59e56e304cbc329858de116aab215e4209e1ed7bcff417103fd454e669bbf229",
   "cases/03-checkpoint-and-fork.md": "8fef1510d06cac18283bad3f7735ed5ae624403e93f4a8ebce8ff81c6dc5e301",

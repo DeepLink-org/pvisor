@@ -5,7 +5,6 @@ use pvisor_vm::api::ColdRamControl;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use pvisor_vm::api::{FrozenMemory, RuntimeSupport, VmPlatform};
 use std::io;
-#[cfg(not(target_os = "linux"))]
 use std::{
     os::unix::{
         fs::{MetadataExt, PermissionsExt},
@@ -155,11 +154,6 @@ pub(super) fn start_if_requested(
     let Some(_path) = std::env::var_os(POOL_ENV) else {
         return Ok(());
     };
-    #[cfg(target_os = "linux")]
-    return Err(io::Error::other(
-        "Linux cold pager supports bounded instance-local storage only; external pool latency is not supported",
-    ));
-    #[cfg(not(target_os = "linux"))]
     {
         let path = Path::new(&_path);
         let parent = path

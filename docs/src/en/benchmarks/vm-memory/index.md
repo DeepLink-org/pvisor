@@ -10,7 +10,8 @@
 | Compressed offload | Offload saves 77.6–78.2% resident memory per instance; saves more disk backing, with parked residency about 40 MiB |
 | Idle release | Saves 33.9–35.2% residency per instance while the host retains file cache |
 | Memory compression | Per-instance residency increases by 183.8–209.8%; these static readings show no savings |
-| Share across instances | Four VMs configured with 512 MiB each save 58.7–60.3% average per-instance residency with identical contents, or 14.5% with unique random contents; savings after complete rewrites are 13.0–15.1% |
+| Shared snapshot + COW | Relative to independent fresh VMs, identical contents save 71.8–72.0% average per-instance residency; unique random contents save 36.4%. Savings after complete rewrites remain 36.7–37.7% |
+| KSM | About 144–145 MiB per instance after the two-second scan window, close to the unshared baseline; no clear benefit confirmed |
 
 ## Motivation {#motivation}
 
@@ -25,12 +26,12 @@ Every VM has **512 MiB guest RAM, 2 vCPU and 64 MiB application data**. Working 
 **Idle release** has the application actively free the test working set while the VM keeps running; the application regenerates the data when needed again. **Memory offload** pauses the VM, retains RAM state in uncompressed backing and unloads resident RAM; execution continues after restoration. **Compressed offload** stores the same state in compressed backing, saving storage at the cost of compression and decompression.
 
 - Single instances compare default running, idle release, memory compression and memory/compressed offload. Repeated and deterministic random data cover compressible and difficult-to-compress contents; default/memory compression also test distinct compressible pages and a 16 MiB hot region plus 48 MiB cold region.
-- Multiple instances restore four VMs from one sealed snapshot, comparing a shared baseline with independent-inode copies of identical bytes. Check 25%/100% working-set writes and independent termination. KSM on/off has a separate dynamic-private-page comparison.
+- Multiple instances compare unshared VMs, shared snapshot + COW and KSM. The unshared arm boots four independent VMs with private anonymous RAM; the shared arm restores from one sealed snapshot; the KSM arm enables RAM advice on independent fresh VMs. Working sets match, with 25%/100% writes and independent termination checks.
 - One fresh VM or group per condition, no warmups. Single instances have a five-second observation window; multi-instance scan windows are two seconds. No P50/P95, confidence interval or eventual-convergence claim.
 
 **Resident physical memory** covers the complete product group's VM, management processes, compressed store and helpers, using summed process PSS with shared pages counted proportionally. **Host-group memory** uses complete cgroup physical-memory charging, including unmapped file cache and kernel costs charged to that group. These metrics cannot be added: residency describes actual mapped physical pages, while group usage keeps retained cache visible; shared-page attribution also differs. Neither establishes exclusive incremental whole-host cost or production capacity.
 
-Linux x86_64/KVM on an AMD Ryzen 7 9700X, host kernel 7.2.8-200.fc44.x86_64. The complete group uses logical CPUs 0–3, a four-core quota, a 2 GiB cap and zero swap. Coordinator, observer and global KSM thread remain outside it. Inputs are prepared without global cache eviction; background compilation is recorded, so durations are single observations. All 28 conditions passed data, write-isolation, termination and provenance checks without OOM. Some independent-baseline conditions reached the 2 GiB group cap and experienced cache reclaim.
+Linux x86_64/KVM on an AMD Ryzen 7 9700X, host kernel 7.2.8-200.fc44.x86_64. The complete group uses logical CPUs 0–3, a four-core quota, a 2 GiB cap and zero swap. Coordinator, observer and global KSM thread remain outside it. Inputs are prepared without global cache eviction; background compilation is recorded, so durations are single observations. The 16 single-instance conditions and nine new multi-instance conditions come from separate static cohorts. All passed data, write-isolation, termination and provenance checks without OOM.
 
 The commands below configure a 512 MiB VM and enable each feature. Replace `JOB`, `SOCKET` and `ATTEMPT` with startup output identities. Memory offload starts from an ordinary VM; compressed offload requires compressed backing at startup. Memory compression requires userfaultfd permission and compressed backing requires FUSE.
 
@@ -94,23 +95,29 @@ The offload operation happens when entering the idle state and is reported separ
 
 Compressed backing saves storage for repeated contents but requires encoding, decoding and transient memory. Do not set the complete task's memory cap from its parked reading. CSVs retain peaks, phase CPU and complete measurement scope.
 
-### Four VMs with 512 MiB each: shared snapshot baseline {#linux-lifecycle}
+### Four VMs with 512 MiB each: strategy comparison {#linux-lifecycle}
 
-This measures pVisor restoring four VMs from the same snapshot, sharing the read-only RAM baseline and isolating modifications through copy-on-write (COW). The independent control uses four separate files containing identical snapshot bytes. Neither arm enables KSM advice or connects to an external shared compressed cold-page pool.
+Total configured capacity is 2048 MiB. Unshared means four independently booted VMs. Shared snapshot + COW maps one immutable RAM file and creates instance-private pages on writes. KSM enables deduplication advice on independently booted VMs. Neither the unshared nor shared-snapshot arm enables KSM advice.
 
-Total configured capacity is 2048 MiB. Per-instance residency is complete-group residency divided by four, including allocated helper overhead and proportional shared pages. N=1 per condition, in MiB. Savings use the independent baseline with the same working set and phase, calculated from unrounded readings.
+Per-instance residency = complete-product group PSS divided by four, including allocated helper overhead. N=1 per condition, with a two-second scan window, in MiB. Savings use the unshared baseline with the same working set and phase, calculated from unrounded readings.
 
-| Working set | Independent snapshot residency per instance | Shared snapshot residency per instance | Per-instance savings | Per-instance savings after 100% writes |
-|---|---:|---:|---:|---:|
-| Identical repeated data | 104.7 | 41.6 | 60.3% | 13.8% |
-| Identical random data | 104.2 | 43.1 | 58.7% | 13.0% |
-| Unique random data per VM | 106.9 | 91.5 | 14.5% | 15.1% |
+| Working set | Strategy | Residency per instance MiB | Per-instance savings | Residency per instance after 100% writes MiB | Post-write per-instance savings |
+|---|---|---:|---:|---:|---:|
+| Identical repeated data | Unshared | 145.7 | Baseline | 145.7 | Baseline |
+| Identical repeated data | Shared snapshot + COW | 41.1 | 71.8% | 90.8 | 37.7% |
+| Identical repeated data | KSM | 145.1 | 0.5% | 145.9 | Increase 0.2% |
+| Identical random data | Unshared | 145.0 | Baseline | 145.8 | Baseline |
+| Identical random data | Shared snapshot + COW | 40.5 | 72.0% | 90.9 | 37.6% |
+| Identical random data | KSM | 144.1 | 0.6% | 145.1 | 0.5% |
+| Unique random data per VM | Unshared | 143.6 | Baseline | 144.3 | Baseline |
+| Unique random data per VM | Shared snapshot + COW | 91.3 | 36.4% | 91.4 | 36.7% |
+| Unique random data per VM | KSM | 144.8 | Increase 0.8% | 145.8 | Increase 1.0% |
 
-For example, identical repeated data reduces average per-instance residency from 104.7 MiB to 41.6 MiB, saving 60.3%. After complete rewrites, independent/shared group totals are 426.4 / 367.4 MiB, or 106.6 / 91.8 MiB per instance, saving 13.8%. Post-write savings use the post-write independent baseline.
+Shared snapshot + COW retains both common system state and unchanged application pages. After completely rewriting the 64 MiB application working set, system pages may still remain shared. Unique random contents already create private pages during preparation, reducing initial savings.
 
-Identical contents retain the most sharing. Unique random contents already add private pages during preparation, and writes reduce the benefit. Repeated-data independent/shared groups had 2035.7 / 841.2 MiB cache-inclusive usage, distinct from their 418.8 / 166.4 MiB residency. Baseline storage cache consumes RAM, but it cannot all be called the VM's resident working set, nor can its ratio directly predict runnable VM counts.
+The host KSM scanner is enabled, and advice is submitted for private RAM in independently booted VMs. The table reports actual residency; successful advice does not establish merging. This single two-second observation confirms no clear benefit and does not describe eventual scan results.
 
-KSM is a separate comparison on dynamic private pages produced after restoration. Residency with KSM advice off/on was 363.5 / 362.1 MiB for repeated data, 367.8 / 361.3 MiB for identical random data and 366.1 / 365.0 MiB for unique random data. Two seconds and one sample cannot confirm an additional benefit or prove KSM ineffective. The external shared compressed cold-page pool (`--vm-memory-pool`) has no measurements for this 512 MiB configuration. The current Linux pager supports instance-local compressed storage only; the external pool requires Apple Silicon macOS. See the [experimental cold-page pool](../../design/memory-optimization/proof-of-concept.md#v1-integration). These data do not establish long-term stability, real Agent latency, macOS or other-runtime density comparisons.
+The memory-pool strategy will be measured after a daemon-owned shared compressed pool is connected to real VMs and complete-group accounting passes, including daemon/pool residency. These three strategies do not use an external pool or establish long-term stability, real Agent latency or production density.
 
 ### Data and reproduction {#run}
 

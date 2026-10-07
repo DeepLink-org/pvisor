@@ -339,7 +339,7 @@ search:
 | `benchmark/pvisor/README.md` 中的数据 | `benchmarks/startup.md` | 数据迁入站点，脚本和原始报告仍放在 `benchmark/` |
 | `benchmark/replay/qwen3.6-results.md` | `benchmarks/replay-fidelity.md` | 同上 |
 
-所有迁移都在 `docs/zensical*.toml` 的 `[project.plugins.redirects.redirect_maps]` 中登记旧路径到新路径的映射，由 Zensical 原生生成重定向。
+迁移时更新站内链接，以及 `docs/zensical.zh.toml` 和 `docs/zensical.en.toml` 的导航。不保留历史重定向或旧入口兼容页；发布根地址只提供当前中英文站点的语言选择入口。
 
 ## 10. 双语策略
 
@@ -357,7 +357,7 @@ search:
 
 | 阶段 | 内容 | 产出 |
 | --- | --- | --- |
-| 第一期：骨架 | 新目录与导航；全部 `[TODO]` 占位页；页面迁移与重定向；修复 `shared-image-cache` 导航；`why/` 四页；`security/index`、`disclosure`，加根目录 `SECURITY.md`、`CONTRIBUTING.md` | 结构完整，需求可见 |
+| 第一期：骨架 | 新目录与导航；全部 `[TODO]` 占位页；页面迁移与站内链接更新；修复 `shared-image-cache` 导航；`why/` 四页；`security/index`、`disclosure`，加根目录 `SECURITY.md`、`CONTRIBUTING.md` | 结构完整，需求可见 |
 | 第二期：可信 | `concepts/staging`、`security/threat-model`、`reference/platforms`、`run-bundle`、`config`；B1、B2、B4、B8 四项基准；C1、C2 两项对比；英文 P0 | 首屏有数字，有威胁模型 |
 | 第三期：影响力 | B5、B6、B7；C3、C4、C5；`guides/ci`、`rl-rollouts`；`design/research/*`；`adopters`；英文 P1 | 研究和平台读者有完整入口 |
 

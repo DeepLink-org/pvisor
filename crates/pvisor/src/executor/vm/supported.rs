@@ -2162,7 +2162,8 @@ fn run_linked_krun(
             handle.resume().map_err(std::io::Error::other)?;
         }
         #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), all(target_os = "macos", target_arch = "aarch64")))]
-        super::pager::start_if_requested(handle.clone(), spec.cold_ram_compression, spec.memory_mib)?;
+        super::pager::start_if_requested(handle.clone(), spec.cold_ram_compression, spec.memory_mib)
+            .inspect_err(|error| eprintln!("cold RAM pager startup failed: {error}"))?;
         std::thread::Builder::new()
             .name("pvisor-vm-control".into())
             .spawn(move || {
@@ -2741,7 +2742,7 @@ mod tests {
         let error = VmExecutor::new(eligible).unwrap_err().to_string();
         assert_eq!(
             error,
-            "Linux cold pager currently supports bounded instance-local storage only; use vm.cold_ram_compression"
+            "resolve vm.memory_pool socket"
         );
         assert!(!socket.exists());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);

@@ -26,13 +26,18 @@ just docs-build         # build docs/site and validate generated pages
 ```
 
 The recipes call `zensical build` and `zensical serve` directly. Configuration is
-checked-in native TOML, using tables and arrays of tables rather than generated
-inline dictionaries. No Python build wrapper, source copy, temporary configuration,
-HTML rewriting, custom search index or custom HTTP server is involved.
+checked-in native TOML. Define navigation as a single nested `nav = [...]` array
+under `[project]`, following Zensical's official navigation examples. Use inline
+tables for labels and nested arrays for sections and groups, without repeated
+`[[project.nav...]]` headers. No configuration is generated at build time, and no
+Python build wrapper, source copy, temporary configuration, HTML rewriting,
+custom search index or custom HTTP server is involved.
 
-Zensical has one theme language and search index per project. `zensical.toml`
-builds the root landing page, shared assets and legacy URLs; `zensical.zh.toml`
-and `zensical.en.toml` then build each locale directly into `site/zh` and `site/en`.
+Zensical has one theme language and search index per project. Keep exactly two
+native configurations: `zensical.zh.toml` and `zensical.en.toml`, building each
+locale directly into `site/zh` and `site/en`. `docs/index.html` is a small static
+language selector copied unchanged to the published root; it needs no third
+Zensical project. Builds start with a clean `docs/site/` to remove stale outputs.
 Both locale configurations own their translated navigation and native search.
 The language selector keeps the current article. Preview one locale at a time
 with the native server; alternate-language links use absolute published-site URLs, preserving the article
@@ -52,11 +57,11 @@ CI uses the same bilingual build and page checks before uploading `docs/site`.
 
 ## Layout
 
-`docs/landing/` contains the root landing page. `docs/src/zh/` and `docs/src/en/`
-contain the complete locale source trees. `docs/overrides/assets/` holds shared
-static resources that Zensical publishes natively in each project. The `docs/` root holds site
-infrastructure — the three `zensical*.toml` files, `translations.json`,
-`overrides/`, and this file. Keep each document next to what it serves: tool and
+`docs/src/zh/` and `docs/src/en/` contain the complete locale source trees and
+their product homepages. `docs/overrides/assets/` holds shared static resources
+that Zensical publishes natively in each project. The `docs/` root holds site
+infrastructure — the two locale TOML files, the static `index.html` language
+selector, `translations.json`, `overrides/`, and this file. Keep each document next to what it serves: tool and
 specification documents live with their tool (for example `tools/semspec/DESIGN.md`),
 and user-facing protocol pages belong in the site's `reference/` tree, not at the
 `docs/` root. `docs/site/` is generated output; never edit it by hand.
@@ -170,11 +175,11 @@ it. The models are the uv, Ruff and Ray docs.
 - A page with no data yet says “建设中” and links to its TODO page instead of making an empty claim.
 
 The native TOML files own navigation. Maintain paired Chinese and English articles.
-`[project.plugins.redirects.redirect_maps]` maps old Markdown paths to their
-replacements; Zensical emits redirects for English, Chinese, and the original
-unprefixed published URLs. Update incoming source links to canonical paths as well.
-The checker rejects missing Chinese originals, missing or duplicate navigation targets,
-broken links, missing anchors and invalid redirect targets.
+Keep only current article paths; do not maintain historical redirect maps or
+compatibility pages. When moving or merging articles, update incoming source
+links and both locale navigations. Old published article URLs are retired.
+The checker rejects missing Chinese originals, missing or duplicate navigation
+targets, broken links, missing anchors and generated redirect pages.
 Use explicit heading IDs for links to translated sections, so wording changes do not break anchors.
 Appendices may be reached through an index without appearing in the main navigation.
 Keep semantic case IDs, assertions and annotations intact; passing a case does
@@ -207,8 +212,8 @@ versions, claims and limitations before recording. This revision file is not a
 semspec approval ledger and never replaces human semantic approval.
 
 Maintain matching navigation paths in `zensical.zh.toml` and `zensical.en.toml`.
-The root navigation links to both locale homepages. Update all relevant redirect
-tables when moving an article. Documented pages become searchable in both
+The root navigation links to both locale homepages. Update incoming links and navigation
+when moving an article; do not add historical redirects. Documented pages become searchable in both
 languages together. Do not fill
 missing measurements, audit results or maintainer decisions with inferred claims;
 state the current public record and keep engineering follow-ups below.

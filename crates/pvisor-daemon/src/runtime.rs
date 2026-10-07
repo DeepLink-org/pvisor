@@ -179,6 +179,8 @@ struct Identity {
     cgroup_device: u64,
     cgroup_inode: u64,
     boot_id: String,
+    #[serde(default)]
+    memory_pool: Option<PathBuf>,
 }
 
 /// Durable proof published only with exclusive ownership and an empty native
@@ -280,6 +282,7 @@ fn validate_reply(identity: &Identity, request: &Request, response: Response) ->
 }
 
 pub struct NativeRuntime {
+    memory_pool: Option<PathBuf>,
     config: NativeRuntimeConfig,
     operations: SandboxLocks,
 }
@@ -323,9 +326,15 @@ impl NativeRuntime {
             publish_new(&marker, &config.owner)?;
         }
         Ok(Self {
+            memory_pool: None,
             config,
             operations: SandboxLocks::default(),
         })
+    }
+
+    pub fn with_memory_pool(mut self, socket: Option<PathBuf>) -> Self {
+        self.memory_pool = socket;
+        self
     }
 
     fn directory(&self, id: &str) -> Result<PathBuf> {
@@ -644,6 +653,7 @@ impl Runtime for NativeRuntime {
                 cgroup_device: 0,
                 cgroup_inode: 0,
                 boot_id: current_boot_id()?,
+                memory_pool: self.memory_pool.clone(),
             };
             make_run_spec(&identity)?;
             publish_new(&directory.join("preparing.json"), &identity)?;
@@ -864,7 +874,8 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
     let run_dir = sandbox_dir.join("run");
     private_directory(&run_dir)?;
     let settings = pvisor::VmSettings {
-        ram_backing: Some(run_dir.join("live-ram")),
+        ram_backing: identity.memory_pool.is_none().then(|| run_dir.join("live-ram")),
+        memory_pool: identity.memory_pool.clone(),
         rootfs: Some(identity.image.rootfs.clone()),
         rootfs_immutable: true,
         library_dir: identity.image.library_dir.clone(),
@@ -2100,11 +2111,13 @@ mod tests {
             cgroup_device: 1,
             cgroup_inode: 1,
             boot_id: "32345678-1234-4234-8234-123456789abc".into(),
+            memory_pool: None,
         };
         (identity, directory)
     }
     fn runtime_fixture(identity: &Identity, directory: &Path) -> NativeRuntime {
         NativeRuntime {
+            memory_pool: None,
             config: NativeRuntimeConfig {
                 state_dir: directory.parent().unwrap().to_owned(),
                 owner: identity.owner.clone(),
@@ -2703,12 +2716,14 @@ mod tests {
             executable: temp.path().join("unused"),
         };
         let runtime = NativeRuntime {
+            memory_pool: None,
             config: config.clone(),
             operations: SandboxLocks::default(),
         };
         runtime.cleanup(&identity).await.unwrap();
         assert_eq!(runtime.inspect(ID).await.unwrap(), RuntimeState::Missing);
         let recovered = NativeRuntime {
+            memory_pool: None,
             config,
             operations: SandboxLocks::default(),
         };
@@ -2728,6 +2743,7 @@ mod tests {
         identity.cgroup_inode = 0;
         publish_new(&directory.join("preparing.json"), &identity).unwrap();
         let runtime = NativeRuntime {
+            memory_pool: None,
             config: NativeRuntimeConfig {
                 state_dir: directory.parent().unwrap().to_owned(),
                 owner: identity.owner.clone(),
@@ -2761,6 +2777,7 @@ mod tests {
         )
         .unwrap();
         let runtime = NativeRuntime {
+            memory_pool: None,
             config: NativeRuntimeConfig {
                 state_dir: directory.parent().unwrap().to_owned(),
                 owner: identity.owner.clone(),

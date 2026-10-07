@@ -95,7 +95,7 @@ def cells(args):
 def worker_command(config):
     if config['vms'] not in (1, 2, 4):
         raise ValueError('VM count must be 1, 2 or 4; hard cap includes preparation')
-    if config['mode'] not in (*MODES,'fresh') or config['pattern'] not in PATTERNS:
+    if config['mode'] not in (*MODES,'fresh','pool') or config['pattern'] not in PATTERNS:
         raise ValueError('unknown condition')
     if type(config['dedup']) is not bool or (config['mode'] not in (*RESTORE_MODES, 'fresh') and config['dedup']):
         raise ValueError('offload and dedup must be separate conditions')
@@ -104,7 +104,7 @@ def worker_command(config):
                  'seed', 'settle_ms', 'ksm_wait_seconds'):
         value = config[name]
         cmd.extend(['--' + name.replace('_', '-'), str(value).lower() if isinstance(value, bool) else str(value)])
-    for name in ('independent_inodes', 'cpus','memory_mib'):
+    for name in ('independent_inodes', 'cpus','memory_mib','pool_daemon'):
         if name in config:
             value = config[name]
             cmd.extend(['--'+name.replace('_','-'), str(value).lower() if isinstance(value,bool) else str(value)])
@@ -203,11 +203,18 @@ def validate_report(report, config):
             raise ValueError('missing independent RAM inode proof')
     if report.get('source', {}).get('binary_sha256') != config['example_sha256']:
         raise ValueError('worker binary receipt mismatch')
+    if config['mode']=='pool':
+        if report.get('pool_cleanup',{}).get('reaped') is not True:
+            raise ValueError('daemon pool not reaped')
+        if report.get('pool_daemon_sha256') != digest(Path(config['pool_daemon'])):
+            raise ValueError('daemon pool binary mismatch')
+        if not report.get('pool_observations'):
+            raise ValueError('missing actual pool observations')
     if report.get('cleanup', {}).get('all_reaped') is not True:
         raise ValueError('missing terminal reaping fence')
     n, restored_mode = config['vms'], config['mode'] in RESTORE_MODES
     dynamic_ksm = config['mode'] == 'ksm'
-    write_mode = restored_mode or config['mode'] == 'fresh'
+    write_mode = restored_mode or config['mode'] in ('fresh','pool')
     phases = report.get('phases', [])
     if dynamic_ksm:
         names = ['ready', 'dynamic_private_before_wait', 'dynamic_private_after_wait',

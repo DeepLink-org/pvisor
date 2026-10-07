@@ -45,9 +45,17 @@ enum Command {
         memory_bytes: u64,
         #[arg(long, default_value_t = 86400)]
         max_timeout_seconds: u64,
+        /// Enable the daemon-owned experimental shared cold-page pool.
+        #[arg(long)]
+        memory_pool: bool,
     },
     /// Print the fixed protocol baseline, not a claim of full API support.
     Protocol,
+    /// Serve the daemon-owned bounded shared cold-page pool component.
+    MemoryPool {
+        #[arg(long)]
+        directory: PathBuf,
+    },
     #[command(hide = true)]
     NativeSupervisor {
         #[arg(long)]
@@ -61,6 +69,9 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let args = Args::parse();
+    if let Command::MemoryPool { directory } = &args.command {
+        return pvisor_daemon::memory_pool::run(directory);
+    }
     if matches!(args.command, Command::Protocol) {
         println!(
             "OpenSandbox {} ({})",
@@ -81,7 +92,7 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(command: Command) -> anyhow::Result<()> {
     match command {
-        Command::Protocol => unreachable!(),
+        Command::Protocol | Command::MemoryPool { .. } => unreachable!(),
         Command::NativeSupervisor { sandbox_dir } => {
             run_native_supervisor(&sandbox_dir).await?;
         }
@@ -96,6 +107,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             cpu_millis,
             memory_bytes,
             max_timeout_seconds,
+            memory_pool,
         } => {
             anyhow::ensure!(
                 cfg!(all(target_os = "linux", target_arch = "x86_64")),
@@ -128,13 +140,25 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 max_timeout_seconds,
             };
             let daemon = Daemon::open(config, move |owner| {
-                Ok(Arc::new(NativeRuntime::new(NativeRuntimeConfig {
-                    state_dir: runtime_state.canonicalize()?,
-                    owner,
-                    cgroup_root,
-                    images_dir,
-                    executable,
-                })?)
+                let pool = if memory_pool {
+                    Some(pvisor_daemon::memory_pool::ensure_service(
+                        &runtime_state.canonicalize()?,
+                        &executable,
+                        Default::default(),
+                    )?)
+                } else {
+                    None
+                };
+                Ok(Arc::new(
+                    NativeRuntime::new(NativeRuntimeConfig {
+                        state_dir: runtime_state.canonicalize()?,
+                        owner,
+                        cgroup_root,
+                        images_dir,
+                        executable,
+                    })?
+                    .with_memory_pool(pool),
+                )
                     as Arc<dyn pvisor_daemon::runtime::Runtime>)
             })
             .await?;

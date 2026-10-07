@@ -7,14 +7,14 @@ import random
 import statistics
 from types import SimpleNamespace
 
-from memory_sharing import ARMS,STRATEGIES,matrix,validate
+from memory_sharing import ARMS,STRATEGIES,strategy_arms,matrix,validate
 from memory_savings import digest,validate_observation
 from publication import distribution,write_csv
 
 
 def load_cohort(path,static=False):
     root=path.parent;report=json.loads(path.read_text());args=report['arguments']
-    planned=[c for c in matrix(args.get("strategies",False)) if not static or c[0]==4]
+    planned=[c for c in matrix(args.get("strategies",False),bool(args.get("pool_daemon"))) if not static or c[0]==4]
     if (report.get('schema')!='pvisor-memory-sharing-cohort/v1' or report.get('role')!='user-facing'
             or report.get('benchmark_id')!='B-VM-MEMORY'
             or report.get('budget')!=dict(cpu_cores=4,memory_max=2147483648,swap_max=0)
@@ -36,14 +36,19 @@ def load_cohort(path,static=False):
         raise ValueError('incomplete harness inventory')
     for file,expected in report['harnesses'].items():
         if digest(root/file)!=expected:raise ValueError('harness mismatch')
+    if args.get('pool_daemon'):
+        pool=report.get('pool',{})
+        if pool.get('binary_sha256')!=digest(root/'pool-daemon') or pool.get('build_receipt_sha256')!=digest(root/'pool-build-receipt.json') or pool.get('source_manifest_sha256')!=digest(root/'pool-source-manifest.json'):
+            raise ValueError('daemon pool provenance mismatch')
     expected={(r,n,p,a) for r in range(-args['warmups'],args['samples']) for n,p,a in planned}
     records={};inputs=SimpleNamespace(rootfs=Path(args['rootfs']),firmware=Path(args['firmware']))
     for index,row in enumerate(report['attempts']):
         c=row['condition'];key=(row['round'],c['vms'],c['pattern'],row['arm'])
         if key not in expected or key in records or row['warmup']!=(row['round']<0):
             raise ValueError('unplanned/duplicate trial')
-        wanted=dict(vms=c['vms'],pattern=c['pattern'],**(STRATEGIES if args.get("strategies") else ARMS)[row['arm']],cpus=2,
+        wanted=dict(vms=c['vms'],pattern=c['pattern'],**(strategy_arms(bool(args.get("pool_daemon"))) if args.get("strategies") else ARMS)[row['arm']],cpus=2,
                     seed=20261006,settle_ms=500,ksm_wait_seconds=args['scan_seconds'])
+        if row['arm']=='daemon-pool':wanted['pool_daemon']=args['pool_daemon']
         if 'memory_mib' in args:wanted['memory_mib']=args['memory_mib']
         if c!=wanted:raise ValueError('condition does not match planned arm')
         if row['status']!='successful' or row['returncode']!=0 or not row['unit_quiescent']:
@@ -96,9 +101,9 @@ def publish(path,output,static=False):
                 arm=arm,metric=metric,unit='MiB' if metric.endswith('_mib') else 'ms',
                 **(dict(n=1,value=values[0][metric]) if static else
                    distribution([v[metric] for v in values]))))
-        reference=({'snapshot-cow':'unshared','ksm':'unshared'} if report['arguments'].get('strategies') else {'shared':'independent','ksm-on':'ksm-off'}).get(arm)
+        reference=({'snapshot-cow':'unshared','ksm':'unshared','daemon-pool':'unshared'} if report['arguments'].get('strategies') else {'shared':'independent','ksm-on':'ksm-off'}).get(arm)
         if reference:
-            metrics=('ready_mib','cow25_mib','cow100_mib') if arm in ('shared','snapshot-cow','ksm') else (
+            metrics=('ready_mib','cow25_mib','cow100_mib') if arm in ('shared','snapshot-cow','ksm','daemon-pool') else (
                 'dynamic_private_after_wait_mib','cow25_mib','cow100_mib','dynamic_private_after_wait_cpu_ms')
             metrics=list(metrics)
             metrics += [metric[:-4]+'_physical_mib' for metric in metrics.copy()
@@ -106,8 +111,15 @@ def publish(path,output,static=False):
             for metric in metrics:
                 differences=[records[r,n,pattern,arm][metric]-records[r,n,pattern,reference][metric] for r in range(samples)]
                 if static:
+                    physical=metric.endswith('_physical_mib')
+                    baseline=records[0,n,pattern,reference][metric]
+                    current=records[0,n,pattern,arm][metric]
+                    if physical and baseline <= 0:raise ValueError('nonpositive resident baseline')
                     comparisons.append(dict(cohort=path.parent.name,vms=n,pattern=pattern,arm=arm,reference=reference,
-                        metric=metric,n=1,observed_difference=differences[0]))
+                        metric=metric,n=1,observed_difference=differences[0],
+                        reference_per_instance_mib=baseline/n if physical else '',
+                        current_per_instance_mib=current/n if physical else '',
+                        resident_saving_pct=100*(baseline-current)/baseline if physical else ''))
                     continue
                 rng=random.Random(7800)
                 boot=sorted(statistics.median(rng.choices(differences,k=samples)) for _ in range(5000))

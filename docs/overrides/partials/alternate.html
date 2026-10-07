@@ -1,6 +1,5 @@
 {# Each article has a matching path in both languages. #}
-{% set current = page.url if page else '' %}
-{% set suffix = current[3:] if config.extra.root and current[:3] in ['en/', 'zh/'] else current %}
+{% set suffix = page.url if page else '' %}
 <div class="md-header__option">
   <div class="md-select">
     <button class="md-header__button md-icon" aria-label="{{ lang.t('select.language') }}">

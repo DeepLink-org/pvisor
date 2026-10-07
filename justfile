@@ -211,9 +211,10 @@ test-benchmark *args:
 # Build both languages with the same pinned tool as CI, then validate links.
 docs-build:
     python3 scripts/check-reference.py
-    uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.toml
+    rm -rf docs/site
     uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.zh.toml
     uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.en.toml
+    cp docs/index.html docs/site/index.html
     python3 scripts/check-docs.py
 
 # Native locale preview; accepts Zensical options such as -a HOST:PORT.
