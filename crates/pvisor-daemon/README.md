@@ -301,7 +301,7 @@ with the same configuration. Connections authenticate the host UID; individual
 connection references are released on disconnect. Default limits are 512 MiB
 of encoded payload, 32,768 objects, 32 connections and 32,768 references per
 connection. Indexes, threads and allocator memory are additional overhead.
-Linux requires the existing kernel-fault userfaultfd permission.
+Each Linux 4 KiB cold page consumes one connection reference; the default reference ceiling holds at most 128 MiB of cold RAM per VM. Healthy budget rejection leaves the page resident. Linux requires the existing kernel-fault userfaultfd permission.
 
 Reserve host memory for the pool separately from sandbox admission: its process
 is outside individual sandbox cgroups and their hard limits. Startup preserves sparse guest RAM. First-touch faults allocate one 4 KiB

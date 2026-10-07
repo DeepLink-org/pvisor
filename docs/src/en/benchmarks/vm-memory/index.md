@@ -10,9 +10,9 @@
 | Compressed offload | Saves 78.0–78.1% resident memory per instance; saves more disk backing, with parked residency about 40 MiB |
 | Idle release | Saves 31.7–34.7% residency per instance while the host retains file cache |
 | Memory compression | Repeated contents save 18.9% per instance; random contents increase residency by 18.2%, depending on compressibility |
-| Shared snapshot + COW | Relative to independent fresh VMs, identical contents save 67.9–68.9% average per-instance residency; unique random contents save 31.2%. Savings after complete rewrites remain 31.3–32.4% |
-| KSM | After 60 seconds, per-instance savings are 63.0% for repeated contents, 51.6% for identical random contents and 15.9% for unique random contents |
-| Daemon memory pool | After the fix, about 115–133 MiB resident per instance; repeated contents save 14.1%, and the two random workloads save 0.5–0.8% |
+| Shared snapshot + COW | Identical contents save 68.4–69.0% per instance; unique random contents save 30.6%. Savings after complete rewrites remain 31.0–31.8% |
+| KSM | After 60 seconds, savings are 63.7% for repeated contents, 50.8% for identical random contents and 16.3% for unique random contents |
+| Daemon memory pool | About 117–139 MiB resident per instance; repeated / identical random / unique random savings are 12.4% / 11.0% / Increase 4.6% |
 
 ## Motivation {#motivation}
 
@@ -76,7 +76,7 @@ N=1 per condition, sampled five seconds after the operation, in MiB. Savings = (
 
 Idle release lowers residency to about 118–123 MiB, while cache-inclusive usage remains about 223–224 MiB. This does not establish an equal net host-RAM reclaim. Memory offload lowers both readings, providing clearer savings.
 
-Memory compression keeps the VM running. After the fix it handles only resident cold chunks and retains allocation on demand for unused RAM. Repeated contents use 147.2 MiB and random contents 212.1 MiB. Distinct compressible pages use 146.4 MiB and the hot/cold mix 158.3 MiB, versus default residency of 179.8 / 177.8 MiB. Scanning, encoding and decompression on subsequent access consume CPU; savings depend on the actual working set.
+Memory compression keeps the VM running. It handles only resident cold chunks and retains allocation on demand for unused RAM. Repeated contents use 147.2 MiB and random contents 212.1 MiB. Distinct compressible pages use 146.4 MiB and the hot/cold mix 158.3 MiB, versus default residency of 179.8 / 177.8 MiB. Scanning, encoding and decompression on subsequent access consume CPU; savings depend on the actual working set.
 
 ### Offload storage and recovery cost
 
@@ -104,26 +104,26 @@ Per-instance residency = complete-product group PSS divided by four, including a
 
 | Working set | Strategy | Residency per instance MiB | Per-instance savings | Residency per instance after 100% writes MiB | Post-write per-instance savings |
 |---|---|---:|---:|---:|---:|
-| Identical repeated data | Unshared | 133.7 | Baseline | 135.2 | Baseline |
-| Identical repeated data | Shared snapshot + COW | 41.7 | 68.9% | 91.4 | 32.4% |
-| Identical repeated data | KSM | 49.5 | 63.0% | 113.3 | 16.2% |
-| Identical repeated data | Daemon memory pool | 114.9 | 14.1% | 118.4 | 12.4% |
-| Identical random data | Unshared | 133.8 | Baseline | 134.9 | Baseline |
-| Identical random data | Shared snapshot + COW | 43.0 | 67.9% | 91.7 | 32.0% |
-| Identical random data | KSM | 64.7 | 51.6% | 113.4 | 15.9% |
-| Identical random data | Daemon memory pool | 133.0 | 0.5% | 121.0 | 10.3% |
-| Unique random data per VM | Unshared | 133.1 | Baseline | 134.2 | Baseline |
-| Unique random data per VM | Shared snapshot + COW | 91.5 | 31.2% | 92.2 | 31.3% |
-| Unique random data per VM | KSM | 111.9 | 15.9% | 112.7 | 16.0% |
-| Unique random data per VM | Daemon memory pool | 132.0 | 0.8% | 120.5 | 10.2% |
+| Identical repeated data | Unshared | 133.1 | Baseline | 134.8 | Baseline |
+| Identical repeated data | Shared snapshot + COW | 42.1 | 68.4% | 91.9 | 31.8% |
+| Identical repeated data | KSM | 48.4 | 63.7% | 112.8 | 16.3% |
+| Identical repeated data | Daemon memory pool | 116.6 | 12.4% | 119.0 | 11.7% |
+| Identical random data | Unshared | 132.6 | Baseline | 133.8 | Baseline |
+| Identical random data | Shared snapshot + COW | 41.1 | 69.0% | 91.5 | 31.6% |
+| Identical random data | KSM | 65.2 | 50.8% | 113.2 | 15.4% |
+| Identical random data | Daemon memory pool | 118.0 | 11.0% | 119.4 | 10.8% |
+| Unique random data per VM | Unshared | 132.6 | Baseline | 133.4 | Baseline |
+| Unique random data per VM | Shared snapshot + COW | 92.0 | 30.6% | 92.0 | 31.0% |
+| Unique random data per VM | KSM | 111.0 | 16.3% | 111.7 | 16.3% |
+| Unique random data per VM | Daemon memory pool | 138.7 | Increase 4.6% | 140.5 | Increase 5.3% |
 
 Shared snapshot + COW retains both common system state and unchanged application pages. After completely rewriting the 64 MiB application working set, system pages may still remain shared. Unique random contents already create private pages during preparation, reducing initial savings.
 
-KSM produced actual merged pages during the 60-second window. Per-instance residency was 49.5 MiB for repeated contents, 64.7 MiB for identical random contents and 111.9 MiB for unique random contents. It merges identical pages within and across instances; unique random data must remain separately stored, reducing savings. Complete rewrites break existing sharing, leaving about 15–17% savings in the short post-write observation; these readings do not wait another 60 seconds for new pages to merge.
+KSM produces actual merged pages during the 60-second window. Repeated, identical random and unique random contents use 48.4/65.2/111.0 MiB resident per instance. It merges identical pages within and across instances; unique random data remains separately stored. Complete rewrites break existing sharing. Post-write readings do not wait another 60 seconds and do not establish reconverged savings. Every VM passes private-RAM, accepted-advice and mergeable-mapping checks.
 
-The earlier KSM startup path used shared RAM mappings and skipped all dedup advice, so its result could not establish a lack of KSM benefit. This run uses private anonymous RAM for both KSM and the unshared control, and verifies accepted advice and mergeable mappings for every VM. The 60-second window does not establish eventual convergence or stable production savings.
+**The daemon pool scans, deduplicates and reclaims independent 4 KiB cold pages.** Per-instance residency for the three workloads is 116.6/118.0/138.7 MiB, including pool and helper overhead; complete-group startup peaks are 561–650 MiB. Scanning skips nonresident pages, and object references and checksum metadata are allocated only for reclaimed pages, preserving physical allocation on demand. Access restores only the requested page while adjacent cold pages remain in the pool.
 
-**The daemon pool saves 14.1% for repeated contents and 0.5–0.8% for random contents.** RAM remains allocated on demand, and scanning only handles resident cold chunks; first access to an unallocated address materializes one zero page. Stored object sizes do not represent whole-group usage: the table includes the pool component and helpers. The four-VM/pool startup peak is 539–576 MiB; all four strategies retain the same 4 GiB group ceiling. Random contents are difficult to compress, and identical application data in independently booted VMs may not occupy matching 64 KiB chunk boundaries, limiting pool savings in this short window. Scanning, encoding and fault restoration consume CPU, and pool-process loss fails dependent VMs.
+The pool holds identical cold-page objects, restoring VM-private pages on access. Continuously read pages therefore do not retain pool sharing. It serves cold-page reclamation, with savings depending on the scan window, compressibility and access patterns. KSM and shared snapshot + COW can retain sharing during reads. Scanning, encoding, object transport and fault restoration consume CPU; pool-process loss fails dependent VMs.
 
 Append `--memory-pool` to `pvisor-daemon serve` to enable it; the default is off. The pool runs separately from the API process and retains objects across API restart. See [the daemon guide](../../guides/daemon/index.md#memory-pool) for configuration and budgets. This run measures the real daemon pool component and VM path; it does not start the complete OpenSandbox API/SDK data plane or establish long-term stability, real Agent latency or production density.
 
