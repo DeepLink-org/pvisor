@@ -1852,6 +1852,41 @@ impl OverlayCore {
         Ok(self.metadata_resolved(rel)?.metadata)
     }
 
+    /// Query the current upper object for a still-lower regular-file hardlink.
+    /// The copy-up group belongs to this Core owner, independent of adapter inode
+    /// lookup/handle lifetimes. Performs checked merged resolution and hardlink
+    /// authorization, then reads fresh no-follow upper metadata under the group
+    /// lock. Returns `None` for upper winners or no surviving copied-up alias.
+    /// Does not materialize an alias, capture content or change namespace; callers
+    /// that need a physical upper alias must use `copy_up` and observe its effects.
+    /// Namespace, policy and I/O errors propagate; a poisoned group lock is EIO.
+    pub fn copied_hard_link_metadata(&self, rel: &Path) -> io::Result<Option<Metadata>> {
+        let entry = self.metadata_resolved(rel)?;
+        if entry.resolved.is_upper || !entry.metadata.is_file() {
+            return Ok(None);
+        }
+        let identity = (entry.metadata.dev(), entry.metadata.ino());
+        let groups = self
+            .copied_hard_links
+            .lock()
+            .map_err(|_| error(libc::EIO))?;
+        if let Some(paths) = groups.get(&identity) {
+            for path in paths {
+                let metadata = match crate::backend::symlink_metadata(path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                };
+                if !metadata.is_file() {
+                    return Err(error(libc::EIO));
+                }
+                self.require_unaliased_metadata(path, &metadata)?;
+                return Ok(Some(metadata));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn exists_in_lower(&self, rel: &Path) -> bool {
         if self.require_visible(rel).is_err() {
             return false;

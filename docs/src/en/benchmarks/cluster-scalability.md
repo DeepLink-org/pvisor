@@ -60,7 +60,7 @@ The retired Controller's million-record cohort observed about 8 GiB lifecycle pe
 
 ### Comparison with existing schedulers {#limits}
 
-Matched workloads and common budgets for Kubernetes, Ray and cloud sandboxes are unmeasured, so no numeric ranking is provided. The archived measurements do not size the current daemon or justify replacing a general scheduler. Single-task Docker, Firecracker and QEMU measurements are in the [runtime comparison](compare-runtimes.md).
+Matched workloads and common budgets for Kubernetes, Ray and cloud sandboxes are unmeasured, so no numeric ranking is provided. The archived measurements do not size the current daemon or justify replacing a general scheduler. Single-task Docker, Firecracker and QEMU measurements are in the [end-to-end tasks](agent-tasks.md).
 
 ### Historical downloads and provenance {#run}
 

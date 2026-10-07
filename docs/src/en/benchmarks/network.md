@@ -56,7 +56,7 @@ Host deny-all and VM deny-all each block direct sockets to the same local servic
 
 ### Comparison with familiar options {#baseline-meaning}
 
-Podman host network supplies an ordinary OCI control. pVisor OCI additionally uses a policy proxy, so boundaries differ. Docker bridge, Firecracker/QEMU networking, macOS, TLS and public APIs are unmeasured and receive no numeric ranking. Complete-task Docker/Firecracker/QEMU comparisons are in the [runtime comparison](compare-runtimes.md).
+Podman host network supplies an ordinary OCI control. pVisor OCI additionally uses a policy proxy, so boundaries differ. Docker bridge, Firecracker/QEMU networking, macOS, TLS and public APIs are unmeasured and receive no numeric ranking. Complete-task Docker/Firecracker/QEMU comparisons are in the [end-to-end tasks](agent-tasks.md).
 
 ### Downloads and reproduction {#run}
 

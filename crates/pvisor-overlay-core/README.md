@@ -55,8 +55,16 @@ Fresh regular-file copy-up for `O_TRUNC` can omit the content copy only when the
 source has one link. Baseline preimage capture and journal ordering precede
 upper publication. Existing uppers and shared hardlink inodes keep the normal
 path; adapters perform the actual open and truncation after inode/handle
-rebinding. This avoids the copy, not baseline hashing. Baseline capture and
-content copying are separate: any descriptor-bound fingerprint callback must
+rebinding. `OverlayCore` / `FilesystemService::copied_hard_link_metadata(rel)`
+provides a checked, non-mutating query of a lower hardlink's surviving copied-up
+upper metadata. The group belongs to the Core owner and survives adapter FORGET
+or inode reclamation; no adapter inode/canonical path is proof of content identity.
+The query follows tracked upper renames/removals, propagates policy/I/O errors,
+and does not materialize aliases or alter generic `metadata()` resolution.
+HOST FUSE uses it to bind late aliases and select current inode attrs after
+recursive materialization, including when the canonical node path is still lower.
+The fresh single-link O_TRUNC path avoids the copy, not baseline hashing.
+Baseline capture and content copying are separate: any descriptor-bound fingerprint callback must
 prove baseline/source identity and preserve first-observation publication
 races, composed lowers, remote backing and hardlink ordering.
 

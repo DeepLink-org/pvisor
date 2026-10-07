@@ -5,9 +5,10 @@
 //! and manual-mount CLI wrapper around this library.
 
 use crate::api::{
-    KernelCacheConfig, KernelCachePolicy, OverlayConfiguration, OverlayMountConfig, OverlayMounting,
-    OverlaySessionControl, ReadObservationSemantics,
+    KernelCacheConfig, KernelCachePolicy, OverlayConfiguration, OverlayMountConfig,
+    OverlayMounting, OverlaySessionControl, ReadObservationSemantics,
 };
+use crate::cache::{CacheHandle, CacheWorkers};
 use crate::fs::OverlayFs;
 use anyhow::{Context, Result, bail};
 use fuser::{BackgroundSession, MountOption, Session};
@@ -15,6 +16,7 @@ use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 impl Default for KernelCacheConfig {
@@ -61,7 +63,10 @@ impl OverlayConfiguration for OverlayMountConfig {
 
     fn validate_kernel_cache(&self) -> Result<()> {
         let cache = &self.kernel_cache;
-        if cache.policy == KernelCachePolicy::Disabled {
+        if matches!(
+            cache.policy,
+            KernelCachePolicy::Disabled | KernelCachePolicy::Uncached
+        ) {
             return Ok(());
         }
         if cache.ttl.is_zero() || cache.ttl > Duration::from_secs(60) {
@@ -69,37 +74,50 @@ impl OverlayConfiguration for OverlayMountConfig {
         }
         if self.lower_dirs.is_empty()
             || self.lower_mutability.len() != self.lower_dirs.len()
-            || self.lower_mutability.iter().any(|value| {
-                *value != pvisor_overlay_core::LayerMutability::Immutable
-            })
+            || self
+                .lower_mutability
+                .iter()
+                .any(|value| *value != pvisor_overlay_core::LayerMutability::Immutable)
         {
             bail!("kernel cache requires explicit Immutable declarations for every physical lower");
         }
         let Some(contract) = cache.owned_view else {
-            bail!("kernel cache requires an explicit owned-view contract; advisory locks are not proof");
+            bail!(
+                "kernel cache requires an explicit owned-view contract; advisory locks are not proof"
+            );
         };
         if !contract.exclusive_upper_and_work || !contract.fixed_metadata_and_aliases {
-            bail!("kernel cache requires exclusive upper/work and fixed metadata/aliases including backing atime");
+            bail!(
+                "kernel cache requires exclusive upper/work and fixed metadata/aliases including backing atime"
+            );
         }
         if cache.read_observation != ReadObservationSemantics::StableView {
             bail!("kernel cache requires explicit StableView read observation semantics");
         }
         if self.preimage_dir.is_some() || self.compact_preimages || self.observation.is_some() {
-            bail!("kernel cache cannot preserve journal first-content observations or callback read metrics");
+            bail!(
+                "kernel cache cannot preserve journal first-content observations or callback read metrics"
+            );
         }
         if self.access_policy != pvisor_overlay_core::FileAccessPolicy::default()
             || !self.excluded_paths.is_empty()
         {
-            bail!("kernel cache rejects custom path access policy and exclusions: cached access can bypass callbacks");
+            bail!(
+                "kernel cache rejects custom path access policy and exclusions: cached access can bypass callbacks"
+            );
         }
         if !self.default_permissions || self.allow_other || self.allow_root {
             bail!("kernel cache requires default_permissions and owner-only access");
         }
         if !cfg!(target_os = "linux") || self.backend.is_some() {
-            bail!("kernel cache is supported only by the Linux HOST FUSE backend; macOS notifications are not validated");
+            bail!(
+                "kernel cache is supported only by the Linux HOST FUSE backend; macOS notifications are not validated"
+            );
         }
-        if !self.read_only {
-            bail!("writable kernel cache is unsupported: asynchronous fail-closed mutation invalidation is not implemented");
+        if !self.read_only && cache.policy == KernelCachePolicy::MetadataAndData {
+            bail!(
+                "writable MetadataAndData is unsupported: KEEP_CACHE requires a read-only stable mapping"
+            );
         }
         Ok(())
     }
@@ -111,6 +129,7 @@ impl OverlayConfiguration for OverlayMountConfig {
 pub struct OverlaySession {
     background: Option<BackgroundSession>,
     mountpoint: PathBuf,
+    cache_workers: Option<CacheWorkers>,
 }
 
 impl OverlaySessionControl for OverlaySession {
@@ -133,9 +152,20 @@ impl OverlaySessionControl for OverlaySession {
 impl OverlaySession {
     fn unmount_inner(&mut self) -> Result<()> {
         if let Some(background) = self.background.take() {
-            background
-                .unmount()
-                .context("unmount FUSE session and stop request loop")?;
+            let _deadline = self
+                .cache_workers
+                .as_ref()
+                .map(|_| crate::cache::LifecycleDeadline::start(Duration::from_secs(15)));
+            if let Some(workers) = &self.cache_workers {
+                workers.shutdown();
+            }
+            let result = background.unmount();
+            if let Some(workers) = self.cache_workers.take() {
+                workers
+                    .join()
+                    .context("stop kernel cache notification workers")?;
+            }
+            result.context("unmount FUSE session and stop request loop")?;
             for _ in 0..250 {
                 if !is_mountpoint(&self.mountpoint) {
                     break;
@@ -158,33 +188,189 @@ impl Drop for OverlaySession {
 
 impl OverlayMounting for crate::api::OverlayFs {
     fn mount(config: OverlayMountConfig) -> Result<OverlaySession> {
+        config.validate_kernel_cache()?;
         #[cfg(target_os = "macos")]
         check_fskit_version(&config)?;
         let (filesystem, mountpoint, options) = prepare(config)?;
+        let slot = filesystem.cache_slot();
+        let writable_cache = filesystem.needs_notifications();
+        if writable_cache {
+            verify_termination(&mountpoint, &options)?;
+        }
         let session = Session::new(filesystem, &mountpoint, &options)
             .with_context(|| format!("mount {}", mountpoint.display()))?;
+        let cache_workers = start_notifications(&session, &mountpoint, slot, writable_cache)?;
         let background = BackgroundSession::new(session).context("start FUSE request loop")?;
         log::info!("pvisor-overlayfs mounted at {}", mountpoint.display());
         Ok(OverlaySession {
             background: Some(background),
             mountpoint,
+            cache_workers,
         })
     }
 
     fn run_foreground(config: OverlayMountConfig) -> Result<()> {
+        config.validate_kernel_cache()?;
         #[cfg(target_os = "macos")]
         check_fskit_version(&config)?;
         let (filesystem, mountpoint, options) = prepare(config)?;
         log::info!("pvisor-overlayfs mounted at {}", mountpoint.display());
+        let slot = filesystem.cache_slot();
+        let writable_cache = filesystem.needs_notifications();
+        if writable_cache {
+            verify_termination(&mountpoint, &options)?;
+        }
         let mut session = Session::new(filesystem, &mountpoint, &options)
             .with_context(|| format!("mount {}", mountpoint.display()))?;
-        session.run().context("FUSE session")?;
-        Ok(())
+        let workers = start_notifications(&session, &mountpoint, slot, writable_cache)?;
+        let result = session.run();
+        let _deadline = workers
+            .as_ref()
+            .map(|_| crate::cache::LifecycleDeadline::start(Duration::from_secs(15)));
+        if let Some(workers) = &workers {
+            workers.shutdown();
+        }
+        drop(session);
+        if let Some(workers) = workers {
+            workers
+                .join()
+                .context("stop kernel cache notification workers")?;
+        }
+        result.context("FUSE session")
     }
 
     fn is_mountpoint(path: &Path) -> bool {
         is_mountpoint(path)
     }
+}
+
+fn start_notifications(
+    session: &Session<OverlayFs>,
+    mountpoint: &Path,
+    slot: Arc<OnceLock<CacheHandle>>,
+    writable: bool,
+) -> Result<Option<CacheWorkers>> {
+    if !writable {
+        return Ok(None);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let abort = connection_abort_file(mountpoint)?;
+        let (handle, workers) = CacheWorkers::start(session.notifier(), abort, mountpoint)?;
+        if slot.set(handle).is_err() {
+            bail!("cache transport already initialized");
+        }
+        Ok(Some(workers))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (session, mountpoint, slot);
+        bail!("writable kernel cache requires Linux FUSE notifications");
+    }
+}
+
+fn verify_termination(mountpoint: &Path, options: &[MountOption]) -> Result<()> {
+    // No filesystem users may start until mount() returns. Exercise the actual
+    // mountpoint, credentials, fusectl and detach route before publishing TTLs.
+    let _deadline = crate::cache::LifecycleDeadline::start(Duration::from_secs(5));
+    struct Probe;
+    impl fuser::Filesystem for Probe {}
+    let session =
+        Session::new(Probe, mountpoint, options).context("mount kernel cache termination probe")?;
+    #[cfg(target_os = "linux")]
+    {
+        let abort = connection_abort_file(mountpoint)?;
+        crate::cache::abort_and_detach(&abort, mountpoint)
+            .context("writable Metadata termination admission probe failed")?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    bail!("Linux termination capability required");
+    drop(session);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn connection_abort_file(mountpoint: &Path) -> Result<File> {
+    use std::os::unix::ffi::OsStrExt;
+    // stat(mountpoint) before serving INIT can deadlock. Mountinfo provides the
+    // connection's device minor without asking our mounted filesystem anything.
+    let mountinfo = std::fs::read("/proc/self/mountinfo")?;
+    let mut connection = None;
+    for line in mountinfo.split(|byte| *byte == b'\n') {
+        let fields: Vec<_> = line.split(|byte| *byte == b' ').collect();
+        if fields.len() < 7 {
+            continue;
+        }
+        let mut path = Vec::new();
+        let mut bytes = fields[4].iter().copied();
+        while let Some(byte) = bytes.next() {
+            if byte == b'\\' {
+                let octal: Vec<_> = bytes.by_ref().take(3).collect();
+                if octal.len() != 3 || octal.iter().any(|b| !(b'0'..=b'7').contains(b)) {
+                    bail!("invalid mountinfo pathname escape");
+                }
+                path.push((octal[0] - b'0') * 64 + (octal[1] - b'0') * 8 + octal[2] - b'0');
+            } else {
+                path.push(byte);
+            }
+        }
+        if path == mountpoint.as_os_str().as_bytes() {
+            let separator = fields
+                .iter()
+                .position(|field| *field == b"-")
+                .context("mountinfo separator")?;
+            if !fields
+                .get(separator + 1)
+                .is_some_and(|fs| fs.starts_with(b"fuse"))
+            {
+                continue;
+            }
+            let device = std::str::from_utf8(fields[2])?;
+            let (major, minor) = device.split_once(':').context("FUSE device identity")?;
+            if major != "0" {
+                bail!("unexpected FUSE device major");
+            }
+            connection = Some(minor.parse::<u32>()?);
+        }
+    }
+    let id = connection.context("cannot identify mounted FUSE connection for fail-closed abort")?;
+    let path = format!("/sys/fs/fuse/connections/{id}/abort");
+    OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&path)
+        .with_context(|| {
+            format!("writable Metadata requires an accessible FUSE abort endpoint: {path}")
+        })
+}
+
+fn lock_owned_view(upper: &Path, work: Option<&Path>) -> Result<Vec<File>> {
+    let mut paths = vec![upper];
+    if let Some(work) = work {
+        paths.push(work);
+    }
+    paths.sort_unstable();
+    paths.dedup();
+    let mut locks = Vec::new();
+    for path in paths {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)
+            .with_context(|| {
+                format!("open owned-view coordination directory {}", path.display())
+            })?;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(std::io::Error::last_os_error()).with_context(|| {
+                format!(
+                    "owned-view coordination lock unavailable: {}",
+                    path.display()
+                )
+            });
+        }
+        locks.push(file);
+    }
+    Ok(locks)
 }
 
 #[cfg(target_os = "macos")]
@@ -221,6 +407,7 @@ fn require_fskit_version(version: &str) -> Result<()> {
 }
 
 fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<MountOption>)> {
+    config.validate_kernel_cache()?;
     if config.lower_dirs.is_empty() {
         bail!("lowerdir must list at least one path");
     }
@@ -335,6 +522,17 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
         }
     }
 
+    // Lock directory objects, not replaceable lockfiles. Acquire in canonical
+    // order and retain on the filesystem owner through request-loop teardown.
+    // This coordinates opted-in sessions only; it never proves exclusivity.
+    let cache_locks = if matches!(
+        config.kernel_cache.policy,
+        KernelCachePolicy::Metadata | KernelCachePolicy::MetadataAndData
+    ) {
+        lock_owned_view(&config.upper_dir, config.work_dir.as_deref())?
+    } else {
+        Vec::new()
+    };
     let target = config
         .apply_target
         .clone()
@@ -360,7 +558,8 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
     .with_private_root(fskit && !config.allow_other)
     .with_read_only(config.read_only)
     .with_access_policy(&config.access_policy)
-    .with_observation(config.observation.clone());
+    .with_observation(config.observation.clone())
+    .with_kernel_cache(config.kernel_cache, cache_locks);
     // Access time is not part of a pVisor changeset. Disabling it also avoids
     // macFUSE issuing read-induced SETATTR requests that would otherwise force
     // lower files into the writable upper.
@@ -428,6 +627,46 @@ fn is_mountpoint(path: &Path) -> bool {
 
 #[cfg(test)]
 mod mount_config_tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires working Linux HOST FUSE and fusectl abort permission"]
+    fn host_kernel_cache_abort_endpoint_stops_cached_mount_and_tears_down() {
+        use crate::api::{OwnedViewContract, ReadObservationSemantics};
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir(&lower).unwrap();
+        std::fs::write(lower.join("a"), b"stable").unwrap();
+        let mut config = OverlayMountConfig::new(
+            vec![lower],
+            temp.path().join("upper"),
+            None,
+            temp.path().join("merged"),
+        );
+        config.read_only = true;
+        config.lower_mutability = vec![pvisor_overlay_core::LayerMutability::Immutable];
+        config.kernel_cache.policy = KernelCachePolicy::Metadata;
+        config.kernel_cache.owned_view = Some(OwnedViewContract {
+            exclusive_upper_and_work: true,
+            fixed_metadata_and_aliases: true,
+        });
+        config.kernel_cache.read_observation = ReadObservationSemantics::StableView;
+        let session = crate::api::OverlayFs::mount(config).unwrap();
+        let path = session.mountpoint().join("a");
+        std::fs::metadata(&path).unwrap();
+        let abort = connection_abort_file(session.mountpoint()).unwrap();
+        crate::cache::abort_and_detach(&abort, session.mountpoint()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !session.has_exited() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(session.has_exited());
+        assert!(
+            std::fs::metadata(&path).is_err(),
+            "failed connection must be detached, not leave warm metadata at its mount path"
+        );
+        session.unmount().unwrap();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "requires a working host FUSE mount"]

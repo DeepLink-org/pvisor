@@ -16,17 +16,26 @@ pub use crate::mount::OverlaySession;
 pub use crate::observation::FsMetrics;
 
 /// Explicit host-kernel caching strategy; never inferred from source classification.
-/// No strategy enables writeback caching. Enabled strategies currently require a
-/// Linux read-only stable view; writable views and macOS are explicitly rejected.
+/// No strategy enables writeback caching. Extended strategies require a Linux
+/// owned view. Metadata supports adapter-mediated writes; MetadataAndData is
+/// read-only. macOS is explicitly rejected.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum KernelCachePolicy {
-    /// Zero entry/attribute/negative TTL and no KEEP_CACHE. Normal page caching
-    /// within an open file remains enabled, preserving existing read semantics.
+    /// Preserve legacy behavior: one-second entry/attribute TTL, no negative
+    /// caching, no KEEP_CACHE and no additional ownership requirements.
     #[default]
     Disabled,
+    /// Explicit metadata-cache-off A/B control: zero entry/attribute/negative
+    /// TTL, no KEEP_CACHE. Normal page caching within an open file remains on.
+    /// Like Disabled, does not require an owned-view contract.
+    Uncached,
     /// Bounded entry, attribute and negative caching; no KEEP_CACHE across opens.
+    /// Writable Linux views use asynchronous mutation invalidation and forced
+    /// teardown on transport failure. Mount admission exercises detach/abort;
+    /// catastrophic OS teardown failure still requires caller containment of users.
     Metadata,
-    /// Metadata caching plus KEEP_CACHE for stable regular-file mappings only.
+    /// Metadata caching plus KEEP_CACHE for stable read-only regular-file mappings.
+    /// Writable configurations are explicitly rejected.
     MetadataAndData,
 }
 
@@ -36,7 +45,14 @@ pub struct OwnedViewContract {
     /// Upper/work and their physical ancestors/mount identities are exclusively
     /// owned until actual mount detachment, including aliases and other sessions.
     /// No host-side writer, apply, checkpoint restore or backing replacement may
-    /// run concurrently. All mutations must go through this adapter.
+    /// run concurrently. All mutations must go through this adapter. Writable
+    /// cached views must not be exported through bind mounts/namespace copies,
+    /// overmounted or replaced; forced teardown must cover their only view.
+    /// Preserve mount namespace, credentials, helper availability and detach
+    /// permissions for the session lifetime. Callers must supervise all users
+    /// and stop them if the server exits or termination fails: process abort
+    /// alone cannot revoke another process's warm metadata or held descriptors.
+    /// Do not opt in if that failure-containment contract cannot be honored.
     pub exclusive_upper_and_work: bool,
     /// Permissions, ownership, xattrs, namespace and all hardlink aliases of
     /// every backing object remain fixed except for adapter-mediated mutations.
@@ -67,7 +83,8 @@ pub enum ReadObservationSemantics {
 pub struct KernelCacheConfig {
     /// Same-artifact A/B strategy; changing it does not alter lower declarations.
     pub policy: KernelCachePolicy,
-    /// Reviewable, finite kernel TTL; ignored when disabled. Default is 60 seconds.
+    /// Reviewable, finite kernel TTL; ignored for Disabled/Uncached. Default is
+    /// 60 seconds. Writable replies temporarily use zero while effects are pending.
     pub ttl: Duration,
     /// Explicit lifetime promise; `None` is rejected for enabled policies.
     pub owned_view: Option<OwnedViewContract>,
@@ -161,9 +178,20 @@ pub trait OverlayConfiguration: Sized {
     /// mount FUSE or negotiate kernel support. Enabled modes require explicit
     /// immutable declarations for every lower, an affirmed owned-view contract,
     /// stable-view read semantics, OS permission checks, owner-only access and
-    /// no path policy, exclusions, journal or metrics. Currently only Linux
-    /// read-only views are supported: writable views lack a verified asynchronous
-    /// fail-closed invalidation pipeline. Failure leaves configuration unchanged.
+    /// no path policy, exclusions, journal or metrics. Linux Metadata permits
+    /// writes; MetadataAndData requires read-only. Actual writable mounting also
+    /// requires the connection's fusectl abort file and a successful sacrificial
+    /// mount/detach/abort probe at the actual mountpoint before serving requests.
+    /// On notification/queue failure, a worker detaches using Linux umount or
+    /// fusermount3/fusermount, verifies absence in mountinfo, then writes abort.
+    /// Rejected admission performs no further mutation; already-mutated failed
+    /// replies await completed teardown. Normal/stop queues and effects are
+    /// bounded; helper, termination and shutdown waits have deadlines. Fatal
+    /// teardown failure/deadline terminates the server, but is NOT a guarantee
+    /// that other processes' caches were revoked: the caller's user-containment
+    /// obligation still applies. EIO is not a general mount-detachment fence.
+    /// Held descriptors must be released on failure; changes may remain in upper.
+    /// Validation failure leaves configuration unchanged.
     fn validate_kernel_cache(&self) -> anyhow::Result<()>;
 }
 
@@ -204,7 +232,10 @@ pub trait OverlaySessionControl: Sized {
     /// Consume the owner, unmount and stop the request loop, then poll detachment
     /// for up to about five seconds. The underlying unmount/join can take longer.
     /// Errors do not return ownership or guarantee detachment; callers must
-    /// retain stage paths for recovery. Drop attempts the same cleanup but
+    /// retain stage paths for recovery. Writable cache notification failures are
+    /// reported here even if the mount was already forcibly detached; mutations
+    /// may have reached upper before failure, and are not rolled back. Drop
+    /// attempts the same cleanup but
     /// discards errors. Shutdown should be serialized by the owning caller.
     fn unmount(self) -> anyhow::Result<()>;
 }

@@ -1,3 +1,5 @@
+use crate::api::{KernelCacheConfig, KernelCachePolicy};
+use crate::cache::{CacheHandle, EFFECT_LIMIT, Effects};
 #[cfg(target_os = "macos")]
 use fuser::ReplyXTimes;
 use fuser::{
@@ -14,6 +16,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::unix::fs::{FileExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn directory_file_type(type_: u32) -> FileType {
@@ -29,7 +32,69 @@ fn directory_file_type(type_: u32) -> FileType {
     }
 }
 
-const TTL: Duration = Duration::from_secs(1);
+fn set_append(file: &File, append: bool) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let status = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    if status < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let desired = (status & !libc::O_APPEND) | if append { libc::O_APPEND } else { 0 };
+    if desired != status && unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, desired) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn write_request(file: &File, data: &[u8], offset: u64, flags: i32) -> io::Result<usize> {
+    // F_SETFL on the mounted fd is reflected in each FUSE WRITE's flags, not
+    // another OPEN. Linux pwrite honors O_APPEND; sync only that mutable bit.
+    set_append(file, flags & libc::O_APPEND != 0)?;
+    file.write_at(data, offset)
+}
+
+fn copy_range(
+    len: u64,
+    mut read: impl FnMut(&mut [u8], u64) -> io::Result<usize>,
+    mut write: impl FnMut(&[u8], u64) -> io::Result<usize>,
+) -> io::Result<u64> {
+    let mut copied = 0;
+    let mut buffer = vec![0; len.min(128 * 1024) as usize];
+    let result = (|| {
+        while copied < len {
+            let wanted = (len - copied).min(buffer.len() as u64) as usize;
+            let amount = read(&mut buffer[..wanted], copied)?;
+            if amount == 0 {
+                break;
+            }
+            let mut written = 0;
+            while written < amount {
+                let count = write(&buffer[written..amount], copied)?;
+                if count == 0 {
+                    return Err(io::Error::from_raw_os_error(libc::EIO));
+                }
+                written += count;
+                copied += count as u64;
+            }
+        }
+        Ok(copied)
+    })();
+    // Every modified byte is acknowledged even if a later read/write fails.
+    // Linux can then expire exactly that target page-cache range.
+    if copied != 0 { Ok(copied) } else { result }
+}
+
+macro_rules! mutation_or_reply {
+    ($expression:expr, $reply:expr) => {
+        match $expression {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                $reply.error(errno(&error));
+                return;
+            }
+        }
+    };
+}
+
 const RENAME_NOREPLACE: u32 = 1;
 const RENAME_EXCHANGE: u32 = 2;
 
@@ -67,6 +132,14 @@ struct DirectoryEntry {
     attr: Option<FileAttr>,
 }
 
+struct Mutation {
+    handle: CacheHandle,
+    effects: Effects,
+    objects: BTreeSet<u64>,
+    paths: Vec<PathBuf>,
+    subtree: bool,
+}
+
 pub(crate) struct OverlayFs {
     core: FilesystemService,
     profile: pvisor_overlay_core::profile::Profile,
@@ -74,6 +147,12 @@ pub(crate) struct OverlayFs {
     private_root: bool,
     access_policy: FileAccessPolicy,
     observation: Option<crate::api::FsMetrics>,
+    kernel_cache: KernelCacheConfig,
+    cache_transport: Arc<OnceLock<CacheHandle>>,
+    // Advisory coordination only. The caller still owns the lifetime proof.
+    _cache_locks: Vec<File>,
+    #[cfg(test)]
+    copy_fault_after: Option<u64>,
     nodes: HashMap<u64, Node>,
     by_path: HashMap<PathBuf, u64>,
     by_object: HashMap<ObjectKey, u64>,
@@ -159,6 +238,189 @@ impl OverlayFs {
         self
     }
 
+    pub(crate) fn with_kernel_cache(mut self, config: KernelCacheConfig, locks: Vec<File>) -> Self {
+        self.kernel_cache = config;
+        self._cache_locks = locks;
+        self
+    }
+
+    pub(crate) fn cache_slot(&self) -> Arc<OnceLock<CacheHandle>> {
+        self.cache_transport.clone()
+    }
+
+    pub(crate) fn needs_notifications(&self) -> bool {
+        !self.read_only && self.kernel_cache.policy == KernelCachePolicy::Metadata
+    }
+
+    fn cache_ttl(&self) -> Duration {
+        if self.cache_transport.get().is_some_and(CacheHandle::pending) {
+            return Duration::ZERO;
+        }
+        match self.kernel_cache.policy {
+            KernelCachePolicy::Disabled => Duration::from_secs(1),
+            KernelCachePolicy::Uncached => Duration::ZERO,
+            KernelCachePolicy::Metadata | KernelCachePolicy::MetadataAndData => {
+                self.kernel_cache.ttl
+            }
+        }
+    }
+
+    fn negative_ttl(&self) -> Duration {
+        match self.kernel_cache.policy {
+            KernelCachePolicy::Disabled | KernelCachePolicy::Uncached => Duration::ZERO,
+            _ => self.cache_ttl(),
+        }
+    }
+
+    fn begin_mutation(
+        &self,
+        paths: &[Option<&Path>],
+        inodes: &[u64],
+        subtree: bool,
+    ) -> io::Result<Option<Mutation>> {
+        let Some(handle) = self.cache_transport.get().cloned() else {
+            return Ok(None);
+        };
+        if !handle.begin() {
+            return Err(io::Error::from_raw_os_error(libc::EIO));
+        }
+        let paths: Vec<_> = paths
+            .iter()
+            .flatten()
+            .map(|path| path.to_path_buf())
+            .collect();
+        let mut effects = Effects::default();
+        let objects = self.extend_effects(&mut effects, &paths, inodes, subtree);
+        if effects.overflow {
+            handle.submit(effects, |_| {});
+            return Err(io::Error::from_raw_os_error(libc::EIO));
+        }
+        Ok(Some(Mutation {
+            handle,
+            effects,
+            objects,
+            paths,
+            subtree,
+        }))
+    }
+
+    fn extend_effects(
+        &self,
+        effects: &mut Effects,
+        paths: &[PathBuf],
+        inodes: &[u64],
+        subtree: bool,
+    ) -> BTreeSet<u64> {
+        if effects.overflow {
+            return BTreeSet::new();
+        }
+        let mut objects: BTreeSet<_> = inodes.iter().copied().collect();
+        for (path, ino) in &self.by_path {
+            if paths
+                .iter()
+                .any(|prefix| path == prefix || (subtree && path.starts_with(prefix)))
+            {
+                objects.insert(*ino);
+                if objects.len() > EFFECT_LIMIT {
+                    effects.overflow = true;
+                    return BTreeSet::new();
+                }
+            }
+        }
+        for ino in &objects {
+            effects.inodes.insert(*ino);
+            if effects.inodes.len() + effects.entries.len() > EFFECT_LIMIT {
+                effects.overflow = true;
+                return objects;
+            }
+        }
+        // Stream aliases: never allocate an unbounded subtree/path snapshot.
+        for path in paths.iter().chain(
+            self.by_path
+                .iter()
+                .filter(|(_, ino)| objects.contains(ino))
+                .map(|(path, _)| path),
+        ) {
+            if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+                && let Some(ino) = self.by_path.get(parent)
+            {
+                effects.entries.insert((*ino, name.to_os_string()));
+            }
+            // Copy-up can materialize every physical ancestor. Their merged
+            // inode numbers remain stable but size/nlink/times may have changed.
+            for ancestor in path.ancestors() {
+                if let Some(ino) = self.by_path.get(ancestor) {
+                    effects.inodes.insert(*ino);
+                    if effects.inodes.len() + effects.entries.len() > EFFECT_LIMIT {
+                        break;
+                    }
+                }
+            }
+            if effects.inodes.len() + effects.entries.len() > EFFECT_LIMIT {
+                effects.overflow = true;
+                break;
+            }
+        }
+        objects
+    }
+
+    fn mutation_reply(
+        &mut self,
+        mutation: Option<Mutation>,
+        reply: impl FnOnce(bool) + Send + 'static,
+    ) {
+        let Some(mut mutation) = mutation else {
+            reply(true);
+            return;
+        };
+        // Parent attributes are effects, not target objects. Do not expand
+        // their aliases into parent-entry invalidations that would unnecessarily
+        // evict unrelated sibling subtrees.
+        let inodes: Vec<_> = mutation.objects.iter().copied().collect();
+        self.extend_effects(
+            &mut mutation.effects,
+            &mutation.paths,
+            &inodes,
+            mutation.subtree,
+        );
+        // Recursive directory copy-up/rename changes backing object identities
+        // without changing the existing FUSE inode identity. Bind those new
+        // physical keys before a later LOOKUP can accidentally allocate a new ino.
+        let bindings: Vec<_> = self
+            .by_path
+            .iter()
+            .filter(|(_, ino)| mutation.effects.inodes.contains(ino))
+            .filter_map(|(path, ino)| {
+                self.core
+                    .metadata(path)
+                    .ok()
+                    .filter(|m| !m.is_dir())
+                    .map(|m| {
+                        (
+                            ObjectKey {
+                                device: m.dev(),
+                                inode: m.ino(),
+                            },
+                            *ino,
+                        )
+                    })
+            })
+            .collect();
+        self.by_object.extend(bindings);
+        mutation.handle.submit(mutation.effects, reply);
+    }
+
+    fn cache_open_flags(&self, metadata: &fs::Metadata) -> u32 {
+        if self.read_only
+            && self.kernel_cache.policy == KernelCachePolicy::MetadataAndData
+            && metadata.is_file()
+        {
+            fuser::consts::FOPEN_KEEP_CACHE
+        } else {
+            0
+        }
+    }
+
     fn open_inode_with_backing(&mut self, ino: u64, flags: i32) -> io::Result<(File, PathBuf)> {
         // FSKit may send O_RDWR even for a read. A read-only inspection must
         // never copy lower files into the persistent upper merely by opening.
@@ -175,7 +437,11 @@ impl OverlayFs {
         let path = if writing {
             self.copy_up_inode_for_open(ino, flags)?
         } else {
-            self.node_path(ino)?
+            let path = self.node_path(ino)?;
+            if !self.read_only {
+                self.inode_for_path_with_metadata(path.clone())?;
+            }
+            path
         };
         self.open_path_with_backing(&path, flags)
     }
@@ -248,6 +514,11 @@ impl OverlayFs {
             private_root: false,
             access_policy: FileAccessPolicy::default(),
             observation: None,
+            kernel_cache: KernelCacheConfig::default(),
+            cache_transport: Arc::new(OnceLock::new()),
+            _cache_locks: Vec::new(),
+            #[cfg(test)]
+            copy_fault_after: None,
             nodes,
             by_path,
             by_object: HashMap::new(),
@@ -306,13 +577,54 @@ impl OverlayFs {
                 .metadata();
         }
         if let Ok(path) = self.node_path(ino) {
-            return self.core.metadata(&path);
+            // Recursive materialization need not have copied every known alias.
+            // The lexicographically first node path can still be a lower alias.
+            return match self.core.copied_hard_link_metadata(&path)? {
+                Some(metadata) => Ok(metadata),
+                None => self.core.metadata(&path),
+            };
         }
         self.open_files
             .values()
             .find(|file| file.ino == ino)
             .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?
             .metadata()
+    }
+
+    fn inode_for_path_with_metadata(&mut self, path: PathBuf) -> io::Result<(u64, fs::Metadata)> {
+        let mut metadata = self.core.metadata(&path)?;
+        let key = ObjectKey {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        };
+        if let Some(current) = self.core.copied_hard_link_metadata(&path)? {
+            // Core's session-owned mapping outlives FORGET/reclaim. Neither the
+            // presence of an adapter inode nor its canonical path is authority
+            // for deciding whether this lower alias already has upper contents.
+            let upper_key = ObjectKey {
+                device: current.dev(),
+                inode: current.ino(),
+            };
+            let known = self
+                .by_object
+                .get(&upper_key)
+                .or_else(|| self.by_object.get(&key))
+                .copied();
+            let inodes: Vec<_> = known.into_iter().collect();
+            let mutation = self.begin_mutation(&[Some(&path)], &inodes, false)?;
+            let result = self.core.copy_up(&path).and_then(|_| {
+                metadata = self.core.metadata(&path)?;
+                if let Some(ino) = known {
+                    self.by_object.insert(upper_key, ino);
+                }
+                let ino = self.allocate_inode(path.clone(), &metadata);
+                Ok((ino, metadata.clone()))
+            });
+            self.mutation_reply(mutation, |_| {});
+            return result;
+        }
+        let ino = self.allocate_inode(path, &metadata);
+        Ok((ino, metadata))
     }
 
     fn allocate_inode(&mut self, path: PathBuf, metadata: &fs::Metadata) -> u64 {
@@ -592,9 +904,7 @@ impl OverlayFs {
 
     fn directory_entry_attr(&mut self, fh: u64, index: usize) -> io::Result<FileAttr> {
         let entry = &self.open_directories[&fh][index];
-        if let Some(attr) = entry.attr {
-            return Ok(attr);
-        }
+
         let previous_ino = entry.ino;
         let name = entry.name.clone();
         // The first snapshot entry pins the handle-owning directory inode.
@@ -610,15 +920,17 @@ impl OverlayFs {
                 .to_path_buf(),
             _ => OverlayCore::child(&directory, &name)?,
         };
-        let metadata = self.core.metadata(&path)?;
-        let ino = if index == 0 {
-            owner
+        let (ino, metadata) = if index == 0 {
+            (owner, self.core.metadata(&path)?)
         } else {
-            self.allocate_inode(path, &metadata)
+            self.inode_for_path_with_metadata(path)?
         };
         let attr = self.attr_from_metadata(ino, &metadata);
         let entry = &mut self.open_directories.get_mut(&fh).unwrap()[index];
         entry.ino = ino;
+        entry.kind = attr.kind;
+        // Retain the last materialization for diagnostics, never reuse it as a
+        // fresh reply: handle snapshots pin names/cookies, not attributes.
         entry.attr = Some(attr);
         // Replace the entry's handle pin before attempting to reclaim the old
         // inode; other aliases, handles and lookup references still protect it.
@@ -709,15 +1021,31 @@ impl Filesystem for OverlayFs {
         let observed_path = self.child_path(parent, name).ok();
         let result = (|| {
             let path = self.child_path(parent, name)?;
-            let metadata = self.core.metadata(&path)?;
-            let ino = self.allocate_inode(path, &metadata);
-            Ok((ino, metadata))
+            self.inode_for_path_with_metadata(path)
         })();
         self.observe_result(observed_path.as_deref(), "lookup", &result, 0, false);
         match result {
             Ok((ino, metadata)) => {
                 self.retain_lookup(ino);
-                reply.entry(&TTL, &self.attr_from_metadata(ino, &metadata), 0)
+                reply.entry(
+                    &self.cache_ttl(),
+                    &self.attr_from_metadata(ino, &metadata),
+                    0,
+                )
+            }
+            Err(error) if errno(&error) == libc::ENOENT && !self.negative_ttl().is_zero() => {
+                // Inode zero is FUSE's negative entry representation. Attribute
+                // payload is ignored, but the parent must still be resolvable.
+                match self
+                    .node_path(parent)
+                    .and_then(|path| self.attr(parent, &path))
+                {
+                    Ok(mut attr) => {
+                        attr.ino = 0;
+                        reply.entry(&self.negative_ttl(), &attr, 0);
+                    }
+                    Err(_) => reply.error(libc::ENOENT),
+                }
             }
             Err(error) => reply.error(errno(&error)),
         }
@@ -732,7 +1060,7 @@ impl Filesystem for OverlayFs {
             .map(|metadata| self.attr_from_metadata(ino, &metadata));
         self.observe_result(observed_path.as_deref(), "getattr", &result, 0, false);
         match result {
-            Ok(attr) => reply.attr(&TTL, &attr),
+            Ok(attr) => reply.attr(&self.cache_ttl(), &attr),
             Err(error) => reply.error(errno(&error)),
         }
     }
@@ -759,6 +1087,14 @@ impl Filesystem for OverlayFs {
         let _span = profile.span("setattr");
         let observed_path = self.node_path(ino).ok();
         let mutating = setattr_requires_copy_up(mode, uid, gid, size, atime, mtime, flags);
+        let mutation = if mutating {
+            mutation_or_reply!(
+                self.begin_mutation(&[observed_path.as_deref()], &[ino], false),
+                reply
+            )
+        } else {
+            None
+        };
         let result = (|| {
             if fh.is_some_and(|handle| {
                 !self
@@ -847,10 +1183,17 @@ impl Filesystem for OverlayFs {
             self.attr(ino, &path)
         })();
         self.observe_result(observed_path.as_deref(), "setattr", &result, 0, mutating);
-        match result {
-            Ok(attr) => reply.attr(&TTL, &attr),
-            Err(error) => reply.error(errno(&error)),
-        }
+        let ttl = self.cache_ttl();
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(attr) => reply.attr(&ttl, &attr),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn readlink(&mut self, _request: &Request<'_>, ino: u64, reply: ReplyData) {
@@ -881,6 +1224,10 @@ impl Filesystem for OverlayFs {
         let profile = self.profile.clone();
         let _span = profile.span("mknod");
         let observed_path = self.child_path(parent, name).ok();
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[observed_path.as_deref()], &[], false),
+            reply
+        );
         let result = (|| {
             let path = self.child_path(parent, name)?;
             self.core.create_node(&path, mode & !umask, rdev)?;
@@ -889,13 +1236,20 @@ impl Filesystem for OverlayFs {
             self.attr(ino, &path)
         })();
         self.observe_result(observed_path.as_deref(), "mknod", &result, 0, true);
-        match result {
-            Ok(attr) => {
-                self.retain_lookup(attr.ino);
-                reply.entry(&TTL, &attr, 0)
-            }
-            Err(error) => reply.error(errno(&error)),
+        if let Ok(attr) = &result {
+            self.retain_lookup(attr.ino);
         }
+        let ttl = self.cache_ttl();
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(attr) => reply.entry(&ttl, &attr, 0),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn mkdir(
@@ -910,6 +1264,10 @@ impl Filesystem for OverlayFs {
         let profile = self.profile.clone();
         let _span = profile.span("mkdir");
         let observed_path = self.child_path(parent, name).ok();
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[observed_path.as_deref()], &[], true),
+            reply
+        );
         let result = (|| {
             let path = self.child_path(parent, name)?;
             self.core.create_dir(&path, mode & !umask)?;
@@ -918,19 +1276,30 @@ impl Filesystem for OverlayFs {
             self.attr(ino, &path)
         })();
         self.observe_result(observed_path.as_deref(), "mkdir", &result, 0, true);
-        match result {
-            Ok(attr) => {
-                self.retain_lookup(attr.ino);
-                reply.entry(&TTL, &attr, 0)
-            }
-            Err(error) => reply.error(errno(&error)),
+        if let Ok(attr) = &result {
+            self.retain_lookup(attr.ino);
         }
+        let ttl = self.cache_ttl();
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(attr) => reply.entry(&ttl, &attr, 0),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn unlink(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let profile = self.profile.clone();
         let _span = profile.span("unlink");
         let observed_path = self.child_path(parent, name).ok();
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[observed_path.as_deref()], &[], false),
+            reply
+        );
         let result = self.child_path(parent, name).and_then(|path| {
             if let Some(ino) = self.by_path.get(&path).copied()
                 && self.open_files.values().any(|file| file.ino == ino)
@@ -940,30 +1309,50 @@ impl Filesystem for OverlayFs {
             self.core.remove(&path, false).map(|()| path)
         });
         self.observe_result(observed_path.as_deref(), "unlink", &result, 0, true);
-        match result {
-            Ok(path) => {
-                self.remove_inode_prefix(&path);
-                reply.ok();
-            }
-            Err(error) => reply.error(errno(&error)),
+        if let Ok(path) = &result {
+            self.remove_inode_prefix(path);
         }
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(_) => {
+                    reply.ok();
+                }
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn rmdir(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let profile = self.profile.clone();
         let _span = profile.span("rmdir");
         let observed_path = self.child_path(parent, name).ok();
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[observed_path.as_deref()], &[], true),
+            reply
+        );
         let result = self
             .child_path(parent, name)
             .and_then(|path| self.core.remove(&path, true).map(|()| path));
         self.observe_result(observed_path.as_deref(), "rmdir", &result, 0, true);
-        match result {
-            Ok(path) => {
-                self.remove_inode_prefix(&path);
-                reply.ok();
-            }
-            Err(error) => reply.error(errno(&error)),
+        if let Ok(path) = &result {
+            self.remove_inode_prefix(path);
         }
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(_) => {
+                    reply.ok();
+                }
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn symlink(
@@ -977,6 +1366,10 @@ impl Filesystem for OverlayFs {
         let profile = self.profile.clone();
         let _span = profile.span("symlink");
         let observed_path = self.child_path(parent, name).ok();
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[observed_path.as_deref()], &[], false),
+            reply
+        );
         let result = (|| {
             let path = self.child_path(parent, name)?;
             self.core.create_symlink(&path, target)?;
@@ -985,13 +1378,20 @@ impl Filesystem for OverlayFs {
             self.attr(ino, &path)
         })();
         self.observe_result(observed_path.as_deref(), "symlink", &result, 0, true);
-        match result {
-            Ok(attr) => {
-                self.retain_lookup(attr.ino);
-                reply.entry(&TTL, &attr, 0)
-            }
-            Err(error) => reply.error(errno(&error)),
+        if let Ok(attr) = &result {
+            self.retain_lookup(attr.ino);
         }
+        let ttl = self.cache_ttl();
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(attr) => reply.entry(&ttl, &attr, 0),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn rename(
@@ -1022,6 +1422,10 @@ impl Filesystem for OverlayFs {
             reply.error(libc::ENOTSUP);
             return;
         }
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[old_path.as_deref(), new_path.as_deref()], &[], true),
+            reply
+        );
         let result = (|| {
             let old = self.child_path(parent, name)?;
             let new = self.child_path(newparent, newname)?;
@@ -1051,17 +1455,23 @@ impl Filesystem for OverlayFs {
         })();
         self.observe_result(old_path.as_deref(), "rename_from", &result, 0, true);
         self.observe_result(new_path.as_deref(), "rename_to", &result, 0, true);
-        match result {
-            Ok((old, new, exchange)) => {
-                if exchange {
-                    self.exchange_inode_prefixes(&old, &new);
-                } else {
-                    self.remap_inode_prefix(&old, &new);
-                }
-                reply.ok();
+        if let Ok((old, new, exchange)) = &result {
+            if *exchange {
+                self.exchange_inode_prefixes(old, new);
+            } else {
+                self.remap_inode_prefix(old, new);
             }
-            Err(error) => reply.error(errno(&error)),
         }
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(_) => reply.ok(),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn link(
@@ -1075,6 +1485,10 @@ impl Filesystem for OverlayFs {
         let profile = self.profile.clone();
         let _span = profile.span("link");
         let observed_path = self.child_path(newparent, newname).ok();
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[observed_path.as_deref()], &[ino], false),
+            reply
+        );
         let result = (|| {
             let source = self.copy_up_inode(ino)?;
             let destination = self.child_path(newparent, newname)?;
@@ -1083,20 +1497,42 @@ impl Filesystem for OverlayFs {
             self.attr(ino, &destination)
         })();
         self.observe_result(observed_path.as_deref(), "link", &result, 0, true);
-        match result {
-            Ok(attr) => {
-                self.retain_lookup(attr.ino);
-                reply.entry(&TTL, &attr, 0)
-            }
-            Err(error) => reply.error(errno(&error)),
+        if let Ok(attr) = &result {
+            self.retain_lookup(attr.ino);
         }
+        let ttl = self.cache_ttl();
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(attr) => reply.entry(&ttl, &attr, 0),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn open(&mut self, _request: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
         let profile = self.profile.clone();
         let _span = profile.span("open");
         let observed_path = self.node_path(ino).ok();
-        let result = self.open_inode_with_backing(ino, flags);
+        let writing = flags & libc::O_ACCMODE != libc::O_RDONLY
+            || flags & (libc::O_TRUNC | libc::O_APPEND) != 0;
+        let mutation = if writing {
+            mutation_or_reply!(
+                self.begin_mutation(&[observed_path.as_deref()], &[ino], false),
+                reply
+            )
+        } else {
+            None
+        };
+        let result = self
+            .open_inode_with_backing(ino, flags)
+            .and_then(|(file, backing)| {
+                let cache_flags = self.cache_open_flags(&file.metadata()?);
+                Ok((file, backing, cache_flags))
+            });
         self.observe_result(
             observed_path.as_deref(),
             "open",
@@ -1104,23 +1540,30 @@ impl Filesystem for OverlayFs {
             0,
             flags & libc::O_TRUNC != 0,
         );
-        match result {
-            Ok((file, backing)) => {
-                let handle = self.allocate_handle();
-                self.open_files.insert(
-                    handle,
-                    OpenFile {
-                        file,
-                        backing,
-                        ino,
-                        path: observed_path.unwrap_or_default(),
-                        flags,
-                    },
-                );
-                reply.opened(handle, 0);
+        let result = result.map(|(file, backing, cache_flags)| {
+            let handle = self.allocate_handle();
+            self.open_files.insert(
+                handle,
+                OpenFile {
+                    file,
+                    backing,
+                    ino,
+                    path: observed_path.unwrap_or_default(),
+                    flags,
+                },
+            );
+            (handle, cache_flags)
+        });
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
             }
-            Err(error) => reply.error(errno(&error)),
-        }
+            match result {
+                Ok((handle, cache_flags)) => reply.opened(handle, cache_flags),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn read(
@@ -1191,7 +1634,7 @@ impl Filesystem for OverlayFs {
         offset: i64,
         data: &[u8],
         _write_flags: u32,
-        _flags: i32,
+        flags: i32,
         _lock_owner: Option<u64>,
         reply: ReplyWrite,
     ) {
@@ -1224,7 +1667,11 @@ impl Filesystem for OverlayFs {
             reply.error(libc::EBADF);
             return;
         };
-        let result = file.write_at(data, offset as u64);
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[observed_path.as_deref()], &[ino], false),
+            reply
+        );
+        let result = write_request(file, data, offset as u64, flags);
         self.observe_result(
             observed_path.as_deref(),
             "write",
@@ -1232,10 +1679,16 @@ impl Filesystem for OverlayFs {
             result.as_ref().copied().unwrap_or(0) as u64,
             true,
         );
-        match result {
-            Ok(written) => reply.written(written as u32),
-            Err(error) => reply.error(errno(&error)),
-        }
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(written) => reply.written(written as u32),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn flush(
@@ -1350,8 +1803,9 @@ impl Filesystem for OverlayFs {
     ) {
         let profile = self.profile.clone();
         let _span = profile.span("readdirplus");
+        let ttl = self.cache_ttl();
         let result = self.buffer_readdirplus(fh, offset, |entry, cookie, attr| {
-            reply.add(entry.ino, cookie, &entry.name, &TTL, attr, 0)
+            reply.add(entry.ino, cookie, &entry.name, &ttl, attr, 0)
         });
         match result {
             Ok(()) => reply.ok(),
@@ -1439,6 +1893,10 @@ impl Filesystem for OverlayFs {
             reply.error(libc::ENOTSUP);
             return;
         }
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[observed_path.as_deref()], &[ino], false),
+            reply
+        );
         let result = pvisor_overlay_core::validate_guest_xattr(name)
             .and_then(|()| self.copy_up_inode(ino))
             .and_then(|path| self.core.prepare_metadata_change(&path))
@@ -1450,10 +1908,16 @@ impl Filesystem for OverlayFs {
             value.len() as u64,
             true,
         );
-        match result {
-            Ok(()) => reply.ok(),
-            Err(error) => reply.error(errno(&error)),
-        }
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(()) => reply.ok(),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn getxattr(
@@ -1505,15 +1969,25 @@ impl Filesystem for OverlayFs {
         let profile = self.profile.clone();
         let _span = profile.span("removexattr");
         let observed_path = self.node_path(ino).ok();
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[observed_path.as_deref()], &[ino], false),
+            reply
+        );
         let result = pvisor_overlay_core::validate_guest_xattr(name)
             .and_then(|()| self.copy_up_inode(ino))
             .and_then(|path| self.core.prepare_metadata_change(&path))
             .and_then(|path| sys::remove_xattr(&path, name));
         self.observe_result(observed_path.as_deref(), "removexattr", &result, 0, true);
-        match result {
-            Ok(()) => reply.ok(),
-            Err(error) => reply.error(errno(&error)),
-        }
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(()) => reply.ok(),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn access(&mut self, _request: &Request<'_>, ino: u64, mask: i32, reply: ReplyEmpty) {
@@ -1547,6 +2021,10 @@ impl Filesystem for OverlayFs {
         let profile = self.profile.clone();
         let _span = profile.span("create");
         let observed_path = self.child_path(parent, name).ok();
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[observed_path.as_deref()], &[], false),
+            reply
+        );
         let result = (|| {
             let path = self.child_path(parent, name)?;
             let file = self.core.create_file(&path, mode & !umask, flags)?;
@@ -1556,26 +2034,34 @@ impl Filesystem for OverlayFs {
             Ok((file, attr))
         })();
         self.observe_result(observed_path.as_deref(), "create", &result, 0, true);
-        match result {
-            Ok((file, attr)) => {
-                let handle = self.allocate_handle();
-                self.retain_lookup(attr.ino);
-                self.open_files.insert(
-                    handle,
-                    OpenFile {
-                        file,
-                        ino: attr.ino,
-                        backing: self
-                            .core
-                            .upper_path(observed_path.as_deref().unwrap_or_else(|| Path::new(""))),
-                        path: observed_path.unwrap_or_default(),
-                        flags,
-                    },
-                );
-                reply.created(&TTL, &attr, 0, handle, 0);
+        let result = result.map(|(file, attr)| {
+            let handle = self.allocate_handle();
+            self.retain_lookup(attr.ino);
+            self.open_files.insert(
+                handle,
+                OpenFile {
+                    file,
+                    ino: attr.ino,
+                    backing: self
+                        .core
+                        .upper_path(observed_path.as_deref().unwrap_or_else(|| Path::new(""))),
+                    path: observed_path.unwrap_or_default(),
+                    flags,
+                },
+            );
+            (attr, handle)
+        });
+        let ttl = self.cache_ttl();
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
             }
-            Err(error) => reply.error(errno(&error)),
-        }
+            match result {
+                Ok((attr, handle)) => reply.created(&ttl, &attr, 0, handle, 0),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn fallocate(
@@ -1607,12 +2093,22 @@ impl Filesystem for OverlayFs {
             reply.error(libc::EBADF);
             return;
         };
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[observed_path.as_deref()], &[ino], false),
+            reply
+        );
         let result = sys::allocate(file, offset, length);
         self.observe_result(observed_path.as_deref(), "fallocate", &result, 0, true);
-        match result {
-            Ok(()) => reply.ok(),
-            Err(error) => reply.error(errno(&error)),
-        }
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
+            }
+            match result {
+                Ok(()) => reply.ok(),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     fn lseek(
@@ -1670,42 +2166,46 @@ impl Filesystem for OverlayFs {
             reply.error(libc::EBADF);
             return;
         };
-        let mut copied = 0_u64;
-        let mut buffer = vec![0_u8; (len.min(128 * 1024)) as usize];
-        let result = (|| {
-            while copied < len {
-                let wanted = (len - copied).min(buffer.len() as u64) as usize;
-                let read = input.read_at(
-                    &mut buffer[..wanted],
-                    (offset_in as u64).saturating_add(copied),
-                )?;
-                if read == 0 {
-                    break;
-                }
-                let mut written = 0;
-                while written < read {
-                    let amount = output.write_at(
-                        &buffer[written..read],
-                        (offset_out as u64)
-                            .saturating_add(copied)
-                            .saturating_add(written as u64),
-                    )?;
-                    if amount == 0 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::WriteZero,
-                            "copy_file_range made no progress",
-                        ));
-                    }
-                    written += amount;
-                }
-                copied += read as u64;
+        let output_path = self.open_files.get(&fh_out).map(|file| file.path.clone());
+        let output_ino = self.open_files.get(&fh_out).map(|file| file.ino).unwrap();
+        let mutation = mutation_or_reply!(
+            self.begin_mutation(&[output_path.as_deref()], &[output_ino], false),
+            reply
+        );
+        // The FUSE reply count is u32. Never modify bytes outside the range
+        // reported to the kernel, including after a short write / later error.
+        // Linux rejects copy_file_range while the mounted target has O_APPEND.
+        // Unlike WRITE this opcode carries no current open flags. A received
+        // request is positional: clear any stale backing OPEN/WRITE append bit
+        // before touching bytes (F_SETFL may have cleared it without a WRITE).
+        let result = set_append(&output, false).and_then(|()| {
+            copy_range(
+                len.min(u32::MAX as u64),
+                |buffer, copied| input.read_at(buffer, offset_in as u64 + copied),
+                |buffer, copied| {
+                    #[cfg(test)]
+                    let buffer = if let Some(limit) = self.copy_fault_after {
+                        if copied >= limit {
+                            return Err(io::Error::from_raw_os_error(libc::ENOSPC));
+                        }
+                        &buffer[..buffer.len().min((limit - copied) as usize)]
+                    } else {
+                        buffer
+                    };
+                    output.write_at(buffer, offset_out as u64 + copied)
+                },
+            )
+        });
+        self.mutation_reply(mutation, move |valid| {
+            if !valid {
+                reply.error(libc::EIO);
+                return;
             }
-            Ok::<(), io::Error>(())
-        })();
-        match result {
-            Ok(()) => reply.written(copied.min(u32::MAX as u64) as u32),
-            Err(error) => reply.error(errno(&error)),
-        }
+            match result {
+                Ok(copied) => reply.written(copied as u32),
+                Err(error) => reply.error(errno(&error)),
+            }
+        });
     }
 
     #[cfg(target_os = "macos")]
@@ -1755,6 +2255,422 @@ impl Filesystem for OverlayFs {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn late_lower_alias_binds_upper_before_attributes_and_open() {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("a"), b"abcd").unwrap();
+        fs::hard_link(lower.join("a"), lower.join("z")).unwrap();
+        let mut overlay =
+            OverlayFs::new(vec![lower.clone()], root.path().join("upper"), None).unwrap();
+        let (ino, _) = overlay.inode_for_path_with_metadata("a".into()).unwrap();
+        let file = overlay
+            .open_inode(ino, libc::O_WRONLY | libc::O_APPEND)
+            .unwrap();
+        write_request(&file, b"efgh", 0, libc::O_APPEND).unwrap();
+        assert!(!overlay.by_path.contains_key(Path::new("z")));
+        let (alias, metadata) = overlay.inode_for_path_with_metadata("z".into()).unwrap();
+        assert_eq!(alias, ino);
+        assert_eq!(metadata.len(), 8);
+        assert_eq!(metadata.ino(), file.metadata().unwrap().ino());
+        let reader = overlay.open_inode(alias, libc::O_RDONLY).unwrap();
+        let mut bytes = [0; 8];
+        assert_eq!(reader.read_at(&mut bytes, 0).unwrap(), 8);
+        assert_eq!(&bytes, b"abcdefgh");
+        assert_eq!(fs::read(lower.join("z")).unwrap(), b"abcd");
+    }
+
+    #[test]
+    fn late_lower_alias_after_forget_reclaim_uses_core_owned_upper_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("a"), b"abcd").unwrap();
+        fs::hard_link(lower.join("a"), lower.join("z")).unwrap();
+        let mut overlay =
+            OverlayFs::new(vec![lower.clone()], root.path().join("upper"), None).unwrap();
+        let (old, _) = overlay.inode_for_path_with_metadata("a".into()).unwrap();
+        overlay.retain_lookup(old);
+        let appender = overlay
+            .open_inode(old, libc::O_WRONLY | libc::O_APPEND)
+            .unwrap();
+        write_request(&appender, b"efgh", 0, libc::O_APPEND).unwrap();
+        drop(appender);
+        // Apply the final FORGET's accounting and the same reclaim helper used
+        // by the callback. No live handle, inode or by_object entry survives.
+        overlay.nodes.get_mut(&old).unwrap().lookups -= 1;
+        overlay.reclaim_inode(old);
+        assert!(!overlay.nodes.contains_key(&old));
+        assert!(overlay.by_object.is_empty());
+        assert!(!overlay.by_path.contains_key(Path::new("z")));
+        let (alias, metadata) = overlay.inode_for_path_with_metadata("z".into()).unwrap();
+        assert_ne!(
+            alias, old,
+            "reclaimed protocol inode must not be resurrected"
+        );
+        assert_eq!(metadata.len(), 8);
+        let reader = overlay.open_inode(alias, libc::O_RDONLY).unwrap();
+        let mut bytes = [0; 8];
+        assert_eq!(reader.read_at(&mut bytes, 0).unwrap(), 8);
+        assert_eq!(&bytes, b"abcdefgh");
+        assert_eq!(fs::read(lower.join("z")).unwrap(), b"abcd");
+        let (source, source_metadata) = overlay.inode_for_path_with_metadata("a".into()).unwrap();
+        assert_eq!(source, alias);
+        assert_eq!(source_metadata.ino(), metadata.ino());
+    }
+
+    #[test]
+    fn recursive_materialization_reads_upper_despite_canonical_lower_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        let upper = root.path().join("upper");
+        fs::create_dir_all(lower.join("dir")).unwrap();
+        fs::write(lower.join("dir/child"), b"abcd").unwrap();
+        fs::hard_link(lower.join("dir/child"), lower.join("a-outside")).unwrap();
+        let mut overlay = OverlayFs::new(vec![lower.clone()], upper.clone(), None).unwrap();
+        let (ino, _) = overlay
+            .inode_for_path_with_metadata("a-outside".into())
+            .unwrap();
+        assert_eq!(
+            overlay
+                .inode_for_path_with_metadata("dir/child".into())
+                .unwrap()
+                .0,
+            ino
+        );
+        overlay
+            .core
+            .rename(Path::new("dir"), Path::new("moved"), false)
+            .unwrap();
+        overlay.remap_inode_prefix(Path::new("dir"), Path::new("moved"));
+        assert_eq!(overlay.node_path(ino).unwrap(), Path::new("a-outside"));
+        assert!(!upper.join("a-outside").exists());
+        // Model modification of the already materialized upper child. Neither
+        // its lower alias nor adapter by_object has been rebound by this step.
+        fs::write(upper.join("moved/child"), b"abcdefgh").unwrap();
+        assert_eq!(overlay.inode_metadata(ino, None).unwrap().len(), 8);
+        let reader = overlay.open_inode(ino, libc::O_RDONLY).unwrap();
+        let mut bytes = [0; 8];
+        assert_eq!(reader.read_at(&mut bytes, 0).unwrap(), 8);
+        assert_eq!(&bytes, b"abcdefgh");
+        assert_eq!(overlay.by_path[Path::new("a-outside")], ino);
+        assert_eq!(
+            reader.metadata().unwrap().ino(),
+            fs::metadata(upper.join("moved/child")).unwrap().ino()
+        );
+        assert_eq!(fs::read(lower.join("a-outside")).unwrap(), b"abcd");
+    }
+
+    #[test]
+    fn copy_range_acknowledges_partial_write_read_error_and_write_zero() {
+        for zero in [false, true] {
+            let mut target = Vec::new();
+            let count = copy_range(
+                8,
+                |buffer, _| {
+                    buffer.fill(b'x');
+                    Ok(buffer.len())
+                },
+                |buffer, offset| {
+                    if offset != 0 {
+                        return if zero {
+                            Ok(0)
+                        } else {
+                            Err(io::Error::from_raw_os_error(libc::ENOSPC))
+                        };
+                    }
+                    target.extend_from_slice(&buffer[..3]);
+                    Ok(3)
+                },
+            )
+            .unwrap();
+            assert_eq!(count, 3);
+            assert_eq!(target, b"xxx");
+        }
+        let count = copy_range(
+            256 * 1024,
+            |buffer, offset| {
+                if offset != 0 {
+                    return Err(io::Error::from_raw_os_error(libc::EIO));
+                }
+                buffer.fill(b'x');
+                Ok(buffer.len())
+            },
+            |buffer, _| Ok(buffer.len()),
+        )
+        .unwrap();
+        assert_eq!(count, 128 * 1024);
+        assert_eq!(
+            copy_range(
+                8,
+                |_, _| Err(io::Error::from_raw_os_error(libc::EIO)),
+                |_, _| unreachable!()
+            )
+            .unwrap_err()
+            .raw_os_error(),
+            Some(libc::EIO)
+        );
+        assert_eq!(
+            copy_range(
+                8,
+                |buffer, _| Ok(buffer.len()),
+                |_, _| Err(io::Error::from_raw_os_error(libc::ENOSPC))
+            )
+            .unwrap_err()
+            .raw_os_error(),
+            Some(libc::ENOSPC)
+        );
+    }
+
+    #[test]
+    fn mutation_subtree_effects_are_bounded() {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], root.path().join("upper"), None).unwrap();
+        for index in 0..EFFECT_LIMIT + 20 {
+            overlay
+                .by_path
+                .insert(PathBuf::from(format!("tree/{index}")), index as u64 + 2);
+        }
+        let mut effects = Effects::default();
+        let objects = overlay.extend_effects(&mut effects, &["tree".into()], &[], true);
+        assert!(effects.overflow);
+        assert!(objects.len() <= EFFECT_LIMIT);
+        assert!(effects.entries.len() + effects.inodes.len() <= EFFECT_LIMIT + 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires real HOST FUSE and writable fusectl abort"]
+    fn host_kernel_cache_reclaimed_late_alias_first_lookup_and_read() {
+        use crate::cache::CacheWorkers;
+        let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+        let lower = root.path().join("lower");
+        let upper = root.path().join("upper");
+        let mount = root.path().join("merged");
+        for path in [&lower, &upper, &mount] {
+            fs::create_dir(path).unwrap();
+        }
+        fs::write(lower.join("a"), b"abcd").unwrap();
+        fs::hard_link(lower.join("a"), lower.join("z")).unwrap();
+        let future = SystemTime::now() + Duration::from_secs(7 * 24 * 60 * 60);
+        for path in [&lower, &upper, &lower.join("a")] {
+            File::open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_accessed(future))
+                .unwrap();
+        }
+        let atime = fs::metadata(lower.join("a")).unwrap().accessed().unwrap();
+        let mut filesystem = OverlayFs::new(vec![lower.clone()], upper, None).unwrap();
+        let (old, _) = filesystem.inode_for_path_with_metadata("a".into()).unwrap();
+        filesystem.retain_lookup(old);
+        let appender = filesystem
+            .open_inode(old, libc::O_WRONLY | libc::O_APPEND)
+            .unwrap();
+        write_request(&appender, b"efgh", 0, libc::O_APPEND).unwrap();
+        drop(appender);
+        filesystem.nodes.get_mut(&old).unwrap().lookups -= 1;
+        filesystem.reclaim_inode(old);
+        assert!(!filesystem.nodes.contains_key(&old));
+        assert!(filesystem.by_object.is_empty());
+        // Start the real kernel adapter with deterministically reclaimed state.
+        // This avoids relying on Linux's discretionary dcache/inode eviction;
+        // every kernel lookup below is after source-close and final reclaim.
+        let filesystem = filesystem.with_kernel_cache(
+            KernelCacheConfig {
+                policy: KernelCachePolicy::Metadata,
+                ..Default::default()
+            },
+            vec![],
+        );
+        let slot = filesystem.cache_slot();
+        let session = fuser::Session::new(
+            filesystem,
+            &mount,
+            &[
+                fuser::MountOption::DefaultPermissions,
+                fuser::MountOption::NoAtime,
+            ],
+        )
+        .unwrap();
+        let abort = crate::mount::connection_abort_file(&mount).unwrap();
+        let (handle, workers) = CacheWorkers::start(session.notifier(), abort, &mount).unwrap();
+        assert!(slot.set(handle).is_ok());
+        drop(slot);
+        let background = fuser::BackgroundSession::new(session).unwrap();
+        assert_eq!(fs::metadata(mount.join("z")).unwrap().len(), 8);
+        assert_eq!(fs::read(mount.join("z")).unwrap(), b"abcdefgh");
+        assert_eq!(
+            fs::metadata(mount.join("z")).unwrap().ino(),
+            fs::metadata(mount.join("a")).unwrap().ino()
+        );
+        assert_eq!(fs::read(lower.join("z")).unwrap(), b"abcd");
+        assert_eq!(
+            fs::metadata(lower.join("a")).unwrap().accessed().unwrap(),
+            atime
+        );
+        workers.shutdown();
+        background.unmount().unwrap();
+        workers.join().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires real HOST FUSE and writable fusectl abort"]
+    fn host_kernel_cache_partial_copy_error_updates_warmed_target_pages() {
+        use crate::cache::CacheWorkers;
+        use std::os::fd::AsRawFd;
+        // Private per-instance fault injection, no process-global environment.
+        for limit in [0, 3, 128 * 1024 + 3] {
+            let root = tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap();
+            let lower = root.path().join("lower");
+            let upper = root.path().join("upper");
+            let mount = root.path().join("merged");
+            for path in [&lower, &upper, &mount] {
+                fs::create_dir(path).unwrap();
+            }
+            let bytes = vec![b'x'; 256 * 1024];
+            fs::write(upper.join("input"), &bytes).unwrap();
+            fs::write(upper.join("target"), vec![b'o'; bytes.len()]).unwrap();
+            fs::hard_link(upper.join("target"), upper.join("alias")).unwrap();
+            let future = SystemTime::now() + Duration::from_secs(7 * 24 * 60 * 60);
+            for path in [&upper, &upper.join("input"), &upper.join("target")] {
+                File::open(path)
+                    .unwrap()
+                    .set_times(fs::FileTimes::new().set_accessed(future))
+                    .unwrap();
+            }
+            let input_atime = fs::metadata(upper.join("input"))
+                .unwrap()
+                .accessed()
+                .unwrap();
+            let mut filesystem = OverlayFs::new(vec![lower], upper.clone(), None)
+                .unwrap()
+                .with_kernel_cache(
+                    KernelCacheConfig {
+                        policy: KernelCachePolicy::Metadata,
+                        ..Default::default()
+                    },
+                    vec![],
+                );
+            filesystem.copy_fault_after = Some(limit);
+            let slot = filesystem.cache_slot();
+            let session = fuser::Session::new(
+                filesystem,
+                &mount,
+                &[
+                    fuser::MountOption::DefaultPermissions,
+                    fuser::MountOption::NoAtime,
+                ],
+            )
+            .unwrap();
+            let abort = crate::mount::connection_abort_file(&mount).unwrap();
+            let (handle, workers) = CacheWorkers::start(session.notifier(), abort, &mount).unwrap();
+            assert!(slot.set(handle).is_ok());
+            drop(slot);
+            let background = fuser::BackgroundSession::new(session).unwrap();
+            let input = File::open(mount.join("input")).unwrap();
+            let output = OpenOptions::new()
+                .write(true)
+                .open(mount.join("target"))
+                .unwrap();
+            let cached = File::open(mount.join("alias")).unwrap();
+            let mut warm = vec![0; bytes.len()];
+            assert_eq!(cached.read_at(&mut warm, 0).unwrap(), bytes.len());
+            assert!(warm.iter().all(|byte| *byte == b'o'));
+            let mut src = 0;
+            let mut dst = 0;
+            let copied = unsafe {
+                libc::copy_file_range(
+                    input.as_raw_fd(),
+                    &mut src,
+                    output.as_raw_fd(),
+                    &mut dst,
+                    bytes.len(),
+                    0,
+                )
+            };
+            if limit == 0 {
+                assert_eq!(copied, -1);
+                assert_eq!(
+                    io::Error::last_os_error().raw_os_error(),
+                    Some(libc::ENOSPC)
+                );
+            } else {
+                assert_eq!(copied, limit as isize);
+            }
+            assert_eq!(cached.read_at(&mut warm, 0).unwrap(), bytes.len());
+            assert!(warm[..limit as usize].iter().all(|byte| *byte == b'x'));
+            assert!(warm[limit as usize..].iter().all(|byte| *byte == b'o'));
+            assert_eq!(fs::read(upper.join("target")).unwrap(), warm);
+            assert_eq!(
+                fs::metadata(upper.join("input"))
+                    .unwrap()
+                    .accessed()
+                    .unwrap(),
+                input_atime,
+                "fault fixture must preserve backing atime"
+            );
+            drop((input, output, cached));
+            workers.shutdown();
+            background.unmount().unwrap();
+            workers.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn mutation_effects_cover_aliases_parents_and_subtrees_without_sibling_eviction() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir_all(lower.join("dir/sub")).unwrap();
+        fs::create_dir_all(lower.join("other")).unwrap();
+        fs::write(lower.join("dir/a"), b"a").unwrap();
+        fs::hard_link(lower.join("dir/a"), lower.join("other/alias")).unwrap();
+        fs::write(lower.join("dir/sub/child"), b"child").unwrap();
+        fs::write(lower.join("other/unrelated"), b"unrelated").unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], temp.path().join("upper"), None).unwrap();
+        for path in [
+            "dir",
+            "dir/sub",
+            "dir/a",
+            "dir/sub/child",
+            "other",
+            "other/alias",
+            "other/unrelated",
+        ] {
+            let path = PathBuf::from(path);
+            overlay.allocate_inode(path.clone(), &overlay.core.metadata(&path).unwrap());
+        }
+        let dir = overlay.by_path[Path::new("dir")];
+        let other = overlay.by_path[Path::new("other")];
+        let a = overlay.by_path[Path::new("dir/a")];
+        let child = overlay.by_path[Path::new("dir/sub/child")];
+        let unrelated = overlay.by_path[Path::new("other/unrelated")];
+        let mut effects = Effects::default();
+        let objects = overlay.extend_effects(&mut effects, &["dir/a".into()], &[], false);
+        assert_eq!(objects, BTreeSet::from([a]));
+        assert_eq!(
+            effects.inodes,
+            BTreeSet::from([FUSE_ROOT_ID, dir, other, a])
+        );
+        assert_eq!(
+            effects.entries,
+            BTreeSet::from([(dir, "a".into()), (other, "alias".into())])
+        );
+        assert!(!effects.inodes.contains(&child));
+        assert!(!effects.inodes.contains(&unrelated));
+        let mut renamed = Effects::default();
+        let _ = overlay.extend_effects(&mut renamed, &["dir".into(), "moved".into()], &[], true);
+        assert!(renamed.inodes.contains(&child));
+        assert!(renamed.entries.contains(&(FUSE_ROOT_ID, "dir".into())));
+        assert!(renamed.entries.contains(&(FUSE_ROOT_ID, "moved".into())));
+        assert!(renamed.entries.contains(&(other, "alias".into())));
+        assert!(!renamed.entries.contains(&(FUSE_ROOT_ID, "other".into())));
+        assert!(!renamed.inodes.contains(&unrelated));
+    }
+
     #[test]
     fn replacement_with_denied_hardlink_is_rejected_before_content_observation() {
         let temp = tempfile::tempdir().unwrap();
@@ -2078,7 +2994,10 @@ mod tests {
         overlay.reclaim_inode(a.ino);
         assert!(overlay.nodes.contains_key(&a.ino));
         fs::remove_file(lower.join("a")).unwrap();
-        assert_eq!(overlay.directory_entry_attr(fh, 2).unwrap().ino, a.ino);
+        assert_eq!(
+            errno(&overlay.directory_entry_attr(fh, 2).unwrap_err()),
+            libc::ENOENT
+        );
         overlay.open_directories.remove(&fh);
         overlay.reclaim_inode(a.ino);
         assert!(!overlay.nodes.contains_key(&a.ino));
@@ -2334,6 +3253,75 @@ mod tests {
                 .is_err()
         );
         assert_eq!(fs::read(lower.join("file")).unwrap(), b"original");
+    }
+
+    #[test]
+    fn repeated_plus_refreshes_attributes_after_copyup_truncate_chmod_and_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("a"), b"original").unwrap();
+        let mut overlay =
+            OverlayFs::new(vec![lower.clone()], temp.path().join("upper"), None).unwrap();
+        let fh = snapshot_handle(&mut overlay, FUSE_ROOT_ID);
+        let first = overlay.directory_entry_attr(fh, 2).unwrap();
+        assert_eq!(first.size, 8);
+        let upper = overlay.copy_up_inode(first.ino).unwrap();
+        let physical = overlay.core.upper_path(&upper);
+        OpenOptions::new()
+            .write(true)
+            .open(&physical)
+            .unwrap()
+            .set_len(2)
+            .unwrap();
+        fs::set_permissions(&physical, fs::Permissions::from_mode(0o600)).unwrap();
+        let updated = overlay.directory_entry_attr(fh, 2).unwrap();
+        assert_eq!(updated.ino, first.ino);
+        assert_eq!(updated.size, 2);
+        assert_eq!(updated.perm, 0o600);
+        assert_eq!(fs::read(lower.join("a")).unwrap(), b"original");
+        // A held physical fd prevents inode-number reuse in this replacement test.
+        let held = File::open(&physical).unwrap();
+        overlay.core.remove(Path::new("a"), false).unwrap();
+        overlay.remove_inode_prefix(Path::new("a"));
+        overlay
+            .core
+            .create_file(Path::new("a"), 0o640, libc::O_WRONLY)
+            .unwrap()
+            .write_at(b"replacement", 0)
+            .unwrap();
+        let replaced = overlay.directory_entry_attr(fh, 2).unwrap();
+        assert_ne!(replaced.ino, first.ino);
+        assert_eq!(replaced.size, 11);
+        drop(held);
+    }
+
+    #[test]
+    fn cache_reply_policy_is_bounded_and_keep_cache_only_for_readonly_regular_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("a"), b"stable").unwrap();
+        let metadata = fs::metadata(lower.join("a")).unwrap();
+        let directory = fs::metadata(&lower).unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], temp.path().join("upper"), None).unwrap();
+        assert_eq!(overlay.cache_ttl(), Duration::from_secs(1));
+        assert_eq!(overlay.negative_ttl(), Duration::ZERO);
+        overlay.kernel_cache.policy = KernelCachePolicy::Uncached;
+        assert_eq!(overlay.cache_ttl(), Duration::ZERO);
+        assert_eq!(overlay.cache_open_flags(&metadata), 0);
+        overlay.kernel_cache.policy = KernelCachePolicy::Metadata;
+        overlay.read_only = true;
+        assert_eq!(overlay.cache_ttl(), Duration::from_secs(60));
+        assert_eq!(overlay.cache_open_flags(&metadata), 0);
+        overlay.kernel_cache.policy = KernelCachePolicy::MetadataAndData;
+        assert_eq!(
+            overlay.cache_open_flags(&metadata),
+            fuser::consts::FOPEN_KEEP_CACHE
+        );
+        assert_eq!(overlay.cache_open_flags(&directory), 0);
+        overlay.read_only = false;
+        assert_eq!(overlay.cache_open_flags(&metadata), 0);
     }
 
     #[test]

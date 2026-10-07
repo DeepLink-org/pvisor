@@ -56,7 +56,7 @@ host deny-all 和 VM deny-all 各 30/30 批次阻止对同一本地服务的直�
 
 ### 与熟悉方案比较 {#baseline-meaning}
 
-Podman 使用 host network，提供普通 OCI 对照；pVisor OCI 还经过策略代理，所测边界不同。Docker bridge、Firecracker/QEMU 网络、macOS、TLS 和公网 API 未测，不补成数字排名。完整任务的 Docker/Firecracker/QEMU 对照见[运行时对比](compare-runtimes.md)。
+Podman 使用 host network，提供普通 OCI 对照；pVisor OCI 还经过策略代理，所测边界不同。Docker bridge、Firecracker/QEMU 网络、macOS、TLS 和公网 API 未测，不补成数字排名。完整任务的 Docker/Firecracker/QEMU 对照见[端到端任务](agent-tasks.md)。
 
 ### 数据下载与复现 {#run}
 

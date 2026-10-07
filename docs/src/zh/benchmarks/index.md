@@ -20,6 +20,8 @@
 
 [网络](network.md)每条件 30 个独立批次、3 次预热；小请求以每批 256 请求的中位数作为一个样本，origin 在负载 CPU 预算之外，内存没有统一限额。[容量](density.md)在共同两核、2 GiB、零 swap 预算下，按并发度和空闲/有效工具负载分别运行五轮，保留所有失败、未知和 OOM。
 
+[镜像按需启动](lazy-image-startup.md)按 Ubuntu shell 和 Python/NumPy 负载分别测量同一固定镜像的客户端冷/热缓存等待与内容载荷；NumPy 内容传输减少，但未检出冷 Ready 中位数差异，热缓存 Docker 更快。它使用预准备的本机 registry/cache 服务，网络、Docker image store 和内存配置与上述启动对照不同，分别报告，不合并为统一排名。
+
 ## 实验数据和分析 {#results}
 
 2026-10-06 的启动、文件系统和修复共 1,440 个有效样本，完整审查流程 360 个；2026-10-07 的独立 stock 内核启动对照为 240 个有效样本，失败均为 0。各批次不合并，中位数差异和 95% 配对 bootstrap 区间见各专题。
@@ -40,7 +42,7 @@
 
 [Network](network.md) · [Apply](supervision-cost.md#apply-cost) · [Density](density.md) · [VM memory](vm-memory/index.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md)
 
-[Docker/devcontainer](compare-containers.md) · [Firecracker/QEMU/gVisor/Kata](compare-runtimes.md) · [Agent sandboxes](compare-agent-sandboxes.md) · [E2B/Daytona/Modal](compare-cloud-sandboxes.md) · [Agent RL infrastructure](compare-rl-infra.md)
+[端到端任务](agent-tasks.md)结合工具等待、工作区生命周期与 CLI 兼容性分析 Agent 沙箱、容器、VM 和云端的取舍。[强化学习训练](compare-rl-infra.md)把工具成本、活跃容量与历史前缀准备映射到 rollout；完整训练吞吐与 reward 未测。
 
 ### 数据下载与复现 {#run}
 

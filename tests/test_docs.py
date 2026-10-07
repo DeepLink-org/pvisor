@@ -94,6 +94,35 @@ def test_asset_migration_keeps_old_git_paths_free_of_symlinks(path):
     assert (ROOT / "docs/overrides/assets/stylesheets/extra.css").is_file()
 
 
+@pytest.mark.parametrize("locale", ["zh", "en"])
+def test_benchmarks_group_measurements_and_evidence_backed_scenarios(locale):
+    import tomllib
+
+    labels = {
+        "zh": ("基准测试", "性能测试", "场景分析"),
+        "en": ("Benchmarks", "Performance tests", "Scenario analysis"),
+    }
+    section_label, performance_label, scenario_label = labels[locale]
+    config = tomllib.loads((ROOT / f"docs/zensical.{locale}.toml").read_text())
+    groups = next(section[section_label] for section in config["project"]["nav"] if section_label in section)
+    assert [label for group in groups for label in group] == [performance_label, scenario_label]
+    scenarios = next(group[scenario_label] for group in groups if scenario_label in group)
+    assert [path for entry in scenarios for path in entry.values()] == [
+        "benchmarks/agent-tasks.md",
+        "benchmarks/compare-rl-infra.md",
+        "benchmarks/isolation-tests.md",
+        "benchmarks/replay-fidelity.md",
+    ]
+    performance = next(group[performance_label] for group in groups if performance_label in group)
+    assert not set(path for entry in performance for path in entry.values()) & set(
+        path for entry in scenarios for path in entry.values()
+    )
+    for filename in ("task-scenarios.csv", "compare-rl-infra.csv"):
+        assert (ROOT / "docs/src/en/benchmarks" / filename).read_bytes() == (
+            ROOT / "docs/src/zh/benchmarks" / filename
+        ).read_bytes()
+
+
 def test_native_locale_configs_keep_matching_navigation_without_legacy_redirects():
     import tomllib
 

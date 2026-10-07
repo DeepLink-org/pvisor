@@ -10,6 +10,8 @@
 | 独立 guest 内核 | 同时预算启动和 VM 工具等待 |
 | 并发或闲置环境 | 需要固定资源下的吞吐与物理内存实测 |
 
+上述耗时来自 2026-10-06 的跨运行时基线，未计入后续缓存优化。当前缓存实验尚未建立默认 staged、VM 或完整审查任务的新性能结论，选型仍应使用这组基线。
+
 ## Motivation {#motivation}
 
 Agent 的工具循环需要遍历、读写、搜索、编译和安装依赖。选型要同时看单项操作与完整等待，避免用快速启动估计文件密集任务。
@@ -59,6 +61,12 @@ staged 相对 Docker 的完整任务中位数差为 +268.81 ms，95% 配对 boot
 
 <a id="full-ubuntu"></a>
 完整 Ubuntu 文件负载在当前制品下尚未复测。
+
+### 缓存优化的适用范围 {#cache-status}
+
+不可变 lower 的物理元数据缓存已有独立工程 A/B，收益限定于显式声明并保持 lower 稳定的 Linux HOST FUSE 配置。宿主 rootfs、OCI 解包目录与 lazy 镜像的本地投影不自动获得不变性承诺。该实验未覆盖完整审查流程，不能用于折算上表 staged 或 VM 的耗时；实验设计、结果与置信区间见[不可变 lower 缓存分析](../design/filesystem-performance-analysis.md#immutable-lower-cache)。
+
+扩展内核缓存由 Linux HOST API 显式开启：可写长 metadata 缓存要求不可变 lower、独占 upper/work 和稳定 backing 元数据；KEEP_CACHE 仅支持稳定只读普通文件。配置不兼容 journal、读取观察指标或自定义路径策略时会拒绝启用，不会静默省略观察。当前版本的正式计时受并行构建检查干扰，尚无验收通过的加速幅度；未接入默认 `pvisor run` 或 VM。能力边界与验证状态见[内核缓存分析](../design/filesystem-performance-analysis.md#host-kernel-cache)。
 
 ### 数据下载与复现 {#run}
 

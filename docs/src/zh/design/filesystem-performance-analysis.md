@@ -1,5 +1,73 @@
 # 文件系统性能：技术分析与实验记录
 
+## 当前 Linux HOST 内核缓存能力与证据 {#host-kernel-cache}
+
+**显式所有权契约下，Linux HOST API 支持可写 `Metadata` 和只读 `MetadataAndData`；当前源码的正确性测试与独立请求计数有效，正式性能验收仍受阻。** 内核缓存与下方不可变 lower 的服务端物理元数据缓存是独立机制，均不自动改变产品执行器默认配置。
+
+### 策略与准入契约 {#host-cache-contract}
+
+`pvisor_overlayfs::api::OverlayMountConfig.kernel_cache` 显式选择策略；默认行为保持不变，无环境变量自动开启扩展策略。
+
+| 策略 | entry/attr TTL | negative TTL | 普通文件打开与范围 |
+|---|---|---|---|
+| `Disabled`（默认） | 原有 1 秒 | 0 | 无 KEEP_CACHE；保留旧默认 |
+| `Uncached` | 0 | 0 | 无 KEEP_CACHE；显式 metadata-cache-off 对照 |
+| `Metadata` | 配置值，`0 < TTL <= 60s` | 同配置值 | 无 KEEP_CACHE；支持 Linux HOST 可写视图 |
+| `MetadataAndData` | 配置值，`0 < TTL <= 60s` | 同配置值 | 仅稳定只读普通文件设置 KEEP_CACHE；可写配置明确拒绝 |
+
+配置 TTL 默认 60 秒，`Disabled`/`Uncached` 忽略该值。`Uncached` 不启用 DIRECT_IO，打开句柄内仍有普通内核页缓存；所有策略均不启用 writeback caching。
+
+扩展策略要求所有物理 lower 按顺序显式声明 `Immutable`，`OwnedViewContract` 两项断言均为真，读取语义显式为 `StableView`，启用 `default_permissions` 且 FUSE 仅允许 owner 访问。内容、命名空间、权限、ownership、xattrs、hardlink 别名、物理祖先和挂载身份必须保持稳定；upper/work 仅允许此 adapter 修改，并独占至实际卸载。读取也不得改变 backing atime：merged mount 的 NoAtime 不能替代真实 backing 的 noatime 或等价保证。只读挂载、镜像摘要与 advisory lock 都不能证明这些条件。adapter 持有 canonical upper/work 目录对象的非阻塞独占 `flock`，仅协调合作的 opt-in 会话，不阻止宿主旁路写入。
+
+准入在准备 I/O 前拒绝 journal/preimage、compact journal 初始化、read metrics sink、所有自定义 path policy（包括绑定上下文）及 exclusions，不降级或静默跳过观察。`StableView` 接受缓存命中不进入 callback，不提供逐 read 审计、首次内容观察日志、snapshot 或 review 兼容性。macOS 和 VM 不支持扩展策略；virtio-fs 尚无等价已验证通知输出通道，该 DTO 不传播到 runtime/VM 配置。
+
+### Mutation effects 与失败边界 {#host-cache-mutations}
+
+mutation 前后均收集精确 effects，包括已部分 copy-up 或修改 upper 后失败的请求。effects 覆盖已知对象 inode、hardlink 别名、父目录/祖先属性和精确 namespace entry；rename/exchange/removal 包含已知子树、替换对象及旧/新 entry，不将父目录属性变化扩散为无关 sibling entry 淘汰。覆盖 create/mknod/mkdir/symlink、unlink/rmdir、rename/exchange、link、可写 open/copy-up/O_TRUNC、write、setattr、xattrs、fallocate 和 copy_file_range。
+
+copy-up 与递归目录 materialization 将新物理对象绑定回已有 FUSE 身份。晚发现的 lower hardlink 别名通过 Core owner-session 的 `copied_hard_link_metadata` 映射取得当前 upper 身份与属性；映射在 adapter FORGET/reclaim 后仍有效，lookup/readdirplus 必要时 materialize upper 别名并记录 effects。该映射仅属当前 Core owner/session，不跨 rebuild、重新构造或新会话持久化；adapter inode 表或 canonical path 不能替代它。
+
+mutation 开始前增加 pending，此后 metadata/entry 回复（包括 mutation 回复）暂用零 TTL。独立 reply worker 对受影响 inode 执行 metadata-only `inval_inode(ino, -1, 0)` 后发送回复；Linux 协作 mutation 路径处理直接 dentry/page-cache 更新。独立 entry worker 随后异步发送额外 `inval_entry(parent, name)` 并再次过期属性；全部批次完成后才恢复长 TTL。entry 通知不保证先于 syscall 返回，reply worker 不等待 entry worker，FUSE callback 不等待 worker、不发通知、不卸载。可写 inode 不做 blanket data invalidation，避免等待脏页/相关 write；`Metadata` 不使用 KEEP_CACHE。
+
+WRITE 使用请求的当前 open flags，支持动态清除/恢复 O_APPEND。COPY_FILE_RANGE 在 positional copy 前清除 backing fd 的旧 O_APPEND，无需先发生 WRITE；部分复制后遇到错误返回已写字节数，使内核获知实际修改。
+
+reply/entry 队列各限 256 批，stop 队列限 513 项，全局最多 512 个 mutation 批次；每 effects plan 最多 4096 个 inode/entry key 加一个 overflow sentinel。溢出、worker panic 或通知错误（无害 ENOENT 除外）停止会话，upper 已发生的修改不回滚。可写准入要求真实 fusectl abort endpoint，并在实际 mountpoint 用临时挂载验证 detach→abort；`mount()` 返回前不得启动用户。
+
+失败 worker 先 detach 并核对 mountinfo，再写 connection abort；detach 失败不写 abort。helper、termination、worker join 和 shutdown 均有有界等待，shutdown 外层限 15 秒，致命终止失败会结束 server 进程。单次 notifier 调用没有独立 deadline；终止时限不保证每个 mutation syscall 都在该时限内结束。abort/server death 不能撤销其他进程的暖缓存，成功 detach 也不能撤销已持有 fd；EIO 不是通用卸载 fence。调用方必须监督并停止全部用户、释放 fd、保留 backing 供恢复，不允许导出 bind/namespace/FD 别名，并维持 namespace、凭据、helper 与卸载权限。实验失败路径已观察到 namespace kill 后 FUSE task 等待 `request_wait_answer`；简单进程终止探针不证明所有 FUSE 等待都可立即有界清理。
+
+### 当前验证与测量范围 {#host-cache-evidence}
+
+2026-10-07，定向验证记录：`pvisor-overlayfs` **58 passed / 9 skipped**，`pvisor-overlay-core` **124 passed / 5 skipped**；显式执行的真实 mount 测试 **7 passed**。回归覆盖 inode 回收后的 late-hardlink 身份、动态 APPEND 与 positional copy、部分复制失败。独立源码复核未在这两项身份和复制修复中发现新的阻断问题；验证范围不包含全面审计或性能验收。
+
+B-FS-ENG 计划以同一新冻结 release 二进制比较 native、legacy-writable、Metadata-writable60s、Metadata-readonly60s 与 MetadataAndData-readonly60s，每格 3 warmups、30 samples，CPU 0,1、seed 4207，2048 个字节校验文件、32 个半深路径分支。可写对照保持视图语义相同，KEEP_CACHE 归因仅比较两个只读条件。hot/readsearch/TTL 操作前即时预热；TTL 窗口在计时外等待 1.1 秒，不测试 60 秒过期。
+
+所有 native/lower/upper/work 均位于私有 user/mount/PID namespace 的真实 `noatime,nosuid,nodev,mode=0700,size=512m` tmpfs。live mountinfo/device 与物理 file/directory 的 past-atime 反复读取检查覆盖 upper/work 等 backing，证实 atime 不变；仅设置 merged NoAtime 或未来 atime 不算 physical proof。RAM backing 的证据不能推广到磁盘性能/持久化、VM、`pvisor run` 或 review。
+
+| 证据 | 当前源码状态 |
+|---|---|
+| 五条件预检，n=1/cell | 通过 |
+| 正式计时，3 warmups + 30 samples/cell | 三个整批均被并行 Cargo checks 污染并拒绝；accepted=0 |
+| P50、耗时变化及 bootstrap 95% CI | 未验收；25 个计划 cell 的统计值均留空 |
+| 独立 B-FS-DIAG profile，n=3/case | 有效，仅用于请求计数 |
+
+独立 profile 保留 90 个新诊断 case、5 个持续正确性进程、95 个日志及 152 个唯一 final 实例；累计 checkpoint 由各实例最后记录替换，不相加。下表摘自派生 CSV，为每种条件三次诊断的请求中位数（范围均等于中位数）；warm 增量减去同轮独立 fresh mount 的 prime-only，单位为 callback 次数，不包含时间。
+
+| 操作 / 计数范围 | 条件 | LOOKUP | GETATTR | OPEN | READ |
+|---|---|---:|---:|---:|---:|
+| hot / warm 增量 | legacy-writable | 0 | 4096 | 4096 | 4096 |
+| hot / warm 增量 | metadata-writable | 0 | 4096 | 4096 | 4096 |
+| hot / warm 增量 | metadata-readonly | 0 | 0 | 4096 | 4096 |
+| hot / warm 增量 | metadata-and-data-readonly | 0 | 0 | 4096 | 0 |
+| TTL 窗口 / warm 增量 | legacy-writable | 2192 | 2049 | 4096 | 4096 |
+| TTL 窗口 / warm 增量 | metadata-writable | 0 | 4096 | 4096 | 4096 |
+| readsearch / warm 增量 | metadata-readonly | 0 | 0 | 2048 | 2048 |
+| readsearch / warm 增量 | metadata-and-data-readonly | 0 | 0 | 2048 | 0 |
+| hot / fresh mount 完整生命周期 | metadata-and-data-readonly | 2192 | 1 | 8192 | 2048 |
+
+计数支持延长 TTL 避免此窗口的重复 LOOKUP，以及只读 KEEP_CACHE 消除暖操作 READ callback；可写 Metadata 的 GETATTR/OPEN/READ 并未消失。完整生命周期仍包含初次读取，零暖 READ 不表示无物理读取或零任务成本。诊断耗时不进入正式分布，失败批次不拼接，旧源码 noatime 性能不替代最新源码验收；下方独立 immutable-cache 的有效结果保留其原始测量范围。
+
+[正式验收状态 CSV](kernel-cache-summary.csv) · [独立请求计数 CSV](kernel-cache-counters.csv) · [工程报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/KERNEL_CACHE_REPORT.md) · [复现与证据契约](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#extended-linux-host-api-kernel-cache)。两个 CSV 均为直接复制的派生数据，保留来源/二进制摘要与统计口径；原始样本、日志、冻结源码与回执留在 `benchmark/pvisor/.data/`，不发布到站点或改写历史结果。
+
 ## 不可变 lower 的物理元数据缓存 {#immutable-lower-cache}
 
 **真实 Linux FUSE 的同制品 A/B 中，缓存使读密集操作的中位耗时下降约 24%–26%，新进程、挂载、工具执行到卸载的任务下降 19.6%。** 这是 B-FS-ENG 工程实验，不是数量级提升，也不证明 OCI、VM、完整 Agent 任务或带审查日志的 staged 执行有同等收益。

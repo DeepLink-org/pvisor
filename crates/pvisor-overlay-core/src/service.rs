@@ -164,6 +164,12 @@ impl FilesystemService {
     pub fn metadata(&self, rel: &Path) -> io::Result<Metadata> {
         self.core.metadata(rel)
     }
+    /// Checked, non-mutating query of a lower hardlink's surviving copied-up
+    /// metadata. Group ownership is Core-scoped, not tied to protocol inodes;
+    /// see `OverlayCore::copied_hard_link_metadata` for errors and ordering.
+    pub fn copied_hard_link_metadata(&self, rel: &Path) -> io::Result<Option<Metadata>> {
+        self.core.copied_hard_link_metadata(rel)
+    }
     pub fn metadata_for_backing_lookup(&self, rel: &Path) -> io::Result<BackingResolution> {
         self.core.metadata_for_backing_lookup(rel)
     }

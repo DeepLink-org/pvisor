@@ -1,5 +1,73 @@
 # Filesystem performance: technical analysis and experiment records
 
+## Current Linux HOST kernel caching and evidence {#host-kernel-cache}
+
+**Under an explicit ownership contract, the Linux HOST API supports writable `Metadata` and read-only `MetadataAndData`; current-source correctness tests and independent request counters are valid, while formal performance acceptance remains blocked.** Kernel caching and the service-side immutable-lower physical metadata cache below are separate mechanisms. Neither automatically changes product executor defaults.
+
+### Policies and admission contract {#host-cache-contract}
+
+`pvisor_overlayfs::api::OverlayMountConfig.kernel_cache` explicitly selects the policy. Default behavior remains unchanged; no environment variable automatically enables extended policies.
+
+| Policy | Entry/attr TTL | Negative TTL | Regular-file opens and scope |
+|---|---|---|---|
+| `Disabled` (default) | Legacy 1 second | 0 | No KEEP_CACHE; preserves the old default |
+| `Uncached` | 0 | 0 | No KEEP_CACHE; explicit metadata-cache-off control |
+| `Metadata` | Configured, `0 < TTL <= 60s` | Same configured value | No KEEP_CACHE; supports writable Linux HOST views |
+| `MetadataAndData` | Configured, `0 < TTL <= 60s` | Same configured value | KEEP_CACHE only for stable read-only regular files; writable configurations explicitly rejected |
+
+Configured TTL defaults to 60 seconds and is ignored by `Disabled`/`Uncached`. `Uncached` does not enable DIRECT_IO: normal kernel page caching within an open handle remains. No policy enables writeback caching.
+
+Extended policies require every physical lower explicitly declared `Immutable` in order, both `OwnedViewContract` assertions affirmed, explicit `StableView` read semantics, `default_permissions` and owner-only FUSE access. Contents, namespace, permissions, ownership, xattrs, hardlink aliases, physical ancestors and mount identities must remain stable. Only this adapter may mutate upper/work, which remain exclusive until actual detachment. Reads must not change backing atime: merged-mount NoAtime does not replace real backing noatime or an equivalent guarantee. A read-only mount, image digest or advisory lock does not prove these conditions. The adapter retains nonblocking exclusive `flock` locks on canonical upper/work directory objects; they coordinate cooperating opt-in sessions only, not out-of-band host writers.
+
+Admission rejects journals/preimages, compact journal initialization, read metrics sinks, all custom path policies (including bound contexts) and exclusions before preparation I/O, without downgrading or silently skipping observations. `StableView` accepts that cache hits bypass callbacks; it provides no per-read audit, first-content-observation journal, snapshot or review compatibility. macOS and VM do not support extended policies. Virtio-fs lacks an equivalent verified notification output transport, and this DTO is not propagated into runtime/VM configuration.
+
+### Mutation effects and failure boundaries {#host-cache-mutations}
+
+Precise effects are collected before and after mutations, including requests that fail after partial copy-up or upper modification. Effects cover known object inodes, hardlink aliases, parent/ancestor attributes and exact namespace entries. Rename/exchange/removal include known subtrees, replaced objects and old/new entries; parent attribute changes do not expand into unrelated sibling-entry eviction. Covered operations include create/mknod/mkdir/symlink, unlink/rmdir, rename/exchange, link, writable open/copy-up/O_TRUNC, write, setattr, xattrs, fallocate and copy_file_range.
+
+Copy-up and recursive directory materialization bind new physical objects back to existing FUSE identities. Late-discovered lower hardlink aliases obtain current upper identity and attributes from the Core owner-session `copied_hard_link_metadata` mapping. It survives adapter FORGET/reclaim; lookup/readdirplus materialize upper aliases when needed and record effects. The mapping belongs only to the current Core owner/session and is not persisted across rebuilds, reconstruction or new sessions. Adapter inode tables or canonical paths cannot replace it.
+
+Pending is incremented before mutation, temporarily forcing zero TTL on metadata/entry replies, including mutation replies. An independent reply worker performs metadata-only `inval_inode(ino, -1, 0)` on affected inodes before replying; Linux cooperative mutation handling updates direct dentry/page-cache state. A separate entry worker asynchronously sends additional `inval_entry(parent, name)` notifications and expires attributes again. Long TTLs resume only after all batches complete. Entry notifications need not precede syscall completion. The reply worker never waits for the entry worker; FUSE callbacks do not wait for workers, notify the kernel or detach mounts. Writable inodes receive no blanket data invalidation that could wait on dirty pages/related writes; `Metadata` uses no KEEP_CACHE.
+
+WRITE uses each request's current open flags, honoring dynamic clearing/restoring of O_APPEND. COPY_FILE_RANGE clears stale backing-fd O_APPEND before positional copying, without requiring an intervening WRITE. Errors after partial copying return the written byte count so the kernel learns about actual modifications.
+
+Reply/entry queues each hold at most 256 batches, the stop queue 513 items, and global reservations at most 512 mutation batches. Each effects plan holds at most 4096 inode/entry keys plus one overflow sentinel. Overflow, worker panic or notification errors (except harmless ENOENT) stop the session; upper modifications are not rolled back. Writable admission requires the real fusectl abort endpoint and a disposable mount at the actual mountpoint verifying detach→abort. Users must not start before `mount()` returns.
+
+Failure workers detach and verify mountinfo before writing connection abort; failed detach prevents the abort write. Helpers, termination, worker joins and shutdown have bounded waits, with a 15-second outer shutdown deadline; fatal termination failure ends the server process. Individual notifier calls have no independent deadline; termination limits do not guarantee that every mutation syscall completes within those limits. Abort/server death cannot revoke other processes' warm caches, and successful detachment cannot revoke held fds. EIO is not a general detachment fence. Callers must supervise and stop every user, release fds, retain backing for recovery, prohibit exported bind/namespace/FD aliases, and preserve namespace, credentials, helpers and detach permissions. Experiment failure evidence includes FUSE tasks waiting in `request_wait_answer` after namespace kill; simple-process termination probes do not establish immediate bounded cleanup for every FUSE wait.
+
+### Current validation and measurement scope {#host-cache-evidence}
+
+Targeted validation records on 2026-10-07 report **58 passed / 9 skipped** for `pvisor-overlayfs` and **124 passed / 5 skipped** for `pvisor-overlay-core`, plus **7 passed** explicitly executed real-mount tests. Regressions cover late-hardlink identity after inode reclamation, dynamic APPEND with positional copy, and partial-copy failures. Independent source review found no new blocking issues in these identity and copy fixes. The validation scope does not include a comprehensive audit or performance acceptance.
+
+B-FS-ENG plans a same newly frozen release-binary comparison of native, legacy-writable, Metadata-writable60s, Metadata-readonly60s and MetadataAndData-readonly60s: 3 warmups and 30 samples/cell, CPUs 0,1, seed 4207, 2048 byte-verified files in 32 half-deep branches. Writable comparisons hold view semantics fixed; KEEP_CACHE attribution compares only the two read-only conditions. Hot/readsearch/TTL operations have immediate priming. The TTL window waits 1.1 seconds outside timing and does not test 60-second expiry.
+
+All native/lower/upper/work inputs reside on genuine `noatime,nosuid,nodev,mode=0700,size=512m` tmpfs in a private user/mount/PID namespace. Live mountinfo/device proofs and repeated physical file/directory reads with past atime cover backing including upper/work and establish unchanged atime. Merged NoAtime or future atime alone is not physical proof. RAM-backed evidence does not establish disk-backed performance/durability, VM, `pvisor run` or review guarantees.
+
+| Evidence | Current-source status |
+|---|---|
+| Five-condition preflight, n=1/cell | Passed |
+| Formal timing, 3 warmups + 30 samples/cell | All three whole cohorts contaminated by concurrent Cargo checks and rejected; accepted=0 |
+| P50, time changes and bootstrap 95% CI | Unaccepted; statistics remain empty in all 25 planned cells |
+| Independent B-FS-DIAG profile, n=3/case | Valid for request counters only |
+
+The independent profile retains 90 fresh diagnostic cases, 5 persistent correctness processes, 95 logs and 152 unique final instances. Each instance's final cumulative record replaces earlier checkpoints rather than being summed. The table extracts request medians from the derived CSV for three diagnostics per condition; all ranges equal the medians. Warm deltas subtract the independently fresh-mounted prime-only case in the same round. Units are callbacks, with no timing values.
+
+| Operation / counting scope | Condition | LOOKUP | GETATTR | OPEN | READ |
+|---|---|---:|---:|---:|---:|
+| Hot / warm delta | legacy-writable | 0 | 4096 | 4096 | 4096 |
+| Hot / warm delta | metadata-writable | 0 | 4096 | 4096 | 4096 |
+| Hot / warm delta | metadata-readonly | 0 | 0 | 4096 | 4096 |
+| Hot / warm delta | metadata-and-data-readonly | 0 | 0 | 4096 | 0 |
+| TTL window / warm delta | legacy-writable | 2192 | 2049 | 4096 | 4096 |
+| TTL window / warm delta | metadata-writable | 0 | 4096 | 4096 | 4096 |
+| Readsearch / warm delta | metadata-readonly | 0 | 0 | 2048 | 2048 |
+| Readsearch / warm delta | metadata-and-data-readonly | 0 | 0 | 2048 | 0 |
+| Hot / complete fresh-mount lifecycle | metadata-and-data-readonly | 2192 | 1 | 8192 | 2048 |
+
+Counts support extended TTL avoiding repeated LOOKUP in this window and read-only KEEP_CACHE eliminating warm-operation READ callbacks. Writable Metadata does not eliminate GETATTR/OPEN/READ. The full lifecycle still includes initial reads; zero warm READ does not mean no physical reads or zero task cost. Diagnostic elapsed times do not enter formal distributions, rejected batches are not pooled, and earlier-source noatime performance cannot substitute for current-source acceptance. The separate valid immutable-cache results below retain their original measurement scope.
+
+[Formal acceptance status CSV](kernel-cache-summary.csv) · [Independent request counters CSV](kernel-cache-counters.csv) · [Engineering report](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/KERNEL_CACHE_REPORT.md) · [Reproduction and evidence contract](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#extended-linux-host-api-kernel-cache). Both CSVs are directly copied derived data retaining source/binary digests and statistical scope. Raw samples, logs, frozen sources and receipts stay in `benchmark/pvisor/.data/`, without site publication or rewriting historical results.
+
 ## Physical metadata caching for immutable lowers {#immutable-lower-cache}
 
 **Same-artifact real Linux FUSE A/B reduced read-heavy median operation time by roughly 24–26%, and fresh-process/mount/tool-through-unmount task time by 19.6%.** This is B-FS-ENG engineering evidence, not an order-of-magnitude improvement or proof of equal gains for OCI, VM, full Agent tasks or staged execution with review journals.
