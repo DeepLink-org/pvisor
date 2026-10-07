@@ -153,9 +153,8 @@ def main():
                 assert (work/'held').read_bytes().startswith(marker.encode())
             result = results[0]
             command('gc')
-            # Exercise a second checkpoint epoch from each restored branch and
-            # stop while all vCPUs/devices are drained. The lazy RAM path has
-            # also stalled during exit after this checkpoint; its cause is unknown.
+            # The lazy RAM path has stalled during exit after this checkpoint,
+            # even with all vCPUs/devices drained; its cause is unknown.
             for (name, _), (process, _, _) in zip(branches, restored):
                 final_id = command('save', name)
                 process.wait(timeout=15)

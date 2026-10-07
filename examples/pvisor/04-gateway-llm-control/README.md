@@ -13,8 +13,6 @@
 ./test.sh  # 执行同一场景并验证预期结果
 ```
 
-预期：2 次 upstream POST、2 次 Gateway sink request、4 个 LLM events、0 次失败。
-
 ## Links
 
 - [pVisor examples](../README.md)

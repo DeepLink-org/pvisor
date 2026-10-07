@@ -117,7 +117,7 @@ VM 执行器将 Run/Attempt 生命周期适配到 `pvisor_vm::api`；VMM、平�
 Bundle 和检查点与运行记录放在一起，不归某个执行后端。
 
 既有公开运行时导入，包括 `PVisor`、`ProcessExecutor`、`cache` 以及内部 `sandbox` 入口，
-保留原有路径。新增显式前端／嵌入 API 导出文件访问类型、`GatewayProfile`、
+保留原有路径。显式前端／嵌入 API 导出文件访问类型、`GatewayProfile`、
 `DelegatedRunOutput`、`rootless_runtime_available`、Overlay 选择／检查及 Run 查找／控制工具、
 Linux Run 租约、`audit`、`checkpoint`、`job_execution` 和启动标记／私有 JSON 工具。
 运行时实现模块仍保持私有；这些导出不构成 API 稳定性承诺。

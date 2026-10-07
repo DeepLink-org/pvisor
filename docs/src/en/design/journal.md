@@ -12,6 +12,8 @@ It stores execution facts without atomically joining append to external requests
 
 ### One state and one commit order {#ownership}
 
+The public boundary is exclusively `pvisor_journal::api`: import `JournalStore`, `TraceProducer` and `DurableFiles` for storage, producer and durable-file operations. `Journal` and `Trace` are opaque owners with no public mutable fields; `Trace::with_id` sets explicit, immutable trace identity at construction. Core owns the shared Event, Fact, Record and Receipt contracts. Implementation stays in private `journal.rs`, `trace.rs` and `persistence.rs` modules.
+
 Journal clones share `Arc<Mutex<State>>`. State owns the journal ID, optional file FD, deduplication index, causal graph, unresolved-reference set and poisoned flag. Disk mode holds an exclusive file lock; a process-local mutex serializes appends to the same Journal. Memory mode stores `Vec<Record>` and returns Volatile receipts.
 
 | Data | Content/purpose |
@@ -120,7 +122,7 @@ This revision reads source/existing documentation without compiling or running p
 
 | Source/test | Scenario and assertions |
 |---|---|
-| `pvisor-journal/src/lib.rs::write_error_requires_recovery_before_another_receipt` | Read-only FD injection; Unknown blocks subsequent append/records; reopen yields offset 0 and LocalSync |
+| `pvisor-journal/src/journal.rs::write_error_requires_recovery_before_another_receipt` | Read-only FD injection; Unknown blocks subsequent append/records; reopen yields offset 0 and LocalSync |
 | `cancelling_waiter_does_not_cancel_accepted_append` | Mutex-blocked accepted append survives dropped waiter Future; repeated submission retains one record |
 | `pvisor/tests/trace_journal.rs::durable_identity_and_idempotence_survive_reopen_and_truncated_tail` | Writer lock, identical-ID retry, conflicting content, read-only nonrepair, reopen truncation and position continuity |
 | `complete_corruption_and_old_formats_are_never_silently_repaired` | Complete corrupt lines/old versions rejected with bytes preserved |

@@ -90,14 +90,15 @@ or changed provider protocol/endpoint fails explicitly.
 
 Model requests enter the local Gateway/OverlayNet listener and Gateway
 forwards them to BigModel. This example requires direct outbound access to the
-model endpoint; external proxy chaining is outside this change. Native Anthropic Messages/SSE is preserved. Gateway records
+model endpoint; external proxy chaining is not supported. Native Anthropic
+Messages/SSE is preserved. Gateway records
 model content according to `level`; other HTTPS traffic stays a CONNECT tunnel
 without content decryption. This profile covers the individual account provider,
 not custom API-key providers, team plans, or other providers selected in the TUI.
 VM/container adaptation is not yet supported.
 
 Even without this Gateway profile, enabling OverlayNet proxy mode for a direct
-`zcode` command now injects `ZCODE_HTTP_PROXY` and `ZCODE_NO_PROXY`. These
+`zcode` command injects `ZCODE_HTTP_PROXY` and `ZCODE_NO_PROXY`. These
 Run-specific values replace passed host values. As elsewhere in host proxy
 mode, direct sockets remain outside cooperative network enforcement.
 

@@ -89,8 +89,8 @@ virtio-fs 文件服务入口分开，随 VM teardown 释放。
 
 内容读取不持有服务全局锁或元数据表锁，缓存 miss 仅锁住相应的内容块。
 测试覆盖跨块与热缓存读取、硬链接 copy-up、guest 属性、打开句柄、完整目录
-导出及 runner 接入。两套入口的协议状态尚未全部收拢；后续可以继续统一
-共同操作，但应保留平台权限和描述符语义。[文件系统测量](filesystem-performance-analysis.md#filesystem-service)
+导出及 runner 接入。两套入口的协议状态尚未全部共享；平台权限和描述符
+语义仍由各自适配器处理。[文件系统测量](filesystem-performance-analysis.md#filesystem-service)
 已覆盖本地完整负载和 lazy 冷/热缓存：读路径有局部收益，元数据和 copy-up
 出现回归，尚未显示普遍端到端加速；并发任务容量未在这批测量中验证。
 统一文件服务处理文件系统及 lazy image；[快照 RAM lazy 恢复](environment-snapshot.md)
@@ -262,7 +262,7 @@ pending apply 存在时不能 drop，以免删掉恢复所需的 upper。已 Dis
 
 `pvisor-core/tests/overlay_contracts.rs` 另覆盖旧 schema 默认值、指纹变体和原始路径字节。`tests/semantics/stage-apply.md` 提供 S-STAGE-001～014 的运行语义草稿；其人工审批状态独立于测试通过，不能由这份文档替代。
 
-本修复没有重新测 copy-up / apply 吞吐、fsync 尾延迟、大型真实仓库负载或断电恢复。1,024 路径的普通 metadata walk 回归确认不会创建内容观察条目，不是吞吐 benchmark。首次内容观察仍需读取并哈希整个目标文件及写入每路径 journal；首次修改仍同步原像，copy-up、目录遍历与 ledger 更新也有成本。已有 [apply 成本实验](../benchmarks/supervision-cost.md#apply-cost) 是历史固定工作负载和制品的具体证据，不能当成本修复的性能复验。进程内恢复控制组与 guest descriptor 测试也不替代任意 syscall 处 kill / 断电、真实 Linux FUSE 或 macOS FSKit/HVF 矩阵。
+先读后修改的冲突回归没有重新验证 copy-up / apply 吞吐、fsync 尾延迟、大型真实仓库负载或断电恢复。1,024 路径的普通 metadata walk 回归确认不会创建内容观察条目，不是吞吐 benchmark。首次内容观察仍需读取并哈希整个目标文件及写入每路径 journal；首次修改仍同步原像，copy-up、目录遍历与 ledger 更新也有成本。已有 [apply 成本实验](../benchmarks/supervision-cost.md#apply-cost) 是历史固定工作负载和制品的具体证据，不能当作先读后修改冲突跟踪的性能复验。进程内恢复控制组与 guest descriptor 测试也不替代任意 syscall 处 kill / 断电、真实 Linux FUSE 或 macOS FSKit/HVF 矩阵。
 
 ## 5. 使用建议 {#usage}
 

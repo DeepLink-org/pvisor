@@ -32,7 +32,7 @@ Snapshot data and transient RAM mounts have separate lifetimes. Native restore a
 
 `SnapshotRamMount::new` and `PublishedEnvironment::ram_mount` treat their `directory` argument as an excluded state root, not as the parent for mountpoints. Callers must not discover mounts by enumerating that directory. Keep the mount owner alive until all RAM files and VM mappings have been released. External pager specifications use separate private runtime directories with `0600` files, removed after readiness or startup failure. Owner EOF triggers cleanup; helper waits are bounded and abnormal helper exits invoke cleanup for that owner's private mount only. Persistent snapshot data is not removed by mount cleanup, and existing legacy mounts are not automatically adopted or unmounted.
 
-Linux rootless host staging still does not support nested mounts within a projected state root. It fails before Agent execution rather than exposing writable submounts or silently hiding their contents. Diagnostics identify the state root, covering mount and nested mounts, and preserve the underlying mount error. Moving pVisor's own transient mounts avoids creating this conflict; it does not claim support for arbitrary user mount layouts.
+Linux rootless host staging still does not support nested mounts within a projected state root. It fails before Agent execution rather than exposing writable submounts or silently hiding their contents. Diagnostics identify the state root, covering mount and nested mounts, and preserve the underlying mount error. The private runtime directory keeps pVisor's transient RAM mounts outside projected state roots; this separation does not establish support for arbitrary user mount layouts.
 
 ## Historical evidence {#historical-evidence}
 

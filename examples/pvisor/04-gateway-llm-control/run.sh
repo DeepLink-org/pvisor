@@ -6,7 +6,6 @@ source "$example_dir/../common.sh"
 pvisor_example_init "$example_dir" gateway-llm-control
 command -v jq >/dev/null
 
-# Start a local OpenAI-compatible endpoint for the example agent.
 pvisor_example_reset
 ports="$(pvisor_free_ports 3)"
 read -r mock_port proxy_port admin_port <<<"$ports"
@@ -24,12 +23,10 @@ mock_pid=$!
 trap 'kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true' EXIT
 pvisor_wait_tcp "$mock_port"
 
-# Run the agent through pVisor's configured Gateway.
 "$pvisor_bin" run --config "$work_dir/run.toml" --stdio capture
 run_dir="$(find "$PVISOR_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print -quit)"
 test -n "$run_dir"
 
-# Print the upstream requests, Gateway counters, and captured conversation.
 echo 'Mock LLM requests:'
 cat "$work_dir/mock.log"
 

@@ -13,9 +13,6 @@
 ./test.sh  # 执行同一场景并验证预期结果
 ```
 
-预期：base 保持原值，upper 和 Bundle 都记录 2 个变化，
-`filesystem_non_bypassable=false`。
-
 ## Links
 
 - [pVisor examples](../README.md)

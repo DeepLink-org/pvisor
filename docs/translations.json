@@ -62,7 +62,7 @@
   "design/index.md": "7ebddb53ae481c56db447c11e31f63c92d79d5c331a05df8627f1036bf4a58e1",
   "design/isolation.md": "8f47ebb7db484a5e8cc4d6bc2d99caac2ca039c437fc704bb7221f9c9321b957",
   "design/job-checkpoint-cli.md": "c304d251091c546c5f752b7279213ff2250c68b538e71d63cff387e386c7e04d",
-  "design/journal.md": "f6884236b2d47ee3c9fe501ef4540d6ad4fb88a21421d604c02b5a9c081b5523",
+  "design/journal.md": "1de019f85c0f400e5e729df0141c13adbc8efef7ec3f31a1919f53ad974944b7",
   "design/lazy-image-v2.md": "09b5dc2fd455099cd2b03eaae03323b3a903a36ab5b2292e4ea6af9ce9cb9edd",
   "design/memory-optimization/compression-local.md": "1c93677d1bd38a30515a11c97e95982180d2969c294b37121ef66c8e8fae318a",
   "design/memory-optimization/compression-pool.md": "37d9c0fdb109220cd56158c905cbf0bd3d04acdeeb306bed13054a452767cc62",

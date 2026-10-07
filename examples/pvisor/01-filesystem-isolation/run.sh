@@ -6,7 +6,6 @@ source "$example_dir/../common.sh"
 pvisor_example_init "$example_dir" filesystem-isolation
 command -v jq >/dev/null
 
-# Create a clean host directory for the isolated command.
 pvisor_example_reset
 mkdir -p "$work_dir/base"
 printf 'original\n' >"$work_dir/base/existing.txt"
@@ -21,7 +20,6 @@ base="$work_dir/base"
 run_dir="$(find "$PVISOR_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print -quit)"
 test -n "$run_dir"
 
-# Print the unchanged host file and the two staged files.
 echo 'Base directory:'
 cat "$base/existing.txt"
 

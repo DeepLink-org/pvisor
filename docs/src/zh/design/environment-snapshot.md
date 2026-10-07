@@ -32,7 +32,7 @@ RAM server/watchdog 使用 native runner 的私有启动路径，提供 EOF 排�
 
 `SnapshotRamMount::new` 和 `PublishedEnvironment::ram_mount` 的 `directory` 参数表示需要避开的状态根，而不是挂载点的父目录。调用方不能通过枚举该目录发现挂载。所有 RAM 文件和 VM 映射释放之前必须保留挂载 owner。外部 pager 的 spec 使用独立私有运行时目录，文件权限为 `0600`，在 readiness 或启动失败后移除。Owner EOF 触发清理；helper 等待有上限，helper 异常退出时只清理该 owner 的私有挂载。挂载清理不删除持久快照数据，也不自动接管或卸载已有旧挂载。
 
-Linux rootless host 暂存仍不支持投影状态根中的嵌套挂载。它在 Agent 执行之前失败，不把子挂载以可写方式暴露，也不静默隐藏其内容。诊断指出状态根、覆盖该根的挂载及嵌套挂载，并保留底层 mount 错误。迁移 pVisor 自身临时挂载避免主动制造冲突，不等于已支持任意用户挂载布局。
+Linux rootless host 暂存仍不支持投影状态根中的嵌套挂载。它在 Agent 执行之前失败，不把子挂载以可写方式暴露，也不静默隐藏其内容。诊断指出状态根、覆盖该根的挂载及嵌套挂载，并保留底层 mount 错误。私有运行时目录将 pVisor 的临时 RAM 挂载留在投影状态根之外；这种分离不构成对任意用户挂载布局的支持保证。
 
 ## 历史证据 {#historical-evidence}
 

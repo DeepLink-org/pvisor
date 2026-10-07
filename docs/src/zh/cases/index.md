@@ -54,7 +54,7 @@ python3 scripts/cases/run.py --subject-bin target/release/pvisor --output target
 
 `just cases-v2` 构建 release 产品及伴随工具，在独立临时工作区、HOME、XDG 和 Job 数据目录执行全部 16 条场景。Linux CI 预先检查 FUSE 和 user/mount/network namespace。此入口不把缺少前提当成 SKIP；环境或实际执行失败会使门禁失败。输出 `target/pvisor-learning-report.json`，失败保留现场，`--keep` 保留成功现场。逐条选择时门禁检查选定 ID 的精确集合；全量执行时从本目录文档发现全部 ID，新增场景自动纳入门禁。空报告、漏项、重复 ID、SKIP、XFAIL 或非 PASS 都不能通过。
 
-规格、夹具中的 Python 断言和 Bash 词汇都参与 semspec 摘要。新规格保持 UNREVIEWED；执行成功与人工语义批准是两件事。人工完成引擎、词汇和规格审核后，可增加 `--require-reviewed`，本次不改审核账本。
+规格、夹具中的 Python 断言和 Bash 词汇都参与 semspec 摘要。新规格保持 UNREVIEWED；执行成功与人工语义批准是两件事。人工完成引擎、词汇和规格审核后，可增加 `--require-reviewed`。测试执行不会批准规格或更新审核账本。
 
 旧的 [DOC cases](../reference/cases.md)、[VM 控制 cases](../reference/cases-vm.md)、`just cases`、`just vm-cases` 和 `examples/pvisor` 保留原入口。CI 同时运行原有隔离回归、网络/Gateway mock 场景和新学习路线。旧独立 snapshot 的硬件记录保留作历史证据；旧 Controller/Worker 验收记录不验证新 daemon。完整原生执行恢复按 [execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)单独验证；daemon 的[运行时边界](../guides/daemon/boundaries.md)不包含 VM 恢复；本学习路线没有把未运行的 VM/Gateway 能力算作成功。
 

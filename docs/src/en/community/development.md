@@ -108,7 +108,7 @@ crates/pvisor/src/
 
 CLI arguments/display, Host listener/workers and local resource-owner supervision belong in `pvisor-cli`; execution mechanisms belong in `pvisor`'s `executor/`, and Run resource ownership and the durable Job service belong in `runtime/`. The VM executor adapts Run/Attempt lifecycle to `pvisor_vm::api`; `pvisor-vm` owns the VMM, platform mechanisms, embedded guest and kernel/firmware integration. OCI preparation belongs in `image/` and is shared by direct loading/cache service. Cache storage and the authenticated server remain in the runtime; cache command parsing/rendering belongs in `pvisor-cli/src/cli/cache.rs`. Bundles and checkpoints belong with run records rather than one backend.
 
-Existing public runtime imports, including `PVisor`, `ProcessExecutor`, `cache` and the internal `sandbox` entry, retain their paths. Explicit frontend/embedding APIs now export filesystem access types, `GatewayProfile`, `DelegatedRunOutput`, `rootless_runtime_available`, overlay selection/inspection and Run lookup/control helpers, Linux Run leases, `audit`, `checkpoint`, `job_execution` and startup/private-JSON helpers. Runtime implementation modules remain private; these exports do not establish an API stability promise.
+Existing public runtime imports, including `PVisor`, `ProcessExecutor`, `cache` and the internal `sandbox` entry, retain their paths. Explicit frontend/embedding APIs export filesystem access types, `GatewayProfile`, `DelegatedRunOutput`, `rootless_runtime_available`, overlay selection/inspection and Run lookup/control helpers, Linux Run leases, `audit`, `checkpoint`, `job_execution` and startup/private-JSON helpers. Runtime implementation modules remain private; these exports do not establish an API stability promise.
 
 In replay, `adapter/` owns native trajectory planning and launch selection; `bridge/` owns Claude/Codex/OpenCode protocol bridges and Claude resume transport validation. Shared execution and journal remain at the crate root.
 
@@ -150,7 +150,7 @@ CI checks the default runtime and application dependency boundaries before the c
 
 `just test`/`just test-rust` accept Cargo package names and aliases `pvisor`, `cli` (`pvisor-cli`), `core`, `control`/`agentctl` (Core compatibility aliases), `capture` (Gateway) and `shim` (`pvisor-shim`). With package arguments, `just test` runs only those Rust tests. CI shards use `just test-rust` without additionally running Python tests.
 
-Runtime-only Rust tests remain in `crates/pvisor/tests/`. The 19 executable/frontend integration test files, including mixed runtime/command tests, now live in `crates/pvisor-cli/tests/`; mixed files retain their runtime-only cases in `pvisor`. Native VM and environment-dependent tests keep their existing prerequisites and skip/ignore gates; compile checks do not validate real guests.
+Runtime-only Rust tests remain in `crates/pvisor/tests/`. The 19 executable/frontend integration test files, including mixed runtime/command tests, live in `crates/pvisor-cli/tests/`; mixed files retain their runtime-only cases in `pvisor`. Native VM and environment-dependent tests keep their existing prerequisites and skip/ignore gates; compile checks do not validate real guests.
 
 Default pytest collection includes `tests/` and `benchmark/pvisor/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
 

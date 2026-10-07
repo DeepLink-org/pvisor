@@ -12,8 +12,6 @@
 ./test.sh  # 执行同一场景并验证预期结果
 ```
 
-预期：review 共看到 3 个变化；2 个被应用，1 个被删除且没有进入 base。
-
 ## Links
 
 - [pVisor examples](../README.md)

@@ -102,8 +102,8 @@ virtio-fs filesystem entry, and terminates during VM teardown.
 Content reads hold neither a service-wide lock nor the metadata map lock; a cache
 miss locks only its content block. Tests cover cross-block and warm reads, hard-link
 copy-up, guest attributes, open handles, complete tree exports and runner attachment.
-Protocol state is not fully shared between adapters; further common operations can
-be gathered while retaining platform permission and descriptor semantics.
+Protocol state is not fully shared between adapters; platform permissions and
+descriptor semantics remain adapter-specific.
 [Filesystem measurements](filesystem-performance-analysis.md#filesystem-service) cover
 local workloads and lazy cold/warm caches; version A/B shows localized read gains
 and metadata/copy-up regressions, without a general end-to-end speedup. Concurrent
@@ -279,7 +279,7 @@ Shared Core does not imply identical POSIX return behavior across backends. Stag
 
 `pvisor-core/tests/overlay_contracts.rs` also checks legacy defaults, fingerprint variants and raw path bytes. `tests/semantics/stage-apply.md` supplies S-STAGE-001–014 runtime contract drafts. Human approval is separate from test success and is not replaced by this document.
 
-This fix did not rerun copy-up/apply throughput, fsync tails, large real-repository workloads or power-loss recovery experiments. The 1,024-path positive metadata-walk regression verifies that no content-observation entries are created; it is not a throughput benchmark. First content observation still reads/hashes the entire target file and writes a per-path journal entry. First mutation still syncs the preimage, while copy-up, tree traversal and ledger updates retain their costs. Existing [apply cost experiments](../benchmarks/supervision-cost.md#apply-cost) are historical evidence for their fixed workloads and artifacts, not a performance revalidation of this fix. In-process recovery controls and guest descriptor tests do not replace a kill/power-loss matrix at arbitrary syscalls or real Linux FUSE and macOS FSKit/HVF acceptance.
+The read-before-write conflict regressions do not revalidate copy-up/apply throughput, fsync tails, large real-repository workloads or power-loss recovery. The 1,024-path positive metadata-walk regression verifies that no content-observation entries are created; it is not a throughput benchmark. First content observation still reads/hashes the entire target file and writes a per-path journal entry. First mutation still syncs the preimage, while copy-up, tree traversal and ledger updates retain their costs. Existing [apply cost experiments](../benchmarks/supervision-cost.md#apply-cost) are historical evidence for their fixed workloads and artifacts, not a performance revalidation of read-before-write conflict tracking. In-process recovery controls and guest descriptor tests do not replace a kill/power-loss matrix at arbitrary syscalls or real Linux FUSE and macOS FSKit/HVF acceptance.
 
 ## 5. Usage recommendations {#usage}
 

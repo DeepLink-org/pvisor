@@ -12,6 +12,8 @@ Journal 选择单写入者、JSONL 和逐条同步。提交接口返回包含事
 
 ### 一份状态，一个提交顺序 {#ownership}
 
+公共边界仅为 `pvisor_journal::api`：导入 `JournalStore`、`TraceProducer` 和 `DurableFiles`，分别调用存储、生产者和持久文件操作。`Journal` 与 `Trace` 是不透明的所有者，没有公开可变字段；`Trace::with_id` 在构造时显式设定不可变的 trace 身份。共享的 Event、Fact、Record 和 Receipt 合同由 Core 拥有。实现保留在私有的 `journal.rs`、`trace.rs` 和 `persistence.rs` 模块中。
+
 `Journal` 的克隆共享 `Arc<Mutex<State>>`。State 持有 journal ID、可选文件 FD、事件去重索引、因果图、未解析引用集合及 poisoned 标记。磁盘模式持独占文件锁，进程内 mutex 串行化同一 Journal 的追加；内存模式使用 `Vec<Record>`，回执为 Volatile。
 
 | 数据 | 内容与用途 |
@@ -118,7 +120,7 @@ live 只在成功提交后 send，重复 receipt 不再次 send，没有 receive
 
 | 文件 / 测试 | 场景与可复核断言 |
 |---|---|
-| `pvisor-journal/src/lib.rs::write_error_requires_recovery_before_another_receipt` | 注入只读 FD 写失败；Unknown 后继续 append / records 拒绝；reopen 后 offset 0 与 LocalSync |
+| `pvisor-journal/src/journal.rs::write_error_requires_recovery_before_another_receipt` | 注入只读 FD 写失败；Unknown 后继续 append / records 拒绝；reopen 后 offset 0 与 LocalSync |
 | `cancelling_waiter_does_not_cancel_accepted_append` | mutex 阻塞已接受的 append，丢弃等待 Future 后仍可观察记录；重复提交仍只有一条 |
 | `pvisor/tests/trace_journal.rs::durable_identity_and_idempotence_survive_reopen_and_truncated_tail` | 单写入锁、同 ID 重试、冲突内容拒绝、只读不修复、reopen 截尾和位置延续 |
 | `complete_corruption_and_old_formats_are_never_silently_repaired` | 完整损坏行和旧版本拒绝，文件字节保持原状 |
