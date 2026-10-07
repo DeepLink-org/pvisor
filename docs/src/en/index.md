@@ -1,7 +1,7 @@
 ---
 template: home.html
 title: Scaling autonomous agent execution
-description: The limit on agent autonomy is human supervision, not compute. pVisor makes each execution bounded, recoverable, and checkable, so supervision can be scaled.
+description: Higher execution density. Lower supervision cost. pVisor uses resource sharing and idle-memory reclamation to improve machine capacity, and staged file changes, execution records, and review mechanisms to reduce supervision overhead.
 hide:
   - navigation
   - toc

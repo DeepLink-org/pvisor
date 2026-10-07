@@ -57,6 +57,9 @@ struct Args {
     pool_socket: Option<PathBuf>,
     #[arg(long, default_value_t = 256, value_parser = clap::value_parser!(u32).range(256..=512))]
     memory_mib: u32,
+    /// Explicit whole-group ceiling; identical for all compared strategies.
+    #[arg(long, default_value_t = 2147483648u64)]
+    group_memory_max: u64,
     #[arg(long)]
     rootfs: PathBuf,
     /// Directory containing libkrunfw (same convention as other SDK examples).
@@ -101,6 +104,10 @@ fn validate(a: &Args) -> anyhow::Result<()> {
     ensure!(
         cfg!(all(target_os = "linux", target_arch = "x86_64")),
         "requires Linux x86-64"
+    );
+    ensure!(
+        matches!(a.group_memory_max, 2147483648 | 4294967296),
+        "group memory ceiling must be 2 or 4 GiB"
     );
     ensure!(
         !a.private_baselines,
@@ -467,6 +474,11 @@ async fn start(
                 ..Default::default()
             },
         )
+    };
+    let executor = if a.mode == Mode::Fresh {
+        executor.with_private_ram()?
+    } else {
+        executor
     };
     let upper = protocol_upper(&overlay)?;
     // Copied heartbeat existence is not readiness. Capture its value before run;
@@ -1067,12 +1079,12 @@ async fn run(mut a: Args) -> anyhow::Result<()> {
         ensure!(unsafe { stat.assume_init() }.f_type != 0x01021994, "output must not be tmpfs");
         report["before"] = accounting()?;
         let cg = cgroup_root()?;
-        ensure!(fs::read_to_string(cg.join("memory.max"))?.trim() == "2147483648", "parent must set group memory.max=2147483648 (2 GiB)");
+        ensure!(fs::read_to_string(cg.join("memory.max"))?.trim() == a.group_memory_max.to_string(), "parent must set the declared group memory.max");
         ensure!(fs::read_to_string(cg.join("memory.swap.max"))?.trim() == "0", "parent must set group memory.swap.max=0");
         let cpu = fs::read_to_string(cg.join("cpu.max"))?;
         let parts: Vec<_> = cpu.split_whitespace().collect();
         ensure!(parts.len() == 2 && parts[0].parse::<u64>().ok().zip(parts[1].parse::<u64>().ok()).is_some_and(|(quota, period)| period > 0 && quota == period.saturating_mul(4)), "parent must set cpu.max to exactly four cores");
-        check(&mut report, "group_budget", json!({"memory_max":2147483648u64,"swap_max":0,"cpu_max":cpu}));
+        check(&mut report, "group_budget", json!({"memory_max":a.group_memory_max,"swap_max":0,"cpu_max":cpu}));
         if a.mode == Mode::Pool {
             use std::os::unix::fs::DirBuilderExt;
             let daemon = a.pool_daemon.as_ref().context("pool arm requires --pool-daemon")?.canonicalize()?;

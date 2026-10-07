@@ -729,7 +729,7 @@ writes after the last resume may be discarded, leaving only the last committed h
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`; FUSE/macFUSE Seekable backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`; Linux x86_64 local live cold pager |
 | `--vm-ram-dedup[=BOOL]` | `ram_dedup` | `false`; best-effort host dedup advice |
-| `--vm-memory-pool SOCKET` | `memory_pool` | Unset: experimental Apple Silicon pool; Linux external pools are unsupported |
+| `--vm-memory-pool SOCKET` | `memory_pool` | Unset: experimental external cold-page pool; Linux x86_64 requires userfaultfd permission |
 | `--vm-node-socket SOCKET` | `node_socket` | Unset: same-host node resource service for immutable images/restored RAM |
 | `--vm-snapshot-filesystem-pool DIR` | `snapshot_filesystem_pool` | Unset: owned copies; optional host-owned immutable lower pool for Linux x86_64 no-network native checkpoints |
 
@@ -841,14 +841,17 @@ fallback, and pVisor changes no global sysctl. See [local compression](../design
 for a user-specific ACL grant/revoke example and restricted mappings/build features.
 It rejects `vm.ram_backing`, `vm.ram_compression`, `vm.ram_dedup`,
 `vm.snapshot_filesystem_pool`, snapshot capture/restore and whole-VM offload.
-Linux external `vm.memory_pool` and `PVISOR_EXPERIMENTAL_MEMORY_POOL` are
-unsupported. Guest execution continues between short capture/recheck windows
+Linux external `vm.memory_pool` uses the same userfaultfd path with objects
+held in an external pool. It requires private anonymous RAM and is mutually
+exclusive with instance-local compression. Guest execution continues between short capture/recheck windows
 without application participation: this is eviction/refault probing, not ordinary
 pause or a true read-access heat detector. No production-density gain is promised.
 
 ### VM RAM dedup advice {#vm-ram-dedup}
 
 `--vm-ram-dedup` sets `[vm].ram_dedup = true` and selects the VM executor. The default is `false`; omitting the flag preserves a configured value. This is an explicit opt-in to cross-workload content-sharing risks, not a promise of savings. It cannot be combined with `--vm-memory-pool` / `vm.memory_pool`, `--vm-ram-compression` / `vm.ram_compression`, `--vm-cold-ram-compression` / `vm.cold_ram_compression`, or `PVISOR_EXPERIMENTAL_MEMORY_POOL`.
+
+On Linux, a fresh VM with dedup enabled and no explicit `vm.ram_backing` uses private anonymous RAM eligible for KSM. This path does not support whole-VM offload. Explicit writable RAM backing keeps shared mappings and skips dedup advice.
 
 The runner calls `handle.advise_ram_dedup()` explicitly and writes a best-effort installation report to stderr; advice failure does not stop execution. Linux advice covers ordinary private anonymous RAM and restored private COW mappings. Live `MAP_SHARED` RAM is skipped without mapping conversion; macOS reports unsupported for otherwise eligible mappings. `accepted_bytes` means advice was accepted for those ranges, not merged bytes, savings or an enabled KSM scanner. No global KSM settings change and no new service is required. See [current integration and evidence](../design/memory-optimization/deduplication.md#direction) for eligibility, snapshot ownership and validation limits.
 
@@ -983,4 +986,4 @@ and the native container executor keep their current behavior. See the
 limits and SSH remote access.
 
 
-Experimental macOS memory-pool entry points are `pvisor service memory-pool SOCKET` and `pvisor run --vm-memory-pool SOCKET`. Keep the pool running: stopping it fails dependent VMs. See [first-version memory sharing integration](../design/memory-optimization/proof-of-concept.md#v1-integration) for configuration, budgets and usage.
+Experimental external memory-pool entry points are `pvisor service memory-pool SOCKET` and `pvisor run --vm-memory-pool SOCKET`. Keep the pool running: stopping it fails dependent VMs. See [first-version memory sharing integration](../design/memory-optimization/proof-of-concept.md#v1-integration) for configuration, budgets and usage.

@@ -4,6 +4,7 @@ set positional-arguments
 repo := justfile_directory()
 target_dir := absolute_path(env("CARGO_TARGET_DIR", repo / "target"))
 python_paths := "pvisor tests examples conftest.py"
+zensical_version := "0.0.67"
 
 default:
     @just --list --unsorted
@@ -208,18 +209,25 @@ benchmark-compare candidate baseline="" output="benchmark/pvisor/.data/compariso
 test-benchmark *args:
     just test-py benchmark/pvisor "$@"
 
-# Build both languages with the same pinned tool as CI, then validate links.
-docs-build:
+# Clean-build both languages; pass --require-recorded to enforce reviewed translations.
+docs-build *check_args:
     python3 scripts/check-reference.py
     rm -rf docs/site
-    uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.zh.toml
-    uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.en.toml
+    uv run --no-project --with zensical=={{ zensical_version }} zensical build --strict -f docs/zensical.zh.toml
+    uv run --no-project --with zensical=={{ zensical_version }} zensical build --strict -f docs/zensical.en.toml
     cp docs/index.html docs/site/index.html
-    python3 scripts/check-docs.py
+    python3 scripts/check-docs.py "$@"
 
-# Native locale preview; accepts Zensical options such as -a HOST:PORT.
+# Native zh/en preview; additional arguments go directly to Zensical.
 docs-serve locale="zh" *args:
-    uv run --no-project --with zensical==0.0.67 zensical serve -f "docs/zensical.$1.toml" "${@:2}"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$1" in
+      zh|en) config="docs/zensical.$1.toml" ;;
+      *) echo "expected zh or en, got: $1" >&2; exit 2 ;;
+    esac
+    shift
+    exec uv run --no-project --with zensical=={{ zensical_version }} zensical serve -f "$config" "$@"
 
 # Read-only local checks, followed by tests and a debug build.
 ci: fmt-check lint test build

@@ -287,6 +287,31 @@ contract above. Invoke `pvisor-daemon` directly or use the native CLI's passthro
 `pvisor service daemon serve ...`; both address the same separately installed
 daemon executable.
 
+## Optional daemon-owned memory pool
+
+Add `--memory-pool` to `pvisor-daemon serve` to enable the shared cold-page
+pool. It is off by default. The daemon starts its own `memory-pool` component
+in a private state subdirectory and records its socket in each new sandbox
+identity. VM RAM remains private; eligible cold chunks are compressed into
+content-addressed pool objects, and identical chunks reuse one object. A
+userfaultfd miss restores bytes into the requesting VM's private RAM.
+
+The detached pool component survives API-process restart and is reused only
+with the same configuration. Connections authenticate the host UID; individual
+connection references are released on disconnect. Default limits are 512 MiB
+of encoded payload, 32,768 objects, 32 connections and 32,768 references per
+connection. Indexes, threads and allocator memory are additional overhead.
+Linux requires the existing kernel-fault userfaultfd permission.
+
+Reserve host memory for the pool separately from sandbox admission: its process
+is outside individual sandbox cgroups and their hard limits. Startup currently
+prefaults guest RAM, so peak consumption may exceed the steady-state amount.
+The pool must stay alive while dependent VMs run; loss fails those VMs, and a
+stale socket is not silently replaced. State-directory retention supports API
+restart, not pool-process or host-reboot recovery. The VM/pool benchmark includes
+the pool component in one group; it does not establish full API/SDK conformance
+or production density.
+
 ## Package and evidence scope
 
 The Cargo package/directory/library are `pvisor-daemon` / `pvisor_daemon`.
@@ -321,5 +346,6 @@ SDK, isolation or density validation.
 | `daemon/mod.rs` | Admission/commit serialization, lifecycle, restart reconciliation, TTL and endpoint access |
 | `daemon/api.rs` | OpenSandbox HTTP adapter, filters, streaming data-plane proxy |
 | `runtime.rs` | Runtime trait, VM-only NativeRuntime, detached supervisor, IPC/cgroup identity and vsock bridges |
+| `memory_pool.rs` | Daemon-owned bounded cold-page pool, private socket and restart reuse |
 | `main.rs` | Daemon CLI/configuration, listener and maintenance lifecycle |
 

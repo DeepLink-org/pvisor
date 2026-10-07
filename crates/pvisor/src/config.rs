@@ -259,7 +259,8 @@ pub struct VmSettings {
     /// The existing parent must be private (0700); existing paths are never overwritten.
     pub control_socket: Option<PathBuf>,
     /// New private live RAM backing file. Omitted: create an attempt-local file
-    /// in the user's disk cache. Existing files are never overwritten.
+    /// in the user's disk cache, except Linux dedup without an explicit backing
+    /// uses private anonymous RAM. Existing files are never overwritten.
     pub ram_backing: Option<PathBuf>,
     /// Commit RAM as Seekable base/delta generations through a cached FUSE adapter. Requires
     /// /dev/fuse on Linux or the macFUSE kernel backend on Apple Silicon.

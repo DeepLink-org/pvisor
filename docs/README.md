@@ -2,9 +2,12 @@
 
 Use **PolicyVisor** for the product name, **pVisor** for its short name, and
 `pvisor` for the CLI. The positioning is **scaling autonomous agent execution**;
-in Chinese, **让自主 Agent 的执行可以规模化**, with the day-one line
-**让 Agent 全自动执行，文件改动由你决定去留** / "run agents unattended, keep only
-the file changes you approve". The product covers Agent CLIs, scripts, and
+in Chinese, **让自主 Agent 的执行可以规模化**, with the subtitle
+**提升执行密度，降低监督成本。** / **Higher execution density. Lower supervision cost.**
+Describe the two supporting paths: resource sharing and idle-memory reclamation
+for machine capacity; staged file changes, execution records and review for
+supervision efficiency. Quantified gains require workload-specific evidence.
+The product covers Agent CLIs, scripts, and
 automation commands; describe Agent-specific integrations as such.
 
 Use `pvisor` for the Python distribution, import package, and wheel filename
@@ -22,7 +25,8 @@ behavior, examples, evidence and known limitations.
 just docs-serve         # native Chinese preview on 127.0.0.1:3000
 just docs-serve en      # native English preview on 127.0.0.1:3001
 just docs-serve zh -a 127.0.0.1:3002
-just docs-build         # build docs/site and validate generated pages
+just docs-build         # clean-build both languages and validate generated pages
+just docs-build --require-recorded  # same build with CI's strict translation check
 ```
 
 The recipes call `zensical build` and `zensical serve` directly. Configuration is
@@ -53,7 +57,9 @@ Zensical components. `docs/overrides/assets/stylesheets/extra.css` supplies the 
 gradient, grid, brand contrast and homepage layout. Use native Markdown fences,
 `!!! note` / `!!! tip` callouts, and relative image paths.
 
-CI uses the same bilingual build and page checks before uploading `docs/site`.
+The Zensical version is pinned once in `justfile`. CI runs the documentation
+regression tests and `just docs-build --require-recorded` before uploading
+`docs/site`; do not duplicate the build commands in the workflow.
 
 ## Layout
 

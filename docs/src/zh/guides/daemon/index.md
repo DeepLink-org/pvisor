@@ -56,6 +56,12 @@ EOF
 
 预期返回 JSON 沙箱列表；全新状态下列表为空。此查询验证 API 访问；沙箱创建、原生资源强制与 SDK 数据面就绪需要另行验证。不要公开密钥，也不要把带凭据的日志贴进 issue。
 
+## 启用 daemon 内存池 {#memory-pool}
+
+在上述 `serve` 命令中添加 `--memory-pool`，即可让新沙箱接入 daemon 持有的共享冷页池；默认关闭。池压缩冷页，相同内容只保存一份，VM 再次访问时恢复到自己的私有 RAM。Linux 需要 userfaultfd 内核缺页权限。实际占用与扫描、内容和访问方式有关，见[内存 benchmark](../../benchmarks/vm-memory/index.md#linux-lifecycle)。
+
+池组件独立于 API 进程，复用同一状态目录时可跨 API 重启继续持有对象。池进程本身必须保持运行，丢失后依赖它的 VM 会失败，不会自动替换有活动引用的池。默认上限为 512 MiB 编码数据，索引、线程和分配器另有开销；池在单个沙箱的 cgroup 与准入额度之外，需要预留宿主余量。当前启动会预触及 guest RAM，按峰值设置总预算。这个开关的 VM/池测试不等于完整 OpenSandbox SDK 端到端验证。
+
 ## 连接客户端 {#clients}
 
 使用 OpenSandbox SDK 1.1.0，配置选定的 domain、protocol 与生命周期 API key。创建请求需要 `image`、`entrypoint` argv，以及恰好包含 `cpu`、`memory` 的 `resourceLimits`。可选 `timeout` 以秒计，至少 60 秒；省略或 null 表示手动清理。这里不提供 prepared-image 名称，因为目前没有经过验证的开箱即用镜像配方。

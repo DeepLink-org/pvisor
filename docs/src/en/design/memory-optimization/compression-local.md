@@ -87,9 +87,11 @@ sudo setfacl -x u:reiase /dev/userfaultfd
 
 Admission rejects `vm.ram_backing`, `vm.ram_compression`, `vm.ram_dedup`,
 `vm.snapshot_filesystem_pool`, snapshot capture/restore and whole-VM
-[offload/FUSE backing](offload.md) combinations. Linux deliberately rejects
-`vm.memory_pool` and `PVISOR_EXPERIMENTAL_MEMORY_POOL`: only bounded local storage
-is supported. Ordinary RAM has no live backing file in this mode.
+[offload/FUSE backing](offload.md) combinations. Local compression and external
+`vm.memory_pool` are mutually exclusive. External pools use the same userfaultfd
+path with cold objects held by the pool process. Enable one through
+[the daemon's `--memory-pool`](../../guides/daemon/index.md#memory-pool).
+Ordinary RAM has no live backing file in this mode.
 
 Selection is experimental eviction/refault probing, not a read-access heat
 detector: unchanged bytes can still be read frequently. Rechecks protect content,

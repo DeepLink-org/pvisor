@@ -7,7 +7,7 @@ import random
 import statistics
 from types import SimpleNamespace
 
-from memory_sharing import ARMS,STRATEGIES,strategy_arms,matrix,validate
+from memory_sharing import ARMS,STRATEGIES,strategy_arms,matrix,validate,scan_seconds
 from memory_savings import digest,validate_observation
 from publication import distribution,write_csv
 
@@ -17,9 +17,11 @@ def load_cohort(path,static=False):
     planned=[c for c in matrix(args.get("strategies",False),bool(args.get("pool_daemon"))) if not static or c[0]==4]
     if (report.get('schema')!='pvisor-memory-sharing-cohort/v1' or report.get('role')!='user-facing'
             or report.get('benchmark_id')!='B-VM-MEMORY'
-            or report.get('budget')!=dict(cpu_cores=4,memory_max=2147483648,swap_max=0)
+            or args.get('group_memory_max',2147483648) not in (2147483648,4294967296)
+            or report.get('budget')!=dict(cpu_cores=4,memory_max=args.get('group_memory_max',2147483648),swap_max=0)
             or not report.get('complete') or args['preflight']
             or (static and (not args.get('static') or args['samples']!=1 or args['warmups']!=0 or args['scan_seconds']!=2))
+            or (args.get('ksm_scan_seconds') is not None and (not static or not args.get('strategies') or args['ksm_scan_seconds'] not in (2,60)))
             or (not static and (args['samples']<30 or args['warmups']<3 or args['scan_seconds']!=30))
             or (not static and args.get('static',False))
             or len(report['selected'])!=len(planned) or set(map(tuple,report['selected']))!=set(planned)
@@ -40,6 +42,9 @@ def load_cohort(path,static=False):
         pool=report.get('pool',{})
         if pool.get('binary_sha256')!=digest(root/'pool-daemon') or pool.get('build_receipt_sha256')!=digest(root/'pool-build-receipt.json') or pool.get('source_manifest_sha256')!=digest(root/'pool-source-manifest.json'):
             raise ValueError('daemon pool provenance mismatch')
+        pool_receipt=json.loads((root/'pool-build-receipt.json').read_text())
+        if pool_receipt['binary_sha256']!=pool['binary_sha256'] or pool_receipt['source_manifest_sha256']!=pool['source_manifest_sha256']:
+            raise ValueError('daemon pool build receipt mismatch')
     expected={(r,n,p,a) for r in range(-args['warmups'],args['samples']) for n,p,a in planned}
     records={};inputs=SimpleNamespace(rootfs=Path(args['rootfs']),firmware=Path(args['firmware']))
     for index,row in enumerate(report['attempts']):
@@ -47,7 +52,8 @@ def load_cohort(path,static=False):
         if key not in expected or key in records or row['warmup']!=(row['round']<0):
             raise ValueError('unplanned/duplicate trial')
         wanted=dict(vms=c['vms'],pattern=c['pattern'],**(strategy_arms(bool(args.get("pool_daemon"))) if args.get("strategies") else ARMS)[row['arm']],cpus=2,
-                    seed=20261006,settle_ms=500,ksm_wait_seconds=args['scan_seconds'])
+                    seed=20261006,settle_ms=500,ksm_wait_seconds=scan_seconds(SimpleNamespace(**args),row['arm']))
+        if args.get('group_memory_max',2147483648)!=2147483648:wanted['group_memory_max']=args['group_memory_max']
         if row['arm']=='daemon-pool':wanted['pool_daemon']=args['pool_daemon']
         if 'memory_mib' in args:wanted['memory_mib']=args['memory_mib']
         if c!=wanted:raise ValueError('condition does not match planned arm')
@@ -61,7 +67,7 @@ def load_cohort(path,static=False):
         # Conditions bind the original command paths; retained artifacts may be relocated.
         validate(raw,c,inputs,binary,Path(raw['conditions']['output']))
         monitor=json.loads((trial/'monitor.json').read_text())
-        validate_observation(monitor,json.loads((trial/'guard.json').read_text()),allow_builds=static)
+        validate_observation(monitor,json.loads((trial/'guard.json').read_text()),allow_builds=static,memory_max=args.get('group_memory_max',2147483648))
         if any(x['group']!=raw['before']['cgroup'] for x in monitor):raise ValueError('observer group mismatch')
         values={'peak_mib':max([x['memory_peak'] for x in monitor]+
                               [int(raw['after']['counters']['memory.peak']['raw'])])/1024**2}
@@ -77,6 +83,10 @@ def load_cohort(path,static=False):
             for field in ('anon','file','kernel'):values[name+'_'+field+'_mib']=stat[field]/1024**2
             cpu=int(next(line.split()[1] for line in counters['cpu.stat']['raw'].splitlines() if line.startswith('usage_usec ')))
             values[name+'_cpu_ms']=(cpu-prior_cpu)/1000;prior_cpu=cpu
+        for observation in raw.get('pool_observations',[]):
+            name=observation['phase']
+            values[name+'_pool_encoded_mib']=observation['encoded_bytes']/1024**2
+            values[name+'_pool_objects_count']=observation['objects']
         for check_name,metric,percent in (
                 ('ready_full_digest','ready_per_vm_scan_ms',None),
                 ('dynamic_private_after_wait_full_digest','dynamic_private_per_vm_scan_ms',None),
@@ -98,7 +108,7 @@ def publish(path,output,static=False):
         for metric in values[0]:
             rows.append(dict(benchmark_id='B-VM-MEMORY',cohort=path.parent.name,vms=n,pattern=pattern,
                 vm_memory_mib=report['arguments'].get('memory_mib',256),
-                arm=arm,metric=metric,unit='MiB' if metric.endswith('_mib') else 'ms',
+                arm=arm,observation_seconds=scan_seconds(SimpleNamespace(**report['arguments']),arm),metric=metric,unit='MiB' if metric.endswith('_mib') else 'count' if metric.endswith('_count') else 'ms',
                 **(dict(n=1,value=values[0][metric]) if static else
                    distribution([v[metric] for v in values]))))
         reference=({'snapshot-cow':'unshared','ksm':'unshared','daemon-pool':'unshared'} if report['arguments'].get('strategies') else {'shared':'independent','ksm-on':'ksm-off'}).get(arm)
@@ -130,11 +140,12 @@ def publish(path,output,static=False):
     write_csv(output/'memory-sharing.csv',rows);write_csv(output/'memory-sharing-comparisons.csv',comparisons)
     provenance=[dict(field=k,value=json.dumps(report[k],sort_keys=True)) for k in
                 ('schema','benchmark_id','role','host','budget','arguments','binary_sha256','harnesses','input_verification','host_verification')]
+    if report.get('pool'):provenance.append(dict(field='pool',value=json.dumps(report['pool'],sort_keys=True)))
     provenance +=[dict(field='report_sha256',value=digest(path)),dict(field='build_receipt_sha256',value=digest(path.parent/'build-receipt.json')),
                  dict(field='resident_physical_metric',value='sum of product-process PSS; shared pages proportional; excludes unmapped file cache and kernel memory; full cgroup charge retained separately'),
                  dict(field='interference_policy',value=report.get('interference_policy','reject foreign VM/build activity')),
                  dict(field='input_manifest_sha256',value=digest(path.parent/'input-manifest.json')),
-                 dict(field='statistics',value='single static group observation; 2-second scan windows; no quantiles or confidence intervals; per-VM duration is median within group' if static else 'group is independent sample; per-VM timing is median within each group, not complete group elapsed time; writes at 25/100% remain separate; 5000 paired bootstrap resamples; P95 descriptive; separated clusters replace P50; no P99')]
+                 dict(field='statistics',value='single static group observation; baseline scan window recorded in arguments.scan_seconds; KSM override recorded in arguments.ksm_scan_seconds when present; no quantiles or confidence intervals; per-VM duration is median within group' if static else 'group is independent sample; per-VM timing is median within each group, not complete group elapsed time; writes at 25/100% remain separate; 5000 paired bootstrap resamples; P95 descriptive; separated clusters replace P50; no P99')]
     if static:
         affected=sum(any(job.get('kind')=='build/test' for observation in
             json.loads((path.parent/str(i)/'guard.json').read_text()) for job in observation['jobs'])

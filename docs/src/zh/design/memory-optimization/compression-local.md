@@ -78,8 +78,9 @@ sudo setfacl -x u:reiase /dev/userfaultfd
 
 准入拒绝与 `vm.ram_backing`、`vm.ram_compression`、`vm.ram_dedup`、
 `vm.snapshot_filesystem_pool`、快照捕获/恢复及整 VM
-[offload/FUSE backing](offload.md) 组合。Linux 有意拒绝 `vm.memory_pool`
-及 `PVISOR_EXPERIMENTAL_MEMORY_POOL`，仅支持有界本地存储。
+[offload/FUSE backing](offload.md) 组合。本地压缩与外部 `vm.memory_pool`
+二选一；外部池使用相同的 userfaultfd 路径，冷页对象由池进程持有。
+可通过 [daemon 的 `--memory-pool`](../../guides/daemon/index.md#memory-pool) 启用。
 此模式的普通 RAM 没有 live backing 文件。
 
 选择策略是实验性的驱逐/refault 探测，不是真正的读访问热度检测器：

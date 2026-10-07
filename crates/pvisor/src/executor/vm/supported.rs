@@ -70,6 +70,7 @@ compile_error!("static musl VM support currently targets x86_64 only");
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
     settings: VmSettings,
+    private_ram: bool,
     vsock_ports: BTreeMap<u32, PathBuf>,
     #[cfg(target_os = "linux")]
     cpu_group: Option<std::sync::Arc<super::cpu_qos::CpuQosGroup>>,
@@ -102,6 +103,8 @@ pub(super) struct RunnerSpec {
     pub(super) memory_mib: u32,
     #[serde(default)]
     pub(super) ram_dedup: bool,
+    #[serde(default)]
+    pub(super) private_ram: bool,
     #[serde(default)]
     pub(super) cold_ram_compression: bool,
     pub(super) library_dir: Option<PathBuf>,
@@ -456,6 +459,7 @@ impl VmExecutor {
         }
         Ok(Self {
             settings,
+            private_ram: false,
             vsock_ports: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cpu_group: None,
@@ -557,6 +561,27 @@ impl VmExecutor {
     ) -> Self {
         self.cpu_group = Some(group);
         self
+    }
+
+    /// Start fresh RAM as private anonymous mappings, without a writable live backing.
+    /// This supports a like-for-like KSM control; whole-VM offload is unavailable.
+    pub fn with_private_ram(mut self) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            self.settings.ram_backing.is_none()
+                && !self.settings.ram_compression
+                && !self.settings.cold_pager_requested(),
+            "private anonymous RAM requires a fresh VM without backing, compression or a cold pager"
+        );
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        anyhow::ensure!(
+            self.restore.is_none(),
+            "private RAM mode requires a fresh VM"
+        );
+        self.private_ram = true;
+        Ok(self)
     }
 
     #[cfg(target_os = "linux")]
@@ -1099,6 +1124,10 @@ impl RunExecutor for VmExecutor {
             cpus: self.settings.cpus as u8,
             memory_mib,
             ram_dedup: self.settings.ram_dedup,
+            private_ram: self.private_ram
+                || cfg!(target_os = "linux")
+                    && self.settings.ram_dedup
+                    && self.settings.ram_backing.is_none(),
             cold_ram_compression: self.settings.cold_ram_compression,
             library_dir: self.settings.library_dir.clone(),
             checkpoint,
@@ -1316,7 +1345,10 @@ impl RunExecutor for VmExecutor {
         if let Some(pid) = child.id() {
             context.vm_control.track_native_process(
                 pid,
-                (!self.settings.cold_pager_requested()).then_some(&ram_backing.file),
+                (!self.settings.cold_pager_requested()
+                    && !self.private_ram
+                    && !(self.settings.ram_dedup && self.settings.ram_backing.is_none()))
+                .then_some(&ram_backing.file),
             );
         }
         context
@@ -1959,7 +1991,9 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         }
         // Only explicitly opted-in runners may open the host-authorized fault
         // device. Landlock does not replace its administrator-granted ACL.
-        if spec.cold_ram_compression && Path::new("/dev/userfaultfd").exists() {
+        if (spec.cold_ram_compression || std::env::var_os(super::pager::POOL_ENV).is_some())
+            && Path::new("/dev/userfaultfd").exists()
+        {
             read_write.push(PathBuf::from("/dev/userfaultfd"));
         }
         crate::executor::sandbox::restrict_krun_runner(
@@ -2063,10 +2097,10 @@ fn run_linked_krun(
         !cold_pager || (!spec.ram_dedup && spec.restore.is_none() && spec.checkpoint.is_none()),
         "cold pager is incompatible with dedup, snapshot restore and snapshot capture"
     );
-    if spec.restore.is_none() && !cold_pager {
+    if spec.restore.is_none() && !cold_pager && !spec.private_ram {
         vm.ram_backing(unsafe { std::fs::File::from_raw_fd(ram) })?;
     } else if spec.restore.is_none() {
-        // Bookkeeping FD is not guest RAM. Close it; the pager uses private
+        // Bookkeeping FD is not guest RAM. Close it; dedup/paging uses private
         // anonymous memory and must never masquerade as shared file backing.
         // Restored RAM has already transferred this descriptor to MachineRestore;
         // constructing another File here would close its still-owned mapping FD.
@@ -2199,10 +2233,10 @@ fn run_linked_krun(
                             handle.resume().map(|()| (VmState::Running, None))
                         }
                         Ok(OperationKind::RunOffload { .. }) => {
-                            if cold_pager {
+                            if cold_pager || spec.private_ram {
                                 rejection_state = handle.is_paused().ok().map(|paused|
                                     if paused { VmState::Paused } else { VmState::Running });
-                                Err("whole-VM offload is incompatible with the experimental cold pager".into())
+                                Err("whole-VM offload requires writable shared RAM backing".into())
                             } else { handle.offload_ram().map(|memory| {
                                 (
                                     VmState::Offloaded,
@@ -2423,6 +2457,26 @@ mod tests {
     }
 
     #[test]
+    fn private_ram_control_rejects_explicit_backing_and_keeps_advice_disabled() {
+        let root = tempfile::tempdir().unwrap();
+        let plain = VmExecutor::new(VmSettings {
+            rootfs: Some(root.path().to_owned()),
+            ..Default::default()
+        })
+        .unwrap()
+        .with_private_ram()
+        .unwrap();
+        assert!(!plain.settings().ram_dedup);
+        let file = VmExecutor::new(VmSettings {
+            rootfs: Some(root.path().to_owned()),
+            ram_backing: Some(root.path().join("ram")),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(file.with_private_ram().is_err());
+    }
+
+    #[test]
     fn runner_checkpoint_binding_is_optional_and_roundtrips() {
         let legacy = serde_json::json!({
             "run_id": "run",
@@ -2438,10 +2492,12 @@ mod tests {
         let mut spec: RunnerSpec = serde_json::from_value(legacy.clone()).unwrap();
         assert!(spec.checkpoint.is_none());
         assert!(!spec.ram_dedup);
+        assert!(!spec.private_ram);
         let encoded = serde_json::to_value(&spec).unwrap();
         assert!(encoded.get("checkpoint").is_none());
 
         spec.ram_dedup = true;
+        spec.private_ram = true;
         spec.checkpoint = Some(super::super::checkpoint::LaunchBinding {
             store: "/private/snapshots".into(),
             filesystem_pool: None,
@@ -2461,6 +2517,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&decoded).unwrap(), encoded);
         assert_eq!(decoded.checkpoint.unwrap().attempt_id, "attempt");
         assert!(decoded.ram_dedup);
+        assert!(decoded.private_ram);
     }
 
     #[test]
@@ -2740,10 +2797,7 @@ mod tests {
             ..Default::default()
         };
         let error = VmExecutor::new(eligible).unwrap_err().to_string();
-        assert_eq!(
-            error,
-            "resolve vm.memory_pool socket"
-        );
+        assert_eq!(error, "resolve vm.memory_pool socket");
         assert!(!socket.exists());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
     }

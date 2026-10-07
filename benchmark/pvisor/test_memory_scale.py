@@ -654,8 +654,42 @@ def test_host_preflight_reads_only_and_keeps_unknown_scanner(monkeypatch):
 def test_fresh_independent_group_requires_write_isolation_without_snapshot_producer():
     report, config = valid('fresh', 4, scanner='1')
     config['dedup'] = report['conditions']['dedup'] = True
+    for guest in report['guests']:
+        guest['result']['output']={'stderr':'VM RAM dedup advice installation: accepted_bytes=536870912'}
+    report['phases'][0]['accounting']['processes']*=4
+    for process in report['phases'][0]['accounting']['processes']:
+        process['smaps']['raw']+='VmFlags: rd wr mr mw me ac mg\n'
     assert scale.validate_report(report, config)['merging_claim'] is False
     assert all(g['instance'] != 0 for g in report['guests'])
     report['checks'] = [c for c in report['checks'] if c['name'] != 'peer_write_isolation']
     with pytest.raises(ValueError):
         scale.validate_report(report, config)
+
+
+def test_declared_four_gib_ceiling_is_checked_in_every_snapshot():
+    report, config = valid('fresh', 4, scanner='1')
+    config['group_memory_max'] = report['conditions']['group_memory_max'] = 4294967296
+    snapshots = [report['before'], report['after'], report['ksm_scan_window']['before'],
+                 report['ksm_scan_window']['after'], *(p['accounting'] for p in report['phases'])]
+    for snapshot in snapshots:
+        snapshot['counters']['memory.max']['raw'] = '4294967296'
+    scale.validate_report(report, config)
+    snapshots[-1]['counters']['memory.max']['raw'] = '2147483648'
+    with pytest.raises(ValueError, match='memory/swap budget'):
+        scale.validate_report(report, config)
+
+
+def test_budget_cannot_silently_differ_from_planned_condition():
+    report, config = valid('fresh', 4, scanner='1')
+    report['conditions']['group_memory_max'] = 4294967296
+    with pytest.raises(ValueError, match='budget condition mismatch'):
+        scale.validate_report(report, config)
+
+
+def test_fresh_ksm_rejects_skipped_shared_ram_advice():
+    report, config = valid('fresh', 4, scanner='1')
+    config['dedup'] = report['conditions']['dedup'] = True
+    for guest in report['guests']:
+        guest['result']['output']={'stderr':'VM RAM dedup advice installation: accepted_bytes=0'}
+    with pytest.raises(ValueError, match='accepted advice and mergeable RAM'):
+        scale.validate_report(report,config)

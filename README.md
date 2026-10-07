@@ -3,8 +3,8 @@
 **Scaling autonomous agent execution.**  
 **让自主 Agent 的执行可以规模化。**
 
-Today: run agents unattended and keep only the file changes you approve.  
-今天：让 Agent 全自动执行，文件改动由你决定去留。
+**Higher execution density. Lower supervision cost.**  
+**提升执行密度，降低监督成本。**
 
 [![CI](https://github.com/DeepLink-org/pvisor/actions/workflows/ci.yml/badge.svg)](https://github.com/DeepLink-org/pvisor/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://deeplink-org.github.io/pvisor/)
@@ -13,9 +13,10 @@ Today: run agents unattended and keep only the file changes you approve.
 PolicyVisor runs Agent CLIs and scripts within a policy boundary, stages their file changes, and records the execution. Review the result like a pull request and apply only the paths you want. The same workflow works across agents, with platform-specific controls provided by each executor.
 
 Running more agents takes both compute resources and human attention.
-PolicyVisor combines execution boundaries, staged file changes, and execution
-records so you can review completed work. These **bounded, recoverable, and
-checkable** executions provide a basis for batch review and automated checks.
+PolicyVisor uses resource sharing and idle-memory reclamation to improve machine
+capacity, and staged file changes, execution records, and review mechanisms to
+reduce supervision overhead. These **bounded, recoverable, and checkable**
+executions provide a basis for batch review and automated checks.
 
 ![PolicyVisor execution and review workflow](docs/overrides/assets/diagrams/pvisor/system-products.svg)
 

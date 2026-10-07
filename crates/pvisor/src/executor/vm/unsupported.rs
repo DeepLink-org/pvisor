@@ -38,6 +38,10 @@ impl VmExecutor {
     ) -> anyhow::Result<crate::environment_snapshot::Compatibility> {
         anyhow::bail!(UNSUPPORTED_MESSAGE)
     }
+    pub fn with_private_ram(self) -> anyhow::Result<Self> {
+        anyhow::bail!("private VM RAM is unsupported on this platform")
+    }
+
     pub fn new(_settings: VmSettings) -> anyhow::Result<Self> {
         anyhow::bail!(UNSUPPORTED_MESSAGE)
     }

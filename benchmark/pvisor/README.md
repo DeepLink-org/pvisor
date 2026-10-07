@@ -547,11 +547,28 @@ The user strategy comparison uses `memory_sharing.py --static --strategies
 --memory-mib 512` with the frozen `vm_memory_scale` example and its build receipt.
 It measures nine conditions: three content patterns, each with four independent
 fresh VMs, four shared-snapshot COW restores, and four independent fresh VMs with
-KSM advice. All use private RAM, matching guest/workload budgets, two-second
+KSM advice. Both unshared and KSM arms use private anonymous RAM through the SDK
+`with_private_ram()` control, with advice enabled only for KSM. All have matching guest/workload budgets, two-second
 scan windows and N=1. Compare ready and post-write phases separately against the
-fresh unshared arm. KSM advice is not a guaranteed merge; retain actual RAM KSM
-bytes. This protocol does not substitute the older independent-snapshot-copy
+fresh unshared arm. KSM advice is not a guaranteed merge; require positive accepted bytes for
+every VM and mergeable flags for four VM processes, and retain actual RAM KSM
+bytes. All-skipped shared mappings are invalid KSM evidence. This protocol does not substitute the older independent-snapshot-copy
 control or restored dynamic-private KSM observations.
+
+To compare the fourth strategy, append `--pool-daemon /absolute/frozen/pvisor-daemon`
+and `--pool-receipt /absolute/path/to/daemon/build-receipt.json`. The daemon receipt
+binds `binary_sha256` and the adjacent source manifest. The worker starts the
+actual daemon pool component, attaches four private-RAM VMs, includes its PSS and
+cgroup charge, records pool objects/encoded bytes and reaps it after VM cleanup.
+This creates twelve conditions. Append `--ksm-scan-seconds 60` to extend only
+the fresh KSM arm to 60 seconds; other arms keep the two-second static window.
+The complete twelve-condition cohort is rerun, and the distinct windows are
+retained in raw conditions and provenance. Use `--group-memory-max 4294967296` for **all**
+four strategies: the cold pager currently prefaults RAM and four 512 MiB VMs can
+exceed the default 2 GiB ceiling at startup. Guest capacity stays 512 MiB and
+savings still use matching-phase unshared PSS, never the resource ceiling.
+`--preflight --arm daemon-pool --pattern repeated` is a short diagnostic subset;
+partial/preflight reports cannot be published. Failed runs retain evidence.
 
 `memory_sharing.py` is the separate B-VM-MEMORY user protocol for shared
 baselines and KSM. It uses `vm_memory_scale` with 2 vCPU per VM and genuine

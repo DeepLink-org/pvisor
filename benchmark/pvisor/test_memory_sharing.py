@@ -40,3 +40,13 @@ def test_engineering_and_preflight_cohorts_cannot_publish(tmp_path):
     for changes in ({},{'role':'user-facing','arguments':dict(preflight=True,samples=1,warmups=0,scan_seconds=2)}):
         path.write_text(json.dumps(value|changes))
         with pytest.raises(ValueError,match='public sharing cohort'):load_cohort(path)
+
+
+def test_ksm_sixty_second_override_keeps_other_strategy_windows_short():
+    from types import SimpleNamespace
+    from memory_sharing import scan_seconds
+    args = SimpleNamespace(scan_seconds=2, ksm_scan_seconds=60)
+    assert scan_seconds(args, 'ksm') == 60
+    for arm in ('unshared', 'snapshot-cow', 'daemon-pool'):
+        assert scan_seconds(args, arm) == 2
+    assert scan_seconds(SimpleNamespace(scan_seconds=30), 'ksm-on') == 30

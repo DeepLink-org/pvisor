@@ -576,7 +576,7 @@ live VM。offload 的新目标路径限于当前 backing 的同一文件系统�
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`；FUSE/macFUSE Seekable backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`；Linux x86_64 本地 live 冷 pager |
 | `--vm-ram-dedup[=BOOL]` | `ram_dedup` | `false`；尽力而为的宿主去重建议 |
-| `--vm-memory-pool SOCKET` | `memory_pool` | 未设置：实验性 Apple Silicon 池；Linux 外部池不受支持 |
+| `--vm-memory-pool SOCKET` | `memory_pool` | 未设置：实验性外部冷页池；Linux x86_64 需要 userfaultfd 权限 |
 | `--vm-node-socket SOCKET` | `node_socket` | 未设置：同宿主 node 资源服务，提供不可变镜像/恢复 RAM |
 | `--vm-snapshot-filesystem-pool DIR` | `snapshot_filesystem_pool` | 未设置：独立副本；可选的宿主管理不可变 lower 池，用于 Linux x86_64 无网络原生 checkpoint |
 
@@ -678,13 +678,16 @@ sysctl。单用户 ACL 授权/撤销示例及受限映射、构建 feature 见
 [实例内压缩](../design/memory-optimization/compression-local.md#direction)。
 它拒绝 `vm.ram_backing`、`vm.ram_compression`、`vm.ram_dedup`、
 `vm.snapshot_filesystem_pool`、快照捕获/恢复及整 VM offload。
-Linux 外部 `vm.memory_pool` 与 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 不受支持。
+Linux 外部 `vm.memory_pool` 使用相同的 userfaultfd 路径，将冷页对象交给外部池；
+它与实例本地压缩二选一，并要求私有匿名 RAM。
 guest 在短暂捕获/复核窗口之间持续运行，无需应用参与；这是驱逐/refault
 探测，不是普通 pause 或真正的读访问热度检测器，不承诺生产密度收益。
 
 ### VM RAM 去重建议 {#vm-ram-dedup}
 
 `--vm-ram-dedup` 设置 `[vm].ram_dedup = true` 并选择 VM executor。默认值为 `false`；省略该参数会保留配置值。这是对跨工作负载内容共享风险的显式启用，不承诺节省。它不能与 `--vm-memory-pool` / `vm.memory_pool`、`--vm-ram-compression` / `vm.ram_compression`、`--vm-cold-ram-compression` / `vm.cold_ram_compression` 或 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 组合。
+
+Linux 新 VM 在启用去重且未指定 `vm.ram_backing` 时使用私有匿名 RAM，能够接受 KSM 建议；此路径不支持整 VM offload。显式指定的可写 RAM backing 仍使用共享映射，会跳过去重建议。
 
 runner 显式调用 `handle.advise_ram_dedup()`，将尽力而为的建议安装报告写入 stderr；建议失败不阻止执行。Linux 建议覆盖普通私有匿名 RAM 与恢复的私有 COW 映射。live `MAP_SHARED` RAM 被跳过，不转换映射；macOS 对其他条件合格的映射报告不支持。`accepted_bytes` 表示这些区间的建议被接受，不是已合并字节、节省或 KSM scanner 已启用。不修改宿主全局 KSM 参数，不需要新服务。资格检查、快照所有权和验证范围见[当前接入与验证基础](../design/memory-optimization/deduplication.md#direction)。
 
@@ -796,4 +799,4 @@ VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像�
 完整协议、限制和 SSH 远程访问方式见 [共享镜像缓存协议](shared-image-cache.md)。
 
 
-实验性 macOS 内存池入口为 `pvisor service memory-pool SOCKET` 与 `pvisor run --vm-memory-pool SOCKET`。池需要保持运行，停止会使依赖 VM 失败；配置、预算和使用步骤见[共享内存首版接入](../design/memory-optimization/proof-of-concept.md#v1-integration)。
+实验性外部内存池入口为 `pvisor service memory-pool SOCKET` 与 `pvisor run --vm-memory-pool SOCKET`。池需要保持运行，停止会使依赖 VM 失败；配置、预算和使用步骤见[共享内存首版接入](../design/memory-optimization/proof-of-concept.md#v1-integration)。

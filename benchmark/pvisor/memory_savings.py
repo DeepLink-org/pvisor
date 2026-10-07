@@ -112,14 +112,14 @@ def wait_for_quiet(output, quiet_seconds=30, deadline_seconds=180,allow_builds=F
         time.sleep(min(1, deadline-now))
 
 
-def validate_observation(rows, guards,allow_builds=False):
+def validate_observation(rows, guards,allow_builds=False,memory_max=2147483648):
     complete = [row for row in rows if 'error' not in row]
     if not complete or any('error' in row for row in rows):
         raise ValueError('missing/failed external memory observation')
     for row in complete:
         budget = row['budget']
         quota, period = map(int, budget['cpu.max'].split())
-        if (budget['memory.max'] != '2147483648' or budget['memory.swap.max'] != '0'
+        if (budget['memory.max'] != str(memory_max) or budget['memory.swap.max'] != '0'
                 or budget['memory.swap.current'] != '0' or quota != 4 * period
                 or period <= 0 or budget['pids.max'] != '128'):
             raise ValueError('installed resource budget mismatch')
@@ -174,7 +174,7 @@ def run(args, binary, output, condition, round_id, warmup, validator=validate):
         row['error'] = 'quiet admission failed'
         return row
     cmd = ['systemd-run', '--user', '--quiet', '--wait', '--pipe', '--collect', '--unit='+unit,
-        '-p', 'MemoryAccounting=yes', '-p', 'CPUAccounting=yes', '-p', 'MemoryMax=2147483648',
+        '-p', 'MemoryAccounting=yes', '-p', 'CPUAccounting=yes', '-p', 'MemoryMax='+str(condition.get('group_memory_max',2147483648)),
         '-p', 'MemorySwapMax=0', '-p', 'CPUQuota=400%', '-p', 'CPUAffinity=0 1 2 3',
         '-p', 'TasksMax=128', '-p', 'RuntimeMaxSec=240', '-p', 'TimeoutStopSec=10', '-p', 'KillMode=control-group',
         str(binary), '--rootfs', str(args.rootfs), '--firmware', str(args.firmware), '--output', str(worker)]
@@ -207,7 +207,7 @@ def run(args, binary, output, condition, round_id, warmup, validator=validate):
         guards = json.loads((output/'guard.json').read_text())
         try:
             validate_observation(json.loads((output/'monitor.json').read_text()), guards,
-                                 allow_builds=getattr(args,'static',False))
+                                 allow_builds=getattr(args,'static',False), memory_max=condition.get('group_memory_max',2147483648))
         except ValueError as error:
             row.update(status='failed', error=str(error))
         if not row['unit_quiescent']:

@@ -56,6 +56,12 @@ EOF
 
 Expect a JSON sandbox list, initially empty for fresh state. This query verifies API access; sandbox creation, native resource enforcement and SDK data-plane readiness need separate validation. Never publish the key or paste credential-bearing logs into an issue.
 
+## Enable the daemon memory pool {#memory-pool}
+
+Append `--memory-pool` to the `serve` command above to connect new sandboxes to a daemon-owned shared cold-page pool. It is off by default. The pool compresses cold pages and stores identical contents once; subsequent access restores bytes into each VM's private RAM. Linux requires kernel-fault userfaultfd permission. Actual usage depends on scanning, contents and access patterns; see the [memory benchmark](../../benchmarks/vm-memory/index.md#linux-lifecycle).
+
+The pool component runs independently of the API process and retains objects across API restart with the same state directory. The pool process must remain alive: its loss fails dependent VMs, and a pool with live references is not automatically replaced. The default ceiling is 512 MiB of encoded data, with additional index, thread and allocator overhead. Its process is outside individual sandbox cgroups and admission limits; reserve host headroom separately. Startup currently prefaults guest RAM, so budget for peaks. VM/pool tests do not establish complete OpenSandbox SDK end-to-end conformance.
+
 ## Connect clients {#clients}
 
 Use OpenSandbox SDK 1.1.0 with your chosen domain and protocol, supplying the lifecycle API key. Creation requires `image`, an `entrypoint` argv and `resourceLimits` containing exactly `cpu` and `memory`. An optional `timeout` is in seconds and must be at least 60; omission or null means manual cleanup. No prepared-image name is supplied here because there is no validated drop-in image recipe.

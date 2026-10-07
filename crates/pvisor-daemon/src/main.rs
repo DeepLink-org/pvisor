@@ -140,6 +140,13 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 max_timeout_seconds,
             };
             let daemon = Daemon::open(config, move |owner| {
+                let runtime = NativeRuntime::new(NativeRuntimeConfig {
+                    state_dir: runtime_state.canonicalize()?,
+                    owner,
+                    cgroup_root,
+                    images_dir,
+                    executable: executable.clone(),
+                })?;
                 let pool = if memory_pool {
                     Some(pvisor_daemon::memory_pool::ensure_service(
                         &runtime_state.canonicalize()?,
@@ -149,16 +156,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 } else {
                     None
                 };
-                Ok(Arc::new(
-                    NativeRuntime::new(NativeRuntimeConfig {
-                        state_dir: runtime_state.canonicalize()?,
-                        owner,
-                        cgroup_root,
-                        images_dir,
-                        executable,
-                    })?
-                    .with_memory_pool(pool),
-                )
+                Ok(Arc::new(runtime.with_memory_pool(pool))
                     as Arc<dyn pvisor_daemon::runtime::Runtime>)
             })
             .await?;

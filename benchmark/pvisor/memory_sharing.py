@@ -10,6 +10,8 @@ import argparse
 import json
 from pathlib import Path
 import random
+import os
+import stat
 import shutil
 import sys
 
@@ -32,6 +34,10 @@ PATTERNS=('repeated','random-shared','random-unique')
 
 def strategy_arms(pool=False):
     return {**STRATEGIES, **({'daemon-pool':dict(mode='pool',dedup=False,independent_inodes=False)} if pool else {})}
+
+
+def scan_seconds(args,arm):
+    return args.ksm_scan_seconds if getattr(args,'ksm_scan_seconds',None) is not None and arm=='ksm' else args.scan_seconds
 
 
 def matrix(strategies=False,pool=False):
@@ -63,7 +69,18 @@ def validate(raw,condition,args,binary,worker):
 def retire(worker,output):
     # Only after complete correctness and native/owned-unit reaping. Retain
     # aggregate proof and bytes/modes/hashes of disposable execution stores.
-    manifest=inventory(worker)
+    retired_sockets=[]
+    socket=worker/'pool'/'pool.sock'
+    if socket.exists():
+        raw=json.loads((worker/'raw.json').read_text())
+        metadata=socket.lstat()
+        if (raw.get('correctness')!='passed' or raw.get('cleanup',{}).get('all_reaped') is not True
+                or raw.get('pool_cleanup',{}).get('reaped') is not True
+                or not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid!=os.geteuid()):
+            raise ValueError('pool socket retirement requires successful native/pool reaping')
+        retired_sockets.append(dict(path='pool/pool.sock',mode=metadata.st_mode,kind='socket',retired_after_pool_reap=True))
+        socket.unlink()
+    manifest=inventory(worker)+retired_sockets
     (output/'retired-runtime-manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     for child in worker.iterdir():
         if child.is_dir():shutil.rmtree(child)
@@ -78,6 +95,7 @@ def main():
     parser.add_argument('--samples',type=int,default=30)
     parser.add_argument('--warmups',type=int,default=3)
     parser.add_argument('--scan-seconds',type=int,default=30)
+    parser.add_argument('--ksm-scan-seconds',type=int,choices=(2,60),help='static strategy comparison: override only the fresh KSM arm')
     parser.add_argument('--preflight',action='store_true')
     parser.add_argument('--arm',choices=(*ARMS,*STRATEGIES,'daemon-pool'),help='preflight only: restrict to one arm')
     parser.add_argument('--pattern',choices=PATTERNS,help='preflight only: restrict to one pattern')
@@ -88,7 +106,9 @@ def main():
     parser.add_argument('--strategies',action='store_true',help='compare independent fresh VMs, snapshot COW and fresh-RAM KSM')
     parser.add_argument('--static',action='store_true',help='one four-VM observation with 2-second scan windows')
     parser.add_argument('--memory-mib',type=int,choices=(256,512),default=512)
+    parser.add_argument('--group-memory-max',type=int,choices=(2147483648,4294967296),default=2147483648)
     args=parser.parse_args()
+    if args.ksm_scan_seconds is not None and (not args.static or not args.strategies):parser.error('KSM window override requires static strategies')
     if (args.arm or args.pattern) and not args.preflight:parser.error('arm/pattern subsets require preflight')
     if args.preflight:args.samples,args.warmups,args.scan_seconds=1,0,2
     if args.static:args.samples,args.warmups,args.scan_seconds,args.quiet_seconds,args.vms=1,0,2,0,4
@@ -128,7 +148,7 @@ def main():
                 pool=pool_info,selected=[c for c in matrix(args.strategies,bool(args.pool_daemon)) if (args.vms is None or c[0]==args.vms) and (args.arm is None or c[2]==args.arm) and (args.pattern is None or c[1]==args.pattern)],
                 host=host_identity(),
                 interference_policy='record background builds, reject foreign VMs; static memory only' if args.static else 'reject visible foreign VM/build activity',
-                budget=dict(cpu_cores=4,memory_max=2147483648,swap_max=0),attempts=[],complete=False)
+                budget=dict(cpu_cores=4,memory_max=args.group_memory_max,swap_max=0),attempts=[],complete=False)
     def save():(args.output/'report.json').write_text(json.dumps(report,indent=2)+'\n')
     save()
     for round_id in range(-args.warmups,args.samples):
@@ -136,7 +156,8 @@ def main():
         for n,pattern,arm in cells:
             output=args.output/str(len(report['attempts']))
             condition=dict(vms=n,pattern=pattern,**(strategy_arms(bool(args.pool_daemon)) if args.strategies else ARMS)[arm],cpus=2,seed=20261006,
-                           settle_ms=500,ksm_wait_seconds=args.scan_seconds,memory_mib=args.memory_mib)
+                           settle_ms=500,ksm_wait_seconds=scan_seconds(args,arm),memory_mib=args.memory_mib)
+            if args.group_memory_max!=2147483648:condition['group_memory_max']=args.group_memory_max
             if arm=='daemon-pool':condition['pool_daemon']=str(args.pool_daemon)
             row=run(args,binary,output,condition,round_id,round_id<0,
                     validator=lambda raw,c:validate(raw,c,args,binary,output/'w'))

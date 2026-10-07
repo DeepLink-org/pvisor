@@ -25,6 +25,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -104,7 +105,7 @@ def worker_command(config):
                  'seed', 'settle_ms', 'ksm_wait_seconds'):
         value = config[name]
         cmd.extend(['--' + name.replace('_', '-'), str(value).lower() if isinstance(value, bool) else str(value)])
-    for name in ('independent_inodes', 'cpus','memory_mib','pool_daemon'):
+    for name in ('independent_inodes', 'cpus','memory_mib','pool_daemon','group_memory_max'):
         if name in config:
             value = config[name]
             cmd.extend(['--'+name.replace('_','-'), str(value).lower() if isinstance(value,bool) else str(value)])
@@ -141,10 +142,10 @@ def scanner(accounting):
     return value.strip()
 
 
-def validate_accounting(accounting, group):
+def validate_accounting(accounting, group, memory_max=MEMORY_MAX):
     if accounting.get('cgroup') != group:
         raise ValueError('accounting escaped the owned cgroup')
-    if raw_field(accounting, 'memory.max') != str(MEMORY_MAX) or raw_field(accounting, 'memory.swap.max') != '0':
+    if raw_field(accounting, 'memory.max') != str(memory_max) or raw_field(accounting, 'memory.swap.max') != '0':
         raise ValueError('incorrect memory/swap budget')
     quota, period = map(int, raw_field(accounting, 'cpu.max').split())
     if period <= 0 or quota != 4 * period:
@@ -182,6 +183,9 @@ def validate_report(report, config):
     if report.get('schema') != 'pvisor-memory-scale/v1' or report.get('correctness') != 'passed':
         raise ValueError('missing successful integrity proof')
     conditions = report.get('conditions', {})
+    memory_max = config.get('group_memory_max',MEMORY_MAX)
+    if memory_max not in (MEMORY_MAX,2*MEMORY_MAX) or conditions.get('group_memory_max',MEMORY_MAX)!=memory_max:
+        raise ValueError('group memory budget condition mismatch')
     for name in ('rootfs', 'firmware', 'output', 'vms', 'mode', 'pattern', 'dedup', 'seed', 'settle_ms', 'ksm_wait_seconds'):
         if conditions.get(name) != config[name]:
             raise ValueError('wrong condition: ' + name)
@@ -210,6 +214,16 @@ def validate_report(report, config):
             raise ValueError('daemon pool binary mismatch')
         if not report.get('pool_observations'):
             raise ValueError('missing actual pool observations')
+    if config['mode']=='fresh' and config['dedup']:
+        guests=report.get('guests',[])
+        accepted=[re.search(r'dedup advice installation: accepted_bytes=(\d+)',
+                           g.get('result',{}).get('output',{}).get('stderr','')) for g in guests]
+        ready=next((p for p in report.get('phases',[]) if p['name']=='ready'),{})
+        eligible=sum(any(line.startswith('VmFlags:') and 'mg' in line.split()[1:]
+                         for line in process.get('smaps',{}).get('raw','').splitlines())
+                     for process in ready.get('accounting',{}).get('processes',[]))
+        if len(accepted)!=config['vms'] or not all(a and int(a.group(1))>0 for a in accepted) or eligible<config['vms']:
+            raise ValueError('fresh KSM requires accepted advice and mergeable RAM in every VM')
     if report.get('cleanup', {}).get('all_reaped') is not True:
         raise ValueError('missing terminal reaping fence')
     n, restored_mode = config['vms'], config['mode'] in RESTORE_MODES
@@ -257,7 +271,7 @@ def validate_report(report, config):
     else:
         snapshots += [p.get('accounting', {}) for p in phases]
     snapshots += [report.get('after', {})]
-    usage = [validate_accounting(a, config['cgroup']) for a in snapshots]
+    usage = [validate_accounting(a, config['cgroup'], config.get('group_memory_max',MEMORY_MAX)) for a in snapshots]
     if usage != sorted(usage):
         raise ValueError('nonmonotonic group CPU')
     states = [scanner(a) for a in snapshots]

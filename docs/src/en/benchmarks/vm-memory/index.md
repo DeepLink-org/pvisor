@@ -10,8 +10,9 @@
 | Compressed offload | Offload saves 77.6–78.2% resident memory per instance; saves more disk backing, with parked residency about 40 MiB |
 | Idle release | Saves 33.9–35.2% residency per instance while the host retains file cache |
 | Memory compression | Per-instance residency increases by 183.8–209.8%; these static readings show no savings |
-| Shared snapshot + COW | Relative to independent fresh VMs, identical contents save 71.8–72.0% average per-instance residency; unique random contents save 36.4%. Savings after complete rewrites remain 36.7–37.7% |
-| KSM | About 144–145 MiB per instance after the two-second scan window, close to the unshared baseline; no clear benefit confirmed |
+| Shared snapshot + COW | Relative to independent fresh VMs, identical contents save 68.5–69.0% average per-instance residency; unique random contents save 30.9%. Savings after complete rewrites remain 30.8–32.7% |
+| KSM | After 60 seconds, per-instance savings are 63.8% for repeated contents, 51.8% for identical random contents and 15.1% for unique random contents |
+| Daemon memory pool | Connected to real VMs; about 537–546 MiB resident per instance, an increase of 302.9–309.9%; no savings in this run |
 
 ## Motivation {#motivation}
 
@@ -26,12 +27,12 @@ Every VM has **512 MiB guest RAM, 2 vCPU and 64 MiB application data**. Working 
 **Idle release** has the application actively free the test working set while the VM keeps running; the application regenerates the data when needed again. **Memory offload** pauses the VM, retains RAM state in uncompressed backing and unloads resident RAM; execution continues after restoration. **Compressed offload** stores the same state in compressed backing, saving storage at the cost of compression and decompression.
 
 - Single instances compare default running, idle release, memory compression and memory/compressed offload. Repeated and deterministic random data cover compressible and difficult-to-compress contents; default/memory compression also test distinct compressible pages and a 16 MiB hot region plus 48 MiB cold region.
-- Multiple instances compare unshared VMs, shared snapshot + COW and KSM. The unshared arm boots four independent VMs with private anonymous RAM; the shared arm restores from one sealed snapshot; the KSM arm enables RAM advice on independent fresh VMs. Working sets match, with 25%/100% writes and independent termination checks.
-- One fresh VM or group per condition, no warmups. Single instances have a five-second observation window; multi-instance scan windows are two seconds. No P50/P95, confidence interval or eventual-convergence claim.
+- Multiple instances compare unshared VMs, shared snapshot + COW, KSM and the daemon memory pool. The unshared arm boots four independent VMs with private anonymous RAM; the shared arm restores from one sealed snapshot; the KSM arm uses the same RAM mappings with dedup advice enabled. The pool arm boots independent VMs with compressed objects held by the daemon pool component; identical cold chunks are stored once and restored into instance-private RAM on faults. Working sets match, with 25%/100% writes and independent termination checks.
+- One fresh VM or group per condition, no warmups. Single instances have a five-second observation window. KSM waits 60 seconds before its initial reading; the other multi-instance strategies wait two seconds. No P50/P95, confidence interval or eventual-convergence claim.
 
 **Resident physical memory** covers the complete product group's VM, management processes, compressed store and helpers, using summed process PSS with shared pages counted proportionally. **Host-group memory** uses complete cgroup physical-memory charging, including unmapped file cache and kernel costs charged to that group. These metrics cannot be added: residency describes actual mapped physical pages, while group usage keeps retained cache visible; shared-page attribution also differs. Neither establishes exclusive incremental whole-host cost or production capacity.
 
-Linux x86_64/KVM on an AMD Ryzen 7 9700X, host kernel 7.2.8-200.fc44.x86_64. The complete group uses logical CPUs 0–3, a four-core quota, a 2 GiB cap and zero swap. Coordinator, observer and global KSM thread remain outside it. Inputs are prepared without global cache eviction; background compilation is recorded, so durations are single observations. The 16 single-instance conditions and nine new multi-instance conditions come from separate static cohorts. All passed data, write-isolation, termination and provenance checks without OOM.
+Linux x86_64/KVM on an AMD Ryzen 7 9700X, host kernel 7.2.8-200.fc44.x86_64. The complete group uses logical CPUs 0–3, a four-core quota and zero swap. Single-instance groups have a 2 GiB ceiling; all four multi-instance strategies use the same 4 GiB ceiling. Coordinator, observer and global KSM thread remain outside it. Inputs are prepared without global cache eviction; background compilation is recorded, so durations are single observations. The 16 single-instance conditions and 12 new multi-instance conditions come from separate static cohorts. All passed data, write-isolation, termination and provenance checks without OOM.
 
 The commands below configure a 512 MiB VM and enable each feature. Replace `JOB`, `SOCKET` and `ATTEMPT` with startup output identities. Memory offload starts from an ordinary VM; compressed offload requires compressed backing at startup. Memory compression requires userfaultfd permission and compressed backing requires FUSE.
 
@@ -49,11 +50,11 @@ pvisor run --executor vm --memory 512MiB --vm-ram-compression -- claude
 pvisor suspend JOB --vm-socket SOCKET --vm-job-id JOB --vm-attempt-id ATTEMPT --vm-offload
 pvisor resume JOB --vm-socket SOCKET --vm-job-id JOB --vm-attempt-id ATTEMPT --vm-load
 
-# KSM advice: restored private COW RAM is eligible; fresh shared RAM is skipped
+# KSM: without an explicit backing, Linux uses private anonymous RAM
 pvisor run --executor vm --memory 512MiB --vm-ram-dedup -- claude
 ```
 
-Fresh VMs' shared RAM is skipped by this KSM advice; restored private COW RAM is eligible for the tested path. Baseline-sharing results also do not describe four independent `run` commands. Memory compression cannot combine with RAM deduplication, and restored private COW RAM does not support the live offload path above. See [control options](../../reference/cli.md#vm-instance-control) and [deduplication advice](../../reference/cli.md#vm-ram-dedup).
+Private anonymous RAM and restored private COW RAM accept KSM advice; writable shared RAM backing is skipped. On Linux, dedup without an explicit backing selects private anonymous RAM for fresh VMs; this path does not support whole-VM offload. The benchmark also verifies accepted advice for every VM and mergeable RAM mappings: command acceptance alone does not prove that pages participate in scanning. Baseline-sharing results also do not describe four independent `run` commands. Memory compression cannot combine with RAM deduplication, and restored private COW RAM does not support the live offload path above. See [control options](../../reference/cli.md#vm-instance-control) and [deduplication advice](../../reference/cli.md#vm-ram-dedup).
 
 ## Data and analysis {#results}
 
@@ -97,27 +98,34 @@ Compressed backing saves storage for repeated contents but requires encoding, de
 
 ### Four VMs with 512 MiB each: strategy comparison {#linux-lifecycle}
 
-Total configured capacity is 2048 MiB. Unshared means four independently booted VMs. Shared snapshot + COW maps one immutable RAM file and creates instance-private pages on writes. KSM enables deduplication advice on independently booted VMs. Neither the unshared nor shared-snapshot arm enables KSM advice.
+Total configured capacity is 2048 MiB. Unshared means four independently booted VMs. Shared snapshot + COW maps one immutable RAM file and creates instance-private pages on writes. KSM enables deduplication advice on independently booted VMs. The daemon pool arm uses private anonymous RAM and shares compressed, deduplicated objects in the pool process; access restores VM-private pages. Only the KSM arm enables KSM advice.
 
-Per-instance residency = complete-product group PSS divided by four, including allocated helper overhead. N=1 per condition, with a two-second scan window, in MiB. Savings use the unshared baseline with the same working set and phase, calculated from unrounded readings.
+Per-instance residency = complete-product group PSS divided by four, including allocated helper and daemon pool component overhead. N=1 per condition, in MiB. KSM waits 60 seconds before its initial reading; other strategies wait two seconds. Readings after 25%/100% writes keep the same short sampling procedure, without another 60-second wait. Savings use the unshared baseline with the same working set and phase, calculated from unrounded readings.
 
 | Working set | Strategy | Residency per instance MiB | Per-instance savings | Residency per instance after 100% writes MiB | Post-write per-instance savings |
 |---|---|---:|---:|---:|---:|
-| Identical repeated data | Unshared | 145.7 | Baseline | 145.7 | Baseline |
-| Identical repeated data | Shared snapshot + COW | 41.1 | 71.8% | 90.8 | 37.7% |
-| Identical repeated data | KSM | 145.1 | 0.5% | 145.9 | Increase 0.2% |
-| Identical random data | Unshared | 145.0 | Baseline | 145.8 | Baseline |
-| Identical random data | Shared snapshot + COW | 40.5 | 72.0% | 90.9 | 37.6% |
-| Identical random data | KSM | 144.1 | 0.6% | 145.1 | 0.5% |
-| Unique random data per VM | Unshared | 143.6 | Baseline | 144.3 | Baseline |
-| Unique random data per VM | Shared snapshot + COW | 91.3 | 36.4% | 91.4 | 36.7% |
-| Unique random data per VM | KSM | 144.8 | Increase 0.8% | 145.8 | Increase 1.0% |
+| Identical repeated data | Unshared | 133.4 | Baseline | 135.0 | Baseline |
+| Identical repeated data | Shared snapshot + COW | 41.3 | 69.0% | 90.8 | 32.7% |
+| Identical repeated data | KSM | 48.3 | 63.8% | 112.6 | 16.6% |
+| Identical repeated data | Daemon memory pool | 537.2 | Increase 302.9% | 517.2 | Increase 283.0% |
+| Identical random data | Unshared | 132.8 | Baseline | 133.8 | Baseline |
+| Identical random data | Shared snapshot + COW | 41.9 | 68.5% | 92.6 | 30.8% |
+| Identical random data | KSM | 64.0 | 51.8% | 112.3 | 16.1% |
+| Identical random data | Daemon memory pool | 540.3 | Increase 307.0% | 512.1 | Increase 282.7% |
+| Unique random data per VM | Unshared | 133.2 | Baseline | 133.9 | Baseline |
+| Unique random data per VM | Shared snapshot + COW | 92.0 | 30.9% | 92.2 | 31.1% |
+| Unique random data per VM | KSM | 113.0 | 15.1% | 113.5 | 15.2% |
+| Unique random data per VM | Daemon memory pool | 545.9 | Increase 309.9% | 508.8 | Increase 280.0% |
 
 Shared snapshot + COW retains both common system state and unchanged application pages. After completely rewriting the 64 MiB application working set, system pages may still remain shared. Unique random contents already create private pages during preparation, reducing initial savings.
 
-The host KSM scanner is enabled, and advice is submitted for private RAM in independently booted VMs. The table reports actual residency; successful advice does not establish merging. This single two-second observation confirms no clear benefit and does not describe eventual scan results.
+KSM produced actual merged pages during the 60-second window. Per-instance residency was 48.3 MiB for repeated contents, 64.0 MiB for identical random contents and 113.0 MiB for unique random contents. It merges identical pages within and across instances; unique random data must remain separately stored, reducing savings. Complete rewrites break existing sharing, leaving about 15–17% savings in the short post-write observation; these readings do not wait another 60 seconds for new pages to merge.
 
-The memory-pool strategy will be measured after a daemon-owned shared compressed pool is connected to real VMs and complete-group accounting passes, including daemon/pool residency. These three strategies do not use an external pool or establish long-term stability, real Agent latency or production density.
+The earlier KSM startup path used shared RAM mappings and skipped all dedup advice, so its result could not establish a lack of KSM benefit. This run uses private anonymous RAM for both KSM and the unshared control, and verifies accepted advice and mergeable mappings for every VM. The 60-second window does not establish eventual convergence or stable production savings.
+
+**The daemon memory pool saves no memory in this short static test.** Initial encoded pool data is about 11.2 MiB for repeated contents or 63.8–86.7 MiB for random contents, which does not represent whole-group usage. The cold-page path currently prefaults all guest RAM; reclaim in this short window does not offset that cost. The four-VM/pool startup peak measured about 2.16 GiB, so all four strategies use a 4 GiB group ceiling. Pool scanning, encoding and fault restoration consume CPU, and pool-process loss fails dependent VMs.
+
+Append `--memory-pool` to `pvisor-daemon serve` to enable it; the default is off. The pool runs separately from the API process and retains objects across API restart. See [the daemon guide](../../guides/daemon/index.md#memory-pool) for configuration and budgets. This run measures the real daemon pool component and VM path; it does not start the complete OpenSandbox API/SDK data plane or establish long-term stability, real Agent latency or production density.
 
 ### Data and reproduction {#run}
 

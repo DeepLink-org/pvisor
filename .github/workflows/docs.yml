@@ -3,10 +3,10 @@ name: Documentation
 on:
   push:
     branches: [main, develop]
-    paths: ['docs/**', 'scripts/*docs*.py', 'justfile', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'scripts/*docs*.py', 'scripts/check-reference.py', 'tests/test_docs.py', 'justfile', '.github/actions/setup-build-env/**', '.github/workflows/docs.yml']
   pull_request:
     branches: [main, develop]
-    paths: ['docs/**', 'scripts/*docs*.py', 'justfile', '.github/workflows/docs.yml']
+    paths: ['docs/**', 'scripts/*docs*.py', 'scripts/check-reference.py', 'tests/test_docs.py', 'justfile', '.github/actions/setup-build-env/**', '.github/workflows/docs.yml']
   workflow_dispatch:
 
 permissions:
@@ -23,16 +23,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - name: Build documentation
-        run: |
-          python scripts/check-reference.py
-          rm -rf docs/site
-          uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.zh.toml
-          uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.en.toml
-          cp docs/index.html docs/site/index.html
-      - name: Check generated pages
-        run: python scripts/check-docs.py --require-recorded
+      - uses: ./.github/actions/setup-build-env
+      - name: Test documentation checks
+        run: just test-py tests/test_docs.py
+      - name: Build and check documentation
+        run: just docs-build --require-recorded
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/site
