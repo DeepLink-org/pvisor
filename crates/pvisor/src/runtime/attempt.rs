@@ -619,6 +619,7 @@ pub(crate) fn prepare_attempt(
         &root_session,
         preparation.guest_workspace_overlay,
         opts.overlay_override.execution_snapshot.as_ref(),
+        &opts.overlay_override,
     )?;
     crate::util::startup_mark_run("storage.overlay_ready", spec.run_id.as_str());
     let PreparedOverlay {
@@ -770,6 +771,7 @@ pub(crate) fn prepare_overlay_attempt(
         &root_session,
         preparation.guest_workspace_overlay,
         opts.overlay.execution_snapshot.as_ref(),
+        &opts.overlay,
     )?;
     crate::util::startup_mark_run("storage.overlay_ready", spec.run_id.as_str());
     let PreparedOverlay {
@@ -1154,12 +1156,41 @@ fn apply_overlay_override(
     }
 }
 
+// Do not infer immutable from digest-looking paths, protect_target or a frozen
+// baseline. Normalization may insert/replace lowers, so only an exact final
+// stack can inherit the caller's explicit per-physical-layer promises.
+fn validated_lower_mutability(
+    hint: &OverlayHint,
+    lowers: &[PathBuf],
+) -> anyhow::Result<Vec<pvisor_overlay_core::LayerMutability>> {
+    use pvisor_overlay_core::LayerMutability;
+    if hint.lower_mutability.is_empty() {
+        return Ok(vec![LayerMutability::Mutable; lowers.len()]);
+    }
+    anyhow::ensure!(
+        hint.lower_mutability.len() == hint.lower_dirs.len(),
+        "lower mutability length mismatch"
+    );
+    anyhow::ensure!(
+        hint.lower_dirs.len() == lowers.len(),
+        "lower mutability requires exact normalized lower stack"
+    );
+    for (declared, actual) in hint.lower_dirs.iter().zip(lowers) {
+        anyhow::ensure!(
+            declared.canonicalize()? == actual.canonicalize()?,
+            "lower mutability cannot transfer to a replacement lower"
+        );
+    }
+    Ok(hint.lower_mutability.clone())
+}
+
 fn prepare_overlay(
     overlay_cfg: &pvisor_core::overlay::OverlayConfig,
     storage: &Path,
     root_session: &str,
     mountless: bool,
     execution_snapshot: Option<&super::implant::ExecutionOverlayHint>,
+    declaration: &OverlayHint,
 ) -> anyhow::Result<PreparedOverlay> {
     if !overlay_cfg.enabled && overlay_cfg.target.is_none() {
         return Ok(PreparedOverlay {
@@ -1190,6 +1221,7 @@ fn prepare_overlay(
             } else {
                 lower_stack_from_config(overlay_cfg, storage, &mut record, !mountless)?
             };
+            let lower_mutability = validated_lower_mutability(declaration, &lowers)?;
             let (mount, record, fs_metrics) = if mountless {
                 (
                     None,
@@ -1216,12 +1248,14 @@ fn prepare_overlay(
                     &record,
                     &lowers,
                     Some(metrics.clone()),
+                    &lower_mutability,
                     overlay_cfg.durability,
                 )?;
                 let record = mount.record().clone();
                 (Some(mount), record, Some(metrics))
             };
             let mut hint = hint_from_record(&record, lowers.clone());
+            hint.lower_mutability = lower_mutability;
             if mountless {
                 hint.merged_dir = None;
             }
@@ -1263,6 +1297,7 @@ fn inject_krun_overlay_metadata(
         "pvisor.vm.workspace_overlay".into(),
         serde_json::json!({
             "lowers": hint.lower_dirs,
+            "lower_mutability": hint.lower_mutability,
             "apply_target": record.target,
             "baseline_lower": record.baseline_lower,
             "upper": upper,
@@ -1542,6 +1577,34 @@ pub(crate) fn apply_implant(process: &mut ProcessInvocation, plan: &ImplantPlan)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lower_promises_require_exact_final_physical_stack() {
+        use pvisor_overlay_core::LayerMutability::{Immutable, Mutable};
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        for path in [&a, &b] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let mut hint = super::OverlayHint {
+            lower_dirs: vec![a.clone(), b.clone()],
+            lower_mutability: vec![Immutable, Mutable],
+            ..Default::default()
+        };
+        assert_eq!(
+            super::validated_lower_mutability(&hint, &[a.clone(), b.clone()]).unwrap(),
+            [Immutable, Mutable]
+        );
+        assert!(super::validated_lower_mutability(&hint, &[b.clone(), a.clone()]).is_err());
+        assert!(super::validated_lower_mutability(&hint, std::slice::from_ref(&a)).is_err());
+        hint.lower_mutability.pop();
+        assert!(super::validated_lower_mutability(&hint, &[a.clone(), b.clone()]).is_err());
+        hint.lower_mutability.clear();
+        assert_eq!(
+            super::validated_lower_mutability(&hint, &[b, a]).unwrap(),
+            [Mutable, Mutable]
+        );
+    }
 
     #[test]
     fn hibernation_retains_partial_workspace_without_auto_apply_or_discard() {

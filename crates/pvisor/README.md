@@ -426,6 +426,39 @@ The detailed command, platform, storage and memory limits above remain relevant
 to embedded callers where they describe runtime behavior, and to the installed
 application where they describe frontend behavior.
 
+## Physical lower stability (explicit experiment contract)
+
+Embedded callers may set `OverlayHint::lower_mutability` to a per-physical-lower
+`Vec<pvisor_overlay_core::LayerMutability>` in `lower_dirs` order. Empty defaults
+to all mutable. Attempt preparation validates nonempty length and exact canonical
+identity/order against the final normalized stack; promises cannot silently
+transfer to inserted targets or frozen copies. Host mounts receive the declarations
+through `OverlayMountConfig`; native VM handoff serializes `lower_mutability`
+alongside `lowers`, retains it in `OverlayDeviceSpec`, and projects it into
+`pvisor_vm::api::OverlayConfig`. Legacy runner metadata omitting the field defaults
+to mutable. Restored/rebound copies are not automatically promoted. The enum
+lives only in overlay-core; no duplicate runtime contract is introduced.
+
+**No automatic image/frozen promotion in this first version.** Host rootfs and
+arbitrary prepared `--rootfs` directories are mutable. OCI extraction uses
+content-addressed atomic publication (`image/oci.rs`) but retains writable host
+permissions and does not enforce a lifetime lease against external changes.
+VM lazy images have immutable remote logical metadata, but their physical
+projection (`image/cache/direct.rs::Projection::project`) creates names/links and
+updates metadata on demand; that projection is not a stable physical lower.
+Host lazy read-only mounting alone is not a lifetime stability proof. Frozen
+baseline selects observation semantics, not an immutability guarantee. All
+these paths therefore conservatively retain mutable declarations; an owned,
+externally stabilized experimental lower can use the explicit contract.
+
+For same-artifact/same-input A/B keep declarations unchanged and set
+`PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE=1` before constructing the serving host
+process/VM runner for the no-cache control; unset for caching. No formal CLI was
+added. `PVISOR_FS_PROFILE=1` reports `overlay-core` hit/miss/eviction `units`; see
+that crate's README for exact names and capacity. This is a metadata/path/parent
+cache only: no directory inventory/content cache, kernel TTL or KEEP_CACHE change,
+or claimed real-FUSE speedup. Upper/merged state must never be labeled immutable.
+
 ## Develop
 
 ```bash

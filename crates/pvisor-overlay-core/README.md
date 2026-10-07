@@ -10,6 +10,45 @@ Adapters own protocol inode identifiers, handles and permission translation.
 just test pvisor-overlay-core
 ```
 
+## Physical lower immutability (conservative first version)
+
+`LayerMutability::{Mutable, Immutable}` is the shared contract. Build a layout
+with `OverlayLayout::with_lower_mutability(Vec<LayerMutability>)`; entries match
+`lowers()` in highest-to-lowest priority order. Empty means all mutable for old
+callers; nonempty length mismatch is `InvalidInput`. `lower_mutability()` returns
+the validated declarations. Immutable is a caller promise that contents,
+metadata, namespace, physical ancestors, mount identity and all hardlink aliases
+stay stable for the entire overlay lifetime. A read-only mount or content-addressed
+pathname does not prove this. `frozen_baseline` only changes baseline observation
+semantics and never infers this promise.
+
+Only successful physical immutable-lower metadata/path/parent identity results
+are cached, scoped to one Core owner and keyed by lower index and relative path.
+Merged winners, negatives, errors, directory inventories, upper, whiteouts,
+opaque probes, policy, hardlink authorization and read/preimage observations are
+not cached. Every request still walks merged prefixes and higher mutable layers.
+The mutex-protected cache retains at most 4096 entries, clears on capacity, and
+bypasses keys whose root plus relative path exceed 4096 bytes or whose relative
+path exceeds 256 components (bounding parent identity storage too). First misses
+collect complete parent identities; this can cost more than an uncached shallow
+stat. No kernel TTL, KEEP_CACHE or content caching policy changes are made.
+
+For same-artifact/same-input A/B, keep the immutable declarations identical and
+set `PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE=1` in the serving host process before
+Core construction for the uncached control. Unset it for caching. This only
+disables optimization, not the caller's contract. `PVISOR_FS_PROFILE=1` emits
+`overlay-core` measurements: `immutable_lower_cache_hits`,
+`immutable_lower_cache_misses`, `immutable_lower_cache_evictions` (in `units`),
+plus existing `layer_parent_stats`, `layer_leaf_stats` and mount identity counters.
+Misses include uncached absence/errors; mutable/disabled/bound-bypassed probes
+are not cache misses. Profiles are diagnostic, not performance acceptance.
+The [owned-lower host FUSE experiment](../../benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md)
+records same-contract cache-off/on engineering measurements; it does not establish
+OCI/VM performance or review-journal costs.
+
+`tests/lower_immutability.rs` covers contract validation, external live changes,
+mixed precedence, upper mutations, hardlink denials, capacity and disabled control.
+
 ## Copy-up and truncation
 
 Fresh regular-file copy-up for `O_TRUNC` can omit the content copy only when the

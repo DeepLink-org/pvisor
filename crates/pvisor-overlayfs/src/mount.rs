@@ -5,14 +5,28 @@
 //! and manual-mount CLI wrapper around this library.
 
 use crate::api::{
-    OverlayConfiguration, OverlayMountConfig, OverlayMounting, OverlaySessionControl,
+    KernelCacheConfig, KernelCachePolicy, OverlayConfiguration, OverlayMountConfig, OverlayMounting,
+    OverlaySessionControl, ReadObservationSemantics,
 };
 use crate::fs::OverlayFs;
 use anyhow::{Context, Result, bail};
 use fuser::{BackgroundSession, MountOption, Session};
-use std::os::unix::fs::MetadataExt;
+use std::fs::{File, OpenOptions};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+impl Default for KernelCacheConfig {
+    fn default() -> Self {
+        Self {
+            policy: KernelCachePolicy::Disabled,
+            ttl: Duration::from_secs(60),
+            owned_view: None,
+            read_observation: ReadObservationSemantics::RequestCallbacks,
+        }
+    }
+}
 
 impl OverlayConfiguration for OverlayMountConfig {
     fn new(
@@ -25,6 +39,8 @@ impl OverlayConfiguration for OverlayMountConfig {
             apply_target: lower_dirs.last().cloned(),
             baseline_lower: None,
             lower_dirs,
+            lower_mutability: Vec::new(),
+            kernel_cache: KernelCacheConfig::default(),
             upper_dir,
             work_dir,
             mountpoint,
@@ -41,6 +57,51 @@ impl OverlayConfiguration for OverlayMountConfig {
             access_policy: Default::default(),
             observation: None,
         }
+    }
+
+    fn validate_kernel_cache(&self) -> Result<()> {
+        let cache = &self.kernel_cache;
+        if cache.policy == KernelCachePolicy::Disabled {
+            return Ok(());
+        }
+        if cache.ttl.is_zero() || cache.ttl > Duration::from_secs(60) {
+            bail!("kernel cache TTL must be greater than zero and at most 60 seconds");
+        }
+        if self.lower_dirs.is_empty()
+            || self.lower_mutability.len() != self.lower_dirs.len()
+            || self.lower_mutability.iter().any(|value| {
+                *value != pvisor_overlay_core::LayerMutability::Immutable
+            })
+        {
+            bail!("kernel cache requires explicit Immutable declarations for every physical lower");
+        }
+        let Some(contract) = cache.owned_view else {
+            bail!("kernel cache requires an explicit owned-view contract; advisory locks are not proof");
+        };
+        if !contract.exclusive_upper_and_work || !contract.fixed_metadata_and_aliases {
+            bail!("kernel cache requires exclusive upper/work and fixed metadata/aliases including backing atime");
+        }
+        if cache.read_observation != ReadObservationSemantics::StableView {
+            bail!("kernel cache requires explicit StableView read observation semantics");
+        }
+        if self.preimage_dir.is_some() || self.compact_preimages || self.observation.is_some() {
+            bail!("kernel cache cannot preserve journal first-content observations or callback read metrics");
+        }
+        if self.access_policy != pvisor_overlay_core::FileAccessPolicy::default()
+            || !self.excluded_paths.is_empty()
+        {
+            bail!("kernel cache rejects custom path access policy and exclusions: cached access can bypass callbacks");
+        }
+        if !self.default_permissions || self.allow_other || self.allow_root {
+            bail!("kernel cache requires default_permissions and owner-only access");
+        }
+        if !cfg!(target_os = "linux") || self.backend.is_some() {
+            bail!("kernel cache is supported only by the Linux HOST FUSE backend; macOS notifications are not validated");
+        }
+        if !self.read_only {
+            bail!("writable kernel cache is unsupported: asynchronous fail-closed mutation invalidation is not implemented");
+        }
+        Ok(())
     }
 }
 
@@ -163,6 +224,11 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
     if config.lower_dirs.is_empty() {
         bail!("lowerdir must list at least one path");
     }
+    if !config.lower_mutability.is_empty()
+        && config.lower_mutability.len() != config.lower_dirs.len()
+    {
+        bail!("lower mutability length mismatch");
+    }
     std::fs::create_dir_all(&config.upper_dir)
         .with_context(|| format!("create upperdir {}", config.upper_dir.display()))?;
     if let Some(work) = &config.work_dir {
@@ -284,7 +350,8 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
             config.lower_dirs,
             target,
             config.baseline_lower.as_deref(),
-        )?,
+        )?
+        .with_lower_mutability(config.lower_mutability)?,
         config.upper_dir,
         config.work_dir,
         config.excluded_paths,

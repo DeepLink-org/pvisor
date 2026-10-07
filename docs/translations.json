@@ -65,7 +65,7 @@
   "design/environment-snapshot.md": "3172b7848f558b06fc2e35c097a41f7fea6dd4c2c14587b2bb7a3233024a9666",
   "design/execution-model.md": "8182aecd82ab87fc16dadd02f1849fed9202f5bdf2dc6269d7c24e87a845b577",
   "design/failure-semantics.md": "91bad87a97df5d87efc6c11e8cfda22ee3946fb12e09186f028c6bb1d1a26822",
-  "design/filesystem-performance-analysis.md": "da34d0c9a75c75814aba542ed30a56f19120c61ecaf8311e842986ff5ca31def",
+  "design/filesystem-performance-analysis.md": "b859f5fda07e6735cd65fe3a3d0c411db65abca2bcab57dfc5916c11987d1b01",
   "design/gateway.md": "bb0c97fd0e0fb14820a34db539ebb2875b0095bf189764d690b20d1898b5a889",
   "design/index.md": "caa3b80ca71b97bada57947ba3a120640699d8559004d721967efa12945a1e4f",
   "design/isolation.md": "8f47ebb7db484a5e8cc4d6bc2d99caac2ca039c437fc704bb7221f9c9321b957",

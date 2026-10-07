@@ -654,6 +654,7 @@ pub(super) fn publish(
             )
             .map(|id| crate::environment_snapshot::NativePublication {
                 id,
+                lower_mutability: Vec::new(),
                 lowers: vec![],
                 private_files: None,
                 #[cfg(target_os = "linux")]
@@ -899,6 +900,7 @@ mod tests {
             attempt_id: "attempt".into(),
         };
         let device = OverlayDeviceSpec {
+            lower_mutability: Vec::new(),
             lowers: vec![make("readonly")],
             upper: make("private/upper"),
             work: Some(make("private/work")),
@@ -1743,6 +1745,9 @@ pub(super) mod native {
             durability: Some(pvisor_overlay_core::stage::policy(&recorded_preimages)?),
             access_policy: recorded.access_policy.clone(),
             lower_dirs: recorded.lowers.clone(),
+            // Rebound copies have a new lifetime; do not inherit an old promise
+            // without the coordinator proving physical backing stability again.
+            lower_mutability: Vec::new(),
             stage_dir: Some(storage.clone()),
             upper_dir: Some(recorded.upper.clone()),
             work_dir: recorded.work.clone(),
@@ -1899,6 +1904,7 @@ pub(super) mod native {
             path
         };
         let device = OverlayDeviceSpec {
+            lower_mutability: Vec::new(),
             lowers: vec![make("lower")],
             upper: make("upper"),
             work: Some(make("work")),

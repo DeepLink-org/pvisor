@@ -67,6 +67,25 @@ field-level security, platform and ownership contracts.
 `tests/api_contract.rs` checks the syntax boundary and portable public behavior
 without mounting FUSE.
 
+## Lower stability and cache experiments
+
+Set `api::OverlayMountConfig::lower_mutability` using the shared
+`pvisor_overlay_core::LayerMutability`, in `lower_dirs` order. Construction leaves
+it empty (all mutable); mounting rejects a nonempty length mismatch before path
+preparation, after the existing macOS backend installation probe. The caller
+must keep physical backing contents, metadata, namespace, ancestors and mount
+identities stable until session teardown; `read_only` is not such proof. Upper
+and the merged mount must never be declared immutable. Private mount preparation
+passes declarations into `OverlayLayout::with_lower_mutability`.
+
+The shared Core caches only successful immutable physical-lower metadata and
+parent identities, not merged results or policy/observations. Upper and mutable
+precedence checks stay fresh; FUSE TTL and open flags are unchanged. For A/B use
+identical declarations with `PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE=1` set before
+starting the host request process versus unset. `PVISOR_FS_PROFILE=1` exposes
+Core hit/miss/eviction `units`; see the overlay-core README for bounds and exact
+counter names. These are diagnostic knobs, not new product CLI options.
+
 ## Develop
 
 ### Prerequisites

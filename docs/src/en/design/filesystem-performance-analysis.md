@@ -1,5 +1,35 @@
 # Filesystem performance: technical analysis and experiment records
 
+## Physical metadata caching for immutable lowers {#immutable-lower-cache}
+
+**Same-artifact real Linux FUSE A/B reduced read-heavy median operation time by roughly 24–26%, and fresh-process/mount/tool-through-unmount task time by 19.6%.** This is B-FS-ENG engineering evidence, not an order-of-magnitude improvement or proof of equal gains for OCI, VM, full Agent tasks or staged execution with review journals.
+
+### Contract and experiment design
+
+Each lower declares `LayerMutability::{Mutable,Immutable}`, defaulting to mutable. The caller guarantees lifetime stability of contents, metadata, namespace, parent and mount identity, including hardlink aliases. The cache retains successful physical-lower metadata only, bounded to 4096 entries. Upper, higher-priority mutable layers, whiteout/opaque, access policy and first observations remain checked. The kernel's one-second TTL, KEEP_CACHE and read-observation semantics are unchanged.
+
+OCI extraction directories remain host-writable and lazy-image physical projections change on demand, so neither source is automatically promoted. Host rootfs, arbitrary directories and frozen baselines also receive no automatic promise. The experiment uses an exclusively owned, actually stable lower; a read-only mount is not a substitute for ownership.
+
+Measured 2026-10-07 on Ryzen 7 9700X, Linux x86_64 and Btrfs, with driver/tools pinned to CPUs 0,1. Inputs have 2048 files in 32 branches, half deeply nested, totaling about 1.1 MB; host cache is warm. Native, mutable FUSE and immutable cache-off/on use one frozen release driver. Three warmups and 30 measured samples per cell are seeded-shuffled, totaling 600 measured samples with no formal failures. Both immutable arms keep identical declarations, changing only the service cache. No preimage journal is enabled, excluding review/apply cost.
+
+### Data and analysis
+
+Milliseconds, P50; changes are relative to same-contract cache-off, with paired-round bootstrap 95% intervals.
+
+| Workload | Native | Mutable FUSE | Cache-off | Cache-on | Time change | 95% interval |
+|---|---:|---:|---:|---:|---:|---|
+| Hot metadata/open/read, two passes | 9.34 | 140.01 | 140.86 | 103.96 | −26.20% | [−26.55%, −25.79%] |
+| Two passes after TTL expiry | 13.56 | 150.56 | 147.71 | 112.47 | −23.86% | [−25.44%, −22.44%] |
+| One open/read/search verification pass | 3.36 | 69.72 | 70.31 | 52.80 | −24.90% | [−25.48%, −24.22%] |
+| Git status, rg and content checks on persistent mount | 19.81 | 202.21 | 203.43 | 154.55 | −24.03% | [−24.69%, −22.98%] |
+| Fresh process, mount, tools and unmount | 22.66 | 210.76 | 210.49 | 169.28 | −19.58% | [−20.44%, −19.10%] |
+
+Hot traversal has untimed priming. TTL conditions wait 1.1 seconds after priming outside the timer; the second pass may hit kernel cache, so this is not fully cold reading. Writes are correctness probes only, without write-performance claims. All reads verify complete bytes. Append-preserving copy-up, rename, unlink/recreate, whiteout, immediate/after-TTL visibility and exact upper inventories pass; complete lower content, namespace and metadata inventories are unchanged. Inputs do not trigger eviction. Large repositories, concurrency, macOS and guest paths remain unmeasured.
+
+An independent profile has 24 instances, all with final records; instrumentation is excluded from timing. Persistent cache-on reduces physical parent-stat counts by 49.2% and leaf-stat counts by 84.3% versus off, with equal open/read counts. This supports less repeated server resolution, not proof of eliminating all FUSE requests or physical disk reads; inclusive spans are not summed. Cache-on remains substantially slower than native. Long kernel caching, upper consistency and mapping/fault paths need separate validation.
+
+[Formal statistics CSV](immutable-lower-cache-summary.csv) · [All-instance counters CSV](immutable-lower-cache-counters.csv) · [Engineering report and reproduction](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md). Frozen sources, build receipts, input inventories, failed preflight, formal samples and independent profiles stay in `benchmark/.data/immutable-cache-*`, separate from user performance distributions.
+
 ## Independent counters for pinned artifacts {#current-counters}
 
 Measured on 2026-10-06, CPUs 0,1, VM 2 vCPU/16 GiB, with verified frozen CLI, source, tool inputs and firmware. Seven-tool and fixed-repair workloads each run three times in staged/VM modes: twelve valid jobs, zero failures. Complete shared-input byte inventories are identical before and after. Executor-provided TMPDIR is preserved, with a fresh private empty tool cache per task; seven-operation Cargo temporary files and outputs remain in each independent workspace. Diagnostic stderr goes directly to a regular file, avoiding EAGAIN from nonblocking pipes during large profile writes. Profiles and startup timing are enabled; these times do not enter [user performance distributions](../benchmarks/filesystem.md).

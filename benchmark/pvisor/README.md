@@ -431,6 +431,80 @@ Build only after unrelated timing ends. After all shell/tool preflight condition
 
 ## Engineering and diagnostics
 
+### Owned immutable lower physical metadata cache
+
+`immutable_lower_cache.py` / `immutable_lower_cache_driver.rs` serve **B-FS-ENG**;
+`--profiles` serves **B-FS-DIAG**, never elapsed-time claims. The retained
+[engineering report](IMMUTABLE_LOWER_CACHE_REPORT.md) compares real Linux host
+FUSE native/mutable/immutable-cache-off/on. This is not a VM/OCI or user-facing
+benchmark. It uses the completed API traits with CLI disabled, no journal in all
+conditions, unchanged kernel TTL/KEEP_CACHE, and no permission workaround.
+
+Run from the repository root, using a **new** output directory for each command:
+
+```sh
+python3 -m pytest benchmark/pvisor/test_immutable_lower_cache.py -q
+python3 benchmark/pvisor/immutable_lower_cache.py --build \
+  --output benchmark/.data/immutable-cache-build-new
+python3 benchmark/pvisor/immutable_lower_cache.py \
+  --build-receipt benchmark/.data/immutable-cache-build-new/build-receipt.json \
+  --output benchmark/.data/immutable-cache-preflight-new --samples 1 --warmups 0
+# After successful preflight, announce the timing window; no concurrent build/test.
+python3 benchmark/pvisor/immutable_lower_cache.py \
+  --build-receipt benchmark/.data/immutable-cache-build-new/build-receipt.json \
+  --output benchmark/.data/immutable-cache-timing-new --samples 30 --warmups 3 \
+  --seed 4207 --affinity 0,1
+# Only after timing exits; profile timings are not included in engineering tables.
+python3 benchmark/pvisor/immutable_lower_cache.py \
+  --build-receipt benchmark/.data/immutable-cache-build-new/build-receipt.json \
+  --output benchmark/.data/immutable-cache-profile-new --profiles \
+  --samples 3 --warmups 0 --seed 4207 --affinity 0,1
+```
+
+Select allowed CPUs with `--affinity` on other hosts (default: first two allowed
+CPUs). The isolated generated manifest contains `[workspace]`, frozen path
+dependencies and the product's vendored fuser patch. Build is offline, release,
+CLI-disabled, with four build jobs; it reuses root `target` by default, or accepts
+`--target-dir benchmark/.data/immutable-cache-target` for fully isolated artifacts.
+All tracked/nonignored crate and vendor files, including current dirty bytes,
+are frozen and SHA-256 inventoried; build command/compiler/lock/manifest/binary
+and harness receipts are retained. Existing output directories are rejected.
+Fixture creation is outside timing: 2048 unique files in 32 branches, 1024 shallow
+and 1024 seven-level-nested files; private Git repo with automatic GC/maintenance
+disabled, optional Git locks disabled during tasks. Only generated fixture
+atimes are initialized beyond the run window to preserve physical metadata under
+relatime; no host mount policy is changed. Exact lower namespace, bytes, modes,
+ownership, inode/device/link identities, times and xattrs must match after runs.
+
+Each condition has an exclusively owned upper/work/mountpoint. Persistent mounts
+remain alive for seeded random interleaved rounds but only one workload runs at a
+time. Immediate untimed priming precedes hot and TTL-expiry operations; the latter
+waits 1.1 seconds before the first traversal, outside the operation timer. Each
+metadata/open/read command traverses all files twice and compares all bytes;
+readsearch traverses once. `tools` runs clean `git status`, exact-path-checked `rg`
+and all-byte verification; `whole-tools` uses a fresh mount per sample and measures
+coordinator launch-through-normal-unmount, with mount/tools/unmount fields kept
+separate. Persistent process lifetime includes all idle/shuffle/wait windows and
+is not task latency. Warmups are retained but not aggregated; slow valid samples
+are not discarded, paired bootstrap intervals and distribution checks are emitted.
+
+After sampling, warmed lower paths undergo append copy-up (old contents retained),
+rename, unlink/recreate and lower-only unlink. Immediate and post-TTL visible
+contents, metadata, ENOENT, directory names, exact upper file inventory and whiteout
+markers are checked; every physical lower remains unchanged. No preimage/review,
+concurrent upper modifier, eviction stress, VM, OCI or cold-disk claim is made.
+Independent profile stderr goes directly to regular files. All PID/component/
+instance cumulative records are retained; only the final record per instance is
+used for comparisons. Inclusive spans are not added into a total.
+
+The coordinator bounds responses to 90 seconds, builds to 600 seconds and
+shutdown to 15 seconds; the driver also has a finite 1800-second watchdog. Failure
+logs and stages are retained. Cleanup addresses only the exact generated owned
+mountpoint/process group, never sudo, lazy unmount or global policy changes. A
+failed real mount is not a valid performance sample; preserve it and report the
+FUSE gap rather than substituting a mocked view. The recorded host successfully
+mounted FUSE, so no core-only fallback was needed.
+
 B-FS-ENG engineering runners and B-FS-DIAG diagnostic helpers remain active: `filesystem_ab.py`, `filesystem_fuse_ab.py`, `filesystem_stage_ab.py`, `filesystem_stage_durability.py`, `filesystem_lazy_ab.py`, `filesystem_kernel_probe.py` and `filesystem_diagnostic.py`. The FUSE passthrough adapter is a diagnostic control without staging semantics, not a production mode. Record each engineering run’s ID and keep raw output in `.data/`; publish only when it changes a user conclusion, after a matching user-facing comparison.
 
 After formal timing completes, `filesystem_counters.py` collects independent filesystem and fixed-repair diagnostics from the same verified current binary and inputs:

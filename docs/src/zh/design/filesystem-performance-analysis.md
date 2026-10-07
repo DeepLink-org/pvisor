@@ -1,5 +1,35 @@
 # 文件系统性能：技术分析与实验记录
 
+## 不可变 lower 的物理元数据缓存 {#immutable-lower-cache}
+
+**真实 Linux FUSE 的同制品 A/B 中，缓存使读密集操作的中位耗时下降约 24%–26%，新进程、挂载、工具执行到卸载的任务下降 19.6%。** 这是 B-FS-ENG 工程实验，不是数量级提升，也不证明 OCI、VM、完整 Agent 任务或带审查日志的 staged 执行有同等收益。
+
+### 契约与实验设计
+
+每个 lower 用 `LayerMutability::{Mutable,Immutable}` 声明；默认可变。不变性由调用方保证整个服务生命周期内的内容、元数据、命名空间、父目录和挂载身份稳定，包括 hardlink 别名。缓存只保留成功的物理 lower 元数据，最多 4096 条；upper、更高优先级可变层、whiteout/opaque、访问策略和首次观察仍检查。内核的一秒 TTL、KEEP_CACHE 和读取观察语义未改动。
+
+OCI 解包缓存的宿主目录仍可写，lazy 镜像的本地投影会按需变化，故当前没有自动升级这些来源；宿主 rootfs、任意目录和 frozen baseline 也不自动获得承诺。实验使用独占且实际保持稳定的 lower，不能以只读挂载替代所有权保证。
+
+2026-10-07，Ryzen 7 9700X、Linux x86_64、Btrfs，driver 与工具固定 CPU 0,1。2048 个文件、32 个分支，半数路径深嵌套，总 payload 约 1.1 MB；宿主缓存热。四个条件为 native、mutable FUSE、immutable cache-off/on，使用同一冻结 release driver。每格三次预热、30 次正式采样，按固定种子随机交替，共 600 个正式样本，无正式失败。两组 immutable 声明相同，仅关闭/开启服务端缓存；不启用 preimage journal，排除 review/apply 成本。
+
+### 数据与分析
+
+单位 ms，P50；变化相对相同承诺的 cache-off，95% 区间来自按轮配对 bootstrap。
+
+| 负载 | Native | Mutable FUSE | Cache-off | Cache-on | 耗时变化 | 95% 区间 |
+|---|---:|---:|---:|---:|---:|---|
+| 热 metadata/open/read，两次遍历 | 9.34 | 140.01 | 140.86 | 103.96 | −26.20% | [−26.55%, −25.79%] |
+| TTL 到期后的两次遍历 | 13.56 | 150.56 | 147.71 | 112.47 | −23.86% | [−25.44%, −22.44%] |
+| 单次打开、读取与搜索校验 | 3.36 | 69.72 | 70.31 | 52.80 | −24.90% | [−25.48%, −24.22%] |
+| 持续挂载的 Git status、rg 与内容校验 | 19.81 | 202.21 | 203.43 | 154.55 | −24.03% | [−24.69%, −22.98%] |
+| 新进程、挂载、工具任务与卸载 | 22.66 | 210.76 | 210.49 | 169.28 | −19.58% | [−20.44%, −19.10%] |
+
+热遍历有未计时预热；TTL 条件在预热后等待 1.1 秒，等待不计时，第二次遍历可以命中内核缓存，因此不是全冷读。写入只用于正确性探针，不提供写性能结论。全部读取验证完整字节；append copy-up、rename、unlink/recreate、whiteout、立即及 TTL 后可见性和 upper 精确清单通过，lower 的完整内容、命名空间和元数据清单前后相同。输入未触发容量淘汰；大仓库、并发、macOS 与 guest 路径未测。
+
+独立 profile 有 24 个实例、全部 final 记录，计时结果不含插桩。持续挂载的 cache-on 相对 off，物理 parent stat 计数下降 49.2%，leaf stat 下降 84.3%；open/read 请求数相同。计数支持减少服务端重复解析，不是减少全部 FUSE 请求或物理磁盘读取的证明；inclusive spans 不相加。cache-on 仍明显慢于 native，长期内核缓存、upper 一致性和映射/缺页路径需分别验证。
+
+[正式统计 CSV](immutable-lower-cache-summary.csv) · [全部实例计数 CSV](immutable-lower-cache-counters.csv) · [工程报告与复现命令](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md)。冻结源码、制品回执、输入清单、失败预检、正式样本和独立 profile 保存在 `benchmark/.data/immutable-cache-*`，不合并到用户性能分布。
+
 ## 冻结制品的独立计数器诊断 {#current-counters}
 
 测于 2026-10-06，CPU 0,1，VM 2 vCPU/16 GiB，使用已核验的冻结 CLI、源码、工具输入和固件。七项文件工具和固定修复各测 staged/VM 三次，共十二个有效任务，失败 0；共享输入的完整字节清单在前后相同。保留执行器默认 TMPDIR，每任务使用新的私有空工具缓存；七项工具的 Cargo 临时文件和产物留在独立工作区。stderr 直接写入普通文件，避免非阻塞管道在大段 profile 输出时返回 EAGAIN。启用 profile 和启动计时，耗时不进入[用户性能分布](../benchmarks/filesystem.md)。

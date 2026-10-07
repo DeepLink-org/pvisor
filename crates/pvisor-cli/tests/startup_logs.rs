@@ -2,6 +2,30 @@
 use std::process::Command;
 
 #[test]
+fn informational_commands_do_not_emit_execution_diagnostics() {
+    for args in [
+        vec![],
+        vec!["--help"],
+        vec!["-h"],
+        vec!["help"],
+        vec!["help", "status"],
+        vec!["run", "--help"],
+        vec!["--version"],
+        vec!["feature", "--json"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+            .args(&args)
+            .env_remove("PVISOR_STARTUP_TIMING")
+            .env_remove("PVISOR_DIAGNOSTICS_FD")
+            .env_remove("PVISOR_UI_CHILD")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+        assert!(output.stderr.is_empty(), "{args:?}: {:?}", output.stderr);
+    }
+}
+
+#[test]
 fn startup_logs_are_default_correlated_and_route_to_frontend() {
     let temp = tempfile::tempdir().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));

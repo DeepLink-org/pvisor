@@ -10,9 +10,70 @@
 //! host permissions and macFUSE installation are checked at runtime.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub use crate::mount::OverlaySession;
 pub use crate::observation::FsMetrics;
+
+/// Explicit host-kernel caching strategy; never inferred from source classification.
+/// No strategy enables writeback caching. Enabled strategies currently require a
+/// Linux read-only stable view; writable views and macOS are explicitly rejected.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum KernelCachePolicy {
+    /// Zero entry/attribute/negative TTL and no KEEP_CACHE. Normal page caching
+    /// within an open file remains enabled, preserving existing read semantics.
+    #[default]
+    Disabled,
+    /// Bounded entry, attribute and negative caching; no KEEP_CACHE across opens.
+    Metadata,
+    /// Metadata caching plus KEEP_CACHE for stable regular-file mappings only.
+    MetadataAndData,
+}
+
+/// Caller-owned proof, not a property established by an advisory coordination lock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OwnedViewContract {
+    /// Upper/work and their physical ancestors/mount identities are exclusively
+    /// owned until actual mount detachment, including aliases and other sessions.
+    /// No host-side writer, apply, checkpoint restore or backing replacement may
+    /// run concurrently. All mutations must go through this adapter.
+    pub exclusive_upper_and_work: bool,
+    /// Permissions, ownership, xattrs, namespace and all hardlink aliases of
+    /// every backing object remain fixed except for adapter-mediated mutations.
+    /// Reads must not change backing atime (caller must arrange noatime or an
+    /// equivalent guarantee). Read-only FUSE alone does not establish this.
+    pub fixed_metadata_and_aliases: bool,
+}
+
+/// Which observations the caller expects when kernel caches satisfy requests.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ReadObservationSemantics {
+    /// Preserve per-request callback observations; incompatible with extended
+    /// kernel caching. Journals and metrics are never silently disabled.
+    #[default]
+    RequestCallbacks,
+    /// Caller accepts that cache hits do not reach the adapter. This is not an
+    /// audit of reads or a first-content-observation journal. Existing journal,
+    /// metrics and custom path-policy configurations are still rejected.
+    StableView,
+}
+
+/// Explicit cache admission inputs. Default is disabled, with no ownership proof.
+/// Validation is side-effect free. For enabled policies TTL must be greater than
+/// zero and at most 60 seconds; it applies equally to entry/attr/negative replies.
+/// No environment variable can enable this policy. VM virtio-fs has no equivalent
+/// mode: this DTO belongs only to the host FUSE adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KernelCacheConfig {
+    /// Same-artifact A/B strategy; changing it does not alter lower declarations.
+    pub policy: KernelCachePolicy,
+    /// Reviewable, finite kernel TTL; ignored when disabled. Default is 60 seconds.
+    pub ttl: Duration,
+    /// Explicit lifetime promise; `None` is rejected for enabled policies.
+    pub owned_view: Option<OwnedViewContract>,
+    /// Explicit agreement to cached-read observations; defaults to callbacks.
+    pub read_observation: ReadObservationSemantics,
+}
 
 /// Owned mount inputs. Cloning copies configuration but shares any metrics sink.
 /// Lower paths are canonicalized and checked during mounting, not construction.
@@ -25,6 +86,16 @@ pub struct OverlayMountConfig {
     pub baseline_lower: Option<PathBuf>,
     /// Nonempty ordered lower directories, highest priority first (below upper).
     pub lower_dirs: Vec<PathBuf>,
+    /// Per-physical-lower stability promises, in `lower_dirs` order. Empty means
+    /// all mutable; any other length mismatch is rejected during mounting.
+    /// Caller must preserve contents, metadata, namespace and mount identities
+    /// until session teardown. Read-only mounts and frozen baselines do not prove
+    /// this promise. Upper and merged views are never covered by it.
+    pub lower_mutability: Vec<pvisor_overlay_core::LayerMutability>,
+    /// Explicit host kernel cache admission and lifetime contract. Defaults to
+    /// disabled. Enabled policies reject unsupported configurations before any
+    /// preparation I/O; they never silently fall back or skip journals.
+    pub kernel_cache: KernelCacheConfig,
     /// Writable stage directory; created if absent, even for inspection mounts.
     pub upper_dir: PathBuf,
     /// Optional copy-up work directory, created if absent. Must differ from upper
@@ -84,6 +155,16 @@ pub trait OverlayConfiguration: Sized {
         work_dir: Option<PathBuf>,
         mountpoint: PathBuf,
     ) -> Self;
+
+    /// Validate cache admission without filesystem I/O or acquiring locks. This
+    /// does not prove the caller's ownership contract, validate canonical paths,
+    /// mount FUSE or negotiate kernel support. Enabled modes require explicit
+    /// immutable declarations for every lower, an affirmed owned-view contract,
+    /// stable-view read semantics, OS permission checks, owner-only access and
+    /// no path policy, exclusions, journal or metrics. Currently only Linux
+    /// read-only views are supported: writable views lack a verified asynchronous
+    /// fail-closed invalidation pipeline. Failure leaves configuration unchanged.
+    fn validate_kernel_cache(&self) -> anyhow::Result<()>;
 }
 
 /// Marker for host FUSE mounting services; contains no filesystem state.

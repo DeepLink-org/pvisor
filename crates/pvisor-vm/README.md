@@ -182,6 +182,29 @@ clock conversion 或 wake latch，不能自动卸载，也不证明 Linux runque
 当前源码尚无对应的真实 KVM 实测通过记录；macOS/HVF 尚未实际编译或运行
 验证。后续实测须使用独立制品和收据，不覆盖已有 binary、receipt 或实验数据。
 
+## Physical lower stability contract
+
+`api::OverlayConfig::lower_mutability` uses the shared
+`pvisor_overlay_core::LayerMutability`, ordered like `lower_dirs`. Empty means all
+mutable (including older serialized private adapter configurations). A nonempty
+length mismatch is `InvalidInput` before builder configuration replacement and
+is also checked during private adapter construction/restore. API shape remains
+unconditional and no API method bodies are added. The private adapter passes the
+promises into `OverlayLayout::with_lower_mutability`; caches are newly constructed,
+not serialized into machine snapshots. Rebinding copies downgrades declarations
+to mutable; only explicitly retained, unchanged lower owners keep old promises.
+
+Immutable is a caller-owned lifetime guarantee of physical contents, metadata,
+namespace, parent and mount identity, including hardlink aliases, not proof from
+a read-only mount or `frozen_baseline`. Do not declare a merged upper immutable.
+The Core cache is bounded and never bypasses merged precedence, upper markers,
+policy, hardlink checks or baseline read observations. Guest TTL and KEEP_CACHE
+are unchanged. Set `PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE=1` in the host runner
+before device construction for the same-contract uncached A/B control; unset
+for caching. `PVISOR_FS_PROFILE=1` reports Core hit/miss/eviction counters; the
+shared Core README specifies bounds and exact measurement names. No real guest
+performance claim is made by these contract tests.
+
 ## 验证入口
 
 `just test pvisor-vm` 运行设备、快照和接口契约测试；macOS 自动使用仓库既有 Hypervisor entitlement 签署测试程序。真实 HVF/KVM 和本地 socket 测试需要宿主权限。Linux 测试中创建 VM 的用例需要可用 `/dev/kvm`。
