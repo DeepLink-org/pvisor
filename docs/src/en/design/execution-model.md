@@ -4,6 +4,8 @@ A **Job** is a persistent CLI unit of work. `pvisor run` creates it; `status`, `
 
 The [single-node daemon](daemon/index.md) manages OpenSandbox-profile `sb-*` sandboxes through VM-only NativeRuntime. Private supervisor records bind each generation to native Run/Attempt IDs; sandbox IDs are not public Job IDs. The API does not implement stage/apply, checkpoints or Run Bundle export. Native execution is embedded, but the Job workflow below is not automatically exposed; external orchestration owns cross-host identities.
 
+![Job execution completion and file acceptance are published separately](assets/job-lifecycle.svg)
+
 ## Operation: the object being processed
 
 Job describes the user's work; Operation describes what pVisor processes. The current production operation is `run.execute`, containing the program, arguments and working directory along with effective policy decisions and Placement. pvisor owns admission, actual rewrites, scheduling and execution; core defines the records.
@@ -20,7 +22,9 @@ Attempt identifies one execution by an executor. Each current `PVisor::run` crea
 
 Admission resolves the driver network configuration once, applies scoped policies and carries that final configuration into Attempt preparation. Gateway, explicit proxy and VM networking consume it rather than re-reading the original configuration. Guest workspace overlays require an explicit executor opt-in; executor names are descriptive records, not capability checks. The actual VM network attachment path determines non-bypassable network markers; the backend name is not used for this decision.
 
-Fork creates a new Run with lineage from a logical checkpoint; it does not restore the original process.
+Workspace fork creates a file branch from a logical checkpoint; execution fork restores a new Job from a supported machine checkpoint. Both retain lineage, with restoration scope determined by checkpoint kind.
+
+The durable Job service also owns completion publication. `ManagedJobRun` gives the actual Attempt join and `Server::finish` to a runtime task; frontends hold a wait adapter. A failed or dropped frontend wait requests cancellation, while accepted completion work continues reconciling and publishing as long as the Tokio runtime remains alive. Runtime shutdown and host-process exit retain their own recovery boundaries.
 
 ## Effect: consequences of execution
 

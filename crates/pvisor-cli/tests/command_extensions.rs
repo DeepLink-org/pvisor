@@ -29,10 +29,10 @@ fn discovery_is_inert_and_dispatch_preserves_arguments_and_exit() {
     );
     let help = String::from_utf8_lossy(&list.stdout);
     let extensions = help
-        .split("Extensions:\n")
+        .split("Tools:\n")
         .nth(1)
         .unwrap()
-        .split("Help:\n")
+        .split("Options:\n")
         .next()
         .unwrap();
     assert!(
@@ -60,8 +60,14 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(!help.contains("\n  env "));
-    assert!(help.contains("execution kernel"));
-    let headings = ["Jobs:", "Filesystems:", "Help:", "Options:"];
+    assert!(help.contains("Run agents, review changes, and manage Jobs"));
+    let headings = [
+        "Execution:",
+        "Changes:",
+        "Checkpoints:",
+        "Tools:",
+        "Options:",
+    ];
     let positions: Vec<_> = headings
         .iter()
         .map(|heading| {
@@ -72,45 +78,29 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{help}");
     assert!(!help.contains("\nCommands:"));
     assert!(!help.contains("\n  extensions "));
-    let jobs = help
-        .split("Jobs:\n")
-        .nth(1)
-        .unwrap()
-        .split("Filesystems:\n")
-        .next()
-        .unwrap();
-    for name in [
-        "run",
-        "status",
-        "kill",
-        "suspend",
-        "resume",
-        "fork",
-        "checkpoint",
+    for (start, end, names) in [
+        ("Execution:\n", "Changes:\n", &["run", "status", "kill"][..]),
+        (
+            "Changes:\n",
+            "Checkpoints:\n",
+            &["inspect", "review", "apply", "drop"][..],
+        ),
+        (
+            "Checkpoints:\n",
+            "Tools:\n",
+            &["checkpoint", "suspend", "resume", "fork"][..],
+        ),
     ] {
-        assert!(jobs.contains(&format!("  {name} ")), "{jobs}");
-    }
-    assert!(!jobs.contains("  tui "), "{jobs}");
-    let filesystems = help
-        .split("Filesystems:\n")
-        .nth(1)
-        .unwrap()
-        .split("Help:\n")
-        .next()
-        .unwrap();
-    for name in ["inspect", "review", "apply", "drop"] {
-        assert!(filesystems.contains(&format!("  {name} ")), "{filesystems}");
+        let section = help.split(start).nth(1).unwrap().split(end).next().unwrap();
+        for name in names {
+            assert!(section.contains(&format!("  {name} ")), "{section}");
+        }
+        assert!(!section.contains("  tui "), "{section}");
     }
     for name in ["service", "daemon", "cache", "memory-pool"] {
         assert!(!help.contains(&format!("\n  {name} ")), "{help}");
     }
-    if let Some(extensions) = help.find("Extensions:") {
-        assert!(
-            positions[1] < extensions && extensions < positions[2],
-            "{help}"
-        );
-    }
-    for heading in ["Checkpoints:", "Services:", "Trajectories:"] {
+    for heading in ["Jobs:", "Filesystems:", "Services:", "Trajectories:"] {
         assert!(!help.contains(heading), "{help}");
     }
     for args in [vec!["--help"], vec!["-h"], vec!["help"]] {

@@ -4,14 +4,7 @@
 
 ## 职责划分 {#architecture}
 
-```text
-调用方／外部编排
-  → OpenSandbox 生命周期 HTTP API
-  → daemon：本机准入 + 持久 registry + 每 sandbox 生命周期锁
-  → NativeRuntime → 嵌入 pvisor 的独立 supervisor → 仅 VM
-  → 预制镜像：工作负载 + 真实 execd + 带 guest CID 3 vsock bridge 的 egress 服务
-调用方 → daemon 端点代理 → 预制服务
-```
+![API daemon、sandbox supervisor 与可选 pool 的所有权和故障范围](../assets/daemon-ownership.svg)
 
 | 所有者 | 职责 | 不负责 |
 | --- | --- | --- |

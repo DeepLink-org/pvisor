@@ -2,7 +2,7 @@ name: pVisor Benchmark
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, next]
     paths:
       - 'Cargo.*'
       - '.cargo/**'
@@ -14,7 +14,7 @@ on:
       - '.github/actions/setup-build-env/**'
       - '.github/workflows/pvisor-benchmark.yml'
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, next]
     paths:
       - 'Cargo.*'
       - '.cargo/**'

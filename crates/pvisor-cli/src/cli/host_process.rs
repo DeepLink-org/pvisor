@@ -1,8 +1,9 @@
 //! Request-owned processes and terminal handoff. No cross-request PID signalling.
 use anyhow::{Context, ensure};
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    os::fd::{AsRawFd, FromRawFd, OwnedFd},
     time::{Duration, Instant},
 };
 
@@ -261,6 +262,7 @@ pub(super) struct OwnedTree {
     root: i32,
     /// Only the originating frontend adopts request orphans; its independently
     /// started service must never become part of the request cleanup.
+    #[cfg(target_os = "linux")]
     adopt: Option<i32>,
     excluded: i32,
     #[cfg(target_os = "linux")]
@@ -275,7 +277,7 @@ pub(super) struct OwnedTree {
     processes: BTreeMap<i32, (u64, u64)>,
 }
 impl OwnedTree {
-    pub(super) fn new(root: i32, parent: i32, adopt: bool, excluded: i32) -> anyhow::Result<Self> {
+    pub(super) fn new(root: i32, parent: i32, _adopt: bool, excluded: i32) -> anyhow::Result<Self> {
         #[cfg(target_os = "linux")]
         {
             let before = stat(root)?;
@@ -290,7 +292,7 @@ impl OwnedTree {
             );
             Ok(Self {
                 root,
-                adopt: adopt.then_some(parent),
+                adopt: _adopt.then_some(parent),
                 excluded,
                 processes: BTreeMap::from([(root, fd)]),
             })
@@ -304,7 +306,6 @@ impl OwnedTree {
             );
             Ok(Self {
                 root,
-                adopt: None,
                 excluded,
                 identity: (info.pbi_start_tvsec, info.pbi_start_tvusec),
                 cleaned: false,

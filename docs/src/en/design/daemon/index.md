@@ -4,14 +4,7 @@ Manage local sandboxes through `pvisor-daemon`: one process accepts resource-bou
 
 ## Responsibilities {#architecture}
 
-```text
-Caller / external orchestration
-  → OpenSandbox lifecycle HTTP API
-  → daemon: local admission + durable registry + per-sandbox lifecycle locks
-  → NativeRuntime → detached supervisor embedding pvisor → VM only
-  → prepared image: workload + real execd + egress service with guest CID 3 vsock bridges
-Caller → daemon endpoint proxy → prepared service
-```
+![Ownership and failure scope of the API daemon, sandbox supervisors and optional pool](../assets/daemon-ownership.svg)
 
 | Owner | Responsibility | Outside its scope |
 | --- | --- | --- |

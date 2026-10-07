@@ -17,6 +17,8 @@ checkpoint 的独立保存、压缩和恢复仍是单独的架构要求。live �
 
 ## 所有权与数据流 {#architecture}
 
+![两次静止窗口、压缩发布与 userfaultfd 恢复](../assets/cold-page-cycle.svg)
+
 实例协调器拥有[完整 checkpoint](../environment-snapshot.md)，
 负责 CPU/设备状态、兼容性和持久存储。checkpoint 编码可以复用 codec，
 但不采用运行态冷对象的生命周期或持久性合同。
@@ -78,15 +80,16 @@ sudo setfacl -x u:reiase /dev/userfaultfd
 
 准入拒绝与 `vm.ram_backing`、`vm.ram_compression`、`vm.ram_dedup`、
 `vm.snapshot_filesystem_pool`、快照捕获/恢复及整 VM
-[offload/FUSE backing](offload.md) 组合。本地压缩与外部 `vm.memory_pool`
-二选一；外部池使用相同的 userfaultfd 路径，冷页对象由池进程持有。
-可通过 [daemon 的 `--memory-pool`](../../guides/daemon/index.md#memory-pool) 启用。
-此模式的普通 RAM 没有 live backing 文件。
+[offload/FUSE backing](offload.md) 组合。本地压缩与外部 `vm.memory_pool` 二选一。
+当前 Linux daemon 的 `--memory-pool` 使用 raw-page 物理共享：只读、大小封印的
+memfd 槽位经引用固定后，由 VM 以 `MAP_PRIVATE` 映射；它不注册 userfaultfd，
+也不压缩独有内容。两条路径复用采样/复核屏障，恢复方式和对象生命周期不同。
+部署入口见 [daemon memory pool](../../guides/daemon/index.md#memory-pool)。
 
 选择策略是实验性的驱逐/refault 探测，不是真正的读访问热度检测器：
 字节不变仍可能被频繁读取。重新核对保护内容，不保证工作负载延迟。
-客户端持有 sealed `memfd` 的池化仍是[未来提案](compression-pool.md)，
-macOS 尚未交付等价 sealed 方案。
+历史的编码对象池与更广的客户端持有方案保留在[池化压缩](compression-pool.md)，
+不能用它们替代当前物理池的合同；macOS 尚未交付等价的 daemon 物理共享路径。
 
 ## 证据边界 {#evidence}
 

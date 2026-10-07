@@ -36,7 +36,7 @@ impl SharedFilesystemLayer {
     }
     /// The native supervisor uses this while the producer remains frozen.
     /// Verify unseen data too; saved guest inode digests alone are insufficient.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn verify_source(&self, source: &Path) -> anyhow::Result<()> {
         self.verify_projected_source(source, &[])
     }
@@ -322,6 +322,7 @@ fn metadata(pool: &Path, id: &str) -> anyhow::Result<(Vec<u8>, TreeInventory)> {
     Ok((stored.logical_root, stored.filesystem))
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn captured_layer(
     pool: &Path,
     capture_root: &Path,
@@ -390,6 +391,7 @@ fn read_manifest(path: &Path) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn validate_identity(layer: &super::layers::FilesystemLayer) -> anyhow::Result<()> {
     layer.validate()?;
     let manifest = serde_json::to_vec(&LayerManifest {

@@ -30,6 +30,9 @@ impl Remote {
                 while !stop.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
+                            // BSD/macOS can inherit the listener's nonblocking
+                            // mode; handlers require blocking, timed reads.
+                            stream.set_nonblocking(false).unwrap();
                             let entered = entered.clone();
                             let release = release.clone();
                             handlers.push(std::thread::spawn(move || {

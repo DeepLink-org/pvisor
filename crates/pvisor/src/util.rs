@@ -86,6 +86,7 @@ pub fn startup_mark_run(stage: &str, run_id: &str) {
 }
 
 /// Host work counters accompanying startup/lifecycle timing, without guest data.
+#[cfg(target_os = "linux")]
 pub(crate) fn startup_detail_run(stage: &str, run_id: &str, fields: std::fmt::Arguments<'_>) {
     if startup_logging_enabled() {
         crate::diagnostics::diagnostic(format_args!(

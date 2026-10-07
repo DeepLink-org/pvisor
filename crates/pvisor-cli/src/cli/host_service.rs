@@ -15,7 +15,7 @@ use pvisor_core::host_protocol::{
     AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
     AgentCtlHostResponse, AgentCtlTarget,
 };
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use pvisor_journal::api::JournalStore;
 use serde::{Deserialize, Serialize};
 use std::os::{

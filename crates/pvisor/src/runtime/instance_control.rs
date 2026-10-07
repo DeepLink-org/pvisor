@@ -18,7 +18,7 @@ use pvisor_core::host_protocol::{
     AgentCtlHostResponse, HostAttemptCommand, HostVmCommand, HostVmResult,
 };
 #[cfg(test)]
-use pvisor_core::operation::{OperationKind, Value};
+use pvisor_core::operation::OperationKind;
 use std::collections::HashMap;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -1222,7 +1222,7 @@ mod tests {
                 assert_eq!(reply.status.state, RunState::Suspended);
                 assert!(matches!(
                     reply.value,
-                    Some(Value::Vm {
+                    Some(pvisor_core::operation::Value::Vm {
                         memory: Some(_),
                         ..
                     })

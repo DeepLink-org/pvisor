@@ -12,7 +12,7 @@ use std::{
 pub(super) struct SharedRam {
     pub file: Arc<File>,
     pub path: PathBuf,
-    pub base: Option<Arc<crate::environment_snapshot::PinnedRamBlocks>>,
+    pub _base: Option<Arc<crate::environment_snapshot::PinnedRamBlocks>>,
     // Drop the file before unmounting. PreparedRestore and its native mappings
     // must keep this entire owner alive until the runner is reaped.
     _mount: Option<SnapshotRamMount>,
@@ -40,7 +40,7 @@ pub(super) fn acquire(
         return Ok(Arc::new(SharedRam {
             path: pin.path().into(),
             file: Arc::new(file),
-            base: published.ram_reader()?.compressed_base(),
+            _base: published.ram_reader()?.compressed_base(),
             _mount: None,
             _node: Some(pin),
         }));
@@ -61,7 +61,7 @@ pub(super) fn acquire(
             Ok(SharedRam {
                 file: Arc::new(file),
                 path: mount.ram_path(),
-                base,
+                _base: base,
                 _mount: Some(mount),
                 _node: None,
             })

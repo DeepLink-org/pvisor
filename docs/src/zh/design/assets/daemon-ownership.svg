@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="605" viewBox="0 0 960 605" role="img" aria-labelledby="title desc"><title id="title">Daemon 的三个进程所有者</title><desc id="desc">每一列保留一个所有者；向下追踪它的故障语义。</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="960" height="605" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">Daemon 的三个进程所有者</text>
+<text x="28" y="67" font-size="15">每一列保留一个所有者；向下追踪它的故障语义。</text>
+<rect x="20" y="105" width="920" height="156" fill="#1a304c"/>
+<rect x="20" y="311" width="920" height="172" fill="#12243b"/>
+<rect x="36" y="151" width="250" height="87" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="161.0" y="188.5" font-size="17" font-weight="600" text-anchor="middle">API daemon</text>
+<text x="161.0" y="212.5" font-size="14" text-anchor="middle">registry / admission / TTL</text>
+<rect x="355" y="151" width="250" height="87" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="480.0" y="188.5" font-size="17" font-weight="600" text-anchor="middle">每 sandbox supervisor</text>
+<text x="480.0" y="212.5" font-size="14" text-anchor="middle">RunHandle / owner / cgroup</text>
+<rect x="674" y="151" width="250" height="87" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="799.0" y="188.5" font-size="17" font-weight="600" text-anchor="middle">可选 pool 组件</text>
+<text x="799.0" y="212.5" font-size="14" text-anchor="middle">memfd / slots / references</text>
+<polyline points="286,195 355,195" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="605,195 674,195" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="36" y="354" width="250" height="104" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="161.0" y="388.0" font-size="17" font-weight="600" text-anchor="middle">API daemon 重启</text>
+<text x="161.0" y="412.0" font-size="14" text-anchor="middle">同 owner 重新核对</text>
+<text x="161.0" y="436.0" font-size="14" text-anchor="middle">存活 supervisor 可重连</text>
+<polyline points="161,238 161,354" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="355" y="354" width="250" height="104" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="480.0" y="388.0" font-size="17" font-weight="600" text-anchor="middle">删除 sandbox</text>
+<text x="480.0" y="412.0" font-size="14" text-anchor="middle">Stopping → native Missing</text>
+<text x="480.0" y="436.0" font-size="14" text-anchor="middle">确认后释放预留</text>
+<polyline points="480,238 480,354" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="674" y="354" width="250" height="104" rx="2" fill="#443929" stroke="#c9a96e" stroke-width="1.4"/>
+<text x="799.0" y="388.0" font-size="17" font-weight="600" text-anchor="middle">Pool 进程丢失</text>
+<text x="799.0" y="412.0" font-size="14" text-anchor="middle">依赖 VM 失败</text>
+<text x="799.0" y="436.0" font-size="14" text-anchor="middle">无透明恢复或替换</text>
+<polyline points="799,238 799,354" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="28" y="521" font-size="15">持久意图 + 已确认观察 → 更新状态；失联保留身份与容量。</text>
+<text x="28" y="556" font-size="15">Supervisor 位于 sandbox cgroup；pool 位于外部，需独立纳入节点预算。</text>
+<text x="36" y="128" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">01  进程与资源所有权</text>
+<text x="36" y="334" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">02  重启、终止与丢失</text></g></svg>

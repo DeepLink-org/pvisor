@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="760" viewBox="0 0 1080 760" role="img" aria-labelledby="title desc"><title id="title">一次执行：谁在何时拥有结果</title><desc id="desc">自上向下表示时间；箭头表示调用或回执。虚线是取消请求。</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="1080" height="760" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">一次执行：谁在何时拥有结果</text>
+<text x="28" y="67" font-size="15">自上向下表示时间；箭头表示调用或回执。虚线是取消请求。</text>
+<rect x="20" y="164" width="1040" height="108" fill="#1a304c"/>
+<rect x="20" y="278" width="1040" height="163" fill="#12243b"/>
+<rect x="20" y="450" width="1040" height="115" fill="#1a304c"/>
+<rect x="20" y="575" width="1040" height="123" fill="#12243b"/>
+<rect x="30" y="100" width="196" height="48" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="128.0" y="130.0" font-size="17" font-weight="600" text-anchor="middle">前端</text>
+<path d="M128 148 V690" stroke="#416080" stroke-dasharray="4 4"/>
+<rect x="307" y="100" width="196" height="48" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="405.0" y="130.0" font-size="17" font-weight="600" text-anchor="middle">Session</text>
+<path d="M405 148 V690" stroke="#416080" stroke-dasharray="4 4"/>
+<rect x="579" y="100" width="196" height="48" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="677.0" y="130.0" font-size="17" font-weight="600" text-anchor="middle">驱动 / Executor</text>
+<path d="M677 148 V690" stroke="#416080" stroke-dasharray="4 4"/>
+<rect x="854" y="100" width="196" height="48" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="952.0" y="130.0" font-size="17" font-weight="600" text-anchor="middle">持久记录</text>
+<path d="M952 148 V690" stroke="#416080" stroke-dasharray="4 4"/>
+<polyline points="128,185 405,185" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="210" y="175" font-size="14">RunSpec</text>
+<rect x="315" y="205" width="180" height="58" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="405.0" y="228.0" font-size="17" font-weight="600" text-anchor="middle">准入与有效配置</text>
+<text x="405.0" y="252.0" font-size="14" text-anchor="middle">策略 + capability</text>
+<polyline points="405,290 677,290" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="458" y="280" font-size="14">1 准备资源</text>
+<polyline points="677,325 405,325" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="450" y="348" font-size="14">附件 / 已安装控制</text>
+<polyline points="405,378 952,378" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="575" y="367" font-size="14">2 提交必要启动事实</text>
+<polyline points="952,411 405,411" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="573" y="433" font-size="14">回执成功才派发</text>
+<polyline points="405,466 677,466" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="510" y="455" font-size="14">3 execute</text>
+<polyline points="128,497 405,497" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="143" y="487" font-size="14">cancel（可在运行中发生）</text>
+<polyline points="677,534 405,534" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="465" y="558" font-size="14">ExecutorOutput</text>
+<polyline points="405,589 677,589" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="455" y="578" font-size="14">4 清理与观察核对</text>
+<polyline points="405,632 952,632" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="560" y="621" font-size="14">5 保存结果；公布终态</text>
+<polyline points="405,676 128,676" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="220" y="666" font-size="14">RunResult</text>
+<text x="28" y="727" font-size="15">ManagedJobRun 另持有 Attempt join 与 Job 完成发布；前端不拥有最终提交。</text></g></svg>

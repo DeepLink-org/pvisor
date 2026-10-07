@@ -1,26 +1,26 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1670" viewBox="0 0 1440 1670" role="img" aria-labelledby="title desc"><title id="title">Journal：JSONL字节布局、索引与持久回执</title><desc id="desc">Journal：JSONL字节布局、索引与持久回执；按当前源码展示文件内容、引用与恢复关系，字段块不是二进制 ABI offset。</desc><defs><style>text{font-family:system-ui,-apple-system,'PingFang SC',sans-serif;fill:#182f46}.h{font-size:28px;font-weight:700}.l{font-size:21px;font-weight:650}.b{font-size:18px}.s{font-size:16px;fill:#516a7c}.m{font-family:ui-monospace,monospace;font-size:17px}</style><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="none" stroke="#4b718d" stroke-width="1.4"/></marker></defs><rect width="1440" height="1670" fill="#f5f8fa"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1670" viewBox="0 0 1440 1670" role="img" aria-labelledby="title desc"><title id="title">Journal：JSONL字节布局、索引与持久回执</title><desc id="desc">Journal：JSONL字节布局、索引与持久回执；按当前源码展示文件内容、引用与恢复关系，字段块不是二进制 ABI offset。</desc><defs><style>text{font-family:system-ui,-apple-system,'PingFang SC',sans-serif;fill:#e9eef8}.h{font-size:28px;font-weight:600}.l{font-size:21px;font-weight:600}.b{font-size:18px}.s{font-size:16px;fill:#a8cefa}.m{font-family:ui-monospace,monospace;font-size:17px}</style><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="none" stroke="#a8cefa" stroke-width="1.4"/></marker></defs><rect width="1440" height="1670" fill="#0d1b30"/>
 <text x="36" y="48" class="h">Journal：一个 JSONL 文件，内存索引，没有额外 WAL</text>
 <text x="36" y="80" class="s">示例使用正文两行 JSONL 的真实 UTF-8 长度：Header 52 B，Record 359 B，总长度 413 B。</text>
-<rect x="24" y="108" width="1392" height="261" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="24" y="108" width="1392" height="261" fill="#1a304c"/>
 <text x="44" y="145" class="l">① 磁盘字节范围 · [start, end) · 这一段按示例长度比例绘制</text>
-<rect x="48" y="177" width="168.21307506053267" height="76" fill="#edf2fc" stroke="#9eafbc"/>
+<rect x="48" y="177" width="168.21307506053267" height="76" fill="#142840" stroke="#6485a8"/>
 <text x="60" y="222" class="l">Header · 52 B</text>
-<rect x="216.21307506053267" y="177" width="3.234866828087167" height="76" fill="#64829a" stroke="#9eafbc"/>
-<rect x="219.44794188861985" y="177" width="1161.317191283293" height="76" fill="#e7f4ec" stroke="#9eafbc"/>
+<rect x="216.21307506053267" y="177" width="3.234866828087167" height="76" fill="#a8cefa" stroke="#6485a8"/>
+<rect x="219.44794188861985" y="177" width="1161.317191283293" height="76" fill="#193d40" stroke="#6485a8"/>
 <text x="231.44794188861985" y="222" class="l">Record 0 · 359 B</text>
-<rect x="1380.7651331719128" y="177" width="3.234866828087167" height="76" fill="#64829a" stroke="#9eafbc"/>
+<rect x="1380.7651331719128" y="177" width="3.234866828087167" height="76" fill="#a8cefa" stroke="#6485a8"/>
 <text x="48" y="283" class="m">Header [0,52)；LF [52,53)；Record [53,412)；LF [412,413)；EOF = 413。</text>
 <text x="48" y="320" class="b">position.offset = 0 是记录序号；此记录真正的文件字节 offset = 53，两者不同。</text>
 <text x="48" y="350" class="s">LF 是提交记录边界；没有固定页、长度前缀、CRC、hash footer 或预分配段。</text>
-<rect x="24" y="389" width="1392" height="187" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="24" y="389" width="1392" height="187" fill="#12243b"/>
 <text x="44" y="426" class="l">② Header 内部 · 一行紧凑 JSON + LF</text>
-<rect x="48" y="447" width="1336" height="67" rx="8" fill="#edf2fc" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="48" y="447" width="1336" height="67" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
 <text x="68" y="488" class="m">{&quot;format&quot;:&quot;pvisor.trace/5&quot;,&quot;journal&quot;:&quot;demo-journal&quot;}  +  0x0a</text>
 <text x="48" y="550" class="s">format 绑定 VERSION=5；journal 绑定后续所有 position。Header 不完整时不按 Record 尾部修复。</text>
-<rect x="24" y="596" width="1392" height="310" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="24" y="596" width="1392" height="310" fill="#1a304c"/>
 <text x="44" y="633" class="l">③ Record 内部 · JSON 对象结构，子块不按字节比例绘制</text>
-<rect x="48" y="655" width="408" height="214" rx="8" fill="#fff1dc" stroke="#c6d3de" stroke-width="1.5"/>
-<rect x="498" y="655" width="886" height="214" rx="8" fill="#e7f4ec" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="48" y="655" width="408" height="214" rx="2" fill="#443929" stroke="#6485a8" stroke-width="1.5"/>
+<rect x="498" y="655" width="886" height="214" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
 <text x="68" y="691" class="l">position</text>
 <text x="68" y="729" class="m">journal: &quot;demo-journal&quot;</text>
 <text x="68" y="763" class="m">offset: 0</text>
@@ -31,33 +31,33 @@
 <text x="518" y="765" class="m">scope / context / operation / caused_by</text>
 <text x="518" y="800" class="m">level / granularity / data { fact, … }</text>
 <text x="518" y="835" class="s">Event 序列化 ≤ 1 MiB；scanner 行预算 = 1 MiB + 4096 B</text>
-<rect x="24" y="926" width="1392" height="306" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="24" y="926" width="1392" height="306" fill="#12243b"/>
 <text x="44" y="963" class="l">④ 进程内索引与实时队列 · 重新打开从文件重建</text>
-<rect x="48" y="986" width="408" height="215" rx="8" fill="#edf2fc" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="48" y="986" width="408" height="215" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
 <text x="66" y="1021" class="l">State · Arc&lt;Mutex&lt;State&gt;&gt;</text>
 <text x="66" y="1057" class="s">file FD：独占文件锁</text>
 <text x="66" y="1087" class="s">seen：ID → offset + digest[32]</text>
 <text x="66" y="1117" class="s">causes：ID → 引用列表</text>
 <text x="66" y="1147" class="s">unresolved：尚未出现的 ID</text>
 <text x="66" y="1177" class="s">poisoned：未知写结果后的隔离</text>
-<rect x="498" y="986" width="430" height="215" rx="8" fill="#e7f4ec" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="498" y="986" width="430" height="215" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
 <text x="516" y="1021" class="l">JSONL 文件唯一持久载体</text>
 <text x="516" y="1057" class="s">Header + Record 行</text>
 <text x="516" y="1087" class="s">seen / causes 不单独写文件</text>
 <text x="516" y="1117" class="s">同 ID / 内容 → 原位置 Receipt</text>
 <text x="516" y="1147" class="s">磁盘摘要未链入日志</text>
 <text x="516" y="1177" class="s">合法 JSON 改写不等于可检测篡改</text>
-<rect x="954" y="986" width="430" height="215" rx="8" fill="#fff1dc" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="954" y="986" width="430" height="215" rx="2" fill="#443929" stroke="#6485a8" stroke-width="1.5"/>
 <text x="972" y="1021" class="l">live · broadcast&lt;Event&gt;</text>
 <text x="972" y="1057" class="s">容量 256，按条数而非字节</text>
 <text x="972" y="1087" class="s">在 sync + 索引更新之后通知</text>
 <text x="972" y="1117" class="s">重复 Receipt 不再次通知</text>
 <text x="972" y="1147" class="s">Lagged → 从历史核对</text>
 <text x="972" y="1177" class="s">通知没有持久 position / ACK</text>
-<rect x="24" y="1252" width="1392" height="237" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="24" y="1252" width="1392" height="237" fill="#1a304c"/>
 <text x="44" y="1289" class="l">⑤ 尾部布局：只修复缺 LF 的最终 Record，不丢弃完整损坏行</text>
-<rect x="48" y="1312" width="825" height="65" rx="8" fill="#e7f4ec" stroke="#c6d3de" stroke-width="1.5"/>
-<rect x="902" y="1312" width="482" height="65" rx="8" fill="#fff1dc" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="48" y="1312" width="825" height="65" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<rect x="902" y="1312" width="482" height="65" rx="2" fill="#443929" stroke="#6485a8" stroke-width="1.5"/>
 <text x="68" y="1353" class="m">Header LF | 完整 Record LF | … | 最后完整 Record LF</text>
 <text x="922" y="1353" class="m">未完成 JSON … 无 LF</text>
 <text x="48" y="1412" class="b">open：验证完整前缀与因果图后，可截断右侧 tail 并 sync；read / records：报错，不改文件。</text>

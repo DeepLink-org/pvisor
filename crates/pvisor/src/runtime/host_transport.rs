@@ -191,6 +191,18 @@ pub async fn write_host_frame<T: Serialize>(
 
 /// Fail closed when kernel peer credentials cannot establish same-effective-UID ownership.
 pub fn authorize_host_peer(stream: &UnixStream) -> Result<(), AgentCtlHostError> {
+    #[cfg(target_os = "macos")]
+    let authorized = {
+        use std::os::fd::AsRawFd;
+        let mut uid = 0;
+        let mut gid = 0;
+        // Authorization needs the kernel's UID, not a live peer PID. Darwin's
+        // LOCAL_PEERPID query can fail after the client disconnects even while
+        // its authenticated request remains buffered in the socket.
+        (unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) == 0 })
+            && uid == unsafe { libc::geteuid() }
+    };
+    #[cfg(not(target_os = "macos"))]
     let authorized = stream
         .peer_cred()
         .is_ok_and(|cred| cred.uid() == unsafe { libc::geteuid() });

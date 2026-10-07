@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1270" viewBox="0 0 1440 1270" role="img" aria-labelledby="title desc">
+<title id="title">Network Subsystem · Controlled VM Egress</title><desc id="desc">Current vm-smoltcp path: name binding, authorization, connection and byte relay</desc>
+<rect width="1440" height="1270" fill="#0d1b30"/>
+<g font-family="Arial,Helvetica,PingFang SC,Microsoft YaHei,sans-serif" text-anchor="middle">
+<text x="720" y="59" fill="#c8e0fc" font-size="39" font-weight="700">Network Subsystem · Controlled VM Egress</text>
+<text x="720" y="98" fill="#b7c6db" font-size="21" font-weight="500">Current vm-smoltcp path: name binding, authorization, connection and byte relay</text>
+<rect x="30" y="126" width="1380" height="128" rx="38" fill="#244569" stroke="#416080" stroke-width="7"/>
+<text x="720" y="173" fill="#c8e0fc" font-size="31" font-weight="700">Guest Linux · Application Sockets &amp; Kernel TCP/IP</text>
+<rect x="54" y="190" width="1332" height="44" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="221.0" fill="#e9eef8" font-size="27" font-weight="700">192.0.2.2/24 → router 192.0.2.1 → virtio-net</text>
+<path d="M720 261 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="295" width="1380" height="120" rx="38" fill="#102138" stroke="#416080" stroke-width="7"/>
+<text x="720" y="342" fill="#c8e0fc" font-size="31" font-weight="700">pvisor-vm · virtio-net</text>
+<rect x="54" y="358" width="1332" height="39" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="386.5" fill="#e9eef8" font-size="25" font-weight="700">virtqueue ↔ Ethernet frame ↔ length-prefixed UnixStream</text>
+<path d="M720 422 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="456" width="1380" height="498" rx="38" fill="#223852" stroke="#416080" stroke-width="7"/>
+<text x="720" y="503" fill="#c8e0fc" font-size="31" font-weight="700">pvisor-overlaynet · vm-smoltcp</text>
+<rect x="54" y="523" width="650" height="190" rx="28" fill="#2e4c70" stroke="#416080" stroke-width="7"/>
+<text x="379" y="568" fill="#e9eef8" font-size="28" font-weight="700">Synthetic DNS &amp; Logical Identity</text>
+<rect x="72" y="590" width="614" height="96" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="379.0" y="634.0" fill="#e9eef8" font-size="27" font-weight="700">Name ↔ Attempt-stable Address</text>
+<text x="379.0" y="663.0" fill="#e9eef8" font-size="20" font-weight="500">198.18.0.0/15</text>
+<rect x="726" y="523" width="660" height="190" rx="28" fill="#284867" stroke="#416080" stroke-width="7"/>
+<text x="1056" y="568" fill="#e9eef8" font-size="28" font-weight="700">Guest TCP &amp; Flow State</text>
+<rect x="744" y="590" width="624" height="96" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1056.0" y="634.0" fill="#e9eef8" font-size="26" font-weight="700">SYN waits for authorization &amp; connect</text>
+<text x="1056.0" y="663.0" fill="#e9eef8" font-size="20" font-weight="500">Separate handshake / buffers / closure</text>
+<rect x="54" y="735" width="1332" height="74" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="768.0" fill="#e9eef8" font-size="27" font-weight="700">Egress Policy Gate · hostname / IP + port + transport</text>
+<text x="720.0" y="797.0" fill="#e9eef8" font-size="20" font-weight="500">Core authorization → resolved-address checks; opaque aliases hide final IPs</text>
+<rect x="54" y="830" width="1332" height="98" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="875.0" fill="#e9eef8" font-size="27" font-weight="700">Host connect succeeds → advance guest handshake → relay bytes</text>
+<text x="720.0" y="904.0" fill="#e9eef8" font-size="20" font-weight="500">One Attempt owns policy, counters and bandwidth budgets</text>
+<path d="M720 961 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="995" width="1380" height="111" rx="38" fill="#1c3c45" stroke="#416080" stroke-width="7"/>
+<text x="720" y="1042" fill="#c8e0fc" font-size="31" font-weight="700">Host TCP Socket → External Service</text>
+<text x="720" y="1081" fill="#c8e0fc" font-size="24" font-weight="700">TLS ciphertext is relayed; model capture uses an explicit Gateway route</text>
+<text x="720" y="1150" fill="#c8e0fc" font-size="21" font-weight="700">Supported: IPv4 TCP + local DNS; general UDP / IPv6 / QUIC / inbound are blocked.</text>
+<text x="720" y="1191" fill="#c8e0fc" font-size="21" font-weight="700">Host / OCI explicit proxies remain cooperative; netns and seccomp are future designs.</text>
+<text x="720" y="1232" fill="#c8e0fc" font-size="21" font-weight="700">TSI stays disabled; the VM virtual NIC is the control point for current guest egress.</text>
+</g></svg>

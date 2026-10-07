@@ -555,6 +555,8 @@ fn ask_preserves_default_rules_read_only_shares_and_job_changes() {
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // BSD/macOS can inherit the listener's nonblocking mode.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(2)))
                     .unwrap();

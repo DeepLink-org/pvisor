@@ -10,9 +10,10 @@ Share known-identical immutable RAM baselines first, then let Linux KSM discover
 | --- | --- | --- |
 | Immutable baseline + private COW | Unmodified pages restored from a common baseline | No scanning needed, but writes reduce sharing |
 | Linux KSM | Identical private anonymous pages found by the kernel | No sharing service, but asynchronous scans consume CPU |
-| Pool content deduplication | Identical encoded cold objects | Can complement compression, but needs cold reclamation and restoration |
+| Linux physical pool | Equal resident raw pages in different VMs | Scanning, slots/references, kernel COW and a separate process failure domain |
+| Encoded-pool deduplication | Equal encoded cold objects | May combine with compression, requiring reclamation and restoration |
 
-Pool deduplication is defined by [Pooled-server compression](compression-pool.md), not treated as merging active uncompressed physical pages.
+Encoded-pool deduplication is defined by [Pooled-server compression](compression-pool.md); the Linux physical pool shares raw resident pages and has a separate ownership contract.
 
 ## Immutable baseline sharing {#baseline}
 
@@ -21,6 +22,14 @@ Instances map corresponding ranges of the same backing object with `MAP_PRIVATE`
 Materialize compressed checkpoints into mappable immutable baselines, then reuse those baselines. Files with identical content but different inodes do not automatically share cache pages, and disk reflinks are not memory sharing. The baseline cache is a regenerable accelerator, not a replacement for persistent checkpoints.
 
 Content validation and immutability are prerequisites for reuse. Instances hold their own backing references and leases; an instance exit or cache eviction must not invalidate another instance's mappings. Kernel-object/storage references should keep shared content alive rather than another instance's heap.
+
+## Linux daemon physical pool {#physical-pool}
+
+![Two VMs read the same slot; writes create private COW pages](../assets/memory-cow.svg)
+
+Explicit `serve --memory-pool` enables raw-page sharing in the daemon-owned pool. Candidates retain hashes only; content enters a bounded memfd slot after appearing in different VM sessions. With CPUs/devices quiesced, the VM rechecks bytes and maps equal pages using a read-only descriptor and `MAP_PRIVATE`. This path needs no userfaultfd and does not encode or compress unique pages.
+
+References pin slots until mappings are removed; disconnects retain them until pidfd confirms peer exit. The pool owns live shared pages, so its loss fails dependent VMs. It does not supply durable snapshots or process-restart recovery. See [Shared working sets](../daemon/shared-working-set.md) for budgets and failure scope.
 
 ## Linux KSM {#ksm}
 
@@ -35,7 +44,7 @@ KSM does not merge file page-cache pages. Adding advice to the current `MAP_SHAR
 - **Explicit sharing versus background discovery:** Common baselines need no rediscovery; KSM handles dynamic duplicates at the cost of scanning delay and CPU.
 - **Savings versus write costs:** Frequent writes break sharing, reduce benefits, and add COW costs. Initial sharing ratios alone cannot determine capacity.
 - **Sharing versus isolation:** Restrict trust domains and assess content-presence side channels. KSM advice has no pVisor-defined domain parameter, so product labels alone cannot establish isolation.
-- **Simplicity versus coverage:** The first version builds no immediate merger for arbitrary hot pages and requires no P2P. Future discovery services only coordinate content and do not become mandatory online restoration dependencies.
+- **Simplicity versus coverage:** The current physical pool uses bounded resident scanning. Arbitrary instant hot-page merging and P2P remain outside its scope; active shared slots and durable machine recovery are designed separately.
 
 The first version does not combine KSM and userspace cold reclamation on the same region, avoiding redundant merging followed by copying and compression. See [Memory compression](compression.md) for unique but compressible cold content.
 

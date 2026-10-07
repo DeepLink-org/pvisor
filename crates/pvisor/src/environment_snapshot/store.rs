@@ -448,7 +448,7 @@ impl SnapshotStore {
     /// Native supervisor only: the producer remains frozen and the caller
     /// has authenticated this source as a read-only launch role. First users
     /// create one pool tree; later Jobs reuse it without temporary data copies.
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn retain_live_lower(
         &self,
         source: &Path,
@@ -869,7 +869,7 @@ impl PendingEnvironment {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn publish_native_layered(
         self,
         source: &Path,
@@ -890,7 +890,7 @@ impl PendingEnvironment {
         .map(|publication| publication.id)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn publish_native_layered_retained(
         self,
         source: &Path,
@@ -1065,7 +1065,7 @@ impl PendingEnvironment {
                 "direct native filesystem capture requires Linux"
             );
         }
-        let mut filesystem = match &publication_source {
+        let filesystem = match &publication_source {
             #[cfg(target_os = "linux")]
             PublicationSource::Chunked => copy_owned_tree(&source_root, &destination)?,
             // Use the supplied spelling for strict ancestry validation. Keep
@@ -1077,6 +1077,8 @@ impl PendingEnvironment {
             | PublicationSource::Stage(_)
             | PublicationSource::Layered(_) => copy_owned_tree(&source_root, &destination)?,
         };
+        #[cfg(target_os = "linux")]
+        let mut filesystem = filesystem;
         let mut filesystem_layers = Vec::new();
         let mut retained = Vec::new();
         #[cfg(target_os = "linux")]

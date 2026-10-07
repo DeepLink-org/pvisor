@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="705" viewBox="0 0 960 705" role="img" aria-labelledby="title desc"><title id="title">Research loop: mechanisms, workloads and conclusions</title><desc id="desc">Hypothesis → experiment → interpretation; counterexamples revise the hypothesis.</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="960" height="705" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">Research loop: mechanisms, workloads and conclusions</text>
+<text x="28" y="67" font-size="15">Hypothesis → experiment → interpretation; counterexamples revise the hypothesis.</text>
+<rect x="20" y="102" width="920" height="145" fill="#1a304c"/>
+<rect x="20" y="289" width="920" height="145" fill="#12243b"/>
+<rect x="20" y="476" width="920" height="145" fill="#1a304c"/>
+<rect x="70" y="153" width="360" height="76" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="250.0" y="185.0" font-size="17" font-weight="600" text-anchor="middle">① Problem and budget</text>
+<text x="250.0" y="209.0" font-size="14" text-anchor="middle">correct completions under a budget</text>
+<rect x="530" y="153" width="360" height="76" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="710.0" y="185.0" font-size="17" font-weight="600" text-anchor="middle">② Hypothesis</text>
+<text x="710.0" y="209.0" font-size="14" text-anchor="middle">duplicate, read-heavy or idle state</text>
+<polyline points="430,191 530,191" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="70" y="340" width="360" height="76" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="250.0" y="372.0" font-size="17" font-weight="600" text-anchor="middle">③ Mechanism</text>
+<text x="250.0" y="396.0" font-size="14" text-anchor="middle">sharing / offload / reviewable files</text>
+<rect x="530" y="340" width="360" height="76" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="710.0" y="372.0" font-size="17" font-weight="600" text-anchor="middle">④ Controlled workload</text>
+<text x="710.0" y="396.0" font-size="14" text-anchor="middle">versions, outputs, failures, unknowns</text>
+<polyline points="430,378 530,378" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="70" y="527" width="360" height="76" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="250.0" y="559.0" font-size="17" font-weight="600" text-anchor="middle">⑤ Lifecycle metrics</text>
+<text x="250.0" y="583.0" font-size="14" text-anchor="middle">CPU / peak / latency / review effort</text>
+<rect x="530" y="527" width="360" height="76" rx="2" fill="#443929" stroke="#c9a96e" stroke-width="1.4"/>
+<text x="710.0" y="559.0" font-size="17" font-weight="600" text-anchor="middle">⑥ Scoped conclusion</text>
+<text x="710.0" y="583.0" font-size="14" text-anchor="middle">which workloads benefit?</text>
+<polyline points="430,565 530,565" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="710,229 710,269 250,269 250,340" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="710,416 710,455 250,455 250,527" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="890,565 935,565 935,134 710,134 710,153" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="28" y="666" font-size="14">Keep mechanism probes, workload benchmarks and production evidence distinct; bind gains to workloads.</text>
+<text x="36" y="125" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">01  Problem and falsifiable hypothesis</text>
+<text x="36" y="312" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">02  Mechanism and controlled workload</text>
+<text x="36" y="499" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">03  Metrics and scoped conclusion</text></g></svg>

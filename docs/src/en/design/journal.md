@@ -6,7 +6,7 @@ A Run produces admission, rewriting, placement, dispatch, results and Gateway ob
 
 Journal chooses one writer, JSONL and per-record synchronization. Each Receipt contains event ID, Journal position and durability. Producers can publish committed facts after receiving it, and lagging consumers can inspect history. The cost is one sync per new disk event and full scans for recovery/history.
 
-It stores execution facts without atomically joining append to external requests. LocalSync is not cross-node replication or external-effect exactly-once, nor a common commit point for RunRecord, Bundle and file apply ledgers. Event fields belong in [Operation and Event](operations-events.md); this page covers storage, commit and recovery.
+It stores execution facts without atomically joining append to external requests. LocalSync is not cross-node replication or external-effect exactly-once, nor a common commit point for RunRecord, Bundle and file apply ledgers. Event fields belong in [Operation and Event](operations-events.md); cross-module deduplication and retry boundaries belong in [Failure semantics](failure-semantics.md#idempotency).
 
 ## 2. Core design {#core-design}
 
@@ -73,6 +73,8 @@ Empty files receive Header/LF followed by file and parent-directory sync. Nonemp
 `Journal::read()` takes a shared lock, requiring writer release, and never repairs/truncates. `records()` uses the shared writer state: disk mode scans under the mutex, memory mode clones its Vec. All Journal clones and accepted blocking writes retain the state, so dropping one outer handle may not release the writer lock.
 
 ### Append and receipts {#append}
+
+![Disk append synchronization, Unknown and recovery with stable identity](assets/journal-commit.svg)
 
 `append()` proceeds through:
 

@@ -1,6 +1,8 @@
 # Shared working sets and lazy loading
 
-Reuse immutable contents by identity, and keep actual access and private modification costs explicit. Native pVisor caches and node resources provide mechanisms for this direction; the native VM daemon has **not** acquired those resources or validated their density benefits.
+Reuse immutable contents by identity, and keep actual access and private modification costs explicit. Native pVisor caches and node resources provide mechanisms for this direction; the daemon can explicitly enable its own Linux physical pool. It has no general node acquire/release adapter, and density benefits for the complete API path remain unvalidated.
+
+![Shared raw pages and COW writes in the Linux physical pool](../assets/memory-cow.svg)
 
 ## Three distinct mechanisms {#principles}
 

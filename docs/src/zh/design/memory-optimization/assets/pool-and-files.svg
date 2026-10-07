@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1570" viewBox="0 0 1440 1570" role="img" aria-labelledby="title desc"><title id="title">共享池堆分配、IPC缓冲与磁盘文件关系</title><desc id="desc">runner仅持session token对象ID元数据，经Unix socket访问共享池。池内两个连接引用同一个Arc对象，payload单独Box分配，文件只保留原RAM洞和诊断输出。</desc><defs><style>text{font-family:system-ui,-apple-system,'PingFang SC',sans-serif;fill:#182f46}.h{font-size:28px;font-weight:700}.l{font-size:21px;font-weight:650}.b{font-size:18px}.s{font-size:16px;fill:#516a7c}.m{font-family:ui-monospace,monospace;font-size:17px}</style><pattern id="holes" width="12" height="12" patternUnits="userSpaceOnUse"><path d="M0 12L12 0" stroke="#c4ccd4" stroke-width="2"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="none" stroke="#4b718d" stroke-width="1.4"/></marker></defs><rect width="1440" height="1570" fill="#f5f8fa"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1570" viewBox="0 0 1440 1570" role="img" aria-labelledby="title desc"><title id="title">共享池堆分配、IPC缓冲与磁盘文件关系</title><desc id="desc">runner仅持session token对象ID元数据，经Unix socket访问共享池。池内两个连接引用同一个Arc对象，payload单独Box分配，文件只保留原RAM洞和诊断输出。</desc><defs><style>text{font-family:system-ui,-apple-system,'PingFang SC',sans-serif;fill:#e9eef8}.h{font-size:28px;font-weight:600}.l{font-size:21px;font-weight:600}.b{font-size:18px}.s{font-size:16px;fill:#a8cefa}.m{font-family:ui-monospace,monospace;font-size:17px}</style><pattern id="holes" width="12" height="12" patternUnits="userSpaceOnUse"><path d="M0 12L12 0" stroke="#416080" stroke-width="2"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="none" stroke="#a8cefa" stroke-width="1.4"/></marker></defs><rect width="1440" height="1570" fill="#0d1b30"/>
 <text x="36" y="48" class="h">共享池实际分配与文件关系</text>
 <text x="36" y="80" class="s">跨进程共享由 RPC 与服务端 Arc 实现；不向 runner 映射共享 payload，不传递内存 FD。</text>
-<rect x="24" y="108" width="448" height="340" rx="8" fill="#eef2fb" stroke="#c6d3de" stroke-width="1.5"/>
-<rect x="490" y="108" width="926" height="340" rx="8" fill="#e8f4ed" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="24" y="108" width="448" height="340" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<rect x="490" y="108" width="926" height="340" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
 <text x="44" y="145" class="l">每个 runner · 普通进程堆</text>
 <text x="44" y="185" class="m">Page[i] → RamBlock + State + detached</text>
 <text x="44" y="224" class="m">RamBlock → g / h / 64 KiB / FD / f</text>
@@ -11,59 +11,59 @@
 <text x="44" y="341" class="m">scratch → Vec&lt;u8&gt;，长度 64 KiB</text>
 <text x="44" y="380" class="m">PoolClient → UnixStream + session</text>
 <text x="512" y="145" class="l">共享池进程 · 普通进程堆</text>
-<rect x="512" y="163" width="422" height="120" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
-<rect x="958" y="163" width="430" height="120" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="512" y="163" width="422" height="120" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<rect x="958" y="163" width="430" height="120" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
 <text x="530" y="195" class="m">连接 A：BTreeMap&lt;token, Arc&gt;</text>
 <text x="530" y="229" class="m">token A1 → Arc(O)</text>
 <text x="530" y="261" class="s">重复 PUT → 新 token，仍可指向 O</text>
 <text x="976" y="195" class="m">连接 B：BTreeMap&lt;token, Arc&gt;</text>
 <text x="976" y="229" class="m">token B1 → Arc(O)</text>
 <text x="976" y="261" class="s">连接退出只释放自己的引用</text>
-<rect x="512" y="302" width="876" height="119" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="512" y="302" width="876" height="119" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
 <text x="530" y="335" class="m">CompressedPool.objects：BTreeMap&lt;ID, Arc&lt;O&gt;&gt;</text>
 <text x="530" y="369" class="s">索引也持有一个 Arc；最后外部引用消失后 collect_one / collect 删除对象。</text>
 <text x="530" y="402" class="s">一把池锁；每连接一个服务线程；索引与连接 map 分别分配。</text>
-<rect x="24" y="468" width="1392" height="357" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="24" y="468" width="1392" height="357" fill="#1a304c"/>
 <text x="44" y="505" class="l">对象 O 的内部与 payload：字段图，不是 Rust ABI offset 图</text>
-<rect x="48" y="530" width="408" height="157" rx="8" fill="#e8f4ed" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="48" y="530" width="408" height="157" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
 <text x="68" y="562" class="l">一个 Arc 分配</text>
 <text x="68" y="595" class="m">strong / weak 计数 + 对象 O</text>
 <text x="68" y="628" class="m">ID [u8;32] + length: usize</text>
 <text x="68" y="660" class="s">Payload enum + padding（ABI 未固定）</text>
-<rect x="498" y="530" width="414" height="157" rx="8" fill="#e8f4ed" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="498" y="530" width="414" height="157" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
 <text x="518" y="562" class="l">Payload 的三种选择</text>
 <text x="518" y="595" class="m">Fill(u8)：字节内联在对象中</text>
 <text x="518" y="628" class="m">Zstd / Raw：Box&lt;[u8]&gt; 指针与长度</text>
 <text x="518" y="660" class="s">后两者指向单独的堆分配</text>
-<rect x="954" y="530" width="430" height="157" rx="8" fill="#fff1dc" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="954" y="530" width="430" height="157" rx="2" fill="#443929" stroke="#6485a8" stroke-width="1.5"/>
 <text x="974" y="562" class="l">Zstd / Raw 的连续字节分配</text>
 <text x="974" y="595" class="m">[ byte 0 … byte E−1 ]</text>
 <text x="974" y="628" class="s">E 为编码长度；Raw 的 E = 原长度</text>
 <text x="974" y="660" class="s">271 B 样本只描述 payload 字节</text>
-<path d="M458 609L491 609" fill="none" stroke="#4b718d" stroke-width="2" marker-end="url(#arrow)"/>
-<path d="M914 609L947 609" fill="none" stroke="#4b718d" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M458 609L491 609" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M914 609L947 609" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
 <text x="48" y="730" class="b">宿主物理页由 allocator / 内核管理：普通堆对象可能共页或跨页，当前没有专用 slab / arena。</text>
 <text x="48" y="766" class="b">encoded_bytes 不含 Arc、BTreeMap、Box / 对齐、线程栈；271 B 编码不能解释成 271 B 物理占用。</text>
 <text x="48" y="798" class="s">引用箭头只在池进程内成立；runner 保存的是 token 与 ID，不是跨进程可解引用的 Arc 指针。</text>
-<rect x="24" y="845" width="1392" height="278" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="24" y="845" width="1392" height="278" fill="#12243b"/>
 <text x="44" y="882" class="l">传输与提交期间的额外副本</text>
-<rect x="48" y="906" width="408" height="164" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="48" y="906" width="408" height="164" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
 <text x="66" y="938" class="l">runner 临时内存</text>
 <text x="66" y="975" class="s">Sample.snapshots ≤ 64 × 64 KiB</text>
 <text x="66" y="1007" class="s">每轮最多 4 MiB 原始快照</text>
 <text x="66" y="1039" class="s">恢复 scratch 另占 64 KiB</text>
-<rect x="498" y="906" width="430" height="164" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="498" y="906" width="430" height="164" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
 <text x="516" y="938" class="l">Unix socket · 内核缓冲</text>
 <text x="516" y="975" class="s">PUT：传未压缩块，最多 64 KiB</text>
 <text x="516" y="1007" class="s">GET：返回解码块，最多 64 KiB</text>
 <text x="516" y="1039" class="s">socket inode 是端点，不存对象</text>
-<rect x="954" y="906" width="430" height="164" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="954" y="906" width="430" height="164" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
 <text x="972" y="938" class="l">池服务线程临时内存</text>
 <text x="972" y="975" class="s">PUT input Vec / 去重比较缓冲</text>
 <text x="972" y="1007" class="s">GET 解码 Vec，最多 64 KiB</text>
 <text x="972" y="1039" class="s">压缩输出与输入可短时并存</text>
 <text x="48" y="1100" class="s">上述副本可能同时存在；payload 预算不是整个系统的峰值内存预算。</text>
-<rect x="24" y="1143" width="1392" height="322" rx="8" fill="#fff" stroke="#c6d3de" stroke-width="1.5"/>
+<rect x="24" y="1143" width="1392" height="322" fill="#1a304c"/>
 <text x="44" y="1180" class="l">磁盘目录与对象的关系</text>
 <text x="48" y="1220" class="m">&lt;private experiment directory&gt;/pool.sock     0600 · Unix socket · 无压缩 payload</text>
 <text x="48" y="1263" class="m">&lt;runner A backing&gt;                          原 RAM，逻辑长度 L_A，冷块范围打洞</text>

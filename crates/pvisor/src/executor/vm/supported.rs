@@ -1971,7 +1971,7 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 
 fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
     spec.features.validate(crate::RunExecutorKind::Vm)?;
-    let direct_lowers = crate::image::cache::attach_runner_lowers(
+    let _direct_lowers = crate::image::cache::attach_runner_lowers(
         spec.root.lowers.iter().chain(
             spec.workspace
                 .iter()
@@ -2031,7 +2031,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     {
         let mut read_only = spec.root.lowers.clone();
-        read_only.extend(direct_lowers.read_only.iter().cloned());
+        read_only.extend(_direct_lowers.read_only.iter().cloned());
         read_only.extend(
             baseline_indexes
                 .iter()
@@ -2039,7 +2039,7 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
                 .map(|index| index.file.clone()),
         );
         let mut read_write = vec![spec.root.upper.clone()];
-        read_write.extend(direct_lowers.read_write.iter().cloned());
+        read_write.extend(_direct_lowers.read_write.iter().cloned());
         read_write.extend(spec.root.work.iter().cloned());
         read_write.extend(spec.root.preimages.iter().cloned());
         // Published sockets have their own private directory; grant only those

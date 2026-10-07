@@ -109,6 +109,7 @@ pub use runtime::{RunRecord, RunRecordState, control_observations};
 // Explicit frontend/embedding APIs; runtime implementation stays private.
 pub use config::{FilesystemAccessLevel, FilesystemAccessRule, FilesystemMount, GatewayProfile};
 pub use executor::delegated::DelegatedRunOutput;
+#[cfg(target_os = "linux")]
 pub use executor::process::rootless_runtime_available;
 pub use runtime::{
     ApplySelection, ReadOnlyOverlayMount, control_mount_inspect, control_ping,

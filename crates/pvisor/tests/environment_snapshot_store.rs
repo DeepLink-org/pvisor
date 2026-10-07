@@ -284,7 +284,9 @@ fn sparse_ram_copy_and_sealing_preserve_bytes_length_and_detach_source_writers()
         let source = directory.path().join("source");
         fs::create_dir(&source).unwrap();
         let capture = tempfile::tempfile().unwrap();
-        let size = 8 * 1024 * 1024 + 17;
+        // APFS can materialize small holes at fsync. Use a large enough hole
+        // to test sparse preservation on both APFS and Linux filesystems.
+        let size = 64 * 1024 * 1024 + 17;
         capture.set_len(size).unwrap();
         capture.write_all_at(b"first", 7).unwrap();
         capture.write_all_at(b"tail", size - 4).unwrap();

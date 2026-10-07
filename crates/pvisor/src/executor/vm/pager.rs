@@ -174,9 +174,13 @@ pub(super) fn start_if_requested(
                 "experimental pool directory must belong to this user and be private",
             ));
         }
-        let mut pool = PoolClient::new(UnixStream::connect(path)?, Duration::from_secs(5))?;
+        let pool = PoolClient::new(UnixStream::connect(path)?, Duration::from_secs(5))?;
         #[cfg(target_os = "linux")]
-        pool.enable_shared_mapping()?;
+        let pool = {
+            let mut pool = pool;
+            pool.enable_shared_mapping()?;
+            pool
+        };
         handle.start_cold_pager(
             pool,
             pvisor_vm::api::ColdRamOptions {

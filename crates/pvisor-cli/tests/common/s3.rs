@@ -136,6 +136,8 @@ impl MockS3 {
             while !worker_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // BSD/macOS can inherit the listener's nonblocking mode.
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(5)))
                             .unwrap();

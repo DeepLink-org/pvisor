@@ -515,7 +515,7 @@ impl VmControl {
                 .backing
                 .restored
                 .as_ref()
-                .and_then(|restore| restore._ram_owner.base.clone())
+                .and_then(|restore| restore._ram_owner._base.clone())
         } else {
             None
         };

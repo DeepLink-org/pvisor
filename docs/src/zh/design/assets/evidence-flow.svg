@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="655" viewBox="0 0 960 655" role="img" aria-labelledby="title desc"><title id="title">从请求到可验收证据</title><desc id="desc">逐层区分意图、安装事实与结果；右列标明承载这些信息的对象。</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="960" height="655" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">从请求到可验收证据</text>
+<text x="28" y="67" font-size="15">逐层区分意图、安装事实与结果；右列标明承载这些信息的对象。</text>
+<text x="46" y="109" font-size="14" font-weight="600">阶段</text>
+<text x="310" y="109" font-size="14" font-weight="600">这一层回答的问题</text>
+<text x="719" y="109" font-size="14" font-weight="600">承载对象</text>
+<rect x="20" y="125" width="920" height="73" fill="#1a304c"/>
+<rect x="36" y="134" width="210" height="55" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="141.0" y="167.5" font-size="17" font-weight="600" text-anchor="middle">① 请求</text>
+<text x="315" y="168" font-size="16">希望执行什么？</text>
+<rect x="706" y="134" width="218" height="55" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="815.0" y="167.5" font-size="17" font-weight="600" text-anchor="middle">Operation</text>
+<polyline points="246,161 293,161" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="654,161 706,161" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="20" y="214" width="920" height="73" fill="#12243b"/>
+<rect x="36" y="223" width="210" height="55" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="141.0" y="256.5" font-size="17" font-weight="600" text-anchor="middle">② 有效决定</text>
+<text x="315" y="257" font-size="16">允许在哪里、如何执行？</text>
+<rect x="706" y="223" width="218" height="55" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="815.0" y="256.5" font-size="17" font-weight="600" text-anchor="middle">Policy + Placement</text>
+<polyline points="246,250 293,250" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="654,250 706,250" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="20" y="303" width="920" height="73" fill="#1a304c"/>
+<rect x="36" y="312" width="210" height="55" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="141.0" y="345.5" font-size="17" font-weight="600" text-anchor="middle">③ 安装控制</text>
+<text x="315" y="346" font-size="16">平台实际安装了什么？</text>
+<rect x="706" y="312" width="218" height="55" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="815.0" y="345.5" font-size="17" font-weight="600" text-anchor="middle">Executor / driver</text>
+<polyline points="246,339 293,339" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="654,339 706,339" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="20" y="392" width="920" height="73" fill="#12243b"/>
+<rect x="36" y="401" width="210" height="55" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="141.0" y="434.5" font-size="17" font-weight="600" text-anchor="middle">④ 观察结果</text>
+<text x="315" y="435" font-size="16">运行时发生了什么？</text>
+<rect x="706" y="401" width="218" height="55" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="815.0" y="434.5" font-size="17" font-weight="600" text-anchor="middle">Event / Bundle</text>
+<polyline points="246,428 293,428" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="654,428 706,428" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="20" y="481" width="920" height="73" fill="#1a304c"/>
+<rect x="36" y="490" width="210" height="55" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="141.0" y="523.5" font-size="17" font-weight="600" text-anchor="middle">⑤ 结果接受</text>
+<text x="315" y="524" font-size="16">哪些成果进入目标？</text>
+<rect x="706" y="490" width="218" height="55" rx="2" fill="#193d40" stroke="#74b7b0" stroke-width="1.4"/>
+<text x="815.0" y="523.5" font-size="17" font-weight="600" text-anchor="middle">Effects / apply ledger</text>
+<polyline points="246,517 293,517" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="654,517 706,517" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="28" y="608" font-size="15">后续记录引用前序身份；position 表示提交顺序，caused_by 表示已知依赖。</text>
+<text x="28" y="637" font-size="15">时间戳记录观察时间，不单独证明因果顺序。</text></g></svg>
