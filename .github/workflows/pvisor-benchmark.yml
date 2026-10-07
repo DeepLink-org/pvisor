@@ -82,6 +82,9 @@ jobs:
 
       - name: Benchmark main
         if: steps.baseline.outputs.supported == 'true'
+        env:
+          # Older baseline firmware recipes expand MAKEFLAGS as command arguments.
+          GNUMAKEFLAGS: --no-print-directory
         shell: bash
         run: |
           set -euo pipefail

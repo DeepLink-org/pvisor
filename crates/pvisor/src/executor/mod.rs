@@ -26,6 +26,8 @@ pub(crate) use crate::session::Session;
 
 /// The production execution boundary: consumes the resolved RunSpec and controls.
 /// Operation is an audit projection, not an arbitrary-expression dispatch API.
+// async_trait adds #[must_use] to the already must-use boxed future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait RunExecutor: Send + Sync {
     fn descriptor(&self) -> ExecutorPlan;

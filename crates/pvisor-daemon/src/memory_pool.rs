@@ -149,6 +149,8 @@ pub fn ensure_service(state: &Path, executable: &Path, config: PoolConfig) -> Re
 
 /// Foreground daemon component, also used by bounded real-VM benchmarks.
 /// The private config fixes memory/connection bounds before any VM connects.
+// Keep fetch_update available to Rust toolchains before its 1.99 rename.
+#[allow(deprecated)]
 pub fn run(directory: &Path) -> Result<()> {
     private_directory(directory)?;
     let config: PoolConfig = serde_json::from_slice(&fs::read(directory.join("config.json"))?)?;

@@ -23,6 +23,8 @@ pub trait ModelWaitLifecycle: Send + Sync + Debug {
     fn reserve(&self, request: ModelCallRequest) -> anyhow::Result<Box<dyn ModelWait>>;
 }
 
+// async_trait adds #[must_use] to already must-use boxed futures.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait ModelWait: Send {
     /// Publish the wait and confirm that any owned pause has completed before

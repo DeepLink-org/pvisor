@@ -74,6 +74,8 @@ const READY_TIMEOUT: Duration = Duration::from_secs(90);
 const DELETE_TIMEOUT: Duration = Duration::from_secs(30);
 const MIB: u64 = 1024 * 1024;
 
+// async_trait adds #[must_use] to already must-use boxed futures.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait Runtime: Send + Sync {
     async fn preflight(&self) -> Result<()> {
