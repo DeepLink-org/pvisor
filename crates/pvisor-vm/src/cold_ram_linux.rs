@@ -17,7 +17,7 @@ use std::{
 use vm_memory::{GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 
 const BLOCK: usize = 64 * 1024;
-const BATCH: usize = 64; // At most 4 MiB retained across publication.
+const BATCH_BYTES: usize = 4 * 1024 * 1024;
 static PENDING: AtomicU64 = AtomicU64::new(0);
 const API: u64 = 0xaa;
 // Linux x86_64 _IOWR/_IOR ABI; this module is compiled only on that target.
@@ -130,6 +130,21 @@ impl Uffd {
         }
         self.wake(range)
     }
+    // A missing page with no published cold object is an untouched anonymous
+    // zero page. Materialize only the faulting 4 KiB, preserving sparse RAM and
+    // every neighboring resident page. Queued faults may race an earlier copy.
+    fn zero_page(&self, address: u64) -> io::Result<()> {
+        let range = Range {
+            start: address & !4095,
+            len: 4096,
+        };
+        let zero = [0u8; 4096];
+        match self.restore(range, &zero) {
+            Err(error) if error.raw_os_error() == Some(libc::EEXIST) => self.wake(range),
+            result => result,
+        }
+    }
+
     fn wake(&self, mut range: Range) -> io::Result<()> {
         self.ioctl(0x8010_aa02, &mut range)
     }
@@ -187,7 +202,9 @@ impl Uffd {
 
 struct Page<O> {
     range: Range,
-    cold: Option<(O, [u8; 32])>,
+    // Most configured guest pages are not cold objects. Reserve only a pointer
+    // for those pages; allocate authority/checksum when reclamation succeeds.
+    cold: Option<Box<(O, [u8; 32])>>,
     eligible_at: Instant,
 }
 struct Pager<S: ColdRamStore> {
@@ -205,14 +222,14 @@ struct Pager<S: ColdRamStore> {
     restore_total_us: u64,
     restore_max_us: u64,
 }
-fn host_sorted_pages<O>(mappings: &[Range], eligible_at: Instant) -> Vec<Page<O>> {
+fn host_sorted_pages<O>(mappings: &[Range], eligible_at: Instant, block_bytes: usize) -> Vec<Page<O>> {
     let mut pages: Vec<_> = mappings
         .iter()
         .flat_map(|mapping| {
-            (0..mapping.len).step_by(BLOCK).map(move |offset| Page {
+            (0..mapping.len).step_by(block_bytes).map(move |offset| Page {
                 range: Range {
                     start: mapping.start + offset,
-                    len: (mapping.len - offset).min(BLOCK as u64),
+                    len: (mapping.len - offset).min(block_bytes as u64),
                 },
                 cold: None,
                 eligible_at,
@@ -234,6 +251,27 @@ impl Drop for Batch {
         PENDING.fetch_sub(bytes as u64, Ordering::SeqCst);
     }
 }
+// Inspect residency without reading RAM or creating missing-fault events.
+// The sample barrier rechecks this predicate before copying under the pager lock.
+fn fully_resident(range: Range) -> io::Result<bool> {
+    let mut pages = [0u8; BLOCK / 4096];
+    let count = (range.len as usize).div_ceil(4096);
+    if count > pages.len() {
+        return Err(io::Error::other("cold RAM block exceeds residency buffer"));
+    }
+    if unsafe {
+        libc::mincore(
+            range.start as *mut libc::c_void,
+            range.len as usize,
+            pages.as_mut_ptr(),
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(pages[..count].iter().all(|byte| byte & 1 != 0))
+}
+
 fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
@@ -363,9 +401,10 @@ fn publish_snapshot<S: ColdRamStore>(
 impl<S: ColdRamStore> Pager<S> {
     fn candidates(&mut self) -> Vec<usize> {
         let mut candidates = Vec::new();
+        let mut candidate_bytes = 0;
         let now = Instant::now();
         for _ in 0..self.pages.len() {
-            if candidates.len() == BATCH || now.elapsed() >= Duration::from_millis(8) {
+            if candidate_bytes >= BATCH_BYTES || now.elapsed() >= Duration::from_millis(8) {
                 break;
             }
             let index = self.cursor;
@@ -374,7 +413,10 @@ impl<S: ColdRamStore> Pager<S> {
             if page.cold.is_some() || now < page.eligible_at {
                 continue;
             }
-            candidates.push(index);
+            if fully_resident(page.range).unwrap_or_else(|error| fatal(error)) {
+                candidates.push(index);
+                candidate_bytes += page.range.len as usize;
+            }
         }
         candidates
     }
@@ -396,9 +438,14 @@ impl<S: ColdRamStore> Pager<S> {
             if page.cold.is_some() || now < page.eligible_at {
                 continue;
             }
+            // Never copy a sparse block while holding pager state: that would
+            // fault and wait for the resolver, which needs this same lock.
+            if !fully_resident(page.range).unwrap_or_else(|error| fatal(error)) {
+                continue;
+            }
             // Metadata selection needs no barrier, but copying live RAM does:
             // CPUs must be parked and device leases drained to avoid concurrent
-            // writes. All non-cold pages were prefaulted before registration.
+            // writes. This block was verified resident under the barrier.
             let bytes = unsafe {
                 std::slice::from_raw_parts(page.range.start as *const u8, page.range.len as usize)
             }
@@ -422,7 +469,7 @@ impl<S: ColdRamStore> Pager<S> {
             return Ok(Some(object));
         }
         // Store the immutable reference and checksum before any destructive syscall.
-        page.cold = Some((object, digest(&snapshot.bytes)));
+        page.cold = Some(Box::new((object, digest(&snapshot.bytes))));
         if unsafe {
             libc::madvise(
                 page.range.start as *mut libc::c_void,
@@ -440,9 +487,10 @@ impl<S: ColdRamStore> Pager<S> {
     }
     fn restore(&mut self, index: usize) -> io::Result<()> {
         let page = &mut self.pages[index];
-        let Some((object, expected)) = &page.cold else {
+        let Some(cold) = &page.cold else {
             return self.uffd.wake(page.range);
         };
+        let (object, expected) = cold.as_ref();
         // Service time includes store lock/restore, validation, COPY and release,
         // but excludes kernel/UFFD queue wait before entering this method.
         let started = Instant::now();
@@ -456,7 +504,7 @@ impl<S: ColdRamStore> Pager<S> {
             return Err(io::Error::other("cold RAM restore checksum mismatch"));
         }
         self.uffd.restore(page.range, &bytes)?;
-        let (object, _) = page.cold.take().unwrap();
+        let (object, _) = *page.cold.take().unwrap();
         page.eligible_at = Instant::now() + Duration::from_secs(30);
         self.restored += page.range.len;
         store.release(object)?;
@@ -480,7 +528,11 @@ impl<S: ColdRamStore> Pager<S> {
         let index = self
             .fault_index(address)
             .ok_or_else(|| io::Error::other("UFFD fault outside owned RAM"))?;
-        self.restore(index)
+        if self.pages[index].cold.is_none() {
+            self.uffd.zero_page(address)
+        } else {
+            self.restore(index)
+        }
     }
     fn shutdown(&mut self) -> io::Result<()> {
         for index in 0..self.pages.len() {
@@ -518,6 +570,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     store: S,
     options: ColdRamOptions,
 ) -> io::Result<()> {
+    let block_bytes = if options.page_granular { 4096 } else { BLOCK };
     if cfg!(any(
         feature = "tee",
         feature = "aws-nitro",
@@ -569,24 +622,21 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         let faults = Arc::new(crate::devices::virtio::memory_gate::ColdFaultActivity::default());
         let pages = handle
             .ram_quiesced(|vmm| {
-                // Disable the other destructive RAM owner before prefaulting.
+                // Disable the other destructive RAM owner before registration.
                 // A closed idle gate guarantees every old balloon lease drained.
                 vmm.device_memory_gate()
                     .install_cold_faults(faults.clone())?;
                 for mapping in &mappings {
-                    // Populate before registration so snapshots never fault while
-                    // holding pager state. Quiescence makes same-byte writes safe.
-                    for offset in (0..mapping.len as usize).step_by(4096) {
-                        let ptr = (mapping.start as *mut u8).wrapping_add(offset);
-                        unsafe {
-                            ptr.write_volatile(ptr.read_volatile());
-                        }
-                    }
+                    // Existing bytes remain mapped; untouched/previously ballooned
+                    // holes remain zero. No new destructive owner can create holes
+                    // after the fault gate is installed. Missing faults without a
+                    // cold object are therefore safe lazy-zero allocations.
                     uffd.register(*mapping).map_err(|error| error.to_string())?;
                 }
                 Ok(host_sorted_pages(
                     &mappings,
                     Instant::now() + Duration::from_secs(1),
+                    block_bytes,
                 ))
             })
             .map_err(io::Error::other)?
@@ -626,7 +676,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         // if complete VMA intervals exactly cover it. A larger coalesced VMA is
         // an envelope, not isolated RAM; its per-RAM PSS must be unavailable.
         eprintln!(
-            "pvisor-cold-linux-layout host_page_bytes=4096 block_bytes={BLOCK} eligible_mappings={} eligible_bytes_total={eligible_bytes} kernel_excluded={} pss_attribution=requires_exact_vma_union pid={pid}",
+            "pvisor-cold-linux-layout host_page_bytes=4096 block_bytes={block_bytes} eligible_mappings={} eligible_bytes_total={eligible_bytes} kernel_excluded={} pss_attribution=requires_exact_vma_union pid={pid}",
             mappings.len(),
             kernel.is_some()
         );
@@ -894,6 +944,7 @@ mod tests {
                 },
             ],
             Instant::now(),
+            BLOCK,
         );
         assert_eq!(
             pager
@@ -969,7 +1020,7 @@ mod tests {
     #[test]
     fn empty_or_ineligible_work_never_enters_barriers() {
         let mut pager = pager(2, false);
-        pager.pages[0].cold = Some((Vec::new(), [0; 32]));
+        pager.pages[0].cold = Some(Box::new((Vec::new(), [0; 32])));
         pager.pages[1].eligible_at = Instant::now() + Duration::from_secs(30);
         let mut candidates = pager.candidates();
         assert!(candidates.is_empty());
@@ -1026,7 +1077,7 @@ mod tests {
         let mut pager = pager(1, false);
         let bytes = vec![0x5a; BLOCK];
         let object = pager.store.lock().unwrap().put(&bytes).unwrap();
-        pager.pages[0].cold = Some((object, digest(&bytes)));
+        pager.pages[0].cold = Some(Box::new((object, digest(&bytes))));
         pager.store.lock().unwrap().corrupt = true;
         assert_eq!(
             pager.restore(0).unwrap_err().to_string(),
@@ -1038,10 +1089,10 @@ mod tests {
     }
     #[test]
     fn batch_is_bounded_and_excludes_cold_pages() {
-        let mut pager = pager(BATCH + 2, false);
-        pager.pages[0].cold = Some((Vec::new(), [0; 32]));
+        let mut pager = pager(BATCH_BYTES / BLOCK + 2, false);
+        pager.pages[0].cold = Some(Box::new((Vec::new(), [0; 32])));
         let batch = pager.sample();
-        assert!(batch.0.len() <= BATCH);
+        assert!(batch.0.len() <= BATCH_BYTES / BLOCK);
         assert!(!batch.0.is_empty());
         assert!(batch.0.iter().all(|snapshot| snapshot.index != 0));
         assert!(
@@ -1312,6 +1363,148 @@ mod tests {
         stop.store(true, Ordering::Release);
         resolver.join().unwrap();
     }
+    fn sparse_state() -> Pager<CompressedStore> {
+        let state = pager(4, false);
+        let range = Range {
+            start: state.memory.iter().next().unwrap().as_ptr() as u64,
+            len: (4 * BLOCK) as u64,
+        };
+        assert_eq!(
+            unsafe {
+                libc::madvise(
+                    range.start as *mut libc::c_void,
+                    range.len as usize,
+                    libc::MADV_DONTNEED,
+                )
+            },
+            0
+        );
+        state
+            .memory
+            .write_slice(&[0x31; 4096], GuestAddress(0))
+            .unwrap();
+        state
+            .memory
+            .write_slice(&[0x93; 4096], GuestAddress((4 * BLOCK - 4096) as u64))
+            .unwrap();
+        state
+    }
+
+    #[test]
+    fn sparse_selection_does_not_materialize_or_snapshot_holes() {
+        let mut state = sparse_state();
+        assert!(state.sample().0.is_empty());
+        let range = Range {
+            start: state.memory.iter().next().unwrap().as_ptr() as u64,
+            len: (4 * BLOCK) as u64,
+        };
+        assert_eq!(resident(range), 8192);
+    }
+
+    #[test]
+    fn page_granular_selection_reclaims_resident_pages_in_sparse_blocks() {
+        let mut state = sparse_state();
+        let mappings = ranges(&state.memory, u64::MAX).unwrap();
+        state.pages = host_sorted_pages(&mappings, Instant::now(), 4096);
+        let batch = state.sample();
+        assert_eq!(batch.0.len(), 2);
+        assert_eq!(batch.0[0].bytes, vec![0x31; 4096]);
+        assert_eq!(batch.0[1].bytes, vec![0x93; 4096]);
+        assert_eq!(resident(mappings[0]), 8192);
+    }
+
+    #[test]
+    fn unoccupied_page_metadata_does_not_reserve_full_store_objects() {
+        // Store-specific object sizes must not multiply by all configured pages.
+        assert!(std::mem::size_of::<Page<[u8; 4096]>>() <= 48);
+    }
+
+    #[test]
+    #[ignore = "requires permitted kernel-fault userfaultfd; never changes host policy"]
+    fn page_granular_fault_restores_only_requested_page() {
+        let mut state = pager(1, true);
+        let memory = state.memory.clone();
+        let mappings = ranges(&memory, u64::MAX).unwrap();
+        state.pages = host_sorted_pages(&mappings, Instant::now(), 4096);
+        let batch = state.sample();
+        let expected: Vec<_> = batch.0.iter().map(|snapshot| snapshot.bytes.clone()).collect();
+        for snapshot in &batch.0 {
+            let object = state.store.lock().unwrap().put(&snapshot.bytes).unwrap();
+            assert!(state.commit(snapshot, object).unwrap().is_none());
+        }
+        assert_eq!(resident(mappings[0]), 0);
+        let pager = Arc::new(Mutex::new(state));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = resolver(pager.clone(), stop.clone());
+        let mut bytes = [0; 4096];
+        memory.read_slice(&mut bytes, GuestAddress(4096)).unwrap();
+        assert_eq!(bytes.as_slice(), expected[1]);
+        {
+            let state = pager.lock().unwrap();
+            assert!(state.pages[0].cold.is_some());
+            assert!(state.pages[1].cold.is_none());
+            assert!(state.pages[2].cold.is_some());
+            assert_eq!(state.restored, 4096);
+        }
+        assert_eq!(resident(mappings[0]), 4096);
+        pager.lock().unwrap().shutdown().unwrap();
+        stop.store(true, Ordering::Release);
+        thread.join().unwrap();
+        for (index, expected) in expected.iter().enumerate() {
+            memory.read_slice(&mut bytes, GuestAddress((index * 4096) as u64)).unwrap();
+            assert_eq!(bytes.as_slice(), expected);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires permitted kernel-fault userfaultfd; never changes host policy"]
+    fn sparse_missing_faults_preserve_lazy_zeroes_and_existing_bytes() {
+        let mut state = sparse_state();
+        let memory = state.memory.clone();
+        let mappings = ranges(&memory, u64::MAX).unwrap();
+        let uffd = Arc::new(Uffd::open().unwrap());
+        for range in &mappings {
+            uffd.register(*range).unwrap();
+        }
+        state.uffd = uffd;
+        assert_eq!(
+            resident(mappings[0]),
+            8192,
+            "registration must not prefault RAM"
+        );
+        let pager = Arc::new(Mutex::new(state));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = resolver(pager.clone(), stop.clone());
+        let mut zero = [1; 4096];
+        memory
+            .read_slice(&mut zero, GuestAddress(BLOCK as u64))
+            .unwrap();
+        assert_eq!(zero, [0; 4096]);
+        memory
+            .write_slice(&[0x72; 4096], GuestAddress((BLOCK + 4096) as u64))
+            .unwrap();
+        // A stale queued missing event must not overwrite an existing page.
+        pager.lock().unwrap().fault(mappings[0].start).unwrap();
+        let mut first = [0; 4096];
+        memory.read_slice(&mut first, GuestAddress(0)).unwrap();
+        assert_eq!(first, [0x31; 4096]);
+        memory
+            .read_slice(&mut first, GuestAddress((4 * BLOCK - 4096) as u64))
+            .unwrap();
+        assert_eq!(first, [0x93; 4096]);
+        memory
+            .read_slice(&mut first, GuestAddress((BLOCK + 4096) as u64))
+            .unwrap();
+        assert_eq!(first, [0x72; 4096]);
+        assert!(
+            resident(mappings[0]) <= 4 * 4096,
+            "faults must not populate entire cold blocks"
+        );
+        pager.lock().unwrap().shutdown().unwrap();
+        stop.store(true, Ordering::Release);
+        thread.join().unwrap();
+    }
+
     fn resolver(
         pager: Arc<Mutex<Pager<CompressedStore>>>,
         stop: Arc<AtomicBool>,

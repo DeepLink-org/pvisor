@@ -66,7 +66,7 @@ target/debug/examples/cold_storage_probe --pattern random --trial 1
 
 Use a NEW ignored evidence directory, record prechosen order, affinity and complete failures, and do not build/test during sampling. The retained experiment used a frozen debug binary, seeded interleaving, CPU 0, and no cgroup cap; exact commands, source/binary receipts and all nine runs are retained under `.data/cold-storage-20261006/`. See [the historical storage verification report](COLD_RUNTIME_REPORT.md) for those observations; its pre-implementation support statements are historical. They do not substitute for live VM validation.
 
-`B-COLD-RUNTIME-ENG` now validates the experimental Linux x86_64 kernel-fault userfaultfd pager with instance-local storage. Enable `[vm].cold_ram_compression = true` or `--vm-cold-ram-compression`; it is default-off and distinct from FUSE `ram_compression`. Userfaultfd authority must be granted by the administrator. Linux deliberately rejects external pools, file/COW backing, KSM advice and snapshot/offload combinations. The policy uses eviction/refault probing, not full read-heat tracking.
+`B-COLD-RUNTIME-ENG` now validates the experimental Linux x86_64 kernel-fault userfaultfd pager with instance-local storage. Enable `[vm].cold_ram_compression = true` or `--vm-cold-ram-compression`; it is default-off and distinct from FUSE `ram_compression`. Userfaultfd authority must be granted by the administrator. Local compression rejects file/COW backing, KSM advice and snapshot/offload combinations; the external daemon pool is a separate store choice on the same Linux pager path. The policy uses eviction/refault probing, not full read-heat tracking.
 
 ```sh
 python3 -m unittest discover -s benchmark/pvisor -p test_linux_cold_runtime.py -v
@@ -564,8 +564,9 @@ This creates twelve conditions. Append `--ksm-scan-seconds 60` to extend only
 the fresh KSM arm to 60 seconds; other arms keep the two-second static window.
 The complete twelve-condition cohort is rerun, and the distinct windows are
 retained in raw conditions and provenance. Use `--group-memory-max 4294967296` for **all**
-four strategies: the cold pager currently prefaults RAM and four 512 MiB VMs can
-exceed the default 2 GiB ceiling at startup. Guest capacity stays 512 MiB and
+four strategies to match the retained pre-fix comparison. The cold pager now
+preserves sparse RAM, resolves natural missing pages with 4 KiB zero allocation
+and samples resident 4 KiB pages in the Linux daemon-pool arm; it no longer prefaults all guest RAM. Local compression retains 64 KiB blocks. Guest capacity stays 512 MiB and
 savings still use matching-phase unshared PSS, never the resource ceiling.
 `--preflight --arm daemon-pool --pattern repeated` is a short diagnostic subset;
 partial/preflight reports cannot be published. Failed runs retain evidence.

@@ -149,7 +149,13 @@ pub(super) fn start_if_requested(
             ram_bytes / 2,
             ram_bytes.div_ceil(64 * 1024),
         );
-        return handle.start_cold_pager(store, pvisor_vm::api::ColdRamOptions { metrics });
+        return handle.start_cold_pager(
+            store,
+            pvisor_vm::api::ColdRamOptions {
+                metrics,
+                page_granular: false,
+            },
+        );
     }
     let Some(_path) = std::env::var_os(POOL_ENV) else {
         return Ok(());
@@ -168,7 +174,13 @@ pub(super) fn start_if_requested(
             ));
         }
         let pool = PoolClient::new(UnixStream::connect(path)?, Duration::from_secs(5))?;
-        handle.start_cold_pager(pool, pvisor_vm::api::ColdRamOptions { metrics })
+        handle.start_cold_pager(
+            pool,
+            pvisor_vm::api::ColdRamOptions {
+                metrics,
+                page_granular: cfg!(target_os = "linux"),
+            },
+        )
     }
 }
 

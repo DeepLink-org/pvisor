@@ -560,6 +560,10 @@ pub trait ColdRamStore: Send {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ColdRamOptions {
     pub metrics: bool,
+    /// Request independently reclaimable 4 KiB pages for a shared host pool.
+    /// Linux only; other backends reject this option. The default retains the
+    /// backend's larger compression blocks for instance-local stores.
+    pub page_granular: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

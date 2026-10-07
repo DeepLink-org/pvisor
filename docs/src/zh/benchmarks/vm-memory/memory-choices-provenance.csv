@@ -4,16 +4,16 @@ benchmark_id,"""B-VM-MEMORY"""
 role,"""user-facing"""
 host,"{""cpu_affinity"": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], ""cpu_cores_requested"": [0, 1, 2, 3], ""cpu_model"": ""AMD Ryzen 7 9700X 8-Core Processor"", ""host_cp_sha256"": ""bfba948281d479ecc254261327651e8ece093e848c71debc1e597299dd0906e4"", ""kernel"": ""7.2.8-200.fc44.x86_64"", ""ksm"": {""pages_to_scan"": ""100"", ""run"": ""1"", ""sleep_millisecs"": ""20""}}"
 budget,"{""cpu_cores"": 4, ""memory_max"": 2147483648, ""swap_max"": 0}"
-arguments,"{""build_receipt"": ""/home/reiase/workspace/pvisor/benchmark/.data/m8b/vm_memory_savings/build-receipt.json"", ""example"": ""/home/reiase/workspace/pvisor/benchmark/.data/m8b/vm_memory_savings/vm_memory_savings"", ""firmware"": ""/home/reiase/workspace/pvisor/benchmark/.data/full-retest-20261006/firmware"", ""memory_mib"": 512, ""modes"": ""default,cold,pause,raw,compressed,release"", ""output"": ""/home/reiase/workspace/pvisor/benchmark/.data/m8-single"", ""patterns"": ""repeated,compressible,random,mixed"", ""quiet_seconds"": 0, ""rootfs"": ""/home/reiase/workspace/pvisor/benchmark/.data/full-retest-20261006/density-env4/rootfs"", ""samples"": 1, ""static"": true, ""wait"": 5, ""warmups"": 0}"
-binary_sha256,"""515bd7341c1c63f8b3044bcfea8ee510862ac65f9d9731889fbca27b5d8b2627"""
-harness_sha256,"""fdd58b58f8eb408d8e2b4739fe6b28da3b0b3e9490812aeec3ded1a2545ead0f"""
+arguments,"{""build_receipt"": ""/home/reiase/workspace/pvisor/benchmark/.data/m17b/vm_memory_savings/build-receipt.json"", ""example"": ""/home/reiase/workspace/pvisor/benchmark/.data/m17b/vm_memory_savings/vm_memory_savings"", ""firmware"": ""/home/reiase/workspace/pvisor/benchmark/.data/full-retest-20261006/firmware"", ""memory_mib"": 512, ""modes"": ""default,cold,pause,raw,compressed,release"", ""output"": ""/home/reiase/workspace/pvisor/benchmark/.data/m17-single-fixed"", ""patterns"": ""repeated,compressible,random,mixed"", ""quiet_seconds"": 0, ""rootfs"": ""/home/reiase/workspace/pvisor/benchmark/.data/full-retest-20261006/density-env4/rootfs"", ""samples"": 1, ""static"": true, ""wait"": 5, ""warmups"": 0}"
+binary_sha256,"""63bc423b3cf63250efd89dc462ecd635f0d6b168f9eb5170cc0e2c1b3a857f97"""
+harness_sha256,"""14b1e9b94c691aa1dfc8fedb6b7956802615364798481b76f0b3ff9c1cdd4632"""
 helper_sha256,"""218dc3e2eeb3abfb680f09968d52221ff9698e7fe6ce98fd5c3c06431b34486c"""
 input_verification,"{""firmware"": true, ""rootfs"": true}"
 host_verification,"{""cpu_model"": true, ""host_cp_sha256"": true, ""kernel"": true, ""ksm"": true}"
-report_sha256,55f3155c718097190ca62a36d49920f51361484489b6d38eaef168d4aa123b92
+report_sha256,80127db0dd57b77b133598f9c833706eea2b0382d62faea566eabe8c4340e6c6
 resident_physical_metric,sum of product-process PSS; shared pages proportional; excludes unmapped file cache and kernel memory; full cgroup charge retained separately
 interference_policy,"record background builds, reject foreign VMs; static memory only"
-build_receipt_sha256,49e3e8f3bcff53b6e610366d11f6675ec0eed3e898d9b058648f2394464458f3
+build_receipt_sha256,28dc0480de635ff7688a715e30992debc774c31801f7d6f241617802098b4ede
 input_manifest_sha256,fc6cd0677218ada99ca4b568c09b1d82385c4b7d81011e224da13ef8d64609da
 statistics,single static observation; no quantiles or confidence intervals; 5-second window
-conditions_with_background_builds,1/16
+conditions_with_background_builds,0/16

@@ -155,7 +155,7 @@ mod cold_ram_tests {
                         calls: calls.clone(),
                         drops: drops.clone(),
                     },
-                    ColdRamOptions { metrics },
+                    ColdRamOptions { metrics, ..Default::default() },
                 )
                 .unwrap_err();
             if cfg!(all(

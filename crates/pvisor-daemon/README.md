@@ -292,7 +292,7 @@ daemon executable.
 Add `--memory-pool` to `pvisor-daemon serve` to enable the shared cold-page
 pool. It is off by default. The daemon starts its own `memory-pool` component
 in a private state subdirectory and records its socket in each new sandbox
-identity. VM RAM remains private; eligible cold chunks are compressed into
+identity. VM RAM remains private; on Linux, independently reclaimable 4 KiB pages are compressed into
 content-addressed pool objects, and identical chunks reuse one object. A
 userfaultfd miss restores bytes into the requesting VM's private RAM.
 
@@ -304,8 +304,9 @@ connection. Indexes, threads and allocator memory are additional overhead.
 Linux requires the existing kernel-fault userfaultfd permission.
 
 Reserve host memory for the pool separately from sandbox admission: its process
-is outside individual sandbox cgroups and their hard limits. Startup currently
-prefaults guest RAM, so peak consumption may exceed the steady-state amount.
+is outside individual sandbox cgroups and their hard limits. Startup preserves sparse guest RAM. First-touch faults allocate one 4 KiB
+zero page; the scanner samples resident pages without filling holes. A fault restores only the requested page; adjacent cold pages remain in the pool.
+Budget for the actual working set and restoration peaks.
 The pool must stay alive while dependent VMs run; loss fails those VMs, and a
 stale socket is not silently replaced. State-directory retention supports API
 restart, not pool-process or host-reboot recovery. The VM/pool benchmark includes
