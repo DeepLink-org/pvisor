@@ -14,12 +14,13 @@ Anonymous-page scanning, cold-page compression and whole-VM offload remain separ
 
 | Component | Mechanism | Boundary |
 | --- | --- | --- |
-| `pvisor/src/node.rs`, `node/registry.rs` | Same-user, same-host immutable owners; identity-based preparation, connection pins, bounded warming | Native resource service, not daemon sandbox lifecycle; no transparent live takeover after failure |
+| `pvisor/src/node.rs`, `node/registry.rs` | Same-user, same-host immutable owners; identity-based preparation, connection pins, bounded warming | Runtime protocols retained, CLI node supervisor removed; no daemon adapter or transparent live takeover |
 | Native image cache | Validated demand reads, paged metadata and content reuse | Published FS/S3 objects have paged reads; an uncached ordinary OCI prepare can still fully prepare before returning |
 | Native Linux RAM restore | Authorized sealed identity/compatibility and shared read-only inode, private COW guest mappings | Ordinary fresh boot bypasses RAM restore; compatible native profiles remain required |
 | Snapshot lazy reader | Validate/decode blocks on fault with bounded decoded cache | First-access costs remain; legacy raw formats can require full validation |
-| Experimental cold RAM pool | Session references and cold-page restoration | `vm.memory_pool` requires macOS/Apple Silicon; not a Linux daemon feature |
-| NativeRuntime daemon | Independent immutable rootfs, private VM writes | No automatic node socket acquisition, RAM restore, lazy snapshot or cold-pool integration |
+| Historical macOS compressed pool | Session references and private cold-page restoration | Recorded-version mechanism; standalone launcher removed; not the current Linux protocol |
+| Daemon-owned Linux pool | Resident duplicate 4 KiB pages shared through bounded memfd slots and private COW mappings | Explicit `serve --memory-pool`; separate budgets and failure scope, no unique-page compression |
+| NativeRuntime daemon | Independent immutable rootfs, private VM writes | Optional daemon-owned pool; no automatic node socket acquisition, RAM restore or lazy snapshot integration |
 
 Additional source areas: `image/cache/lazy.rs`, `image/cache/portable/binary.rs`, `executor/vm/restore_ram.rs`, `environment_snapshot/lazy.rs` and `pvisor-vm/src/memory.rs`. Native node acquisition validates authorized stores, publication and compatibility rather than accepting cache presence as authority.
 
@@ -43,7 +44,7 @@ Keep logical reservations, physical occupancy and reclaimable cache separate. Na
 
 Connection pins protect active immutable mounts/backing until native runners are reaped. Last release permits teardown or bounded warming. Preparation for the same identity is serialized without holding the global map lock across slow I/O. Refetchable decoded cache may be evicted; active owners or the only remaining copy of private cold RAM cannot be treated as cache.
 
-Connecting the existing native runtime to node sharing would need explicit acquire/release, cancellation, compatible input handoff, cleanup, evidence and budget contracts. Packaging the node service next to the daemon does not implement that adapter. Generic warm-template Agent restoration is not already available: source command/input/environment/policy bindings and native no-network restore constraints still apply.
+Connecting the existing native runtime to node sharing would need explicit acquire/release, cancellation, compatible input handoff, cleanup, evidence and budget contracts. Removing the CLI node supervisor does not implement that adapter or migrate node protocols into the daemon. Generic warm-template Agent restoration is not already available: source command/input/environment/policy bindings and native no-network restore constraints still apply.
 
 Bounded critical-page prefetch, coalescing additional identical misses and extending complete metadata/scratch accounting remain possible work. There is no daemon host-affinity policy or placement hint protocol; external orchestration owns host choice.
 
@@ -60,5 +61,7 @@ No new measurements or PASS claims are available. Separate native-path experimen
 | Failure preservation | Publication authorization, pin/owner release, GC, slow/failing reads and owner/pool loss without claiming unimplemented reconnect |
 
 Use at most four simultaneous real native guests, counting live source VMs; cap each guest and service. Do not flush global page cache or infer sharing from untouched-page savings. Freeze workloads, sample counts and meaningful thresholds before collection. Historical independent fresh-boot probes neither establish nor refute native sharing, and do not establish daemon density.
+
+The daemon pool is separate from node-backed restoration. Pool loss fails dependent VMs; API restart retains the detached component but cannot recover failed pool contents. See [activation, ownership and limits](../../guides/daemon/index.md#memory-pool).
 
 Related designs: [responsibility convergence](responsibility-convergence.md), [shared image storage](../shared-image-cache-storage.md), [memory optimization](../memory-optimization/index.md) and [experimental cold RAM pool](../memory-optimization/proof-of-concept.md).

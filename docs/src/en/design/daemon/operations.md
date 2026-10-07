@@ -1,6 +1,6 @@
 # Daemon operations
 
-Run a single-node sandbox service with the native VM runtime, private state and explicit resource capacity. Invoke the standalone executable directly or use `pvisor service daemon ...` companion dispatch.
+Run a single-node sandbox service with the native VM runtime, private state and explicit resource capacity. Invoke `pvisor-daemon` directly. It owns sandbox services and its optional detached pool; `pvisor-cache` remains independent.
 
 ## Deployment {#deployment}
 

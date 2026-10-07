@@ -14,7 +14,15 @@ Images are trusted local `images_dir/<key>.json` manifests, not registry referen
 
 ## Install the executable {#install}
 
-Prepare the [native build prerequisites](../../community/development.md) and run these source-installation commands at your selected revision. This installation path has not yet been validated:
+On Linux x86_64, install the `pvisor` wheel to get the standalone `pvisor-daemon` executable in your Python environment's bin directory. macOS wheels do not include the daemon:
+
+```bash
+pip install pvisor
+pvisor-daemon --help
+pvisor-daemon protocol
+```
+
+For the latest `main` build, use the [nightly wheel installer](../../start/installation.md). Alternatively, prepare the [native build prerequisites](../../community/development.md) and run these local source-installation commands at your selected revision. This source-installation path has not yet been validated:
 
 ```bash
 cargo install --locked --path crates/pvisor-daemon --bin pvisor-daemon
@@ -22,7 +30,7 @@ pvisor-daemon --help
 pvisor-daemon protocol
 ```
 
-`protocol` prints the pinned OpenSandbox version and commit. Source installation is separate from installing the Python `pvisor` package; when using a wheel, check whether that version includes the daemon and prepare images separately. Pin the source revision, SDK 1.1.0 and image contents together; SDK conformance still needs end-to-end validation.
+`protocol` prints the pinned OpenSandbox version and commit. Local source installation is separate from installing the Python `pvisor` package. Both installation paths require you to prepare images separately. Pin the source revision, SDK 1.1.0 and image contents together; SDK conformance still needs end-to-end validation.
 
 ## Start the API {#start}
 
@@ -80,4 +88,4 @@ Current v2 state stores a small `sandboxes.json` owner/header with an empty map 
 
 The old Cluster task/client SDK, Controller/Worker registration, placement, DAG, lease renewal, completion outbox and artifact-retirement commands are not the daemon interface. Do not reuse old task JSON, `worker.toml`, Controller credentials or journals as daemon input. There is no automatic conversion of distributed task history into sandbox state.
 
-Preserve old results before retiring the deployment and use new state for the OpenSandbox profile. Native VM execution is wired in `NativeRuntime`; stage/apply and checkpoint/fork APIs are not implemented, and node/cache/pool sharing is not automatically acquired. See [operations](operations.md).
+Preserve old results before retiring the deployment and use new state for the OpenSandbox profile. Native VM execution is wired in `NativeRuntime`; stage/apply and checkpoint/fork APIs are not implemented, and node/cache resources are not automatically acquired. The optional pool is owned by the daemon and enabled explicitly with `serve --memory-pool`. See [operations](operations.md).

@@ -1,6 +1,6 @@
 # Daemon 运维
 
-使用原生 VM 运行时、私有状态与显式资源容量运行单节点 sandbox 服务。直接调用独立可执行文件，或使用 `pvisor service daemon ...` companion 派发。
+使用原生 VM 运行时、私有状态与显式资源容量运行单节点 sandbox 服务。直接调用 `pvisor-daemon`。它拥有 sandbox 服务及可选独立池组件；`pvisor-cache` 保持独立。
 
 ## 部署 {#deployment}
 

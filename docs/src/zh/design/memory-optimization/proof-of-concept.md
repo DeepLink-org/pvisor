@@ -17,11 +17,11 @@
 
 多个 Agent VM 往往运行相同的系统和工具，保留相似的代码、缓存与运行时数据。每个 VM 各存一份 RAM，隔离关系简单，却会重复支付这些内容的内存成本。交互间隔还会留下暂时不用、下一次执行又需要的工作集。只暂停 vCPU 并不能释放它们。
 
-pVisor 当前选择在宿主侧处理冷块：观察哪些 RAM 块暂时没有 CPU 或设备访问，将内容压缩并交给同一宿主上的共享池。相同内容只保存一份编码对象；访问时恢复到各 VM 自己的可写页。这样不要求 guest 配置 zram，也不要求应用主动保存状态。
+记录中的 macOS 方案在宿主侧处理冷块：观察哪些 RAM 块暂时没有 CPU 或设备访问，将内容压缩并交给同一宿主上的共享池。相同内容只保存一份编码对象；访问时恢复到各 VM 自己的可写页。这样不要求 guest 配置 zram，也不要求应用主动保存状态。
 
 收益取决于三个条件：内容是否重复、是否可压缩，以及冷窗口是否足够长。每次观察会改变 guest 访问权限，每次恢复都要付出传输、校验和重映射成本。写密集或频繁扫描整个工作集的负载可能很快抵消冷态收益。内存与执行延迟必须一起衡量。
 
-本文描述 2026-10-03 工作树中的 macOS / Apple Silicon 实验实现，默认关闭。首版提供前台 `pvisor service memory-pool` 服务及显式 CLI/SDK 接入，仍无池重启恢复或完整物理内存收益验收。旧的逐轮设计记录保留在仓库 `docs/macos-memory-sharing.md`，原始证据保留在 `review_project/06-evidence/macos-memory/`；本文按当前机制组织，实验数字只对应记录中的执行版本。
+2026-10-03 工作树记录的 macOS / Apple Silicon 实验实现默认关闭。首版使用前台池及显式 CLI/SDK 接入；其独立启动器现已移除。当时未完成池重启恢复或完整物理内存收益验收。旧的逐轮设计记录保留在仓库 `docs/macos-memory-sharing.md`，原始证据保留在 `review_project/06-evidence/macos-memory/`；这些机制记录与实验数字只对应各数据集记录中的执行版本。
 
 ## 2. 核心设计 {#core-design}
 
@@ -257,22 +257,16 @@ RAM＋pool 代理为两 runner 的 `resident_bytes + pending_file_bytes` 之和�
 
 ## 6. 收敛版本与产品接入 {#v1-integration}
 
-本轮收敛为显式启用的 macOS / Apple Silicon 实验 v1：不可变共享压缩池、宿主冷块观察、两阶段发布、私有页恢复。CLI 的 `--vm-memory-pool SOCKET` 会选择 VM executor；TOML 对应 `[vm].memory_pool`，Rust SDK 对应 `VmSettings.memory_pool`。省略它时默认关闭；旧实验环境变量仅作兼容入口。此内存路径不依赖 guest zram 或 macFUSE RAM adapter。
+记录中的首版收敛为显式启用的 macOS / Apple Silicon 实验 v1：不可变共享压缩池、宿主冷块观察、两阶段发布、私有页恢复。CLI 的 `--vm-memory-pool SOCKET` 会选择 VM executor；TOML 对应 `[vm].memory_pool`，Rust SDK 对应 `VmSettings.memory_pool`。省略它时默认关闭；旧实验环境变量仅作兼容入口。此内存路径不依赖 guest zram 或 macFUSE RAM adapter。
 
-在一个终端创建私有目录并运行前台池；目录已存在时先确认其所有者和权限：
-
-```bash
-mkdir -m 700 /tmp/pvisor-memory-pool-v1
-pvisor service memory-pool /tmp/pvisor-memory-pool-v1/pool.sock
-```
-
-在其他终端启动 VM，使用同一个 socket；也可直接运行 `pvisor-memory-pool`：
+当前服务所有权归 `pvisor-daemon`：通过 `serve --memory-pool` 启用池；它使用已持久化的私有配置启动或复用独立 `memory-pool --directory DIR` 组件。旧 positional-socket 启动器已移除。当前 Linux 物理共享池使用不同协议，不是已迁移的 macOS 压缩池结果。见 [daemon 池启用](../../guides/daemon/index.md#memory-pool)。
 
 ```bash
-pvisor run --vm-memory-pool /tmp/pvisor-memory-pool-v1/pool.sock --rootfs image=ubuntu:latest -- bash
+pvisor-daemon serve --help
+pvisor-daemon memory-pool --help
 ```
 
-池默认预算为 16 MiB 编码 payload、8192 对象、16 连接、每连接 32768 引用；最后一项覆盖 2 GiB RAM 的 64 KiB 分块。四项预算可通过服务参数分别设置，编码预算不包含全部堆元数据。服务仅接受当前 UID，socket 权限为 0600，拒绝覆盖已有端点。SIGINT/SIGTERM 关闭连接、等待引用回收并删除自己创建的 socket；停止池会使依赖的活 VM 失败。它是操作方管理的前台组件，暂不自动重启或恢复池内容。
+记录中的 macOS v1 池默认预算为 16 MiB 编码 payload、8192 对象、16 连接、每连接 32768 引用；最后一项覆盖 2 GiB RAM 的 64 KiB 分块。该版本的四项预算可通过服务参数分别设置，编码预算不包含全部堆元数据。服务仅接受当前 UID，socket 权限为 0600，拒绝覆盖已有端点。SIGINT/SIGTERM 关闭连接、等待引用回收并删除自己创建的 socket；停止池会使依赖的活 VM 失败。该版本是操作方管理的前台组件，不自动重启或恢复池内容；这些是历史限制，不是当前 daemon 默认值。
 
 v1 接入验证使用产品池程序和显式 SDK 参数，父进程未设置旧池环境变量。两个真实 VM 的共享对象、内容恢复、独立写入和正常退出通过；池退出及 socket 清理通过，约 36.6 s，无宿主守卫错误。原始记录为 `v1-product-integration.json`。定向 Rust 回归、Clippy 与安装/打包检查见 review 的收敛报告。
 

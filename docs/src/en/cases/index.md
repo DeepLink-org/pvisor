@@ -36,7 +36,7 @@ This stages workspace files while host file access remains ambient. Before runni
 | Prepare restoration from native Agent history | `pvisor replay`, dispatched to adjacent `pvisor-replay` | [Chapter 5](05-tools-and-restoration.md), [replay guide](../guides/replay.md) |
 | Select an OCI container or VM executor | `pvisor run --executor container` / `--executor vm` | [Containers](../guides/executors/container.md), [VMs](../guides/executors/vm.md); requires a runtime/rootfs |
 | Save CPU, RAM, devices, and the complete file tree | Native VM execution checkpoints / snapshot storage SDK | [Execution-checkpoint contract](../reference/cli.md#full-vm-execution-checkpoints); requires a compatible owned-rootfs, no-network Job; not a daemon capability |
-| Manage OCI file caching or a shared cold-page pool | `pvisor service cache` / `pvisor service memory-pool` | [Shared image cache](../reference/shared-image-cache.md), [memory sharing](../design/memory-optimization/proof-of-concept.md) |
+| Manage OCI file caching or a shared cold-page pool | `pvisor-cache` / `pvisor-daemon serve --memory-pool` | [Shared image cache](../reference/shared-image-cache.md), [daemon pool](../guides/daemon/index.md#memory-pool) |
 
 Gateway capture requires a build with the gateway feature; wheels and `just build release` include it. Core Job commands work without companion binaries; `pvisor --help` lists installed optional commands in their object group. Full VM snapshots require KVM or Apple Silicon Hypervisor and a working FUSE backend. Ordinary VM Jobs support execution checkpoints with a compatible owned-rootfs, no-network profile; `status --json` reports capability and blockers.
 

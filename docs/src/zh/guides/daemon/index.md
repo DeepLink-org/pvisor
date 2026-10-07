@@ -14,7 +14,15 @@
 
 ## 安装可执行文件 {#install}
 
-按[原生构建前提](../../community/development.md)准备环境，在选定 revision 上运行以下源码安装命令；这条安装路径尚未验证：
+在 Linux x86_64 上安装 `pvisor` wheel，即可在 Python 环境的 bin 目录获得独立可执行文件 `pvisor-daemon`。macOS wheel 不包含 daemon：
+
+```bash
+pip install pvisor
+pvisor-daemon --help
+pvisor-daemon protocol
+```
+
+需要 `main` 最新构建时，使用 [nightly wheel 安装器](../../start/installation.md)。也可按[原生构建前提](../../community/development.md)准备环境，在选定 revision 上运行以下本地源码安装命令；这条源码安装路径尚未验证：
 
 ```bash
 cargo install --locked --path crates/pvisor-daemon --bin pvisor-daemon
@@ -22,7 +30,7 @@ pvisor-daemon --help
 pvisor-daemon protocol
 ```
 
-`protocol` 打印固定的 OpenSandbox 版本与 commit。源码安装独立于 Python `pvisor` 包安装；使用 wheel 时，检查该版本是否包含 daemon，并单独准备镜像。源码 revision、SDK 1.1.0 与镜像内容应一起固定；SDK 兼容性仍需端到端验证。
+`protocol` 打印固定的 OpenSandbox 版本与 commit。本地源码安装独立于 Python `pvisor` 包安装。两条安装路径都需要单独准备镜像。源码 revision、SDK 1.1.0 与镜像内容应一起固定；SDK 兼容性仍需端到端验证。
 
 ## 启动 API {#start}
 
@@ -80,4 +88,4 @@ daemon 检查真实 execd 的 `/ping`、`/ready` 和 egress 的 `/healthz` 后�
 
 旧 Cluster 任务/客户端 SDK、Controller/Worker 注册、放置、DAG、lease 续期、完成 outbox 和 artifact 退役命令都不是 daemon 接口。不要把旧 task JSON、`worker.toml`、Controller 凭据或 journal 作为 daemon 输入。分布式任务历史没有自动转成沙箱状态的路径。
 
-退役部署前保留旧结果，为 OpenSandbox profile 使用新状态。`NativeRuntime` 已接入原生 VM 执行；stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node/cache/pool 共享资源。见[运维](operations.md)。
+退役部署前保留旧结果，为 OpenSandbox profile 使用新状态。`NativeRuntime` 已接入原生 VM 执行；stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node/cache 资源。可选池由 daemon 拥有，通过 `serve --memory-pool` 显式启用。见[运维](operations.md)。

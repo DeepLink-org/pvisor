@@ -1,8 +1,8 @@
 # pVisor application frontends
 
-`pvisor-cli` owns the `pvisor`, `pvisor-cache`, `pvisor-memory-pool`,
-`pvisor-tui`, and `pvisor-replay` executables and their argument parsing, terminal
-adapters, rendering, companion lookup and local resource-owner supervision.
+`pvisor-cli` owns four executables: `pvisor`, `pvisor-cache`, `pvisor-tui`, and
+`pvisor-replay`, with their argument parsing, terminal adapters, rendering and
+companion lookup.
 The TUI frontend lives here, not in the embeddable runtime.
 
 ## Boundary
@@ -11,8 +11,15 @@ Embed [`pvisor`](../pvisor/README.md) for `PVisor`, Session/Attempt execution an
 `job_service::RuntimeJobService`. This application library exposes frontend
 modules, not a compatibility re-export of the runtime. Frontends call explicit
 runtime APIs and retain request-local cancellation, admission fences and terminal
-ownership. Neither the persistent Host Job listener nor the local node/pool
-supervisor is an implicit requirement of embedded execution.
+ownership. The persistent Host Job listener is not an implicit requirement of
+embedded execution.
+
+There is no CLI service layer or standalone `pvisor-memory-pool` binary. The
+separate `pvisor-daemon` owns shared services, including the memory pool. Invoke
+`pvisor-daemon` and `pvisor-cache` directly; neither is a root command alias.
+Only replay and TUI are root companions. The retired `pvisor service` command
+is rejected, including its help forms, rather than treated as an implicit guest
+command. Explicit `pvisor -- COMMAND` execution remains available.
 
 Recording callers import `Journal` and `JournalStore` from `pvisor_journal::api`;
 durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
@@ -26,8 +33,6 @@ durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 - `src/cli/cache.rs`: cache command parsing and rendering; cache storage,
   image preparation and authenticated server implementation remain in `pvisor`.
 - `src/companions.rs`: trusted same-installation companion discovery/dispatch.
-- `src/service.rs` and `src/service_cgroup.rs`: local resource-owner process
-  supervision and delegated cgroup resolution, not the runtime Job service.
 - `src/tui/`: native TUI PTY runtime, renderer, review panels and keymap,
   including Zellij attribution and the adapted border-glyph license.
 - `src/bin/pvisor-replay.rs`: replay argument parsing and managed-run frontend;

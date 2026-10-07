@@ -9,9 +9,9 @@ The Cargo workspace has 13 crates organized by product responsibility. Its defau
 | Directory | Responsibility |
 | --- | --- |
 | `crates/pvisor/` | Embeddable runtime, Session/Attempt orchestration, executors, durable Job service, image preparation and cache mechanisms |
-| `crates/pvisor-cli/` | CLI commands, terminal frontends, companion dispatch and local resource-owner supervision |
+| `crates/pvisor-cli/` | Four application binaries, CLI commands, terminal frontends and replay/TUI companion dispatch |
 | `crates/pvisor-vm/` | Native VM runtime, portable API, private VMM/platform implementations, embedded guest and kernel/firmware integration |
-| `crates/pvisor-daemon/` | Linux x86_64 sandbox lifecycle API and detached native VM supervisors |
+| `crates/pvisor-daemon/` | Linux x86_64 sandbox lifecycle API, detached native VM supervisors and optional daemon-owned pool |
 | `crates/pvisor-core/` | Operation, Placement, policies, external interactions and Event contracts |
 | `crates/pvisor-journal/` | Shared fact Journal storage and readers |
 | `crates/pvisor-gateway/` | Agent protocol forwarding/conversion, capture and projections |
@@ -56,14 +56,12 @@ core, guest ──> no other workspace crates
 ```text
 crates/pvisor-cli/src/
 ├── lib.rs                 # Frontend modules, not runtime re-exports
-├── bin/                   # pvisor, pvisor-cache, pvisor-memory-pool,
-│                          # pvisor-tui and pvisor-replay entry points
+├── bin/                   # Four: pvisor, pvisor-cache, pvisor-tui, pvisor-replay
 ├── cli/                   # Arguments, commands and shared terminal utilities
 │   ├── cache.rs           # Cache argument parsing and rendering
 │   └── features.rs        # Runtime feature listing frontend
 ├── companions.rs          # Same-installation companion lookup/dispatch
-├── service.rs             # Local resource-owner process supervision
-├── service_cgroup.rs      # Delegated cgroup resolution
+
 └── tui/                   # TUI PTY runtime, renderer, review panels and keymap
 
 crates/pvisor/src/
@@ -106,7 +104,7 @@ crates/pvisor/src/
 └── util.rs                # Small shared file/time utilities
 ```
 
-CLI arguments/display, Host listener/workers and local resource-owner supervision belong in `pvisor-cli`; execution mechanisms belong in `pvisor`'s `executor/`, and Run resource ownership and the durable Job service belong in `runtime/`. The VM executor adapts Run/Attempt lifecycle to `pvisor_vm::api`; `pvisor-vm` owns the VMM, platform mechanisms, embedded guest and kernel/firmware integration. OCI preparation belongs in `image/` and is shared by direct loading/cache service. Cache storage and the authenticated server remain in the runtime; cache command parsing/rendering belongs in `pvisor-cli/src/cli/cache.rs`. Bundles and checkpoints belong with run records rather than one backend.
+CLI arguments/display and Host listener/workers belong in `pvisor-cli`; execution mechanisms belong in `pvisor`'s `executor/`, and Run resource ownership and the durable Job service belong in `runtime/`. The VM executor adapts Run/Attempt lifecycle to `pvisor_vm::api`; `pvisor-vm` owns the VMM, platform mechanisms, embedded guest and kernel/firmware integration. OCI preparation belongs in `image/` and is shared by direct loading/cache service. Cache storage and the authenticated server remain in the runtime; cache command parsing/rendering belongs in `pvisor-cli/src/cli/cache.rs`. Bundles and checkpoints belong with run records rather than one backend. `pvisor-daemon/src/memory_pool.rs` owns pool startup/reuse and the detached `memory-pool` component; `serve --memory-pool` enables it. Node protocols in `pvisor/src/node.rs` and `node/` remain runtime facilities; the removed CLI node supervisor is not a daemon adapter. `pvisor-cache` retains independent preparation, publication, serving and reads.
 
 Existing public runtime imports, including `PVisor`, `ProcessExecutor`, `cache` and the internal `sandbox` entry, retain their paths. Explicit frontend/embedding APIs export filesystem access types, `GatewayProfile`, `DelegatedRunOutput`, `rootless_runtime_available`, overlay selection/inspection and Run lookup/control helpers, Linux Run leases, `audit`, `checkpoint`, `job_execution` and startup/private-JSON helpers. Runtime implementation modules remain private; these exports do not establish an API stability promise.
 

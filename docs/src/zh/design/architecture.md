@@ -42,7 +42,7 @@ CLI 解析类型化 `JobCommand` 并连接按需启动的持久 listener。
 以 generation 命名的 Unix socket。根目录属于同 UID、不是符号链接，
 权限恰为 `0700`；socket 与私有 manifest 文件为 `0600`。
 已有条目无效时 fail closed，不用 chmod 修复。listener 独立于
-node/cache/pool 部署服务。
+daemon sandbox/pool 所有权及独立缓存。Node 资源协议仍是运行时设施；旧 CLI supervisor 已移除，没有 daemon 适配器。
 
 通过内核同 UID peer 验证和构建兼容协商后，前端用 `SCM_RIGHTS` 传递
 stdin/stdout/stderr，提交类型化命令、cwd、环境、终端上下文及固定目标。

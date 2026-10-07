@@ -10,9 +10,9 @@ wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python �
 | 目录 | 职责 |
 |---|---|
 | `crates/pvisor/` | 可嵌入运行时、Session/Attempt 编排、执行器、持久化 Job 服务、镜像准备和缓存机制 |
-| `crates/pvisor-cli/` | CLI 命令、终端前端、伴随程序分派和本地资源所有者监督 |
+| `crates/pvisor-cli/` | 四个应用二进制、CLI 命令、终端前端和 replay/TUI 伴随程序分派 |
 | `crates/pvisor-vm/` | 原生 VM 运行时、跨平台 API、私有 VMM／平台实现、内嵌 guest 和内核／固件接入 |
-| `crates/pvisor-daemon/` | Linux x86_64 sandbox 生命周期 API 与独立原生 VM supervisor |
+| `crates/pvisor-daemon/` | Linux x86_64 sandbox 生命周期 API、独立原生 VM supervisor 和可选 daemon 自有池 |
 | `crates/pvisor-core/` | Operation、Placement、策略、对外交互和 Event 契约 |
 | `crates/pvisor-journal/` | 共享事实 Journal 存储与读取 |
 | `crates/pvisor-gateway/` | Agent 协议转发、转换、采集与投影 |
@@ -59,14 +59,12 @@ core, guest ──> 不依赖其他 workspace crate
 ```text
 crates/pvisor-cli/src/
 ├── lib.rs                 # 前端模块，不重导出运行时
-├── bin/                   # pvisor、pvisor-cache、pvisor-memory-pool、
-│                          # pvisor-tui 和 pvisor-replay 入口
+├── bin/                   # 四个：pvisor、pvisor-cache、pvisor-tui、pvisor-replay
 ├── cli/                   # 参数、命令和共享终端工具
 │   ├── cache.rs           # 缓存参数解析与展示
 │   └── features.rs        # 运行时功能列表前端
 ├── companions.rs          # 同一安装中的伴随程序查找／分派
-├── service.rs             # 本地资源所有者进程监督
-├── service_cgroup.rs      # 委派 cgroup 解析
+
 └── tui/                   # TUI PTY 运行时、渲染、审查面板和按键映射
 
 crates/pvisor/src/
@@ -109,12 +107,12 @@ crates/pvisor/src/
 └── util.rs                # 少量共享文件与时间工具
 ```
 
-CLI 参数与展示、Host 监听器／worker 和本地资源所有者监督归 `pvisor-cli`；
+CLI 参数与展示、Host 监听器／worker 归 `pvisor-cli`；
 具体执行机制归 `pvisor` 的 `executor/`，Run 资源所有权和持久化 Job 服务归 `runtime/`。
 VM 执行器将 Run/Attempt 生命周期适配到 `pvisor_vm::api`；VMM、平台机制、内嵌 guest
 和内核／固件接入属于 `pvisor-vm`。OCI 准备属于 `image/`，供直接加载和缓存服务共用。
 缓存存储及带认证的服务端留在运行时，缓存命令解析／展示归 `pvisor-cli/src/cli/cache.rs`。
-Bundle 和检查点与运行记录放在一起，不归某个执行后端。
+Bundle 和检查点与运行记录放在一起，不归某个执行后端。`pvisor-daemon/src/memory_pool.rs` 拥有池启动／复用和独立 `memory-pool` 组件；通过 `serve --memory-pool` 启用。`pvisor/src/node.rs` 与 `node/` 中的 node 协议仍是运行时设施；已移除的 CLI node supervisor 不是 daemon 适配器。`pvisor-cache` 保留独立准备、发布、服务和读取入口。
 
 既有公开运行时导入，包括 `PVisor`、`ProcessExecutor`、`cache` 以及内部 `sandbox` 入口，
 保留原有路径。显式前端／嵌入 API 导出文件访问类型、`GatewayProfile`、

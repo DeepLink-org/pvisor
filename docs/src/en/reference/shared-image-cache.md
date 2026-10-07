@@ -1,6 +1,6 @@
 # Shared image cache and storage backends
 
-`pvisor service cache` reuses OCI image content through server, filesystem, or S3 backends. In server mode, `pvisor service cache serve` prepares OCI images and generates paged indexes and content objects under `<image-store>/cache-v1/`. All three backends share immutable revisions, the object format and image reader. Clients query by `image_handle`, receive no host paths, and never access registries during file queries.
+`pvisor-cache` reuses OCI image content through server, filesystem, or S3 backends. In server mode, `pvisor-cache serve` prepares OCI images and generates paged indexes and content objects under `<image-store>/cache-v1/`. All three backends share immutable revisions, the object format and image reader. Clients query by `image_handle`, receive no host paths, and never access registries during file queries.
 
 ## Choose a backend
 
@@ -19,11 +19,11 @@ CLI --backend, --location, and --image-store override environment values and wor
 ### Filesystem: publish once, read from independent processes
 
 ```sh
-pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor-cache --backend filesystem --location /mnt/pvisor-cache \
   --image-store /tmp/pvisor-publish publish alpine:latest
-pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor-cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only prepare alpine:latest
-pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor-cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
@@ -36,12 +36,12 @@ export AWS_DEFAULT_REGION=ap-southeast-1
 # Supply AWS credentials through environment variables or workload roles.
 export PVISOR_CACHE_BACKEND=s3
 export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor service cache --image-store /tmp/pvisor-publish publish alpine:latest
+pvisor-cache --image-store /tmp/pvisor-publish publish alpine:latest
 
 # Native cache consumers only need GetObject access to this prefix.
 export PVISOR_CACHE_READ_ONLY=true
-pvisor service cache prepare alpine:latest
-pvisor service cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+pvisor-cache prepare alpine:latest
+pvisor-cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 pvisor run --executor vm --rootfs image=alpine:latest -- /bin/sh
 ```
 
@@ -56,15 +56,15 @@ export AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
 export AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
 export PVISOR_CACHE_BACKEND=s3
 export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor service cache prepare alpine:latest
+pvisor-cache prepare alpine:latest
 ```
 
 ### Image splitting and upload tool
 
-`pvisor service cache publish IMAGE` is the explicit publishing command. It pulls the selected platform's OCI manifest and layers from a registry, applies layers and whiteouts locally, walks the merged image filesystem, and uploads the file index and content blocks. Reuse existing local OCI staging through `--image-store` or `PVISOR_IMAGE_STORE`; staging can be removed after upload.
+`pvisor-cache publish IMAGE` is the explicit publishing command. It pulls the selected platform's OCI manifest and layers from a registry, applies layers and whiteouts locally, walks the merged image filesystem, and uploads the file index and content blocks. Reuse existing local OCI staging through `--image-store` or `PVISOR_IMAGE_STORE`; staging can be removed after upload.
 
 ```sh
-PVISOR_CACHE_READ_ONLY=false pvisor service cache publish alpine:latest \
+PVISOR_CACHE_READ_ONLY=false pvisor-cache publish alpine:latest \
   --backend s3 --location s3://your-bucket/pvisor-cache \
   --architecture amd64 --image-store /tmp/pvisor-publish
 ```
@@ -111,10 +111,11 @@ Actual S3 traffic includes control objects, metadata pages, and complete data ch
 
 Implementation lives in `crates/pvisor/src/image/cache/`:
 
+The independent `pvisor-cache` entry point and argument parsing live in `crates/pvisor-cli/src/bin/pvisor-cache.rs` and `crates/pvisor-cli/src/cli/cache.rs`. The daemon does not own cache preparation, publication or serving.
+
 ```text
 cache/
 ├── mod.rs              # Public entry and module assembly
-├── cli.rs              # pvisor service cache subcommands
 ├── protocol.rs         # Request/response types, framing and content hashes
 ├── transport.rs        # Unix/TCP endpoints, streams and timeouts
 ├── client.rs           # Backend discovery and validated requests
@@ -141,19 +142,19 @@ cache/
 
 ```sh
 # 终端 1：前台服务端，使用默认的按用户 Unix socket 与 OCI 存储
-pvisor service cache serve
+pvisor-cache serve
 
 # 终端 2：使用同一个默认 socket
-pvisor service cache prepare alpine:latest
+pvisor-cache prepare alpine:latest
 # 即使处于五分钟 tag 缓存窗口内也强制刷新 registry：
-pvisor service cache prepare alpine:latest --refresh
+pvisor-cache prepare alpine:latest --refresh
 # 从 JSON 结果复制 image_handle：
-pvisor service cache list pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION
-pvisor service cache stat pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
-pvisor service cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+pvisor-cache list pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION
+pvisor-cache stat pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+pvisor-cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
-`PVISOR_CACHE_SERVER` selects the endpoint for client/server; `cache serve --listen` overrides it on the server. The default is `unix://<dirs::cache_dir()>/pvisor/cache.sock`:
+`PVISOR_CACHE_SERVER` selects the endpoint for client/server; `pvisor-cache serve --listen` overrides it on the server. The default is `unix://<dirs::cache_dir()>/pvisor/cache.sock`:
 
 - macOS: `~/Library/Caches/pvisor/cache.sock`
 - Linux: `$XDG_CACHE_HOME/pvisor/cache.sock`, usually `~/.cache/pvisor/cache.sock`
@@ -176,7 +177,7 @@ Direct backends stay attached until VM completion, then release their private pr
 
 Before responding to `prepare`, the server still fully prepares an uncached image. This is client-side lazy loading, not lazy OCI layer extraction on the server. FUSE adapters and existing virtio-fs workers handle requests synchronously, so a miss can delay unrelated filesystem requests. There is no explicit vCPU pause. Disk quotas/eviction, original OCI xattrs and asynchronous virtio-fs completion are outside this implementation.
 
-The public blocking Rust client is `pvisor::cache::CacheClient::from_env()`. Explicit `cache prepare/list/stat/read` commands do not use the VM's local fallback policy.
+The public blocking Rust client is `pvisor::cache::CacheClient::from_env()`. Explicit `pvisor-cache prepare/list/stat/read` commands do not use the VM's local fallback policy.
 
 Unix sockets use 0600 permissions and require the same effective user at both ends. A lock prevents duplicate servers. Restart reclaims stale sockets, never ordinary files, symlinks or active listeners. Place the socket in a server-owned directory. Ctrl-C may leave a stale socket; manual cleanup is unnecessary.
 
@@ -185,7 +186,7 @@ For remote servers, use authenticated loopback TCP through SSH:
 ```sh
 # 服务端：通过你的密钥管理/命令行设置一个强共享密钥。
 export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
-pvisor service cache serve --listen tcp://127.0.0.1:7447
+pvisor-cache serve --listen tcp://127.0.0.1:7447
 
 # 客户端机器上，保持该隧道运行：
 ssh -N -L 7447:127.0.0.1:7447 your-server
@@ -193,7 +194,7 @@ ssh -N -L 7447:127.0.0.1:7447 your-server
 # 客户端 shell，使用同一密钥：
 export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
 export PVISOR_CACHE_SERVER=tcp://127.0.0.1:7447
-pvisor service cache prepare alpine:latest
+pvisor-cache prepare alpine:latest
 ```
 
 TCP requires a nonempty token and literal loopback IP endpoints. There is no built-in TLS; use SSH encryption. Tokens grant all cache operations, including preparing new images. This is a trusted shared service rather than a public multitenant API. Unix clients must also supply tokens when configured on the server.
@@ -228,7 +229,7 @@ Paths/names use JSON arrays of Unix filename bytes, preserving non-UTF-8 names. 
 | `stat` | `digest`, `path` | `metadata`: `kind`, `size`, `mode`, `uid`, `gid`, `inode`, `nlink`, `mtime`, `mtime_nsec`, `target` |
 | `read` | `digest`, `path`, `offset` (bytes), `length` (1..1048576) | `data`: `length`, `sha256`, then raw bytes |
 
-`prepare` requests a Linux image for the client's architecture, independent of server architecture. Successful records persist at `<image-store>/metadata/prepared-v1/` with platform digest/launch configuration. Mutable tags reuse records for five minutes; immutable digests do not expire while the extracted root exists. `cache prepare IMAGE --refresh` (`refresh: true`) forces registry resolution. Failed refresh returns an error while retaining previous records. Registry requests have a 10-second connect and 300-second total timeout. Expired tags never silently fall back to stale data. Missing/corrupt records or missing roots are prepared again.
+`prepare` requests a Linux image for the client's architecture, independent of server architecture. Successful records persist at `<image-store>/metadata/prepared-v1/` with platform digest/launch configuration. Mutable tags reuse records for five minutes; immutable digests do not expire while the extracted root exists. `pvisor-cache prepare IMAGE --refresh` (`refresh: true`) forces registry resolution. Failed refresh returns an error while retaining previous records. Registry requests have a 10-second connect and 300-second total timeout. Expired tags never silently fall back to stale data. Missing/corrupt records or missing roots are prepared again.
 
 Reference/architecture locks cover resolution/preparation; concurrent callers recheck/reuse the first successful result. Preparation may populate uncached images and retains existing digest extraction locks. `read`/`stat`/`list` require published immutable image handles and never pull images implicitly.
 

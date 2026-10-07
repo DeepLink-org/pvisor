@@ -10,6 +10,15 @@ from setuptools.command.bdist_wheel import bdist_wheel
 
 ROOT = Path(__file__).resolve().parent
 WHEEL_SCRIPTS = ROOT / "target" / "wheel-data" / "scripts"
+WHEEL_PAYLOADS = {
+    "pvisor",
+    "pvisor-cache",
+    "pvisor-tui",
+    "pvisor-replay",
+    "pvisor-daemon",
+    "libkrunfw.5.dylib",
+    "libkrunfw.SOURCE",
+}
 
 
 class PlatformWheel(bdist_wheel):
@@ -72,7 +81,7 @@ def wheel_scripts() -> list[str]:
     return [
         path.relative_to(ROOT).as_posix()
         for path in sorted(WHEEL_SCRIPTS.iterdir())
-        if path.is_file()
+        if path.is_file() and path.name in WHEEL_PAYLOADS
     ]
 
 

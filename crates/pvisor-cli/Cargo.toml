@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license = "Apache-2.0 AND MIT"
-description = "pVisor command-line application and local service frontends"
+description = "pVisor command-line application frontends"
 readme = "README.md"
 default-run = "pvisor"
 
@@ -64,9 +64,6 @@ path = "src/bin/pvisor.rs"
 name = "pvisor-cache"
 path = "src/bin/pvisor-cache.rs"
 
-[[bin]]
-name = "pvisor-memory-pool"
-path = "src/bin/pvisor-memory-pool.rs"
 
 [[bin]]
 name = "pvisor-tui"

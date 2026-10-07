@@ -78,9 +78,6 @@ enum Command {
     Fork(run::ForkArgs),
     /// Open a read-only shell or run a command against a Job filesystem view.
     Inspect(runtime::InspectArgs),
-    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-    /// Manage local services, shared node resources and optional daemon tools.
-    Service(crate::service::ServiceArgs),
     #[command(external_subcommand)]
     External(Vec<OsString>),
 }
@@ -115,7 +112,7 @@ fn grouped_commands(command: &clap::Command) -> String {
             ],
         ),
         ("Filesystems", &["inspect", "review", "apply", "drop"]),
-        ("Extensions", &["service", "replay", "tui"]),
+        ("Extensions", &["replay", "tui"]),
         ("Help", &["feature", "help"]),
     ];
     let width = command
@@ -168,7 +165,7 @@ fn normalize_default_run(mut args: Vec<OsString>, command: &clap::Command) -> Ve
     if let Some(first) = args.get(offset).and_then(|arg| arg.to_str())
         && command.find_subcommand(first).is_none()
         && !companions::is_root_command(first)
-        && first != "ctrl"
+        && !["ctrl", "service"].contains(&first)
         && !["--help", "-h", "--version", "-V"].contains(&first)
     {
         args.insert(offset, "run".into());
@@ -219,6 +216,12 @@ pub fn main() -> anyhow::Result<()> {
     let mut core_command = Cli::command();
     core_command.build();
     let offset = command_offset(&args);
+    anyhow::ensure!(
+        !args.get(offset).is_some_and(|arg| arg == "service")
+            && !(args.get(offset).is_some_and(|arg| arg == "help")
+                && args.get(offset + 1).is_some_and(|arg| arg == "service")),
+        "`pvisor service` has been retired; invoke pvisor-daemon or pvisor-cache directly; the daemon manages shared services and the memory pool"
+    );
     let mut routing_args = vec![args[0].clone()];
     routing_args.extend_from_slice(&args[offset..]);
     if offset > 1 {
@@ -253,26 +256,9 @@ pub fn main() -> anyhow::Result<()> {
                     .iter()
                     .take_while(|arg| *arg != "--")
                     .any(|arg| arg == "--help" || arg == "-h")
-                || !companions::is_root_command(name) && name != "service",
-            "--feature enables apply to run, not extensions/services; use pvisor help COMMAND for help"
+                || !companions::is_root_command(name),
+            "--feature enables apply to run, not extensions; use pvisor help COMMAND for help"
         );
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-        if name == "service"
-            && let Some(tool) = args.get(2).and_then(|arg| arg.to_str())
-            && companions::is_service_tool(tool)
-        {
-            return companions::dispatch(tool, &args[3..]);
-        }
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-        if name == "help"
-            && args.get(2).is_some_and(|arg| arg == "service")
-            && let Some(tool) = args.get(3).and_then(|arg| arg.to_str())
-            && companions::is_service_tool(tool)
-        {
-            let mut tool_args = args[4..].to_vec();
-            tool_args.push("--help".into());
-            return companions::dispatch(tool, &tool_args);
-        }
         if companions::is_root_command(name)
             && let Some((path, _)) = companions::find(name)?
         {
@@ -318,10 +304,6 @@ pub fn main() -> anyhow::Result<()> {
     }
     match parsed.command {
         Command::Feature(_) => unreachable!("feature queries return without contacting Host"),
-        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-        Command::Service(args) => {
-            tokio::runtime::Runtime::new()?.block_on(crate::service::run(args))?
-        }
         Command::Run(run) => {
             if !terminal::is_child() {
                 let audit = run.audit_requested()?;

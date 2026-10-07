@@ -35,7 +35,7 @@ just examples 03-network-isolation
 
 ## Links
 
-- [Reproducible examples](../../docs/src/zh/development/examples.md)
+- [Reproducible examples](../../docs/src/zh/community/examples.md)
 - [pVisor get started](../../docs/src/zh/start/first-run.md)
 - [Isolation architecture](../../docs/src/zh/design/isolation.md)
 

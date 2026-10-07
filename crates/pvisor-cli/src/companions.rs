@@ -9,21 +9,6 @@ pub struct Companion {
     pub description: &'static str,
 }
 
-const SERVICE_COMMANDS: &[Companion] = &[
-    Companion {
-        name: "daemon",
-        description: "Manage node-local sandboxes through the optional daemon",
-    },
-    Companion {
-        name: "memory-pool",
-        description: "Serve the experimental shared VM cold-page pool",
-    },
-    Companion {
-        name: "cache",
-        description: "Prepare or query OCI caches backed by a server, filesystem, or S3",
-    },
-];
-
 const ROOT_COMMANDS: &[Companion] = &[
     Companion {
         name: "replay",
@@ -35,19 +20,12 @@ const ROOT_COMMANDS: &[Companion] = &[
     },
 ];
 
-pub(crate) fn is_service_tool(name: &str) -> bool {
-    SERVICE_COMMANDS.iter().any(|command| command.name == name)
-}
-
 pub(crate) fn is_root_command(name: &str) -> bool {
     ROOT_COMMANDS.iter().any(|command| command.name == name)
 }
 
 fn companion(name: &str) -> Option<&'static Companion> {
-    ROOT_COMMANDS
-        .iter()
-        .chain(SERVICE_COMMANDS)
-        .find(|command| command.name == name)
+    ROOT_COMMANDS.iter().find(|command| command.name == name)
 }
 
 fn check_trust(metadata: &std::fs::Metadata) -> anyhow::Result<()> {
@@ -120,16 +98,7 @@ pub(crate) fn execute(path: PathBuf, args: &[OsString]) -> anyhow::Result<()> {
     );
     check_executable(&path)?;
     let mut command = std::process::Command::new(&path);
-    if let Some(name) = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix("pvisor-"))
-        && is_service_tool(name)
-    {
-        // Clap derives its displayed invocation from argv[0]; keep nested tool
-        // help/errors in the public namespace without rewriting tool options.
-        command.arg0(format!("pvisor service {name}"));
-    }
+
     Err(command.args(args).exec().into())
 }
 
@@ -154,5 +123,8 @@ mod tests {
         assert!(check_executable(&link).is_err());
         assert!(find("../escape").unwrap().is_none());
         assert!(find("status").unwrap().is_none());
+        for name in ["service", "daemon", "cache", "memory-pool"] {
+            assert!(find(name).unwrap().is_none(), "{name} is not a companion");
+        }
     }
 }

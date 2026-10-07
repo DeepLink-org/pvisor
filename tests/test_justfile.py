@@ -28,7 +28,7 @@ def run_task(tmp_path):
         "if name == 'python3' and args[0] in ['scripts/build-pvisor.py', 'scripts/packaging/build_daemon.py']:\n"
         "    profile = args[args.index('--profile') + 1]\n"
         "    target = Path(args[args.index('--target-dir') + 1])\n"
-        "    names = ['pvisor', 'pvisor-daemon', 'pvisor-cache', 'pvisor-tui', 'pvisor-replay', 'pvisor-memory-pool']\n"
+        "    names = ['pvisor', 'pvisor-daemon', 'pvisor-cache', 'pvisor-tui', 'pvisor-replay']\n"
         "    if args[0] == 'scripts/packaging/build_daemon.py': names = ['pvisor-daemon']\n"
         "    for binary_name in names:\n"
         "        binary = target / ('debug' if profile == 'dev' else profile) / binary_name\n"
@@ -57,6 +57,7 @@ def run_task(tmp_path):
                 "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
                 "CARGO_TARGET_DIR": str(tmp_path / "target with spaces"),
                 "JUST_TEST_LOG": str(log),
+                "CARGO_INSTALL_ROOT": str(tmp_path / "install"),
             },
             check=True,
             capture_output=True,
@@ -65,6 +66,7 @@ def run_task(tmp_path):
         return [json.loads(line) for line in log.read_text().splitlines()]
 
     run.target_dir = tmp_path / "target with spaces"
+    run.install_dir = tmp_path / "install"
     return run
 
 
@@ -161,6 +163,30 @@ def test_native_executor_package_keeps_hvf_signing(run_task, selector, package):
     assert commands == signing + [["cargo", "nextest", "run", "--locked", "-p", package]]
 
 
+@pytest.mark.parametrize("profile", ["debug", "release", "performance"])
+def test_build_preserves_four_application_binaries_without_pool(run_task, profile):
+    run_task("build", profile)
+    names = {path.name for path in (run_task.target_dir / profile).iterdir()}
+    assert {"pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay"} <= names
+    assert "pvisor-memory-pool" not in names
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux installation has no dylib payload")
+def test_install_ignores_retired_target_artifact_and_preserves_components(run_task):
+    retired = run_task.target_dir / "release/pvisor-memory-pool"
+    retired.parent.mkdir(parents=True)
+    retired.write_bytes(b"old user artifact")
+    run_task("install-cli")
+    assert {path.name for path in (run_task.install_dir / "bin").iterdir()} == {
+        "pvisor",
+        "pvisor-cache",
+        "pvisor-tui",
+        "pvisor-replay",
+        "pvisor-daemon",
+    }
+    assert retired.read_bytes() == b"old user artifact"
+
+
 def test_product_check_selects_application(run_task):
     assert run_task("check") == [["cargo", "check", "--locked", "-p", "pvisor-cli"]]
 
@@ -199,7 +225,8 @@ def test_cluster_only_recipes_are_retired():
     assert not any("cluster" in name for name in recipes)
     assert "test-service" not in recipes
     assert "test-service-vm" not in recipes
-    assert {"service-build", "daemon-build", "daemon-install", "test-daemon"} <= recipes
+    assert not {"service-build", "service-check", "service-test"} & recipes
+    assert {"daemon-build", "daemon-install", "test-daemon"} <= recipes
     assert {"test-hvf-cold-restore", "test-vm-snapshot-state", "vm-cases"} <= recipes
 
 

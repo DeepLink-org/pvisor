@@ -20,7 +20,9 @@ Caller → daemon endpoint proxy → prepared service
 | Native supervisor | Embedded pVisor/VM, RunHandle, acknowledged vCPU controls, cgroup identity, vsock bridges | Stage/apply/checkpoint API or automatic node sharing |
 | Prepared image | Supervise argv, initialize and authenticate execd/egress | Replacing lifecycle API authorization |
 | Native pVisor | VM execution embedded by supervisors; public Job workflow remains separate | Automatic exposure of stage/checkpoint APIs |
-| Native node resources | Separate immutable backing ownership | Automatic daemon acquisition/sharing |
+| Native node runtime | Separate immutable backing protocols; CLI node supervisor removed | Automatic daemon acquisition/sharing |
+| Daemon pool component | Optional detached pool enabled by `serve --memory-pool` | Pool-process/host-reboot recovery; node acquire/release |
+| Independent `pvisor-cache` | OCI prepare/publish/serve/list/stat/read | Daemon lifecycle ownership |
 
 The Runtime trait has one implementation: VM-only NativeRuntime. Detached supervisors embed `pvisor::PVisor` with only VmExecutor and retain RunHandles across daemon restart. No host/OCI/pull fallback exists. The executable's `serve` command constructs NativeRuntime using required `--images-dir`/`--cgroup-root`; synchronous internal VM dispatch runs before Tokio, and the hidden supervisor command is dispatched. See [operations](operations.md#deployment).
 

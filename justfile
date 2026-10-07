@@ -20,7 +20,7 @@ build profile="debug":
       *) echo "expected debug, release or performance, got: $1" >&2; exit 2 ;;
     esac
     python3 scripts/build-pvisor.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
-    names=(pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool)
+    names=(pvisor pvisor-cache pvisor-tui pvisor-replay)
     if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then names+=(pvisor-daemon); fi
     for name in "${names[@]}"; do
       binary="{{ target_dir }}/$1/$name"
@@ -45,7 +45,7 @@ install-cli: (build "release")
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     mkdir -p "$install_root/bin"
-    binaries=(pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-memory-pool)
+    binaries=(pvisor pvisor-cache pvisor-tui pvisor-replay)
     if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then binaries+=(pvisor-daemon); fi
     for binary in "${binaries[@]}"; do
       install -m 755 "{{ target_dir }}/release/$binary" "$install_root/bin/$binary"
@@ -100,9 +100,6 @@ daemon-install: (daemon-build "release")
 # Conventional daemon contracts; does not enable the retired cluster feature.
 test-daemon:
     just test pvisor-daemon
-
-# Local service components through the native pipeline (daemon on Linux only).
-service-build: build
 
 
 # Format source files; use fmt-check for a read-only check.

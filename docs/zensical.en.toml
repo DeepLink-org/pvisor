@@ -64,7 +64,7 @@ nav = [
     ] },
     { "Daemon quickstart" = [
       { "Run the single-node daemon" = "guides/daemon/index.md" },
-      { "Daemon and native service entry points" = "guides/daemon/service.md" },
+      { "Daemon and independent cache entry points" = "guides/daemon/service.md" },
       { "Operate the single-node daemon" = "guides/daemon/operations.md" },
       { "Daemon runtime and integration boundaries" = "guides/daemon/boundaries.md" },
     ] },

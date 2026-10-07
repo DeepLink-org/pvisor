@@ -1,6 +1,6 @@
 # VM 内存性能：技术记录
 
-> CLI 更新：独立 `pvisor snapshot` 已删除。以下旧接口/测量属于记录中的历史制品，不是当前可执行指南；当前入口与能力范围见[CLI 参考](../reference/cli.md)。
+> CLI 更新：独立 `pvisor snapshot`、service 层和独立池启动器已删除。当前池所有权使用 `pvisor-daemon serve --memory-pool`；其 Linux 物理共享协议与记录中的 macOS 压缩池分开。以下旧接口/测量属于记录中的历史制品，不是当前可执行指南；当前入口与能力范围见[CLI 参考](../reference/cli.md)。
 
 
 [主要结论](#conclusions) · [Motivation](#motivation) · [实验设计](#experiment-design) · [实验数据](#experiment-data) · [分析与使用建议](#analysis) · [机制概念验证](memory-optimization/proof-of-concept.md)
@@ -29,7 +29,7 @@
 
 256 MiB / 2 vCPU / raw 的 pause P50 为 **0.24 ms**，offload 为 **22.98 ms**；完整快照保存为 **712 ms**，恢复至 guest heartbeat 为 **933 ms**。压缩格式降低磁盘占用，但增加保存和恢复时间。[生命周期分布](#linux-lifecycle)与[完整快照结果](#linux-snapshot)包含全部规格、P95 和正确性检查。
 
-共享冷页 pager 当前仅支持 macOS/ARM64。Linux 的 offload 是显式暂停并写回 RAM，完整快照还包含 CPU、设备与文件系统状态；这些数字与上面的自动冷页回收收益分别解释。macOS 的 CLI 启动结果继续保留在[启动延迟](../benchmarks/startup.md)中。
+记录版本的共享压缩冷页 pager 仅支持 macOS/ARM64。Linux 的 offload 是显式暂停并写回 RAM，完整快照还包含 CPU、设备与文件系统状态；这些数字与上面的自动冷页回收收益分别解释。macOS 的 CLI 启动结果继续保留在[启动延迟](../benchmarks/startup.md)中。
 
 ## 二、Motivation：为什么测冷内存 {#motivation}
 
@@ -450,24 +450,13 @@ RAM 代理回答“冷 guest RAM 是否已回收”；footprint 回答 macOS 对
 
 显式 RAM 文件本身不带来压缩或共享。FUSE 压缩 RAM 是另一条路径，与共享池互斥，本轮没有它的性能数据。
 
-### macOS/HVF：最小启用方式 {#usage}
+### macOS/HVF：记录版本的启用边界 {#usage}
 
-在第一个终端创建仅自己可访问的新目录并运行服务；目录已经存在时应换新路径或核验权限。Unix socket 路径应保持短。
+测量的 macOS 版本使用显式共享 socket 和操作方管理的压缩池。其独立启动器已从当前分发中移除。保留下方固定二进制身份及复现记录；不要换成 daemon 池后将这些测量归于它。
 
-```bash
-mkdir -m 700 /tmp/pvisor-pool-demo
-pvisor service memory-pool /tmp/pvisor-pool-demo/p
-```
+当前池通过 `pvisor-daemon serve --memory-pool` 启用，使用独立 `memory-pool --directory DIR` 组件及 daemon 准备的配置。开启与预算见 [daemon 池](../guides/daemon/index.md#memory-pool)。Linux 物理共享协议不证明 macOS 压缩池路径已迁移。
 
-在其他终端运行 VM，共用同一个 socket；rootfs 镜像不是本次测量使用的静态 guest，所以实际收益必须另测。
-
-```bash
-pvisor run --vm --memory 256MiB --cpu 2 \
-  --vm-memory-pool /tmp/pvisor-pool-demo/p \
-  --rootfs image=ubuntu:24.04 -- /bin/sh
-```
-
-省略 `--vm-memory-pool` 即关闭这一实验路径。不要在任务完成前停止服务；池丢失会让依赖 VM 失败，当前不支持服务重启后恢复。16 MiB 默认预算只约束编码 payload，不约束服务全部物理内存。`--max-bytes 1048576` 是 1 MiB payload 上限，也会增加容量拒绝的机会。
+记录版本省略 `--vm-memory-pool` 时关闭实验路径。池丢失使依赖 VM 失败，不支持服务重启恢复。其默认 16 MiB 编码 payload 预算不包含全部物理内存；降低预算会增加容量拒绝。这些是历史限制，不是 daemon 默认值。
 
 `--vm-ram-backing FILE` 要求每台 VM 使用不同、尚不存在的文件；它不使 live RAM 自动共享。`--vm-ram-compression` 是另一条 FUSE 路径，不能与共享池组合。
 

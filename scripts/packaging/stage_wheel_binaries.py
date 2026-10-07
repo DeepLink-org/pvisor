@@ -24,7 +24,6 @@ NATIVE_BINARIES = (
     "pvisor-cache",
     "pvisor-tui",
     "pvisor-replay",
-    "pvisor-memory-pool",
 )
 EXPECTED_BINARIES = (*NATIVE_BINARIES, "pvisor-daemon")
 SUPPORTED_TARGETS = {

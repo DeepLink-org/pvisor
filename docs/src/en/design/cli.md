@@ -62,7 +62,7 @@ The public workflow is simple: start a Job, inspect evidence, then decide what t
 
 ## Core commands and service boundaries
 
-Top-level commands follow the object they operate on: flat Job/workspace operations, with native deployment and node resources grouped under `service`. Sandbox lifecycle is a separate daemon interface, not Cluster task submission. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help groups commands under Jobs, Filesystems and Extensions. Jobs includes `checkpoint`; Extensions contains `service`, `replay` and `tui`, with optional companions shown when installed.
+Top-level commands follow the object they operate on: flat Job/workspace operations. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI caching uses independent `pvisor-cache`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help groups commands under Jobs, Filesystems and Extensions, with installed optional companions shown.
 
 | Responsibility | Entry |
 |---|---|
@@ -70,23 +70,22 @@ Top-level commands follow the object they operate on: flat Job/workspace operati
 | Inspect, review and accept file changes | `inspect`, `review`, `apply`, `drop` |
 | Immutable Job checkpoints | `checkpoint` |
 | Trajectory replay and interactive frontend | `replay`, `tui` |
-| Deployment role lifecycle | `service run/status/restart/stop --config FILE` |
 | Local sandbox lifecycle | Direct `pvisor-daemon serve` and OpenSandbox-profile HTTP API |
-| Immutable environments and experimental cold pages | `service cache`, `service memory-pool` |
+| Immutable image cache | `pvisor-cache prepare/publish/serve/list/stat/read` |
+| Optional daemon-owned shared pages | `pvisor-daemon serve --memory-pool`; detached `memory-pool --directory DIR` component |
 
 `status --review` is a shortcut; `review` is the detailed review entry. `run --tui` is the primary interactive path, with top-level `tui` for explicit frontend invocation. Job operations are top-level commands, without a `job` command layer.
 
-Resource tools use `service` subcommands. Native execution capture, restoration and storage management use Job commands, with support determined by the VM profile. Other unknown names follow ordinary default execution rules. Direct `pvisor ctrl`, `pvisor ctrl --help` and `pvisor help ctrl` explicitly reject with migration guidance instead of default-running a workload; `pvisor run -- ctrl` remains explicit workload intent, not a control API alias.
+Resource tools use their own executables; the old service supervisor and node/pool role TOML are removed. Native execution capture, restoration and storage management use Job commands, with support determined by the VM profile. Other unknown names follow ordinary default execution rules. Direct `pvisor ctrl`, `pvisor ctrl --help` and `pvisor help ctrl` explicitly reject with migration guidance instead of default-running a workload; `pvisor run -- ctrl` remains explicit workload intent, not a control API alias.
 
 ```bash
-pvisor service --help
+pvisor-daemon serve --help
 pvisor-daemon protocol
-pvisor service cache --help
-pvisor service memory-pool --help
-
+pvisor-cache --help
+pvisor-daemon memory-pool --help
 ```
 
-Use `pvisor-daemon` directly for sandbox lifecycle, or `pvisor service daemon ...` to dispatch to the trusted installed executable. Retired `pvisor-cluster`/`pvisor-worker` services are not the current product workflow. Native resource companions, replay and TUI remain separate from Job commands; missing companions yield an explicit tool error. The daemon CLI constructs the native VM runtime and dispatches supervisors, with synchronous internal VM dispatch before Tokio. Packaging does not expose staging/checkpoint APIs or automatically acquire node resources.
+Use `pvisor-daemon` directly for sandbox lifecycle and optional pool ownership. The cache, replay and TUI remain separate from Job commands; replay/TUI companion lookup reports missing tools explicitly. The daemon CLI constructs the native VM runtime and dispatches supervisors, with synchronous internal VM dispatch before Tokio. Node resource protocols remain in the runtime, but the old CLI node supervisor has not migrated into the daemon. Packaging does not expose staging/checkpoint APIs or automatically acquire node resources.
 
 Tools come from a static table and only a trusted installation directory; discovery neither searches PATH nor executes companions. The directory/executables belong to the current user or root, must not be group/world writable, and reject symlinks. Unix `exec` preserves argv, stdio, signals and exit codes. Tool `--help`/`--version` arguments pass through unchanged, and tools cannot shadow Job commands. See [daemon operations](daemon/operations.md) for sandbox deployment and [responsibility convergence](daemon/responsibility-convergence.md) for separate native resource budgets.
 

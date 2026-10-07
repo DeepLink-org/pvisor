@@ -50,8 +50,8 @@ Signed endpoint expiration is unsupported and explicitly rejected.
 
 ## Runtime boundary: native VM and prepared images
 
-Native `pvisor` forwards `pvisor service daemon ...` arguments unchanged to the
-separately installed `pvisor-daemon`; it does not depend on this crate. The
+Invoke `pvisor-daemon` directly; the native `pvisor` application does not depend
+on this crate and has no service dispatch layer. The
 VM-only `NativeRuntime` in `runtime.rs` embeds `pvisor::PVisor` and `VmExecutor`
 in a detached `native-supervisor` subprocess that holds the RunHandle and survives
 daemon restart. Execution starts through pVisor's `RuntimeJobService`; live
@@ -283,9 +283,11 @@ correct public endpoint; automatic endpoint publication is not implemented.
 
 `pvisor-daemon protocol` prints the pinned baseline. Connect SDK version 1.1.0
 with the chosen domain and protocol, and use a prepared image satisfying the
-contract above. Invoke `pvisor-daemon` directly or use the native CLI's passthrough,
-`pvisor service daemon serve ...`; both address the same separately installed
-daemon executable.
+contract above. Invoke the separately built `pvisor-daemon` executable directly.
+The independent `pvisor-cache` tool retains `prepare`, `publish`, `serve`, `list`,
+`stat` and `read`; cache lifecycle is not absorbed by the daemon. Node runtime
+protocols remain in `pvisor`, but the removed CLI node supervisor has no daemon
+replacement or automatic acquire/release adapter.
 
 ## Optional daemon-owned memory pool
 
@@ -297,7 +299,12 @@ slot privately: reads retain the shared physical page, while writes use kernel
 COW. This path does not require userfaultfd and does not compress unique pages.
 Local cold-RAM compression remains a separate userfaultfd mode.
 
-The detached component survives API restart with the same configuration.
+The daemon starts or reuses the detached
+`pvisor-daemon memory-pool --directory DIR` component with configuration-bound
+private state under `<state>/memory-pool/`. This component expects the daemon's
+persisted pool configuration; it is not a replacement positional-socket CLI.
+There is no standalone pool binary. The component survives API restart with the
+same configuration.
 Connections authenticate the host UID and receive a read-only file descriptor.
 References pin slots until explicit release after unmapping; on disconnect,
 pidfd-confirmed peer exit is required before releasing mapped references.

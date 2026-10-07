@@ -1,6 +1,6 @@
 # VM memory performance: technical evidence
 
-> CLI update: the standalone `pvisor snapshot` entry is removed. Old interfaces/measurements below belong to their historical artifacts, not current executable instructions. See [CLI reference](../reference/cli.md) for current entries and capability boundaries.
+> CLI update: the standalone `pvisor snapshot` entry, service layer and standalone pool launcher are removed. Current pool ownership uses `pvisor-daemon serve --memory-pool`; its Linux physical-sharing protocol is separate from the recorded macOS compressed pool. Old interfaces/measurements below belong to their historical artifacts, not current executable instructions. See [CLI reference](../reference/cli.md) for current entries and capability boundaries.
 
 
 [Main conclusions](#conclusions) · [Motivation](#motivation) · [Experiment design](#experiment-design) · [Experimental data](#experiment-data) · [Analysis and usage guidance](#analysis) · [Mechanism proof of concept](memory-optimization/proof-of-concept.md)
@@ -29,7 +29,7 @@ Capacities need different reclamation times. These rows show observed benefits, 
 
 At 256 MiB / 2 vCPU / raw, pause P50 is **0.24 ms** and offload is **22.98 ms**. Complete snapshot save is **712 ms**, with restoration to guest heartbeat at **933 ms**. Compression reduces disk allocation while increasing save and restore time. [Lifecycle distributions](#linux-lifecycle) and [complete snapshot results](#linux-snapshot) include all configurations, P95 and correctness checks.
 
-The shared cold-page pager currently requires macOS/ARM64. Linux offload explicitly pauses and flushes RAM; complete snapshots also capture CPU, device and filesystem state. Interpret these figures separately from automatic cold-page reclamation above. macOS CLI startup measurements remain in [startup latency](../benchmarks/startup.md).
+The shared compressed cold-page pager in this recorded version required macOS/ARM64. Linux offload explicitly pauses and flushes RAM; complete snapshots also capture CPU, device and filesystem state. Interpret these figures separately from automatic cold-page reclamation above. macOS CLI startup measurements remain in [startup latency](../benchmarks/startup.md).
 
 ## 2. Motivation: why measure cold memory {#motivation}
 
@@ -464,24 +464,13 @@ Local raw record `docs/src/en/benchmarks/vm-memory/assets/.data/startup-timeline
 
 Explicit RAM files do not inherently compress or share memory. FUSE-compressed RAM is a separate, mutually exclusive path with no performance data in this run.
 
-### macOS/HVF: minimal opt-in {#usage}
+### macOS/HVF: recorded opt-in boundary {#usage}
 
-In one terminal, create a new owner-private directory and start the service; if the directory already exists, choose a new path or verify its permissions. Keep Unix socket paths short.
+The measured macOS version used an explicit shared socket and an operator-managed compressed pool. Its standalone launcher is removed from the current distribution. Retain the frozen executable identities and reproduction records below; do not substitute the daemon pool and attribute these measurements to it.
 
-```bash
-mkdir -m 700 /tmp/pvisor-pool-demo
-pvisor service memory-pool /tmp/pvisor-pool-demo/p
-```
+Current pool activation uses `pvisor-daemon serve --memory-pool`, with a detached `memory-pool --directory DIR` component and daemon-provisioned configuration. See [daemon pool activation and budgets](../guides/daemon/index.md#memory-pool). The Linux physical-sharing protocol does not establish migration of the macOS compressed-pool path.
 
-Run VMs in other terminals sharing the same socket. This rootfs image differs from the static guest measured here, so its actual benefits require separate measurement.
-
-```bash
-pvisor run --vm --memory 256MiB --cpu 2 \
-  --vm-memory-pool /tmp/pvisor-pool-demo/p \
-  --rootfs image=ubuntu:24.04 -- /bin/sh
-```
-
-Omit `--vm-memory-pool` to disable this experimental path. Do not stop the service before tasks finish: pool loss fails dependent VMs, and recovery after service restart is unsupported. The default 16 MiB budget limits encoded payload, not all physical memory used by the service. `--max-bytes 1048576` limits payload to 1 MiB and can increase capacity rejections.
+In the recorded version, omitting `--vm-memory-pool` disabled the experimental path. Pool loss failed dependent VMs, and service-restart recovery was unsupported. Its default 16 MiB encoded-payload budget excluded some physical memory; reducing that budget increased capacity rejections. These are historical limits, not daemon defaults.
 
 `--vm-ram-backing FILE` requires a different, nonexistent file for each VM; it does not automatically share live RAM. `--vm-ram-compression` selects a separate FUSE path and cannot be combined with the pool.
 

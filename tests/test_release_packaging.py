@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 import shutil
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+APPLICATION_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay")
 
 
 def _load_script(name: str):
@@ -159,7 +161,10 @@ def test_nightly_version_updates_python_package(
 
 
 @pytest.mark.parametrize("include_pvisor", [True, False])
-def test_nightly_installer_selects_pvisor_wheel(tmp_path: Path, include_pvisor: bool) -> None:
+@pytest.mark.parametrize("missing_binary", [None, *APPLICATION_BINARIES, "pvisor-daemon"])
+def test_nightly_installer_selects_pvisor_wheel(
+    tmp_path: Path, include_pvisor: bool, missing_binary: str | None
+) -> None:
     """Exercise the installer offline, with both old and new release assets."""
     interpreter = tmp_path / "python"
     interpreter.write_text(
@@ -190,6 +195,8 @@ def test_nightly_installer_selects_pvisor_wheel(tmp_path: Path, include_pvisor: 
     executable.chmod(0o755)
     for name in wheel_stage.EXPECTED_BINARIES[1:]:
         (tmp_path / name).symlink_to(executable)
+    if missing_binary is not None:
+        (tmp_path / missing_binary).unlink()
     result = subprocess.run(
         ["bash", str(ROOT / "scripts/install-nightly.sh")],
         env={**os.environ, "PYTHON": str(interpreter)},
@@ -202,7 +209,14 @@ def test_nightly_installer_selects_pvisor_wheel(tmp_path: Path, include_pvisor: 
         assert "no platform wheel" in result.stderr
         assert not (tmp_path / "pip.log").exists()
         return
+    if missing_binary is not None and (
+        missing_binary != "pvisor-daemon" or sys.platform == "linux"
+    ):
+        assert result.returncode != 0
+        assert f"wheel did not install executable {tmp_path / missing_binary}" in result.stderr
+        return
     assert result.returncode == 0, result.stderr
+    assert "pvisor-memory-pool" not in result.stdout + result.stderr
     installs = (tmp_path / "pip.log").read_text()
     assert "https://example.test/pvisor-" in installs
     assert "legacy-package" not in installs
@@ -390,13 +404,17 @@ def test_editable_staging_does_not_bundle_firmware(
     tmp_path: Path,
 ) -> None:
     artifacts = {}
-    for name in wheel_stage.EXPECTED_BINARIES:
+    for name in (*wheel_stage.EXPECTED_BINARIES, "pvisor-memory-pool"):
         artifact = tmp_path / "artifacts" / name
         artifact.parent.mkdir(exist_ok=True)
         artifact.write_text(name, encoding="utf-8")
         artifacts[name] = artifact
 
-    monkeypatch.setattr(wheel_stage, "WHEEL_DATA", tmp_path / "wheel-data")
+    wheel_data = tmp_path / "wheel-data"
+    stale_scripts = wheel_data / "scripts"
+    stale_scripts.mkdir(parents=True)
+    (stale_scripts / "pvisor-memory-pool").write_bytes(b"stale binary")
+    monkeypatch.setattr(wheel_stage, "WHEEL_DATA", wheel_data)
     monkeypatch.setattr(wheel_stage, "_build", lambda _options, **kwargs: artifacts)
     monkeypatch.setattr(wheel_stage, "_is_macos", lambda _options: False)
 
@@ -545,6 +563,7 @@ def test_cargo_command_selects_static_musl_on_linux(monkeypatch):
     assert "pvisor-cli/gateway" in command
     assert "pvisor/gateway" not in command
     assert "--bins" not in command
+    assert "pvisor-memory-pool" not in command
     assert "pvisor-cluster" not in command
     assert "pvisor-worker" not in command
     assert "pvisor-daemon" not in command
@@ -851,25 +870,19 @@ def test_macos_wheel_requires_native_set_and_rejects_daemon(tmp_path):
         wheel_verify._wheel_contents(wheel)
 
 
-def test_daemon_ci_and_distribution_use_native_linux_pipeline():
+def test_daemon_ci_uses_native_linux_pipeline():
     ci = (ROOT / ".github/workflows/ci.yml").read_text()
     daemon_job = ci.split("\n  daemon:\n", 1)[1].split("\n  rust-test:", 1)[0]
     assert "runs-on: ubuntu-latest" in daemon_job
     assert "macos" not in daemon_job
     assert 'static-musl: "true"' in daemon_job
     assert "just daemon-build" in daemon_job
-    dist = (ROOT / ".github/workflows/daemon-dist.yml").read_text()
-    assert "just daemon-build release" in dist
-    assert "cargo zigbuild" not in dist
-    assert "libkrunfw.SOURCE LICENSE NOTICE" in dist
-    assert "INSTALL.md" in dist
-    assert "INTERP" in dist and "(NEEDED)" in dist
-    assert "no native executor or firmware" not in ci + dist
+    assert "no native executor or firmware" not in ci
 
 
 def test_nightly_release_describes_native_daemon_prerequisites():
     contents = (ROOT / ".github/workflows/nightly.yml").read_text()
-    assert "no wheel or separate CLI is required" in contents
+    assert "daemon included in the Linux x86_64 wheel" in contents
     assert "native `pvisor-vm` execution" in contents
     assert "KVM access and delegated cgroup v2" in contents
     assert "trusted prepared-image manifest" in contents
@@ -885,30 +898,142 @@ def test_nightly_installer_uses_platform_specific_component_set():
     assert "== Linux-x86_64 ]]; then binaries+=(pvisor-daemon)" in contents
     assert 'for binary in "${binaries[@]}"' in contents
     assert "Linux-aarch64)" not in contents
+    assert "binaries=(pvisor pvisor-cache pvisor-tui pvisor-replay)" in contents
+    assert "pvisor-memory-pool" not in contents
 
 
-def test_native_daemon_user_service_has_explicit_runtime_prerequisites():
-    unit = (ROOT / "deploy/systemd/pvisor-daemon.service").read_text()
-    env = (ROOT / "deploy/systemd/daemon.env.example").read_text()
-    guide = (ROOT / "deploy/systemd/INSTALL.md").read_text()
-    assert "--podman" not in unit and "PVISOR_DAEMON_PODMAN" not in unit + env
-    assert "--images-dir=${PVISOR_DAEMON_IMAGES_DIR}" in unit
-    assert "--cgroup-root=${PVISOR_DAEMON_CGROUP_ROOT}" in unit
-    assert "--state=${PVISOR_DAEMON_STATE}" in unit
-    assert "PVISOR_DAEMON_STATE=/var/lib/pvd" in unit + env
-    assert "PVISOR_DAEMON_CGROUP_ROOT=\n" in env
-    assert "Delegate=cpu memory pids" in unit
-    assert "KillMode=process" in unit and "UMask=0077" in unit
-    assert "104 bytes" in guide and "cgroup.kill" in guide
-    assert "/dev/kvm" in guide and "Linux x86_64 only" in guide
-    assert "not supplied" in guide and "44772/18080" in guide
-    assert "no-internal-process" in guide
+@pytest.mark.parametrize("workflow", ["nightly.yml", "release.yml"])
+def test_releases_publish_wheels_and_sources_without_standalone_daemon(workflow):
+    assert not (ROOT / ".github/workflows/daemon-dist.yml").exists()
+    contents = (ROOT / ".github/workflows" / workflow).read_text()
+    for retired in (
+        "daemon-dist",
+        "nightly-daemon",
+        "release-daemon",
+        "daemon-sources",
+        "pvisor-daemon-",
+        "firmware-source-daemon",
+        "Download standalone daemon",
+        "\n  daemon:\n",
+        "Verify daemon archive checksum",
+    ):
+        assert retired not in contents
+    assert "dist/*.whl" in contents
+    assert "dist/pvisor-firmware-source-*.tar.gz" in contents
+    assert "test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz" in contents
+    assert "test -s dist/pvisor-firmware-source-macos-arm64.tar.gz" in contents
+    if workflow == "nightly.yml":
+        assert "needs: [meta, wheels]" in contents
+    else:
+        assert "needs: [validate, verify]" in contents
+        assert "needs: [validate, verify, github-release]" in contents
 
 
 @pytest.mark.parametrize("platform", ["manylinux_2_28_aarch64", "win_amd64", "macosx_11_0_x86_64"])
 def test_wheel_verifier_rejects_unsupported_platforms(platform):
     with pytest.raises(RuntimeError, match="unsupported wheel platform"):
         wheel_verify.expected_binaries(Path(f"pvisor-1.2.3-py3-none-{platform}.whl"))
+
+
+@pytest.mark.parametrize(
+    "platform,target,expected",
+    [
+        (
+            "manylinux_2_28_x86_64",
+            "x86_64-unknown-linux-musl",
+            (*APPLICATION_BINARIES, "pvisor-daemon"),
+        ),
+        ("macosx_11_0_arm64", "aarch64-apple-darwin", APPLICATION_BINARIES),
+    ],
+)
+def test_native_binary_contract_excludes_retired_pool(platform, target, expected):
+    options = wheel_stage.BuildOptions(target=target)
+    assert wheel_stage.NATIVE_BINARIES == APPLICATION_BINARIES
+    assert wheel_stage.expected_binaries(options) == expected
+    wheel = Path(f"pvisor-1.2.3-py3-none-{platform}.whl")
+    assert wheel_verify.expected_binaries(wheel) == expected
+    command = wheel_stage._cargo_command(options)
+    assert (
+        tuple(command[i + 1] for i, arg in enumerate(command) if arg == "--bin")
+        == APPLICATION_BINARIES
+    )
+    assert "pvisor-memory-pool" not in command
+
+
+@pytest.mark.parametrize("platform", ["manylinux_2_28_x86_64", "macosx_11_0_arm64"])
+def test_wheel_rejects_retired_pool_even_with_all_maintained_binaries(tmp_path, platform):
+    wheel = tmp_path / f"pvisor-1.2.3-py3-none-{platform}.whl"
+    _write_wheel(wheel, "1.2.3")
+    with zipfile.ZipFile(wheel, "a") as archive:
+        for name in (*wheel_verify.expected_binaries(wheel), "pvisor-memory-pool"):
+            binary = zipfile.ZipInfo(f"pvisor-1.2.3.data/scripts/{name}")
+            binary.external_attr = 0o100755 << 16
+            archive.writestr(binary, b"native binary")
+        if "macosx" in platform:
+            archive.writestr("pvisor-1.2.3.data/scripts/libkrunfw.5.dylib", b"firmware")
+    with pytest.raises(RuntimeError, match="retired executable pvisor-memory-pool"):
+        wheel_verify._wheel_contents(wheel)
+
+
+@pytest.mark.parametrize("platform", ["manylinux_2_28_x86_64", "macosx_11_0_arm64"])
+def test_install_smoke_uses_standalone_cache_and_daemon(monkeypatch, platform):
+    commands = []
+    wheel = Path(f"pvisor-1.2.3-py3-none-{platform}.whl")
+    expected = wheel_verify.expected_binaries(wheel)
+
+    def create_environment(self, environment):
+        scripts = wheel_verify._installed_script_dir(environment)
+        scripts.mkdir(parents=True)
+        for name in expected:
+            executable = scripts / name
+            executable.write_bytes(b"binary")
+            executable.chmod(0o755)
+
+    def run(command, **kwargs):
+        commands.append([Path(command[0]).name, *command[1:]])
+        return "pvisor 1.2.3"
+
+    monkeypatch.setattr(wheel_verify.venv.EnvBuilder, "create", create_environment)
+    monkeypatch.setattr(wheel_verify, "_run", run)
+    wheel_verify.install_smoke(wheel, "1.2.3")
+    for name in expected:
+        assert [name, "--version"] in commands
+        assert [name, "--help"] in commands
+    for command in ("prepare", "publish", "read"):
+        assert ["pvisor-cache", command, "--help"] in commands
+    for command in ("run", "tui", "replay"):
+        assert ["pvisor", command, "--help"] in commands
+    if "pvisor-daemon" in expected:
+        assert ["pvisor-daemon", "serve", "--help"] in commands
+        assert ["pvisor-daemon", "protocol"] in commands
+    else:
+        assert not any(command[0] == "pvisor-daemon" for command in commands)
+    assert not any("service" in command or "pvisor-memory-pool" in command for command in commands)
+
+
+def test_setuptools_excludes_stale_retired_and_unrelated_wheel_scripts(tmp_path, monkeypatch):
+    # Execute only the selector and its constants, without invoking setuptools.setup.
+    tree = ast.parse((ROOT / "setup.py").read_text())
+    selector = ast.Module(
+        body=[
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            or isinstance(node, ast.FunctionDef)
+            and node.name == "wheel_scripts"
+        ],
+        type_ignores=[],
+    )
+    namespace = {"Path": Path, "os": os, "__file__": str(tmp_path / "setup.py")}
+    exec(compile(selector, "setup.py", "exec"), namespace)
+    scripts = namespace["WHEEL_SCRIPTS"]
+    scripts.mkdir(parents=True)
+    payloads = {*APPLICATION_BINARIES, "pvisor-daemon", "libkrunfw.5.dylib", "libkrunfw.SOURCE"}
+    for name in payloads | {"pvisor-memory-pool", "unrelated-binary"}:
+        (scripts / name).write_bytes(b"payload")
+    monkeypatch.delenv("PVISOR_SETUP_SKIP_NATIVE_SCRIPTS", raising=False)
+    assert {Path(path).name for path in namespace["wheel_scripts"]()} == payloads
+    assert (scripts / "pvisor-memory-pool").is_file()
 
 
 def test_daemon_helper_uses_shared_component_builder_without_cli_dependency():
@@ -918,6 +1043,6 @@ def test_daemon_helper_uses_shared_component_builder_without_cli_dependency():
     assert "cargo build" not in contents and "scripts/build-pvisor.py" not in contents
     justfile = (ROOT / "justfile").read_text()
     assert 'daemon-install: (daemon-build "release")' in justfile
-    assert "service-build: build" in justfile
+    assert "service-build:" not in justfile
     assert "scripts/packaging/build_daemon.py --profile" in justfile
     assert "independently built daemon" not in justfile

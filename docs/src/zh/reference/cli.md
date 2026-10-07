@@ -24,7 +24,7 @@ listener 检查内核提供的同 UID 身份，在接纳 stdio／命令之前核
 版本 1、内部 Job ticket schema、包版本和可执行文件内容摘要。
 类型化 `JobCommand` payload 包含绑定精确 schema／构建的内部 CLI DTO，
 不是稳定公共 API。
-它不是 `pvisor service` 管理的 node/cache/pool 服务。Guest AgentCtl
+它与 daemon sandbox/pool 所有权及独立镜像缓存分开。Guest AgentCtl
 `Hello`/`Sync` 仍是独立协作通道，其 token 不能授权宿主 Job 或 VM 操作。
 
 升级前先排空活动请求，并使用旧二进制停止旧 listener。新客户端拒绝不兼容
@@ -58,18 +58,17 @@ pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/slee
 
 特性启用仅适用于 `run` 和特性查询，其他生命周期命令拒绝该选项；execution resume/fork 保留存储的配置。显式 Run 配置中的 `[features]` 也可启用特性；CLI 启用覆盖 `false`，省略保留配置。当前没有 CLI 禁用选项或持久化的 `feature enable` 操作。见[特性配置](config.md#features)。运行时特性与 Cargo 编译特性独立，既有 VM 内存参数保持不变。
 
-## Service 命令 {#service}
+## Daemon 与缓存命令 {#service}
 
-顶层命令操作原生 Job；`service` 管理原生节点资源并派发已安装的 companion。`run/status/restart/stop --config FILE` 管理配置中的原生角色；单机沙箱 daemon 使用独立的生命周期 API 与持久状态。
+顶层 `pvisor` 命令操作原生 Job。直接调用 `pvisor-daemon` 管理 sandbox 生命周期及可选池；独立使用 `pvisor-cache` 管理 OCI 缓存。
 
 ```bash
-pvisor service --help
-pvisor service daemon --help
-pvisor service cache --help
-pvisor service memory-pool --help
+pvisor-daemon serve --help
+pvisor-daemon memory-pool --help
+pvisor-cache --help
 ```
 
-原生资源工具使用 `service cache/memory-pool`。`service daemon` 将参数原样派发到单独安装、同目录的匹配 `pvisor-daemon`；使用旧构建时以 `pvisor service --help` 为准。daemon 单独安装后也可直接调用，步骤见 [daemon 安装指南](../guides/daemon/index.md)。NativeRuntime 嵌入 VM 执行；daemon 可执行入口与必需原生参数已接入，checkpoint/fork 与 stage/apply API 未实现，也不自动获取 node 共享。Controller/Worker 任务工具及其配置已退役。原生 node/cache/pool 所有权与部署边界见 [Service 入口](../guides/daemon/service.md)。
+为 `pvisor-daemon serve` 添加 `--memory-pool`，启用默认关闭的独立池组件。`pvisor-cache prepare/publish/serve/list/stat/read` 保持独立。旧 service supervisor、node/pool 角色 TOML 和独立池二进制已移除。Node 运行时协议仍保留，没有 daemon acquire/release 适配器。NativeRuntime 嵌入 VM 执行；checkpoint/fork 与 stage/apply API 未实现。所有权、安装与部署边界见 [daemon 与缓存入口](../guides/daemon/service.md)。
 
 其他未知名称按默认执行规则处理。已退役的 `ctrl` 是明确例外：
 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 在 Job 准入前
@@ -812,9 +811,10 @@ staging 数据，但保留紧凑的 Run/Overlay 元数据、apply ledger 和 cap
 
 ### 共享镜像文件缓存
 
-`pvisor service cache serve` 在前台提供 OCI 镜像文件服务；`cache prepare IMAGE`、
-`cache list DIGEST [PATH]`、`cache stat DIGEST PATH` 和 `cache read DIGEST PATH`
-通过 `PVISOR_CACHE_SERVER` 访问它。默认使用用户缓存目录下的
+`pvisor-cache serve` 在前台提供独立 OCI 镜像文件服务；`pvisor-cache prepare IMAGE`、
+`pvisor-cache list DIGEST [PATH]`、`pvisor-cache stat DIGEST PATH` 和
+`pvisor-cache read DIGEST PATH` 通过 `PVISOR_CACHE_SERVER` 访问它。
+`pvisor-cache publish IMAGE` 显式发布到可写 filesystem/S3 后端。默认使用用户缓存目录下的
 `pvisor/cache.sock` Unix socket。服务端可用 `--image-store DIR`
 指定已有 OCI store。文件读取支持分段和 SHA-256 校验。
 
@@ -825,4 +825,4 @@ VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像�
 完整协议、限制和 SSH 远程访问方式见 [共享镜像缓存协议](shared-image-cache.md)。
 
 
-实验性外部内存池入口为 `pvisor service memory-pool SOCKET` 与 `pvisor run --vm-memory-pool SOCKET`。池需要保持运行，停止会使依赖 VM 失败；配置、预算和使用步骤见[共享内存首版接入](../design/memory-optimization/proof-of-concept.md#v1-integration)。
+通过 `pvisor-daemon serve --memory-pool` 启用 daemon 自有实验池；独立 `memory-pool --directory DIR` 组件使用 daemon 准备的私有配置。原生 `pvisor run --vm-memory-pool SOCKET` 仍是带有平台／协议限制的显式运行时选项，不是服务启动器。池丢失会使依赖 VM 失败。启用与预算见 [daemon 池](../guides/daemon/index.md#memory-pool)；历史 macOS 压缩池结果保留其[版本范围](../design/memory-optimization/proof-of-concept.md#v1-integration)。

@@ -42,7 +42,6 @@ def test_workspace_separates_runtime_engines_and_application_entry_points():
     assert {binary["name"] for binary in app["bin"]} == {
         "pvisor",
         "pvisor-cache",
-        "pvisor-memory-pool",
         "pvisor-tui",
         "pvisor-replay",
     }

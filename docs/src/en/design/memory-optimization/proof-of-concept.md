@@ -17,11 +17,11 @@ Targets and evidence remain separate. Experimental parameters, protocols, and ex
 
 Agent VMs often run the same system and tools, retaining similar code, caches and runtime data. Separate RAM copies make isolation straightforward, but charge each VM for repeated content. Between interactions, a VM may also retain a working set that it will need later. Pausing vCPUs does not release those pages.
 
-pVisor's current approach handles cold blocks on the host: observe RAM ranges without CPU or device access, compress their contents and transfer ownership to a shared pool on the same host. Identical contents retain one encoded object; accesses restore writable pages owned by each VM. This requires neither guest zram nor application-managed state saving.
+The recorded macOS approach handles cold blocks on the host: observe RAM ranges without CPU or device access, compress their contents and transfer ownership to a shared pool on the same host. Identical contents retain one encoded object; accesses restore writable pages owned by each VM. This requires neither guest zram nor application-managed state saving.
 
 The benefit depends on content duplication, compressibility and the length of cold windows. Observation changes guest access permissions, and restoration costs transport, validation and remapping. Write-heavy workloads or repeated full-working-set scans may consume the initial savings quickly. Memory and execution latency must be evaluated together.
 
-This document describes the experimental macOS / Apple Silicon working-tree implementation on 2026-10-03. It is disabled by default. The first version provides a foreground `pvisor service memory-pool` service and explicit CLI/SDK integration; recovery after pool restart and whole-system physical-memory acceptance remain incomplete. Historical iterations remain in repository file `docs/macos-memory-sharing.md`, and raw evidence in `review_project/06-evidence/macos-memory/`. This page describes current mechanisms; measurements apply to the execution versions recorded with each dataset.
+The experimental macOS / Apple Silicon working-tree implementation recorded on 2026-10-03 was disabled by default. Its first version used a foreground pool and explicit CLI/SDK integration; that standalone launcher is now removed. Pool-restart recovery and whole-system physical-memory acceptance were incomplete. Historical iterations remain in repository file `docs/macos-memory-sharing.md`, and raw evidence in `review_project/06-evidence/macos-memory/`. These mechanism records and measurements apply only to the execution versions recorded with each dataset.
 
 ## 2. Core design {#core-design}
 
@@ -257,22 +257,16 @@ Do not use this mode's backing file as a checkpoint or combine it with FUSE RAM 
 
 ## 6. Converged version and product integration {#v1-integration}
 
-This release converges on an explicitly enabled experimental macOS / Apple Silicon v1: immutable shared compression, host cold-block observation, two-phase publication and private restoration. `--vm-memory-pool SOCKET` selects the VM executor; TOML uses `[vm].memory_pool`, and Rust SDK uses `VmSettings.memory_pool`. It is disabled when omitted; the old experimental environment variable remains a compatibility entry. This memory path requires neither guest zram nor the macFUSE RAM adapter.
+The recorded first version converged on an explicitly enabled experimental macOS / Apple Silicon v1: immutable shared compression, host cold-block observation, two-phase publication and private restoration. `--vm-memory-pool SOCKET` selects the VM executor; TOML uses `[vm].memory_pool`, and Rust SDK uses `VmSettings.memory_pool`. It is disabled when omitted; the old experimental environment variable remains a compatibility entry. This memory path requires neither guest zram nor the macFUSE RAM adapter.
 
-Create a private directory and run the foreground pool in one terminal. If the directory already exists, verify its owner and permissions first:
-
-```bash
-mkdir -m 700 /tmp/pvisor-memory-pool-v1
-pvisor service memory-pool /tmp/pvisor-memory-pool-v1/pool.sock
-```
-
-Start VMs in other terminals with the same socket. The service can also be invoked directly as `pvisor-memory-pool`:
+Current service ownership belongs to `pvisor-daemon`: enable its pool with `serve --memory-pool`; it starts or reuses a detached `memory-pool --directory DIR` component using persisted private configuration. The old positional-socket launcher is removed. The current Linux physical-sharing pool is a different protocol, not a migrated macOS compressed-pool result. See [daemon pool activation](../../guides/daemon/index.md#memory-pool).
 
 ```bash
-pvisor run --vm-memory-pool /tmp/pvisor-memory-pool-v1/pool.sock --rootfs image=ubuntu:latest -- bash
+pvisor-daemon serve --help
+pvisor-daemon memory-pool --help
 ```
 
-Default pool budgets are 16 MiB encoded payload, 8192 objects, 16 connections and 32768 references per connection; the reference budget covers 2 GiB RAM in 64 KiB blocks. Service flags set these four budgets independently; encoded payload excludes some heap metadata. The service accepts only the current UID, uses socket permissions 0600 and refuses to overwrite an endpoint. SIGINT/SIGTERM closes connections, waits for reference cleanup and removes its own socket. Stopping the pool fails dependent live VMs. This is an operator-managed foreground component, without automatic restart or content recovery.
+The recorded macOS v1 default pool budgets were 16 MiB encoded payload, 8192 objects, 16 connections and 32768 references per connection; the reference budget covers 2 GiB RAM in 64 KiB blocks. That version's service flags set these four budgets independently; encoded payload excludes some heap metadata. The service accepts only the current UID, uses socket permissions 0600 and refuses to overwrite an endpoint. SIGINT/SIGTERM closes connections, waits for reference cleanup and removes its own socket. Stopping the pool fails dependent live VMs. That version was an operator-managed foreground component, without automatic restart or content recovery; these are historical limits, not current daemon defaults.
 
 The v1 integration check used the shipped pool and explicit SDK option without the old pool environment variable in the parent. Two real VMs passed shared-object, restoration, independent-write and exit checks; service exit and socket cleanup passed in about 36.6 s, without host-guard errors. Raw evidence is `v1-product-integration.json`. Targeted Rust regression, Clippy and installation/packaging results are recorded in the convergence report.
 

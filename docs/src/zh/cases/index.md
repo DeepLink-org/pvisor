@@ -36,7 +36,7 @@ cat report.txt
 | 从原生 Agent 轨迹准备恢复 | `pvisor replay`，派发到同目录的 `pvisor-replay` | [第五章](05-tools-and-restoration.md)、[回放指南](../guides/replay.md) |
 | 选择 OCI 容器或 VM 执行 | `pvisor run --executor container` / `--executor vm` | [容器](../guides/executors/container.md)、[VM](../guides/executors/vm.md)；需要对应 runtime/rootfs |
 | 保存 CPU、RAM、设备和完整文件树 | 原生 VM execution checkpoint / 快照存储 SDK | [Execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)；要求兼容的独立 rootfs、无网络 Job，不是 daemon 能力 |
-| 管理 OCI 文件缓存或共享冷页池 | `pvisor service cache` / `pvisor service memory-pool` | [共享镜像缓存](../reference/shared-image-cache.md)、[内存共享](../design/memory-optimization/proof-of-concept.md) |
+| 管理 OCI 文件缓存或共享冷页池 | `pvisor-cache` / `pvisor-daemon serve --memory-pool` | [共享镜像缓存](../reference/shared-image-cache.md)、[daemon 池](../guides/daemon/index.md#memory-pool) |
 
 Gateway 捕获需要启用 `gateway` feature 的构建；wheel 和 `just build release` 包含该能力。没有安装伴随二进制时，核心 Job 命令仍能使用；`pvisor --help` 按操作对象列出已安装的可选命令。完整 VM 快照需要 KVM 或 Apple Silicon Hypervisor 和可用 FUSE 后端；普通 VM Job 在兼容的独立 rootfs、无网络 profile 下支持 execution checkpoint；用 `status --json` 检查能力和拒绝原因。
 

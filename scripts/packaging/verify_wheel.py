@@ -18,7 +18,6 @@ EXPECTED_BINARIES = (
     "pvisor-cache",
     "pvisor-tui",
     "pvisor-replay",
-    "pvisor-memory-pool",
     "pvisor-daemon",
 )
 COMPANION_BINARIES = EXPECTED_BINARIES[1:-1]
@@ -61,6 +60,8 @@ def _wheel_contents(
 
         scripts: dict[str, zipfile.ZipInfo] = {}
         expected = expected_binaries(wheel)
+        if any(name.endswith("/scripts/pvisor-memory-pool") for name in archive.namelist()):
+            raise RuntimeError("wheel contains retired executable pvisor-memory-pool")
         if "pvisor-daemon" not in expected and any(
             name.endswith("/scripts/pvisor-daemon") for name in archive.namelist()
         ):
@@ -199,12 +200,12 @@ def install_smoke(wheel: Path, version: str) -> None:
         if "pvisor-daemon" in expected_binaries(wheel):
             _run([str(scripts / "pvisor-daemon"), "serve", "--help"], env=env)
             _run([str(scripts / "pvisor-daemon"), "protocol"], env=env)
-            _run([str(scripts / "pvisor"), "service", "daemon", "protocol"], env=env)
+
         _run([str(scripts / "pvisor"), "run", "--help"], env=env)
-        for binary in COMPANION_BINARIES:
-            name = binary.removeprefix("pvisor-")
-            prefix = ["service"] if name in {"cache", "memory-pool"} else []
-            _run([str(scripts / "pvisor"), *prefix, name, "--help"], env=env)
+        for command in ("prepare", "publish", "read"):
+            _run([str(scripts / "pvisor-cache"), command, "--help"], env=env)
+        for command in ("tui", "replay"):
+            _run([str(scripts / "pvisor"), command, "--help"], env=env)
 
 
 def main() -> None:

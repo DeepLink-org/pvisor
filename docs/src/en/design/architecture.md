@@ -42,7 +42,7 @@ publishes a generation/capability manifest plus a generation-named Unix socket
 under canonical `/tmp/pvisor-host-<effective-UID>`. The root is same-UID,
 non-symlink and exactly `0700`; sockets and private manifest files are `0600`.
 Invalid pre-existing entries fail closed rather than being repaired with chmod.
-The listener is independent of the node/cache/pool deployment service.
+The listener is independent of daemon sandbox/pool ownership and the standalone cache. Node resource protocols remain runtime facilities; their old CLI supervisor is removed, without a daemon adapter.
 
 After kernel same-UID peer authentication and build compatibility negotiation,
 the frontend transfers stdin/stdout/stderr with `SCM_RIGHTS` and sends its typed

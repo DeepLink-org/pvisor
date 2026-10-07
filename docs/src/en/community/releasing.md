@@ -5,7 +5,7 @@ GitHub Actions builds stable releases from version tags and publishes to PyPI us
 Each platform wheel is tagged `py3-none-<platform>` and contains:
 
 - The Python `pvisor` version marker, not a launcher;
-- Native scripts `pvisor`, `pvisor-cache`, `pvisor-tui`, `pvisor-replay` and `pvisor-memory-pool`, installed directly into the environment's bin directory;
+- Four native scripts `pvisor`, `pvisor-cache`, `pvisor-tui` and `pvisor-replay`, installed directly into the environment's bin directory;
 - Independently built `pvisor-daemon` only in the Linux x86_64 wheel;
 - `libkrunfw.5.dylib` only on Apple Silicon macOS; Linux embeds the kernel at build time.
 
@@ -57,8 +57,8 @@ Every wheel has component checks and an installed CLI smoke test. Release-set va
 
 Rerunning a partially completed tagged release skips files already accepted by PyPI and fills missing GitHub Release assets.
 
-The Linux x86_64 daemon uses native `pvisor-vm`, not rootless Podman. Its wheel/standalone executable needs KVM access, delegated cgroup v2 and a trusted prepared-image manifest/rootfs with a bootstrap supervising genuine execd/egress services and guest vsock bridges on CID 3, ports 44772/18080. The bootstrap/image recipe is not supplied or end-to-end validated. Shipping an executable is not SDK-conformance or density evidence. See [daemon setup](../guides/daemon/index.md).
+The Linux x86_64 daemon uses native `pvisor-vm`, not rootless Podman. Its standalone executable, installed from a Linux x86_64 wheel or built locally from source, needs KVM access, delegated cgroup v2 and a trusted prepared-image manifest/rootfs with a bootstrap supervising genuine execd/egress services and guest vsock bridges on CID 3, ports 44772/18080. The bootstrap/image recipe is not supplied or end-to-end validated. Shipping an executable is not SDK-conformance or density evidence. See [daemon setup](../guides/daemon/index.md).
 
 ## Nightly builds
 
-**Nightly Build** runs daily at UTC 03:00 (11:00 Beijing) and can be triggered manually on `main`. Ordinary pushes run CI rather than rebuilding nightly wheels. Nightly/stable releases share the Linux/macOS build matrix, installation smoke tests and complete artifact-set validation. Nightly versions append `+g<run-number>.<commit>` and update only GitHub's `nightly` release. Stable tags publish to PyPI first, then attach the same validated wheels to GitHub Release. Nightly also publishes the standalone `pvisor-daemon-linux-x86_64.tar.gz` with a SHA-256 checksum; it needs neither a wheel nor a separate CLI, but retains the native runtime prerequisites above.
+**Nightly Build** runs daily at UTC 03:00 (11:00 Beijing) and can be triggered manually on `main`. Ordinary pushes run CI rather than rebuilding nightly wheels. Nightly/stable releases share the Linux/macOS build matrix, installation smoke tests and complete artifact-set validation. Nightly versions append `+g<run-number>.<commit>` and update only GitHub's `nightly` release. Stable tags publish validated wheels and corresponding firmware sources to GitHub Release before uploading the wheels to PyPI. Install the daemon from the Linux x86_64 nightly wheel or build it locally from source; both paths retain the native runtime prerequisites above. Standalone daemon archives are not published.

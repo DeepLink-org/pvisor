@@ -8,12 +8,12 @@ Reduce duplicated management by giving each local resource a clear owner, not by
 | --- | --- | --- |
 | Sandbox admission, intentions, expiration, endpoints | `pvisor-daemon` | Implemented by VM-only NativeRuntime with integrated executable/CLI |
 | Job/Attempt lifecycle, staging, Gateway and native VM checkpoints | `pvisor` Session/executors | VM execution embedded in supervisors; staging/Gateway/checkpoint APIs not exposed |
-| Immutable environment mounts and shared read-only RAM backing | Native node resource service (`pvisor/src/node.rs`) | Retained same-user, same-host service; no daemon acquire/release adapter |
-| Image cache reads and decoded payload | Native cache modules | Separate native data path and budgets |
-| Experimental cold RAM objects/session references | Optional native memory-pool process | Separate process; macOS/Apple Silicon support boundary remains |
+| Immutable environment mounts and shared read-only RAM backing | Native node resource service (`pvisor/src/node.rs`) | Runtime protocols retained; old CLI node supervisor removed; no daemon acquire/release adapter |
+| Image preparation, publication, serving and reads | Independent `pvisor-cache` and runtime cache modules | Separate executable, data path and budgets; not absorbed by daemon |
+| Optional shared pages and session references | `pvisor-daemon/src/memory_pool.rs` | `serve --memory-pool` starts/reuses a detached `memory-pool --directory DIR` component; off by default |
 | Host selection, workflows and retry policy | External orchestration | Outside the product control plane |
 
-The native node service remains useful independently of retired distributed roles. Its identity is an image handle/digest or sealed RAM identity/compatibility, not a sandbox ID. A connection pins one owner. Same-identity preparation is single-flight; active owner/session/preparation counts and warming are bounded. A process-local registry remains available where native callers do not configure a node socket.
+Node runtime protocols remain available to embedded native callers; the removed CLI node supervisor is not a daemon feature. Its identity is an image handle/digest or sealed RAM identity/compatibility, not a sandbox ID. A connection pins one owner. Same-identity preparation is single-flight; active owner/session/preparation counts and warming are bounded. A process-local registry remains available where native callers do not configure a node socket.
 
 ```mermaid
 flowchart TB
@@ -23,7 +23,8 @@ flowchart TB
     Native[Native pVisor execution] --> Node[Native node resource service]
     Node --> Cache[Immutable cache and lazy reads]
     Node --> RAM[Shared read-only RAM backing]
-    Native --> Pool[Optional cold RAM pool]
+    Daemon --> Pool[Optional detached shared-page pool]
+    Supervisor --> Pool
 ```
 
 There is deliberately no daemon-to-node arrow. Shared packaging, a common launch entry or fewer ports does not supply a missing runtime adapter or establish faster startup, lower memory or improved useful-work density.
@@ -38,11 +39,11 @@ There is deliberately no daemon-to-node arrow. Shared packaging, a common launch
 | Published checkpoints/evidence | Only through their own retention and GC roots | Native registry warmth cannot authorize deletion |
 | Daemon sandbox record | After confirmed native deletion | Normal daemon shutdown preserves supervisors/VMs and registry |
 
-A daemon-only restart need not restart detached native supervisors/VMs or native owners. Restarting a backing owner or cold pool is a different operation and cannot promise transparent session reconnect. Keep pins until native runners are reaped; without lossless draining, wait for dependent VMs before upgrades. Do not infer live RAM reconstruction from a restored metadata file.
+A daemon-only restart preserves detached native supervisors/VMs and the configuration-bound pool component. It does not recover a failed pool or recreate its live pages. Restarting a backing owner or cold pool is a different operation and cannot promise transparent session reconnect. Keep pins until native runners are reaped; without lossless draining, wait for dependent VMs before upgrades. Do not infer live RAM reconstruction from a restored metadata file.
 
 ## Budgets and concurrency {#budget}
 
-Native node configuration bounds owners, warm owners, sessions, preparations and retained cache payload. That payload counter aggregates content blocks, paged metadata and Linux decoded RAM; it excludes complete metadata, scratch, external references and kernel residency. The separate cold-pool payload budget is not dynamically arbitrated against node caches or equal to a whole-process cap.
+Native node configuration bounds owners, warm owners, sessions, preparations and retained cache payload. That payload counter aggregates content blocks, paged metadata and Linux decoded RAM; it excludes complete metadata, scratch, external references and kernel residency. The daemon pool has separate bounded page/object/connection/reference budgets, outside individual sandbox cgroups. They are not dynamically arbitrated against node caches or equal to a whole-process cap; see [pool budgets](../../guides/daemon/index.md#memory-pool).
 
 Reserve headroom for active objects and restoration before optional caches/prefetch. Under pressure, drop expendable warmth/refetchable contents or refuse new preparations, never the only live bytes. Slow teardown and I/O stay outside management map locks; same-identity serialization must retain authorization and compatibility checks.
 
@@ -56,5 +57,7 @@ Daemon CPU/memory admission remains a separate conservative sum of supervisor/VM
 4. Consider process merging only after explicit restart/drain and data-preservation contracts, followed by fixed-budget measurements.
 
 No live-VM takeover, shared cold-pool arbitration, automatic node acquisition or density advantage is established by consolidation. Native resource correctness evidence and legacy service experiments keep their original scope; they are not daemon acceptance results.
+
+The independent cache keeps `prepare`, `publish`, `serve`, `list`, `stat` and `read`; removing the service layer does not merge cache or node protocols into the daemon.
 
 Related contracts: [shared working sets](shared-working-set.md), [state and recovery](state-and-recovery.md), [native shared image storage](../shared-image-cache-storage.md) and [experimental pool](../memory-optimization/proof-of-concept.md).

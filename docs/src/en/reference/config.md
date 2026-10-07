@@ -55,7 +55,7 @@ workload-aware-memory-offloading = true
 
 ## Daemon configuration {#daemon}
 
-`pvisor-daemon serve` accepts command-line settings, not this native `RunConfig` TOML or resolved `RunSpec`. Set `OPEN_SANDBOX_API_KEY` to a protected secret of at least 32 bytes. See [daemon startup](../guides/daemon/index.md#start) and [service entry points](../guides/daemon/service.md).
+`pvisor-daemon serve` accepts command-line settings, not this native `RunConfig` TOML or resolved `RunSpec`. Set `OPEN_SANDBOX_API_KEY` to a protected secret of at least 32 bytes. See [daemon startup](../guides/daemon/index.md#start) and [daemon and cache entry points](../guides/daemon/service.md).
 
 | Option | Default / meaning |
 | --- | --- |
@@ -68,8 +68,9 @@ workload-aware-memory-offloading = true
 | `--cpu-millis N` | 4000; sum of admitted hard CPU limits, thousandths of one CPU |
 | `--memory-bytes N` | 8589934592; sum of admitted hard memory limits, not node-wide physical memory |
 | `--max-timeout-seconds N` | 86400; maximum creation TTL, configurable from 60 seconds to one year |
+| `--memory-pool` | Off by default; enable daemon-owned detached pool; reserve host memory outside sandbox admission |
 
-Old `[controller]`, `[[workers]]`, Worker profiles and Cluster task JSON are not daemon inputs. Native node/cache/pool configuration remains separate. NativeRuntime is VM-only; checkpoint/fork, stage/apply, global DAG and distributed lease APIs are absent.
+Old `[controller]`, `[[workers]]`, Worker profiles and Cluster task JSON are not daemon inputs. The removed node/pool service-role TOML is not a daemon configuration format. `pvisor-cache` remains independent; node runtime protocols have no daemon acquire/release adapter. NativeRuntime is VM-only; checkpoint/fork, stage/apply, global DAG and distributed lease APIs are absent.
 
 `serve` constructs NativeRuntime with the required `--images-dir` and `--cgroup-root` options. Cargo links `pvisor`/`pvisor-core`, and synchronous internal VM dispatch runs before argument parsing or Tokio. The hidden supervisor command is implemented. Images/cgroup paths are canonicalized; relative state resolves against the startup working directory and runtime state is canonicalized. Use short absolute paths in deployments and keep them unchanged on restart.
 

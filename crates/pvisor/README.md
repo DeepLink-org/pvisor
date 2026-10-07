@@ -18,11 +18,12 @@ OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 `pvisor-core` defines Operations, Events and cross-component contracts. This crate
 owns Session lifecycle, scheduling, policy adaptation and execution. The
 `pvisor-cli` application owns Job lifecycle commands, the persistent Host Job
-listener/worker adapters, terminal/rendering code, companion discovery, and local
-node/pool supervision. Cache storage and node resource protocols remain runtime
-components; their argument parsers and executable entry points live in the app.
-Job commands use `pvisor`; local node
-lifecycle, cache and memory-pool tools use `pvisor service`. TUI and replay are
+listener/worker adapters, terminal/rendering code and companion discovery.
+Cache storage and node resource protocols remain runtime components; cache
+argument parsing and the independent `pvisor-cache` executable live in the app.
+Job commands use `pvisor`; `pvisor-daemon` owns sandbox services and its optional
+pool. The old CLI node supervisor is removed, not migrated into the daemon.
+TUI and replay are
 Job frontends, not runtime dependencies. Cross-node placement and distributed scheduling
 belong to external orchestrators, not this crate.
 Guest injection uses the core `pvisor` execution runtime.
@@ -91,7 +92,7 @@ options. Feature queries run locally without starting/contacting the Host Job
 service. Their `enabled` column means registry defaults plus this invocation's
 CLI enables, not a live VM status or a scan of personal/project config files.
 Global enables are supported by `run` and feature queries, not other Job actions
-or extensions/services; extension arguments and help requests are forwarded to
+or extensions; extension arguments and help requests are forwarded to
 companions. Companion help also supports leading feature options, without
 forwarding those options as runtime enables; use `pvisor help COMMAND` or
 `pvisor COMMAND --help`.
@@ -145,7 +146,8 @@ All built-in Job CLI operations (`run`, `status`, `kill`, `suspend`, `resume`,
 listener in `pvisor-cli/src/cli/host_service.rs`. Ordinary persisted Jobs need no endpoint options or manual
 service startup. Bare `pvisor` displays help; default execution via
 `pvisor -- COMMAND` enters the same service. This listener is separate from
-the node/cache/pool deployment service below; embedded `PVisor` remains a direct API.
+daemon sandbox/pool ownership and the independent cache; embedded `PVisor`
+remains a direct API.
 
 Host authority lives under canonical `/tmp/pvisor-host-<effective-UID>`
 (usually `/private/tmp` on macOS): a same-user, non-symlink `0700` root with
@@ -347,14 +349,20 @@ savings; compressed exit still does not commit writes after the last resume.
 See the [CLI commands and limits](../../docs/src/en/reference/cli.md#vm-instance-control)
 and [configuration example](../../docs/src/en/reference/config.md#vm-control-memory).
 
-## Local service boundary
+## Resource ownership and local cold compression
 
-`pvisor service run --config service.toml` supervises local resource owners;
-`status`, `restart ROLE` and `stop [--role ROLE]` manage their lifecycle. The
-`node` role shares immutable image mounts and snapshot RAM while retaining
-same-user authorization, compatibility checks and active-pin restart/stop
-fences. The optional `pool` role serves the experimental Apple Silicon cold-page
-pool. `service cache` and `service memory-pool` dispatch their installed tools.
+`pvisor-daemon serve --memory-pool` enables the daemon-owned experimental pool;
+the daemon starts or reuses its detached `pvisor-daemon memory-pool --directory DIR`
+component. Keep the pool alive until dependent VMs exit; API restart does not
+provide pool-process or host-reboot recovery. Reserve pool/host overhead outside
+sandbox admission limits. See the [daemon boundary](../pvisor-daemon/README.md).
+
+`pvisor-cache` remains independent, with `prepare`, `publish`, `serve`, `list`,
+`stat` and `read`. Node runtime protocols still own immutable mounts and snapshot
+RAM with same-user authorization, compatibility checks and connection pins.
+The old CLI service supervisor and node/pool role configuration are removed;
+the daemon has no node acquire/release adapter. Embedded callers retain explicit
+resource ownership and must release consumers before backing owners.
 
 Linux x86_64 also has default-off experimental instance-local live cold
 compression: `VmSettings.cold_ram_compression` / `[vm].cold_ram_compression` or
@@ -378,48 +386,12 @@ for user-specific device ACLs, restricted mappings/build features and ownership.
 This delivers an experimental mechanism, not a production-density claim; sealed
 `memfd` pooling remains proposed.
 
-A minimal configuration is:
-
-```toml
-state = '.pvisor/services'
-
-[node]
-cache_backend = 'filesystem'
-cache_location = 'cache'
-snapshot_roots = ['snapshots']
-```
-
-Paths resolve relative to the configuration file; node state/socket paths resolve
-under service state. Linux deployments can set `cgroup_root = ':self:'` **before
-`[node]`**, using a real delegated unified cgroup v2 hierarchy. Service limits
-remain installed before child execution, with positive per-role `[limits.node]`
-(and optional `[limits.pool]`) budgets. Without delegation, process ownership is
-not evidence of kernel-enforced limits. Resource owners are not transparently
-recoverable after a crash; drain pins before restart/stop. Node pin checks do not
-prove the pool has no direct VM clients. Drain those clients separately: SIGINT
-puts the pool into draining, and a stop timeout can leave it rejecting new clients
-while retaining existing data owners.
-
-The service configuration accepts local resource roles, not distributed
-scheduler roles; `controller`, `worker` and `workers` keys are rejected even
-when their sections/lists are empty.
-`pvisor service daemon ...` passes arguments unchanged to a trusted, separately
-installed `pvisor-daemon` beside `pvisor`; it does not add a daemon role to this
-configuration or link a daemon dependency. The daemon's VM-only `NativeRuntime`
-embeds this crate in detached supervisor subprocesses. The daemon CLI is wired
-to that runtime; companion dispatch does not automatically acquire node sharing
-resources. The daemon API has no stage/apply or checkpoint/fork implementation.
-
-### Build and validation boundary
-
-The root `service-build` selects local binaries and builds the daemon separately.
-Ignored local gates require explicit selection and the environment described in
-their test annotations. Install `pvisor-daemon` beside `pvisor` for companion
-dispatch. The daemon is a separate executable linking `pvisor` and `pvisor-core`;
-synchronous internal VM dispatch runs before Tokio. Packaging includes both
-executables, but does not supply or validate the prepared-image bootstrap,
-SDK conformance or density.
-See the [daemon boundary](../pvisor-daemon/README.md).
+The daemon's VM-only `NativeRuntime` embeds this crate in detached supervisor
+subprocesses. Its CLI uses explicit flags rather than the removed service TOML.
+The daemon API has no stage/apply or checkpoint/fork implementation. The daemon
+is a separate executable linking `pvisor` and `pvisor-core`; synchronous internal
+VM dispatch runs before Tokio. Packaging does not supply or validate the
+prepared-image bootstrap, SDK conformance or density.
 
 ## Source and application boundary
 
@@ -439,12 +411,14 @@ barriers call `Persistence` through `DurableFiles` directly, while runtime JSON
 publication and Run persistence diagnostics retain their own helpers.
 
 Application sources live under `../pvisor-cli/`: `src/cli/`, `src/companions.rs`,
-`src/service.rs`, `src/service_cgroup.rs`, and the `pvisor`, `pvisor-cache`, and
-`pvisor-memory-pool` entries in `src/bin/`. Feature listing and cache argument
+`src/tui/`, and four entries in `src/bin/`: `pvisor`, `pvisor-cache`, `pvisor-tui`
+and `pvisor-replay`. Daemon pool lifecycle belongs in
+`../pvisor-daemon/src/memory_pool.rs`; node protocols remain in `src/node.rs`
+and `src/node/`. Feature listing and cache argument
 parsing also live in the application. Executable-dependent integration tests
 live in its `tests/`; runtime-only tests remain here. Tests combining command
 execution with runtime APIs link both crates from the application test suite.
-The detailed command, platform, storage and service limits above remain relevant
+The detailed command, platform, storage and memory limits above remain relevant
 to embedded callers where they describe runtime behavior, and to the installed
 application where they describe frontend behavior.
 

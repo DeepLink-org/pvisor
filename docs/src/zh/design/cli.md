@@ -73,7 +73,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 ## 核心命令与服务边界
 
-顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平，原生部署／节点资源集中在 `service`；sandbox 生命周期是独立 daemon 接口，不是 Cluster 任务提交。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。主帮助按 Jobs、Filesystems、Extensions 分组。Jobs 包含 `checkpoint`；Extensions 包含 `service`、`replay`、`tui`，可选伴随命令安装后显示。
+顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存使用独立 `pvisor-cache`。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。主帮助按 Jobs、Filesystems、Extensions 分组，显示已安装的可选伴随命令。
 
 | 职责 | 入口 |
 |---|---|
@@ -81,23 +81,22 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 | 查看、审查与接受文件变化 | `inspect`、`review`、`apply`、`drop` |
 | Job 不可变检查点 | `checkpoint` |
 | 轨迹回放与交互前端 | `replay`、`tui` |
-| 部署角色生命周期 | `service run/status/restart/stop --config FILE` |
 | 本机 sandbox 生命周期 | 直接 `pvisor-daemon serve` 与 OpenSandbox profile HTTP API |
-| 不可变环境与实验冷页池 | `service cache`、`service memory-pool` |
+| 不可变镜像缓存 | `pvisor-cache prepare/publish/serve/list/stat/read` |
+| 可选 daemon 自有共享页 | `pvisor-daemon serve --memory-pool`；独立 `memory-pool --directory DIR` 组件 |
 
 `status --review` 是快捷形式；`review` 是详细审查入口。`run --tui` 是主要交互路径，顶层 `tui` 用于显式前端调用。Job 操作直接使用顶层命令，没有 `job` 命令层。
 
-资源工具使用 `service` 子命令。原生执行状态捕获、恢复和存储管理使用 Job 命令，能力由实际 VM profile 决定。其他未知名称按普通默认执行规则处理。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor run -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
+资源工具使用各自的可执行文件；旧 service supervisor 与 node/pool 角色 TOML 已移除。原生执行状态捕获、恢复和存储管理使用 Job 命令，能力由实际 VM profile 决定。其他未知名称按普通默认执行规则处理。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor run -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
 
 ```bash
-pvisor service --help
+pvisor-daemon serve --help
 pvisor-daemon protocol
-pvisor service cache --help
-pvisor service memory-pool --help
-
+pvisor-cache --help
+pvisor-daemon memory-pool --help
 ```
 
-Sandbox 生命周期直接调用 `pvisor-daemon`，或通过 `pvisor service daemon ...` 分发给可信安装目录中的可执行文件。已退役的 `pvisor-cluster`/`pvisor-worker` 服务不是当前产品流程。原生资源 companion、replay 与 TUI 仍独立于 Job 命令，缺失 companion 会明确报错。daemon CLI 构造原生 VM 运行时并派发 supervisor，同步内部 VM 派发先于 Tokio。打包不暴露 staging/checkpoint API，也不自动获取 node 资源。
+Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存、replay 和 TUI 仍独立于 Job 命令；replay/TUI 伴随程序查找会明确报告工具缺失。Daemon CLI 构造原生 VM 运行时并派发 supervisor，同步内部 VM 派发先于 Tokio。Node 资源协议仍保留在运行时，但旧 CLI node supervisor 未迁入 daemon。打包不暴露 staging/checkpoint API，也不自动获取 node 资源。
 
 工具来自静态表，只查可信安装目录，不搜索 PATH 或执行 discovery。安装目录与可执行文件归当前用户或 root 所有，不得 group/world 可写，拒绝符号链接。Unix `exec` 保留参数、stdio、信号和退出码；子命令自己的 `--help`/`--version` 原样转交，工具不能覆盖 Job 命令。Sandbox 部署见 [daemon 运维](daemon/operations.md)，独立原生资源预算见[职责收敛](daemon/responsibility-convergence.md)。
 

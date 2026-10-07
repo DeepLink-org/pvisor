@@ -14,12 +14,13 @@
 
 | 组件 | 机制 | 边界 |
 | --- | --- | --- |
-| `pvisor/src/node.rs`、`node/registry.rs` | 同用户、同主机不可变 owner；按身份准备、连接 pin、有界 warming | 原生资源服务，不是 daemon sandbox 生命周期；故障后无透明 live 接管 |
+| `pvisor/src/node.rs`、`node/registry.rs` | 同用户、同主机不可变 owner；按身份准备、连接 pin、有界 warming | 运行时协议保留，CLI node supervisor 已移除；无 daemon 适配器或透明 live 接管 |
 | 原生镜像缓存 | 校验后的按需读、分页 metadata 与内容复用 | 已发布 FS/S3 对象支持分页读；普通未缓存 OCI prepare 仍可能全部准备后返回 |
 | 原生 Linux RAM 恢复 | 经授权的 sealed 身份／兼容性与共享只读 inode，guest 私有 COW 映射 | 普通新启动绕过 RAM restore；仍要求兼容原生 profile |
 | Snapshot lazy reader | 缺页时校验／解码块，decoded cache 有界 | 保留首次访问成本；旧 raw 格式可能要求完整校验 |
-| 实验冷 RAM pool | Session 引用与冷页恢复 | `vm.memory_pool` 要求 macOS/Apple Silicon，不是 Linux daemon 功能 |
-| NativeRuntime daemon | 独立不可变 rootfs、VM 私有写入 | 无自动 node socket 获取、RAM restore、lazy snapshot 或 cold-pool 集成 |
+| 历史 macOS 压缩池 | Session 引用与私有冷页恢复 | 记录版本的机制；独立启动器已移除；不是当前 Linux 协议 |
+| Daemon 自有 Linux 池 | 重复驻留 4 KiB 页，通过有界 memfd slot 和私有 COW 映射共享 | 显式 `serve --memory-pool`；独立预算和故障范围，不压缩唯一页 |
+| NativeRuntime daemon | 独立不可变 rootfs、VM 私有写入 | 可选 daemon 自有池；无自动 node socket 获取、RAM restore 或 lazy snapshot 集成 |
 
 其他源码区域：`image/cache/lazy.rs`、`image/cache/portable/binary.rs`、`executor/vm/restore_ram.rs`、`environment_snapshot/lazy.rs` 与 `pvisor-vm/src/memory.rs`。原生 node acquire 校验授权 store、发布与兼容性，不以缓存存在替代权威。
 
@@ -43,7 +44,7 @@
 
 连接 pin 保护活动不可变挂载／backing，直到原生 runner 已回收。最后释放后才能拆除或有界 warming。同身份准备串行，慢 I/O 不占用全局 map 锁。可重新获取的 decoded cache 可以驱逐，活动 owner 或私有冷 RAM 唯一剩余副本不能视为缓存。
 
-为已有原生运行时接入 node 共享需要显式 acquire/release、取消、兼容输入交接、清理、证据和预算合同。将 node 服务与 daemon 一起打包不等于完成适配器。通用 warm-template Agent 恢复尚不可用，来源 command/input/environment/policy 绑定与原生 no-network 恢复限制仍适用。
+为已有原生运行时接入 node 共享需要显式 acquire/release、取消、兼容输入交接、清理、证据和预算合同。移除 CLI node supervisor 不等于完成适配器或将 node 协议迁入 daemon。通用 warm-template Agent 恢复尚不可用，来源 command/input/environment/policy 绑定与原生 no-network 恢复限制仍适用。
 
 有界关键页预取、进一步合并同对象 miss、扩展完整 metadata/scratch 记账是可能后续工作。Daemon 没有主机亲和策略或 placement hint 协议，主机选择属于外部编排。
 
@@ -60,5 +61,7 @@
 | 故障保全 | 发布授权、pin/owner 释放、GC、慢／失败读与 owner/pool 丢失，不声称未实现 reconnect |
 
 最多同时四个真实原生 guest，包括活动 source VM；限制每个 guest 与服务。不要清空全局 page cache，也不从未触碰页节省推断共享。采集前固定工作负载、样本数和有效阈值。历史独立 fresh-boot 探针既不建立也不否定原生共享，不建立 daemon 密度。
+
+Daemon 池与 node backing 恢复分开。池丢失会使依赖 VM 失败；API 重启保留独立组件，但不能恢复已失败的池内容。见[启用、所有权和限制](../../guides/daemon/index.md#memory-pool)。
 
 相关设计：[职责收敛](responsibility-convergence.md)、[共享镜像存储](../shared-image-cache-storage.md)、[内存优化](../memory-optimization/index.md)与[实验冷 RAM pool](../memory-optimization/proof-of-concept.md)。

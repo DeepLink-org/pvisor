@@ -1,12 +1,12 @@
 # 共享镜像缓存与存储后端
 
-`pvisor service cache` 通过服务器、文件系统或 S3 复用 OCI 镜像内容。服务器模式的 `pvisor service cache serve` 自动准备 OCI 镜像并生成分页索引和内容对象，存放在 `<image-store>/cache-v1/`。三个后端共用不可变 revision、对象格式和镜像读取器。客户端使用 `image_handle` 查询，不接收宿主路径；文件查询不访问 registry。
+`pvisor-cache` 通过服务器、文件系统或 S3 复用 OCI 镜像内容。服务器模式的 `pvisor-cache serve` 自动准备 OCI 镜像并生成分页索引和内容对象，存放在 `<image-store>/cache-v1/`。三个后端共用不可变 revision、对象格式和镜像读取器。客户端使用 `image_handle` 查询，不接收宿主路径；文件查询不访问 registry。
 
 ## 选择后端
 
 服务器、文件系统与 S3 使用[共享镜像缓存 v1](../design/shared-image-cache-storage.md)：每个镜像独立 meta、跨镜像共享 data、二进制分页文件表与索引。只保留这一套格式实现。
 
-服务器、文件系统和 S3 使用同一套 `prepare/list/stat/read` 接口，VM 也使用相同配置。文件系统和 S3 是直接存储后端，使用它们不需要启动 `cache serve`。
+服务器、文件系统和 S3 使用同一套 `prepare/list/stat/read` 接口，VM 也使用相同配置。文件系统和 S3 是直接存储后端，使用它们不需要启动 `pvisor-cache serve`。
 
 | 后端 | 配置 | 适用场景 |
 |---|---|---|
@@ -19,11 +19,11 @@
 ### 文件系统：发布一次，独立进程读取
 
 ```sh
-pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor-cache --backend filesystem --location /mnt/pvisor-cache \
   --image-store /tmp/pvisor-publish publish alpine:latest
-pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor-cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only prepare alpine:latest
-pvisor service cache --backend filesystem --location /mnt/pvisor-cache \
+pvisor-cache --backend filesystem --location /mnt/pvisor-cache \
   --read-only read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
@@ -36,12 +36,12 @@ export AWS_DEFAULT_REGION=ap-southeast-1
 # Supply AWS credentials through environment variables or workload roles.
 export PVISOR_CACHE_BACKEND=s3
 export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor service cache --image-store /tmp/pvisor-publish publish alpine:latest
+pvisor-cache --image-store /tmp/pvisor-publish publish alpine:latest
 
 # Native cache consumers only need GetObject access to this prefix.
 export PVISOR_CACHE_READ_ONLY=true
-pvisor service cache prepare alpine:latest
-pvisor service cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+pvisor-cache prepare alpine:latest
+pvisor-cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 pvisor run --executor vm --rootfs image=alpine:latest -- /bin/sh
 ```
 
@@ -56,15 +56,15 @@ export AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY
 export AWS_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
 export PVISOR_CACHE_BACKEND=s3
 export PVISOR_CACHE_LOCATION=s3://your-bucket/pvisor-cache
-pvisor service cache prepare alpine:latest
+pvisor-cache prepare alpine:latest
 ```
 
 ### 镜像拆分与上传工具
 
-`pvisor service cache publish IMAGE` 是显式发布入口：从 registry 拉取所选平台的 OCI manifest 和层，在本地应用层与 whiteout，遍历合并后的镜像文件，再上传文件索引和内容块。已有的本地 OCI 暂存可通过 `--image-store` 或 `PVISOR_IMAGE_STORE` 复用；上传后可以删除暂存目录。
+`pvisor-cache publish IMAGE` 是显式发布入口：从 registry 拉取所选平台的 OCI manifest 和层，在本地应用层与 whiteout，遍历合并后的镜像文件，再上传文件索引和内容块。已有的本地 OCI 暂存可通过 `--image-store` 或 `PVISOR_IMAGE_STORE` 复用；上传后可以删除暂存目录。
 
 ```sh
-PVISOR_CACHE_READ_ONLY=false pvisor service cache publish alpine:latest \
+PVISOR_CACHE_READ_ONLY=false pvisor-cache publish alpine:latest \
   --backend s3 --location s3://your-bucket/pvisor-cache \
   --architecture amd64 --image-store /tmp/pvisor-publish
 ```
@@ -111,10 +111,11 @@ S3 实际流量包括控制对象、元数据页和完整数据块。现有 TUI 
 
 实现位于 `crates/pvisor/src/image/cache/`：
 
+独立 `pvisor-cache` 入口和参数解析位于 `crates/pvisor-cli/src/bin/pvisor-cache.rs` 与 `crates/pvisor-cli/src/cli/cache.rs`。Daemon 不负责缓存准备、发布或服务。
+
 ```text
 cache/
 ├── mod.rs              # 公共入口与模块装配
-├── cli.rs              # pvisor service cache 子命令
 ├── protocol.rs         # 请求/响应类型、分帧、内容哈希
 ├── transport.rs        # Unix/TCP 端点、流、超时
 ├── client.rs           # 后端发现与校验后的请求
@@ -141,19 +142,19 @@ cache/
 
 ```sh
 # 终端 1：前台服务端，使用默认的按用户 Unix socket 与 OCI 存储
-pvisor service cache serve
+pvisor-cache serve
 
 # 终端 2：使用同一个默认 socket
-pvisor service cache prepare alpine:latest
+pvisor-cache prepare alpine:latest
 # 即使处于五分钟 tag 缓存窗口内也强制刷新 registry：
-pvisor service cache prepare alpine:latest --refresh
+pvisor-cache prepare alpine:latest --refresh
 # 从 JSON 结果复制 image_handle：
-pvisor service cache list pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION
-pvisor service cache stat pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
-pvisor service cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+pvisor-cache list pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION
+pvisor-cache stat pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
+pvisor-cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
 ```
 
-`PVISOR_CACHE_SERVER` 为客户端和服务端选择端点。服务端用 `cache serve --listen` 覆盖它。没有覆盖时端点为 `unix://<dirs::cache_dir()>/pvisor/cache.sock`：
+`PVISOR_CACHE_SERVER` 为客户端和服务端选择端点。服务端用 `pvisor-cache serve --listen` 覆盖它。没有覆盖时端点为 `unix://<dirs::cache_dir()>/pvisor/cache.sock`：
 
 - macOS：`~/Library/Caches/pvisor/cache.sock`
 - Linux：`$XDG_CACHE_HOME/pvisor/cache.sock`，通常为
@@ -174,7 +175,7 @@ VM 客户端将不可变只读 lower 直接接入 virtio-fs 文件服务，保�
 
 服务端在应答 `prepare` 前仍会完整准备未缓存的镜像，并生成索引和内容对象。这是客户端侧的懒加载，不是服务端的惰性 OCI 层解包。FUSE 适配器和现有 virtio-fs worker 目前同步处理请求：一次缓存未命中可能延迟无关的文件系统请求。不使用显式 vCPU 暂停。磁盘缓存配额/淘汰、原始 OCI xattr 和异步 virtio-fs 完成不在此实现中加入。
 
-公共 Rust 客户端是 `pvisor::cache::CacheClient::from_env()`，它是阻塞式的。`cache prepare/list/stat/read` 使用显式后端配置，不使用 VM 默认 socket 探测的本地回退策略。
+公共 Rust 客户端是 `pvisor::cache::CacheClient::from_env()`，它是阻塞式的。`pvisor-cache prepare/list/stat/read` 使用显式后端配置，不使用 VM 默认 socket 探测的本地回退策略。
 
 Unix socket 权限为 0600，并要求两端为同一有效用户。锁可防止两个服务端占用同一 socket；重启时会回收陈旧 socket，但普通文件、符号链接或活跃监听者绝不会被移除。请把 socket 放在由服务用户拥有的目录中。用 Ctrl-C 停止前台服务端可能留下陈旧 socket；无需手工清理。
 
@@ -183,7 +184,7 @@ Unix socket 权限为 0600，并要求两端为同一有效用户。锁可防止
 ```sh
 # 服务端：通过你的密钥管理/命令行设置一个强共享密钥。
 export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
-pvisor service cache serve --listen tcp://127.0.0.1:7447
+pvisor-cache serve --listen tcp://127.0.0.1:7447
 
 # 客户端机器上，保持该隧道运行：
 ssh -N -L 7447:127.0.0.1:7447 your-server
@@ -191,7 +192,7 @@ ssh -N -L 7447:127.0.0.1:7447 your-server
 # 客户端 shell，使用同一密钥：
 export PVISOR_CACHE_TOKEN='YOUR_RANDOM_SECRET'
 export PVISOR_CACHE_SERVER=tcp://127.0.0.1:7447
-pvisor service cache prepare alpine:latest
+pvisor-cache prepare alpine:latest
 ```
 
 TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TLS；请用 SSH 做传输加密。令牌授予所有缓存操作，包括准备新镜像，因此这是受信任的共享服务，不是公共多租户 API。若为 Unix 服务端配置了令牌，Unix 客户端也必须提供。
@@ -224,7 +225,7 @@ TCP 要求非空令牌，且只接受字面 loopback IP 端点。没有内置 TL
 | `read` | `digest`、`path`、`offset`（字节偏移）、`length`（1..1048576） | `data`：`length`、`sha256`，后接原始字节 |
 
 `prepare` 为客户端架构请求 Linux 镜像，与服务端架构无关。成功的已准备镜像记录持久化到
-`<image-store>/metadata/prepared-v1/`，包含平台摘要和启动配置。可变 tag 复用记录五分钟；不可变摘要记录在其解包 root 存在期间不过期。`cache prepare IMAGE
+`<image-store>/metadata/prepared-v1/`，包含平台摘要和启动配置。可变 tag 复用记录五分钟；不可变摘要记录在其解包 root 存在期间不过期。`pvisor-cache prepare IMAGE
 --refresh`（协议 `refresh: true`）强制 registry 解析。刷新失败会返回错误并保留之前的记录；registry 请求有
 10 秒连接超时和 300 秒总超时。过期的 tag 不会静默回退到陈旧数据。缺失/损坏的记录或缺失 root 会重新准备。按引用和架构的锁覆盖解析与准备，
 因此并发请求会复查并复用首个成功结果。准备可能填充一个未缓存镜像，并保留现有的按摘要解包锁。`read`、`stat` 和

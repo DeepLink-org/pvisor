@@ -224,7 +224,7 @@ impl CacheClient {
                     .map_err(CacheConnectError)
                     .with_context(|| {
                         format!(
-                            "connect cache {}; start `pvisor service cache serve`",
+                            "connect cache {}; start `pvisor-cache serve`",
                             self.address()
                         )
                     })?,

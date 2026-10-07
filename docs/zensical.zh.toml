@@ -64,7 +64,7 @@ nav = [
     ] },
     { "Daemon 上手" = [
       { "运行单机 daemon" = "guides/daemon/index.md" },
-      { "Daemon 与原生 Service 入口" = "guides/daemon/service.md" },
+      { "Daemon 与独立缓存入口" = "guides/daemon/service.md" },
       { "单机 daemon 运维" = "guides/daemon/operations.md" },
       { "Daemon 运行时与集成边界" = "guides/daemon/boundaries.md" },
     ] },

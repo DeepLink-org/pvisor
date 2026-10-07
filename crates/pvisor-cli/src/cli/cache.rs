@@ -1,4 +1,4 @@
-//! `pvisor service cache` command definitions and dispatch.
+//! `pvisor-cache` command definitions and dispatch.
 use pvisor::cache::{CacheBackend, CacheClient, CacheConfig, MAX_READ, Request, serve};
 fn architecture() -> &'static str {
     match std::env::consts::ARCH {
