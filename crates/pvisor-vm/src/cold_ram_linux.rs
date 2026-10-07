@@ -212,7 +212,9 @@ struct Pager<S: ColdRamStore> {
     memory: GuestMemoryMmap,
     pages: Vec<Page<S::Object>>,
     store: Arc<Mutex<S>>,
-    uffd: Arc<Uffd>,
+    uffd: Option<Arc<Uffd>>,
+    pagemap: Option<std::fs::File>,
+    share_resident: bool,
     cursor: usize,
     restored: u64,
     discarded: u64,
@@ -222,18 +224,24 @@ struct Pager<S: ColdRamStore> {
     restore_total_us: u64,
     restore_max_us: u64,
 }
-fn host_sorted_pages<O>(mappings: &[Range], eligible_at: Instant, block_bytes: usize) -> Vec<Page<O>> {
+fn host_sorted_pages<O>(
+    mappings: &[Range],
+    eligible_at: Instant,
+    block_bytes: usize,
+) -> Vec<Page<O>> {
     let mut pages: Vec<_> = mappings
         .iter()
         .flat_map(|mapping| {
-            (0..mapping.len).step_by(block_bytes).map(move |offset| Page {
-                range: Range {
-                    start: mapping.start + offset,
-                    len: (mapping.len - offset).min(block_bytes as u64),
-                },
-                cold: None,
-                eligible_at,
-            })
+            (0..mapping.len)
+                .step_by(block_bytes)
+                .map(move |offset| Page {
+                    range: Range {
+                        start: mapping.start + offset,
+                        len: (mapping.len - offset).min(block_bytes as u64),
+                    },
+                    cold: None,
+                    eligible_at,
+                })
         })
         .collect();
     pages.sort_unstable_by_key(|page| page.range.start);
@@ -372,6 +380,23 @@ fn publish_snapshot<S: ColdRamStore>(
     pool: &Mutex<S>,
     snapshot: &Snapshot,
 ) -> io::Result<Option<S::Object>> {
+    // A COW page no longer maps its old slot. Drop that reference before
+    // admitting replacement contents, including when the new page is unique.
+    let retired = {
+        let mut state = pager
+            .lock()
+            .map_err(|_| io::Error::other("pager poisoned"))?;
+        if state.share_resident && !state.file_page(state.pages[snapshot.index].range)? {
+            state.pages[snapshot.index].cold.take().map(|cold| cold.0)
+        } else {
+            None
+        }
+    };
+    if let Some(object) = retired {
+        pool.lock()
+            .map_err(|_| io::Error::other("store poisoned"))?
+            .release(object)?;
+    }
     let object = {
         let mut store = pool
             .lock()
@@ -381,7 +406,9 @@ fn publish_snapshot<S: ColdRamStore>(
             Err(error) => {
                 // A healthy capacity rejection preserves RAM; a broken store
                 // must not silently strand references to existing cold objects.
-                store.stats().map_err(|_| error)?;
+                if error.kind() != io::ErrorKind::WouldBlock {
+                    store.stats().map_err(|_| error)?;
+                }
                 None
             }
         }
@@ -389,31 +416,88 @@ fn publish_snapshot<S: ColdRamStore>(
     // Fault recovery locks pager before store. Release store before taking
     // pager here, including the incompressible/capacity rejection path.
     if object.is_none() {
-        pager
+        let mut state = pager
             .lock()
-            .map_err(|_| io::Error::other("pager poisoned"))?
-            .pages[snapshot.index]
-            .eligible_at = Instant::now() + Duration::from_secs(30);
+            .map_err(|_| io::Error::other("pager poisoned"))?;
+        let retry = if state.share_resident {
+            Duration::from_millis(250)
+        } else {
+            Duration::from_secs(30)
+        };
+        state.pages[snapshot.index].eligible_at = Instant::now() + retry;
     }
     Ok(object)
 }
 
 impl<S: ColdRamStore> Pager<S> {
+    fn file_page(&self, range: Range) -> io::Result<bool> {
+        use std::os::unix::fs::FileExt;
+        let Some(file) = &self.pagemap else {
+            return Ok(false);
+        };
+        let mut bytes = [0; 8];
+        file.read_exact_at(&mut bytes, (range.start / 4096) * 8)?;
+        let bits = u64::from_ne_bytes(bytes);
+        Ok(bits & ((1 << 63) | (1 << 61)) == (1 << 63) | (1 << 61))
+    }
+    /// One mincore call per contiguous RAM run instead of one syscall per
+    /// sparse 4 KiB page. The commit barrier still rechecks every selected page.
+    fn resident_bitmap(&self) -> io::Result<Vec<u8>> {
+        let mut bits = vec![0; self.pages.len()];
+        let mut begin = 0;
+        while begin < self.pages.len() {
+            let mut end = begin + 1;
+            while end < self.pages.len()
+                && self.pages[end].range.start == self.pages[end - 1].range.start + 4096
+            {
+                end += 1;
+            }
+            let result = unsafe {
+                libc::mincore(
+                    self.pages[begin].range.start as *mut libc::c_void,
+                    (end - begin) * 4096,
+                    bits[begin..end].as_mut_ptr(),
+                )
+            };
+            if result != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            begin = end;
+        }
+        Ok(bits)
+    }
     fn candidates(&mut self) -> Vec<usize> {
+        let resident = self
+            .share_resident
+            .then(|| self.resident_bitmap().unwrap_or_else(|error| fatal(error)));
         let mut candidates = Vec::new();
         let mut candidate_bytes = 0;
         let now = Instant::now();
         for _ in 0..self.pages.len() {
-            if candidate_bytes >= BATCH_BYTES || now.elapsed() >= Duration::from_millis(8) {
+            let limit = if self.share_resident {
+                BATCH_BYTES / 4
+            } else {
+                BATCH_BYTES
+            };
+            if candidate_bytes >= limit || now.elapsed() >= Duration::from_millis(8) {
                 break;
             }
             let index = self.cursor;
             self.cursor = (self.cursor + 1) % self.pages.len();
             let page = &self.pages[index];
-            if page.cold.is_some() || now < page.eligible_at {
+            if now < page.eligible_at
+                || (page.cold.is_some()
+                    && (!self.share_resident
+                        || self
+                            .file_page(page.range)
+                            .unwrap_or_else(|error| fatal(error))))
+            {
                 continue;
             }
-            if fully_resident(page.range).unwrap_or_else(|error| fatal(error)) {
+            if resident.as_ref().map_or_else(
+                || fully_resident(page.range).unwrap_or_else(|error| fatal(error)),
+                |bits| bits[index] & 1 != 0,
+            ) {
                 candidates.push(index);
                 candidate_bytes += page.range.len as usize;
             }
@@ -435,7 +519,13 @@ impl<S: ColdRamStore> Pager<S> {
                 break;
             }
             let page = &self.pages[index];
-            if page.cold.is_some() || now < page.eligible_at {
+            if now < page.eligible_at
+                || (page.cold.is_some()
+                    && (!self.share_resident
+                        || self
+                            .file_page(page.range)
+                            .unwrap_or_else(|error| fatal(error))))
+            {
                 continue;
             }
             // Never copy a sparse block while holding pager state: that would
@@ -457,7 +547,7 @@ impl<S: ColdRamStore> Pager<S> {
     }
     fn commit(&mut self, snapshot: &Snapshot, object: S::Object) -> io::Result<Option<S::Object>> {
         let page = &mut self.pages[snapshot.index];
-        if page.cold.is_some() {
+        if page.cold.is_some() && !self.share_resident {
             return Ok(Some(object));
         }
         let live = unsafe {
@@ -467,6 +557,66 @@ impl<S: ColdRamStore> Pager<S> {
             page.eligible_at = Instant::now() + Duration::from_secs(30);
             self.rejected += 1;
             return Ok(Some(object));
+        }
+        if self.share_resident {
+            use std::os::{fd::AsRawFd, unix::fs::FileExt};
+            let mapping = self
+                .store
+                .lock()
+                .map_err(|_| io::Error::other("store poisoned"))?
+                .shared_mapping(&object)
+                .ok_or_else(|| {
+                    io::Error::other("shared pool did not provide a pinned file page")
+                })?;
+            if page.range.len != 4096 || !mapping.offset.is_multiple_of(4096) {
+                return Err(io::Error::other("invalid shared page geometry"));
+            }
+            let mut bytes = [0; 4096];
+            mapping.file.read_exact_at(&mut bytes, mapping.offset)?;
+            if bytes != snapshot.bytes.as_slice() {
+                return Err(io::Error::other("shared mapping content mismatch"));
+            }
+            let flags = unsafe { libc::fcntl(mapping.file.as_raw_fd(), libc::F_GETFL) };
+            let seals = unsafe { libc::fcntl(mapping.file.as_raw_fd(), libc::F_GET_SEALS) };
+            if flags < 0
+                || flags & libc::O_ACCMODE != libc::O_RDONLY
+                || seals < 0
+                || seals & (libc::F_SEAL_GROW | libc::F_SEAL_SHRINK)
+                    != libc::F_SEAL_GROW | libc::F_SEAL_SHRINK
+            {
+                return Err(io::Error::other(
+                    "shared mapping must be read-only and size-sealed",
+                ));
+            }
+            // CPU/device access is drained, bytes were rechecked, and the pool
+            // reference pins this slot. Linux invalidates KVM secondary mappings
+            // on MAP_FIXED; reads retain the pool page and writes create COW RAM.
+            let mapped = unsafe {
+                libc::mmap(
+                    page.range.start as *mut libc::c_void,
+                    4096,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_FIXED,
+                    mapping.file.as_raw_fd(),
+                    mapping.offset as libc::off_t,
+                )
+            };
+            if mapped == libc::MAP_FAILED {
+                return Err(io::Error::last_os_error());
+            }
+            // A read faults in the shared file PTE. MAP_POPULATE on a writable
+            // private mapping may prefault for writing and eagerly create COW.
+            unsafe {
+                std::ptr::read_volatile(mapped.cast::<u8>());
+            }
+            let previous = page
+                .cold
+                .replace(Box::new((object, digest(&snapshot.bytes))));
+            self.discarded += 4096;
+            // Release the old reference only outside the barrier, after its
+            // mapping has been replaced. On transport loss the owner pins slots
+            // with pidfd until this process (and all its mappings) has exited.
+            return Ok(previous.map(|cold| cold.0));
         }
         // Store the immutable reference and checksum before any destructive syscall.
         page.cold = Some(Box::new((object, digest(&snapshot.bytes))));
@@ -488,7 +638,7 @@ impl<S: ColdRamStore> Pager<S> {
     fn restore(&mut self, index: usize) -> io::Result<()> {
         let page = &mut self.pages[index];
         let Some(cold) = &page.cold else {
-            return self.uffd.wake(page.range);
+            return self.uffd.as_ref().unwrap().wake(page.range);
         };
         let (object, expected) = cold.as_ref();
         // Service time includes store lock/restore, validation, COPY and release,
@@ -503,7 +653,7 @@ impl<S: ColdRamStore> Pager<S> {
         if digest(&bytes) != *expected {
             return Err(io::Error::other("cold RAM restore checksum mismatch"));
         }
-        self.uffd.restore(page.range, &bytes)?;
+        self.uffd.as_ref().unwrap().restore(page.range, &bytes)?;
         let (object, _) = *page.cold.take().unwrap();
         page.eligible_at = Instant::now() + Duration::from_secs(30);
         self.restored += page.range.len;
@@ -529,12 +679,17 @@ impl<S: ColdRamStore> Pager<S> {
             .fault_index(address)
             .ok_or_else(|| io::Error::other("UFFD fault outside owned RAM"))?;
         if self.pages[index].cold.is_none() {
-            self.uffd.zero_page(address)
+            self.uffd.as_ref().unwrap().zero_page(address)
         } else {
             self.restore(index)
         }
     }
     fn shutdown(&mut self) -> io::Result<()> {
+        // Shared mappings may still be borrowed by draining devices. Leave them
+        // intact; closing this store pins server references until process exit.
+        if self.share_resident {
+            return Ok(());
+        }
         for index in 0..self.pages.len() {
             if self.pages[index].cold.is_some() {
                 self.restore(index)?;
@@ -552,7 +707,7 @@ impl<S: ColdRamStore> Pager<S> {
                     start: region.as_ptr() as u64,
                     len: region.len(),
                 };
-                self.uffd.ioctl(0x8010_aa01, &mut range)?;
+                self.uffd.as_ref().unwrap().ioctl(0x8010_aa01, &mut range)?;
             }
         }
         Ok(())
@@ -571,6 +726,9 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     options: ColdRamOptions,
 ) -> io::Result<()> {
     let block_bytes = if options.page_granular { 4096 } else { BLOCK };
+    if options.share_resident && !options.page_granular {
+        return Err(io::Error::other("shared RAM requires 4 KiB pages"));
+    }
     if cfg!(any(
         feature = "tee",
         feature = "aws-nitro",
@@ -618,7 +776,16 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         (memory, mappings, kernel)
     };
     let initialized = (|| {
-        let uffd = Arc::new(Uffd::open()?);
+        let uffd = if options.share_resident {
+            None
+        } else {
+            Some(Arc::new(Uffd::open()?))
+        };
+        let pagemap = if options.share_resident {
+            Some(std::fs::File::open("/proc/self/pagemap")?)
+        } else {
+            None
+        };
         let faults = Arc::new(crate::devices::virtio::memory_gate::ColdFaultActivity::default());
         let pages = handle
             .ram_quiesced(|vmm| {
@@ -626,12 +793,14 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                 // A closed idle gate guarantees every old balloon lease drained.
                 vmm.device_memory_gate()
                     .install_cold_faults(faults.clone())?;
-                for mapping in &mappings {
-                    // Existing bytes remain mapped; untouched/previously ballooned
-                    // holes remain zero. No new destructive owner can create holes
-                    // after the fault gate is installed. Missing faults without a
-                    // cold object are therefore safe lazy-zero allocations.
-                    uffd.register(*mapping).map_err(|error| error.to_string())?;
+                if let Some(uffd) = &uffd {
+                    for mapping in &mappings {
+                        // Existing bytes remain mapped; untouched/previously ballooned
+                        // holes remain zero. No new destructive owner can create holes
+                        // after the fault gate is installed. Missing faults without a
+                        // cold object are therefore safe lazy-zero allocations.
+                        uffd.register(*mapping).map_err(|error| error.to_string())?;
+                    }
                 }
                 Ok(host_sorted_pages(
                     &mappings,
@@ -651,6 +820,8 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             pages,
             store: Arc::new(Mutex::new(store)),
             uffd,
+            pagemap,
+            share_resident: options.share_resident,
             cursor: 0,
             restored: 0,
             discarded: 0,
@@ -717,26 +888,32 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             .cold_faults()
             .ok_or_else(|| io::Error::other("missing cold fault monitor"))?
     };
-    let resolver = match std::thread::Builder::new()
-        .name("pvisor-uffd".into())
-        .spawn(move || {
-            while !resolver_stop.load(Ordering::Acquire) {
-                if let Some(address) = uffd.event().unwrap_or_else(|error| fatal(error)) {
-                    let _fault = faults.begin();
-                    resolver_pager
-                        .lock()
-                        .unwrap_or_else(|_| fatal("pager poisoned"))
-                        .fault(address)
-                        .unwrap_or_else(|error| fatal(error));
+    let resolver = if let Some(uffd) = uffd {
+        Some(
+            match std::thread::Builder::new()
+                .name("pvisor-uffd".into())
+                .spawn(move || {
+                    while !resolver_stop.load(Ordering::Acquire) {
+                        if let Some(address) = uffd.event().unwrap_or_else(|error| fatal(error)) {
+                            let _fault = faults.begin();
+                            resolver_pager
+                                .lock()
+                                .unwrap_or_else(|_| fatal("pager poisoned"))
+                                .fault(address)
+                                .unwrap_or_else(|error| fatal(error));
+                        }
+                    }
+                }) {
+                Ok(thread) => thread,
+                Err(error) => {
+                    pager.lock().unwrap().shutdown()?;
+                    handle.cold_pager_started.store(false, Ordering::Release);
+                    return Err(error);
                 }
-            }
-        }) {
-        Ok(thread) => thread,
-        Err(error) => {
-            pager.lock().unwrap().shutdown()?;
-            handle.cold_pager_started.store(false, Ordering::Release);
-            return Err(error);
-        }
+            },
+        )
+    } else {
+        None
     };
     let reservation = handle.cold_pager_started.clone();
     let worker_pager = pager.clone();
@@ -744,7 +921,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     let worker = std::thread::Builder::new().name("pvisor-cold-pager".into()).spawn(move || {
         let pool = worker_pager.lock().unwrap().store.clone();
         loop {
-            std::thread::sleep(Duration::from_millis(250));
+            std::thread::sleep(Duration::from_millis(if options.share_resident { 1 } else { 250 }));
             // Empty scans still need to observe VM teardown without a barrier.
             if handle.vmm.upgrade().is_none() {
                 break;
@@ -755,7 +932,13 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             }));
             let batch = match sampled {
                 Ok(Some(batch)) => batch,
-                Ok(None) => continue,
+                Ok(None) => {
+                    if options.share_resident {
+                        pool.lock().unwrap_or_else(|_| fatal("store poisoned")).stats().unwrap_or_else(|error| fatal(error));
+                        std::thread::sleep(Duration::from_millis(250));
+                    }
+                    continue;
+                },
                 Err(error) if error == "VMM has stopped" => break,
                 Err(error) => fatal(error),
             };
@@ -809,9 +992,11 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     });
     if let Err(error) = worker {
         stop.store(true, Ordering::Release);
-        resolver
-            .join()
-            .map_err(|_| io::Error::other("UFFD resolver panicked"))?;
+        if let Some(resolver) = resolver {
+            resolver
+                .join()
+                .map_err(|_| io::Error::other("UFFD resolver panicked"))?;
+        }
         pager.lock().unwrap().shutdown()?;
         reservation.store(false, Ordering::Release);
         return Err(error);
@@ -837,6 +1022,9 @@ mod tests {
     }
     impl ColdRamStore for CompressedStore {
         type Object = Vec<u8>;
+        fn shared_mapping(&self, _: &Self::Object) -> Option<crate::api::SharedRamMapping> {
+            None
+        }
         fn put(&mut self, bytes: &[u8]) -> io::Result<Vec<u8>> {
             if let Some(barrier) = &self.reject_barrier {
                 barrier.wait();
@@ -868,6 +1056,188 @@ mod tests {
                 cross_session_objects: 0,
             })
         }
+    }
+    #[derive(Default)]
+    struct SharedStore {
+        files: std::collections::BTreeMap<Vec<u8>, Arc<std::fs::File>>,
+        releases: usize,
+        reject_new: bool,
+    }
+    impl ColdRamStore for SharedStore {
+        type Object = Arc<std::fs::File>;
+        fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object> {
+            use std::os::unix::fs::FileExt;
+            if let Some(file) = self.files.get(bytes) {
+                return Ok(file.clone());
+            }
+            if self.reject_new {
+                return Err(io::Error::other("unique candidate rejected"));
+            }
+            let raw = unsafe {
+                libc::memfd_create(
+                    c"shared-test".as_ptr(),
+                    libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+                )
+            };
+            assert!(raw >= 0);
+            let file = unsafe { std::fs::File::from_raw_fd(raw) };
+            file.set_len(4096)?;
+            file.write_all_at(bytes, 0)?;
+            assert_eq!(
+                unsafe {
+                    libc::fcntl(
+                        raw,
+                        libc::F_ADD_SEALS,
+                        libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK,
+                    )
+                },
+                0
+            );
+            let readonly = Arc::new(std::fs::File::open(format!("/proc/self/fd/{raw}"))?);
+            self.files.insert(bytes.to_vec(), readonly.clone());
+            Ok(readonly)
+        }
+        fn restore(&mut self, _: &Self::Object, _: &mut [u8]) -> io::Result<()> {
+            panic!("resident sharing must not copy on reads")
+        }
+        fn release(&mut self, _: Self::Object) -> io::Result<()> {
+            self.releases += 1;
+            Ok(())
+        }
+        fn stats(&mut self) -> io::Result<ColdRamPoolStats> {
+            Ok(ColdRamPoolStats {
+                encoded_bytes: 0,
+                objects: 0,
+                session_references: 0,
+                cross_session_objects: 0,
+            })
+        }
+        fn shared_mapping(&self, object: &Self::Object) -> Option<crate::api::SharedRamMapping> {
+            Some(crate::api::SharedRamMapping {
+                file: object.clone(),
+                offset: 0,
+            })
+        }
+    }
+    fn shared_pager() -> Pager<SharedStore> {
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 8192)]).unwrap();
+        memory.write_slice(&[0x5a; 8192], GuestAddress(0)).unwrap();
+        let pages = host_sorted_pages(&ranges(&memory, u64::MAX).unwrap(), Instant::now(), 4096);
+        Pager {
+            memory,
+            pages,
+            store: Arc::new(Mutex::new(SharedStore::default())),
+            uffd: None,
+            pagemap: Some(std::fs::File::open("/proc/self/pagemap").unwrap()),
+            share_resident: true,
+            cursor: 0,
+            restored: 0,
+            discarded: 0,
+            rejected: 0,
+            put_rejections: 0,
+            restore_count: 0,
+            restore_total_us: 0,
+            restore_max_us: 0,
+        }
+    }
+    #[test]
+    fn shared_reads_keep_pool_pages_and_writes_are_isolated_cow() {
+        let mut pager = shared_pager();
+        let batch = pager.sample();
+        assert_eq!(batch.0.len(), 2);
+        for snapshot in &batch.0 {
+            let object = pager.store.lock().unwrap().put(&snapshot.bytes).unwrap();
+            assert!(pager.commit(snapshot, object).unwrap().is_none());
+        }
+        let memory = pager.memory.clone();
+        let mut bytes = [0; 8192];
+        for _ in 0..8 {
+            memory.read_slice(&mut bytes, GuestAddress(0)).unwrap();
+            assert_eq!(bytes, [0x5a; 8192]);
+            assert!(pager.file_page(pager.pages[0].range).unwrap());
+            assert!(pager.file_page(pager.pages[1].range).unwrap());
+        }
+        assert!(pager.sample().0.is_empty());
+        memory.write_slice(&[0x72], GuestAddress(0)).unwrap();
+        assert!(!pager.file_page(pager.pages[0].range).unwrap());
+        assert!(pager.file_page(pager.pages[1].range).unwrap());
+        memory.read_slice(&mut bytes, GuestAddress(0)).unwrap();
+        assert_eq!(bytes[0], 0x72);
+        assert_eq!(&bytes[4096..], &[0x5a; 4096]);
+        let batch = pager.sample();
+        assert_eq!(batch.0.len(), 1);
+        assert_eq!(batch.0[0].index, 0);
+        let object = pager.store.lock().unwrap().put(&batch.0[0].bytes).unwrap();
+        let old = pager.commit(&batch.0[0], object).unwrap().unwrap();
+        // The old slot still contains the original page; COW never modified it.
+        use std::os::unix::fs::FileExt;
+        let mut old_bytes = [0; 4096];
+        old.read_exact_at(&mut old_bytes, 0).unwrap();
+        assert_eq!(old_bytes, [0x5a; 4096]);
+        pager.store.lock().unwrap().release(old).unwrap();
+        assert!(pager.file_page(pager.pages[0].range).unwrap());
+        memory.read_slice(&mut bytes, GuestAddress(0)).unwrap();
+        assert_eq!(bytes[0], 0x72);
+        assert_eq!(bytes[4096], 0x5a);
+        assert_eq!(pager.restore_count, 0);
+        pager.shutdown().unwrap();
+    }
+    #[test]
+    fn shared_residency_bitmap_preserves_sparse_pages() {
+        let mut pager = shared_pager();
+        let empty = pager.pages[1].range;
+        assert_eq!(
+            unsafe { libc::madvise(empty.start as *mut libc::c_void, 4096, libc::MADV_DONTNEED) },
+            0
+        );
+        let bits = pager.resident_bitmap().unwrap();
+        assert_eq!(bits[0] & 1, 1);
+        assert_eq!(bits[1] & 1, 0);
+        assert_eq!(pager.sample().0.len(), 1);
+        assert!(!fully_resident(empty).unwrap());
+    }
+    #[test]
+    fn cow_releases_old_pool_reference_even_when_replacement_is_rejected() {
+        let mut pager = shared_pager();
+        let snapshot = pager.sample().0.remove(0);
+        let object = pager.store.lock().unwrap().put(&snapshot.bytes).unwrap();
+        pager.commit(&snapshot, object).unwrap();
+        pager.memory.write_slice(&[0x72], GuestAddress(0)).unwrap();
+        let snapshot = pager.sample().0.remove(0);
+        let store = pager.store.clone();
+        store.lock().unwrap().reject_new = true;
+        let pager = Mutex::new(pager);
+        assert!(
+            publish_snapshot(&pager, &store, &snapshot)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(store.lock().unwrap().releases, 1);
+        assert!(pager.lock().unwrap().pages[snapshot.index].cold.is_none());
+        let mut value = [0];
+        pager
+            .lock()
+            .unwrap()
+            .memory
+            .read_slice(&mut value, GuestAddress(0))
+            .unwrap();
+        assert_eq!(value, [0x72]);
+    }
+    #[test]
+    fn shared_publication_rechecks_live_bytes_before_replacing_ram() {
+        let mut pager = shared_pager();
+        let batch = pager.sample();
+        let object = pager.store.lock().unwrap().put(&batch.0[0].bytes).unwrap();
+        pager.memory.write_slice(&[0xa3], GuestAddress(0)).unwrap();
+        let unused = pager.commit(&batch.0[0], object).unwrap().unwrap();
+        pager.store.lock().unwrap().release(unused).unwrap();
+        assert!(!pager.file_page(pager.pages[0].range).unwrap());
+        let mut bytes = [0];
+        pager
+            .memory
+            .read_slice(&mut bytes, GuestAddress(0))
+            .unwrap();
+        assert_eq!(bytes, [0xa3]);
     }
     fn pager(blocks: usize, real: bool) -> Pager<CompressedStore> {
         let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), blocks * BLOCK)]).unwrap();
@@ -903,7 +1273,9 @@ mod tests {
             memory,
             pages,
             store: Arc::new(Mutex::new(CompressedStore::default())),
-            uffd: Arc::new(uffd),
+            uffd: Some(Arc::new(uffd)),
+            pagemap: None,
+            share_resident: false,
             cursor: 0,
             restored: 0,
             discarded: 0,
@@ -1314,7 +1686,7 @@ mod tests {
             }
             uffd.register(mapping).unwrap();
         }
-        state.uffd = uffd;
+        state.uffd = Some(uffd);
         gate.open();
         let range = state.pages[1].range;
         let expected = vec![0x5c; BLOCK];
@@ -1427,7 +1799,11 @@ mod tests {
         let mappings = ranges(&memory, u64::MAX).unwrap();
         state.pages = host_sorted_pages(&mappings, Instant::now(), 4096);
         let batch = state.sample();
-        let expected: Vec<_> = batch.0.iter().map(|snapshot| snapshot.bytes.clone()).collect();
+        let expected: Vec<_> = batch
+            .0
+            .iter()
+            .map(|snapshot| snapshot.bytes.clone())
+            .collect();
         for snapshot in &batch.0 {
             let object = state.store.lock().unwrap().put(&snapshot.bytes).unwrap();
             assert!(state.commit(snapshot, object).unwrap().is_none());
@@ -1451,7 +1827,9 @@ mod tests {
         stop.store(true, Ordering::Release);
         thread.join().unwrap();
         for (index, expected) in expected.iter().enumerate() {
-            memory.read_slice(&mut bytes, GuestAddress((index * 4096) as u64)).unwrap();
+            memory
+                .read_slice(&mut bytes, GuestAddress((index * 4096) as u64))
+                .unwrap();
             assert_eq!(bytes.as_slice(), expected);
         }
     }
@@ -1466,7 +1844,7 @@ mod tests {
         for range in &mappings {
             uffd.register(*range).unwrap();
         }
-        state.uffd = uffd;
+        state.uffd = Some(uffd);
         assert_eq!(
             resident(mappings[0]),
             8192,
@@ -1509,7 +1887,7 @@ mod tests {
         pager: Arc<Mutex<Pager<CompressedStore>>>,
         stop: Arc<AtomicBool>,
     ) -> std::thread::JoinHandle<()> {
-        let uffd = pager.lock().unwrap().uffd.clone();
+        let uffd = pager.lock().unwrap().uffd.clone().unwrap();
         std::thread::spawn(move || {
             while !stop.load(Ordering::Acquire) {
                 if let Some(address) = uffd.event().unwrap() {

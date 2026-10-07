@@ -154,6 +154,7 @@ pub(super) fn start_if_requested(
             pvisor_vm::api::ColdRamOptions {
                 metrics,
                 page_granular: false,
+                share_resident: false,
             },
         );
     }
@@ -173,12 +174,15 @@ pub(super) fn start_if_requested(
                 "experimental pool directory must belong to this user and be private",
             ));
         }
-        let pool = PoolClient::new(UnixStream::connect(path)?, Duration::from_secs(5))?;
+        let mut pool = PoolClient::new(UnixStream::connect(path)?, Duration::from_secs(5))?;
+        #[cfg(target_os = "linux")]
+        pool.enable_shared_mapping()?;
         handle.start_cold_pager(
             pool,
             pvisor_vm::api::ColdRamOptions {
                 metrics,
                 page_granular: cfg!(target_os = "linux"),
+                share_resident: cfg!(target_os = "linux"),
             },
         )
     }
@@ -186,8 +190,11 @@ pub(super) fn start_if_requested(
 
 impl pvisor_vm::api::ColdRamStore for PoolClient {
     type Object = RemoteObject;
+    fn shared_mapping(&self, object: &Self::Object) -> Option<pvisor_vm::api::SharedRamMapping> {
+        PoolClient::shared_mapping(self, object)
+    }
     fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object> {
-        PoolClient::put(self, bytes)
+        PoolClient::put_duplicate(self, bytes)
     }
     fn restore(&mut self, object: &Self::Object, output: &mut [u8]) -> io::Result<()> {
         PoolClient::restore(self, object, output)

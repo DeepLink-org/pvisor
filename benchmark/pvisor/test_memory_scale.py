@@ -693,3 +693,29 @@ def test_fresh_ksm_rejects_skipped_shared_ram_advice():
         guest['result']['output']={'stderr':'VM RAM dedup advice installation: accepted_bytes=0'}
     with pytest.raises(ValueError, match='accepted advice and mergeable RAM'):
         scale.validate_report(report,config)
+
+
+def test_streamed_smaps_keeps_full_evidence_and_rejects_tampering(tmp_path):
+    import hashlib
+    raw, config = valid()
+    accounting = raw['before']
+    process = accounting['processes'][0]
+    text = process['smaps']['raw'].encode()
+    directory = tmp_path / 'smaps'
+    directory.mkdir()
+    artifact = directory / '0000-123.smaps'
+    artifact.write_bytes(text)
+    process['smaps'] = dict(file=artifact.name, bytes=len(text),
+                            sha256=hashlib.sha256(text).hexdigest(),
+                            capture='streamed-synced-cache-discarded')
+    scale.validate_accounting(accounting, config['cgroup'], worker=tmp_path / 'w')
+    process['smaps_totals_bytes']['Pss'] += 1024
+    with pytest.raises(ValueError, match='totals evidence'):
+        scale.validate_accounting(accounting, config['cgroup'], worker=tmp_path / 'w')
+    process['smaps_totals_bytes']['Pss'] -= 1024
+    artifact.write_bytes(text.replace(b'12', b'13'))
+    with pytest.raises(ValueError, match='digest mismatch'):
+        scale.validate_accounting(accounting, config['cgroup'], worker=tmp_path / 'w')
+    process['smaps']['file'] = '../escape'
+    with pytest.raises(ValueError, match='unsafe smaps'):
+        scale.smaps_text(process, tmp_path / 'w')

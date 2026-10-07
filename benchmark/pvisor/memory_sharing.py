@@ -16,7 +16,7 @@ import shutil
 import sys
 
 from memory_savings import run, digest, inventory, host_identity
-from memory_scale import validate_report
+from memory_scale import validate_report, smaps_text
 
 ARMS = {
     'independent':dict(mode='baseline',dedup=False,independent_inodes=True),
@@ -54,10 +54,10 @@ def validate(raw,condition,args,binary,worker):
     if condition.get('memory_mib')==512:
         for phase in raw['phases']:
             processes=phase['accounting']['processes']
-            if not processes or any('raw' not in p['smaps'] or 'Pss' not in p['smaps_totals_bytes'] for p in processes):
+            if not processes or any(smaps_text(p,worker) is None or 'Pss' not in p['smaps_totals_bytes'] for p in processes):
                 raise ValueError('missing complete resident physical memory')
             for process in processes:
-                observed=sum(int(line.split()[1])*1024 for line in process['smaps']['raw'].splitlines() if line.startswith('Pss:'))
+                observed=sum(int(line.split()[1])*1024 for line in smaps_text(process,worker).splitlines() if line.startswith('Pss:'))
                 if observed!=process['smaps_totals_bytes']['Pss']:raise ValueError('resident PSS evidence mismatch')
     if result.get('scanner_state') != '1':
         # Validate the actual read-only sysfs evidence, regardless of helper keys.

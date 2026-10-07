@@ -101,10 +101,19 @@ controls, with platform-dependent container/VM support. See [capabilities and ev
 - [Security](https://deeplink-org.github.io/pvisor/en/security/) — threat model, executor boundaries, and known limitations
 - [Benchmarks](https://deeplink-org.github.io/pvisor/en/benchmarks/) — methods and current data
 - [Design and research](https://deeplink-org.github.io/pvisor/en/design/) — architecture, isolation, and research directions
+- [Experimental features](experimental/README.md) — proposed capabilities, implementation stages, and validation gates
 - [Community](https://deeplink-org.github.io/pvisor/en/community/) — contributing, testing, and roadmap
 - [中文文档](https://deeplink-org.github.io/pvisor/zh/start/)
 
 Security issues: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Guest firmware
+
+The customized libkrunfw sources, guest kernel configurations, patches and
+bundle tests are maintained in [`fw/`](fw/README.md). Use `just fw-build` to
+build the firmware and `just test-fw` to run its bundle/ABI regression tests.
+See the directory README for toolchain requirements and how to select the
+built firmware when building the CLI or single wheel.
 
 ## License
 

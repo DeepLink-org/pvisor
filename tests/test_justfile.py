@@ -93,6 +93,39 @@ def test_test_routes_packages_and_python(run_task):
     ]
 
 
+def test_firmware_tasks_use_in_tree_sources_and_forward_make_arguments(run_task):
+    assert run_task("fw-build", "-j4", "ARCH=arm64") == [
+        [
+            "uv",
+            "run",
+            "--no-project",
+            "--with",
+            "pyelftools==0.33",
+            "make",
+            "-C",
+            str(ROOT / "fw"),
+            "-j4",
+            "ARCH=arm64",
+        ]
+    ]
+    assert run_task("test-fw") == [
+        [
+            "uv",
+            "run",
+            "--no-project",
+            "--with",
+            "pyelftools==0.33",
+            "python",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "fw/tests",
+            "-v",
+        ]
+    ]
+
+
 def test_vm_package_signs_before_running_native_tests(run_task):
     commands = run_task("test", "pvisor-vm")
     signing = (

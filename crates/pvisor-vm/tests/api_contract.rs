@@ -48,7 +48,14 @@ fn api_is_unconditional_and_contains_no_implementation() {
 #[test]
 fn concrete_owners_implement_the_declared_contracts() {
     fn config<T: VmConfiguration + VmRuntime>() {}
-    fn control<T: VmControl + SnapshotControl + api::ColdRamControl + api::RamDedupControl>() {}
+    fn control<
+        T: VmControl
+            + SnapshotControl
+            + api::ColdRamControl
+            + api::RamDedupControl
+            + api::VcpuObservationControl,
+    >() {
+    }
     fn frozen<T: api::SnapshotCapture + api::FrozenMemory>() {}
     fn snapshot<T: api::SnapshotState>() {}
     fn restore<T: api::RestoreState>() {}
@@ -63,6 +70,7 @@ fn concrete_owners_implement_the_declared_contracts() {
     platform::<api::VmPlatform>();
     let _object_safe: Option<&dyn VmControl> = None;
     let _dedup_object_safe: Option<&dyn api::RamDedupControl> = None;
+    let _observation_object_safe: Option<&dyn api::VcpuObservationControl> = None;
     assert!(VmBuilder::from_config(VmConfig {
         cpus: 0,
         memory_mib: 128
@@ -127,6 +135,7 @@ fn private_adapters_do_not_define_public_inherent_methods() {
         include_str!("../src/handle.rs"),
         include_str!("../src/memory.rs"),
         include_str!("../src/ram_dedup.rs"),
+        include_str!("../src/vcpu_observation.rs"),
         include_str!("../src/firmware_store.rs"),
         include_str!("../src/cold_ram.rs"),
         include_str!("../src/ram_file.rs"),

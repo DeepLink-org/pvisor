@@ -59,6 +59,8 @@ mod portable;
 mod ram_dedup;
 #[path = "startup_profile.rs"]
 mod startup_profile;
+#[path = "vcpu_observation.rs"]
+mod vcpu_observation;
 
 #[cfg(test)]
 #[path = "kernel_bundle.rs"]

@@ -2,6 +2,35 @@
 
 Read [the benchmark registry and writing rules](../README.md) before measuring or publishing. User questions, controls and roles belong to that registry; this manual owns commands and retention. Entry scripts carry `Benchmark:` declarations. Preparation, publication and plotting helpers serve their caller’s ID.
 
+## vCPU observation M0
+
+`B-VCPU-IDLE-ENG` / EXP-001 M0 的 [实验计划](vcpu_idle_plan.md)定义真实 guest sleep/busy/短 timer、1/2 CPU 与 SMP 单 CPU busy 负对照，以及 observer off/on seeded 随机配对。真实 SDK example 直接在 ready callback 接通 `VmmHandle` 的 `VcpuObservationControl`；不走产品 src 修改，不 pause/offload。KVM_RUN 内 Unknown、HVF WaitingForEvent 原样保留；卸载收益未测，M1/M2 未实现。
+
+先在仓库根构建并冻结（不启动 VM），输出必须为 NEW；GNU debug build 可用于可运行性预检，正式性能比较必须使用同批同制品，不能把 debug 数字当 release 成本。
+
+```sh
+python3 -m unittest discover -s benchmark/pvisor -p test_vcpu_idle.py -v
+CARGO_BUILD_JOBS=4 python3 benchmark/pvisor/vcpu_idle.py --build \
+  --output benchmark/pvisor/.data/vcpu-build-new
+benchmark/pvisor/.data/vcpu-build-new/vm_vcpu_observe --describe
+```
+
+用户选择资产后，才运行下列独立预检；这里 `/absolute/path/...` 是必须替换的输入占位说明，不是仓库提供或已验证的路径。
+
+```sh
+python3 benchmark/pvisor/vcpu_idle.py \
+  --build-receipt benchmark/pvisor/.data/vcpu-build-new/build-receipt.json \
+  --rootfs /absolute/path/to/prepared/rootfs \
+  --firmware /absolute/path/to/firmware-directory \
+  --init /absolute/path/to/static/pvisor-guest \
+  --python /usr/bin/python3 \
+  --output benchmark/pvisor/.data/vcpu-preflight-new --pairs 1
+```
+
+正式批换新的输出目录并使用 `--pairs 5`（或预先选择更多 pair）。默认每个 worker 3 秒、10 ms 采样、90 秒进程组 timeout，最多一台 VM。rootfs 必须有同架构 Python 3/hashlib/multiprocessing/sched affinity；init 必须是理解 `/.pvisor-guest.json` 的静态 Linux pvisor-guest，不能拿任意 `/sbin/init` 替代。firmware 使用 API 的 `firmware_name`，embedded kernel 则记录实际嵌入 hash；不自动找本地路径或下载。Linux 需要 `/dev/kvm` 授权，macOS build helper 自动签署 HVF entitlement（平台仍需实机验证）。
+
+每个试次复制 rootfs，保存完整日志、guest digest/affinity/重叠时间校验、有界 samples、初始 snapshot 与失败；保留 source/binary/compiler/build 和 input receipts。`report.json` 包含完整性、失败数量、窗口/Unknown/拒绝原因和配对 wall/CPU bootstrap CI。任何失败/来源变化最终 exit 非零；不剔除慢有效样本。观察者成本包含采集、采样和 JSONL I/O，VM wall 含启动退出，不是纯 collector 成本、全机 CPU 或卸载收益。不要与构建/测试/其他实验并行，不改 global sysctl。真实 Linux/KVM guest 的独立预检与 5-pair 工程 A/B 结果见 [M0 实测报告](vcpu_idle_report.md)，含完整命令、来源摘要、失败保留与解释边界；HVF 仍未实机验证。
+
 ## Memory mechanism diagnostic
 
 `B-MEMORY-DIAG` uses the Linux-only ignored `ram_dedup::tests::memory_diagnostic` test in `pvisor-vm`. It checks same-inode private baseline sharing, COW isolation and reference lifetime, optional KSM registration, and raw disk-backed reclaim without KVM/FUSE. It requires KSM `run=0` and never changes global settings. Use a fresh output directory and retain the log and source/binary receipts; registration is not measured merging, and mapping RSS/PSS is not whole-machine savings.
@@ -564,12 +593,23 @@ This creates twelve conditions. Append `--ksm-scan-seconds 60` to extend only
 the fresh KSM arm to 60 seconds; other arms keep the two-second static window.
 The complete twelve-condition cohort is rerun, and the distinct windows are
 retained in raw conditions and provenance. Use `--group-memory-max 4294967296` for **all**
-four strategies to match the retained pre-fix comparison. The cold pager now
-preserves sparse RAM, resolves natural missing pages with 4 KiB zero allocation
-and samples resident 4 KiB pages in the Linux daemon-pool arm; it no longer prefaults all guest RAM. Local compression retains 64 KiB blocks. Guest capacity stays 512 MiB and
+four strategies to match the retained pre-fix comparison. The Linux daemon-pool arm preserves sparse RAM and scans resident 4 KiB pages.
+It admits cross-session duplicate candidates into a read-only, size-sealed memfd
+with full-byte checks, then maps them privately after CPU/device quiescence and
+a live-byte recheck. Reads retain sharing, writes use COW, and scanning releases
+obsolete references. Unique candidates hold bounded hashes only, not page payloads.
+This arm does not require userfaultfd or compress unique pages. Local compression retains 64 KiB blocks. Guest capacity stays 512 MiB and
 savings still use matching-phase unshared PSS, never the resource ceiling.
 `--preflight --arm daemon-pool --pattern repeated` is a short diagnostic subset;
 partial/preflight reports cannot be published. Failed runs retain evidence.
+The worker streams complete `/proc/PID/smaps` into SHA-256-bound sidecars under
+the trial `smaps/` directory, retaining only totals and file references in RAM.
+It flushes, syncs and requests cache discard for every MiB of evidence, bounding
+the measurement tool's own memory contribution when page sharing creates many
+VMAs. Validators reopen all sidecars and verify bytes, hashes, PSS totals and
+KSM flags; retirement preserves them. Do not mix earlier in-memory-smaps samples
+with this complete rerun. The external cgroup/host observer remains outside
+the measured group.
 
 `memory_sharing.py` is the separate B-VM-MEMORY user protocol for shared
 baselines and KSM. It uses `vm_memory_scale` with 2 vCPU per VM and genuine

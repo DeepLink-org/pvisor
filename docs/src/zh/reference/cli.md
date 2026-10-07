@@ -576,7 +576,7 @@ live VM。offload 的新目标路径限于当前 backing 的同一文件系统�
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`；FUSE/macFUSE Seekable backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`；Linux x86_64 本地 live 冷 pager |
 | `--vm-ram-dedup[=BOOL]` | `ram_dedup` | `false`；尽力而为的宿主去重建议 |
-| `--vm-memory-pool SOCKET` | `memory_pool` | 未设置：实验性外部冷页池；Linux x86_64 需要 userfaultfd 权限 |
+| `--vm-memory-pool SOCKET` | `memory_pool` | 未设置：实验性外部池；Linux 使用物理共享页，不需要 userfaultfd |
 | `--vm-node-socket SOCKET` | `node_socket` | 未设置：同宿主 node 资源服务，提供不可变镜像/恢复 RAM |
 | `--vm-snapshot-filesystem-pool DIR` | `snapshot_filesystem_pool` | 未设置：独立副本；可选的宿主管理不可变 lower 池，用于 Linux x86_64 无网络原生 checkpoint |
 
@@ -678,7 +678,7 @@ sysctl。单用户 ACL 授权/撤销示例及受限映射、构建 feature 见
 [实例内压缩](../design/memory-optimization/compression-local.md#direction)。
 它拒绝 `vm.ram_backing`、`vm.ram_compression`、`vm.ram_dedup`、
 `vm.snapshot_filesystem_pool`、快照捕获/恢复及整 VM offload。
-Linux 外部 `vm.memory_pool` 使用相同的 userfaultfd 路径，将冷页对象交给外部池；
+Linux 外部 `vm.memory_pool` 使用物理共享页池：读取保持共享、写入 COW，不需要 userfaultfd；
 它与实例本地压缩二选一，并要求私有匿名 RAM。
 guest 在短暂捕获/复核窗口之间持续运行，无需应用参与；这是驱逐/refault
 探测，不是普通 pause 或真正的读访问热度检测器，不承诺生产密度收益。

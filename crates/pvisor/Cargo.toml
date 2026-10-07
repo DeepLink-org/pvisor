@@ -77,5 +77,9 @@ vm-memory = { version = "=0.17.1", features = ["backend-mmap"] }
 
 
 [[example]]
+name = "vm_vcpu_observe"
+path = "examples/vm_vcpu_observe.rs"
+
+[[example]]
 name = "guest_init_bench"
 path = "../../benchmark/pvisor/guest_init.rs"

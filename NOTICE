@@ -33,6 +33,25 @@ distributed under the Apache License, Version 2.0. pVisor's modifications
 add the mountless copy-on-write virtio-fs backend used by pVisor and embed
 the first-party Rust guest supervisor from `crates/pvisor-guest`.
 
+libkrunfw guest firmware
+-----------------------
+
+`fw/` contains a modified copy of libkrunfw, including pVisor's guest kernel
+configurations, patches and compact firmware storage generator:
+
+https://github.com/libkrun/libkrunfw
+
+Source identity and imported local modifications are recorded in `fw/IMPORT.md`.
+The Linux kernel and kernel patches are GPL-2.0-only; the library code,
+including generated library code, is LGPL-2.1-only. See
+`fw/LICENSE-GPL-2.0-only` and `fw/LICENSE-LGPL-2.1-only`.
+The macOS compatibility headers have separate terms in
+`fw/include/macos-host/LICENSE`.
+
+Firmware binary distributions must include the corresponding source and
+license materials. These components are not covered by the repository's
+first-party Apache-2.0 license.
+
 agentgateway test fixtures
 --------------------------
 

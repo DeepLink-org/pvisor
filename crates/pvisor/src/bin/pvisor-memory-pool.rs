@@ -1,7 +1,10 @@
-//! Foreground, bounded pool for experimental macOS VM cold-page sharing.
+//! Foreground bounded page pool; Linux shares physical pages, macOS cold objects.
 use anyhow::{Context, ensure};
 use clap::Parser;
+#[cfg(not(target_os = "linux"))]
 use pvisor::ram_backing::{ipc::serve, resident::CompressedPool};
+#[cfg(target_os = "linux")]
+use pvisor::ram_backing::{ipc::serve_shared as serve, shared::SharedPool};
 use std::{
     collections::BTreeMap,
     net::Shutdown,
@@ -19,14 +22,14 @@ use tokio::{net::UnixListener, sync::Semaphore, task::JoinSet};
 struct Args {
     /// Socket inside an existing private directory owned by this user.
     socket: PathBuf,
-    /// Encoded payload budget in bytes; metadata has a separate object bound.
+    /// Page payload budget in bytes; metadata has a separate object bound.
     #[arg(long, default_value_t = 16 * 1024 * 1024)]
     max_bytes: usize,
     #[arg(long, default_value_t = 8192)]
     max_objects: usize,
     #[arg(long, default_value_t = 16)]
     max_connections: usize,
-    /// Connection-owned references; 32768 covers 2 GiB in 64 KiB blocks.
+    /// Connection-owned references: Linux uses 4 KiB pages, macOS 64 KiB blocks.
     #[arg(long, default_value_t = 32768)]
     max_references: usize,
 }
@@ -74,10 +77,16 @@ async fn main() -> anyhow::Result<()> {
     let m = socket.symlink_metadata()?;
     let _cleanup = SocketCleanup(socket.clone(), m.dev(), m.ino());
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    #[cfg(not(target_os = "linux"))]
     let pool = Arc::new(std::sync::Mutex::new(CompressedPool::new(
         args.max_bytes,
         args.max_objects,
     )));
+    #[cfg(target_os = "linux")]
+    let pool = Arc::new(std::sync::Mutex::new(SharedPool::new(
+        args.max_bytes,
+        args.max_objects,
+    )?));
     let slots = Arc::new(Semaphore::new(args.max_connections));
     let mut workers = JoinSet::new();
     let mut connections = BTreeMap::new();

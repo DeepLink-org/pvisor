@@ -729,7 +729,7 @@ writes after the last resume may be discarded, leaving only the last committed h
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`; FUSE/macFUSE Seekable backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`; Linux x86_64 local live cold pager |
 | `--vm-ram-dedup[=BOOL]` | `ram_dedup` | `false`; best-effort host dedup advice |
-| `--vm-memory-pool SOCKET` | `memory_pool` | Unset: experimental external cold-page pool; Linux x86_64 requires userfaultfd permission |
+| `--vm-memory-pool SOCKET` | `memory_pool` | Unset: experimental external pool; Linux shares physical pages without userfaultfd |
 | `--vm-node-socket SOCKET` | `node_socket` | Unset: same-host node resource service for immutable images/restored RAM |
 | `--vm-snapshot-filesystem-pool DIR` | `snapshot_filesystem_pool` | Unset: owned copies; optional host-owned immutable lower pool for Linux x86_64 no-network native checkpoints |
 
@@ -841,8 +841,8 @@ fallback, and pVisor changes no global sysctl. See [local compression](../design
 for a user-specific ACL grant/revoke example and restricted mappings/build features.
 It rejects `vm.ram_backing`, `vm.ram_compression`, `vm.ram_dedup`,
 `vm.snapshot_filesystem_pool`, snapshot capture/restore and whole-VM offload.
-Linux external `vm.memory_pool` uses the same userfaultfd path with objects
-held in an external pool. It requires private anonymous RAM and is mutually
+Linux external `vm.memory_pool` maps physical pool pages privately: reads
+retain sharing and writes use COW, without userfaultfd. It requires private anonymous RAM and is mutually
 exclusive with instance-local compression. Guest execution continues between short capture/recheck windows
 without application participation: this is eviction/refault probing, not ordinary
 pause or a true read-access heat detector. No production-density gain is promised.

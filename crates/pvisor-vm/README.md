@@ -85,6 +85,18 @@ pager 的 cooldown，包括不可压缩或容量不足的拒绝路径。禁止�
 
 快照捕获/恢复、整 VM offload、文件/FUSE backing、`ram_dedup` 与此模式互斥；Linux 外部 `memory_pool` 使用相同 pager，由 daemon 持有有界跨实例 store。完整权限、存储预算与剩余提案见[实例内压缩](../../docs/src/zh/design/memory-optimization/compression-local.md)。
 
+Linux daemon 物理共享模式使用同一采样/复核屏障，但不注册 userfaultfd：
+宿主 store 提供只读、大小封印的文件与被引用固定的 4 KiB 槽位；发布后复核
+live bytes，再以 MAP_PRIVATE 替换原位置映射。读取保持共享，写入由内核 COW
+隔离；pagemap 的 present/file 位用于跳过仍共享的页并发现已写入的私有页，
+不读取 PFN。共享模式每批最多暂存 1 MiB；驻留状态按连续 RAM 区间批量
+查询，逐页采样/复核仍在屏障内。跨实例重复候选进入物理池，独有候选只保留
+有界摘要；写入成为私有页后，发布前释放旧池引用，即使新页被拒绝。
+替换后才释放仍被映射的旧引用；worker 退出仍保留映射，连接断开由池通过
+pidfd 确认进程退出后释放引用，不能把断连当作可安全复用槽位的证明。
+该模式不压缩独有页，也不要求 userfaultfd；前述 UFFD 驱逐/恢复契约只适用于
+实例本地冷压缩。快照、offload 与 KSM advice 仍互斥。
+
 `RamDedupControl::advise_ram_dedup()` 仅显式登记适合的普通私有 RAM（匿名映射及私有文件 COW 候选），跳过 shared、hugetlb 和设备窗口，不替换映射、不更改全局 sysfs，也不自动启用。`RamDedupReport` 逐映射区分 accepted、skipped、unsupported 和 error；`accepted_bytes` 只表示本次建议被接受的区域长度，不是已合并字节或实际节省。macOS 对候选报告 unsupported。调用与 VM transition 串行化，任一登记成功后，本 VM 生命周期内拒绝启动冷 pager 或安装 device prepare；反向也跳过已启动 pager/prepare 的 VM。建议不可用不暂停或破坏健康 VM；共享信任域和侧信道授权由调用方负责。现有私有 COW RAM 的 reclaim 拒绝逻辑保持不变。
 
 `GuestCommand` 配合禁用 implicit init 的自定义 init；普通 Rust supervisor 继续使用 `/.pvisor-guest.json`。参数和环境不会继承宿主值，拒绝不支持的引号、控制字符、保留环境键及超长命令。`NetworkOptions` 显式控制自定义 init 的 DHCP，请求不会开启 TSI。`network` 默认关闭 DHCP。
@@ -96,6 +108,61 @@ Rust supervisor 的可选私有 tmpfs 契约见 [pvisor-guest](../pvisor-guest/R
 为保持 Run/证据协议兼容，部分记录标识、trace stage、环境变量和 runner 参数使用 `krun` 命名；VM 控制通过 Rust API 实现。基准证据只描述其实际测量的实现，不能作为其他实现的验证结果。
 
 Clippy 清理以语义和契约为先：保留 `EAX/EBX/ECX/EDX`、`RTC` 等硬件专名以及诊断含义明确的错误名称，必要时使用带理由的局部豁免。优先删除失效豁免、整理配置与资源参数、修复实现问题，不为消除告警改变专有术语或持久化协议。生成的 ABI 定义、跨平台 libc 字段宽度和 FUSE 协议签名需单独判断。
+
+## EXP-001 M0：observe-only vCPU 观测
+
+`api::VcpuObservationControl` 由 `VmmHandle` 实现，默认关闭，所有平台公开
+同一接口。实验调用方可在 ready callback 中启用，然后由自己的采样线程
+读取；collector 不创建线程、不积累事件队列、不调用 pause/offload/resume。
+
+```rust
+use pvisor_vm::api::{VcpuObservationControl, VmmHandle};
+
+fn sample(handle: &VmmHandle) -> Result<(), String> {
+    handle.set_vcpu_observation(true)?; // 重复启用不会清空本 session
+    let snapshot = handle.vcpu_observation()?;
+    println!("{snapshot:?}");
+    Ok(())
+}
+```
+
+快照是 collector 锁下的一致视图，保存每个配置 CPU 的当前状态、局部和全局
+sequence、hypervisor 来源、转换/等待进入退出计数与累计等待时间。`sampled_at` / `since` /
+`all_waiting_since` 为本 VM 的单调时间偏移，不是 guest 时钟。`sampled_at`
+与 CPU 记录在同一 collector 锁内采集/复制，不在解锁后给旧视图补时间戳。
+全 CPU 实际等待才能打开 `idle_epoch`；任一退出等待、控制停驻、Unknown
+或退出都会关闭窗口。`online` 指注册后端 CPU 未停止，不代表 guest Linux
+CPU online；尚未 PSCI boot 的 HVF secondary 保守阻止全等待聚合。
+VM 退出/CPU drop 登记 Stopped 并推进 topology generation，不复活停止的 CPU。
+当前拓扑固定、不支持热插拔。关闭再启用会新建 session 并清空 session 计数，
+旧 epoch 不复用；中途启用不会 kick CPU，既有 wait/park 保持 Unknown，直到
+下一个可观察接点。关闭观测时，以同一时间截断逐 CPU wait 和全等待窗口，
+将活动 wait 标为 Unknown；`wait_exits` 包含此类观测区间截断，不等同于后端
+wake 次数。禁用期间 Stopped 仍登记生命周期/topology，但不累计不可观测的
+等待时长。调用方绑定自己的 Attempt、源码及 binary/firmware 身份。
+
+HVF 只在 `should_wait` 通过且真正进入 WFE/timeout channel select 前采集
+WaitingForEvent，离开 select 即关闭；已过期或有 pending interrupt 的路径
+不生成等待窗口。KVM 执行入口记录 Executing 接点，整个 `KVM_RUN` 内是
+Unknown，返回后是 HandlingExit。不以调用未返回、低 CPU、抢占或 HLT
+判断 idle；HLT/shutdown 保持原 Stopped/退出语义。控制停驻（包括快照及 RAM
+维护）是 ManualPaused，绝不是 guest idle。HostDescheduled 预留但未推断。
+
+内存为 O(配置 CPU 数)，只存一份当前记录；每次采样返回同样有界的副本，
+调用方自行限制保存样本的容量。关闭时普通接点只有原子读取，不获取锁或
+读取时钟（退出清理仍登记拓扑）；启用时每个接点序列化更新 collector。
+这只是实现层面的开销边界，尚无真实任务开销测量。
+`rejection` 区分 Disabled / TopologyIncomplete / Unknown / NotAllWaiting；
+即使 all_waiting 也恒为 WakeDeadlineUnavailable：M0 **没有完整 deadline、
+clock conversion 或 wake latch，不能自动卸载，也不证明 Linux runqueue 空闲**。
+真实 HVF 任务、SMP guest 和性能验收仍需对应宿主实验，不以单测替代。
+
+**实测后源码修复（2026-10-07）：**当前 collector 已修复快照时间戳的锁内
+采集，以及关闭观测时逐 CPU 等待区间的截断/禁用退出记账。这些修改发生在
+冻结的真实 KVM 实验之后；旧实验仅验证其冻结 binary/source 对应的修复前
+版本，不能作为当前源码的实测通过记录。本次保留旧 binary、receipt 和
+实验数据；后续实测须另建制品/收据，不覆盖原实验。macOS/HVF 尚未实际
+编译或运行验证。
 
 ## 验证入口
 

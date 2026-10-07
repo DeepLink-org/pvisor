@@ -8,6 +8,9 @@ pub mod inventory;
 pub mod ipc;
 /// Experimental resident compression interfaces; not enabled by VM settings.
 pub mod resident;
+/// Linux daemon-owned physical pages, mapped privately by VMs for kernel COW.
+#[cfg(target_os = "linux")]
+pub mod shared;
 pub use image::{ImageId, RamLayout, RamRegion, SnapshotChain};
 
 use serde::{Deserialize, Serialize};

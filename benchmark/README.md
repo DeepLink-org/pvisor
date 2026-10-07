@@ -308,7 +308,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 同时测回收量、恢复延迟和 CPU 开销。
   - 当前用户页以 512 MiB 配置的 VM 为基准：主表使用完整产品进程 PSS 之和描述实际常驻物理内存，共享页按比例计入，包含压缩池和辅助进程；明确它不包含未映射文件缓存及内核内存，整组 cgroup 内存与缓存另外报告。不能把 PSS 当作完整宿主成本，也不能把配置容量当作实际占用。
   - 先提供短窗口静态读数：单实例每格一个新 VM、零预热、5 秒观察；跨实例先测四实例、每格一个新组、零预热、2 秒扫描窗。启动前一次检查，采样期间持续监测；后台构建如实记录，只允许解释静态内存，不用于速度比较；其他 VM 干扰、预算或校验失败仍拒绝。静态读数只回答指定窗口的占用及观测到的恢复成本，不报告 P50/P95、置信区间、长期稳定性或密度。完整多轮设计是独立后续批次，不能将短窗口读数混入。
-  - 跨实例选型另设 `memory_sharing.py --static --strategies`：原始不共享与 KSM 均为四台独立启动的私有匿名 RAM VM，原始组关闭 advice（SDK `with_private_ram()`）、共享快照＋COW 从一份 sealed RAM 恢复、KSM 在相同 RAM 映射上开启 RAM advice；三者同为 512 MiB/2 vCPU、64 MiB 工作集、四实例，ready/25%/100% 写入逐阶段对照。每格 N=1、默认扫描 2 秒，比例以相同阶段原始不共享组为分母；不得将旧独立快照副本或 restored-KSM 的数值充当这些新条件。传入 frozen `--pool-daemon`/`--pool-receipt` 加入 daemon 持有的内存池，四方案共 12 格，包含池进程 PSS、全组计费和内容恢复校验。冷页路径保留稀疏 RAM；为了与修复前条件保持一致，四方案统一 `--group-memory-max 4294967296`；上限不作节约分母。`--ksm-scan-seconds 60` 仅延长原始 KSM 组到 60 秒，其余保持静态 2 秒窗，完整 12 格重新测量并保留逐条件窗口；KSM 每台 VM 必须有正的 advice 接受字节，ready smaps 必须有四个 mergeable VM 进程，不能将全部 SharedMapping 跳过当作有效 KSM 结果。单方案 `--preflight --arm/--pattern` 仅诊断，不得发布部分 cohort。
+  - 跨实例选型另设 `memory_sharing.py --static --strategies`：原始不共享与 KSM 均为四台独立启动的私有匿名 RAM VM，原始组关闭 advice（SDK `with_private_ram()`）、共享快照＋COW 从一份 sealed RAM 恢复、KSM 在相同 RAM 映射上开启 RAM advice；三者同为 512 MiB/2 vCPU、64 MiB 工作集、四实例，ready/25%/100% 写入逐阶段对照。每格 N=1、默认扫描 2 秒，比例以相同阶段原始不共享组为分母；不得将旧独立快照副本或 restored-KSM 的数值充当这些新条件。传入 frozen `--pool-daemon`/`--pool-receipt` 加入 daemon 持有的内存池，四方案共 12 格，包含池进程 PSS、全组计费和内容恢复校验。Linux daemon 池扫描已驻留的 4 KiB 页，优先收纳跨 VM 重复候选，物理页由 daemon memfd 持有；读取保持共享、写入 COW，扫描后释放已改写页的旧引用。独有候选只保留有界摘要，不提前复制页；不需要 userfaultfd，也不压缩独有页。保留稀疏 RAM；为了与既有条件保持一致，四方案统一 `--group-memory-max 4294967296`；上限不作节约分母。`--ksm-scan-seconds 60` 仅延长原始 KSM 组到 60 秒，其余保持静态 2 秒窗，完整 12 格重新测量并保留逐条件窗口；KSM 每台 VM 必须有正的 advice 接受字节，ready smaps 必须有四个 mergeable VM 进程，不能将全部 SharedMapping 跳过当作有效 KSM 结果。单方案 `--preflight --arm/--pattern` 仅诊断，不得发布部分 cohort。完整 smaps 使用流式写入且逐 MiB 同步／缓存丢弃的独立证据文件，测量组内只保留汇总与文件引用；发布时重验字节、SHA-256、PSS 汇总及 KSM flags。避免大量页映射的原始文本驻留在测量进程中造成假占用；保留证据，不将此前内存驻留 smaps 的读数混入本轮。
   - 区分重复数据和随机数据负载。
   - 每次试验使用新的 VM，并校验数据完整性。
   - `memory_savings.py` / `vm_memory_savings` 提供当前 Linux 默认回收、live 压缩、暂停和 raw/compressed offload 用户对照。每格先预检，再 3 次预热、30 次正式样本；完整组四核/2 GiB/零 swap，512 MiB/2 vCPU guest、64 MiB 应用数据、固定 60 秒闲置窗。逐块独立摘要、全量工具写入/读回和原生 reap 为成功门禁，观察者与协调器在组外。新制品与既有快照/offload 批次分开保留。`publish_memory_savings.py` 校验完整条件、预热与正式样本、来源和干扰门禁后导出阶段/峰值/CPU/存储分布及相对默认模式的配对 bootstrap 区间。
@@ -339,6 +339,14 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** 明确实例内 cold off/on 的完整受限 cgroup 内存、RAM PSS、压缩 store/临时峰值、冷页和恢复计数，以及全部 payload 摘要、mutation、设备 I/O、退出；原始随机内容是否拒绝无益回收。
 - **实验设计：** 初始 1 VM 新实例 off/on、256 MiB/1vCPU、64 MiB 重复/独有随机数据，每格固定两段冷窗口和两次全量恢复；组四核/2GiB/零 swap，最多四 VM，无全局 KSM/sysctl 修改。kernel-fault userfaultfd 权限由用户授权。每条件独立新 cgroup，固定等待和 deadline，完整保留失败，不以 codec 字节当作净内存节省。初始预检每格 n=1，计时含 debug/校验边界，先正确性后扩展。
 - **入口：** `crates/pvisor/examples/vm_cold_runtime.rs` 与 `benchmark/pvisor/linux_cold_runtime.py`；报告 `LINUX_COLD_RUNTIME_REPORT.md`；同源冻结 GNU release 预检与加工 CSV 见 `benchmark/pvisor/COLD_RUNTIME_RELEASE_REPORT.md`，独立成批，不与既有 cohort 合并。
+
+### B-VCPU-IDLE-ENG：真实 guest 的 vCPU 等待窗口与观测开销 {#b-vcpu-idle-eng}
+
+- **角色**：engineering A/B；EXP-001 M0 observe-only，不进入用户 benchmark 正文。
+- **入口**：`benchmark/pvisor/vcpu_idle.py`，真实 VM SDK example `vm_vcpu_observe`；协议 `benchmark/pvisor/vcpu_idle_plan.md`。
+- **Motivation**：决定当前后端观测是否足以发现真实 guest 等待机会，以及开启采集与有界采样的成本是否值得继续研究。
+- **想要的结论**：按后端/负载报告窗口、Unknown 与拒绝原因，observer off/on 的同批配对 wall/CPU 差异及 bootstrap 95% CI；无法证明的能力明确未测。
+- **实验设计**：同机同制品，fresh VM，sleep/busy/短 timer，1/2 CPU 与 SMP 单 CPU busy 负对照；预先保存 seeded 随机配对顺序，完整输出校验、有界采样、超时、来源及失败保留。KVM_RUN 是 Unknown；HVF WaitingForEvent 不证明 Linux runqueue 空闲。无 pause/offload、全局 sysctl 修改或自动策略；卸载收益未测，M1/M2 未实现。
 
 ### B-COLD-STORAGE-DIAG：冷压缩存储的空间与完整性边界 {#b-cold-storage-diag}
 

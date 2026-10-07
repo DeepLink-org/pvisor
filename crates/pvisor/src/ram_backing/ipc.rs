@@ -20,6 +20,9 @@ const PUT: u8 = 1;
 const GET: u8 = 2;
 const RELEASE: u8 = 3;
 const STATS: u8 = 4;
+const PUT_SHARED: u8 = 5;
+const MAPPING: u8 = 6;
+const PUT_DUPLICATE: u8 = 7;
 
 /// A connection-owned reference, not an object ID that grants global access.
 pub struct RemoteObject {
@@ -27,6 +30,7 @@ pub struct RemoteObject {
     token: u64,
     id: ImageId,
     length: usize,
+    offset: Option<u64>,
 }
 impl RemoteObject {
     pub fn id(&self) -> ImageId {
@@ -57,9 +61,11 @@ fn read_u64(stream: &mut impl Read) -> io::Result<u64> {
 fn reject(stream: &mut UnixStream, message: &str) -> io::Result<()> {
     let bytes = message.as_bytes();
     let length = bytes.len().min(256);
-    stream.write_all(&[1])?;
-    stream.write_all(&(length as u32).to_le_bytes())?;
-    stream.write_all(&bytes[..length])
+    let mut frame = Vec::with_capacity(5 + length);
+    frame.push(1);
+    frame.extend_from_slice(&(length as u32).to_le_bytes());
+    frame.extend_from_slice(&bytes[..length]);
+    stream.write_all(&frame)
 }
 fn status(stream: &mut impl Read) -> io::Result<Option<io::Error>> {
     let mut byte = [0];
@@ -84,17 +90,147 @@ fn status(stream: &mut impl Read) -> io::Result<Option<io::Error>> {
 /// One service thread per authorized connection; callers bound connection count.
 /// No idle expiry: disconnected sessions release references, quiet VMs retain them.
 pub fn serve(
-    mut stream: UnixStream,
+    stream: UnixStream,
     pool: Arc<Mutex<CompressedPool>>,
     max_references: usize,
 ) -> io::Result<()> {
+    serve_inner(stream, Owner::Compressed(pool), max_references)
+}
+#[cfg(target_os = "linux")]
+pub fn serve_shared(
+    stream: UnixStream,
+    pool: Arc<Mutex<super::shared::SharedPool>>,
+    max_references: usize,
+) -> io::Result<()> {
+    serve_inner(stream, Owner::Shared(pool), max_references)
+}
+
+enum Owner {
+    Compressed(Arc<Mutex<CompressedPool>>),
+    #[cfg(target_os = "linux")]
+    Shared(Arc<Mutex<super::shared::SharedPool>>),
+}
+enum Reference {
+    Compressed(Arc<CompressedObject>),
+    #[cfg(target_os = "linux")]
+    Shared(Arc<super::shared::SharedObject>),
+}
+impl Reference {
+    fn id(&self) -> ImageId {
+        match self {
+            Self::Compressed(o) => o.id(),
+            #[cfg(target_os = "linux")]
+            Self::Shared(o) => o.id(),
+        }
+    }
+    fn length(&self) -> usize {
+        match self {
+            Self::Compressed(o) => o.length(),
+            #[cfg(target_os = "linux")]
+            Self::Shared(_) => 4096,
+        }
+    }
+    fn restore(&self, out: &mut [u8]) -> io::Result<()> {
+        match self {
+            Self::Compressed(o) => o.restore(out),
+            #[cfg(target_os = "linux")]
+            Self::Shared(o) => o.restore(out),
+        }
+    }
+    fn count(&self) -> usize {
+        match self {
+            Self::Compressed(o) => Arc::strong_count(o),
+            #[cfg(target_os = "linux")]
+            Self::Shared(o) => Arc::strong_count(o),
+        }
+    }
+    fn offset(&self) -> Option<u64> {
+        match self {
+            Self::Compressed(_) => None,
+            #[cfg(target_os = "linux")]
+            Self::Shared(o) => Some(o.offset()),
+        }
+    }
+}
+impl Owner {
+    fn is_shared(&self) -> bool {
+        match self {
+            Self::Compressed(_) => false,
+            #[cfg(target_os = "linux")]
+            Self::Shared(_) => true,
+        }
+    }
+    fn intern(&self, bytes: &[u8], duplicate: bool, session: [u8; 16]) -> io::Result<Reference> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = (duplicate, session);
+        match self {
+            Self::Compressed(pool) => pool
+                .lock()
+                .map_err(|_| io::Error::other("pool poisoned"))?
+                .intern(bytes)
+                .map(Reference::Compressed),
+            #[cfg(target_os = "linux")]
+            Self::Shared(pool) => {
+                let mut pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                (if duplicate {
+                    pool.intern_duplicate(bytes, session)
+                } else {
+                    pool.intern(bytes)
+                })
+                .map(Reference::Shared)
+            }
+        }
+    }
+    fn collect(&self, id: Option<ImageId>) -> io::Result<()> {
+        match self {
+            Self::Compressed(pool) => {
+                let mut pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                if let Some(id) = id {
+                    pool.collect_one(id);
+                } else {
+                    pool.collect();
+                }
+                Ok(())
+            }
+            #[cfg(target_os = "linux")]
+            Self::Shared(pool) => {
+                let mut pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                if let Some(id) = id {
+                    pool.collect_one(id)
+                } else {
+                    pool.collect()
+                }
+            }
+        }
+    }
+    fn stats(&self) -> io::Result<(u64, u64)> {
+        match self {
+            Self::Compressed(pool) => {
+                let pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                Ok((pool.encoded_bytes() as u64, pool.object_count() as u64))
+            }
+            #[cfg(target_os = "linux")]
+            Self::Shared(pool) => {
+                let pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                Ok((pool.payload_bytes() as u64, pool.object_count() as u64))
+            }
+        }
+    }
+}
+fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    let peer = if matches!(&pool, Owner::Shared(_)) {
+        Some(super::shared::peer_pidfd(&stream)?)
+    } else {
+        None
+    };
     if max_references == 0 {
         return Err(invalid("invalid pool reference budget"));
     }
     let session = *uuid::Uuid::new_v4().as_bytes();
     stream.write_all(MAGIC)?;
     stream.write_all(&session)?;
-    let mut references: BTreeMap<u64, Arc<CompressedObject>> = BTreeMap::new();
+    let mut references: BTreeMap<u64, Reference> = BTreeMap::new();
     let result = (|| {
         let mut next = 0u64;
         loop {
@@ -106,7 +242,7 @@ pub fn serve(
                 Err(error) => return Err(error),
             }
             match operation[0] {
-                PUT => {
+                PUT | PUT_SHARED | PUT_DUPLICATE => {
                     let size = read_u32(&mut stream)? as usize;
                     if size == 0 || size > BLOCK_BYTES {
                         return Err(invalid("invalid pool block length"));
@@ -117,10 +253,11 @@ pub fn serve(
                         reject(&mut stream, "pool reference budget exhausted")?;
                         continue;
                     }
-                    let interned = pool
-                        .lock()
-                        .map_err(|_| io::Error::other("pool lock poisoned"))?
-                        .intern(&bytes);
+                    if operation[0] != PUT && !pool.is_shared() {
+                        reject(&mut stream, "physical sharing unsupported by this pool")?;
+                        continue;
+                    }
+                    let interned = pool.intern(&bytes, operation[0] == PUT_DUPLICATE, session);
                     let object = match interned {
                         Ok(object) => object,
                         Err(error) => {
@@ -130,12 +267,31 @@ pub fn serve(
                     };
                     next += 1;
                     let id = object.id();
+                    let offset = object.offset();
                     references.insert(next, object);
                     // Reference remains owned even if this response fails; session cleanup releases it.
-                    stream.write_all(&[0])?;
-                    stream.write_all(&next.to_le_bytes())?;
-                    stream.write_all(&id)?;
-                    stream.write_all(&(size as u32).to_le_bytes())?;
+                    let mut reply = Vec::with_capacity(53);
+                    reply.push(0);
+                    reply.extend_from_slice(&next.to_le_bytes());
+                    reply.extend_from_slice(&id);
+                    reply.extend_from_slice(&(size as u32).to_le_bytes());
+                    if operation[0] != PUT {
+                        reply.extend_from_slice(&offset.unwrap().to_le_bytes());
+                    }
+                    stream.write_all(&reply)?;
+                }
+                MAPPING => {
+                    #[cfg(target_os = "linux")]
+                    if let Owner::Shared(owner) = &pool {
+                        let file = owner
+                            .lock()
+                            .map_err(|_| io::Error::other("pool poisoned"))?
+                            .readonly_file();
+                        stream.write_all(&[0])?;
+                        send_mapping_fd(&stream, file.as_raw_fd())?;
+                        continue;
+                    }
+                    reject(&mut stream, "physical sharing unsupported by this pool")?;
                 }
                 GET => {
                     let token = read_u64(&mut stream)?;
@@ -160,31 +316,20 @@ pub fn serve(
                     };
                     let id = object.id();
                     drop(object);
-                    pool.lock()
-                        .map_err(|_| io::Error::other("pool lock poisoned"))?
-                        .collect_one(id);
+                    pool.collect(Some(id))?;
                     stream.write_all(&[0])?;
                 }
                 STATS => {
-                    let mut local = BTreeMap::<ImageId, (usize, &Arc<CompressedObject>)>::new();
+                    let mut local = BTreeMap::<ImageId, (usize, &Reference)>::new();
                     for object in references.values() {
                         local.entry(object.id()).or_insert((0, object)).0 += 1;
                     }
                     let cross_session = local
                         .values()
-                        .filter(|(count, object)| Arc::strong_count(object) > 1 + count)
+                        .filter(|(count, object)| object.count() > 1 + count)
                         .count() as u64;
-                    let values = {
-                        let pool = pool
-                            .lock()
-                            .map_err(|_| io::Error::other("pool lock poisoned"))?;
-                        [
-                            pool.encoded_bytes() as u64,
-                            pool.object_count() as u64,
-                            references.len() as u64,
-                            cross_session,
-                        ]
-                    };
+                    let (payload, objects) = pool.stats()?;
+                    let values = [payload, objects, references.len() as u64, cross_session];
                     stream.write_all(&[0])?;
                     for value in values {
                         stream.write_all(&value.to_le_bytes())?;
@@ -194,11 +339,53 @@ pub fn serve(
             }
         }
     })();
-    drop(references);
-    if let Ok(mut pool) = pool.lock() {
-        pool.collect();
+    #[cfg(target_os = "linux")]
+    if let Owner::Shared(owner) = &pool {
+        owner
+            .lock()
+            .map_err(|_| io::Error::other("pool poisoned"))?
+            .forget_candidates(session);
     }
+    #[cfg(target_os = "linux")]
+    if !references.is_empty()
+        && let Some(peer) = peer
+    {
+        // Socket loss is not proof that private COW mappings have disappeared.
+        // Hold every slot until the peer's pidfd proves the VM process exited.
+        super::shared::wait_peer_exit(&peer).unwrap_or_else(|error| {
+            eprintln!("cannot safely release shared RAM ownership: {error}");
+            std::process::abort();
+        });
+    }
+    drop(references);
+    pool.collect(None)?;
     result
+}
+
+#[cfg(target_os = "linux")]
+fn send_mapping_fd(stream: &UnixStream, fd: std::os::fd::RawFd) -> io::Result<()> {
+    let mut marker = [0x46u8];
+    let mut iov = libc::iovec {
+        iov_base: marker.as_mut_ptr().cast(),
+        iov_len: 1,
+    };
+    let mut control = [0usize; 4];
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = unsafe { libc::CMSG_SPACE(4) } as usize;
+    unsafe {
+        let c = libc::CMSG_FIRSTHDR(&message);
+        (*c).cmsg_level = libc::SOL_SOCKET;
+        (*c).cmsg_type = libc::SCM_RIGHTS;
+        (*c).cmsg_len = libc::CMSG_LEN(4) as usize;
+        std::ptr::write_unaligned(libc::CMSG_DATA(c).cast(), fd);
+        if libc::sendmsg(stream.as_raw_fd(), &message, libc::MSG_NOSIGNAL) != 1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 /// Serialized RPCs. Transport/protocol failure permanently closes the session;
@@ -207,6 +394,7 @@ pub struct PoolClient {
     stream: Option<UnixStream>,
     session: [u8; 16],
     timeout: Duration,
+    shared_file: Option<Arc<std::fs::File>>,
 }
 // One absolute deadline covers partial writes and trickling replies. Nonblocking
 // I/O plus poll avoids relying on per-syscall Unix socket timeout semantics.
@@ -220,6 +408,59 @@ impl<'a> DeadlineStream<'a> {
             .checked_add(timeout)
             .ok_or_else(|| invalid("pool timeout overflow"))?;
         Ok(Self { stream, deadline })
+    }
+    #[cfg(target_os = "linux")]
+    fn receive_mapping_fd(&mut self) -> io::Result<std::os::fd::OwnedFd> {
+        use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+        self.io(libc::POLLIN, |stream| {
+            let mut marker = [0u8];
+            let mut control = [0usize; 4];
+            let mut iov = libc::iovec {
+                iov_base: marker.as_mut_ptr().cast(),
+                iov_len: 1,
+            };
+            let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+            message.msg_iov = &mut iov;
+            message.msg_iovlen = 1;
+            message.msg_control = control.as_mut_ptr().cast();
+            message.msg_controllen = std::mem::size_of_val(&control);
+            let n =
+                unsafe { libc::recvmsg(stream.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
+            if n < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut fds = Vec::new();
+            let mut bad = false;
+            unsafe {
+                let mut c = libc::CMSG_FIRSTHDR(&message);
+                while !c.is_null() {
+                    if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
+                        let size = (*c).cmsg_len.saturating_sub(libc::CMSG_LEN(0) as usize);
+                        bad |= (*c).cmsg_len < libc::CMSG_LEN(0) as usize
+                            || !size.is_multiple_of(std::mem::size_of::<RawFd>());
+                        for i in 0..size / std::mem::size_of::<RawFd>() {
+                            fds.push(OwnedFd::from_raw_fd(std::ptr::read_unaligned(
+                                libc::CMSG_DATA(c).cast::<RawFd>().add(i),
+                            )));
+                        }
+                    } else {
+                        bad = true;
+                    }
+                    c = libc::CMSG_NXTHDR(&message, c);
+                }
+            }
+            // Adopt all installed rights before validation so malformed frames
+            // cannot leak descriptors, including a truncated ancillary prefix.
+            if n != 1
+                || marker[0] != 0x46
+                || bad
+                || message.msg_flags & libc::MSG_CTRUNC != 0
+                || fds.len() != 1
+            {
+                return Err(invalid("invalid shared pool descriptor frame"));
+            }
+            Ok(fds.remove(0))
+        })
     }
     fn remaining(&self) -> io::Result<Duration> {
         self.deadline
@@ -294,6 +535,7 @@ impl PoolClient {
             stream: Some(stream),
             session,
             timeout,
+            shared_file: None,
         })
     }
     fn exchange<T>(
@@ -318,17 +560,37 @@ impl PoolClient {
         }
     }
     pub fn put(&mut self, bytes: &[u8]) -> io::Result<RemoteObject> {
+        self.put_inner(bytes, false)
+    }
+    pub fn put_duplicate(&mut self, bytes: &[u8]) -> io::Result<RemoteObject> {
+        self.put_inner(bytes, self.shared_file.is_some())
+    }
+    fn put_inner(&mut self, bytes: &[u8], duplicate: bool) -> io::Result<RemoteObject> {
         if bytes.is_empty() || bytes.len() > BLOCK_BYTES {
             return Err(invalid("invalid pool input length"));
         }
         let session = self.session;
         let expected = identity(bytes);
+        let shared_file = self.shared_file.clone();
+        if shared_file.is_some() && bytes.len() != 4096 {
+            return Err(invalid("shared pool requires 4 KiB pages"));
+        }
         self.exchange(|stream| {
-            stream.write_all(&[PUT])?;
-            stream.write_all(&(bytes.len() as u32).to_le_bytes())?;
-            stream.write_all(bytes)?;
+            let operation = if duplicate {
+                PUT_DUPLICATE
+            } else if shared_file.is_some() {
+                PUT_SHARED
+            } else {
+                PUT
+            };
+            let mut frame = Vec::with_capacity(5 + bytes.len());
+            frame.push(operation);
+            frame.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            frame.extend_from_slice(bytes);
+            stream.write_all(&frame)?;
             if let Some(error) = status(stream)? {
-                return Ok(Err(error));
+                // The complete rejection frame proves the connection is healthy.
+                return Ok(Err(io::Error::new(io::ErrorKind::WouldBlock, error)));
             }
             let token = read_u64(stream)?;
             let mut id = [0; 32];
@@ -337,12 +599,72 @@ impl PoolClient {
             if token == 0 || id != expected || length != bytes.len() {
                 return Err(invalid("invalid pool object reply"));
             }
+            let offset = if let Some(file) = &shared_file {
+                let offset = read_u64(stream)?;
+                let file_len = file.metadata()?.len();
+                if !offset.is_multiple_of(4096)
+                    || offset.checked_add(4096).is_none_or(|end| end > file_len)
+                {
+                    return Err(invalid("invalid shared page offset"));
+                }
+                use std::os::unix::fs::FileExt;
+                let mut actual = [0; 4096];
+                file.read_exact_at(&mut actual, offset)?;
+                if actual != bytes {
+                    return Err(invalid("shared page publication content mismatch"));
+                }
+                Some(offset)
+            } else {
+                None
+            };
             Ok(Ok(RemoteObject {
                 session,
                 token,
                 id,
                 length,
+                offset,
             }))
+        })
+    }
+    #[cfg(target_os = "linux")]
+    pub fn enable_shared_mapping(&mut self) -> io::Result<()> {
+        let file = self.exchange(|stream| {
+            stream.write_all(&[MAPPING])?;
+            if let Some(error) = status(stream)? {
+                return Ok(Err(error));
+            }
+            let fd = stream.receive_mapping_fd()?;
+            let access = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+            let seals = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GET_SEALS) };
+            if access < 0
+                || access & libc::O_ACCMODE != libc::O_RDONLY
+                || seals < 0
+                || seals & (libc::F_SEAL_GROW | libc::F_SEAL_SHRINK)
+                    != libc::F_SEAL_GROW | libc::F_SEAL_SHRINK
+            {
+                return Err(invalid(
+                    "pool mapping descriptor must be read-only and size-sealed",
+                ));
+            }
+            let file = std::fs::File::from(fd);
+            if file.metadata()?.len() == 0 || !file.metadata()?.len().is_multiple_of(4096) {
+                return Err(invalid("invalid shared pool file size"));
+            }
+            Ok(Ok(Arc::new(file)))
+        })?;
+        self.shared_file = Some(file);
+        Ok(())
+    }
+    pub fn shared_mapping(
+        &self,
+        object: &RemoteObject,
+    ) -> Option<pvisor_vm::api::SharedRamMapping> {
+        if self.owns(object).is_err() {
+            return None;
+        }
+        Some(pvisor_vm::api::SharedRamMapping {
+            file: self.shared_file.as_ref()?.clone(),
+            offset: object.offset?,
         })
     }
     fn owns(&self, object: &RemoteObject) -> io::Result<()> {
@@ -404,6 +726,160 @@ impl PoolClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn physical_pool_maps_one_page_and_cow_keeps_other_references_unchanged() {
+        let pool = Arc::new(Mutex::new(
+            super::super::shared::SharedPool::new(8192, 2).unwrap(),
+        ));
+        let (a, sa) = UnixStream::pair().unwrap();
+        let (b, sb) = UnixStream::pair().unwrap();
+        let owner = pool.clone();
+        let ta = std::thread::spawn(move || serve_shared(sa, owner, 8));
+        let owner = pool.clone();
+        let tb = std::thread::spawn(move || serve_shared(sb, owner, 8));
+        let mut a = PoolClient::new(a, Duration::from_secs(5)).unwrap();
+        a.enable_shared_mapping().unwrap();
+        let mut b = PoolClient::new(b, Duration::from_secs(5)).unwrap();
+        b.enable_shared_mapping().unwrap();
+        assert!(a.put_duplicate(&[0x53; 4096]).is_err());
+        assert_eq!(a.stats().unwrap().objects, 0);
+        let br = b.put_duplicate(&[0x53; 4096]).unwrap();
+        let ar = a.put_duplicate(&[0x53; 4096]).unwrap();
+        let am = a.shared_mapping(&ar).unwrap();
+        let bm = b.shared_mapping(&br).unwrap();
+        assert_eq!(am.offset, bm.offset);
+        assert_eq!(a.stats().unwrap().encoded_bytes, 4096);
+        assert_eq!(a.stats().unwrap().cross_session_objects, 1);
+        let map = |m: &pvisor_vm::api::SharedRamMapping| unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                4096,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE,
+                m.file.as_raw_fd(),
+                m.offset as libc::off_t,
+            )
+        };
+        let ap = map(&am);
+        let bp = map(&bm);
+        assert_ne!(ap, libc::MAP_FAILED);
+        assert_ne!(bp, libc::MAP_FAILED);
+        unsafe {
+            assert_eq!(*(bp as *const u8), 0x53);
+            *(ap as *mut u8) = 0x91;
+            assert_eq!(*(bp as *const u8), 0x53);
+            assert_eq!(*(ap as *const u8), 0x91);
+            libc::munmap(ap, 4096);
+            libc::munmap(bp, 4096);
+        }
+        a.release(ar).unwrap();
+        let mut out = [0; 4096];
+        b.restore(&br, &mut out).unwrap();
+        assert_eq!(out, [0x53; 4096]);
+        b.release(br).unwrap();
+        drop(a);
+        drop(b);
+        ta.join().unwrap().unwrap();
+        tb.join().unwrap().unwrap();
+        assert_eq!(pool.lock().unwrap().object_count(), 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn disconnected_mapping_is_pinned_until_peer_process_exits() {
+        use std::io::BufRead;
+        const CHILD: &str = "PVISOR_SHARED_LIFETIME_CHILD";
+        if let Some(socket) = std::env::var_os(CHILD) {
+            let mut client =
+                PoolClient::new(UnixStream::connect(socket).unwrap(), Duration::from_secs(5))
+                    .unwrap();
+            client.enable_shared_mapping().unwrap();
+            let object = client.put(&[7; 4096]).unwrap();
+            let mapping = client.shared_mapping(&object).unwrap();
+            let ptr = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    4096,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE,
+                    mapping.file.as_raw_fd(),
+                    mapping.offset as libc::off_t,
+                )
+            };
+            assert_ne!(ptr, libc::MAP_FAILED);
+            unsafe {
+                assert_eq!(*(ptr as *const u8), 7);
+            }
+            drop(client);
+            println!("ready");
+            std::io::stdout().flush().unwrap();
+            let mut command = [0];
+            std::io::stdin().read_exact(&mut command).unwrap();
+            unsafe {
+                assert_eq!(*(ptr as *const u8), 7);
+                libc::munmap(ptr, 4096);
+            }
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("pool.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let pool = Arc::new(Mutex::new(
+            super::super::shared::SharedPool::new(4096, 1).unwrap(),
+        ));
+        let owner = pool.clone();
+        let server = std::thread::spawn(move || {
+            let mut workers = Vec::new();
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                let owner = owner.clone();
+                workers.push(std::thread::spawn(move || serve_shared(stream, owner, 8)));
+            }
+            for worker in workers {
+                worker.join().unwrap().unwrap();
+            }
+        });
+        let name = module_path!().split_once("::").unwrap().1.to_owned()
+            + "::disconnected_mapping_is_pinned_until_peer_process_exits";
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture"])
+            .env(CHILD, &socket)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut output = std::io::BufReader::new(child.stdout.take().unwrap());
+        loop {
+            let mut line = String::new();
+            assert!(output.read_line(&mut line).unwrap() > 0);
+            if line.trim() == "ready" {
+                break;
+            }
+        }
+        let mut observer = PoolClient::new(
+            UnixStream::connect(&socket).unwrap(),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        observer.enable_shared_mapping().unwrap();
+        assert_eq!(observer.stats().unwrap().objects, 1);
+        assert!(observer.put(&[9; 4096]).is_err());
+        child.stdin.take().unwrap().write_all(&[1]).unwrap();
+        assert!(child.wait().unwrap().success());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while observer.stats().unwrap().objects != 0 {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let object = observer.put(&[9; 4096]).unwrap();
+        let mut bytes = [0; 4096];
+        observer.restore(&object, &mut bytes).unwrap();
+        assert_eq!(bytes, [9; 4096]);
+        observer.release(object).unwrap();
+        drop(observer);
+        server.join().unwrap();
+    }
     #[test]
     fn trickling_reply_cannot_extend_exchange_deadline() {
         let (client, mut server) = UnixStream::pair().unwrap();

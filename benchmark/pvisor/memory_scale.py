@@ -122,6 +122,21 @@ def unit_command(unit, harness, config):
             '--internal-worker', str(config)]
 
 
+def smaps_text(process, worker=None):
+    evidence=process.get('smaps',{})
+    if 'raw' in evidence:return evidence['raw']
+    if 'error' in evidence:return None
+    name=evidence.get('file')
+    if (worker is None or not isinstance(name,str) or Path(name).name!=name
+            or name in ('.','..') or evidence.get('capture')!='streamed-synced-cache-discarded'):
+        raise ValueError('missing or unsafe smaps sidecar')
+    path=Path(worker).parent/'smaps'/name
+    data=path.read_bytes()
+    if len(data)!=evidence.get('bytes') or hashlib.sha256(data).hexdigest()!=evidence.get('sha256'):
+        raise ValueError('smaps sidecar digest mismatch')
+    return data.decode('utf-8')
+
+
 def raw_field(accounting, name):
     value = accounting.get('counters', {}).get(name, {}).get('raw')
     if not isinstance(value, str):
@@ -142,7 +157,7 @@ def scanner(accounting):
     return value.strip()
 
 
-def validate_accounting(accounting, group, memory_max=MEMORY_MAX):
+def validate_accounting(accounting, group, memory_max=MEMORY_MAX, worker=None):
     if accounting.get('cgroup') != group:
         raise ValueError('accounting escaped the owned cgroup')
     if raw_field(accounting, 'memory.max') != str(memory_max) or raw_field(accounting, 'memory.swap.max') != '0':
@@ -172,8 +187,11 @@ def validate_accounting(accounting, group, memory_max=MEMORY_MAX):
     for process in accounting['processes']:
         if not isinstance(process.get('smaps'), dict) or not isinstance(process.get('smaps_totals_bytes'), dict):
             raise ValueError('missing smaps evidence (raw or explicit error required)')
-        if not ({'raw', 'error'} & process['smaps'].keys()):
-            raise ValueError('silent smaps gap')
+        text=smaps_text(process,worker)
+        if text is not None:
+            for field,value in process['smaps_totals_bytes'].items():
+                observed=sum(int(line.split()[1])*1024 for line in text.splitlines() if line.startswith(field+':'))
+                if observed!=value:raise ValueError('smaps totals evidence mismatch')
     return cpu['usage_usec']
 
 
@@ -220,7 +238,7 @@ def validate_report(report, config):
                            g.get('result',{}).get('output',{}).get('stderr','')) for g in guests]
         ready=next((p for p in report.get('phases',[]) if p['name']=='ready'),{})
         eligible=sum(any(line.startswith('VmFlags:') and 'mg' in line.split()[1:]
-                         for line in process.get('smaps',{}).get('raw','').splitlines())
+                         for line in (smaps_text(process,config['output']) or '').splitlines())
                      for process in ready.get('accounting',{}).get('processes',[]))
         if len(accepted)!=config['vms'] or not all(a and int(a.group(1))>0 for a in accepted) or eligible<config['vms']:
             raise ValueError('fresh KSM requires accepted advice and mergeable RAM in every VM')
@@ -271,7 +289,7 @@ def validate_report(report, config):
     else:
         snapshots += [p.get('accounting', {}) for p in phases]
     snapshots += [report.get('after', {})]
-    usage = [validate_accounting(a, config['cgroup'], config.get('group_memory_max',MEMORY_MAX)) for a in snapshots]
+    usage = [validate_accounting(a, config['cgroup'], config.get('group_memory_max',MEMORY_MAX), worker=config['output']) for a in snapshots]
     if usage != sorted(usage):
         raise ValueError('nonmonotonic group CPU')
     states = [scanner(a) for a in snapshots]

@@ -177,6 +177,7 @@ type VcpuCell = Cell<Option<*const Vcpu>>;
 
 /// A wrapper around creating and using a kvm-based VCPU.
 pub struct Vcpu {
+    pub(crate) observation: Option<Arc<crate::vcpu_observation::Collector>>,
     id: u8,
     boot_entry_addr: u64,
     boot_receiver: Option<Receiver<u64>>,
@@ -208,6 +209,12 @@ pub struct Vcpu {
 }
 
 impl Vcpu {
+    fn observe(&self, state: crate::api::VcpuObservedState) {
+        if let Some(collector) = &self.observation {
+            collector.record(self.id, state);
+        }
+    }
+
     thread_local!(static TLS_VCPU_PTR: VcpuCell = const { Cell::new(None) });
 
     /// Associates `self` with the current thread.
@@ -284,6 +291,7 @@ impl Vcpu {
         let (response_sender, response_receiver) = unbounded();
 
         Ok(Vcpu {
+            observation: None,
             id,
             boot_entry_addr: boot_entry_addr.raw_value(),
             boot_receiver,
@@ -390,7 +398,10 @@ impl Vcpu {
     fn run_emulation(&mut self, hvf_vcpu: &mut HvfVcpu) -> Result<VcpuEmulation> {
         let vcpuid = hvf_vcpu.id();
 
-        match hvf_vcpu.run(self.vcpu_list.clone()) {
+        self.observe(crate::api::VcpuObservedState::Executing);
+        let exit = hvf_vcpu.run(self.vcpu_list.clone());
+        self.observe(crate::api::VcpuObservedState::HandlingExit);
+        match exit {
             Ok(exit) => match exit {
                 VcpuExit::Breakpoint => {
                     debug!("vCPU {vcpuid} breakpoint");
@@ -617,6 +628,7 @@ impl Vcpu {
         timeout: Option<Duration>,
     ) {
         if self.vcpu_list.should_wait(hvf_vcpu.id()) {
+            self.observe(crate::api::VcpuObservedState::WaitingForEvent);
             let paused = if let Some(timeout) = timeout {
                 select! {
                     recv(receiver) -> event => { event.expect("WFE channel closed"); false }
@@ -629,6 +641,7 @@ impl Vcpu {
                     recv(self.event_receiver) -> event => self.wait_control(event),
                 }
             };
+            self.observe(crate::api::VcpuObservedState::HandlingExit);
             if paused {
                 self.pause_and_park(hvf_vcpu);
             }
@@ -653,6 +666,7 @@ impl Vcpu {
     }
 
     fn pause_and_park(&mut self, hvf_vcpu: &mut HvfVcpu) {
+        self.observe(crate::api::VcpuObservedState::ManualPaused);
         self.response_sender
             .send(VcpuResponse::Paused)
             .expect("pause response channel closed");
@@ -696,6 +710,7 @@ impl Vcpu {
     }
 
     fn exit(&mut self, exit_code: u8) {
+        self.observe(crate::api::VcpuObservedState::Stopped);
         // A dropped handle closes the response channel during normal teardown.
         let _ = self.response_sender.send(VcpuResponse::Exited(exit_code));
 
@@ -707,6 +722,7 @@ impl Vcpu {
 
 impl Drop for Vcpu {
     fn drop(&mut self) {
+        self.observe(crate::api::VcpuObservedState::Stopped);
         let _ = self.reset_thread_local_data();
     }
 }

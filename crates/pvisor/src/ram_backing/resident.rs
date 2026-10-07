@@ -295,6 +295,10 @@ impl LocalColdRamStore {
 impl pvisor_vm::api::ColdRamStore for LocalColdRamStore {
     type Object = LocalColdRamObject;
 
+    fn shared_mapping(&self, _: &Self::Object) -> Option<pvisor_vm::api::SharedRamMapping> {
+        None
+    }
+
     fn put(&mut self, bytes: &[u8]) -> io::Result<Self::Object> {
         let content = self.pool.intern_with_policy(bytes, true)?;
         self.references += 1;

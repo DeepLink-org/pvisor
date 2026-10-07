@@ -16,7 +16,11 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    os::unix::fs::MetadataExt,
+    io::{BufRead, BufReader, BufWriter, Write},
+    os::unix::{
+        fs::{MetadataExt, OpenOptionsExt},
+        io::AsRawFd,
+    },
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -549,6 +553,76 @@ fn collect_pids(root: &Path, pids: &mut BTreeSet<u32>, errors: &mut Vec<String>)
         Err(e) => errors.push(format!("{}: {e}", root.display())),
     }
 }
+static ACCOUNTING_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+static ACCOUNTING_SAMPLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn flush_evidence(writer: &mut BufWriter<fs::File>) -> anyhow::Result<()> {
+    writer.flush()?;
+    writer.get_ref().sync_data()?;
+    #[cfg(target_os = "linux")]
+    ensure!(
+        unsafe {
+            libc::posix_fadvise(
+                writer.get_ref().as_raw_fd(),
+                0,
+                0,
+                libc::POSIX_FADV_DONTNEED,
+            )
+        } == 0,
+        "cannot discard synced measurement evidence cache"
+    );
+    Ok(())
+}
+fn stream_smaps(
+    path: &Path,
+    sample: u64,
+    pid: u32,
+) -> anyhow::Result<(Value, BTreeMap<String, u64>)> {
+    let root = ACCOUNTING_ROOT
+        .get()
+        .context("accounting output not initialized")?;
+    let name = format!("{sample:04}-{pid}.smaps");
+    let mut input = BufReader::new(fs::File::open(path)?);
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(root.join(&name))?;
+    let mut output = BufWriter::with_capacity(65536, file);
+    let mut hash = Sha256::new();
+    let mut sums = BTreeMap::<String, u64>::new();
+    let mut line = String::new();
+    let mut bytes = 0;
+    let mut pending = 0;
+    loop {
+        line.clear();
+        let n = input.read_line(&mut line)?;
+        if n == 0 {
+            break;
+        }
+        output.write_all(line.as_bytes())?;
+        hash.update(line.as_bytes());
+        bytes += n;
+        pending += n;
+        let mut words = line.split_whitespace();
+        if let Some(key) = words.next()
+            && ["Rss:", "Pss:", "KSM:", "Private_Dirty:", "Shared_Clean:"].contains(&key)
+            && let Some(n) = words.next().and_then(|n| n.parse::<u64>().ok())
+        {
+            *sums.entry(key.trim_end_matches(':').into()).or_default() += n * 1024;
+        }
+        // Bound the measurement tool's page-cache contribution too, rather
+        // than retaining all per-page mappings inside the measured group.
+        if pending >= 1024 * 1024 {
+            flush_evidence(&mut output)?;
+            pending = 0;
+        }
+    }
+    flush_evidence(&mut output)?;
+    Ok((
+        json!({"file":name,"bytes":bytes,"sha256":hex(&hash.finalize()),"capture":"streamed-synced-cache-discarded"}),
+        sums,
+    ))
+}
 fn accounting() -> anyhow::Result<Value> {
     let root = cgroup_root()?;
     let mut counters = serde_json::Map::new();
@@ -575,19 +649,11 @@ fn accounting() -> anyhow::Result<Value> {
     let mut processes = Vec::new();
     for pid in pids {
         let proc = PathBuf::from(format!("/proc/{pid}"));
-        let mut sums = BTreeMap::<String, u64>::new();
-        let smaps = evidence_file(&proc.join("smaps"));
-        if let Some(raw) = smaps["raw"].as_str() {
-            for line in raw.lines() {
-                let mut words = line.split_whitespace();
-                if let Some(key) = words.next()
-                    && ["Rss:", "Pss:", "KSM:", "Private_Dirty:", "Shared_Clean:"].contains(&key)
-                    && let Some(n) = words.next().and_then(|n| n.parse::<u64>().ok())
-                {
-                    *sums.entry(key.trim_end_matches(':').into()).or_default() += n * 1024;
-                }
-            }
-        }
+        let sample = ACCOUNTING_SAMPLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (smaps, sums) = match stream_smaps(&proc.join("smaps"), sample, pid) {
+            Ok(sample) => sample,
+            Err(error) => (json!({"error":format!("{error:#}")}), BTreeMap::new()),
+        };
         let mut fds = Vec::new();
         let entries = fs::read_dir(proc.join("fd"));
         let fd_error = entries.as_ref().err().map(|e| e.to_string());
@@ -1065,6 +1131,14 @@ async fn run(mut a: Args) -> anyhow::Result<()> {
     fs::create_dir(&a.output).context("--output must be a NEW directory")?;
     OWNS_OUTPUT.store(true, std::sync::atomic::Ordering::Release);
     let root = a.output.canonicalize()?;
+    let evidence = root
+        .parent()
+        .context("output parent missing")?
+        .join("smaps");
+    fs::create_dir(&evidence)?;
+    ACCOUNTING_ROOT
+        .set(evidence)
+        .map_err(|_| anyhow::anyhow!("accounting already initialized"))?;
     let mut report = json!({"schema":"pvisor-memory-scale/v1","conditions":a,"profile":{"memory_mib":a.memory_mib,"cpus":a.cpus,"payload_bytes":BYTES,"page_bytes":PAGE,"max_live_vms":4,"deadline_seconds":180,"overlaynet_mode":"off","network_policy":"no-network"},"correctness":"failed","phases":[],"checks":[],"guests":[],"pool_observations":[],"gaps":["independent-inode controls copy identical sealed bytes; independent native captures remain unsupported", "KSM scan results are observations, not guaranteed merging", "random-unique restored preparation dirties all payload pages before ready; only repeated/random-shared ready are unchanged shared payloads", "large_file_fds and smaps expose identities/advice when proc permissions permit; missing reads are explicit", "parent owns group budgets, randomized pairing, repetitions and continuous resource accounting"]});
     // Persist failure evidence even if validation, startup or capture fails.
     persist(&root, &report)?;

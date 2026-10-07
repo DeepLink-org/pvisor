@@ -133,6 +133,7 @@ mod cold_ram_tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             panic!("unsupported pager must not query storage")
         }
+        fn shared_mapping(&self, _: &()) -> Option<SharedRamMapping> { None }
     }
 
     fn inactive_handle() -> VmmHandle {

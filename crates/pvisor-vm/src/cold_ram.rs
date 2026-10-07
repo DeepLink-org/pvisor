@@ -407,7 +407,7 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     store: S,
     options: ColdRamOptions,
 ) -> io::Result<()> {
-    if options.page_granular {
+    if options.page_granular || options.share_resident {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "page-granular cold RAM requires the Linux pager",

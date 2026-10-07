@@ -31,6 +31,14 @@ build profile="debug":
       fi
     done
 
+# Build the in-tree guest firmware; requires the platform Linux kernel toolchain.
+fw-build *args:
+    uv run --no-project --with pyelftools==0.33 make -C "{{ repo }}/fw" "$@"
+
+# Verify compact firmware storage and the compiled libkrunfw ABI roundtrip.
+test-fw:
+    uv run --no-project --with pyelftools==0.33 python -m unittest discover -s fw/tests -v
+
 # Install the signed release binary in CARGO_INSTALL_ROOT or ~/.cargo.
 install-cli: (build "release")
     #!/usr/bin/env bash

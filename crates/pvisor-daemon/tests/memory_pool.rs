@@ -62,7 +62,19 @@ fn daemon_pool_shares_objects_and_survives_owner_reopen_without_replacement() {
         Duration::from_secs(2),
     )
     .unwrap();
-    let bytes = vec![7; 65536];
+    #[cfg(target_os = "linux")]
+    {
+        a.enable_shared_mapping().unwrap();
+        b.enable_shared_mapping().unwrap();
+    }
+    let bytes = vec![
+        7;
+        if cfg!(target_os = "linux") {
+            4096
+        } else {
+            65536
+        }
+    ];
     let first = a.put(&bytes).unwrap();
     let second = b.put(&bytes).unwrap();
     assert_eq!(a.stats().unwrap().objects, 1);

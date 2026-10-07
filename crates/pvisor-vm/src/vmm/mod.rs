@@ -207,6 +207,7 @@ pub(crate) struct RawKernelMapping {
 
 /// Contains the state and associated methods required for the Firecracker VMM.
 pub struct Vmm {
+    pub(crate) vcpu_observation: Arc<crate::vcpu_observation::Collector>,
     // Guest VM core resources.
     guest_memory: GuestMemoryMmap,
     arch_memory_info: ArchMemoryInfo,
@@ -595,12 +596,14 @@ impl Vmm {
     /// Starts the microVM vcpus.
     pub fn start_vcpus(&mut self, mut vcpus: Vec<Vcpu>) -> Result<()> {
         let vcpu_count = vcpus.len();
+        self.vcpu_observation = Arc::new(crate::vcpu_observation::Collector::new(vcpu_count));
 
         Vcpu::register_kick_signal_handler();
 
         self.vcpus_handles.reserve(vcpu_count);
 
         for mut vcpu in vcpus.drain(..) {
+            vcpu.observation = Some(self.vcpu_observation.clone());
             vcpu.set_mmio_bus(self.mmio_device_manager.bus.clone());
 
             self.vcpus_handles

@@ -954,6 +954,7 @@ type VcpuCell = Cell<Option<*mut Vcpu>>;
 
 /// A wrapper around creating and using a kvm-based VCPU.
 pub struct Vcpu {
+    pub(crate) observation: Option<std::sync::Arc<crate::vcpu_observation::Collector>>,
     fd: VcpuFd,
     id: u8,
     mmio_bus: Option<crate::devices::Bus>,
@@ -991,6 +992,12 @@ pub struct Vcpu {
 }
 
 impl Vcpu {
+    fn observe(&self, state: crate::api::VcpuObservedState) {
+        if let Some(collector) = &self.observation {
+            collector.record(self.id, state);
+        }
+    }
+
     thread_local!(static TLS_VCPU_PTR: VcpuCell = const { Cell::new(None) });
 
     /// Associates `self` with the current thread.
@@ -1124,6 +1131,7 @@ impl Vcpu {
         // Initially the cpuid per vCPU is the one supported by this VM.
         Ok(Vcpu {
             fd: kvm_vcpu,
+            observation: None,
             id,
             mmio_bus: None,
             exit_evt,
@@ -1159,6 +1167,7 @@ impl Vcpu {
 
         Ok(Vcpu {
             fd: kvm_vcpu,
+            observation: None,
             id,
             mmio_bus: None,
             exit_evt,
@@ -1186,6 +1195,7 @@ impl Vcpu {
 
         Ok(Vcpu {
             fd: kvm_vcpu,
+            observation: None,
             id,
             mmio_bus: None,
             exit_evt,
@@ -1560,7 +1570,16 @@ impl Vcpu {
             }
         }
 
-        match self.fd.run() {
+        self.observe(crate::api::VcpuObservedState::Executing);
+        // In-kernel execution, irqchip halt and host descheduling cannot be
+        // distinguished here. Never treat a non-returning KVM_RUN as idle.
+        self.observe(crate::api::VcpuObservedState::Unknown);
+        let run = self.fd.run();
+        // KVM exits borrow the run mapping; only access disjoint fields here.
+        if let Some(collector) = &self.observation {
+            collector.record(self.id, crate::api::VcpuObservedState::HandlingExit);
+        }
+        match run {
             Ok(run) => match run {
                 #[cfg(feature = "tee")]
                 VcpuExit::Hypercall(hypercall) => {
@@ -1761,6 +1780,7 @@ impl Vcpu {
 
     // This is the main loop of the `Paused` state.
     fn paused(&mut self) -> StateMachine<Self> {
+        self.observe(crate::api::VcpuObservedState::ManualPaused);
         match self.event_receiver.recv() {
             #[cfg(target_arch = "x86_64")]
             Ok(VcpuEvent::Capture(reply)) => {
@@ -1799,6 +1819,7 @@ impl Vcpu {
     #[cfg(not(test))]
     // Transition to the exited state.
     fn exit(&mut self, exit_code: u8) -> StateMachine<Self> {
+        self.observe(crate::api::VcpuObservedState::Stopped);
         self.response_sender
             .send(VcpuResponse::Exited(exit_code))
             .expect("failed to send Exited status");
@@ -1833,6 +1854,7 @@ impl Vcpu {
     // All channels get closed on the other side while this Vcpu thread is still running.
     // This Vcpu thread should just do a clean finish without reporting back to the main thread.
     fn exit(&mut self, _: u8) -> StateMachine<Self> {
+        self.observe(crate::api::VcpuObservedState::Stopped);
         // State machine reached its end.
         StateMachine::finish()
     }
@@ -1840,6 +1862,7 @@ impl Vcpu {
 
 impl Drop for Vcpu {
     fn drop(&mut self) {
+        self.observe(crate::api::VcpuObservedState::Stopped);
         let _ = self.reset_thread_local_data();
     }
 }
@@ -2035,6 +2058,109 @@ mod tests {
         }
 
         (vm, vcpu, gm)
+    }
+
+    /// No irqchip in this test fixture, so HLT is surfaced to userspace. The
+    /// production in-kernel irqchip and its shutdown semantics are unchanged.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn observation_real_kvm_exit_and_hlt_remain_shutdown() {
+        use crate::api::{VcpuObservationRejection, VcpuObservedState};
+        use vm_memory::Bytes;
+        let kvm = KvmContext::new().unwrap();
+        let mut vm = Vm::new(kvm.fd()).unwrap();
+        let memory = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap();
+        vm.memory_init(&memory, kvm.max_memslots()).unwrap();
+        // Real mode: OUT 0x80, AL; HLT.
+        memory
+            .write_slice(&[0xe6, 0x80, 0xf4], GuestAddress(0))
+            .unwrap();
+        let mut cpu = Vcpu::new_x86_64(
+            0,
+            vm.fd(),
+            vm.supported_cpuid().clone(),
+            vm.supported_msrs().clone(),
+            crate::devices::Bus::new(),
+            EventFd::new(0).unwrap(),
+        )
+        .unwrap();
+        let mut sregs = cpu.fd.get_sregs().unwrap();
+        sregs.cs.base = 0;
+        sregs.cs.selector = 0;
+        cpu.fd.set_sregs(&sregs).unwrap();
+        cpu.fd
+            .set_regs(&kvm_regs {
+                rip: 0,
+                rflags: 2,
+                ..Default::default()
+            })
+            .unwrap();
+        let collector = Arc::new(crate::vcpu_observation::Collector::new(1));
+        collector.enable(true).unwrap();
+        cpu.observation = Some(collector.clone());
+        assert!(matches!(cpu.run_emulation(), Ok(VcpuEmulation::Handled)));
+        let exit = collector.snapshot().unwrap();
+        assert_eq!(exit.vcpus[0].state, VcpuObservedState::HandlingExit);
+        assert_eq!(exit.vcpus[0].transitions, 3);
+        assert!(matches!(cpu.run_emulation(), Ok(VcpuEmulation::Stopped)));
+        cpu.exit(FC_EXIT_CODE_OK);
+        let stopped = collector.snapshot().unwrap();
+        assert_eq!(stopped.vcpus[0].state, VcpuObservedState::Stopped);
+        assert_eq!(stopped.vcpus[0].wait_entries, 0);
+        assert_eq!(
+            stopped.rejection,
+            VcpuObservationRejection::TopologyIncomplete
+        );
+        assert!(!stopped.all_waiting);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn observation_real_busy_kvm_run_is_unknown_until_kicked() {
+        use crate::api::{VcpuObservationRejection, VcpuObservedState};
+        use vm_memory::Bytes;
+        let (_vm, mut cpu, memory) = setup_vcpu(0x1000);
+        // Real mode: JMP to self. KVM_RUN has no ordinary userspace exit.
+        memory.write_slice(&[0xeb, 0xfe], GuestAddress(0)).unwrap();
+        let mut sregs = cpu.fd.get_sregs().unwrap();
+        sregs.cs.base = 0;
+        sregs.cs.selector = 0;
+        cpu.fd.set_sregs(&sregs).unwrap();
+        cpu.fd
+            .set_regs(&kvm_regs {
+                rip: 0,
+                rflags: 2,
+                ..Default::default()
+            })
+            .unwrap();
+        Vcpu::register_kick_signal_handler();
+        let collector = Arc::new(crate::vcpu_observation::Collector::new(2));
+        collector.enable(true).unwrap();
+        cpu.observation = Some(collector.clone());
+        let thread = std::thread::spawn(move || {
+            cpu.init_thread_local_data().unwrap();
+            matches!(cpu.run_emulation(), Ok(VcpuEmulation::Interrupted))
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut observed = None;
+        while std::time::Instant::now() < deadline {
+            let snapshot = collector.snapshot().unwrap();
+            if snapshot.vcpus[1].transitions >= 2 {
+                observed = Some(snapshot);
+                break;
+            }
+            std::thread::yield_now();
+        }
+        // Kick/join even when sampling times out, so the test never strands a CPU.
+        thread.kill(sigrtmin() + VCPU_RTSIG_OFFSET).unwrap();
+        assert!(thread.join().unwrap());
+        let observed = observed.expect("did not sample the KVM_RUN entry within one second");
+        assert_eq!(observed.vcpus[1].state, VcpuObservedState::Unknown);
+        assert_eq!(observed.rejection, VcpuObservationRejection::Unknown);
+        assert!(!observed.all_waiting);
+        let stopped = collector.snapshot().unwrap();
+        assert_eq!(stopped.vcpus[1].state, VcpuObservedState::Stopped);
+        assert_eq!(stopped.vcpus[1].wait_entries, 0);
     }
 
     #[test]

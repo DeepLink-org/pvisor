@@ -2,10 +2,11 @@
 //! Losing the service fails dependent VMs; no replacement of live references.
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
-use pvisor::ram_backing::{
-    ipc::{PoolClient, serve},
-    resident::CompressedPool,
-};
+use pvisor::ram_backing::ipc::PoolClient;
+#[cfg(not(target_os = "linux"))]
+use pvisor::ram_backing::{ipc::serve, resident::CompressedPool};
+#[cfg(target_os = "linux")]
+use pvisor::ram_backing::{ipc::serve_shared as serve, shared::SharedPool};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -70,7 +71,10 @@ fn probe(socket: &Path) -> Result<()> {
             "pool peer belongs to another user"
         );
     }
-    PoolClient::new(stream, Duration::from_secs(2))?.stats()?;
+    let mut client = PoolClient::new(stream, Duration::from_secs(2))?;
+    client.stats()?;
+    #[cfg(target_os = "linux")]
+    client.enable_shared_mapping().context("pool lacks physical sharing; preserve active VMs and use a fresh pool state for this version")?;
     Ok(())
 }
 /// Called under the daemon's exclusive state lock. Reuse only its private,
@@ -169,10 +173,16 @@ pub fn run(directory: &Path) -> Result<()> {
     // An existing endpoint is never unlinked or silently adopted.
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))?;
+    #[cfg(not(target_os = "linux"))]
     let pool = Arc::new(Mutex::new(CompressedPool::new(
         config.max_bytes,
         config.max_objects,
     )));
+    #[cfg(target_os = "linux")]
+    let pool = Arc::new(Mutex::new(SharedPool::new(
+        config.max_bytes,
+        config.max_objects,
+    )?));
     let connections = Arc::new(AtomicUsize::new(0));
     println!(
         "{}",

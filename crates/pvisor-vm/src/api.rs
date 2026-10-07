@@ -120,7 +120,7 @@ pub trait VmConfiguration: Sized {
     fn from_restore(config: VmConfig, restore: MachineRestore) -> io::Result<Self>;
     fn ram_backing(&mut self, file: File) -> io::Result<()>;
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
-    -> io::Result<()>;
+        -> io::Result<()>;
     fn disable_implicit_init(&mut self) -> io::Result<()>;
     /// Configure a custom init's command; requires implicit init to be disabled.
     /// Validate atomically before replacing the previous command.
@@ -256,7 +256,7 @@ pub trait SnapshotCapture {
 /// Fault handlers must synchronize concurrent faults and reject unowned addresses.
 pub trait ColdRamControl: VmControl {
     /// Start one VM-owned experimental pager using caller-authorized storage.
-    /// Supported on Apple Silicon HVF and Linux x86_64 KVM. Linux requires
+    /// Supported on Apple Silicon HVF and Linux x86_64 KVM. Local Linux cold storage requires
     /// kernel-fault userfaultfd authority (permitted /dev/userfaultfd or
     /// CAP_SYS_PTRACE); it never changes sysctls or KSM policy. Linux currently
     /// accepts only private anonymous writable RAM, rejects file-backed/COW RAM,
@@ -278,7 +278,12 @@ pub trait ColdRamControl: VmControl {
     /// Unsupported backends reject before spawning a worker.
     /// The store exclusively owns its session references;
     /// restore/release RPCs serialize separately from CPU/device barriers.
-    /// Blocks are 64 KiB; snapshots are bounded to 4 MiB per sampling batch.
+    /// Local storage uses 64 KiB blocks; page-granular Linux stores use 4 KiB.
+    /// With `share_resident`, Linux instead maps immutable store pages privately:
+    /// reads remain shared and writes use kernel COW, without userfaultfd. The
+    /// store mapping lookup is bounded metadata access without transport calls.
+    /// Page publication happens outside the CPU/device barrier; live bytes are
+    /// rechecked before remapping. Snapshots are bounded to 4 MiB per batch.
     /// The worker lives with the runner; a failed mapping transition terminates
     /// that runner. Call once, before allowing control requests or guest work.
     fn start_cold_pager<S: ColdRamStore + 'static>(
@@ -432,6 +437,89 @@ pub struct VmmHandle {
     pub(crate) transition: Arc<std::sync::Mutex<()>>,
     pub(crate) cold_pager_started: Arc<std::sync::atomic::AtomicBool>,
 }
+/// EXP-001 M0: diagnostic execution phase, not a Linux runqueue assertion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VcpuObservedState {
+    /// A backend execution-entry boundary; not proof of sustained guest execution.
+    Executing,
+    HandlingExit,
+    WaitingForEvent,
+    /// Reserved for a reliable host scheduling source; M0 does not infer this.
+    HostDescheduled,
+    /// A control park (including snapshot/RAM maintenance), never guest idle.
+    ManualPaused,
+    Stopped,
+    /// Includes time inside KVM_RUN, which can execute, halt or be descheduled.
+    Unknown,
+}
+
+#[derive(Clone, Debug)]
+pub struct VcpuObservation {
+    pub id: u8,
+    /// Registered backend CPU not yet stopped, not guest Linux CPU-online state.
+    /// Unbooted HVF secondaries conservatively remain Unknown and block aggregation.
+    pub online: bool,
+    pub state: VcpuObservedState,
+    pub sequence: u64,
+    /// Monotonic offsets from this VM's observation origin, not guest time.
+    pub since: Duration,
+    pub transitions: u64,
+    pub wait_entries: u64,
+    /// Closed observation intervals, including truncation when disabling;
+    /// not necessarily a backend wake event.
+    pub wait_exits: u64,
+    /// Observed waiting time, including intervals truncated on disable.
+    /// Add sampled_at - since only for an enabled, active WaitingForEvent record.
+    pub completed_wait: Duration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VcpuObservationRejection {
+    Disabled,
+    TopologyIncomplete,
+    Unknown,
+    NotAllWaiting,
+    /// Even a full waiting window is observe-only: no complete wake/deadline contract.
+    WakeDeadlineUnavailable,
+}
+
+/// Consistent bounded snapshot: one record per configured CPU, no event backlog.
+/// Sequence and epoch are VM-local; the caller must bind its own Attempt/source
+/// identity. A new enable session invalidates old records. All-waiting is only
+/// an opportunity, never authorization to pause/offload. No timer completeness
+/// or wake delivery guarantee is provided in M0.
+#[derive(Clone, Debug)]
+pub struct VcpuObservationSnapshot {
+    pub hypervisor: Hypervisor,
+    pub enabled: bool,
+    pub session: u64,
+    pub topology_generation: u64,
+    pub sequence: u64,
+    /// Captured under the same collector lock as the cloned CPU records.
+    pub sampled_at: Duration,
+    pub vcpus: Vec<VcpuObservation>,
+    pub all_waiting: bool,
+    pub idle_epoch: u64,
+    pub all_waiting_since: Option<Duration>,
+    pub completed_all_waiting: Duration,
+    pub rejection: VcpuObservationRejection,
+}
+
+/// Optional bounded diagnostics, disabled by default. Calls never kick CPUs,
+/// pause, resume, offload, or start an owner thread. Cloned handles share one
+/// collector. Enabling mid-wait/park leaves Unknown until the next backend
+/// boundary; it does not manufacture an idle record. Repeated enable is
+/// idempotent; disabling truncates active wait intervals and marks them Unknown.
+/// Disabled CPU teardown updates lifecycle only, not waiting time; re-enabling
+/// starts a fresh session with Unknown records for CPUs not yet stopped.
+/// Sampling and backend updates serialize on a private collector lock, without
+/// holding device/queue locks. A dead VM or poisoned lock returns an error;
+/// observation errors do not change VM control state. Counters saturate.
+pub trait VcpuObservationControl {
+    fn set_vcpu_observation(&self, enabled: bool) -> Result<(), String>;
+    fn vcpu_observation(&self) -> Result<VcpuObservationSnapshot, String>;
+}
+
 /// Access available only within a quiescence callback; cannot escape its lifetime.
 pub struct FrozenMachine<'a> {
     pub(crate) inner: &'a mut crate::vmm::Vmm,
@@ -546,8 +634,9 @@ pub struct MachineRestore {
 /// Immutable block storage supplied by the host's pool/service adapter.
 /// Object references belong to one store session; successful `put` acquires one
 /// reference, and `release` consumes it. `restore` must verify the entire block
-/// before returning success. Rejected puts must leave the session usable; stats
-/// distinguishes capacity rejection from a broken connection. No VM pointers or
+/// before returning success. `WouldBlock` from put certifies a healthy admission
+/// rejection with no acquired reference; other errors require a stats check to
+/// distinguish capacity rejection from a broken connection. No VM pointers or
 /// OS mapping state cross this boundary. The pager never calls put under a VM barrier.
 pub trait ColdRamStore: Send {
     type Object: Send;
@@ -555,6 +644,17 @@ pub trait ColdRamStore: Send {
     fn restore(&mut self, object: &Self::Object, output: &mut [u8]) -> io::Result<()>;
     fn release(&mut self, object: Self::Object) -> io::Result<()>;
     fn stats(&mut self) -> io::Result<ColdRamPoolStats>;
+    /// An optional immutable, read-only pool file page. The object pins its slot
+    /// until release; callers must unmap it before releasing the object. On a
+    /// lost connection, a host pool must retain slots until the VM process exits.
+    /// Mappings and references must stay in that process: inheriting mappings
+    /// across fork or transferring their authority to another process is unsupported.
+    fn shared_mapping(&self, object: &Self::Object) -> Option<SharedRamMapping>;
+}
+
+pub struct SharedRamMapping {
+    pub file: Arc<File>,
+    pub offset: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -564,6 +664,11 @@ pub struct ColdRamOptions {
     /// Linux only; other backends reject this option. The default retains the
     /// backend's larger compression blocks for instance-local stores.
     pub page_granular: bool,
+    /// Linux pool pages remain shared on reads and use kernel COW on writes.
+    /// Requires page_granular and a store providing pinned shared_mapping slots.
+    /// No UFFD permission is needed for this mode. Snapshots/offload remain
+    /// incompatible; remapping takes the CPU/device barrier and rechecks bytes.
+    pub share_resident: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]

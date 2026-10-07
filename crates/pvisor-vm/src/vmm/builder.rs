@@ -1083,6 +1083,7 @@ pub fn build_microvm_for_arch<A: crate::backend::Architecture>(
         ram_unmapped: false,
         #[cfg(target_os = "macos")]
         ram_fault_vcpus: vcpu_list.clone(),
+        vcpu_observation: Arc::new(crate::vcpu_observation::Collector::new(0)),
         vm,
         mmio_device_manager,
         #[cfg(target_arch = "x86_64")]

@@ -2,6 +2,8 @@
 
 共享基线、COW 和冷页池实验提供了内存优化的机制基础，也暴露了服务可用性、恢复竞争和物理计量的限制。目标架构由[内存优化](index.md)、[内存去重](deduplication.md)及[内存压缩](compression.md)主导；以下保留对应版本的实现、实验与失败记录，不作为未来方案的生产保证。
 
+
+当前 Linux daemon 池已改为物理共享页＋COW，读取不会恢复私有副本；开启与预算见 [daemon 指南](../../guides/daemon/index.md#memory-pool)。本文保留 macOS 冷压缩及历史 Linux 路径的机制记录。
 ## 实验如何影响架构 {#architectural-lessons}
 
 - 共享基线与独立写入探针支持优先复用系统 COW，不要求自建任意热页合并器。
@@ -35,7 +37,7 @@ pVisor 当前选择在宿主侧处理冷块：观察哪些 RAM 块暂时没有 C
 |---|---|---|
 | A：共同只读文件基底＋`MAP_PRIVATE` COW | 两进程 HVF 探针、页身份和写入隔离验证 | 利用系统 COW；私有修改需要独立的提交与回收合同 |
 | B：共享基底＋HVF 写保护＋显式私有化 | stage-2 写 fault、重试与基底不变验证 | 控制更直接，但 CPU 与设备写必须都经过私有化入口 |
-| C：不可变压缩池＋宿主冷页 pager | 当前完整 Linux VM 实验主线 | 压缩态去重，恢复为私有 RAM；增加 fault、RPC 和映射维护 |
+| C：不可变压缩池＋宿主冷页 pager | 历史 Linux 冷页池路径 | 压缩态去重，恢复为私有 RAM；增加 fault、RPC 和映射维护 |
 | D：FUSE 压缩 backing＋整 VM offload | 独立的 [offload 实现](../offload/index.md) | 适合整 VM 闲置；没有页级温度判断，不能与 C 混用 |
 
 ### 职责与可用性 {#components}

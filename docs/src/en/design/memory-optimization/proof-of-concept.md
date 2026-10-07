@@ -2,6 +2,8 @@
 
 Shared-baseline, COW, and cold-pool experiments provide foundations for memory optimization while exposing service availability, restoration contention, and physical-accounting limitations. [Memory optimization](index.md), [Memory deduplication](deduplication.md), and [Memory compression](compression.md) define the target architecture. The implementation, experiments, and failures below retain their version scope rather than establishing production guarantees for future approaches.
 
+
+The current Linux daemon pool uses physical shared pages with COW; reads do not restore private copies. See the [daemon guide](../../guides/daemon/index.md#memory-pool) for activation and budgets. This page retains the macOS cold-compression and historical Linux mechanism records.
 ## How experiments inform the architecture {#architectural-lessons}
 
 - Shared-baseline and independent-write probes support reusing system COW first, without building a merger for arbitrary hot pages.
@@ -35,7 +37,7 @@ Deduplication occurs in the compressed state. The current pager neither merges a
 |---|---|---|
 | A: common read-only file base with `MAP_PRIVATE` COW | Two-process HVF probes, page identity and write isolation | Uses system COW; private modifications need a separate commit/reclaim contract |
 | B: shared base with HVF write protection and explicit privatization | Stage-2 write faults, instruction retry and unchanged-base checks | More direct control; CPU and device writes must both enter privatization |
-| C: immutable compressed pool with host cold-block pager | Current full Linux VM experiment path | Compressed-state deduplication with private restored RAM; adds faults, RPCs and mapping maintenance |
+| C: immutable compressed pool with host cold-block pager | Historical Linux cold-pool path | Compressed-state deduplication with private restored RAM; adds faults, RPCs and mapping maintenance |
 | D: FUSE compressed backing with whole-VM offload | Separate [offload implementation](../offload/index.md) | Suitable for idle VMs, without block-level temperature; incompatible with C |
 
 ### Responsibilities and availability {#components}

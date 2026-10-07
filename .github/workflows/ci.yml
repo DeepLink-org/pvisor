@@ -74,6 +74,17 @@ jobs:
       - run: just lint-py
       - run: just test-py
 
+  firmware:
+    name: Firmware bundle and ABI / Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-build-env
+      - name: Install firmware test compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends build-essential
+      - run: just test-fw
+
   daemon:
     name: Native daemon / Linux x86_64
     runs-on: ubuntu-latest
@@ -282,7 +293,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [checks, python, daemon, rust-test, pvisor-isolation-regression, examples, semspec]
+    needs: [checks, python, firmware, daemon, rust-test, pvisor-isolation-regression, examples, semspec]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

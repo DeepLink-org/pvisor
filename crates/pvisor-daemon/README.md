@@ -289,24 +289,31 @@ daemon executable.
 
 ## Optional daemon-owned memory pool
 
-Add `--memory-pool` to `pvisor-daemon serve` to enable the shared cold-page
-pool. It is off by default. The daemon starts its own `memory-pool` component
-in a private state subdirectory and records its socket in each new sandbox
-identity. VM RAM remains private; on Linux, independently reclaimable 4 KiB pages are compressed into
-content-addressed pool objects, and identical chunks reuse one object. A
-userfaultfd miss restores bytes into the requesting VM's private RAM.
+Add `--memory-pool` to `pvisor-daemon serve` to enable the daemon-owned pool.
+It is off by default. On Linux, the VM scans resident 4 KiB pages and publishes
+immutable content-addressed pages into a bounded daemon memfd. Only candidates observed in different VM sessions enter the pool; candidates
+hold hashes without retaining page payloads. Equal bytes reuse one slot. After CPU/device quiescence and a live-byte recheck, the VM maps that
+slot privately: reads retain the shared physical page, while writes use kernel
+COW. This path does not require userfaultfd and does not compress unique pages.
+Local cold-RAM compression remains a separate userfaultfd mode.
 
-The detached pool component survives API-process restart and is reused only
-with the same configuration. Connections authenticate the host UID; individual
-connection references are released on disconnect. Default limits are 512 MiB
-of encoded payload, 32,768 objects, 32 connections and 32,768 references per
-connection. Indexes, threads and allocator memory are additional overhead.
-Each Linux 4 KiB cold page consumes one connection reference; the default reference ceiling holds at most 128 MiB of cold RAM per VM. Healthy budget rejection leaves the page resident. Linux requires the existing kernel-fault userfaultfd permission.
+The detached component survives API restart with the same configuration.
+Connections authenticate the host UID and receive a read-only file descriptor.
+References pin slots until explicit release after unmapping; on disconnect,
+pidfd-confirmed peer exit is required before releasing mapped references.
+Default limits are 512 MiB of page storage, 32,768 objects, 32 connections and
+32,768 references per connection. At 4 KiB per object, the object ceiling bounds
+the default pool to 128 MiB of distinct pages and each VM to 128 MiB of references.
+Indexes, VM mappings, threads and allocator memory add overhead. Budget rejection
+keeps the original page resident. An older compressed pool is not reused by the
+physical-sharing client; drain old VMs and use fresh pool state when upgrading.
 
 Reserve host memory for the pool separately from sandbox admission: its process
-is outside individual sandbox cgroups and their hard limits. Startup preserves sparse guest RAM. First-touch faults allocate one 4 KiB
-zero page; the scanner samples resident pages without filling holes. A fault restores only the requested page; adjacent cold pages remain in the pool.
-Budget for the actual working set and restoration peaks.
+is outside individual sandbox cgroups and their hard limits. Scanning skips
+nonresident RAM and leaves untouched capacity sparse. Shared reads do not restore
+private RAM; COW writes and scanning consume memory and CPU; scanning releases obsolete
+pool references after writes. Budget for the actual
+working set and startup/write peaks.
 The pool must stay alive while dependent VMs run; loss fails those VMs, and a
 stale socket is not silently replaced. State-directory retention supports API
 restart, not pool-process or host-reboot recovery. The VM/pool benchmark includes
