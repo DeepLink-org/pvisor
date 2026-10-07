@@ -140,6 +140,15 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 开源 Distribution registry 提供固定 OCI 镜像，pvisor-cache serve 提供同镜像文件索引和内容。两服务均为本机 loopback，无人工延迟时只能解释为本机模拟远程协议，不是 WAN。按独立网络条件分批；配置两核/2 GiB（容器硬限制与 VM guest RAM 不等价，Docker daemon/containerd 未作整机两核约束，必须披露），随机交替每组至少 30 次，冷客户端缓存后紧接热缓存，新 guest/容器与工作区。Ubuntu 负载校验发行版身份和 shell 输出；Python 负载禁用 bytecode 写入，固定单线程，校验 Python/库版本和确定性 NumPy 数组与矩阵运算（可选 PyTorch 还须校验 CPU-only build 和张量运算），ready 为全部校验后的唯一输出。两组均要求成功退出；失败单列，不剔除慢有效样本。预热/预检不纳入正式样本；非分离分布 P50、分离分布各簇比例和中位数、参考 P95、配对 bootstrap 95% CI。镜像服务端拉取/解包/索引时间单独保留，原始日志、源码和制品摘要放 `.data/`。不回答完整 OS 引导、真实 WAN、并发或大型任务性能。
 - **入口脚本：** `lazy_startup.py`。
 
+### B-LAZY-ENG：小文件 lazy image V2 的工程对照 {#b-lazy-eng}
+
+- **文档：** 工程结果保留 `benchmark/pvisor/LAZY_IMAGE_V2_REPORT.md` 和 `.data/`；不混入用户启动页的历史 Docker 对照。
+- **角色：** engineering A/B。
+- **Motivation：** 判断有界目录元数据预取与持久连接是否减少 Python 导入的小文件请求成本。
+- **想要的结论：** 同一冻结制品、同一 NumPy 镜像及脚本下，关闭/开启 V2 的冷/热 ready、completion、请求数、连接数和内容量变化，附配对 bootstrap 95% CI；不宣称 Docker/WAN 或吞吐排名。
+- **实验设计：** 私有 user/mount/PID namespace 隔离 Host listener；新 VM/workspace/stage，CPU 0/1、2 vCPU、2 GiB guest RAM，预准备 cache 服务在 CPU 2/3，本机 loopback TCP，无延迟注入。每轮随机交替 V1-compatible（`PVISOR_LAZY_IMAGE_V2=0`）/V2（默认启用），每模式冷客户端后紧接热，至少 30 轮，另有初始轮与 3 warmups。两模式均包含正确分页等共同修复，开关只比较元数据预取与连接复用。唯一正确 NumPy 输出、退出码、Run Bundle、冷内容非零、热内容为零全部通过才有效；任何失败使批次无效，不剔除慢有效样本。分布规则同 B-LAZY-STARTUP，P95 仅参考。冻结源码、制品、harness、请求和原始报告在 `.data/`，不与历史批次合并。
+- **入口脚本：** `lazy_image_v2.py`。
+
 ### B-FS-TOOLS：开发工具在各执行模式下要多花多少时间 {#b-fs-tools}
 
 - **文档：** `filesystem.md`

@@ -54,6 +54,67 @@ A cold Docker sample must fetch every blob; a cold lazy sample must read content
 
 The immutable measurement report is kept as generated; `--analyze` writes separate `analysis.json` using the existing publication cluster rule and paired bootstrap. The original cohort's source/binary hashes and frozen harness identify its actual measurement implementation; later statistical fixes do not alter samples or replace the original harness.
 
+## Lazy image V2 engineering A/B
+
+`B-LAZY-ENG` compares the same frozen static release binary with bounded metadata
+prefetch and socket reuse disabled (`PVISOR_LAZY_IMAGE_V2=0`) versus enabled
+(`=1`, also the default). Both modes retain common correctness/pagination fixes;
+this is a V1-compatible control, not the historical Docker/old-binary cohort.
+See [the engineering report](LAZY_IMAGE_V2_REPORT.md) and
+[derived statistics](lazy-image-v2-summary.csv). Do not put engineering A/B
+samples into the user-facing Docker comparison.
+
+Prepare artifacts and run tests before sampling; stop concurrent builds and other
+benchmarks. This runner needs Linux x86_64/KVM, CPU 0–3, user/mount/PID namespaces,
+`mount`, `umount`, and `pivot_root` (or libc pivot_root). A new static build can be
+created without overwriting the existing launcher or its listener:
+
+```sh
+just test pvisor
+PVISOR_LAZY_IMAGE_V2=0 just test pvisor
+just test-benchmark -q benchmark/pvisor/test_lazy_image_v2.py
+python3 scripts/build-pvisor.py --profile release --target-dir target/lazy-image-v2-build
+python3 benchmark/pvisor/lazy_image_v2.py \
+  --binary-dir target/lazy-image-v2-build/release \
+  --prepared-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --output benchmark/pvisor/.data/lazy-image-v2-preflight-new \
+  --samples 1 --warmups 0
+# Only after a successful preflight; choose another new directory.
+python3 benchmark/pvisor/lazy_image_v2.py \
+  --binary-dir target/lazy-image-v2-build/release \
+  --prepared-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --output benchmark/pvisor/.data/lazy-image-v2-formal-new \
+  --samples 30 --warmups 3
+```
+
+`--prepared-store` is an existing supported cache image store containing the
+pinned NumPy image, not handcrafted cache metadata. If that local evidence is
+unavailable, first prepare a new store through the supported NumPy preflight
+above and pass its `service-store`. The runner preserves symlinks when copying
+the store, starts real `pvisor-cache serve`, then checks the immutable handle,
+platform and digest using its supported `prepare` command. That cached-service
+preparation is separate from client timing. Allow space for the copied store,
+complete frozen sources/binaries and 68 cold client caches at default settings.
+
+The entire A/B runs in one supervised private namespace with an owned tmpfs root
+and `pivot_root`, not a chroot: libkrun must be able to create nested namespaces.
+Required host trees are recursively bound privately; original host listeners and
+ownership remain unchanged. Executables launch from safe owned paths with hashes
+identical to the frozen binaries. A framed counting proxy supports V1 and V2,
+checks body hashes and records requests, connection counts and payloads; idle
+connections do not count as in-flight requests. Each launch checks NumPy output,
+exit and its VM Run Bundle; any proxy/correctness/cache failure invalidates the
+campaign. Namespace teardown is audited, with stable pre-launch PID/starttime
+receipts for already inaccessible unrelated processes; new/reused inaccessible
+identities are never exempted. Supervisor lifetime is bounded to 900 seconds.
+
+Formal evidence is retained at `.data/lazy-image-v2-formal-20261008/`; its
+`derive.py` audits all 136 launches, frozen hashes, build receipt and teardown,
+then regenerates the engineering CSV without changing the read-only report.
+Build command/log/input hashes are retained separately at
+`.data/lazy-image-v2-build-20261008/`. Failed smoke campaigns remain independent;
+no speed-based exclusions or cross-cohort causal comparisons are allowed.
+
 ## vCPU observation M0
 
 `B-VCPU-IDLE-ENG` / EXP-001 M0 的 [实验计划](vcpu_idle_plan.md)定义真实 guest sleep/busy/短 timer、1/2 CPU 与 SMP 单 CPU busy 负对照，以及 observer off/on seeded 随机配对。真实 SDK example 直接在 ready callback 接通 `VmmHandle` 的 `VcpuObservationControl`；不走产品 src 修改，不 pause/offload。KVM_RUN 内 Unknown、HVF WaitingForEvent 原样保留；卸载收益未测，M1/M2 未实现。

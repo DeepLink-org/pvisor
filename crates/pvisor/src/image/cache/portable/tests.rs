@@ -700,6 +700,126 @@ fn publication_uses_v1_for_controls_handles_and_binary_magic() {
 }
 
 #[test]
+fn remote_backend_uses_opaque_portable_cursors_with_local_resume_and_eviction() {
+    use crate::image::cache::backend::RemoteFs;
+    use crate::image::cache::{CacheBackend, CacheClient, CacheConfig};
+    use std::ffi::{OsStr, OsString};
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    let (tmp, publisher, store, image) = fixture();
+    let mut expected = vec![OsString::from("."), OsString::from("..")];
+    for index in 0..2500 {
+        let name = format!("f-{index:04}");
+        fs::write(image.rootfs.join("directory").join(&name), [index as u8]).unwrap();
+        expected.push(OsString::from(name));
+    }
+    if cfg!(target_os = "linux") {
+        let name = OsString::from_vec(b"f-\xff".to_vec());
+        fs::write(image.rootfs.join("directory").join(&name), b"bytes").unwrap();
+        expected.push(name);
+    }
+    fs::hard_link(
+        image.rootfs.join("directory/f-0000"),
+        image.rootfs.join("directory/linked"),
+    )
+    .unwrap();
+    expected.push(OsString::from("linked"));
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    publisher
+        .publish(&store, &image, "amd64", &canonical)
+        .unwrap();
+    let handle = read_handle(&publisher);
+    // This is the production binary reader, not the ordinal source test server.
+    let client = CacheClient::from_config(CacheConfig {
+        backend: CacheBackend::Filesystem,
+        location: tmp.path().join("shared").display().to_string(),
+        read_only: true,
+        image_store: None,
+    })
+    .unwrap();
+    let mut remote = RemoteFs::new(
+        client,
+        handle.clone(),
+        tmp.path().join("blocks"),
+        Some(tmp.path().join("metadata")),
+    )
+    .unwrap();
+    let directory = remote.child(1, OsStr::new("directory")).unwrap();
+    let (response, _) = remote
+        .client
+        .request(Request::List {
+            digest: handle,
+            path: b"directory".to_vec(),
+            offset: 0,
+        })
+        .unwrap();
+    let Response::Entries {
+        names,
+        next_offset: Some(cursor),
+        ..
+    } = response
+    else {
+        panic!("expected multipage inventory");
+    };
+    assert_ne!(
+        cursor,
+        names.len(),
+        "portable continuation is not an ordinal"
+    );
+    let first = remote.entries_page(directory.attr.ino, 0).unwrap();
+    assert_eq!(
+        remote.entries_page(directory.attr.ino, 17).unwrap(),
+        first[17..]
+    );
+    let all = remote.entries(directory.attr.ino).unwrap();
+    assert_eq!(
+        all.iter()
+            .map(|(_, _, name)| name.clone())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    // More than eight pages have evicted the prefix. Local cookie zero and a
+    // cookie inside an evicted page must replay valid remote boundaries.
+    assert_eq!(remote.entries_page(directory.attr.ino, 0).unwrap(), first);
+    let resumed = remote.entries_page(directory.attr.ino, 333).unwrap();
+    assert_eq!(resumed, all[333..333 + resumed.len()]);
+    assert!(
+        remote
+            .entries_page(directory.attr.ino, all.len())
+            .unwrap()
+            .is_empty()
+    );
+    let original = remote
+        .child(directory.attr.ino, OsStr::new("f-0000"))
+        .unwrap();
+    let linked = remote
+        .child(directory.attr.ino, OsStr::new("linked"))
+        .unwrap();
+    assert_eq!(original.attr.ino, linked.attr.ino);
+    assert_eq!(original.override_stat, linked.override_stat);
+    assert_eq!(original.attr.mtime, linked.attr.mtime);
+    assert_eq!(
+        remote.downloads.lock().unwrap().snapshot().downloaded_bytes,
+        0,
+        "portable metadata enumeration must not fetch content"
+    );
+    if cfg!(target_os = "linux") {
+        let bytes = remote
+            .child(directory.attr.ino, OsStr::from_bytes(b"f-\xff"))
+            .unwrap();
+        assert_eq!(remote.read_range(bytes.attr.ino, 0, 10).unwrap(), b"bytes");
+    }
+    assert!(
+        remote
+            .child(directory.attr.ino, OsStr::new("missing"))
+            .is_err()
+    );
+    assert!(remote.child(1, OsStr::new("link")).is_ok());
+}
+
+#[test]
 fn removed_packed_layout_is_not_a_readable_cache() {
     let tmp = tempfile::tempdir().unwrap();
     let storage = Storage::filesystem(tmp.path().into(), false).unwrap();

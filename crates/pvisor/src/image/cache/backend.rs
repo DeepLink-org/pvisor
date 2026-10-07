@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -80,6 +80,17 @@ impl HotBlocks {
     }
 }
 
+#[derive(Clone)]
+struct DirectoryPage {
+    // The key in RemoteFs::directories is a local ordinal, never a wire cursor.
+    cursor: usize,
+    response: Response,
+}
+
+fn lazy_image_v2(value: Option<&OsStr>) -> bool {
+    value != Some(OsStr::new("0"))
+}
+
 pub(super) struct RemoteFs {
     pub(super) downloads: Arc<Mutex<super::progress::Downloads>>,
     pub(super) reader: Arc<ContentReader>,
@@ -93,8 +104,13 @@ pub(super) struct RemoteFs {
     nodes: HashMap<u64, Node>,
     paths: HashMap<Vec<u8>, u64>,
     objects: HashMap<u64, u64>,
-    directories: HashMap<(u64, usize), Response>,
+    directories: HashMap<(u64, usize), DirectoryPage>,
     directory_order: VecDeque<(u64, usize)>,
+    prefetch_enabled: bool,
+    // Saturating admission, not eviction: revisiting a directory cannot reset
+    // its speculative allowance and repeatedly scan an oversized inventory.
+    prefetch_probes: HashMap<u64, u8>,
+    prefetch_pages: usize,
     next_inode: u64,
 }
 impl RemoteFs {
@@ -124,6 +140,10 @@ impl RemoteFs {
             objects: HashMap::new(),
             directories: HashMap::new(),
             directory_order: VecDeque::new(),
+            // Reconstructed runner backends read the same host engineering env.
+            prefetch_enabled: lazy_image_v2(std::env::var_os("PVISOR_LAZY_IMAGE_V2").as_deref()),
+            prefetch_probes: HashMap::new(),
+            prefetch_pages: 0,
             next_inode: 1,
         };
         let root = fs.lookup_path(Vec::new())?;
@@ -139,11 +159,7 @@ impl RemoteFs {
             return self.client.request(request).map(|(response, _)| response);
         };
         let path = directory.join(&hash(&serde_json::to_vec(&request)?)[7..]);
-        let cached = fs::read(&path).ok().and_then(|bytes| {
-            (bytes.len() >= 32 && Sha256::digest(&bytes[32..]).as_slice() == &bytes[..32])
-                .then(|| serde_json::from_slice::<Response>(&bytes[32..]).ok())
-                .flatten()
-        });
+        let cached = self.cached_metadata(&request);
         let response = if let Some(response) = cached {
             response
         } else {
@@ -161,14 +177,13 @@ impl RemoteFs {
                 }
                 Err(error) => return Err(error),
             };
-            fs::create_dir_all(directory)?;
-            let bytes = serde_json::to_vec(&response)?;
-            let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-            temporary.write_all(&Sha256::digest(&bytes))?;
-            temporary.write_all(&bytes)?;
-            temporary.persist(&path)?;
+            self.store_metadata_at(directory, &path, &response)?;
             response
         };
+        Self::metadata_response(response)
+    }
+
+    fn metadata_response(response: Response) -> anyhow::Result<Response> {
         match response {
             Response::Error { code, message } if code == "not_found" => {
                 Err(std::io::Error::new(std::io::ErrorKind::NotFound, message).into())
@@ -177,15 +192,51 @@ impl RemoteFs {
         }
     }
 
-    pub(super) fn lookup_path(&mut self, path: Vec<u8>) -> anyhow::Result<Node> {
-        if let Some(ino) = self.paths.get(&path) {
-            return self.node(*ino).cloned();
+    fn cached_metadata(&self, request: &CacheRequest) -> Option<Response> {
+        let directory = self.metadata_cache.as_ref()?;
+        let path = directory.join(&hash(&serde_json::to_vec(request).ok()?)[7..]);
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+            .ok()?;
+        let limit = super::protocol::MAX_FRAME + 32;
+        if !file
+            .metadata()
+            .is_ok_and(|m| m.is_file() && m.len() <= limit as u64)
+        {
+            return None;
         }
-        let listed = self.directories.iter().find_map(|((ino, _), response)| {
+        let mut bytes = Vec::new();
+        file.take(limit as u64 + 1).read_to_end(&mut bytes).ok()?;
+        (bytes.len() >= 32
+            && bytes.len() <= super::protocol::MAX_FRAME + 32
+            && Sha256::digest(&bytes[32..]).as_slice() == &bytes[..32])
+            .then(|| serde_json::from_slice(&bytes[32..]).ok())
+            .flatten()
+    }
+
+    fn store_metadata_at(
+        &self,
+        directory: &Path,
+        path: &Path,
+        response: &Response,
+    ) -> anyhow::Result<()> {
+        fs::create_dir_all(directory)?;
+        let bytes = serde_json::to_vec(response)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+        temporary.write_all(&Sha256::digest(&bytes))?;
+        temporary.write_all(&bytes)?;
+        temporary.persist(path)?;
+        Ok(())
+    }
+
+    fn listed_metadata(&self, path: &[u8]) -> Option<Response> {
+        self.directories.iter().find_map(|((ino, _), page)| {
             let parent = self.nodes.get(ino)?;
             let Response::Entries {
                 names, metadata, ..
-            } = response
+            } = &page.response
             else {
                 return None;
             };
@@ -197,9 +248,27 @@ impl RemoteFs {
                 child.extend_from_slice(name);
                 (child == path).then(|| attr.clone())
             })
-        });
-        let response = match listed {
-            Some(response) => response,
+        })
+    }
+
+    pub(super) fn lookup_path(&mut self, path: Vec<u8>) -> anyhow::Result<Node> {
+        if let Some(ino) = self.paths.get(&path) {
+            return self.node(*ino).cloned();
+        }
+        let response = match self.listed_metadata(&path) {
+            Some(response) => {
+                // Persist only actually looked-up children, without pinning the
+                // entire inventory. Remounts hit exact stat metadata before V2.
+                if let Some(directory) = &self.metadata_cache {
+                    let request = CacheRequest::Stat {
+                        digest: self.digest.clone(),
+                        path: path.clone(),
+                    };
+                    let key = directory.join(&hash(&serde_json::to_vec(&request)?)[7..]);
+                    self.store_metadata_at(directory, &key, &response)?;
+                }
+                response
+            }
             None => self.metadata_request(CacheRequest::Stat {
                 digest: self.digest.clone(),
                 path: path.clone(),
@@ -333,27 +402,222 @@ impl RemoteFs {
             path.push(b'/');
         }
         path.extend_from_slice(name);
-        // Absence is provable only while all contiguous pages are resident.
-        let mut offset = 0;
-        while let Some(Response::Entries {
-            names, next_offset, ..
-        }) = self.directories.get(&(parent.attr.ino, offset))
-        {
-            if names.iter().any(|entry| entry == name) {
-                break;
-            }
-            match next_offset {
-                Some(next) => offset = *next,
-                None => return Err(std::io::Error::from(std::io::ErrorKind::NotFound).into()),
-            }
+        let ino = parent.attr.ino;
+        if self.paths.contains_key(&path) || self.listed_metadata(&path).is_some() {
+            return self.lookup_path(path);
+        }
+        let request = CacheRequest::Stat {
+            digest: self.digest.clone(),
+            path: path.clone(),
+        };
+        // Exact persistent positive AND negative hits precede speculative I/O.
+        if let Some(response) = self.cached_metadata(&request) {
+            return self.insert_node(path, Self::metadata_response(response)?);
+        }
+        if self.directory_complete(ino) {
+            return self.inventory_absent(&request);
+        }
+        self.prefetch_directory(ino)?;
+        if self.listed_metadata(&path).is_some() {
+            return self.lookup_path(path);
+        }
+        if self.directory_complete(ino) {
+            return self.inventory_absent(&request);
         }
         self.lookup_path(path)
     }
 
-    const DIRECTORY_PAGES: usize = 8;
+    // Called only after a validated complete inventory proves this exact stat
+    // absent. Publish the same negative receipt as a remote stat before ENOENT;
+    // cache-write failures retain their own error rather than masquerading as absence.
+    fn inventory_absent(&self, request: &CacheRequest) -> anyhow::Result<Node> {
+        let message = "path absent from immutable image";
+        if let Some(directory) = &self.metadata_cache {
+            let key = directory.join(&hash(&serde_json::to_vec(request)?)[7..]);
+            self.store_metadata_at(
+                directory,
+                &key,
+                &Response::Error {
+                    code: "not_found".into(),
+                    message: message.into(),
+                },
+            )?;
+        }
+        Err(std::io::Error::new(std::io::ErrorKind::NotFound, message).into())
+    }
 
-    /// Cookies are compact list offsets plus two synthetic dot entries. Fetch
-    /// at the cookie itself, so eviction never requires replaying earlier pages.
+    const DIRECTORY_PAGES: usize = 8;
+    const PREFETCH_DIRECTORIES: usize = 64;
+    const PREFETCH_PAGES: usize = 2;
+
+    fn directory_complete(&self, ino: u64) -> bool {
+        let mut start = 0;
+        let mut cursor = 0;
+        while let Some(page) = self.directories.get(&(ino, start)) {
+            if page.cursor != cursor {
+                return false;
+            }
+            let Response::Entries {
+                names, next_offset, ..
+            } = &page.response
+            else {
+                return false;
+            };
+            match next_offset {
+                None => return true,
+                Some(next) => {
+                    start += names.len();
+                    cursor = *next;
+                }
+            }
+        }
+        false
+    }
+
+    fn prefetch_directory(&mut self, ino: u64) -> anyhow::Result<()> {
+        if !self.prefetch_enabled {
+            return Ok(());
+        }
+        if !self.prefetch_probes.contains_key(&ino) {
+            if self.prefetch_probes.len() == Self::PREFETCH_DIRECTORIES {
+                return Ok(());
+            }
+            self.prefetch_probes.insert(ino, 1);
+            return Ok(());
+        }
+        let probes = self.prefetch_probes.get_mut(&ino).unwrap();
+        if *probes != 1 {
+            return Ok(());
+        }
+        *probes = 2;
+        let node = self.node(ino)?.clone();
+        let mut start = 0;
+        let mut cursor = 0;
+        for _ in 0..Self::PREFETCH_PAGES {
+            // Count even failed attempts; transport failures cannot reset the
+            // bound. Speculative failures fall back to exact stat, never ENOENT.
+            self.prefetch_pages += 1;
+            let page = match self.directory_page(&node, start, cursor) {
+                Ok(page) => page,
+                Err(_) => return Ok(()),
+            };
+            let Response::Entries {
+                names, next_offset, ..
+            } = page.response
+            else {
+                unreachable!();
+            };
+            let Some(next) = next_offset else { break };
+            start += names.len();
+            cursor = next;
+        }
+        Ok(())
+    }
+
+    fn directory_page(
+        &mut self,
+        node: &Node,
+        start: usize,
+        cursor: usize,
+    ) -> anyhow::Result<DirectoryPage> {
+        let key = (node.attr.ino, start);
+        if let Some(page) = self.directories.get(&key) {
+            ensure!(
+                page.cursor == cursor,
+                "directory cursor relationship mismatch"
+            );
+            return Ok(page.clone());
+        }
+        let response = self.metadata_request(CacheRequest::List {
+            digest: self.digest.clone(),
+            path: node.path.clone(),
+            offset: cursor,
+        })?;
+        let Response::Entries {
+            names,
+            metadata,
+            next_offset,
+        } = &response
+        else {
+            anyhow::bail!("expected cache directory response");
+        };
+        ensure!(
+            names.len() == metadata.len(),
+            "directory metadata count mismatch"
+        );
+        let end = start
+            .checked_add(names.len())
+            .context("directory offset overflow")?;
+        ensure!(end <= i64::MAX as usize - 2, "directory cookie overflow");
+        // Cursors are opaque, but both supported readers advance monotonically.
+        // Reject non-progress/cycles without assuming cursor == child ordinal.
+        ensure!(
+            next_offset.is_none_or(|next| next > cursor && end > start),
+            "invalid cache directory continuation"
+        );
+        ensure!(
+            serde_json::to_vec(&response)?.len() <= super::protocol::MAX_FRAME,
+            "cache directory page exceeds frame limit"
+        );
+        ensure!(
+            names.windows(2).all(|pair| pair[0] < pair[1]),
+            "unordered cache directory page"
+        );
+        let previous_last = self
+            .directories
+            .iter()
+            .find_map(|((ino, previous_start), page)| {
+                let Response::Entries {
+                    names, next_offset, ..
+                } = &page.response
+                else {
+                    return None;
+                };
+                (*ino == node.attr.ino
+                    && *previous_start < start
+                    && *previous_start + names.len() == start
+                    && *next_offset == Some(cursor))
+                .then(|| names.last())
+                .flatten()
+            });
+        ensure!(
+            previous_last.is_none_or(|last| names.first().is_none_or(|first| last < first)),
+            "unordered cache directory continuation"
+        );
+        for (name, attr) in names.iter().zip(metadata) {
+            ensure!(
+                !name.is_empty()
+                    && name != b"."
+                    && name != b".."
+                    && !name.contains(&b'/')
+                    && !name.contains(&0),
+                "invalid remote filename"
+            );
+            ensure!(
+                matches!(attr, Response::Metadata { .. }),
+                "invalid directory metadata"
+            );
+            let mut path = node.path.clone();
+            if !path.is_empty() {
+                path.push(b'/');
+            }
+            path.extend_from_slice(name);
+            // Validate attributes before admitting an inventory as absence proof.
+            self.make_node(path, attr.clone(), false)?;
+        }
+        while self.directory_order.len() >= Self::DIRECTORY_PAGES {
+            self.directories
+                .remove(&self.directory_order.pop_front().unwrap());
+        }
+        let page = DirectoryPage { cursor, response };
+        self.directory_order.push_back(key);
+        self.directories.insert(key, page.clone());
+        Ok(page)
+    }
+
+    /// Local cookies are child ordinals plus two synthetic dot entries. Remote
+    /// continuations are opaque: after eviction replay from a retained boundary
+    /// (or zero), never send a local ordinal to the portable B-tree reader.
     pub(super) fn entries_page(
         &mut self,
         ino: u64,
@@ -373,73 +637,37 @@ impl RemoteFs {
             entries.push((parent.attr.ino, FileType::Directory, "..".into()));
         }
         let offset = cookie.saturating_sub(2);
-        let key = (ino, offset);
-        // A resumed cookie can lie inside an already cached page.
-        let cached = self
+        let boundary = self
             .directories
             .iter()
-            .find_map(|((directory, start), response)| {
-                let Response::Entries {
-                    names, next_offset, ..
-                } = response
-                else {
-                    return None;
-                };
-                (*directory == ino
-                    && offset >= *start
-                    && (offset < start + names.len()
-                        || (offset == start + names.len() && next_offset.is_none())))
-                .then(|| (*start, response.clone()))
-            });
-        let (start, response) = match cached {
-            Some(page) => page,
-            None => (
-                offset,
-                self.metadata_request(CacheRequest::List {
-                    digest: self.digest.clone(),
-                    path: node.path.clone(),
-                    offset,
-                })?,
-            ),
+            .filter(|((directory, start), _)| *directory == ino && *start <= offset)
+            .max_by_key(|((_, start), _)| *start)
+            .map(|((_, start), page)| (*start, page.cursor));
+        let (mut start, mut cursor) = boundary.unwrap_or((0, 0));
+        let response = loop {
+            let page = self.directory_page(&node, start, cursor)?;
+            let Response::Entries {
+                names, next_offset, ..
+            } = &page.response
+            else {
+                unreachable!();
+            };
+            let end = start + names.len();
+            if offset < end || (offset == end && next_offset.is_none()) {
+                break page.response;
+            }
+            let Some(next) = next_offset else {
+                anyhow::bail!("directory offset out of range");
+            };
+            start = end;
+            cursor = *next;
         };
         let Response::Entries {
-            names,
-            metadata,
-            next_offset,
+            names, metadata, ..
         } = &response
         else {
-            anyhow::bail!("expected cache directory response");
+            unreachable!();
         };
-        ensure!(
-            names.len() == metadata.len(),
-            "directory metadata count mismatch"
-        );
-        let end = start
-            .checked_add(names.len())
-            .context("directory offset overflow")?;
-        ensure!(end <= i64::MAX as usize - 2, "directory cookie overflow");
-        ensure!(
-            next_offset.is_none() || (*next_offset == Some(end) && end > start),
-            "invalid cache directory continuation"
-        );
-        ensure!(
-            serde_json::to_vec(&response)?.len() <= super::protocol::MAX_FRAME,
-            "cache directory page exceeds frame limit"
-        );
-        for (name, attr) in names.iter().zip(metadata) {
-            ensure!(
-                !name.is_empty()
-                    && name != b"."
-                    && name != b".."
-                    && !name.contains(&b'/')
-                    && !name.contains(&0),
-                "invalid remote filename"
-            );
-            ensure!(
-                matches!(attr, Response::Metadata { .. }),
-                "invalid directory metadata"
-            );
-        }
         for (name, attr) in names.iter().zip(metadata).skip(offset - start) {
             let mut path = node.path.clone();
             if !path.is_empty() {
@@ -453,14 +681,7 @@ impl RemoteFs {
                 OsString::from_vec(name.clone()),
             ));
         }
-        if !self.directories.contains_key(&(ino, start)) {
-            while self.directory_order.len() >= Self::DIRECTORY_PAGES {
-                self.directories
-                    .remove(&self.directory_order.pop_front().unwrap());
-            }
-            self.directory_order.push_back(key);
-            self.directories.insert(key, response);
-        }
+
         Ok(entries)
     }
 
