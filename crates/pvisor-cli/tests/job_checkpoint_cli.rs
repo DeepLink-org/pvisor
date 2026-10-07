@@ -260,6 +260,11 @@ fn legacy_workspace_fork_rejects_missing_policy_without_mutation() {
 
 #[test]
 fn workspace_fork_copies_files_and_preimages_and_retains_source_checkpoint() {
+    #[cfg(target_os = "macos")]
+    if !Path::new("/Library/Filesystems/macfuse.fs").is_dir() {
+        eprintln!("skipping workspace fork integration: macFUSE is not installed");
+        return;
+    }
     let temp = tempfile::tempdir().unwrap();
     let record = managed_fixture(temp.path());
     let stage = record.stage_dir();

@@ -94,6 +94,13 @@ jobs:
             --output "${RUNNER_TEMP}/.data/pvisor-benchmark/main" \
             --target-dir "${GITHUB_WORKSPACE}/target/pvisor-benchmark-main"
 
+      - name: Stop baseline Host listener before switching binaries
+        if: steps.baseline.outputs.supported == 'true'
+        shell: bash
+        run: |
+          # The Host listener intentionally rejects a different executable digest.
+          pkill -f "^${GITHUB_WORKSPACE}/target/pvisor-benchmark-main/release/pvisor --pvisor-internal-host$" || [[ $? == 1 ]]
+
       - name: Benchmark candidate
         shell: bash
         run: |
