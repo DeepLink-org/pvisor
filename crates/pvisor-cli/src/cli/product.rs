@@ -49,15 +49,10 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
             checkpoint: args.checkpoint,
         },
     )?;
-    let pvisor::job_service::ReviewResponse {
-        record,
-        bundle,
-        context,
-        lease: _lease,
-    } = response;
+    let (record, bundle, context) = response.view();
     let context = serde_json::to_value(context)?;
     if args.json {
-        let mut result = serde_json::to_value(&bundle)?;
+        let mut result = serde_json::to_value(bundle)?;
         result["review_context"] = context;
         println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
@@ -322,8 +317,8 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
     }
     if args.diff {
         print_diffs(
-            &record,
-            &bundle,
+            record,
+            bundle,
             args.max_diff_bytes,
             args.max_diff_file_bytes,
         )?;

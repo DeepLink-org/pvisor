@@ -1193,13 +1193,12 @@ pub(super) async fn wait_cli_job(
 pub(super) async fn wait_cli_run(
     handle: pvisor::RunHandle,
 ) -> anyhow::Result<pvisor_core::RunResult> {
-    let token = handle.cancellation.clone();
     let cancellation = handle.cancellation();
     let wait = handle.wait();
     tokio::pin!(wait);
     tokio::select! {
         result = &mut wait => Ok(result?),
-        _ = token.cancelled() => {
+        _ = cancellation.cancelled() => {
             super::host_service::notify_cleanup();
             Ok(wait.await?)
         }

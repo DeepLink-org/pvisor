@@ -18,7 +18,7 @@ use std::{
 struct CancelRun {}
 struct ActiveRun {
     record: pvisor::RunRecord,
-    cancellation: tokio_util::sync::CancellationToken,
+    cancellation: pvisor::RunCancellation,
 }
 static ACTIVE: OnceLock<Arc<Mutex<Option<ActiveRun>>>> = OnceLock::new();
 fn path(directory: &Path, pid: u32) -> PathBuf {
@@ -169,7 +169,7 @@ pub(super) fn register(handle: &pvisor::RunHandle, stage: &Path) -> anyhow::Resu
     ensure!(active.is_none(), "worker already owns a registered Run");
     *active = Some(ActiveRun {
         record,
-        cancellation: handle.cancellation.clone(),
+        cancellation: handle.cancellation(),
     });
     Ok(())
 }

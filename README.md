@@ -107,6 +107,23 @@ controls, with platform-dependent container/VM support. See [capabilities and ev
 
 Security issues: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Crate layout
+
+The Cargo workspace contains 13 crates. `pvisor` is the embeddable execution
+runtime and durable Job service; `pvisor-cli` is the default workspace member and
+owns the `pvisor`, `pvisor-cache`, `pvisor-memory-pool`, `pvisor-tui` and
+`pvisor-replay` executables. The TUI implementation is integrated into
+`pvisor-cli`; there is no separate `pvisor-tui` crate. The runtime has no CLI or
+Clap normal dependency, and the `pvisor-replay` engine depends on shared Core and
+Journal contracts rather than the runtime or Clap.
+
+The remaining crates are `pvisor-core`, `pvisor-journal`, `pvisor-gateway`,
+`pvisor-vm`, `pvisor-daemon`, `pvisor-guest`, `pvisor-shim`, `pvisor-overlay-core`,
+`pvisor-overlayfs` and `pvisor-overlaynet`. See the
+[engineering guide](docs/src/en/community/development.md) for source ownership,
+dependencies and targeted tests (`just test pvisor` for the runtime,
+`just test cli` for application frontends).
+
 ## Guest firmware
 
 The customized libkrunfw sources, guest kernel configurations, patches and

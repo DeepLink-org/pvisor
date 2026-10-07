@@ -4,21 +4,23 @@
 
 ## 仓库结构与代码归属
 
-Cargo workspace 按产品职责划分。Python `pvisor/` 是可安装的版本标记，不是启动器或运行时实现。
+Cargo workspace 包含按产品职责划分的 13 个 crate，默认成员是 `pvisor-cli`。Python `pvisor/` 是可安装的版本标记，不是启动器或运行时实现。
 wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python 启动器及其二进制覆盖方式已废弃。
 
 | 目录 | 职责 |
 |---|---|
-| `crates/pvisor/` | CLI、运行编排、执行器、镜像准备和缓存服务 |
+| `crates/pvisor/` | 可嵌入运行时、Session/Attempt 编排、执行器、持久化 Job 服务、镜像准备和缓存机制 |
+| `crates/pvisor-cli/` | CLI 命令、终端前端、伴随程序分派和本地资源所有者监督 |
 | `crates/pvisor-vm/` | 原生 VM 运行时、跨平台 API、私有 VMM／平台实现、内嵌 guest 和内核／固件接入 |
 | `crates/pvisor-daemon/` | Linux x86_64 sandbox 生命周期 API 与独立原生 VM supervisor |
 | `crates/pvisor-core/` | Operation、Placement、策略、对外交互和 Event 契约 |
+| `crates/pvisor-journal/` | 共享事实 Journal 存储与读取 |
 | `crates/pvisor-gateway/` | Agent 协议转发、转换、采集与投影 |
 | `crates/pvisor-overlay-core/` | 不依赖 FUSE 的 OverlayFS 操作和文件访问控制 |
 | `crates/pvisor-overlayfs/` | FUSE 适配及挂载 |
 | `crates/pvisor-overlaynet/` | 出站策略、HTTP 代理和 VM virtio-net 数据通路 |
 | `crates/pvisor-guest/` | Linux PID 1 supervisor，以及 VM 执行器共用的启动契约 |
-| `crates/pvisor-tui/` | 独立终端前端 `pvisor-tui` |
+| `crates/pvisor-shim/` | containerd Runtime v2 shim，可选 VM 执行 |
 | `crates/pvisor-replay/` | 回放规划、原生 Agent 适配器和续跑协议桥 |
 | `pvisor/`、`setup.py`、`scripts/packaging/` | Python 版本标记和原生脚本 wheel 打包 |
 | `crates/*/tests/` | Rust 集成测试；单元测试跟随所属模块 |
@@ -28,15 +30,19 @@ wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python �
 | `docs/src/zh/`、`docs/src/en/` | 文档源；`docs/site/` 是生成产物 |
 | `vendor/` | 有补丁的第三方依赖；产品编排逻辑放在 `crates/` |
 
-workspace 内的实际依赖关系：
+workspace 内的直接普通依赖关系（包含目标平台限定的边；以下名称省略 `pvisor-` 前缀）：
 
 ```text
+cli ──> pvisor, core, journal, replay, overlaynet, overlay-core, vm
 pvisor ──> core, journal, overlaynet, overlayfs, overlay-core, guest, vm
-vm ──> overlay-core
-pvisor-daemon ──> pvisor, core
+cli --features gateway ──> gateway, pvisor/gateway
 pvisor --features gateway ──> gateway
-tui, replay ──> pvisor
-gateway ──> core, overlaynet
+vm ──> overlay-core
+daemon ──> pvisor, core
+replay ──> core, journal
+shim ──> guest, overlay-core
+shim --features vm ──> vm
+gateway ──> core, journal, overlaynet
 overlaynet ──> core
 overlayfs ──> core, overlay-core
 overlay-core ──> core, journal
@@ -44,13 +50,27 @@ journal ──> core
 core, guest ──> 不依赖其他 workspace crate
 ```
 
+`pvisor` 没有 CLI 或 Clap 普通依赖；Clap 仅作为示例使用的开发依赖。
+`pvisor-replay` 引擎没有对 `pvisor` 或 Clap 的普通依赖。
+`pvisor-tui` crate 已移除，其可执行文件名称不变。
+
 ### pVisor 源码模块
 
 ```text
-src/
-├── lib.rs                 # 稳定的嵌入接口导出
-├── bin/pvisor.rs          # 二进制入口
+crates/pvisor-cli/src/
+├── lib.rs                 # 前端模块，不重导出运行时
+├── bin/                   # pvisor、pvisor-cache、pvisor-memory-pool、
+│                          # pvisor-tui 和 pvisor-replay 入口
 ├── cli/                   # 参数、命令和共享终端工具
+│   ├── cache.rs           # 缓存参数解析与展示
+│   └── features.rs        # 运行时功能列表前端
+├── companions.rs          # 同一安装中的伴随程序查找／分派
+├── service.rs             # 本地资源所有者进程监督
+├── service_cgroup.rs      # 委派 cgroup 解析
+└── tui/                   # TUI PTY 运行时、渲染、审查面板和按键映射
+
+crates/pvisor/src/
+├── lib.rs                 # 运行时导出与显式前端／嵌入 API
 ├── session/               # Attempt 生命周期与收尾
 ├── session.rs             # Session 所有者
 ├── config.rs              # 运行时与执行器配置
@@ -66,9 +86,13 @@ src/
 │   └── vm/                # VM 执行器适配与 Run 资源／控制接入
 ├── image/
 │   ├── oci.rs             # Registry、准备记录、blob 和解包
-│   └── cache/             # 缓存 CLI、协议、服务端、客户端及懒加载 FUSE
+│   └── cache/             # 缓存协议、服务端、客户端及懒加载 FUSE
 ├── runtime/
 │   ├── run.rs             # PVisor API 和运行生命周期
+│   ├── job_service.rs     # 持久化 RuntimeJobService
+│   ├── job_execution.rs   # Job 执行机制
+│   ├── host_transport.rs  # 类型化 Host 传输
+│   ├── instance_control.rs # 本地实例控制交互
 │   ├── agentctl.rs        # 每次运行的协作控制服务
 │   ├── agentctl_client.rs # 同步 AgentCtl 客户端
 │   ├── audit.rs           # 审批 socket 传输与缓存
@@ -85,12 +109,18 @@ src/
 └── util.rs                # 少量共享文件与时间工具
 ```
 
-CLI 参数与展示留在 `cli/`，具体执行机制归 `executor/`，Run 资源所有权归
-`runtime/`。VM 执行器将 Run/Attempt 生命周期适配到 `pvisor_vm::api`；VMM、平台机制、内嵌 guest
-和内核／固件接入属于 `pvisor-vm`。OCI 准备属于 `image/`，供直接加载和缓存
-服务共用。Bundle 和检查点与运行记录放在一起，不归某个执行后端。
-`PVisor`、`ProcessExecutor`、`cache` 以及内部 `sandbox` 入口等根级导出保留
-原有导入路径。
+CLI 参数与展示、Host 监听器／worker 和本地资源所有者监督归 `pvisor-cli`；
+具体执行机制归 `pvisor` 的 `executor/`，Run 资源所有权和持久化 Job 服务归 `runtime/`。
+VM 执行器将 Run/Attempt 生命周期适配到 `pvisor_vm::api`；VMM、平台机制、内嵌 guest
+和内核／固件接入属于 `pvisor-vm`。OCI 准备属于 `image/`，供直接加载和缓存服务共用。
+缓存存储及带认证的服务端留在运行时，缓存命令解析／展示归 `pvisor-cli/src/cli/cache.rs`。
+Bundle 和检查点与运行记录放在一起，不归某个执行后端。
+
+既有公开运行时导入，包括 `PVisor`、`ProcessExecutor`、`cache` 以及内部 `sandbox` 入口，
+保留原有路径。新增显式前端／嵌入 API 导出文件访问类型、`GatewayProfile`、
+`DelegatedRunOutput`、`rootless_runtime_available`、Overlay 选择／检查及 Run 查找／控制工具、
+Linux Run 租约、`audit`、`checkpoint`、`job_execution` 和启动标记／私有 JSON 工具。
+运行时实现模块仍保持私有；这些导出不构成 API 稳定性承诺。
 
 replay 中，`adapter/` 负责原生轨迹规划和 Agent 启动选择；`bridge/` 负责
 Claude、Codex、OpenCode 协议桥及 Claude resume transport 校验。
@@ -105,9 +135,10 @@ AgentCtl 与审批 socket 的实际 I/O 留在 pvisor。完整职责见[核心�
 
 ## 核心减法预算
 
-CI 先独立构建默认核心，再构建带捕获的分发包。`scripts/ci/check_core_budget.py`
-拒绝 Gateway、replay、TUI 及其终端依赖进入默认核心，并记录工具链、依赖数、源码行数、
-Core 公开声明数与二进制字节数。预算及统计口径由脚本维护；实测结果保存在 CI 报告中，
+CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分发包。`scripts/ci/check_core_budget.py`
+拒绝 CLI、Gateway、replay、Clap、TUI 和终端依赖进入 `pvisor` 的普通依赖闭包。
+默认 `pvisor-cli` 应用包含 replay 引擎和集成 TUI，Gateway 仍为可选。
+脚本记录工具链、运行时／应用依赖数、运行时闭包源码行数、Core 公开声明数和应用二进制字节数。预算及统计口径由脚本维护；实测结果保存在 CI 报告中，
 比较时使用相同平台和工具链。
 
 ## 贡献者命令
@@ -121,7 +152,8 @@ Core 公开声明数与二进制字节数。预算及统计口径由脚本维护
 | `just fmt` / `just fmt-check` | 格式化 Rust/Python 源码，或仅检查格式 |
 | `just lint` | 运行 Clippy 和 Python 包 lint 检查 |
 | `just test` | 通过 nextest 跑工作区 Rust 测试，再跑 Python 测试 |
-| `just test core pvisor` | 测试指定 Rust 包，支持简称或 Cargo 包名 |
+| `just test core pvisor cli` | 测试指定 Rust 包：共享契约、运行时和应用 |
+| `just test cli` / `just test pvisor-cli` | 可执行文件／前端测试；`just test pvisor` 选择运行时测试 |
 | `just test pvisor-vm` | VM 所有者测试；macOS 在 nextest 前签署 Hypervisor entitlement |
 | `just test-py -k packaging` | 将选项传给 pytest |
 | `just test-benchmark` | 用 pytest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
@@ -137,10 +169,15 @@ Core 公开声明数与二进制字节数。预算及统计口径由脚本维护
 | `just ci` | 检查格式、lint、测试并构建，不改写源码 |
 | `just clean` | 清理构建产物，保留开发环境和本地 Run 记录 |
 
-`just test` 和 `just test-rust` 支持 Cargo 包名，以及 `pvisor`、`core`、
-`control`／`agentctl`（Core 的兼容别名）、`capture`（Gateway）这些简称。
+`just test` 和 `just test-rust` 支持 Cargo 包名，以及 `pvisor`、`cli`（`pvisor-cli`）、`core`、
+`control`／`agentctl`（Core 的兼容别名）、`capture`（Gateway）、`shim`（`pvisor-shim`）这些简称。
 带参数的 `just test` 只运行指定 Rust 包的测试。CI 分片使用 `just test-rust`，
 不会额外触发 Python 测试。
+
+仅使用运行时的 Rust 测试留在 `crates/pvisor/tests/`。
+19 个可执行文件／前端集成测试文件（包括混合运行时与命令测试）现归 `crates/pvisor-cli/tests/`；
+混合文件中的纯运行时用例仍保留在 `pvisor`。
+原生 VM 和依赖环境的测试保留原有前置条件及跳过／ignore 门槛；编译检查不代表真实 guest 验证。
 
 默认 pytest 收集 `tests/` 和 `benchmark/pvisor/`；共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
 benchmark 中依赖 `/proc` 和 Linux rootfs 工具的测试仅在 Linux 上运行。
@@ -190,7 +227,7 @@ CLI 和 shim 注入 `/.pvisor-guest.json`，传递 argv、环境变量、cwd、�
 
 ## 打包与命名
 
-Python 包、CLI 和核心 Rust crate 统一使用 `pvisor`；伴随 crate 使用 `pvisor-*`，
+Python 包、安装后的 CLI 和运行时 Rust crate 使用 `pvisor`；应用 crate 为 `pvisor-cli`，伴随 crate 使用 `pvisor-*`，
 环境变量使用 `PVISOR_*`。wheel 文件名形如 `pvisor-<version>-py3-none-<platform>.whl`。
 
 ## 构建环境

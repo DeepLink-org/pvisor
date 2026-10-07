@@ -4,20 +4,22 @@ Run commands from the repository root. `just` lists supported tasks, with one en
 
 ## Repository layout and ownership
 
-The Cargo workspace follows product responsibilities. Python `pvisor/` is an installable version marker, not a launcher or runtime implementation. Wheels install native executable scripts directly into the environment's bin directory; the old Python launcher and its binary override are obsolete.
+The Cargo workspace has 13 crates organized by product responsibility. Its default member is `pvisor-cli`. Python `pvisor/` is an installable version marker, not a launcher or runtime implementation. Wheels install native executable scripts directly into the environment's bin directory; the old Python launcher and its binary override are obsolete.
 
 | Directory | Responsibility |
 | --- | --- |
-| `crates/pvisor/` | CLI, orchestration, executors, image preparation and cache service |
+| `crates/pvisor/` | Embeddable runtime, Session/Attempt orchestration, executors, durable Job service, image preparation and cache mechanisms |
+| `crates/pvisor-cli/` | CLI commands, terminal frontends, companion dispatch and local resource-owner supervision |
 | `crates/pvisor-vm/` | Native VM runtime, portable API, private VMM/platform implementations, embedded guest and kernel/firmware integration |
 | `crates/pvisor-daemon/` | Linux x86_64 sandbox lifecycle API and detached native VM supervisors |
 | `crates/pvisor-core/` | Operation, Placement, policies, external interactions and Event contracts |
+| `crates/pvisor-journal/` | Shared fact Journal storage and readers |
 | `crates/pvisor-gateway/` | Agent protocol forwarding/conversion, capture and projections |
 | `crates/pvisor-overlay-core/` | FUSE-independent OverlayFS operations and file access controls |
 | `crates/pvisor-overlayfs/` | FUSE adaptation and mounts |
 | `crates/pvisor-overlaynet/` | Egress policy, HTTP proxy and VM virtio-net path |
 | `crates/pvisor-guest/` | Linux PID 1 supervisor and shared VM launch contract |
-| `crates/pvisor-tui/` | Standalone terminal frontend `pvisor-tui` |
+| `crates/pvisor-shim/` | containerd Runtime v2 shim; optional VM execution |
 | `crates/pvisor-replay/` | Replay planning, native agent adapters and continuation protocol bridges |
 | `pvisor/`, `setup.py`, `scripts/packaging/` | Python version marker and native-script wheel packaging |
 | `crates/*/tests/` | Rust integration tests; unit tests stay with their modules |
@@ -27,15 +29,19 @@ The Cargo workspace follows product responsibilities. Python `pvisor/` is an ins
 | `docs/src/zh/`, `docs/src/en/` | Documentation source; `docs/site/` is generated |
 | `vendor/` | Patched third-party dependencies; product orchestration belongs in `crates/` |
 
-Actual workspace dependencies:
+Direct normal workspace dependencies (including target-specific edges; names below omit the `pvisor-` prefix):
 
 ```text
+cli ──> pvisor, core, journal, replay, overlaynet, overlay-core, vm
 pvisor ──> core, journal, overlaynet, overlayfs, overlay-core, guest, vm
-vm ──> overlay-core
-pvisor-daemon ──> pvisor, core
+cli --features gateway ──> gateway, pvisor/gateway
 pvisor --features gateway ──> gateway
-tui, replay ──> pvisor
-gateway ──> core, overlaynet
+vm ──> overlay-core
+daemon ──> pvisor, core
+replay ──> core, journal
+shim ──> guest, overlay-core
+shim --features vm ──> vm
+gateway ──> core, journal, overlaynet
 overlaynet ──> core
 overlayfs ──> core, overlay-core
 overlay-core ──> core, journal
@@ -43,13 +49,25 @@ journal ──> core
 core, guest ──> no other workspace crates
 ```
 
+`pvisor` has no CLI or Clap normal dependency; Clap is a development dependency for examples only. The `pvisor-replay` engine has no normal dependency on `pvisor` or Clap. The `pvisor-tui` crate has been removed; its executable name is unchanged.
+
 ### pVisor source modules
 
 ```text
-src/
-├── lib.rs                 # Stable embedded API exports
-├── bin/pvisor.rs          # Binary entry
+crates/pvisor-cli/src/
+├── lib.rs                 # Frontend modules, not runtime re-exports
+├── bin/                   # pvisor, pvisor-cache, pvisor-memory-pool,
+│                          # pvisor-tui and pvisor-replay entry points
 ├── cli/                   # Arguments, commands and shared terminal utilities
+│   ├── cache.rs           # Cache argument parsing and rendering
+│   └── features.rs        # Runtime feature listing frontend
+├── companions.rs          # Same-installation companion lookup/dispatch
+├── service.rs             # Local resource-owner process supervision
+├── service_cgroup.rs      # Delegated cgroup resolution
+└── tui/                   # TUI PTY runtime, renderer, review panels and keymap
+
+crates/pvisor/src/
+├── lib.rs                 # Runtime exports and explicit frontend/embedding APIs
 ├── session/               # Attempt lifecycle and completion
 ├── session.rs             # Session owner
 ├── config.rs              # Runtime and executor configuration
@@ -65,9 +83,13 @@ src/
 │   └── vm/                # VM executor adapter and Run resource/control integration
 ├── image/
 │   ├── oci.rs             # Registry, prepared records, blobs and unpacking
-│   └── cache/             # Cache CLI/protocol/server/client and lazy FUSE
+│   └── cache/             # Cache protocol/server/client and lazy FUSE
 ├── runtime/
 │   ├── run.rs             # PVisor API and run lifecycle
+│   ├── job_service.rs     # Durable RuntimeJobService
+│   ├── job_execution.rs   # Job execution mechanisms
+│   ├── host_transport.rs  # Typed Host transport
+│   ├── instance_control.rs # Local instance control exchange
 │   ├── agentctl.rs        # Per-run cooperative control server
 │   ├── agentctl_client.rs # Synchronous AgentCtl client
 │   ├── audit.rs           # Approval socket transport/cache
@@ -84,7 +106,9 @@ src/
 └── util.rs                # Small shared file/time utilities
 ```
 
-CLI arguments/display stay in `cli/`; execution mechanisms belong in `executor/`; Run resource ownership belongs in `runtime/`. The VM executor adapts Run/Attempt lifecycle to `pvisor_vm::api`; `pvisor-vm` owns the VMM, platform mechanisms, embedded guest and kernel/firmware integration. OCI preparation belongs in `image/` and is shared by direct loading/cache service. Bundles and checkpoints belong with run records rather than one backend. Root exports such as `PVisor`, `ProcessExecutor`, `cache` and internal `sandbox` retain their import paths.
+CLI arguments/display, Host listener/workers and local resource-owner supervision belong in `pvisor-cli`; execution mechanisms belong in `pvisor`'s `executor/`, and Run resource ownership and the durable Job service belong in `runtime/`. The VM executor adapts Run/Attempt lifecycle to `pvisor_vm::api`; `pvisor-vm` owns the VMM, platform mechanisms, embedded guest and kernel/firmware integration. OCI preparation belongs in `image/` and is shared by direct loading/cache service. Cache storage and the authenticated server remain in the runtime; cache command parsing/rendering belongs in `pvisor-cli/src/cli/cache.rs`. Bundles and checkpoints belong with run records rather than one backend.
+
+Existing public runtime imports, including `PVisor`, `ProcessExecutor`, `cache` and the internal `sandbox` entry, retain their paths. Explicit frontend/embedding APIs now export filesystem access types, `GatewayProfile`, `DelegatedRunOutput`, `rootless_runtime_available`, overlay selection/inspection and Run lookup/control helpers, Linux Run leases, `audit`, `checkpoint`, `job_execution` and startup/private-JSON helpers. Runtime implementation modules remain private; these exports do not establish an API stability promise.
 
 In replay, `adapter/` owns native trajectory planning and launch selection; `bridge/` owns Claude/Codex/OpenCode protocol bridges and Claude resume transport validation. Shared execution and journal remain at the crate root.
 
@@ -94,7 +118,7 @@ Core defines Operation, Event and shared policies; pvisor implements admission, 
 
 ## Core reduction budget
 
-CI builds the default core independently before the capture-enabled distribution. `scripts/ci/check_core_budget.py` rejects Gateway, replay, TUI and their terminal dependencies in the default core. It records toolchain, dependency count, source lines, public Core declarations and binary bytes. The script owns budget/measurement definitions; CI reports contain measured results. Compare on the same platform/toolchain.
+CI checks the default runtime and application dependency boundaries before the capture-enabled distribution. `scripts/ci/check_core_budget.py` rejects the CLI, Gateway, replay, Clap, TUI and terminal dependencies in the normal `pvisor` closure. The default `pvisor-cli` application includes the replay engine and integrated TUI, while Gateway remains optional. It records toolchain, runtime/application dependency counts, runtime-closure source lines, public Core declarations and application binary bytes. The script owns budget/measurement definitions; CI reports contain measured results. Compare on the same platform/toolchain.
 
 ## Contributor commands
 
@@ -107,7 +131,8 @@ CI builds the default core independently before the capture-enabled distribution
 | `just fmt` / `just fmt-check` | Format Rust/Python or check formatting |
 | `just lint` | Clippy and Python package lint |
 | `just test` | Workspace Rust tests via nextest, followed by Python tests |
-| `just test core pvisor` | Selected Rust packages, using aliases or Cargo package names |
+| `just test core pvisor cli` | Selected Rust packages: shared contracts, runtime and application |
+| `just test cli` / `just test pvisor-cli` | Executable/frontend tests; `just test pvisor` selects runtime tests |
 | `just test pvisor-vm` | VM-owner tests; macOS signs Hypervisor entitlement before nextest |
 | `just test-py -k packaging` | Pass options to pytest |
 | `just test-benchmark` | Benchmark tool tests via pytest; also included in default Python tests |
@@ -123,7 +148,9 @@ CI builds the default core independently before the capture-enabled distribution
 | `just ci` | Check format/lint/tests and build without rewriting source |
 | `just clean` | Remove build artifacts, preserving development environment/local Run records |
 
-`just test`/`just test-rust` accept Cargo package names and aliases `pvisor`, `core`, `control`/`agentctl` (Core compatibility aliases) and `capture` (Gateway). With package arguments, `just test` runs only those Rust tests. CI shards use `just test-rust` without additionally running Python tests.
+`just test`/`just test-rust` accept Cargo package names and aliases `pvisor`, `cli` (`pvisor-cli`), `core`, `control`/`agentctl` (Core compatibility aliases), `capture` (Gateway) and `shim` (`pvisor-shim`). With package arguments, `just test` runs only those Rust tests. CI shards use `just test-rust` without additionally running Python tests.
+
+Runtime-only Rust tests remain in `crates/pvisor/tests/`. The 19 executable/frontend integration test files, including mixed runtime/command tests, now live in `crates/pvisor-cli/tests/`; mixed files retain their runtime-only cases in `pvisor`. Native VM and environment-dependent tests keep their existing prerequisites and skip/ignore gates; compile checks do not validate real guests.
 
 Default pytest collection includes `tests/` and `benchmark/pvisor/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
 
@@ -155,7 +182,7 @@ See [Guest init comparison](https://github.com/DeepLink-org/pvisor/blob/main/ben
 
 ## Packaging and names
 
-The Python package, CLI and core Rust crate use `pvisor`; companion crates use `pvisor-*`; environment variables use `PVISOR_*`. Wheel names follow `pvisor-<version>-py3-none-<platform>.whl`.
+The Python package, installed CLI and runtime Rust crate use `pvisor`; the application crate is `pvisor-cli`, and companion crates use `pvisor-*`; environment variables use `PVISOR_*`. Wheel names follow `pvisor-<version>-py3-none-<platform>.whl`.
 
 ## Build environment
 
