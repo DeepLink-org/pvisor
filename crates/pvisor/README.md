@@ -22,8 +22,7 @@ listener/worker adapters, terminal/rendering code and companion discovery.
 Cache storage and node resource protocols remain runtime components; cache
 argument parsing and the independent `pvisor-cache` executable live in the app.
 Job commands use `pvisor`; `pvisor-daemon` owns sandbox services and its optional
-pool. The old CLI node supervisor is removed, not migrated into the daemon.
-TUI and replay are
+pool. TUI and replay are
 Job frontends, not runtime dependencies. Cross-node placement and distributed scheduling
 belong to external orchestrators, not this crate.
 Guest injection uses the core `pvisor` execution runtime.
@@ -292,7 +291,13 @@ pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --v
 pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
 ```
 
-All three global addressing options are required, including
+The live VM flags are command-local: `status` accepts only `--vm-socket`,
+`--vm-job-id` and `--vm-attempt-id`; `suspend` accepts those identity flags plus
+`--vm-pause`, `--vm-offload` and `--vm-ram-file`; `resume` accepts the identity
+flags plus `--vm-load`. Place them after the command. Root-prefixed live VM
+flags and live VM flags on other commands are rejected.
+
+All three addressing options are required together, including
 for live `status`; suspend/resume's positional selector must match `--vm-job-id`.
 Only `status`, `suspend --vm-pause` / `--vm-offload` and `resume --vm-load` support
 live mode. Pause and offload are mutually exclusive. `--vm-ram-file` requires
@@ -336,7 +341,7 @@ at Attempt termination. It must never be guest-accessible, including in
 host-rootfs VMs; the host parent provides executor exclusions. It is separate
 from staged Job control and is not exported as a guest discovery file.
 `--vm-control-socket` selects the creation path; `--vm-socket` addresses a live
-endpoint. The global live addressing/action options are not `[vm]` fields.
+endpoint. The command-local live addressing/action options are not `[vm]` fields.
 
 The local cold pager has one combined reclaim/compression toggle; it conflicts
 with dedup, file/FUSE backing, external pools, snapshot capture/restore, snapshot
@@ -358,10 +363,9 @@ provide pool-process or host-reboot recovery. Reserve pool/host overhead outside
 sandbox admission limits. See the [daemon boundary](../pvisor-daemon/README.md).
 
 `pvisor-cache` remains independent, with `prepare`, `publish`, `serve`, `list`,
-`stat` and `read`. Node runtime protocols still own immutable mounts and snapshot
+`stat` and `read`. Node runtime protocols own immutable mounts and snapshot
 RAM with same-user authorization, compatibility checks and connection pins.
-The old CLI service supervisor and node/pool role configuration are removed;
-the daemon has no node acquire/release adapter. Embedded callers retain explicit
+The daemon has no node acquire/release adapter. Embedded callers retain explicit
 resource ownership and must release consumers before backing owners.
 
 Linux x86_64 also has default-off experimental instance-local live cold
@@ -387,7 +391,7 @@ This delivers an experimental mechanism, not a production-density claim; sealed
 `memfd` pooling remains proposed.
 
 The daemon's VM-only `NativeRuntime` embeds this crate in detached supervisor
-subprocesses. Its CLI uses explicit flags rather than the removed service TOML.
+subprocesses. Its CLI uses explicit flags.
 The daemon API has no stage/apply or checkpoint/fork implementation. The daemon
 is a separate executable linking `pvisor` and `pvisor-core`; synchronous internal
 VM dispatch runs before Tokio. Packaging does not supply or validate the

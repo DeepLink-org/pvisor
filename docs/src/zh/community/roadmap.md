@@ -31,7 +31,7 @@
 
 ## 单机 daemon {#daemon}
 
-[Daemon](../guides/daemon/index.md) 的部分 OpenSandbox 1.1.0 profile 已有 VM-only `NativeRuntime`，在独立 supervisor 中嵌入 pVisor；daemon 可执行入口与必需原生参数已接入。Stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node/cache 共享资源。可选池由 daemon 拥有，通过 `serve --memory-pool` 显式启用；移除 CLI node supervisor 不代表 node 协议已迁移。Bootstrap／镜像未提供或端到端验证，没有 SDK 兼容或密度证据。Controller/Worker 与 Cluster 任务 SDK 已退役。
+[Daemon](../guides/daemon/index.md) 的部分 OpenSandbox 1.1.0 profile 已有 VM-only `NativeRuntime`，在独立 supervisor 中嵌入 pVisor；daemon 可执行入口与必需原生参数已接入。Stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node/cache 共享资源。可选池由 daemon 拥有，通过 `serve --memory-pool` 显式启用。Bootstrap／镜像未提供或端到端验证，没有 SDK 兼容或密度证据。Controller/Worker 与 Cluster 任务 SDK 已退役。
 
 ## L2 与 L3 里程碑
 

@@ -34,14 +34,13 @@ use std::ffi::OsString;
 #[command(
     name = "pvisor",
     version,
-    about = "Manage Agent Jobs through one execution kernel"
+    about = "Run agents, review changes, and manage Jobs"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Command,
-    #[command(flatten)]
-    vm: host::VmOptions,
-    /// Explicitly enable a runtime experiment (repeatable, comma-separated).
+
+    /// Enable a runtime experiment (repeatable, comma-separated).
     #[arg(
         long = "feature",
         global = true,
@@ -53,30 +52,30 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// List registered runtime experiments and default/current CLI enable state.
+    /// List runtime experiments.
     Feature(crate::cli::features::FeatureArgs),
     #[command(about = run::RUN_COMMAND_ABOUT, long_about = run::RUN_COMMAND_LONG_ABOUT)]
     Run(Box<run::RunArgs>),
 
-    /// Apply selected staged changes from a stopped Job.
+    /// Apply reviewed changes.
     Apply(runtime::ApplyArgs),
-    /// Discard staged changes from a stopped Job.
+    /// Discard staged changes.
     Drop(runtime::SelectArgs),
-    /// Show a Job's process, filesystem, and network status.
-    Status(runtime::StatusArgs),
-    /// Review a stopped Job's current staged changes and execution evidence.
+    /// Show Job status and execution evidence.
+    Status(runtime::StatusCommandArgs),
+    /// Review staged changes and execution evidence.
     Review(product::ReviewArgs),
-    /// Manage immutable, Job-scoped checkpoints.
+    /// Manage Job checkpoints.
     Checkpoint(checkpoint::CheckpointArgs),
-    /// Suspend a Job when its executor supports complete execution checkpoints.
-    Suspend(checkpoint::SuspendArgs),
-    /// Continue a suspended Job when its executor supports full state restoration.
-    Resume(checkpoint::ResumeArgs),
-    /// Request graceful termination of a live Job.
+    /// Suspend a Job or pause a live VM.
+    Suspend(checkpoint::SuspendCommandArgs),
+    /// Resume a suspended Job or live VM.
+    Resume(checkpoint::ResumeCommandArgs),
+    /// Stop a running Job.
     Kill(runtime::KillArgs),
-    /// Branch a Job from staged files or a VM execution checkpoint.
+    /// Branch a Job from staged files or a checkpoint.
     Fork(run::ForkArgs),
-    /// Open a read-only shell or run a command against a Job filesystem view.
+    /// Inspect a Job's filesystem.
     Inspect(runtime::InspectArgs),
     #[command(external_subcommand)]
     External(Vec<OsString>),
@@ -91,7 +90,7 @@ fn root_command() -> anyhow::Result<clap::Command> {
     let groups = grouped_commands(&command);
     Ok(command
         .before_help(groups.trim_end().to_owned())
-        .after_help("Use pvisor -- COMMAND for default execution. Use pvisor help COMMAND for command details.")
+        .after_help("Examples:\n  pvisor run --safe -- claude\n  pvisor review last\n  pvisor apply last --path src\n\nUse pvisor -- COMMAND for default execution.\nUse pvisor help COMMAND for command details.")
         .help_template("{about}\n\n{usage-heading} {usage}\n\n{before-help}Options:\n{options}{after-help}\n"))
 }
 
@@ -99,21 +98,10 @@ fn root_command() -> anyhow::Result<clap::Command> {
 /// for help display without modifying the parser.
 fn grouped_commands(command: &clap::Command) -> String {
     const GROUPS: &[(&str, &[&str])] = &[
-        (
-            "Jobs",
-            &[
-                "run",
-                "status",
-                "kill",
-                "suspend",
-                "resume",
-                "fork",
-                "checkpoint",
-            ],
-        ),
-        ("Filesystems", &["inspect", "review", "apply", "drop"]),
-        ("Extensions", &["replay", "tui"]),
-        ("Help", &["feature", "help"]),
+        ("Execution", &["run", "status", "kill"]),
+        ("Changes", &["review", "apply", "drop", "inspect"]),
+        ("Checkpoints", &["checkpoint", "suspend", "resume", "fork"]),
+        ("Tools", &["replay", "tui", "feature", "help"]),
     ];
     let width = command
         .get_subcommands()
@@ -134,7 +122,10 @@ fn grouped_commands(command: &clap::Command) -> String {
         output.push_str(&format!("{heading}:\n"));
         for sub in members {
             let name = sub.get_name();
-            let about = sub.get_about().map(ToString::to_string).unwrap_or_default();
+            let about = match name {
+                "run" => "Run an agent or command".to_owned(),
+                _ => sub.get_about().map(ToString::to_string).unwrap_or_default(),
+            };
             output.push_str(&format!("  {name:width$}  {about}\n"));
         }
         output.push('\n');
@@ -199,10 +190,7 @@ pub fn main() -> anyhow::Result<()> {
             std::process::exit(pvisor::sandbox::SANDBOX_SETUP_EXIT_CODE);
         }
     }
-    // The trusted sandbox launcher is part of the parent's Run, not another
-    // CLI invocation. Its cleared workload environment must not create a
-    // duplicate startup record or override the parent's logging preference.
-    pvisor::startup_mark("process.entry");
+
     if pvisor::run_krun_internal_if_requested()? {
         return Ok(());
     }
@@ -273,7 +261,7 @@ pub fn main() -> anyhow::Result<()> {
     }
     let args = normalize_default_run(args, &core_command);
     if args.len() == 1 {
-        root_command()?.print_long_help()?;
+        root_command()?.print_help()?;
         println!();
         return Ok(());
     }
@@ -286,10 +274,12 @@ pub fn main() -> anyhow::Result<()> {
         core_command
     };
     let mut parsed = Cli::from_arg_matches(&command.get_matches_from(args.clone()))?;
-    pvisor::startup_mark("cli.parsed");
     if let Command::Feature(query) = &parsed.command {
         return query.print(&parsed.features);
     }
+    // Informational invocations return without emitting execution diagnostics.
+    pvisor::startup_mark("process.entry");
+    pvisor::startup_mark("cli.parsed");
     if let Command::Run(run) = &mut parsed.command {
         run.features = parsed.features.clone();
     } else {
@@ -298,7 +288,7 @@ pub fn main() -> anyhow::Result<()> {
             "--feature enables apply only to run or feature queries"
         );
     }
-    if let Some(command) = parsed.vm.request(&parsed.command)? {
+    if let Some(command) = host::vm_request(&parsed.command)? {
         finish(host_service::call(command)?);
         return Ok(());
     }
@@ -324,13 +314,14 @@ pub fn main() -> anyhow::Result<()> {
         Command::Fork(args) => finish(host_service::call(host::JobCommand::Fork(args))?),
         Command::Apply(args) => finish(host_service::call(host::JobCommand::Apply(args))?),
         Command::Drop(args) => finish(host_service::call(host::JobCommand::Drop(args))?),
-        Command::Status(args) => finish(host_service::call(host::JobCommand::Status(args))?),
+        Command::Status(args) => finish(host_service::call(host::JobCommand::Status(args.args))?),
         Command::Review(args) => finish(host_service::call(host::JobCommand::Review(args))?),
         Command::Checkpoint(args) => {
             finish(host_service::call(host::JobCommand::Checkpoint(args))?)
         }
-        Command::Suspend(args) => finish(host_service::call(host::JobCommand::Suspend(args))?),
+        Command::Suspend(args) => finish(host_service::call(host::JobCommand::Suspend(args.args))?),
         Command::Resume(resume) => {
+            let resume = resume.args;
             if resume.tui && !terminal::is_child() {
                 anyhow::ensure!(
                     terminal::available(),

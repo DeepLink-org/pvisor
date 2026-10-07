@@ -31,7 +31,7 @@ Acceptance criteria:
 
 ## Single-node daemon {#daemon}
 
-The [daemon](../guides/daemon/index.md) has VM-only `NativeRuntime` embedding pVisor in detached supervisors for the partial OpenSandbox 1.1.0 profile. The daemon executable and required native flags are integrated. Stage/apply and checkpoint/fork APIs are not implemented; node/cache sharing is not automatically acquired. The optional pool is owned by the daemon and explicitly enabled with `serve --memory-pool`; removing the CLI node supervisor does not migrate node protocols. Bootstrap/images are not supplied or end-to-end validated; there is no SDK-conformance or density evidence. Controller/Worker and the Cluster task SDK are retired.
+The [daemon](../guides/daemon/index.md) has VM-only `NativeRuntime` embedding pVisor in detached supervisors for the partial OpenSandbox 1.1.0 profile. The daemon executable and required native flags are integrated. Stage/apply and checkpoint/fork APIs are not implemented; node/cache sharing is not automatically acquired. The optional pool is owned by the daemon and explicitly enabled with `serve --memory-pool`. Bootstrap/images are not supplied or end-to-end validated; there is no SDK-conformance or density evidence. Controller/Worker and the Cluster task SDK are retired.
 
 ## L2 and L3 milestones
 

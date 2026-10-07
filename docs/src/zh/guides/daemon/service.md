@@ -11,7 +11,7 @@ pvisor-daemon protocol
 pvisor-daemon serve --help
 ```
 
-`OPEN_SANDBOX_API_KEY` 配置生命周期认证。监听地址、public endpoint、持久状态和准入预算是 daemon 选项。Daemon 不读取原生 `RunConfig`、`RunSpec` 或已移除的 service 角色 TOML。Daemon 状态与原生 Job 和缓存存储分开保存。
+`OPEN_SANDBOX_API_KEY` 配置生命周期认证。监听地址、public endpoint、持久状态和准入预算是 daemon 选项。Daemon 不读取原生 `RunConfig` 或 `RunSpec`。Daemon 状态与原生 Job 和缓存存储分开保存。
 
 VM-only supervisor 跨 API 重启保留 RunHandle。Pause/resume 使用同一 Attempt 上已确认的 live vCPU 控制，不是 cgroup freeze 或快照。为 `serve` 添加 `--memory-pool`，启用默认关闭的 daemon 自有池。Daemon 在私有状态目录下启动或复用独立的 `pvisor-daemon memory-pool --directory DIR` 组件；组件需要已持久化的池配置。见[池启用与预算](index.md#memory-pool)。
 
@@ -24,7 +24,7 @@ pvisor-daemon memory-pool --help
 
 `pvisor-cache prepare/publish/serve/list/stat/read` 保持为独立命令，不是 daemon 子命令。发布、后端、认证和访问见[共享镜像缓存参考](../../reference/shared-image-cache.md)。
 
-旧 CLI service supervisor、node/pool 角色和独立池二进制已移除。Node 运行时仍拥有不可变环境挂载与 snapshot RAM，保留授权 store、兼容性检查和连接 pin。这些协议未迁入 daemon：没有自动 node acquire/release 适配器、RAM restore 或 template API。嵌入式原生调用方仍须显式管理所有权；先停使用方，再停 backing owner。
+Node 运行时拥有不可变环境挂载与 snapshot RAM，保留授权 store、兼容性检查和连接 pin。Daemon 没有自动 node acquire/release 适配器、RAM restore 或 template API。嵌入式原生调用方仍须显式管理所有权；先停使用方，再停 backing owner。
 
 ## 宿主监督与外部访问 {#supervision}
 

@@ -55,29 +55,42 @@ impl JobCommand {
 }
 
 #[derive(Debug, Default, Args)]
+#[command(next_help_heading = "Live VM")]
 pub(super) struct VmOptions {
     /// Host-only live VM endpoint (requires explicit Job and Attempt identities).
-    #[arg(long, global = true, requires_all = ["vm_job_id", "vm_attempt_id"])]
+    #[arg(long, requires_all = ["vm_job_id", "vm_attempt_id"])]
     pub vm_socket: Option<PathBuf>,
-    #[arg(long, global = true, requires = "vm_socket")]
+    /// Explicit Job identity served by the live VM endpoint.
+    #[arg(long, requires = "vm_socket")]
     pub vm_job_id: Option<String>,
-    #[arg(long, global = true, requires = "vm_socket")]
+    /// Explicit live Attempt identity; never inferred from the Job.
+    #[arg(long, requires = "vm_socket")]
     pub vm_attempt_id: Option<String>,
+}
+
+#[derive(Debug, Default, Args)]
+#[command(next_help_heading = "Live VM")]
+pub(super) struct SuspendVmOptions {
+    #[command(flatten)]
+    pub identity: VmOptions,
     /// Pause vCPUs rather than creating an execution checkpoint (suspend only).
-    #[arg(
-        long,
-        global = true,
-        requires = "vm_socket",
-        conflicts_with = "vm_offload"
-    )]
+    #[arg(long, requires = "vm_socket", conflicts_with = "vm_offload")]
     pub vm_pause: bool,
     /// Quiesce and offload live VM RAM (suspend only).
-    #[arg(long, global = true, requires = "vm_socket")]
+    #[arg(long, requires = "vm_socket")]
     pub vm_offload: bool,
-    #[arg(long, global = true, requires = "vm_offload")]
+    /// Write offloaded RAM to this host file (requires --vm-offload).
+    #[arg(long, requires = "vm_offload")]
     pub vm_ram_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Default, Args)]
+#[command(next_help_heading = "Live VM")]
+pub(super) struct ResumeVmOptions {
+    #[command(flatten)]
+    pub identity: VmOptions,
     /// Reload/unpause the same live Attempt, not snapshot restoration (resume only).
-    #[arg(long, global = true, requires = "vm_socket")]
+    #[arg(long, requires = "vm_socket")]
     pub vm_load: bool,
 }
 
@@ -91,39 +104,22 @@ pub(crate) struct VmRequest {
 }
 
 impl VmOptions {
-    pub fn request(self, command: &super::Command) -> anyhow::Result<Option<JobCommand>> {
-        let Some(socket) = self.vm_socket else {
+    fn request(
+        &self,
+        command: HostVmCommand,
+        selector: Option<&Path>,
+    ) -> anyhow::Result<Option<JobCommand>> {
+        let Some(socket) = &self.vm_socket else {
             return Ok(None);
-        };
-        let vm_command = match command {
-            super::Command::Status(_) if !self.vm_pause && !self.vm_offload && !self.vm_load => {
-                HostVmCommand::Status
-            }
-            super::Command::Suspend(_) if self.vm_pause && !self.vm_load => HostVmCommand::Pause,
-            super::Command::Suspend(_) if self.vm_offload && !self.vm_load => {
-                HostVmCommand::Offload {
-                    file: self.vm_ram_file,
-                }
-            }
-            super::Command::Resume(_) if self.vm_load && !self.vm_pause && !self.vm_offload => {
-                HostVmCommand::Resume
-            }
-            _ => anyhow::bail!(
-                "VM options require status, suspend --vm-pause/--vm-offload, or resume --vm-load"
-            ),
         };
         let job_id = self
             .vm_job_id
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("--vm-job-id is required"))?;
         let attempt_id = self
             .vm_attempt_id
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("--vm-attempt-id is required"))?;
-        let selector = match command {
-            super::Command::Status(args) => args.selector.as_deref(),
-            super::Command::Suspend(args) => Some(args.job_selector()),
-            super::Command::Resume(args) => Some(args.job_selector()),
-            _ => None,
-        };
         anyhow::ensure!(
             selector.is_none_or(|selector| selector == std::path::Path::new(&job_id)),
             "live VM command selector must match the explicit --vm-job-id"
@@ -133,11 +129,46 @@ impl VmOptions {
             "VM identities must not be empty"
         );
         Ok(Some(JobCommand::Vm(VmRequest {
-            socket,
-            job_id,
-            attempt_id,
-            command: vm_command,
+            socket: socket.clone(),
+            job_id: job_id.clone(),
+            attempt_id: attempt_id.clone(),
+            command,
         })))
+    }
+}
+
+pub(super) fn vm_request(command: &super::Command) -> anyhow::Result<Option<JobCommand>> {
+    match command {
+        super::Command::Status(args) => args
+            .vm
+            .request(HostVmCommand::Status, args.args.selector.as_deref()),
+        super::Command::Suspend(args) => {
+            if args.vm.identity.vm_socket.is_none() {
+                return Ok(None);
+            }
+            let command = if args.vm.vm_pause {
+                HostVmCommand::Pause
+            } else if args.vm.vm_offload {
+                HostVmCommand::Offload {
+                    file: args.vm.vm_ram_file.clone(),
+                }
+            } else {
+                anyhow::bail!("live VM suspend requires --vm-pause or --vm-offload");
+            };
+            args.vm
+                .identity
+                .request(command, Some(args.args.job_selector()))
+        }
+        super::Command::Resume(args) => {
+            if args.vm.identity.vm_socket.is_none() {
+                return Ok(None);
+            }
+            anyhow::ensure!(args.vm.vm_load, "live VM resume requires --vm-load");
+            args.vm
+                .identity
+                .request(HostVmCommand::Resume, Some(args.args.job_selector()))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -309,7 +340,7 @@ pub(crate) fn execute(rt: &tokio::runtime::Runtime, command: JobCommand) -> anyh
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn nested_run_args_roundtrip_as_typed_data() {
@@ -378,7 +409,283 @@ mod tests {
         let super::super::Command::Status(args) = parsed.command else {
             panic!("expected status");
         };
-        assert!(!JobCommand::Status(args).inherits_terminal_input().unwrap());
+        assert!(
+            !JobCommand::Status(args.args)
+                .inherits_terminal_input()
+                .unwrap()
+        );
+    }
+
+    fn parse_vm(command: &str, selector: Option<&str>, options: &[&str]) -> super::super::Cli {
+        let mut args = vec!["pvisor", command];
+        args.extend(selector);
+        args.extend([
+            "--vm-socket",
+            "/private/control.sock",
+            "--vm-job-id",
+            "job-one",
+            "--vm-attempt-id",
+            "attempt-one",
+        ]);
+        args.extend_from_slice(options);
+        super::super::Cli::try_parse_from(args).unwrap()
+    }
+
+    #[test]
+    fn vm_flags_are_rejected_outside_their_command() {
+        let vm_flags = [
+            ("--vm-socket", Some("/private/control.sock")),
+            ("--vm-job-id", Some("job-one")),
+            ("--vm-attempt-id", Some("attempt-one")),
+            ("--vm-pause", None),
+            ("--vm-offload", None),
+            ("--vm-ram-file", Some("/private/ram")),
+            ("--vm-load", None),
+        ];
+        for (flag, value) in vm_flags {
+            for command in [
+                "run",
+                "kill",
+                "inspect",
+                "apply",
+                "drop",
+                "review",
+                "fork",
+                "checkpoint",
+                "feature",
+            ] {
+                let mut args = vec!["pvisor", command, flag];
+                args.extend(value);
+                let error = super::super::Cli::try_parse_from(args).unwrap_err();
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::UnknownArgument,
+                    "{command} {flag}"
+                );
+            }
+            let mut args = vec!["pvisor", flag];
+            args.extend(value);
+            args.push("status");
+            assert!(
+                super::super::Cli::try_parse_from(args.clone()).is_err(),
+                "{flag}"
+            );
+            let mut command = super::super::Cli::command();
+            command.build();
+            let args = super::super::normalize_default_run(
+                args.into_iter().map(Into::into).collect(),
+                &command,
+            );
+            assert!(
+                super::super::Cli::try_parse_from(args).is_err(),
+                "normalized {flag}"
+            );
+        }
+        for (command, flags) in [
+            (
+                "status",
+                vec!["--vm-pause", "--vm-offload", "--vm-ram-file", "--vm-load"],
+            ),
+            ("suspend", vec!["--vm-load"]),
+            (
+                "resume",
+                vec!["--vm-pause", "--vm-offload", "--vm-ram-file"],
+            ),
+        ] {
+            for flag in flags {
+                let error = super::super::Cli::try_parse_from(["pvisor", command, "job-one", flag])
+                    .unwrap_err();
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::UnknownArgument,
+                    "{command} {flag}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn vm_dependencies_and_selector_fences_are_preserved() {
+        for (command, options) in [
+            ("status", vec![]),
+            ("suspend", vec!["--vm-pause"]),
+            ("suspend", vec!["--vm-offload"]),
+            ("resume", vec!["--vm-load"]),
+        ] {
+            for missing in ["--vm-socket", "--vm-job-id", "--vm-attempt-id"] {
+                let mut args = vec!["pvisor", command, "job-one"];
+                for (flag, value) in [
+                    ("--vm-socket", "/private/control.sock"),
+                    ("--vm-job-id", "job-one"),
+                    ("--vm-attempt-id", "attempt-one"),
+                ] {
+                    if flag != missing {
+                        args.extend([flag, value]);
+                    }
+                }
+                args.extend_from_slice(&options);
+                assert!(
+                    super::super::Cli::try_parse_from(args).is_err(),
+                    "{command} missing {missing}"
+                );
+            }
+            let parsed = parse_vm(command, Some("another-job"), &options);
+            assert!(
+                vm_request(&parsed.command)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("selector must match")
+            );
+            let parsed = parse_vm(command, Some("job-one"), &options);
+            let mut request = vm_request(&parsed.command).unwrap().unwrap();
+            let target = request.pin_target().unwrap().unwrap();
+            assert_eq!(target.job_id, "job-one");
+            assert_eq!(target.attempt_id.as_deref(), Some("attempt-one"));
+            request
+                .validate_target(Some(&target), Path::new("/"))
+                .unwrap();
+            assert!(request.validate_target(None, Path::new("/")).is_err());
+            let mut wrong = target.clone();
+            wrong.attempt_id = Some("another-attempt".into());
+            assert!(
+                request
+                    .validate_target(Some(&wrong), Path::new("/"))
+                    .is_err()
+            );
+        }
+        for identity in ["--vm-job-id", "--vm-attempt-id"] {
+            let mut args = vec!["pvisor", "status", "--vm-socket", "/private/control.sock"];
+            for (flag, value) in [
+                ("--vm-job-id", "job-one"),
+                ("--vm-attempt-id", "attempt-one"),
+            ] {
+                args.extend([flag, if flag == identity { "   " } else { value }]);
+            }
+            let parsed = super::super::Cli::try_parse_from(args).unwrap();
+            assert!(
+                vm_request(&parsed.command)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("must not be empty")
+            );
+        }
+        for (command, options) in [("suspend", vec![]), ("resume", vec![])] {
+            let parsed = parse_vm(command, Some("job-one"), &options);
+            assert!(vm_request(&parsed.command).is_err());
+        }
+        for options in [
+            vec!["--vm-pause", "--vm-offload"],
+            vec!["--vm-ram-file", "/private/ram"],
+        ] {
+            let mut args = vec![
+                "pvisor",
+                "suspend",
+                "job-one",
+                "--vm-socket",
+                "/private/control.sock",
+                "--vm-job-id",
+                "job-one",
+                "--vm-attempt-id",
+                "attempt-one",
+            ];
+            args.extend(options);
+            assert!(super::super::Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
+    fn vm_help_is_local_documented_and_non_global() {
+        use clap::CommandFactory;
+        let mut root = super::super::Cli::command();
+        root.build();
+        assert!(!root.render_long_help().to_string().contains("--vm-"));
+        for command in ["status", "suspend", "resume"] {
+            let subcommand = root.find_subcommand_mut(command).unwrap();
+            let help = subcommand.render_long_help().to_string();
+            assert!(help.contains("Live VM:"), "{help}");
+            for arg in subcommand
+                .get_arguments()
+                .filter(|arg| arg.get_id().as_str().starts_with("vm_"))
+            {
+                assert!(!arg.is_global_set(), "{command}: {}", arg.get_id());
+                assert!(arg.get_help().is_some(), "{command}: {}", arg.get_id());
+                assert_eq!(arg.get_help_heading(), Some("Live VM"));
+            }
+            for flag in ["--vm-socket", "--vm-job-id", "--vm-attempt-id"] {
+                assert!(help.contains(flag), "{help}");
+            }
+            for flag in ["--vm-pause", "--vm-offload", "--vm-ram-file"] {
+                assert_eq!(help.contains(flag), command == "suspend", "{help}");
+            }
+            assert_eq!(help.contains("--vm-load"), command == "resume", "{help}");
+        }
+        for command in [
+            "run",
+            "kill",
+            "inspect",
+            "apply",
+            "drop",
+            "review",
+            "fork",
+            "checkpoint",
+            "feature",
+        ] {
+            let help = root
+                .find_subcommand_mut(command)
+                .unwrap()
+                .render_long_help()
+                .to_string();
+            for flag in [
+                "--vm-socket",
+                "--vm-job-id",
+                "--vm-attempt-id",
+                "--vm-pause",
+                "--vm-offload",
+                "--vm-ram-file",
+                "--vm-load",
+            ] {
+                assert!(!help.contains(flag), "{command}: {flag}");
+            }
+        }
+    }
+
+    #[test]
+    fn vm_wrappers_leave_host_dtos_unchanged() {
+        let parsed = parse_vm("status", None, &[]);
+        assert!(matches!(
+            vm_request(&parsed.command).unwrap(),
+            Some(JobCommand::Vm(_))
+        ));
+        let super::super::Command::Status(args) = parsed.command else {
+            unreachable!()
+        };
+        let value = serde_json::to_value(JobCommand::Status(args.args)).unwrap();
+        assert!(!value.to_string().contains("vm_"));
+        let _: JobCommand = serde_json::from_value(value).unwrap();
+        let parsed = parse_vm(
+            "suspend",
+            Some("job-one"),
+            &["--vm-offload", "--vm-ram-file", "/private/ram"],
+        );
+        let JobCommand::Vm(request) = vm_request(&parsed.command).unwrap().unwrap() else {
+            unreachable!()
+        };
+        assert!(
+            matches!(request.command, HostVmCommand::Offload { file: Some(ref file) } if file == Path::new("/private/ram"))
+        );
+        let super::super::Command::Suspend(args) = parsed.command else {
+            unreachable!()
+        };
+        let value = serde_json::to_value(JobCommand::Suspend(args.args)).unwrap();
+        assert!(!value.to_string().contains("vm_"));
+        let _: JobCommand = serde_json::from_value(value).unwrap();
+        let parsed = parse_vm("resume", Some("job-one"), &["--vm-load"]);
+        let super::super::Command::Resume(args) = parsed.command else {
+            unreachable!()
+        };
+        let value = serde_json::to_value(JobCommand::Resume(args.args)).unwrap();
+        assert!(!value.to_string().contains("vm_"));
+        let _: JobCommand = serde_json::from_value(value).unwrap();
     }
 
     #[test]
@@ -404,8 +711,7 @@ mod tests {
                 args.push(option);
             }
             let parsed = super::super::Cli::try_parse_from(args).unwrap();
-            let JobCommand::Vm(request) = parsed.vm.request(&parsed.command).unwrap().unwrap()
-            else {
+            let JobCommand::Vm(request) = vm_request(&parsed.command).unwrap().unwrap() else {
                 panic!("expected VM control");
             };
             assert_eq!(format!("{:?}", request.command), action);

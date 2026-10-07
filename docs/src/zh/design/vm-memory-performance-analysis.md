@@ -1,6 +1,6 @@
 # VM 内存性能：技术记录
 
-> CLI 更新：独立 `pvisor snapshot`、service 层和独立池启动器已删除。当前池所有权使用 `pvisor-daemon serve --memory-pool`；其 Linux 物理共享协议与记录中的 macOS 压缩池分开。以下旧接口/测量属于记录中的历史制品，不是当前可执行指南；当前入口与能力范围见[CLI 参考](../reference/cli.md)。
+> CLI 更新：独立 `pvisor snapshot` 入口已删除。当前池所有权使用 `pvisor-daemon serve --memory-pool`；其 Linux 物理共享协议与记录中的 macOS 压缩池分开。以下旧接口/测量属于记录中的历史制品，不是当前可执行指南；当前入口与能力范围见[CLI 参考](../reference/cli.md)。
 
 
 [主要结论](#conclusions) · [Motivation](#motivation) · [实验设计](#experiment-design) · [实验数据](#experiment-data) · [分析与使用建议](#analysis) · [机制概念验证](memory-optimization/proof-of-concept.md)
@@ -452,9 +452,9 @@ RAM 代理回答“冷 guest RAM 是否已回收”；footprint 回答 macOS 对
 
 ### macOS/HVF：记录版本的启用边界 {#usage}
 
-测量的 macOS 版本使用显式共享 socket 和操作方管理的压缩池。其独立启动器已从当前分发中移除。保留下方固定二进制身份及复现记录；不要换成 daemon 池后将这些测量归于它。
+测量的 macOS 版本使用显式共享 socket 和操作方管理的压缩池。保留下方固定二进制身份及复现记录；不要换成 daemon 池后将这些测量归于它。
 
-当前池通过 `pvisor-daemon serve --memory-pool` 启用，使用独立 `memory-pool --directory DIR` 组件及 daemon 准备的配置。开启与预算见 [daemon 池](../guides/daemon/index.md#memory-pool)。Linux 物理共享协议不证明 macOS 压缩池路径已迁移。
+当前池通过 `pvisor-daemon serve --memory-pool` 启用，使用独立 `memory-pool --directory DIR` 组件及 daemon 准备的配置。开启与预算见 [daemon 池](../guides/daemon/index.md#memory-pool)。Linux 物理共享协议与记录中的 macOS 压缩池路径分开。
 
 记录版本省略 `--vm-memory-pool` 时关闭实验路径。池丢失使依赖 VM 失败，不支持服务重启恢复。其默认 16 MiB 编码 payload 预算不包含全部物理内存；降低预算会增加容量拒绝。这些是历史限制，不是 daemon 默认值。
 

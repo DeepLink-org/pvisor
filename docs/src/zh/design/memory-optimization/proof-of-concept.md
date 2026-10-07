@@ -21,7 +21,7 @@
 
 收益取决于三个条件：内容是否重复、是否可压缩，以及冷窗口是否足够长。每次观察会改变 guest 访问权限，每次恢复都要付出传输、校验和重映射成本。写密集或频繁扫描整个工作集的负载可能很快抵消冷态收益。内存与执行延迟必须一起衡量。
 
-2026-10-03 工作树记录的 macOS / Apple Silicon 实验实现默认关闭。首版使用前台池及显式 CLI/SDK 接入；其独立启动器现已移除。当时未完成池重启恢复或完整物理内存收益验收。旧的逐轮设计记录保留在仓库 `docs/macos-memory-sharing.md`，原始证据保留在 `review_project/06-evidence/macos-memory/`；这些机制记录与实验数字只对应各数据集记录中的执行版本。
+2026-10-03 工作树记录的 macOS / Apple Silicon 实验实现默认关闭。首版使用前台池及显式 CLI/SDK 接入。当时未完成池重启恢复或完整物理内存收益验收。旧的逐轮设计记录保留在仓库 `docs/macos-memory-sharing.md`，原始证据保留在 `review_project/06-evidence/macos-memory/`；这些机制记录与实验数字只对应各数据集记录中的执行版本。
 
 ## 2. 核心设计 {#core-design}
 
@@ -259,7 +259,7 @@ RAM＋pool 代理为两 runner 的 `resident_bytes + pending_file_bytes` 之和�
 
 记录中的首版收敛为显式启用的 macOS / Apple Silicon 实验 v1：不可变共享压缩池、宿主冷块观察、两阶段发布、私有页恢复。CLI 的 `--vm-memory-pool SOCKET` 会选择 VM executor；TOML 对应 `[vm].memory_pool`，Rust SDK 对应 `VmSettings.memory_pool`。省略它时默认关闭；旧实验环境变量仅作兼容入口。此内存路径不依赖 guest zram 或 macFUSE RAM adapter。
 
-当前服务所有权归 `pvisor-daemon`：通过 `serve --memory-pool` 启用池；它使用已持久化的私有配置启动或复用独立 `memory-pool --directory DIR` 组件。旧 positional-socket 启动器已移除。当前 Linux 物理共享池使用不同协议，不是已迁移的 macOS 压缩池结果。见 [daemon 池启用](../../guides/daemon/index.md#memory-pool)。
+当前服务所有权归 `pvisor-daemon`：通过 `serve --memory-pool` 启用池；它使用已持久化的私有配置启动或复用独立 `memory-pool --directory DIR` 组件。当前 Linux 物理共享池使用独立协议；记录中的 macOS 压缩池测量不验证该协议。见 [daemon 池启用](../../guides/daemon/index.md#memory-pool)。
 
 ```bash
 pvisor-daemon serve --help

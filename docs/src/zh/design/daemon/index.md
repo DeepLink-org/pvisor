@@ -20,7 +20,7 @@
 | 原生 supervisor | 嵌入 pVisor/VM、RunHandle、已确认 vCPU 控制、cgroup 身份、vsock bridge | Stage/apply/checkpoint API 或自动 node 共享 |
 | 预制镜像 | 监督 argv，初始化并鉴权 execd/egress | 替代生命周期 API 授权 |
 | 原生 pVisor | Supervisor 嵌入 VM 执行；公开 Job 工作流仍独立 | 自动暴露 stage/checkpoint API |
-| 原生 node 运行时 | 独立不可变 backing 协议；CLI node supervisor 已移除 | 自动 daemon 获取／共享 |
+| 原生 node 运行时 | 独立不可变 backing 协议 | 自动 daemon 获取／共享 |
 | Daemon 池组件 | `serve --memory-pool` 启用的可选独立池 | 池进程／宿主重启恢复；node acquire/release |
 | 独立 `pvisor-cache` | OCI prepare/publish/serve/list/stat/read | Daemon 生命周期所有权 |
 

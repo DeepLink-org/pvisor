@@ -1,6 +1,6 @@
 # VM memory performance: technical evidence
 
-> CLI update: the standalone `pvisor snapshot` entry, service layer and standalone pool launcher are removed. Current pool ownership uses `pvisor-daemon serve --memory-pool`; its Linux physical-sharing protocol is separate from the recorded macOS compressed pool. Old interfaces/measurements below belong to their historical artifacts, not current executable instructions. See [CLI reference](../reference/cli.md) for current entries and capability boundaries.
+> CLI update: the standalone `pvisor snapshot` entry is removed. Current pool ownership uses `pvisor-daemon serve --memory-pool`; its Linux physical-sharing protocol is separate from the recorded macOS compressed pool. Old interfaces/measurements below belong to their historical artifacts, not current executable instructions. See [CLI reference](../reference/cli.md) for current entries and capability boundaries.
 
 
 [Main conclusions](#conclusions) · [Motivation](#motivation) · [Experiment design](#experiment-design) · [Experimental data](#experiment-data) · [Analysis and usage guidance](#analysis) · [Mechanism proof of concept](memory-optimization/proof-of-concept.md)
@@ -466,9 +466,9 @@ Explicit RAM files do not inherently compress or share memory. FUSE-compressed R
 
 ### macOS/HVF: recorded opt-in boundary {#usage}
 
-The measured macOS version used an explicit shared socket and an operator-managed compressed pool. Its standalone launcher is removed from the current distribution. Retain the frozen executable identities and reproduction records below; do not substitute the daemon pool and attribute these measurements to it.
+The measured macOS version used an explicit shared socket and an operator-managed compressed pool. Retain the frozen executable identities and reproduction records below; do not substitute the daemon pool and attribute these measurements to it.
 
-Current pool activation uses `pvisor-daemon serve --memory-pool`, with a detached `memory-pool --directory DIR` component and daemon-provisioned configuration. See [daemon pool activation and budgets](../guides/daemon/index.md#memory-pool). The Linux physical-sharing protocol does not establish migration of the macOS compressed-pool path.
+Current pool activation uses `pvisor-daemon serve --memory-pool`, with a detached `memory-pool --directory DIR` component and daemon-provisioned configuration. See [daemon pool activation and budgets](../guides/daemon/index.md#memory-pool). The Linux physical-sharing protocol is separate from the recorded macOS compressed-pool path.
 
 In the recorded version, omitting `--vm-memory-pool` disabled the experimental path. Pool loss failed dependent VMs, and service-restart recovery was unsupported. Its default 16 MiB encoded-payload budget excluded some physical memory; reducing that budget increased capacity rejections. These are historical limits, not daemon defaults.
 

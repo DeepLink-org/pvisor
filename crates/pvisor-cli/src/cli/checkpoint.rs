@@ -55,6 +55,22 @@ pub(crate) struct CheckpointArgs {
     command: CheckpointCommand,
 }
 
+#[derive(Debug, Args)]
+pub(super) struct SuspendCommandArgs {
+    #[command(flatten)]
+    pub args: SuspendArgs,
+    #[command(flatten)]
+    pub vm: super::host::SuspendVmOptions,
+}
+
+#[derive(Debug, Args)]
+pub(super) struct ResumeCommandArgs {
+    #[command(flatten)]
+    pub args: ResumeArgs,
+    #[command(flatten)]
+    pub vm: super::host::ResumeVmOptions,
+}
+
 #[derive(Debug, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SuspendArgs {

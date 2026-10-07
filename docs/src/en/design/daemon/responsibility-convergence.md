@@ -8,12 +8,12 @@ Reduce duplicated management by giving each local resource a clear owner, not by
 | --- | --- | --- |
 | Sandbox admission, intentions, expiration, endpoints | `pvisor-daemon` | Implemented by VM-only NativeRuntime with integrated executable/CLI |
 | Job/Attempt lifecycle, staging, Gateway and native VM checkpoints | `pvisor` Session/executors | VM execution embedded in supervisors; staging/Gateway/checkpoint APIs not exposed |
-| Immutable environment mounts and shared read-only RAM backing | Native node resource service (`pvisor/src/node.rs`) | Runtime protocols retained; old CLI node supervisor removed; no daemon acquire/release adapter |
+| Immutable environment mounts and shared read-only RAM backing | Native node resource service (`pvisor/src/node.rs`) | Runtime protocols for native callers; no daemon acquire/release adapter |
 | Image preparation, publication, serving and reads | Independent `pvisor-cache` and runtime cache modules | Separate executable, data path and budgets; not absorbed by daemon |
 | Optional shared pages and session references | `pvisor-daemon/src/memory_pool.rs` | `serve --memory-pool` starts/reuses a detached `memory-pool --directory DIR` component; off by default |
 | Host selection, workflows and retry policy | External orchestration | Outside the product control plane |
 
-Node runtime protocols remain available to embedded native callers; the removed CLI node supervisor is not a daemon feature. Its identity is an image handle/digest or sealed RAM identity/compatibility, not a sandbox ID. A connection pins one owner. Same-identity preparation is single-flight; active owner/session/preparation counts and warming are bounded. A process-local registry remains available where native callers do not configure a node socket.
+Node runtime protocols are available to embedded native callers. Its identity is an image handle/digest or sealed RAM identity/compatibility, not a sandbox ID. A connection pins one owner. Same-identity preparation is single-flight; active owner/session/preparation counts and warming are bounded. A process-local registry remains available where native callers do not configure a node socket.
 
 ```mermaid
 flowchart TB
@@ -58,6 +58,6 @@ Daemon CPU/memory admission remains a separate conservative sum of supervisor/VM
 
 No live-VM takeover, shared cold-pool arbitration, automatic node acquisition or density advantage is established by consolidation. Native resource correctness evidence and legacy service experiments keep their original scope; they are not daemon acceptance results.
 
-The independent cache keeps `prepare`, `publish`, `serve`, `list`, `stat` and `read`; removing the service layer does not merge cache or node protocols into the daemon.
+The independent cache provides `prepare`, `publish`, `serve`, `list`, `stat` and `read`. Cache and node protocols have separate ownership from daemon sandbox lifecycle.
 
 Related contracts: [shared working sets](shared-working-set.md), [state and recovery](state-and-recovery.md), [native shared image storage](../shared-image-cache-storage.md) and [experimental pool](../memory-optimization/proof-of-concept.md).

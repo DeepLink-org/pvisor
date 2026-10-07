@@ -236,6 +236,14 @@ IDs/checksums are **32 integers in [0,255]**, not hex strings. Additional constr
 - Decoded length matches the block, allowing a short final block; checksums verify content.
 - The current FUSE adapter writes one compact region beginning at 0 and page_bytes=4096. This does not imply the original VM had one guest physical region.
 
+### Reader bounds and validation timing {#reader-validation}
+
+The current reader accepts v2 only, without reading v1 files. Open validates the footer at EOF, metadata/seek-table bounds and checksums, version/layout, entry ordering and uniqueness, frame indexes and ancestry. External chains are limited to 32 layers. Excess depth, cycles, missing parents, mismatched layouts or incomplete base coverage are errors, never implicit zero-fill.
+
+Each seek-table frame must have 1..66560 input bytes (64 KiB plus 1024) and 1..65536 output bytes, matching its logical block exactly; region tails may be short blocks. Only when payload is read does the reader check that input contains exactly one Zstd frame without trailing data, decode with maximum window log 16 and bounded output, then verify exact output length and SHA-256. Fill blocks also verify the decoded-content checksum. Successful open validates metadata and indexes, not every payload. Publication reuses an existing same-ID file only after validating its metadata and all payload in that layer.
+
+`[0, metadata_offset)` is the standard Zstd Seekable data region, followed by outer metadata and footer. A generic Seekable reader must be restricted to that range or use an extracted region, rather than treating the whole outer file as a standard Seekable file.
+
 ### Other files
 
 ![Raw file and sparse-page layouts](../../../zh/design/offload/assets/raw-and-staging-layout.svg)

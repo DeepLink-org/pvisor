@@ -112,7 +112,7 @@ CLI 参数与展示、Host 监听器／worker 归 `pvisor-cli`；
 VM 执行器将 Run/Attempt 生命周期适配到 `pvisor_vm::api`；VMM、平台机制、内嵌 guest
 和内核／固件接入属于 `pvisor-vm`。OCI 准备属于 `image/`，供直接加载和缓存服务共用。
 缓存存储及带认证的服务端留在运行时，缓存命令解析／展示归 `pvisor-cli/src/cli/cache.rs`。
-Bundle 和检查点与运行记录放在一起，不归某个执行后端。`pvisor-daemon/src/memory_pool.rs` 拥有池启动／复用和独立 `memory-pool` 组件；通过 `serve --memory-pool` 启用。`pvisor/src/node.rs` 与 `node/` 中的 node 协议仍是运行时设施；已移除的 CLI node supervisor 不是 daemon 适配器。`pvisor-cache` 保留独立准备、发布、服务和读取入口。
+Bundle 和检查点与运行记录放在一起，不归某个执行后端。`pvisor-daemon/src/memory_pool.rs` 拥有池启动／复用和独立 `memory-pool` 组件；通过 `serve --memory-pool` 启用。`pvisor/src/node.rs` 与 `node/` 中的 node 协议是运行时设施，没有 daemon acquire/release 适配器。`pvisor-cache` 保留独立准备、发布、服务和读取入口。
 
 既有公开运行时导入，包括 `PVisor`、`ProcessExecutor`、`cache` 以及内部 `sandbox` 入口，
 保留原有路径。显式前端／嵌入 API 导出文件访问类型、`GatewayProfile`、

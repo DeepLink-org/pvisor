@@ -73,7 +73,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 ## 核心命令与服务边界
 
-顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存使用独立 `pvisor-cache`。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。主帮助按 Jobs、Filesystems、Extensions 分组，显示已安装的可选伴随命令。
+顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存使用独立 `pvisor-cache`。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。根帮助保持简洁，按 Execution（`run`、`status`、`kill`）、Changes（`review`、`apply`、`drop`、`inspect`）、Checkpoints（`checkpoint`、`suspend`、`resume`、`fork`）和 Tools（已安装的 `replay`/`tui` 伴随程序、`feature`、`help`）分组，提供 run-review-apply 示例，并提示用 `pvisor help COMMAND` 查看详情。
 
 | 职责 | 入口 |
 |---|---|
@@ -87,7 +87,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 `status --review` 是快捷形式；`review` 是详细审查入口。`run --tui` 是主要交互路径，顶层 `tui` 用于显式前端调用。Job 操作直接使用顶层命令，没有 `job` 命令层。
 
-资源工具使用各自的可执行文件；旧 service supervisor 与 node/pool 角色 TOML 已移除。原生执行状态捕获、恢复和存储管理使用 Job 命令，能力由实际 VM profile 决定。其他未知名称按普通默认执行规则处理。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor run -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
+资源工具使用各自的可执行文件。原生执行状态捕获、恢复和存储管理使用 Job 命令，能力由实际 VM profile 决定。其他未知名称按普通默认执行规则处理。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor run -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
 
 ```bash
 pvisor-daemon serve --help
@@ -96,7 +96,7 @@ pvisor-cache --help
 pvisor-daemon memory-pool --help
 ```
 
-Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存、replay 和 TUI 仍独立于 Job 命令；replay/TUI 伴随程序查找会明确报告工具缺失。Daemon CLI 构造原生 VM 运行时并派发 supervisor，同步内部 VM 派发先于 Tokio。Node 资源协议仍保留在运行时，但旧 CLI node supervisor 未迁入 daemon。打包不暴露 staging/checkpoint API，也不自动获取 node 资源。
+Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存、replay 和 TUI 仍独立于 Job 命令；replay/TUI 伴随程序查找会明确报告工具缺失。Daemon CLI 构造原生 VM 运行时并派发 supervisor，同步内部 VM 派发先于 Tokio。Node 资源协议属于运行时，没有 daemon acquire/release 适配器。打包不暴露 staging/checkpoint API，也不自动获取 node 资源。
 
 工具来自静态表，只查可信安装目录，不搜索 PATH 或执行 discovery。安装目录与可执行文件归当前用户或 root 所有，不得 group/world 可写，拒绝符号链接。Unix `exec` 保留参数、stdio、信号和退出码；子命令自己的 `--help`/`--version` 原样转交，工具不能覆盖 Job 命令。Sandbox 部署见 [daemon 运维](daemon/operations.md)，独立原生资源预算见[职责收敛](daemon/responsibility-convergence.md)。
 
@@ -105,9 +105,14 @@ Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存�
 
 内置 Job CLI 操作以类型化请求经过按需启动的持久 Host AgentCtl listener；
 前端启动授权请求 worker，listener 不重建 shell 命令。普通持久 Job 不需
-端点参数。Live VM 寻址在 `status`、`suspend --vm-pause` / `--vm-offload`
-和 `resume --vm-load` 上使用全局 `--vm-socket`、`--vm-job-id` 与
-`--vm-attempt-id`。见 [CLI 参考](../reference/cli.md#vm-instance-control)。
+端点参数。Live VM flags 是子命令局部选项：`status` 接受 `--vm-socket`、
+`--vm-job-id`、`--vm-attempt-id`；`suspend` 接受这三个身份选项及
+`--vm-pause`、`--vm-offload`、`--vm-ram-file`；`resume` 接受三个身份选项及
+`--vm-load`。根命令前置 live VM flags，以及在其他命令上使用 live VM flags，
+均被拒绝。三个身份选项必须一起提供，suspend/resume 的 Job 位置参数必须
+与 `--vm-job-id` 相同。pause 与 offload 互斥，`--vm-ram-file` 要求 offload。
+Live resume 继续同一个 Attempt；持久 Job 的 suspend/resume 保留执行检查点
+捕获／恢复行为。见 [CLI 参考](../reference/cli.md#vm-instance-control)。
 
 嵌入调用方通过 `RunHandle` 查询状态、请求取消、创建 checkpoint 和订阅 Event。
 Attempt 生命周期由 Session 管理；Guest AgentCtl 保留工作负载协作职责，
@@ -117,6 +122,10 @@ Attempt 生命周期由 Session 管理；Guest AgentCtl 保留工作负载协作
 
 
 完整 VM 快照的 Job 接口见[Job 检查点与分叉 CLI 设计稿](job-checkpoint-cli.md)。工作区命令和原生 VM execution 保存/恢复通过 Job 命令提供；支持范围和验收见设计的第 10 节。[完整环境快照与迁移](environment-snapshot.md)说明存储 SDK 和历史证据的边界。
+
+帮助、版本和 feature 查询返回时不输出 startup 日志。执行命令仅在解析完成后、
+派发 Job 请求前打出 `process.entry` 和 `cli.parsed`。标记名称不代表已测量
+完整的进程入口或参数解析开销。
 
 ## 实现职责 {#implementation-ownership}
 

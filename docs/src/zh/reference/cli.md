@@ -6,6 +6,23 @@ Job 是 pVisor 面向用户的核心对象；`pvisor run` 创建 Job，其余扁
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guides/executors/index.md)。
 
+根帮助（`pvisor` 或 `pvisor --help`）按 **Execution**（`run`、`status`、
+`kill`）、**Changes**（`review`、`apply`、`drop`、`inspect`）、
+**Checkpoints**（`checkpoint`、`suspend`、`resume`、`fork`）和 **Tools**
+（已安装的 `replay`/`tui` 伴随程序、`feature`、`help`）分组。帮助提供简短的
+run-review-apply 示例；用 `pvisor help COMMAND` 查看详细选项。
+
+```bash
+pvisor run --safe -- claude
+pvisor review last
+pvisor apply last --path src
+pvisor help suspend
+```
+
+帮助、版本和 feature 查询不输出 startup 日志。执行命令仅在命令解析完成后
+打出 `process.entry` 和 `cli.parsed`；这些标记不测量完整的进程入口或参数
+解析开销。
+
 ## Host Job 服务 {#host-agentctl}
 
 内置 Job 命令（`run`、`status`、`kill`、`suspend`、`resume`、`fork`、
@@ -68,7 +85,7 @@ pvisor-daemon memory-pool --help
 pvisor-cache --help
 ```
 
-为 `pvisor-daemon serve` 添加 `--memory-pool`，启用默认关闭的独立池组件。`pvisor-cache prepare/publish/serve/list/stat/read` 保持独立。旧 service supervisor、node/pool 角色 TOML 和独立池二进制已移除。Node 运行时协议仍保留，没有 daemon acquire/release 适配器。NativeRuntime 嵌入 VM 执行；checkpoint/fork 与 stage/apply API 未实现。所有权、安装与部署边界见 [daemon 与缓存入口](../guides/daemon/service.md)。
+为 `pvisor-daemon serve` 添加 `--memory-pool`，启用默认关闭的独立池组件。`pvisor-cache prepare/publish/serve/list/stat/read` 保持独立。Node 运行时协议供原生调用方使用，没有 daemon acquire/release 适配器。NativeRuntime 嵌入 VM 执行；checkpoint/fork 与 stage/apply API 未实现。所有权、安装与部署边界见 [daemon 与缓存入口](../guides/daemon/service.md)。
 
 其他未知名称按默认执行规则处理。已退役的 `ctrl` 是明确例外：
 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 在 Job 准入前
@@ -646,8 +663,18 @@ pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --v
 pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
 ```
 
-全局选项 `--vm-socket PATH`、`--vm-job-id ID`
-与 `--vm-attempt-id ID` 必须一起提供，即使 live `status` 也不例外；
+七个 live VM flags 是子命令局部选项，在子命令帮助的 **Live VM** 下显示：
+
+| 命令 | 接受的 live VM flags |
+| --- | --- |
+| `status` | `--vm-socket PATH`、`--vm-job-id ID`、`--vm-attempt-id ID` |
+| `suspend` | 三个身份选项，加上 `--vm-pause`、`--vm-offload`、`--vm-ram-file PATH` |
+| `resume` | 三个身份选项，加上 `--vm-load` |
+
+将它们放在支持的子命令之后。根命令前置 live VM flags，以及在其他命令上
+使用 live VM flags，均被拒绝；`status` 不接受 live 动作选项。
+身份选项 `--vm-socket PATH`、`--vm-job-id ID` 与 `--vm-attempt-id ID`
+必须一起提供，即使 live `status` 也不例外；
 过期或不匹配身份被拒绝。`suspend` 和 `resume` 必须提供与
 `--vm-job-id` 相同的 Job 位置参数，不能用 `last` 或 stage 路径。
 仅 `status`、`suspend --vm-pause` / `--vm-offload` 和

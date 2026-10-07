@@ -15,6 +15,14 @@ use pvisor::{
 
 const DEFAULT_STORAGE: &str = ".pvisor/capture";
 
+#[derive(Debug, Args)]
+pub(super) struct StatusCommandArgs {
+    #[command(flatten)]
+    pub args: StatusArgs,
+    #[command(flatten)]
+    pub vm: super::host::VmOptions,
+}
+
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StatusArgs {

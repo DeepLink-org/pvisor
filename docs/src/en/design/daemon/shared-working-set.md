@@ -14,11 +14,11 @@ Anonymous-page scanning, cold-page compression and whole-VM offload remain separ
 
 | Component | Mechanism | Boundary |
 | --- | --- | --- |
-| `pvisor/src/node.rs`, `node/registry.rs` | Same-user, same-host immutable owners; identity-based preparation, connection pins, bounded warming | Runtime protocols retained, CLI node supervisor removed; no daemon adapter or transparent live takeover |
+| `pvisor/src/node.rs`, `node/registry.rs` | Same-user, same-host immutable owners; identity-based preparation, connection pins, bounded warming | Runtime protocols for native callers; no daemon adapter or transparent live takeover |
 | Native image cache | Validated demand reads, paged metadata and content reuse | Published FS/S3 objects have paged reads; an uncached ordinary OCI prepare can still fully prepare before returning |
 | Native Linux RAM restore | Authorized sealed identity/compatibility and shared read-only inode, private COW guest mappings | Ordinary fresh boot bypasses RAM restore; compatible native profiles remain required |
 | Snapshot lazy reader | Validate/decode blocks on fault with bounded decoded cache | First-access costs remain; legacy raw formats can require full validation |
-| Historical macOS compressed pool | Session references and private cold-page restoration | Recorded-version mechanism; standalone launcher removed; not the current Linux protocol |
+| Historical macOS compressed pool | Session references and private cold-page restoration | Recorded-version mechanism; separate from the current Linux protocol |
 | Daemon-owned Linux pool | Resident duplicate 4 KiB pages shared through bounded memfd slots and private COW mappings | Explicit `serve --memory-pool`; separate budgets and failure scope, no unique-page compression |
 | NativeRuntime daemon | Independent immutable rootfs, private VM writes | Optional daemon-owned pool; no automatic node socket acquisition, RAM restore or lazy snapshot integration |
 
@@ -44,7 +44,7 @@ Keep logical reservations, physical occupancy and reclaimable cache separate. Na
 
 Connection pins protect active immutable mounts/backing until native runners are reaped. Last release permits teardown or bounded warming. Preparation for the same identity is serialized without holding the global map lock across slow I/O. Refetchable decoded cache may be evicted; active owners or the only remaining copy of private cold RAM cannot be treated as cache.
 
-Connecting the existing native runtime to node sharing would need explicit acquire/release, cancellation, compatible input handoff, cleanup, evidence and budget contracts. Removing the CLI node supervisor does not implement that adapter or migrate node protocols into the daemon. Generic warm-template Agent restoration is not already available: source command/input/environment/policy bindings and native no-network restore constraints still apply.
+Connecting the existing native runtime to node sharing would need explicit acquire/release, cancellation, compatible input handoff, cleanup, evidence and budget contracts. The daemon has no node acquire/release adapter. Generic warm-template Agent restoration is not already available: source command/input/environment/policy bindings and native no-network restore constraints still apply.
 
 Bounded critical-page prefetch, coalescing additional identical misses and extending complete metadata/scratch accounting remain possible work. There is no daemon host-affinity policy or placement hint protocol; external orchestration owns host choice.
 

@@ -60,6 +60,12 @@ Explicit backing is created with mode 0600 and must not exist. Otherwise a tempo
 
 Publishing temporary compressed backing keeps its original layers directory. The original temporary manifest name is deleted at exit while aliases remain. Run Bundle, OverlayFS upper and OCI cache are separate resources.
 
+### Storage capture and restore contract {#storage-contract}
+
+The host storage layer's `SnapshotChain::capture` takes a `RamLayout`, optional parent chain, dirty-block set and block reader. The dirty set must include every changed block, including vCPU and device writes; the reader must observe one stable epoch throughout capture. Storage does not pause a VM itself, and omitted dirty blocks inherit old content. The parent must belong to the same directory with an identical layout; a layout change requires a new base with `parent=None`. Base and compaction captures read every block, so supplying only dirty-block content is insufficient.
+
+`SnapshotChain::restore_to` sets the destination file length, writes all RAM blocks at compact logical offsets and synchronizes the file. The caller must quiesce every destination accessor throughout restore. Failure can leave a resized or partially written destination; there is no transactional rollback. This restores RAM bytes only, without starting a VM or restoring CPU/device state. Direct storage supports multiple regions; the current FUSE adapter uses a logical file region beginning at 0, which cannot reconstruct the actual guest physical layout.
+
 ### Page staging and block reads
 
 Staging is a sparse raw file at compact logical RAM offsets. Each 64 KiB block has a `u16` validity mask for its sixteen 4 KiB pages. A first partial-page write fills untouched bytes from parent; a complete-page overwrite writes directly.
@@ -87,6 +93,23 @@ Ordinary pause stops vCPUs without closing the device gate or committing a gener
 macOS uses `msync(MS_SYNC | MS_INVALIDATE)` and `madvise(MADV_DONTNEED)`; Linux uses `MS_SYNC` plus `posix_fadvise(DONTNEED)`. Host MAP_SHARED addresses remain valid. vCPU transitions have a shared 3-second deadline; device drain has 5 seconds. Host exchange budgets are 300 seconds for offload and 10 for pause/resume.
 
 The runner acknowledgement precedes host storage completion. Callers must wait for the full outcome. Control frames use a 4-byte big-endian length plus JSON, bounded to 16 KiB. Dropping the caller future does not abandon acknowledgement consumption and desynchronize the next request.
+
+### State, events and memory reports {#control-state-and-memory}
+
+Host `RunHandle` / `RunControlHandle` pause, resume and offload operations use Core `OperationKind` and return `Value::Vm`. Successful pause/offload sets the outer `RunState` to `Suspended`; successful resume sets it to `Running`. The result's `VmState::{Running,Paused,Offloaded}` distinguishes VM control states. `Suspended` alone does not prove RAM was offloaded and is separate from durable checkpoint/suspend workflows. The lower-level interface is `pvisor_vm::api::VmControl`, implemented by `VmmHandle`, with offload returning `RamReclaim`.
+
+Control transitions are serialized and record `vm.control_requested`, followed by `vm.control_completed` or `vm.control_failed`. Failure to publish the request event prevents control execution. After successful control, Run state is updated before publishing completion. If that event write fails, the call returns `VM control completed but observation failed`; neither the completed control nor its state is rolled back. Callers must not interpret this error as proof that the VM did not execute the operation.
+
+Core `VmMemory` fields have these meanings:
+
+| Field | Meaning |
+|---|---|
+| `backing_file` | Host-selected absolute live backing path; the host replaces the runner's reported path with its own owned path |
+| `backed_bytes` | File-backed RAM range covered by reclamation, including the separate kernel region and excluding DAX/GPU shared windows |
+| `resident_before_bytes` | Pre-reclamation mincore residency sample in host-page bytes; null if unavailable |
+| `resident_after_bytes` | Equivalent sample after runner reclamation; null if unavailable |
+
+On Linux, mincore includes file page-cache residency and is not process RSS. Samples do not guarantee zero residency, and later accesses can fault pages back in; host compression also follows runner sampling.
 
 ### Publication and validation {#format-and-publication}
 
@@ -119,6 +142,18 @@ The resolved index identifies each block's last overriding entry. Dirty blocks m
 At parent depth 8, the next capture builds a complete base with null parent. Compaction reads all logical RAM, decodes old blocks and re-encodes content while the VM is paused. Its cost approaches a full save even when recent changes are small.
 
 GC retains current head and ancestry reachable from `.pvpin` roots. Old manifest records do not retain history. Unpinned old chains can be deleted after compaction. Standard offload neither pins automatically nor rebuilds a VM from a historical head.
+
+The directory owner must serialize `SnapshotChain::pin/unpin/capture/collect_unreachable`; these operations provide no interprocess locks. GC requires exclusive directory ownership and prior publication/fsync of the current head. It resolves all pin roots and ancestors before deleting anything; an invalid pin name or missing/corrupt chain stops collection. Direct capture does not implicitly delete history, and an unpinned historical ID has no durable retention promise. Pins and collection do not impose a capacity quota.
+
+### Reference designs and tradeoffs {#design-references}
+
+- [Zstd Seekable](https://github.com/facebook/zstd/blob/dev/contrib/seekable_format/zstd_seekable_compression_format.md): independent frames and a trailing seek table; incompressible blocks also use Zstd frames, without a separate RAW payload.
+- [QEMU mapped-ram](https://www.qemu.org/docs/master/devel/migration/mapped-ram.html): RAMBlock, stable logical positions and write bitmaps, without copying fixed physical disk positions.
+- [QEMU fast snapshot load](https://www.qemu.org/docs/master/devel/migration/fast-snapshot-load.html): faults and background restore must coordinate page ownership; FUSE backing does not implement that pager.
+- [Firecracker memory](https://github.com/firecracker-microvm/firecracker/blob/main/src/vmm/src/vstate/memory.rs): region layouts and the boundary requiring both vCPU and userspace writes in incremental tracking.
+- [zram](https://www.kernel.org/doc/html/latest/admin-guide/blockdev/zram.html) / [zswap](https://www.kernel.org/doc/html/latest/admin-guide/mm/zswap.html): zero/uniform omission and compressed-object organization, without copying kernel allocators.
+
+Compressed objects are packed contiguously and may cross disk pages. There is no storage-page allocation bitmap, mutable extent, hole punching or online defragmentation, and small objects do not each require an extra 4 KiB extent. PVZRAM v2 replaces the old mutable-block container; the current reader does not read v1 files.
 
 ### Exit and failures {#ownership-and-cleanup}
 

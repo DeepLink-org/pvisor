@@ -14,11 +14,11 @@
 
 | 组件 | 机制 | 边界 |
 | --- | --- | --- |
-| `pvisor/src/node.rs`、`node/registry.rs` | 同用户、同主机不可变 owner；按身份准备、连接 pin、有界 warming | 运行时协议保留，CLI node supervisor 已移除；无 daemon 适配器或透明 live 接管 |
+| `pvisor/src/node.rs`、`node/registry.rs` | 同用户、同主机不可变 owner；按身份准备、连接 pin、有界 warming | 供原生调用方使用的运行时协议；无 daemon 适配器或透明 live 接管 |
 | 原生镜像缓存 | 校验后的按需读、分页 metadata 与内容复用 | 已发布 FS/S3 对象支持分页读；普通未缓存 OCI prepare 仍可能全部准备后返回 |
 | 原生 Linux RAM 恢复 | 经授权的 sealed 身份／兼容性与共享只读 inode，guest 私有 COW 映射 | 普通新启动绕过 RAM restore；仍要求兼容原生 profile |
 | Snapshot lazy reader | 缺页时校验／解码块，decoded cache 有界 | 保留首次访问成本；旧 raw 格式可能要求完整校验 |
-| 历史 macOS 压缩池 | Session 引用与私有冷页恢复 | 记录版本的机制；独立启动器已移除；不是当前 Linux 协议 |
+| 历史 macOS 压缩池 | Session 引用与私有冷页恢复 | 记录版本的机制；与当前 Linux 协议分开 |
 | Daemon 自有 Linux 池 | 重复驻留 4 KiB 页，通过有界 memfd slot 和私有 COW 映射共享 | 显式 `serve --memory-pool`；独立预算和故障范围，不压缩唯一页 |
 | NativeRuntime daemon | 独立不可变 rootfs、VM 私有写入 | 可选 daemon 自有池；无自动 node socket 获取、RAM restore 或 lazy snapshot 集成 |
 
@@ -44,7 +44,7 @@
 
 连接 pin 保护活动不可变挂载／backing，直到原生 runner 已回收。最后释放后才能拆除或有界 warming。同身份准备串行，慢 I/O 不占用全局 map 锁。可重新获取的 decoded cache 可以驱逐，活动 owner 或私有冷 RAM 唯一剩余副本不能视为缓存。
 
-为已有原生运行时接入 node 共享需要显式 acquire/release、取消、兼容输入交接、清理、证据和预算合同。移除 CLI node supervisor 不等于完成适配器或将 node 协议迁入 daemon。通用 warm-template Agent 恢复尚不可用，来源 command/input/environment/policy 绑定与原生 no-network 恢复限制仍适用。
+为已有原生运行时接入 node 共享需要显式 acquire/release、取消、兼容输入交接、清理、证据和预算合同。Daemon 没有 node acquire/release 适配器。通用 warm-template Agent 恢复尚不可用，来源 command/input/environment/policy 绑定与原生 no-network 恢复限制仍适用。
 
 有界关键页预取、进一步合并同对象 miss、扩展完整 metadata/scratch 记账是可能后续工作。Daemon 没有主机亲和策略或 placement hint 协议，主机选择属于外部编排。
 

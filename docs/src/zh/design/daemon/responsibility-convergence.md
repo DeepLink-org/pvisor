@@ -8,12 +8,12 @@
 | --- | --- | --- |
 | Sandbox 准入、意图、过期、端点 | `pvisor-daemon` | 由 VM-only NativeRuntime 实现，已接入可执行入口／CLI |
 | Job/Attempt 生命周期、暂存、Gateway、原生 VM 检查点 | `pvisor` Session／执行器 | Supervisor 嵌入 VM 执行；不暴露 staging/Gateway/checkpoint API |
-| 不可变环境挂载与共享只读 RAM backing | 原生 node 资源服务（`pvisor/src/node.rs`） | 运行时协议保留；旧 CLI node supervisor 已移除；没有 daemon acquire/release 适配器 |
+| 不可变环境挂载与共享只读 RAM backing | 原生 node 资源服务（`pvisor/src/node.rs`） | 供原生调用方使用的运行时协议；没有 daemon acquire/release 适配器 |
 | 镜像准备、发布、服务和读取 | 独立 `pvisor-cache` 与运行时 cache 模块 | 独立程序、数据路径与预算；未并入 daemon |
 | 可选共享页与 session 引用 | `pvisor-daemon/src/memory_pool.rs` | `serve --memory-pool` 启动／复用独立 `memory-pool --directory DIR` 组件；默认关闭 |
 | 主机选择、工作流与重试策略 | 外部编排 | 不属于产品控制面 |
 
-Node 运行时协议仍供嵌入式原生调用方使用；已移除的 CLI node supervisor 不是 daemon 功能。它的身份是 image handle/digest 或 sealed RAM 身份／兼容性，不是 sandbox ID。一个连接 pin 一个 owner。同身份准备 single-flight，活动 owner/session/preparation 数量与 warming 有界。原生调用方不配置 node socket 时，仍可使用进程本地 registry。
+Node 运行时协议供嵌入式原生调用方使用。它的身份是 image handle/digest 或 sealed RAM 身份／兼容性，不是 sandbox ID。一个连接 pin 一个 owner。同身份准备 single-flight，活动 owner/session/preparation 数量与 warming 有界。原生调用方不配置 node socket 时，仍可使用进程本地 registry。
 
 ```mermaid
 flowchart TB
@@ -58,6 +58,6 @@ Daemon CPU/内存准入仍是 supervisor/VM 树硬限制的独立保守求和，
 
 职责收敛不建立 live-VM 接管、共享 cold-pool 仲裁、自动 node 获取或密度优势。原生资源正确性证据和旧 service 实验保留原范围，不是 daemon 验收结果。
 
-独立缓存保留 `prepare`、`publish`、`serve`、`list`、`stat`、`read`；移除 service 层不会把 cache 或 node 协议并入 daemon。
+独立缓存提供 `prepare`、`publish`、`serve`、`list`、`stat`、`read`。Cache 和 node 协议的所有权与 daemon sandbox 生命周期分开。
 
 相关合同：[共享工作集](shared-working-set.md)、[状态与恢复](state-and-recovery.md)、[原生共享镜像存储](../shared-image-cache-storage.md)与[实验 pool](../memory-optimization/proof-of-concept.md)。

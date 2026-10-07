@@ -21,7 +21,7 @@ The recorded macOS approach handles cold blocks on the host: observe RAM ranges 
 
 The benefit depends on content duplication, compressibility and the length of cold windows. Observation changes guest access permissions, and restoration costs transport, validation and remapping. Write-heavy workloads or repeated full-working-set scans may consume the initial savings quickly. Memory and execution latency must be evaluated together.
 
-The experimental macOS / Apple Silicon working-tree implementation recorded on 2026-10-03 was disabled by default. Its first version used a foreground pool and explicit CLI/SDK integration; that standalone launcher is now removed. Pool-restart recovery and whole-system physical-memory acceptance were incomplete. Historical iterations remain in repository file `docs/macos-memory-sharing.md`, and raw evidence in `review_project/06-evidence/macos-memory/`. These mechanism records and measurements apply only to the execution versions recorded with each dataset.
+The experimental macOS / Apple Silicon working-tree implementation recorded on 2026-10-03 was disabled by default. Its first version used a foreground pool and explicit CLI/SDK integration. Pool-restart recovery and whole-system physical-memory acceptance were incomplete. Historical iterations remain in repository file `docs/macos-memory-sharing.md`, and raw evidence in `review_project/06-evidence/macos-memory/`. These mechanism records and measurements apply only to the execution versions recorded with each dataset.
 
 ## 2. Core design {#core-design}
 
@@ -259,7 +259,7 @@ Do not use this mode's backing file as a checkpoint or combine it with FUSE RAM 
 
 The recorded first version converged on an explicitly enabled experimental macOS / Apple Silicon v1: immutable shared compression, host cold-block observation, two-phase publication and private restoration. `--vm-memory-pool SOCKET` selects the VM executor; TOML uses `[vm].memory_pool`, and Rust SDK uses `VmSettings.memory_pool`. It is disabled when omitted; the old experimental environment variable remains a compatibility entry. This memory path requires neither guest zram nor the macFUSE RAM adapter.
 
-Current service ownership belongs to `pvisor-daemon`: enable its pool with `serve --memory-pool`; it starts or reuses a detached `memory-pool --directory DIR` component using persisted private configuration. The old positional-socket launcher is removed. The current Linux physical-sharing pool is a different protocol, not a migrated macOS compressed-pool result. See [daemon pool activation](../../guides/daemon/index.md#memory-pool).
+Current service ownership belongs to `pvisor-daemon`: enable its pool with `serve --memory-pool`; it starts or reuses a detached `memory-pool --directory DIR` component using persisted private configuration. The current Linux physical-sharing pool uses a separate protocol; the recorded macOS compressed-pool measurements do not validate it. See [daemon pool activation](../../guides/daemon/index.md#memory-pool).
 
 ```bash
 pvisor-daemon serve --help

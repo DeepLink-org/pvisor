@@ -50,9 +50,8 @@ Signed endpoint expiration is unsupported and explicitly rejected.
 
 ## Runtime boundary: native VM and prepared images
 
-Invoke `pvisor-daemon` directly; the native `pvisor` application does not depend
-on this crate and has no service dispatch layer. The
-VM-only `NativeRuntime` in `runtime.rs` embeds `pvisor::PVisor` and `VmExecutor`
+Invoke `pvisor-daemon` directly. The native `pvisor` application does not depend
+on this crate. The VM-only `NativeRuntime` in `runtime.rs` embeds `pvisor::PVisor` and `VmExecutor`
 in a detached `native-supervisor` subprocess that holds the RunHandle and survives
 daemon restart. Execution starts through pVisor's `RuntimeJobService`; live
 status/pause/resume/termination dispatch through the shared in-process
@@ -286,8 +285,8 @@ with the chosen domain and protocol, and use a prepared image satisfying the
 contract above. Invoke the separately built `pvisor-daemon` executable directly.
 The independent `pvisor-cache` tool retains `prepare`, `publish`, `serve`, `list`,
 `stat` and `read`; cache lifecycle is not absorbed by the daemon. Node runtime
-protocols remain in `pvisor`, but the removed CLI node supervisor has no daemon
-replacement or automatic acquire/release adapter.
+protocols belong to `pvisor`; the daemon has no automatic acquire/release
+adapter.
 
 ## Optional daemon-owned memory pool
 
@@ -302,8 +301,7 @@ Local cold-RAM compression remains a separate userfaultfd mode.
 The daemon starts or reuses the detached
 `pvisor-daemon memory-pool --directory DIR` component with configuration-bound
 private state under `<state>/memory-pool/`. This component expects the daemon's
-persisted pool configuration; it is not a replacement positional-socket CLI.
-There is no standalone pool binary. The component survives API restart with the
+persisted pool configuration. The component survives API restart with the
 same configuration.
 Connections authenticate the host UID and receive a read-only file descriptor.
 References pin slots until explicit release after unmapping; on disconnect,

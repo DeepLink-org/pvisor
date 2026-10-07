@@ -71,7 +71,9 @@ queue/descriptor、Reader/Writer、vsock packet 和网络 TX 地址引用纳入�
 构建拒绝 offload。不包含虚拟时钟冻结或完整快照；实际回收量不作保证。
 macOS 的 vtimer offset 与 HVF WFE deadline 修正没有拆开回移植。
 **这项后续适配未编译、未运行测试，不能套用下方先前版本的验收结果。**
-接口、边界及验证状态见 [VM 控制说明](../../docs/vm-pause-resume.md)。
+以上记录保留当时适配的接口名与验收边界，不代表当前公开 API 或当前版本的运行证据。
+现行接口、控制状态及回收报告见 [VM RAM offload 实现说明](../../../../docs/src/zh/design/offload/index.md#control-state-and-memory)；
+底层公开接口以 [`pvisor_vm::api`](../../src/api.rs) 为准。下方历史验收结果仍仅覆盖当时所列版本与范围。
 
 | 改进 | 本次不引入的原因 / 后续条件 |
 |---|---|

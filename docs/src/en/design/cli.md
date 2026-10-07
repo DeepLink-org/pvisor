@@ -62,7 +62,7 @@ The public workflow is simple: start a Job, inspect evidence, then decide what t
 
 ## Core commands and service boundaries
 
-Top-level commands follow the object they operate on: flat Job/workspace operations. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI caching uses independent `pvisor-cache`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help groups commands under Jobs, Filesystems and Extensions, with installed optional companions shown.
+Top-level commands follow the object they operate on: flat Job/workspace operations. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI caching uses independent `pvisor-cache`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help stays concise, grouping commands under Execution (`run`, `status`, `kill`), Changes (`review`, `apply`, `drop`, `inspect`), Checkpoints (`checkpoint`, `suspend`, `resume`, `fork`) and Tools (installed `replay`/`tui` companions, `feature`, `help`). It includes run-review-apply examples and points to `pvisor help COMMAND` for details.
 
 | Responsibility | Entry |
 |---|---|
@@ -76,7 +76,7 @@ Top-level commands follow the object they operate on: flat Job/workspace operati
 
 `status --review` is a shortcut; `review` is the detailed review entry. `run --tui` is the primary interactive path, with top-level `tui` for explicit frontend invocation. Job operations are top-level commands, without a `job` command layer.
 
-Resource tools use their own executables; the old service supervisor and node/pool role TOML are removed. Native execution capture, restoration and storage management use Job commands, with support determined by the VM profile. Other unknown names follow ordinary default execution rules. Direct `pvisor ctrl`, `pvisor ctrl --help` and `pvisor help ctrl` explicitly reject with migration guidance instead of default-running a workload; `pvisor run -- ctrl` remains explicit workload intent, not a control API alias.
+Resource tools use their own executables. Native execution capture, restoration and storage management use Job commands, with support determined by the VM profile. Other unknown names follow ordinary default execution rules. Direct `pvisor ctrl`, `pvisor ctrl --help` and `pvisor help ctrl` explicitly reject with migration guidance instead of default-running a workload; `pvisor run -- ctrl` remains explicit workload intent, not a control API alias.
 
 ```bash
 pvisor-daemon serve --help
@@ -85,15 +85,20 @@ pvisor-cache --help
 pvisor-daemon memory-pool --help
 ```
 
-Use `pvisor-daemon` directly for sandbox lifecycle and optional pool ownership. The cache, replay and TUI remain separate from Job commands; replay/TUI companion lookup reports missing tools explicitly. The daemon CLI constructs the native VM runtime and dispatches supervisors, with synchronous internal VM dispatch before Tokio. Node resource protocols remain in the runtime, but the old CLI node supervisor has not migrated into the daemon. Packaging does not expose staging/checkpoint APIs or automatically acquire node resources.
+Use `pvisor-daemon` directly for sandbox lifecycle and optional pool ownership. The cache, replay and TUI remain separate from Job commands; replay/TUI companion lookup reports missing tools explicitly. The daemon CLI constructs the native VM runtime and dispatches supervisors, with synchronous internal VM dispatch before Tokio. Node resource protocols belong to the runtime and have no daemon acquire/release adapter. Packaging does not expose staging/checkpoint APIs or automatically acquire node resources.
 
 Tools come from a static table and only a trusted installation directory; discovery neither searches PATH nor executes companions. The directory/executables belong to the current user or root, must not be group/world writable, and reject symlinks. Unix `exec` preserves argv, stdio, signals and exit codes. Tool `--help`/`--version` arguments pass through unchanged, and tools cannot shadow Job commands. See [daemon operations](daemon/operations.md) for sandbox deployment and [responsibility convergence](daemon/responsibility-convergence.md) for separate native resource budgets.
 
 The default core build excludes Gateway. Use `--features gateway` for capture; wheel builds enable it. Without capture, OverlayNet still authorizes and forwards ordinary explicit proxy traffic. Requesting uncompiled capture or Gateway debug capabilities returns an error.
 
-Built-in Job CLI operations cross the on-demand persistent Host AgentCtl listener as typed requests; the frontend launches authorized request workers rather than reconstructing shell commands in the listener. Ordinary persisted Jobs need no endpoint arguments. Live VM addressing uses the global `--vm-socket`, `--vm-job-id` and `--vm-attempt-id` options on `status`, `suspend --vm-pause` / `--vm-offload`, and `resume --vm-load`. See the [CLI reference](../reference/cli.md#vm-instance-control).
+Built-in Job CLI operations cross the on-demand persistent Host AgentCtl listener as typed requests; the frontend launches authorized request workers rather than reconstructing shell commands in the listener. Ordinary persisted Jobs need no endpoint arguments. Live VM flags are command-local: `status` accepts `--vm-socket`, `--vm-job-id` and `--vm-attempt-id`; `suspend` accepts these identity flags plus `--vm-pause`, `--vm-offload` and `--vm-ram-file`; `resume` accepts the identity flags plus `--vm-load`. Root-prefixed live VM flags and live VM flags on other commands are rejected. All three identities are required together; suspend/resume's positional Job must match `--vm-job-id`. Pause and offload are mutually exclusive, and `--vm-ram-file` requires offload. Live resume continues the same Attempt; persisted-Job suspend/resume retain execution checkpoint capture/restoration. See the [CLI reference](../reference/cli.md#vm-instance-control).
 
 Embedded callers use `RunHandle` for status, cancellation, checkpoints and Event subscriptions. Session owns Attempt lifecycle; Guest AgentCtl retains workload cooperation duties, isolated from Host authority. See [Host and Guest AgentCtl](architecture.md#host-agentctl) for protocol compatibility, cancellation and upgrade limits. See [Core architecture](architecture.md) for execution/terminal handling and [Operation and Event](operations-events.md) for records/failures.
+
+Help, version and feature queries return without startup logs. Execution
+commands emit `process.entry` and `cli.parsed` only after parsing, before Job
+request dispatch. The marker names do not establish a measurement of complete
+process-entry or argument-parsing overhead.
 
 ## Implementation ownership {#implementation-ownership}
 

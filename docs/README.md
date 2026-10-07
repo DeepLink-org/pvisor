@@ -253,6 +253,24 @@ These requirements remain engineering or policy work. They are separate from
 publication readiness and do not authorize AI to approve semantic claims or
 make maintainer decisions.
 
+### Unadopted documentation proposals
+
+The following ideas are retained for engineering evaluation only. They are not
+publication requirements, adopted study protocols, existing issue automation,
+or evidence of completed research:
+
+- Supervision-cost research: consider a fixed-task user study with at least ten
+  participants and a preregistered protocol; a smaller internal pilot could
+  first assess feasibility. Study design and adoption remain open decisions.
+- Comparison corrections: consider a dedicated correction issue template and
+  an entry point from comparison articles; no template or workflow is claimed
+  to exist by retaining this proposal.
+- TODO tracking: consider one GitHub issue per outstanding documentation page,
+  a `docs-todo` label, page links to its owner/issue, a build-generated TODO list,
+  and coordinated page completion/issue closure. This does not adopt the old
+  proposal's navigation or search policy, and removing a TODO marker alone
+  does not establish completion.
+
 ### Verified reference and example coverage
 
 - `reference/config`: all 100 fields in the configured serde structures, including

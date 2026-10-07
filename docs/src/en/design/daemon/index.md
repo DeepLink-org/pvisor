@@ -20,7 +20,7 @@ Caller → daemon endpoint proxy → prepared service
 | Native supervisor | Embedded pVisor/VM, RunHandle, acknowledged vCPU controls, cgroup identity, vsock bridges | Stage/apply/checkpoint API or automatic node sharing |
 | Prepared image | Supervise argv, initialize and authenticate execd/egress | Replacing lifecycle API authorization |
 | Native pVisor | VM execution embedded by supervisors; public Job workflow remains separate | Automatic exposure of stage/checkpoint APIs |
-| Native node runtime | Separate immutable backing protocols; CLI node supervisor removed | Automatic daemon acquisition/sharing |
+| Native node runtime | Separate immutable backing protocols | Automatic daemon acquisition/sharing |
 | Daemon pool component | Optional detached pool enabled by `serve --memory-pool` | Pool-process/host-reboot recovery; node acquire/release |
 | Independent `pvisor-cache` | OCI prepare/publish/serve/list/stat/read | Daemon lifecycle ownership |
 

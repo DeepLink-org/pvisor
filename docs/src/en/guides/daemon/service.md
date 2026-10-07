@@ -11,7 +11,7 @@ pvisor-daemon protocol
 pvisor-daemon serve --help
 ```
 
-`OPEN_SANDBOX_API_KEY` configures lifecycle authentication. Listener, public endpoint, persistent state and admission budgets are daemon options. The daemon does not read native `RunConfig`, `RunSpec` or the removed service-role TOML. Keep daemon state separate from native Job and cache storage.
+`OPEN_SANDBOX_API_KEY` configures lifecycle authentication. Listener, public endpoint, persistent state and admission budgets are daemon options. The daemon does not read native `RunConfig` or `RunSpec`. Keep daemon state separate from native Job and cache storage.
 
 VM-only supervisors retain RunHandles across API restart. Pause/resume uses acknowledged live vCPU controls on the same Attempt, not cgroup freeze or a snapshot. Add `--memory-pool` to `serve` to enable the default-off daemon-owned pool. The daemon starts or reuses a detached `pvisor-daemon memory-pool --directory DIR` component under its private state directory; the component expects the persisted pool configuration. See [pool activation and budgets](index.md#memory-pool).
 
@@ -24,7 +24,7 @@ pvisor-daemon memory-pool --help
 
 `pvisor-cache prepare/publish/serve/list/stat/read` remain independent commands, not daemon subcommands. Use the [shared image cache reference](../../reference/shared-image-cache.md) for publication, backends, authentication and access.
 
-The old CLI service supervisor, node/pool roles and standalone pool binary are removed. The node runtime still owns immutable environment mounts and snapshot RAM, with authorized stores, compatibility checks and connection pins. These protocols have not migrated into the daemon: there is no automatic node acquire/release adapter, RAM restore or template API. Embedded native callers retain explicit ownership; stop consumers before their backing owners.
+The node runtime owns immutable environment mounts and snapshot RAM, with authorized stores, compatibility checks and connection pins. The daemon has no automatic node acquire/release adapter, RAM restore or template API. Embedded native callers retain explicit ownership; stop consumers before their backing owners.
 
 ## Supervision and external access {#supervision}
 

@@ -245,6 +245,14 @@ reader 从 EOF 回退 64 B 读 footer，再定位 index。seek table 是 skippab
 - 解码长度与块长度一致，最后块可短；每个块核对 checksum。
 - 当前 FUSE adapter 写入的 layout 是一个从 0 开始的紧凑文件 region，`page_bytes=4096`；这里的 guest_address=0 不能解释为原 VM 真实物理 region 只有一个。
 
+### 读取边界与验证时机 {#reader-validation}
+
+当前 reader 只接受 v2；不向后读取 v1。打开时验证 footer 位于 EOF、metadata/seek table 的边界和校验、版本与布局、entry 顺序/唯一性、frame 索引和继承关系。外部链最多 32 层，超过限制或出现循环、父层缺失、布局不一致、base 覆盖不完整均报错，不补零。
+
+seek table 中每个 frame 的输入必须为 1..66560 字节（64 KiB＋1024），输出长度必须为 1..65536 字节且精确匹配对应逻辑块；region 末尾允许短块。实际读取 payload 时才检查输入恰好包含一个 Zstd frame、没有尾随数据，使用最大 window log 16 的有界解码，再核对精确输出长度和 SHA-256；fill 块也核对解码内容 checksum。成功打开只证明元数据和索引已验证，不证明所有 payload 已读取验证。发布遇到同 ID 的已有文件时，会验证其元数据及全部本层 payload 后才复用。
+
+`[0, metadata_offset)` 是标准 Zstd Seekable 数据区，外层 metadata 和 footer 在其后。通用 Seekable reader 必须限制到这个区间或先提取该区间，不能直接把整个外层文件当作标准 Seekable 文件。
+
 ### 其他文件
 
 ![原始 RAM、staging、pin、逻辑文件与 alias 的实际内容](assets/raw-and-staging-layout.svg)

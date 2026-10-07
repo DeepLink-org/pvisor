@@ -14,15 +14,47 @@ runtime APIs and retain request-local cancellation, admission fences and termina
 ownership. The persistent Host Job listener is not an implicit requirement of
 embedded execution.
 
-There is no CLI service layer or standalone `pvisor-memory-pool` binary. The
-separate `pvisor-daemon` owns shared services, including the memory pool. Invoke
-`pvisor-daemon` and `pvisor-cache` directly; neither is a root command alias.
-Only replay and TUI are root companions. The retired `pvisor service` command
-is rejected, including its help forms, rather than treated as an implicit guest
-command. Explicit `pvisor -- COMMAND` execution remains available.
+The separate `pvisor-daemon` owns shared services, including the memory pool.
+Invoke `pvisor-daemon` and `pvisor-cache` directly. Replay and TUI are root
+companions. Use `pvisor -- COMMAND` for explicit workload execution.
 
 Recording callers import `Journal` and `JournalStore` from `pvisor_journal::api`;
 durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
+
+## Command help and live VM controls
+
+Root help stays concise: **Execution** (`run`, `status`, `kill`), **Changes**
+(`review`, `apply`, `drop`, `inspect`), **Checkpoints** (`checkpoint`, `suspend`,
+`resume`, `fork`) and **Tools** (installed `replay`/`tui` companions, `feature`,
+`help`). It includes the run-review-apply examples; use `pvisor help COMMAND`
+for command options.
+
+```bash
+pvisor run --safe -- claude
+pvisor review last
+pvisor apply last --path src
+```
+
+The seven live VM flags are command-local, under **Live VM** in command help:
+
+| Command | Accepted live VM flags |
+| --- | --- |
+| `status` | `--vm-socket`, `--vm-job-id`, `--vm-attempt-id` |
+| `suspend` | The three identity flags plus `--vm-pause`, `--vm-offload`, `--vm-ram-file` |
+| `resume` | The three identity flags plus `--vm-load` |
+
+Place these flags after the supported command. Root-prefixed live VM flags and
+live VM flags on other commands are rejected. All three identity flags are
+required together; suspend/resume's positional Job must match `--vm-job-id`.
+Pause and offload are mutually exclusive; `--vm-ram-file` requires offload.
+Live resume continues the same Attempt. Ordinary persisted-Job suspend/resume
+retain execution checkpoint capture/restoration. See the runtime README and
+[CLI reference](../../docs/src/en/reference/cli.md#vm-instance-control) for
+examples and endpoint/lifecycle limits.
+
+Help, version and feature queries emit no startup logs. For execution commands,
+`process.entry` and `cli.parsed` are emitted only after command parsing; these
+markers do not measure the complete process-entry or argument-parsing overhead.
 
 ## Source layout
 

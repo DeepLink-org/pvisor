@@ -60,6 +60,12 @@ VMM 以 `MAP_SHARED` 映射文件，vCPU 和 virtio 设备继续通过原有地�
 
 临时 compressed backing 发布后，原 layers 目录通过 `keep()` 转为持久保留。原临时 manifest 名称在退出时删除，alias 继续存在。Run Bundle、OverlayFS upper 和 OCI cache 不属于这组 RAM 文件。
 
+### 存储捕获与恢复合同 {#storage-contract}
+
+宿主存储层的 `SnapshotChain::capture` 接收 `RamLayout`、可选父链、dirty block 集合及块读取函数。dirty 集合必须包含所有变化块，包括 vCPU 和设备写入；读取函数必须始终观察同一个稳定 epoch。存储层不会自行暂停 VM，遗漏 dirty 块会继承旧内容。父链必须属于同一目录且布局完全一致；布局变化需要以 `parent=None` 创建新 base。base 和合并轮次读取全部块，不能只提供 dirty 块内容。
+
+`SnapshotChain::restore_to` 设置目标文件长度，按紧凑逻辑 offset 写入全部 RAM 块并同步文件。调用方必须在整个恢复期间静止所有目标访问者；失败可能留下已改长度或部分写入的目标，不提供事务回滚。它只恢复 RAM 字节，不启动 VM，也不恢复 CPU/设备状态。多 region 布局由直接存储层支持；当前 FUSE 适配器使用从 0 开始的逻辑文件 region，不能据此重建真实 Guest 物理布局。
+
 ### 页暂存与块读取
 
 staging 是稀疏原始文件，byte offset 与紧凑逻辑 RAM offset 相同。每个 64 KiB 块用一个 `u16` 标记其中 16 个 4 KiB 页是否有效。第一次部分覆盖某页时，writer 从旧 chain 补齐其余字节；完整页覆盖直接写入。
@@ -87,6 +93,23 @@ staging 是稀疏原始文件，byte offset 与紧凑逻辑 RAM offset 相同。
 macOS 使用 `msync(MS_SYNC | MS_INVALIDATE)` 和 `madvise(MADV_DONTNEED)`；Linux 使用 `MS_SYNC` 并额外请求 `posix_fadvise(DONTNEED)`。宿主 MAP_SHARED 地址仍保留。vCPU 转换共享 3 秒截止预算，设备排空为 5 秒；host offload 交换预算 300 秒，pause/resume 为 10 秒。
 
 runner ack 后 host 仍有存储工作，所以调用者应以完整 operation outcome 为完成点。控制 stream 的 frame 是 4 字节大端长度加 JSON，最大 16 KiB。调用者丢弃 future 不会让交换任务放弃读 ack，以免后续请求读到旧回复。
+
+### 状态、事件与内存报告 {#control-state-and-memory}
+
+宿主 `RunHandle` / `RunControlHandle` 的 pause、resume、offload 操作使用 Core 的 `OperationKind`，结果为 `Value::Vm`。pause/offload 成功将外层 `RunState` 设为 `Suspended`，resume 成功设为 `Running`；结果中的 `VmState::{Running,Paused,Offloaded}` 细分实际 VM 控制状态。`Suspended` 本身不证明 RAM 已 offload，也不同于持久 checkpoint/suspend 流程。底层接口为 `pvisor_vm::api::VmControl`，由 `VmmHandle` 实现，offload 返回 `RamReclaim`。
+
+控制转换串行执行，记录 `vm.control_requested`，再记录 `vm.control_completed` 或 `vm.control_failed`。请求事件发布失败时不会执行控制。控制成功后先更新 Run 状态，再发布完成事件；若此时事件写入失败，调用返回 `VM control completed but observation failed` 错误，已完成的控制和状态不回滚。调用方不能把这个错误解释成 VM 未执行操作。
+
+Core 的 `VmMemory` 字段含义如下：
+
+| 字段 | 含义 |
+|---|---|
+| `backing_file` | 宿主选定的 live backing 绝对路径；host 用自身持有的路径替换 runner 报告值 |
+| `backed_bytes` | 本次回收覆盖的 file-backed RAM 范围，包含独立 kernel 区域，排除 DAX/GPU 共享窗口 |
+| `resident_before_bytes` | 回收前按宿主页采样的 mincore 驻留字节；无法查询时为 null |
+| `resident_after_bytes` | runner 回收后的同类采样；无法查询时为 null |
+
+mincore 在 Linux 包含文件页缓存，不能等同于进程 RSS。采样没有驻留归零承诺，后续访问可以重新带入页面；host 压缩提交还发生在 runner 采样之后。
 
 ### 提交与文件校验 {#format-and-publication}
 
@@ -119,6 +142,18 @@ H3(delta) = A2，parent H2
 parent depth 达到 8 后，下一次 capture 生成完整 base，parent=null。合并需要读取全部逻辑 RAM、解压旧块并重新编码，发生在 VM 暂停的 offload 路径中。这一轮的成本接近全量保存，即使最近修改很少。
 
 GC 保留 current head 及所有 `.pvpin` 所指 head 的祖先。旧 manifest 记录不是保留根；合并后的旧链若未被 pin，可以删除。标准 offload 不自动 pin，也不提供从旧 head 重建 VM 的接口。
+
+`SnapshotChain::pin/unpin/capture/collect_unreachable` 必须由目录 owner 串行调用；这些操作没有进程间锁。GC 要求 owner 独占目录，并先发布、fsync 当前 head；删除任何文件前先解析全部 pin 根及祖先，pin 名称非法或链缺失/损坏就停止回收。直接 capture 不隐式删除历史层，未 pin 的历史 ID 没有持久保留承诺。pin 和回收也不提供容量配额。
+
+### 参考设计与取舍 {#design-references}
+
+- [Zstd Seekable](https://github.com/facebook/zstd/blob/dev/contrib/seekable_format/zstd_seekable_compression_format.md)：采用独立 frame 和尾部 seek table；不可压缩块也使用 Zstd frame，不另设 RAW payload。
+- [QEMU mapped-ram](https://www.qemu.org/docs/master/devel/migration/mapped-ram.html)：参考 RAMBlock、稳定逻辑位置和写入 bitmap，不复制固定磁盘物理位置。
+- [QEMU fast snapshot load](https://www.qemu.org/docs/master/devel/migration/fast-snapshot-load.html)：缺页和后台恢复需要协调页面归属；FUSE backing 不实现该 pager。
+- [Firecracker memory](https://github.com/firecracker-microvm/firecracker/blob/main/src/vmm/src/vstate/memory.rs)：参考 region 布局与 vCPU/用户态写入都参与增量追踪的边界。
+- [zram](https://www.kernel.org/doc/html/latest/admin-guide/blockdev/zram.html) / [zswap](https://www.kernel.org/doc/html/latest/admin-guide/mm/zswap.html)：参考零/同值省略和压缩对象组织，不复制内核分配器。
+
+压缩对象紧凑连续排列，可以跨磁盘页；没有 storage-page 分配位图、可变 extent、hole punching 或在线碎片整理，不为每个小对象额外分配 4 KiB extent。PVZRAM v2 已替换旧可变块容器，当前 reader 不读取 v1 文件。
 
 ### 退出与失败 {#ownership-and-cleanup}
 

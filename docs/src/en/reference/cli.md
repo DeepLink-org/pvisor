@@ -10,6 +10,23 @@ Full command examples for Host, OCI VM and transparent host-rootfs VM
 are in
 [Run workloads with pVisor](../guides/executors/index.md).
 
+Root help (`pvisor` or `pvisor --help`) groups commands under **Execution**
+(`run`, `status`, `kill`), **Changes** (`review`, `apply`, `drop`, `inspect`),
+**Checkpoints** (`checkpoint`, `suspend`, `resume`, `fork`) and **Tools**
+(installed `replay`/`tui` companions, `feature`, `help`). It shows a short
+run-review-apply example; use `pvisor help COMMAND` for detailed options.
+
+```bash
+pvisor run --safe -- claude
+pvisor review last
+pvisor apply last --path src
+pvisor help suspend
+```
+
+Help, version and feature queries emit no startup logs. Execution commands emit
+`process.entry` and `cli.parsed` only after command parsing. These markers do
+not measure the complete process-entry or argument-parsing overhead.
+
 ## Host Job service {#host-agentctl}
 
 Built-in Job commands (`run`, `status`, `kill`, `suspend`, `resume`, `fork`,
@@ -74,7 +91,7 @@ pvisor-daemon memory-pool --help
 pvisor-cache --help
 ```
 
-Add `--memory-pool` to `pvisor-daemon serve` to enable its default-off detached pool component. `pvisor-cache prepare/publish/serve/list/stat/read` remain independent. The old service supervisor, node/pool role TOML and standalone pool binary are removed. Node runtime protocols remain, without a daemon acquire/release adapter. NativeRuntime embeds VM execution; checkpoint/fork and stage/apply APIs are absent. See [daemon and cache entry points](../guides/daemon/service.md) for ownership, installation and deployment boundaries.
+Add `--memory-pool` to `pvisor-daemon serve` to enable its default-off detached pool component. `pvisor-cache prepare/publish/serve/list/stat/read` remain independent. Node runtime protocols serve native callers, without a daemon acquire/release adapter. NativeRuntime embeds VM execution; checkpoint/fork and stage/apply APIs are absent. See [daemon and cache entry points](../guides/daemon/service.md) for ownership, installation and deployment boundaries.
 
 Other unknown names follow default execution rules. The `ctrl` name
 is an explicit exception: `pvisor ctrl`, `pvisor ctrl --help` and
@@ -805,8 +822,19 @@ pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --v
 pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
 ```
 
-The global options `--vm-socket PATH`,
-`--vm-job-id ID` and `--vm-attempt-id ID` are required together, even for
+The seven live VM flags are command-local and appear under **Live VM** in
+command help:
+
+| Command | Accepted live VM flags |
+| --- | --- |
+| `status` | `--vm-socket PATH`, `--vm-job-id ID`, `--vm-attempt-id ID` |
+| `suspend` | The three identity flags plus `--vm-pause`, `--vm-offload`, `--vm-ram-file PATH` |
+| `resume` | The three identity flags plus `--vm-load` |
+
+Place them after the supported command. Root-prefixed live VM flags and live VM
+flags on other commands are rejected; `status` accepts no live action flags.
+The identity options `--vm-socket PATH`, `--vm-job-id ID` and
+`--vm-attempt-id ID` are required together, even for
 live `status`; stale or mismatched identities are rejected. `suspend` and
 `resume` require a positional Job selector matching `--vm-job-id`, not `last`
 or a stage path. Only `status`, `suspend --vm-pause` / `--vm-offload`, and

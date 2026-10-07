@@ -113,8 +113,8 @@ The Cargo workspace contains 13 crates. `pvisor` is the embeddable execution
 runtime and durable Job service; `pvisor-cli` is the default workspace member and
 owns four application executables: `pvisor`, `pvisor-cache`, `pvisor-tui` and
 `pvisor-replay`. The separately built `pvisor-daemon` owns its optional pool via
-`serve --memory-pool` and a detached `memory-pool` component; there is no
-standalone memory-pool binary. `pvisor-cache` remains an independent tool for
+`serve --memory-pool` and a detached `memory-pool` component.
+`pvisor-cache` is an independent tool for
 `prepare`, `publish`, `serve`, `list`, `stat` and `read`. The TUI implementation is integrated into
 `pvisor-cli`; there is no separate `pvisor-tui` crate. The runtime has no CLI or
 Clap normal dependency, and the `pvisor-replay` engine depends on shared Core and
