@@ -49,8 +49,10 @@ just test pvisor-overlayfs
 ```
 
 pVisor embeds the overlay library; it does not discover or launch an overlay
-binary. The standalone CLI is optional and intended for diagnostics or manual
-mounts:
+binary. Library consumers use `default-features = false` to exclude the diagnostic
+CLI's argument parser and logger. The `cli` feature is enabled for standalone
+builds by default; the executable requires it and is intended for diagnostics or
+manual mounts:
 
 ```bash
 cargo zigbuild -p pvisor-overlayfs --release --target x86_64-unknown-linux-musl

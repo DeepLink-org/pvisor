@@ -3,11 +3,52 @@
 import ast
 import importlib.util
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_workspace_separates_runtime_engines_and_application_entry_points():
+    workspace = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]
+    assert set(workspace["members"]) == {
+        f"crates/{name}"
+        for name in (
+            "pvisor-core",
+            "pvisor",
+            "pvisor-cli",
+            "pvisor-daemon",
+            "pvisor-shim",
+            "pvisor-replay",
+            "pvisor-vm",
+            "pvisor-guest",
+            "pvisor-overlay-core",
+            "pvisor-overlayfs",
+            "pvisor-overlaynet",
+            "pvisor-gateway",
+            "pvisor-journal",
+        )
+    }
+    assert workspace["default-members"] == ["crates/pvisor-cli"]
+    runtime = tomllib.loads((ROOT / "crates/pvisor/Cargo.toml").read_text())
+    replay = tomllib.loads((ROOT / "crates/pvisor-replay/Cargo.toml").read_text())
+    app = tomllib.loads((ROOT / "crates/pvisor-cli/Cargo.toml").read_text())
+    assert "clap" not in runtime["dependencies"]
+    assert "pvisor-cli" not in runtime["dependencies"]
+    assert not (ROOT / "crates/pvisor/src/bin").exists()
+    assert not {"pvisor", "pvisor-cli", "clap"} & replay["dependencies"].keys()
+    assert {binary["name"] for binary in app["bin"]} == {
+        "pvisor",
+        "pvisor-cache",
+        "pvisor-memory-pool",
+        "pvisor-tui",
+        "pvisor-replay",
+    }
+    overlay = tomllib.loads((ROOT / "crates/pvisor-overlayfs/Cargo.toml").read_text())
+    assert overlay["dependencies"]["clap"]["optional"]
+    assert overlay["bin"][0]["required-features"] == ["cli"]
 
 
 @pytest.fixture

@@ -221,7 +221,7 @@ jobs:
       - name: Record isolated core budget
         run: |
           cargo build --release --locked -p pvisor --lib
-                    cargo build --release --locked -p pvisor-cli --bin pvisor
+          cargo build --release --locked -p pvisor-cli --bin pvisor
           python3 scripts/ci/check_core_budget.py target/release/pvisor --max-dependencies 230 --max-workspace-lines 44423 --max-core-items 230 > target/pvisor-core-budget.json
       - uses: actions/upload-artifact@v4
         with:
