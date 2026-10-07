@@ -26,7 +26,7 @@ pub struct ImageProgress {
 }
 
 static OUTPUT: OnceLock<Option<PathBuf>> = OnceLock::new();
-pub(crate) fn init_output(path: Option<PathBuf>) {
+pub fn init_output(path: Option<PathBuf>) {
     let _ = OUTPUT.set(path);
 }
 

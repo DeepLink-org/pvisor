@@ -536,8 +536,14 @@ def test_cargo_command_selects_static_musl_on_linux(monkeypatch):
     monkeypatch.setattr(wheel_stage.sys, "platform", "linux")
     monkeypatch.setattr(wheel_stage.platform, "machine", lambda: "x86_64")
     command = wheel_stage._cargo_command(wheel_stage.BuildOptions())
-    assert {"pvisor", "pvisor-tui", "pvisor-replay"} <= set(command)
-    assert "pvisor/gateway" in command
+    assert [command[index + 1] for index, arg in enumerate(command) if arg == "-p"] == [
+        "pvisor-cli"
+    ]
+    assert [command[index + 1] for index, arg in enumerate(command) if arg == "--bin"] == list(
+        wheel_stage.NATIVE_BINARIES
+    )
+    assert "pvisor-cli/gateway" in command
+    assert "pvisor/gateway" not in command
     assert "--bins" not in command
     assert "pvisor-cluster" not in command
     assert "pvisor-worker" not in command

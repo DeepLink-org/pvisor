@@ -65,15 +65,15 @@ pub fn init_child_context() {
         std::env::remove_var(AUDIT_SOCKET);
     }
     if let Some(socket) = audit_socket {
-        crate::runtime::audit::init(socket);
+        pvisor::audit::init(socket);
     }
     let _ = CHILD_CONTEXT.set(path);
-    crate::image::cache::progress::init_output(
+    pvisor::cache::progress::init_output(
         log_path
             .as_ref()
             .map(|path| path.with_extension("image.json")),
     );
-    crate::diagnostics::init(log_path);
+    pvisor::diagnostics::init(log_path);
 }
 
 pub fn announce_stage(stage: &Path) {

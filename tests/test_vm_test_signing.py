@@ -13,7 +13,7 @@ def test_nextest_signature_selection(monkeypatch):
     spec = importlib.util.spec_from_file_location("sign_vm_tests", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    packages = ["pvisor-vm", "pvisor", "nativepvisor", "pvisor-daemon", "pvisor-core"]
+    packages = ["pvisor-vm", "pvisor", "pvisor-cli", "nativepvisor", "pvisor-daemon", "pvisor-core"]
     suites = {
         package: {"package-name": package, "binary-path": f"/tests/{package}"}
         for package in packages
@@ -39,5 +39,10 @@ def test_nextest_signature_selection(monkeypatch):
     assert [command[-1] for command in commands[1:]] == [
         "/tests/pvisor-vm",
         "/tests/pvisor",
+        "/tests/pvisor-cli",
     ]
-    assert all("--entitlements" in command for command in commands[1:])
+    assert all(
+        command[command.index("--entitlements") + 1]
+        == str(ROOT / "crates/pvisor/macos-hypervisor.entitlements")
+        for command in commands[1:]
+    )

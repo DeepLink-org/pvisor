@@ -13,8 +13,8 @@ use std::os::fd::AsRawFd;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
 
-pub(crate) const REQUIRED_SANDBOX_KEY: &str = "pvisor.sandbox.required";
-pub(crate) const LANDLOCK_SANDBOX_KEY: &str = "pvisor.sandbox.landlock";
+pub const REQUIRED_SANDBOX_KEY: &str = "pvisor.sandbox.required";
+pub const LANDLOCK_SANDBOX_KEY: &str = "pvisor.sandbox.landlock";
 pub(crate) const SANDBOX_PROXY_KEY: &str = "pvisor.sandbox.proxy";
 pub(crate) const SANDBOX_HIDDEN_PATHS_KEY: &str = "pvisor.sandbox.hidden_paths";
 pub(crate) const SANDBOX_NO_GPU_KEY: &str = "pvisor.sandbox.no_gpu";

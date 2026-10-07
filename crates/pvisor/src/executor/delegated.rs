@@ -8,9 +8,9 @@ pub(crate) const SPEC_FILENAME: &str = "run-spec.json";
 pub(crate) const RESULT_FILENAME: &str = "run-result.json";
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DelegatedRunOutput {
-    pub(crate) result: RunResult,
-    pub(crate) agentctl: crate::AgentCtlSnapshot,
+pub struct DelegatedRunOutput {
+    pub result: RunResult,
+    pub agentctl: crate::AgentCtlSnapshot,
 }
 
 pub(crate) struct DelegatedRunFiles {

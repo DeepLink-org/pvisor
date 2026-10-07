@@ -328,7 +328,7 @@ impl ReadOnlyBackend for Projection {
     }
 }
 
-pub(crate) struct DirectImage {
+pub struct DirectImage {
     attachment: BackendAttachment,
     _directory: tempfile::TempDir,
 }

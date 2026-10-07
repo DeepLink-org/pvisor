@@ -10,7 +10,7 @@ pub fn cache_main() -> anyhow::Result<()> {
     )]
     struct CacheCli {
         #[command(flatten)]
-        args: crate::image::cache::CacheArgs,
+        args: super::cache::CacheArgs,
     }
-    crate::image::cache::run(CacheCli::parse().args)
+    super::cache::run(CacheCli::parse().args)
 }

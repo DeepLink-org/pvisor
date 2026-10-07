@@ -50,14 +50,14 @@ impl RuntimeJobService {
         let _job = lock_selected_job(context, &selected)?;
         collect_fenced_workspace_transactions(context, &selected)
     }
-    pub(crate) fn create_selected_workspace_checkpoint(
+    pub fn create_selected_workspace_checkpoint(
         context: &ServiceContext<'_>,
         selected: &RunRecord,
         request_id: Option<&str>,
     ) -> anyhow::Result<(crate::LogicalCheckpoint, bool)> {
         create_fenced_workspace_request(context, selected, request_id)
     }
-    pub(crate) fn delete_selected_workspace_checkpoint(
+    pub fn delete_selected_workspace_checkpoint(
         context: &ServiceContext<'_>,
         selected: &RunRecord,
         id: &str,
@@ -65,7 +65,7 @@ impl RuntimeJobService {
         delete_workspace_checkpoint(context, selected, id)
     }
     // The mixed workspace/execution CLI operation already owns the Job lease.
-    pub(crate) fn collect_selected_workspace_transactions(
+    pub fn collect_selected_workspace_transactions(
         context: &ServiceContext<'_>,
         selected: &RunRecord,
     ) -> anyhow::Result<usize> {

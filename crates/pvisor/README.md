@@ -7,17 +7,23 @@ commands. The **p** stands for **Policy**: connect requested capabilities,
 effective runtime controls, and reviewable results.
 
 Owns one Job, its internal Run record and Attempts, capability admission,
-filesystem Effects, execution placement, and the host CLI (`pvisor`). It can
+filesystem Effects, and execution placement. It is an embeddable library, not
+an application frontend. The host CLI (`pvisor`) lives in
+[`pvisor-cli`](../pvisor-cli/README.md). The runtime can
 place Jobs on host, native OCI container, and `pvisor-vm` executors while preserving one
 Run contract.
 It is not an Agent framework, an OCI runtime, or an operating system.
 
 OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 `pvisor-core` defines Operations, Events and cross-component contracts. This crate
-owns Session lifecycle, scheduling, policy adaptation and execution. Job lifecycle
-commands are built into `pvisor`; local node lifecycle, cache and memory-pool
-tools are grouped under `pvisor service`, while TUI and replay are optional Job
-frontends found beside it. Cross-node placement and distributed scheduling
+owns Session lifecycle, scheduling, policy adaptation and execution. The
+`pvisor-cli` application owns Job lifecycle commands, the persistent Host Job
+listener/worker adapters, terminal/rendering code, companion discovery, and local
+node/pool supervision. Cache storage and node resource protocols remain runtime
+components; their argument parsers and executable entry points live in the app.
+The installed commands are unchanged: Job commands use `pvisor`; local node
+lifecycle, cache and memory-pool tools use `pvisor service`. TUI and replay are
+Job frontends, not runtime dependencies. Cross-node placement and distributed scheduling
 belong to external orchestrators, not this crate.
 Guest injection uses the core `pvisor` execution runtime.
 
@@ -135,8 +141,8 @@ real-guest, macOS platform, energy/density, or upstream validation evidence.
 
 All built-in Job CLI operations (`run`, `status`, `kill`, `suspend`, `resume`,
 `fork`, `checkpoint`, `inspect`, `review`, `apply`, `drop`) submit typed
-`cli/host.rs::JobCommand` requests through the on-demand persistent listener in
-`cli/host_service.rs`. Ordinary persisted Jobs need no endpoint options or manual
+`pvisor-cli/src/cli/host.rs::JobCommand` requests through the on-demand persistent
+listener in `pvisor-cli/src/cli/host_service.rs`. Ordinary persisted Jobs need no endpoint options or manual
 service startup. Bare `pvisor` displays help; default execution via
 `pvisor -- COMMAND` enters the same service. This listener is separate from
 the node/cache/pool deployment service below; embedded `PVisor` remains a direct API.
@@ -164,7 +170,7 @@ Cargo package version and BLAKE3 executable content digest before descriptor/
 command transfer; package version alone is insufficient. Worker executable
 ownership, permissions, device/inode and content are checked.
 
-Linux hashes `/proc/self/exe`. On macOS, `cli/host_image.rs` compares dyld's loaded
+Linux hashes `/proc/self/exe`. On macOS, `pvisor-cli/src/cli/host_image.rs` compares dyld's loaded
 main-image UUID with on-disk Mach-O `LC_UUID` for the matching CPU slice before
 hashing the same open file. Admission requires a matching source Mach-O UUID;
 missing, malformed, ambiguous or mismatched metadata fails closed. UUID
@@ -416,12 +422,33 @@ executables, but does not supply or validate the prepared-image bootstrap,
 SDK conformance or density.
 See the [daemon boundary](../pvisor-daemon/README.md).
 
+## Source and application boundary
+
+Runtime APIs are exported explicitly from `src/lib.rs`: `PVisor`, Session/Attempt
+handles, configuration and feature settings, `job_service`, durable Job/checkpoint
+records, transport, and filesystem review primitives. The implementation module
+`runtime` remains private. The runtime library has no Clap dependency and does
+not depend on `pvisor-cli`; application enums are parsed by app-local Clap
+adapters. Clap is retained only as a development dependency for standalone
+runtime demonstration/measurement examples.
+
+Relocated paths are under `../pvisor-cli/`: `src/cli/`, `src/companions.rs`,
+`src/service.rs`, `src/service_cgroup.rs`, and the `pvisor`, `pvisor-cache`, and
+`pvisor-memory-pool` entries in `src/bin/`. Feature listing and cache argument
+parsing also live in the application. Executable-dependent integration tests
+live in its `tests/`; runtime-only tests remain here. Tests combining command
+execution with runtime APIs link both crates from the application test suite.
+The detailed command, platform, storage and service limits above remain relevant
+to embedded callers where they describe runtime behavior, and to the installed
+application where they describe frontend behavior.
+
 ## Develop
 
 ```bash
 just build release          # release build + macOS Hypervisor signing
 just build    # debug build + macOS signing
-just test pvisor
+just test pvisor            # runtime tests
+just test pvisor-cli        # application/executable tests
 just examples
 ```
 

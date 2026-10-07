@@ -285,7 +285,7 @@ fn direct_managed_config(args: &ReplayArgs) -> Result<ReplayToml, ReplayError> {
 }
 
 fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
-    let executable = pvisor::companions::core_executable().map_err(|error| {
+    let executable = pvisor_cli::companions::core_executable().map_err(|error| {
         ReplayError::configuration(format!("cannot resolve the pVisor executable: {error}"))
     })?;
     let mut outer = PVisorRunConfig::default();
@@ -603,7 +603,7 @@ fn main() -> anyhow::Result<()> {
         args: ReplayArgs,
     }
     use clap::Parser;
-    pvisor::cli::terminal::init_child_context();
+    pvisor_cli::cli::terminal::init_child_context();
     let code = run(ReplayCli::parse().args);
     if code != 0 {
         std::process::exit(code);

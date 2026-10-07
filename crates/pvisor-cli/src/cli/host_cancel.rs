@@ -1,7 +1,7 @@
 //! Private, attempt-fenced cooperative cancellation for CLI-owned Runs.
 //! This host-only endpoint is not written into the Job or guest discovery state.
-use crate::runtime::host_transport::{authorize_host_peer, read_host_frame, write_host_frame};
 use anyhow::{Context, ensure};
+use pvisor::host_transport::{authorize_host_peer, read_host_frame, write_host_frame};
 use pvisor_core::host_protocol::{
     AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest, AgentCtlHostResponse,
 };
@@ -17,7 +17,7 @@ use std::{
 #[serde(deny_unknown_fields)]
 struct CancelRun {}
 struct ActiveRun {
-    record: crate::RunRecord,
+    record: pvisor::RunRecord,
     cancellation: tokio_util::sync::CancellationToken,
 }
 static ACTIVE: OnceLock<Arc<Mutex<Option<ActiveRun>>>> = OnceLock::new();
@@ -112,15 +112,15 @@ pub(super) fn start(rt: &tokio::runtime::Runtime, directory: &Path) -> anyhow::R
                             )
                         })?;
                         let validate = || -> anyhow::Result<()> {
-                            let template = crate::runtime::job_execution::Job::read(&run.record)?;
+                            let template = pvisor::job_execution::Job::read(&run.record)?;
                             let _job_lease = template
                                 .as_ref()
-                                .map(crate::runtime::job_execution::Job::lock)
+                                .map(pvisor::job_execution::Job::lock)
                                 .transpose()?;
                             if let Some(template) = template {
                                 template.current()?.validate_record_target(&run.record)?;
                             }
-                            let current = crate::RunRecord::read(&run.record.stage_dir())?;
+                            let current = pvisor::RunRecord::read(&run.record.stage_dir())?;
                             super::host::check_selected_record(&run.record, &current)?;
                             super::host::check_target(target, &current)?;
                             ensure!(
@@ -154,11 +154,11 @@ pub(super) fn start(rt: &tokio::runtime::Runtime, directory: &Path) -> anyhow::R
     Ok(Server { _file: file, task })
 }
 
-pub(super) fn register(handle: &crate::RunHandle, stage: &Path) -> anyhow::Result<()> {
+pub(super) fn register(handle: &pvisor::RunHandle, stage: &Path) -> anyhow::Result<()> {
     let Some(active) = ACTIVE.get() else {
         return Ok(());
     };
-    let record = crate::RunRecord::read(stage)?;
+    let record = pvisor::RunRecord::read(stage)?;
     ensure!(
         record.run_id == handle.run_id().as_str()
             && record.attempt_id.as_deref() == Some(handle.attempt_id().as_str())
@@ -176,7 +176,7 @@ pub(super) fn register(handle: &crate::RunHandle, stage: &Path) -> anyhow::Resul
 
 /// None is returned ONLY when no connection was established. Once submitted,
 /// cancellation is never retried through a numeric-PID fallback.
-pub(super) fn request(record: &crate::RunRecord) -> anyhow::Result<bool> {
+pub(super) fn request(record: &pvisor::RunRecord) -> anyhow::Result<bool> {
     let Some(directory) = super::host_service::worker_directory() else {
         return Ok(false);
     };

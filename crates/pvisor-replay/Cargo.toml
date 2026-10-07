@@ -8,8 +8,6 @@ description = "Agent-native sandbox replay and continuation for pVisor"
 
 [dependencies]
 tempfile.workspace = true
-clap = { workspace = true, features = ["derive"] }
-pvisor = { path = "../pvisor" }
 anyhow.workspace = true
 pvisor-core.workspace = true
 pvisor-journal.workspace = true

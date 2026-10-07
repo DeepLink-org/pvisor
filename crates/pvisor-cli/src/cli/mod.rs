@@ -1,6 +1,8 @@
 //! Job lifecycle commands and dispatch to first-party companions.
+mod cache;
 mod checkpoint;
 mod commands;
+mod features;
 #[cfg(unix)]
 pub(crate) mod host;
 #[cfg(unix)]
@@ -13,6 +15,7 @@ mod host_image;
 mod host_process;
 #[cfg(unix)]
 mod host_service;
+mod values;
 use crate::companions;
 mod product;
 mod run;
@@ -45,13 +48,13 @@ struct Cli {
         value_name = "NAME",
         value_delimiter = ','
     )]
-    features: Vec<crate::features::Feature>,
+    features: Vec<pvisor::features::Feature>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
     /// List registered runtime experiments and default/current CLI enable state.
-    Feature(crate::features::FeatureArgs),
+    Feature(crate::cli::features::FeatureArgs),
     #[command(about = run::RUN_COMMAND_ABOUT, long_about = run::RUN_COMMAND_LONG_ABOUT)]
     Run(Box<run::RunArgs>),
 
@@ -189,21 +192,21 @@ pub fn main() -> anyhow::Result<()> {
     if host_service::internal_if_requested()? {
         return Ok(());
     }
-    crate::diagnostics::init_inherited();
+    pvisor::diagnostics::init_inherited();
     terminal::init_child_context();
-    match crate::sandbox::run_internal_if_requested() {
+    match pvisor::sandbox::run_internal_if_requested() {
         Ok(true) => return Ok(()),
         Ok(false) => {}
         Err(error) => {
             eprintln!("pVisor local sandbox setup failed: {error:#}");
-            std::process::exit(crate::sandbox::SANDBOX_SETUP_EXIT_CODE);
+            std::process::exit(pvisor::sandbox::SANDBOX_SETUP_EXIT_CODE);
         }
     }
     // The trusted sandbox launcher is part of the parent's Run, not another
     // CLI invocation. Its cleared workload environment must not create a
     // duplicate startup record or override the parent's logging preference.
-    crate::util::startup_mark("process.entry");
-    if crate::run_krun_internal_if_requested()? {
+    pvisor::startup_mark("process.entry");
+    if pvisor::run_krun_internal_if_requested()? {
         return Ok(());
     }
     let args: Vec<OsString> = std::env::args_os().collect();
@@ -235,7 +238,7 @@ pub fn main() -> anyhow::Result<()> {
                     .expect("leading feature option")
             };
             for name in value.split(',') {
-                name.parse::<crate::features::Feature>()
+                name.parse::<pvisor::features::Feature>()
                     .map_err(anyhow::Error::msg)?;
             }
             index += 1;
@@ -297,7 +300,7 @@ pub fn main() -> anyhow::Result<()> {
         core_command
     };
     let mut parsed = Cli::from_arg_matches(&command.get_matches_from(args.clone()))?;
-    crate::util::startup_mark("cli.parsed");
+    pvisor::startup_mark("cli.parsed");
     if let Command::Feature(query) = &parsed.command {
         return query.print(&parsed.features);
     }
@@ -425,7 +428,7 @@ mod feature_parser_tests {
             assert!(matches!(parsed.command, Command::Run(_)));
             assert_eq!(
                 parsed.features,
-                [crate::features::Feature::WorkloadAwareMemoryOffloading]
+                [pvisor::features::Feature::WorkloadAwareMemoryOffloading]
             );
         }
     }

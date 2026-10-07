@@ -5,8 +5,8 @@ use super::{
     input, view,
 };
 use anyhow::{Context, Result};
-use pvisor::cli::terminal::{AUDIT_SOCKET, CHILD_MARKER, LOG_FILE, STAGE_FILE};
 use pvisor::{RunRecord, control_observations};
+use pvisor_cli::cli::terminal::{AUDIT_SOCKET, CHILD_MARKER, LOG_FILE, STAGE_FILE};
 use pvisor_core::audit::{AuditDecision, AuditRequest};
 use pvisor_core::operation::FilesystemObservation;
 use std::ffi::OsString;

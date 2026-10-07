@@ -150,13 +150,37 @@ def test_daemon_build_routes_through_native_packaging_pipeline(run_task, tmp_pat
     ]
 
 
-def test_native_executor_package_keeps_hvf_signing(run_task):
-    package = "pvisor"
-    commands = run_task("test", package)
+@pytest.mark.parametrize(
+    "selector,package", [("pvisor", "pvisor"), ("cli", "pvisor-cli"), ("pvisor-cli", "pvisor-cli")]
+)
+def test_native_executor_package_keeps_hvf_signing(run_task, selector, package):
+    commands = run_task("test", selector)
     signing = (
         [["python3", "scripts/sign-vm-tests.py", "-p", package]] if sys.platform == "darwin" else []
     )
     assert commands == signing + [["cargo", "nextest", "run", "--locked", "-p", package]]
+
+
+def test_product_check_selects_application(run_task):
+    assert run_task("check") == [["cargo", "check", "--locked", "-p", "pvisor-cli"]]
+
+
+def test_isolation_selects_moved_application_tests(run_task):
+    assert run_task("test-isolation") == [
+        [
+            "cargo",
+            "nextest",
+            "run",
+            "--locked",
+            "-p",
+            "pvisor-cli",
+            "--test",
+            "rootless_local",
+            "--test",
+            "run_config_cli",
+            "--no-capture",
+        ]
+    ]
 
 
 def test_retired_nativepvisor_is_not_a_vm_signing_selector():

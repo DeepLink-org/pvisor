@@ -36,7 +36,7 @@ impl RuntimeJobService {
         )
         .await
     }
-    pub(crate) async fn capture_selected_execution(
+    pub async fn capture_selected_execution(
         context: &ServiceContext<'_>,
         record: &RunRecord,
         suspend: bool,
@@ -67,7 +67,7 @@ impl RuntimeJobService {
         })
     }
 }
-pub(crate) fn require_execution(record: &RunRecord) -> anyhow::Result<()> {
+pub fn require_execution(record: &RunRecord) -> anyhow::Result<()> {
     if let Some(blocker) = execution_blocker(record) {
         anyhow::bail!("CAPABILITY_UNSUPPORTED: Job {}: {}", record.run_id, blocker);
     }

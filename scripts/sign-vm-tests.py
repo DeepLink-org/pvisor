@@ -17,7 +17,7 @@ def main():
         text=True,
     )
     for suite in json.loads(result.stdout)["rust-suites"].values():
-        if suite["package-name"] in {"pvisor-vm", "pvisor"}:
+        if suite["package-name"] in {"pvisor-vm", "pvisor", "pvisor-cli"}:
             subprocess.run(
                 [
                     "codesign",

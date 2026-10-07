@@ -11,12 +11,12 @@ mod effects;
 mod fork;
 pub use fork::{ExecutionForkRequest, ExecutionForkResponse};
 mod lifecycle;
-pub(crate) mod paths;
-pub(crate) mod policy;
+pub mod paths;
+pub mod policy;
 #[cfg(test)]
 mod tests;
 mod views;
-pub(crate) use capture::require_execution;
+pub use capture::require_execution;
 pub use capture::{CaptureRequest, CaptureResponse};
 
 pub(crate) use lifecycle::preserve_apply_target;
@@ -136,7 +136,7 @@ pub fn validate_request_id(id: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
-pub(crate) fn lock_selected_job(
+pub fn lock_selected_job(
     context: &ServiceContext<'_>,
     record: &RunRecord,
 ) -> anyhow::Result<Option<(Job, impl Send + use<>)>> {

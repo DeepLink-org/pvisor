@@ -188,7 +188,7 @@ pub struct RunRecord {
 
 impl RunRecord {
     /// A missing process/lease is insufficient evidence of a completed Attempt.
-    pub(crate) fn require_stopped(&self) -> anyhow::Result<()> {
+    pub fn require_stopped(&self) -> anyhow::Result<()> {
         super::job_execution::require_mutable(self)?;
         anyhow::ensure!(
             self.state.is_stopped() && self.finished_at_unix_ms.is_some(),

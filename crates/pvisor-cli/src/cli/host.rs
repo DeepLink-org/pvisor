@@ -43,7 +43,7 @@ impl JobCommand {
                 let Some(record) = self.selected_record(&std::env::current_dir()?)? else {
                     return Ok(false);
                 };
-                let Some(job) = crate::runtime::job_execution::Job::read(&record)? else {
+                let Some(job) = pvisor::job_execution::Job::read(&record)? else {
                     return Ok(false);
                 };
                 let pvisor_core::RunInvocation::Process(process) = &job.spec.invocation;
@@ -160,7 +160,7 @@ impl JobCommand {
             Self::Checkpoint(a) => Some((Some(&a.selection().job), &a.selection().output_dir)),
         }
     }
-    pub(super) fn selected_record(&self, cwd: &Path) -> anyhow::Result<Option<crate::RunRecord>> {
+    pub(super) fn selected_record(&self, cwd: &Path) -> anyhow::Result<Option<pvisor::RunRecord>> {
         let Some((selector, output)) = self.selection() else {
             return Ok(None);
         };
@@ -175,7 +175,7 @@ impl JobCommand {
             selector.is_absolute(),
             "service Job selector must be an absolute durable path"
         );
-        Ok(Some(crate::runtime::resolve_run(Some(selector), &output)?))
+        Ok(Some(pvisor::resolve_run(Some(selector), &output)?))
     }
     /// Resolve aliases in the originating cwd once. All subsequent reads and
     /// mutations address this durable Job root, never a retargetable `last`.
@@ -192,8 +192,8 @@ impl JobCommand {
         let Some((selector, output)) = self.selection() else {
             return Ok(None);
         };
-        let record = crate::runtime::resolve_run(selector, output)?;
-        let root = crate::runtime::job_execution::Job::read(&record)?
+        let record = pvisor::resolve_run(selector, output)?;
+        let root = pvisor::job_execution::Job::read(&record)?
             .map(|job| job.root)
             .unwrap_or_else(|| record.stage_dir());
         let root = std::fs::canonicalize(&root)
@@ -223,7 +223,7 @@ impl JobCommand {
         cwd: &Path,
     ) -> anyhow::Result<()> {
         if let Self::Vm(a) = self {
-            crate::runtime::host_transport::validate_host_target(target, &a.job_id, &a.attempt_id)?;
+            pvisor::host_transport::validate_host_target(target, &a.job_id, &a.attempt_id)?;
             return Ok(());
         }
         match (self.selected_record(cwd)?, target) {
@@ -243,8 +243,8 @@ impl JobCommand {
     }
 }
 
-pub(super) fn service_context() -> crate::runtime::job_service::ServiceContext<'static> {
-    crate::runtime::job_service::ServiceContext {
+pub(super) fn service_context() -> pvisor::job_service::ServiceContext<'static> {
+    pvisor::job_service::ServiceContext {
         expected_target: None,
         check_cancelled: Some(&super::host_service::check_cancelled),
         check_record: Some(&super::host_service::check_record),
@@ -252,21 +252,21 @@ pub(super) fn service_context() -> crate::runtime::job_service::ServiceContext<'
 }
 
 pub(super) fn lock_selected_job(
-    record: &crate::RunRecord,
-) -> anyhow::Result<Option<(crate::runtime::job_execution::Job, impl Send)>> {
-    crate::runtime::job_service::lock_selected_job(&service_context(), record)
+    record: &pvisor::RunRecord,
+) -> anyhow::Result<Option<(pvisor::job_execution::Job, impl Send)>> {
+    pvisor::job_service::lock_selected_job(&service_context(), record)
 }
 pub(super) fn check_selected_record(
-    selected: &crate::RunRecord,
-    current: &crate::RunRecord,
+    selected: &pvisor::RunRecord,
+    current: &pvisor::RunRecord,
 ) -> anyhow::Result<()> {
-    crate::runtime::job_service::check_selected_record(selected, current)
+    pvisor::job_service::check_selected_record(selected, current)
 }
 pub(super) fn check_target(
     target: &AgentCtlTarget,
-    record: &crate::RunRecord,
+    record: &pvisor::RunRecord,
 ) -> anyhow::Result<()> {
-    crate::runtime::job_service::check_target(target, record)
+    pvisor::job_service::check_target(target, record)
 }
 
 pub(crate) fn execute(rt: &tokio::runtime::Runtime, command: JobCommand) -> anyhow::Result<i32> {
@@ -284,7 +284,7 @@ pub(crate) fn execute(rt: &tokio::runtime::Runtime, command: JobCommand) -> anyh
         JobCommand::Suspend(args) => rt.block_on(checkpoint::suspend(args))?,
         JobCommand::Checkpoint(args) => rt.block_on(checkpoint::run(args))?,
         JobCommand::Vm(args) => rt.block_on(async {
-            let response = crate::runtime::instance_control::exchange(
+            let response = pvisor::host_vm_exchange(
                 &args.socket,
                 &AgentCtlHostRequest {
                     version: AGENTCTL_HOST_VERSION,

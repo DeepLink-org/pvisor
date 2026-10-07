@@ -24,7 +24,7 @@ use std::{
     time::Duration,
 };
 
-pub(crate) const STORE_KEY: &str = "pvisor.orchestration.execution_snapshot_store";
+pub const STORE_KEY: &str = "pvisor.orchestration.execution_snapshot_store";
 
 pub(crate) fn snapshot_store(
     stage: &Path,
@@ -51,13 +51,13 @@ const CONTROL_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CONTROL_CONNECTIONS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Capture {
+pub struct Capture {
     pub checkpoint: ExecutionCheckpoint,
     pub branches: BTreeMap<String, PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct Request {
+pub struct Request {
     pub suspend: bool,
     pub ram_storage: SnapshotRamStorage,
     pub checkpoint: Option<String>,
@@ -66,7 +66,7 @@ pub(crate) struct Request {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum JobState {
+pub enum JobState {
     Running,
     Suspending,
     Suspended,
@@ -88,18 +88,18 @@ impl std::fmt::Display for JobState {
     }
 }
 
-pub(crate) const JOB_SCHEMA_VERSION: u16 = 2;
+pub const JOB_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ResumeRequest {
+pub struct ResumeRequest {
     pub stage: PathBuf,
     pub eager_ram: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ForkOptions {
+pub struct ForkOptions {
     pub checkpoint: Option<String>,
     pub stage: Option<PathBuf>,
     pub name: Option<String>,
@@ -109,7 +109,7 @@ pub(crate) struct ForkOptions {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ForkRequest {
+pub struct ForkRequest {
     pub options: ForkOptions,
     pub stage: PathBuf,
     pub job_id: String,
@@ -118,7 +118,7 @@ pub(crate) struct ForkRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Job {
+pub struct Job {
     pub version: u16,
     pub run_id: String,
     pub root: PathBuf,
@@ -247,7 +247,7 @@ pub(crate) fn require_mutable(record: &RunRecord) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn job(record: &RunRecord) -> anyhow::Result<Job> {
+pub fn job(record: &RunRecord) -> anyhow::Result<Job> {
     let job = Job::read(record)?
         .context("CAPABILITY_UNSUPPORTED: this Job has no native execution handoff")?;
     ensure!(
@@ -780,7 +780,7 @@ pub(crate) async fn capture(
     tokio::time::timeout(timeout, work).await.with_context(|| format!("EXECUTION_UNKNOWN: timed out waiting for request {request_id}; capture may still complete; inspect status or retry the same request id"))?
 }
 
-pub(crate) fn terminate_suspended(record: &RunRecord) -> anyhow::Result<bool> {
+pub fn terminate_suspended(record: &RunRecord) -> anyhow::Result<bool> {
     let Some(template) = Job::read(record)? else {
         return Ok(false);
     };

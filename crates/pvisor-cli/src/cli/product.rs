@@ -1,9 +1,9 @@
 //! CLI review presentation and bounded filesystem diff rendering.
 
-use crate::runtime::RunRecord;
-use crate::{ChangeEntryType, ChangeKind, RunBundle};
 use anyhow::Context;
 use clap::Args;
+use pvisor::RunRecord;
+use pvisor::{ChangeEntryType, ChangeKind, RunBundle};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,17 +39,17 @@ pub struct ReviewArgs {
 }
 
 pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
-    let response = crate::runtime::job_service::RuntimeJobService::review(
+    let response = pvisor::job_service::RuntimeJobService::review(
         &super::host::service_context(),
-        crate::runtime::job_service::ReviewRequest {
-            job: crate::runtime::job_service::JobSelection {
+        pvisor::job_service::ReviewRequest {
+            job: pvisor::job_service::JobSelection {
                 selector: args.selector,
                 storage: args.output_dir,
             },
             checkpoint: args.checkpoint,
         },
     )?;
-    let crate::runtime::job_service::ReviewResponse {
+    let pvisor::job_service::ReviewResponse {
         record,
         bundle,
         context,

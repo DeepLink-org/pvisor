@@ -672,7 +672,7 @@ impl ProcessExecutor {
 /// probe safe in a multithreaded Tokio process and distinguishes an unavailable
 /// host capability from a later Agent failure.
 #[cfg(target_os = "linux")]
-pub(crate) fn rootless_runtime_available(preserve_host_filesystem: bool) -> bool {
+pub fn rootless_runtime_available(preserve_host_filesystem: bool) -> bool {
     let probe = |args: &[&str]| {
         StdCommand::new("unshare")
             .args(args)

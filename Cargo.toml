@@ -14,7 +14,7 @@ members = [
     "crates/pvisor-journal",
     "crates/pvisor-gateway",
     "crates/pvisor",
-    "crates/pvisor-tui",
+    "crates/pvisor-cli",
     "crates/pvisor-guest",
     "crates/pvisor-replay",
     "crates/pvisor-shim",
@@ -25,7 +25,7 @@ members = [
 exclude = ["vendor/fuser"]
 
 default-members = [
-    "crates/pvisor",
+    "crates/pvisor-cli",
 ]
 
 [workspace.dependencies]
@@ -60,6 +60,7 @@ log = "0.4"
 pvisor-guest = { path = "crates/pvisor-guest" }
 pvisor-journal = { path = "crates/pvisor-journal" }
 pvisor-core = { path = "crates/pvisor-core" }
+pvisor-cli = { path = "crates/pvisor-cli" }
 pvisor-daemon = { path = "crates/pvisor-daemon" }
 pvisor-gateway = { path = "crates/pvisor-gateway", default-features = false }
 pvisor-overlayfs = { path = "crates/pvisor-overlayfs", default-features = false }

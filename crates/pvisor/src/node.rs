@@ -341,13 +341,13 @@ impl Owners {
 }
 
 /// Refuse to remove existing endpoints; callers explicitly clean stale sockets.
-pub(crate) struct SocketGuard {
+pub struct SocketGuard {
     path: PathBuf,
     device: u64,
     inode: u64,
 }
 impl SocketGuard {
-    pub(crate) fn bind(path: &Path) -> anyhow::Result<(UnixListener, Self)> {
+    pub fn bind(path: &Path) -> anyhow::Result<(UnixListener, Self)> {
         let parent = path.parent().context("socket requires parent")?;
         private_directory(parent)?;
         let listener = UnixListener::bind(path)?;
@@ -372,7 +372,7 @@ impl Drop for SocketGuard {
         }
     }
 }
-pub(crate) fn private_directory(path: &Path) -> anyhow::Result<()> {
+pub fn private_directory(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
     fs::DirBuilder::new()
         .recursive(true)

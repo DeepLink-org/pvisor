@@ -1,3 +1,3 @@
 fn main() -> anyhow::Result<()> {
-    pvisor::cli::cache_main()
+    pvisor_cli::cli::main()
 }

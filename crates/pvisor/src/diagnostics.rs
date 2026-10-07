@@ -12,7 +12,7 @@ static INHERITED_LOG: OnceLock<Mutex<File>> = OnceLock::new();
 
 /// Only the VM runner receives this pre-opened host diagnostic descriptor.
 /// Keep it out of guest exec, and avoid opening frontend paths inside confinement.
-pub(crate) fn init_inherited() {
+pub fn init_inherited() {
     use std::os::fd::FromRawFd;
     if INHERITED_LOG.get().is_some() || std::env::var(INHERITED_LOG_ENV).as_deref() != Ok("201") {
         return;
@@ -35,7 +35,7 @@ pub fn init(path: Option<PathBuf>) {
     let _ = LOG_CONTEXT.set(path);
 }
 
-pub(crate) fn diagnostic(args: std::fmt::Arguments<'_>) {
+pub fn diagnostic(args: std::fmt::Arguments<'_>) {
     // Parent and runner append to the same file. Format first so one record
     // is submitted in one write rather than interleaved formatting fragments.
     let mut line = args.to_string();

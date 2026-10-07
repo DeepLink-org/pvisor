@@ -1,6 +1,6 @@
 mod safe;
 
-use crate::runtime::job_service::policy::PolicySource;
+use pvisor::job_service::policy::PolicySource;
 use std::path::{Path, PathBuf};
 
 const STAGE_OWNER_FILE: &str = ".pvisor-stage-owner";
@@ -80,32 +80,32 @@ use pvisor_overlaynet::{NetworkAccessRule, NetworkBandwidthLimit};
 use pvisor_overlaynet::{NetworkConfig, NetworkMode};
 use serde::Deserialize;
 
-use crate::config::{
+use pvisor::{
+    ContainerExecutor, NetworkDriverConfig, OverlayHint, PVisor, ProcessExecutor, RunBundle,
+    RunExecutor, VmExecutor,
+};
+use pvisor::{
     ContainerMount, ContainerNetwork, ContainerPlatform, FilesystemAccessLevel, FilesystemMode,
     GatewayMode, GatewayProfile, OverlayFsCommit, OverlayFsSettings, OverlayNetMode,
     OverlayNetPolicy, OverlayNetSettings, RunConfig, RunExecutorKind, RunPolicy, RunStdio,
 };
-use crate::runtime::{RunLineage, default_run_home, resolve_run};
-use crate::{
-    ContainerExecutor, NetworkDriverConfig, OverlayHint, PVisor, ProcessExecutor, RunBundle,
-    RunExecutor, VmExecutor,
-};
+use pvisor::{RunLineage, default_run_home, resolve_run};
 
 use super::trajectory::JournalRecording;
 #[cfg(feature = "gateway")]
-use crate::GatewayDriverConfig;
+use pvisor::GatewayDriverConfig;
 
 // Keep pVisor diagnostics separate from the Agent PTY in TUI runs.
 macro_rules! run_log {
     ($($arg:tt)*) => {{
         #[cfg(unix)]
-        crate::diagnostics::diagnostic(format_args!($($arg)*));
+        pvisor::diagnostics::diagnostic(format_args!($($arg)*));
         #[cfg(not(unix))]
         eprintln!($($arg)*);
     }};
 }
 
-fn announce_control_socket(handle: &crate::RunHandle) {
+fn announce_control_socket(handle: &pvisor::RunHandle) {
     #[cfg(unix)]
     if let Ok(path) = handle.control_socket() {
         let status = handle.status();
@@ -165,7 +165,7 @@ pub struct RunArgs {
     /// Explicit runtime enables, also parsed by companions reusing RunArgs.
     #[arg(long = "feature", value_name = "NAME", value_delimiter = ',')]
     #[serde(default)]
-    pub(super) features: Vec<crate::features::Feature>,
+    pub(super) features: Vec<pvisor::features::Feature>,
     /// Show a terminal with status bar; Ctrl-] opens the TUI command mode.
     #[arg(long)]
     tui: bool,
@@ -276,16 +276,16 @@ struct RunOverrides {
     /// Human-readable Job/Agent name.
     #[arg(long)]
     name: Option<String>,
-    #[arg(long, value_enum, help = EXECUTOR_HELP)]
+    #[arg(long, value_parser = super::values::run_executor_kind(), help = EXECUTOR_HELP)]
     executor: Option<RunExecutorKind>,
     /// Filesystem access policy; independent from OverlayNet and OverlayFS staging.
-    #[arg(long, value_enum)]
+    #[arg(long, value_parser = super::values::filesystem_mode())]
     filesystem: Option<FilesystemMode>,
     /// Fail the Job when it runs longer than DURATION (for example `30s` or `5m`).
     #[arg(long, value_name = "DURATION")]
     timeout: Option<DurationMs>,
     /// Agent stdio: `inherit` keeps the terminal, `capture` records output into the Job record.
-    #[arg(long, value_enum)]
+    #[arg(long, value_parser = super::values::run_stdio())]
     stdio: Option<RunStdio>,
     /// Fail before execution unless every requested capability has a non-bypassable boundary.
     #[arg(long)]
@@ -338,7 +338,7 @@ struct ContainerOverrides {
     #[arg(long, value_name = "PLATFORM")]
     container_platform: Option<ContainerPlatform>,
     /// Container network mode; host keeps the in-process Gateway reachable.
-    #[arg(long, value_enum)]
+    #[arg(long, value_parser = super::values::container_network())]
     container_network: Option<ContainerNetwork>,
     /// Container-native workdir used when pVisor does not inject an OverlayFS cwd.
     #[arg(long, value_name = "PATH")]
@@ -531,7 +531,7 @@ struct OverlayNetOverrides {
     /// Network driver: auto selects VM smoltcp, proxy is host/container only, off disables it.
     #[arg(
         long,
-        value_enum,
+        value_parser = super::values::overlay_net_mode(),
         value_name = "MODE",
         num_args = 0..=1,
         default_missing_value = "proxy"
@@ -540,7 +540,7 @@ struct OverlayNetOverrides {
     /// Explicit proxy listen address; supplying it enables OverlayNet.
     #[arg(long, value_name = "ADDR")]
     overlaynet_listen: Option<String>,
-    #[arg(long, value_enum, hide = true)]
+    #[arg(long, value_parser = super::values::overlay_net_policy(), hide = true)]
     overlaynet_policy: Option<OverlayNetPolicy>,
     /// Allowed HOST[:PORT] or CIDR[:PORT]; enables the executor's OverlayNet driver.
     #[arg(long, value_name = "TARGET")]
@@ -706,10 +706,10 @@ impl FromStr for OverlayNetRuleArg {
 #[serde(deny_unknown_fields)]
 struct GatewayOverrides {
     /// Adapt a supported client and enable Gateway capture.
-    #[arg(long, value_enum)]
+    #[arg(long, value_parser = super::values::gateway_profile())]
     gateway_profile: Option<GatewayProfile>,
     /// Enable the in-process Gateway for LLM traffic capture, or disable it.
-    #[arg(long, value_enum)]
+    #[arg(long, value_parser = super::values::gateway_mode())]
     gateway_mode: Option<GatewayMode>,
     /// Gateway admin API listen address.
     #[arg(long, value_name = "ADDR")]
@@ -828,7 +828,7 @@ fn load_run_config(
 }
 
 pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
-    crate::util::startup_mark("cli.run_begin");
+    pvisor::startup_mark("cli.run_begin");
     #[cfg(unix)]
     if pvisor_core::audit::configured() {
         args.audit = true;
@@ -860,7 +860,7 @@ pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
     if args.run.safe || args.audit {
         warn_safe_preset(&config, &args);
     }
-    crate::util::startup_mark_run("cli.config_ready", &run_id);
+    pvisor::startup_mark_run("cli.config_ready", &run_id);
     execute_config(
         config,
         run_id,
@@ -1036,16 +1036,15 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
         )
     };
     let managed =
-        crate::runtime::job_service::RuntimeJobService::start_managed(&pvisor, spec, config)
-            .await?;
+        pvisor::job_service::RuntimeJobService::start_managed(&pvisor, spec, config).await?;
     announce_control_socket(managed.handle());
     let agentctl = managed.handle().agentctl();
     let result = wait_cli_job(managed, registration_stage.as_deref()).await?;
-    let output = crate::executor::delegated::DelegatedRunOutput {
+    let output = pvisor::DelegatedRunOutput {
         agentctl: agentctl.snapshot(),
         result,
     };
-    let write_result = crate::util::write_private_json(&result_path, &output)
+    let write_result = pvisor::write_private_json(&result_path, &output)
         .with_context(|| format!("write delegated RunResult to {}", result_path.display()));
     let cleanup_result = stage_guard
         .as_mut()
@@ -1155,7 +1154,7 @@ impl RunExecutor for TerminalReportingExecutor {
     fn supports_cpu_qos(&self) -> bool {
         self.0.supports_cpu_qos()
     }
-    async fn execute(&self, session: &crate::Session) -> crate::executor::ExecutorOutput {
+    async fn execute(&self, session: &pvisor::Session) -> pvisor::ExecutorOutput {
         let output = self.0.execute(session).await;
         if output
             .failure
@@ -1178,7 +1177,7 @@ pub(super) fn report_terminal(executor: Arc<dyn RunExecutor>) -> Arc<dyn RunExec
 }
 
 pub(super) async fn wait_cli_job(
-    managed: crate::job_service::ManagedJobRun,
+    managed: pvisor::job_service::ManagedJobRun,
     stage: Option<&Path>,
 ) -> anyhow::Result<pvisor_core::RunResult> {
     managed
@@ -1192,7 +1191,7 @@ pub(super) async fn wait_cli_job(
 }
 
 pub(super) async fn wait_cli_run(
-    handle: crate::RunHandle,
+    handle: pvisor::RunHandle,
 ) -> anyhow::Result<pvisor_core::RunResult> {
     let token = handle.cancellation.clone();
     let cancellation = handle.cancellation();
@@ -1246,9 +1245,9 @@ async fn execute_config(
         config.vm.control_socket =
             super::host_service::vm_control_socket(config.vm.control_socket.as_deref())?;
     }
-    crate::util::startup_mark_run("cli.rootfs_begin", &run_id);
+    pvisor::startup_mark_run("cli.rootfs_begin", &run_id);
     resolve_default_vm_rootfs(&mut config)?;
-    let mut _image_attachment: Option<crate::image::cache::DirectImage> = None;
+    let mut _image_attachment: Option<pvisor::cache::DirectImage> = None;
     let prepared_image = if config.run.executor == RunExecutorKind::Vm && config.vm.rootfs.is_none()
     {
         let image = config
@@ -1258,11 +1257,10 @@ async fn execute_config(
             .context("VM image must be explicitly configured")?;
         let store = config.vm.image_store.clone();
         run_log!("pVisor image: resolving {image}");
-        let (prepared, mount) = tokio::task::spawn_blocking(move || {
-            crate::image::cache::prepare_vm_image(&image, store)
-        })
-        .await
-        .context("OCI image preparation task failed")??;
+        let (prepared, mount) =
+            tokio::task::spawn_blocking(move || pvisor::cache::prepare_vm_image(&image, store))
+                .await
+                .context("OCI image preparation task failed")??;
         _image_attachment = mount;
         run_log!(
             "pVisor image: {} ({})",
@@ -1344,7 +1342,7 @@ async fn execute_config(
     #[cfg(target_os = "linux")]
     let rootless_probe = (config.run.executor == RunExecutorKind::Host).then(|| {
         tokio::task::spawn_blocking(move || {
-            crate::executor::process::rootless_runtime_available(!filesystem_isolated)
+            pvisor::rootless_runtime_available(!filesystem_isolated)
         })
     });
 
@@ -1448,7 +1446,7 @@ async fn execute_config(
         bail!("--record-destination only accepts a local path; remote URIs are unsupported");
     }
     let mut json_writer = None;
-    let event_sink: Arc<dyn crate::EventSink> = if config.gateway.mode == GatewayMode::Capture
+    let event_sink: Arc<dyn pvisor::EventSink> = if config.gateway.mode == GatewayMode::Capture
         || config.overlaynet.mode == OverlayNetMode::Proxy
         || config.record.destination.is_some()
     {
@@ -1463,7 +1461,7 @@ async fn execute_config(
         json_writer = Some(writer);
         event_sink
     } else {
-        Arc::new(crate::trace::Journal::memory())
+        Arc::new(pvisor::trace::Journal::memory())
     };
 
     #[cfg(target_os = "linux")]
@@ -1527,7 +1525,7 @@ async fn execute_config(
         RunExecutorKind::Host => Arc::new(ProcessExecutor::default()),
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
         RunExecutorKind::Vm => {
-            crate::util::startup_mark_run("cli.vm_inputs_ready", &run_id);
+            pvisor::startup_mark_run("cli.vm_inputs_ready", &run_id);
             Arc::new(VmExecutor::new(config.vm.clone())?.with_features(config.features.clone())?)
         }
     };
@@ -1585,7 +1583,7 @@ async fn execute_config(
     {
         let store = execution_store_location(&config, &workspace, &storage, &run_id)?;
         spec.metadata.insert(
-            crate::runtime::job_execution::STORE_KEY.into(),
+            pvisor::job_execution::STORE_KEY.into(),
             serde_json::to_value(store)?,
         );
     }
@@ -1632,10 +1630,8 @@ async fn execute_config(
         process.cwd = Some(workspace.display().to_string());
     }
     if safe {
-        spec.metadata.insert(
-            crate::executor::sandbox::REQUIRED_SANDBOX_KEY.into(),
-            true.into(),
-        );
+        spec.metadata
+            .insert(pvisor::sandbox::REQUIRED_SANDBOX_KEY.into(), true.into());
     }
     spec.runtime.timeout_ms = config.run.timeout_ms;
     spec.runtime.resource_limits = config.run.resource_limits.clone();
@@ -1708,10 +1704,8 @@ async fn execute_config(
     );
 
     if safe {
-        spec.metadata.insert(
-            crate::executor::sandbox::LANDLOCK_SANDBOX_KEY.into(),
-            true.into(),
-        );
+        spec.metadata
+            .insert(pvisor::sandbox::LANDLOCK_SANDBOX_KEY.into(), true.into());
     }
     {
         let network_boundary = if config.run.executor == RunExecutorKind::Vm
@@ -1789,17 +1783,14 @@ async fn execute_config(
             }
         }
     }
-    crate::util::startup_mark_run("cli.session_begin", &run_id);
-    let managed = crate::runtime::job_service::RuntimeJobService::start_managed(
-        &pvisor,
-        spec,
-        config.clone(),
-    )
-    .await?;
+    pvisor::startup_mark_run("cli.session_begin", &run_id);
+    let managed =
+        pvisor::job_service::RuntimeJobService::start_managed(&pvisor, spec, config.clone())
+            .await?;
     announce_control_socket(managed.handle());
-    crate::util::startup_mark_run("cli.session_started", &run_id);
+    pvisor::startup_mark_run("cli.session_started", &run_id);
     let result = wait_cli_job(managed, Some(&storage)).await?;
-    crate::util::startup_mark_run("cli.run_finished", &run_id);
+    pvisor::startup_mark_run("cli.run_finished", &run_id);
     drop(pvisor);
     if let Some(writer) = json_writer {
         writer.finish()?;
@@ -1824,7 +1815,7 @@ async fn execute_config(
     }
     let record = resolve_run(Some(Path::new(&run_id)), &storage)
         .with_context(|| format!("load finalized Run record for {run_id}"))?;
-    crate::util::startup_mark_run("cli.result_loaded", &run_id);
+    pvisor::startup_mark_run("cli.result_loaded", &run_id);
     let bundle = RunBundle::read(&record.stage_dir()).with_context(|| {
         format!(
             "load finalized Run Bundle from {}",
@@ -1997,7 +1988,7 @@ fn apply_safe_defaults(config: &mut RunConfig) -> anyhow::Result<()> {
     if config.overlaynet.listen == OverlayNetSettings::default().listen {
         config.overlaynet.listen = free_loopback_address()?;
     }
-    if config.gateway.admin_listen == crate::GatewaySettings::default().admin_listen {
+    if config.gateway.admin_listen == pvisor::GatewaySettings::default().admin_listen {
         config.gateway.admin_listen = free_loopback_address()?;
     }
     if config.run.agent == "agent"
@@ -2356,7 +2347,7 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
             overlayfs
                 .access
                 .extend(args.overlayfs.access.into_iter().map(|access| {
-                    crate::config::FilesystemAccessRule {
+                    pvisor::FilesystemAccessRule {
                         path: access.path,
                         level: match access.level {
                             FilesystemLevel::Deny => FilesystemAccessLevel::Deny,
@@ -2375,7 +2366,7 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
                 .overlayfs
                 .mounts
                 .into_iter()
-                .map(|mount| crate::config::FilesystemMount {
+                .map(|mount| pvisor::FilesystemMount {
                     source: mount.source,
                     target: Some(mount.target),
                     access: match mount.access {
@@ -3037,7 +3028,7 @@ mod tests {
 
     #[test]
     fn feature_config_cli_precedence_and_executor_validation() {
-        use crate::features::Feature;
+        use pvisor::features::Feature;
         let mut config: RunConfig = toml::from_str(
             "[run]\nexecutor = 'vm'\n[features]\nworkload-aware-memory-offloading = false",
         )
@@ -3377,7 +3368,7 @@ mod tests {
     use proptest::prelude::*;
 
     use crate::cli::Cli;
-    use crate::config::FilesystemMount;
+    use pvisor::FilesystemMount;
 
     fn preset_args(values: &[&str]) -> RunArgs {
         let crate::cli::Command::Run(args) =
@@ -4790,9 +4781,9 @@ sandbox = "required""#
     #[test]
     fn composed_layers_cannot_be_auto_applied() {
         let config = RunConfig {
-            run: crate::config::RunSettings {
+            run: pvisor::RunSettings {
                 command: vec!["true".into()],
-                ..crate::config::RunSettings::default()
+                ..pvisor::RunSettings::default()
             },
             overlayfs: Some(OverlayFsSettings {
                 compose: vec!["/tmp/layer".into()],

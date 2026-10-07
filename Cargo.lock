@@ -2879,13 +2879,11 @@ dependencies = [
  "async-trait",
  "axum",
  "blake3",
- "chrono",
  "clap",
  "dirs",
  "flate2",
  "fs2",
  "fuser",
- "globset",
  "libc",
  "lru",
  "object_store",
@@ -2912,6 +2910,41 @@ dependencies = [
  "uuid",
  "vm-memory",
  "zstd",
+]
+
+[[package]]
+name = "pvisor-cli"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "blake3",
+ "clap",
+ "dirs",
+ "fs2",
+ "libc",
+ "proptest",
+ "pvisor",
+ "pvisor-core",
+ "pvisor-gateway",
+ "pvisor-journal",
+ "pvisor-overlay-core",
+ "pvisor-overlaynet",
+ "pvisor-replay",
+ "pvisor-vm",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "toml 0.8.23",
+ "toml_edit 0.22.27",
+ "tracing",
+ "unicode-width",
+ "uuid",
+ "vm-memory",
+ "vt100",
 ]
 
 [[package]]
@@ -3076,10 +3109,8 @@ dependencies = [
  "anyhow",
  "axum",
  "chrono",
- "clap",
  "fs2",
  "libc",
- "pvisor",
  "pvisor-core",
  "pvisor-journal",
  "reqwest",
@@ -3111,27 +3142,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
-]
-
-[[package]]
-name = "pvisor-tui"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "fs2",
- "libc",
- "pvisor",
- "pvisor-core",
- "pvisor-overlaynet",
- "serde",
- "serde_json",
- "tempfile",
- "toml 0.8.23",
- "toml_edit 0.22.27",
- "unicode-width",
- "vt100",
 ]
 
 [[package]]

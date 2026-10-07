@@ -48,7 +48,13 @@ pub struct ReviewResponse {
     pub bundle: RunBundle,
     pub context: ReviewContext,
     // Keep the chosen file view stable through frontend diff rendering.
-    pub(crate) lease: crate::runtime::registry::RunLease,
+    _lease: crate::runtime::registry::RunLease,
+}
+impl ReviewResponse {
+    /// Borrow review data while this response retains the selected file-view lease.
+    pub fn view(&self) -> (&RunRecord, &RunBundle, &ReviewContext) {
+        (&self.record, &self.bundle, &self.context)
+    }
 }
 impl RuntimeJobService {
     pub fn status(
@@ -168,7 +174,7 @@ impl RuntimeJobService {
             record,
             bundle,
             context: review_context,
-            lease: _lease,
+            _lease,
         })
     }
 }

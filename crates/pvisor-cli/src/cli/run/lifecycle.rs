@@ -5,17 +5,17 @@ use super::{
     announce_control_socket, execute_config, paths_overlap, report_terminal, resolve_workspace,
     select_run_storage, wait_cli_job,
 };
-#[cfg(feature = "gateway")]
-use crate::GatewayDriverConfig;
 use crate::cli::trajectory::JournalRecording;
+#[cfg(feature = "gateway")]
+use pvisor::GatewayDriverConfig;
 #[cfg(test)]
-use crate::config::RunExecutorKind;
-use crate::config::{GatewayMode, OverlayFsCommit, OverlayFsSettings, OverlayNetPolicy, RunConfig};
+use pvisor::RunExecutorKind;
 #[cfg(test)]
-use crate::runtime::job_execution::JobState;
-use crate::runtime::job_service::paths::fork_stage_candidate;
-use crate::runtime::{RunLineage, RunRecord, default_run_home, resolve_run};
-use crate::{NetworkDriverConfig, PVisor, RunBundle, restore_logical_checkpoint};
+use pvisor::job_execution::JobState;
+use pvisor::job_service::paths::fork_stage_candidate;
+use pvisor::{GatewayMode, OverlayFsCommit, OverlayFsSettings, OverlayNetPolicy, RunConfig};
+use pvisor::{NetworkDriverConfig, PVisor, RunBundle, restore_logical_checkpoint};
+use pvisor::{RunLineage, RunRecord, default_run_home, resolve_run};
 
 use clap::Args;
 use pvisor_core::RunState;
@@ -103,16 +103,15 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     let (source, source_lease) = source.lock_current()?;
     crate::cli::host_service::check_record(&source)?;
     // Fail before checkpoint/stage mutations when historical policy cannot be reconstructed.
-    let (mut config, required_sandbox) =
-        crate::runtime::job_service::policy::workspace_config(&source)?;
+    let (mut config, required_sandbox) = pvisor::job_service::policy::workspace_config(&source)?;
     let parent_isolation = source
         .executor
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("workspace fork lacks parent executor boundary evidence"))?
         .isolation;
     let checkpoint = match args.checkpoint.as_deref() {
-        Some(id) => crate::runtime::checkpoint::resolve_checkpoint(&source, id)?,
-        None => crate::runtime::checkpoint::create_stopped_checkpoint_locked(&source, None)?,
+        Some(id) => pvisor::checkpoint::resolve_checkpoint(&source, id)?,
+        None => pvisor::checkpoint::create_stopped_checkpoint_locked(&source, None)?,
     };
     anyhow::ensure!(
         checkpoint.run_id == source.run_id,
@@ -174,11 +173,11 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
                 .all(|lower| !lower.starts_with(&stage)),
         "child stage must not overlap the source Job or contain its filesystem layers"
     );
-    crate::util::create_dir_all_durable(&stage)?;
+    pvisor_journal::create_dir_all_durable(&stage)?;
     let upper = stage.join("upper");
     // Exclusive pin creation arbitrates competing forks targeting one empty
     // directory. A loser must never remove the winner's files during cleanup.
-    crate::runtime::checkpoint::pin_checkpoint(&checkpoint, &stage)?;
+    pvisor::checkpoint::pin_checkpoint(&checkpoint, &stage)?;
     if let Err(error) = restore_logical_checkpoint(&checkpoint, &upper, &stage.join("preimages")) {
         let _ = std::fs::remove_dir_all(&stage);
         return Err(error);
@@ -194,7 +193,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
             parent_run_id: source.run_id,
             checkpoint_id: checkpoint.checkpoint_id,
         }),
-        crate::runtime::job_service::policy::PolicySource::Inherited(parent_isolation),
+        pvisor::job_service::policy::PolicySource::Inherited(parent_isolation),
     )
     .await
 }
@@ -220,9 +219,7 @@ pub(in crate::cli) async fn resume_execution(
     request_id: Option<String>,
     eager_ram: bool,
 ) -> anyhow::Result<i32> {
-    use crate::runtime::job_service::{
-        JobSelection, ResumeRequest, ResumeResponse, RuntimeJobService,
-    };
+    use pvisor::job_service::{JobSelection, ResumeRequest, ResumeResponse, RuntimeJobService};
     let response = RuntimeJobService::resume(
         &crate::cli::host::service_context(),
         ResumeRequest {
@@ -246,7 +243,7 @@ pub(in crate::cli) async fn resume_execution(
 }
 
 async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32> {
-    use crate::runtime::job_service::{
+    use pvisor::job_service::{
         ExecutionForkRequest, ExecutionForkResponse, JobSelection, RuntimeJobService,
     };
     let response = RuntimeJobService::fork_execution(
@@ -279,14 +276,12 @@ async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32
     }
 }
 
-async fn execute_restored(
-    attempt: crate::runtime::job_service::RestoredAttempt,
-) -> anyhow::Result<i32> {
+async fn execute_restored(attempt: pvisor::job_service::RestoredAttempt) -> anyhow::Result<i32> {
     let stage = attempt.stage.clone();
     let mut recording = None;
     let managed = attempt
         .start_with(|config, stage, executor, overlay| {
-            let event_sink: Arc<dyn crate::EventSink> = if config.gateway.mode
+            let event_sink: Arc<dyn pvisor::EventSink> = if config.gateway.mode
                 == GatewayMode::Capture
                 || config.record.destination.is_some()
             {
@@ -300,7 +295,7 @@ async fn execute_restored(
                 recording = Some(writer);
                 sink
             } else {
-                Arc::new(crate::trace::Journal::memory())
+                Arc::new(pvisor::trace::Journal::memory())
             };
             let network = NetworkDriverConfig::new(
                 config.overlaynet.mode,
@@ -422,9 +417,7 @@ pub(super) fn execution_store_location(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::job_execution::{
-        ForkOptions, ForkRequest, JOB_SCHEMA_VERSION, Job, ResumeRequest,
-    };
+    use pvisor::job_execution::{ForkOptions, ForkRequest, JOB_SCHEMA_VERSION, Job, ResumeRequest};
     fn fixture(root: &Path) -> (RunRecord, Job) {
         let record: RunRecord = serde_json::from_value(serde_json::json!({
             "schema_version":1,"run_id":"job-fence","attempt_id":"attempt-old","session_id":"job-fence",
@@ -434,7 +427,7 @@ mod tests {
         record.write().unwrap();
         let mut config = RunConfig::default();
         config.run.executor = RunExecutorKind::Vm;
-        config.overlaynet.mode = crate::OverlayNetMode::Off;
+        config.overlaynet.mode = pvisor::OverlayNetMode::Off;
         let job = Job {
             version: JOB_SCHEMA_VERSION,
             run_id: record.run_id.clone(),

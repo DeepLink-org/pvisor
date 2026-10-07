@@ -17,13 +17,13 @@ const FILENAME: &str = "workspace-launch-policy.json";
 /// Keep provenance separate from policy layers: even an identity layer can change
 /// executor isolation/evidence selected by the final capability's representation.
 #[derive(Clone, Copy)]
-pub(crate) enum PolicySource {
+pub enum PolicySource {
     CurrentDefaults,
     Inherited(pvisor_core::IsolationKind),
 }
 
 impl PolicySource {
-    pub(crate) fn load_defaults(
+    pub fn load_defaults(
         self,
         config: &mut RunConfig,
         workspace: &std::path::Path,
@@ -35,10 +35,7 @@ impl PolicySource {
         }
     }
 
-    pub(crate) fn validate_executor(
-        self,
-        executor: &pvisor_core::ExecutorPlan,
-    ) -> anyhow::Result<()> {
+    pub fn validate_executor(self, executor: &pvisor_core::ExecutorPlan) -> anyhow::Result<()> {
         if let Self::Inherited(parent) = self {
             anyhow::ensure!(
                 executor.kind == ExecutorKind::Process
@@ -161,7 +158,7 @@ pub(super) fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Res
     crate::util::write_private_json(&record.stage_dir().join(FILENAME), &policy)
 }
 
-pub(crate) fn workspace_config(record: &RunRecord) -> anyhow::Result<(RunConfig, bool)> {
+pub fn workspace_config(record: &RunRecord) -> anyhow::Result<(RunConfig, bool)> {
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     const MAX_BYTES: u64 = 1024 * 1024;

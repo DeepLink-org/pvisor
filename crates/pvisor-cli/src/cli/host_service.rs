@@ -7,12 +7,10 @@ use super::{
     host_fds,
     host_process::{OwnedTree, TerminalOwner},
 };
-pub(super) use crate::runtime::host_transport::read_host_frame_sync as read_frame;
-use crate::runtime::host_transport::{
-    encode_host_frame as encoded, write_host_frame_sync as write_frame,
-};
 use anyhow::{Context, ensure};
 use fs2::FileExt;
+pub(super) use pvisor::host_transport::read_host_frame_sync as read_frame;
+use pvisor::host_transport::{encode_host_frame as encoded, write_host_frame_sync as write_frame};
 use pvisor_core::host_protocol::{
     AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
     AgentCtlHostResponse, AgentCtlTarget,
@@ -86,7 +84,7 @@ pub(super) fn check_cancelled() -> anyhow::Result<()> {
     );
     Ok(())
 }
-pub(super) fn check_record(record: &crate::RunRecord) -> anyhow::Result<()> {
+pub(super) fn check_record(record: &pvisor::RunRecord) -> anyhow::Result<()> {
     check_cancelled()?;
     if let Some(Some(target)) = WORKER_TARGET.get() {
         super::host::check_target(target, record)?;
@@ -322,7 +320,7 @@ fn uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 fn directory() -> anyhow::Result<PathBuf> {
-    crate::runtime::host_transport::host_authority_root()
+    pvisor::host_transport::host_authority_root()
 }
 fn private_dir(path: &Path) -> anyhow::Result<()> {
     let m = fs::symlink_metadata(path)?;
@@ -736,7 +734,7 @@ fn run_worker(mut channel: UnixStream, dir: PathBuf, g: Generation) -> anyhow::R
         }
     }
     super::terminal::restore_service_context(context.terminal);
-    crate::diagnostics::init_inherited();
+    pvisor::diagnostics::init_inherited();
     super::terminal::init_child_context();
     // pre_exec blocks cancellation until handlers exist. Tokio threads inherit
     // that mask too: release it on EVERY runtime thread, or workloads spawned
@@ -798,7 +796,7 @@ fn run_worker(mut channel: UnixStream, dir: PathBuf, g: Generation) -> anyhow::R
                 .command
                 .validate_target(request.target.as_ref(), &context.cwd)?;
             if std::env::var("PVISOR_STARTUP_TIMING").as_deref() != Ok("0") {
-                crate::diagnostics::diagnostic(format_args!(
+                pvisor::diagnostics::diagnostic(format_args!(
                     "pvisor-host-request level=info version={} request_id={} frontend_pid={} worker_pid={}",
                     AGENTCTL_HOST_VERSION,
                     serde_json::to_string(&request.request_id)?,
@@ -1365,9 +1363,9 @@ mod tests {
             assert!(status.success());
             return;
         }
-        struct HangingTerminalSink(crate::trace::Journal);
+        struct HangingTerminalSink(pvisor::trace::Journal);
         #[async_trait::async_trait]
-        impl crate::EventSink for HangingTerminalSink {
+        impl pvisor::EventSink for HangingTerminalSink {
             async fn append(
                 &self,
                 event: &pvisor_core::event::Event,
@@ -1386,12 +1384,12 @@ mod tests {
         WORKER_READY.store(true, Ordering::SeqCst);
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let runtime = crate::PVisor::builder()
+            let runtime = pvisor::PVisor::builder()
                 .event_sink(Arc::new(HangingTerminalSink(
-                    crate::trace::Journal::memory(),
+                    pvisor::trace::Journal::memory(),
                 )))
                 .executors(vec![super::super::run::report_terminal(Arc::new(
-                    crate::ProcessExecutor::default(),
+                    pvisor::ProcessExecutor::default(),
                 ))])
                 .build();
             let mut spec = pvisor_core::RunSpec::process("terminal-hook", "sh", "/bin/sh");
@@ -1440,8 +1438,8 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             for code in [129, 130, 143] {
-                let runtime = crate::PVisor::builder().executors(vec![
-                    super::super::run::report_terminal(Arc::new(crate::ProcessExecutor::default()))
+                let runtime = pvisor::PVisor::builder().executors(vec![
+                    super::super::run::report_terminal(Arc::new(pvisor::ProcessExecutor::default()))
                 ]).build();
                 let mut spec = pvisor_core::RunSpec::process(format!("exit-{code}"), "sh", "/bin/sh");
                 let pvisor_core::RunInvocation::Process(process) = &mut spec.invocation;
@@ -1455,8 +1453,8 @@ mod tests {
                 assert!(matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut), "unexpected worker event after exit {code}");
             }
             for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
-                let runtime = crate::PVisor::builder().executors(vec![
-                    super::super::run::report_terminal(Arc::new(crate::ProcessExecutor::default()))
+                let runtime = pvisor::PVisor::builder().executors(vec![
+                    super::super::run::report_terminal(Arc::new(pvisor::ProcessExecutor::default()))
                 ]).build();
                 let mut spec = pvisor_core::RunSpec::process(format!("signal-{signal}"), "sh", "/bin/sh");
                 let pvisor_core::RunInvocation::Process(process) = &mut spec.invocation;

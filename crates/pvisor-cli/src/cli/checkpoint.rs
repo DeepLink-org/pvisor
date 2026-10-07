@@ -1,9 +1,9 @@
 //! Job-scoped workspace and execution checkpoint management.
-use crate::runtime::checkpoint::{checkpoint_branch_refs, list_checkpoints, resolve_checkpoint};
-use crate::runtime::job_execution::{self, Job};
-use crate::runtime::{RunRecord, resolve_run};
 use anyhow::Context;
 use clap::{Args, Subcommand, ValueEnum};
+use pvisor::checkpoint::{checkpoint_branch_refs, list_checkpoints, resolve_checkpoint};
+use pvisor::job_execution::{self, Job};
+use pvisor::{RunRecord, resolve_run};
 use pvisor_core::operation::SnapshotRamStorage;
 
 use std::path::PathBuf;
@@ -113,7 +113,7 @@ pub(super) async fn suspend(args: SuspendArgs) -> anyhow::Result<()> {
     let request_id = args
         .request_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let response = crate::runtime::job_service::RuntimeJobService::capture_selected_execution(
+    let response = pvisor::job_service::RuntimeJobService::capture_selected_execution(
         &super::host::service_context(),
         &record,
         true,
@@ -247,10 +247,10 @@ impl CheckpointArgs {
 /// Check the Job configuration before admitting native execution checkpoints.
 /// Platform support alone does not guarantee that this Job can be restored.
 pub(crate) fn execution_blocker(record: &RunRecord) -> Option<String> {
-    crate::runtime::job_service::execution_blocker(record)
+    pvisor::job_service::execution_blocker(record)
 }
 pub(super) fn check_execution(record: &RunRecord) -> anyhow::Result<()> {
-    crate::runtime::job_service::require_execution(record)
+    pvisor::job_service::require_execution(record)
 }
 
 pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
@@ -270,29 +270,29 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             let selected = selection.resolve()?;
             if kind == Kind::Execution {
                 let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                let response =
-                    crate::runtime::job_service::RuntimeJobService::capture_selected_execution(
-                        &super::host::service_context(),
-                        &selected,
-                        false,
-                        ram_storage
-                            .map(Into::into)
-                            .unwrap_or(SnapshotRamStorage::Compressed),
-                        Some(request_id.clone()),
-                        std::time::Duration::from_millis(timeout.0),
-                    )
-                    .await?;
+                let response = pvisor::job_service::RuntimeJobService::capture_selected_execution(
+                    &super::host::service_context(),
+                    &selected,
+                    false,
+                    ram_storage
+                        .map(Into::into)
+                        .unwrap_or(SnapshotRamStorage::Compressed),
+                    Some(request_id.clone()),
+                    std::time::Duration::from_millis(timeout.0),
+                )
+                .await?;
                 let checkpoint = response.checkpoint;
                 return emit(
                     json,
                     serde_json::json!({"schema_version":1,"operation":"checkpoint.create","job_id":selected.run_id,"request_id":request_id,"checkpoint_id":checkpoint.snapshot_id,"kind":"execution","checkpoint":checkpoint}),
                 );
             }
-            let (checkpoint, reused) = crate::runtime::job_service::RuntimeJobService::create_selected_workspace_checkpoint(
-                &super::host::service_context(),
-                &selected,
-                request_id.as_deref(),
-            )?;
+            let (checkpoint, reused) =
+                pvisor::job_service::RuntimeJobService::create_selected_workspace_checkpoint(
+                    &super::host::service_context(),
+                    &selected,
+                    request_id.as_deref(),
+                )?;
             emit(
                 json,
                 serde_json::json!({
@@ -392,7 +392,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                     serde_json::json!({"schema_version":1,"operation":"checkpoint.delete","job_id":record.run_id,"kind":"execution","checkpoint_id":id,"deleted":true}),
                 );
             }
-            let id = crate::runtime::job_service::RuntimeJobService::delete_selected_workspace_checkpoint(
+            let id = pvisor::job_service::RuntimeJobService::delete_selected_workspace_checkpoint(
                 &super::host::service_context(),
                 &record,
                 &id,
@@ -426,7 +426,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             let removed = if kind == Some(Kind::Execution) {
                 0
             } else {
-                crate::runtime::job_service::RuntimeJobService::collect_selected_workspace_transactions(
+                pvisor::job_service::RuntimeJobService::collect_selected_workspace_transactions(
                     &super::host::service_context(),
                     &record,
                 )?
@@ -450,7 +450,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                 json,
                 serde_json::json!({"schema_version":1,"operation":"checkpoint.gc",
                 "job_id":record.run_id,"scope":scope,"kind_filter":kind,
-                "root":record.stage_dir().join(crate::CHECKPOINTS_DIR),"removed_transactions":removed,
+                "root":record.stage_dir().join(pvisor::CHECKPOINTS_DIR),"removed_transactions":removed,
                 "execution_removed_transactions":execution_removed,"published_checkpoints_deleted":0}),
             )
         }
@@ -466,7 +466,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             job.validate_record_target(&record)?;
             super::host_service::check_record(&RunRecord::read(&job.active_stage)?)?;
             let checkpoint = job.checkpoint(&id)?;
-            let compatibility = crate::VmExecutor::checkpoint_compatibility(&job.config.vm)?;
+            let compatibility = pvisor::VmExecutor::checkpoint_compatibility(&job.config.vm)?;
             let object = checkpoint_store(&job, &checkpoint.store)?.open(&id, &compatibility)?;
             emit(
                 json,
@@ -497,7 +497,7 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             let record = selection.resolve()?;
             let job = job_execution::job(&record)?;
             let base = checkpoint_store(&job, &job.primary_store()?)?
-                .open_base(&crate::environment_snapshot::BaseReference { id })?;
+                .open_base(&pvisor::environment_snapshot::BaseReference { id })?;
             emit(
                 json,
                 serde_json::json!({"operation":"checkpoint.verify_base","job_id":job.run_id,"base":base.reference(),"verified":true}),
@@ -509,10 +509,10 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
 fn checkpoint_store(
     job: &Job,
     path: &std::path::Path,
-) -> anyhow::Result<crate::environment_snapshot::SnapshotStore> {
+) -> anyhow::Result<pvisor::environment_snapshot::SnapshotStore> {
     match job.config.vm.snapshot_filesystem_pool.as_deref() {
-        Some(pool) => crate::environment_snapshot::SnapshotStore::with_filesystem_pool(path, pool),
-        None => crate::environment_snapshot::SnapshotStore::new(path),
+        Some(pool) => pvisor::environment_snapshot::SnapshotStore::with_filesystem_pool(path, pool),
+        None => pvisor::environment_snapshot::SnapshotStore::new(path),
     }
 }
 

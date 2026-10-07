@@ -10,7 +10,7 @@ pub(crate) use pvisor_journal::{create_dir_all_durable, sync_directory};
 pub(crate) use pvisor_journal::atomic_write;
 
 /// Publish owner-only JSON using the same durable replacement as Run records.
-pub(crate) fn write_private_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
+pub fn write_private_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
     atomic_write(path, &serde_json::to_vec_pretty(value)?, 0o600)
 }
 
@@ -79,11 +79,11 @@ fn startup_logging_enabled() -> bool {
 
 /// Routine host checkpoints; guest clocks have a different epoch.
 /// `PVISOR_STARTUP_TIMING=0` suppresses output for uninstrumented benchmarks.
-pub(crate) fn startup_mark(stage: &str) {
+pub fn startup_mark(stage: &str) {
     startup_checkpoint(stage, None);
 }
 
-pub(crate) fn startup_mark_run(stage: &str, run_id: &str) {
+pub fn startup_mark_run(stage: &str, run_id: &str) {
     startup_checkpoint(stage, Some(run_id));
 }
 

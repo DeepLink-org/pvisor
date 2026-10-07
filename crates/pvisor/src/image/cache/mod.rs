@@ -2,7 +2,6 @@
 //! See docs/src/zh/reference/shared-image-cache.md for storage layout and lifecycle.
 
 mod backend;
-mod cli;
 mod client;
 mod config;
 mod direct;
@@ -17,7 +16,6 @@ pub(crate) mod storage;
 pub(crate) use config::scrub_guest_environment;
 mod transport;
 
-pub use cli::{CacheArgs, run};
 pub use client::CacheClient;
 pub use config::{BACKEND_ENV, CacheBackend, CacheConfig, LOCATION_ENV, READ_ONLY_ENV};
 pub use progress::ImageTotals;
@@ -28,7 +26,7 @@ pub use transport::default_endpoint;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod lazy;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub(crate) use lazy::prepare_vm_image;
+pub use lazy::prepare_vm_image;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 pub use lazy::{LazyImage, open_image_handle_for_host, open_image_handle_for_vm};
 
@@ -43,5 +41,19 @@ fn architecture() -> &'static str {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub(crate) use direct::{DirectImage, attach_runner_lowers, private_owner as direct_image_owner};
+pub use direct::DirectImage;
+pub(crate) use direct::{attach_runner_lowers, private_owner as direct_image_owner};
 pub(crate) use network::run_internal_if_requested as run_image_access_internal;
+
+/// Serve a cache using host-owned OCI staging and an optional transport token.
+pub fn serve(
+    location: String,
+    image_store: Option<std::path::PathBuf>,
+    token: Option<String>,
+) -> anyhow::Result<()> {
+    server::serve(
+        location,
+        crate::image::oci::ImageStore::new(image_store)?,
+        token,
+    )
+}

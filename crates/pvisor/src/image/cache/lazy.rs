@@ -37,7 +37,7 @@ impl Drop for FuseMount {
     }
 }
 
-pub(crate) fn prepare_vm_image(
+pub fn prepare_vm_image(
     image: &str,
     store: Option<PathBuf>,
 ) -> anyhow::Result<(PreparedImage, Option<super::direct::DirectImage>)> {

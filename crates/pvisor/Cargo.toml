@@ -4,9 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license = "Apache-2.0 AND MIT"
-description = "pVisor foreground Agent Run manager and portable execution runtime"
+description = "pVisor embeddable execution runtime and durable Job service"
 readme = "README.md"
-default-run = "pvisor"
 
 [features]
 default = []
@@ -18,12 +17,9 @@ pvisor-guest.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 blake3.workspace = true
-chrono.workspace = true
-clap = { workspace = true, features = ["derive", "env", "string"] }
 dirs.workspace = true
 flate2.workspace = true
 fs2.workspace = true
-globset.workspace = true
 libc.workspace = true
 lru = "0.12.5"
 object_store = { version = "=0.13.2", default-features = false, features = ["aws", "tls-webpki-roots"] }
@@ -50,11 +46,9 @@ reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 [target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
 pvisor-vm = { workspace = true, features = ["net"] }
 
-[[bin]]
-name = "pvisor"
-path = "src/bin/pvisor.rs"
-
 [dev-dependencies]
+# Example-only argument parsers; the runtime library does not link Clap.
+clap = { workspace = true, features = ["derive"] }
 
 proptest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

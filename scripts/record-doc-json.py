@@ -81,8 +81,8 @@ def main():
         (args.output / f'{name}.json').write_text(
             json.dumps(normalize(value), ensure_ascii=False, indent=2) + '\n')
     sources = [
-        'crates/pvisor/src/runtime/bundle.rs', 'crates/pvisor/src/cli/runtime.rs',
-        'crates/pvisor/src/cli/checkpoint.rs', 'crates/pvisor/src/cli/product.rs',
+        'crates/pvisor/src/runtime/bundle.rs', 'crates/pvisor-cli/src/cli/runtime.rs',
+        'crates/pvisor-cli/src/cli/checkpoint.rs', 'crates/pvisor-cli/src/cli/product.rs',
     ]
     provenance = {
         'kind': 'actual CLI output; paths, identities and numeric wall-clock fields normalized',

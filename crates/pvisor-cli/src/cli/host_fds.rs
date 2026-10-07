@@ -186,7 +186,7 @@ mod tests {
                 for _ in 0..8 {
                     a.write_all(b"42\n43\n").unwrap();
                     send(&a, &[file.as_raw_fd(); 3]).unwrap();
-                    crate::runtime::host_transport::write_host_frame_sync(&mut a, &44).unwrap();
+                    pvisor::host_transport::write_host_frame_sync(&mut a, &44).unwrap();
                     assert_eq!(
                         super::super::host_service::read_frame::<u32>(&mut b).unwrap(),
                         42

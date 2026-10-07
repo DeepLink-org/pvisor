@@ -1,8 +1,12 @@
 //! `pvisor service cache` command definitions and dispatch.
-use super::server::serve;
-use super::transport::TOKEN_ENV;
-use super::{CacheBackend, CacheClient, CacheConfig, MAX_READ, Request, architecture};
-use crate::image::oci::ImageStore;
+use pvisor::cache::{CacheBackend, CacheClient, CacheConfig, MAX_READ, Request, serve};
+fn architecture() -> &'static str {
+    match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    }
+}
 use clap::{Args, Subcommand};
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
@@ -11,7 +15,7 @@ use std::path::PathBuf;
 #[derive(Debug, Args)]
 pub struct CacheArgs {
     /// Cache backend: daemon, shared filesystem, or direct S3 object storage.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, value_parser = super::values::cache_backend())]
     backend: Option<CacheBackend>,
     /// Server endpoint, absolute shared directory, or s3://BUCKET/PREFIX.
     #[arg(long, global = true)]
@@ -91,8 +95,8 @@ pub fn run(args: CacheArgs) -> anyhow::Result<()> {
         );
         return serve(
             listen.unwrap_or(config.location),
-            ImageStore::new(config.image_store)?,
-            std::env::var(TOKEN_ENV).ok(),
+            config.image_store,
+            std::env::var("PVISOR_CACHE_TOKEN").ok(),
         );
     }
     let client = CacheClient::from_config(config)?;

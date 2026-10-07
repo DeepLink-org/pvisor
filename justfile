@@ -76,7 +76,7 @@ wheel profile="release":
 
 # Check the product and its dependencies without producing a binary.
 check:
-    cargo check --locked -p pvisor
+    cargo check --locked -p pvisor-cli
 
 # Linux x86_64 daemon embeds pvisor's VM/guest/kernel via the shared musl/Zig pipeline.
 daemon-build profile="debug":
@@ -131,7 +131,7 @@ test *packages:
     just test-rust "$@"
     if [[ $# -eq 0 ]]; then just test-py; fi
 
-# Debug nextest; accepts Cargo names and pvisor/control/agentctl/capture/shim aliases.
+# Debug nextest; accepts Cargo names and pvisor/cli/core/control/agentctl/capture/shim aliases.
 test-rust *packages:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -140,11 +140,12 @@ test-rust *packages:
     for package in "$@"; do
       case "$package" in
         pvisor) package=pvisor ;;
+                cli) package=pvisor-cli ;;
         core|control|agentctl) package=pvisor-core ;;
         capture) package=pvisor-gateway ;;
         shim) package=pvisor-shim ;;
       esac
-      if [[ "$package" == pvisor-vm || "$package" == pvisor ]]; then needs_vm_signature=1; fi
+      if [[ "$package" == pvisor-vm || "$package" == pvisor || "$package" == pvisor-cli ]]; then needs_vm_signature=1; fi
       args+=(-p "$package")
     done
     if [[ $# -eq 0 ]]; then args+=(--workspace); needs_vm_signature=1; fi
@@ -168,7 +169,7 @@ test-py *args:
 
 # Strict Linux rootless/FUSE regression: never skip missing user namespaces.
 test-isolation:
-    env -u PVISOR_TEST_ALLOW_NO_USERNS cargo nextest run --locked -p pvisor --test rootless_local --test run_config_cli --no-capture
+    env -u PVISOR_TEST_ALLOW_NO_USERNS cargo nextest run --locked -p pvisor-cli --test rootless_local --test run_config_cli --no-capture
 
 # Build the debug CLI and check its main command surfaces.
 smoke: build

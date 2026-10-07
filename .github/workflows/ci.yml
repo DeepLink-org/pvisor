@@ -123,7 +123,6 @@ jobs:
               pvisor-overlayfs
               pvisor-overlaynet
               pvisor-replay
-              pvisor-tui
             prepare_pvisor: false
           - platform: Linux
             os: ubuntu-latest
@@ -134,6 +133,11 @@ jobs:
             os: ubuntu-latest
             shard: pvisor
             packages: pvisor pvisor-vm
+            prepare_pvisor: true
+          - platform: Linux
+            os: ubuntu-latest
+            shard: cli
+            packages: pvisor-cli
             prepare_pvisor: true
           - platform: macOS
             os: macos-latest
@@ -149,7 +153,7 @@ jobs:
               pvisor
               pvisor-vm
               pvisor-replay
-              pvisor-tui
+              pvisor-cli
             prepare_pvisor: true
     steps:
       - uses: actions/checkout@v4
@@ -216,7 +220,8 @@ jobs:
 
       - name: Record isolated core budget
         run: |
-          cargo build --release --locked -p pvisor --bin pvisor
+          cargo build --release --locked -p pvisor --lib
+                    cargo build --release --locked -p pvisor-cli --bin pvisor
           python3 scripts/ci/check_core_budget.py target/release/pvisor --max-dependencies 230 --max-workspace-lines 44423 --max-core-items 230 > target/pvisor-core-budget.json
       - uses: actions/upload-artifact@v4
         with:

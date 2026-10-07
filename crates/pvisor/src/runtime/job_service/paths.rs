@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 /// Resolve existing symlink ancestors before validating a new branch path,
 /// without creating directories inside the source Job on rejected requests.
-pub(crate) fn fork_stage_candidate(path: &Path) -> anyhow::Result<PathBuf> {
+pub fn fork_stage_candidate(path: &Path) -> anyhow::Result<PathBuf> {
     let path = if path.is_absolute() {
         path.to_path_buf()
     } else {

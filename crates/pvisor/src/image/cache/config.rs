@@ -1,18 +1,30 @@
 //! Shared CLI and executor configuration for server and daemonless caches.
 use super::{SERVER_ENV, default_endpoint};
 use anyhow::{Context, ensure};
-use clap::ValueEnum;
 use std::path::PathBuf;
 
 pub const BACKEND_ENV: &str = "PVISOR_CACHE_BACKEND";
 pub const LOCATION_ENV: &str = "PVISOR_CACHE_LOCATION";
 pub const READ_ONLY_ENV: &str = "PVISOR_CACHE_READ_ONLY";
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CacheBackend {
     #[default]
     Server,
     Filesystem,
     S3,
+}
+impl std::str::FromStr for CacheBackend {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "server" => Ok(Self::Server),
+            "filesystem" => Ok(Self::Filesystem),
+            "s3" => Ok(Self::S3),
+            _ => Err(format!(
+                "invalid cache backend {value:?}; expected server, filesystem, s3"
+            )),
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct CacheConfig {
@@ -25,7 +37,7 @@ impl CacheConfig {
     pub fn from_env() -> anyhow::Result<Self> {
         Self::from_options(None, None, None, None)
     }
-    pub(crate) fn from_options(
+    pub fn from_options(
         backend: Option<CacheBackend>,
         location: Option<String>,
         read_only: Option<bool>,
@@ -34,7 +46,7 @@ impl CacheConfig {
         let backend = match backend {
             Some(backend) => backend,
             None => match std::env::var(BACKEND_ENV) {
-                Ok(value) => CacheBackend::from_str(&value, false).map_err(anyhow::Error::msg)?,
+                Ok(value) => value.parse::<CacheBackend>().map_err(anyhow::Error::msg)?,
                 Err(std::env::VarError::NotPresent) => CacheBackend::Server,
                 Err(error) => return Err(error.into()),
             },
@@ -76,7 +88,7 @@ impl CacheConfig {
                 .or_else(|| std::env::var_os("PVISOR_IMAGE_STORE").map(PathBuf::from)),
         })
     }
-    pub(super) fn address(&self) -> anyhow::Result<String> {
+    pub fn address(&self) -> anyhow::Result<String> {
         match self.backend {
             CacheBackend::Server => Ok(self.location.clone()),
             CacheBackend::Filesystem => {

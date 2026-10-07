@@ -175,7 +175,7 @@ impl Default for RunSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunExecutorKind {
     #[default]
@@ -308,7 +308,7 @@ impl VmSettings {
             || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some()
     }
 
-    pub(crate) fn validate_ram_dedup(&self) -> anyhow::Result<()> {
+    pub fn validate_ram_dedup(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.cold_ram_compression || cfg!(all(target_os = "linux", target_arch = "x86_64")),
             "vm.cold_ram_compression requires Linux x86_64 kernel-fault userfaultfd support"
@@ -367,7 +367,7 @@ impl Default for VmSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContainerNetwork {
     /// Share the runtime host network. This keeps an in-process Gateway and
@@ -387,7 +387,7 @@ pub struct ContainerMount {
     pub read_only: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunStdio {
     #[default]
@@ -395,7 +395,7 @@ pub enum RunStdio {
     Capture,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunPolicy {
     #[default]
@@ -405,7 +405,7 @@ pub enum RunPolicy {
 
 /// Whether a host process receives pVisor's synthetic-root/Landlock or
 /// Seatbelt filesystem access restrictions.
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum FilesystemMode {
     /// Preserve the host process filesystem view and permissions.
@@ -493,7 +493,7 @@ pub enum FilesystemAccessLevel {
     Write,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum OverlayFsCommit {
     #[default]
@@ -529,7 +529,7 @@ impl Default for OverlayNetSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum OverlayNetMode {
     #[default]
@@ -538,7 +538,7 @@ pub enum OverlayNetMode {
     Proxy,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum OverlayNetPolicy {
     #[default]
@@ -575,7 +575,7 @@ impl Default for GatewaySettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum GatewayMode {
     #[default]
@@ -583,7 +583,7 @@ pub enum GatewayMode {
     Capture,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum GatewayProfile {
     ZcodeBigmodel,

@@ -139,14 +139,14 @@ def _cargo_command(
         options.profile,
         "--message-format=json-render-diagnostics",
         "-p",
-        "pvisor-daemon" if daemon else "pvisor-shim" if shim_vm else "pvisor",
+        "pvisor-daemon" if daemon else "pvisor-shim" if shim_vm else "pvisor-cli",
     ]
     if daemon:
         command.extend(("--bin", "pvisor-daemon", "--no-default-features"))
     elif shim_vm:
         command.extend(("--bin", "containerd-shim-pvisor-v2", "--features", "vm"))
     else:
-        command.extend(("-p", "pvisor-tui", "-p", "pvisor-replay", "--features", "pvisor/gateway"))
+        command.extend(("--features", "pvisor-cli/gateway"))
         for name in NATIVE_BINARIES:
             command.extend(("--bin", name))
     if target is not None:

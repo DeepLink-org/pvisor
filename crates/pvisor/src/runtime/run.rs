@@ -94,6 +94,11 @@ impl RunCancellation {
     pub fn is_cancelled(&self) -> bool {
         self.token.is_cancelled()
     }
+
+    /// Wait for cancellation without exposing the underlying provider token.
+    pub async fn cancelled(&self) {
+        self.token.cancelled().await;
+    }
 }
 
 /// Handle for one in-flight Run: status, cancel, wait, event subscribe.

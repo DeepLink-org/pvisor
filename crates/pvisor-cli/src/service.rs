@@ -73,7 +73,7 @@ struct ToolArgs {
 #[serde(default, deny_unknown_fields)]
 struct Config {
     state: PathBuf,
-    node: Option<crate::node::Config>,
+    node: Option<pvisor::node::Config>,
     pool: Option<Pool>,
     cgroup_root: Option<PathBuf>,
     limits: BTreeMap<String, Limits>,
@@ -82,7 +82,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             state: ".pvisor/services".into(),
-            node: Some(crate::node::Config::default()),
+            node: Some(pvisor::node::Config::default()),
             pool: None,
             cgroup_root: None,
             limits: BTreeMap::new(),
@@ -284,7 +284,7 @@ impl Manager {
         {
             let socket = self.config.node.as_ref().unwrap().socket.clone();
             let resources =
-                tokio::task::spawn_blocking(move || crate::node::stats(&socket)).await?;
+                tokio::task::spawn_blocking(move || pvisor::node::stats(&socket)).await?;
             value["node_resources"] = match resources {
                 Ok(stats) => stats,
                 Err(error) => serde_json::json!({"error": format!("{error:#}")}),
@@ -295,7 +295,7 @@ impl Manager {
     fn spawn(&mut self, name: &str) -> anyhow::Result<()> {
         let role = self.roles.get_mut(name).context("unknown service role")?;
         ensure!(role.child.is_none(), "role already running");
-        crate::node::private_directory(&self.config.state.join("logs"))?;
+        pvisor::node::private_directory(&self.config.state.join("logs"))?;
         let log = OpenOptions::new()
             .create(true)
             .append(true)
@@ -345,7 +345,7 @@ impl Manager {
             let ready = match name {
                 "node" => {
                     let socket = self.config.node.as_ref().unwrap().socket.clone();
-                    tokio::task::spawn_blocking(move || crate::node::stats(&socket))
+                    tokio::task::spawn_blocking(move || pvisor::node::stats(&socket))
                         .await?
                         .is_ok()
                 }
@@ -378,7 +378,7 @@ impl Manager {
                 .is_some_and(|role| role.child.is_some())
         {
             let socket = self.config.node.as_ref().unwrap().socket.clone();
-            let stats = tokio::task::spawn_blocking(move || crate::node::stats(&socket)).await??;
+            let stats = tokio::task::spawn_blocking(move || pvisor::node::stats(&socket)).await??;
             ensure!(
                 stats["active_pins"].as_u64() == Some(0),
                 "node has active pins; drain dependent tasks first"
@@ -535,7 +535,7 @@ pub async fn run(args: ServiceArgs) -> anyhow::Result<()> {
         }
         ServiceCommand::Run { config } => return supervise(&config).await,
         ServiceCommand::Node { config } => {
-            return crate::node::serve(
+            return pvisor::node::serve(
                 Config::load(&config)?
                     .node
                     .context("node role is disabled")?,
@@ -561,7 +561,7 @@ async fn supervise(path: &Path) -> anyhow::Result<()> {
     use fs2::FileExt;
     let path = path.canonicalize()?;
     let config = Config::load(&path)?;
-    crate::node::private_directory(&config.state)?;
+    pvisor::node::private_directory(&config.state)?;
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -580,7 +580,7 @@ async fn supervise(path: &Path) -> anyhow::Result<()> {
     std::io::Write::write_all(&mut active, toml::to_string(&config)?.as_bytes())?;
     active.as_file().sync_all()?;
     active.persist(&active_path)?;
-    let (listener, _socket) = crate::node::SocketGuard::bind(&config.management_socket())?;
+    let (listener, _socket) = pvisor::node::SocketGuard::bind(&config.management_socket())?;
     let mut manager = Manager::new(config.clone(), &active_path)?;
     let names: Vec<_> = ["node", "pool"]
         .into_iter()

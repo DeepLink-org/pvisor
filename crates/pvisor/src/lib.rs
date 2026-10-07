@@ -1,4 +1,4 @@
-//! pVisor — foreground Agent Run manager and portable execution runtime.
+//! pVisor — embeddable execution runtime and durable Job service.
 //!
 //! Hosts call [`PVisor::run`] directly; pVisor assembles execution, control,
 //! network, filesystem, and the optional internal Gateway driver. Durable
@@ -6,7 +6,6 @@
 
 #![cfg_attr(all(target_os = "macos", target_arch = "x86_64"), allow(dead_code))]
 
-pub mod cli;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 #[doc(hidden)]
 pub mod environment_snapshot;
@@ -16,8 +15,6 @@ pub mod trace;
 pub use session::Session;
 
 mod cache_budget;
-#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-pub mod companions;
 mod config;
 #[doc(hidden)]
 pub mod diagnostics;
@@ -27,7 +24,6 @@ mod image;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 pub mod node;
 pub mod ram_backing;
-pub mod service;
 
 #[doc(hidden)]
 pub use executor::sandbox;
@@ -109,3 +105,17 @@ pub use util::unix_now_ms;
 
 #[doc(hidden)]
 pub use runtime::{RunRecord, RunRecordState, control_observations};
+
+// Explicit frontend/embedding APIs; runtime implementation stays private.
+pub use config::{FilesystemAccessLevel, FilesystemAccessRule, FilesystemMount, GatewayProfile};
+pub use executor::delegated::DelegatedRunOutput;
+pub use executor::process::rootless_runtime_available;
+pub use runtime::{
+    ApplySelection, ReadOnlyOverlayMount, control_mount_inspect, control_ping,
+    control_unmount_inspect, default_run_home, is_live, mount_overlay_record_read_only,
+    resolve_run,
+};
+#[cfg(target_os = "linux")]
+pub use runtime::{LEASE_FILENAME, RunLease};
+pub use runtime::{audit, checkpoint, job_execution};
+pub use util::{startup_mark, startup_mark_run, write_private_json};

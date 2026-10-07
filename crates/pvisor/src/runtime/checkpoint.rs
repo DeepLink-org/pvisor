@@ -87,7 +87,7 @@ pub fn create_logical_checkpoint(
 }
 
 /// Caller retains the Job lease through publication and any branch pin/copy.
-pub(crate) fn create_stopped_checkpoint_locked(
+pub fn create_stopped_checkpoint_locked(
     record: &RunRecord,
     requested_id: Option<&str>,
 ) -> anyhow::Result<LogicalCheckpoint> {
@@ -191,7 +191,7 @@ fn create_checkpoint(
 
 /// Committed workspace checkpoints only. Corrupt committed records are errors,
 /// whereas unpublished transaction directories are never exposed as savepoints.
-pub(crate) fn list_checkpoints(record: &RunRecord) -> anyhow::Result<Vec<LogicalCheckpoint>> {
+pub fn list_checkpoints(record: &RunRecord) -> anyhow::Result<Vec<LogicalCheckpoint>> {
     let root = record.stage_dir().join(CHECKPOINTS_DIR);
     if !root.exists() {
         return Ok(Vec::new());
@@ -263,10 +263,7 @@ fn validate_owned_checkpoint(
     Ok(())
 }
 
-pub(crate) fn resolve_checkpoint(
-    record: &RunRecord,
-    id: &str,
-) -> anyhow::Result<LogicalCheckpoint> {
+pub fn resolve_checkpoint(record: &RunRecord, id: &str) -> anyhow::Result<LogicalCheckpoint> {
     validate_checkpoint_id(id)?;
     let checkpoints = list_checkpoints(record)?;
     if let Some(exact) = checkpoints.iter().find(|cp| cp.checkpoint_id == id) {
@@ -291,24 +288,21 @@ pub(crate) fn resolve_checkpoint(
 
 /// A hard link is a durable branch retention reference, including when the
 /// child fails before its runner starts. Job lease serializes pin vs delete.
-pub(crate) fn pin_checkpoint(
-    checkpoint: &LogicalCheckpoint,
-    child_stage: &Path,
-) -> anyhow::Result<()> {
+pub fn pin_checkpoint(checkpoint: &LogicalCheckpoint, child_stage: &Path) -> anyhow::Result<()> {
     fs::hard_link(checkpoint.manifest_path(), child_stage.join(SOURCE_CHECKPOINT_PIN))
         .map_err(|e| anyhow::anyhow!("retain source checkpoint: {e}; workspace branches currently require a stage on the same filesystem"))?;
     sync_directory(child_stage)?;
     Ok(())
 }
 
-pub(crate) fn checkpoint_branch_refs(checkpoint: &LogicalCheckpoint) -> anyhow::Result<u64> {
+pub fn checkpoint_branch_refs(checkpoint: &LogicalCheckpoint) -> anyhow::Result<u64> {
     Ok(fs::metadata(checkpoint.manifest_path())?
         .nlink()
         .saturating_sub(1))
 }
 
 /// In-memory read-only projection, never a replacement Job/Attempt record.
-pub(crate) fn workspace_view(
+pub fn workspace_view(
     record: &RunRecord,
     checkpoint: &LogicalCheckpoint,
 ) -> anyhow::Result<RunRecord> {

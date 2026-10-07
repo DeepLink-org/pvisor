@@ -15,7 +15,7 @@ use tokio::{
 
 /// All host-authority sockets share this service-compatible exclusion root.
 /// Never chmod or follow a preexisting entry: an invalid root fails startup.
-pub(crate) fn host_authority_root() -> anyhow::Result<std::path::PathBuf> {
+pub fn host_authority_root() -> anyhow::Result<std::path::PathBuf> {
     let root =
         std::fs::canonicalize("/tmp")?.join(format!("pvisor-host-{}", unsafe { libc::geteuid() }));
     create_authority_root(&root)?;
@@ -206,7 +206,7 @@ pub fn authorize_host_peer(stream: &UnixStream) -> Result<(), AgentCtlHostError>
 
 /// A live endpoint must never route to a different Attempt, including after restore.
 /// There is no independent generation in these endpoint records; reject supplied generations.
-pub(crate) fn validate_host_target(
+pub fn validate_host_target(
     target: Option<&AgentCtlTarget>,
     job: &str,
     attempt: &str,

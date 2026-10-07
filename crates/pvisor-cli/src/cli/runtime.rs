@@ -3,12 +3,12 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[cfg(target_os = "linux")]
-use crate::runtime::LEASE_FILENAME;
 use anyhow::Context;
 use clap::Args;
+#[cfg(target_os = "linux")]
+use pvisor::LEASE_FILENAME;
 
-use crate::runtime::{
+use pvisor::{
     ApplySelection, ReadOnlyOverlayMount, RunRecord, control_mount_inspect, control_ping,
     control_unmount_inspect, is_live, mount_overlay_record_read_only, resolve_run,
 };
@@ -107,10 +107,10 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             checkpoint: None,
         });
     }
-    let response = crate::runtime::job_service::RuntimeJobService::status(
+    let response = pvisor::job_service::RuntimeJobService::status(
         &super::host::service_context(),
-        crate::runtime::job_service::StatusRequest {
-            job: crate::runtime::job_service::JobSelection {
+        pvisor::job_service::StatusRequest {
+            job: pvisor::job_service::JobSelection {
                 selector: args.selector,
                 storage: args.output_dir,
             },
@@ -120,7 +120,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
         println!("{}", serde_json::to_string_pretty(&status_json(&response))?);
         return Ok(());
     }
-    let crate::runtime::job_service::StatusResponse {
+    let pvisor::job_service::StatusResponse {
         record,
         live,
         execution_blocker: blocker,
@@ -135,7 +135,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     println!("session: {}", record.session_id);
     let state = if live {
         "running"
-    } else if record.state == crate::RunRecordState::Running {
+    } else if record.state == pvisor::RunRecordState::Running {
         "stale"
     } else {
         record.state.as_str()
@@ -241,7 +241,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn status_json(response: &crate::runtime::job_service::StatusResponse) -> serde_json::Value {
+fn status_json(response: &pvisor::job_service::StatusResponse) -> serde_json::Value {
     let record = &response.record;
     serde_json::json!({
         "run": record, "live": response.live,
@@ -257,7 +257,7 @@ fn status_json(response: &crate::runtime::job_service::StatusResponse) -> serde_
 pub fn kill(args: KillArgs) -> anyhow::Result<()> {
     let record = selected(Some(&args.selector), &args.output_dir)?;
     super::host_service::check_record(&record)?;
-    if crate::runtime::job_execution::terminate_suspended(&record)? {
+    if pvisor::job_execution::terminate_suspended(&record)? {
         if args.json {
             println!(
                 "{}",
@@ -290,7 +290,7 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
         record.run_id
     );
     anyhow::ensure!(
-        record.state == crate::RunRecordState::Running && is_live(&record.stage_dir())?,
+        record.state == pvisor::RunRecordState::Running && is_live(&record.stage_dir())?,
         "Job {} is not live",
         record.run_id
     );
@@ -300,10 +300,10 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
         {
             // Pin before inspecting the lease, then reread the durable identity
             // under the native Job lock. Never signal a recycled numeric PID.
-            let template = crate::runtime::job_execution::Job::read(&record)?;
+            let template = pvisor::job_execution::Job::read(&record)?;
             let _job_lease = template
                 .as_ref()
-                .map(crate::runtime::job_execution::Job::lock)
+                .map(pvisor::job_execution::Job::lock)
                 .transpose()?;
             if let Some(template) = template {
                 template.current()?.validate_record_target(&record)?;
@@ -320,12 +320,12 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
                 record.run_id,
                 pid
             );
-            let current = crate::RunRecord::read(&record.stage_dir())?;
+            let current = pvisor::RunRecord::read(&record.stage_dir())?;
             super::host::check_selected_record(&record, &current)?;
             super::host_service::check_record(&current)?;
             anyhow::ensure!(
                 current.pid == record.pid
-                    && current.state == crate::RunRecordState::Running
+                    && current.state == pvisor::RunRecordState::Running
                     && is_live(&current.stage_dir())?
                     && process.is_alive(),
                 "Job process ownership changed; termination refused"
@@ -389,8 +389,8 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
     let (mut record, _lease) = selected.lock_current()?;
     super::host_service::check_record(&record)?;
     if let Some(id) = &args.checkpoint {
-        let checkpoint = crate::runtime::checkpoint::resolve_checkpoint(&record, id)?;
-        record = crate::runtime::checkpoint::workspace_view(&record, &checkpoint)?;
+        let checkpoint = pvisor::checkpoint::resolve_checkpoint(&record, id)?;
+        record = pvisor::checkpoint::workspace_view(&record, &checkpoint)?;
     } else {
         record.require_stopped()?;
     }
@@ -522,11 +522,11 @@ impl InspectMount {
 }
 
 pub fn apply(args: ApplyArgs) -> anyhow::Result<()> {
-    use crate::runtime::job_service::{ApplyRequest, RuntimeJobService};
+    use pvisor::job_service::{ApplyRequest, RuntimeJobService};
     let response = RuntimeJobService::apply(
         &super::host::service_context(),
         ApplyRequest {
-            job: crate::runtime::job_service::JobSelection {
+            job: pvisor::job_service::JobSelection {
                 selector: Some(args.selector),
                 storage: args.output_dir,
             },
@@ -543,11 +543,11 @@ pub fn apply(args: ApplyArgs) -> anyhow::Result<()> {
     Ok(())
 }
 pub fn drop_overlay(args: SelectArgs) -> anyhow::Result<()> {
-    use crate::runtime::job_service::{DropRequest, RuntimeJobService};
+    use pvisor::job_service::{DropRequest, RuntimeJobService};
     let response = RuntimeJobService::drop(
         &super::host::service_context(),
         DropRequest {
-            job: crate::runtime::job_service::JobSelection {
+            job: pvisor::job_service::JobSelection {
                 selector: Some(args.selector),
                 storage: args.output_dir,
             },
@@ -556,8 +556,8 @@ pub fn drop_overlay(args: SelectArgs) -> anyhow::Result<()> {
     render_mutation(response);
     Ok(())
 }
-fn render_mutation(response: crate::runtime::job_service::MutationResponse) {
-    use crate::runtime::job_service::MutationOutcome;
+fn render_mutation(response: pvisor::job_service::MutationResponse) {
+    use pvisor::job_service::MutationOutcome;
     match response.outcome {
         MutationOutcome::AlreadyApplied => println!(
             "already applied {} → {}",
@@ -628,7 +628,7 @@ mod tests {
     #[test]
     fn process_must_hold_the_selected_run_lease() {
         let temporary = tempfile::tempdir().unwrap();
-        let lease = crate::runtime::RunLease::acquire(temporary.path()).unwrap();
+        let lease = pvisor::RunLease::acquire(temporary.path()).unwrap();
         let path = temporary.path().join(LEASE_FILENAME);
         let pid = std::process::id() as libc::pid_t;
         assert!(pid_holds_lease(pid, &path).unwrap());
