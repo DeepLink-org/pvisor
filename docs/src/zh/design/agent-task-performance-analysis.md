@@ -20,7 +20,7 @@
 
 pVisor 复用宿主已安装的 Python/Node/Rust/Git/rg/Claude/Codex，不制作系统镜像；Firecracker/QEMU 在完整官方 Ubuntu 26.04.1 LTS 中安装发行版工具及相同 Rust/Agent CLI。每次新建环境，再执行同一修复计划与测试。VM 2 vCPU / 16 GiB，所有组相同两核预算、热宿主缓存；每格计划 10 次、3 次预热，随机顺序；有效 N 不足 10 时在表内标明。Ubuntu 的 Python/Node/Git 版本与宿主不同，完整版本和内核差异见[方法](../benchmarks/methodology.md#full-ubuntu)。
 
-![Complete Ubuntu and image-free pVisor tool loops](../../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-workflows.svg)
+![Complete Ubuntu and image-free pVisor tool loops](../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-workflows.svg)
 
 | Backend | Tool self-check P50/P95 s | Repair/tests P50/P95 s | Claude loop P50/P95 s | Codex loop P50/P95 s |
 |---|---|---|---|---|
@@ -76,7 +76,7 @@ Codex 使用统一内部 `danger-full-access`，外层运行时提供表明的�
 
 任务从检查项目、搜索错误、修复 Python 开始，再执行 Python/Rust/Node 测试、安装 32 个本地依赖、生成 diff。模型响应固定为这一工具计划；CLI 必须把真实通过的测试结果传回服务并正常结束。它覆盖环境部署与工具执行，尚不能代表大型仓库、真实模型解题成功率或公网依赖安装。
 
-![完整工具环境与真实 CLI 的 P50/P95](../../assets/benchmarks/reference-env-20261004/reference-workflows.svg)
+![完整工具环境与真实 CLI 的 P50/P95](../assets/benchmarks/reference-env-20261004/reference-workflows.svg)
 
 | Backend | Tool self-check P50/P95 s | Repair/tests P50/P95 s | Claude loop P50/P95 s | Codex loop P50/P95 s |
 |---|---|---|---|---|

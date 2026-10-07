@@ -63,4 +63,4 @@ printf 'run=%s review=%s\n' "$run_code" "$review_code"
 
 解析错误和准入前失败可能发生在 `run.failure` 或 Bundle 生成之前。找不到 Job、apply 冲突和管理命令错误写到 stderr 并返回 1，不会伪装成任务失败。`UnsupportedPolicy` 诊断表示能力请求被拒绝；普通 execution checkpoint/suspend 请求使用 `CAPABILITY_UNSUPPORTED`。不要把这些情况评分为模型回答失败。
 
-可下载的[非零退出样例](../../assets/examples/json/failed-run.json) 记录 `state = "failed"`、`exit_code = 7`、`failure.kind = "process_exit"`。[超时样例](../../assets/examples/json/timeout-run.json) 记录 `state = "failed"`，省略 `exit_code`，`failure.kind = "deadline_exceeded"`，CLI 返回 1。两者都保留了暂存的候选文件。[采集来源](../../assets/examples/json/provenance.json) 包含命令与实际退出码。
+可下载的[非零退出样例](../assets/examples/json/failed-run.json) 记录 `state = "failed"`、`exit_code = 7`、`failure.kind = "process_exit"`。[超时样例](../assets/examples/json/timeout-run.json) 记录 `state = "failed"`，省略 `exit_code`，`failure.kind = "deadline_exceeded"`，CLI 返回 1。两者都保留了暂存的候选文件。[采集来源](../assets/examples/json/provenance.json) 包含命令与实际退出码。

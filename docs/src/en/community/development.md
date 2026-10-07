@@ -119,7 +119,7 @@ CI builds the default core independently before the capture-enabled distribution
 | `just cases --case S-DOC-001,S-DOC-002` | Selected documentation cases |
 | `just benchmark` / `just benchmark nightly` | Process and Run Bundle benchmarks |
 | `just docs-build` | Build bilingual documentation and check links |
-| `just docs-serve --port 3000` | Build/watch/preview docs; refresh manually after rebuild |
+| `just docs-serve` / `just docs-serve en` | Native Zensical preview with live reload; Chinese on port 3000, English on port 3001 |
 | `just ci` | Check format/lint/tests and build without rewriting source |
 | `just clean` | Remove build artifacts, preserving development environment/local Run records |
 

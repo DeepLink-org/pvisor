@@ -9,10 +9,8 @@ use anyhow::{Context, bail};
 use clap::Args;
 
 use crate::runtime::{
-    ApplySelection, OverlayState, ReadOnlyOverlayMount, RunRecord, apply_overlay_selected,
-    control_mount_inspect, control_observations, control_overlay_status, control_ping,
-    control_unmount_inspect, discard_overlay, is_live, load_apply_records,
-    mount_overlay_record_read_only, overlay_status, resolve_run,
+    ApplySelection, ReadOnlyOverlayMount, RunRecord, control_mount_inspect, control_ping,
+    control_unmount_inspect, is_live, mount_overlay_record_read_only, resolve_run,
 };
 
 const DEFAULT_STORAGE: &str = ".pvisor/capture";
@@ -109,83 +107,30 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             checkpoint: None,
         });
     }
-    let record = selected(args.selector.as_deref(), &args.output_dir)?;
-    let live = control_ping(&record.stage_dir()) || is_live(&record.stage_dir())?;
-    let checkpoints = crate::runtime::checkpoint::list_checkpoints(&record)?;
-    let capability = serde_json::json!({
-        "workspace": record.overlay.is_some(),
-        "workspace_capture_requires": "confirmed_stopped",
-        "execution": super::checkpoint::execution_blocker(&record).is_none(),
-        "execution_blocker": super::checkpoint::execution_blocker(&record),
-    });
-    let apply_history = load_apply_records(&record.stage_dir())?;
-    let fs = record
-        .overlay
-        .as_ref()
-        .map(|overlay| {
-            if control_ping(&record.stage_dir()) {
-                control_overlay_status(&record.stage_dir()).map(|status| FsSummary {
-                    changed_files: status.changed_files,
-                    whiteouts: status.whiteouts,
-                    sample_paths: status.sample_paths,
-                })
-            } else {
-                overlay_status(overlay)
-                    .map(|status| FsSummary {
-                        changed_files: status.changed_files,
-                        whiteouts: status.whiteouts,
-                        sample_paths: status.sample_paths,
-                    })
-                    .map_err(Into::into)
-            }
-        })
-        .transpose()?;
-    let observations = if live {
-        control_observations(&record.stage_dir()).ok()
-    } else {
-        None
-    };
-    let file_observed = observations
-        .as_ref()
-        .and_then(|value| value.get("filesystem"))
-        .and_then(|value| {
-            serde_json::from_value::<pvisor_core::operation::FilesystemObservation>(value.clone())
-                .ok()
-        })
-        .or_else(|| record.filesystem_observation.clone());
-    let net_observed = observations
-        .as_ref()
-        .and_then(|value| value.get("network"))
-        .and_then(|value| {
-            serde_json::from_value::<pvisor_overlaynet::InterceptionSnapshot>(value.clone()).ok()
-        })
-        .or_else(|| record.network_interception_metrics.clone());
+    let response = crate::runtime::job_service::RuntimeJobService::status(
+        &super::host::service_context(),
+        crate::runtime::job_service::StatusRequest {
+            job: crate::runtime::job_service::JobSelection {
+                selector: args.selector,
+                storage: args.output_dir,
+            },
+        },
+    )?;
     if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "run": record,
-                "live": live,
-                "checkpoint_capability": capability,
-                "execution": crate::runtime::job_execution::Job::read(&record)?.map(|job| serde_json::json!({"state":job.state,"suspended_head":job.head,"active_attempt":job.active_attempt,"job_root":job.root,"checkpoints":job.checkpoints,"requests":job.requests,"resume_requests":job.resumes,"fork_requests":job.forks,"checkpoint_stores":job.stores})),
-                "checkpoints": checkpoints,
-                "workspace_generation": record.overlay.as_ref().map(|overlay| overlay.generation),
-                "apply_history": apply_history,
-                "observations": {
-                    "filesystem": file_observed,
-                    "network": net_observed,
-                },
-                "filesystem": fs.as_ref().map(|status| serde_json::json!({
-                    "state": record.overlay.as_ref().map(|overlay| overlay.state),
-                    "changed_files": status.changed_files,
-                    "whiteouts": status.whiteouts,
-                    "sample_paths": status.sample_paths,
-                })),
-            }))?
-        );
+        println!("{}", serde_json::to_string_pretty(&status_json(&response))?);
         return Ok(());
     }
-
+    let crate::runtime::job_service::StatusResponse {
+        record,
+        live,
+        execution_blocker: blocker,
+        checkpoints,
+        apply_history,
+        filesystem: fs,
+        filesystem_observation: file_observed,
+        network_observation: net_observed,
+        execution,
+    } = response;
     println!("job: {}", record.run_id);
     println!("session: {}", record.session_id);
     let state = if live {
@@ -205,18 +150,18 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     println!("command: {}", shell_join(&record.command));
     println!("stage: {}", record.stage_dir().display());
     println!("checkpoints: {} workspace", checkpoints.len());
-    if let Some(blocker) = super::checkpoint::execution_blocker(&record) {
+    if let Some(blocker) = blocker {
         println!("execution checkpoint: unsupported ({blocker})");
     } else {
         println!("execution checkpoint: supported");
     }
-    if let Some(job) = crate::runtime::job_execution::Job::read(&record)? {
+    if let Some(job) = execution {
         println!(
             "execution: {} ({} checkpoints)",
-            job.state,
-            job.checkpoints.len()
+            job["state"].as_str().unwrap_or("unknown"),
+            job["checkpoints"].as_object().map_or(0, |v| v.len())
         );
-        if let Some(head) = job.head {
+        if let Some(head) = job["suspended_head"].as_str() {
             println!("suspended head: {head}");
         }
     }
@@ -294,6 +239,19 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
         println!("fs: host view (no OverlayFS workspace)");
     }
     Ok(())
+}
+
+fn status_json(response: &crate::runtime::job_service::StatusResponse) -> serde_json::Value {
+    let record = &response.record;
+    serde_json::json!({
+        "run": record, "live": response.live,
+        "checkpoint_capability": {"workspace": record.overlay.is_some(), "workspace_capture_requires": "confirmed_stopped", "execution": response.execution_blocker.is_none(), "execution_blocker": response.execution_blocker},
+        "execution": response.execution, "checkpoints": response.checkpoints,
+        "workspace_generation": record.overlay.as_ref().map(|o| o.generation),
+        "apply_history": response.apply_history,
+        "observations": {"filesystem": response.filesystem_observation, "network": response.network_observation},
+        "filesystem": response.filesystem.as_ref().map(|fs| serde_json::json!({"state": record.overlay.as_ref().map(|o| o.state), "changed_files": fs.changed_files, "whiteouts": fs.whiteouts, "sample_paths": fs.sample_paths})),
+    })
 }
 
 pub fn kill(args: KillArgs) -> anyhow::Result<()> {
@@ -423,12 +381,6 @@ fn pid_holds_lease(pid: libc::pid_t, lease: &Path) -> anyhow::Result<bool> {
         }
     }
     Ok(false)
-}
-
-struct FsSummary {
-    changed_files: usize,
-    whiteouts: usize,
-    sample_paths: Vec<String>,
 }
 
 pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
@@ -570,155 +522,68 @@ impl InspectMount {
 }
 
 pub fn apply(args: ApplyArgs) -> anyhow::Result<()> {
-    if args.all && (!args.paths.is_empty() || !args.include.is_empty() || !args.exclude.is_empty())
-    {
-        bail!("--all cannot be combined with --path, --include, or --exclude");
-    }
-    let selection = ApplySelection {
-        paths: args.paths,
-        includes: args.include,
-        excludes: args.exclude,
-    };
-    let select = SelectArgs {
-        selector: args.selector,
-        output_dir: args.output_dir,
-    };
-    mutate(select, true, args.target.as_deref(), Some(&selection))
-}
-
-pub fn drop_overlay(args: SelectArgs) -> anyhow::Result<()> {
-    mutate(args, false, None, None)
-}
-
-fn mutate(
-    args: SelectArgs,
-    apply: bool,
-    target: Option<&Path>,
-    selection: Option<&ApplySelection>,
-) -> anyhow::Result<()> {
-    let selected = selected(Some(&args.selector), &args.output_dir)?;
-    let _job = super::host::lock_selected_job(&selected)?;
-    let (mut record, _lease) = selected.lock_current()?;
-    super::host_service::check_record(&record)?;
-    record.require_stopped()?;
-    let next_generation = record
-        .overlay
-        .as_ref()
-        .context("this Job has no OverlayFS workspace")?
-        .generation
-        .checked_add(1)
-        .context("workspace generation exhausted")?;
-    let mut overlay = record
-        .overlay
-        .take()
-        .context("this Job has no OverlayFS workspace")?;
-    // The final lower may be the Run-owned snapshot of the target. It is
-    // still the base workspace, whereas any preceding lower is a composed
-    // read-only layer whose changes cannot be applied to that workspace.
-    let base_snapshot = record.storage.join(".overlay-lowers");
-    if apply
-        && (record.overlay_lowers.len() > 1
-            || record.overlay_lowers.first().is_some_and(|lower| {
-                lower != &overlay.target && !lower.starts_with(&base_snapshot)
-            }))
-    {
-        bail!(
-            "Job {} composes read-only layers above its base; apply is disabled until pVisor can materialize the complete merged diff",
-            record.run_id
-        );
-    }
-    match (apply, overlay.state) {
-        (true, OverlayState::Applied) => {
-            println!(
-                "already applied {} → {}",
-                record.run_id,
-                overlay.target.display()
-            );
-            return Ok(());
-        }
-        (false, OverlayState::Discarded) => {
-            println!(
-                "remaining staged changes already dropped for {}",
-                record.run_id
-            );
-            return Ok(());
-        }
-        (false, OverlayState::Applied) => {
-            bail!(
-                "Job {} was already applied; drop cannot undo changes written to {}",
-                record.run_id,
-                overlay.target.display()
-            );
-        }
-        (true, OverlayState::Discarded) => {
-            bail!(
-                "Job {} was already dropped; apply cannot recover discarded changes",
-                record.run_id
-            );
-        }
-        _ => {}
-    }
-    if apply {
-        if overlay.target == Path::new("/") {
-            bail!(
-                "Job {} is a full-root libkrun changeset; fork it or drop it instead of applying it to the host root",
-                record.run_id
-            );
-        }
-        if let Some(target) = target {
-            let target = resolve_apply_target(target, &record.stage_dir())?;
-            overlay.target = target.clone();
-            overlay.baseline_lower = None;
-            if let Some(primary_lower) = record.overlay_lowers.last_mut() {
-                *primary_lower = target;
-            } else {
-                record.overlay_lowers.push(target);
-            }
-        }
-        let lower_dirs = if record.overlay_lowers.is_empty() {
-            vec![overlay.target.clone()]
-        } else {
-            record.overlay_lowers.clone()
-        };
-        let outcome = apply_overlay_selected(
-            &mut overlay,
-            &lower_dirs,
-            selection.expect("apply always supplies a selection"),
-        )?;
-        println!(
-            "applied {} changes from {} → {} (apply_id={}, remaining={})",
-            outcome.applied.len(),
-            record.run_id,
-            overlay.target.display(),
-            outcome.apply_id,
-            outcome.remaining.len()
-        );
-    } else {
-        discard_overlay(&mut overlay)?;
-        println!("dropped remaining staged changes for {}", record.run_id);
-    }
-    record.overlay = Some(overlay);
-    let overlay = record.overlay.as_mut().expect("restored above");
-    overlay.generation = next_generation;
-    record.write()?;
+    use crate::runtime::job_service::{ApplyRequest, RuntimeJobService};
+    let response = RuntimeJobService::apply(
+        &super::host::service_context(),
+        ApplyRequest {
+            job: crate::runtime::job_service::JobSelection {
+                selector: Some(args.selector),
+                storage: args.output_dir,
+            },
+            target: args.target,
+            selection: ApplySelection {
+                paths: args.paths,
+                includes: args.include,
+                excludes: args.exclude,
+            },
+            all: args.all,
+        },
+    )?;
+    render_mutation(response);
     Ok(())
 }
-
-fn resolve_apply_target(target: &Path, stage: &Path) -> anyhow::Result<PathBuf> {
-    std::fs::create_dir_all(target)
-        .with_context(|| format!("create apply target {}", target.display()))?;
-    let target = target
-        .canonicalize()
-        .with_context(|| format!("resolve apply target {}", target.display()))?;
-    let stage = stage.canonicalize().unwrap_or_else(|_| stage.to_path_buf());
-    if target.starts_with(&stage) || stage.starts_with(&target) {
-        bail!(
-            "apply target must not overlap the pVisor stage: target={}, stage={}",
-            target.display(),
-            stage.display()
-        );
+pub fn drop_overlay(args: SelectArgs) -> anyhow::Result<()> {
+    use crate::runtime::job_service::{DropRequest, RuntimeJobService};
+    let response = RuntimeJobService::drop(
+        &super::host::service_context(),
+        DropRequest {
+            job: crate::runtime::job_service::JobSelection {
+                selector: Some(args.selector),
+                storage: args.output_dir,
+            },
+        },
+    )?;
+    render_mutation(response);
+    Ok(())
+}
+fn render_mutation(response: crate::runtime::job_service::MutationResponse) {
+    use crate::runtime::job_service::MutationOutcome;
+    match response.outcome {
+        MutationOutcome::AlreadyApplied => println!(
+            "already applied {} → {}",
+            response.job_id,
+            response.target.display()
+        ),
+        MutationOutcome::AlreadyDropped => println!(
+            "remaining staged changes already dropped for {}",
+            response.job_id
+        ),
+        MutationOutcome::Dropped => {
+            println!("dropped remaining staged changes for {}", response.job_id)
+        }
+        MutationOutcome::Applied {
+            applied,
+            apply_id,
+            remaining,
+        } => println!(
+            "applied {} changes from {} → {} (apply_id={}, remaining={})",
+            applied,
+            response.job_id,
+            response.target.display(),
+            apply_id,
+            remaining
+        ),
     }
-    Ok(target)
 }
 
 fn selected(selector: Option<&Path>, output_dir: &Path) -> anyhow::Result<RunRecord> {

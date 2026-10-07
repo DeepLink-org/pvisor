@@ -152,7 +152,7 @@ Bundle 以 `0600` 写入。当前读取器要求 schema 恰为 4；不把旧格�
 
 ## 区分净变更与访问操作 {#changes}
 
-[真实样例](../../assets/examples/json/run-bundle.json) 中，`obsolete.txt` 为 `deleted`，`src` 是新增目录，`src/result.txt` 是新增文件。`filesystem.changes` 描述暂存的净结果；`run_observation.filesystem` 描述实际访问、允许/拒绝决定及计数。一个文件被反复写入，变更清单里仍可能只出现一次；被拒绝的读取可以出现在观察中而不产生文件变更。
+[真实样例](../assets/examples/json/run-bundle.json) 中，`obsolete.txt` 为 `deleted`，`src` 是新增目录，`src/result.txt` 是新增文件。`filesystem.changes` 描述暂存的净结果；`run_observation.filesystem` 描述实际访问、允许/拒绝决定及计数。一个文件被反复写入，变更清单里仍可能只出现一次；被拒绝的读取可以出现在观察中而不产生文件变更。
 
 `path` 用于展示。如果存在 `path_bytes`，路径身份应使用这组 Unix 字节，不要只按展示文本授权修改。目录变更与 `opaque` 条目有子树影响，选择 apply 路径时需一并考虑。使用 CLI 的选择性 apply，不要把 upper 层的 whiteout 原样复制进项目。
 

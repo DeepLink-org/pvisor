@@ -418,73 +418,33 @@ impl JobCommand {
     }
 }
 
-pub(super) fn validate_request_id(id: &str) -> anyhow::Result<()> {
-    pvisor_core::host_protocol::AgentCtlHostRequest {
-        version: pvisor_core::host_protocol::AGENTCTL_HOST_VERSION,
-        request_id: id.to_owned(),
-        target: None,
-        command: (),
+pub(super) fn service_context() -> crate::runtime::job_service::ServiceContext<'static> {
+    crate::runtime::job_service::ServiceContext {
+        expected_target: None,
+        check_cancelled: Some(&super::host_service::check_cancelled),
+        check_record: Some(&super::host_service::check_record),
     }
-    .validate()?;
-    if id.trim().is_empty() {
-        return Err(AgentCtlHostError::new(
-            AgentCtlHostErrorCode::InvalidRequest,
-            "durable request id must not be blank",
-        )
-        .into());
-    }
-    Ok(())
 }
 
+pub(super) fn validate_request_id(id: &str) -> anyhow::Result<()> {
+    crate::runtime::job_service::validate_request_id(id)
+}
 pub(super) fn lock_selected_job(
     record: &crate::RunRecord,
 ) -> anyhow::Result<Option<(crate::runtime::job_execution::Job, impl Send)>> {
-    let Some(template) = crate::runtime::job_execution::Job::read(record)? else {
-        return Ok(None);
-    };
-    let lease = template.lock()?;
-    let current = template.current()?;
-    current.validate_record_target(record)?;
-    let current_record = crate::RunRecord::read(&current.active_stage)?;
-    check_selected_record(record, &current_record)?;
-    super::host_service::check_record(&current_record)?;
-    Ok(Some((current, lease)))
+    crate::runtime::job_service::lock_selected_job(&service_context(), record)
 }
-
 pub(super) fn check_selected_record(
     selected: &crate::RunRecord,
     current: &crate::RunRecord,
 ) -> anyhow::Result<()> {
-    check_target(
-        &AgentCtlTarget {
-            job_id: selected.run_id.clone(),
-            attempt_id: selected.attempt_id.clone(),
-            generation: selected.overlay.as_ref().map(|o| o.generation.to_string()),
-        },
-        current,
-    )
+    crate::runtime::job_service::check_selected_record(selected, current)
 }
-
 pub(super) fn check_target(
     target: &AgentCtlTarget,
     record: &crate::RunRecord,
 ) -> anyhow::Result<()> {
-    target.validate()?;
-    let generation = record
-        .overlay
-        .as_ref()
-        .map(|overlay| overlay.generation.to_string());
-    if target.job_id != record.run_id
-        || target.attempt_id != record.attempt_id
-        || target.generation != generation
-    {
-        return Err(AgentCtlHostError::new(
-            AgentCtlHostErrorCode::Conflict,
-            "stale Job, Attempt, or workspace generation",
-        )
-        .into());
-    }
-    Ok(())
+    crate::runtime::job_service::check_target(target, record)
 }
 
 pub(crate) fn execute(rt: &tokio::runtime::Runtime, command: JobCommand) -> anyhow::Result<i32> {

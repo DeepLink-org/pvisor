@@ -6,7 +6,7 @@
 
 2026-10-05 的 shell/sleep 实验同时增加 Worker 数和 CPU 预算，每个 VM 使用独立 Worker。它观察一到四个 guest 的并行就绪，不是固定预算有效任务吞吐或单 Worker 密度。
 
-![历史退役 Worker 就绪探针](../../assets/benchmarks/cluster-scalability-20261005/execution.svg)
+![历史退役 Worker 就绪探针](../assets/benchmarks/cluster-scalability-20261005/execution.svg)
 
 | 存活 VM | 总内存 P50，MiB | 就绪 P50，s | 批量就绪速率，台/s |
 |---:|---:|---:|---:|
@@ -18,7 +18,7 @@
 
 ## 历史 Controller 成本 {#controller}
 
-![历史退役 Controller 查询与恢复](../../assets/benchmarks/cluster-scalability-20261005/controller.svg)
+![历史退役 Controller 查询与恢复](../assets/benchmarks/cluster-scalability-20261005/controller.svg)
 
 | 保留记录 | 索引计数 P50，ns | 全扫描参考 P50，ms | 进程与 ID fixture RSS，MiB | 日志，MiB | 热回放，s |
 |---:|---:|---:|---:|---:|---:|

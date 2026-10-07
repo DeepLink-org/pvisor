@@ -249,7 +249,7 @@ retain every sample. The two figure panels are independent batches, each
 comparing old/new artifacts with matched build settings. They are not a same-batch
 release/performance A/B or individual-mechanism gains.
 
-![Local-rootfs VM version comparison under two build profiles](../../assets/benchmarks/filesystem-service-20261005/local-vm.svg)
+![Local-rootfs VM version comparison under two build profiles](../assets/benchmarks/filesystem-service-20261005/local-vm.svg)
 
 ### Lazy images: cold/warm comparison without intermediate host FUSE {#service-lazy}
 

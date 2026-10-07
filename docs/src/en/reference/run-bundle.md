@@ -152,7 +152,7 @@ Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting envir
 
 ## Read a change without confusing it with an operation {#changes}
 
-The [real sample](../../assets/examples/json/run-bundle.json) contains `obsolete.txt` as `deleted`, `src` as an added directory, and `src/result.txt` as an added file. `filesystem.changes` describes the net staged result; `run_observation.filesystem` describes actual accesses, allowed/denied decisions, and counters. A file written repeatedly can appear once in the changeset. A denied read may appear in observations without producing a change.
+The [real sample](../assets/examples/json/run-bundle.json) contains `obsolete.txt` as `deleted`, `src` as an added directory, and `src/result.txt` as an added file. `filesystem.changes` describes the net staged result; `run_observation.filesystem` describes actual accesses, allowed/denied decisions, and counters. A file written repeatedly can appear once in the changeset. A denied read may appear in observations without producing a change.
 
 `path` is for display. If `path_bytes` exists, use those Unix bytes for path identity; do not authorize a mutation by the display text alone. Directory changes and `opaque` entries have subtree effects and must be considered when selecting files to apply. Use the CLI's selective apply rather than copying raw upper-layer whiteouts into the project.
 

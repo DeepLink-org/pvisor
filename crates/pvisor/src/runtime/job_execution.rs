@@ -7,12 +7,12 @@ use super::host_transport::{
     write_host_frame,
 };
 use super::registry::RunLease;
-use super::run::RunControlHandle;
+use super::run::{AttemptService, RunControlHandle};
 use crate::config::{RunConfig, RunExecutorKind};
 use anyhow::{Context, ensure};
 use pvisor_core::host_protocol::{
     AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
-    AgentCtlHostResponse, AgentCtlTarget,
+    AgentCtlHostResponse, AgentCtlTarget, HostAttemptCommand,
 };
 use pvisor_core::operation::{
     ExecutionCheckpoint, ExecutionSuspension, OperationKind, SnapshotRamStorage, Value,
@@ -564,12 +564,16 @@ async fn handle_request(
     }
     job.write()?;
     drop(lease);
-    let result = controls.control(kind).await;
+    let result = AttemptService::new(controls)
+        .dispatch(HostAttemptCommand::Operation { kind })
+        .await
+        .map(|result| result.value)
+        .map_err(anyhow::Error::from);
     let _lease = template.lock_wait().await?;
     let mut job = template.current()?;
     validate_capture_binding(template, &job, &request)?;
     match result {
-        Ok(Value::ExecutionCheckpoint { checkpoint }) => {
+        Ok(Some(Value::ExecutionCheckpoint { checkpoint })) => {
             ensure!(
                 checkpoint.source_run_id == job.run_id
                     && checkpoint.source_attempt_id == request.attempt_id,
@@ -605,6 +609,7 @@ async fn handle_request(
 
 /// Timeout abandons only the client's wait, never cancels or repeats capture.
 pub(crate) async fn capture(
+    context: &super::job_service::ServiceContext<'_>,
     record: &RunRecord,
     suspend: bool,
     ram_storage: SnapshotRamStorage,
@@ -631,6 +636,9 @@ pub(crate) async fn capture(
             let _lease = job.lock_wait().await?;
             let current = job.current()?;
             current.validate_record_target(record)?;
+            let current_record = RunRecord::read(&current.active_stage)?;
+            super::job_service::check_selected_record(record, &current_record)?;
+            context.check(&current_record)?;
             current
         };
         let checkpoint = if let Some(previous) = job.requests.get(&request_id) {
@@ -666,6 +674,9 @@ pub(crate) async fn capture(
             let _lease = job.lock_wait().await?;
             let mut current = job.current()?;
             current.validate_record_target(record)?;
+            let current_record = RunRecord::read(&current.active_stage)?;
+            super::job_service::check_selected_record(record, &current_record)?;
+            context.check(&current_record)?;
             ensure!(
                 current.state == JobState::Suspended,
                 "JOB_BUSY: suspended head changed during request"
@@ -719,7 +730,17 @@ pub(crate) async fn capture(
                 },
             };
             request.validate()?;
+            // Connection establishment can wait too. Recheck admission under the
+            // Job lease immediately before sending; do not cancel or revalidate
+            // the caller's context after sending an effectful request.
+            let lease = job.lock_wait().await?;
+            let current = job.current()?;
+            current.validate_record_target(record)?;
+            let current_record = RunRecord::read(&current.active_stage)?;
+            super::job_service::check_selected_record(record, &current_record)?;
+            context.check(&current_record)?;
             write_host_frame(&mut stream, &request).await?;
+            drop(lease);
             let reply: AgentCtlHostResponse<ExecutionCheckpoint> =
                 read_host_frame(&mut stream).await.context(
                     "EXECUTION_UNKNOWN: execution control disconnected before acknowledgement",
@@ -1046,7 +1067,9 @@ mod tests {
             }
             job.write().unwrap();
             let lease = job.lock().unwrap();
+            let context = super::super::job_service::ServiceContext::default();
             let mut pending = Box::pin(capture(
+                &context,
                 &record,
                 false,
                 SnapshotRamStorage::Raw,
@@ -1211,6 +1234,7 @@ mod tests {
             });
             assert!(
                 capture(
+                    &super::super::job_service::ServiceContext::default(),
                     &record,
                     false,
                     SnapshotRamStorage::Raw,
@@ -1224,6 +1248,59 @@ mod tests {
             std::fs::remove_file(job.active_stage.join(SOCKET)).unwrap();
             drop(directory);
         }
+    }
+
+    #[tokio::test]
+    async fn capture_keeps_the_acknowledgement_after_post_admission_cancellation() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let temp = tempfile::tempdir().unwrap();
+        let (record, mut job) = fixture(temp.path());
+        job.state = JobState::Running;
+        job.write().unwrap();
+        let (listener, _directory) = bind_control_endpoint(&job.active_stage).unwrap();
+        let captured = checkpoint(temp.path());
+        let expected = captured.snapshot_id.clone();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let server_cancelled = cancelled.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request: AgentCtlHostRequest<HostCaptureCommand> =
+                read_host_frame(&mut stream).await.unwrap();
+            server_cancelled.store(true, Ordering::SeqCst);
+            write_host_frame(
+                &mut stream,
+                &AgentCtlHostResponse {
+                    version: AGENTCTL_HOST_VERSION,
+                    request_id: request.request_id,
+                    result: Ok(captured),
+                },
+            )
+            .await
+            .unwrap();
+        });
+        let check = || {
+            ensure!(!cancelled.load(Ordering::SeqCst), "request cancelled");
+            Ok(())
+        };
+        let context = super::super::job_service::ServiceContext {
+            check_cancelled: Some(&check),
+            ..Default::default()
+        };
+        let result = capture(
+            &context,
+            &record,
+            false,
+            SnapshotRamStorage::Raw,
+            Some("admitted-capture".into()),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.snapshot_id, expected);
+        assert!(cancelled.load(Ordering::SeqCst));
+        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -1251,6 +1328,7 @@ mod tests {
         );
         job.write().unwrap();
         let result = capture(
+            &super::super::job_service::ServiceContext::default(),
             &record,
             false,
             SnapshotRamStorage::Raw,
@@ -1261,6 +1339,7 @@ mod tests {
         .unwrap();
         assert_eq!(result.snapshot_id, id);
         let error = capture(
+            &super::super::job_service::ServiceContext::default(),
             &record,
             true,
             SnapshotRamStorage::Raw,
@@ -1271,6 +1350,7 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("REQUEST_ID_CONFLICT"));
         let error = capture(
+            &super::super::job_service::ServiceContext::default(),
             &record,
             false,
             SnapshotRamStorage::Compressed,

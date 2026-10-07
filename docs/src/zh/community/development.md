@@ -133,7 +133,7 @@ Core 公开声明数与二进制字节数。预算及统计口径由脚本维护
 | `just cases --case S-DOC-001,S-DOC-002` | 运行选定的文档场景 |
 | `just benchmark` / `just benchmark nightly` | 运行进程与 Run Bundle 基准 |
 | `just docs-build` | 构建双语文档并检查链接 |
-| `just docs-serve --port 3000` | 构建、监听并预览文档；重建后手动刷新浏览器 |
+| `just docs-serve` / `just docs-serve en` | Zensical 原生预览与自动刷新；中文端口 3000，英文端口 3001 |
 | `just ci` | 检查格式、lint、测试并构建，不改写源码 |
 | `just clean` | 清理构建产物，保留开发环境和本地 Run 记录 |
 

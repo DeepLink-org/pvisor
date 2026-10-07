@@ -11,14 +11,13 @@ use crate::cli::trajectory::JournalRecording;
 use crate::config::{
     GatewayMode, OverlayFsCommit, OverlayFsSettings, OverlayNetPolicy, RunConfig, RunExecutorKind,
 };
+#[cfg(test)]
 use crate::runtime::job_execution::JobState;
 use crate::runtime::{RunLineage, RunRecord, default_run_home, resolve_run};
-use crate::{
-    NetworkDriverConfig, OverlayHint, PVisor, RunBundle, VmExecutor, restore_logical_checkpoint,
-};
+use crate::{NetworkDriverConfig, PVisor, RunBundle, restore_logical_checkpoint};
 use anyhow::Context;
 use clap::Args;
-use pvisor_core::{RunInvocation, RunState};
+use pvisor_core::RunState;
 use pvisor_overlaynet::{NetworkConfig, NetworkMode};
 use std::{
     path::{Path, PathBuf},
@@ -240,376 +239,140 @@ pub(in crate::cli) async fn resume_execution(
     request_id: Option<String>,
     eager_ram: bool,
 ) -> anyhow::Result<i32> {
-    use crate::runtime::job_execution;
-    let template = job_execution::job(&source)?;
-    let lease = template.lock()?;
-    let mut job = template.current()?;
-    job.validate_record_target(&source)?;
-    let current_record = RunRecord::read(&job.active_stage)?;
-    crate::cli::host::check_selected_record(&source, &current_record)?;
-    crate::cli::host_service::check_record(&current_record)?;
-    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    crate::cli::host::validate_request_id(&request_id)?;
-    if let Some(request) = job.resumes.get(&request_id) {
-        let stage = &request.stage;
-        anyhow::ensure!(
-            request.eager_ram == eager_ram,
-            "REQUEST_ID_CONFLICT: resume RAM policy changed"
-        );
-        anyhow::ensure!(
-            stage.join("run.json").is_file() && job.state != JobState::Restoring,
-            "EXECUTION_UNKNOWN: resume request admitted without confirmed successor startup at {}",
-            stage.display()
-        );
-        run_log!("resume request already admitted: {}", stage.display());
-        return Ok(0);
-    }
-    anyhow::ensure!(
-        job.state == JobState::Suspended,
-        "JOB_BUSY: resume requires a confirmed suspended head (state={})",
-        job.state
-    );
-    let checkpoint = job.checkpoint(job.head.as_deref().context("missing suspended head")?)?;
-    let (source, source_lease) = source.lock_current()?;
-    job.validate_record_target(&source)?;
-    crate::cli::host_service::check_record(&source)?;
-    let stage = job
-        .root
-        .join("attempts")
-        .join(uuid::Uuid::new_v4().to_string());
-    let (mut executor, mut overlay) =
-        VmExecutor::restore(job.config.vm.clone(), checkpoint.clone(), &stage)?;
-    if eager_ram {
-        executor.materialize_restore_ram(&stage)?;
-    }
-    preserve_apply_target(&source, &mut overlay);
-    let previous = job.clone();
-    job.previous_stage = job.active_stage.clone();
-    job.active_stage = stage.clone();
-    job.state = JobState::Restoring;
-    job.resumes.insert(
-        request_id.clone(),
-        job_execution::ResumeRequest {
-            stage: stage.clone(),
+    use crate::runtime::job_service::{
+        JobSelection, ResumeRequest, ResumeResponse, RuntimeJobService,
+    };
+    let response = RuntimeJobService::resume(
+        &crate::cli::host::service_context(),
+        ResumeRequest {
+            job: JobSelection {
+                selector: Some(source.stage_dir()),
+                storage: source.storage,
+            },
+            request_id,
             eager_ram,
         },
-    );
-    job.link_stage(&stage)?;
-    job.write()?;
-    drop(lease);
-    // Keep the previous Attempt's lease until the successor has completed.
-    // The new Attempt acquires its own lease through normal runtime admission.
-    let result = execute_restored(job.clone(), stage, executor, overlay, checkpoint).await;
-    drop(source_lease);
-    if result.is_err() {
-        let _lease = job.lock()?;
-        let current = job.current()?;
-        if owns_restore_transition(&current, &job, &request_id)
-            && !crate::runtime::is_live(&job.active_stage)?
-            && !job.active_stage.join("run.json").try_exists()?
-        {
-            // An error can occur after RunHandle acceptance too. Roll back only
-            // our unchanged transition with no durable or live successor.
-            previous.write()?;
+        execute_restored,
+    )
+    .await?;
+    match response {
+        ResumeResponse::AlreadyAdmitted { stage } => {
+            run_log!("resume request already admitted: {}", stage.display());
+            Ok(0)
         }
-    }
-    result
-}
-
-fn owns_restore_transition(
-    current: &crate::runtime::job_execution::Job,
-    admitted: &crate::runtime::job_execution::Job,
-    request_id: &str,
-) -> bool {
-    current.state == JobState::Restoring
-        && current.run_id == admitted.run_id
-        && current.root == admitted.root
-        && current.active_attempt == admitted.active_attempt
-        && current.active_stage == admitted.active_stage
-        && current.previous_stage == admitted.previous_stage
-        && current.head == admitted.head
-        && matches!((serde_json::to_value(current), serde_json::to_value(admitted)),
-            (Ok(current), Ok(admitted)) if current == admitted)
-        && current
-            .resumes
-            .get(request_id)
-            .is_some_and(|request| request.stage == admitted.active_stage)
-}
-
-fn preserve_apply_target(source: &RunRecord, overlay: &mut OverlayHint) {
-    if let (Some(original), Some(saved)) = (&source.overlay, &mut overlay.execution_snapshot) {
-        saved.target = original.target.clone();
-        if saved.baseline_lower.is_none() {
-            saved.baseline_lower = overlay.lower_dirs.last().cloned();
-        }
-        overlay.protect_target = original.protect_target;
+        ResumeResponse::Finished { exit_code } => Ok(exit_code),
     }
 }
 
 async fn fork_execution(args: ForkArgs, source: RunRecord) -> anyhow::Result<i32> {
-    use crate::runtime::job_execution;
-    use pvisor_core::operation::SnapshotRamStorage;
-    crate::cli::checkpoint::check_execution(&source)?;
-    let request_id = args
-        .request_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    crate::cli::host::validate_request_id(&request_id)?;
-    let options = job_execution::ForkOptions {
-        checkpoint: args.checkpoint.clone(),
-        stage: args.stage.clone(),
-        name: args.name.clone(),
-        ram_storage: args.ram_storage.map(SnapshotRamStorage::from),
-        eager_ram: args.eager_ram,
+    use crate::runtime::job_service::{
+        ExecutionForkRequest, ExecutionForkResponse, JobSelection, RuntimeJobService,
     };
-    let template = job_execution::job(&source)?;
-    let selection_lease = template.lock()?;
-    let selected = template.current()?;
-    selected.validate_record_target(&source)?;
-    let current_record = RunRecord::read(&selected.active_stage)?;
-    crate::cli::host::check_selected_record(&source, &current_record)?;
-    crate::cli::host_service::check_record(&current_record)?;
-    if let Some(previous) = selected.forks.get(&request_id) {
-        anyhow::ensure!(
-            previous.options == options,
-            "REQUEST_ID_CONFLICT: execution fork options changed"
-        );
-        let stage = &previous.stage;
-        let child=RunRecord::read(stage).context("EXECUTION_UNKNOWN: branch admitted without a confirmed Attempt; inspect retained branch stage")?;
-        anyhow::ensure!(
-            child.run_id == previous.job_id,
-            "branch Job binding mismatch"
-        );
-        run_log!(
-            "fork request already admitted: Job {} at {}",
-            child.run_id,
-            stage.display()
-        );
-        return Ok(0);
-    }
-    let checkpoint = match args.checkpoint.as_deref() {
-        Some(id) => selected.checkpoint(id)?,
-        None if selected.state == JobState::Suspended => {
-            selected.checkpoint(selected.head.as_deref().context("missing suspended head")?)?
-        }
-        None => {
-            // Capture acquires the same Job lease internally and fences the
-            // selected record there. Never await capture while holding it.
-            drop(selection_lease);
-            let captured = job_execution::capture(
-                &source,
-                false,
-                args.ram_storage
-                    .map(Into::into)
-                    .unwrap_or(SnapshotRamStorage::Compressed),
-                Some({
-                    use sha2::Digest;
-                    format!(
-                        "fork-{}",
-                        crate::util::encode_hex(&sha2::Sha256::digest(request_id.as_bytes()))
-                    )
-                }),
-                std::time::Duration::from_secs(120),
-            )
-            .await?;
-            return fork_execution_from_checkpoint(args, source, request_id, options, captured)
-                .await;
-        }
-    };
-    drop(selection_lease);
-    fork_execution_from_checkpoint(args, source, request_id, options, checkpoint).await
-}
-
-async fn fork_execution_from_checkpoint(
-    args: ForkArgs,
-    source: RunRecord,
-    request_id: String,
-    options: crate::runtime::job_execution::ForkOptions,
-    checkpoint: pvisor_core::operation::ExecutionCheckpoint,
-) -> anyhow::Result<i32> {
-    use crate::runtime::job_execution;
-    let template = job_execution::job(&source)?;
-    let _lease = template.lock()?;
-    let mut parent = template.current()?;
-    parent.validate_record_target(&source)?;
-    let current_record = RunRecord::read(&parent.active_stage)?;
-    crate::cli::host::check_selected_record(&source, &current_record)?;
-    crate::cli::host_service::check_record(&current_record)?;
-    if let Some(previous) = parent.forks.get(&request_id) {
-        anyhow::ensure!(
-            previous.options == options,
-            "REQUEST_ID_CONFLICT: execution fork options changed"
-        );
-        anyhow::bail!(
-            "EXECUTION_UNKNOWN: branch already admitted at {}; inspect status or retry the same request",
-            previous.stage.display()
-        );
-    }
-    parent.checkpoint(&checkpoint.snapshot_id)?;
-    let run_id = format!("run-{}", uuid::Uuid::new_v4());
-    let stage = fork_stage_candidate(
-        &args
-            .stage
-            .unwrap_or_else(|| default_run_home().join(&run_id)),
-    )?;
-    anyhow::ensure!(
-        !paths_overlap(&stage, &parent.root) && !paths_overlap(&stage, &checkpoint.store),
-        "execution fork stage overlaps its source Job"
-    );
-    anyhow::ensure!(
-        !stage.exists() || std::fs::read_dir(&stage)?.next().is_none(),
-        "execution fork requires an empty stage"
-    );
-    let (mut executor, mut overlay) =
-        VmExecutor::restore(parent.config.vm.clone(), checkpoint.clone(), &stage)?;
-    if args.eager_ram {
-        executor.materialize_restore_ram(&stage)?;
-    }
-    preserve_apply_target(&source, &mut overlay);
-    let mut spec = parent.spec.clone();
-    spec.metadata.remove(job_execution::STORE_KEY);
-    spec.run_id = run_id.clone().into();
-    spec.parent_run_id = Some(parent.run_id.clone().into());
-    spec.metadata.insert(
-        "pvisor.lineage".into(),
-        serde_json::json!({"parent_run_id":parent.run_id,"checkpoint_id":checkpoint.snapshot_id}),
-    );
-    if let Some(name) = args.name {
-        spec.metadata.insert(
-            "pvisor.orchestration.job_name".into(),
-            serde_json::json!(name),
-        );
-    }
-    let child = job_execution::Job {
-        version: job_execution::JOB_SCHEMA_VERSION,
-        run_id: run_id.clone(),
-        root: stage.clone(),
-        active_stage: stage.clone(),
-        previous_stage: stage.clone(),
-        active_attempt: String::new(),
-        config: parent.config.clone(),
-        spec,
-        state: JobState::Restoring,
-        head: None,
-        checkpoints: Default::default(),
-        requests: Default::default(),
-        resumes: Default::default(),
-        forks: Default::default(),
-        stores: [stage.join("execution-snapshots")].into(),
-    };
-    child.write()?;
-    child.link_stage(&stage)?;
-    // Pin before launching; a crash cannot leave a child with a deletable source.
-    parent
-        .checkpoints
-        .get_mut(&checkpoint.snapshot_id)
-        .context("checkpoint disappeared")?
-        .branches
-        .insert(run_id, stage.clone());
-    parent.forks.insert(
-        request_id,
-        job_execution::ForkRequest {
-            options,
-            stage: stage.clone(),
-            job_id: child.run_id.clone(),
-            checkpoint_id: checkpoint.snapshot_id.clone(),
+    let response = RuntimeJobService::fork_execution(
+        &crate::cli::host::service_context(),
+        ExecutionForkRequest {
+            job: JobSelection {
+                selector: Some(source.stage_dir()),
+                storage: source.storage,
+            },
+            checkpoint: args.checkpoint,
+            stage: args.stage,
+            name: args.name,
+            ram_storage: args.ram_storage.map(Into::into),
+            eager_ram: args.eager_ram,
+            request_id: args.request_id,
         },
-    );
-    parent.write()?;
-    drop(_lease);
-    execute_restored(child, stage, executor, overlay, checkpoint).await
+        execute_restored,
+    )
+    .await?;
+    match response {
+        ExecutionForkResponse::AlreadyAdmitted { job_id, stage } => {
+            run_log!(
+                "fork request already admitted: Job {} at {}",
+                job_id,
+                stage.display()
+            );
+            Ok(0)
+        }
+        ExecutionForkResponse::Finished { exit_code } => Ok(exit_code),
+    }
 }
 
 async fn execute_restored(
-    job: crate::runtime::job_execution::Job,
-    stage: PathBuf,
-    executor: VmExecutor,
-    overlay: OverlayHint,
-    checkpoint: pvisor_core::operation::ExecutionCheckpoint,
+    attempt: crate::runtime::job_service::RestoredAttempt,
 ) -> anyhow::Result<i32> {
-    let config = &job.config;
-    let saved_environment = executor
-        .restored_guest_environment()
-        .context("missing captured guest environment")?;
+    let stage = attempt.stage.clone();
     let mut recording = None;
-    let event_sink: Arc<dyn crate::EventSink> =
-        if config.gateway.mode == GatewayMode::Capture || config.record.destination.is_some() {
-            let destination = config
-                .record
-                .destination
-                .clone()
-                .unwrap_or_else(|| stage.join(".capture"));
-            let writer = JournalRecording::open(&destination)?;
-            let sink = Arc::new(writer.journal.clone());
-            recording = Some(writer);
-            sink
-        } else {
-            Arc::new(crate::trace::Journal::memory())
+    let managed = attempt
+        .start_with(|config, stage, executor, overlay| {
+            let event_sink: Arc<dyn crate::EventSink> = if config.gateway.mode
+                == GatewayMode::Capture
+                || config.record.destination.is_some()
+            {
+                let destination = config
+                    .record
+                    .destination
+                    .clone()
+                    .unwrap_or_else(|| stage.join(".capture"));
+                let writer = JournalRecording::open(&destination)?;
+                let sink = Arc::new(writer.journal.clone());
+                recording = Some(writer);
+                sink
+            } else {
+                Arc::new(crate::trace::Journal::memory())
+            };
+            let network = NetworkDriverConfig::new(
+                config.overlaynet.mode,
+                NetworkConfig {
+                    capability: None,
+                    mode: match config.overlaynet.policy {
+                        OverlayNetPolicy::Public => NetworkMode::Public,
+                        OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
+                        OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
+                    },
+                    allowed_hosts: config.overlaynet.allow.clone(),
+                    rules: config.overlaynet.rules.clone(),
+                    deny_rules: config.overlaynet.deny.clone(),
+                    limits: config.overlaynet.limits.clone(),
+                },
+            )
+            .listen(&config.overlaynet.listen);
+            #[allow(unused_mut)]
+            let mut builder = PVisor::builder()
+                .storage(&stage)
+                .overlay(overlay)
+                .executors(vec![report_terminal(Arc::new(executor))])
+                .network(network)
+                .event_sink(event_sink);
+            let control_socket = crate::cli::host_service::vm_control_socket(None)?
+                .or_else(|| config.vm.control_socket.clone());
+            if let Some(path) = &control_socket {
+                builder = builder.control_socket(path);
+            }
+            #[cfg(feature = "gateway")]
+            if let Some(proxy) = resolve_proxy(config)? {
+                builder = builder.gateway(
+                    GatewayDriverConfig::new(proxy)
+                        .output_dir(&stage)
+                        .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
+                );
+            }
+            #[cfg(unix)]
+            crate::cli::terminal::announce_stage(stage);
+            Ok(builder.build())
+        })
+        .await?;
+    announce_control_socket(managed.handle());
+    if let Err(error) = crate::cli::host_cancel::register(managed.handle(), &stage) {
+        managed.cancel();
+        return match managed.wait().await {
+            Ok(_) => Err(error),
+            Err(cleanup) => {
+                Err(error.context(format!("restored Job cleanup also failed: {cleanup:#}")))
+            }
         };
-    let network = NetworkDriverConfig::new(
-        config.overlaynet.mode,
-        NetworkConfig {
-            capability: None,
-            mode: match config.overlaynet.policy {
-                OverlayNetPolicy::Public => NetworkMode::Public,
-                OverlayNetPolicy::Deny => NetworkMode::NoNetwork,
-                OverlayNetPolicy::Allowlist => NetworkMode::Allowlist,
-            },
-            allowed_hosts: config.overlaynet.allow.clone(),
-            rules: config.overlaynet.rules.clone(),
-            deny_rules: config.overlaynet.deny.clone(),
-            limits: config.overlaynet.limits.clone(),
-        },
-    )
-    .listen(&config.overlaynet.listen);
-    #[allow(unused_mut)]
-    let mut builder = PVisor::builder()
-        .storage(&stage)
-        .overlay(overlay)
-        .executors(vec![report_terminal(Arc::new(executor))])
-        .network(network)
-        .event_sink(event_sink);
-    let control_socket = crate::cli::host_service::vm_control_socket(None)?
-        .or_else(|| config.vm.control_socket.clone());
-    if let Some(path) = &control_socket {
-        builder = builder.control_socket(path);
     }
-    #[cfg(feature = "gateway")]
-    if let Some(proxy) = resolve_proxy(config)? {
-        builder = builder.gateway(
-            GatewayDriverConfig::new(proxy)
-                .output_dir(&stage)
-                .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
-        );
-    }
-    let pvisor = builder.build();
-    let mut spec = job.spec.clone();
-    spec.metadata
-        .remove(crate::runtime::job_execution::STORE_KEY);
-    let RunInvocation::Process(process) = &mut spec.invocation;
-    process.inherit_env = false;
-    process.env = saved_environment;
-    spec.metadata.insert("pvisor.environment".into(),serde_json::json!({"inherits_host":false,"projected_keys":process.env.keys().collect::<Vec<_>>()}));
-    spec.metadata
-        .insert("pvisor.stage".into(), serde_json::to_value(&stage)?);
-    spec.metadata.insert(
-        "pvisor.orchestration.execution_restore".into(),
-        serde_json::to_value(&checkpoint)?,
-    );
-    #[cfg(unix)]
-    crate::cli::terminal::announce_stage(&stage);
-    let handle = pvisor.run(spec.clone()).await?;
-    announce_control_socket(&handle);
-    let record = RunRecord::read(&stage)?;
-    let server = crate::runtime::job_execution::Server::start(
-        &record,
-        job.config.clone(),
-        spec,
-        handle.controls(),
-    )?;
-    crate::cli::host_cancel::register(&handle, &stage)?;
-    let result = wait_cli_run(handle).await?;
-    server.finish(&result).await?;
+    let result = managed.wait_with(wait_cli_run).await?;
     if let Some(writer) = recording {
         writer.finish()?;
     }
@@ -736,7 +499,9 @@ mod tests {
                 eager_ram: false,
             },
         );
-        assert!(owns_restore_transition(&admitted, &admitted, "restore"));
+        assert!(crate::runtime::job_service::owns_restore_transition(
+            &admitted, &admitted, "restore"
+        ));
         for variant in 0..5 {
             let mut current = admitted.clone();
             match variant {
@@ -754,7 +519,9 @@ mod tests {
                     );
                 }
             }
-            assert!(!owns_restore_transition(&current, &admitted, "restore"));
+            assert!(!crate::runtime::job_service::owns_restore_transition(
+                &current, &admitted, "restore"
+            ));
         }
     }
 }

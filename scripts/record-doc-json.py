@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=ROOT / 'target/debug/pvisor')
-    parser.add_argument('--output', type=Path, default=ROOT / 'docs/src/assets/examples/json')
+    parser.add_argument('--output', type=Path, default=ROOT / 'docs/overrides/assets/examples/json')
     args = parser.parse_args()
     binary = args.binary.resolve()
     work = Path(tempfile.mkdtemp(prefix='pvisor-doc-json-'))

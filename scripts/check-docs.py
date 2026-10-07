@@ -77,6 +77,7 @@ class Page(HTMLParser):
     def __init__(self, path):
         super().__init__(convert_charrefs=True)
         self.ids, self.links, self.language = set(), [], ""
+        self.redirect = False
         self.feed(path.read_text())
 
     def handle_starttag(self, tag, attrs):
@@ -85,6 +86,8 @@ class Page(HTMLParser):
             self.ids.add(attrs["id"])
         if tag == "html":
             self.language = attrs.get("lang", "")
+        if tag == "meta" and attrs.get("http-equiv", "").lower() == "refresh":
+            self.redirect = True
         for key in ("href", "src"):
             if key in attrs:
                 self.links.append((tag, attrs[key], attrs.get("class", "")))
@@ -108,15 +111,36 @@ def check(strict=False):
                 yield from nav_pages(child)
 
     config = tomllib.loads((ROOT.parent / "zensical.toml").read_text())
+    root_source = ROOT.parent / config["project"].get("docs_dir", "src")
     navigation = list(nav_pages(config["project"]["nav"]))
     for page in navigation:
-        if not (source / page).is_file():
+        if page.startswith("/") or urlsplit(page).scheme:
+            continue
+        if not (root_source / page).is_file():
             issues.append(f"navigation page missing: {page}")
     if len(navigation) != len(set(navigation)):
         issues.append("navigation lists the same article more than once")
-    for old, new in json.loads((ROOT.parent / "redirects.json").read_text()).items():
-        if not (source / "zh" / new).is_file():
-            issues.append(f"redirect target missing: {old} -> zh/{new}")
+    for old, new in config["project"]["plugins"]["redirects"]["redirect_maps"].items():
+        target = urlsplit(new)
+        relative = target.path.removeprefix("/pvisor/").rstrip("/")
+        exists = ((source / relative / "index.md").is_file()
+                  or (source / (relative + ".md")).is_file()) if target.scheme else (source / new).is_file()
+        if not exists:
+            issues.append(f"redirect target missing: {old} -> {new}")
+    article_paths = set()
+    for locale in ("en", "zh"):
+        for article in (source / locale).rglob("*.md"):
+            if ".data" in article.parts:
+                continue
+            relative = article.relative_to(source).with_suffix("")
+            target = ROOT / (relative.parent if relative.name == "index" else relative) / "index.html"
+            article_paths.add(target.resolve())
+            if target.resolve() not in pages:
+                issues.append(f"article not rendered: {article.relative_to(source)}")
+    if any(".data" in path.parts for path in ROOT.rglob("*")):
+        issues.append("raw .data evidence included in generated site")
+    if issues:
+        raise SystemExit("\n".join(sorted(set(issues))))
     for locale in ("en", "zh"):
         index = json.loads((ROOT / locale / "search.json").read_text())
         if index["config"]["lang"] != [locale] or not index["items"]:
@@ -131,7 +155,8 @@ def check(strict=False):
     for path, page in pages.items():
         rel = path.relative_to(ROOT)
         locale = rel.parts[0] if rel.parts[0] in ("en", "zh") else None
-        if locale and page.language != locale:
+        # Native redirect pages have English boilerplate; articles use the locale theme.
+        if locale and not page.redirect and page.language != locale:
             issues.append(f"{rel}: html lang={page.language}, expected {locale}")
         for tag, href, classes in page.links:
             url = urlsplit(href)
@@ -151,7 +176,8 @@ def check(strict=False):
             )
             if dest.is_dir():
                 dest /= "index.html"
-            if locale and "md-select__link" in classes and dest.is_relative_to(ROOT):
+            # A 404 has no matching article and returns to the language homepage.
+            if path in article_paths and "md-select__link" in classes and dest.is_relative_to(ROOT):
                 target_rel = dest.relative_to(ROOT)
                 if target_rel.parts[1:] != rel.parts[1:]:
                     issues.append(f"{rel}: language selector loses current article: {href}")

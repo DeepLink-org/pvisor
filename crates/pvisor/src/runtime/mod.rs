@@ -12,11 +12,12 @@ pub(crate) mod bundle;
 pub(crate) mod checkpoint;
 pub(crate) mod event;
 #[cfg(unix)]
-pub(crate) mod host_transport;
+pub mod host_transport;
 mod implant;
 #[cfg(unix)]
 pub(crate) mod instance_control;
 pub(crate) mod job_execution;
+pub mod job_service;
 pub(crate) mod operation;
 mod overlay;
 mod proxy;

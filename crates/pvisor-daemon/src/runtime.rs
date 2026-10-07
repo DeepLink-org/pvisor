@@ -47,15 +47,17 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use fs2::FileExt;
+use pvisor::host_transport::{
+    authorize_host_peer, read_host_frame as receive_frame, write_host_frame as send_frame,
+};
 use pvisor_core::host_protocol::{
     AGENTCTL_HOST_MAX_FRAME_BYTES, AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode,
-    AgentCtlHostRequest, AgentCtlHostResponse, AgentCtlTarget, HostSupervisorAuth,
-    HostSupervisorCommand as Operation, HostSupervisorRequest, HostSupervisorResult,
-    HostSupervisorState,
+    AgentCtlHostRequest, AgentCtlHostResponse, AgentCtlTarget, HostAttemptCommand,
+    HostSupervisorAuth, HostSupervisorCommand as Operation, HostSupervisorRequest,
+    HostSupervisorResult, HostSupervisorState,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, UnixListener, UnixStream},
     process::Command,
     sync::{Mutex, OwnedMutexGuard, Semaphore},
@@ -451,7 +453,7 @@ impl NativeRuntime {
             let mut stream = UnixStream::connect(directory.join("control.sock"))
                 .await
                 .context("supervisor control unavailable; retain sandbox and reconcile")?;
-            authenticate_peer(&stream)?;
+            authorize_host_peer(&stream)?;
             // Never resolve an unspecified target to the current instance.
             // run.json is published once and binds the same Attempt across restart.
             let record: RunRecord = read_json(&directory.join("run.json"))?;
@@ -871,15 +873,14 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
         ..Default::default()
     };
     let executor = pvisor::VmExecutor::new(settings)?.with_vsock_ports(vsock_ports)?;
-    let visor = pvisor::PVisor::builder()
+    let visor = supervisor_builder()
         .storage(run_dir)
         .network(pvisor::NetworkDriverConfig::default())
         .executors(vec![Arc::new(executor)])
         .build();
     let mut run = make_run_spec(&identity)?;
     run.runtime.max_output_bytes = 64 * 1024;
-    let handle = visor
-        .run(run)
+    let handle = pvisor::job_service::RuntimeJobService::start(&visor, run)
         .await
         .context("native VM run admission failed")?;
     publish_new(
@@ -890,26 +891,34 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
             attempt_id: handle.attempt_id().to_string(),
         },
     )?;
+    let service = handle.service();
     // Prove acknowledged live controls before advertising any readiness. This
     // pauses/resumes the SAME attempt briefly; no snapshot/rebuild is involved.
     let controls_ready = timeout(READY_TIMEOUT, async {
-        let mut controls = handle.controls();
-        controls.wait_ready().await?;
-        handle.pause_vm().await?;
+        wait_control_ready(&service).await?;
+        service
+            .dispatch(HostAttemptCommand::Operation {
+                kind: pvisor_core::OperationKind::RunPause,
+            })
+            .await?;
         ensure!(
-            native_state(&handle)? == RuntimeState::Paused,
+            native_state(&service)? == RuntimeState::Paused,
             "startup pause was not confirmed"
         );
-        handle.resume_vm().await?;
+        service
+            .dispatch(HostAttemptCommand::Operation {
+                kind: pvisor_core::OperationKind::RunResume,
+            })
+            .await?;
         ensure!(
-            native_state(&handle)? == RuntimeState::Running,
+            native_state(&service)? == RuntimeState::Running,
             "startup resume was not confirmed"
         );
         Ok::<(), anyhow::Error>(())
     })
     .await;
     if !matches!(controls_ready, Ok(Ok(()))) {
-        handle.cancel();
+        service.dispatch(HostAttemptCommand::Terminate).await?;
         let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
         bail!("native live VM control verification failed");
     }
@@ -920,7 +929,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
         tokio::select! {
             accepted = listener.accept() => {
                 let (mut stream, _) = accepted?;
-                if authenticate_peer(&stream).is_err() { continue; }
+                if authorize_host_peer(&stream).is_err() { continue; }
                 let request = timeout(Duration::from_secs(5), receive_frame::<Request>(&mut stream)).await;
                 let Ok(Ok(request)) = request else { continue; };
                 let admission = request.validate().and_then(|()| {
@@ -934,7 +943,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
                     continue;
                 }
                 let deleted = matches!(request.command.operation, Operation::Terminate);
-                let result = execute_control(&handle, &identity, sandbox_dir,
+                let result = execute_control(&service, &identity, sandbox_dir,
                     &client, &endpoints, request.command.operation).await;
                 let mut reply = Response {
                     version: AGENTCTL_HOST_VERSION, request_id: request.request_id,
@@ -946,7 +955,6 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
                 };
                 // Never return image env, argv, guest output or native paths.
                 if deleted && reply.result.is_ok() {
-                    handle.cancel();
                     // Wait for native runner teardown, NOT merely terminal status.
                     // On uncertainty the parent uses the inode-bound cgroup kill.
                     let waited = timeout(DELETE_TIMEOUT, handle.wait()).await;
@@ -963,7 +971,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
             }
             // Publication task death cannot leave a pretend healthy sandbox.
             _ = publications.join_next() => {
-                handle.cancel();
+                service.dispatch(HostAttemptCommand::Terminate).await?;
                 let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
                 bail!("native publication failed");
             }
@@ -971,8 +979,36 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
     }
 }
 
+async fn wait_control_ready(service: &pvisor::AttemptService) -> Result<()> {
+    loop {
+        let status = service.dispatch(HostAttemptCommand::Status).await?.status;
+        ensure!(
+            status.attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
+            "run is not a VM"
+        );
+        ensure!(
+            !status.state.is_terminal() && status.state != pvisor_core::RunState::Cancelling,
+            "attempt ended before control readiness"
+        );
+        if matches!(
+            status.state,
+            pvisor_core::RunState::Running | pvisor_core::RunState::Suspended
+        ) {
+            return Ok(());
+        }
+        // AttemptService exposes live status, not a readiness subscription. The
+        // startup owner supplies READY_TIMEOUT and still proves native pause/resume.
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn supervisor_builder() -> pvisor::PVisorBuilder {
+    // The daemon owns the authenticated supervisor endpoint and its publication.
+    pvisor::PVisor::builder().instance_control(false)
+}
+
 async fn execute_control(
-    handle: &pvisor::RunHandle,
+    service: &pvisor::AttemptService,
     identity: &Identity,
     directory: &Path,
     client: &reqwest::Client,
@@ -981,24 +1017,32 @@ async fn execute_control(
 ) -> Result<(RuntimeState, Option<String>)> {
     if matches!(operation, Operation::Terminate) {
         mark(directory, "deleting")?;
+        timeout(
+            CONTROL_TIMEOUT,
+            service.dispatch(HostAttemptCommand::Terminate),
+        )
+        .await??;
+        // Cancellation is not reaping proof; the caller still awaits RunHandle::wait.
         return Ok((RuntimeState::Stopped, None));
     }
     ensure_not_deleting(directory)?;
-    match operation {
-        Operation::Pause => {
-            timeout(CONTROL_TIMEOUT, handle.pause_vm()).await??;
-        }
-        Operation::Resume => {
-            timeout(CONTROL_TIMEOUT, handle.resume_vm()).await??;
-        }
-        _ => {}
-    }
+    let command = match operation {
+        Operation::Pause => HostAttemptCommand::Operation {
+            kind: pvisor_core::OperationKind::RunPause,
+        },
+        Operation::Resume => HostAttemptCommand::Operation {
+            kind: pvisor_core::OperationKind::RunResume,
+        },
+        _ => HostAttemptCommand::Status,
+    };
+    let result = timeout(CONTROL_TIMEOUT, service.dispatch(command)).await??;
+    let state = native_status(result.status)?;
     observe_control(
         directory,
         client,
         endpoints,
         operation,
-        || native_state(handle),
+        || Ok(state),
         || {
             Group::open(identity)?
                 .context("owned cgroup disappeared")?
@@ -1009,7 +1053,7 @@ async fn execute_control(
 }
 
 // The supervisor authenticates each request before this path. Endpoint resolves
-// only from the current RunHandle, never a durable observation; readiness and
+// only from the current AttemptService, never a durable observation; readiness and
 // hard-limit reconciliation belong to Inspect and lifecycle controls.
 async fn observe_control(
     directory: &Path,
@@ -1041,9 +1085,12 @@ async fn observe_control(
     Ok((state, endpoint))
 }
 
-fn native_state(handle: &pvisor::RunHandle) -> Result<RuntimeState> {
+fn native_state(service: &pvisor::AttemptService) -> Result<RuntimeState> {
+    native_status(service.status())
+}
+
+fn native_status(status: pvisor_core::RunStatus) -> Result<RuntimeState> {
     use pvisor_core::{ExecutorKind, RunState};
-    let status = handle.status();
     ensure!(
         status.attempt.executor.kind == ExecutorKind::VirtualMachine,
         "run is not a VM"
@@ -1669,36 +1716,6 @@ fn random_token() -> String {
         uuid::Uuid::new_v4().simple()
     )
 }
-fn authenticate_peer(stream: &UnixStream) -> Result<()> {
-    ensure!(
-        stream.peer_cred()?.uid() == unsafe { libc::geteuid() },
-        "control peer UID mismatch"
-    );
-    Ok(())
-}
-async fn send_frame<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<()> {
-    let bytes = serde_json::to_vec(value)?;
-    ensure!(bytes.len() <= IPC_LIMIT, "control frame exceeds limit");
-    stream.write_all(&bytes).await?;
-    stream.write_all(b"\n").await?;
-    stream.flush().await?;
-    Ok(())
-}
-async fn receive_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T> {
-    // Read only this frame, without buffering bytes from the next request.
-    // Growth is capped before accepting another payload byte.
-    let mut bytes = Vec::new();
-    loop {
-        let byte = stream.read_u8().await?;
-        if byte == b'\n' {
-            break;
-        }
-        ensure!(bytes.len() < IPC_LIMIT, "control frame exceeds limit");
-        bytes.push(byte);
-    }
-    ensure!(!bytes.is_empty(), "empty control frame");
-    serde_json::from_slice(&bytes).map_err(|_| anyhow!("invalid control frame"))
-}
 
 /// Store has already locked and validated this registry. Re-read only the
 /// backend admission envelope, bounded by the Store's 16 MiB limit. Do not
@@ -1925,6 +1942,120 @@ impl Drop for SandboxLease {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pvisor::host_transport::{encode_host_frame, read_host_frame_sync, write_host_frame_sync};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // A VM-labelled process has no native control channel. It exercises shared
+    // admission/status and fail-closed dispatch, not VM enforcement or readiness.
+    struct VmLabelledProcess;
+    #[async_trait::async_trait]
+    impl pvisor::RunExecutor for VmLabelledProcess {
+        fn descriptor(&self) -> pvisor_core::ExecutorPlan {
+            use pvisor::RunExecutor;
+            let mut plan = pvisor::ProcessExecutor::default().descriptor();
+            plan.kind = pvisor_core::ExecutorKind::VirtualMachine;
+            plan.isolation = pvisor_core::IsolationKind::VirtualMachine;
+            plan
+        }
+        fn supports(&self, invocation: &pvisor_core::RunInvocation) -> bool {
+            use pvisor::RunExecutor;
+            pvisor::ProcessExecutor::default().supports(invocation)
+        }
+        async fn execute(&self, session: &pvisor::Session) -> pvisor::ExecutorOutput {
+            use pvisor::RunExecutor;
+            pvisor::ProcessExecutor::default().execute(session).await
+        }
+    }
+
+    #[tokio::test]
+    async fn supervisor_builder_disables_auto_endpoint_and_rejects_custom_socket() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("unexpected.sock");
+        let visor = supervisor_builder().control_socket(&socket).build();
+        let result = pvisor::job_service::RuntimeJobService::start(
+            &visor,
+            pvisor_core::RunSpec::process("socket-conflict", "test", "/bin/true"),
+        )
+        .await;
+        assert!(matches!(result, Err(pvisor::PVisorError::InvalidSpec(_))));
+        assert!(!socket.exists());
+    }
+
+    #[tokio::test]
+    async fn shared_job_start_and_attempt_dispatch_do_not_fabricate_vm_controls() {
+        let temp = tempfile::tempdir().unwrap();
+        let visor = supervisor_builder()
+            .storage(temp.path().join("run"))
+            .network(pvisor::NetworkDriverConfig::new(
+                pvisor::OverlayNetMode::Off,
+                Default::default(),
+            ))
+            .executors(vec![Arc::new(VmLabelledProcess)])
+            .build();
+        let mut run = pvisor_core::RunSpec::process("shared-attempt", "test", "/bin/sleep");
+        let pvisor_core::RunInvocation::Process(process) = &mut run.invocation;
+        process.args = vec!["60".into()];
+        let handle = pvisor::job_service::RuntimeJobService::start(&visor, run)
+            .await
+            .unwrap();
+        let service = handle.service();
+        let ready = timeout(CONTROL_TIMEOUT, wait_control_ready(&service)).await;
+        if !matches!(ready, Ok(Ok(()))) {
+            service
+                .dispatch(HostAttemptCommand::Terminate)
+                .await
+                .unwrap();
+            let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
+            panic!("mock executor did not reach running state");
+        }
+        assert!(
+            handle.control_socket().is_err(),
+            "unexpected auto VM endpoint"
+        );
+        let status = service.dispatch(HostAttemptCommand::Status).await.unwrap();
+        assert_eq!(status.status.attempt.attempt_id, *handle.attempt_id());
+        assert_eq!(native_status(status.status).unwrap(), RuntimeState::Running);
+        assert_eq!(native_state(&service).unwrap(), RuntimeState::Running);
+
+        let (identity, _) = identity_fixture(temp.path());
+        let error = execute_control(
+            &service,
+            &identity,
+            temp.path(),
+            &health_client().unwrap(),
+            &BTreeMap::new(),
+            Operation::Pause,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<AgentCtlHostError>().unwrap().code,
+            AgentCtlHostErrorCode::Unavailable
+        );
+        // The same adapter must still fence admission after durable delete intent.
+        mark(temp.path(), "deleting").unwrap();
+        assert!(
+            execute_control(
+                &service,
+                &identity,
+                temp.path(),
+                &health_client().unwrap(),
+                &BTreeMap::new(),
+                Operation::Inspect,
+            )
+            .await
+            .is_err()
+        );
+        service
+            .dispatch(HostAttemptCommand::Terminate)
+            .await
+            .unwrap();
+        timeout(DELETE_TIMEOUT, handle.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(service.status().state.is_terminal());
+    }
+
     const ID: &str = "sb-12345678-1234-4234-8234-123456789abc";
     fn spec() -> RuntimeSpec {
         RuntimeSpec {
@@ -2878,8 +3009,61 @@ mod tests {
             received.command.operation,
             Operation::Endpoint { port: EXECD_PORT }
         ));
-        authenticate_peer(&receiver).unwrap();
+        authorize_host_peer(&receiver).unwrap();
     }
+    #[tokio::test]
+    async fn shared_sync_client_and_daemon_exchange_host_envelopes() {
+        let temp = tempfile::tempdir().unwrap();
+        let (identity, _) = identity_fixture(temp.path());
+        let request = supervisor_request(&identity, "attempt", Operation::Inspect);
+        let client_request = request.clone();
+        let (mut client, server) = std::os::unix::net::UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let mut server = UnixStream::from_std(server).unwrap();
+        let client = tokio::task::spawn_blocking(move || {
+            client.set_read_timeout(Some(CONTROL_TIMEOUT)).unwrap();
+            client.set_write_timeout(Some(CONTROL_TIMEOUT)).unwrap();
+            write_host_frame_sync(&mut client, &client_request).unwrap();
+            read_host_frame_sync::<Response>(&mut client).unwrap()
+        });
+        authorize_host_peer(&server).unwrap();
+        let received: Request = receive_frame(&mut server).await.unwrap();
+        assert!(authorized(&identity, "attempt", &received));
+        let reply = Response {
+            version: AGENTCTL_HOST_VERSION,
+            request_id: received.request_id.clone(),
+            result: Ok(HostSupervisorResult {
+                owner: identity.owner.clone(),
+                target: received.target.clone().unwrap(),
+                state: HostSupervisorState::Running,
+                endpoint: None,
+            }),
+        };
+        send_frame(&mut server, &reply).await.unwrap();
+        let response = client.await.unwrap();
+        assert_eq!(
+            validate_reply(&identity, &request, response).unwrap().state,
+            Some(RuntimeState::Running)
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_codec_leaves_version_validation_to_the_envelope() {
+        let temp = tempfile::tempdir().unwrap();
+        let (identity, _) = identity_fixture(temp.path());
+        let mut request = supervisor_request(&identity, "attempt", Operation::Inspect);
+        request.version = AGENTCTL_HOST_VERSION + 1;
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        sender
+            .write_all(&encode_host_frame(&request).unwrap())
+            .await
+            .unwrap();
+        let received: Request = receive_frame(&mut receiver).await.unwrap();
+        assert_eq!(received.version, request.version);
+        assert!(received.validate().is_err());
+        assert!(!authorized(&identity, "attempt", &received));
+    }
+
     #[test]
     fn readiness_requires_upstream_boolean_initialization() {
         assert!(validate_ready(br#"{"initialized":true}"#).is_ok());
@@ -2995,35 +3179,39 @@ mod tests {
         sender.write_all(b"true\nfalse\n").await.unwrap();
         assert!(receive_frame::<bool>(&mut receiver).await.unwrap());
         assert!(!receive_frame::<bool>(&mut receiver).await.unwrap());
-        sender.write_all(b"\n").await.unwrap();
-        assert!(receive_frame::<bool>(&mut receiver).await.is_err());
+        for frame in [b"\n".as_slice(), b"true false\n", b"not-json\n"] {
+            sender.write_all(frame).await.unwrap();
+            assert!(receive_frame::<bool>(&mut receiver).await.is_err());
+        }
         sender.write_all(b"true").await.unwrap();
         sender.shutdown().await.unwrap();
         assert!(receive_frame::<bool>(&mut receiver).await.is_err());
 
         let (mut sender, mut receiver) = UnixStream::pair().unwrap();
         // JSON quotes count towards the payload limit; the delimiter does not.
-        let value = "x".repeat(IPC_LIMIT - 2);
+        let value = "x".repeat(AGENTCTL_HOST_MAX_FRAME_BYTES - 2);
         let sending = tokio::spawn(async move {
             send_frame(&mut sender, &value).await.unwrap();
             assert!(
-                send_frame(&mut sender, &"x".repeat(IPC_LIMIT - 1))
+                send_frame(&mut sender, &"x".repeat(AGENTCTL_HOST_MAX_FRAME_BYTES - 1))
                     .await
                     .is_err()
             );
         });
         assert_eq!(
             receive_frame::<String>(&mut receiver).await.unwrap().len(),
-            IPC_LIMIT - 2
+            AGENTCTL_HOST_MAX_FRAME_BYTES - 2
         );
         sending.await.unwrap();
     }
 
     #[tokio::test]
-    async fn oversized_ipc_is_rejected_before_allocation() {
+    async fn oversized_ipc_is_rejected_before_accepting_another_payload_byte() {
         let (mut sender, mut receiver) = UnixStream::pair().unwrap();
         let sending = tokio::spawn(async move {
-            let _ = sender.write_all(&vec![b'x'; IPC_LIMIT + 1]).await;
+            let _ = sender
+                .write_all(&vec![b'x'; AGENTCTL_HOST_MAX_FRAME_BYTES + 1])
+                .await;
         });
         assert!(receive_frame::<Request>(&mut receiver).await.is_err());
         sending.await.unwrap();

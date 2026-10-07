@@ -3,6 +3,10 @@
 //! Callers configure a [`PVisor`] and invoke [`PVisor::run`]. CLI and other
 //! embedders talk to this API directly; there is no separate control-plane process.
 
+#[path = "attempt_service.rs"]
+pub mod attempt_service;
+pub use attempt_service::AttemptService;
+
 #[cfg(feature = "gateway")]
 use crate::GatewayDriverConfig;
 #[cfg(feature = "gateway")]
@@ -120,6 +124,15 @@ pub struct RunControlHandle {
 }
 
 impl RunControlHandle {
+    pub fn status(&self) -> RunStatus {
+        self.status.borrow().clone()
+    }
+
+    /// Request cancellation; completion and resource release remain Run-owned.
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
     /// Read-only physical observations never acquire the native control exchange
     /// lock, modify VM state, or retain snapshot RAM/pager ownership.
     pub async fn memory_sample(&self) -> pvisor_core::memory::RunMemorySample {
@@ -431,6 +444,10 @@ impl RunHandle {
         }
     }
 
+    pub fn service(&self) -> AttemptService {
+        AttemptService::new(self.controls())
+    }
+
     pub async fn control(
         &self,
         kind: pvisor_core::operation::OperationKind,
@@ -506,12 +523,25 @@ impl RunHandle {
 }
 
 /// Builder for a configured [`PVisor`].
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct PVisorBuilder {
     runtime: RuntimeSupervisorBuilder,
     event_sink: Option<Arc<dyn EventSink>>,
     executors: Option<Vec<Arc<dyn RunExecutor>>>,
     control_socket: Option<std::path::PathBuf>,
+    instance_control: bool,
+}
+
+impl Default for PVisorBuilder {
+    fn default() -> Self {
+        Self {
+            runtime: RuntimeSupervisorBuilder::default(),
+            event_sink: None,
+            executors: None,
+            control_socket: None,
+            instance_control: true,
+        }
+    }
 }
 
 impl std::fmt::Debug for PVisorBuilder {
@@ -523,6 +553,7 @@ impl std::fmt::Debug for PVisorBuilder {
                 &self.event_sink.as_ref().map(|_| "<EventSink>"),
             )
             .field("executors", &self.executors.as_ref().map(|e| e.len()))
+            .field("instance_control", &self.instance_control)
             .finish()
     }
 }
@@ -591,6 +622,14 @@ impl PVisorBuilder {
         self
     }
 
+    /// Enable the host-only VM listener (default true). Supervisors providing
+    /// their own endpoint can disable it without changing native control authority.
+    /// A custom control_socket combined with false is rejected at run admission.
+    pub fn instance_control(mut self, enabled: bool) -> Self {
+        self.instance_control = enabled;
+        self
+    }
+
     pub fn executors(mut self, executors: Vec<Arc<dyn RunExecutor>>) -> Self {
         self.executors = Some(executors);
         self
@@ -620,6 +659,7 @@ impl PVisorBuilder {
             event_sink,
             runtime: runtime.build(),
             control_socket: self.control_socket,
+            instance_control: self.instance_control,
         }
     }
 }
@@ -634,6 +674,7 @@ pub struct PVisor {
     event_sink: Arc<dyn EventSink>,
     runtime: RuntimeSupervisor,
     control_socket: Option<std::path::PathBuf>,
+    instance_control: bool,
 }
 
 /// Typed preparation inputs resolved before any runtime side effects.
@@ -893,6 +934,11 @@ impl PVisor {
 
     /// Start one Run: resolve Operation → prepare controls → execute → teardown.
     pub async fn run(&self, spec: RunSpec) -> Result<RunHandle, PVisorError> {
+        if !self.instance_control && self.control_socket.is_some() {
+            return Err(PVisorError::InvalidSpec(
+                "custom control socket conflicts with disabled instance control".into(),
+            ));
+        }
         let mut resolved = self.resolve_run(spec)?;
         #[cfg(unix)]
         resolved
@@ -901,22 +947,23 @@ impl PVisor {
             .remove(super::instance_control::INSTANCE_CONTROL_DIRECTORY_METADATA);
         // Bind before starting any attempt task: setup errors cannot orphan a VM.
         #[cfg(unix)]
-        let control_server =
-            if resolved.descriptor.kind == pvisor_core::ExecutorKind::VirtualMachine {
-                Some(
-                    super::instance_control::InstanceControlServer::bind(
-                        self.control_socket.as_deref(),
-                    )
-                    .map_err(PVisorError::Prepare)?,
+        let control_server = if self.instance_control
+            && resolved.descriptor.kind == pvisor_core::ExecutorKind::VirtualMachine
+        {
+            Some(
+                super::instance_control::InstanceControlServer::bind(
+                    self.control_socket.as_deref(),
                 )
-            } else {
-                if self.control_socket.is_some() {
-                    return Err(PVisorError::InvalidSpec(
-                        "control socket requires a VM executor".into(),
-                    ));
-                }
-                None
-            };
+                .map_err(PVisorError::Prepare)?,
+            )
+        } else {
+            if self.control_socket.is_some() {
+                return Err(PVisorError::InvalidSpec(
+                    "control socket requires a VM executor".into(),
+                ));
+            }
+            None
+        };
         #[cfg(unix)]
         if let Some(server) = &control_server {
             resolved.spec.metadata.insert(
@@ -1210,6 +1257,132 @@ mod tests {
                 live,
             ),
         }
+    }
+
+    #[tokio::test]
+    async fn attempt_service_status_and_terminate_work_without_vm_authority() {
+        use pvisor_core::host_protocol::{AgentCtlHostErrorCode, HostAttemptCommand};
+        use pvisor_core::operation::{OperationKind, SnapshotRamStorage};
+        let controls = starting_vm_controls();
+        controls.vm_status.send_modify(|status| {
+            status.state = RunState::Running;
+            status.attempt.executor.kind = ExecutorKind::Process;
+        });
+        let service = AttemptService::new(controls.clone());
+        let reply = service.dispatch(HostAttemptCommand::Status).await.unwrap();
+        assert_eq!(reply.status.run_id, controls.status().run_id);
+        assert_eq!(
+            reply.status.attempt.attempt_id,
+            controls.status().attempt.attempt_id
+        );
+        assert!(reply.value.is_none());
+        for kind in [
+            OperationKind::RunPause,
+            OperationKind::RunResume,
+            OperationKind::RunOffload { file: None },
+            OperationKind::RunCheckpoint {
+                request_id: "checkpoint".into(),
+                ram_storage: SnapshotRamStorage::Raw,
+            },
+            OperationKind::RunSuspend {
+                request_id: "suspend".into(),
+                ram_storage: SnapshotRamStorage::Raw,
+            },
+            OperationKind::RunExecute {
+                program: "/bin/true".into(),
+                args: vec![],
+                cwd: None,
+            },
+        ] {
+            let error = service
+                .dispatch(HostAttemptCommand::Operation { kind })
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, AgentCtlHostErrorCode::Unsupported);
+        }
+        assert!(!controls.cancellation.is_cancelled());
+        let reply = service
+            .dispatch(HostAttemptCommand::Terminate)
+            .await
+            .unwrap();
+        assert!(controls.cancellation.is_cancelled());
+        assert!(reply.value.is_none());
+        // A cancellation acknowledgement must not claim terminal publication.
+        assert_eq!(reply.status.state, RunState::Running);
+        controls
+            .vm_status
+            .send_modify(|status| status.state = RunState::Completed);
+        assert_eq!(
+            service
+                .dispatch(HostAttemptCommand::Status)
+                .await
+                .unwrap()
+                .status
+                .state,
+            RunState::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn attempt_service_routes_all_native_primitives_through_control_checks() {
+        use pvisor_core::host_protocol::{AgentCtlHostErrorCode, HostAttemptCommand};
+        use pvisor_core::operation::{OperationKind, SnapshotRamStorage};
+        let controls = starting_vm_controls();
+        let service = AttemptService::new(controls.clone());
+        for kind in [
+            OperationKind::RunPause,
+            OperationKind::RunResume,
+            OperationKind::RunOffload { file: None },
+            OperationKind::RunCheckpoint {
+                request_id: "checkpoint".into(),
+                ram_storage: SnapshotRamStorage::Raw,
+            },
+            OperationKind::RunSuspend {
+                request_id: "suspend".into(),
+                ram_storage: SnapshotRamStorage::Raw,
+            },
+        ] {
+            let error = service
+                .dispatch(HostAttemptCommand::Operation { kind })
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, AgentCtlHostErrorCode::Unavailable);
+            assert!(
+                error
+                    .message
+                    .contains("attempt is not running or suspended")
+            );
+        }
+        let error = service
+            .dispatch(HostAttemptCommand::Operation {
+                kind: OperationKind::RunExecute {
+                    program: "/bin/true".into(),
+                    args: vec![],
+                    cwd: None,
+                },
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, AgentCtlHostErrorCode::Unsupported);
+        let error = service
+            .dispatch(HostAttemptCommand::Operation {
+                kind: OperationKind::RunCheckpoint {
+                    request_id: String::new(),
+                    ram_storage: SnapshotRamStorage::Raw,
+                },
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, AgentCtlHostErrorCode::InvalidRequest);
+        controls.cancel();
+        let error = service
+            .dispatch(HostAttemptCommand::Operation {
+                kind: OperationKind::RunPause,
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, AgentCtlHostErrorCode::Unavailable);
+        assert!(error.message.contains("attempt is cancelling"));
     }
 
     #[tokio::test(start_paused = true)]

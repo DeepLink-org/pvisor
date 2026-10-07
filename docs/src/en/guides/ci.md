@@ -77,6 +77,6 @@ printf 'failure=%s review=%s timeout=%s review=%s\n' \
   "$failure_code" "$failure_review_code" "$timeout_code" "$timeout_review_code"
 ```
 
-Expect `failure=7 review=0 timeout=1 review=0`. Check the two Bundles before dropping these test Stages. The recorded [failure](../../assets/examples/json/failed-run.json) and [timeout](../../assets/examples/json/timeout-run.json) examples show the corresponding outcomes. A preparation failure can instead leave `review` nonzero; upload whatever records exist and retain the original run exit status.
+Expect `failure=7 review=0 timeout=1 review=0`. Check the two Bundles before dropping these test Stages. The recorded [failure](../assets/examples/json/failed-run.json) and [timeout](../assets/examples/json/timeout-run.json) examples show the corresponding outcomes. A preparation failure can instead leave `review` nonzero; upload whatever records exist and retain the original run exit status.
 
 Regression coverage lives in `tests/documentation_json.rs` (real nonzero-exit/timeout runs, retained candidates, and recorded output formats). These local Linux checks validate the CLI behavior used by the workflow; they are not measurements from a hosted GitHub Actions runner.

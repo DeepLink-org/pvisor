@@ -238,7 +238,7 @@ npm **7.4 倍**。新版 performance 二进制 **19.38 MiB**，release
 保留逐样本值。以下图中的两个面板属于独立批次，均对比各自同编译配置的
 旧版与新版；不是同批 release/performance A/B，也不是单机制收益。
 
-![本地 rootfs VM 两种编译配置的版本对照](../../assets/benchmarks/filesystem-service-20261005/local-vm.svg)
+![本地 rootfs VM 两种编译配置的版本对照](../assets/benchmarks/filesystem-service-20261005/local-vm.svg)
 
 ### Lazy 镜像：移除中间宿主 FUSE 的冷/热对照 {#service-lazy}
 

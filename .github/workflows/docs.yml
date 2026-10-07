@@ -25,8 +25,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - name: Build documentation
-        working-directory: docs
-        run: uv run --no-project --with zensical==0.0.61 python ../scripts/build-docs.py
+        run: |
+          python scripts/check-reference.py
+          uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.toml
+          uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.zh.toml
+          uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.en.toml
       - name: Check generated pages
         run: python scripts/check-docs.py --require-recorded
       - uses: actions/upload-pages-artifact@v3

@@ -1,4 +1,9 @@
 //! Host-only AgentCtl transport. No cooperative guest token grants host authority.
+//!
+//! Frames are compact newline-delimited JSON, bounded by
+//! [`AGENTCTL_HOST_MAX_FRAME_BYTES`] excluding the delimiter. Codec functions do
+//! not validate envelopes or authorize commands: endpoint owners retain version,
+//! target, secret, admission and timeout checks.
 use pvisor_core::host_protocol::{
     AGENTCTL_HOST_MAX_FRAME_BYTES, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlTarget,
 };
@@ -72,7 +77,7 @@ fn frame_chunk_length(buffered: usize, chunk: &[u8]) -> anyhow::Result<(usize, b
 /// Peek in chunks, then consume only through the newline: buffered readers can
 /// swallow the next SCM_RIGHTS marker and discard its ancillary descriptors.
 /// One reader must own the socket; callers impose deadlines and admission bounds.
-pub(crate) fn read_host_frame_sync<T: DeserializeOwned>(
+pub fn read_host_frame_sync<T: DeserializeOwned>(
     stream: &mut std::os::unix::net::UnixStream,
 ) -> anyhow::Result<T> {
     use std::{io::Read, os::fd::AsRawFd};
@@ -104,7 +109,7 @@ pub(crate) fn read_host_frame_sync<T: DeserializeOwned>(
     }
 }
 
-pub(crate) fn write_host_frame_sync<T: Serialize>(
+pub fn write_host_frame_sync<T: Serialize>(
     stream: &mut std::os::unix::net::UnixStream,
     value: &T,
 ) -> anyhow::Result<()> {
@@ -114,9 +119,7 @@ pub(crate) fn write_host_frame_sync<T: Serialize>(
 
 /// Read exactly one bounded newline-delimited JSON frame, retaining pipelined bytes.
 /// Endpoint owners impose their own I/O deadlines and admission bounds.
-pub(crate) async fn read_host_frame<T: DeserializeOwned>(
-    stream: &mut UnixStream,
-) -> anyhow::Result<T> {
+pub async fn read_host_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> anyhow::Result<T> {
     let mut bytes = Vec::new();
     let mut chunk = [0; 4096];
     loop {
@@ -155,7 +158,7 @@ pub(crate) async fn read_host_frame<T: DeserializeOwned>(
 
 /// Compact JSON plus one newline; the 1 MiB limit excludes that delimiter.
 /// Bound serialization before growing the output or writing any socket bytes.
-pub(crate) fn encode_host_frame<T: Serialize>(value: &T) -> anyhow::Result<Vec<u8>> {
+pub fn encode_host_frame<T: Serialize>(value: &T) -> anyhow::Result<Vec<u8>> {
     struct Bounded(Vec<u8>);
     impl std::io::Write for Bounded {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -178,7 +181,7 @@ pub(crate) fn encode_host_frame<T: Serialize>(value: &T) -> anyhow::Result<Vec<u
     Ok(bytes.0)
 }
 
-pub(crate) async fn write_host_frame<T: Serialize>(
+pub async fn write_host_frame<T: Serialize>(
     stream: &mut UnixStream,
     value: &T,
 ) -> anyhow::Result<()> {
@@ -187,7 +190,7 @@ pub(crate) async fn write_host_frame<T: Serialize>(
 }
 
 /// Fail closed when kernel peer credentials cannot establish same-effective-UID ownership.
-pub(crate) fn authorize_host_peer(stream: &UnixStream) -> Result<(), AgentCtlHostError> {
+pub fn authorize_host_peer(stream: &UnixStream) -> Result<(), AgentCtlHostError> {
     let authorized = stream
         .peer_cred()
         .is_ok_and(|cred| cred.uid() == unsafe { libc::geteuid() });

@@ -4,7 +4,7 @@ use serde_json::Value;
 
 fn sample() -> Value {
     serde_json::from_str(include_str!(
-        "../../../docs/src/assets/examples/json/run-bundle.json"
+        "../../../docs/overrides/assets/examples/json/run-bundle.json"
     ))
     .unwrap()
 }
@@ -79,13 +79,13 @@ fn documented_omission_is_different_from_an_observed_zero() {
     );
     assert_eq!(value["run"]["exit_code"], 0);
     let status: Value = serde_json::from_str(include_str!(
-        "../../../docs/src/assets/examples/json/status.json"
+        "../../../docs/overrides/assets/examples/json/status.json"
     ))
     .unwrap();
     assert!(status.get("schema_version").is_none());
     assert_eq!(status["observations"]["network"]["requests_seen"], 0);
     let checkpoint: Value = serde_json::from_str(include_str!(
-        "../../../docs/src/assets/examples/json/checkpoint-list.json"
+        "../../../docs/overrides/assets/examples/json/checkpoint-list.json"
     ))
     .unwrap();
     assert_eq!(checkpoint["schema_version"], 1);

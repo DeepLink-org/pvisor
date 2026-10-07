@@ -1,7 +1,5 @@
 //! Job-scoped workspace and execution checkpoint management.
-use crate::runtime::checkpoint::{
-    checkpoint_branch_refs, create_stopped_checkpoint_locked, list_checkpoints, resolve_checkpoint,
-};
+use crate::runtime::checkpoint::{checkpoint_branch_refs, list_checkpoints, resolve_checkpoint};
 use crate::runtime::job_execution::{self, Job};
 use crate::runtime::{RunRecord, resolve_run};
 use anyhow::Context;
@@ -116,7 +114,8 @@ pub(super) async fn suspend(args: SuspendArgs) -> anyhow::Result<()> {
     let request_id = args
         .request_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let checkpoint = job_execution::capture(
+    let response = crate::runtime::job_service::RuntimeJobService::capture_selected_execution(
+        &super::host::service_context(),
         &record,
         true,
         args.ram_storage
@@ -126,6 +125,7 @@ pub(super) async fn suspend(args: SuspendArgs) -> anyhow::Result<()> {
         std::time::Duration::from_millis(args.timeout.0),
     )
     .await?;
+    let checkpoint = response.checkpoint;
     emit(
         args.json,
         serde_json::json!({"schema_version":1,"operation":"suspend","job_id":record.run_id,"state":"suspended","request_id":request_id,"checkpoint_id":checkpoint.snapshot_id,"kind":"execution","checkpoint":checkpoint}),
@@ -248,37 +248,10 @@ impl CheckpointArgs {
 /// Check the Job configuration before admitting native execution checkpoints.
 /// Platform support alone does not guarantee that this Job can be restored.
 pub(crate) fn execution_blocker(record: &RunRecord) -> Option<String> {
-    let job = match job_execution::job(record) {
-        Ok(job) => job,
-        Err(error) => return Some(format!("{error:#}")),
-    };
-    if !cfg!(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    )) {
-        return Some("native execution checkpoints are unsupported on this platform".into());
-    }
-    if job.config.overlaynet.mode != crate::OverlayNetMode::Off {
-        return Some("native execution checkpoints require --overlaynet off; the Job's networking is retained".into());
-    }
-    if job.config.vm.rootfs.as_deref() == Some(std::path::Path::new("/")) {
-        return Some(
-            "native execution checkpoints require an owned rootfs; host root is unsupported".into(),
-        );
-    }
-    if job.config.vm.cold_pager_requested()
-        || job.config.vm.ram_backing.is_some()
-        || job.config.vm.ram_compression
-    {
-        return Some("native restore requires private RAM without live writable backing, a memory pool or cold pager".into());
-    }
-    None
+    crate::runtime::job_service::execution_blocker(record)
 }
 pub(super) fn check_execution(record: &RunRecord) -> anyhow::Result<()> {
-    if let Some(blocker) = execution_blocker(record) {
-        anyhow::bail!("CAPABILITY_UNSUPPORTED: Job {}: {}", record.run_id, blocker);
-    }
-    Ok(())
+    crate::runtime::job_service::require_execution(record)
 }
 
 pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
@@ -299,16 +272,19 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             if kind == Kind::Execution {
                 check_execution(&selected)?;
                 let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                let checkpoint = job_execution::capture(
-                    &selected,
-                    false,
-                    ram_storage
-                        .map(Into::into)
-                        .unwrap_or(SnapshotRamStorage::Compressed),
-                    Some(request_id.clone()),
-                    std::time::Duration::from_millis(timeout.0),
-                )
-                .await?;
+                let response =
+                    crate::runtime::job_service::RuntimeJobService::capture_selected_execution(
+                        &super::host::service_context(),
+                        &selected,
+                        false,
+                        ram_storage
+                            .map(Into::into)
+                            .unwrap_or(SnapshotRamStorage::Compressed),
+                        Some(request_id.clone()),
+                        std::time::Duration::from_millis(timeout.0),
+                    )
+                    .await?;
+                let checkpoint = response.checkpoint;
                 return emit(
                     json,
                     serde_json::json!({"schema_version":1,"operation":"checkpoint.create","job_id":selected.run_id,"request_id":request_id,"checkpoint_id":checkpoint.snapshot_id,"kind":"execution","checkpoint":checkpoint}),
@@ -521,120 +497,28 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
         }
     }
 }
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WorkspaceReceipt {
-    schema_version: u32,
-    job_id: String,
-    checkpoint_id: String,
-}
-
 fn create_fenced_workspace_request(
     selected: &RunRecord,
     request_id: Option<&str>,
 ) -> anyhow::Result<(crate::LogicalCheckpoint, bool)> {
-    let _job = super::host::lock_selected_job(selected)?;
-    let (record, _lease) = selected.lock_current()?;
-    super::host::check_selected_record(selected, &record)?;
-    super::host_service::check_record(&record)?;
-    record.require_stopped()?;
-    let Some(key) = request_id else {
-        return Ok((create_stopped_checkpoint_locked(&record, None)?, false));
-    };
-    super::host::validate_request_id(key)?;
-    use sha2::Digest;
-    let id = format!(
-        "request-{}",
-        crate::util::encode_hex(&sha2::Sha256::digest(key.as_bytes()))
-    );
-    let requests = record
-        .stage_dir()
-        .join(crate::CHECKPOINTS_DIR)
-        .join(".requests");
-    let receipt = requests.join(format!("{id}.json"));
-    if receipt.try_exists()? {
-        let prior: WorkspaceReceipt = serde_json::from_slice(&std::fs::read(&receipt)?)?;
-        anyhow::ensure!(
-            prior.schema_version == 1 && prior.job_id == record.run_id && prior.checkpoint_id == id,
-            "workspace request receipt identity mismatch"
-        );
-        let cp = resolve_checkpoint(&record, &id).map_err(|e| anyhow::anyhow!(
-            "request already committed; its checkpoint is no longer available; use a new request id: {e}"))?;
-        return Ok((cp, true));
-    }
-    let prior = list_checkpoints(&record)?
-        .into_iter()
-        .find(|cp| cp.checkpoint_id == id);
-    let reused = prior.is_some();
-    let checkpoint = match prior {
-        Some(cp) => cp,
-        None => create_stopped_checkpoint_locked(&record, Some(&id))?,
-    };
-    crate::util::create_dir_all_durable(&requests)?;
-    crate::util::write_private_json(
-        &receipt,
-        &WorkspaceReceipt {
-            schema_version: 1,
-            job_id: record.run_id,
-            checkpoint_id: id,
-        },
-    )?;
-    Ok((checkpoint, reused))
+    crate::runtime::job_service::RuntimeJobService::create_selected_workspace_checkpoint(
+        &super::host::service_context(),
+        selected,
+        request_id,
+    )
 }
-
-// The runtime workspace helpers acquire their own lease and have no target
-// callback. Keep the host fence and transaction together under the CLI lease.
 fn delete_workspace_checkpoint(selected: &RunRecord, id: &str) -> anyhow::Result<String> {
-    let (current, _lease) = selected.lock_current()?;
-    super::host::check_selected_record(selected, &current)?;
-    super::host_service::check_record(&current)?;
-    current.require_stopped()?;
-    let checkpoint = resolve_checkpoint(&current, id)?;
-    anyhow::ensure!(
-        checkpoint_branch_refs(&checkpoint)? == 0,
-        "CHECKPOINT_REFERENCED: checkpoint {} is retained by a child Job",
-        checkpoint.checkpoint_id
-    );
-    let manifest = checkpoint.manifest_path();
-    let root = manifest.parent().context("checkpoint manifest parent")?;
-    let parent = root.parent().context("checkpoint parent")?;
-    let tombstone = parent.join(format!(".deleted-{}", uuid::Uuid::new_v4().simple()));
-    std::fs::rename(root, &tombstone)?;
-    crate::util::sync_directory(parent)?;
-    std::fs::remove_dir_all(tombstone)?;
-    crate::util::sync_directory(parent)?;
-    Ok(checkpoint.checkpoint_id)
+    crate::runtime::job_service::RuntimeJobService::delete_selected_workspace_checkpoint(
+        &super::host::service_context(),
+        selected,
+        id,
+    )
 }
-
 fn collect_fenced_workspace_transactions(selected: &RunRecord) -> anyhow::Result<usize> {
-    let (current, _lease) = selected.lock_current()?;
-    super::host::check_selected_record(selected, &current)?;
-    super::host_service::check_record(&current)?;
-    current.require_stopped()?;
-    let root = current.stage_dir().join(crate::CHECKPOINTS_DIR);
-    if !root.exists() {
-        return Ok(0);
-    }
-    let mut removed = 0;
-    for entry in std::fs::read_dir(&root)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if (name.starts_with(".pending-") || name.starts_with(".deleted-"))
-            && entry.file_type()?.is_dir()
-        {
-            if let Ok(cp) = crate::LogicalCheckpoint::read(&entry.path()) {
-                anyhow::ensure!(
-                    cp.checkpoint_id != name,
-                    "refuse to collect a legacy committed checkpoint named {name}"
-                );
-            }
-            std::fs::remove_dir_all(entry.path())?;
-            removed += 1;
-        }
-    }
-    crate::util::sync_directory(&root)?;
-    Ok(removed)
+    crate::runtime::job_service::RuntimeJobService::collect_selected_workspace_transactions(
+        &super::host::service_context(),
+        selected,
+    )
 }
 
 fn checkpoint_store(

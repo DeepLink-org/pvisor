@@ -1,7 +1,7 @@
 {% extends "main.html" %}
-{% set zh = page.url[:2] != 'en' %}
-{% set prefix = 'zh/' if page.url[:2] not in ['en', 'zh'] else '' %}
-{% set canonical = '../zh/' if not zh else prefix %}
+{% set zh = config.theme.language == 'zh' %}
+{% set prefix = 'zh/' if config.extra.root else '' %}
+{% set canonical = prefix %}
 {% block container %}
 <div class="pc-home-container" data-md-component="content">
   <article class="pc-home-article md-typeset">

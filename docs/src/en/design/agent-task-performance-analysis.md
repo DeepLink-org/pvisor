@@ -20,7 +20,7 @@ These workloads were measured on Linux; macFUSE/FSKit overhead and capacity rema
 
 pVisor reuses installed host Python/Node/Rust/Git/rg/Claude/Codex without making an OS image. Firecracker/QEMU install distribution tools and the same Rust/Agent CLIs in complete official Ubuntu 26.04.1 LTS. Each trial creates a new environment, then runs the same repair plan and tests. VMs use 2 vCPU / 16 GiB; all groups share the two-core budget and warm host caches, with 10 planned samples, 3 warmups and randomized order; cells state effective N when below 10. Ubuntu Python/Node/Git versions differ from the host; full versions and kernel differences are in the [method](../benchmarks/methodology.md#full-ubuntu).
 
-![Complete Ubuntu and image-free pVisor tool loops](../../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-workflows.svg)
+![Complete Ubuntu and image-free pVisor tool loops](../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-workflows.svg)
 
 | Backend | Tool self-check P50/P95 s | Repair/tests P50/P95 s | Claude loop P50/P95 s | Codex loop P50/P95 s |
 |---|---|---|---|---|
@@ -76,7 +76,7 @@ The deployed environment contains Python 3.14.7, Node 24.18.0/npm, Rust/Cargo 1.
 
 The workflow inspects a project, searches for the bug, repairs Python, runs Python/Rust/Node tests, installs 32 local dependencies, and generates a diff. Fixed model responses request that plan. Real CLIs must return actual passing tool results and exit normally. This covers environment deployment and tool execution, not large repositories, real model success rates or Internet dependency installation.
 
-![P50/P95 complete environment and real CLI workflows](../../assets/benchmarks/reference-env-20261004/reference-workflows.svg)
+![P50/P95 complete environment and real CLI workflows](../assets/benchmarks/reference-env-20261004/reference-workflows.svg)
 
 | Backend | Tool self-check P50/P95 s | Repair/tests P50/P95 s | Claude loop P50/P95 s | Codex loop P50/P95 s |
 |---|---|---|---|---|

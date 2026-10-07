@@ -1016,7 +1016,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
             .executors(vec![report_terminal(Arc::new(ProcessExecutor::default()))])
             .build()
     };
-    let handle = match pvisor.run(spec).await {
+    let handle = match crate::runtime::job_service::RuntimeJobService::start(&pvisor, spec).await {
         Ok(handle) => handle,
         Err(error) => return Err(error.into()),
     };
@@ -1780,7 +1780,7 @@ async fn execute_config(
     }
     crate::util::startup_mark_run("cli.session_begin", &run_id);
     let execution_spec = spec.clone();
-    let handle = pvisor.run(spec).await?;
+    let handle = crate::runtime::job_service::RuntimeJobService::start(&pvisor, spec).await?;
     announce_control_socket(&handle);
     let execution_server = if config.run.executor == RunExecutorKind::Vm {
         let record = resolve_run(Some(Path::new(&run_id)), &storage)?;

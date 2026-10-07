@@ -115,6 +115,44 @@ impl<R> AgentCtlHostResponse<R> {
     }
 }
 
+/// Host-authority commands for an already selected Attempt.
+/// Endpoint authentication and exact Job/Attempt/generation binding are external.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HostAttemptCommand {
+    Status,
+    Terminate,
+    Operation {
+        kind: crate::operation::OperationKind,
+    },
+}
+
+impl<'de> Deserialize<'de> for HostAttemptCommand {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+        enum WireCommand {
+            Status {},
+            Terminate {},
+            Operation {
+                kind: crate::operation::OperationKind,
+            },
+        }
+        Ok(match WireCommand::deserialize(deserializer)? {
+            WireCommand::Status {} => Self::Status,
+            WireCommand::Terminate {} => Self::Terminate,
+            WireCommand::Operation { kind } => Self::Operation { kind },
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostAttemptResult {
+    pub status: crate::RunStatus,
+    pub value: Option<crate::operation::Value>,
+}
+
 /// Host-only live VM controls for an explicitly addressed Attempt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -143,6 +181,33 @@ impl<'de> Deserialize<'de> for HostVmCommand {
             WireCommand::Offload { file } => Self::Offload { file },
             WireCommand::Status {} => Self::Status,
         })
+    }
+}
+
+impl From<HostVmCommand> for HostAttemptCommand {
+    fn from(command: HostVmCommand) -> Self {
+        use crate::operation::OperationKind;
+        match command {
+            HostVmCommand::Status => Self::Status,
+            HostVmCommand::Pause => Self::Operation {
+                kind: OperationKind::RunPause,
+            },
+            HostVmCommand::Resume => Self::Operation {
+                kind: OperationKind::RunResume,
+            },
+            HostVmCommand::Offload { file } => Self::Operation {
+                kind: OperationKind::RunOffload { file },
+            },
+        }
+    }
+}
+
+impl From<HostAttemptResult> for HostVmResult {
+    fn from(result: HostAttemptResult) -> Self {
+        Self {
+            status: result.status,
+            value: result.value,
+        }
     }
 }
 
@@ -294,6 +359,72 @@ mod tests {
             serde_json::json!({"command": "status", "file": null}),
         ] {
             assert!(serde_json::from_value::<HostVmCommand>(wire).is_err());
+        }
+    }
+
+    #[test]
+    fn attempt_commands_use_strict_operation_tagged_wire() {
+        use crate::operation::{OperationKind, SnapshotRamStorage};
+        for kind in [
+            OperationKind::RunPause,
+            OperationKind::RunResume,
+            OperationKind::RunOffload {
+                file: Some("/private/ram".into()),
+            },
+            OperationKind::RunCheckpoint {
+                request_id: "checkpoint".into(),
+                ram_storage: SnapshotRamStorage::Raw,
+            },
+            OperationKind::RunSuspend {
+                request_id: "suspend".into(),
+                ram_storage: SnapshotRamStorage::Compressed,
+            },
+            // The shared core kind stays intact; rejecting execution is runtime policy.
+            OperationKind::RunExecute {
+                program: "/bin/true".into(),
+                args: vec![],
+                cwd: None,
+            },
+        ] {
+            let command = HostAttemptCommand::Operation { kind };
+            let wire = serde_json::to_value(&command).unwrap();
+            assert_eq!(
+                serde_json::from_value::<HostAttemptCommand>(wire).unwrap(),
+                command
+            );
+        }
+        for (command, wire) in [
+            (
+                HostAttemptCommand::Status,
+                serde_json::json!({"operation": "status"}),
+            ),
+            (
+                HostAttemptCommand::Terminate,
+                serde_json::json!({"operation": "terminate"}),
+            ),
+            (
+                HostAttemptCommand::Operation {
+                    kind: OperationKind::RunPause,
+                },
+                serde_json::json!({"operation": "operation", "kind": {"op": "run.pause"}}),
+            ),
+        ] {
+            assert_eq!(serde_json::to_value(&command).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<HostAttemptCommand>(wire).unwrap(),
+                command
+            );
+        }
+        for wire in [
+            serde_json::json!({"operation": "status", "kind": null}),
+            serde_json::json!({"operation": "terminate", "extra": true}),
+            serde_json::json!({"operation": "operation"}),
+            serde_json::json!({"operation": "operation", "kind": {"op": "run.pause"}, "extra": true}),
+            serde_json::json!({"operation": "operation", "kind": {"op": "run.pause", "extra": true}}),
+            serde_json::json!({"operation": "pause"}),
+            serde_json::json!({"operation": "load"}),
+        ] {
+            assert!(serde_json::from_value::<HostAttemptCommand>(wire).is_err());
         }
     }
 

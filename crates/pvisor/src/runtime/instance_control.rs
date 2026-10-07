@@ -7,7 +7,7 @@ use super::host_transport::{
     allocate_host_directory, authorize_host_peer, host_authority_root, read_host_frame,
     validate_host_target, write_host_frame,
 };
-use super::run::{RunControlHandle, RunHandle};
+use super::run::{AttemptService, RunControlHandle, RunHandle};
 #[cfg(test)]
 use pvisor_core::AttemptId;
 use pvisor_core::RunStatus;
@@ -15,8 +15,9 @@ use pvisor_core::RunStatus;
 use pvisor_core::host_protocol::{AGENTCTL_HOST_MAX_FRAME_BYTES, AgentCtlTarget};
 use pvisor_core::host_protocol::{
     AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
-    AgentCtlHostResponse, HostVmCommand, HostVmResult,
+    AgentCtlHostResponse, HostAttemptCommand, HostVmCommand, HostVmResult,
 };
+#[cfg(test)]
 use pvisor_core::operation::{OperationKind, Value};
 use std::collections::HashMap;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -227,7 +228,7 @@ impl Drop for InstanceControlServer {
 fn host_operation(
     request: &AgentCtlHostRequest<HostVmCommand>,
     status: &RunStatus,
-) -> Result<Option<OperationKind>, AgentCtlHostError> {
+) -> Result<HostAttemptCommand, AgentCtlHostError> {
     request.validate()?;
     validate_host_target(
         request.target.as_ref(),
@@ -240,12 +241,7 @@ fn host_operation(
             "live VM controls require a VM executor",
         ));
     }
-    Ok(match &request.command {
-        HostVmCommand::Pause => Some(OperationKind::RunPause),
-        HostVmCommand::Resume => Some(OperationKind::RunResume),
-        HostVmCommand::Offload { file } => Some(OperationKind::RunOffload { file: file.clone() }),
-        HostVmCommand::Status => None,
-    })
+    Ok(request.command.clone().into())
 }
 
 async fn serve(
@@ -269,18 +265,15 @@ async fn serve(
     let request_id = request.request_id.clone();
     let result = host_operation(&request, &status.borrow().clone());
     let result = match result {
-        Ok(Some(kind)) => {
-            let operation = controls.control(kind);
+        Ok(command) => {
+            let service = AttemptService::new(controls);
+            let operation = service.dispatch(command);
             tokio::pin!(operation);
             match tokio::time::timeout(operation_timeout, &mut operation).await {
-                Ok(result) => result.map(Some).map_err(|error| {
-                    AgentCtlHostError::new(AgentCtlHostErrorCode::Unavailable, format!("{error:#}"))
-                }),
+                Ok(result) => result.map(HostVmResult::from),
                 Err(_) => {
-                    let snapshot = status.borrow().clone();
                     respond(
                         &mut stream,
-                        snapshot,
                         &request_id,
                         Err(AgentCtlHostError::new(
                             AgentCtlHostErrorCode::Unavailable,
@@ -297,20 +290,16 @@ async fn serve(
                 }
             }
         }
-        Ok(None) => Ok(None),
         Err(error) => Err(error),
     };
-    let snapshot = status.borrow().clone();
-    respond(&mut stream, snapshot, &request_id, result).await;
+    respond(&mut stream, &request_id, result).await;
 }
 
 async fn respond(
     stream: &mut UnixStream,
-    status: RunStatus,
     request_id: &str,
-    result: Result<Option<Value>, AgentCtlHostError>,
+    result: Result<HostVmResult, AgentCtlHostError>,
 ) {
-    let result = result.map(|value| HostVmResult { status, value });
     let response = AgentCtlHostResponse {
         version: AGENTCTL_HOST_VERSION,
         request_id: request_id.to_owned(),
@@ -701,6 +690,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disabled_instance_control_creates_no_endpoint_or_registry_entry() {
+        struct NoEndpointVm;
+        #[async_trait::async_trait]
+        impl RunExecutor for NoEndpointVm {
+            fn descriptor(&self) -> ExecutorPlan {
+                MockVm.descriptor()
+            }
+            fn supports(&self, _: &RunInvocation) -> bool {
+                true
+            }
+            async fn execute(&self, session: &Session) -> crate::ExecutorOutput {
+                assert!(
+                    !session
+                        .spec()
+                        .metadata
+                        .contains_key(INSTANCE_CONTROL_DIRECTORY_METADATA)
+                );
+                ProcessExecutor::default().execute(session).await
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let mut spec = RunSpec::process("disabled-control", "test", "/bin/sleep");
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["60".into()];
+        // Caller metadata must not substitute for runtime-owned exclusion state.
+        spec.metadata.insert(
+            INSTANCE_CONTROL_DIRECTORY_METADATA.into(),
+            serde_json::to_value(directory.path()).unwrap(),
+        );
+        let handle = PVisor::builder()
+            .executors(vec![Arc::new(NoEndpointVm)])
+            .network(crate::NetworkDriverConfig {
+                mode: crate::OverlayNetMode::Off,
+                ..Default::default()
+            })
+            .instance_control(false)
+            .build()
+            .run(spec)
+            .await
+            .unwrap();
+        assert!(handle.control_socket().is_err());
+        let identity = (handle.run_id().to_string(), handle.attempt_id().to_string());
+        assert!(!endpoints().lock().unwrap().contains_key(&identity));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        let service = handle.service();
+        assert_eq!(service.status().attempt.attempt_id, *handle.attempt_id());
+        // Wait for execution so the fixture's metadata assertion is exercised.
+        handle.controls().wait_ready().await.unwrap();
+        service
+            .dispatch(HostAttemptCommand::Terminate)
+            .await
+            .unwrap();
+        handle.wait().await.unwrap();
+        assert!(!endpoints().lock().unwrap().contains_key(&identity));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn disabled_instance_control_rejects_custom_socket_in_either_builder_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("unused.sock");
+        for builder in [
+            PVisor::builder()
+                .control_socket(&path)
+                .instance_control(false),
+            PVisor::builder()
+                .instance_control(false)
+                .control_socket(&path),
+        ] {
+            let result = builder
+                .executors(vec![Arc::new(MockVm)])
+                .build()
+                .run(RunSpec::process(
+                    "disabled-custom-control",
+                    "test",
+                    "/bin/true",
+                ))
+                .await;
+            assert!(matches!(
+                result,
+                Err(super::super::run::PVisorError::InvalidSpec(_))
+            ));
+            assert!(!path.exists());
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[tokio::test]
     async fn configured_socket_rejects_non_vm_before_start() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("unused.sock");
@@ -772,7 +849,7 @@ mod tests {
         ] {
             assert_eq!(
                 host_operation(&request(&handle, command), &handle.status()).unwrap(),
-                Some(kind)
+                HostAttemptCommand::Operation { kind }
             );
         }
         handle.controls().wait_ready().await.unwrap();

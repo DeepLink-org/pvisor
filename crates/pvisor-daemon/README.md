@@ -54,7 +54,14 @@ Native `pvisor` forwards `pvisor service daemon ...` arguments unchanged to the
 separately installed `pvisor-daemon`; it does not depend on this crate. The
 VM-only `NativeRuntime` in `runtime.rs` embeds `pvisor::PVisor` and `VmExecutor`
 in a detached `native-supervisor` subprocess that holds the RunHandle and survives
-daemon restart. Cargo links `pvisor` and
+daemon restart. Execution starts through pVisor's `RuntimeJobService`; live
+status/pause/resume/termination dispatch through the shared in-process
+`AttemptService`. The supervisor disables pVisor's default HostVm endpoint with
+`instance_control(false)`, retaining only its authenticated `control.sock` rather
+than two management endpoints for one VM. It still owns readiness, boot/generation
+identity, cgroup reconciliation, deletion fencing and confirmed teardown. Shared
+termination only requests cancellation; it cannot release a reservation or replace
+cgroup absence proof. Cargo links `pvisor` and
 `pvisor-core`; synchronous `main` calls `pvisor::run_krun_internal_if_requested()`
 before argument parsing or Tokio, then dispatches the hidden
 `native-supervisor --sandbox-dir ABSOLUTE_PATH` command. `serve` constructs
@@ -125,7 +132,11 @@ No security audit or hostile multi-user assurance is claimed.
   sandbox records are atomically persisted before native creation/control.
 - Runtime operations use core `AgentCtlHostRequest`/`AgentCtlHostResponse` version-1
   envelopes over newline-delimited JSON (maximum 1 MiB payload, no length prefix).
-  Responses must correlate the request ID and echo the authenticated owner/target.
+  Framing and same-effective-UID peer authentication reuse pVisor's public
+  `host_transport` implementation, including bounded encoding and sync/async frame
+  interoperability; envelope and owner/token/generation validation remain explicit
+  supervisor responsibilities. Responses must correlate the request ID and echo
+  the authenticated owner/target.
   Private IPC authenticates same-UID peer credentials, namespace owner, sandbox Job
   ID, explicit Attempt ID, generation and secret token. Missing generation or
   Attempt cannot resolve to the current instance. The token remains private and

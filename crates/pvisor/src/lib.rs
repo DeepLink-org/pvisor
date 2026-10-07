@@ -92,10 +92,13 @@ pub use runtime::event::{
     EventAppendErrorKind, EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher,
 };
 #[cfg(unix)]
+pub use runtime::host_transport;
+#[cfg(unix)]
 pub use runtime::instance_control::exchange as host_vm_exchange;
+pub use runtime::job_service;
 pub use runtime::run::{
-    PVisor, PVisorBuilder, PVisorError, RunCancellation, RunControlHandle, RunEventStream,
-    RunHandle,
+    AttemptService, PVisor, PVisorBuilder, PVisorError, RunCancellation, RunControlHandle,
+    RunEventStream, RunHandle,
 };
 pub use runtime::{
     ChangeEntry, ChangeEntryType, ChangeKind, ExecutionOverlayHint, ImplantPlan, OverlayHint,

@@ -77,6 +77,6 @@ printf 'failure=%s review=%s timeout=%s review=%s\n' \
   "$failure_code" "$failure_review_code" "$timeout_code" "$timeout_review_code"
 ```
 
-预期 `failure=7 review=0 timeout=1 review=0`。检查两份 Bundle 后，再 drop 这些测试 Stage。实际采集的[失败](../../assets/examples/json/failed-run.json)与[超时](../../assets/examples/json/timeout-run.json)样例展示了对应结果。准备阶段失败则可能使 review 非零；上传已有记录，并保留原始运行退出码。
+预期 `failure=7 review=0 timeout=1 review=0`。检查两份 Bundle 后，再 drop 这些测试 Stage。实际采集的[失败](../assets/examples/json/failed-run.json)与[超时](../assets/examples/json/timeout-run.json)样例展示了对应结果。准备阶段失败则可能使 review 非零；上传已有记录，并保留原始运行退出码。
 
 回归覆盖包括 `tests/documentation_json.rs`（实际非零退出/超时运行、候选暂存保留与已记录输出格式）。这些本地 Linux 检查验证工作流依赖的 CLI 行为，不是 GitHub Actions 托管 runner 的测量数据。

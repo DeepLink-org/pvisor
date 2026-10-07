@@ -13,27 +13,35 @@ repository/deployment URLs. Separate requested policy, installed controls, and o
 results; distinguish ordinary host write-through from `--safe` staging and
 describe each executor's platform-dependent boundary.
 
-The site uses Zensical 0.0.61. Each article under `docs/src/zh/` has a matching
+The site uses Zensical 0.0.67. Each article under `docs/src/zh/` has a matching
 English article at the same relative path under `docs/src/en/`. Chinese defines
 the canonical information architecture; both languages describe the same
 behavior, examples, evidence and known limitations.
 
 ```bash
-just docs-serve         # build, watch, and serve on 127.0.0.1:3000
-just docs-serve --port 3001
+just docs-serve         # native Chinese preview on 127.0.0.1:3000
+just docs-serve en      # native English preview on 127.0.0.1:3001
+just docs-serve zh -a 127.0.0.1:3002
 just docs-build         # build docs/site and validate generated pages
 ```
 
-`scripts/build-docs.py` renders the same navigation in both languages with each
-locale's native theme and search index. The language selector keeps the current
-article; navigation, breadcrumbs and search results stay in that language. Former
-article URLs redirect to their replacements in the same language; unprefixed
-legacy URLs use Chinese. `check-docs.py` checks translation coverage, paired
-revisions, examples, links, navigation and HTML language attributes.
+The recipes call `zensical build` and `zensical serve` directly. Configuration is
+checked-in native TOML, using tables and arrays of tables rather than generated
+inline dictionaries. No Python build wrapper, source copy, temporary configuration,
+HTML rewriting, custom search index or custom HTTP server is involved.
+
+Zensical has one theme language and search index per project. `zensical.toml`
+builds the root landing page, shared assets and legacy URLs; `zensical.zh.toml`
+and `zensical.en.toml` then build each locale directly into `site/zh` and `site/en`.
+Both locale configurations own their translated navigation and native search.
+The language selector keeps the current article. Preview one locale at a time
+with the native server; alternate-language links use the published site paths.
+`check-docs.py` checks translation coverage, paired revisions, examples, links,
+navigation, HTML language attributes and that every article was generated.
 
 `docs/overrides/home.html` overrides the native content block for the full-width
 homepage. The header, mobile drawer, sidebars and table of contents remain
-Zensical components. `docs/src/stylesheets/extra.css` supplies the shared blue
+Zensical components. `docs/overrides/assets/stylesheets/extra.css` supplies the shared blue
 gradient, grid, brand contrast and homepage layout. Use native Markdown fences,
 `!!! note` / `!!! tip` callouts, and relative image paths.
 
@@ -41,9 +49,10 @@ CI uses the same bilingual build and page checks before uploading `docs/site`.
 
 ## Layout
 
-`docs/src/` is the published site source: `assets/`, `stylesheets/`, `index.md`,
-and the complete per-locale trees `zh/` and `en/`. The `docs/` root holds site
-infrastructure — `zensical.toml`, `redirects.json`, `translations.json`,
+`docs/landing/` contains the root landing page. `docs/src/zh/` and `docs/src/en/`
+contain the complete locale source trees. `docs/overrides/assets/` holds shared
+static resources that Zensical publishes natively in each project. The `docs/` root holds site
+infrastructure — the three `zensical*.toml` files, `translations.json`,
 `overrides/`, and this file. Keep each document next to what it serves: tool and
 specification documents live with their tool (for example `tools/semspec/DESIGN.md`),
 and user-facing protocol pages belong in the site's `reference/` tree, not at the
@@ -87,7 +96,17 @@ network policy guide owns the executor boundary matrix (summarized in
 `security/executor-boundaries`); the evidence page owns the meaning and limits of
 observations. Other articles link to these definitions. Implementation pages
 explain mechanisms and code ownership. Benchmark and comparison pages state
-method, environment and date, and keep dated raw samples in local `.data/` directories. Only derived Markdown tables and same-directory CSV downloads are versioned. Site builds use a source copy that excludes `.data/` at every depth.
+method, environment and date, and keep dated raw samples in local `.data/` directories.
+Only derived Markdown tables and same-directory CSV downloads are versioned.
+The native `exclude` plugin excludes `.data/` at every depth, and the generated
+site checker rejects leaked evidence. Zensical publishes the shared theme assets
+in each locale, including images and JSON downloads, so native previews need no
+extra server. JSON fixtures, recording tools and published figures use
+`docs/overrides/assets/` directly. Existing local evidence remains in the real
+`docs/src/assets/benchmarks/.data/` directory, outside the three projects' article
+roots. Do not replace the former tracked `docs/src/assets/` or
+`docs/src/stylesheets/` directories with symlinks: Git cannot stage individual
+old-file deletions through a symlink during the migration.
 
 ### Publication readiness
 
@@ -123,10 +142,10 @@ it. The models are the uv, Ruff and Ray docs.
 - Tables for options, matrices and comparisons; code fences for anything runnable.
 - A page with no data yet says “建设中” and links to its TODO page instead of making an empty claim.
 
-`zensical.toml` owns navigation. Maintain paired Chinese and English articles.
-`redirects.json` maps old locale-relative Markdown paths to their replacements;
-the build emits redirects for English, Chinese, and the original unprefixed
-published URLs. Update incoming source links to canonical paths as well.
+The native TOML files own navigation. Maintain paired Chinese and English articles.
+`[project.plugins.redirects.redirect_maps]` maps old Markdown paths to their
+replacements; Zensical emits redirects for English, Chinese, and the original
+unprefixed published URLs. Update incoming source links to canonical paths as well.
 The checker rejects missing Chinese originals, missing or duplicate navigation targets,
 broken links, missing anchors and invalid redirect targets.
 Use explicit heading IDs for links to translated sections, so wording changes do not break anchors.
@@ -160,11 +179,25 @@ do not prove that translated prose has the same meaning. Review commands, number
 versions, claims and limitations before recording. This revision file is not a
 semspec approval ledger and never replaces human semantic approval.
 
-Navigation labels for English groups live in `EN_NAV_LABELS` in
-`scripts/build-docs.py`; ordinary article labels use translated page titles.
-Add the English label when adding a Chinese navigation group. Documented pages become searchable in both languages together. Do not fill
+Maintain matching navigation paths in `zensical.zh.toml` and `zensical.en.toml`.
+The root navigation links to both locale homepages. Update all relevant redirect
+tables when moving an article. Documented pages become searchable in both
+languages together. Do not fill
 missing measurements, audit results or maintainer decisions with inferred claims;
 state the current public record and keep engineering follow-ups below.
+
+### Build reports success but produces no articles
+
+Zensical requires available inotify watches even for a one-time build. On this
+Linux host, Cursor occupied about 270,412 watches against a 271,298 limit;
+`inotify_add_watch` returned `ENOSPC`, while Zensical exited successfully without
+reading the article tree. This is a host resource failure, not a Markdown error.
+The page checker must still run after the generator.
+
+Check `cat /proc/sys/fs/inotify/max_user_watches`. Free unnecessary editor watches
+or increase the host limit, for example `sudo sysctl -w fs.inotify.max_user_watches=524288`.
+This command applies until reboot; permanent system policy belongs to the host
+administrator. Do not work around the failure with source copies or HTML rewrites.
 
 ## Core design
 

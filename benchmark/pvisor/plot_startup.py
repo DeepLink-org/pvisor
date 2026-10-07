@@ -9,8 +9,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[2]
-ASSETS = ROOT / 'docs/src/assets/benchmarks'
-REPORT = load_evidence(ASSETS / '.data/startup-20261003.tsv')
+ASSETS = ROOT / 'docs/overrides/assets/benchmarks'
+REPORT = load_evidence(ROOT / 'docs/src/assets/benchmarks/.data/startup-20261003.tsv')
 PREVIEW = ROOT / 'target/startup-figures'
 PREVIEW.mkdir(parents=True, exist_ok=True)
 plt.rcParams.update({'font.family': 'DejaVu Sans', 'font.size': 11,

@@ -1,4 +1,4 @@
-# <img src="docs/src/assets/logos/pvisor-icon.png" alt="PolicyVisor" width="72" /> PolicyVisor (pVisor)
+# <img src="docs/overrides/assets/logos/pvisor-icon.png" alt="PolicyVisor" width="72" /> PolicyVisor (pVisor)
 
 **Scaling autonomous agent execution.**  
 **让自主 Agent 的执行可以规模化。**
@@ -18,7 +18,7 @@ cost grows with the execution volume. PolicyVisor makes each execution **bounded
 recoverable, and checkable**, so supervision can be spread out, sampled, and
 eventually automated.
 
-![PolicyVisor execution and review workflow](docs/src/assets/diagrams/pvisor/system-products.svg)
+![PolicyVisor execution and review workflow](docs/overrides/assets/diagrams/pvisor/system-products.svg)
 
 ## What you get
 

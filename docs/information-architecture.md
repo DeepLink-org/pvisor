@@ -339,7 +339,7 @@ search:
 | `benchmark/pvisor/README.md` 中的数据 | `benchmarks/startup.md` | 数据迁入站点，脚本和原始报告仍放在 `benchmark/` |
 | `benchmark/replay/qwen3.6-results.md` | `benchmarks/replay-fidelity.md` | 同上 |
 
-所有迁移都在 `docs/redirects.json` 中登记旧路径到新路径的映射。
+所有迁移都在 `docs/zensical*.toml` 的 `[project.plugins.redirects.redirect_maps]` 中登记旧路径到新路径的映射，由 Zensical 原生生成重定向。
 
 ## 10. 双语策略
 

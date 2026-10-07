@@ -210,12 +210,15 @@ test-benchmark *args:
 
 # Build both languages with the same pinned tool as CI, then validate links.
 docs-build:
-    uv run --no-project --with zensical==0.0.61 python scripts/build-docs.py
+    python3 scripts/check-reference.py
+    uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.toml
+    uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.zh.toml
+    uv run --no-project --with zensical==0.0.67 zensical build --strict -f docs/zensical.en.toml
     python3 scripts/check-docs.py
 
-# Watch and serve documentation on localhost:3000; accepts --port and --host.
-docs-serve *args: docs-build
-    uv run --no-project --with zensical==0.0.61 python scripts/serve-docs.py --directory docs/site --watch "$@"
+# Native locale preview; accepts Zensical options such as -a HOST:PORT.
+docs-serve locale="zh" *args:
+    uv run --no-project --with zensical==0.0.67 zensical serve -f "docs/zensical.$1.toml" "${@:2}"
 
 # Read-only local checks, followed by tests and a debug build.
 ci: fmt-check lint test build
@@ -248,4 +251,3 @@ test-hvf-cold-restore:
 # VMM owning-thread/GIC correctness checks.
 test-vm-snapshot-state:
     python3 scripts/check-vm-snapshot-state.py --target-dir "{{ target_dir }}"
-

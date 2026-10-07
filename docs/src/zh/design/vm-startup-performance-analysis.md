@@ -148,7 +148,7 @@ Apple M4 上最新复测的启动中位耗时为 **84.35 ms**，P95 为 **112.14
 
 #### 完整矩阵：无诊断日志的端到端结果 {#macos-results}
 
-![官方与裁剪 firmware 在四种 VM 规格下的 Ready P50、P95、P99 对比](../../assets/benchmarks/startup-firmware-latency.svg)
+![官方与裁剪 firmware 在四种 VM 规格下的 Ready P50、P95、P99 对比](../assets/benchmarks/startup-firmware-latency.svg)
 
 图 1：各规格的就绪延迟。三个面板使用不同的横轴范围；P99 保留长尾样本，不能把中位数改善解释为每次启动都同样快。
 
@@ -186,7 +186,7 @@ Apple M4 上最新复测的启动中位耗时为 **84.35 ms**，P95 为 **112.14
 
 诊断结果显示，宿主准备和 guest 启动到返回输出是两项主要耗时，各约 **30 ms**；VMM 构造约 **3 ms**。进一步降低启动等待，需要优先关注运行记录与文件系统准备，以及 guest 的启动路径。
 
-![裁剪版 2 vCPU、128 MiB 的六段启动均值瀑布图，累计 87.05 ms](../../assets/benchmarks/startup-phase-waterfall.svg)
+![裁剪版 2 vCPU、128 MiB 的六段启动均值瀑布图，累计 87.05 ms](../assets/benchmarks/startup-phase-waterfall.svg)
 
 图 2：六段按时间顺序排列，横向位置表示累计经过的时间。图使用诊断批次的均值，合计 87.05 ms；下表另列 P50。guest 段包含初始化、负载执行和输出到达。
 
@@ -223,7 +223,7 @@ Apple M4 上最新复测的启动中位耗时为 **84.35 ms**，P95 为 **112.14
 
 #### 已验证并保留的优化
 
-![两个独立历史实验中，持久化优化和启动熵优化前后的 Ready P50](../../assets/benchmarks/startup-retained-optimizations.svg)
+![两个独立历史实验中，持久化优化和启动熵优化前后的 Ready P50](../assets/benchmarks/startup-retained-optimizations.svg)
 
 图 3：两次历史对照实验分别验证持久化优化和启动熵优化。每次 50 对样本，资源规格与批次不同；它们不是连续的优化时间线，收益不能相加。
 
@@ -301,7 +301,7 @@ RunRecord 是执行前的权威状态，不能为了更快把必要持久化改�
 
 **新建短任务 VM 的等待约 0.11 秒；Firecracker 上的完整 Ubuntu 开机进入可执行命令的状态约 5.64–9.25 秒。** 这里的 Ubuntu 来自官方最新云虚拟机发布，固定为 26.04.1 LTS / 20260927。保留原厂 `7.0.0-34-generic` 内核、initrd、模块与系统服务，等待 systemd multi-user、网络、cloud-init 和 SSH socket 就绪后才执行命令。pVisor 使用 `--rootfs host` 和自身内置内核，直接复用宿主工具，不准备系统镜像。
 
-![pVisor and complete Ubuntu startup P50/P95](../../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-startup.svg)
+![pVisor and complete Ubuntu startup P50/P95](../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-startup.svg)
 
 Linux / KVM，2 vCPU / 2 GiB、相同宿主两核预算，原批次前五行各 30 次正式样本，QEMU 补测两行各 10 次，均 3 次预热；分别 150/150、20/20 通过。每次创建新 VM，无 RAM 快照或常驻池；宿主磁盘缓存已预热。已配置 Ubuntu 使用安装好工具、完成初次 cloud-init 的磁盘模板；首次启动使用尚未初始化的完整 Ubuntu 模板，预置 NoCloud 网络配置和测量服务，没有安装完整 Agent 工具。首次启动不等于首次下载。
 
@@ -347,7 +347,7 @@ Exit 还包含正常关机：pVisor 中位数 174 ms，Firecracker/Ubuntu 约 9.
 
 同机、相同两核执行预算的准备环境中，pVisor VM Ready 中位数 **86.29 ms**，与 Docker **90.12 ms**、QEMU microvm **88.10 ms**接近，Firecracker 为 **73.74 ms**。这给出了“百毫秒量级”的位置：它接近成熟 microVM 路径，并没有全面胜过它们。
 
-![同机准备环境的首条输出 P50 与 P95](../../assets/benchmarks/reference-env-20261004/reference-startup.svg)
+![同机准备环境的首条输出 P50 与 P95](../assets/benchmarks/reference-env-20261004/reference-startup.svg)
 
 条形为 P50，横线为 P95；不是置信区间。N=30、3 次预热，按轮随机排列。128 MiB/2 vCPU，所有运行时绑定宿主物理核心 0、1；Docker daemon 与容器内工具也明确绑定。环境已包含完整 Python/Node/Rust/Git/Claude/Codex 工具，工作区包含 2,048 文件及 64 MiB 输入；准备与克隆成本另计。
 

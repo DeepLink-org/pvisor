@@ -148,7 +148,7 @@ The latest Apple M4 remeasurement has median readiness **84.35 ms** and P95 **11
 
 #### Full matrix: end-to-end results without diagnostic logging {#macos-results}
 
-![Ready P50, P95 and P99 for official and trimmed firmware across four VM shapes](../../assets/benchmarks/startup-firmware-latency.svg)
+![Ready P50, P95 and P99 for official and trimmed firmware across four VM shapes](../assets/benchmarks/startup-firmware-latency.svg)
 
 Figure 1: Readiness across VM shapes. Panels use different x-axis ranges. P99 retains tail samples; a better median does not mean every launch improves equally.
 
@@ -186,7 +186,7 @@ Median paired savings need not equal the difference between group medians. More 
 
 Diagnostics identify host preparation and guest startup through output arrival as the two main costs, each around **30 ms**; VMM construction takes about **3 ms**. Further reductions should focus on Run records and filesystem preparation, and on the guest startup path.
 
-![Six startup phase means for trimmed firmware at 2 vCPU and 128 MiB, totaling 87.05 ms](../../assets/benchmarks/startup-phase-waterfall.svg)
+![Six startup phase means for trimmed firmware at 2 vCPU and 128 MiB, totaling 87.05 ms](../assets/benchmarks/startup-phase-waterfall.svg)
 
 Figure 2: Phases follow startup order; horizontal position shows cumulative elapsed time. Diagnostic means sum to 87.05 ms; the table also lists P50. The guest phase includes initialization, workload execution and output arrival.
 
@@ -223,7 +223,7 @@ Durable records and overlay preparation dominate parent preparation. Runner prep
 
 #### Validated and retained optimizations
 
-![Ready P50 before and after persistence and boot-entropy changes in two independent historical experiments](../../assets/benchmarks/startup-retained-optimizations.svg)
+![Ready P50 before and after persistence and boot-entropy changes in two independent historical experiments](../assets/benchmarks/startup-retained-optimizations.svg)
 
 Figure 3: Independent historical comparisons validate persistence and boot entropy changes. Each uses 50 pairs, with different shapes and batches; they are not a continuous optimization timeline and gains cannot be added.
 
@@ -301,7 +301,7 @@ RunRecord is authoritative state before execution. Required persistence cannot b
 
 **A fresh short-task VM becomes usable in about 0.11 seconds; complete Ubuntu on Firecracker takes 5.64–9.25 seconds to boot and execute a command.** Ubuntu comes from the latest official cloud VM release, pinned to 26.04.1 LTS / 20260927. Its stock `7.0.0-34-generic` kernel, initrd, modules and services are retained. The command runs after systemd multi-user, networking, cloud-init and the SSH socket are active. pVisor uses `--rootfs host`, its embedded kernel, and installed host tools without preparing an OS image.
 
-![pVisor and complete Ubuntu startup P50/P95](../../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-startup.svg)
+![pVisor and complete Ubuntu startup P50/P95](../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-startup.svg)
 
 Linux / KVM, 2 vCPU / 2 GiB, the same two-core host budget, 30 samples for each of the first five rows and 10 for each QEMU follow-up row, all with 3 warmups; the batches pass 150/150 and 20/20 formal startup trials respectively. Every trial creates a fresh VM without a RAM snapshot or resident pool, with warm host disk caches. Prepared Ubuntu uses a disk template with installed tools and completed initial cloud-init. First boot uses an uninitialized complete Ubuntu template with NoCloud networking and the measurement service, without the complete Agent toolset. First boot does not include downloading the image.
 
@@ -347,7 +347,7 @@ These Firecracker/QEMU controls use a trimmed kernel and static init, skipping U
 
 With the same two-core host execution budget and prepared environment, pVisor VM Ready P50 is **86.29 ms**, close to Docker **90.12 ms** and QEMU microvm **88.10 ms**; Firecracker measures **73.74 ms**. This locates its hundred-millisecond scale near mature microVM paths, without claiming to beat all of them.
 
-![P50 and P95 first-output latency in the same prepared environment](../../assets/benchmarks/reference-env-20261004/reference-startup.svg)
+![P50 and P95 first-output latency in the same prepared environment](../assets/benchmarks/reference-env-20261004/reference-startup.svg)
 
 Bars show P50 and lines P95, not confidence intervals. N=30, 3 warmups, randomized backend order per round. VMs use 128 MiB/2 vCPU; every runtime is bound to physical host cores 0 and 1, including the Docker daemon and in-container tools. The environment already contains Python/Node/Rust/Git/Claude/Codex; the workspace has 2,048 files and a 64 MiB input. Preparation and cloning are measured separately.
 

@@ -6,7 +6,7 @@
 
 The 2026-10-05 shell/sleep experiment increased both Worker count and CPU budget, using one independent Worker per VM. It observed parallel readiness for one to four guests, not fixed-budget useful-task throughput or single-Worker density.
 
-![Historical retired-Worker readiness probe](../../assets/benchmarks/cluster-scalability-20261005/execution.svg)
+![Historical retired-Worker readiness probe](../assets/benchmarks/cluster-scalability-20261005/execution.svg)
 
 | Live VMs | Total memory P50, MiB | Readiness P50, s | Burst readiness rate, guests/s |
 |---:|---:|---:|---:|
@@ -18,7 +18,7 @@ Five measured batches per size followed one warmup. Guests used 128 MiB/one vCPU
 
 ## Historical Controller costs {#controller}
 
-![Historical retired-Controller queries and recovery](../../assets/benchmarks/cluster-scalability-20261005/controller.svg)
+![Historical retired-Controller queries and recovery](../assets/benchmarks/cluster-scalability-20261005/controller.svg)
 
 | Retained records | Indexed counts P50, ns | Full-scan reference P50, ms | Process + ID fixture RSS, MiB | Journal, MiB | Warm replay, s |
 |---:|---:|---:|---:|---:|---:|

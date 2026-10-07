@@ -87,8 +87,9 @@ Core's version-1 Host envelopes carry `request_id`, optional Job/Attempt/generat
 `target`, typed commands and correlated results/errors. Core's envelope and
 supervisor contracts are pure shared definitions/validation. `JobCommand`
 embeds internal CLI DTOs tied to an exact schema/build, not a stable public API.
-The Job service and internal workers use shared `runtime/host_transport.rs`
-async/sync newline JSON framing: 1 MiB of JSON excluding the newline, consuming
+The Job listener, internal workers and daemon native supervisors use shared
+`runtime/host_transport.rs` async/sync newline JSON framing and same-effective-UID
+peer authentication: 1 MiB of JSON excluding the newline, consuming
 only through the delimiter. `SCM_RIGHTS` FD markers are separate transport
 records, not JSON. The internal version-1 handshake checks the Job ticket schema,
 Cargo package version and BLAKE3 executable content digest before descriptor/
@@ -131,10 +132,41 @@ the old binary before upgrade too. There is no legacy fallback. See
 [Host and Guest AgentCtl](../../docs/src/en/design/architecture.md#host-agentctl)
 for contract bounds, ownership and limitations.
 
+### Shared runtime implementation
+
+`runtime/job_service.rs::RuntimeJobService` provides typed persisted-Job status,
+review, apply/drop, workspace checkpoint mutations, native capture and execution
+resume/fork operations without CLI argument or rendering dependencies. Request-local
+`ServiceContext` hooks retain cancellation and exact Job/Attempt/generation fences;
+mutations recheck admission under their leases. Capture rechecks before sending,
+not after an effectful request has been sent. Scoped receipts and lost-response
+ambiguity remain; this is not a universal exactly-once dispatcher.
+
+Restored execution uses `RestoredAttempt::start_with()` and `ManagedRestoredRun`:
+the runtime projects the captured environment and restore metadata, takes durable
+Job ownership and publishes completion after native teardown. Frontends supply
+runtime configuration, terminal/cancellation adapters and rendering. Dropping the
+managed run requests cancellation; the completion task retains publication
+ownership while its Tokio runtime remains alive. This is not crash recovery or a
+promise of persistence after frontend process/runtime shutdown. Resume/fork do not
+report `Finished` solely because a launcher callback returned success.
+
+`AttemptService` is the shared in-process dispatcher for live status, termination
+and native controls. Host VM and daemon supervisor endpoints adapt their own
+command/authentication contracts to it. Termination requests cancellation, not
+reaping, cgroup absence or resource-release proof. CLI `JobCommand` and daemon
+Sandbox registry/lifecycle remain separate; Guest AgentCtl remains isolated.
+The daemon does not acquire checkpoint/fork or apply/drop API support merely by
+linking these services.
+
 ## Per-instance VM controls and memory CLI
 
-Every native VM Attempt gets a host-only Unix control endpoint, even for embedded
-runs without retained Job storage. `pvisor run` prints `--vm-socket PATH
+By default every native VM Attempt gets a host-only Unix control endpoint, even
+for embedded runs without retained Job storage. Embedded owners with their own
+authenticated control endpoint may use `PVisorBuilder::instance_control(false)`;
+a custom `control_socket` combined with this setting is rejected at admission.
+Native control authority remains available through the handle/service. The daemon
+uses this setting to avoid publishing a second control endpoint for the same VM. `pvisor run` prints `--vm-socket PATH
 --vm-job-id ID --vm-attempt-id ID` to stderr; copy those exact values into normal
 commands in another host terminal. The example root assumes Linux effective UID
 `1000`; replace it and the identities with the printed values:

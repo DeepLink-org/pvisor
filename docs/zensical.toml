@@ -1,101 +1,143 @@
+# 根首页；中文和英文文档分别由 zensical.zh.toml、zensical.en.toml 构建。
 [project]
 site_name = "PolicyVisor"
 site_description = "Scaling autonomous agent execution for Agents, scripts, and automation."
 site_url = "https://deeplink-org.github.io/pvisor/"
-docs_dir = "src"
+docs_dir = "landing"
 site_dir = "site"
+cache_dir = ".cache/root"
+dev_addr = "127.0.0.1:3000"
 repo_name = "DeepLink-org/pvisor"
 repo_url = "https://github.com/DeepLink-org/pvisor"
-extra_css = ["stylesheets/extra.css"]
+extra_css = ["assets/stylesheets/extra.css"]
 
-nav = [
-  { "首页" = "zh/index.md" },
-  { "为什么" = ["zh/why/index.md", "zh/why/trust-ladder.md", "zh/why/use-cases.md", "zh/why/comparisons.md", "zh/why/when-not-to-use.md", "zh/why/faq.md"] },
-  { "开始使用" = ["zh/start/index.md", "zh/start/what-is-pvisor.md", "zh/start/installation.md", "zh/start/first-run.md", "zh/start/next-steps.md"] },
-  { "任务学习路线" = ["zh/cases/index.md", "zh/cases/01-first-job.md", "zh/cases/02-review-and-decide.md", "zh/cases/03-checkpoint-and-fork.md", "zh/cases/04-boundaries.md", "zh/cases/05-tools-and-restoration.md"] },
-  { "指南" = [
-    "zh/guides/index.md",
-    { "接入你的 Agent" = ["zh/guides/agents/index.md", "zh/guides/agents/claude-code.md", "zh/guides/agents/codex.md", { "Gemini CLI" = "zh/guides/agents/gemini-cli.md" }, { "aider" = "zh/guides/agents/aider.md" }, { "OpenCode" = "zh/guides/agents/opencode.md" }, "zh/guides/agents/custom-scripts.md"] },
-    "zh/guides/review-apply.md",
-    "zh/guides/fork-checkpoint.md",
-    { "策略" = ["zh/guides/policies/files.md", "zh/guides/policies/network.md", "zh/guides/policies/credentials.md"] },
-    { "执行器" = ["zh/guides/executors/index.md", "zh/guides/executors/host.md", "zh/guides/executors/container.md", "zh/guides/executors/vm.md"] },
-    "zh/guides/capture.md",
-    "zh/guides/replay.md",
-    { "在 CI 中运行" = "zh/guides/ci.md" },
-    { "并行 Agent" = "zh/guides/parallel-agents.md" },
-    { "Daemon 上手" = ["zh/guides/daemon/index.md", "zh/guides/daemon/service.md", "zh/guides/daemon/operations.md", "zh/guides/daemon/boundaries.md"] },
-    { "RL rollout" = "zh/guides/rl-rollouts.md" },
-    "zh/guides/troubleshooting.md"
-  ] },
-  { "概念" = ["zh/concepts/index.md", "zh/concepts/jobs.md", "zh/concepts/staging.md", "zh/concepts/capabilities-and-evidence.md", "zh/concepts/policy-model.md", "zh/concepts/glossary.md"] },
-  { "基准与对比" = [
-    "zh/benchmarks/index.md",
-    "zh/benchmarks/methodology.md",
-    "zh/benchmarks/startup.md",
-    { "VM 内存节约与开销" = "zh/benchmarks/vm-memory/index.md" },
-    { "文件系统开销" = "zh/benchmarks/filesystem.md" },
-    { "网络开销" = "zh/benchmarks/network.md" },
-    { "apply/drop 成本" = "zh/benchmarks/apply.md" },
-    { "端到端任务" = "zh/benchmarks/agent-tasks.md" },
-    { "监督成本" = "zh/benchmarks/supervision-cost.md" },
-    { "并发密度" = "zh/benchmarks/density.md" },
-    { "Cluster 扩展性（退役历史）" = "zh/benchmarks/cluster-scalability.md" },
-    { "隔离有效性" = "zh/benchmarks/isolation-tests.md" },
-    "zh/benchmarks/replay-fidelity.md",
-    { "对比" = [{ "Agent 自带沙箱" = "zh/benchmarks/compare-agent-sandboxes.md" }, { "Docker / devcontainer" = "zh/benchmarks/compare-containers.md" }, { "云端沙箱" = "zh/benchmarks/compare-cloud-sandboxes.md" }, { "隔离基座" = "zh/benchmarks/compare-runtimes.md" }, { "RL 基础设施" = "zh/benchmarks/compare-rl-infra.md" }] }
-  ] },
-  { "安全" = ["zh/security/index.md", "zh/security/threat-model.md", "zh/security/executor-boundaries.md", "zh/security/hardening.md", "zh/security/known-limitations.md", "zh/security/disclosure.md", { "第三方审计" = "zh/security/audits.md" }] },
-  { "参考" = ["zh/reference/index.md", "zh/reference/cli.md", "zh/reference/config.md", "zh/reference/policy.md", "zh/reference/run-bundle.md", "zh/reference/json-output.md", "zh/reference/env-vars.md", "zh/reference/exit-codes.md", "zh/reference/platforms.md", "zh/reference/stability.md", "zh/reference/cases.md", "zh/reference/shared-image-cache.md"] },
-  { "设计与研究" = ["zh/design/index.md", "zh/design/principles.md", "zh/design/architecture.md", { "Daemon 单机执行" = ["zh/design/daemon/index.md", "zh/design/daemon/state-and-recovery.md", "zh/design/daemon/admission.md", "zh/design/daemon/lifecycle.md", "zh/design/daemon/storage.md", "zh/design/daemon/shared-working-set.md", "zh/design/daemon/responsibility-convergence.md", "zh/design/daemon/operations.md"] }, "zh/design/execution-model.md", "zh/design/shared-image-cache-storage.md", "zh/design/lazy-image-v2.md", { "内存优化" = ["zh/design/memory-optimization/index.md", "zh/design/memory-optimization/deduplication.md", { "内存卸载" = ["zh/design/memory-optimization/offload.md", "zh/design/memory-optimization/offload-format.md"] }, { "内存压缩" = ["zh/design/memory-optimization/compression.md", "zh/design/memory-optimization/compression-local.md", "zh/design/memory-optimization/compression-pool.md"] }, "zh/design/memory-optimization/proof-of-concept.md"] }, "zh/design/operations-events.md", "zh/design/isolation.md", "zh/design/overlayfs.md", "zh/design/overlaynet.md", "zh/design/gateway.md", "zh/design/journal.md", "zh/design/replay.md", "zh/design/cli.md", "zh/design/decisions/index.md", { "研究方向" = ["zh/design/research/index.md", { "外部编排与单机执行" = "zh/design/research/cluster-execution.md" }, { "RL 执行基座" = "zh/design/research/rl-execution-substrate.md" }, { "论文与报告" = "zh/design/research/publications.md" }] }] },
-  { "社区" = ["zh/community/index.md", "zh/community/contributing.md", "zh/community/development.md", "zh/community/testing.md", "zh/community/examples.md", "zh/community/releasing.md", "zh/community/roadmap.md", "zh/community/changelog.md", "zh/community/code-of-conduct.md", { "治理" = "zh/community/governance.md" }, { "使用者" = "zh/community/adopters.md" }] },
-]
+[[project.nav]]
+"首页" = "index.md"
+
+[[project.nav]]
+"中文文档" = "/pvisor/zh/"
+
+[[project.nav]]
+English = "/pvisor/en/"
 
 [project.theme]
 language = "zh"
 custom_dir = "overrides"
 logo = "assets/logos/pvisor-icon.png"
 favicon = "assets/logos/pvisor-icon.png"
-features = [
-  "navigation.tabs",
-  "navigation.sections",
-  "navigation.expand",
-  "navigation.indexes",
-  "navigation.path",
-  "navigation.tracking",
-  "navigation.top",
-  "search.highlight",
-  "content.code.copy",
-  "content.code.select",
-  "content.code.annotate",
-  "content.tabs.link",
-  "content.tooltips",
-  "content.footnote.tooltips",
-  "toc.follow",
-]
+features = ["navigation.tabs"]
 
-[project.theme.palette]
+[[project.theme.palette]]
 scheme = "slate"
 primary = "custom"
 accent = "custom"
 
-
 [project.extra]
 homepage = "zh/"
-alternate = [
-  { name = "English", link = "/pvisor/en/", lang = "en" },
-  { name = "中文", link = "/pvisor/zh/", lang = "zh" },
-]
+root = true
 
-[project.markdown_extensions]
-admonition = {}
-"pymdownx.details" = {}
-"pymdownx.superfences" = {}
-"pymdownx.highlight" = { anchor_linenums = true }
-"pymdownx.inlinehilite" = {}
-"pymdownx.tabbed" = { alternate_style = true }
-attr_list = {}
-md_in_html = {}
-def_list = {}
-tables = {}
-toc.permalink = true
+[[project.extra.alternate]]
+name = "English"
+link = "/pvisor/en/"
+lang = "en"
+
+[[project.extra.alternate]]
+name = "中文"
+link = "/pvisor/zh/"
+lang = "zh"
+
+[project.plugins.search]
+lang = ["zh"]
+
+[project.plugins.exclude]
+regex = ["(^|/)\\.data(/|$)"]
+
+# 无语言前缀的历史链接默认跳转到中文；zh/、en/ 下的重定向由各语言配置维护。
+[project.plugins.redirects.redirect_maps]
+
+# 旧入口
+"installation.md" = "https://deeplink-org.github.io/pvisor/zh/start/installation/"
+"overview.md" = "https://deeplink-org.github.io/pvisor/zh/start/"
+"roadmap.md" = "https://deeplink-org.github.io/pvisor/zh/community/roadmap/"
+"why-pvisor.md" = "https://deeplink-org.github.io/pvisor/zh/why/"
+
+# 旧 pvisor/ 目录
+"pvisor/concepts/agentvisor.md" = "https://deeplink-org.github.io/pvisor/zh/start/what-is-pvisor/"
+"pvisor/concepts/capabilities-and-evidence.md" = "https://deeplink-org.github.io/pvisor/zh/concepts/capabilities-and-evidence/"
+"pvisor/concepts/index.md" = "https://deeplink-org.github.io/pvisor/zh/concepts/"
+"pvisor/concepts/run-model.md" = "https://deeplink-org.github.io/pvisor/zh/design/execution-model/"
+"pvisor/design/cli.md" = "https://deeplink-org.github.io/pvisor/zh/design/cli/"
+"pvisor/design/gateway.md" = "https://deeplink-org.github.io/pvisor/zh/design/gateway/"
+"pvisor/design/index.md" = "https://deeplink-org.github.io/pvisor/zh/design/"
+"pvisor/design/isolation.md" = "https://deeplink-org.github.io/pvisor/zh/design/isolation/"
+"pvisor/design/overlaynet.md" = "https://deeplink-org.github.io/pvisor/zh/design/overlaynet/"
+"pvisor/get-started.md" = "https://deeplink-org.github.io/pvisor/zh/start/first-run/"
+"pvisor/guides/capture.md" = "https://deeplink-org.github.io/pvisor/zh/guides/capture/"
+"pvisor/guides/execution.md" = "https://deeplink-org.github.io/pvisor/zh/guides/executors/"
+"pvisor/guides/index.md" = "https://deeplink-org.github.io/pvisor/zh/guides/"
+"pvisor/guides/network.md" = "https://deeplink-org.github.io/pvisor/zh/guides/policies/network/"
+"pvisor/guides/review-apply.md" = "https://deeplink-org.github.io/pvisor/zh/guides/review-apply/"
+"pvisor/guides/sandbox-replay.md" = "https://deeplink-org.github.io/pvisor/zh/guides/replay/"
+"pvisor/guides/troubleshooting.md" = "https://deeplink-org.github.io/pvisor/zh/guides/troubleshooting/"
+"pvisor/index.md" = "https://deeplink-org.github.io/pvisor/zh/start/what-is-pvisor/"
+"pvisor/reference/cases.md" = "https://deeplink-org.github.io/pvisor/zh/reference/cases/"
+"pvisor/reference/cli.md" = "https://deeplink-org.github.io/pvisor/zh/reference/cli/"
+"pvisor/reference/index.md" = "https://deeplink-org.github.io/pvisor/zh/reference/"
+
+# 旧 system-design/ 目录
+"system-design/architecture.md" = "https://deeplink-org.github.io/pvisor/zh/design/architecture/"
+"system-design/design-principles.md" = "https://deeplink-org.github.io/pvisor/zh/design/principles/"
+"system-design/index.md" = "https://deeplink-org.github.io/pvisor/zh/design/"
+"system-design/local-to-fleet.md" = "https://deeplink-org.github.io/pvisor/zh/design/architecture/"
+"system-design/security-evidence.md" = "https://deeplink-org.github.io/pvisor/zh/concepts/capabilities-and-evidence/"
+
+# 概念
+"concepts/agentvisor.md" = "https://deeplink-org.github.io/pvisor/zh/start/what-is-pvisor/"
+"concepts/policyvisor.md" = "https://deeplink-org.github.io/pvisor/zh/start/what-is-pvisor/"
+"concepts/run-model.md" = "https://deeplink-org.github.io/pvisor/zh/design/execution-model/"
+"concepts/security-evidence.md" = "https://deeplink-org.github.io/pvisor/zh/concepts/capabilities-and-evidence/"
+"concepts/why-pvisor.md" = "https://deeplink-org.github.io/pvisor/zh/why/"
+
+# 使用指南
+"guides/cluster/index.md" = "https://deeplink-org.github.io/pvisor/zh/guides/daemon/"
+"guides/cluster/operations.md" = "https://deeplink-org.github.io/pvisor/zh/guides/daemon/operations/"
+"guides/cluster/service.md" = "https://deeplink-org.github.io/pvisor/zh/guides/daemon/service/"
+"guides/cluster/vm-and-gateway.md" = "https://deeplink-org.github.io/pvisor/zh/guides/daemon/boundaries/"
+"guides/execution.md" = "https://deeplink-org.github.io/pvisor/zh/guides/executors/"
+"guides/network.md" = "https://deeplink-org.github.io/pvisor/zh/guides/policies/network/"
+"guides/sandbox-replay.md" = "https://deeplink-org.github.io/pvisor/zh/guides/replay/"
+"guides/using-pvisor.md" = "https://deeplink-org.github.io/pvisor/zh/why/use-cases/"
+"guides/workflows.md" = "https://deeplink-org.github.io/pvisor/zh/why/use-cases/"
+
+# 设计
+"design/cluster/index.md" = "https://deeplink-org.github.io/pvisor/zh/design/daemon/"
+"design/cluster/lifecycle.md" = "https://deeplink-org.github.io/pvisor/zh/design/daemon/lifecycle/"
+"design/cluster/operations.md" = "https://deeplink-org.github.io/pvisor/zh/design/daemon/operations/"
+"design/cluster/scheduling.md" = "https://deeplink-org.github.io/pvisor/zh/design/daemon/admission/"
+"design/cluster/server-consolidation.md" = "https://deeplink-org.github.io/pvisor/zh/design/daemon/responsibility-convergence/"
+"design/cluster/shared-working-set.md" = "https://deeplink-org.github.io/pvisor/zh/design/daemon/shared-working-set/"
+"design/cluster/state-and-recovery.md" = "https://deeplink-org.github.io/pvisor/zh/design/daemon/state-and-recovery/"
+"design/cluster/storage.md" = "https://deeplink-org.github.io/pvisor/zh/design/daemon/storage/"
+"design/local-to-fleet.md" = "https://deeplink-org.github.io/pvisor/zh/design/architecture/"
+"design/memory-sharing/backends.md" = "https://deeplink-org.github.io/pvisor/zh/design/memory-optimization/"
+"design/memory-sharing/compression.md" = "https://deeplink-org.github.io/pvisor/zh/design/memory-optimization/compression/"
+"design/memory-sharing/deduplication.md" = "https://deeplink-org.github.io/pvisor/zh/design/memory-optimization/deduplication/"
+"design/memory-sharing/index.md" = "https://deeplink-org.github.io/pvisor/zh/design/memory-optimization/proof-of-concept/"
+
+# 基准测试
+"benchmarks/cluster-questions.md" = "https://deeplink-org.github.io/pvisor/zh/design/cluster-benchmark-plan/"
+"benchmarks/vm-lifecycle.md" = "https://deeplink-org.github.io/pvisor/zh/benchmarks/vm-memory/"
+"benchmarks/vm-memory/methodology.md" = "https://deeplink-org.github.io/pvisor/zh/benchmarks/vm-memory/"
+"benchmarks/vm-memory/results.md" = "https://deeplink-org.github.io/pvisor/zh/benchmarks/vm-memory/"
+
+# 旧 project/ 目录
+"project/engineering.md" = "https://deeplink-org.github.io/pvisor/zh/community/development/"
+"project/examples.md" = "https://deeplink-org.github.io/pvisor/zh/community/examples/"
+"project/index.md" = "https://deeplink-org.github.io/pvisor/zh/community/"
+"project/releasing.md" = "https://deeplink-org.github.io/pvisor/zh/community/releasing/"
+
+# 旧 development/ 目录
+"development/engineering.md" = "https://deeplink-org.github.io/pvisor/zh/community/development/"
+"development/examples.md" = "https://deeplink-org.github.io/pvisor/zh/community/examples/"
+"development/index.md" = "https://deeplink-org.github.io/pvisor/zh/community/"
+"development/releasing.md" = "https://deeplink-org.github.io/pvisor/zh/community/releasing/"
