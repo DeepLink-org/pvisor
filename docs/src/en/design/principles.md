@@ -1,6 +1,6 @@
 # Core design principles
 
-The design follows one thread: Operation is the object being processed, pvisor owns execution, and Event is the observation interface.
+Operation is the object being processed, pvisor owns the execution lifecycle, and Event provides the observation interface.
 
 ## Separate definitions from execution
 
@@ -28,6 +28,6 @@ With staging enabled, workspace changes stay in the Overlay; explicit review and
 
 ## Records reconstruct facts
 
-Public records should explain requests, actual rewrites, placement, results and provenance. Snapshots and causal chains make facts reviewable. Deterministic replay of effects needs more inputs; the name Event does not promise it.
+Public records should explain requests, actual rewrites, placement, results and provenance. Snapshots and causal chains make facts reviewable. Deterministic replay of effects also requires initial state, external inputs and the corresponding execution mechanism; Event records alone are insufficient.
 
 See [Core architecture](architecture.md), [Operation and Event](operations-events.md) and [Isolation design](isolation.md) for mechanisms.

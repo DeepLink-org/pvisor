@@ -19,7 +19,7 @@ pVisor 是 Operation 的处理核心：接收操作请求，根据策略决定�
 | `pvisor-daemon` | 独立的单节点 sandbox 准入、持久归属、原生 VM supervisor 生命周期与端点代理 |
 | `pvisor-tui`、`pvisor-replay` | 依赖 pvisor 的终端前端与 Agent 轨迹回放工具 |
 
-[Daemon](daemon/index.md) 使用 VM-only NativeRuntime：独立 supervisor 嵌入 `PVisor::run`，跨 daemon 重启保留 RunHandle。它不是分布式调度器。可执行入口通过原生 CLI 设置构造 NativeRuntime；stage/apply、checkpoint/fork 和 Gateway API 未实现，也不自动获取 node 共享。见[职责收敛](daemon/responsibility-convergence.md)。主机选择和工作流属于外部编排。
+[Daemon](daemon/index.md) 使用 VM-only NativeRuntime：独立 supervisor 嵌入 `PVisor::run`，跨 daemon 重启保留 RunHandle。可执行入口通过原生 CLI 设置构造 NativeRuntime；stage/apply、checkpoint/fork 和 Gateway API 未实现，也不自动获取 node 共享。见[职责收敛](daemon/responsibility-convergence.md)。主机选择和工作流属于外部编排。
 
 core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor 实现 AgentCtl 客户端／服务端和审批 socket；驱动实现各自的文件、网络与隔离边界。默认核心不依赖 Gateway、TUI 或 replay，捕获通过 `gateway` feature 启用。
 
@@ -110,15 +110,15 @@ Daemon 原生 supervisor 使用同一 version-1 换行 Host envelope，
 libproc 身份检查后按数字 PID 发信号，不是原子 pidfd 操作，也不提供
 Linux 等价的 containment。macOS 清理路径尚未编译或测试。
 
-宿主传输与进程检查不能证明 guest 正确性或完整平台验证。真实 VM TUI
-端到端验证仍不可用；macOS 身份与清理路径保留上述平台特定限制。
-
-持久 listener 不是持久请求队列。`request_id` 用于响应、错误、ticket 与
-取消的关联，不是通用去重或 exactly-once 合同。部分持久 Job 操作保留自己
+持久 listener 提供请求接入，不持久化请求队列。`request_id` 关联响应、错误、ticket 与
+取消；通用去重和 exactly-once 不在其合同范围内。部分持久 Job 操作保留自己
 范围内的回执，但不覆盖所有 Host 命令。断连、超时和取消可能发生在副作用
 之后；前端报告不确定性，不自动重试。决定再次提交前，先核对 Job 状态和
-产物。Host AgentCtl 路径尚无真实 VM TUI 端到端验证；传输、进程或 mock 检查不能证明
-guest 正确性或生产级持久性。
+产物。
+
+Host AgentCtl 路径尚无真实 VM TUI 端到端验证。现有传输、进程或 mock 检查的
+验证范围不含 guest 正确性、生产级持久性或完整平台行为；macOS 身份与清理
+路径的限制见上方说明。
 
 ## 一条生产执行路径
 
@@ -136,7 +136,7 @@ CLI／嵌入调用方
 
 准入保留请求与有效操作的快照。实际策略变化记录为 Rewritten，选定的 VM／Overlay 放置记录为 Placed。拦截发生在实际驱动边界：文件操作进入 OverlayFS／OverlayCore，网络流量进入 OverlayNet。它们共享策略定义，但当前并没有将每个文件或网络操作都提升为独立的公共 Operation。
 
-例如，网络驱动把请求的 Ambient 能力收窄为 Deny：Requested 保留原始权限，Rewritten 保存收窄前后快照，Placed 描述最终放置，执行器按有效配置运行。这是实际策略处理的记录，不是通用规则解释器。
+例如，网络驱动把请求的 Ambient 能力收窄为 Deny：Requested 保留原始权限，Rewritten 保存收窄前后快照，Placed 描述最终放置，执行器按有效配置运行。这些快照记录实际策略处理；通用规则解释器不在当前实现范围内。
 
 ## 一个生命周期所有者
 
@@ -150,7 +150,7 @@ Process／VM 清理其受管理的进程组；容器使用 runtime 的终止接�
 
 外部观察的是 Event，不需要依赖 Session 的内部字段。事件链、身份、因果引用与记录边界见 [Operation 与 Event](operations-events.md)。
 
-当前实现先准备驱动，再提交启动事实，最后调用执行器。必要启动事实提交失败会阻止执行器派发并清理准备资源；这不代表准备阶段完全没有文件或 socket 副作用。
+当前实现先准备驱动，再提交启动事实，最后调用执行器。必要启动事实提交失败会阻止执行器派发并清理准备资源；准备阶段仍可能产生文件或 socket 副作用。
 
 ## 策略、控制与证据
 

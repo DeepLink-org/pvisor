@@ -27,6 +27,20 @@ pub const AGENT_ARG: &str = "--pvisor-shim-guest-agent";
 /// Guest-side path the agent binary is copied to at VM boot.
 pub const AGENT_GUEST_PATH: &str = "/.pvisor-agent";
 
+/// Maximum payload in either direction, including JSON control messages.
+/// Stream pumps use small chunks; no peer may request an unbounded allocation.
+pub const MAX_FRAME_PAYLOAD: usize = 1024 * 1024;
+
+fn check_frame_length(length: usize) -> std::io::Result<()> {
+    if length > MAX_FRAME_PAYLOAD {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("frame payload {length} exceeds limit {MAX_FRAME_PAYLOAD}"),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
     Control = 0,
@@ -98,11 +112,16 @@ impl<R: Read> FrameReader<R> {
 
     pub fn read_frame(&mut self) -> std::io::Result<Option<Frame>> {
         let mut header = [0u8; 5];
-        match self.inner.read_exact(&mut header) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-            Err(error) => return Err(error),
+        // Only EOF before the first byte is a clean connection close.
+        loop {
+            match self.inner.read(&mut header[..1]) {
+                Ok(0) => return Ok(None),
+                Ok(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
         }
+        self.inner.read_exact(&mut header[1..])?;
         let Some(channel) = Channel::from_u8(header[0]) else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -110,6 +129,7 @@ impl<R: Read> FrameReader<R> {
             ));
         };
         let length = u32::from_le_bytes([header[1], header[2], header[3], header[4]]) as usize;
+        check_frame_length(length)?;
         let mut payload = vec![0u8; length];
         self.inner.read_exact(&mut payload)?;
         Ok(Some(Frame { channel, payload }))
@@ -149,6 +169,7 @@ impl<W: Write> FrameWriter<W> {
     }
 
     pub fn write_frame(&mut self, channel: Channel, payload: &[u8]) -> std::io::Result<()> {
+        check_frame_length(payload.len())?;
         let mut buffer = Vec::with_capacity(5 + payload.len());
         encode_frame(&mut buffer, channel, payload);
         self.inner.write_all(&buffer)?;
@@ -529,6 +550,66 @@ mod tests {
             let mut reader = FrameReader::new(&buffer[..]);
             let decoded = reader.read_control().expect("read").expect("some");
             assert_eq!(&decoded, message);
+        }
+    }
+
+    #[test]
+    fn oversized_headers_are_rejected_without_reading_payload() {
+        struct HeaderOnly(std::io::Cursor<Vec<u8>>);
+        impl Read for HeaderOnly {
+            fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                assert!(self.0.position() < 5, "must not read oversized payload");
+                self.0.read(out)
+            }
+        }
+        for channel in [
+            Channel::Control,
+            Channel::Stdin,
+            Channel::Stdout,
+            Channel::Stderr,
+        ] {
+            for length in [MAX_FRAME_PAYLOAD as u32 + 1, u32::MAX] {
+                let mut header = vec![channel as u8];
+                header.extend_from_slice(&length.to_le_bytes());
+                let mut reader = FrameReader::new(HeaderOnly(std::io::Cursor::new(header)));
+                let error = reader.read_frame().unwrap_err();
+                assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+                assert!(error.to_string().contains("exceeds limit"));
+            }
+        }
+    }
+
+    #[test]
+    fn payload_limit_is_inclusive_and_writer_rejects_oversize() {
+        let payload = vec![42; MAX_FRAME_PAYLOAD];
+        let mut wire = Vec::new();
+        FrameWriter::new(&mut wire)
+            .write_frame(Channel::Stdout, &payload)
+            .unwrap();
+        assert_eq!(
+            FrameReader::new(&wire[..])
+                .read_frame()
+                .unwrap()
+                .unwrap()
+                .payload,
+            payload
+        );
+        let mut output = Vec::new();
+        let error = FrameWriter::new(&mut output)
+            .write_frame(Channel::Control, &vec![0; MAX_FRAME_PAYLOAD + 1])
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn truncated_frames_are_not_clean_eof() {
+        assert!(FrameReader::new(&[][..]).read_frame().unwrap().is_none());
+        for wire in [&[2][..], &[2, 1, 0, 0][..], &[2, 1, 0, 0, 0][..]] {
+            assert_eq!(
+                FrameReader::new(wire).read_frame().unwrap_err().kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
         }
     }
 

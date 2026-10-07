@@ -12,7 +12,7 @@ use super::run::{AttemptService, RunControlHandle, RunHandle};
 use pvisor_core::AttemptId;
 use pvisor_core::RunStatus;
 #[cfg(test)]
-use pvisor_core::host_protocol::{AGENTCTL_HOST_MAX_FRAME_BYTES, AgentCtlTarget};
+use pvisor_core::host_protocol::AgentCtlTarget;
 use pvisor_core::host_protocol::{
     AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
     AgentCtlHostResponse, HostAttemptCommand, HostVmCommand, HostVmResult,
@@ -199,7 +199,7 @@ impl InstanceControlServer {
                     _ = clients.join_next(), if !clients.is_empty() => {}
                     accepted = self.listener.accept() => {
                         let Ok((stream, _)) = accepted else { break; };
-                        if clients.len() >= MAX_CONNECTIONS || authorize_host_peer(&stream).is_err() { continue; }
+                        if clients.len() >= MAX_CONNECTIONS { continue; }
                         let controls = controls.clone();
                         let status = status.clone();
                         clients.spawn(async move { serve(stream, controls, status, OPERATION_TIMEOUT).await; });
@@ -920,29 +920,6 @@ mod tests {
             .unwrap();
         removed(&path).await;
         drop(idle);
-    }
-
-    #[tokio::test]
-    async fn frame_limit_and_single_request_framing() {
-        let (mut writer, mut reader) = UnixStream::pair().unwrap();
-        writer.write_all(b"1\n2\n").await.unwrap();
-        assert_eq!(read_host_frame::<u32>(&mut reader).await.unwrap(), 1);
-        assert_eq!(read_host_frame::<u32>(&mut reader).await.unwrap(), 2);
-        let (mut writer, mut reader) = UnixStream::pair().unwrap();
-        let sender = tokio::spawn(async move {
-            writer
-                .write_all(&vec![b'x'; AGENTCTL_HOST_MAX_FRAME_BYTES + 1])
-                .await
-                .unwrap();
-        });
-        assert!(
-            read_host_frame::<serde_json::Value>(&mut reader)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("too large")
-        );
-        sender.await.unwrap();
     }
 
     #[tokio::test]

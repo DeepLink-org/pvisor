@@ -443,7 +443,7 @@ async fn read_limited<R: AsyncRead + Unpin>(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn network_isolation(spec: &RunSpec) -> std::io::Result<NetworkIsolation> {
+pub(crate) fn network_isolation(spec: &RunSpec) -> std::io::Result<NetworkIsolation> {
     if crate::executor::sandbox::sandbox_required(spec) {
         #[cfg(target_os = "macos")]
         {

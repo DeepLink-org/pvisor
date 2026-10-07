@@ -38,12 +38,12 @@ root = true
 
 [[project.extra.alternate]]
 name = "English"
-link = "/pvisor/en/"
+link = "https://deeplink-org.github.io/pvisor/en/"
 lang = "en"
 
 [[project.extra.alternate]]
 name = "中文"
-link = "/pvisor/zh/"
+link = "https://deeplink-org.github.io/pvisor/zh/"
 lang = "zh"
 
 [project.plugins.search]
@@ -54,6 +54,7 @@ regex = ["(^|/)\\.data(/|$)"]
 
 # 无语言前缀的历史链接默认跳转到中文；zh/、en/ 下的重定向由各语言配置维护。
 [project.plugins.redirects.redirect_maps]
+"benchmarks/apply.md" = "https://deeplink-org.github.io/pvisor/zh/benchmarks/supervision-cost/"
 
 # 旧入口
 "installation.md" = "https://deeplink-org.github.io/pvisor/zh/start/installation/"

@@ -664,6 +664,103 @@ fn native_jsonl_prepare_only_never_executes_tools_or_replaces_observations() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn native_jsonl_replay_records_effects_and_preserves_uncertain_failures() {
+    for agent in [AgentKind::Codex, AgentKind::Opencode] {
+        for fail in [false, true] {
+            let temporary = tempfile::tempdir().unwrap();
+            let workspace = temporary.path().join("workspace");
+            fs::create_dir(&workspace).unwrap();
+            fs::write(workspace.join("blocked"), "not a directory").unwrap();
+            let entrypoint = temporary.path().join("version-only-agent");
+            fs::write(
+                &entrypoint,
+                format!(
+                    "#!/bin/sh\nif [ \"$1\" = --version ]; then echo {}; else exit 97; fi\n",
+                    agent.supported_version()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&entrypoint, fs::Permissions::from_mode(0o700)).unwrap();
+            let (tool, arguments) = if fail {
+                ("write", json!({"path":"blocked/child", "content":"effect"}))
+            } else {
+                ("bash", json!({"command":"printf fresh > effect"}))
+            };
+            let events = match agent {
+                AgentKind::Codex => vec![
+                    json!({"type":"session_meta","payload":{"id":"receipt-contract"}}),
+                    json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"replay"}]}}),
+                    json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"action"}]}}),
+                    json!({"type":"response_item","payload":{"type":"function_call","call_id":"call-1","name":tool,"arguments":arguments.to_string()}}),
+                    json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"old"}}),
+                ],
+                AgentKind::Opencode => vec![
+                    json!({"type":"user","sessionID":"receipt-contract","parts":[{"type":"text","text":"replay"}]}),
+                    json!({"type":"step_start","sessionID":"receipt-contract"}),
+                    json!({"type":"tool_use","sessionID":"receipt-contract","part":{"type":"tool","tool":tool,"callID":"call-1","state":{"status":"completed","input":arguments,"output":"old"}}}),
+                    json!({"type":"step_finish","sessionID":"receipt-contract","part":{"reason":"tool-calls"}}),
+                ],
+                _ => unreachable!(),
+            };
+            let trajectory = temporary.path().join("trajectory.jsonl");
+            fs::write(
+                &trajectory,
+                events
+                    .iter()
+                    .map(Value::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n",
+            )
+            .unwrap();
+            let report = execute(PlaybackRequest {
+                agent,
+                trajectory,
+                after_step: 1,
+                workspace: workspace.clone(),
+                state_dir: temporary.path().join("state"),
+                output_dir: temporary.path().join("output"),
+                agent_entrypoint: Some(entrypoint),
+                agent_runtime: None,
+                disallowed_tools: Vec::new(),
+                trajectory_assets: None,
+                session_id: None,
+                max_steps: None,
+                mode: ReplayMode::ReplayOnly,
+                allow_stale_observations: false,
+                run_id: Some("receipt-contract".into()),
+                disable_thinking: false,
+                boundary_user_prompt: None,
+            })
+            .unwrap();
+            let journal =
+                fs::read_to_string(report.result.state_dir.join("replay-events.jsonl")).unwrap();
+            assert!(journal.contains("tool_started"));
+            if fail {
+                assert_eq!(report.exit_code, 31);
+                assert_eq!(
+                    report.result.failure.unwrap().category,
+                    "ambiguous_execution"
+                );
+                assert!(!report.result.retryable);
+                assert_eq!(report.result.replayed_tool_calls, 0);
+                assert!(!journal.contains("tool_finished"));
+                assert!(journal.contains("run_failed"));
+            } else {
+                assert_eq!(report.exit_code, 0);
+                assert_eq!(report.result.replayed_tool_calls, 1);
+                assert_eq!(
+                    fs::read_to_string(workspace.join("effect")).unwrap(),
+                    "fresh"
+                );
+                assert!(journal.contains("tool_finished"));
+            }
+        }
+    }
+}
+
 #[test]
 fn native_json_prepare_only_preserves_complete_batch_observations() {
     for agent in [AgentKind::MiniSweAgent, AgentKind::Openhands] {

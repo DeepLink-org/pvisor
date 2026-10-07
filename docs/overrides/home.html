@@ -12,8 +12,8 @@
       <div class="pc-home-copy">
         <p class="pc-home-kicker">PolicyVisor · pVisor</p>
         <h1>{% if zh %}让自主 Agent 的执行可以规模化{% else %}Scaling autonomous agent execution{% endif %}</h1>
-        <p>{% if zh %}限制 Agent 自主性的不是算力，而是人的监督带宽：今天每一单位 Agent 工作，都要付出差不多同等的人工注意力。{% else %}The limit on agent autonomy is not compute but human supervision: today every unit of agent work costs roughly the same unit of human attention.{% endif %}</p>
-        <p>{% if zh %}pVisor 让每次执行都有界、可逆、可查，使监督可以被摊薄、抽样，直到交给机器——委托的规模由策略和证据决定，而不是由你盯着的时间。{% else %}pVisor makes each execution bounded, recoverable, and checkable, so supervision can be spread out, sampled, and eventually automated—scale is set by policy and evidence, not by the time you spend watching.{% endif %}</p>
+        <p>{% if zh %}运行更多 Agent，需要算力，也需要人的注意力。pVisor 把执行边界、文件暂存和运行记录放在一起，方便你审查完成后的工作。{% else %}Running more agents takes compute resources and human attention. pVisor combines execution boundaries, staged file changes, and execution records to help you review completed work.{% endif %}</p>
+        <p>{% if zh %}任务按策略运行，文件改动留待审查，执行记录供你核对。这些能力为批量审查和自动检查提供基础。{% else %}Tasks run under policy, file changes wait for review, and execution records are available for inspection. These capabilities provide a basis for batch review and automated checks.{% endif %}</p>
         <p>{% if zh %}今天：在本机放手运行 Claude Code、Codex 或任意命令，结束后审查改动和证据，只合入你要的部分。{% else %}Today: run Claude Code, Codex, or any command unattended on your machine, then review the changes and evidence and keep only what you want.{% endif %}</p>
         <div class="pc-home-actions">
           <a class="pc-home-btn primary" href="{{ prefix }}start/first-run/">{% if zh %}开始第一次运行{% else %}Start your first Run{% endif %}</a>

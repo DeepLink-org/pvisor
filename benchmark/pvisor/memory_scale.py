@@ -95,15 +95,19 @@ def cells(args):
 def worker_command(config):
     if config['vms'] not in (1, 2, 4):
         raise ValueError('VM count must be 1, 2 or 4; hard cap includes preparation')
-    if config['mode'] not in MODES or config['pattern'] not in PATTERNS:
+    if config['mode'] not in (*MODES,'fresh') or config['pattern'] not in PATTERNS:
         raise ValueError('unknown condition')
-    if type(config['dedup']) is not bool or (config['mode'] not in RESTORE_MODES and config['dedup']):
+    if type(config['dedup']) is not bool or (config['mode'] not in (*RESTORE_MODES, 'fresh') and config['dedup']):
         raise ValueError('offload and dedup must be separate conditions')
     cmd = [config['example']]
     for name in ('rootfs', 'firmware', 'output', 'vms', 'mode', 'pattern', 'dedup',
                  'seed', 'settle_ms', 'ksm_wait_seconds'):
         value = config[name]
         cmd.extend(['--' + name.replace('_', '-'), str(value).lower() if isinstance(value, bool) else str(value)])
+    for name in ('independent_inodes', 'cpus','memory_mib'):
+        if name in config:
+            value = config[name]
+            cmd.extend(['--'+name.replace('_','-'), str(value).lower() if isinstance(value,bool) else str(value)])
     return cmd
 
 
@@ -184,21 +188,31 @@ def validate_report(report, config):
     if conditions.get('private_baselines') is not False:
         raise ValueError('private baseline unsupported')
     profile = report.get('profile', {})
-    for name, value in dict(memory_mib=256, cpus=1, payload_bytes=64 * 1024**2,
+    for name, value in dict(memory_mib=config.get('memory_mib',256), cpus=config.get('cpus',1), payload_bytes=64 * 1024**2,
                             page_bytes=4096, max_live_vms=4, deadline_seconds=180).items():
         if profile.get(name) != value:
             raise ValueError('wrong VM profile: ' + name)
+    if conditions.get('independent_inodes',False) != config.get('independent_inodes',False):
+        raise ValueError('wrong independent-inode condition')
+    if config.get('independent_inodes'):
+        evidence=[check.get('evidence',{}) for check in report.get('checks',[])
+                  if check.get('name')=='independent_ram_inode' and check.get('passed') is True]
+        if (len(evidence)!=config['vms'] or len({(item['device'],item['inode']) for item in evidence})!=config['vms']
+                or [item['instance'] for item in evidence]!=list(range(1,config['vms']+1))
+                or any(item['bytes']<config.get('memory_mib',256)*1024**2 for item in evidence)):
+            raise ValueError('missing independent RAM inode proof')
     if report.get('source', {}).get('binary_sha256') != config['example_sha256']:
         raise ValueError('worker binary receipt mismatch')
     if report.get('cleanup', {}).get('all_reaped') is not True:
         raise ValueError('missing terminal reaping fence')
     n, restored_mode = config['vms'], config['mode'] in RESTORE_MODES
     dynamic_ksm = config['mode'] == 'ksm'
+    write_mode = restored_mode or config['mode'] == 'fresh'
     phases = report.get('phases', [])
     if dynamic_ksm:
         names = ['ready', 'dynamic_private_before_wait', 'dynamic_private_after_wait',
                  'cow25', 'cow100', 'after_exit']
-    elif restored_mode:
+    elif write_mode:
         names = ['ready', 'cow25', 'cow100', 'after_exit']
     else:
         names = ['ready', 'offloaded0', 'resumed0', 'offloaded1', 'resumed1', 'after_exit']
@@ -277,7 +291,7 @@ def validate_report(report, config):
         raise ValueError('wrong cancellation order')
     expected = {(e['instance'], e['percent']): e['digest'] for e in report.get('expected_digests', [])}
     oracle_keys = {(0, 0)} | {(i, percent) for i in range(1, n + 1)
-                                     for percent in ((0, 25, 100) if restored_mode else (0,))}
+                                     for percent in ((0, 25, 100) if write_mode else (0,))}
     if set(expected) != oracle_keys or len(report['expected_digests']) != len(expected) or any(len(v) != 64 or any(c not in '0123456789abcdef' for c in v) for v in expected.values()):
         raise ValueError('incomplete full-payload oracle')
 
@@ -309,6 +323,7 @@ def validate_report(report, config):
                 raise ValueError('private offload rejection missing')
         by_name['rejected_ack'] = [e['ack'] for e in rejected]
         acks('rejected_ack', [(f'rejected-offload-{i}', 'read', i, 0, i) for i in range(1, n + 1)])
+    if write_mode:
         acks('cow_full_digest', [(f'cow{p}-{i}', 'mutate', i, p, i) for p in (25, 100) for i in range(1, n + 1)])
         acks('peer_write_isolation', [(f'isolation-{p}-{index}-{i}', 'read', i, 0 if p == 25 else 25, i)
                                      for p in (25, 100) for index in range(n) for i in range(index + 2, n + 1)])
@@ -330,7 +345,7 @@ def validate_report(report, config):
                 raise ValueError('offload resume heartbeat does not match parked phase/readback')
         by_name['resume_ack'] = [e['ack'] for e in resumes]
         acks('resume_ack', [(f'readback-{cycle}-{i}', 'read', i, 0, i) for cycle in range(2) for i in range(1, n + 1)])
-    percent = 100 if restored_mode else 0
+    percent = 100 if write_mode else 0
     acks('survivor_full_digest', [(f'survivor-{i}', 'read', i, percent, i) for i in range(2, n + 1)])
     acks('orderly_exit_digest', [(f'exit-{i}', 'exit', i, percent, i) for i in range(2, n + 1)])
     guests = report.get('guests', [])

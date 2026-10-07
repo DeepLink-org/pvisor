@@ -18,8 +18,6 @@
 
 ## 历史 Controller 成本 {#controller}
 
-![历史退役 Controller 查询与恢复](../assets/benchmarks/cluster-scalability-20261005/controller.svg)
-
 | 保留记录 | 索引计数 P50，ns | 全扫描参考 P50，ms | 进程与 ID fixture RSS，MiB | 日志，MiB | 热回放，s |
 |---:|---:|---:|---:|---:|---:|
 | 1,000 | 202.83 | 0.068 | 12.13 | 1.93 | 0.079 |

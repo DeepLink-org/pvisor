@@ -16,301 +16,362 @@ extra_css = ["assets/stylesheets/extra.css"]
 
 [[project.nav]]
 
-[[project.nav."为什么"]]
-"为什么是 pVisor" = "why/index.md"
+[[project.nav."快速开始"]]
 
-[[project.nav."为什么"]]
-"信任阶梯与规模轴" = "why/trust-ladder.md"
-
-[[project.nav."为什么"]]
-"用例" = "why/use-cases.md"
-
-[[project.nav."为什么"]]
-"与现成方案对比" = "why/comparisons.md"
-
-[[project.nav."为什么"]]
-"什么时候不需要 pVisor" = "why/when-not-to-use.md"
-
-[[project.nav."为什么"]]
-"常见问题" = "why/faq.md"
-
-[[project.nav]]
-
-[[project.nav."开始使用"]]
+[[project.nav."快速开始"."快速上手"]]
 "从这里开始" = "start/index.md"
 
-[[project.nav."开始使用"]]
+[[project.nav."快速开始"."快速上手"]]
 "PolicyVisor 是什么" = "start/what-is-pvisor.md"
 
-[[project.nav."开始使用"]]
+[[project.nav."快速开始"."快速上手"]]
 "安装指南" = "start/installation.md"
 
-[[project.nav."开始使用"]]
+[[project.nav."快速开始"."快速上手"]]
 "第一次运行" = "start/first-run.md"
 
-[[project.nav."开始使用"]]
+[[project.nav."快速开始"."快速上手"]]
 "第一次运行之后" = "start/next-steps.md"
 
+
+[[project.nav."快速开始"]]
+
+[[project.nav."快速开始"."了解 pVisor"]]
+"为什么是 pVisor" = "why/index.md"
+
+[[project.nav."快速开始"."了解 pVisor"]]
+"信任阶梯与规模轴" = "why/trust-ladder.md"
+
+[[project.nav."快速开始"."了解 pVisor"]]
+"用例" = "why/use-cases.md"
+
+[[project.nav."快速开始"."了解 pVisor"]]
+"与现成方案对比" = "why/comparisons.md"
+
+[[project.nav."快速开始"."了解 pVisor"]]
+"什么时候不需要 pVisor" = "why/when-not-to-use.md"
+
+[[project.nav."快速开始"."了解 pVisor"]]
+"常见问题" = "why/faq.md"
+
+
+
 [[project.nav]]
 
-[[project.nav."任务学习路线"]]
-"按任务学习 pVisor" = "cases/index.md"
+[[project.nav."用户指南"]]
 
-[[project.nav."任务学习路线"]]
-"1. 从一个命令到一个 Job" = "cases/01-first-job.md"
-
-[[project.nav."任务学习路线"]]
-"2. 先审查，再接受文件改动" = "cases/02-review-and-decide.md"
-
-[[project.nav."任务学习路线"]]
-"3. 保存提案，探索另一条分支" = "cases/03-checkpoint-and-fork.md"
-
-[[project.nav."任务学习路线"]]
-"4. 为不可信任务声明边界" = "cases/04-boundaries.md"
-
-[[project.nav."任务学习路线"]]
-"5. 回放轨迹与选择恢复工具" = "cases/05-tools-and-restoration.md"
-
-[[project.nav]]
-
-[[project.nav."指南"]]
+[[project.nav."用户指南"."任务操作"]]
 "任务指南" = "guides/index.md"
 
-[[project.nav."指南"]]
-
-[[project.nav."指南"."接入你的 Agent"]]
-"接入你的 Agent" = "guides/agents/index.md"
-
-[[project.nav."指南"."接入你的 Agent"]]
-"Claude Code" = "guides/agents/claude-code.md"
-
-[[project.nav."指南"."接入你的 Agent"]]
-"Codex CLI" = "guides/agents/codex.md"
-
-[[project.nav."指南"."接入你的 Agent"]]
-"Gemini CLI" = "guides/agents/gemini-cli.md"
-
-[[project.nav."指南"."接入你的 Agent"]]
-"aider" = "guides/agents/aider.md"
-
-[[project.nav."指南"."接入你的 Agent"]]
-"OpenCode" = "guides/agents/opencode.md"
-
-[[project.nav."指南"."接入你的 Agent"]]
-"任意脚本与自动化命令" = "guides/agents/custom-scripts.md"
-
-[[project.nav."指南"]]
+[[project.nav."用户指南"."任务操作"]]
 "审查并应用改动" = "guides/review-apply.md"
 
-[[project.nav."指南"]]
+[[project.nav."用户指南"."任务操作"]]
 "逻辑检查点与分叉" = "guides/fork-checkpoint.md"
 
-[[project.nav."指南"]]
-
-[[project.nav."指南"."策略"]]
-"文件策略" = "guides/policies/files.md"
-
-[[project.nav."指南"."策略"]]
-"使用 OverlayNet 控制网络访问" = "guides/policies/network.md"
-
-[[project.nav."指南"."策略"]]
-"凭据与环境变量" = "guides/policies/credentials.md"
-
-[[project.nav."指南"]]
-
-[[project.nav."指南"."执行器"]]
-"选择执行环境" = "guides/executors/index.md"
-
-[[project.nav."指南"."执行器"]]
-"host 执行器" = "guides/executors/host.md"
-
-[[project.nav."指南"."执行器"]]
-"原生 OCI 容器" = "guides/executors/container.md"
-
-[[project.nav."指南"."执行器"]]
-"pVisor VM" = "guides/executors/vm.md"
-
-[[project.nav."指南"]]
+[[project.nav."用户指南"."任务操作"]]
 "捕获 Agent 轨迹" = "guides/capture.md"
 
-[[project.nav."指南"]]
+[[project.nav."用户指南"."任务操作"]]
 "SandboxReplay" = "guides/replay.md"
 
-[[project.nav."指南"]]
+[[project.nav."用户指南"."任务操作"]]
 "在 CI 中运行" = "guides/ci.md"
 
-[[project.nav."指南"]]
+[[project.nav."用户指南"."任务操作"]]
 "并行 Agent" = "guides/parallel-agents.md"
 
-[[project.nav."指南"]]
-
-[[project.nav."指南"."Daemon 上手"]]
-"运行单机 daemon" = "guides/daemon/index.md"
-
-[[project.nav."指南"."Daemon 上手"]]
-"Daemon 与原生 Service 入口" = "guides/daemon/service.md"
-
-[[project.nav."指南"."Daemon 上手"]]
-"单机 daemon 运维" = "guides/daemon/operations.md"
-
-[[project.nav."指南"."Daemon 上手"]]
-"Daemon 运行时与集成边界" = "guides/daemon/boundaries.md"
-
-[[project.nav."指南"]]
+[[project.nav."用户指南"."任务操作"]]
 "RL rollout" = "guides/rl-rollouts.md"
 
-[[project.nav."指南"]]
+[[project.nav."用户指南"."任务操作"]]
 "排查一次 Run" = "guides/troubleshooting.md"
 
-[[project.nav]]
 
-[[project.nav."概念"]]
-"概念与边界" = "concepts/index.md"
+[[project.nav."用户指南"]]
 
-[[project.nav."概念"]]
-"Job 与存储" = "concepts/jobs.md"
+[[project.nav."用户指南"."接入你的 Agent"]]
+"接入你的 Agent" = "guides/agents/index.md"
 
-[[project.nav."概念"]]
-"暂存与 apply 语义" = "concepts/staging.md"
+[[project.nav."用户指南"."接入你的 Agent"]]
+"Claude Code" = "guides/agents/claude-code.md"
 
-[[project.nav."概念"]]
-"能力、证据与保证边界" = "concepts/capabilities-and-evidence.md"
+[[project.nav."用户指南"."接入你的 Agent"]]
+"Codex CLI" = "guides/agents/codex.md"
 
-[[project.nav."概念"]]
-"策略模型" = "concepts/policy-model.md"
+[[project.nav."用户指南"."接入你的 Agent"]]
+"Gemini CLI" = "guides/agents/gemini-cli.md"
 
-[[project.nav."概念"]]
-"术语表" = "concepts/glossary.md"
+[[project.nav."用户指南"."接入你的 Agent"]]
+"aider" = "guides/agents/aider.md"
 
-[[project.nav]]
+[[project.nav."用户指南"."接入你的 Agent"]]
+"OpenCode" = "guides/agents/opencode.md"
 
-[[project.nav."基准与对比"]]
-"pVisor 相比已有方案，在哪些场景有优势？" = "benchmarks/index.md"
+[[project.nav."用户指南"."接入你的 Agent"]]
+"任意脚本与自动化命令" = "guides/agents/custom-scripts.md"
 
-[[project.nav."基准与对比"]]
-"哪些 benchmark 数字可以用于选型？" = "benchmarks/methodology.md"
 
-[[project.nav."基准与对比"]]
-"启动一个可用环境要等多久？" = "benchmarks/startup.md"
+[[project.nav."用户指南"]]
 
-[[project.nav."基准与对比"]]
-"VM 内存节约与开销" = "benchmarks/vm-memory/index.md"
+[[project.nav."用户指南"."策略"]]
+"文件策略" = "guides/policies/files.md"
 
-[[project.nav."基准与对比"]]
-"文件系统开销" = "benchmarks/filesystem.md"
+[[project.nav."用户指南"."策略"]]
+"使用 OverlayNet 控制网络访问" = "guides/policies/network.md"
 
-[[project.nav."基准与对比"]]
-"网络开销" = "benchmarks/network.md"
+[[project.nav."用户指南"."策略"]]
+"凭据与环境变量" = "guides/policies/credentials.md"
 
-[[project.nav."基准与对比"]]
-"apply/drop 成本" = "benchmarks/apply.md"
 
-[[project.nav."基准与对比"]]
-"端到端任务" = "benchmarks/agent-tasks.md"
+[[project.nav."用户指南"]]
 
-[[project.nav."基准与对比"]]
-"监督成本" = "benchmarks/supervision-cost.md"
+[[project.nav."用户指南"."执行器"]]
+"选择执行环境" = "guides/executors/index.md"
 
-[[project.nav."基准与对比"]]
-"并发密度" = "benchmarks/density.md"
+[[project.nav."用户指南"."执行器"]]
+"host 执行器" = "guides/executors/host.md"
 
-[[project.nav."基准与对比"]]
-"Cluster 扩展性（退役历史）" = "benchmarks/cluster-scalability.md"
+[[project.nav."用户指南"."执行器"]]
+"原生 OCI 容器" = "guides/executors/container.md"
 
-[[project.nav."基准与对比"]]
-"隔离有效性" = "benchmarks/isolation-tests.md"
+[[project.nav."用户指南"."执行器"]]
+"pVisor VM" = "guides/executors/vm.md"
 
-[[project.nav."基准与对比"]]
-"历史轨迹能否准确准备为新的执行起点？" = "benchmarks/replay-fidelity.md"
 
-[[project.nav."基准与对比"]]
+[[project.nav."用户指南"]]
 
-[[project.nav."基准与对比"."对比"]]
-"Agent 自带沙箱" = "benchmarks/compare-agent-sandboxes.md"
+[[project.nav."用户指南"."Daemon 上手"]]
+"运行单机 daemon" = "guides/daemon/index.md"
 
-[[project.nav."基准与对比"."对比"]]
-"Docker / devcontainer" = "benchmarks/compare-containers.md"
+[[project.nav."用户指南"."Daemon 上手"]]
+"Daemon 与原生 Service 入口" = "guides/daemon/service.md"
 
-[[project.nav."基准与对比"."对比"]]
-"云端沙箱" = "benchmarks/compare-cloud-sandboxes.md"
+[[project.nav."用户指南"."Daemon 上手"]]
+"单机 daemon 运维" = "guides/daemon/operations.md"
 
-[[project.nav."基准与对比"."对比"]]
-"隔离基座" = "benchmarks/compare-runtimes.md"
+[[project.nav."用户指南"."Daemon 上手"]]
+"Daemon 运行时与集成边界" = "guides/daemon/boundaries.md"
 
-[[project.nav."基准与对比"."对比"]]
-"RL 基础设施" = "benchmarks/compare-rl-infra.md"
 
-[[project.nav]]
+[[project.nav."用户指南"]]
 
-[[project.nav."安全"]]
-"安全概览" = "security/index.md"
+[[project.nav."用户指南"."任务学习路线"]]
+"按任务学习 pVisor" = "cases/index.md"
 
-[[project.nav."安全"]]
-"威胁模型" = "security/threat-model.md"
+[[project.nav."用户指南"."任务学习路线"]]
+"1. 从一个命令到一个 Job" = "cases/01-first-job.md"
 
-[[project.nav."安全"]]
-"执行器边界" = "security/executor-boundaries.md"
+[[project.nav."用户指南"."任务学习路线"]]
+"2. 先审查，再接受文件改动" = "cases/02-review-and-decide.md"
 
-[[project.nav."安全"]]
-"加固建议" = "security/hardening.md"
+[[project.nav."用户指南"."任务学习路线"]]
+"3. 保存提案，探索另一条分支" = "cases/03-checkpoint-and-fork.md"
 
-[[project.nav."安全"]]
-"已知限制" = "security/known-limitations.md"
+[[project.nav."用户指南"."任务学习路线"]]
+"4. 为不可信任务声明边界" = "cases/04-boundaries.md"
 
-[[project.nav."安全"]]
-"漏洞披露政策" = "security/disclosure.md"
+[[project.nav."用户指南"."任务学习路线"]]
+"5. 回放轨迹与选择恢复工具" = "cases/05-tools-and-restoration.md"
 
-[[project.nav."安全"]]
-"第三方审计" = "security/audits.md"
 
-[[project.nav]]
+[[project.nav."用户指南"]]
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "命令与场景参考" = "reference/index.md"
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "`pvisor` 命令参考" = "reference/cli.md"
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "配置文件参考" = "reference/config.md"
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "策略字段参考" = "reference/policy.md"
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "Run Bundle 格式" = "reference/run-bundle.md"
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "机器可读输出" = "reference/json-output.md"
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "环境变量" = "reference/env-vars.md"
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "退出码与错误" = "reference/exit-codes.md"
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "平台与执行器支持矩阵" = "reference/platforms.md"
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "稳定性与兼容承诺" = "reference/stability.md"
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "pVisor Job 用户场景与回归示例" = "reference/cases.md"
 
-[[project.nav."参考"]]
+[[project.nav."用户指南"."命令与配置参考"]]
 "共享镜像缓存与存储后端" = "reference/shared-image-cache.md"
+
+
+
+[[project.nav]]
+
+[[project.nav."基础概念"]]
+
+[[project.nav."基础概念"."执行概念"]]
+"概念与边界" = "concepts/index.md"
+
+[[project.nav."基础概念"."执行概念"]]
+"Job 与存储" = "concepts/jobs.md"
+
+[[project.nav."基础概念"."执行概念"]]
+"暂存与 apply 语义" = "concepts/staging.md"
+
+[[project.nav."基础概念"."执行概念"]]
+"能力、证据与保证边界" = "concepts/capabilities-and-evidence.md"
+
+[[project.nav."基础概念"."执行概念"]]
+"策略模型" = "concepts/policy-model.md"
+
+[[project.nav."基础概念"."执行概念"]]
+"术语表" = "concepts/glossary.md"
+
+
+[[project.nav."基础概念"]]
+
+[[project.nav."基础概念"."安全"]]
+"安全概览" = "security/index.md"
+
+[[project.nav."基础概念"."安全"]]
+"威胁模型" = "security/threat-model.md"
+
+[[project.nav."基础概念"."安全"]]
+"执行器边界" = "security/executor-boundaries.md"
+
+[[project.nav."基础概念"."安全"]]
+"加固建议" = "security/hardening.md"
+
+[[project.nav."基础概念"."安全"]]
+"已知限制" = "security/known-limitations.md"
+
+[[project.nav."基础概念"."安全"]]
+"漏洞披露政策" = "security/disclosure.md"
+
+[[project.nav."基础概念"."安全"]]
+"第三方审计" = "security/audits.md"
+
+
+
+[[project.nav]]
+
+[[project.nav."基准测试"]]
+
+[[project.nav."基准测试"."性能测试"]]
+"基准概览" = "benchmarks/index.md"
+
+[[project.nav."基准测试"."性能测试"]]
+"测试方法" = "benchmarks/methodology.md"
+
+[[project.nav."基准测试"."性能测试"]]
+"启动延迟" = "benchmarks/startup.md"
+
+[[project.nav."基准测试"."性能测试"]]
+"内存优化" = "benchmarks/vm-memory/index.md"
+
+[[project.nav."基准测试"."性能测试"]]
+"文件系统" = "benchmarks/filesystem.md"
+
+[[project.nav."基准测试"."性能测试"]]
+"网络开销" = "benchmarks/network.md"
+
+[[project.nav."基准测试"."性能测试"]]
+"端到端任务" = "benchmarks/agent-tasks.md"
+
+[[project.nav."基准测试"."性能测试"]]
+"监督成本" = "benchmarks/supervision-cost.md"
+
+[[project.nav."基准测试"."性能测试"]]
+"并发密度" = "benchmarks/density.md"
+
+[[project.nav."基准测试"."性能测试"]]
+"集群扩展（历史）" = "benchmarks/cluster-scalability.md"
+
+[[project.nav."基准测试"."性能测试"]]
+"隔离有效性" = "benchmarks/isolation-tests.md"
+
+[[project.nav."基准测试"."性能测试"]]
+"回放保真度" = "benchmarks/replay-fidelity.md"
+
+
+[[project.nav."基准测试"]]
+
+[[project.nav."基准测试"."对比"]]
+"Agent 自带沙箱" = "benchmarks/compare-agent-sandboxes.md"
+
+[[project.nav."基准测试"."对比"]]
+"Docker / devcontainer" = "benchmarks/compare-containers.md"
+
+[[project.nav."基准测试"."对比"]]
+"云端沙箱" = "benchmarks/compare-cloud-sandboxes.md"
+
+[[project.nav."基准测试"."对比"]]
+"隔离基座" = "benchmarks/compare-runtimes.md"
+
+[[project.nav."基准测试"."对比"]]
+"RL 基础设施" = "benchmarks/compare-rl-infra.md"
+
+
 
 [[project.nav]]
 
 [[project.nav."设计与研究"]]
-"实现设计" = "design/index.md"
 
-[[project.nav."设计与研究"]]
+[[project.nav."设计与研究"."核心机制"]]
+"机制概览" = "design/index.md"
+
+[[project.nav."设计与研究"."核心机制"]]
 "核心设计原则" = "design/principles.md"
 
-[[project.nav."设计与研究"]]
+[[project.nav."设计与研究"."核心机制"]]
 "核心架构" = "design/architecture.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"Job、Operation、Attempt 与 Event" = "design/execution-model.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"共享镜像缓存 v1：独立元数据与共享内容" = "design/shared-image-cache-storage.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"Lazy Image V2：目录局部化打包与按需索引" = "design/lazy-image-v2.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"Operation 与 Event" = "design/operations-events.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"隔离机制与限制" = "design/isolation.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"OverlayCore 设计" = "design/overlayfs.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"OverlayNet 透明拦截" = "design/overlaynet.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"Gateway 实现" = "design/gateway.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"Journal 设计" = "design/journal.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"回放设计" = "design/replay.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"pVisor 命令模型" = "design/cli.md"
+
+[[project.nav."设计与研究"."核心机制"]]
+"设计决策记录（ADR）" = "design/decisions/index.md"
+
 
 [[project.nav."设计与研究"]]
 
@@ -338,14 +399,6 @@ extra_css = ["assets/stylesheets/extra.css"]
 [[project.nav."设计与研究"."Daemon 单机执行"]]
 "Daemon 运维" = "design/daemon/operations.md"
 
-[[project.nav."设计与研究"]]
-"Job、Operation、Attempt 与 Event" = "design/execution-model.md"
-
-[[project.nav."设计与研究"]]
-"共享镜像缓存 v1：独立元数据与共享内容" = "design/shared-image-cache-storage.md"
-
-[[project.nav."设计与研究"]]
-"Lazy Image V2：目录局部化打包与按需索引" = "design/lazy-image-v2.md"
 
 [[project.nav."设计与研究"]]
 
@@ -356,53 +409,23 @@ extra_css = ["assets/stylesheets/extra.css"]
 "内存去重" = "design/memory-optimization/deduplication.md"
 
 [[project.nav."设计与研究"."内存优化"]]
-
-[[project.nav."设计与研究"."内存优化"."内存卸载"]]
 "内存卸载" = "design/memory-optimization/offload.md"
 
-[[project.nav."设计与研究"."内存优化"."内存卸载"]]
+[[project.nav."设计与研究"."内存优化"]]
 "卸载文件格式" = "design/memory-optimization/offload-format.md"
 
 [[project.nav."设计与研究"."内存优化"]]
-
-[[project.nav."设计与研究"."内存优化"."内存压缩"]]
 "内存压缩" = "design/memory-optimization/compression.md"
 
-[[project.nav."设计与研究"."内存优化"."内存压缩"]]
+[[project.nav."设计与研究"."内存优化"]]
 "实例内压缩" = "design/memory-optimization/compression-local.md"
 
-[[project.nav."设计与研究"."内存优化"."内存压缩"]]
+[[project.nav."设计与研究"."内存优化"]]
 "池化服务器压缩" = "design/memory-optimization/compression-pool.md"
 
 [[project.nav."设计与研究"."内存优化"]]
 "实验性概念验证" = "design/memory-optimization/proof-of-concept.md"
 
-[[project.nav."设计与研究"]]
-"Operation 与 Event" = "design/operations-events.md"
-
-[[project.nav."设计与研究"]]
-"隔离机制与限制" = "design/isolation.md"
-
-[[project.nav."设计与研究"]]
-"OverlayCore 设计" = "design/overlayfs.md"
-
-[[project.nav."设计与研究"]]
-"OverlayNet 透明拦截" = "design/overlaynet.md"
-
-[[project.nav."设计与研究"]]
-"Gateway 实现" = "design/gateway.md"
-
-[[project.nav."设计与研究"]]
-"Journal 设计" = "design/journal.md"
-
-[[project.nav."设计与研究"]]
-"回放设计" = "design/replay.md"
-
-[[project.nav."设计与研究"]]
-"pVisor 命令模型" = "design/cli.md"
-
-[[project.nav."设计与研究"]]
-"设计决策记录（ADR）" = "design/decisions/index.md"
 
 [[project.nav."设计与研究"]]
 
@@ -418,40 +441,46 @@ extra_css = ["assets/stylesheets/extra.css"]
 [[project.nav."设计与研究"."研究方向"]]
 "论文与报告" = "design/research/publications.md"
 
+
+
 [[project.nav]]
 
-[[project.nav."社区"]]
+[[project.nav."参与开发"]]
+
+[[project.nav."参与开发"."开发指南"]]
 "社区" = "community/index.md"
 
-[[project.nav."社区"]]
+[[project.nav."参与开发"."开发指南"]]
 "贡献指南" = "community/contributing.md"
 
-[[project.nav."社区"]]
+[[project.nav."参与开发"."开发指南"]]
 "工程说明" = "community/development.md"
 
-[[project.nav."社区"]]
+[[project.nav."参与开发"."开发指南"]]
 "测试与 semspec" = "community/testing.md"
 
-[[project.nav."社区"]]
+[[project.nav."参与开发"."开发指南"]]
 "复现 Run 生命周期" = "community/examples.md"
 
-[[project.nav."社区"]]
+[[project.nav."参与开发"."开发指南"]]
 "发布 PolicyVisor" = "community/releasing.md"
 
-[[project.nav."社区"]]
+[[project.nav."参与开发"."开发指南"]]
 "路线图" = "community/roadmap.md"
 
-[[project.nav."社区"]]
+[[project.nav."参与开发"."开发指南"]]
 "变更日志" = "community/changelog.md"
 
-[[project.nav."社区"]]
+[[project.nav."参与开发"."开发指南"]]
 "行为准则" = "community/code-of-conduct.md"
 
-[[project.nav."社区"]]
+[[project.nav."参与开发"."开发指南"]]
 "治理" = "community/governance.md"
 
-[[project.nav."社区"]]
+[[project.nav."参与开发"."开发指南"]]
 "使用者" = "community/adopters.md"
+
+
 
 [project.theme]
 language = "zh"
@@ -487,12 +516,12 @@ root = false
 
 [[project.extra.alternate]]
 name = "English"
-link = "/pvisor/en/"
+link = "https://deeplink-org.github.io/pvisor/en/"
 lang = "en"
 
 [[project.extra.alternate]]
 name = "中文"
-link = "/pvisor/zh/"
+link = "https://deeplink-org.github.io/pvisor/zh/"
 lang = "zh"
 
 [project.markdown_extensions."admonition"]
@@ -527,6 +556,7 @@ lang = ["zh"]
 regex = ["(^|/)\\.data(/|$)"]
 
 [project.plugins.redirects.redirect_maps]
+"benchmarks/apply.md" = "benchmarks/supervision-cost.md"
 "overview.md" = "start/index.md"
 "installation.md" = "start/installation.md"
 "pvisor/index.md" = "start/what-is-pvisor.md"

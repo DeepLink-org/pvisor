@@ -1,8 +1,10 @@
-# Which workflow costs less: a private task workspace, review and selective application?
+# How much time do review, application and disposal take?
 
 ## Main conclusions {#conclusions}
 
 **Creating a fresh task workspace, changing 20 of 10,000 files and retaining ten takes 141 ms at complete machine-workflow P50 with pVisor stage, 248 ms with Git worktree and 343 ms with a btrfs reflink copy. Stage suits sparse changes in large workspaces; Git costs less in small workspaces. A separate experiment on a prepared twenty-file view measures review/application/disposal at P50 of 27.71 ms for stage and 4.69 ms for Git.**
+
+Applying prepared changes alone takes pVisor apply P50 of **17 ms, 0.93 s and 14.26 s** for 10, 1,000 and 10,000 small text files, all higher than Git patches. At 100,000 files, two clusters have medians of **109.73 s and 196.87 s**. The complete workflow applies only ten files; its 141 ms cannot estimate the cost of applying all 10,000 files.
 
 | User scenario | Selection implication |
 |---|---|
@@ -14,7 +16,11 @@
 
 An Agent task needs a private workspace, diff review, selective application and disposal as well as tool execution. Individual filesystem timings omit these costs. If you frequently create task workspaces, compare the entire workflow that produces the same result.
 
+Also estimate review cost with an already prepared view, and waiting and recovery costs as the number of applied files grows. Three independent experiments answer these questions without pooling samples.
+
 ## Experiment design {#interpretation}
+
+### Complete task workflow: B-WORKFLOW
 
 The controls are pVisor rootless stage, a detached Git worktree and a btrfs reflink copy. Inputs are identical prepared, committed and packed Git repositories containing either 100 or 10,000 files of 4 KiB each. Each task changes twenty files, produces their complete content diffs, applies the first ten and discards the rest. Git and reflink workflows extract a patch for the selected paths with `git diff`, run `git apply --check`, then apply it.
 
@@ -26,7 +32,17 @@ Normal application and a host conflict are separate conditions. Every sample mus
 
 This fixed file-editing task excludes inference, compilation and human reading. Git/reflink execute native processes with different isolation. Conflict checks do not cover races between Git's check and write, or compare crash recovery and durability guarantees. These results do not rank containers, VMs or security.
 
-A separate experiment measures only review of a prepared view: twenty small text files already contain identical edits; review every original/edited content, apply the first ten and discard the other ten. Stage timing includes `status --review --diff`, selective `apply` and `drop`. Git timing includes complete diff review, selected patch extraction, `git apply --check`, application and worktree removal. View creation, task execution, fixtures and validation are excluded. Git 2.55.0 is identified by executable digest before sampling; the frozen stage artifact has separate provenance. Each group has thirty samples and three warmups, CPUs 0 and 1, warm caches and no benchmark-specific host memory cap. All sixty formal samples pass content, selection and execution-boundary checks, with final workspaces retained for independent audit and no speed-based exclusions. These experiments are summarized separately; prepared-view review cost is not added to the complete-workflow table.
+### Prepared-view review: B-SUPERVISION
+
+A separate experiment measures only review of a prepared view: twenty small text files already contain identical edits; review every original/edited content, apply the first ten and discard the other ten. Stage timing includes `status --review --diff`, selective `apply` and `drop`. Git timing includes complete diff review, selected patch extraction, `git apply --check`, application and worktree removal. View creation, task execution, fixtures and validation are excluded. Git 2.55.0 is identified by executable digest before sampling; the frozen stage artifact has separate provenance. Each group has thirty samples and three warmups, CPUs 0 and 1, warm caches and no benchmark-specific host memory cap. All sixty formal samples pass content, selection and execution-boundary checks, with final workspaces retained for independent audit and no speed-based exclusions. Prepared-view review is summarized separately and is not added to the complete-workflow table.
+
+### Application scale and recovery: B-APPLY
+
+The host is an AMD Ryzen 7 9700X running Linux 7.2.8-200.fc44 x86_64. Measured processes are pinned to CPUs 0 and 1, with no benchmark-specific host memory cap. Caches are warm and the page cache is not actively cleared. The workload updates small text files in one directory; staged changes and Git patches are generated before timing. Workspace preparation and subsequent verification are outside timing.
+
+At 10, 1,000, 10,000 and 100,000 files, measure pVisor apply, Git apply, native copying, drop and rejection of a conflict introduced before application. Each condition has three warmups and 30 samples, totaling 600 formal timings; a fixed seed randomizes size and operation order within each round. Successful samples must pass complete target-content checks and applicable application-ledger checks. Failures are retained separately, and all valid slow samples are retained without exclusions based on duration.
+
+Independent correctness checks include three actual SIGKILL hits at each of three durable states in a 10,000-file application, and three host-edit injections during application using the same binary. For the latter, pause after one file has changed while the file to be edited still has its original content, write and synchronize the external edit, then resume. These checks cover finite injection windows, not every concurrent schedule.
 
 ## Data and analysis {#results}
 
@@ -79,6 +95,70 @@ One selected host file is changed before application. The complete workflow incl
 
 No participant study was conducted. Batch review and machine timing cannot be converted into human time savings.
 
+### Application and disposal by scale {#apply-cost}
+
+Measured on 2026-10-06. Units: ms; each cell is **P50 / reference P95, N=30**, with zero failures. P95 from 30 samples describes observations rather than a stable tail-latency commitment.
+
+| Files | pVisor apply | Git apply | Native copy | drop | Pre-apply conflict rejection |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 17.21 / 42.47 | 1.08 / 1.57 | 2.56 / 3.07 | 4.25 / 5.60 | 2.24 / 2.88 |
+| 1,000 | 925.96 / 1,788.33 | 14.56 / 18.26 | 16.84 / 19.79 | 26.99 / 40.03 | 21.44 / 23.33 |
+| 10,000 | 14,259.71 / 21,914.94 | 155.31 / 173.19 | 114.55 / 122.87 | 204.20 / 298.34 | 183.90 / 200.78 |
+| 100,000 | Two clusters, see below | 1,639.51 / 1,861.16 | 1,109.58 / 1,253.46 | 858.57 / 929.70 | 1,290.37 / 1,354.08 |
+
+Apply at 100,000 files is reported as two clusters. Units: s.
+
+| Duration cluster | Samples | Share | Cluster median |
+|---|---:|---:|---:|
+| Lower duration | 12 | 40% | 109.73 |
+| Higher duration | 18 | 60% | 196.87 |
+
+Across all 30 samples the observed range is 107.42–205.33 s, with a reference P95 of 203.99 s. Budget for both clusters rather than using the faster cluster alone. Timing data does not establish the cause of the two clusters.
+
+### What the Git patch baseline means {#apply-baseline}
+
+Median differences use 5,000 bootstrap resamples of paired rounds with a fixed seed. Units: ms; 30 pairs per row.
+
+| Files | pVisor apply − Git apply | 95% confidence interval for the difference |
+|---:|---:|---:|
+| 10 | +16.13 | +15.79 to +18.63 |
+| 1,000 | +911.41 | +895.05 to +1,017.69 |
+| 10,000 | +14,104.40 | +11,179.77 to +19,418.50 |
+
+All three scales show higher pVisor latency. The separated distribution at 100,000 files is not summarized by a single median difference. Git patches also check patch context, but do not provide the same preimage checks, durable application ledger and interruption-recovery workflow. This comparison estimates waiting time for the same text updates; it does not claim identical transaction semantics.
+
+### Host edits during apply {#apply-conflicts}
+
+The independent injection check uses 10,000 files and N=3, without pooling these checks with the timing samples above.
+
+| Valid injections | Conflicts detected | Host edits preserved | Silent overwrites | Unknown results |
+|---:|---:|---:|---:|---:|
+| 3 | 3 | 3 | 0 | 0 |
+
+All three windows explicitly reject the conflict and retain the host edit, Prepared ledger and complete upper. Some files have already been applied before the conflict, so this does not mean whole-batch rollback, and does not cover every race between the final check and rename.
+
+### SIGKILL recovery
+
+At 10,000 files, N=3 per requested state. All nine injections hit the requested durable state, and rerunning passes target and Committed-ledger checks, with no missed injection windows. Units: ms; only medians and observed ranges are reported.
+
+| Interruption state | Recovery median | Minimum–maximum |
+|---|---:|---:|
+| prepared | 20,790.33 | 19,599.02–21,358.11 |
+| target_applied | 386.91 | 350.96–475.45 |
+| committed | 428.82 | 374.26–443.29 |
+
+Recovery waiting time depends on the work completed before interruption. This checks process SIGKILL rather than power loss or storage corruption; three observations do not establish tail latency or a reliability guarantee.
+
+### Scope {#apply-scope}
+
+The data covers warm caches and small text files in one directory. It does not cover large binaries, all file types, symlinks and metadata combinations, or macOS. Full content validation ran during measurement; retained commands and ledgers were independently audited, but cleaned target directories cannot be reread byte for byte. Finite conflict injections do not prove detection of every concurrent edit.
+
+### Application-scale and recovery data {#apply-downloads}
+
+[Scale timings CSV](apply.csv) · [Paired Git comparison CSV](apply-comparisons.csv) · [Recovery checks CSV](apply-recovery.csv) · [Concurrent conflicts CSV](apply-concurrent-conflicts.csv) · [Provenance CSV](apply-provenance.csv)
+
+Provenance records binary, source, harness and raw-report digests. Timing and concurrent checks use the same binary in separate cohorts. Raw commands, reports and audit records remain in local `.data/`.
+
 ### Downloads and reproduction {#run}
 
-[Derived table CSV](supervision-cost.csv) · [Step statistics](workflow-summary.csv) · [Differences and confidence intervals](workflow-comparisons.csv) · [Sources and artifacts](workflow-provenance.csv) · [Prepared-view steps](supervision-summary.csv) · [Prepared-view paired differences](supervision-comparisons.csv) · [Prepared-view provenance](supervision-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Derived table CSV](supervision-cost.csv) · [Step statistics](workflow-summary.csv) · [Differences and confidence intervals](workflow-comparisons.csv) · [Sources and artifacts](workflow-provenance.csv) · [Prepared-view steps](supervision-summary.csv) · [Prepared-view paired differences](supervision-comparisons.csv) · [Prepared-view provenance](supervision-provenance.csv) · [Evidence source summary](evidence-sources.csv)

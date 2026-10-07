@@ -229,9 +229,6 @@ pub(crate) fn validate_host_target(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pvisor_core::host_protocol::{
-        AGENTCTL_HOST_VERSION, AgentCtlHostRequest, AgentCtlHostResponse,
-    };
 
     #[test]
     fn authority_root_rejects_symlinks_public_modes_and_non_directories() {
@@ -377,15 +374,21 @@ mod tests {
         writer.write_all(b"1\n2\n").await.unwrap();
         assert_eq!(read_host_frame::<u32>(&mut reader).await.unwrap(), 1);
         assert_eq!(read_host_frame::<u32>(&mut reader).await.unwrap(), 2);
-        writer.write_all(b"bad\n").await.unwrap();
-        assert!(read_host_frame::<u32>(&mut reader).await.is_err());
+        for frame in [b"\n".as_slice(), b"true false\n", b"bad\n"] {
+            writer.write_all(frame).await.unwrap();
+            assert!(
+                read_host_frame::<serde_json::Value>(&mut reader)
+                    .await
+                    .is_err()
+            );
+        }
         writer.write_all(b"3").await.unwrap();
         writer.shutdown().await.unwrap();
         assert!(read_host_frame::<u32>(&mut reader).await.is_err());
     }
 
     #[tokio::test]
-    async fn bounded_frames_and_peer_credentials() {
+    async fn async_limits_accept_exact_bound_reject_oversized_frames_and_authenticate_peer() {
         let (mut writer, mut reader) = UnixStream::pair().unwrap();
         authorize_host_peer(&reader).unwrap();
         assert!(
@@ -394,10 +397,22 @@ mod tests {
                 .is_err()
         );
         let sender = tokio::spawn(async move {
+            // JSON quotes count towards the payload limit; the delimiter does not.
+            let exact = "x".repeat(AGENTCTL_HOST_MAX_FRAME_BYTES - 2);
+            write_host_frame(&mut writer, &exact).await.unwrap();
+            assert!(
+                write_host_frame(&mut writer, &"x".repeat(AGENTCTL_HOST_MAX_FRAME_BYTES - 1))
+                    .await
+                    .is_err()
+            );
             let _ = writer
                 .write_all(&vec![b'x'; AGENTCTL_HOST_MAX_FRAME_BYTES + 1])
                 .await;
         });
+        assert_eq!(
+            read_host_frame::<String>(&mut reader).await.unwrap().len(),
+            AGENTCTL_HOST_MAX_FRAME_BYTES - 2
+        );
         assert!(
             read_host_frame::<serde_json::Value>(&mut reader)
                 .await
@@ -410,41 +425,20 @@ mod tests {
     }
 
     #[test]
-    fn version_target_and_error_correlation() {
-        let mut request = AgentCtlHostRequest {
-            version: AGENTCTL_HOST_VERSION,
-            request_id: "r".into(),
-            target: Some(AgentCtlTarget {
-                job_id: "job".into(),
-                attempt_id: Some("attempt".into()),
-                generation: None,
-            }),
-            command: (),
+    fn live_target_requires_matching_job_explicit_attempt_and_no_generation() {
+        let mut target = AgentCtlTarget {
+            job_id: "job".into(),
+            attempt_id: Some("attempt".into()),
+            generation: None,
         };
-        request.validate().unwrap();
-        request.version += 1;
-        assert_eq!(
-            request.validate().unwrap_err().code,
-            AgentCtlHostErrorCode::VersionMismatch
-        );
-        validate_host_target(request.target.as_ref(), "job", "attempt").unwrap();
-        assert!(validate_host_target(request.target.as_ref(), "other", "attempt").is_err());
-        assert!(validate_host_target(request.target.as_ref(), "job", "new-attempt").is_err());
+        validate_host_target(Some(&target), "job", "attempt").unwrap();
+        assert!(validate_host_target(Some(&target), "other", "attempt").is_err());
+        assert!(validate_host_target(Some(&target), "job", "new-attempt").is_err());
         assert!(validate_host_target(None, "job", "attempt").is_err());
-        request.target.as_mut().unwrap().generation = Some("old".into());
-        assert!(validate_host_target(request.target.as_ref(), "job", "attempt").is_err());
-        let response = AgentCtlHostResponse::<()> {
-            version: AGENTCTL_HOST_VERSION,
-            request_id: "r".into(),
-            result: Err(AgentCtlHostError::new(
-                AgentCtlHostErrorCode::Unavailable,
-                "uncertain",
-            )),
-        };
-        response.validate("r").unwrap();
-        assert_eq!(
-            response.validate("other").unwrap_err().code,
-            AgentCtlHostErrorCode::Conflict
-        );
+        target.generation = Some("old".into());
+        assert!(validate_host_target(Some(&target), "job", "attempt").is_err());
+        target.generation = None;
+        target.attempt_id = None;
+        assert!(validate_host_target(Some(&target), "job", "attempt").is_err());
     }
 }

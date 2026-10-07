@@ -10,13 +10,12 @@ Today: run agents unattended and keep only the file changes you approve.
 [![Documentation](https://img.shields.io/badge/docs-latest-blue)](https://deeplink-org.github.io/pvisor/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Agent CLIs increasingly ship their own sandboxes, and those do block actions. What they do not give you is a post-hoc selective merge, a checkable record, or the same semantics across agents and executors. PolicyVisor adds those three properties: the workload runs unattended inside a policy boundary, and you review the result like a pull request—keeping only the changes you want.
+PolicyVisor runs Agent CLIs and scripts within a policy boundary, stages their file changes, and records the execution. Review the result like a pull request and apply only the paths you want. The same workflow works across agents, with platform-specific controls provided by each executor.
 
-The limit on agent autonomy is not compute; it is human supervision. Today every
-unit of agent work costs roughly the same unit of human attention, so supervision
-cost grows with the execution volume. PolicyVisor makes each execution **bounded,
-recoverable, and checkable**, so supervision can be spread out, sampled, and
-eventually automated.
+Running more agents takes both compute resources and human attention.
+PolicyVisor combines execution boundaries, staged file changes, and execution
+records so you can review completed work. These **bounded, recoverable, and
+checkable** executions provide a basis for batch review and automated checks.
 
 ![PolicyVisor execution and review workflow](docs/overrides/assets/diagrams/pvisor/system-products.svg)
 
@@ -87,10 +86,10 @@ For the four levels, where pVisor places its bet, and the status of L2/L3, see t
 
 ## Scope
 
-A declared policy is not proof of enforcement, and `apply`/`drop` govern staged
-files only, with no undo for remote API calls, database writes, or messages
-already sent. Host, container, and VM executors differ, and container/VM support
-is platform-dependent. See [capabilities and evidence](https://deeplink-org.github.io/pvisor/en/concepts/capabilities-and-evidence/).
+Check execution observations to see which controls were installed.
+`apply`/`drop` govern staged files; remote API calls, database writes, and sent
+messages retain their effects. Host, container, and VM executors provide different
+controls, with platform-dependent container/VM support. See [capabilities and evidence](https://deeplink-org.github.io/pvisor/en/concepts/capabilities-and-evidence/).
 
 ## Documentation
 

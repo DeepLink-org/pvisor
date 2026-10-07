@@ -38,7 +38,7 @@
 
 所有模式的视图内读、写、socket 正对照都通过，避免把无法工作的环境误认为隔离有效。staged、safe、VM 的宿主 lower 保持不变，stage 中保留完整写入；safe 和 VM 的 lower 别名写入 API 返回成功，仍未修改宿主。pVisor OCI 在所测别名下直接写入 lower；Podman 未解析该宿主绝对别名，但其相对工作区写入同样直接落到宿主。
 
-这是路径和 Unix socket fixture 的结果。TCP 策略另见[网络评测](network.md)，合入冲突和中断恢复另见[apply 评测](apply.md)。
+这是路径和 Unix socket fixture 的结果。TCP 策略另见[网络评测](network.md)，合入冲突和中断恢复另见[apply 评测](supervision-cost.md#apply-cost)。
 
 ### 适用边界 {#acceptance}
 

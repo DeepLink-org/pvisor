@@ -1,13 +1,7 @@
 # 运行单机 daemon
 
-安装 `pvisor-daemon`，通过部分兼容 OpenSandbox 1.1.0 的 API 管理一台 Linux 主机上的镜像沙箱。daemon 负责本机准入、生命周期、持久状态与过期清理，不跨节点调度业务任务，不提供全局 DAG、分布式 lease、Controller 或 Worker。跨节点编排交给 Kubernetes、Ray 或你的应用。
+安装 `pvisor-daemon`，通过部分兼容 OpenSandbox 1.1.0 的 API 管理一台 Linux 主机上的镜像沙箱。daemon 负责本机准入、生命周期、持久状态与过期清理。跨节点任务调度、全局 DAG 和分布式 lease 由 Kubernetes、Ray 或你的应用管理；daemon 不包含 Controller 或 Worker。
 
-| 需求 | 指南 |
-| --- | --- |
-| 安装并启动 API | 下方命令 |
-| 准备镜像与选择执行边界 | [运行时与集成边界](boundaries.md) |
-| 查询、删除与恢复沙箱 | [运维](operations.md) |
-| 单独管理原生 node/cache/pool 服务 | [Service 入口](service.md) |
 
 ## 前提条件 {#prerequisites}
 
@@ -16,11 +10,11 @@
 镜像是可信本机 `images_dir/<key>.json` manifest，不是 registry reference。字段包括绝对路径的独立 Linux `rootfs`（不能是宿主 `/` 或与 daemon 状态重叠）、绝对路径的 guest bootstrap `entrypoint` argv、可选 `cmd`、可选 `env` 与可选绝对路径 firmware `library_dir`。请求的工作负载 argv（为空则使用 `cmd`）追加到 `entrypoint`，请求 env 覆盖 manifest env，不继承宿主环境，也不经 shell 插值。
 
 !!! warning
-    Bootstrap 与镜像配方**未提供，也未经端到端验证**。旧容器的 `cap-drop=ALL` 限制不适用于此原生 VM 后端；upstream 镜像名称不是原生 bootstrap/vsock 适配器。不提供假就绪，也没有 SDK 兼容或密度证据。 见[镜像契约](boundaries.md#images)。
+    需要自行准备 guest bootstrap 与 vsock 服务桥接，具体要求见[镜像契约](boundaries.md#images)。项目**尚未提供 bootstrap 或镜像配方，也未做端到端验证**；目前没有 SDK 兼容性验证或密度测量结果。
 
 ## 安装可执行文件 {#install}
 
-源码安装使用选定 revision 与[原生构建前提](../../community/development.md)。以下命令不是已验证安装配方：
+按[原生构建前提](../../community/development.md)准备环境，在选定 revision 上运行以下源码安装命令；这条安装路径尚未验证：
 
 ```bash
 cargo install --locked --path crates/pvisor-daemon --bin pvisor-daemon
@@ -28,11 +22,11 @@ pvisor-daemon --help
 pvisor-daemon protocol
 ```
 
-`protocol` 打印固定的 OpenSandbox 版本与 commit，不代表完整 SDK 兼容认证。源码安装与 Python `pvisor` 包安装是两件事；不要假设已有 wheel 包含新的 daemon 伴随程序或 prepared image。源码 revision、SDK 1.1.0 与镜像内容应一起固定。
+`protocol` 打印固定的 OpenSandbox 版本与 commit。源码安装独立于 Python `pvisor` 包安装；使用 wheel 时，检查该版本是否包含 daemon，并单独准备镜像。源码 revision、SDK 1.1.0 与镜像内容应一起固定；SDK 兼容性仍需端到端验证。
 
 ## 启动 API {#start}
 
-`serve` 使用已实现且必需的 `--images-dir` 与 `--cgroup-root` 构造 `NativeRuntime`。Cargo 链接 `pvisor` 与 `pvisor-core`；同步 `main` 在参数解析或 Tokio 之前调用 `pvisor::run_krun_internal_if_requested()`，随后派发隐藏的 `native-supervisor --sandbox-dir ABSOLUTE_PATH` 命令。下方部署示例使用当前 CLI，但不提供或验证 guest bootstrap、SDK 兼容或密度。
+`serve` 使用已实现且必需的 `--images-dir` 与 `--cgroup-root` 构造 `NativeRuntime`。Cargo 链接 `pvisor` 与 `pvisor-core`；同步 `main` 在参数解析或 Tokio 之前调用 `pvisor::run_krun_internal_if_requested()`，随后派发隐藏的 `native-supervisor --sandbox-dir ABSOLUTE_PATH` 命令。准备好镜像与 cgroup 层级后，使用以下 CLI 配置启动 API。
 
 ```bash
 export OPEN_SANDBOX_API_KEY="$(openssl rand -hex 32)"
@@ -49,7 +43,7 @@ pvisor-daemon serve \
 
 运行时路径使用绝对路径，daemon 重启时保持不变。状态路径保持短，例如 `/run/user/1000/pvd`：逐 sandbox 的 `control.sock` 必须短于 104 字节，vsock Unix socket 也有路径长度限制。保留状态；此 `/run` 示例不保证跨注销／重启持久化，VM 不能跨宿主重启存活。`/sys/fs/cgroup/pvd` 必须是真实委派层级，不能是普通目录。
 
-选择 checkout 外的私有状态目录。API key 只生成一次，保存在受保护的服务秘密存储中，重启时复用同一值。示例最多准入 32 条记录、四个 CPU 单位和总计 8 GiB 硬内存限制，不是已测全节点物理上限；为 daemon/cache/宿主留余量，另行配置宿主监督。
+选择 checkout 外的私有状态目录。API key 只生成一次，保存在受保护的服务秘密存储中，重启时复用同一值。示例的准入预算是 32 条记录、四个 CPU 单位和总计 8 GiB 硬内存限制。全节点物理占用尚未测量；为 daemon/cache/宿主留余量，另行配置宿主监督。
 
 在第二个 shell 中使用同一份受保护 API key 查询生命周期 API：
 
@@ -60,13 +54,13 @@ header = "OPEN-SANDBOX-API-KEY: ${OPEN_SANDBOX_API_KEY}"
 EOF
 ```
 
-预期返回 JSON 沙箱列表；全新状态下列表为空。这只验证 API 访问，不验证沙箱创建、原生资源强制或 SDK 数据面就绪。不要公开密钥，也不要把带凭据的日志贴进 issue。
+预期返回 JSON 沙箱列表；全新状态下列表为空。此查询验证 API 访问；沙箱创建、原生资源强制与 SDK 数据面就绪需要另行验证。不要公开密钥，也不要把带凭据的日志贴进 issue。
 
 ## 连接客户端 {#clients}
 
 使用 OpenSandbox SDK 1.1.0，配置选定的 domain、protocol 与生命周期 API key。创建请求需要 `image`、`entrypoint` argv，以及恰好包含 `cpu`、`memory` 的 `resourceLimits`。可选 `timeout` 以秒计，至少 60 秒；省略或 null 表示手动清理。这里不提供 prepared-image 名称，因为目前没有经过验证的开箱即用镜像配方。
 
-daemon 检查真实 execd 的 `/ping`、`/ready` 和 egress 的 `/healthz` 后才把创建视为就绪。`202` 是生命周期响应，不是工作负载退出结果。命令、文件与 metrics 流量发往镜像中的真实服务，不由 pVisor 仿造 execd。
+daemon 检查真实 execd 的 `/ping`、`/ready` 和 egress 的 `/healthz` 后才把创建视为就绪。`202` 表示生命周期请求已接受；工作负载退出结果需通过命令接口获取。命令、文件与 metrics 流量转发到镜像中的 execd 和 egress 服务。
 
 默认只监听 loopback。对外访问前，在可信反向代理上配置 TLS，并用 `--public-endpoint HOST:PORT` 指定外部路由可达的 authority，不带 scheme 或路径。通配监听与开发用的零端口绑定也要求显式正确的 public endpoint。认证见[端点认证](operations.md#endpoints)。
 

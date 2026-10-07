@@ -5,6 +5,7 @@
 use pvisor_vm::api::RuntimeSupport;
 mod safe;
 
+use crate::runtime::job_service::policy::PolicySource;
 use std::path::{Path, PathBuf};
 
 const STAGE_OWNER_FILE: &str = ".pvisor-stage-owner";
@@ -861,7 +862,14 @@ pub async fn run(mut args: RunArgs) -> anyhow::Result<i32> {
         warn_safe_preset(&config, &args);
     }
     crate::util::startup_mark_run("cli.config_ready", &run_id);
-    execute_config(config, run_id, args.run.safe || args.audit, None).await
+    execute_config(
+        config,
+        run_id,
+        args.run.safe || args.audit,
+        None,
+        PolicySource::CurrentDefaults,
+    )
+    .await
 }
 
 fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
@@ -920,7 +928,7 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     .context("decode delegated RunSpec")?;
     let mut stage_guard = None;
     let registration_stage = stage_spec.clone();
-    let pvisor = if let Some(stage_path) = stage_spec {
+    let (pvisor, config) = if let Some(stage_path) = stage_spec {
         let cleanup = args.stage.is_none();
         if cleanup {
             if stage_path.exists() {
@@ -1010,22 +1018,21 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
                     .gateway_enabled(config.gateway.mode == GatewayMode::Capture),
             );
         }
-        builder.build()
+        (builder.build(), config)
     } else {
-        PVisor::builder()
-            .executors(vec![report_terminal(Arc::new(ProcessExecutor::default()))])
-            .build()
+        (
+            PVisor::builder()
+                .executors(vec![report_terminal(Arc::new(ProcessExecutor::default()))])
+                .build(),
+            RunConfig::default(),
+        )
     };
-    let handle = match crate::runtime::job_service::RuntimeJobService::start(&pvisor, spec).await {
-        Ok(handle) => handle,
-        Err(error) => return Err(error.into()),
-    };
-    announce_control_socket(&handle);
-    if let Some(stage) = registration_stage {
-        super::host_cancel::register(&handle, &stage)?;
-    }
-    let agentctl = handle.agentctl();
-    let result = wait_cli_run(handle).await?;
+    let managed =
+        crate::runtime::job_service::RuntimeJobService::start_managed(&pvisor, spec, config)
+            .await?;
+    announce_control_socket(managed.handle());
+    let agentctl = managed.handle().agentctl();
+    let result = wait_cli_job(managed, registration_stage.as_deref()).await?;
     let output = crate::executor::delegated::DelegatedRunOutput {
         agentctl: agentctl.snapshot(),
         result,
@@ -1164,6 +1171,20 @@ pub(super) fn report_terminal(executor: Arc<dyn RunExecutor>) -> Arc<dyn RunExec
     Arc::new(TerminalReportingExecutor(executor))
 }
 
+pub(super) async fn wait_cli_job(
+    managed: crate::job_service::ManagedJobRun,
+    stage: Option<&Path>,
+) -> anyhow::Result<pvisor_core::RunResult> {
+    managed
+        .wait_with(|handle| async move {
+            if let Some(stage) = stage {
+                super::host_cancel::register(&handle, stage)?;
+            }
+            wait_cli_run(handle).await
+        })
+        .await
+}
+
 pub(super) async fn wait_cli_run(
     handle: crate::RunHandle,
 ) -> anyhow::Result<pvisor_core::RunResult> {
@@ -1211,6 +1232,7 @@ async fn execute_config(
     run_id: String,
     safe: bool,
     lineage: Option<RunLineage>,
+    policy_source: PolicySource,
 ) -> anyhow::Result<i32> {
     normalize_filesystem_config(&mut config)?;
     if config.run.executor == RunExecutorKind::Vm {
@@ -1374,7 +1396,7 @@ async fn execute_config(
         super::host_service::reject_guest_exposure(sources)?;
     }
     let storage = resolve_run_storage(&select_run_storage(&config, &workspace, &run_id)?)?;
-    config.load_policy_defaults(&workspace, personal_config_root().as_deref())?;
+    policy_source.load_defaults(&mut config, &workspace, personal_config_root().as_deref())?;
     if config
         .policies
         .scopes()
@@ -1521,6 +1543,7 @@ async fn execute_config(
             Arc::new(VmExecutor::new(config.vm.clone())?)
         }
     };
+    policy_source.validate_executor(&executor.descriptor())?;
     let mut builder = PVisor::builder()
         .storage(&storage)
         .event_sink(event_sink)
@@ -1779,27 +1802,16 @@ async fn execute_config(
         }
     }
     crate::util::startup_mark_run("cli.session_begin", &run_id);
-    let execution_spec = spec.clone();
-    let handle = crate::runtime::job_service::RuntimeJobService::start(&pvisor, spec).await?;
-    announce_control_socket(&handle);
-    let execution_server = if config.run.executor == RunExecutorKind::Vm {
-        let record = resolve_run(Some(Path::new(&run_id)), &storage)?;
-        Some(crate::runtime::job_execution::Server::start(
-            &record,
-            config.clone(),
-            execution_spec,
-            handle.controls(),
-        )?)
-    } else {
-        None
-    };
+    let managed = crate::runtime::job_service::RuntimeJobService::start_managed(
+        &pvisor,
+        spec,
+        config.clone(),
+    )
+    .await?;
+    announce_control_socket(managed.handle());
     crate::util::startup_mark_run("cli.session_started", &run_id);
-    super::host_cancel::register(&handle, &storage)?;
-    let result = wait_cli_run(handle).await?;
+    let result = wait_cli_job(managed, Some(&storage)).await?;
     crate::util::startup_mark_run("cli.run_finished", &run_id);
-    if let Some(server) = execution_server {
-        server.finish(&result).await?;
-    }
     drop(pvisor);
     if let Some(writer) = json_writer {
         writer.finish()?;

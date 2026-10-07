@@ -4,7 +4,6 @@ use crate::runtime::{OverlayState, RunRecord, restore_overlay_upper, snapshot_ov
 use crate::unix_now_ms;
 use crate::util::{create_dir_all_durable, sync_directory, write_private_json};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::fs::MetadataExt;
@@ -85,63 +84,6 @@ pub fn create_logical_checkpoint(
     }
     let (current, _lease) = record.lock_current()?;
     create_stopped_checkpoint_locked(&current, requested_id)
-}
-
-#[derive(Serialize, Deserialize)]
-struct WorkspaceRequest {
-    schema_version: u32,
-    job_id: String,
-    checkpoint_id: String,
-}
-
-pub(crate) fn create_workspace_request(
-    selected: &RunRecord,
-    request_id: Option<&str>,
-) -> anyhow::Result<(LogicalCheckpoint, bool)> {
-    let (record, _lease) = selected.lock_current()?;
-    record.require_stopped()?;
-    let Some(key) = request_id else {
-        return Ok((create_stopped_checkpoint_locked(&record, None)?, false));
-    };
-    anyhow::ensure!(
-        !key.trim().is_empty() && key.len() <= 256,
-        "request id must contain 1..256 bytes"
-    );
-    let id = format!(
-        "request-{}",
-        crate::util::encode_hex(&Sha256::digest(key.as_bytes()))
-    );
-    let requests = record.stage_dir().join(CHECKPOINTS_DIR).join(".requests");
-    let receipt = requests.join(format!("{id}.json"));
-    if receipt.try_exists()? {
-        let prior: WorkspaceRequest = serde_json::from_slice(&fs::read(&receipt)?)?;
-        anyhow::ensure!(
-            prior.schema_version == 1 && prior.job_id == record.run_id && prior.checkpoint_id == id,
-            "workspace request receipt identity mismatch"
-        );
-        let cp = resolve_checkpoint(&record, &id).map_err(|e| anyhow::anyhow!(
-            "request already committed; its checkpoint is no longer available; use a new request id: {e}"))?;
-        return Ok((cp, true));
-    }
-    // Recover publication followed by a crash before the request receipt.
-    let prior = list_checkpoints(&record)?
-        .into_iter()
-        .find(|cp| cp.checkpoint_id == id);
-    let reused = prior.is_some();
-    let checkpoint = match prior {
-        Some(cp) => cp,
-        None => create_stopped_checkpoint_locked(&record, Some(&id))?,
-    };
-    create_dir_all_durable(&requests)?;
-    write_private_json(
-        &receipt,
-        &WorkspaceRequest {
-            schema_version: 1,
-            job_id: record.run_id,
-            checkpoint_id: id,
-        },
-    )?;
-    Ok((checkpoint, reused))
 }
 
 /// Caller retains the Job lease through publication and any branch pin/copy.
@@ -384,60 +326,6 @@ pub(crate) fn workspace_view(
     Ok(view)
 }
 
-pub(crate) fn delete_checkpoint(record: &RunRecord, id: &str) -> anyhow::Result<String> {
-    let (current, _lease) = record.lock_current()?;
-    current.require_stopped()?;
-    let checkpoint = resolve_checkpoint(&current, id)?;
-    anyhow::ensure!(
-        checkpoint_branch_refs(&checkpoint)? == 0,
-        "CHECKPOINT_REFERENCED: checkpoint {} is retained by a child Job",
-        checkpoint.checkpoint_id
-    );
-    let root = checkpoint
-        .manifest_path()
-        .parent()
-        .expect("manifest parent")
-        .to_path_buf();
-    let parent = root.parent().expect("checkpoint parent");
-    let tombstone = parent.join(format!(".deleted-{}", uuid::Uuid::new_v4().simple()));
-    fs::rename(&root, &tombstone)?;
-    sync_directory(parent)?;
-    fs::remove_dir_all(tombstone)?;
-    sync_directory(parent)?;
-    Ok(checkpoint.checkpoint_id)
-}
-
-pub(crate) fn collect_workspace_transactions(record: &RunRecord) -> anyhow::Result<usize> {
-    let (current, _lease) = record.lock_current()?;
-    current.require_stopped()?;
-    let root = current.stage_dir().join(CHECKPOINTS_DIR);
-    if !root.exists() {
-        return Ok(0);
-    }
-    let mut removed = 0;
-    for entry in fs::read_dir(&root)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if (name.starts_with(".pending-") || name.starts_with(".deleted-"))
-            && entry.file_type()?.is_dir()
-        {
-            // Old callers could choose dot-prefixed ids before these names
-            // became reserved. Never mistake their committed object for debris.
-            if let Ok(cp) = LogicalCheckpoint::read(&entry.path()) {
-                anyhow::ensure!(
-                    cp.checkpoint_id != name,
-                    "refuse to collect a legacy committed checkpoint named {name}"
-                );
-            }
-            fs::remove_dir_all(entry.path())?;
-            removed += 1;
-        }
-    }
-    sync_directory(&root)?;
-    Ok(removed)
-}
-
 pub fn latest_logical_checkpoint(record: &RunRecord) -> anyhow::Result<LogicalCheckpoint> {
     list_checkpoints(record)?
         .pop()
@@ -515,6 +403,7 @@ pub(crate) fn validate_checkpoint_id(id: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::job_service::{RuntimeJobService, ServiceContext};
     use crate::runtime::{OverlayRecord, OverlayUpper, RunLineage};
     use std::os::unix::fs::MetadataExt;
 
@@ -716,36 +605,25 @@ mod tests {
         );
         let reopened = RunRecord::read(temp.path()).unwrap();
         assert_eq!(checkpoint_branch_refs(&cp).unwrap(), 1);
+        let context = ServiceContext::default();
         assert!(
-            delete_checkpoint(&reopened, "branch-point")
-                .unwrap_err()
-                .to_string()
-                .contains("CHECKPOINT_REFERENCED")
+            RuntimeJobService::delete_selected_workspace_checkpoint(
+                &context,
+                &reopened,
+                "branch-point",
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("CHECKPOINT_REFERENCED")
         );
         fs::remove_file(child.join(SOURCE_CHECKPOINT_PIN)).unwrap();
-        delete_checkpoint(&reopened, "branch-point").unwrap();
+        RuntimeJobService::delete_selected_workspace_checkpoint(
+            &context,
+            &reopened,
+            "branch-point",
+        )
+        .unwrap();
         assert_eq!(fs::read(child.join("upper/file")).unwrap(), b"child");
-    }
-
-    #[test]
-    fn request_retry_returns_original_result_and_never_recaptures_a_deleted_result() {
-        let temp = tempfile::tempdir().unwrap();
-        let record = stopped_record(temp.path());
-        record.write().unwrap();
-        let upper = record.overlay.as_ref().unwrap().upper.path();
-        fs::write(upper.join("file"), b"first").unwrap();
-        let (cp, reused) = create_workspace_request(&record, Some("client-key")).unwrap();
-        assert!(!reused);
-        fs::write(upper.join("file"), b"second").unwrap();
-        let (retry, reused) = create_workspace_request(&record, Some("client-key")).unwrap();
-        assert!(reused);
-        assert_eq!(retry.checkpoint_id, cp.checkpoint_id);
-        assert_eq!(
-            fs::read(retry.upper_snapshot.join("file")).unwrap(),
-            b"first"
-        );
-        delete_checkpoint(&record, &cp.checkpoint_id).unwrap();
-        assert!(create_workspace_request(&record, Some("client-key")).is_err());
     }
 
     #[test]
@@ -775,7 +653,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(list_checkpoints(&record).unwrap().len(), 2);
-        assert_eq!(collect_workspace_transactions(&record).unwrap(), 1);
         fs::write(
             record
                 .stage_dir()

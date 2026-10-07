@@ -5,7 +5,7 @@ use std::process::Command;
 
 #[cfg(target_os = "linux")]
 use crate::runtime::LEASE_FILENAME;
-use anyhow::{Context, bail};
+use anyhow::Context;
 use clap::Args;
 
 use crate::runtime::{

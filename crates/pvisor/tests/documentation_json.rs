@@ -39,6 +39,28 @@ fn real_review_sample_is_readable_and_distinguishes_deletion_from_success() {
 }
 
 #[test]
+fn bundle_timing_roundtrips_without_cross_clock_constraints() {
+    for (started, finished, duration) in [(0_u64, 0_u64, 37_u64), (10, 20, 11), (20, 10, 7)] {
+        let mut value = sample();
+        value["run"]["started_at_unix_ms"] = Value::from(started);
+        value["run"]["finished_at_unix_ms"] = Value::from(finished);
+        value["run"]["duration_ms"] = Value::from(duration);
+        let bundle = read(&value).expect("wall-clock samples do not constrain elapsed duration");
+        let directory = tempfile::tempdir().unwrap();
+        bundle.write(directory.path()).unwrap();
+        let restored = RunBundle::read(directory.path()).unwrap();
+        assert_eq!(restored.run.started_at_unix_ms, started);
+        assert_eq!(restored.run.finished_at_unix_ms, finished);
+        assert_eq!(restored.run.duration_ms, duration);
+    }
+    for field in ["started_at_unix_ms", "finished_at_unix_ms", "duration_ms"] {
+        let mut value = sample();
+        value["run"][field] = Value::from(-1);
+        assert!(read(&value).is_err(), "accepted negative {field}");
+    }
+}
+
+#[test]
 fn documented_reader_rejects_unknown_versions_and_missing_receipts() {
     let mut value = sample();
     value["schema_version"] = Value::from(99);

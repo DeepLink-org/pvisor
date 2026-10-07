@@ -232,6 +232,23 @@ fn finalize_failure(
             ("message".into(), json!(error.message)),
         ],
     );
+    let error = match crate::journal::read_observations(&journal.path)
+        .map(crate::journal::ambiguous)
+    {
+        Ok(Some(call_id)) => ReplayError::new(
+            ReplayErrorKind::AmbiguousExecution,
+            format!(
+                "tool call {call_id:?} has no resolved execution receipt; original failure: {error}"
+            ),
+        ),
+        Err(receipt_error) => ReplayError::new(
+            ReplayErrorKind::AmbiguousExecution,
+            format!(
+                "cannot establish replay side-effect receipts: {receipt_error}; original failure: {error}"
+            ),
+        ),
+        Ok(None) => error,
+    };
     let _ = fs::copy(&journal.path, output_dir.join("replay-events.jsonl"));
     let result = failure_result(
         request,

@@ -262,7 +262,7 @@ pending apply 存在时不能 drop，以免删掉恢复所需的 upper。已 Dis
 
 `pvisor-core/tests/overlay_contracts.rs` 另覆盖旧 schema 默认值、指纹变体和原始路径字节。`tests/semantics/stage-apply.md` 提供 S-STAGE-001～014 的运行语义草稿；其人工审批状态独立于测试通过，不能由这份文档替代。
 
-本修复没有重新测 copy-up / apply 吞吐、fsync 尾延迟、大型真实仓库负载或断电恢复。1,024 路径的普通 metadata walk 回归确认不会创建内容观察条目，不是吞吐 benchmark。首次内容观察仍需读取并哈希整个目标文件及写入每路径 journal；首次修改仍同步原像，copy-up、目录遍历与 ledger 更新也有成本。已有 [apply 成本实验](../benchmarks/apply.md) 是历史固定工作负载和制品的具体证据，不能当成本修复的性能复验。进程内恢复控制组与 guest descriptor 测试也不替代任意 syscall 处 kill / 断电、真实 Linux FUSE 或 macOS FSKit/HVF 矩阵。
+本修复没有重新测 copy-up / apply 吞吐、fsync 尾延迟、大型真实仓库负载或断电恢复。1,024 路径的普通 metadata walk 回归确认不会创建内容观察条目，不是吞吐 benchmark。首次内容观察仍需读取并哈希整个目标文件及写入每路径 journal；首次修改仍同步原像，copy-up、目录遍历与 ledger 更新也有成本。已有 [apply 成本实验](../benchmarks/supervision-cost.md#apply-cost) 是历史固定工作负载和制品的具体证据，不能当成本修复的性能复验。进程内恢复控制组与 guest descriptor 测试也不替代任意 syscall 处 kill / 断电、真实 Linux FUSE 或 macOS FSKit/HVF 矩阵。
 
 ## 5. 使用建议 {#usage}
 

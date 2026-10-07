@@ -932,10 +932,7 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
                 if authorize_host_peer(&stream).is_err() { continue; }
                 let request = timeout(Duration::from_secs(5), receive_frame::<Request>(&mut stream)).await;
                 let Ok(Ok(request)) = request else { continue; };
-                let admission = request.validate().and_then(|()| {
-                    if authorized(&identity, &handle.attempt_id().to_string(), &request) { Ok(()) }
-                    else { Err(AgentCtlHostError::new(AgentCtlHostErrorCode::Unauthorized, "supervisor authority mismatch")) }
-                });
+                let admission = admit_supervisor_request(&identity, &handle.attempt_id().to_string(), &request);
                 if let Err(error) = admission {
                     let reply = Response { version: AGENTCTL_HOST_VERSION,
                         request_id: request.request_id, result: Err(error) };
@@ -1690,15 +1687,27 @@ fn ensure_not_deleting(directory: &Path) -> Result<()> {
     );
     Ok(())
 }
-fn authorized(identity: &Identity, attempt_id: &str, request: &Request) -> bool {
-    request.validate().is_ok()
-        && identity.owner == request.command.auth.owner
+fn admit_supervisor_request(
+    identity: &Identity,
+    attempt_id: &str,
+    request: &Request,
+) -> Result<(), AgentCtlHostError> {
+    request.validate()?;
+    if identity.owner == request.command.auth.owner
         && constant_time_equal(&identity.token, &request.command.auth.token)
         && request.target.as_ref().is_some_and(|target| {
             target.job_id == identity.spec.id
                 && target.generation.as_deref() == Some(identity.generation.as_str())
                 && target.attempt_id.as_deref() == Some(attempt_id)
         })
+    {
+        Ok(())
+    } else {
+        Err(AgentCtlHostError::new(
+            AgentCtlHostErrorCode::Unauthorized,
+            "supervisor authority mismatch",
+        ))
+    }
 }
 fn constant_time_equal(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
@@ -1950,18 +1959,15 @@ mod tests {
     #[async_trait::async_trait]
     impl pvisor::RunExecutor for VmLabelledProcess {
         fn descriptor(&self) -> pvisor_core::ExecutorPlan {
-            use pvisor::RunExecutor;
             let mut plan = pvisor::ProcessExecutor::default().descriptor();
             plan.kind = pvisor_core::ExecutorKind::VirtualMachine;
             plan.isolation = pvisor_core::IsolationKind::VirtualMachine;
             plan
         }
         fn supports(&self, invocation: &pvisor_core::RunInvocation) -> bool {
-            use pvisor::RunExecutor;
             pvisor::ProcessExecutor::default().supports(invocation)
         }
         async fn execute(&self, session: &pvisor::Session) -> pvisor::ExecutorOutput {
-            use pvisor::RunExecutor;
             pvisor::ProcessExecutor::default().execute(session).await
         }
     }
@@ -2555,7 +2561,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let (identity, _) = identity_fixture(temp.path());
         let request = supervisor_request(&identity, "attempt", Operation::Inspect);
-        assert!(authorized(&identity, "attempt", &request));
+        assert!(admit_supervisor_request(&identity, "attempt", &request).is_ok());
         for field in 0..8 {
             let mut bad = request.clone();
             match field {
@@ -2568,7 +2574,18 @@ mod tests {
                 6 => bad.target.as_mut().unwrap().generation = None,
                 _ => bad.target.as_mut().unwrap().attempt_id = None,
             }
-            assert!(!authorized(&identity, "attempt", &bad), "field {field}");
+            let expected = if field == 5 {
+                AgentCtlHostErrorCode::VersionMismatch
+            } else {
+                AgentCtlHostErrorCode::Unauthorized
+            };
+            assert_eq!(
+                admit_supervisor_request(&identity, "attempt", &bad)
+                    .unwrap_err()
+                    .code,
+                expected,
+                "field {field}"
+            );
         }
         let response = Response {
             version: AGENTCTL_HOST_VERSION,
@@ -3028,7 +3045,7 @@ mod tests {
         });
         authorize_host_peer(&server).unwrap();
         let received: Request = receive_frame(&mut server).await.unwrap();
-        assert!(authorized(&identity, "attempt", &received));
+        assert!(admit_supervisor_request(&identity, "attempt", &received).is_ok());
         let reply = Response {
             version: AGENTCTL_HOST_VERSION,
             request_id: received.request_id.clone(),
@@ -3060,8 +3077,12 @@ mod tests {
             .unwrap();
         let received: Request = receive_frame(&mut receiver).await.unwrap();
         assert_eq!(received.version, request.version);
-        assert!(received.validate().is_err());
-        assert!(!authorized(&identity, "attempt", &received));
+        assert_eq!(
+            admit_supervisor_request(&identity, "attempt", &received)
+                .unwrap_err()
+                .code,
+            AgentCtlHostErrorCode::VersionMismatch
+        );
     }
 
     #[test]
@@ -3173,49 +3194,7 @@ mod tests {
         drop(first);
         assert!(locks.entries.lock().unwrap().is_empty());
     }
-    #[tokio::test]
-    async fn newline_frames_are_bounded_and_do_not_consume_the_next_frame() {
-        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
-        sender.write_all(b"true\nfalse\n").await.unwrap();
-        assert!(receive_frame::<bool>(&mut receiver).await.unwrap());
-        assert!(!receive_frame::<bool>(&mut receiver).await.unwrap());
-        for frame in [b"\n".as_slice(), b"true false\n", b"not-json\n"] {
-            sender.write_all(frame).await.unwrap();
-            assert!(receive_frame::<bool>(&mut receiver).await.is_err());
-        }
-        sender.write_all(b"true").await.unwrap();
-        sender.shutdown().await.unwrap();
-        assert!(receive_frame::<bool>(&mut receiver).await.is_err());
 
-        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
-        // JSON quotes count towards the payload limit; the delimiter does not.
-        let value = "x".repeat(AGENTCTL_HOST_MAX_FRAME_BYTES - 2);
-        let sending = tokio::spawn(async move {
-            send_frame(&mut sender, &value).await.unwrap();
-            assert!(
-                send_frame(&mut sender, &"x".repeat(AGENTCTL_HOST_MAX_FRAME_BYTES - 1))
-                    .await
-                    .is_err()
-            );
-        });
-        assert_eq!(
-            receive_frame::<String>(&mut receiver).await.unwrap().len(),
-            AGENTCTL_HOST_MAX_FRAME_BYTES - 2
-        );
-        sending.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn oversized_ipc_is_rejected_before_accepting_another_payload_byte() {
-        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
-        let sending = tokio::spawn(async move {
-            let _ = sender
-                .write_all(&vec![b'x'; AGENTCTL_HOST_MAX_FRAME_BYTES + 1])
-                .await;
-        });
-        assert!(receive_frame::<Request>(&mut receiver).await.is_err());
-        sending.await.unwrap();
-    }
     #[test]
     fn token_comparison_checks_all_bytes() {
         assert!(constant_time_equal("abc", "abc"));

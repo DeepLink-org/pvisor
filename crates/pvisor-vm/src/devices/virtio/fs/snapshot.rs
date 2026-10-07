@@ -113,6 +113,18 @@ impl FileIdentity {
 }
 
 impl ServerSnapshot {
+    pub(crate) fn rebind_overlay_exclusions(&mut self, paths: &[PathBuf]) -> io::Result<()> {
+        fn rebind(fs: &mut FsSnapshot, paths: &[PathBuf]) -> io::Result<()> {
+            match fs {
+                FsSnapshot::Overlay(state) => state.rebind_exclusions(paths),
+                FsSnapshot::ReadOnly(inner) | FsSnapshot::Augment { inner, .. } => {
+                    rebind(inner, paths)
+                }
+                _ => Err(invalid("exclusions require an overlay filesystem")),
+            }
+        }
+        rebind(&mut self.fs, paths)
+    }
     /// Verify the original frozen backing, including exact physical identities
     /// and saved file contents. This neither relocates roots nor grants sharing
     /// rights; saved writable handles remain valid only on this same backing.
@@ -656,11 +668,13 @@ mod owned_copy_tests {
             )
             .unwrap();
         state.inodes[0].identity = FileIdentity::read(&File::open(&source).unwrap()).unwrap();
-        assert!(snapshot
-            .rebind_owned_copy(&source, &destination)
-            .unwrap_err()
-            .to_string()
-            .contains("metadata mismatch"));
+        assert!(
+            snapshot
+                .rebind_owned_copy(&source, &destination)
+                .unwrap_err()
+                .to_string()
+                .contains("metadata mismatch")
+        );
     }
 
     #[test]
@@ -675,11 +689,13 @@ mod owned_copy_tests {
                 FileTimes::new().set_modified(original.metadata().unwrap().modified().unwrap()),
             )
             .unwrap();
-        assert!(snapshot
-            .rebind_owned_copy(&source, &destination)
-            .unwrap_err()
-            .to_string()
-            .contains("content mismatch"));
+        assert!(
+            snapshot
+                .rebind_owned_copy(&source, &destination)
+                .unwrap_err()
+                .to_string()
+                .contains("content mismatch")
+        );
     }
 
     #[test]
@@ -690,10 +706,12 @@ mod owned_copy_tests {
             unreachable!()
         };
         state.inodes[0].identity.nlink += 3;
-        assert!(snapshot
-            .retain_readonly_root(&source)
-            .unwrap_err()
-            .to_string()
-            .contains("retained immutable inode identity changed"));
+        assert!(
+            snapshot
+                .retain_readonly_root(&source)
+                .unwrap_err()
+                .to_string()
+                .contains("retained immutable inode identity changed")
+        );
     }
 }

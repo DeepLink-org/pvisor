@@ -49,7 +49,7 @@ Context → Requested → [Rewritten] → Placed → Dispatched → Completed
 
 链中还可以插入生命周期及领域观察。Dispatched 在调用执行器前提交，不代表进程已经成功启动。准入或准备失败可以没有完整操作事实链；外部调用方仍须处理 API 返回的错误。Completed 的来源区分 Backend、Policy、Replay 和 Runtime，运行器失败不能伪装成后端结果。
 
-Outcome 的成功值包含终态和退出码；错误区分 Failed、Denied、Unsupported 和 Unknown。Unknown 保留已知效果，不能理解为“没有副作用”。
+Outcome 的成功值包含终态和退出码；错误区分 Failed、Denied、Unsupported 和 Unknown。Unknown 保留已知效果，副作用仍可能已经发生。
 
 ## 身份、因果与顺序
 
@@ -71,7 +71,7 @@ Outcome 的成功值包含终态和退出码；错误区分 Failed、Denied、Un
 
 pvisor 准备驱动后提交启动事实，成功后才调用执行器。必要事实提交失败会阻止派发，准备资源需要清理。执行后记录失败以 failure／warning 报告；记录失败不会撤销已经发生的效果。
 
-Journal 使用单写入者和提交回执，支持事件去重及尾部恢复。提交结果未知时不能盲目重试外部副作用。`RunHandle` 的订阅提供本次 Run 的已提交事件，包括共享 Journal 中的 Gateway 观察；实时接收方还须处理断开与落后，完整历史从 Journal 读取。
+Journal 使用单写入者和提交回执，支持事件去重及尾部恢复。提交结果未知时，先核对已发生的效果，再决定是否重试外部操作。`RunHandle` 的订阅提供本次 Run 的已提交事件，包括共享 Journal 中的 Gateway 观察；实时接收方还须处理断开与落后，完整历史从 Journal 读取。
 
 关闭文件记录时仍可使用内存事件流，但不产生可供重启恢复的文件日志。结构化 Event 是事实格式，`Event::to_text` 只是人读投影。
 
@@ -79,7 +79,7 @@ Journal 使用单写入者和提交回执，支持事件去重及尾部恢复。
 
 `OperationObservation` 保存结果、规则计数和边界观察，并校验终态及计数一致性。`null` 表示无法观察，零表示观察后没有命中。FUSE 路径表最多保留 8192 项，溢出命中计入 `overflow_hits`；操作次数不替代最终 diff。网络计数仅覆盖经过拦截器的流量。
 
-事件快照可以重建已观察到的请求、改写、放置及结果。完整恢复外部行为还需要初始文件状态、实际环境、外部输入及对应执行机制；当前 Trace 不包含这些全部信息。事件日志、文件检查点和 Agent 轨迹 replay 的恢复范围不能混为一谈。
+事件快照可以重建已观察到的请求、改写、放置及结果。完整恢复外部行为还需要初始文件状态、实际环境、外部输入及对应执行机制；当前 Trace 不包含这些全部信息。事件日志、文件检查点和 Agent 轨迹 replay 各有不同的恢复范围。
 
 当前 Run Bundle 为 schema 4；旧 Bundle 和旧 Event／Journal 格式拒绝读取，不静默混用。版本由代码中的常量维护，详细强制力口径见[能力与证据](../concepts/capabilities-and-evidence.md)。
 

@@ -38,7 +38,7 @@ Measured on 2026-10-06. N=3 per mode, 21/21 conditions passing with no failures.
 
 Every mode passes the inside read, write and socket positives, preventing an unusable environment from being mistaken for an effective boundary. Staged, safe and VM leave host lower unchanged and retain the complete staged write. Safe and VM return success for the lower-alias write API while still leaving the host unchanged. pVisor OCI writes directly to lower through the tested alias. Podman does not resolve that absolute host alias, but its relative workspace write also reaches the host directly.
 
-These are path and Unix socket fixture results. TCP policy is covered separately in [network](network.md), and merge conflicts/interruption recovery in [apply](apply.md).
+These are path and Unix socket fixture results. TCP policy is covered separately in [network](network.md), and merge conflicts/interruption recovery in [apply](supervision-cost.md#apply-cost).
 
 ### Scope {#acceptance}
 

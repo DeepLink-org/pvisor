@@ -26,10 +26,11 @@ def valid(mode='baseline', n=2, scanner='0'):
             'cpu.pressure': 'some avg10=0 total=0',
         }.items()}, ksm={'run': {'error': 'not readable'} if scanner is None else {'raw': scanner + '\n'}})
     restored_mode = mode in ('baseline', 'ksm')
+    write_mode = restored_mode or mode == 'fresh'
     expected = {(0, 0): 'a' * 64}
     expected.update({(i, p): f'{i * 100 + p:064x}' for i in range(1, n + 1)
-                     for p in ((0, 25, 100) if restored_mode else (0,))})
-    names = ['ready', 'cow25', 'cow100', 'after_exit'] if restored_mode else [
+                     for p in ((0, 25, 100) if write_mode else (0,))})
+    names = ['ready', 'cow25', 'cow100', 'after_exit'] if write_mode else [
         'ready', 'offloaded0', 'resumed0', 'offloaded1', 'resumed1', 'after_exit']
     if mode == 'ksm':
         names = ['ready', 'dynamic_private_before_wait', 'dynamic_private_after_wait',
@@ -102,6 +103,7 @@ def valid(mode='baseline', n=2, scanner='0'):
         for i in range(1, n + 1):
             check('private_offload_rejected_and_healthy', dict(instance=i, error='restored private COW RAM',
                    ack=ack(f'rejected-offload-{i}', 'read', i)))
+    if write_mode:
         for p in (25, 100):
             for index in range(n):
                 i = index + 1
@@ -123,7 +125,7 @@ def valid(mode='baseline', n=2, scanner='0'):
                       ack=readback, parked_heartbeat=parked, resumed_heartbeat=heartbeat[i]))
             phase(f'resumed{cycle}')
     check('one_vm_cancelled_and_reaped', {'instance': 1})
-    p = 100 if restored_mode else 0
+    p = 100 if write_mode else 0
     for i in range(2, n + 1):
         check('survivor_full_digest', ack(f'survivor-{i}', 'read', i, p))
     phase('after_exit')
@@ -647,3 +649,13 @@ def test_host_preflight_reads_only_and_keeps_unknown_scanner(monkeypatch):
     result = scale.host_preflight()
     assert 'error' in result['ksm']['run']
     assert 'no host writes' in result['policy']
+
+
+def test_fresh_independent_group_requires_write_isolation_without_snapshot_producer():
+    report, config = valid('fresh', 4, scanner='1')
+    config['dedup'] = report['conditions']['dedup'] = True
+    assert scale.validate_report(report, config)['merging_claim'] is False
+    assert all(g['instance'] != 0 for g in report['guests'])
+    report['checks'] = [c for c in report['checks'] if c['name'] != 'peer_write_isolation']
+    with pytest.raises(ValueError):
+        scale.validate_report(report, config)

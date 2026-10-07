@@ -356,6 +356,18 @@ body::before {
 @media (max-width: 76.234375em) {
   .md-nav--primary { background: #102138; }
 }
+/* Desktop hierarchy uses typography; mobile keeps native sliding panels. */
+@media (min-width: 76.25em) {
+  .md-nav--primary .md-nav[data-md-level] .md-nav__item--nested > .md-nav__link {
+    margin-top: 0.65rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+  .md-nav--primary .md-nav[data-md-level]:not([data-md-level="0"]):not([data-md-level="1"]) > .md-nav__list {
+    padding-inline-start: 0.4rem;
+    font-size: 0.7rem;
+  }
+}
 .md-code__button, .md-clipboard { color: #afc5df; }
 .md-code__button:hover, .md-clipboard:hover { color: #fff; }
 [data-md-color-scheme="slate"] {

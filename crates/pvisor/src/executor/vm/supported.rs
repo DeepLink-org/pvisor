@@ -2065,9 +2065,11 @@ fn run_linked_krun(
     );
     if spec.restore.is_none() && !cold_pager {
         vm.ram_backing(unsafe { std::fs::File::from_raw_fd(ram) })?;
-    } else {
+    } else if spec.restore.is_none() {
         // Bookkeeping FD is not guest RAM. Close it; the pager uses private
         // anonymous memory and must never masquerade as shared file backing.
+        // Restored RAM has already transferred this descriptor to MachineRestore;
+        // constructing another File here would close its still-owned mapping FD.
         drop(unsafe { std::fs::File::from_raw_fd(ram) });
     }
     if spec.checkpoint.is_some() {

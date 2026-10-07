@@ -89,8 +89,9 @@ impl Journal {
     }
 }
 
-fn ambiguous(events: impl IntoIterator<Item = Value>) -> Option<String> {
+pub(crate) fn ambiguous(events: impl IntoIterator<Item = Value>) -> Option<String> {
     let mut started = BTreeSet::new();
+    let mut finished = BTreeSet::new();
     for event in events {
         match event["event"].as_str() {
             Some("tool_started") => {
@@ -98,7 +99,17 @@ fn ambiguous(events: impl IntoIterator<Item = Value>) -> Option<String> {
                     started.insert(call_id.to_owned());
                 }
             }
-            Some("run_finished" | "run_failed") => started.clear(),
+            Some("tool_finished") => {
+                if let Some(call_id) = event["call_id"].as_str() {
+                    finished.insert(call_id.to_owned());
+                }
+            }
+            Some("run_finished" | "run_failed") => {
+                // A terminal run receipt cannot establish an unfinished tool's
+                // outcome. Retain its uncertainty across failures and restarts.
+                started.retain(|call_id| !finished.contains(call_id));
+                finished.clear();
+            }
             _ => {}
         }
     }
@@ -248,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_run_is_terminal() {
+    fn failed_run_does_not_resolve_an_unfinished_tool() {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("replay-events.jsonl");
         write_events(
@@ -260,7 +271,32 @@ mod tests {
             ],
         );
 
-        assert_eq!(Journal::find_ambiguous(&path).unwrap(), None);
+        assert_eq!(
+            Journal::find_ambiguous(&path).unwrap().as_deref(),
+            Some("call-1")
+        );
+        assert_eq!(
+            Journal::open(temporary.path()).err().unwrap().kind,
+            ReplayErrorKind::AmbiguousExecution
+        );
+    }
+
+    #[test]
+    fn terminal_run_with_finished_tool_is_retryable() {
+        for terminal in ["run_finished", "run_failed"] {
+            let temporary = tempfile::tempdir().unwrap();
+            let path = temporary.path().join("replay-events.jsonl");
+            write_events(
+                &path,
+                &[
+                    serde_json::json!({"event": "tool_started", "call_id": "call-1"}),
+                    serde_json::json!({"event": "tool_finished", "call_id": "call-1"}),
+                    serde_json::json!({"event": terminal}),
+                ],
+            );
+            assert_eq!(Journal::find_ambiguous(&path).unwrap(), None);
+            assert!(Journal::open(temporary.path()).is_ok());
+        }
     }
 
     #[test]

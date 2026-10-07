@@ -1,12 +1,12 @@
 # Why pVisor
 
-Give an agent a task, then walk away for two hours—few people dare to do that today. It is not that models fall short; it is that you cannot confirm what the agent did during those two hours.
+Letting an agent complete a task unattended calls for limits on file and network access, followed by a review of its changes and execution record.
 
-## The bottleneck is supervision, not compute
+## Reduce intervention during execution
 
 How long an agent can run depends on how long you are willing to watch. Approve every command and human attention becomes the ceiling; go fully automatic and you must accept that it may corrupt files, read what it should not, and send requests where they should not go.
 
-Scale stalls here: **every unit of agent work requires roughly one unit of human attention**. As execution volume rises, supervision cost rises linearly, and autonomy is pressed down to human bandwidth.
+More tasks take more attention when every command needs approval. Execution boundaries and post-run review can reduce intervention while tasks run.
 
 ## Decouple supervision from execution volume
 
@@ -20,11 +20,11 @@ To let go, every execution needs three things at once:
 
 pVisor is the execution layer that gives every execution these three properties.
 
-## What it is, and what it is not
+## Responsibilities of the execution layer
 
 pVisor is the **semantic layer for each execution**: it defines boundaries, installs controls, and leaves evidence.
 
-It is not a sandbox—the isolation substrate is provided by the executor (host namespaces/Seatbelt, containers, VMs). It is not a scheduler either—cross-node orchestration goes to Kubernetes and Ray, while pVisor provides consistent semantics and evidence for scheduled execution.
+Executors provide isolation through host namespaces/Seatbelt, containers, or VMs. pVisor manages execution policy, lifecycle, and records; external systems such as Kubernetes and Ray handle cross-node orchestration.
 
 ## Today, and after
 

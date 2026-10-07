@@ -465,6 +465,132 @@ just benchmark-compare \
 
 ## Linux SDK live RAM offload
 
+### User memory-saving choices
+
+For a first static result with 512 MiB configured per VM, use `--static --memory-mib 512` on both `memory_savings.py` and
+`memory_sharing.py`. The former measures all 16 single-instance conditions once,
+without warmups, at five seconds. The latter measures the 12 four-VM conditions
+once with two-second scan windows. Both check admission immediately, retain
+continuous host observations and reject foreign VMs, failed budgets, integrity
+or cleanup. Background builds are recorded rather than blocking the memory
+reading; durations under that contention are observational, not speed rankings.
+The user table reports complete-product resident physical memory as the sum of
+process PSS, counting shared pages proportionally and including the compressed
+store and helpers. Keep full cgroup charge, kernel and file cache alongside it;
+resident PSS alone excludes unmapped cache and is not complete host cost.
+Export each complete static report with its matching publisher's `--static`.
+Static CSVs contain N=1 values and observed differences, with no quantiles or
+confidence intervals. Keep these cohorts separate from the longer protocol.
+
+`memory_savings.py` serves B-VM-MEMORY using the current release
+`vm_memory_savings` helper. Its user questions are whether default free-page
+reclaim is sufficient, whether live compression pays for its next-task cost,
+and whether pausing/offloading an idle environment is worthwhile.
+
+Build from a frozen copy of the actual working tree, including local changes:
+
+```sh
+cargo build --locked --offline --release -p pvisor --features gateway --example vm_memory_savings
+python3 benchmark/pvisor/memory_savings.py \
+  --example /absolute/path/to/frozen/vm_memory_savings \
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --rootfs /absolute/path/to/prepared/rootfs \
+  --firmware /absolute/path/to/frozen/firmware \
+  --output /short/disk/new-preflight --samples 1 --warmups 0 --wait 5
+```
+
+The receipt binds `example_sha256`, `source_manifest_sha256`, build command,
+source HEAD and dirty state. All six modes are default, cold, pause, raw,
+compressed and release. Default/cold cover repeated nonzero blocks, distinct
+compressible blocks, deterministic random data and 16 MiB read-hot / 48 MiB
+cold mixed data; other modes cover repeated/random data. Every VM has 2 vCPU,
+256 MiB RAM and 64 MiB independently checked application data. Release frees
+the allocation and subsequently reconstructs and checks it. The tool task
+hashes all bytes, writes/fsyncs them and verifies the complete readback.
+
+Use a NEW output for formal samples, with defaults of 30 samples, three warmups
+and a 60-second idle window. Preflight failures remain separate. Every launch
+requires 30 quiet seconds; the external observer samples complete-group memory
+every 50 ms and checks visible competing VM/build processes every 0.5 seconds.
+VMs, stores/backing/cache and product helpers inherit one four-core, 2 GiB,
+zero-swap cgroup. Monitor/coordinator CPU is outside the product footprint.
+All modes retain startup/idle/recovery memory and CPU, control acknowledgements,
+next complete task time and native reap evidence. Permission or integrity
+failure stops sampling; it never represents successful memory savings.
+After native reap and owned-service quiescence, the coordinator hashes and
+removes its successful trial's disposable live RAM backing. Logical/allocated
+sizes and SHA-256 remain in `result.json`; parked storage is measured before
+resume. Raw reports, monitors, guards, guest logs and source receipts remain.
+
+This probe measures one application allocation and a fixed I/O task, not real
+model inference or a production concurrency limit. KSM/COW sharing uses a
+separate multi-instance protocol; do not pool its samples with these runs.
+
+After the complete formal cohort passes, export aggregate data with:
+
+```sh
+python3 benchmark/pvisor/publish_memory_savings.py \
+  --report /short/disk/formal/report.json \
+  --output /short/disk/derived
+```
+
+The publisher verifies every warmup and formal trial, independent payload checks,
+native reap, retained binary/source/harness hashes, installed resource budgets
+and external host guards. Missing, duplicated, failed or undersampled conditions
+are rejected. `memory-choices.csv` contains phase memory, peak, CPU, storage and
+next-task distributions; `memory-choices-comparisons.csv` contains paired median
+differences against the running default with 5,000 bootstrap resamples. Publish
+these aggregate CSVs with the provenance CSV only after reviewing both locales.
+Separated clusters replace a single P50, P95 is descriptive, and no P99 is emitted.
+
+`memory_sharing.py` is the separate B-VM-MEMORY user protocol for shared
+baselines and KSM. It uses `vm_memory_scale` with 2 vCPU per VM and genuine
+independent-inode controls, preserving the original engineering runner's
+defaults. A copied sealed baseline has identical RAM bytes and independent
+physical inodes; it is not an independently captured VM. Whole-group memory
+includes capture, backing/cache and shared-store helpers. Treat shared baseline
+ready and dynamically dirtied private pages as different comparison boundaries.
+
+```sh
+cargo build --locked --offline --release -p pvisor --features gateway --example vm_memory_scale
+python3 benchmark/pvisor/memory_sharing.py \
+  --example /absolute/path/to/frozen/vm_memory_scale \
+  --build-receipt /absolute/path/to/build-receipt.json \
+  --rootfs /absolute/path/to/prepared/rootfs \
+  --firmware /absolute/path/to/frozen/firmware \
+  --output /short/disk/sharing-preflight --preflight
+```
+
+The 36 conditions cover 1/2/4 VMs, repeated/shared-random/unique-random payloads,
+independent/shared baselines and dynamic KSM advice off/on. It requires the
+already enabled scanner, never changes global KSM, and checks full payloads,
+25/100% private writes, peer isolation and independent exit. Use another new
+output without `--preflight` for 3 warmups/30 paired formal groups and 30-second
+scan windows. Reaching a scan deadline without merging is a valid observation.
+The external observer, resource and host guards match the single-instance
+protocol. After native reap and owned-unit quiescence, runtime stores are
+inventoried with bytes/modes/hashes and removed; raw results and logs remain.
+Do not publish B-MEMORY-SCALE engineering runs as this user protocol.
+
+Export only a complete formal sharing cohort:
+
+```sh
+python3 benchmark/pvisor/publish_memory_sharing.py \
+  --report /short/disk/sharing-formal/report.json \
+  --output /short/disk/sharing-derived
+```
+
+The publisher requires all 36 conditions and every warmup/formal group, matching
+arms, budgets, retained inputs, source/binary/harness receipts and successful
+correctness, reap and host guards. `memory-sharing.csv` keeps baseline sharing,
+dynamic private-page deduplication and subsequent writes separate; paired
+comparisons use shared minus independent or KSM-on minus KSM-off in the same
+round. The provenance CSV retains input and host verification. A fixed scan
+window measures observed savings, not eventual merging or production density.
+Guest timing uses each group's median per-VM checked scan or write duration;
+25% and 100% writes remain separate. It is not the elapsed time for the whole
+group and does not include the single-instance protocol's full write/fsync task.
+
 `live_vm_memory.py` serves B-VM-MEMORY using the current public SDK `RunHandle.offload` and `resume` API, through the `vm_live_memory_bench` example. It parks the running VM with either raw or compressed RAM backing; this is a separate mechanism from execution snapshots and automatic cold-page reclaim. Build the example from frozen source and retain its build receipt (`example_sha256`, `source_manifest_sha256`) and source manifest. Prepare the same Python rootfs for all conditions.
 
 ```bash

@@ -1,7 +1,7 @@
 //! pVisor — foreground Agent Run manager and portable execution runtime.
 //!
-//! Callers configure a [`PVisor`] and invoke [`PVisor::run`]. CLI and other
-//! embedders talk to this API directly; there is no separate control-plane process.
+//! Embedded callers configure a [`PVisor`] and invoke [`PVisor::run`]. CLI Job
+//! requests reach this runtime through the Host listener and authorized workers.
 
 #[path = "attempt_service.rs"]
 pub mod attempt_service;
@@ -107,6 +107,7 @@ pub struct RunHandle {
     pub(crate) control_operation: pvisor_core::operation::Operation,
     pub(crate) events: RunEventPublisher,
     pub(crate) agentctl: crate::AgentCtlControl,
+    pub(crate) record: Option<crate::runtime::RunRecord>,
     pub(crate) checkpoint_record: Option<crate::runtime::RunRecord>,
     pub(crate) join: JoinHandle<RunResult>,
 }
@@ -429,8 +430,6 @@ impl RunHandle {
         Ok(memory)
     }
 
-    /// Execute an attempt-scoped control primitive using this handle's authority.
-    /// Commands and observations remain intact if the caller stops waiting.
     /// Clone the attempt-scoped VM control authority while another task waits
     /// for Run completion. It shares cancellation and native transition ordering.
     pub fn controls(&self) -> RunControlHandle {
@@ -448,6 +447,8 @@ impl RunHandle {
         AttemptService::new(self.controls())
     }
 
+    /// Execute an attempt-scoped control primitive using this handle's authority.
+    /// Commands and observations remain intact if the caller stops waiting.
     pub async fn control(
         &self,
         kind: pvisor_core::operation::OperationKind,

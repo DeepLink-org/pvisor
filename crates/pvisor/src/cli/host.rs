@@ -179,63 +179,6 @@ mod tests {
     }
 
     #[test]
-    fn durable_request_ids_share_core_bounds_and_reject_controls() {
-        validate_request_id(&"x".repeat(256)).unwrap();
-        for id in [
-            "x".repeat(257),
-            "bad\nkey".into(),
-            "bad\u{0085}key".into(),
-            " ".into(),
-        ] {
-            assert_eq!(
-                validate_request_id(&id)
-                    .unwrap_err()
-                    .downcast_ref::<AgentCtlHostError>()
-                    .unwrap()
-                    .code,
-                AgentCtlHostErrorCode::InvalidRequest
-            );
-        }
-    }
-
-    #[test]
-    fn durable_target_rejects_stale_job_attempt_and_generation() {
-        let record: crate::RunRecord = serde_json::from_value(serde_json::json!({
-            "schema_version": 1, "run_id": "job-fence", "session_id": "session-fence",
-            "agent": "sh", "pid": 0, "command": ["/bin/sh"], "state": "completed",
-            "started_at_unix_ms": 1, "finished_at_unix_ms": 2, "storage": "/tmp/job-fence",
-            "network": {}, "gateway_listen": null,
-            "overlay": {"id": "job-fence", "generation": 7, "target": "/tmp/workspace",
-                "upper": {"upper_dir": "/tmp/job-fence/upper", "work_dir": "/tmp/job-fence/work"},
-                "merged_dir": "/tmp/job-fence/merged", "stage_dir": "/tmp/job-fence",
-                "auto_apply": false, "state": "staged"}
-        }))
-        .unwrap();
-        let target = AgentCtlTarget {
-            job_id: record.run_id.clone(),
-            attempt_id: record.attempt_id.clone(),
-            generation: Some("7".into()),
-        };
-        check_target(&target, &record).unwrap();
-        for field in 0..3 {
-            let mut stale = target.clone();
-            match field {
-                0 => stale.job_id = "other-job".into(),
-                1 => stale.attempt_id = Some("stale-attempt".into()),
-                _ => stale.generation = Some("6".into()),
-            }
-            assert_eq!(
-                check_target(&stale, &record)
-                    .unwrap_err()
-                    .downcast_ref::<AgentCtlHostError>()
-                    .unwrap()
-                    .code,
-                AgentCtlHostErrorCode::Conflict
-            );
-        }
-    }
-
-    #[test]
     fn terminal_handoff_is_limited_to_execution_with_inherited_input() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("spec.json");
@@ -426,9 +369,6 @@ pub(super) fn service_context() -> crate::runtime::job_service::ServiceContext<'
     }
 }
 
-pub(super) fn validate_request_id(id: &str) -> anyhow::Result<()> {
-    crate::runtime::job_service::validate_request_id(id)
-}
 pub(super) fn lock_selected_job(
     record: &crate::RunRecord,
 ) -> anyhow::Result<Option<(crate::runtime::job_execution::Job, impl Send)>> {

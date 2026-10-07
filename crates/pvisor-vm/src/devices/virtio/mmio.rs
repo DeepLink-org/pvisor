@@ -78,6 +78,25 @@ pub struct MmioSnapshot {
 }
 
 impl MmioSnapshot {
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    pub fn rebind_filesystem_exclusions(
+        &mut self,
+        tag: &[u8],
+        excluded_paths: &[std::path::PathBuf],
+    ) -> std::io::Result<bool> {
+        if let super::DeviceSnapshotState::Fs {
+            tag: saved_tag,
+            server,
+            ..
+        } = &mut self.device.state
+        {
+            if saved_tag == tag {
+                server.rebind_overlay_exclusions(excluded_paths)?;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
     /// Rebind a matching overlay's audit identity without changing its rules.
     #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
     pub fn rebind_filesystem_policy(

@@ -19,6 +19,10 @@ pub enum PlanError {
     MissingProcess,
     #[error("bundle process section has no args")]
     MissingArgs,
+    #[error("OCI field is not supported; refusing to discard constraint: {0}")]
+    UnsupportedConstraint(String),
+    #[error("cannot inspect OCI constraints: {0}")]
+    InspectConstraint(#[from] serde_json::Error),
     #[error("VM process constraint is not supported: {0}")]
     UnsupportedVmProcess(&'static str),
     #[error("namespace type {0} is not supported (M1 limitation)")]
@@ -302,10 +306,7 @@ fn plan_cgroup(spec: &Spec) -> Option<CgroupPlan> {
     Some(plan)
 }
 
-fn plan_namespaces(
-    spec: &Spec,
-    warnings: &mut Vec<String>,
-) -> Result<Vec<NamespacePlan>, PlanError> {
+fn plan_namespaces(spec: &Spec) -> Result<Vec<NamespacePlan>, PlanError> {
     let mut out = Vec::new();
     let namespaces = spec
         .linux()
@@ -322,8 +323,7 @@ fn plan_namespaces(
             LinuxNamespaceType::User => NamespaceKind::User,
             LinuxNamespaceType::Cgroup => NamespaceKind::Cgroup,
             LinuxNamespaceType::Time => {
-                warnings.push("time namespace ignored (M1 limitation)".to_string());
-                continue;
+                return Err(PlanError::UnsupportedNamespaceType("time".into()));
             }
         };
         // Namespace paths (CRI pod containers point at the sandbox's
@@ -356,6 +356,7 @@ fn plan_namespaces(
 /// Shared by the init container (`config.json`) and exec processes (the
 /// `ExecProcessRequest` spec).
 pub fn process_plan_from(process: &oci_spec::runtime::Process) -> Result<ProcessPlan, PlanError> {
+    validate_process_constraints(process)?;
     let argv = process.args().clone().ok_or(PlanError::MissingArgs)?;
     if argv.is_empty() {
         return Err(PlanError::MissingArgs);
@@ -510,6 +511,7 @@ pub fn validate_vm_process(
     process: &oci_spec::runtime::Process,
     exec: bool,
 ) -> Result<(), PlanError> {
+    validate_process_constraints(process)?;
     let user = process.user();
     if user.uid() != 0
         || user.gid() != 0
@@ -608,6 +610,110 @@ pub fn build_exec_plan(
     })
 }
 
+// Inspect the typed spec using its OCI field names. Allow only fields carried
+// into an enforcement path; empty optional collections request no constraint.
+fn requested(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::String(s) => !s.is_empty(),
+        serde_json::Value::Array(a) => !a.is_empty(),
+        serde_json::Value::Object(o) => o.values().any(requested),
+        _ => true,
+    }
+}
+
+fn reject_other_fields(
+    value: &serde_json::Value,
+    prefix: &str,
+    supported: &[&str],
+) -> Result<(), PlanError> {
+    if let Some(fields) = value.as_object() {
+        for (field, value) in fields {
+            if !supported.contains(&field.as_str()) && requested(value) {
+                return Err(PlanError::UnsupportedConstraint(format!("{prefix}{field}")));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_process_constraints(process: &oci_spec::runtime::Process) -> Result<(), PlanError> {
+    let value = serde_json::to_value(process)?;
+    reject_other_fields(
+        &value,
+        "process.",
+        &[
+            "args",
+            "env",
+            "cwd",
+            "user",
+            "capabilities",
+            "rlimits",
+            "noNewPrivileges",
+            "terminal",
+            "consoleSize",
+        ],
+    )?;
+    reject_other_fields(
+        &value["user"],
+        "process.user.",
+        &["uid", "gid", "additionalGids", "umask"],
+    )
+}
+
+fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
+    let value = serde_json::to_value(spec)?;
+    reject_other_fields(
+        &value,
+        "",
+        &[
+            "ociVersion",
+            "process",
+            "root",
+            "mounts",
+            "hostname",
+            "linux",
+            "annotations",
+        ],
+    )?;
+    let vm = crate::spec::pvisor_annotation(spec, "executor") == Some("vm");
+    let linux = &value["linux"];
+    if vm {
+        // Guest boot does not install OCI mounts, namespaces or cgroups.
+        reject_other_fields(linux, "linux.", &[])?;
+        if requested(&value["mounts"]) {
+            return Err(PlanError::UnsupportedConstraint("VM mounts".into()));
+        }
+        if value["root"]["readonly"] == true {
+            return Err(PlanError::UnsupportedConstraint("VM root.readonly".into()));
+        }
+        if requested(&value["hostname"]) {
+            return Err(PlanError::UnsupportedConstraint("VM hostname".into()));
+        }
+    } else {
+        reject_other_fields(
+            linux,
+            "linux.",
+            &[
+                "namespaces",
+                "uidMappings",
+                "gidMappings",
+                "resources",
+                "cgroupsPath",
+            ],
+        )?;
+        let resources = &linux["resources"];
+        reject_other_fields(resources, "linux.resources.", &["pids", "memory", "cpu"])?;
+        reject_other_fields(&resources["memory"], "linux.resources.memory.", &["limit"])?;
+        reject_other_fields(
+            &resources["cpu"],
+            "linux.resources.cpu.",
+            &["quota", "period"],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn build_plan(
     spec: &Spec,
     id: &str,
@@ -615,6 +721,7 @@ pub fn build_plan(
     rootfs_mounts: Vec<MountPlan>,
     io: IoPlan,
 ) -> Result<ContainerPlan, PlanError> {
+    validate_spec_constraints(spec)?;
     let process = spec.process().as_ref().ok_or(PlanError::MissingProcess)?;
     if spec
         .annotations()
@@ -626,28 +733,8 @@ pub fn build_plan(
     }
     let process_plan = process_plan_from(process)?;
 
-    let mut warnings = Vec::new();
-    if spec
-        .linux()
-        .as_ref()
-        .and_then(|linux| linux.seccomp().as_ref())
-        .is_some()
-    {
-        warnings.push("seccomp profile ignored (M1 limitation)".to_string());
-    }
-    if spec.hooks().is_some() {
-        warnings.push("OCI hooks ignored (M1 limitation)".to_string());
-    }
-    if spec
-        .linux()
-        .as_ref()
-        .and_then(|linux| linux.masked_paths().clone())
-        .is_some_and(|masked| !masked.is_empty())
-    {
-        warnings.push("maskedPaths ignored (M1 limitation)".to_string());
-    }
-
-    let namespaces = plan_namespaces(spec, &mut warnings)?;
+    let warnings = Vec::new();
+    let namespaces = plan_namespaces(spec)?;
 
     let map_mappings = |mappings: Option<&Vec<oci_spec::runtime::LinuxIdMapping>>| {
         mappings
@@ -728,6 +815,11 @@ mod tests {
         base["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
         for (field, value) in [
             ("user", serde_json::json!({"uid":1000,"gid":1000})),
+            (
+                "user",
+                serde_json::json!({"uid":0,"gid":0,"additionalGids":[1]}),
+            ),
+            ("user", serde_json::json!({"uid":0,"gid":0,"umask":63})),
             ("capabilities", serde_json::json!({})),
             ("noNewPrivileges", serde_json::json!(true)),
         ] {
@@ -747,6 +839,171 @@ mod tests {
         assert!(validate_vm_process(spec.process().as_ref().unwrap(), true).is_err());
     }
     use super::*;
+
+    #[test]
+    fn unsupported_container_constraints_fail_closed_for_host_and_vm() {
+        let cases = [
+            (
+                "linux.seccomp",
+                serde_json::json!({"linux":{"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"}}}),
+            ),
+            (
+                "linux.maskedPaths",
+                serde_json::json!({"linux":{"maskedPaths":["/proc/kcore"]}}),
+            ),
+            (
+                "linux.readonlyPaths",
+                serde_json::json!({"linux":{"readonlyPaths":["/proc/sys"]}}),
+            ),
+            (
+                "linux.mountLabel",
+                serde_json::json!({"linux":{"mountLabel":"system_u:object_r:container_file_t:s0"}}),
+            ),
+            (
+                "linux.sysctl",
+                serde_json::json!({"linux":{"sysctl":{"net.ipv4.ip_forward":"0"}}}),
+            ),
+            (
+                "linux.resources.devices",
+                serde_json::json!({"linux":{"resources":{"devices":[{"allow":false,"access":"rwm"}]}}}),
+            ),
+            (
+                "linux.resources.memory.swap",
+                serde_json::json!({"linux":{"resources":{"memory":{"swap":1024}}}}),
+            ),
+            (
+                "linux.resources.cpu.shares",
+                serde_json::json!({"linux":{"resources":{"cpu":{"shares":1024}}}}),
+            ),
+            (
+                "linux.resources.unified",
+                serde_json::json!({"linux":{"resources":{"unified":{"memory.high":"1024"}}}}),
+            ),
+            (
+                "hooks",
+                serde_json::json!({"hooks":{"prestart":[{"path":"/bin/true"}]}}),
+            ),
+        ];
+        for (field, patch) in cases {
+            for vm in [false, true] {
+                let mut value = serde_json::to_value(minimal_spec()).unwrap();
+                for (key, val) in patch.as_object().unwrap() {
+                    value[key] = val.clone();
+                }
+                if vm {
+                    value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
+                }
+                let spec: Spec = serde_json::from_value(value).unwrap();
+                let error = build_plan(&spec, "test", Path::new("/b"), vec![], IoPlan::default())
+                    .unwrap_err();
+                // VM rejects the whole nonempty linux section before translating it.
+                assert!(
+                    error
+                        .to_string()
+                        .contains(if vm && field.starts_with("linux.") {
+                            field.split('.').nth(1).unwrap()
+                        } else {
+                            field
+                        }),
+                    "{field}: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_process_constraints_are_rejected_on_create_and_exec() {
+        for (field, value) in [
+            ("apparmorProfile", serde_json::json!("restricted")),
+            (
+                "selinuxLabel",
+                serde_json::json!("system_u:system_r:container_t:s0"),
+            ),
+            ("oomScoreAdj", serde_json::json!(500)),
+            ("scheduler", serde_json::json!({"policy":"SCHED_OTHER"})),
+            (
+                "ioPriority",
+                serde_json::json!({"class":"IOPRIO_CLASS_BE","priority":4}),
+            ),
+            ("execCPUAffinity", serde_json::json!({"initial":"0"})),
+        ] {
+            let mut spec = serde_json::to_value(minimal_spec()).unwrap();
+            spec["process"][field] = value;
+            let spec: Spec = serde_json::from_value(spec).unwrap();
+            let process = spec.process().as_ref().unwrap();
+            assert!(
+                build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default())
+                    .unwrap_err()
+                    .to_string()
+                    .contains(field)
+            );
+            assert!(
+                build_exec_plan(process, "c", "e", 1, IoPlan::default())
+                    .unwrap_err()
+                    .to_string()
+                    .contains(field)
+            );
+            assert!(
+                validate_vm_process(process, true)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(field)
+            );
+            let mut vm_spec = spec.clone();
+            vm_spec.set_annotations(Some(HashMap::from([(
+                "io.pvisor.executor".into(),
+                "vm".into(),
+            )])));
+            assert!(
+                build_plan(&vm_spec, "c", Path::new("/b"), vec![], IoPlan::default())
+                    .unwrap_err()
+                    .to_string()
+                    .contains(field)
+            );
+        }
+    }
+
+    #[test]
+    fn time_namespace_is_rejected_not_warned() {
+        let mut value = serde_json::to_value(minimal_spec()).unwrap();
+        value["linux"] = serde_json::json!({"namespaces":[{"type":"time"}]});
+        let spec: Spec = serde_json::from_value(value).unwrap();
+        assert!(matches!(
+            build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()),
+            Err(PlanError::UnsupportedNamespaceType(_))
+        ));
+    }
+
+    #[test]
+    fn vm_rejects_host_only_enforcement_requests() {
+        for patch in [
+            serde_json::json!({"root":{"path":"rootfs","readonly":true}}),
+            serde_json::json!({"mounts":[{"destination":"/data","type":"bind","source":"/data"}]}),
+            serde_json::json!({"linux":{"resources":{"pids":{"limit":8}}}}),
+            serde_json::json!({"linux":{"namespaces":[{"type":"network"}]}}),
+            serde_json::json!({"linux":{"cgroupsPath":"/test"}}),
+        ] {
+            let mut value = serde_json::to_value(minimal_spec()).unwrap();
+            value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
+            for (key, val) in patch.as_object().unwrap() {
+                value[key] = val.clone();
+            }
+            let spec: Spec = serde_json::from_value(value).unwrap();
+            assert!(matches!(
+                build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()),
+                Err(PlanError::UnsupportedConstraint(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn empty_optional_security_collections_request_no_restriction() {
+        let mut value = serde_json::to_value(minimal_spec()).unwrap();
+        value["hooks"] = serde_json::json!({"prestart":[]});
+        value["linux"] = serde_json::json!({"maskedPaths":[],"readonlyPaths":[],"resources":{"devices":[],"unified":{}}});
+        let spec: Spec = serde_json::from_value(value).unwrap();
+        build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()).unwrap();
+    }
 
     fn spec_from_json(json: &str) -> Spec {
         serde_json::from_str(json).expect("parse spec")
@@ -847,7 +1104,7 @@ mod tests {
     #[test]
     fn namespaces_map_with_stable_join_semantics() {
         let spec = spec_from_json(
-            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"namespaces":[{"type":"pid"},{"type":"network","path":"/var/run/netns/n1"},{"type":"time"}]}}"#,
+            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"namespaces":[{"type":"pid"},{"type":"network","path":"/var/run/netns/n1"}]}}"#,
         );
         let plan =
             build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
@@ -860,7 +1117,7 @@ mod tests {
         assert_eq!(kinds[0], (NamespaceKind::Mount, false));
         assert_eq!(kinds[1], (NamespaceKind::Pid, false));
         assert_eq!(kinds[2], (NamespaceKind::Network, true));
-        assert!(plan.warnings.iter().any(|w| w.contains("time namespace")));
+        assert!(plan.warnings.is_empty());
     }
 
     #[test]
@@ -893,7 +1150,7 @@ mod tests {
     #[test]
     fn unsupported_mounts_are_rejected() {
         let spec = spec_from_json(
-            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/","user":{"uid":0,"gid":0}},"mounts":[{"destination":"/data","type":"ceph","source":"mon1:/"},{"destination":"/proc","type":"proc"}],"linux":{"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"}}}"#,
+            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/","user":{"uid":0,"gid":0}},"mounts":[{"destination":"/data","type":"ceph","source":"mon1:/"},{"destination":"/proc","type":"proc"}]}"#,
         );
         let error =
             build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).unwrap_err();

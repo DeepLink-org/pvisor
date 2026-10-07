@@ -1,3 +1,5 @@
+use super::lifecycle::owns_restore_transition;
+use super::paths::fork_stage_candidate;
 use super::*;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +29,89 @@ fn conflict(error: anyhow::Error) {
     assert_eq!(
         error.downcast_ref::<AgentCtlHostError>().unwrap().code,
         AgentCtlHostErrorCode::Conflict
+    );
+}
+
+#[test]
+fn durable_request_ids_share_core_bounds_and_reject_controls() {
+    validate_request_id(&"x".repeat(256)).unwrap();
+    for id in [
+        "x".repeat(257),
+        "bad\nkey".into(),
+        "bad\u{0085}key".into(),
+        " ".into(),
+    ] {
+        assert_eq!(
+            validate_request_id(&id)
+                .unwrap_err()
+                .downcast_ref::<AgentCtlHostError>()
+                .unwrap()
+                .code,
+            AgentCtlHostErrorCode::InvalidRequest
+        );
+    }
+}
+
+#[test]
+fn durable_target_rejects_stale_job_attempt_and_generation() {
+    let root = tempfile::tempdir().unwrap();
+    let record = fixture(root.path());
+    let target = AgentCtlTarget {
+        job_id: record.run_id.clone(),
+        attempt_id: record.attempt_id.clone(),
+        generation: Some("7".into()),
+    };
+    check_target(&target, &record).unwrap();
+    for field in 0..3 {
+        let mut stale = target.clone();
+        match field {
+            0 => stale.job_id = "other-job".into(),
+            1 => stale.attempt_id = Some("stale-attempt".into()),
+            _ => stale.generation = Some("6".into()),
+        }
+        conflict(check_target(&stale, &record).unwrap_err());
+    }
+}
+
+#[test]
+fn fork_stage_candidate_does_not_create_nested_missing_directories() {
+    let root = tempfile::tempdir().unwrap();
+    let candidate = root.path().join("missing/nested/stage");
+    assert_eq!(
+        fork_stage_candidate(&candidate).unwrap(),
+        root.path()
+            .canonicalize()
+            .unwrap()
+            .join("missing/nested/stage")
+    );
+    assert!(!root.path().join("missing").exists());
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn fork_stage_candidate_canonicalizes_existing_paths_and_symlink_ancestors() {
+    let root = tempfile::tempdir().unwrap();
+    let existing = root.path().join("existing");
+    std::fs::create_dir(&existing).unwrap();
+    let alias = root.path().join("alias");
+    std::os::unix::fs::symlink(&existing, &alias).unwrap();
+    assert_eq!(
+        fork_stage_candidate(&alias).unwrap(),
+        existing.canonicalize().unwrap()
+    );
+    assert_eq!(
+        fork_stage_candidate(&alias.join("nested/stage")).unwrap(),
+        existing.canonicalize().unwrap().join("nested/stage")
+    );
+    assert!(!existing.join("nested").exists());
+}
+
+#[test]
+fn fork_stage_candidate_resolves_relative_paths_from_current_directory() {
+    assert_eq!(
+        fork_stage_candidate(Path::new(".")).unwrap(),
+        std::env::current_dir().unwrap().canonicalize().unwrap()
     );
 }
 
@@ -155,6 +240,8 @@ fn embedded_review_refreshes_files_without_rewriting_historical_evidence() {
     .unwrap();
     historical["schema_version"] = serde_json::json!(crate::RUN_BUNDLE_SCHEMA_VERSION);
     historical["run"]["run_id"] = serde_json::json!(record.run_id);
+    historical["agentctl"]["run_id"] = serde_json::json!(record.run_id);
+    historical["safety"]["filesystem_changes_staged"] = serde_json::json!(true);
     historical["executor_observations"] =
         serde_json::to_value(pvisor_core::ExecutorObservations::default()).unwrap();
     historical["filesystem"] = serde_json::json!({
@@ -188,7 +275,7 @@ fn embedded_review_refreshes_files_without_rewriting_historical_evidence() {
 fn workspace_receipts_remain_committed_after_deletion() {
     let root = tempfile::tempdir().unwrap();
     let record = fixture(root.path());
-    std::fs::write(root.path().join("upper/change"), "staged").unwrap();
+    std::fs::write(root.path().join("upper/change"), "first").unwrap();
     let context = ServiceContext::default();
     let create = || {
         RuntimeJobService::create_workspace_checkpoint(
@@ -201,11 +288,16 @@ fn workspace_receipts_remain_committed_after_deletion() {
     };
     let first = create().unwrap();
     assert!(!first.reused);
+    std::fs::write(root.path().join("upper/change"), "second").unwrap();
     let second = create().unwrap();
     assert!(second.reused);
     assert_eq!(
         first.checkpoint.checkpoint_id,
         second.checkpoint.checkpoint_id
+    );
+    assert_eq!(
+        std::fs::read(second.checkpoint.upper_snapshot.join("change")).unwrap(),
+        b"first"
     );
     RuntimeJobService::delete_workspace_checkpoint(
         &context,
@@ -265,7 +357,21 @@ fn workspace_transactions_recheck_selection_under_stage_lease() {
         RuntimeJobService::collect_selected_workspace_transactions(&context, &selected)
             .unwrap_err(),
     );
-    assert!(pending.is_dir());
+    assert!(pending.is_dir(), "stale GC must not collect anything");
+    assert_eq!(
+        std::fs::read_dir(root.path().join(crate::CHECKPOINTS_DIR))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_eq!(
+        RunRecord::read(root.path())
+            .unwrap()
+            .overlay
+            .unwrap()
+            .generation,
+        8
+    );
 }
 
 #[test]

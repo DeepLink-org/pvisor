@@ -4,7 +4,7 @@
 
 它运行你现有的 Agent CLI、脚本或自动化命令：命令在策略边界内无人值守地跑完，文件改动先进入暂存区；结束后你像审 PR 一样查看改动和证据，只合入想留下的部分。
 
-不少 Agent CLI 已经自带沙箱或审批模式。它们回答的是"能不能挡住"，没有回答"到底改了什么、哪些该留下、有什么可核对的记录"，也不跨 Agent、跨执行器。为什么这三件事决定了 Agent 自主能扩展到多大，见[为什么是 pVisor](../why/index.md)；与 Docker、Agent 自带沙箱等方案的逐项对比见[对比](../why/comparisons.md)。
+pVisor 为不同 Agent 和执行器提供统一的文件审查、选择性合入与运行记录。自主执行的扩展路线见[为什么是 pVisor](../why/index.md)；与 Docker、Agent 自带沙箱等方案的逐项对比见[对比](../why/comparisons.md)。
 
 ## 你会得到什么
 
@@ -26,7 +26,7 @@ pvisor apply last --path src   # 或：pvisor drop last
 
 ## 今天能做到哪一步
 
-今天 pVisor 在本机逐个 Job 运行：让一个 Agent 全自动跑完，事后审查每个改动并选择性合入。这一级已经具备通往更高自主级别所需的三种性质，路线见[信任阶梯](../why/trust-ladder.md)。各执行器的边界见[执行器边界](../security/executor-boundaries.md)。
+当前工作流以本机 Job 为单位：运行 Agent，审查结果，再选择性合入文件改动。后续路线见[信任阶梯](../why/trust-ladder.md)，各执行器的保护范围见[执行器边界](../security/executor-boundaries.md)。
 
 ## 保证范围
 

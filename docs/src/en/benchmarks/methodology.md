@@ -50,7 +50,7 @@ q35 and microvm use one Ubuntu template. Their samples and percentiles remain se
 
 ### Tasks and resources {#product-v1}
 
-[Application](apply.md) · [Network](network.md) · [Concurrency](density.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md) · [Review](supervision-cost.md). Unmeasured industry alternatives are marked explicitly, without marketing numbers filling gaps.
+[Application](supervision-cost.md#apply-cost) · [Network](network.md) · [Concurrency](density.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md) · [Review](supervision-cost.md). Unmeasured industry alternatives are marked explicitly, without marketing numbers filling gaps.
 
 ### Filesystem engineering experiments {#filesystem-service}
 

@@ -8,7 +8,7 @@
 | `container` | Linux 宿主内核上的 OCI 镜像用户空间 | 原生 OCI runtime（`crun` 或 `runc`）及匹配的 Linux pVisor 二进制 | [container](container.md) |
 | `vm` | libkrun 提供的 Linux 客户机内核 | Linux KVM 或 Apple Silicon HVF，以及匹配宿主架构的 Linux rootfs | [VM](vm.md) |
 
-命令必须安装在选定环境中。宿主装了 Agent，不代表 Ubuntu 镜像也有它。实际安装的控制、警告和平台限制以 Run Bundle 为准；各执行器在每个能力维度上的边界见[执行器边界](../../security/executor-boundaries.md)。
+命令必须安装在选定环境中；使用容器或 VM 时，在其镜像内安装所需 Agent。实际安装的控制、警告和平台限制以 Run Bundle 为准；各执行器在每个能力维度上的边界见[执行器边界](../../security/executor-boundaries.md)。
 
 ## 怎么选
 
@@ -17,7 +17,7 @@
 - **需要固定的 Linux 用户空间**：container 或 VM 加 OCI 镜像。
 - **需要独立内核**：VM。
 
-`--safe` 不会替你选择执行器；它要求所选执行器落实文件和网络隔离，做不到时拒绝启动，而不是静默降级。
+用 `--executor` 选择执行器。`--safe` 要求所选执行器落实文件和网络隔离，做不到时拒绝启动。当前 container 不满足完整能力强制要求，不能使用 `--safe`；需要审查容器工作区改动时显式用 `--stage PATH`，离线运行用 `--container-network none`。容器的 host 网络与选择性代理仍是协作式，具体条件见[容器执行](container.md)。
 
 ## 各执行器通用的参数
 

@@ -18,8 +18,6 @@ Five measured batches per size followed one warmup. Guests used 128 MiB/one vCPU
 
 ## Historical Controller costs {#controller}
 
-![Historical retired-Controller queries and recovery](../assets/benchmarks/cluster-scalability-20261005/controller.svg)
-
 | Retained records | Indexed counts P50, ns | Full-scan reference P50, ms | Process + ID fixture RSS, MiB | Journal, MiB | Warm replay, s |
 |---:|---:|---:|---:|---:|---:|
 | 1,000 | 202.83 | 0.068 | 12.13 | 1.93 | 0.079 |

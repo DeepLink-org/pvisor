@@ -34,17 +34,13 @@ Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌
 
 这是 sandbox 管理，不是任务／结果协议。私有运行时记录将 generation 绑定到原生 Run/Attempt ID，但 `sb-*` 不是公开 Job ID，API 不暴露 Job review、checkpoint 或 Run Bundle 导出。
 
-## 设计入口 {#documents}
+## 并发与故障边界 {#documents}
 
-| 问题 | 设计 |
-| --- | --- |
-| 本机能准入多少资源？ | [本机准入](admission.md) |
-| 控制何时完成？ | [生命周期](lifecycle.md) |
-| 重启后保留什么？ | [状态与恢复](state-and-recovery.md) |
-| 存储与回收哪些内容？ | [存储](storage.md) |
-| 如何部署与排障？ | [运维](operations.md) |
-| 不可变共享与按需读属于哪里？ | [共享工作集](shared-working-set.md) |
-| 哪些服务应保持独立？ | [职责收敛](responsibility-convergence.md) |
+[Registry commit 锁](storage.md#commit)串行化容量检查与持久修改；每个 sandbox 的生命周期锁排序控制操作和代理建连。慢 VM 操作不持有全局运行时 mutex，让无关 sandbox 继续推进，同时防止两个创建请求重复消费预留，或建连与 daemon 管理的删除发生竞争。
+
+持久意图和 live 观察具有不同权威。原生删除前先持久化 `Stopping`，确认对象不存在后才释放容量。IPC 或确认回复丢失时保留待对账工作，不能据此启动替代 VM 或复用容量。[只重启 daemon](state-and-recovery.md#reconcile)会使用相同归属状态重连仍存活的 supervisor；宿主重启则丢失 live VM。
+
+保守预留用利用率换取明确的清理记账：Paused、Failed 和不确定记录在确认移除前持续计费。低 RSS 与原生缓存共享不会减少预留；[准入](admission.md#reservations)和物理工作集记账仍然独立。
 
 ## 兼容性与证据 {#invariants}
 

@@ -639,6 +639,7 @@ pub fn apply_overlay_selected(
     lower_dirs: &[PathBuf],
     selection: &ApplySelection,
 ) -> Result<ApplyOutcome, OverlayError> {
+    reconcile_terminal_overlay(record)?;
     crate::stage::require_sealed(&record.stage_dir.join("preimages"))?;
     if record.protect_target {
         return Err(OverlayError::Apply(format!(
@@ -720,13 +721,22 @@ pub fn apply_overlay_selected(
 /// Complete any transaction whose durable intent was written before a crash.
 /// `TargetApplied` is persisted before pruning starts, so recovery never tries
 /// to reinterpret a partially-pruned opaque upper as a fresh target mutation.
-#[cfg(test)]
-fn recover_pending_applies(
+pub fn recover_pending_applies(
     record: &mut OverlayRecord,
     lower_dirs: &[PathBuf],
 ) -> Result<Vec<String>, OverlayError> {
+    reconcile_terminal_overlay(record)?;
+    crate::stage::require_sealed(&record.stage_dir.join("preimages"))?;
     let _target_lock = TargetApplyLock::acquire(&record.target)?;
+    reconcile_terminal_overlay(record)?;
     recover_pending_applies_locked(record, lower_dirs)
+}
+
+/// Pending ledger entries retain their original generation until recovery commits.
+pub fn has_pending_applies(record: &OverlayRecord) -> Result<bool, OverlayError> {
+    Ok(load_apply_records(&record.stage_dir)?
+        .iter()
+        .any(|apply| apply.state != ApplyRecordState::Committed))
 }
 
 fn recover_pending_applies_locked(
@@ -834,13 +844,11 @@ fn replacement_paths(changes: &[ChangeEntry]) -> Result<Vec<PathBuf>, OverlayErr
 }
 
 fn open_backup_dir(path: &Path) -> Result<File, OverlayError> {
-    match fs::DirBuilder::new().mode(0o700).create(path) {
-        Ok(()) => {
-            File::open(path.parent().unwrap())?.sync_all()?;
-        }
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+    let created = match fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
         Err(error) => return Err(error.into()),
-    }
+    };
     let directory = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
@@ -850,6 +858,40 @@ fn open_backup_dir(path: &Path) -> Result<File, OverlayError> {
         return Err(OverlayError::Apply(
             "apply backup directory must be private and owned by the current user".into(),
         ));
+    }
+    // Permissions alone do not make an existing host directory ours. Only a
+    // newly created backup may mint this durable ownership receipt.
+    let receipt = path.join(".pvisor-owner");
+    let expected = path.file_name().unwrap().as_bytes();
+    if created {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&receipt)?;
+        io::Write::write_all(&mut file, expected)?;
+        file.sync_all()?;
+        directory.sync_all()?;
+        File::open(path.parent().unwrap())?.sync_all()?;
+    } else {
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&receipt)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() != expected.len() as u64 {
+            return Err(OverlayError::Apply(
+                "unowned apply backup directory; retained for inspection".into(),
+            ));
+        }
+        let mut contents = Vec::new();
+        io::Read::read_to_end(&mut file, &mut contents)?;
+        if contents != expected {
+            return Err(OverlayError::Apply(
+                "apply backup ownership receipt mismatch; retained for inspection".into(),
+            ));
+        }
     }
     Ok(directory)
 }
@@ -1317,6 +1359,33 @@ fn complete_target_applied(
     Ok(remaining)
 }
 
+/// Project a terminal core publication over an older runtime record. A matching
+/// generation and backing identity are required; unrelated/stale metadata cannot
+/// terminate a new workspace.
+pub fn reconcile_terminal_overlay(record: &mut OverlayRecord) -> Result<bool, OverlayError> {
+    if !matches!(record.state, OverlayState::Active | OverlayState::Staged) {
+        return Ok(false);
+    }
+    if !overlay_meta_path(&record.stage_dir).try_exists()? {
+        return Ok(false);
+    }
+    let published = load_overlay_record(&record.stage_dir)?;
+    if published.id == record.id
+        && published.generation == record.generation
+        && published.stage_dir == record.stage_dir
+        && published.upper.upper_dir == record.upper.upper_dir
+        && published.upper.work_dir == record.upper.work_dir
+        && matches!(
+            published.state,
+            OverlayState::Applied | OverlayState::Discarded
+        )
+    {
+        *record = published;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// Merge the complete staging upper onto `target`.
 pub fn apply_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
     let lower_dirs = vec![
@@ -1330,7 +1399,9 @@ pub fn apply_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
 
 /// Drop staging upper (and optionally the whole stage dir contents except meta).
 pub fn discard_overlay(record: &mut OverlayRecord) -> Result<(), OverlayError> {
+    reconcile_terminal_overlay(record)?;
     let _target_lock = TargetApplyLock::acquire(&record.target)?;
+    reconcile_terminal_overlay(record)?;
     if load_apply_records(&record.stage_dir)?
         .iter()
         .any(|apply| apply.state != ApplyRecordState::Committed)
@@ -1778,11 +1849,11 @@ fn copy_upper_entry_checked(
         ))
     })?;
     fs::create_dir_all(parent)?;
-    // The deterministic reserved name lets a Prepared transaction clean up
-    // its own interrupted copy before retrying. TargetApplyLock serializes all
-    // pVisor writers for this target while the entry exists.
-    let temporary = parent.join(format!(".pvisor-apply-{}", path_digest(destination)));
-    remove_path(&temporary)?;
+    // A reserved-looking host name is not proof of ownership. Exclusively
+    // create a private namespace; retries never delete a pre-existing object.
+    let temporary_dir = parent.join(format!(".pvisor-apply-{}", uuid::Uuid::new_v4()));
+    fs::DirBuilder::new().mode(0o700).create(&temporary_dir)?;
+    let temporary = temporary_dir.join("entry");
     let identity = (metadata.dev(), metadata.ino());
     let result = (|| {
         if kind.is_symlink() {
@@ -1826,9 +1897,7 @@ fn copy_upper_entry_checked(
         }
         Ok::<_, OverlayError>(())
     })();
-    if result.is_err() {
-        let _ = remove_path(&temporary);
-    }
+    let _ = fs::remove_dir_all(&temporary_dir);
     result
 }
 
@@ -2215,6 +2284,80 @@ mod tests {
             protect_target: false,
             state: OverlayState::Staged,
         }
+    }
+
+    #[test]
+    fn apply_temporary_names_never_remove_unselected_host_objects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let target = tmp.path().join("target");
+        fs::write(&source, b"staged").unwrap();
+        let collision = tmp
+            .path()
+            .join(format!(".pvisor-apply-{}", path_digest(&target)));
+        for directory in [false, true] {
+            if directory {
+                fs::create_dir(&collision).unwrap();
+                fs::write(collision.join("keep"), b"host").unwrap();
+            } else {
+                fs::write(&collision, b"host").unwrap();
+            }
+            copy_upper_entry(&source, &target, &mut HashMap::new()).unwrap();
+            assert_eq!(fs::read(&target).unwrap(), b"staged");
+            let mut verify = || Err(OverlayError::Apply("injected conflict".into()));
+            assert!(
+                copy_upper_entry_checked(&source, &target, &mut HashMap::new(), &mut verify)
+                    .is_err()
+            );
+            assert_eq!(
+                fs::read(if directory {
+                    collision.join("keep")
+                } else {
+                    collision.clone()
+                })
+                .unwrap(),
+                b"host"
+            );
+            remove_path(&collision).unwrap();
+        }
+    }
+
+    #[test]
+    fn backup_cleanup_refuses_a_private_but_unowned_host_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let record = late_conflict_record(&target, &tmp.path().join("upper"));
+        let backup = apply_backup_dir(&record, "apply-id").unwrap();
+        fs::DirBuilder::new().mode(0o700).create(&backup).unwrap();
+        fs::write(backup.join("keep"), b"host").unwrap();
+        assert!(cleanup_apply_backups(&record, "apply-id").is_err());
+        assert_eq!(fs::read(backup.join("keep")).unwrap(), b"host");
+        assert!(!backup.join(".pvisor-owner").exists());
+    }
+
+    #[test]
+    fn stale_drop_cannot_overwrite_a_terminal_core_publication() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&upper).unwrap();
+        let mut stale = late_conflict_record(&target, &upper);
+        let mut published = stale.clone();
+        published.state = OverlayState::Applied;
+        write_overlay_record(&published).unwrap();
+        assert!(discard_overlay(&mut stale).is_err());
+        assert_eq!(
+            load_overlay_record(&published.stage_dir).unwrap().state,
+            OverlayState::Applied
+        );
+        stale.state = OverlayState::Staged;
+        stale.generation += 1;
+        assert!(!reconcile_terminal_overlay(&mut stale).unwrap());
+        stale.generation -= 1;
+        stale.id = "different".into();
+        assert!(!reconcile_terminal_overlay(&mut stale).unwrap());
     }
 
     #[test]
@@ -2863,6 +3006,105 @@ mod tests {
         assert!(TargetApplyLock::acquire_in(&target, &locks).is_ok());
         fs::set_permissions(&locks, fs::Permissions::from_mode(0o777)).unwrap();
         assert!(TargetApplyLock::acquire_in(&target, &locks).is_err());
+    }
+
+    #[test]
+    fn terminal_publication_before_commit_recovers_at_the_original_generation() {
+        for compact in [false, true] {
+            let tmp = tempdir().unwrap();
+            let target = tmp.path().join("target");
+            let upper = tmp.path().join("upper");
+            fs::create_dir(&target).unwrap();
+            fs::write(target.join("value"), b"old").unwrap();
+            let mut record = late_conflict_record(&target, &upper);
+            record.generation = 7;
+            let core = OverlayCore::new_with_exclusions_and_preimages(
+                vec![target.clone()],
+                upper.clone(),
+                Some(record.upper.work_dir.clone()),
+                Vec::new(),
+                Some(record.stage_dir.join("preimages")),
+            )
+            .unwrap();
+            let core = if compact {
+                core.with_compact_preimages().unwrap()
+            } else {
+                core
+            };
+            fs::write(core.copy_up(Path::new("value")).unwrap(), b"new").unwrap();
+            let selection = ApplySelection::default();
+            let plan =
+                plan_overlay_apply(&record, std::slice::from_ref(&target), &selection).unwrap();
+            let preimages =
+                prepare_apply_preimages(&record, &plan.selected_paths, &plan.selected).unwrap();
+            let apply_id = "terminal-before-commit";
+            append_apply_record(
+                &record,
+                ApplyRecord {
+                    schema_version: APPLY_LEDGER_SCHEMA_VERSION,
+                    apply_id: apply_id.into(),
+                    created_at_unix_ms: pvisor_core::unix_now_ms(),
+                    overlay_id: record.id.clone(),
+                    overlay_generation: record.generation,
+                    target: target.clone(),
+                    selection,
+                    changes: plan.selected.clone(),
+                    planned_paths: plan.selected_paths.iter().cloned().collect(),
+                    preimages: preimages.clone(),
+                    state: ApplyRecordState::Prepared,
+                    remaining_changes: 0,
+                },
+            )
+            .unwrap();
+            apply_prepared_target(
+                &record,
+                &plan.selected_paths,
+                &preimages,
+                &plan.selected,
+                false,
+                apply_id,
+            )
+            .unwrap();
+            mark_apply_target_applied(&record, apply_id).unwrap();
+            complete_target_applied(
+                &mut record,
+                std::slice::from_ref(&target),
+                &plan.selected_paths,
+            )
+            .unwrap();
+            // Stop exactly after overlay.json is Applied, before consume/Committed.
+            let mut restarted = load_overlay_record(&record.stage_dir).unwrap();
+            assert_eq!(restarted.state, OverlayState::Applied);
+            assert_eq!(restarted.generation, 7);
+            assert!(has_pending_applies(&restarted).unwrap());
+            assert!(
+                !load_preimages(&record.stage_dir.join("preimages"))
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(discard_overlay(&mut restarted).is_err());
+            fs::write(target.join("value"), b"later host edit").unwrap();
+            assert_eq!(
+                recover_pending_applies(&mut restarted, std::slice::from_ref(&target)).unwrap(),
+                vec![apply_id]
+            );
+            assert_eq!(restarted.generation, 7);
+            assert!(!has_pending_applies(&restarted).unwrap());
+            assert!(
+                load_preimages(&record.stage_dir.join("preimages"))
+                    .unwrap()
+                    .is_empty()
+            );
+            let ledger = load_apply_records(&record.stage_dir).unwrap();
+            assert_eq!(ledger[0].overlay_generation, 7);
+            assert_eq!(ledger[0].state, ApplyRecordState::Committed);
+            assert_eq!(fs::read(target.join("value")).unwrap(), b"later host edit");
+            assert!(
+                recover_pending_applies(&mut restarted, &[target])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

@@ -97,6 +97,32 @@ fn mutate(
             record.run_id
         );
     }
+    if overlay.state == OverlayState::Applied
+        && pvisor_overlay_core::apply::has_pending_applies(&overlay)?
+    {
+        if !apply {
+            bail!(
+                "Job {} has a pending apply; retry apply to reconcile it before any drop",
+                record.run_id
+            );
+        }
+        let lower_dirs = if record.overlay_lowers.is_empty() {
+            vec![overlay.target.clone()]
+        } else {
+            record.overlay_lowers.clone()
+        };
+        pvisor_overlay_core::apply::recover_pending_applies(&mut overlay, &lower_dirs)
+            .context("reconcile pending apply before reporting AlreadyApplied")?;
+        anyhow::ensure!(
+            overlay.state == OverlayState::Applied,
+            "pending apply reconciliation retained staged changes; review and retry apply"
+        );
+        // The Job mutation lock and Run lease are held. Only publish a new
+        // runtime fence after target-locked recovery has committed the ledger.
+        overlay.generation = next_generation;
+        record.overlay = Some(overlay.clone());
+        record.write()?;
+    }
     match (apply, overlay.state) {
         (true, OverlayState::Applied) => {
             return Ok(MutationResponse {
@@ -173,6 +199,160 @@ fn mutate(
         target,
         outcome,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::RunRecord;
+
+    fn fixture(root: &Path) -> RunRecord {
+        for dir in ["target", "upper", "work", "merged"] {
+            std::fs::create_dir(root.join(dir)).unwrap();
+        }
+        let record: RunRecord = serde_json::from_value(serde_json::json!({
+            "schema_version":1,"run_id":"effects-gap","session_id":"session",
+            "attempt_id":"attempt","agent":"sh","pid":0,"command":["/bin/sh"],
+            "state":"completed","started_at_unix_ms":1,"finished_at_unix_ms":2,
+            "storage":root,"network":{},"gateway_listen":null,
+            "overlay":{"id":"effects-gap","generation":7,"target":root.join("target"),
+                "upper":{"upper_dir":root.join("upper"),"work_dir":root.join("work")},
+                "merged_dir":root.join("merged"),"stage_dir":root,
+                "auto_apply":false,"state":"staged"}
+        }))
+        .unwrap();
+        record.write().unwrap();
+        record
+    }
+
+    #[test]
+    fn pending_terminal_apply_is_recovered_before_success_and_new_fence() {
+        use pvisor_core::overlay::ApplyRecordState;
+        use pvisor_overlay_core::apply::{has_pending_applies, load_apply_records};
+        let root = tempfile::tempdir().unwrap();
+        let record = fixture(root.path());
+        std::fs::write(root.path().join("upper/change"), b"staged").unwrap();
+        let mut overlay = record.overlay.clone().unwrap();
+        let lowers = vec![overlay.target.clone()];
+        apply_overlay_selected(&mut overlay, &lowers, &ApplySelection::default()).unwrap();
+        // Reconstruct the ledger side of the terminal-publication interruption.
+        // The core regression stops at the actual consume/commit boundary.
+        let ledger_path = root.path().join("apply-ledger.json");
+        let mut ledger: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&ledger_path).unwrap()).unwrap();
+        ledger["records"][0]["state"] = serde_json::json!("target_applied");
+        std::fs::write(&ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+        assert!(has_pending_applies(&overlay).unwrap());
+        let current = RunRecord::read(root.path()).unwrap();
+        assert_eq!(
+            current.overlay.as_ref().unwrap().state,
+            OverlayState::Applied
+        );
+        assert_eq!(current.overlay.as_ref().unwrap().generation, 7);
+        let job = || JobSelection {
+            selector: Some(root.path().to_path_buf()),
+            storage: root.path().to_path_buf(),
+        };
+        let context = ServiceContext::default();
+        let error = RuntimeJobService::drop(&context, DropRequest { job: job() }).unwrap_err();
+        assert!(error.to_string().contains("pending apply"));
+        assert!(has_pending_applies(&overlay).unwrap());
+        assert_eq!(
+            RunRecord::read(root.path())
+                .unwrap()
+                .overlay
+                .unwrap()
+                .generation,
+            7
+        );
+        // Recovery failure must not return AlreadyApplied or advance the fence.
+        let entries = root.path().join("preimages/entries");
+        std::fs::create_dir_all(&entries).unwrap();
+        let corrupt = entries.join("invalid.json");
+        std::fs::write(&corrupt, b"invalid").unwrap();
+        let request = || ApplyRequest {
+            job: job(),
+            target: None,
+            selection: ApplySelection::default(),
+            all: true,
+        };
+        let error = RuntimeJobService::apply(&context, request()).unwrap_err();
+        assert!(error.to_string().contains("reconcile pending apply"));
+        assert!(has_pending_applies(&overlay).unwrap());
+        assert_eq!(
+            RunRecord::read(root.path())
+                .unwrap()
+                .overlay
+                .unwrap()
+                .generation,
+            7
+        );
+        std::fs::remove_file(corrupt).unwrap();
+        let response = RuntimeJobService::apply(&context, request()).unwrap();
+        assert!(matches!(response.outcome, MutationOutcome::AlreadyApplied));
+        assert!(!has_pending_applies(&overlay).unwrap());
+        let committed = load_apply_records(root.path()).unwrap();
+        assert_eq!(committed[0].state, ApplyRecordState::Committed);
+        assert_eq!(committed[0].overlay_generation, 7);
+        // Read raw run.json too: mutation, not read projection, publishes g+1.
+        let raw: RunRecord =
+            serde_json::from_slice(&std::fs::read(root.path().join("run.json")).unwrap()).unwrap();
+        assert_eq!(raw.overlay.as_ref().unwrap().state, OverlayState::Applied);
+        assert_eq!(raw.overlay.as_ref().unwrap().generation, 8);
+        let repeated = RuntimeJobService::apply(&context, request()).unwrap();
+        assert!(matches!(repeated.outcome, MutationOutcome::AlreadyApplied));
+        assert_eq!(
+            RunRecord::read(root.path())
+                .unwrap()
+                .overlay
+                .unwrap()
+                .generation,
+            8
+        );
+    }
+
+    #[test]
+    fn core_apply_survives_missing_run_publication_and_rejects_drop() {
+        let root = tempfile::tempdir().unwrap();
+        let record = fixture(root.path());
+        std::fs::write(root.path().join("upper/change"), b"staged").unwrap();
+        let mut overlay = record.overlay.clone().unwrap();
+        let lowers = vec![overlay.target.clone()];
+        apply_overlay_selected(&mut overlay, &lowers, &ApplySelection::default()).unwrap();
+        // Deliberately leave run.json unchanged, as on failure/exit after core commit.
+        let current = RunRecord::read(root.path()).unwrap();
+        assert_eq!(
+            current.overlay.as_ref().unwrap().state,
+            OverlayState::Applied
+        );
+        assert_eq!(current.overlay.as_ref().unwrap().generation, 8);
+        let job = || JobSelection {
+            selector: Some(root.path().to_path_buf()),
+            storage: root.path().to_path_buf(),
+        };
+        let error = RuntimeJobService::drop(&ServiceContext::default(), DropRequest { job: job() })
+            .unwrap_err();
+        assert!(error.to_string().contains("already applied"));
+        let response = RuntimeJobService::apply(
+            &ServiceContext::default(),
+            ApplyRequest {
+                job: job(),
+                target: None,
+                selection: ApplySelection::default(),
+                all: true,
+            },
+        )
+        .unwrap();
+        assert!(matches!(response.outcome, MutationOutcome::AlreadyApplied));
+        assert_eq!(
+            std::fs::read(root.path().join("target/change")).unwrap(),
+            b"staged"
+        );
+        assert_eq!(
+            RunRecord::read(root.path()).unwrap().overlay.unwrap().state,
+            OverlayState::Applied
+        );
+    }
 }
 
 fn resolve_apply_target(target: &Path, stage: &Path) -> anyhow::Result<PathBuf> {

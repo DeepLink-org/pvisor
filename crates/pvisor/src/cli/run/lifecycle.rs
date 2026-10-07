@@ -2,20 +2,21 @@
 #[cfg(feature = "gateway")]
 use super::resolve_proxy;
 use super::{
-    announce_control_socket, apply_safe_defaults, execute_config, paths_overlap, report_terminal,
-    resolve_workspace, select_run_storage, wait_cli_run,
+    announce_control_socket, execute_config, paths_overlap, report_terminal, resolve_workspace,
+    select_run_storage, wait_cli_job,
 };
 #[cfg(feature = "gateway")]
 use crate::GatewayDriverConfig;
 use crate::cli::trajectory::JournalRecording;
-use crate::config::{
-    GatewayMode, OverlayFsCommit, OverlayFsSettings, OverlayNetPolicy, RunConfig, RunExecutorKind,
-};
+#[cfg(test)]
+use crate::config::RunExecutorKind;
+use crate::config::{GatewayMode, OverlayFsCommit, OverlayFsSettings, OverlayNetPolicy, RunConfig};
 #[cfg(test)]
 use crate::runtime::job_execution::JobState;
+use crate::runtime::job_service::paths::fork_stage_candidate;
 use crate::runtime::{RunLineage, RunRecord, default_run_home, resolve_run};
 use crate::{NetworkDriverConfig, PVisor, RunBundle, restore_logical_checkpoint};
-use anyhow::Context;
+
 use clap::Args;
 use pvisor_core::RunState;
 use pvisor_overlaynet::{NetworkConfig, NetworkMode};
@@ -101,6 +102,14 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     // The runner starts only after releasing the source's lease.
     let (source, source_lease) = source.lock_current()?;
     crate::cli::host_service::check_record(&source)?;
+    // Fail before checkpoint/stage mutations when historical policy cannot be reconstructed.
+    let (mut config, required_sandbox) =
+        crate::runtime::job_service::policy::workspace_config(&source)?;
+    let parent_isolation = source
+        .executor
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("workspace fork lacks parent executor boundary evidence"))?
+        .isolation;
     let checkpoint = match args.checkpoint.as_deref() {
         Some(id) => crate::runtime::checkpoint::resolve_checkpoint(&source, id)?,
         None => crate::runtime::checkpoint::create_stopped_checkpoint_locked(&source, None)?,
@@ -118,16 +127,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         .unwrap_or_else(|| checkpoint.target.clone());
     let fork_workspace = resolve_workspace(&fork_workspace)?;
     let run_id = format!("run-{}", uuid::Uuid::new_v4());
-    let mut config = RunConfig::default();
-    if source
-        .executor
-        .as_ref()
-        .is_some_and(|executor| executor.isolation == pvisor_core::IsolationKind::VirtualMachine)
-    {
-        config.run.executor = RunExecutorKind::Vm;
-        config.vm.rootfs = Some(checkpoint.target.clone());
-        config.vm.rootfs_immutable = checkpoint.protect_target;
-    }
+
     config.run.workspace = Some(fork_workspace.clone());
     let (agent, command) = fork_command(&source.agent, &source.command, args.command);
     config.run.agent = agent;
@@ -184,38 +184,19 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         return Err(error);
     }
     config.overlayfs.as_mut().expect("configured above").stage = Some(stage);
-    apply_safe_defaults(&mut config)?;
     drop(source_lease);
     drop(source_job);
     execute_config(
         config,
         run_id,
-        false,
+        required_sandbox,
         Some(RunLineage {
             parent_run_id: source.run_id,
             checkpoint_id: checkpoint.checkpoint_id,
         }),
+        crate::runtime::job_service::policy::PolicySource::Inherited(parent_isolation),
     )
     .await
-}
-
-/// Resolve existing symlink ancestors before validating a new branch path,
-/// without creating directories inside the source Job on rejected requests.
-fn fork_stage_candidate(path: &Path) -> anyhow::Result<PathBuf> {
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    fn resolve(path: &Path) -> anyhow::Result<PathBuf> {
-        if path.try_exists()? {
-            return Ok(path.canonicalize()?);
-        }
-        let name = path.file_name().context("invalid child stage path")?;
-        let parent = path.parent().context("child stage has no parent")?;
-        Ok(resolve(parent)?.join(name))
-    }
-    resolve(&path)
 }
 
 pub(super) fn fork_command(
@@ -363,16 +344,7 @@ async fn execute_restored(
         })
         .await?;
     announce_control_socket(managed.handle());
-    if let Err(error) = crate::cli::host_cancel::register(managed.handle(), &stage) {
-        managed.cancel();
-        return match managed.wait().await {
-            Ok(_) => Err(error),
-            Err(cleanup) => {
-                Err(error.context(format!("restored Job cleanup also failed: {cleanup:#}")))
-            }
-        };
-    }
-    let result = managed.wait_with(wait_cli_run).await?;
+    let result = wait_cli_job(managed, Some(&stage)).await?;
     if let Some(writer) = recording {
         writer.finish()?;
     }
@@ -485,44 +457,6 @@ mod tests {
         // The operation lease may be created, but no branch or restore is staged.
         assert!(!root.path().join("unconfirmed-child").exists());
         assert!(before.iter().all(|name| root.path().join(name).exists()));
-    }
-    #[test]
-    fn rollback_only_owns_the_exact_admitted_restore_transition() {
-        let root = tempfile::tempdir().unwrap();
-        let (_, mut admitted) = fixture(root.path());
-        admitted.state = JobState::Restoring;
-        admitted.active_stage = root.path().join("attempts/restore");
-        admitted.resumes.insert(
-            "restore".into(),
-            ResumeRequest {
-                stage: admitted.active_stage.clone(),
-                eager_ram: false,
-            },
-        );
-        assert!(crate::runtime::job_service::owns_restore_transition(
-            &admitted, &admitted, "restore"
-        ));
-        for variant in 0..5 {
-            let mut current = admitted.clone();
-            match variant {
-                0 => current.active_stage = root.path().join("attempts/other"),
-                1 => current.active_attempt = "other-attempt".into(),
-                2 => current.head = Some("other-head".into()),
-                3 => current.resumes.get_mut("restore").unwrap().eager_ram = true,
-                _ => {
-                    current.resumes.insert(
-                        "other-request".into(),
-                        ResumeRequest {
-                            stage: current.active_stage.clone(),
-                            eager_ram: false,
-                        },
-                    );
-                }
-            }
-            assert!(!crate::runtime::job_service::owns_restore_transition(
-                &current, &admitted, "restore"
-            ));
-        }
     }
 }
 

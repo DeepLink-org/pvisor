@@ -206,7 +206,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-APPLY：审查后合入改动要多久，并行修改是否安全 {#b-apply}
 
-- **文档：** `apply.md`
+- **文档：** `supervision-cost.md#apply-cost`
 - **角色：** user-facing
 - **Motivation：** 暂存改动的价值要到合入时才兑现。用户需要知道合入的耗时如何随文件数增长，以及宿主上的并行修改会不会被覆盖。
 - **想要的结论：** "合入 N 个文件需要多少时间，在多大规模以内适合交互式使用"；"宿主并行修改一定会被检测为冲突，不会被静默覆盖"；"合入中途被中断后可以恢复，或者状态明确"。
@@ -304,10 +304,16 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** "闲置 VM 的驻留内存可以降低 X%，以整机物理内存衡量；恢复后首次访问会增加 Y ms"；以及与 Docker 或其他 VM 相比是否真的更省。
 - **实验设计：**
   - 用整机或 cgroup 的物理内存作为主要指标，进程 footprint 只作参考。
+  - 用户选型按默认空闲页回收、运行中压缩、闲置卸载和跨实例共享组织。默认回收测工作集释放/再次分配；压缩测可压缩、随机和读热点混合内容；卸载比较继续运行、仅暂停、raw 和压缩 backing；共享测 1/2/4 实例与写入后的退化。开启命令与内存、CPU、峰值和下一次完整工具任务等待一起报告。
   - 同时测回收量、恢复延迟和 CPU 开销。
+  - 当前用户页以 512 MiB 配置的 VM 为基准：主表使用完整产品进程 PSS 之和描述实际常驻物理内存，共享页按比例计入，包含压缩池和辅助进程；明确它不包含未映射文件缓存及内核内存，整组 cgroup 内存与缓存另外报告。不能把 PSS 当作完整宿主成本，也不能把配置容量当作实际占用。
+  - 先提供短窗口静态读数：单实例每格一个新 VM、零预热、5 秒观察；跨实例先测四实例、每格一个新组、零预热、2 秒扫描窗。启动前一次检查，采样期间持续监测；后台构建如实记录，只允许解释静态内存，不用于速度比较；其他 VM 干扰、预算或校验失败仍拒绝。静态读数只回答指定窗口的占用及观测到的恢复成本，不报告 P50/P95、置信区间、长期稳定性或密度。完整多轮设计是独立后续批次，不能将短窗口读数混入。
+  - 跨实例选型另设 `memory_sharing.py --static --strategies`：原始不共享为四台独立启动的私有匿名 RAM VM、共享快照＋COW 从一份 sealed RAM 恢复、KSM 在原始独立 VM 上仅开启 RAM advice；三者同为 512 MiB/2 vCPU、64 MiB 工作集、四实例，ready/25%/100% 写入逐阶段对照。每格 N=1、扫描 2 秒，比例以相同阶段原始不共享组为分母；不得将旧独立快照副本或 restored-KSM 的数值充当这些新条件。daemon 内存池在实际接入与全组计量通过后作为第四种独立方案补测，包含 daemon/pool 开销和内容恢复校验。
   - 区分重复数据和随机数据负载。
   - 每次试验使用新的 VM，并校验数据完整性。
-- **入口脚本：** `macos_cold_ram.py`（Apple Silicon live cold-page pool）、`vm_memory.py`（当前 Job API 的 Linux raw/compressed execution suspend/resume）、`live_vm_memory.py`（当前 SDK 的 Linux whole-VM offload，使用 `vm_live_memory_bench` example）。Linux 使用独立受限 cgroup，包含 backing/cache、捕获与恢复进程；报告 active、suspended 和恢复阶段、数据完整性与 CPU 成本。SDK offload 每个样本创建新的 VM，重复数据与确定性随机数据、raw 与压缩 backing 随机配对；记录完整 cgroup 的 anon/file/kernel 与 CPU，校验恢复后的全部数据和可变状态。执行快照、whole-VM offload 与运行中自动冷页压缩分别报告；单 VM 回收量不能替代密度实验，不恢复退役的独立 snapshot CLI。
+  - `memory_savings.py` / `vm_memory_savings` 提供当前 Linux 默认回收、live 压缩、暂停和 raw/compressed offload 用户对照。每格先预检，再 3 次预热、30 次正式样本；完整组四核/2 GiB/零 swap，512 MiB/2 vCPU guest、64 MiB 应用数据、固定 60 秒闲置窗。逐块独立摘要、全量工具写入/读回和原生 reap 为成功门禁，观察者与协调器在组外。新制品与既有快照/offload 批次分开保留。`publish_memory_savings.py` 校验完整条件、预热与正式样本、来源和干扰门禁后导出阶段/峰值/CPU/存储分布及相对默认模式的配对 bootstrap 区间。
+  - `memory_sharing.py` 使用同一 SDK worker 的独立用户协议：1/2/4 个 2 vCPU/512 MiB VM，重复、相同随机和独有随机 64 MiB 数据；同一 sealed 快照的共同 inode 与全字节复制的独立 inode 对照，动态私有页 KSM advice off/on。完整组四核/2 GiB/零 swap、扫描器状态只读、每个扫描窗 30 秒；独立 inode 不是独立启动捕获，ready 与动态改写阶段不能混作同一比较。每格 3 次预热、30 个新组，独立恢复/写入/退出校验、全组内存与 CPU 和组外干扰观察；不得将 B-MEMORY-SCALE 工程批次或建议登记字节替代为这些用户数据。
+- **入口脚本：** `memory_savings.py`（当前 Linux 单实例回收、压缩、暂停和卸载）、`memory_sharing.py`（共享基线和动态 KSM 的独立用户协议）、`macos_cold_ram.py`（Apple Silicon live cold-page pool）、`vm_memory.py`（当前 Job API 的 Linux raw/compressed execution suspend/resume）、`live_vm_memory.py`（当前 SDK 的 Linux whole-VM offload，使用 `vm_live_memory_bench` example）。Linux 使用独立受限 cgroup，包含 backing/cache、捕获与恢复进程；报告 active、suspended 和恢复阶段、数据完整性与 CPU 成本。SDK offload 每个样本创建新的 VM，重复数据与确定性随机数据、raw 与压缩 backing 随机配对；记录完整 cgroup 的 anon/file/kernel 与 CPU，校验恢复后的全部数据和可变状态。执行快照、whole-VM offload 与运行中自动冷页压缩分别报告；单 VM 回收量不能替代密度实验，不恢复退役的独立 snapshot CLI。
 
 ### B-MEMORY-SCALE：最多四个 VM 的共享、写入退化与卸载恢复 {#b-memory-scale}
 

@@ -10,7 +10,7 @@ The long-lived guest bootstrap must supervise workload, real OpenSandbox 1.1.0 e
 
 Create, Inspect of a Running VM and resume readiness checks require genuine HTTP 200 execd `/ping`, `/ready` with JSON `initialized: true`, and egress `/healthz` through the bridges, with bounded bodies. The daemon does not inject/initialize execd or synthesize command/SSE/file responses. Python SDK initialization resolves both endpoints even without network policy.
 
-The bootstrap and image recipe are **not supplied or end-to-end validated**. The old container `cap-drop=ALL` restriction does not describe this native VM backend; an upstream image name is not a native bootstrap/vsock adapter. No fake readiness, SDK-conformance or density evidence is provided.
+Prepare the bootstrap and vsock bridges described above; an upstream image name alone cannot meet these requirements. The project **has not supplied a bootstrap or image recipe or performed end-to-end validation**; SDK-conformance validation and density measurements are also unavailable. This native VM backend does not use the old container `cap-drop=ALL` restriction.
 
 ## Isolation and resource limits {#isolation}
 
@@ -20,13 +20,15 @@ The native supervisor embeds `pvisor::PVisor` with only `VmExecutor` and holds i
 
 The launch callback joins the identity-bound cgroup **before exec**, using a pre-opened `cgroup.procs` FD under the owner lock and checking started/deletion/tombstone markers. Supervisor startup verifies membership instead of moving an already-running Tokio process; supervisor/Tokio allocations and subsequent VM/helper children are charged inside the sandbox budget. Direct hidden-command invocation outside that cgroup fails closed.
 
-Native OverlayNet supplies VM outbound networking; OpenSandbox network-policy requests remain unsupported and rejected, not deny-all egress. Trust the host account, daemon/firmware and prepared image; private state and same-UID IPC do not protect against hostile host-UID/root code. Other local users may reach loopback publications, so real service authentication and host controls remain necessary. Secrets stay out of supervisor argv and host environment but persist in private records. No security audit or hostile multi-user assurance is claimed.
+Native OverlayNet supplies VM outbound networking. OpenSandbox network-policy requests are unsupported and rejected; rejecting a request does not change egress to deny-all.
+
+The host account, daemon/firmware and prepared image must be trusted. Private state and same-UID IPC cannot block hostile same-UID or root code. Other local users may reach loopback publications, so configure service authentication and host access controls. Secrets stay out of supervisor argv and host environment but persist in private records. No security audit results are available; hostile multi-user isolation is outside the protection scope.
 
 Private IPC authenticates same-UID peers plus owner, sandbox ID, generation and secret token; durable identity binds boot ID and cgroup device/inode. IDs are never reused or relaunched. Lost IPC is uncertainty, not Missing or cleanup proof. Durable deletion intent and the supervisor exclusive lock fence late launch; cleanup uses identity-bound `cgroup.kill`, never a persisted PID or PID-based kill, and confirms an empty cgroup plus released lock before capacity release. Replaced or missing same-boot cgroups without durable tombstone proof do not prove absence.
 
 ## OpenSandbox profile {#profile}
 
-Compatibility is pinned to OpenSandbox **1.1.0**, tag `release-1.1.0`, commit `b1a29cf93a823a95913f7943010febb3f29de05c`. It is a partial API profile, not full OpenSandbox or unmodified SDK end-to-end conformance.
+Compatibility is pinned to OpenSandbox **1.1.0**, tag `release-1.1.0`, commit `b1a29cf93a823a95913f7943010febb3f29de05c`. Support is limited to the partial API profile below; full OpenSandbox and unmodified SDK end-to-end conformance have not been validated.
 
 | Capability | Current behavior |
 | --- | --- |

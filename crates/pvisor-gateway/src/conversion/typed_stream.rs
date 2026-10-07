@@ -105,6 +105,7 @@ struct StreamDecoder {
     emitted_start: bool,
     finished: bool,
     terminal_observed: bool,
+    candidate_terminals: BTreeMap<u64, bool>,
     decode_failed: bool,
     metrics: StreamMetrics,
     tool_ids: HashMap<(usize, usize), String>,
@@ -124,6 +125,7 @@ impl StreamDecoder {
             emitted_start: false,
             finished: false,
             terminal_observed: false,
+            candidate_terminals: BTreeMap::new(),
             decode_failed: false,
             metrics: StreamMetrics::default(),
             tool_ids: HashMap::new(),
@@ -160,22 +162,25 @@ impl StreamDecoder {
                     value.get("type").and_then(Value::as_str),
                     Some("response.completed" | "response.incomplete" | "response.failed")
                 ),
-                LlmProtocol::ChatCompletions => value
-                    .get("choices")
-                    .and_then(Value::as_array)
-                    .is_some_and(|choices| {
-                        choices
-                            .iter()
-                            .any(|choice| choice.get("finish_reason").is_some_and(Value::is_string))
-                    }),
-                LlmProtocol::Gemini => value
-                    .get("candidates")
-                    .and_then(Value::as_array)
-                    .is_some_and(|candidates| {
-                        candidates.iter().any(|candidate| {
-                            candidate.get("finishReason").is_some_and(Value::is_string)
-                        })
-                    }),
+                LlmProtocol::ChatCompletions | LlmProtocol::Gemini => {
+                    let (candidates, finish) = if self.protocol == LlmProtocol::ChatCompletions {
+                        ("choices", "finish_reason")
+                    } else {
+                        ("candidates", "finishReason")
+                    };
+                    if let Some(candidates) = value.get(candidates).and_then(Value::as_array) {
+                        for candidate in candidates {
+                            let index = candidate.get("index").and_then(Value::as_u64).unwrap_or(0);
+                            let terminal = self.candidate_terminals.entry(index).or_default();
+                            *terminal |= candidate
+                                .get(finish)
+                                .and_then(Value::as_str)
+                                .is_some_and(|reason| !reason.trim().is_empty());
+                        }
+                    }
+                    !self.candidate_terminals.is_empty()
+                        && self.candidate_terminals.values().all(|terminal| *terminal)
+                }
                 LlmProtocol::Unknown => false,
             };
             match self.protocol {
@@ -207,8 +212,8 @@ impl StreamDecoder {
             "provider stream ended inside an SSE frame"
         );
         anyhow::ensure!(
-            self.terminal_observed,
-            "provider stream ended without a protocol terminal event"
+            self.terminal_observed && self.candidate_terminals.values().all(|terminal| *terminal),
+            "provider stream ended without a protocol terminal event for every candidate"
         );
         if matches!(
             self.protocol,
@@ -1364,6 +1369,43 @@ mod tests {
         }
     }
     use super::*;
+
+    #[test]
+    fn eof_requires_a_nonempty_terminal_for_every_observed_candidate() {
+        for (protocol, key, finish) in [
+            (LlmProtocol::ChatCompletions, "choices", "finish_reason"),
+            (LlmProtocol::Gemini, "candidates", "finishReason"),
+        ] {
+            for late_candidate in [false, true] {
+                let mut decoder = StreamDecoder::new(protocol.clone(), "m");
+                let mut first = json!({"index": 0});
+                first[finish] = json!("stop");
+                let mut second = json!({"index": 1});
+                second[finish] = json!("");
+                let frame = |candidates: Vec<Value>| {
+                    let mut value = json!({});
+                    value[key] = json!(candidates);
+                    format!("data: {value}\n\n")
+                };
+                if late_candidate {
+                    decoder.push_chunk(frame(vec![first]).as_bytes()).unwrap();
+                    decoder.push_chunk(frame(vec![second]).as_bytes()).unwrap();
+                } else {
+                    decoder
+                        .push_chunk(frame(vec![first, second]).as_bytes())
+                        .unwrap();
+                }
+                decoder.push_chunk(b"data: [DONE]\n\n").unwrap();
+                assert!(decoder.finish().is_err());
+                let mut terminal = json!({"index": 1});
+                terminal[finish] = json!("stop");
+                decoder
+                    .push_chunk(frame(vec![terminal]).as_bytes())
+                    .unwrap();
+                assert!(decoder.finish().is_ok());
+            }
+        }
+    }
 
     #[test]
     fn tool_arguments_survive_every_fragment_boundary() {

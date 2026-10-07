@@ -282,7 +282,7 @@ impl RunRecord {
             }
         });
         let path = stage.join(RUN_META_FILENAME);
-        let record: Self = serde_json::from_slice(&fs::read(&path)?)?;
+        let mut record: Self = serde_json::from_slice(&fs::read(&path)?)?;
         anyhow::ensure!(
             record.schema_version == 1,
             "unsupported Run record schema {}",
@@ -293,6 +293,21 @@ impl RunRecord {
                 record.run_id == job.run_id,
                 "execution Job record owner mismatch"
             );
+        }
+        if let Some(overlay) = record.overlay.as_mut()
+            && pvisor_overlay_core::apply::reconcile_terminal_overlay(overlay)?
+        {
+            // Applied is published before ledger commit. Preserve its original
+            // generation while pending so locked recovery can still match it.
+            if !pvisor_overlay_core::apply::has_pending_applies(overlay)? {
+                overlay.generation = overlay
+                    .generation
+                    .checked_add(1)
+                    .context("workspace generation exhausted")?;
+            }
+            if let Some(lower) = record.overlay_lowers.last_mut() {
+                *lower = overlay.target.clone();
+            }
         }
         Ok(record)
     }

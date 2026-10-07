@@ -10,7 +10,7 @@
 
 Create、对 Running VM 的 Inspect 与 resume 就绪检查经 bridge 要求真实 HTTP 200 的 execd `/ping`、JSON `initialized: true` 的 `/ready` 和 egress `/healthz`，响应体有界。daemon 不注入／初始化 execd，也不合成 command/SSE/file 响应。Python SDK 初始化即使没有网络策略也会解析两个端点。
 
-Bootstrap 与镜像配方**未提供，也未经端到端验证**。旧容器的 `cap-drop=ALL` 限制不适用于此原生 VM 后端；upstream 镜像名称不是原生 bootstrap/vsock 适配器。不提供假就绪，也没有 SDK 兼容或密度证据。
+需要自行准备上述 bootstrap 与 vsock bridge；直接使用 upstream 镜像名称不能满足这些要求。项目**尚未提供 bootstrap 或镜像配方，也未做端到端验证**，目前没有 SDK 兼容性验证或密度测量结果。此原生 VM 后端不使用旧容器的 `cap-drop=ALL` 限制。
 
 ## 隔离与资源限制 {#isolation}
 
@@ -20,13 +20,15 @@ Bootstrap 与镜像配方**未提供，也未经端到端验证**。旧容器的
 
 启动 callback 在 owner 锁内检查 started／删除／tombstone marker，通过预先打开的 `cgroup.procs` FD 在 **exec 之前**加入身份绑定的 cgroup。Supervisor 启动时核验成员关系，不迁移已运行的 Tokio 进程；supervisor/Tokio 分配与后续 VM/helper 子进程均计入 sandbox 预算。直接在该 cgroup 外调用隐藏命令会失败关闭。
 
-原生 OverlayNet 提供 VM 出口网络；OpenSandbox 网络策略请求仍不支持并被拒绝，不等于 deny-all egress。宿主账户、daemon/firmware 和预制镜像属于可信输入；私有状态与同 UID IPC 不防御敌对宿主 UID/root 代码。其他本机用户可能访问 loopback 发布，仍需真实服务鉴权与宿主控制。秘密不进入 supervisor argv 或宿主环境，但保存在私有记录中。不承诺安全审计或敌对多用户隔离。
+原生 OverlayNet 提供 VM 出口网络。OpenSandbox 网络策略请求不受支持，会被拒绝；拒绝请求不会将出口改为 deny-all。
+
+宿主账户、daemon/firmware 和预制镜像必须可信。私有状态与同 UID IPC 无法阻止敌对同 UID 或 root 代码。其他本机用户可能访问 loopback 发布，应配置服务鉴权与宿主访问控制。秘密不进入 supervisor argv 或宿主环境，但保存在私有记录中。目前没有安全审计结果；敌对多用户隔离不在保护范围内。
 
 私有 IPC 校验同 UID peer、owner、sandbox ID、generation 与秘密 token；持久身份绑定 boot ID 和 cgroup device/inode。ID 不复用、不重新启动。IPC 丢失表示不确定，不是 Missing 或清理证据。持久删除意图与 supervisor 独占锁阻止迟到启动；清理使用身份绑定的 `cgroup.kill`，不保存 PID 或按 PID kill，确认 cgroup 为空且 owner 锁释放后才释放容量。同一 boot 下没有持久 tombstone 证据的 cgroup 被替换或丢失不证明对象不存在。
 
 ## OpenSandbox 接口范围 {#profile}
 
-兼容基线固定为 OpenSandbox **1.1.0**，tag `release-1.1.0`，commit `b1a29cf93a823a95913f7943010febb3f29de05c`。这是部分 API profile，不是完整 OpenSandbox 或未经修改 SDK 的端到端兼容承诺。
+兼容基线固定为 OpenSandbox **1.1.0**，tag `release-1.1.0`，commit `b1a29cf93a823a95913f7943010febb3f29de05c`。支持范围限于下表中的部分 API；完整 OpenSandbox 与未经修改 SDK 的端到端兼容性尚未验证。
 
 | 能力 | 当前行为 |
 | --- | --- |

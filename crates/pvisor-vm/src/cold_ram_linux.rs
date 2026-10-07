@@ -9,8 +9,8 @@ use std::{
     io,
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -293,8 +293,10 @@ fn ranges_excluding_kernel(
             || !(region.as_ptr() as usize).is_multiple_of(page as usize)
             || !region.len().is_multiple_of(page as u64)
         {
-            return Err(io::Error::new(io::ErrorKind::Unsupported,
-                "Linux cold RAM requires private anonymous writable ordinary RAM; file-backed/COW/shared/hugetlb RAM is unsupported"));
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Linux cold RAM requires private anonymous writable ordinary RAM; file-backed/COW/shared/hugetlb RAM is unsupported",
+            ));
         }
         result.push(Range {
             start: region.as_ptr() as u64,
@@ -325,6 +327,37 @@ fn quiesce_nonempty<T, R>(
     } else {
         action(work)
     }
+}
+
+fn publish_snapshot<S: ColdRamStore>(
+    pager: &Mutex<Pager<S>>,
+    pool: &Mutex<S>,
+    snapshot: &Snapshot,
+) -> io::Result<Option<S::Object>> {
+    let object = {
+        let mut store = pool
+            .lock()
+            .map_err(|_| io::Error::other("store poisoned"))?;
+        match store.put(&snapshot.bytes) {
+            Ok(object) => Some(object),
+            Err(error) => {
+                // A healthy capacity rejection preserves RAM; a broken store
+                // must not silently strand references to existing cold objects.
+                store.stats().map_err(|_| error)?;
+                None
+            }
+        }
+    };
+    // Fault recovery locks pager before store. Release store before taking
+    // pager here, including the incompressible/capacity rejection path.
+    if object.is_none() {
+        pager
+            .lock()
+            .map_err(|_| io::Error::other("pager poisoned"))?
+            .pages[snapshot.index]
+            .eligible_at = Instant::now() + Duration::from_secs(30);
+    }
+    Ok(object)
 }
 
 impl<S: ColdRamStore> Pager<S> {
@@ -592,17 +625,29 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
         // Geometry only: a consumer may attribute smaps PSS to this union only
         // if complete VMA intervals exactly cover it. A larger coalesced VMA is
         // an envelope, not isolated RAM; its per-RAM PSS must be unavailable.
-        eprintln!("pvisor-cold-linux-layout host_page_bytes=4096 block_bytes={BLOCK} eligible_mappings={} eligible_bytes_total={eligible_bytes} kernel_excluded={} pss_attribution=requires_exact_vma_union pid={pid}", mappings.len(), kernel.is_some());
+        eprintln!(
+            "pvisor-cold-linux-layout host_page_bytes=4096 block_bytes={BLOCK} eligible_mappings={} eligible_bytes_total={eligible_bytes} kernel_excluded={} pss_attribution=requires_exact_vma_union pid={pid}",
+            mappings.len(),
+            kernel.is_some()
+        );
         for region in pager.memory.iter() {
             if mappings
                 .iter()
                 .any(|range| range.start == region.as_ptr() as u64 && range.len == region.len())
             {
-                eprintln!("pvisor-cold-linux-region host_start=0x{:x} length={} guest_start=0x{:x} pid={pid}", region.as_ptr() as usize, region.len(), region.start_addr().0);
+                eprintln!(
+                    "pvisor-cold-linux-region host_start=0x{:x} length={} guest_start=0x{:x} pid={pid}",
+                    region.as_ptr() as usize,
+                    region.len(),
+                    region.start_addr().0
+                );
             }
         }
         if let Some(kernel) = kernel {
-            eprintln!("pvisor-cold-linux-kernel-excluded host_start=0x{:x} length={} guest_start=0x{:x} reason=trusted_raw_firmware pid={pid}", kernel.host_address, kernel.length, kernel.guest_address);
+            eprintln!(
+                "pvisor-cold-linux-kernel-excluded host_start=0x{:x} length={} guest_start=0x{:x} reason=trusted_raw_firmware pid={pid}",
+                kernel.host_address, kernel.length, kernel.guest_address
+            );
         }
     }
     let stop = Arc::new(AtomicBool::new(false));
@@ -668,23 +713,12 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             let mut put_rejections = 0;
             for snapshot in &batch.0 {
                 // Neither VMM/barrier nor pager state is held during publication.
-                let mut store = pool.lock().unwrap_or_else(|_| fatal("store poisoned"));
-                let object = match store.put(&snapshot.bytes) {
-                    Ok(object) => Some(object),
-                    Err(error) => {
-                        // A complete capacity rejection preserves RAM. A broken
-                        // session must not silently strand existing cold objects.
-                        store.stats().unwrap_or_else(|_| fatal(error));
-                        put_rejections += 1;
-                        None
-                    }
-                };
+                let object = publish_snapshot(&worker_pager, &pool, snapshot)
+                    .unwrap_or_else(|error| fatal(error));
                 if let Some(object) = object {
                     objects.push((snapshot, Some(object)));
                 } else {
-                    // Cooldown is pager metadata, not a live RAM operation.
-                    worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned"))
-                        .pages[snapshot.index].eligible_at = Instant::now() + Duration::from_secs(30);
+                    put_rejections += 1;
                 }
             }
             worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).put_rejections += put_rejections;
@@ -749,10 +783,15 @@ mod tests {
         restores: usize,
         releases: usize,
         corrupt: bool,
+        reject_barrier: Option<Arc<std::sync::Barrier>>,
     }
     impl ColdRamStore for CompressedStore {
         type Object = Vec<u8>;
         fn put(&mut self, bytes: &[u8]) -> io::Result<Vec<u8>> {
+            if let Some(barrier) = &self.reject_barrier {
+                barrier.wait();
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "incompressible"));
+            }
             let mut encoder =
                 flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
             encoder.write_all(bytes)?;
@@ -888,6 +927,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn rejected_publication_does_not_deadlock_fault_recovery() {
+        let mut state = pager(1, false);
+        let batch = state.sample();
+        let pool = state.store.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        pool.lock().unwrap().reject_barrier = Some(barrier.clone());
+        let state = Arc::new(Mutex::new(state));
+        let resolver_state = state.clone();
+        let resolver_pool = pool.clone();
+        let resolver = std::thread::spawn(move || {
+            let _pager = resolver_state.lock().unwrap();
+            barrier.wait();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                if resolver_pool.try_lock().is_ok() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "publication holds store while waiting for fault recovery's pager lock"
+                );
+                std::thread::yield_now();
+            }
+        });
+        assert!(
+            publish_snapshot(&state, &pool, &batch.0[0])
+                .unwrap()
+                .is_none()
+        );
+        resolver.join().unwrap();
+        let state = state.lock().unwrap();
+        assert!(state.pages[0].cold.is_none());
+        assert!(state.pages[0].eligible_at > Instant::now());
+        assert_eq!(state.discarded, 0);
     }
 
     #[test]
@@ -1040,11 +1116,9 @@ mod tests {
             )
         }
         .unwrap();
-        let writable = GuestMemoryMmap::from_regions(vec![GuestRegionMmap::new(
-            writable_raw,
-            GuestAddress(BLOCK as u64),
-        )
-        .unwrap()])
+        let writable = GuestMemoryMmap::from_regions(vec![
+            GuestRegionMmap::new(writable_raw, GuestAddress(BLOCK as u64)).unwrap(),
+        ])
         .unwrap();
         assert!(ranges_excluding_kernel(&writable, u64::MAX, Some(identity)).is_err());
         let file = Arc::new(tempfile::tempfile().unwrap());
@@ -1098,7 +1172,7 @@ mod tests {
             legacy::DummyIrqChip,
             virtio::{Balloon, DeviceQueue, InterruptTransport, VirtioDevice},
         };
-        use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
+        use crate::utils::eventfd::{EFD_NONBLOCK, EventFd};
         let report = crate::devices::virtio::VirtQueue::new(GuestAddress(0x1000), memory, 8);
         report.dtable[0].addr.set(BLOCK as u64);
         report.dtable[0].len.set(BLOCK as u32);
@@ -1128,7 +1202,7 @@ mod tests {
     #[test]
     #[cfg(not(feature = "tee"))]
     fn ordinary_balloon_discard_is_unchanged_and_cold_policy_acknowledges_without_discard() {
-        use crate::devices::virtio::memory_gate::{register, ColdFaultActivity};
+        use crate::devices::virtio::memory_gate::{ColdFaultActivity, register};
         let pager = pager(2, false);
         let memory = &pager.memory;
         let gate = register(memory);
@@ -1165,7 +1239,7 @@ mod tests {
     #[cfg(not(feature = "tee"))]
     #[ignore = "requires permitted kernel-fault userfaultfd access; real balloon free-page queue"]
     fn actual_balloon_reports_cannot_discard_resident_or_cold_pager_ram() {
-        use crate::devices::virtio::memory_gate::{register, ColdFaultActivity};
+        use crate::devices::virtio::memory_gate::{ColdFaultActivity, register};
         let mut state = pager(2, false);
         let memory = state.memory.clone();
         let gate = register(&memory);
@@ -1205,16 +1279,18 @@ mod tests {
             "resident reporting must not create unowned missing pages"
         );
         let object = state.store.lock().unwrap().put(&expected).unwrap();
-        assert!(state
-            .commit(
-                &Snapshot {
-                    index: 1,
-                    bytes: expected.clone()
-                },
-                object
-            )
-            .unwrap()
-            .is_none());
+        assert!(
+            state
+                .commit(
+                    &Snapshot {
+                        index: 1,
+                        bytes: expected.clone()
+                    },
+                    object
+                )
+                .unwrap()
+                .is_none()
+        );
         let pager = Arc::new(Mutex::new(state));
         let stop = Arc::new(AtomicBool::new(false));
         let resolver = resolver(pager.clone(), stop.clone());

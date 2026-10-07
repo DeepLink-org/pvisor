@@ -50,7 +50,7 @@ q35 和 microvm 使用同一 Ubuntu 模板；样本和百分位数与其他批�
 
 ### 任务与资源 {#product-v1}
 
-[合入](apply.md) · [网络](network.md) · [并发](density.md) · [隔离](isolation-tests.md) · [回放](replay-fidelity.md) · [审查](supervision-cost.md)。未测的业界方案明确标记，不填入厂商宣传数字。
+[合入](supervision-cost.md#apply-cost) · [网络](network.md) · [并发](density.md) · [隔离](isolation-tests.md) · [回放](replay-fidelity.md) · [审查](supervision-cost.md)。未测的业界方案明确标记，不填入厂商宣传数字。
 
 ### 文件系统工程实验 {#filesystem-service}
 

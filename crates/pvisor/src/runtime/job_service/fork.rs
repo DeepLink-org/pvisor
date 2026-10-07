@@ -1,6 +1,6 @@
 use super::{
     JobSelection, RestoredAttempt, RuntimeJobService, ServiceContext, check_selected_record,
-    validate_request_id,
+    paths::fork_stage_candidate, validate_request_id,
 };
 use crate::VmExecutor;
 use crate::runtime::job_execution::JobState;
@@ -235,21 +235,4 @@ where
     .await?;
     super::lifecycle::confirm_restored_completion(&completed_stage, &child_id)?;
     Ok(ExecutionForkResponse::Finished { exit_code })
-}
-
-fn fork_stage_candidate(path: &Path) -> anyhow::Result<PathBuf> {
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    fn resolve(path: &Path) -> anyhow::Result<PathBuf> {
-        if path.try_exists()? {
-            return Ok(path.canonicalize()?);
-        }
-        let name = path.file_name().context("invalid child stage path")?;
-        let parent = path.parent().context("child stage has no parent")?;
-        Ok(resolve(parent)?.join(name))
-    }
-    resolve(&path)
 }

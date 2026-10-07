@@ -11,17 +11,21 @@ mod effects;
 mod fork;
 pub use fork::{ExecutionForkRequest, ExecutionForkResponse};
 mod lifecycle;
+pub(crate) mod paths;
+pub(crate) mod policy;
 #[cfg(test)]
 mod tests;
 mod views;
 pub(crate) use capture::require_execution;
 pub use capture::{CaptureRequest, CaptureResponse};
-#[cfg(test)]
-pub(crate) use lifecycle::owns_restore_transition;
+
 pub(crate) use lifecycle::preserve_apply_target;
 pub use lifecycle::{RestoredAttempt, ResumeRequest, ResumeResponse};
+mod managed;
+pub use managed::ManagedJobRun;
+/// Compatibility name for managed restored execution.
+pub type ManagedRestoredRun = ManagedJobRun;
 mod restored;
-pub use restored::ManagedRestoredRun;
 mod workspace;
 pub use effects::{ApplyRequest, DropRequest, MutationOutcome, MutationResponse};
 pub use views::{
@@ -64,6 +68,8 @@ pub struct JobSelection {
 /// Stateless facade. No CLI argument, output or transport dependencies.
 pub struct RuntimeJobService;
 impl RuntimeJobService {
+    /// Start a bare Attempt without installing a durable Job completion owner.
+    /// Supervisors retain their own lifecycle; Job frontends use `start_managed`.
     pub async fn start(
         visor: &crate::PVisor,
         spec: pvisor_core::RunSpec,

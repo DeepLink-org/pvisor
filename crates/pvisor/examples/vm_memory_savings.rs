@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
+    os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -28,6 +29,8 @@ enum Mode {
 }
 #[derive(Parser)]
 struct Args {
+    #[arg(long, default_value_t = 256)]
+    memory_mib: u32,
     #[arg(long)]
     rootfs: PathBuf,
     #[arg(long)]
@@ -123,7 +126,11 @@ fn expected(pattern: &str) -> String {
         }
         digest.update(page);
     }
-    format!("{:x}", digest.finalize())
+    digest
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 fn group() -> anyhow::Result<PathBuf> {
     let membership = fs::read_to_string("/proc/self/cgroup")?;
@@ -148,8 +155,35 @@ fn memory() -> anyhow::Result<Value> {
         }
         Ok(values.into())
     };
+    fn resident(root: &Path, processes: &mut Vec<Value>) -> anyhow::Result<u64> {
+        let mut pss = 0;
+        for pid in fs::read_to_string(root.join("cgroup.procs"))?.lines() {
+            let raw = fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))?;
+            let bytes = raw
+                .lines()
+                .find_map(|line| line.strip_prefix("Pss:"))
+                .context("missing resident PSS")?
+                .split_whitespace()
+                .next()
+                .context("missing PSS value")?
+                .parse::<u64>()?
+                * 1024;
+            processes.push(json!({"pid":pid.parse::<u32>()?,"pss_bytes":bytes,"smaps_rollup":raw}));
+            pss += bytes;
+        }
+        for child in fs::read_dir(root)? {
+            let child = child?;
+            if child.file_type()?.is_dir() {
+                pss += resident(&child.path(), processes)?;
+            }
+        }
+        Ok(pss)
+    }
+    let mut processes = Vec::new();
+    let pss = resident(&root, &mut processes)?;
     Ok(
         json!({"cgroup":root,"current":fs::read_to_string(root.join("memory.current"))?.trim().parse::<u64>()?,
+        "pss_bytes":pss,"processes":processes,
         "peak":fs::read_to_string(root.join("memory.peak"))?.trim().parse::<u64>()?,
         "stat":map("memory.stat")?,"cpu":map("cpu.stat")?,"events":map("memory.events")?}),
     )
@@ -198,11 +232,14 @@ async fn command(
     .await
     .context("guest command timed out")?
 }
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     if pvisor::run_krun_internal_if_requested()? {
         return Ok(());
     }
+    tokio::runtime::Runtime::new()?.block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
     let a = Args::parse();
     ensure!(
         matches!(
@@ -212,6 +249,10 @@ async fn main() -> anyhow::Result<()> {
         "unknown pattern"
     );
     ensure!((5..=60).contains(&a.wait), "wait must be 5..60 seconds");
+    ensure!(
+        [256, 512].contains(&a.memory_mib),
+        "RAM must be 256 or 512 MiB"
+    );
     fs::create_dir(&a.output)?;
     let root = a.output.canonicalize()?;
     ensure!(root.as_os_str().len() < 70, "short output required");
@@ -222,7 +263,7 @@ async fn main() -> anyhow::Result<()> {
         "2 GiB/zero swap required"
     );
     let start = Instant::now();
-    let mut report = json!({"schema":"pvisor-memory-savings/v1","mode":a.mode,"pattern":a.pattern,"wait":a.wait,"cpus":2,"memory_mib":256,"payload_bytes":BYTES,"correctness":"failed","phases":[],"tasks":[],"cleanup":false});
+    let mut report = json!({"schema":"pvisor-memory-savings/v1","mode":a.mode,"pattern":a.pattern,"wait":a.wait,"cpus":2,"memory_mib":a.memory_mib,"payload_bytes":BYTES,"correctness":"failed","phases":[],"tasks":[],"cleanup":false});
     persist(&root, &report)?;
     let digest = tokio::task::spawn_blocking({
         let pattern = a.pattern.clone();
@@ -236,10 +277,11 @@ async fn main() -> anyhow::Result<()> {
     let settings = VmSettings {
         rootfs: Some(a.rootfs.canonicalize()?),
         library_dir: Some(a.firmware.canonicalize()?),
-        memory_mib: 256,
+        memory_mib: a.memory_mib,
         cpus: 2,
         cold_ram_compression: a.mode == Mode::Cold,
         ram_compression: a.mode == Mode::Compressed,
+        ram_backing: (a.mode != Mode::Cold).then(|| root.join("live.ram")),
         ..Default::default()
     };
     let runtime = PVisor::builder()
@@ -284,10 +326,18 @@ async fn main() -> anyhow::Result<()> {
                 handle.pause_vm().await?;
             }
             Mode::Raw | Mode::Compressed => {
-                handle.offload(None).await?;
+                let memory = handle.offload(None).await?;
+                ensure!(
+                    memory.backed_bytes >= u64::from(a.memory_mib) * 1024 * 1024,
+                    "missing RAM backing"
+                );
+                report["offload"] = json!(memory);
             }
             Mode::Release => {
-                let empty = format!("{:x}", Sha256::digest([]));
+                let empty = Sha256::digest([])
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>();
                 report["tasks"]
                     .as_array_mut()
                     .unwrap()
@@ -296,6 +346,14 @@ async fn main() -> anyhow::Result<()> {
             _ => {}
         }
         report["park_ms"] = json!(transition.elapsed().as_secs_f64() * 1000.);
+        if matches!(a.mode, Mode::Raw | Mode::Compressed) {
+            report["storage_allocated_bytes"] = json!(if a.mode == Mode::Compressed {
+                pvisor::ram_backing::CompressedRam::open(fs::File::open(root.join("live.ram"))?)?
+                    .allocated_bytes()?
+            } else {
+                fs::metadata(root.join("live.ram"))?.blocks() * 512
+            });
+        }
         phase(&root, &mut report, "parked", start)?;
         for second in 1..=a.wait {
             sleep(Duration::from_secs(1)).await;

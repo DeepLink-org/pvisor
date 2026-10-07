@@ -72,8 +72,8 @@ pub fn embed_kernel() {
     let source = format!(
         "mod packed {{ include!({decoder_literal}); }}\n\
          pub static KERNEL: std::sync::LazyLock<std::sync::Arc<[u8]>> = std::sync::LazyLock::new(|| {{\n\
-             let mut span = crate::startup_profile::Span::new("kernel_unpack", "runtime");\n\
-             let kernel = packed::unpack(include_bytes!({kernel_literal})).expect("invalid embedded kernel bundle");\n\
+             let mut span = crate::startup_profile::Span::new(\"kernel_unpack\", \"runtime\");\n\
+             let kernel = packed::unpack(include_bytes!({kernel_literal})).expect(\"invalid embedded kernel bundle\");\n\
              span.complete(Some(kernel.len()));\n\
              kernel\n\
          }});\n\

@@ -16,301 +16,362 @@ extra_css = ["assets/stylesheets/extra.css"]
 
 [[project.nav]]
 
-[[project.nav."Why pVisor"]]
-"Why pVisor" = "why/index.md"
+[[project.nav."Quick start"]]
 
-[[project.nav."Why pVisor"]]
-"Trust ladder and scale" = "why/trust-ladder.md"
-
-[[project.nav."Why pVisor"]]
-"Use cases" = "why/use-cases.md"
-
-[[project.nav."Why pVisor"]]
-"Comparing existing approaches" = "why/comparisons.md"
-
-[[project.nav."Why pVisor"]]
-"When you do not need pVisor" = "why/when-not-to-use.md"
-
-[[project.nav."Why pVisor"]]
-"FAQ" = "why/faq.md"
-
-[[project.nav]]
-
-[[project.nav."Get started"]]
+[[project.nav."Quick start"."Getting started"]]
 "Start here" = "start/index.md"
 
-[[project.nav."Get started"]]
+[[project.nav."Quick start"."Getting started"]]
 "What is PolicyVisor?" = "start/what-is-pvisor.md"
 
-[[project.nav."Get started"]]
+[[project.nav."Quick start"."Getting started"]]
 "Installation" = "start/installation.md"
 
-[[project.nav."Get started"]]
+[[project.nav."Quick start"."Getting started"]]
 "Your first run" = "start/first-run.md"
 
-[[project.nav."Get started"]]
+[[project.nav."Quick start"."Getting started"]]
 "After your first run" = "start/next-steps.md"
 
+
+[[project.nav."Quick start"]]
+
+[[project.nav."Quick start"."About pVisor"]]
+"Why pVisor" = "why/index.md"
+
+[[project.nav."Quick start"."About pVisor"]]
+"Trust ladder and scale" = "why/trust-ladder.md"
+
+[[project.nav."Quick start"."About pVisor"]]
+"Use cases" = "why/use-cases.md"
+
+[[project.nav."Quick start"."About pVisor"]]
+"Comparing existing approaches" = "why/comparisons.md"
+
+[[project.nav."Quick start"."About pVisor"]]
+"When you do not need pVisor" = "why/when-not-to-use.md"
+
+[[project.nav."Quick start"."About pVisor"]]
+"FAQ" = "why/faq.md"
+
+
+
 [[project.nav]]
 
-[[project.nav."Learning path"]]
-"Learn pVisor through tasks" = "cases/index.md"
+[[project.nav."User guide"]]
 
-[[project.nav."Learning path"]]
-"1. From a command to a Job" = "cases/01-first-job.md"
-
-[[project.nav."Learning path"]]
-"2. Review and accept file changes" = "cases/02-review-and-decide.md"
-
-[[project.nav."Learning path"]]
-"3. Save a proposal and explore a branch" = "cases/03-checkpoint-and-fork.md"
-
-[[project.nav."Learning path"]]
-"4. Set boundaries for untrusted work" = "cases/04-boundaries.md"
-
-[[project.nav."Learning path"]]
-"5. Replay trajectories and choose restoration tools" = "cases/05-tools-and-restoration.md"
-
-[[project.nav]]
-
-[[project.nav."Guides"]]
+[[project.nav."User guide"."Tasks"]]
 "Guides" = "guides/index.md"
 
-[[project.nav."Guides"]]
-
-[[project.nav."Guides"."Connect your agent"]]
-"Connect your agent" = "guides/agents/index.md"
-
-[[project.nav."Guides"."Connect your agent"]]
-"Claude Code" = "guides/agents/claude-code.md"
-
-[[project.nav."Guides"."Connect your agent"]]
-"Codex CLI" = "guides/agents/codex.md"
-
-[[project.nav."Guides"."Connect your agent"]]
-"Gemini CLI" = "guides/agents/gemini-cli.md"
-
-[[project.nav."Guides"."Connect your agent"]]
-"aider" = "guides/agents/aider.md"
-
-[[project.nav."Guides"."Connect your agent"]]
-"OpenCode" = "guides/agents/opencode.md"
-
-[[project.nav."Guides"."Connect your agent"]]
-"Scripts and automation commands" = "guides/agents/custom-scripts.md"
-
-[[project.nav."Guides"]]
+[[project.nav."User guide"."Tasks"]]
 "Review and apply changes" = "guides/review-apply.md"
 
-[[project.nav."Guides"]]
+[[project.nav."User guide"."Tasks"]]
 "Logical checkpoints and forks" = "guides/fork-checkpoint.md"
 
-[[project.nav."Guides"]]
-
-[[project.nav."Guides"."Policies"]]
-"File policies" = "guides/policies/files.md"
-
-[[project.nav."Guides"."Policies"]]
-"Control network access with OverlayNet" = "guides/policies/network.md"
-
-[[project.nav."Guides"."Policies"]]
-"Credentials and environment" = "guides/policies/credentials.md"
-
-[[project.nav."Guides"]]
-
-[[project.nav."Guides"."Executors"]]
-"Choose an executor" = "guides/executors/index.md"
-
-[[project.nav."Guides"."Executors"]]
-"Host executor" = "guides/executors/host.md"
-
-[[project.nav."Guides"."Executors"]]
-"Native OCI containers" = "guides/executors/container.md"
-
-[[project.nav."Guides"."Executors"]]
-"pVisor VM" = "guides/executors/vm.md"
-
-[[project.nav."Guides"]]
+[[project.nav."User guide"."Tasks"]]
 "Capture agent trajectories" = "guides/capture.md"
 
-[[project.nav."Guides"]]
+[[project.nav."User guide"."Tasks"]]
 "SandboxReplay" = "guides/replay.md"
 
-[[project.nav."Guides"]]
+[[project.nav."User guide"."Tasks"]]
 "Run in CI" = "guides/ci.md"
 
-[[project.nav."Guides"]]
+[[project.nav."User guide"."Tasks"]]
 "Parallel agents" = "guides/parallel-agents.md"
 
-[[project.nav."Guides"]]
-
-[[project.nav."Guides"."Daemon quickstart"]]
-"Run the single-node daemon" = "guides/daemon/index.md"
-
-[[project.nav."Guides"."Daemon quickstart"]]
-"Daemon and native service entry points" = "guides/daemon/service.md"
-
-[[project.nav."Guides"."Daemon quickstart"]]
-"Operate the single-node daemon" = "guides/daemon/operations.md"
-
-[[project.nav."Guides"."Daemon quickstart"]]
-"Daemon runtime and integration boundaries" = "guides/daemon/boundaries.md"
-
-[[project.nav."Guides"]]
+[[project.nav."User guide"."Tasks"]]
 "RL rollouts" = "guides/rl-rollouts.md"
 
-[[project.nav."Guides"]]
+[[project.nav."User guide"."Tasks"]]
 "Troubleshoot a Run" = "guides/troubleshooting.md"
 
-[[project.nav]]
 
-[[project.nav."Concepts"]]
-"Concepts and boundaries" = "concepts/index.md"
+[[project.nav."User guide"]]
 
-[[project.nav."Concepts"]]
-"Jobs and storage" = "concepts/jobs.md"
+[[project.nav."User guide"."Connect your agent"]]
+"Connect your agent" = "guides/agents/index.md"
 
-[[project.nav."Concepts"]]
-"Staging and apply semantics" = "concepts/staging.md"
+[[project.nav."User guide"."Connect your agent"]]
+"Claude Code" = "guides/agents/claude-code.md"
 
-[[project.nav."Concepts"]]
-"Capabilities, evidence, and guarantees" = "concepts/capabilities-and-evidence.md"
+[[project.nav."User guide"."Connect your agent"]]
+"Codex CLI" = "guides/agents/codex.md"
 
-[[project.nav."Concepts"]]
-"Policy model" = "concepts/policy-model.md"
+[[project.nav."User guide"."Connect your agent"]]
+"Gemini CLI" = "guides/agents/gemini-cli.md"
 
-[[project.nav."Concepts"]]
-"Glossary" = "concepts/glossary.md"
+[[project.nav."User guide"."Connect your agent"]]
+"aider" = "guides/agents/aider.md"
 
-[[project.nav]]
+[[project.nav."User guide"."Connect your agent"]]
+"OpenCode" = "guides/agents/opencode.md"
 
-[[project.nav."Benchmarks and comparisons"]]
-"Where does pVisor have an advantage over existing workflows?" = "benchmarks/index.md"
+[[project.nav."User guide"."Connect your agent"]]
+"Scripts and automation commands" = "guides/agents/custom-scripts.md"
 
-[[project.nav."Benchmarks and comparisons"]]
-"Which benchmark results support an adoption decision?" = "benchmarks/methodology.md"
 
-[[project.nav."Benchmarks and comparisons"]]
-"How long does a usable environment take to start?" = "benchmarks/startup.md"
+[[project.nav."User guide"]]
 
-[[project.nav."Benchmarks and comparisons"]]
-"VM memory savings and overhead" = "benchmarks/vm-memory/index.md"
+[[project.nav."User guide"."Policies"]]
+"File policies" = "guides/policies/files.md"
 
-[[project.nav."Benchmarks and comparisons"]]
-"Filesystem overhead" = "benchmarks/filesystem.md"
+[[project.nav."User guide"."Policies"]]
+"Control network access with OverlayNet" = "guides/policies/network.md"
 
-[[project.nav."Benchmarks and comparisons"]]
-"Network overhead" = "benchmarks/network.md"
+[[project.nav."User guide"."Policies"]]
+"Credentials and environment" = "guides/policies/credentials.md"
 
-[[project.nav."Benchmarks and comparisons"]]
-"apply/drop cost" = "benchmarks/apply.md"
 
-[[project.nav."Benchmarks and comparisons"]]
-"End-to-end tasks" = "benchmarks/agent-tasks.md"
+[[project.nav."User guide"]]
 
-[[project.nav."Benchmarks and comparisons"]]
-"Supervision cost" = "benchmarks/supervision-cost.md"
+[[project.nav."User guide"."Executors"]]
+"Choose an executor" = "guides/executors/index.md"
 
-[[project.nav."Benchmarks and comparisons"]]
-"Concurrency density" = "benchmarks/density.md"
+[[project.nav."User guide"."Executors"]]
+"Host executor" = "guides/executors/host.md"
 
-[[project.nav."Benchmarks and comparisons"]]
-"Cluster scalability (retired history)" = "benchmarks/cluster-scalability.md"
+[[project.nav."User guide"."Executors"]]
+"Native OCI containers" = "guides/executors/container.md"
 
-[[project.nav."Benchmarks and comparisons"]]
-"Isolation effectiveness" = "benchmarks/isolation-tests.md"
+[[project.nav."User guide"."Executors"]]
+"pVisor VM" = "guides/executors/vm.md"
 
-[[project.nav."Benchmarks and comparisons"]]
-"Can recorded trajectories prepare a faithful execution starting point?" = "benchmarks/replay-fidelity.md"
 
-[[project.nav."Benchmarks and comparisons"]]
+[[project.nav."User guide"]]
 
-[[project.nav."Benchmarks and comparisons"."Comparisons"]]
-"Agent-native sandboxes" = "benchmarks/compare-agent-sandboxes.md"
+[[project.nav."User guide"."Daemon quickstart"]]
+"Run the single-node daemon" = "guides/daemon/index.md"
 
-[[project.nav."Benchmarks and comparisons"."Comparisons"]]
-"Docker / devcontainer" = "benchmarks/compare-containers.md"
+[[project.nav."User guide"."Daemon quickstart"]]
+"Daemon and native service entry points" = "guides/daemon/service.md"
 
-[[project.nav."Benchmarks and comparisons"."Comparisons"]]
-"Cloud sandboxes" = "benchmarks/compare-cloud-sandboxes.md"
+[[project.nav."User guide"."Daemon quickstart"]]
+"Operate the single-node daemon" = "guides/daemon/operations.md"
 
-[[project.nav."Benchmarks and comparisons"."Comparisons"]]
-"Isolation runtimes" = "benchmarks/compare-runtimes.md"
+[[project.nav."User guide"."Daemon quickstart"]]
+"Daemon runtime and integration boundaries" = "guides/daemon/boundaries.md"
 
-[[project.nav."Benchmarks and comparisons"."Comparisons"]]
-"RL infrastructure" = "benchmarks/compare-rl-infra.md"
 
-[[project.nav]]
+[[project.nav."User guide"]]
 
-[[project.nav."Security"]]
-"Security overview" = "security/index.md"
+[[project.nav."User guide"."Learning path"]]
+"Learn pVisor through tasks" = "cases/index.md"
 
-[[project.nav."Security"]]
-"Threat model" = "security/threat-model.md"
+[[project.nav."User guide"."Learning path"]]
+"1. From a command to a Job" = "cases/01-first-job.md"
 
-[[project.nav."Security"]]
-"Executor boundaries" = "security/executor-boundaries.md"
+[[project.nav."User guide"."Learning path"]]
+"2. Review and accept file changes" = "cases/02-review-and-decide.md"
 
-[[project.nav."Security"]]
-"Hardening" = "security/hardening.md"
+[[project.nav."User guide"."Learning path"]]
+"3. Save a proposal and explore a branch" = "cases/03-checkpoint-and-fork.md"
 
-[[project.nav."Security"]]
-"Known limitations" = "security/known-limitations.md"
+[[project.nav."User guide"."Learning path"]]
+"4. Set boundaries for untrusted work" = "cases/04-boundaries.md"
 
-[[project.nav."Security"]]
-"Vulnerability disclosure policy" = "security/disclosure.md"
+[[project.nav."User guide"."Learning path"]]
+"5. Replay trajectories and choose restoration tools" = "cases/05-tools-and-restoration.md"
 
-[[project.nav."Security"]]
-"Third-party audits" = "security/audits.md"
 
-[[project.nav]]
+[[project.nav."User guide"]]
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "Commands and scenarios" = "reference/index.md"
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "`pvisor` command reference" = "reference/cli.md"
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "Configuration files" = "reference/config.md"
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "Policy fields" = "reference/policy.md"
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "Run Bundle format" = "reference/run-bundle.md"
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "Machine-readable output" = "reference/json-output.md"
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "Environment variables" = "reference/env-vars.md"
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "Exit codes and errors" = "reference/exit-codes.md"
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "Platforms and executor support" = "reference/platforms.md"
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "Stability and compatibility" = "reference/stability.md"
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "pVisor Job scenarios and regression examples" = "reference/cases.md"
 
-[[project.nav."Reference"]]
+[[project.nav."User guide"."Command and configuration reference"]]
 "Shared image cache and storage backends" = "reference/shared-image-cache.md"
+
+
+
+[[project.nav]]
+
+[[project.nav."Core concepts"]]
+
+[[project.nav."Core concepts"."Execution concepts"]]
+"Concepts and boundaries" = "concepts/index.md"
+
+[[project.nav."Core concepts"."Execution concepts"]]
+"Jobs and storage" = "concepts/jobs.md"
+
+[[project.nav."Core concepts"."Execution concepts"]]
+"Staging and apply semantics" = "concepts/staging.md"
+
+[[project.nav."Core concepts"."Execution concepts"]]
+"Capabilities, evidence, and guarantees" = "concepts/capabilities-and-evidence.md"
+
+[[project.nav."Core concepts"."Execution concepts"]]
+"Policy model" = "concepts/policy-model.md"
+
+[[project.nav."Core concepts"."Execution concepts"]]
+"Glossary" = "concepts/glossary.md"
+
+
+[[project.nav."Core concepts"]]
+
+[[project.nav."Core concepts"."Security"]]
+"Security overview" = "security/index.md"
+
+[[project.nav."Core concepts"."Security"]]
+"Threat model" = "security/threat-model.md"
+
+[[project.nav."Core concepts"."Security"]]
+"Executor boundaries" = "security/executor-boundaries.md"
+
+[[project.nav."Core concepts"."Security"]]
+"Hardening" = "security/hardening.md"
+
+[[project.nav."Core concepts"."Security"]]
+"Known limitations" = "security/known-limitations.md"
+
+[[project.nav."Core concepts"."Security"]]
+"Vulnerability disclosure policy" = "security/disclosure.md"
+
+[[project.nav."Core concepts"."Security"]]
+"Third-party audits" = "security/audits.md"
+
+
+
+[[project.nav]]
+
+[[project.nav."Benchmarks"]]
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"Overview" = "benchmarks/index.md"
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"Methodology" = "benchmarks/methodology.md"
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"Startup latency" = "benchmarks/startup.md"
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"Memory optimization" = "benchmarks/vm-memory/index.md"
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"Filesystem" = "benchmarks/filesystem.md"
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"Network overhead" = "benchmarks/network.md"
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"End-to-end tasks" = "benchmarks/agent-tasks.md"
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"Supervision cost" = "benchmarks/supervision-cost.md"
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"Concurrency density" = "benchmarks/density.md"
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"Cluster scaling (historical)" = "benchmarks/cluster-scalability.md"
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"Isolation effectiveness" = "benchmarks/isolation-tests.md"
+
+[[project.nav."Benchmarks"."Performance tests"]]
+"Replay fidelity" = "benchmarks/replay-fidelity.md"
+
+
+[[project.nav."Benchmarks"]]
+
+[[project.nav."Benchmarks"."Comparisons"]]
+"Agent-native sandboxes" = "benchmarks/compare-agent-sandboxes.md"
+
+[[project.nav."Benchmarks"."Comparisons"]]
+"Docker / devcontainer" = "benchmarks/compare-containers.md"
+
+[[project.nav."Benchmarks"."Comparisons"]]
+"Cloud sandboxes" = "benchmarks/compare-cloud-sandboxes.md"
+
+[[project.nav."Benchmarks"."Comparisons"]]
+"Isolation runtimes" = "benchmarks/compare-runtimes.md"
+
+[[project.nav."Benchmarks"."Comparisons"]]
+"RL infrastructure" = "benchmarks/compare-rl-infra.md"
+
+
 
 [[project.nav]]
 
 [[project.nav."Design and research"]]
-"Implementation design" = "design/index.md"
 
-[[project.nav."Design and research"]]
+[[project.nav."Design and research"."Core mechanisms"]]
+"Overview" = "design/index.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
 "Core design principles" = "design/principles.md"
 
-[[project.nav."Design and research"]]
+[[project.nav."Design and research"."Core mechanisms"]]
 "Core architecture" = "design/architecture.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"Job, Operation, Attempt and Event" = "design/execution-model.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"Shared image cache v1: independent metadata and shared content" = "design/shared-image-cache-storage.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"Lazy Image V2: Directory-Local Packing and On-Demand Indexes" = "design/lazy-image-v2.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"Operation and Event" = "design/operations-events.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"Isolation mechanisms and limits" = "design/isolation.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"OverlayCore design" = "design/overlayfs.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"OverlayNet transparent interception" = "design/overlaynet.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"Gateway implementation" = "design/gateway.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"Journal design" = "design/journal.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"Replay design" = "design/replay.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"pVisor command model" = "design/cli.md"
+
+[[project.nav."Design and research"."Core mechanisms"]]
+"Architecture decision records (ADR)" = "design/decisions/index.md"
+
 
 [[project.nav."Design and research"]]
 
@@ -338,14 +399,6 @@ extra_css = ["assets/stylesheets/extra.css"]
 [[project.nav."Design and research"."Daemon single-node execution"]]
 "Daemon operations" = "design/daemon/operations.md"
 
-[[project.nav."Design and research"]]
-"Job, Operation, Attempt and Event" = "design/execution-model.md"
-
-[[project.nav."Design and research"]]
-"Shared image cache v1: independent metadata and shared content" = "design/shared-image-cache-storage.md"
-
-[[project.nav."Design and research"]]
-"Lazy Image V2: Directory-Local Packing and On-Demand Indexes" = "design/lazy-image-v2.md"
 
 [[project.nav."Design and research"]]
 
@@ -356,53 +409,23 @@ extra_css = ["assets/stylesheets/extra.css"]
 "Memory deduplication" = "design/memory-optimization/deduplication.md"
 
 [[project.nav."Design and research"."Memory optimization"]]
-
-[[project.nav."Design and research"."Memory optimization"."RAM offload"]]
 "RAM offload" = "design/memory-optimization/offload.md"
 
-[[project.nav."Design and research"."Memory optimization"."RAM offload"]]
+[[project.nav."Design and research"."Memory optimization"]]
 "Offload file format" = "design/memory-optimization/offload-format.md"
 
 [[project.nav."Design and research"."Memory optimization"]]
-
-[[project.nav."Design and research"."Memory optimization"."Memory compression"]]
 "Memory compression" = "design/memory-optimization/compression.md"
 
-[[project.nav."Design and research"."Memory optimization"."Memory compression"]]
+[[project.nav."Design and research"."Memory optimization"]]
 "Per-instance compression" = "design/memory-optimization/compression-local.md"
 
-[[project.nav."Design and research"."Memory optimization"."Memory compression"]]
+[[project.nav."Design and research"."Memory optimization"]]
 "Pooled-server compression" = "design/memory-optimization/compression-pool.md"
 
 [[project.nav."Design and research"."Memory optimization"]]
 "Experimental proof of concept" = "design/memory-optimization/proof-of-concept.md"
 
-[[project.nav."Design and research"]]
-"Operation and Event" = "design/operations-events.md"
-
-[[project.nav."Design and research"]]
-"Isolation mechanisms and limits" = "design/isolation.md"
-
-[[project.nav."Design and research"]]
-"OverlayCore design" = "design/overlayfs.md"
-
-[[project.nav."Design and research"]]
-"OverlayNet transparent interception" = "design/overlaynet.md"
-
-[[project.nav."Design and research"]]
-"Gateway implementation" = "design/gateway.md"
-
-[[project.nav."Design and research"]]
-"Journal design" = "design/journal.md"
-
-[[project.nav."Design and research"]]
-"Replay design" = "design/replay.md"
-
-[[project.nav."Design and research"]]
-"pVisor command model" = "design/cli.md"
-
-[[project.nav."Design and research"]]
-"Architecture decision records (ADR)" = "design/decisions/index.md"
 
 [[project.nav."Design and research"]]
 
@@ -418,40 +441,46 @@ extra_css = ["assets/stylesheets/extra.css"]
 [[project.nav."Design and research"."Research directions"]]
 "Publications and reports" = "design/research/publications.md"
 
+
+
 [[project.nav]]
 
-[[project.nav."Community"]]
+[[project.nav."Contributing"]]
+
+[[project.nav."Contributing"."Development guide"]]
 "Community" = "community/index.md"
 
-[[project.nav."Community"]]
+[[project.nav."Contributing"."Development guide"]]
 "Contributing" = "community/contributing.md"
 
-[[project.nav."Community"]]
+[[project.nav."Contributing"."Development guide"]]
 "Engineering guide" = "community/development.md"
 
-[[project.nav."Community"]]
+[[project.nav."Contributing"."Development guide"]]
 "Testing and semspec" = "community/testing.md"
 
-[[project.nav."Community"]]
+[[project.nav."Contributing"."Development guide"]]
 "Reproduce the Run lifecycle" = "community/examples.md"
 
-[[project.nav."Community"]]
+[[project.nav."Contributing"."Development guide"]]
 "Release PolicyVisor" = "community/releasing.md"
 
-[[project.nav."Community"]]
+[[project.nav."Contributing"."Development guide"]]
 "Roadmap" = "community/roadmap.md"
 
-[[project.nav."Community"]]
+[[project.nav."Contributing"."Development guide"]]
 "Changelog" = "community/changelog.md"
 
-[[project.nav."Community"]]
+[[project.nav."Contributing"."Development guide"]]
 "Code of conduct" = "community/code-of-conduct.md"
 
-[[project.nav."Community"]]
+[[project.nav."Contributing"."Development guide"]]
 "Governance" = "community/governance.md"
 
-[[project.nav."Community"]]
+[[project.nav."Contributing"."Development guide"]]
 "Adopters" = "community/adopters.md"
+
+
 
 [project.theme]
 language = "en"
@@ -487,12 +516,12 @@ root = false
 
 [[project.extra.alternate]]
 name = "English"
-link = "/pvisor/en/"
+link = "https://deeplink-org.github.io/pvisor/en/"
 lang = "en"
 
 [[project.extra.alternate]]
 name = "中文"
-link = "/pvisor/zh/"
+link = "https://deeplink-org.github.io/pvisor/zh/"
 lang = "zh"
 
 [project.markdown_extensions."admonition"]
@@ -527,6 +556,7 @@ lang = ["en"]
 regex = ["(^|/)\\.data(/|$)"]
 
 [project.plugins.redirects.redirect_maps]
+"benchmarks/apply.md" = "benchmarks/supervision-cost.md"
 "overview.md" = "start/index.md"
 "installation.md" = "start/installation.md"
 "pvisor/index.md" = "start/what-is-pvisor.md"

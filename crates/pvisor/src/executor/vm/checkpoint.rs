@@ -1830,6 +1830,8 @@ pub(super) mod native {
                     .rebind_filesystem_shared_lowers(name, &copies, &shared)?
             };
             ensure!(count == 1, "restore requires exactly one {name} filesystem");
+            ensure!(saved.state.rebind_filesystem_exclusions(name, &overlay.excluded)? == 1,
+                "missing restored host-authority exclusions");
             ensure!(
                 saved
                     .state

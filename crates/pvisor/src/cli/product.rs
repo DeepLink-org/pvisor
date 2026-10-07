@@ -1,4 +1,4 @@
-//! Product-facing review and logical checkpoint commands.
+//! CLI review presentation and bounded filesystem diff rendering.
 
 use crate::runtime::RunRecord;
 use crate::{ChangeEntryType, ChangeKind, RunBundle};

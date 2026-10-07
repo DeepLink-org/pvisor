@@ -73,9 +73,9 @@ containerd ──ttrpc── PvisorTask (Task service)
 ```
 
 - `plan.rs` turns the OCI spec plus the `Create` request into one
-  serializable `ContainerPlan` (cross-platform, unit-tested). Non-enforced
-  spec features (seccomp, hooks, maskedPaths, time namespaces) surface as
-  warnings in the shim log.
+  serializable `ContainerPlan` (cross-platform, unit-tested). Unsupported
+  OCI constraints are rejected before task IO or child creation, rather than
+  downgraded to warnings. Process checks also apply to Exec requests.
 - `child.rs` is the self-exec pipeline (the house `INTERNAL_SANDBOX_ARG`
   pattern): `Create` produces a created-but-not-running init process that
   blocks on a start pipe; `Start` releases it. Exits are reaped by the
@@ -91,8 +91,8 @@ microVM instead of host namespaces: one VM per task, rootfs shared
 read-write over virtio-fs (`/dev/root`), stdio over the virtio-console, VM
 shape via `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib` (default 2 vCPU /
 512 MiB). Kill signals the VM runner (destroying the VM); the guest exit
-code propagates through the task exit status. The implicit vsock is
-disabled, mirroring pVisor's VM executor posture.
+code propagates through the task exit status. The shim configures a vsock
+proxy for the guest agent (see below); this is not a network isolation claim.
 
 Build with the feature (Linux host, or cross via `just shim-vm-build`):
 
@@ -103,8 +103,12 @@ just shim-vm-build
 Host requirement: `/dev/kvm`. The static musl binary embeds its libkrunfw kernel.
 Cross-builds need `PVISOR_KRUNFW_KERNEL_BUNDLE` pointing to extracted
 `kernel.bin` and `kernel.json`; native Linux builds prepare firmware automatically.
-Not mapped into VMs yet (logged as warnings): spec bind mounts and cgroup
-limits (the VM shape is the resource boundary).
+OCI spec mounts, nonempty Linux configuration (including namespaces,
+ID mappings and cgroups), `root.readonly=true`, and hostname configuration
+are rejected for VM tasks: the runner does not install them. Snapshotter
+request mounts used to materialize the rootfs are distinct from OCI spec
+mounts and remain accepted. VM CPU/RAM annotations select VM shape; they
+are not enforcement of OCI cgroup limits.
 
 ## Guest agent and exec-in-VM (feature `vm`)
 
@@ -141,10 +145,58 @@ per-container VMs use `io.pvisor.executor=vm`.
   (rootful containerd). Rootless exec is not supported yet.
 - Pod-level sandboxes share host namespaces as described above; per-pod VMs
   are unsupported.
-- Seccomp profiles, OCI hooks, maskedPaths/readonlyPaths, device cgroups,
-  and systemd cgroup delegation are ignored (logged as warnings).
+- Seccomp profiles, nonempty OCI hooks, maskedPaths/readonlyPaths, device
+  nodes/device cgroups, sysctls, SELinux mount labels, rootfs propagation,
+  time namespaces/offsets and other unimplemented typed Linux fields are
+  rejected. Empty optional collections request no restriction and are accepted.
+- Nonempty AppArmor/SELinux process labels, user names, OOM score adjustment,
+  scheduler, I/O priority and CPU affinity settings are rejected for both
+  init and exec processes.
+- Host cgroup handling implements only `pids.limit`, `memory.limit`, and
+  `cpu.quota`/`cpu.period` on cgroup v2. Other nonempty resource fields
+  (including swap/reservation, CPU shares/cpuset, block IO, huge pages,
+  network, RDMA and unified controls) are rejected. A usable cgroup path and
+  write permissions are required; setup errors fail task creation.
+  Systemd-style paths are translated to filesystem paths, **not** delegated
+  through systemd.
 - Stats, pause/resume, and checkpointing are unimplemented.
 - VM exec: no tty, and the process starts at `Exec` time (see above).
+
+## Security admission and remaining risks
+
+The host execution tail applies numeric uid/gid/supplementary groups, umask,
+rlimits, capability sets and `noNewPrivileges`, and fails on identity/limit
+installation errors. Bounding capabilities are dropped before switching uid;
+a failed required drop is fatal, not a warning. This does not establish complete
+OCI conformance: non-root capability retention across uid changes is not
+implemented, and privileged containerd/VM end-to-end enforcement has not been
+validated by the unit suite. Host namespace joins and supported mount/root
+read-only operations use syscalls; these are not evidence that every mount
+option or nested mount restriction is correctly enforced.
+
+VM init currently accepts only root uid/gid, no supplementary groups or umask,
+no explicitly supplied capability sets (even empty ones), and no
+`noNewPrivileges=true`. Init rlimits are passed to the guest supervisor.
+VM exec additionally rejects nonempty rlimits, since the agent protocol carries
+only argv/env/cwd. Neither the VM boundary nor VM shape substitutes for a
+requested OCI process security policy.
+
+Agent frame readers and writers limit each payload to **1 MiB**, including
+control JSON, and reject larger lengths before payload allocation or reading.
+Only EOF before a header is a clean close; truncated headers/payloads are errors.
+This prevents the guest-selected near-4-GiB allocation, but does not bound
+aggregate connections/threads, total output, JSON object overhead, or time spent
+waiting for a peer. The vsock agent has no protocol authentication and can launch
+root processes inside the guest. Those risks are not fixed by a frame cap.
+
+Admission inspects fields retained by `oci-spec`'s typed deserializer, not raw
+JSON schema validation. Unknown fields discarded by that library are not covered
+by this rejection policy. The shim still needs a broader audit of mount options,
+namespace/ID-map combinations and inherited descriptors; in particular, failure
+to enumerate inherited descriptors remains a warning. Common Docker/CRI specs
+request unsupported security defaults and now fail explicitly; remove a policy
+only if that weaker boundary is intentionally acceptable, or use a runtime that
+actually enforces it.
 
 ## Developing
 

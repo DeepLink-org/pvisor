@@ -141,6 +141,7 @@ def check(strict=False):
         issues.append("raw .data evidence included in generated site")
     if issues:
         raise SystemExit("\n".join(sorted(set(issues))))
+    published = urlsplit(tomllib.loads((ROOT.parent / "zensical.toml").read_text())["project"]["site_url"])
     for locale in ("en", "zh"):
         index = json.loads((ROOT / locale / "search.json").read_text())
         if index["config"]["lang"] != [locale] or not index["items"]:
@@ -161,7 +162,13 @@ def check(strict=False):
         for tag, href, classes in page.links:
             url = urlsplit(href)
             if url.scheme or url.netloc:
-                continue
+                # Language links use the published origin so single-locale previews
+                # can switch languages. Still validate their generated counterparts.
+                if "md-select__link" not in classes:
+                    continue
+                if url.scheme != published.scheme or url.netloc != published.netloc or not url.path.startswith(published.path):
+                    issues.append(f"{rel}: language selector leaves published site: {href}")
+                    continue
             target = unquote(url.path)
             if target.startswith("/pvisor/"):
                 target = target[len("/pvisor") :]

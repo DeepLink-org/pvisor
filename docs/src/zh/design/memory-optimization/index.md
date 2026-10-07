@@ -4,14 +4,14 @@
 
 ## 总体架构与设计理念 {#architecture}
 
-实例负责 checkpoint 的保存、压缩和恢复；VM runtime 负责地址映射及 CPU/设备访问的一致性。内存优化是可选策略，不接管实例状态的唯一副本，也不把“服务正在运行”当作已经回收内容的恢复保证。
+实例负责 checkpoint 的保存、压缩和恢复；VM runtime 负责地址映射及 CPU/设备访问的一致性。内存优化是可选策略；实例继续拥有状态的唯一副本，已回收内容的恢复保证来自可靠的内容来源，服务运行状态本身不足以保证恢复。
 
-- **优先消除重复，其次压缩，必要时卸载。** 这是选择原则，不是每页必须经过的固定流水线。
+- **优先消除重复，其次压缩，必要时卸载。** 按内存页的情况选择机制，无需每页依次经过三个阶段。
 - **实例状态独立，共享机制可选。** 不启用去重或池化服务，实例仍能保存和恢复。
 - **内容所有权先于回收。** 丢弃原 RAM 前必须固定可靠的恢复来源；运行态对象不等于持久 checkpoint。
 - **收益与代价一起衡量。** 内存节省要同时考虑 CPU、暂存峰值、暂停和恢复延迟，不用压缩率替代宿主净收益。
 
-`backing` 是内容载体，去重发现相同内容，压缩改变编码，卸载改变驻留位置。KSM、memfd 和 FUSE 是实现选项，不是彼此等价的后端：KSM 不压缩，memfd 不自动去重，FUSE 也不提供完整机器快照。
+`backing` 是内容载体，去重发现相同内容，压缩改变编码，卸载改变驻留位置。KSM、memfd 和 FUSE 各有不同职责：KSM 不压缩，memfd 不自动去重，FUSE 也不提供完整机器快照。
 
 ## 三类能力 {#capabilities}
 
@@ -40,8 +40,8 @@
 
 ## 实现方向与证据 {#direction}
 
-架构目标以 2026-10-06 的设计为起点，不代表所有能力已交付。优先复用不可变基线与私有 COW 映射，随后引入 Linux KSM 的区域建议；实验性 Linux 实例本地 live 压缩已实现，池化协调仍是独立扩展。
+架构目标以 2026-10-06 的设计为起点，各能力的交付状态如下。优先复用不可变基线与私有 COW 映射，随后引入 Linux KSM 的区域建议；实验性 Linux 实例本地 live 压缩已实现，池化协调仍是独立扩展。
 
-已有文件 offload、格式与实验性 macOS/HVF 冷页池提供实现基础。Linux x86_64 支持默认关闭的 `vm.cold_ram_compression` / `--vm-cold-ram-compression`，使用私有匿名 RAM、runtime 持有的内核缺页 userfaultfd 及有界 `LocalColdRamStore`。这是持续进行且无需 guest 参与的驱逐/refault 探测，不是普通 pause 或真正的读访问热度检测器。必须具备权限，缺少权限时启动失败；准入与恢复合同见[实例内压缩](compression-local.md)。客户端持有 sealed 共享 backing 仍是提案。统一 API 不意味着平台能力相同或宿主已经授权。
+已有文件 offload、格式与实验性 macOS/HVF 冷页池提供实现基础。Linux x86_64 支持默认关闭的 `vm.cold_ram_compression` / `--vm-cold-ram-compression`，使用私有匿名 RAM、runtime 持有的内核缺页 userfaultfd 及有界 `LocalColdRamStore`。它持续进行无需 guest 参与的驱逐/refault 探测，与普通 pause 分开，也不直接检测读访问热度。必须具备权限，缺少权限时启动失败；准入与恢复合同见[实例内压缩](compression-local.md)。客户端持有 sealed 共享 backing 仍是提案。平台支持与宿主授权分别检查，统一 API 保留这些差异。
 
-[实验性概念验证](proof-of-concept.md)保留底层 COW、冷恢复、引用生命周期及历史失败样本。它说明机制的可行性和限制，不承诺目标架构的生产密度、净物理收益或恢复尾延迟。完整状态保存边界见[环境快照](../environment-snapshot.md)。
+[实验性概念验证](proof-of-concept.md)保留底层 COW、冷恢复、引用生命周期及历史失败样本。现有证据覆盖机制的可行性和限制；目标架构的生产密度、净物理收益和恢复尾延迟仍待验证。完整状态保存边界见[环境快照](../environment-snapshot.md)。

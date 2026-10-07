@@ -7,6 +7,6 @@ There is one test: **you are going to watch this execution from start to finish.
 - **The real side effects are external**: remote APIs, database writes, and sent messages are beyond staging's reach; rollback needs something else.
 - **You need adversarial isolation**: for untrusted multi-tenancy you want a VM-grade isolation substrate, and pVisor is only one choice of executor.
 
-pVisor is for the opposite case: you **want to let the agent run unattended**. The goal is not to block every action but to move supervision from the process to the results—review the changes and evidence once at the end, and merge only what you want.
+When you want **unattended execution followed by review**, use pVisor to stage file changes, inspect execution records, and select the paths to apply.
 
 For trade-offs against other tools see [comparisons](comparisons.md).

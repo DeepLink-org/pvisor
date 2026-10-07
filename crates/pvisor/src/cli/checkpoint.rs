@@ -110,7 +110,6 @@ impl ResumeArgs {
 
 pub(super) async fn suspend(args: SuspendArgs) -> anyhow::Result<()> {
     let record = args.selection.resolve()?;
-    check_execution(&record)?;
     let request_id = args
         .request_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -270,7 +269,6 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             );
             let selected = selection.resolve()?;
             if kind == Kind::Execution {
-                check_execution(&selected)?;
                 let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                 let response =
                     crate::runtime::job_service::RuntimeJobService::capture_selected_execution(
@@ -290,8 +288,11 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                     serde_json::json!({"schema_version":1,"operation":"checkpoint.create","job_id":selected.run_id,"request_id":request_id,"checkpoint_id":checkpoint.snapshot_id,"kind":"execution","checkpoint":checkpoint}),
                 );
             }
-            let (checkpoint, reused) =
-                create_fenced_workspace_request(&selected, request_id.as_deref())?;
+            let (checkpoint, reused) = crate::runtime::job_service::RuntimeJobService::create_selected_workspace_checkpoint(
+                &super::host::service_context(),
+                &selected,
+                request_id.as_deref(),
+            )?;
             emit(
                 json,
                 serde_json::json!({
@@ -391,7 +392,11 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
                     serde_json::json!({"schema_version":1,"operation":"checkpoint.delete","job_id":record.run_id,"kind":"execution","checkpoint_id":id,"deleted":true}),
                 );
             }
-            let id = delete_workspace_checkpoint(&record, &id)?;
+            let id = crate::runtime::job_service::RuntimeJobService::delete_selected_workspace_checkpoint(
+                &super::host::service_context(),
+                &record,
+                &id,
+            )?;
             emit(
                 json,
                 serde_json::json!({"schema_version":1,"operation":"checkpoint.delete",
@@ -421,7 +426,10 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             let removed = if kind == Some(Kind::Execution) {
                 0
             } else {
-                collect_fenced_workspace_transactions(&record)?
+                crate::runtime::job_service::RuntimeJobService::collect_selected_workspace_transactions(
+                    &super::host::service_context(),
+                    &record,
+                )?
             };
             let mut execution_removed = 0;
             if kind != Some(Kind::Workspace)
@@ -497,29 +505,6 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
         }
     }
 }
-fn create_fenced_workspace_request(
-    selected: &RunRecord,
-    request_id: Option<&str>,
-) -> anyhow::Result<(crate::LogicalCheckpoint, bool)> {
-    crate::runtime::job_service::RuntimeJobService::create_selected_workspace_checkpoint(
-        &super::host::service_context(),
-        selected,
-        request_id,
-    )
-}
-fn delete_workspace_checkpoint(selected: &RunRecord, id: &str) -> anyhow::Result<String> {
-    crate::runtime::job_service::RuntimeJobService::delete_selected_workspace_checkpoint(
-        &super::host::service_context(),
-        selected,
-        id,
-    )
-}
-fn collect_fenced_workspace_transactions(selected: &RunRecord) -> anyhow::Result<usize> {
-    crate::runtime::job_service::RuntimeJobService::collect_selected_workspace_transactions(
-        &super::host::service_context(),
-        selected,
-    )
-}
 
 fn checkpoint_store(
     job: &Job,
@@ -528,59 +513,6 @@ fn checkpoint_store(
     match job.config.vm.snapshot_filesystem_pool.as_deref() {
         Some(pool) => crate::environment_snapshot::SnapshotStore::with_filesystem_pool(path, pool),
         None => crate::environment_snapshot::SnapshotStore::new(path),
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn workspace_create_delete_and_gc_recheck_generation_under_lease() {
-        let root = tempfile::tempdir().unwrap();
-        let selected: RunRecord = serde_json::from_value(serde_json::json!({
-            "schema_version":1,"run_id":"job-generation","session_id":"session-generation","agent":"sh","pid":0,
-            "command":["/bin/sh"],"state":"completed","started_at_unix_ms":1,"finished_at_unix_ms":2,
-            "storage":root.path(),"network":{},"gateway_listen":null,
-            "overlay":{"id":"job-generation","generation":7,"target":root.path().join("target"),
-                "upper":{"upper_dir":root.path().join("upper"),"work_dir":root.path().join("work")},
-                "merged_dir":root.path().join("merged"),"stage_dir":root.path(),"auto_apply":false,"state":"staged"}
-        })).unwrap();
-        let pending = root
-            .path()
-            .join(crate::CHECKPOINTS_DIR)
-            .join(".pending-owned");
-        std::fs::create_dir_all(&pending).unwrap();
-        let mut current = selected.clone();
-        current.overlay.as_mut().unwrap().generation = 8;
-        current.write().unwrap();
-        let errors = [
-            create_fenced_workspace_request(&selected, None).unwrap_err(),
-            delete_workspace_checkpoint(&selected, "missing").unwrap_err(),
-            collect_fenced_workspace_transactions(&selected).unwrap_err(),
-        ];
-        for error in errors {
-            assert_eq!(
-                error
-                    .downcast_ref::<pvisor_core::host_protocol::AgentCtlHostError>()
-                    .unwrap()
-                    .code,
-                pvisor_core::host_protocol::AgentCtlHostErrorCode::Conflict
-            );
-        }
-        assert!(pending.is_dir(), "stale GC must not collect anything");
-        assert_eq!(
-            std::fs::read_dir(root.path().join(crate::CHECKPOINTS_DIR))
-                .unwrap()
-                .count(),
-            1
-        );
-        assert_eq!(
-            RunRecord::read(root.path())
-                .unwrap()
-                .overlay
-                .unwrap()
-                .generation,
-            8
-        );
     }
 }
 

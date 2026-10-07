@@ -120,7 +120,7 @@ pub trait VmConfiguration: Sized {
     fn from_restore(config: VmConfig, restore: MachineRestore) -> io::Result<Self>;
     fn ram_backing(&mut self, file: File) -> io::Result<()>;
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
-        -> io::Result<()>;
+    -> io::Result<()>;
     fn disable_implicit_init(&mut self) -> io::Result<()>;
     /// Configure a custom init's command; requires implicit init to be disabled.
     /// Validate atomically before replacing the previous command.
@@ -330,6 +330,14 @@ pub trait SnapshotState {
         &mut self,
         tag: &str,
         policy: &pvisor_overlay_core::FileAccessPolicy,
+    ) -> io::Result<usize>;
+    /// Add current Attempt host-authority exclusions to a restored overlay.
+    /// Existing exclusions must remain; absolute/escaping paths and additions
+    /// hiding saved inode paths are rejected. Other topology remains unchanged.
+    fn rebind_filesystem_exclusions(
+        &mut self,
+        tag: &str,
+        excluded_paths: &[PathBuf],
     ) -> io::Result<usize>;
     fn ram_mappings(&self) -> io::Result<Vec<RamMappingSnapshot>>;
     fn rebind_filesystem_copy(

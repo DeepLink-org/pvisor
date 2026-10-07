@@ -351,6 +351,7 @@ impl RunBundle {
     }
 
     pub fn write(&self, stage_dir: &Path) -> anyhow::Result<PathBuf> {
+        self.validate()?;
         let path = Self::path(stage_dir);
         crate::util::write_private_json(&path, self)?;
         Ok(path)
@@ -358,15 +359,62 @@ impl RunBundle {
 
     pub fn read(stage_dir: &Path) -> anyhow::Result<Self> {
         let path = Self::path(stage_dir);
-        let value: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
+        let bytes = fs::read(&path)?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
         anyhow::ensure!(
             value["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION,
             "unsupported Run Bundle schema {}; expected {}",
             value["schema_version"],
             RUN_BUNDLE_SCHEMA_VERSION
         );
-        let bundle: Self = serde_json::from_value(value)?;
+        // Deserialize the original bytes so duplicate typed fields are rejected,
+        // rather than silently collapsed by the schema-inspection Value above.
+        let bundle: Self = serde_json::from_slice(&bytes)?;
+        bundle.validate()?;
         Ok(bundle)
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.schema_version == RUN_BUNDLE_SCHEMA_VERSION,
+            "unsupported Run Bundle schema"
+        );
+        anyhow::ensure!(
+            !self.run.run_id.trim().is_empty()
+                && !self.run.attempt_id.trim().is_empty()
+                && self.agentctl.run_id == self.run.run_id
+                && self.agentctl.attempt_id == self.run.attempt_id,
+            "Run Bundle identity mismatch"
+        );
+        // Unix timestamps are adjustable wall-clock samples, not monotonic
+        // elapsed time. Readers also accept normalized timestamps with retained
+        // duration, so neither ordering nor an exact difference is an invariant.
+        let enforcement = &self.executor_observations.enforcement;
+        let read = enforcement.is_enforced(CapabilityDimension::FilesystemRead);
+        let write = enforcement.is_enforced(CapabilityDimension::FilesystemWrite);
+        anyhow::ensure!(
+            self.safety.filesystem_read_non_bypassable == read
+                && self.safety.filesystem_write_non_bypassable == write
+                && self.safety.filesystem_non_bypassable == (read && write)
+                && self.safety.network_non_bypassable
+                    == enforcement.is_enforced(CapabilityDimension::Network),
+            "Run Bundle safety summary contradicts executor observations"
+        );
+        anyhow::ensure!(
+            self.safety.filesystem_changes_staged
+                == self
+                    .filesystem
+                    .as_ref()
+                    .is_some_and(|filesystem| filesystem.state == OverlayState::Staged)
+                && self.safety.host_process
+                    == self
+                        .run
+                        .executor
+                        .as_ref()
+                        .is_none_or(|executor| executor.isolation == IsolationKind::HostProcess),
+            "Run Bundle safety summary contradicts execution placement"
+        );
+        Ok(())
     }
 
     pub(crate) fn invalidate(stage_dir: &Path) -> anyhow::Result<()> {
@@ -644,6 +692,56 @@ mod tests {
         let bundle = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
         let path = bundle.write(temp.path()).unwrap();
         assert_eq!(RunBundle::read(temp.path()).unwrap().run.run_id, "run-1");
+        let valid = serde_json::to_value(&bundle).unwrap();
+        let duplicate = serde_json::to_string(&valid).unwrap().replace(
+            &format!("\"schema_version\":{RUN_BUNDLE_SCHEMA_VERSION}"),
+            &format!("\"schema_version\":{RUN_BUNDLE_SCHEMA_VERSION},\"schema_version\":{RUN_BUNDLE_SCHEMA_VERSION}"),
+        );
+        fs::write(&path, duplicate).unwrap();
+        assert!(
+            RunBundle::read(temp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate field")
+        );
+        for (section, field, replacement) in [
+            ("safety", "network_non_bypassable", serde_json::json!(true)),
+            (
+                "safety",
+                "filesystem_non_bypassable",
+                serde_json::json!(true),
+            ),
+            (
+                "safety",
+                "filesystem_changes_staged",
+                serde_json::json!(false),
+            ),
+            ("agentctl", "attempt_id", serde_json::json!("other-attempt")),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[section][field] = replacement;
+            fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+            assert!(
+                RunBundle::read(temp.path()).is_err(),
+                "accepted {section}.{field}"
+            );
+            let invalid: RunBundle = serde_json::from_value(invalid).unwrap();
+            assert!(invalid.write(temp.path()).is_err());
+        }
+        let mut clock_adjusted_result = result.clone();
+        clock_adjusted_result.finished_at_unix_ms = result.started_at_unix_ms - 1;
+        let clock_adjusted =
+            RunBundle::capture(&record, &clock_adjusted_result, agentctl.clone(), true).unwrap();
+        assert_eq!(clock_adjusted.run.duration_ms, 0);
+        clock_adjusted.write(temp.path()).unwrap();
+        let restored = RunBundle::read(temp.path()).unwrap();
+        assert_eq!(restored.run.started_at_unix_ms, result.started_at_unix_ms);
+        assert_eq!(
+            restored.run.finished_at_unix_ms,
+            clock_adjusted_result.finished_at_unix_ms
+        );
+        assert_eq!(restored.run.duration_ms, 0);
+        bundle.write(temp.path()).unwrap();
         assert_eq!(
             fs::metadata(path).unwrap().permissions().mode() & 0o777,
             0o600

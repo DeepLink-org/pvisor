@@ -192,6 +192,10 @@ impl AttemptSession {
             vm_network: self.vm_network.clone(),
         }
     }
+    pub(crate) fn record(&self) -> RunRecord {
+        self.run_record.clone()
+    }
+
     pub(crate) fn checkpoint_record(&self) -> Option<RunRecord> {
         self.overlay_record
             .as_ref()

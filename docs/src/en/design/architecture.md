@@ -19,7 +19,7 @@ There are two responsibilities: **core provides definitions; pvisor provides imp
 | `pvisor-daemon` | Separate single-node sandbox admission, durable ownership, native VM supervisor lifecycle and endpoint proxy |
 | `pvisor-tui`, `pvisor-replay` | Terminal frontend and agent trajectory replay tools depending on pvisor |
 
-The [daemon](daemon/index.md) uses VM-only NativeRuntime: detached supervisors embed `PVisor::run` and retain RunHandles across daemon restart. It is not a distributed scheduler. The executable constructs NativeRuntime with native CLI settings; stage/apply, checkpoint/fork and Gateway APIs are absent, and node sharing is not automatically acquired. See [responsibility convergence](daemon/responsibility-convergence.md). External orchestration owns host choice and workflows.
+The [daemon](daemon/index.md) uses VM-only NativeRuntime: detached supervisors embed `PVisor::run` and retain RunHandles across daemon restart. The executable constructs NativeRuntime with native CLI settings; stage/apply, checkpoint/fork and Gateway APIs are absent, and node sharing is not automatically acquired. See [responsibility convergence](daemon/responsibility-convergence.md). External orchestration owns host choice and workflows.
 
 Core neither owns the execution loop nor starts processes or opens control sockets. pvisor implements AgentCtl clients/servers and approval sockets. Drivers implement file, network and isolation boundaries. The default core does not depend on Gateway, TUI or replay; the `gateway` feature enables capture.
 
@@ -129,19 +129,17 @@ libproc identity checks followed by numeric-PID signals are not atomic pidfd
 operations. This is not Linux-equivalent containment. The macOS cleanup path has
 not been compiled or tested.
 
-Host transport and process checks do not establish guest correctness or full
-platform validation. Real-VM TUI end-to-end validation remains unavailable;
-macOS identity and cleanup paths retain the platform-specific limits above.
-
-A persistent listener is not a durable request queue. `request_id` correlates
-responses, errors, tickets and cancellation; it is not universal deduplication
-or an exactly-once contract. Some durable Job operations retain their own scoped
-receipts, but that does not cover every Host command. Disconnects, timeouts and
+The persistent listener accepts requests without persisting a request queue.
+`request_id` correlates responses, errors, tickets and cancellation; universal
+deduplication and exactly-once behavior are outside its contract. Some durable
+Job operations retain their own scoped receipts, but that does not cover every Host command. Disconnects, timeouts and
 cancellation can follow effects already performed; the frontend reports
 ambiguity and does not automatically retry. Reconcile Job state and artifacts
-before deciding what to submit next. Real-VM TUI end-to-end behavior has not been
-validated for the Host AgentCtl path; transport, process or mock checks cannot establish
-guest correctness or production durability.
+before deciding what to submit next.
+
+The Host AgentCtl path lacks real-VM TUI end-to-end validation. Existing transport,
+process or mock checks do not cover guest correctness, production durability or
+full platform behavior; see above for macOS identity and cleanup limits.
 
 ## A production execution path
 
@@ -159,7 +157,7 @@ CLI / embedded caller
 
 Admission preserves snapshots of requested and effective operations. Actual policy changes are recorded as Rewritten; selected VM/Overlay placement as Placed. Interception happens at driver boundaries: file operations enter OverlayFS/OverlayCore and traffic enters OverlayNet. They share policy definitions, but individual file and network operations are not currently promoted to separate public Operations.
 
-For example, the network driver narrows requested Ambient capability to Deny. Requested preserves original permissions, Rewritten stores before/after snapshots, Placed describes final placement, and the executor runs the effective configuration. This records actual policy handling; it is not a general rule interpreter.
+For example, the network driver narrows requested Ambient capability to Deny. Requested preserves original permissions, Rewritten stores before/after snapshots, Placed describes final placement, and the executor runs the effective configuration. These snapshots record actual policy handling; a general rule interpreter is outside the current implementation scope.
 
 ## One lifecycle owner
 

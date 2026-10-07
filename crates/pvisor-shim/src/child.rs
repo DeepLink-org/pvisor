@@ -938,6 +938,8 @@ fn apply_process_identity(process: &ProcessPlan) -> Result<()> {
         !setgroups_denied || user.additional_gids.is_empty(),
         "supplementary groups are disabled in this user namespace"
     );
+    // Bounding-set changes need CAP_SETPCAP, before changing uid can drop it.
+    drop_bounding_capabilities(&process.capabilities)?;
     // SAFETY: identity syscalls in the forked, single-threaded child.
     unsafe {
         if !setgroups_denied
@@ -996,27 +998,39 @@ fn apply_rlimit(typ: &str, soft: u64, hard: u64) -> Result<()> {
     Ok(())
 }
 
-fn apply_capabilities(plan: &crate::plan::CapabilityPlan) -> Result<()> {
+fn drop_bounding_capabilities(plan: &crate::plan::CapabilityPlan) -> Result<()> {
     let bounding = caps::mask_from_names(&plan.bounding).context("bounding capabilities")?;
+    // Include kernel capabilities beyond the named ones in our current table.
+    for bit in 0..64u64 {
+        if bounding & (1 << bit) != 0 {
+            continue;
+        }
+        let present = unsafe { libc::prctl(libc::PR_CAPBSET_READ, bit as libc::c_ulong, 0, 0, 0) };
+        if present == 0 {
+            continue;
+        }
+        if present < 0 {
+            let error = std::io::Error::last_os_error();
+            // EINVAL means the capability does not exist on this kernel.
+            if error.raw_os_error() == Some(libc::EINVAL) {
+                continue;
+            }
+            return Err(error).with_context(|| format!("PR_CAPBSET_READ {bit}"));
+        }
+        if unsafe { libc::prctl(libc::PR_CAPBSET_DROP, bit as libc::c_ulong, 0, 0, 0) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("PR_CAPBSET_DROP {bit}"));
+        }
+    }
+    Ok(())
+}
+
+fn apply_capabilities(plan: &crate::plan::CapabilityPlan) -> Result<()> {
     let effective = caps::mask_from_names(&plan.effective).context("effective capabilities")?;
     let permitted = caps::mask_from_names(&plan.permitted).context("permitted capabilities")?;
     let inheritable =
         caps::mask_from_names(&plan.inheritable).context("inheritable capabilities")?;
     let ambient = caps::mask_from_names(&plan.ambient).context("ambient capabilities")?;
-
-    // Drop everything not kept in the bounding set first.
-    for bit in 0..41u64 {
-        if bounding & (1 << bit) == 0 {
-            let ret = unsafe { libc::prctl(libc::PR_CAPBSET_DROP, bit as libc::c_ulong, 0, 0, 0) };
-            if ret != 0 {
-                let error = std::io::Error::last_os_error();
-                // EINVAL means the capability does not exist on this kernel.
-                if error.raw_os_error() != Some(libc::EINVAL) {
-                    warn!("PR_CAPBSET_DROP {bit} failed: {error}");
-                }
-            }
-        }
-    }
 
     // Ambient capabilities must be cleared before capset drops them.
     if unsafe {
@@ -1215,6 +1229,17 @@ mod tests {
         }
         // Isolate capability changes in a subprocess, even when tests run as root.
         apply_capabilities(&crate::plan::CapabilityPlan::default()).unwrap();
+        let has_bounding_caps = (0..64).any(|bit| unsafe {
+            libc::prctl(libc::PR_CAPBSET_READ, bit as libc::c_ulong, 0, 0, 0) == 1
+        });
+        let dropped = drop_bounding_capabilities(&crate::plan::CapabilityPlan::default());
+        if has_bounding_caps {
+            // Effective CAP_SETPCAP is now gone, even if the test started as root.
+            assert!(dropped.unwrap_err().to_string().contains("PR_CAPBSET_DROP"));
+        } else {
+            // Already-absent capabilities need no privileged drop syscall.
+            dropped.unwrap();
+        }
         let spec = serde_json::from_str(r#"{"ociVersion":"1.0.2","process":{"args":["true"],"cwd":"/","user":{"uid":0,"gid":0}}}"#).unwrap();
         let mut plan = crate::plan::build_plan(
             &spec,

@@ -4,7 +4,7 @@
 
 It runs your existing Agent CLI, script, or automation command: the command runs unattended inside a policy boundary, and file changes go to a stage first. Afterwards you review changes and evidence like a pull request and apply only what you want to keep.
 
-Many Agent CLIs already ship sandboxes or approval modes. They answer "can this be blocked?" but not "what actually changed, which changes should stay, and what record can I check" — and none of it spans agents and executors. See [why pVisor](../why/index.md) for how these three questions set the ceiling on agent autonomy, and [comparisons](../why/comparisons.md) for point-by-point comparisons with Docker, built-in agent sandboxes, and similar approaches.
+pVisor provides a shared file-review, selective-merge, and run-record workflow across agents and executors. See [why pVisor](../why/index.md) for the path to scaling autonomous execution, and [comparisons](../why/comparisons.md) for point-by-point comparisons with Docker, built-in agent sandboxes, and similar approaches.
 
 ## What you get
 
@@ -26,7 +26,7 @@ pvisor apply last --path src   # 或：pvisor drop last
 
 ## Where we are today
 
-Today pVisor runs individual Jobs locally: let one agent finish unattended, then review every change and merge selectively. This level already has the three properties needed to reach higher autonomy levels; see the [trust ladder](../why/trust-ladder.md) for the roadmap. Executor boundaries are in [executor boundaries](../security/executor-boundaries.md).
+The current workflow uses local Jobs: run an agent, review the result, and selectively merge file changes. See the [trust ladder](../why/trust-ladder.md) for the roadmap and [executor boundaries](../security/executor-boundaries.md) for each executor's protection scope.
 
 ## Guarantee scope
 

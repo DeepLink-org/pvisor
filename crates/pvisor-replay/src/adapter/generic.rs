@@ -177,7 +177,23 @@ pub(super) fn execute(
     let mut observations = Vec::new();
     if context.request.mode != ReplayMode::PrepareOnly {
         for call in plan.calls() {
+            journal.append(
+                "tool_started",
+                [
+                    ("call_id".into(), json!(call.call_id)),
+                    ("tool".into(), json!(call.name)),
+                ],
+            )?;
             let fresh = execute_call(call, context)?;
+            journal.append(
+                "tool_finished",
+                [
+                    ("call_id".into(), json!(call.call_id)),
+                    ("return_code".into(), json!(fresh.return_code)),
+                    ("is_error".into(), json!(fresh.is_error)),
+                    ("duration_ms".into(), json!(fresh.duration_ms)),
+                ],
+            )?;
             let output_event = call
                 .native
                 .get("output_event")
@@ -696,6 +712,16 @@ fn execute_call(
         Ok((content, code)) => {
             return_code = code;
             content
+        }
+        Err(error)
+            if matches!(
+                error.kind,
+                ReplayErrorKind::Executor | ReplayErrorKind::AmbiguousExecution
+            ) =>
+        {
+            // I/O or process ownership can fail after an effect. Do not turn
+            // that uncertainty into a completed tool receipt.
+            return Err(error);
         }
         Err(error) => {
             is_error = true;

@@ -30,6 +30,19 @@ publication or upper pruning. Target checks occur at publication time;
 completion/recovery collects fresh remaining changes after pruning. Recovery
 must not reuse stale metadata across mutation boundaries.
 
+Entry publication exclusively creates a private random temporary directory;
+reserved-looking host names are never cleanup authority. Interrupted copies can
+leave these directories behind, and retries do not sweep them. Replacement
+backups require a durable ownership receipt before reuse or cleanup. Legacy
+backups without that receipt are retained and require manual inspection, not
+automatic adoption. Terminal `overlay.json` publications are authoritative over
+an older matching Run overlay identity/generation. While the apply ledger is
+pending, runtime reads project the terminal state to block drop but retain the
+original generation for recovery. Apply reconciles under the Job mutation/Run
+lease and target lock, then publishes the new runtime fence only after ledger
+commit. Recovery failures are errors, not `AlreadyApplied`. This does not make
+`run.json` and the core ledger an atomic publication.
+
 ## Directory enumeration
 
 Host FUSE uses the service's names/type directory candidates and loads

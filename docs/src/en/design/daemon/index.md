@@ -34,17 +34,13 @@ The Runtime trait has one implementation: VM-only NativeRuntime. Detached superv
 
 This is sandbox management, not a task/result protocol. Private runtime records bind generation to native Run/Attempt IDs, but `sb-*` is not a public Job ID and the API does not expose Job review, checkpoints or Run Bundle export.
 
-## Design map {#documents}
+## Concurrency and failure boundaries {#documents}
 
-| Question | Design |
-| --- | --- |
-| What can this machine admit? | [Local admission](admission.md) |
-| When is a control operation complete? | [Lifecycle](lifecycle.md) |
-| What survives a restart? | [State and recovery](state-and-recovery.md) |
-| What is stored and reclaimed? | [Storage](storage.md) |
-| How do you deploy and diagnose it? | [Operations](operations.md) |
-| Where do immutable sharing and lazy reads belong? | [Shared working sets](shared-working-set.md) |
-| Which services should remain separate? | [Responsibility convergence](responsibility-convergence.md) |
+The [registry commit lock](storage.md#commit) serializes capacity checks and durable mutations. A per-sandbox lifecycle lock orders controls and proxy connection establishment; slow VM operations do not hold a global runtime mutex. This keeps unrelated sandboxes moving while preventing two creations from spending the same reservation or a connection from racing daemon-managed deletion.
+
+Durable intentions and live observations have different authority. Persist `Stopping` before native deletion, and release capacity only after absence is confirmed. Lost IPC or an acknowledgement leaves work to reconcile; it cannot authorize a replacement VM or reusable capacity. A [daemon-only restart](state-and-recovery.md#reconcile) reconnects surviving supervisors using the same ownership state. Host reboot loses live VMs.
+
+Conservative reservations trade utilization for explicit cleanup accounting: paused, failed and uncertain records remain charged until verified removal. Low RSS and native cache sharing do not reduce those reservations; [admission](admission.md#reservations) and physical working-set accounting remain separate.
 
 ## Compatibility and evidence {#invariants}
 

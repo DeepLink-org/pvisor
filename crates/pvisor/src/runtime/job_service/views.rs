@@ -2,7 +2,7 @@ use super::{
     JobSelection, RuntimeJobService, ServiceContext, check_selected_record, execution_blocker,
 };
 use crate::RunBundle;
-use crate::runtime::checkpoint::list_checkpoints;
+
 use crate::runtime::{
     RunRecord, control_observations, control_overlay_status, control_ping, is_live,
     load_apply_records, overlay_status,

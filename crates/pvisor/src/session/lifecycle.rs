@@ -201,6 +201,7 @@ impl Session {
             return Err(PVisorError::Prepare(error));
         }
         crate::util::startup_mark_run("session.storage_ready", context.spec.run_id.as_str());
+        let record = context.drivers.as_ref().map(|session| session.record());
         let checkpoint_record = context
             .drivers
             .as_ref()
@@ -250,6 +251,7 @@ impl Session {
             control_operation,
             events,
             agentctl,
+            record,
             checkpoint_record,
             join,
         })

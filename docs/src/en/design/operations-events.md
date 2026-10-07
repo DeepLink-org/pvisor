@@ -49,7 +49,7 @@ Context → Requested → [Rewritten] → Placed → Dispatched → Completed
 
 Lifecycle/domain observations may also appear. Dispatched commits before the executor call and does not mean a process started successfully. Admission/preparation failures can lack a complete fact chain; callers must still handle API errors. Completed distinguishes Backend, Policy, Replay and Runtime provenance. Runner failures must not masquerade as backend outcomes.
 
-A successful Outcome includes terminal state and exit code. Errors distinguish Failed, Denied, Unsupported and Unknown. Unknown preserves known effects and must not be interpreted as “no side effects.”
+A successful Outcome includes terminal state and exit code. Errors distinguish Failed, Denied, Unsupported and Unknown. Unknown preserves known effects; side effects may already have occurred.
 
 ## Identity, causality and order
 
@@ -71,7 +71,7 @@ Processing dependent on an earlier result must wait until that result is determi
 
 After preparing drivers, pvisor commits startup facts before calling the executor. Required-fact commit failure prevents dispatch and requires cleanup. Recording failure after execution is reported as a failure/warning; it cannot undo effects that already happened.
 
-Journal uses one writer and commit receipts, with event deduplication and tail recovery. Unknown commit status does not justify blindly retrying external effects. `RunHandle` subscriptions provide committed events for this Run, including Gateway observations in the shared Journal. Live consumers must handle disconnection and lag; read complete history from Journal.
+Journal uses one writer and commit receipts, with event deduplication and tail recovery. When commit status is unknown, reconcile effects already performed before deciding whether to retry an external operation. `RunHandle` subscriptions provide committed events for this Run, including Gateway observations in the shared Journal. Live consumers must handle disconnection and lag; read complete history from Journal.
 
 Disabling file recording still permits an in-memory event stream, but produces no file log for recovery after restart. Structured Event is the fact format; `Event::to_text` is only a human-readable projection.
 

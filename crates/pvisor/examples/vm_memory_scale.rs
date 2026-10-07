@@ -1,4 +1,5 @@
-//! B-MEMORY-SCALE engineering worker (no measurements are published by this example).
+//! Shared worker for B-MEMORY-SCALE engineering and B-VM-MEMORY user protocols.
+//! The coordinator must declare its role and validate its complete cohort.
 //! Question: how does a bounded 1/2/4-VM group behave under shared-baseline COW
 //! and fresh-live offload, with complete data/state checks and cgroup evidence?
 //! Parent owns randomized pairing, repetitions, resource limits and monitoring.
@@ -30,6 +31,7 @@ static OWNS_OUTPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum Mode {
+    Fresh,
     Baseline,
     Ksm,
     Raw,
@@ -47,6 +49,8 @@ enum Pattern {
     about = "B-MEMORY-SCALE: bounded real-VM SDK worker; parent must supply a disk output and delegated cgroup"
 )]
 struct Args {
+    #[arg(long, default_value_t = 256, value_parser = clap::value_parser!(u32).range(256..=512))]
+    memory_mib: u32,
     #[arg(long)]
     rootfs: PathBuf,
     /// Directory containing libkrunfw (same convention as other SDK examples).
@@ -73,6 +77,11 @@ struct Args {
     /// Unsupported: requires independently captured backing inodes, not cloned references.
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     private_baselines: bool,
+    /// Restore identical sealed bytes through genuinely independent store/RAM inodes.
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    independent_inodes: bool,
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=2))]
+    cpus: u16,
 }
 fn parse_vms(s: &str) -> Result<usize, String> {
     match s {
@@ -90,6 +99,10 @@ fn validate(a: &Args) -> anyhow::Result<()> {
     ensure!(
         !a.private_baselines,
         "private-baselines unsupported: independent native captures/inodes are not implemented; no fake private control"
+    );
+    ensure!(
+        !a.independent_inodes || matches!(a.mode, Mode::Baseline | Mode::Ksm),
+        "independent inodes require snapshot restore"
     );
     ensure!(
         !(a.dedup && a.mode == Mode::Compressed),
@@ -138,7 +151,7 @@ fn expected(a: &Args) -> BTreeMap<(usize, usize), String> {
     let baseline = hex(&baseline.finalize());
     result.insert((0, 0), baseline.clone());
     for id in 1..=a.vms {
-        for &percent in if matches!(a.mode, Mode::Baseline | Mode::Ksm) {
+        for &percent in if matches!(a.mode, Mode::Fresh | Mode::Baseline | Mode::Ksm) {
             &[0, 25, 100][..]
         } else {
             &[0][..]
@@ -425,13 +438,12 @@ async fn start(
     let settings = VmSettings {
         rootfs: Some(a.rootfs.canonicalize()?),
         library_dir: Some(a.firmware.canonicalize()?),
-        ram_backing: checkpoint
-            .is_none()
+        ram_backing: (checkpoint.is_none() && a.mode != Mode::Fresh)
             .then(|| root.join(format!("r{id}.ram"))),
         ram_compression: a.mode == Mode::Compressed,
         ram_dedup: a.dedup,
-        memory_mib: 256,
-        cpus: 1,
+        memory_mib: a.memory_mib,
+        cpus: a.cpus,
         ..Default::default()
     };
     let (executor, overlay) = if let Some(c) = checkpoint {
@@ -709,8 +721,48 @@ async fn experiment(
         persist(root, report)?;
     }
     let first = workers.len();
+    let mut baseline_inodes = BTreeSet::new();
     for id in 1..=a.vms {
-        workers.push(start(a, root, &workspace, id, checkpoint.as_ref()).await?);
+        let mut independent = checkpoint.clone();
+        if a.independent_inodes {
+            let reference = independent.as_mut().context("missing baseline")?;
+            let destination = root.join(format!("b{id}"));
+            copy_store(&reference.store, &destination)?;
+            reference.store = destination;
+            let ram = reference
+                .store
+                .join("objects")
+                .join(&reference.snapshot_id)
+                .join("ram.bin");
+            let meta = fs::metadata(&ram)?;
+            ensure!(
+                baseline_inodes.insert((meta.dev(), meta.ino())),
+                "independent RAM inode was shared"
+            );
+            let source = checkpoint
+                .as_ref()
+                .unwrap()
+                .store
+                .join("objects")
+                .join(&reference.snapshot_id)
+                .join("ram.bin");
+            let original = fs::metadata(&source)?;
+            ensure!(
+                (meta.dev(), meta.ino()) != (original.dev(), original.ino()),
+                "copy reused source RAM inode"
+            );
+            ensure!(
+                pvisor::environment_snapshot::file_hash(&ram)?
+                    == pvisor::environment_snapshot::file_hash(&source)?,
+                "independent baseline RAM bytes differ"
+            );
+            check(
+                report,
+                "independent_ram_inode",
+                json!({"instance":id,"device":meta.dev(),"inode":meta.ino(),"bytes":meta.len()}),
+            );
+        }
+        workers.push(start(a, root, &workspace, id, independent.as_ref()).await?);
     }
     let group = &mut workers[first..];
     for w in group.iter_mut() {
@@ -807,6 +859,8 @@ async fn experiment(
                 json!({"instance":w.id,"error":format!("{error:#}"),"ack":ack}),
             );
         }
+    }
+    if matches!(a.mode, Mode::Fresh | Mode::Baseline | Mode::Ksm) {
         for percent in [25, 100] {
             // Verify untouched peers while each preceding peer is already dirty.
             for index in 0..group.len() {
@@ -849,7 +903,7 @@ async fn experiment(
                 let t = Instant::now();
                 let memory = w.handle()?.offload(None).await?;
                 ensure!(
-                    memory.backed_bytes >= 256 * 1024 * 1024,
+                    memory.backed_bytes >= u64::from(a.memory_mib) * 1024 * 1024,
                     "incomplete RAM offload"
                 );
                 ensure!(
@@ -915,7 +969,7 @@ async fn experiment(
         json!({"instance":group[0].id}),
     );
     let survivors = &mut group[1..];
-    let percent = if matches!(a.mode, Mode::Baseline | Mode::Ksm) {
+    let percent = if matches!(a.mode, Mode::Fresh | Mode::Baseline | Mode::Ksm) {
         100
     } else {
         0
@@ -950,12 +1004,30 @@ async fn experiment(
     }
     Ok(())
 }
+fn copy_store(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    ensure!(!destination.try_exists()?, "independent store must be new");
+    // Preserve snapshot metadata and internal reference-marker hard links.
+    // Data/RAM inodes must be independent of the original and other copies.
+    let status = std::process::Command::new("/usr/bin/cp")
+        .args([
+            "--archive",
+            "--reflink=never",
+            "--no-target-directory",
+            "--",
+        ])
+        .arg(source)
+        .arg(destination)
+        .status()?;
+    ensure!(status.success(), "independent snapshot store copy failed");
+    Ok(())
+}
+
 async fn run(a: Args) -> anyhow::Result<()> {
     let start = Instant::now();
     fs::create_dir(&a.output).context("--output must be a NEW directory")?;
     OWNS_OUTPUT.store(true, std::sync::atomic::Ordering::Release);
     let root = a.output.canonicalize()?;
-    let mut report = json!({"schema":"pvisor-memory-scale/v1","conditions":a,"profile":{"memory_mib":256,"cpus":1,"payload_bytes":BYTES,"page_bytes":PAGE,"max_live_vms":4,"deadline_seconds":180,"overlaynet_mode":"off","network_policy":"no-network"},"correctness":"failed","phases":[],"checks":[],"guests":[],"gaps":["private-baselines unsupported (no independent captures/inodes)","KSM scan results are observations, not guaranteed merging", "random-unique restored preparation dirties all payload pages before ready; only repeated/random-shared ready are unchanged shared payloads", "large_file_fds and smaps expose identities/advice when proc permissions permit; missing reads are explicit", "parent owns group budgets, randomized pairing, repetitions and continuous resource accounting"]});
+    let mut report = json!({"schema":"pvisor-memory-scale/v1","conditions":a,"profile":{"memory_mib":a.memory_mib,"cpus":a.cpus,"payload_bytes":BYTES,"page_bytes":PAGE,"max_live_vms":4,"deadline_seconds":180,"overlaynet_mode":"off","network_policy":"no-network"},"correctness":"failed","phases":[],"checks":[],"guests":[],"gaps":["independent-inode controls copy identical sealed bytes; independent native captures remain unsupported", "KSM scan results are observations, not guaranteed merging", "random-unique restored preparation dirties all payload pages before ready; only repeated/random-shared ready are unchanged shared payloads", "large_file_fds and smaps expose identities/advice when proc permissions permit; missing reads are explicit", "parent owns group budgets, randomized pairing, repetitions and continuous resource accounting"]});
     // Persist failure evidence even if validation, startup or capture fails.
     persist(&root, &report)?;
     let mut workers = Vec::new();
@@ -1092,6 +1164,30 @@ mod tests {
         argv.extend_from_slice(extra);
         Args::try_parse_from(argv)
     }
+    #[test]
+    fn independent_store_copy_preserves_bytes_without_sharing_inodes() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("ram.bin"), b"sealed RAM").unwrap();
+        std::os::unix::fs::symlink("ram.bin", source.join("alias")).unwrap();
+        let target = root.path().join("target");
+        copy_store(&source, &target).unwrap();
+        assert_eq!(fs::read(target.join("ram.bin")).unwrap(), b"sealed RAM");
+        assert_eq!(
+            fs::read_link(target.join("alias")).unwrap(),
+            PathBuf::from("ram.bin")
+        );
+        assert_ne!(
+            fs::metadata(source.join("ram.bin")).unwrap().ino(),
+            fs::metadata(target.join("ram.bin")).unwrap().ino()
+        );
+        assert!(
+            copy_store(&source, &target).is_err(),
+            "must not overwrite an existing store"
+        );
+    }
+
     #[test]
     fn cli_limits() {
         assert!(parse_vms("3").is_err());

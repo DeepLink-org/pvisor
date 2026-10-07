@@ -96,8 +96,8 @@ fn capabilities() -> Capabilities {
 mod cold_ram_tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     struct UnusedStore {
@@ -733,6 +733,29 @@ impl SnapshotState for MachineSnapshot {
             .and_then(serde_json::Value::as_array)
             .map(Vec::len)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing CPU inventory"))
+    }
+    fn rebind_filesystem_exclusions(
+        &mut self,
+        tag: &str,
+        excluded_paths: &[PathBuf],
+    ) -> io::Result<usize> {
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        {
+            self.rebind(tag, |device, tag| {
+                device.rebind_filesystem_exclusions(tag, excluded_paths)
+            })
+        }
+        #[cfg(not(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )))]
+        {
+            let _ = (tag, excluded_paths);
+            Err(unsupported("filesystem snapshot exclusions rebinding"))
+        }
     }
     fn ram_mappings(&self) -> io::Result<Vec<RamMappingSnapshot>> {
         serde_json::from_value(

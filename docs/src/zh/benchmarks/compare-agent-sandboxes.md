@@ -51,7 +51,7 @@ Claude 在 native/staged/Docker/参考 VM 上各 30/30 通过，pVisor VM 初始
 
 暂存适合先审查再合入的流程：执行后可以按路径 apply/drop，宿主并行修改相同文件时拒绝冲突。内置沙箱也可组合 Git/worktree，不因缺少 pVisor 协议而缺少审查能力。单独 stage 不自动限制宿主视图外访问。
 
-[任务数据与兼容性](agent-tasks.md#reference-env) · [合入成本](apply.md) · [执行器边界](../guides/executors/index.md)
+[任务数据与兼容性](agent-tasks.md#reference-env) · [合入成本](supervision-cost.md#apply-cost) · [执行器边界](../guides/executors/index.md)
 
 ### 数据下载与复现 {#run}
 

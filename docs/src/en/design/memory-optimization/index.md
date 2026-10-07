@@ -4,14 +4,14 @@ Multiple pVisor instances retain similar execution environments and working sets
 
 ## Overall architecture and principles {#architecture}
 
-Instances own checkpoint saving, compression, and restoration; the VM runtime owns mappings and consistent CPU/device access. Memory optimization is an optional policy. It does not take ownership of the only copy of instance state or treat a running service as the recovery guarantee for reclaimed content.
+Instances own checkpoint saving, compression, and restoration; the VM runtime owns mappings and consistent CPU/device access. Memory optimization is an optional policy. Instances retain ownership of the only copy of their state; recovery of reclaimed content is guaranteed by a reliable content source. Service uptime alone is insufficient.
 
-- **Remove duplication first, compress next, offload when needed.** This is a selection principle, not a mandatory pipeline for every page.
+- **Remove duplication first, compress next, offload when needed.** Select mechanisms for each memory page as appropriate; pages need not pass through all three stages in order.
 - **Independent instance state, optional sharing.** Instances can save and restore without deduplication or a pooled service.
 - **Content ownership precedes reclamation.** Pin a reliable recovery source before discarding original RAM; runtime objects are not persistent checkpoints.
 - **Measure benefits and costs together.** Include CPU, transient peaks, pauses, and restoration latency. Compression ratio is not a substitute for net host-memory benefit.
 
-`backing` carries content, deduplication finds identical content, compression changes encoding, and offload changes residency. KSM, memfd, and FUSE are implementation options rather than interchangeable backends: KSM does not compress, memfd does not deduplicate automatically, and FUSE does not provide a complete machine snapshot.
+`backing` carries content, deduplication finds identical content, compression changes encoding, and offload changes residency. KSM, memfd, and FUSE have distinct responsibilities: KSM does not compress, memfd does not deduplicate automatically, and FUSE does not provide a complete machine snapshot.
 
 ## Three capabilities {#capabilities}
 
@@ -40,8 +40,8 @@ Space saved by compression cannot be converted unconditionally into capacity for
 
 ## Implementation direction and evidence {#direction}
 
-The architectural goals start from the 2026-10-06 design and do not imply that every capability has shipped. Reuse immutable baselines and private COW mappings first, then introduce region-level Linux KSM advice. Experimental Linux instance-local live compression is implemented; pooled coordination remains a separate extension.
+The architectural goals start from the 2026-10-06 design; delivery status for each capability follows. Reuse immutable baselines and private COW mappings first, then introduce region-level Linux KSM advice. Experimental Linux instance-local live compression is implemented; pooled coordination remains a separate extension.
 
-Existing file offload, formats, and the experimental macOS/HVF cold pool provide implementation foundations. Linux x86_64 supports the default-off `vm.cold_ram_compression` / `--vm-cold-ram-compression` with private anonymous RAM, runtime-owned kernel-fault userfaultfd and bounded `LocalColdRamStore`. It is ongoing guest-independent eviction/refault probing, not ordinary pause or a true read-access heat detector. Permission is required and startup fails without it; see [local compression](compression-local.md) for admission and recovery. Client-owned sealed shared backing remains proposed. A uniform API does not imply equal platform capabilities or host authority.
+Existing file offload, formats, and the experimental macOS/HVF cold pool provide implementation foundations. Linux x86_64 supports the default-off `vm.cold_ram_compression` / `--vm-cold-ram-compression` with private anonymous RAM, runtime-owned kernel-fault userfaultfd and bounded `LocalColdRamStore`. It continuously probes eviction/refault without guest participation, separately from ordinary pause, and does not directly detect read-access heat. Permission is required and startup fails without it; see [local compression](compression-local.md) for admission and recovery. Client-owned sealed shared backing remains proposed. Platform support and host authorization are checked separately; the uniform API preserves these differences.
 
-[Experimental proof of concept](proof-of-concept.md) preserves low-level COW, cold restoration, reference lifetimes, and historical failures. It establishes mechanism feasibility and limitations, not production density, net physical savings, or restoration tail latency for the target architecture. See [Environment snapshots](../environment-snapshot.md) for complete-state boundaries.
+[Experimental proof of concept](proof-of-concept.md) preserves low-level COW, cold restoration, reference lifetimes, and historical failures. Existing evidence covers mechanism feasibility and limitations; production density, net physical savings and restoration tail latency for the target architecture remain unvalidated. See [Environment snapshots](../environment-snapshot.md) for complete-state boundaries.

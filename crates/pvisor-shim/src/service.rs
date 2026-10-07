@@ -686,13 +686,6 @@ impl Task for PvisorTask {
         } else {
             child::INTERNAL_INIT_ARG
         };
-        if wants_vm && !plan.mounts.is_empty() {
-            warn!(
-                "task {}: {} spec mounts are not mapped into VMs yet",
-                req.id,
-                plan.mounts.len()
-            );
-        }
 
         // Containers created while this shim's sandbox runs join the pod's
         // shared namespaces unless their spec overrides them.

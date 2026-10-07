@@ -35,7 +35,10 @@ builds the root landing page, shared assets and legacy URLs; `zensical.zh.toml`
 and `zensical.en.toml` then build each locale directly into `site/zh` and `site/en`.
 Both locale configurations own their translated navigation and native search.
 The language selector keeps the current article. Preview one locale at a time
-with the native server; alternate-language links use the published site paths.
+with the native server; alternate-language links use absolute published-site URLs, preserving the article
+path. A local preview serves one locale, so switching language opens the published
+translation. To inspect unpublished translations, preview the other locale
+separately (`just docs-serve en` or `just docs-serve zh`).
 `check-docs.py` checks translation coverage, paired revisions, examples, links,
 navigation, HTML language attributes and that every article was generated.
 
@@ -60,8 +63,17 @@ and user-facing protocol pages belong in the site's `reference/` tree, not at th
 
 ## Information architecture
 
-Value before mechanism, mechanism before implementation. The top-level order is
-why → start → guides → concepts → benchmarks → security → reference → design → community.
+Value before mechanism, mechanism before implementation. Keep Home as the first
+top-level tab, followed by six sections: Quick start → User guide → Core concepts
+→ Benchmarks → Design and research → Contributing
+(首页 → 快速开始 → 用户指南 → 基础概念 → 基准测试 → 设计与研究 → 参与开发).
+Quick start includes the product introduction and `why/` articles; User guide
+includes the task learning path and reference pages; Core concepts includes
+Security as a subsection. The homepage remains accessible through its own tab
+and the site logo. This grouping changes navigation, not article
+paths or the separation between tutorials, guides, references and explanations.
+Within each tab, keep the sidebar to two levels: topic group → article. Flatten
+subgroups into their parent group; do not add a third sidebar level.
 
 The canonical Chinese documentation uses these sections:
 
@@ -126,7 +138,8 @@ Assess completion against the page's acceptance requirements, not its front
 matter or navigation label. Removing `status: todo` does not complete a missing
 field reference, schema, experiment, or policy decision. Keep outstanding items
 explicit and attach the implementation or verification that completes each one.
-Preserve page paths, navigation order, and bilingual parity.
+Preserve page paths and bilingual parity. Keep both locale navigation trees in
+the Home-plus-six-section order defined above.
 
 ### Writing style
 
@@ -134,12 +147,26 @@ Write for a developer who is deciding whether to adopt pVisor and then how to us
 it. The models are the uv, Ruff and Ray docs.
 
 - Lead with the outcome or the command, then explain. Short paragraphs, one idea each.
+- Describe purpose, behavior and scope directly. Avoid rhetorical contrasts such as
+  “不是……而是……” / “not X, but Y”, imagined objections and repeated disclaimers.
+  Express limitations as concrete prerequisites, unsupported operations, verification
+  gaps or recovery steps. Preserve safety boundaries and implementation status.
 - Second person, active voice. “Run this”, “pVisor refuses to overwrite your edit”.
 - Prefer a concrete example over an abstract description; show the command and what it does.
 - State a guarantee once, on the page that owns it, and link from elsewhere. Never open a page with a disclaimer, and never repeat a caveat in every paragraph.
 - No meta text: no “本文/本节/本页”, no “继续阅读”, no first line that restates the heading.
 - Name the mechanism when it matters; keep terms consistent with the glossary.
 - Tables for options, matrices and comparisons; code fences for anything runnable.
+- Keep article directories in the sidebar. Omit tables that only map topics to
+  documentation links, and do not replace them with equivalent link lists.
+  Index pages should explain the design or usage directly: ownership, execution
+  flow, decisions, or actionable steps. Avoid empty section introductions that
+  only describe what other pages contain. Retain tables with substantive
+  responsibilities, prerequisites, status or measurements.
+- Keep overview and topic pages in a summary-to-detail relationship. An overview
+  should stand alone with the system model, lifecycle and key tradeoffs. Topic
+  pages own protocol fields, algorithms and platform constraints. Link to a topic
+  where its detail becomes relevant instead of duplicating its sections.
 - A page with no data yet says “建设中” and links to its TODO page instead of making an empty claim.
 
 The native TOML files own navigation. Maintain paired Chinese and English articles.

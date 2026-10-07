@@ -109,12 +109,33 @@ def test_native_locale_configs_keep_matching_navigation_and_redirects():
         for locale in ("zh", "en")
     }
     canonical = tomllib.loads((ROOT / "docs/zensical.toml").read_text())["project"]
+    expected_sections = {
+        "zh": ["首页", "快速开始", "用户指南", "基础概念", "基准测试", "设计与研究", "参与开发"],
+        "en": ["Home", "Quick start", "User guide", "Core concepts", "Benchmarks", "Design and research", "Contributing"],
+    }
+    for locale, config in configs.items():
+        assert [label for section in config["nav"] for label in section] == expected_sections[locale]
+        assert config["nav"][0][expected_sections[locale][0]] == "index.md"
+        for section in config["nav"][1:]:
+            for groups in section.values():
+                for group in groups:
+                    for entries in group.values():
+                        assert isinstance(entries, list)
+                        assert entries
+                        assert all(isinstance(path, str) for entry in entries for path in entry.values())
+        concepts = config["nav"][3][expected_sections[locale][3]]
+        security_label = "安全" if locale == "zh" else "Security"
+        security = next(section[security_label] for section in concepts if security_label in section)
+        assert "security/index.md" in pages(security)
     assert pages(configs["zh"]["nav"]) == pages(configs["en"]["nav"])
     for locale, config in configs.items():
         assert config["docs_dir"] == f"src/{locale}"
         assert config["site_dir"] == f"site/{locale}"
         assert config["theme"]["language"] == locale
         assert config["plugins"]["search"]["lang"] == [locale]
+        assert {alt["lang"]: alt["link"] for alt in config["extra"]["alternate"]} == {
+            lang: canonical["site_url"] + lang + "/" for lang in ("en", "zh")
+        }
         for path in pages(config["nav"]):
             assert (ROOT / "docs" / config["docs_dir"] / path).is_file()
         redirects = config["plugins"]["redirects"]["redirect_maps"]

@@ -142,14 +142,51 @@ mutations recheck admission under their leases. Capture rechecks before sending,
 not after an effectful request has been sent. Scoped receipts and lost-response
 ambiguity remain; this is not a universal exactly-once dispatcher.
 
-Restored execution uses `RestoredAttempt::start_with()` and `ManagedRestoredRun`:
-the runtime projects the captured environment and restore metadata, takes durable
-Job ownership and publishes completion after native teardown. Frontends supply
-runtime configuration, terminal/cancellation adapters and rendering. Dropping the
-managed run requests cancellation; the completion task retains publication
-ownership while its Tokio runtime remains alive. This is not crash recovery or a
-promise of persistence after frontend process/runtime shutdown. Resume/fork do not
-report `Finished` solely because a launcher callback returned success.
+Ordinary Job execution uses `RuntimeJobService::start_managed()` and
+`ManagedJobRun`. The runtime retains the actual Attempt completion task, installs
+the durable execution Job server for VM Attempts and publishes its completion
+after native teardown. The server binds to the runtime's prepared record, not a
+frontend selector or caller-supplied stage metadata. Non-VM Attempts retain their
+Session-owned record/Bundle publication without creating an execution checkpoint
+ledger. Managed VM starts require durable Run storage. The supplied `RunConfig`
+is retained for execution restoration; it does not configure or replace the
+caller's already-built `PVisor`.
+
+Restored execution uses `RestoredAttempt::start_with()` to project the captured
+environment and restore metadata, then enters the same managed completion path.
+`ManagedRestoredRun` remains a compatibility alias for `ManagedJobRun`. Frontends
+supply runtime configuration, terminal/cancellation adapters and rendering; they
+do not install or finish the execution Job server. Failed handoff cancels and
+drains the accepted Attempt; partially published Job state is retained for
+reconciliation rather than forged into a completed receipt. Frontend wait errors
+and early success cannot bypass native teardown or hide publication failures.
+Dropping the managed run or its wait future requests cancellation; the completion
+task retains publication ownership while its Tokio runtime remains alive. This
+is not crash recovery or persistence after process/runtime shutdown. Resume/fork
+do not report `Finished` solely because a launcher callback returned success.
+
+Managed starts with durable storage also retain a private, versioned
+`workspace-launch-policy.json` derived from runtime-resolved policy, not the
+caller's restoration `RunConfig`. Workspace fork reconstructs supported network,
+filesystem, resource and environment-projection policy without loading current
+user/workspace defaults. It does not retain environment values or Gateway
+credentials, and it is not an enforcement attestation. The reconstruction path
+currently supports standard host execution with an OverlayNet proxy; legacy Jobs
+without this snapshot and unsupported VM/container/custom executor, Gateway or
+unrepresentable controls are refused before checkpoint/stage mutation rather
+than silently downgraded. Existing workspace forks relying on those configurations
+must not be treated as supported by this change.
+
+Bundle validation checks identity and safety-summary consistency against recorded
+executor observations; it does not authenticate the producer or prove artifact
+contents. Wall-clock timestamps can move backwards and are not a monotonic audit
+clock. Capture completion and replay tool receipts have narrower scopes than a
+complete-run capture or an exactly-once external side-effect guarantee.
+
+The lower-level `PVisor::run()` and `RuntimeJobService::start()` still return a bare
+`RunHandle`. Embedded Attempt callers and daemon detached supervisors retain their
+own lifecycle and resource ownership; they are not implicitly enrolled in the
+managed Job/checkpoint server.
 
 `AttemptService` is the shared in-process dispatcher for live status, termination
 and native controls. Host VM and daemon supervisor endpoints adapt their own

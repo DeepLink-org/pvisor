@@ -51,7 +51,7 @@ Claude passes 30/30 on native/staged/Docker/reference VMs; pVisor VM initializat
 
 Staging supports review before application: apply/drop paths selectively, rejecting conflicts when the host changes the same file. Built-in sandboxes can also use Git/worktrees for review without pVisor's protocol. Standalone stage does not automatically restrict outside-view host access.
 
-[Task data and compatibility](agent-tasks.md#reference-env) · [Apply costs](apply.md) · [Executor boundaries](../guides/executors/index.md)
+[Task data and compatibility](agent-tasks.md#reference-env) · [Apply costs](supervision-cost.md#apply-cost) · [Executor boundaries](../guides/executors/index.md)
 
 ### Downloads and reproduction {#run}
 

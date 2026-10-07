@@ -79,6 +79,10 @@ pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配
 
 Linux pager 在进入采样窗口前，仅持有 pager 锁检查 cold 状态与 cooldown；没有候选时不进入 CPU/设备 barrier，但仍检查 VM 退出。首次 barrier 仍必须停驻 CPU 并排空设备 lease，才能安全复制 live RAM；存储编码/发布不持有 barrier，全部发布被拒绝或批次为空时跳过提交窗口，拒绝后的 cooldown 只更新元数据。成功发布仍在第二次 barrier 内复核 live bytes 后才 discard。缺页查找按宿主地址排序的块做二分查找（不是 guest 地址顺序），并检查块长度，拒绝映射间隙及不足 64 KiB 的尾块之外的地址。这里描述实现与正确性契约，不声明实测性能收益。
 
+缺页恢复持有 pager 锁后才进入 store；发布必须先释放 store 锁，再更新
+pager 的 cooldown，包括不可压缩或容量不足的拒绝路径。禁止持有 store
+锁等待 pager，否则发布拒绝和缺页恢复会互相等待。
+
 快照捕获/恢复、整 VM offload、文件/FUSE backing、`ram_dedup` 与此模式互斥；Linux 外部 `memory_pool` 有意不支持，仅使用有界实例本地 store。完整权限、存储预算与剩余提案见[实例内压缩](../../docs/src/zh/design/memory-optimization/compression-local.md)。
 
 `RamDedupControl::advise_ram_dedup()` 仅显式登记适合的普通私有 RAM（匿名映射及私有文件 COW 候选），跳过 shared、hugetlb 和设备窗口，不替换映射、不更改全局 sysfs，也不自动启用。`RamDedupReport` 逐映射区分 accepted、skipped、unsupported 和 error；`accepted_bytes` 只表示本次建议被接受的区域长度，不是已合并字节或实际节省。macOS 对候选报告 unsupported。调用与 VM transition 串行化，任一登记成功后，本 VM 生命周期内拒绝启动冷 pager 或安装 device prepare；反向也跳过已启动 pager/prepare 的 VM。建议不可用不暂停或破坏健康 VM；共享信任域和侧信道授权由调用方负责。现有私有 COW RAM 的 reclaim 拒绝逻辑保持不变。
@@ -110,6 +114,11 @@ holds leases until VM exit. The runtime validates overlay topology and saved
 inodes/handles; writable stage roots cannot be retained as immutable lowers.
 Legacy full-tree/layer rebinding remains separate. The trait is available with
 the same signature on every platform; unsupported backends return an error.
+Restore can add the new Attempt's private authority paths through
+`rebind_filesystem_exclusions`. It preserves every existing exclusion, rejects
+absolute/escaping paths and additions that hide saved inode paths, and leaves
+other topology checks intact. This keeps new control sockets and storage hidden
+without treating their changed names as a change to the captured workload.
 
 
 ## virtio-fs 并发与冻结契约

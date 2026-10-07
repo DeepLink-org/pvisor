@@ -410,6 +410,51 @@ impl OverlaySnapshot {
         self.hard_link_origins = rebound_origins;
         Ok(())
     }
+    pub(super) fn rebind_exclusions(&mut self, paths: &[PathBuf]) -> io::Result<()> {
+        use super::snapshot::invalid;
+        let names = paths
+            .iter()
+            .map(|path| {
+                if path.as_os_str().is_empty()
+                    || path
+                        .components()
+                        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+                {
+                    return Err(invalid("invalid restored exclusion path"));
+                }
+                path.to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| invalid("non-UTF8 exclusion path"))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        if self
+            .config
+            .excluded_paths
+            .iter()
+            .any(|old| !names.contains(old))
+        {
+            return Err(invalid(
+                "restored exclusions cannot remove an existing rule",
+            ));
+        }
+        for path in paths {
+            if !self
+                .config
+                .excluded_paths
+                .iter()
+                .any(|old| Path::new(old) == path)
+                && self
+                    .nodes
+                    .iter()
+                    .any(|(_, node)| Path::new(OsStr::from_bytes(node)).starts_with(path))
+            {
+                return Err(invalid("restored exclusion would hide a saved inode"));
+            }
+        }
+        self.config.excluded_paths = names;
+        Ok(())
+    }
+
     pub(super) fn rebind_policy(
         &mut self,
         policy: &pvisor_overlay_core::FileAccessPolicy,
@@ -2387,6 +2432,35 @@ mod tests {
         .unwrap();
         fs.init(FsOptions::empty()).unwrap();
         fs
+    }
+
+    #[test]
+    fn restored_exclusions_only_add_unobserved_private_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        let super::super::snapshot::FsSnapshot::Overlay(mut state) = fs.capture_state().unwrap() else {
+            panic!("overlay expected")
+        };
+        state.nodes.push((123, b"visible/file".to_vec()));
+        let original = state.config.excluded_paths.clone();
+        for paths in [
+            vec![],
+            vec![PathBuf::from("private"), PathBuf::from("visible")],
+            vec![PathBuf::from("private"), PathBuf::from("../outside")],
+            vec![PathBuf::from("private"), PathBuf::from("/absolute")],
+        ] {
+            assert!(state.rebind_exclusions(&paths).is_err());
+            assert_eq!(
+                state.config.excluded_paths, original,
+                "failed rebinding changed exclusions"
+            );
+        }
+        state
+            .rebind_exclusions(&[PathBuf::from("private"), PathBuf::from("tmp/new-control")])
+            .unwrap();
+        assert_eq!(state.config.excluded_paths, ["private", "tmp/new-control"]);
+        assert_eq!(state.nodes.last().unwrap().1, b"visible/file");
     }
 
     #[test]
