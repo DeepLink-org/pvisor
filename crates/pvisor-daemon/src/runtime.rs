@@ -874,7 +874,10 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
     let run_dir = sandbox_dir.join("run");
     private_directory(&run_dir)?;
     let settings = pvisor::VmSettings {
-        ram_backing: identity.memory_pool.is_none().then(|| run_dir.join("live-ram")),
+        ram_backing: identity
+            .memory_pool
+            .is_none()
+            .then(|| run_dir.join("live-ram")),
         memory_pool: identity.memory_pool.clone(),
         rootfs: Some(identity.image.rootfs.clone()),
         rootfs_immutable: true,

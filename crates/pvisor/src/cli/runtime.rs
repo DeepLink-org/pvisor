@@ -473,10 +473,10 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
     };
     tree.cleanup(true)?;
     drop(foreground);
-    if let Some(signal) = status.signal() {
-        if [libc::SIGINT, libc::SIGTERM, libc::SIGHUP].contains(&signal) {
-            super::host_service::notify_cancel(signal);
-        }
+    if let Some(signal) = status.signal()
+        && [libc::SIGINT, libc::SIGTERM, libc::SIGHUP].contains(&signal)
+    {
+        super::host_service::notify_cancel(signal);
     }
     // Even if this unmount hangs, the service and frontend have independently
     // armed, bounded whole-request tree cleanup before inspect was admitted.

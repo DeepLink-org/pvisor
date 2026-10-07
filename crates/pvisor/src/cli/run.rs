@@ -1161,12 +1161,10 @@ impl RunExecutor for TerminalReportingExecutor {
             .failure
             .as_ref()
             .is_some_and(|f| f.kind == pvisor_core::RunFailureKind::ProcessExit)
+            && let Some(signal) = output.executor_observations.termination_signal
+            && [libc::SIGINT, libc::SIGTERM, libc::SIGHUP].contains(&signal)
         {
-            if let Some(signal) = output.executor_observations.termination_signal {
-                if [libc::SIGINT, libc::SIGTERM, libc::SIGHUP].contains(&signal) {
-                    super::host_service::notify_cancel(signal);
-                }
-            }
+            super::host_service::notify_cancel(signal);
         }
         if output.state == RunState::Cancelled {
             super::host_service::notify_cleanup();
@@ -1378,10 +1376,10 @@ async fn execute_config(
                 .iter()
                 .map(|mount| mount.source.clone()),
         );
-        if let Some(rootfs) = &config.container.rootfs {
-            if rootfs != Path::new("/") {
-                sources.push(rootfs.clone());
-            }
+        if let Some(rootfs) = &config.container.rootfs
+            && rootfs != Path::new("/")
+        {
+            sources.push(rootfs.clone());
         }
         super::host_service::reject_guest_exposure(sources)?;
     }

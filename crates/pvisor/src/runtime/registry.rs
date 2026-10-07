@@ -484,13 +484,15 @@ impl RunControlServer {
                         Ok((stream, _)) => {
                             serve_control(
                                 stream,
-                                &stage,
-                                &target,
-                                &overlay,
-                                &lowers,
-                                &mut mounts,
-                                filesystem.as_ref(),
-                                network.as_ref(),
+                                ControlContext {
+                                    stage: &stage,
+                                    target: &target,
+                                    overlay: &overlay,
+                                    lowers: &lowers,
+                                    mounts: &mut mounts,
+                                    filesystem: filesystem.as_ref(),
+                                    network: network.as_ref(),
+                                },
                             );
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -519,16 +521,26 @@ impl Drop for RunControlServer {
     }
 }
 
-fn serve_control(
-    stream: std::os::unix::net::UnixStream,
-    stage: &Path,
-    target: &AgentCtlTarget,
-    overlay: &OverlayRecord,
-    lowers: &[PathBuf],
-    mounts: &mut HashMap<String, ReadOnlyOverlayMount>,
-    filesystem: Option<&pvisor_overlayfs::FsMetrics>,
-    network: Option<&pvisor_overlaynet::InterceptionMetrics>,
-) {
+struct ControlContext<'a> {
+    stage: &'a Path,
+    target: &'a AgentCtlTarget,
+    overlay: &'a OverlayRecord,
+    lowers: &'a [PathBuf],
+    mounts: &'a mut HashMap<String, ReadOnlyOverlayMount>,
+    filesystem: Option<&'a pvisor_overlayfs::FsMetrics>,
+    network: Option<&'a pvisor_overlaynet::InterceptionMetrics>,
+}
+
+fn serve_control(stream: std::os::unix::net::UnixStream, context: ControlContext<'_>) {
+    let ControlContext {
+        stage,
+        target,
+        overlay,
+        lowers,
+        mounts,
+        filesystem,
+        network,
+    } = context;
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1079,13 +1091,15 @@ mod tests {
             scope.spawn(|| {
                 serve_control(
                     server,
-                    temp.path(),
-                    envelope.target.as_ref().unwrap(),
-                    record.overlay.as_ref().unwrap(),
-                    &[],
-                    &mut HashMap::new(),
-                    None,
-                    None,
+                    ControlContext {
+                        stage: temp.path(),
+                        target: envelope.target.as_ref().unwrap(),
+                        overlay: record.overlay.as_ref().unwrap(),
+                        lowers: &[],
+                        mounts: &mut HashMap::new(),
+                        filesystem: None,
+                        network: None,
+                    },
                 );
                 done_tx.send(()).unwrap();
             });
@@ -1163,13 +1177,15 @@ mod tests {
                 scope.spawn(|| {
                     serve_control(
                         server,
-                        temp.path(),
-                        &target,
-                        record.overlay.as_ref().unwrap(),
-                        &[],
-                        &mut HashMap::new(),
-                        None,
-                        None,
+                        ControlContext {
+                            stage: temp.path(),
+                            target: &target,
+                            overlay: record.overlay.as_ref().unwrap(),
+                            lowers: &[],
+                            mounts: &mut HashMap::new(),
+                            filesystem: None,
+                            network: None,
+                        },
                     )
                 });
                 match variant {

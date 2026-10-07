@@ -339,10 +339,9 @@ impl OwnedTree {
                     .file_name()
                     .to_str()
                     .and_then(|name| name.parse::<i32>().ok())
+                    && let Ok(info) = stat(pid)
                 {
-                    if let Ok(info) = stat(pid) {
-                        snapshot.insert(pid, info);
-                    }
+                    snapshot.insert(pid, info);
                 }
             }
             // Dead pidfds remain pinned but their numeric PIDs must never be
@@ -370,10 +369,10 @@ impl OwnedTree {
                 if self.processes.contains_key(&pid) {
                     continue;
                 }
-                if let (Some(before), Ok(fd)) = (snapshot.get(&pid), pidfd(pid)) {
-                    if stat(pid).is_ok_and(|after| after.2 == before.2) {
-                        self.processes.insert(pid, fd);
-                    }
+                if let (Some(before), Ok(fd)) = (snapshot.get(&pid), pidfd(pid))
+                    && stat(pid).is_ok_and(|after| after.2 == before.2)
+                {
+                    self.processes.insert(pid, fd);
                 }
             }
             Ok(())

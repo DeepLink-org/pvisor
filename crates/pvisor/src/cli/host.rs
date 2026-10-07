@@ -141,124 +141,6 @@ impl VmOptions {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::Parser;
-
-    #[test]
-    fn nested_run_args_roundtrip_as_typed_data() {
-        let parsed = super::super::Cli::try_parse_from([
-            "pvisor",
-            "run",
-            "--executor",
-            "vm",
-            "--memory",
-            "256MiB",
-            "--timeout",
-            "2m",
-            "--mount",
-            "/tmp:read",
-            "--access",
-            "secret:deny",
-            "--vm-ram-dedup=false",
-            "--",
-            "/bin/echo",
-            "literal ; not a shell request",
-        ])
-        .unwrap();
-        let super::super::Command::Run(args) = parsed.command else {
-            panic!("expected run");
-        };
-        let request = JobCommand::Run(args);
-        let value = serde_json::to_value(&request).unwrap();
-        assert_eq!(value["operation"], "run");
-        assert_eq!(value["args"]["command"][1], "literal ; not a shell request");
-        let roundtrip: JobCommand = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(serde_json::to_value(roundtrip).unwrap(), value);
-    }
-
-    #[test]
-    fn terminal_handoff_is_limited_to_execution_with_inherited_input() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("spec.json");
-        for stdin in [
-            pvisor_core::StdioMode::Inherit,
-            pvisor_core::StdioMode::Null,
-            pvisor_core::StdioMode::Capture,
-        ] {
-            let mut spec =
-                pvisor_core::RunSpec::process("terminal-classification", "true", "/bin/true");
-            let pvisor_core::RunInvocation::Process(process) = &mut spec.invocation;
-            process.stdin = stdin;
-            std::fs::write(&path, serde_json::to_vec(&spec).unwrap()).unwrap();
-            let parsed = super::super::Cli::try_parse_from([
-                "pvisor",
-                "run",
-                "--spec",
-                path.to_str().unwrap(),
-                "--result-file",
-                "result.json",
-            ])
-            .unwrap();
-            let super::super::Command::Run(args) = parsed.command else {
-                panic!("expected run");
-            };
-            assert_eq!(
-                JobCommand::Run(args).inherits_terminal_input().unwrap(),
-                stdin == pvisor_core::StdioMode::Inherit
-            );
-        }
-        let parsed = super::super::Cli::try_parse_from(["pvisor", "status", "--json"]).unwrap();
-        let super::super::Command::Status(args) = parsed.command else {
-            panic!("expected status");
-        };
-        assert!(!JobCommand::Status(args).inherits_terminal_input().unwrap());
-    }
-
-    #[test]
-    fn vm_controls_are_normal_command_options() {
-        for (command, option, action) in [
-            ("status", None, "Status"),
-            ("suspend", Some("--vm-pause"), "Pause"),
-            ("suspend", Some("--vm-offload"), "Offload { file: None }"),
-            ("resume", Some("--vm-load"), "Resume"),
-        ] {
-            let mut args = vec![
-                "pvisor",
-                command,
-                "job-one",
-                "--vm-socket",
-                "/private/control.sock",
-                "--vm-job-id",
-                "job-one",
-                "--vm-attempt-id",
-                "attempt-one",
-            ];
-            if let Some(option) = option {
-                args.push(option);
-            }
-            let parsed = super::super::Cli::try_parse_from(args).unwrap();
-            let JobCommand::Vm(request) = parsed.vm.request(&parsed.command).unwrap().unwrap()
-            else {
-                panic!("expected VM control");
-            };
-            assert_eq!(format!("{:?}", request.command), action);
-            assert_eq!(request.job_id, "job-one");
-            assert_eq!(request.attempt_id, "attempt-one");
-        }
-        assert!(
-            super::super::Cli::try_parse_from([
-                "pvisor",
-                "status",
-                "--vm-socket",
-                "/private/control.sock"
-            ])
-            .is_err()
-        );
-    }
-}
-
 impl JobCommand {
     fn selection(&self) -> Option<(Option<&Path>, &Path)> {
         match self {
@@ -422,4 +304,122 @@ pub(crate) fn execute(rt: &tokio::runtime::Runtime, command: JobCommand) -> anyh
         })?,
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn nested_run_args_roundtrip_as_typed_data() {
+        let parsed = super::super::Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--executor",
+            "vm",
+            "--memory",
+            "256MiB",
+            "--timeout",
+            "2m",
+            "--mount",
+            "/tmp:read",
+            "--access",
+            "secret:deny",
+            "--vm-ram-dedup=false",
+            "--",
+            "/bin/echo",
+            "literal ; not a shell request",
+        ])
+        .unwrap();
+        let super::super::Command::Run(args) = parsed.command else {
+            panic!("expected run");
+        };
+        let request = JobCommand::Run(args);
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["operation"], "run");
+        assert_eq!(value["args"]["command"][1], "literal ; not a shell request");
+        let roundtrip: JobCommand = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(roundtrip).unwrap(), value);
+    }
+
+    #[test]
+    fn terminal_handoff_is_limited_to_execution_with_inherited_input() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("spec.json");
+        for stdin in [
+            pvisor_core::StdioMode::Inherit,
+            pvisor_core::StdioMode::Null,
+            pvisor_core::StdioMode::Capture,
+        ] {
+            let mut spec =
+                pvisor_core::RunSpec::process("terminal-classification", "true", "/bin/true");
+            let pvisor_core::RunInvocation::Process(process) = &mut spec.invocation;
+            process.stdin = stdin;
+            std::fs::write(&path, serde_json::to_vec(&spec).unwrap()).unwrap();
+            let parsed = super::super::Cli::try_parse_from([
+                "pvisor",
+                "run",
+                "--spec",
+                path.to_str().unwrap(),
+                "--result-file",
+                "result.json",
+            ])
+            .unwrap();
+            let super::super::Command::Run(args) = parsed.command else {
+                panic!("expected run");
+            };
+            assert_eq!(
+                JobCommand::Run(args).inherits_terminal_input().unwrap(),
+                stdin == pvisor_core::StdioMode::Inherit
+            );
+        }
+        let parsed = super::super::Cli::try_parse_from(["pvisor", "status", "--json"]).unwrap();
+        let super::super::Command::Status(args) = parsed.command else {
+            panic!("expected status");
+        };
+        assert!(!JobCommand::Status(args).inherits_terminal_input().unwrap());
+    }
+
+    #[test]
+    fn vm_controls_are_normal_command_options() {
+        for (command, option, action) in [
+            ("status", None, "Status"),
+            ("suspend", Some("--vm-pause"), "Pause"),
+            ("suspend", Some("--vm-offload"), "Offload { file: None }"),
+            ("resume", Some("--vm-load"), "Resume"),
+        ] {
+            let mut args = vec![
+                "pvisor",
+                command,
+                "job-one",
+                "--vm-socket",
+                "/private/control.sock",
+                "--vm-job-id",
+                "job-one",
+                "--vm-attempt-id",
+                "attempt-one",
+            ];
+            if let Some(option) = option {
+                args.push(option);
+            }
+            let parsed = super::super::Cli::try_parse_from(args).unwrap();
+            let JobCommand::Vm(request) = parsed.vm.request(&parsed.command).unwrap().unwrap()
+            else {
+                panic!("expected VM control");
+            };
+            assert_eq!(format!("{:?}", request.command), action);
+            assert_eq!(request.job_id, "job-one");
+            assert_eq!(request.attempt_id, "attempt-one");
+        }
+        assert!(
+            super::super::Cli::try_parse_from([
+                "pvisor",
+                "status",
+                "--vm-socket",
+                "/private/control.sock"
+            ])
+            .is_err()
+        );
+    }
 }

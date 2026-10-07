@@ -78,7 +78,9 @@ pub(super) fn receive(stream: &UnixStream, expected: usize) -> anyhow::Result<Ve
                 let length = (*c).cmsg_len as usize;
                 let header = libc::CMSG_LEN(0) as usize;
                 malformed |= length < header
-                    || (length.saturating_sub(header) % std::mem::size_of::<RawFd>() != 0);
+                    || !length
+                        .saturating_sub(header)
+                        .is_multiple_of(std::mem::size_of::<RawFd>());
                 // Adopt EVERY installed FD before any fallible validation or
                 // flag operation. This includes rights accompanying bad markers
                 // and the installed prefix of a truncated rights message.

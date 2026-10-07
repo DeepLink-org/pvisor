@@ -109,15 +109,26 @@ def test_native_locale_configs_keep_matching_navigation_without_legacy_redirects
         for locale in ("zh", "en")
     }
     assert {path.name for path in (ROOT / "docs").glob("zensical*.toml")} == {
-        "zensical.zh.toml", "zensical.en.toml"
+        "zensical.zh.toml",
+        "zensical.en.toml",
     }
     published_root = "https://deeplink-org.github.io/pvisor/"
     expected_sections = {
         "zh": ["首页", "快速开始", "用户指南", "基础概念", "基准测试", "设计与研究", "参与开发"],
-        "en": ["Home", "Quick start", "User guide", "Core concepts", "Benchmarks", "Design and research", "Contributing"],
+        "en": [
+            "Home",
+            "Quick start",
+            "User guide",
+            "Core concepts",
+            "Benchmarks",
+            "Design and research",
+            "Contributing",
+        ],
     }
     for locale, config in configs.items():
-        assert [label for section in config["nav"] for label in section] == expected_sections[locale]
+        assert [label for section in config["nav"] for label in section] == expected_sections[
+            locale
+        ]
         assert config["nav"][0][expected_sections[locale][0]] == "index.md"
         for section in config["nav"][1:]:
             for groups in section.values():
@@ -125,10 +136,14 @@ def test_native_locale_configs_keep_matching_navigation_without_legacy_redirects
                     for entries in group.values():
                         assert isinstance(entries, list)
                         assert entries
-                        assert all(isinstance(path, str) for entry in entries for path in entry.values())
+                        assert all(
+                            isinstance(path, str) for entry in entries for path in entry.values()
+                        )
         concepts = config["nav"][3][expected_sections[locale][3]]
         security_label = "安全" if locale == "zh" else "Security"
-        security = next(section[security_label] for section in concepts if security_label in section)
+        security = next(
+            section[security_label] for section in concepts if security_label in section
+        )
         assert "security/index.md" in pages(security)
     assert pages(configs["zh"]["nav"]) == pages(configs["en"]["nav"])
     for locale, config in configs.items():
@@ -170,7 +185,8 @@ def test_generated_site_check_rejects_success_without_articles(tmp_path, monkeyp
     checker = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["check"]
     monkeypatch.setitem(checker.__globals__, "ROOT", site)
     monkeypatch.setitem(
-        checker.__globals__, "check_translations",
+        checker.__globals__,
+        "check_translations",
         lambda **kwargs: check_translations(tmp_path, **kwargs),
     )
     with pytest.raises(SystemExit, match="article not rendered: en/index.md"):
@@ -183,7 +199,7 @@ def write_locale_configs(docs):
             f'[project]\ndocs_dir = "src/{locale}"\nsite_dir = "site/{locale}"\n'
             f'site_url = "https://example.org/pvisor/{locale}/"\n'
             'nav = ["index.md", "start/what-is-pvisor.md"]\n'
-            '[project.extra]\nalternate = [\n'
+            "[project.extra]\nalternate = [\n"
             '{lang = "en", link = "https://example.org/pvisor/en/"},\n'
             '{lang = "zh", link = "https://example.org/pvisor/zh/"}]\n'
         )
@@ -201,7 +217,9 @@ def generated_site(tmp_path, monkeypatch):
     (site / "index.html").write_text(entry)
     for locale in ("en", "zh"):
         for route in ("", "start/what-is-pvisor/"):
-            source = tmp_path / "src" / locale / ("index.md" if not route else "start/what-is-pvisor.md")
+            source = (
+                tmp_path / "src" / locale / ("index.md" if not route else "start/what-is-pvisor.md")
+            )
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text("# Example {#shared}\n")
             dest = site / locale / route / "index.html"
@@ -209,20 +227,28 @@ def generated_site(tmp_path, monkeypatch):
             dest.write_text(
                 f'<html lang="{locale}"><h1 id="shared">Example</h1>'
                 '<div class="admonition tip">Tip</div><pre>example</pre>'
-                + ''.join(
+                + "".join(
                     f'<a class="md-select__link" href="https://example.org/pvisor/{lang}/{route}">{lang}</a>'
                     for lang in ("en", "zh")
                 )
                 + f'<a class="md-nav__link" href="/pvisor/{locale}/">Home</a></html>'
             )
-        (site / locale / "search.json").write_text(json.dumps({
-            "config": {"lang": [locale]},
-            "items": [{"location": "#shared"}, {"location": "start/what-is-pvisor/#shared"}],
-        }))
+        (site / locale / "search.json").write_text(
+            json.dumps(
+                {
+                    "config": {"lang": [locale]},
+                    "items": [
+                        {"location": "#shared"},
+                        {"location": "start/what-is-pvisor/#shared"},
+                    ],
+                }
+            )
+        )
     checker = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["check"]
     monkeypatch.setitem(checker.__globals__, "ROOT", site)
     monkeypatch.setitem(
-        checker.__globals__, "check_translations",
+        checker.__globals__,
+        "check_translations",
         lambda **kwargs: check_translations(tmp_path, **kwargs),
     )
     return tmp_path, checker
@@ -237,39 +263,48 @@ def test_generated_site_accepts_only_locale_configs_and_copied_current_entry(gen
 def test_generated_site_derives_published_root_from_locale_urls(generated_site):
     docs, checker = generated_site
     for config in docs.glob("zensical.*.toml"):
-        config.write_text(config.read_text().replace("example.org/pvisor/", "docs.example.net/manual/"))
+        config.write_text(
+            config.read_text().replace("example.org/pvisor/", "docs.example.net/manual/")
+        )
     for page in (docs / "site").rglob("*.html"):
-        page.write_text(page.read_text().replace("example.org/pvisor/", "docs.example.net/manual/").replace("/pvisor/", "/manual/"))
+        page.write_text(
+            page.read_text()
+            .replace("example.org/pvisor/", "docs.example.net/manual/")
+            .replace("/pvisor/", "/manual/")
+        )
     checker()
 
 
-@pytest.mark.parametrize("mutation,message", [
-    ("root_config", "only the two native locale configurations"),
-    ("missing_nav", "en: navigation page missing"),
-    ("duplicate_nav", "en: navigation lists the same article more than once"),
-    ("mismatched_nav", "locale navigation article paths do not match"),
-    ("redirect_plugin", "legacy redirect plugin is forbidden"),
-    ("redirect_maps", "legacy redirect plugin is forbidden"),
-    ("redirect_page", "meta refresh redirect is forbidden"),
-    ("root_redirect", "meta refresh redirect is forbidden"),
-    ("root_not_copied", "root index.html must be copied"),
-    ("root_old_entry", "missing current zh language entry"),
-    ("site_url", "site_url must be an absolute published locale URL"),
-    ("alternate", "alternate links must use absolute published locale URLs"),
-    ("raw_data", "raw .data evidence included"),
-    ("language", "html lang=zh, expected en"),
-    ("search_language", "missing native locale search index"),
-    ("search_target", "search result leaves locale"),
-    ("search_anchor", "search result anchor missing"),
-    ("selector_origin", "language selector leaves published site"),
-    ("selector_relative", "language selector must use an absolute published URL"),
-    ("selector_article", "language selector loses current article"),
-    ("navigation_locale", "navigation changes language"),
-    ("breadcrumb_locale", "breadcrumb leaves current language"),
-    ("missing_link", "missing a missing/"),
-    ("missing_anchor", "missing anchor #missing"),
-    ("callout", "missing rendered callout or code block"),
-])
+@pytest.mark.parametrize(
+    "mutation,message",
+    [
+        ("root_config", "only the two native locale configurations"),
+        ("missing_nav", "en: navigation page missing"),
+        ("duplicate_nav", "en: navigation lists the same article more than once"),
+        ("mismatched_nav", "locale navigation article paths do not match"),
+        ("redirect_plugin", "legacy redirect plugin is forbidden"),
+        ("redirect_maps", "legacy redirect plugin is forbidden"),
+        ("redirect_page", "meta refresh redirect is forbidden"),
+        ("root_redirect", "meta refresh redirect is forbidden"),
+        ("root_not_copied", "root index.html must be copied"),
+        ("root_old_entry", "missing current zh language entry"),
+        ("site_url", "site_url must be an absolute published locale URL"),
+        ("alternate", "alternate links must use absolute published locale URLs"),
+        ("raw_data", "raw .data evidence included"),
+        ("language", "html lang=zh, expected en"),
+        ("search_language", "missing native locale search index"),
+        ("search_target", "search result leaves locale"),
+        ("search_anchor", "search result anchor missing"),
+        ("selector_origin", "language selector leaves published site"),
+        ("selector_relative", "language selector must use an absolute published URL"),
+        ("selector_article", "language selector loses current article"),
+        ("navigation_locale", "navigation changes language"),
+        ("breadcrumb_locale", "breadcrumb leaves current language"),
+        ("missing_link", "missing a missing/"),
+        ("missing_anchor", "missing anchor #missing"),
+        ("callout", "missing rendered callout or code block"),
+    ],
+)
 def test_generated_site_rejects_invalid_native_output(generated_site, mutation, message):
     import json
 
@@ -286,13 +321,21 @@ def test_generated_site_rejects_invalid_native_output(generated_site, mutation, 
     if mutation == "root_config":
         (docs / "zensical.toml").write_text("[project]\n")
     elif mutation in ("missing_nav", "duplicate_nav", "mismatched_nav"):
-        target = {"missing_nav": "missing.md", "duplicate_nav": "index.md", "mismatched_nav": "extra.md"}[mutation]
+        target = {
+            "missing_nav": "missing.md",
+            "duplicate_nav": "index.md",
+            "mismatched_nav": "extra.md",
+        }[mutation]
         if mutation == "mismatched_nav":
             (docs / "src/en/extra.md").write_text("# Example\n")
             (docs / "src/zh/extra.md").write_text("# Example\n")
         replace(config, '"start/what-is-pvisor.md"]', f'"start/what-is-pvisor.md", "{target}"]')
     elif mutation in ("redirect_plugin", "redirect_maps"):
-        table = "project.plugins.redirects.redirect_maps" if mutation == "redirect_plugin" else "project.redirect_maps"
+        table = (
+            "project.plugins.redirects.redirect_maps"
+            if mutation == "redirect_plugin"
+            else "project.redirect_maps"
+        )
         with config.open("a") as stream:
             stream.write(f'\n[{table}]\n"old.md" = "index.md"\n')
     elif mutation in ("redirect_page", "root_redirect"):
@@ -333,10 +376,18 @@ def test_generated_site_rejects_invalid_native_output(generated_site, mutation, 
     elif mutation == "navigation_locale":
         replace(article, 'href="/pvisor/en/"', 'href="/pvisor/zh/"')
     elif mutation == "breadcrumb_locale":
-        replace(article, 'class="md-nav__link" href="/pvisor/en/"', 'class="md-path__link" href="/pvisor/"')
+        replace(
+            article,
+            'class="md-nav__link" href="/pvisor/en/"',
+            'class="md-path__link" href="/pvisor/"',
+        )
     elif mutation in ("missing_link", "missing_anchor"):
         with article.open("a") as stream:
-            stream.write('<a href="' + ("missing/" if mutation == "missing_link" else "#missing") + '">Broken</a>')
+            stream.write(
+                '<a href="'
+                + ("missing/" if mutation == "missing_link" else "#missing")
+                + '">Broken</a>'
+            )
     elif mutation == "callout":
         replace(article, 'class="admonition tip"', 'class="admonition note"')
     else:

@@ -35,6 +35,9 @@ pub use workspace::{
     WorkspaceCreateRequest, WorkspaceCreateResponse, WorkspaceDeleteRequest, WorkspaceGcRequest,
 };
 
+/// Request-local admission check for a selected Run record.
+pub type RecordCheck<'a> = dyn Fn(&RunRecord) -> anyhow::Result<()> + Send + Sync + 'a;
+
 /// Request-local admission hooks, never process-global runtime state.
 /// `check_record` allows a frontend to retain its existing admitted-target fence
 /// while migrating to `expected_target`; cancellation hooks must not acquire Job leases.
@@ -42,7 +45,7 @@ pub use workspace::{
 pub struct ServiceContext<'a> {
     pub expected_target: Option<&'a AgentCtlTarget>,
     pub check_cancelled: Option<&'a (dyn Fn() -> anyhow::Result<()> + Send + Sync)>,
-    pub check_record: Option<&'a (dyn Fn(&RunRecord) -> anyhow::Result<()> + Send + Sync)>,
+    pub check_record: Option<&'a RecordCheck<'a>>,
 }
 impl ServiceContext<'_> {
     pub fn check(&self, record: &RunRecord) -> anyhow::Result<()> {

@@ -46,12 +46,12 @@ executor = "vm"
 command = ["/bin/sleep", "10"]
 
 [features]
-vm-vcpu-observe = true
+workload-aware-memory-offloading = true
 ```
 
-`features.vm-vcpu-observe` 默认 `false`，启用 EXP-001 M0 原生 VM 观测。要求 Linux x86_64/KVM 或 Apple Silicon macOS/HVF 的 VM executor；自动 offload 尚未实现，HVF 运行验收尚未完成。未知特性键和非布尔值会导致加载失败。
+`features.workload-aware-memory-offloading` 默认 `false`，启用 EXP-001 M0 原生 VM 观测。要求 Linux x86_64/KVM 或 Apple Silicon macOS/HVF 的 VM executor；自动 offload 尚未实现，HVF 运行验收尚未完成。未知特性键和非布尔值会导致加载失败。
 
-`--feature vm-vcpu-observe` 在配置合并后启用特性，包括配置值为 `false` 的情况。省略则保留配置值。设置显式传递到原生 runner，并保留在存储的 Run 配置中。`pvisor feature` 不加载该文件，只列出注册默认值和本次 CLI 启用值。见[特性命令](cli.md#features)。
+`--feature workload-aware-memory-offloading` 在配置合并后启用特性，包括配置值为 `false` 的情况。省略则保留配置值。设置显式传递到原生 runner，并保留在存储的 Run 配置中。`pvisor feature` 不加载该文件，只列出注册默认值和本次 CLI 启用值。见[特性命令](cli.md#features)。
 
 ## Daemon 配置 {#daemon}
 
@@ -79,7 +79,7 @@ vm-vcpu-observe = true
 
 | TOML 路径 | 类型与默认值 | CLI / 用途 |
 | --- | --- | --- |
-| `features.vm-vcpu-observe` | 布尔值，`false` | `--feature vm-vcpu-observe`；原生 VM 观测 |
+| `features.workload-aware-memory-offloading` | 布尔值，`false` | `--feature workload-aware-memory-offloading`；原生 VM 观测 |
 | `filesystem` | `host`（默认）/ `sandbox` | `--filesystem`；它是顶层字符串，不是 `[filesystem]` 表 |
 | `run.executor` | `host`（默认）/ `container` / `vm` | `--executor` |
 | `run.command` | 字符串数组，默认空 | `--` 后的命令；实际运行必须提供 |
@@ -243,7 +243,7 @@ VM executor 时启用实验性的 Linux x86_64 实例本地 live 压缩；
 | TOML 路径 / 条目字段 | Rust 类型 | 默认值 | 用途 |
 | --- | --- | --- | --- |
 | `features` | `crate::features::FeatureSettings` | `{}` | 运行时实验性特性设置 |
-| `features.vm-vcpu-observe` | `bool` | `false` | EXP-001 M0 原生 VM 观测；`--feature vm-vcpu-observe` 启用 |
+| `features.workload-aware-memory-offloading` | `bool` | `false` | EXP-001 M0 原生 VM 观测；`--feature workload-aware-memory-offloading` 启用 |
 | `run` | `RunSettings` | `{}` | 命令与进程设置 |
 | `container` | `ContainerSettings` | `{}` | 选择 OCI 执行器时使用 |
 | `vm` | `VmSettings` | `{}` | VM 执行器设置 |

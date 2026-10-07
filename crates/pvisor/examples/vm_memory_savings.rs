@@ -109,14 +109,14 @@ fn expected(pattern: &str) -> String {
         let mut page = [0u8; 4096];
         if pattern == "random" || (pattern == "mixed" && p < 4096) {
             let mut x = 42 ^ (p as u64).wrapping_mul(0x9e3779b97f4a7c15);
-            for word in page.chunks_exact_mut(8) {
+            for word in page.as_chunks_mut::<8>().0 {
                 x = x
                     .wrapping_mul(6364136223846793005)
                     .wrapping_add(1442695040888963407);
                 word.copy_from_slice(&x.to_le_bytes());
             }
         } else if pattern == "compressible" {
-            for word in page.chunks_exact_mut(8) {
+            for word in page.as_chunks_mut::<8>().0 {
                 word.copy_from_slice(&(p as u64).to_le_bytes());
             }
         } else {

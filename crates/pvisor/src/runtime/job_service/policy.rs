@@ -221,8 +221,10 @@ impl LaunchPolicy {
                 && self.runtime.max_output_bytes == defaults.max_output_bytes,
             "workspace fork cannot preserve saved runtime controls with this launcher's defaults"
         );
-        let mut config = RunConfig::default();
-        config.filesystem = self.filesystem;
+        let mut config = RunConfig {
+            filesystem: self.filesystem,
+            ..Default::default()
+        };
         config.run.timeout_ms = self.runtime.timeout_ms;
         config.run.resource_limits = self.runtime.resource_limits;
         config.run.policy = if self.runtime.policy_mode == PolicyMode::Enforce {
@@ -691,8 +693,10 @@ mod tests {
                 (OverlayNetPolicy::Public, false, false),
                 (OverlayNetPolicy::Allowlist, true, false),
             ] {
-                let mut config = RunConfig::default();
-                config.filesystem = filesystem;
+                let mut config = RunConfig {
+                    filesystem,
+                    ..Default::default()
+                };
                 config.overlaynet.mode = OverlayNetMode::Proxy;
                 config.overlaynet.policy = policy;
                 if scoped {

@@ -363,7 +363,12 @@ mod tests {
         );
         let mut events = unsafe { fs::File::from_raw_fd(raw) };
         let pending = native_path(&pool.join("pending")).unwrap();
-        assert!(unsafe { libc::inotify_add_watch(raw, pending.as_ptr(), libc::IN_CREATE) } >= 0);
+        assert!(
+            unsafe { libc::inotify_add_watch(raw, pending.as_ptr(), libc::IN_CREATE) } >= 0,
+            "inotify watch {}: {}",
+            pool.join("pending").display(),
+            std::io::Error::last_os_error()
+        );
         let barrier = Arc::new(Barrier::new(8));
         let owners = std::thread::scope(|threads| {
             (0..8)

@@ -53,11 +53,11 @@ pub(super) fn notify_cancel(signal: i32) {
     if let Some(token) = WORKER_CANCEL.get() {
         token.cancel();
     }
-    if WORKER_READY.load(Ordering::SeqCst) {
-        if let Some(channel) = WORKER_EVENTS.get() {
-            let mut channel = channel.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = write_frame(&mut channel, &WorkerEvent::Cancelled { signal });
-        }
+    if WORKER_READY.load(Ordering::SeqCst)
+        && let Some(channel) = WORKER_EVENTS.get()
+    {
+        let mut channel = channel.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = write_frame(&mut channel, &WorkerEvent::Cancelled { signal });
     }
 }
 
@@ -66,11 +66,11 @@ pub(super) fn worker_directory() -> Option<&'static Path> {
 }
 
 pub(super) fn notify_cleanup() {
-    if WORKER_READY.load(Ordering::SeqCst) {
-        if let Some(channel) = WORKER_EVENTS.get() {
-            let mut channel = channel.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = write_frame(&mut channel, &WorkerEvent::Finalizing);
-        }
+    if WORKER_READY.load(Ordering::SeqCst)
+        && let Some(channel) = WORKER_EVENTS.get()
+    {
+        let mut channel = channel.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = write_frame(&mut channel, &WorkerEvent::Finalizing);
     }
 }
 
@@ -205,7 +205,12 @@ fn current_executable() -> anyhow::Result<Executable> {
 fn validate_executable(executable: &Executable) -> anyhow::Result<()> {
     for parent in executable.path.ancestors().skip(1) {
         let m = fs::symlink_metadata(parent)?;
-        let sticky_root = m.uid() == 0 && m.mode() & libc::S_ISVTX as u32 != 0;
+        #[cfg(target_os = "linux")]
+        let sticky_bit = libc::S_ISVTX;
+        // Darwin's mode_t is u16, while MetadataExt::mode() returns u32.
+        #[cfg(not(target_os = "linux"))]
+        let sticky_bit = libc::S_ISVTX as u32;
+        let sticky_root = m.uid() == 0 && m.mode() & sticky_bit != 0;
         ensure!(
             m.is_dir() && [0, uid()].contains(&m.uid()) && (m.mode() & 0o022 == 0 || sticky_root),
             "unsafe worker executable ancestor {}",

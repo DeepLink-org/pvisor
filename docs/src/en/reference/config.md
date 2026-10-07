@@ -46,12 +46,12 @@ executor = "vm"
 command = ["/bin/sleep", "10"]
 
 [features]
-vm-vcpu-observe = true
+workload-aware-memory-offloading = true
 ```
 
-`features.vm-vcpu-observe` defaults to `false` and enables EXP-001 M0 native VM observation. It requires a VM executor on Linux x86_64/KVM or Apple Silicon macOS/HVF; automatic offload is not implemented and HVF runtime validation remains outstanding. Unknown feature keys and non-boolean values reject loading.
+`features.workload-aware-memory-offloading` defaults to `false` and enables EXP-001 M0 native VM observation. It requires a VM executor on Linux x86_64/KVM or Apple Silicon macOS/HVF; automatic offload is not implemented and HVF runtime validation remains outstanding. Unknown feature keys and non-boolean values reject loading.
 
-`--feature vm-vcpu-observe` enables the feature after configuration merging, including when the configured value is `false`. Omission preserves the configured value. Feature settings are passed explicitly to the native runner and retained with the saved Run configuration. `pvisor feature` lists registry defaults and current CLI enables without loading this file. See [feature commands](cli.md#features).
+`--feature workload-aware-memory-offloading` enables the feature after configuration merging, including when the configured value is `false`. Omission preserves the configured value. Feature settings are passed explicitly to the native runner and retained with the saved Run configuration. `pvisor feature` lists registry defaults and current CLI enables without loading this file. See [feature commands](cli.md#features).
 
 ## Daemon configuration {#daemon}
 
@@ -79,7 +79,7 @@ Keep all runtime paths absolute and unchanged on daemon restart. Per-sandbox `co
 
 | TOML path | Type/default | CLI / purpose |
 | --- | --- | --- |
-| `features.vm-vcpu-observe` | Boolean, `false` | `--feature vm-vcpu-observe`; native VM observation |
+| `features.workload-aware-memory-offloading` | Boolean, `false` | `--feature workload-aware-memory-offloading`; native VM observation |
 | `filesystem` | `host` (default) / `sandbox` | `--filesystem`; top-level string, not a `[filesystem]` table |
 | `run.executor` | `host` (default) / `container` / `vm` | `--executor` |
 | `run.command` | String array, empty | Command after `--`; required to execute |
@@ -250,7 +250,7 @@ Field names and types are checked against the Rust serde structures during the d
 | TOML path / entry field | Rust type | Default | Purpose |
 | --- | --- | --- | --- |
 | `features` | `crate::features::FeatureSettings` | `{}` | Runtime experimental feature settings |
-| `features.vm-vcpu-observe` | `bool` | `false` | EXP-001 M0 native VM observation; `--feature vm-vcpu-observe` enables |
+| `features.workload-aware-memory-offloading` | `bool` | `false` | EXP-001 M0 native VM observation; `--feature workload-aware-memory-offloading` enables |
 | `run` | `RunSettings` | `{}` | Command and process settings |
 | `container` | `ContainerSettings` | `{}` | OCI executor settings; used when selected |
 | `vm` | `VmSettings` | `{}` | VM executor settings |

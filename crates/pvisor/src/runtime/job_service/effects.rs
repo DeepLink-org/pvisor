@@ -201,6 +201,23 @@ fn mutate(
     })
 }
 
+fn resolve_apply_target(target: &Path, stage: &Path) -> anyhow::Result<PathBuf> {
+    std::fs::create_dir_all(target)
+        .with_context(|| format!("create apply target {}", target.display()))?;
+    let target = target
+        .canonicalize()
+        .with_context(|| format!("resolve apply target {}", target.display()))?;
+    let stage = stage.canonicalize().unwrap_or_else(|_| stage.to_path_buf());
+    if target.starts_with(&stage) || stage.starts_with(&target) {
+        bail!(
+            "apply target must not overlap the pVisor stage: target={}, stage={}",
+            target.display(),
+            stage.display()
+        );
+    }
+    Ok(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,21 +370,4 @@ mod tests {
             OverlayState::Applied
         );
     }
-}
-
-fn resolve_apply_target(target: &Path, stage: &Path) -> anyhow::Result<PathBuf> {
-    std::fs::create_dir_all(target)
-        .with_context(|| format!("create apply target {}", target.display()))?;
-    let target = target
-        .canonicalize()
-        .with_context(|| format!("resolve apply target {}", target.display()))?;
-    let stage = stage.canonicalize().unwrap_or_else(|_| stage.to_path_buf());
-    if target.starts_with(&stage) || stage.starts_with(&target) {
-        bail!(
-            "apply target must not overlap the pVisor stage: target={}, stage={}",
-            target.display(),
-            stage.display()
-        );
-    }
-    Ok(target)
 }

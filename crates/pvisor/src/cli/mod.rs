@@ -367,6 +367,12 @@ pub fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn finish(code: i32) {
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
+
 #[cfg(test)]
 mod feature_parser_tests {
     use super::*;
@@ -542,11 +548,5 @@ mod feature_parser_tests {
                 .to_string()
                 .contains("unknown feature 'unknown'")
         );
-    }
-}
-
-fn finish(code: i32) {
-    if code != 0 {
-        std::process::exit(code);
     }
 }

@@ -39,7 +39,7 @@ listener 检查内核提供的同 UID 身份，在接纳 stdio／命令之前核
 ```bash
 pvisor feature
 pvisor feature list --json
-pvisor --feature vm-vcpu-observe feature --json
+pvisor --feature workload-aware-memory-offloading feature --json
 ```
 
 每项包含 `name`、`stage`、`default`、`enabled` 和 `description`。`default` 是注册默认值；`enabled` 是默认值叠加本次查询的 `--feature` 选项。查询不加载 Run 配置，也不检查正在运行的 Job。启用值不代表平台可用或运行成功。
@@ -47,14 +47,14 @@ pvisor --feature vm-vcpu-observe feature --json
 全局 `--feature NAME` 可重复，可放在 `run` 前后，也接受逗号分隔名称。未知名称被拒绝。`--` 后的参数属于工作负载。
 
 ```bash
-pvisor run --executor vm --feature vm-vcpu-observe -- /bin/sleep 10
+pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
 ```
 
 | 特性 | 阶段 | 默认值 | 范围 |
 |---|---|---|---|
-| `vm-vcpu-observe` | `experimental` | `false` | EXP-001 M0 原生 VM vCPU 观测；自动 offload 尚未实现 |
+| `workload-aware-memory-offloading` | `experimental` | `false` | EXP-001 M0 原生 VM vCPU 观测；自动 offload 尚未实现 |
 
-`vm-vcpu-observe` 要求最终 executor 为 VM，且构建平台为 Linux x86_64/KVM 或 Apple Silicon macOS/HVF。它不替换 executor 选择。HVF 运行验收尚未完成。原生 runner 会实际开启观测；目前没有 live Host 观测查询接口。
+`workload-aware-memory-offloading` 要求最终 executor 为 VM，且构建平台为 Linux x86_64/KVM 或 Apple Silicon macOS/HVF。它不替换 executor 选择。HVF 运行验收尚未完成。原生 runner 会实际开启观测；目前没有 live Host 观测查询接口。
 
 特性启用仅适用于 `run` 和特性查询，其他生命周期命令拒绝该选项；execution resume/fork 保留存储的配置。显式 Run 配置中的 `[features]` 也可启用特性；CLI 启用覆盖 `false`，省略保留配置。当前没有 CLI 禁用选项或持久化的 `feature enable` 操作。见[特性配置](config.md#features)。运行时特性与 Cargo 编译特性独立，既有 VM 内存参数保持不变。
 

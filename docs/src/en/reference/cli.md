@@ -45,7 +45,7 @@ List runtime features without starting or contacting the Host Job service:
 ```bash
 pvisor feature
 pvisor feature list --json
-pvisor --feature vm-vcpu-observe feature --json
+pvisor --feature workload-aware-memory-offloading feature --json
 ```
 
 Each entry includes `name`, `stage`, `default`, `enabled` and `description`. `default` is the registered default; `enabled` reflects that default plus this query's `--feature` options. The query does not load a Run configuration or inspect a live Job. An enabled flag does not certify platform availability or runtime success.
@@ -53,14 +53,14 @@ Each entry includes `name`, `stage`, `default`, `enabled` and `description`. `de
 Use the repeatable global `--feature NAME` option before or after `run`; comma-separated names are also accepted. Unknown names reject. Arguments after `--` belong to the workload.
 
 ```bash
-pvisor run --executor vm --feature vm-vcpu-observe -- /bin/sleep 10
+pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
 ```
 
 | Feature | Stage | Default | Scope |
 |---|---|---|---|
-| `vm-vcpu-observe` | `experimental` | `false` | EXP-001 M0 native VM vCPU observation; automatic offload is not implemented |
+| `workload-aware-memory-offloading` | `experimental` | `false` | EXP-001 M0 native VM vCPU observation; automatic offload is not implemented |
 
-`vm-vcpu-observe` requires the final executor to be VM and a Linux x86_64/KVM or Apple Silicon macOS/HVF build. It does not replace an executor selection. HVF runtime validation remains outstanding. Observation is enabled through the native runner; no live Host observation query is exposed yet.
+`workload-aware-memory-offloading` requires the final executor to be VM and a Linux x86_64/KVM or Apple Silicon macOS/HVF build. It does not replace an executor selection. HVF runtime validation remains outstanding. Observation is enabled through the native runner; no live Host observation query is exposed yet.
 
 Feature enables apply to `run` and feature queries. Other lifecycle commands reject them; execution resume/fork retain the saved configuration. `[features]` in an explicit Run configuration can also enable features; CLI enables override `false`, omission preserves the configuration. There is no CLI disable option or persistent `feature enable` action. See [feature configuration](config.md#features). Runtime features are separate from Cargo build features and do not change existing VM memory flags.
 

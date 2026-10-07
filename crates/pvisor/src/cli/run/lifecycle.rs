@@ -320,7 +320,7 @@ async fn execute_restored(
             .listen(&config.overlaynet.listen);
             #[allow(unused_mut)]
             let mut builder = PVisor::builder()
-                .storage(&stage)
+                .storage(stage)
                 .overlay(overlay)
                 .executors(vec![report_terminal(Arc::new(executor))])
                 .network(network)
@@ -358,6 +358,65 @@ async fn execute_restored(
         RunState::Cancelled => 130,
         _ => result.exit_code.unwrap_or(1),
     })
+}
+
+// Stage directories can sit below a workspace that the guest sees. Keep the
+// immutable capture store outside every guest backing root, without changing
+// the stage, normal filesystem configuration, or guest I/O path.
+pub(super) fn execution_store_location(
+    config: &RunConfig,
+    workspace: &Path,
+    stage: &Path,
+    run_id: &str,
+) -> anyhow::Result<PathBuf> {
+    let mut roots = vec![workspace.to_owned()];
+    if let Some(root) = &config.vm.rootfs {
+        roots.push(root.canonicalize()?);
+    }
+    if let Some(overlay) = &config.overlayfs {
+        for root in &overlay.compose {
+            roots.push(root.canonicalize()?);
+        }
+    }
+    let mut candidates = vec![
+        stage.join("execution-snapshots"),
+        default_run_home().join("execution-snapshots").join(run_id),
+        std::env::temp_dir()
+            .join("pvisor-execution-snapshots")
+            .join(run_id),
+    ];
+    if roots.iter().any(|root| stage.starts_with(root)) {
+        // A nested stage cannot host its own backing copies. Prefer the nearest
+        // outside ancestor, retaining the stage's filesystem where possible.
+        // Directory link counts can differ between filesystems, so moving an
+        // otherwise exact copy to the default run home can violate restoration.
+        let mut ancestor = stage.parent();
+        while let Some(parent) = ancestor {
+            if roots.iter().all(|root| !parent.starts_with(root)) {
+                if parent.parent().is_some() {
+                    candidates.insert(0, parent.join("pvisor-execution-snapshots").join(run_id));
+                }
+                break;
+            }
+            ancestor = parent.parent();
+        }
+    }
+    if let Some(pool) = &config.vm.snapshot_filesystem_pool {
+        // Pooled snapshots need hard-linked references on the pool's volume.
+        // Prefer a sibling store while keeping it outside guest-visible roots.
+        let parent = pool
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        candidates.insert(0, parent.join("pvisor-execution-snapshots").join(run_id));
+    }
+    for candidate in candidates {
+        let candidate = fork_stage_candidate(&candidate)?;
+        if roots.iter().all(|root| !candidate.starts_with(root)) {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!("no execution snapshot store outside guest backing roots")
 }
 
 #[cfg(test)]
@@ -458,63 +517,4 @@ mod tests {
         assert!(!root.path().join("unconfirmed-child").exists());
         assert!(before.iter().all(|name| root.path().join(name).exists()));
     }
-}
-
-// Stage directories can sit below a workspace that the guest sees. Keep the
-// immutable capture store outside every guest backing root, without changing
-// the stage, normal filesystem configuration, or guest I/O path.
-pub(super) fn execution_store_location(
-    config: &RunConfig,
-    workspace: &Path,
-    stage: &Path,
-    run_id: &str,
-) -> anyhow::Result<PathBuf> {
-    let mut roots = vec![workspace.to_owned()];
-    if let Some(root) = &config.vm.rootfs {
-        roots.push(root.canonicalize()?);
-    }
-    if let Some(overlay) = &config.overlayfs {
-        for root in &overlay.compose {
-            roots.push(root.canonicalize()?);
-        }
-    }
-    let mut candidates = vec![
-        stage.join("execution-snapshots"),
-        default_run_home().join("execution-snapshots").join(run_id),
-        std::env::temp_dir()
-            .join("pvisor-execution-snapshots")
-            .join(run_id),
-    ];
-    if roots.iter().any(|root| stage.starts_with(root)) {
-        // A nested stage cannot host its own backing copies. Prefer the nearest
-        // outside ancestor, retaining the stage's filesystem where possible.
-        // Directory link counts can differ between filesystems, so moving an
-        // otherwise exact copy to the default run home can violate restoration.
-        let mut ancestor = stage.parent();
-        while let Some(parent) = ancestor {
-            if roots.iter().all(|root| !parent.starts_with(root)) {
-                if parent.parent().is_some() {
-                    candidates.insert(0, parent.join("pvisor-execution-snapshots").join(run_id));
-                }
-                break;
-            }
-            ancestor = parent.parent();
-        }
-    }
-    if let Some(pool) = &config.vm.snapshot_filesystem_pool {
-        // Pooled snapshots need hard-linked references on the pool's volume.
-        // Prefer a sibling store while keeping it outside guest-visible roots.
-        let parent = pool
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        candidates.insert(0, parent.join("pvisor-execution-snapshots").join(run_id));
-    }
-    for candidate in candidates {
-        let candidate = fork_stage_candidate(&candidate)?;
-        if roots.iter().all(|root| !candidate.starts_with(root)) {
-            return Ok(candidate);
-        }
-    }
-    anyhow::bail!("no execution snapshot store outside guest backing roots")
 }
