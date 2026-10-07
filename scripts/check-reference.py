@@ -13,6 +13,7 @@ CONFIG = "crates/pvisor/src/config.rs"
 CORE = "crates/pvisor-core/src/"
 GROUPS = [
     (CONFIG, "RunConfig", ""),
+    ("crates/pvisor/src/features.rs", "FeatureSettings", "features."),
     (CONFIG, "RunSettings", "run."),
     (CONFIG, "ContainerSettings", "container."),
     (CONFIG, "ContainerMount", "container.mounts[]."),

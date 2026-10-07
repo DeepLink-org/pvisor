@@ -99,20 +99,7 @@ async fn run() -> anyhow::Result<()> {
     let explicit = mode != "offload";
     let backing = root.join("startup.ram");
     let library_dir = std::env::var_os("PVISOR_CASE_VM_LIBRARY_DIR").map(Into::into);
-    #[cfg(not(any(
-        all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "x86_64")
-    )))]
-    let library_dir = if library_dir.is_none() {
-        use pvisor_vm::api::RuntimeSupport;
-        Some(
-            tokio::task::spawn_blocking(|| pvisor_vm::api::VmPlatform::prepare_firmware(None))
-                .await
-                .context("VM firmware preparation task failed")??,
-        )
-    } else {
-        library_dir
-    };
+
     let settings = VmSettings {
         rootfs: Some(
             std::env::var_os("PVISOR_CASE_ROOTFS")

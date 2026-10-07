@@ -38,10 +38,20 @@ struct Cli {
     command: Command,
     #[command(flatten)]
     vm: host::VmOptions,
+    /// Explicitly enable a runtime experiment (repeatable, comma-separated).
+    #[arg(
+        long = "feature",
+        global = true,
+        value_name = "NAME",
+        value_delimiter = ','
+    )]
+    features: Vec<crate::features::Feature>,
 }
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// List registered runtime experiments and default/current CLI enable state.
+    Feature(crate::features::FeatureArgs),
     #[command(about = run::RUN_COMMAND_ABOUT, long_about = run::RUN_COMMAND_LONG_ABOUT)]
     Run(Box<run::RunArgs>),
 
@@ -103,7 +113,7 @@ fn grouped_commands(command: &clap::Command) -> String {
         ),
         ("Filesystems", &["inspect", "review", "apply", "drop"]),
         ("Extensions", &["service", "replay", "tui"]),
-        ("Help", &["help"]),
+        ("Help", &["feature", "help"]),
     ];
     let width = command
         .get_subcommands()
@@ -132,14 +142,45 @@ fn grouped_commands(command: &clap::Command) -> String {
     output
 }
 
+// Only consume leading root feature options. Never scan guest/extension arguments.
+fn command_offset(args: &[OsString]) -> usize {
+    let mut index = 1;
+    while let Some(arg) = args.get(index).and_then(|arg| arg.to_str()) {
+        if arg == "--feature" {
+            if args.get(index + 1).is_none() {
+                break;
+            }
+            index += 2;
+        } else if arg.starts_with("--feature=") {
+            index += 1;
+        } else {
+            break;
+        }
+    }
+    index
+}
+
 fn normalize_default_run(mut args: Vec<OsString>, command: &clap::Command) -> Vec<OsString> {
-    if let Some(first) = args.get(1).and_then(|arg| arg.to_str())
+    let offset = command_offset(&args);
+    if let Some(first) = args.get(offset).and_then(|arg| arg.to_str())
         && command.find_subcommand(first).is_none()
         && !companions::is_root_command(first)
         && first != "ctrl"
         && !["--help", "-h", "--version", "-V"].contains(&first)
     {
-        args.insert(1, "run".into());
+        args.insert(offset, "run".into());
+    }
+    // clap propagates globals by replacement across parser levels, not append.
+    // Put leading enables on the command level so pre/post-command repetitions
+    // accumulate together; leave help and companion routing untouched.
+    if offset > 1
+        && args
+            .get(offset)
+            .and_then(|arg| arg.to_str())
+            .is_some_and(|name| name != "help" && command.find_subcommand(name).is_some())
+    {
+        let enables: Vec<_> = args.drain(1..offset).collect();
+        args.splice(2..2, enables);
     }
     args
 }
@@ -174,7 +215,44 @@ pub fn main() -> anyhow::Result<()> {
     );
     let mut core_command = Cli::command();
     core_command.build();
-    if let Some(name) = args.get(1).and_then(|arg| arg.to_str()) {
+    let offset = command_offset(&args);
+    let mut routing_args = vec![args[0].clone()];
+    routing_args.extend_from_slice(&args[offset..]);
+    if offset > 1 {
+        // Validate root enables before bypassing clap for companion dispatch.
+        let mut index = 1;
+        while index < offset {
+            let value = if args[index] == "--feature" {
+                index += 1;
+                args[index]
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("feature name must be UTF-8"))?
+            } else {
+                args[index]
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("feature name must be UTF-8"))?
+                    .strip_prefix("--feature=")
+                    .expect("leading feature option")
+            };
+            for name in value.split(',') {
+                name.parse::<crate::features::Feature>()
+                    .map_err(anyhow::Error::msg)?;
+            }
+            index += 1;
+        }
+    }
+    if let Some(name) = routing_args.get(1).and_then(|arg| arg.to_str()) {
+        let args = &routing_args;
+        anyhow::ensure!(
+            offset == 1
+                || name == "help"
+                || args[2..]
+                    .iter()
+                    .take_while(|arg| *arg != "--")
+                    .any(|arg| arg == "--help" || arg == "-h")
+                || !companions::is_root_command(name) && name != "service",
+            "--feature enables apply to run, not extensions/services; use pvisor help COMMAND for help"
+        );
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         if name == "service"
             && let Some(tool) = args.get(2).and_then(|arg| arg.to_str())
@@ -211,20 +289,32 @@ pub fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let command = if args
-        .get(1)
+        .get(command_offset(&args))
         .is_some_and(|arg| arg == "--help" || arg == "-h" || arg == "help")
     {
         root_command()?
     } else {
         core_command
     };
-    let parsed = Cli::from_arg_matches(&command.get_matches_from(args.clone()))?;
+    let mut parsed = Cli::from_arg_matches(&command.get_matches_from(args.clone()))?;
     crate::util::startup_mark("cli.parsed");
+    if let Command::Feature(query) = &parsed.command {
+        return query.print(&parsed.features);
+    }
+    if let Command::Run(run) = &mut parsed.command {
+        run.features = parsed.features.clone();
+    } else {
+        anyhow::ensure!(
+            parsed.features.is_empty(),
+            "--feature enables apply only to run or feature queries"
+        );
+    }
     if let Some(command) = parsed.vm.request(&parsed.command)? {
         finish(host_service::call(command)?);
         return Ok(());
     }
     match parsed.command {
+        Command::Feature(_) => unreachable!("feature queries return without contacting Host"),
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
         Command::Service(args) => {
             tokio::runtime::Runtime::new()?.block_on(crate::service::run(args))?
@@ -275,6 +365,184 @@ pub fn main() -> anyhow::Result<()> {
         )?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod feature_parser_tests {
+    use super::*;
+    fn parse(args: &[&str]) -> Cli {
+        let mut command = Cli::command();
+        command.build();
+        let args = normalize_default_run(args.iter().map(OsString::from).collect(), &command);
+        Cli::from_arg_matches(&command.try_get_matches_from(args).unwrap()).unwrap()
+    }
+    #[test]
+    fn root_enables_work_before_after_and_with_implicit_run() {
+        for args in [
+            vec![
+                "pvisor",
+                "--feature",
+                "workload-aware-memory-offloading",
+                "run",
+                "--executor",
+                "vm",
+                "--",
+                "true",
+            ],
+            vec![
+                "pvisor",
+                "run",
+                "--feature=workload-aware-memory-offloading",
+                "--executor",
+                "vm",
+                "--",
+                "true",
+            ],
+            vec![
+                "pvisor",
+                "--feature",
+                "workload-aware-memory-offloading",
+                "--executor",
+                "vm",
+                "--",
+                "true",
+            ],
+            vec![
+                "pvisor",
+                "--feature",
+                "workload-aware-memory-offloading",
+                "--",
+                "true",
+            ],
+        ] {
+            let parsed = parse(&args);
+            assert!(matches!(parsed.command, Command::Run(_)));
+            assert_eq!(
+                parsed.features,
+                [crate::features::Feature::WorkloadAwareMemoryOffloading]
+            );
+        }
+    }
+    #[test]
+    fn old_feature_name_is_rejected_without_an_alias() {
+        let mut command = Cli::command();
+        command.build();
+        for args in [
+            vec!["pvisor", "--feature", "vm-vcpu-observe", "feature"],
+            vec!["pvisor", "run", "--feature=vm-vcpu-observe", "--", "true"],
+            vec!["pvisor", "--feature", "vm-vcpu-observe", "--", "true"],
+        ] {
+            let normalized =
+                normalize_default_run(args.iter().map(OsString::from).collect(), &command);
+            let error = command
+                .clone()
+                .try_get_matches_from(normalized)
+                .unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert!(
+                error
+                    .to_string()
+                    .contains("unknown feature 'vm-vcpu-observe'")
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_comma_values_and_guest_boundary() {
+        let mut parsed = parse(&[
+            "pvisor",
+            "--feature",
+            "workload-aware-memory-offloading,workload-aware-memory-offloading",
+            "run",
+            "--feature",
+            "workload-aware-memory-offloading",
+            "--",
+            "echo",
+            "--feature",
+            "guest-only",
+        ]);
+        assert_eq!(parsed.features.len(), 3);
+        let Command::Run(run) = &mut parsed.command else {
+            panic!("run")
+        };
+        run.features = parsed.features;
+        let value = serde_json::to_value(host::JobCommand::Run(run.clone())).unwrap();
+        assert_eq!(
+            value["args"]["features"][0],
+            "workload-aware-memory-offloading"
+        );
+        assert_eq!(
+            value["args"]["command"],
+            serde_json::json!(["echo", "--feature", "guest-only"])
+        );
+        let roundtrip: host::JobCommand = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(roundtrip).unwrap(), value);
+    }
+    #[test]
+    fn query_synonyms_json_help_and_extensions_remain_commands() {
+        for args in [
+            vec!["pvisor", "feature"],
+            vec!["pvisor", "feature", "list", "--json"],
+            vec![
+                "pvisor",
+                "--feature",
+                "workload-aware-memory-offloading",
+                "feature",
+                "--json",
+            ],
+        ] {
+            assert!(matches!(parse(&args).command, Command::Feature(_)));
+        }
+        let mut command = Cli::command();
+        command.build();
+        for args in [
+            vec![
+                "pvisor",
+                "--feature",
+                "workload-aware-memory-offloading",
+                "help",
+                "run",
+            ],
+            vec![
+                "pvisor",
+                "run",
+                "--feature",
+                "workload-aware-memory-offloading",
+                "--help",
+            ],
+        ] {
+            let normalized =
+                normalize_default_run(args.iter().map(OsString::from).collect(), &command);
+            assert_eq!(
+                command
+                    .clone()
+                    .try_get_matches_from(normalized)
+                    .unwrap_err()
+                    .kind(),
+                clap::error::ErrorKind::DisplayHelp
+            );
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["pvisor", "custom-extension", "--feature", "extension-only"])
+                .unwrap()
+                .command,
+            Command::External(_)
+        ));
+        assert_eq!(
+            normalize_default_run(
+                vec!["pvisor".into(), "replay".into(), "--help".into()],
+                &command
+            )[1],
+            "replay"
+        );
+        assert!(
+            command
+                .try_get_matches_from(["pvisor", "run", "--feature", "unknown", "--", "true"])
+                .unwrap_err()
+                .to_string()
+                .contains("unknown feature 'unknown'")
+        );
+    }
 }
 
 fn finish(code: i32) {

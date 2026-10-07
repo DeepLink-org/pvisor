@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -16,10 +17,96 @@ import tarfile
 import tempfile
 import urllib.request
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[2]
 FW = ROOT / "fw"
 MACOS_DEPLOYMENT_TARGET = "11.0"
+
+
+class ResolvedFirmware(NamedTuple):
+    path: Path
+    library_name: str | None
+    cargo_variable: str
+    source_record: str
+
+    @property
+    def cargo_env(self) -> dict[str, str]:
+        return {self.cargo_variable: str(self.path)}
+
+
+def host_target() -> str:
+    machine = platform.machine().lower()
+    if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
+        return "aarch64-apple-darwin"
+    if sys.platform == "linux" and machine in {"x86_64", "amd64"}:
+        return "x86_64-unknown-linux-musl"
+    raise RuntimeError(
+        f"automatic libkrunfw preparation is unsupported on {sys.platform}/{machine}"
+    )
+
+
+def resolve_firmware(
+    target: str,
+    *,
+    target_dir: str | None = None,
+    jobs: str | None = None,
+    offline: bool = False,
+) -> ResolvedFirmware:
+    """Select one input for compilation, payload copying and provenance."""
+    selectors = {
+        name: value
+        for name in (
+            "PVISOR_LIBKRUNFW_PATH",
+            "PVISOR_KRUNFW_PATH",
+            "PVISOR_KRUNFW_KERNEL_BUNDLE",
+        )
+        if (value := os.getenv(name))
+    }
+    if len(selectors) > 1:
+        raise RuntimeError(
+            "Conflicting firmware selectors: " + ", ".join(selectors) + "; set only one"
+        )
+    macos = target == "aarch64-apple-darwin"
+    name = "libkrunfw.5.dylib" if macos else "libkrunfw.so.5"
+    if selectors:
+        selector, configured = next(iter(selectors.items()))
+        source = Path(configured).expanduser().resolve()
+        if selector == "PVISOR_KRUNFW_KERNEL_BUNDLE":
+            if macos:
+                raise RuntimeError("PVISOR_KRUNFW_KERNEL_BUNDLE is supported only on Linux")
+            for filename in ("kernel.bin", "kernel.json"):
+                if not (source / filename).is_file():
+                    raise RuntimeError(f"Kernel bundle input does not exist: {source / filename}")
+            record = (
+                json.dumps(
+                    {
+                        "origin": "explicit-kernel-bundle",
+                        "path": str(source),
+                        "files": {
+                            filename: sha256(source / filename)
+                            for filename in ("kernel.bin", "kernel.json")
+                        },
+                        "licenses": "GPL-2.0-only (Linux kernel)",
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+            return ResolvedFirmware(source, None, selector, record)
+        if selector == "PVISOR_LIBKRUNFW_PATH" and source.is_dir():
+            directory = source
+            source = directory / name
+            if not source.is_file() and not macos:
+                candidates = sorted(directory.glob("libkrunfw.so.5.*"))
+                if len(candidates) == 1:
+                    source = candidates[0]
+            source = source.resolve()
+    else:
+        source = build_firmware(target, target_dir=target_dir, jobs=jobs, offline=offline).resolve()
+    if not source.is_file():
+        raise RuntimeError(f"libkrunfw payload does not exist: {source}")
+    return ResolvedFirmware(source, name, "PVISOR_KRUNFW_PATH", source_record(source))
 
 
 def sha256(path: Path) -> str:

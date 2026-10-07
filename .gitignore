@@ -32,3 +32,4 @@ crates/pvisor-vm/upstream/
 
 # Raw benchmark evidence stays local, at any directory depth.
 .data/
+.VSCodeCounter/

@@ -32,6 +32,32 @@ listener 检查内核提供的同 UID 身份，在接纳 stdio／命令之前核
 但结果不确定的副作用；请求不会自动重试。所有权、协议与验证限制见
 [Host 与 Guest AgentCtl](../design/architecture.md#host-agentctl)。
 
+## 实验性特性 {#features}
+
+查询运行时特性，无需启动或联系 Host Job 服务：
+
+```bash
+pvisor feature
+pvisor feature list --json
+pvisor --feature vm-vcpu-observe feature --json
+```
+
+每项包含 `name`、`stage`、`default`、`enabled` 和 `description`。`default` 是注册默认值；`enabled` 是默认值叠加本次查询的 `--feature` 选项。查询不加载 Run 配置，也不检查正在运行的 Job。启用值不代表平台可用或运行成功。
+
+全局 `--feature NAME` 可重复，可放在 `run` 前后，也接受逗号分隔名称。未知名称被拒绝。`--` 后的参数属于工作负载。
+
+```bash
+pvisor run --executor vm --feature vm-vcpu-observe -- /bin/sleep 10
+```
+
+| 特性 | 阶段 | 默认值 | 范围 |
+|---|---|---|---|
+| `vm-vcpu-observe` | `experimental` | `false` | EXP-001 M0 原生 VM vCPU 观测；自动 offload 尚未实现 |
+
+`vm-vcpu-observe` 要求最终 executor 为 VM，且构建平台为 Linux x86_64/KVM 或 Apple Silicon macOS/HVF。它不替换 executor 选择。HVF 运行验收尚未完成。原生 runner 会实际开启观测；目前没有 live Host 观测查询接口。
+
+特性启用仅适用于 `run` 和特性查询，其他生命周期命令拒绝该选项；execution resume/fork 保留存储的配置。显式 Run 配置中的 `[features]` 也可启用特性；CLI 启用覆盖 `false`，省略保留配置。当前没有 CLI 禁用选项或持久化的 `feature enable` 操作。见[特性配置](config.md#features)。运行时特性与 Cargo 编译特性独立，既有 VM 内存参数保持不变。
+
 ## Service 命令 {#service}
 
 顶层命令操作原生 Job；`service` 管理原生节点资源并派发已安装的 companion。`run/status/restart/stop --config FILE` 管理配置中的原生角色；单机沙箱 daemon 使用独立的生命周期 API 与持久状态。

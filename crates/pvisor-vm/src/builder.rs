@@ -35,6 +35,7 @@ use std::{
 pub(crate) struct Builder<B: Backend = NativeBackend> {
     resources: VmResources,
     kernel: KernelOwner,
+    firmware_path: Option<PathBuf>,
     implicit_init: bool,
     guest_cmdline: Option<KernelCmdlineConfig>,
     vsock_ports: HashMap<u32, (PathBuf, bool)>,
@@ -54,11 +55,38 @@ impl<B: Backend> Builder<B> {
         Ok(Self {
             resources,
             kernel: KernelOwner::default(),
+            firmware_path: None,
             implicit_init: cfg!(feature = "init-blob"),
             guest_cmdline: None,
             vsock_ports: HashMap::new(),
             backend: PhantomData,
         })
+    }
+    pub fn set_firmware_path(&mut self, path: PathBuf) -> io::Result<()> {
+        if !path.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "firmware path must be absolute",
+            ));
+        }
+        let path = crate::firmware_store::canonical_file(&path)?;
+        self.firmware_path = Some(path);
+        Ok(())
+    }
+    fn install_default_kernel(
+        &mut self,
+        embedded: Option<crate::api::KernelImage>,
+    ) -> io::Result<()> {
+        if let Some(image) = embedded {
+            return self.embedded_kernel(&image.bytes, image.guest_address, image.entry_address);
+        }
+        let path = match &self.firmware_path {
+            Some(path) => path.clone(),
+            None => crate::firmware_store::resolve(None)?,
+        };
+        self.resources
+            .set_kernel_bundle(self.kernel.load(&path)?)
+            .map_err(io::Error::other)
     }
     pub fn ram_backing(&mut self, file: File) -> io::Result<()> {
         let metadata = file.metadata()?;
@@ -174,20 +202,7 @@ impl<B: Backend> Builder<B> {
             && self.resources.firmware_config.is_none()
             && !cfg!(feature = "efi")
         {
-            #[cfg(not(target_env = "musl"))]
-            self.resources
-                .set_kernel_bundle(self.kernel.load()?)
-                .map_err(io::Error::other)?;
-            #[cfg(target_env = "musl")]
-            {
-                let image = crate::firmware::embedded_kernel().ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "configure an embedded kernel for this static build",
-                    )
-                })?;
-                self.embedded_kernel(&image.bytes, image.guest_address, image.entry_address)?;
-            }
+            self.install_default_kernel(crate::firmware::embedded_kernel())?;
         }
         self.resources
             .set_kernel_cmdline(
@@ -232,6 +247,64 @@ impl<B: Backend> Builder<B> {
         }
     }
 }
+
+#[cfg(test)]
+mod firmware_tests {
+    use super::*;
+
+    #[test]
+    fn firmware_selection_validates_before_replacing_previous_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("selected-firmware");
+        std::fs::write(&file, b"not a library").unwrap();
+        let mut builder = Builder::<NativeBackend>::new(1, 128).unwrap();
+        builder.set_firmware_path(file.clone()).unwrap();
+        let selected = file.canonicalize().unwrap();
+        assert_eq!(builder.firmware_path.as_ref(), Some(&selected));
+        for invalid in [
+            PathBuf::from("libkrunfw.so.5"),
+            directory.path().to_path_buf(),
+            directory.path().join("missing"),
+        ] {
+            assert!(builder.set_firmware_path(invalid).is_err());
+            assert_eq!(builder.firmware_path.as_ref(), Some(&selected));
+        }
+    }
+
+    #[test]
+    fn default_embedded_kernel_precedes_selected_firmware() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("selected-firmware");
+        std::fs::write(&file, b"not a library").unwrap();
+        let mut builder = Builder::<NativeBackend>::new(1, 128).unwrap();
+        builder.set_firmware_path(file.clone()).unwrap();
+        std::fs::remove_file(file).unwrap();
+        builder
+            .install_default_kernel(Some(crate::api::KernelImage {
+                bytes: Arc::from([1_u8, 2, 3, 4]),
+                guest_address: 0x200000,
+                entry_address: 0x200000,
+            }))
+            .unwrap();
+        assert!(builder.resources.kernel_bundle.is_some());
+    }
+
+    #[test]
+    fn selected_firmware_failure_does_not_fall_back() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("selected-firmware");
+        std::fs::write(&file, b"not a library").unwrap();
+        let mut builder = Builder::<NativeBackend>::new(1, 128).unwrap();
+        builder.set_firmware_path(file.clone()).unwrap();
+        let error = builder.install_default_kernel(None).unwrap_err();
+        #[cfg(not(target_env = "musl"))]
+        assert!(error.to_string().contains(&file.display().to_string()));
+        #[cfg(target_env = "musl")]
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(builder.resources.kernel_bundle.is_none());
+    }
+}
+
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 impl<B: Backend> Builder<B> {
     fn attach_fs(&mut self, mut config: FsDeviceConfig) -> io::Result<()> {

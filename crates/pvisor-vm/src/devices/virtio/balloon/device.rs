@@ -51,6 +51,7 @@ pub struct Balloon {
     pub(crate) device_state: DeviceState,
     frozen: bool,
     config: VirtioBalloonConfig,
+    pending_report: Option<(u16, std::sync::Arc<super::super::memory_gate::FreeReport>)>,
 }
 
 impl Balloon {
@@ -64,6 +65,7 @@ impl Balloon {
             device_state: DeviceState::Inactive,
             frozen: false,
             config: VirtioBalloonConfig::default(),
+            pending_report: None,
         })
     }
 
@@ -88,14 +90,38 @@ impl Balloon {
         let discard_allowed = access
             .as_ref()
             .is_none_or(|access| access.balloon_discard_allowed());
+        let free_reports = access.as_ref().and_then(|access| access.free_reports());
         let queues = self
             .queues
             .as_mut()
             .expect("queues should exist when activated");
         let mut have_used = false;
 
+        if let Some((index, report)) = &self.pending_report {
+            if !report.is_done() {
+                return false;
+            }
+            queues[FRQ_INDEX]
+                .queue
+                .add_used(mem, *index, 0)
+                .unwrap_or_else(|error| panic!("balloon report completion failed: {error:?}"));
+            self.pending_report = None;
+            have_used = true;
+        }
+
         while let Some(head) = queues[FRQ_INDEX].queue.pop(mem) {
             let index = head.index;
+            if let Some(reports) = &free_reports {
+                let ranges = head
+                    .into_iter()
+                    .map(|desc| (desc.addr.0, desc.len as usize))
+                    .collect();
+                let report = reports.submit(ranges, queues[FRQ_INDEX].event.clone());
+                self.pending_report = Some((index, report));
+                // Returning without add_used keeps the guest's free pages
+                // reserved until the pager completes its quiesced transition.
+                break;
+            }
             for desc in head.into_iter() {
                 // Free-page reporting is advisory: acknowledge the buffer even
                 // when the cold pager owns all destructive RAM transitions.
@@ -149,6 +175,9 @@ impl VirtioDevice for Balloon {
     }
 
     fn capture_state(&self) -> Result<super::super::DeviceSnapshot, String> {
+        if self.pending_report.is_some() {
+            return Err("balloon free-page report is pending".into());
+        }
         if self.is_activated() && !self.frozen {
             return Err("device must be frozen before capture".into());
         }

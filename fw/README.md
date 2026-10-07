@@ -39,8 +39,19 @@ macOS kernel build path remains experimental; it does not bootstrap with a
 prebuilt firmware or a VM.
 
 An explicit `PVISOR_LIBKRUNFW_PATH` can select a library file or directory instead.
-This is optional, not required for normal builds. Cross-build and SEV/TDX variants
-remain available through the standalone Makefile, not `just fw-build`.
+The lower-level `PVISOR_KRUNFW_PATH` accepts a library file;
+`PVISOR_KRUNFW_KERNEL_BUNDLE` accepts a Linux kernel bundle directory containing
+`kernel.bin` and `kernel.json`. Set at most one selector: conflicting inputs are
+rejected. The selected input is resolved once and shared by compilation, payload
+staging and source attribution. These overrides are optional, not required for
+normal builds; `just fw-build` always builds the maintained in-tree firmware.
+Cross-build and SEV/TDX variants remain available through the standalone Makefile.
+
+At runtime, the build-embedded kernel takes priority. Dynamic builds require a
+local firmware in `--vm-library-dir` or beside the executable. The selected file
+is canonicalized and passed to the VM runner explicitly; loader search paths are
+not firmware selectors. Missing firmware is an error, never an upstream download
+or runtime compilation.
 
 Each default build retains a `libkrunfw.SOURCE` receipt with artifact, input and
 actual kernel configuration hashes. To export the matching sources:

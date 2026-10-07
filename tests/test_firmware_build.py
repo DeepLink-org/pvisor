@@ -5,7 +5,9 @@ import importlib.util
 import io
 import json
 import platform
+import runpy
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -59,6 +61,8 @@ def firmware(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace
     monkeypatch.setattr(module.sys, "platform", "linux")
     monkeypatch.setattr(platform, "machine", lambda: "x86_64")
     monkeypatch.delenv("PVISOR_FW_BUILD_DIR", raising=False)
+    for selector in ("PVISOR_LIBKRUNFW_PATH", "PVISOR_KRUNFW_PATH", "PVISOR_KRUNFW_KERNEL_BUNDLE"):
+        monkeypatch.delenv(selector, raising=False)
 
     tools = Mock(side_effect=lambda target: (["make", "SEV=0", "TDX=0"], {"cc": "fake cc 1"}))
     monkeypatch.setattr(module, "build_tools", tools)
@@ -101,6 +105,133 @@ def firmware(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace
         compile=compile_firmware,
         build=build,
     )
+
+
+@pytest.mark.parametrize(
+    "selectors",
+    [
+        ("PVISOR_LIBKRUNFW_PATH", "PVISOR_KRUNFW_PATH"),
+        ("PVISOR_LIBKRUNFW_PATH", "PVISOR_KRUNFW_KERNEL_BUNDLE"),
+        ("PVISOR_KRUNFW_PATH", "PVISOR_KRUNFW_KERNEL_BUNDLE"),
+        ("PVISOR_LIBKRUNFW_PATH", "PVISOR_KRUNFW_PATH", "PVISOR_KRUNFW_KERNEL_BUNDLE"),
+    ],
+)
+def test_resolver_rejects_conflicting_selectors_before_build(firmware, monkeypatch, selectors):
+    for selector in selectors:
+        monkeypatch.setenv(selector, "missing/input")
+    with pytest.raises(RuntimeError, match="Conflicting firmware selectors") as error:
+        firmware.module.resolve_firmware(TARGET)
+    assert all(selector in str(error.value) for selector in selectors)
+    firmware.run.assert_not_called()
+    firmware.tools.assert_not_called()
+
+
+@pytest.mark.parametrize("selector", ["PVISOR_LIBKRUNFW_PATH", "PVISOR_KRUNFW_PATH"])
+@pytest.mark.parametrize("form", ["relative", "home", "symlink"])
+def test_resolver_normalizes_explicit_library(firmware, tmp_path, monkeypatch, selector, form):
+    source = tmp_path / "libkrunfw.so.5.0.0"
+    source.write_bytes(b"explicit firmware")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    link = tmp_path / "firmware-link"
+    link.symlink_to(source)
+    value = {"relative": source.name, "home": "~/" + source.name, "symlink": str(link)}[form]
+    monkeypatch.setenv(selector, value)
+    resolved = firmware.module.resolve_firmware(TARGET)
+    assert resolved.path == source.resolve()
+    assert resolved.cargo_env == {"PVISOR_KRUNFW_PATH": str(source.resolve())}
+    assert json.loads(resolved.source_record)["firmware_sha256"] == firmware.module.sha256(source)
+    firmware.tools.assert_not_called()
+
+
+@pytest.mark.parametrize("canonical", [False, True])
+def test_library_directory_prefers_canonical_then_unique_versioned(
+    firmware, tmp_path, monkeypatch, canonical
+):
+    versioned = tmp_path / "libkrunfw.so.5.0.0"
+    versioned.write_bytes(b"versioned firmware")
+    preferred = versioned
+    if canonical:
+        preferred = tmp_path / "libkrunfw.so.5"
+        preferred.write_bytes(b"canonical firmware")
+    monkeypatch.setenv("PVISOR_LIBKRUNFW_PATH", str(tmp_path))
+    resolved = firmware.module.resolve_firmware(TARGET)
+    assert resolved.path == preferred
+    assert resolved.cargo_env == {"PVISOR_KRUNFW_PATH": str(preferred)}
+    assert json.loads(resolved.source_record)["firmware_sha256"] == firmware.module.sha256(
+        preferred
+    )
+    firmware.tools.assert_not_called()
+
+
+@pytest.mark.parametrize("selector", ["PVISOR_KRUNFW_PATH", "PVISOR_KRUNFW_KERNEL_BUNDLE"])
+def test_resolver_rejects_missing_explicit_inputs_without_fallback(
+    firmware, tmp_path, monkeypatch, selector
+):
+    monkeypatch.setenv(selector, str(tmp_path / "missing"))
+    with pytest.raises(RuntimeError, match="does not exist"):
+        firmware.module.resolve_firmware(TARGET)
+    firmware.tools.assert_not_called()
+
+
+def test_resolver_normalizes_kernel_bundle(firmware, tmp_path, monkeypatch):
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    for name in ("kernel.bin", "kernel.json"):
+        (bundle / name).write_bytes(name.encode())
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PVISOR_KRUNFW_KERNEL_BUNDLE", "bundle")
+    resolved = firmware.module.resolve_firmware(TARGET)
+    assert resolved.cargo_env == {"PVISOR_KRUNFW_KERNEL_BUNDLE": str(bundle)}
+    assert resolved.library_name is None
+    record = json.loads(resolved.source_record)
+    assert record["files"] == {
+        name: firmware.module.sha256(bundle / name) for name in ("kernel.bin", "kernel.json")
+    }
+    with pytest.raises(RuntimeError, match="supported only on Linux"):
+        firmware.module.resolve_firmware("aarch64-apple-darwin")
+    firmware.tools.assert_not_called()
+
+
+def test_resolver_ignores_empty_selectors_and_preserves_build_receipt(firmware, monkeypatch):
+    for selector in ("PVISOR_LIBKRUNFW_PATH", "PVISOR_KRUNFW_PATH", "PVISOR_KRUNFW_KERNEL_BUNDLE"):
+        monkeypatch.setenv(selector, "")
+    resolved = firmware.module.resolve_firmware(
+        TARGET, target_dir=str(firmware.target_dir), jobs="2"
+    )
+    assert resolved.source_record == (resolved.path.parent / "libkrunfw.SOURCE").read_text()
+    assert json.loads(resolved.source_record)["firmware_sha256"] == firmware.module.sha256(
+        resolved.path
+    )
+    firmware.run.assert_called_once()
+
+
+def test_standalone_cli_does_not_import_wheel_staging(firmware, tmp_path, monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "firmware", firmware.module)
+    monkeypatch.setitem(sys.modules, "stage_wheel_binaries", None)
+    receipt = tmp_path / "export" / "SOURCE"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build-firmware.py",
+            "--target-dir",
+            str(firmware.target_dir),
+            "--jobs",
+            "2",
+            "--source-output",
+            str(receipt),
+        ],
+    )
+    original_path = sys.path[:]
+    try:
+        runpy.run_path(str(ROOT / "scripts" / "build-firmware.py"), run_name="__main__")
+    finally:
+        sys.path[:] = original_path
+    output = Path(capsys.readouterr().out.strip())
+    assert output.is_file()
+    assert receipt.read_text() == firmware.module.source_record(output)
+    firmware.run.assert_called_once()
 
 
 def test_build_reuses_verified_cache(firmware) -> None:

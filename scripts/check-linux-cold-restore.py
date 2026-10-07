@@ -11,12 +11,14 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 DRIVER = ROOT / 'target/debug/examples/vm_linux_cold_restore'
-FIRMWARE = Path(os.environ.get('PVISOR_CASE_VM_LIBRARY_DIR', str(Path.home() / 'Library/Caches/pvisor/firmware/5.5.0/macos-aarch64')))
+FIRMWARE = Path(os.environ.get('PVISOR_CASE_VM_LIBRARY_DIR', str(ROOT / 'target/release')))
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, default=ROOT / "target/vm-validation/linux-machine.json")
     args = parser.parse_args()
+    if not (FIRMWARE / 'libkrunfw.5.dylib').is_file():
+        raise RuntimeError('Set PVISOR_CASE_VM_LIBRARY_DIR to a local built firmware directory')
     subprocess.run(['cargo', 'build', '-p', 'pvisor', '--example', 'vm_linux_cold_restore', '--locked', '--offline'], cwd=ROOT, check=True)
     subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', str(ROOT / 'crates/pvisor/macos-hypervisor.entitlements'), str(DRIVER)], check=True)
     with tempfile.TemporaryDirectory(prefix='pvisor-linux-cold-restore-') as directory:
@@ -24,7 +26,7 @@ def main():
         root = base / 'rootfs'
         root.mkdir()
         subprocess.run(['rustc', '--edition', '2024', '--target', 'aarch64-unknown-linux-musl', '-C', 'linker=rust-lld', '-C', 'opt-level=2', str(ROOT / 'crates/pvisor-vm/src/probes/guest_linux.rs'), '-o', str(root / 'init.krun')], check=True)
-        env = dict(os.environ, DYLD_LIBRARY_PATH=str(FIRMWARE))
+        env = dict(os.environ, PVISOR_CASE_VM_LIBRARY_DIR=str(FIRMWARE.resolve()))
         started = time.monotonic()
         source = subprocess.run([str(DRIVER), 'save', str(base)], env=env, text=True, capture_output=True, timeout=45)
         print('SOURCE:', source.returncode, source.stdout, source.stderr, flush=True)

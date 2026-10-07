@@ -1,8 +1,3 @@
-#[cfg(not(any(
-    all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "x86_64")
-)))]
-use pvisor_vm::api::RuntimeSupport;
 mod safe;
 
 use crate::runtime::job_service::policy::PolicySource;
@@ -167,6 +162,10 @@ const DENY_ALL_HELP: &str = "Deny all OverlayNet egress; direct sockets remain o
 #[derive(Debug, Clone, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunArgs {
+    /// Explicit runtime enables, also parsed by companions reusing RunArgs.
+    #[arg(long = "feature", value_name = "NAME", value_delimiter = ',')]
+    #[serde(default)]
+    pub(super) features: Vec<crate::features::Feature>,
     /// Show a terminal with status bar; Ctrl-] opens the TUI command mode.
     #[arg(long)]
     tui: bool,
@@ -900,6 +899,15 @@ fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
 
 async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     anyhow::ensure!(
+        args.features.is_empty(),
+        "feature workload-aware-memory-offloading requires a VM executor; JSON --spec supports only host"
+    );
+    if let Some(path) = &args.config {
+        RunConfig::from_file(path)?
+            .features
+            .validate(RunExecutorKind::Host)?;
+    }
+    anyhow::ensure!(
         !args.run.safe && !args.audit,
         "--safe/--ask cannot modify a prepared JSON RunSpec"
     );
@@ -1234,6 +1242,7 @@ async fn execute_config(
     lineage: Option<RunLineage>,
     policy_source: PolicySource,
 ) -> anyhow::Result<i32> {
+    config.features.validate(config.run.executor)?;
     normalize_filesystem_config(&mut config)?;
     if config.run.executor == RunExecutorKind::Vm {
         config.vm.control_socket =
@@ -1304,25 +1313,6 @@ async fn execute_config(
                 config.vm.library_dir.is_none(),
                 "--vm-library-dir is unavailable in the static musl build; libkrun's kernel bundle is embedded"
             );
-            #[cfg(not(any(
-                all(target_os = "linux", target_env = "musl", target_arch = "x86_64"),
-                all(target_os = "macos", target_arch = "x86_64")
-            )))]
-            if config.vm.library_dir.is_none()
-                && pvisor_vm::api::VmPlatform::bundled_firmware_directory().is_none()
-            {
-                run_log!(
-                    "pVisor firmware: resolving libkrunfw {}",
-                    pvisor_vm::api::VmPlatform::firmware_version()
-                );
-                let directory = tokio::task::spawn_blocking(|| {
-                    pvisor_vm::api::VmPlatform::prepare_firmware(None)
-                })
-                .await
-                .context("libkrunfw preparation task failed")??;
-                run_log!("pVisor firmware: {}", directory.display());
-                config.vm.library_dir = Some(directory);
-            }
         }
     } else {
         if let Some(base) = config
@@ -1540,7 +1530,7 @@ async fn execute_config(
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
         RunExecutorKind::Vm => {
             crate::util::startup_mark_run("cli.vm_inputs_ready", &run_id);
-            Arc::new(VmExecutor::new(config.vm.clone())?)
+            Arc::new(VmExecutor::new(config.vm.clone())?.with_features(config.features.clone())?)
         }
     };
     policy_source.validate_executor(&executor.descriptor())?;
@@ -2046,7 +2036,7 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
         else {
             unreachable!("expected run command")
         };
-        apply_cli(config, *patch)?;
+        apply_cli_unvalidated(config, *patch)?;
         // The preset requests the sandboxed filesystem view so the launcher
         // installs the synthetic root/Landlock or Seatbelt write controls.
         // An explicit --filesystem value in `args` still wins below.
@@ -2128,6 +2118,16 @@ fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
 }
 
 fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
+    apply_cli_unvalidated(config, args)?;
+    config.features.validate(config.run.executor)
+}
+
+// Safe patches are intermediate layers: validate VM-only features only after
+// the explicit executor override has been applied to the complete configuration.
+fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
+    for feature in &args.features {
+        config.features.enable(*feature);
+    }
     if let Some(path) = args.stage.clone() {
         // A staged command needs a private filesystem view to prevent writes
         // through the original workspace or host /tmp. Explicit CLI policy
@@ -2990,6 +2990,82 @@ fn resolve_filesystem_grants(
 
 #[cfg(test)]
 mod tests {
+    use pvisor_vm::api::RuntimeSupport;
+
+    #[test]
+    fn companions_reusing_run_args_parse_features_and_preserve_guest_boundary() {
+        use clap::Parser;
+        #[derive(clap::Parser)]
+        struct Companion {
+            #[command(subcommand)]
+            action: Action,
+        }
+        #[derive(clap::Subcommand)]
+        enum Action {
+            Run(Box<RunArgs>),
+        }
+        let parsed = Companion::try_parse_from([
+            "pvisor-tui",
+            "run",
+            "--feature",
+            "workload-aware-memory-offloading,workload-aware-memory-offloading",
+            "--feature=workload-aware-memory-offloading",
+            "--",
+            "echo",
+            "--feature",
+            "guest-only",
+        ])
+        .unwrap();
+        let Action::Run(args) = parsed.action;
+        assert_eq!(args.features.len(), 3);
+        assert_eq!(args.command, ["echo", "--feature", "guest-only"]);
+    }
+
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    #[test]
+    fn safe_patch_does_not_validate_features_before_explicit_vm_override() {
+        for option in ["--safe", "--ask"] {
+            let mut config = RunConfig::default();
+            config.features.workload_aware_memory_offloading = true;
+            let args = preset_args(&[option, "--executor", "vm", "--", "true"]);
+            apply_run_options(&mut config, args).unwrap();
+            assert!(config.features.workload_aware_memory_offloading);
+            assert_eq!(config.run.executor, RunExecutorKind::Vm);
+        }
+    }
+
+    #[test]
+    fn feature_config_cli_precedence_and_executor_validation() {
+        use crate::features::Feature;
+        let mut config: RunConfig = toml::from_str(
+            "[run]\nexecutor = 'vm'\n[features]\nworkload-aware-memory-offloading = false",
+        )
+        .unwrap();
+        let mut args = preset_args(&["--", "true"]);
+        args.features = vec![Feature::WorkloadAwareMemoryOffloading];
+        apply_cli(&mut config, args).unwrap();
+        assert!(config.features.workload_aware_memory_offloading);
+        apply_cli(&mut config, preset_args(&["--", "true"])).unwrap();
+        assert!(config.features.workload_aware_memory_offloading);
+        for executor in ["host", "container"] {
+            assert!(
+                apply_cli(
+                    &mut config.clone(),
+                    preset_args(&["--executor", executor, "--", "true"])
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("requires --executor vm")
+            );
+        }
+        let mut args = preset_args(&["--", "true"]);
+        args.features = vec![Feature::WorkloadAwareMemoryOffloading];
+        assert!(apply_cli(&mut RunConfig::default(), args).is_err());
+    }
+
     #[test]
     fn stage_durability_defaults_to_checkpoint_and_accepts_strict_override() {
         use pvisor_core::overlay::StageDurability;
@@ -4161,7 +4237,18 @@ sandbox = "required""#
             target: Some("/workspace".into()),
             ..OverlayFsSettings::default()
         });
-        config.vm.rootfs = Some(tempfile::tempdir().unwrap().keep());
+        let rootfs = tempfile::tempdir().unwrap();
+        config.vm.rootfs = Some(rootfs.path().to_owned());
+        if pvisor_vm::api::VmPlatform::embedded_kernel().is_none() {
+            std::fs::write(
+                rootfs
+                    .path()
+                    .join(pvisor_vm::api::VmPlatform::firmware_name()),
+                b"local firmware fixture",
+            )
+            .unwrap();
+            config.vm.library_dir = Some(rootfs.path().to_owned());
+        }
         config.run.executor = RunExecutorKind::Vm;
         assert!(validate(&config, false).is_ok());
     }

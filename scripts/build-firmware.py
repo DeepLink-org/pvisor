@@ -8,7 +8,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "packaging"))
 import firmware
-from stage_wheel_binaries import BuildOptions, _build_firmware, _host_target
 
 
 def main() -> None:
@@ -20,13 +19,13 @@ def main() -> None:
     parser.add_argument("--source-output", type=Path)
     parser.add_argument("--source-archive", type=Path)
     args = parser.parse_args()
-    options = BuildOptions(
-        target=args.target or _host_target(),
+    source = firmware.build_firmware(
+        args.target or firmware.host_target(),
         target_dir=args.target_dir,
         jobs=args.jobs,
         offline=args.offline,
     )
-    source = _build_firmware(options, "")
+
     if args.source_output:
         args.source_output.parent.mkdir(parents=True, exist_ok=True)
         args.source_output.write_text(firmware.source_record(source))

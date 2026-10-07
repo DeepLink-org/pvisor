@@ -36,6 +36,23 @@ pvisor inspect ../stage-config-001 -- cat result.txt
 
 Proxy deny applies to traffic reaching the proxy; this example does not establish mandatory offline execution. Add `--overlaynet-deny-all` to block ordinary egress through a mandatory boundary. Staging and filesystem sandboxing are independent.
 
+## Experimental feature settings {#features}
+
+Use boolean values under `[features]` in an explicitly loaded Run configuration:
+
+```toml
+[run]
+executor = "vm"
+command = ["/bin/sleep", "10"]
+
+[features]
+vm-vcpu-observe = true
+```
+
+`features.vm-vcpu-observe` defaults to `false` and enables EXP-001 M0 native VM observation. It requires a VM executor on Linux x86_64/KVM or Apple Silicon macOS/HVF; automatic offload is not implemented and HVF runtime validation remains outstanding. Unknown feature keys and non-boolean values reject loading.
+
+`--feature vm-vcpu-observe` enables the feature after configuration merging, including when the configured value is `false`. Omission preserves the configured value. Feature settings are passed explicitly to the native runner and retained with the saved Run configuration. `pvisor feature` lists registry defaults and current CLI enables without loading this file. See [feature commands](cli.md#features).
+
 ## Daemon configuration {#daemon}
 
 `pvisor-daemon serve` accepts command-line settings, not this native `RunConfig` TOML or resolved `RunSpec`. Set `OPEN_SANDBOX_API_KEY` to a protected secret of at least 32 bytes. See [daemon startup](../guides/daemon/index.md#start) and [service entry points](../guides/daemon/service.md).
@@ -62,6 +79,7 @@ Keep all runtime paths absolute and unchanged on daemon restart. Per-sandbox `co
 
 | TOML path | Type/default | CLI / purpose |
 | --- | --- | --- |
+| `features.vm-vcpu-observe` | Boolean, `false` | `--feature vm-vcpu-observe`; native VM observation |
 | `filesystem` | `host` (default) / `sandbox` | `--filesystem`; top-level string, not a `[filesystem]` table |
 | `run.executor` | `host` (default) / `container` / `vm` | `--executor` |
 | `run.command` | String array, empty | Command after `--`; required to execute |
@@ -231,6 +249,8 @@ Field names and types are checked against the Rust serde structures during the d
 <!-- config-fields:start -->
 | TOML path / entry field | Rust type | Default | Purpose |
 | --- | --- | --- | --- |
+| `features` | `crate::features::FeatureSettings` | `{}` | Runtime experimental feature settings |
+| `features.vm-vcpu-observe` | `bool` | `false` | EXP-001 M0 native VM observation; `--feature vm-vcpu-observe` enables |
 | `run` | `RunSettings` | `{}` | Command and process settings |
 | `container` | `ContainerSettings` | `{}` | OCI executor settings; used when selected |
 | `vm` | `VmSettings` | `{}` | VM executor settings |

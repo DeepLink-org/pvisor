@@ -37,7 +37,7 @@ VM staged 和 lazy image 均不建立中间宿主文件系统 FUSE 挂载。lazy
 
 | Trait | 实现 struct | 契约 |
 | --- | --- | --- |
-| `RuntimeSupport` | `VmPlatform` | 能力、日志、内核/固件准备及冷 RAM 诊断 |
+| `RuntimeSupport` | `VmPlatform` | 能力、日志、本地固件发现及冷 RAM 诊断 |
 | `VmConfiguration` | `VmBuilder` | 在启动前接收配置与资源所有权 |
 | `VmRuntime` | `VmBuilder` | 消费配置，启动一个独立 runner 的 VM |
 | `VmControl` | `VmmHandle` | 查询、暂停、恢复、RAM offload；可用于动态分派与 mock |
@@ -75,7 +75,7 @@ RAM 文件的 FUSE 挂载、readiness、mmap 缓存 I/O 和卸载顺序由私有
 
 Linux x86_64 支持实验性的 runtime-owned userfaultfd pager，由默认关闭的 `VmSettings.cold_ram_compression` / `--vm-cold-ram-compression` 自动启动，使用 pVisor 的 `LocalColdRamStore`，不是 FUSE `vm.ram_compression`。`ColdRamControl::start_cold_pager` 使用相同 API；Linux 的缺页与静止窗口由 runtime 内部持有，外部 `install_ram_fault_handler`、`with_ram_quiesced`、`experimental_ram_residency` 及 `FrozenMemory::experimental_ram_blocks` 返回不支持。编译能力不代表权限：必须具备 syscall 或 `/dev/userfaultfd` 的内核缺页授权，缺少授权时启动失败，不回退或修改全局 sysctl。
 
-pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro`、`gpu`、`snd`、`input` 构建及已有 device prepare/dedup advice 被拒绝。实例本地压缩使用 64 KiB 块，Linux daemon 池使用独立的 4 KiB 页；每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。balloon 空闲页报告在 pager 持有映射时确认但不 discard。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
+pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro`、`gpu`、`snd`、`input` 构建及已有 device prepare/dedup advice 被拒绝。实例本地压缩使用 64 KiB 块，Linux daemon 池使用独立的 4 KiB 页；每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。实例本地 UFFD 压缩的 balloon 空闲页报告仍确认但不 discard；物理共享模式的协同回收见下文。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
 
 Linux pager 在进入采样窗口前，仅持有 pager 锁检查 cold 状态与 cooldown；没有候选时不进入 CPU/设备 barrier，但仍检查 VM 退出。首次 barrier 仍必须停驻 CPU 并排空设备 lease，才能安全复制 live RAM；存储编码/发布不持有 barrier，全部发布被拒绝或批次为空时跳过提交窗口，拒绝后的 cooldown 只更新元数据。成功发布仍在第二次 barrier 内复核 live bytes 后才 discard。缺页查找按宿主地址排序的块做二分查找（不是 guest 地址顺序），并检查块长度，拒绝映射间隙及不足一个块的尾部之外的地址。这里描述实现与正确性契约，不声明实测性能收益。
 
@@ -97,13 +97,33 @@ pidfd 确认进程退出后释放引用，不能把断连当作可安全复用�
 该模式不压缩独有页，也不要求 userfaultfd；前述 UFFD 驱逐/恢复契约只适用于
 实例本地冷压缩。快照、offload 与 KSM advice 仍互斥。
 
+共享模式将 balloon free-page reporting 交给 pager：每个设备最多保留一条
+未确认的 descriptor chain，仅暂存 guest 地址/长度与完成状态，不保留 device
+lease。guest 在 used-ring 确认前不能复用报告页。worker 在 CPU 停驻和设备排空
+窗口校验完整 RAM 范围（含对齐、溢出、区域间隙及固件/设备排除），替换为稀疏
+私有匿名零页；旧池引用在窗口外释放，然后通知队列 owner 发布 used ring。
+不能直接对私有文件页使用 MADV_DONTNEED，否则 backing 字节可能再次出现。
+报告页重新分配/写入后继续参与普通共享扫描。暂存报告使 snapshot capture
+明确拒绝，不把未完成队列状态当成可恢复设备状态。
+
+逐页状态只保存池对象指针和单调毫秒 cooldown，地址/长度从有序 RAM 区间
+推导；512 MiB / 4 KiB 的基础状态数组为 2 MiB（不含少量区间记录）。恢复
+checksum 表仅在 UFFD 压缩模式分配，共享模式提交时仍完整比较 live bytes 和
+被引用固定的 backing 页。传输对象的 session 身份按连接共享，offset 使用紧凑
+可选值；每条共享页 authority 为 64 字节，不含分配器和池侧索引开销。这些是
+结构大小与所有权合同，不能直接当作整组物理内存节省的实测结论。
+
 `RamDedupControl::advise_ram_dedup()` 仅显式登记适合的普通私有 RAM（匿名映射及私有文件 COW 候选），跳过 shared、hugetlb 和设备窗口，不替换映射、不更改全局 sysfs，也不自动启用。`RamDedupReport` 逐映射区分 accepted、skipped、unsupported 和 error；`accepted_bytes` 只表示本次建议被接受的区域长度，不是已合并字节或实际节省。macOS 对候选报告 unsupported。调用与 VM transition 串行化，任一登记成功后，本 VM 生命周期内拒绝启动冷 pager 或安装 device prepare；反向也跳过已启动 pager/prepare 的 VM。建议不可用不暂停或破坏健康 VM；共享信任域和侧信道授权由调用方负责。现有私有 COW RAM 的 reclaim 拒绝逻辑保持不变。
 
 `GuestCommand` 配合禁用 implicit init 的自定义 init；普通 Rust supervisor 继续使用 `/.pvisor-guest.json`。参数和环境不会继承宿主值，拒绝不支持的引号、控制字符、保留环境键及超长命令。`NetworkOptions` 显式控制自定义 init 的 DHCP，请求不会开启 TSI。`network` 默认关闭 DHCP。
 
 Rust supervisor 的可选私有 tmpfs 契约见 [pvisor-guest](../pvisor-guest/README.md)。容量属于已有 guest RAM 预算，工作区 stage 与临时 RAM 数据面分别管理；执行器默认策略不改变本 crate 的跨平台 API 定义。
 
-静态 x86_64 musl 的内核提取、无损打包、加载全部在本 crate 内完成；既有 `PVISOR_KRUNFW_PATH` / `PVISOR_KRUNFW_KERNEL_BUNDLE` 构建输入保持兼容。`VmRuntime::run` 自动安装构建内置内核；`VmPlatform::embedded_kernel` 提供不可变共享字节和启动地址用于身份绑定。固件的版本、校验、缓存、下载和平台产物处理集中在本 crate 内；调用方决定何时授权并调用阻塞的准备操作，负责宿主隔离和证据存储。
+静态 x86_64 musl 的内核提取、无损打包、加载全部在本 crate 内完成；既有 `PVISOR_KRUNFW_PATH` / `PVISOR_KRUNFW_KERNEL_BUNDLE` **构建输入**保持兼容。`VmPlatform::embedded_kernel` 提供不可变共享字节和启动地址用于身份绑定。已配置内核或带内核布局的快照不重新加载固件；默认启动顺序在所有平台一致：构建内置内核优先，其次 `VmConfiguration::set_firmware_path(&mut self, PathBuf) -> io::Result<()>` 显式选择的文件，最后可执行文件旁的打包固件，缺失返回明确 `NotFound`。
+
+`RuntimeSupport::resolve_firmware_path(directory: Option<&Path>) -> io::Result<PathBuf>` 仅解析本地平台固件名：`Some` 严格使用指定目录，不回退；`None` 使用当前可执行文件旁的目录。结果必须为 regular file，并 canonicalize 为绝对路径。setter 拒绝相对路径，在替换旧选择前校验并 canonicalize 文件；调用方负责信任文件并保持其可用直到启动，解析不固定文件内容。动态加载向 `KernelOwner` 传递所选绝对文件路径，不使用 basename、`LD_LIBRARY_PATH` 或 `DYLD_LIBRARY_PATH` 选择固件。静态 musl 不支持动态库加载。
+
+运行时不下载、编译、校验发行版、维护固件缓存或提供版本/准备 API；固件构建、获取和打包属于仓库构建工具与 Python packaging。调用方使用本地 resolver，并通过 setter 把精确文件交给 runner，负责宿主隔离和证据存储。
 
 为保持 Run/证据协议兼容，部分记录标识、trace stage、环境变量和 runner 参数使用 `krun` 命名；VM 控制通过 Rust API 实现。基准证据只描述其实际测量的实现，不能作为其他实现的验证结果。
 

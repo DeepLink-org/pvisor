@@ -63,22 +63,20 @@ pub trait RuntimeSupport {
     /// Build-embedded kernel, if present. This does not load host firmware.
     /// The shared bytes are immutable; addresses describe the guest boot layout.
     fn embedded_kernel() -> Option<KernelImage>;
-    /// Firmware ABI library name selected internally for the host platform.
     /// Process-local outstanding cold-RAM work; zero when no pager is active.
     /// These counters are diagnostic bounds, not physical memory attribution.
     fn cold_ram_activity() -> ColdRamActivity;
+    /// Firmware ABI library name selected internally for the host platform.
     fn firmware_name() -> &'static str;
-    /// Pinned firmware release version used by automatic provisioning.
-    fn firmware_version() -> &'static str;
     /// Firmware next to the current executable, if installed. No download or load.
     fn bundled_firmware_directory() -> Option<PathBuf>;
-    /// Provision pinned, SHA-256-verified firmware in a per-user cache. `None`
-    /// selects the platform cache under pvisor/firmware. A custom root must be
-    /// trusted and exclusively controlled by the caller. This blocking operation
-    /// can download and, on macOS, invoke /usr/bin/cc; use it before sandboxing.
-    /// Concurrent installs serialize through a file lock. Unsupported platforms
-    /// return an error without requiring target-specific calls from consumers.
-    fn prepare_firmware(cache_root: Option<&Path>) -> io::Result<PathBuf>;
+    /// Resolve the platform firmware in an explicit directory, or next to the
+    /// current executable when `None`. Returns a canonical absolute regular-file
+    /// path. Missing firmware returns `NotFound`; no acquisition, compilation,
+    /// cache or loader environment search occurs. An explicit directory never
+    /// falls back to packaged discovery. The caller must trust the file and keep
+    /// it available until boot; resolution does not load or pin its contents.
+    fn resolve_firmware_path(directory: Option<&Path>) -> io::Result<PathBuf>;
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +116,13 @@ pub trait VmConfiguration: Sized {
     /// Restore sealed, validated machine state. Captured kernel geometry avoids
     /// loading a fresh firmware payload; legacy states retain the normal loader.
     fn from_restore(config: VmConfig, restore: MachineRestore) -> io::Result<Self>;
+    /// Select a trusted local firmware file. Rejects relative paths and non-files;
+    /// canonicalizes before replacing the previous selection, without loading it.
+    /// An already configured kernel or snapshot kernel takes priority; otherwise
+    /// boot prefers the build-embedded kernel, then this file, then executable-
+    /// adjacent firmware. Keep the file available until boot. Never searches
+    /// LD_LIBRARY_PATH/DYLD_LIBRARY_PATH or downloads missing firmware.
+    fn set_firmware_path(&mut self, path: PathBuf) -> io::Result<()>;
     fn ram_backing(&mut self, file: File) -> io::Result<()>;
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
         -> io::Result<()>;
@@ -264,8 +269,11 @@ pub trait ColdRamControl: VmControl {
     /// guest address, host pointer, length and raw-region metadata (not snapshots),
     /// and probes automatic candidates by eviction/refault, not true read-access
     /// tracking: read-hot RAM may be evicted, then restored with a cooldown.
-    /// Linux disables balloon/free-page discard under the drained device gate
-    /// before registration; ordinary balloon behavior is unchanged without a pager.
+    /// Linux disables independent balloon discard under the drained device gate
+    /// before registration. Physical sharing handles free-page reports through
+    /// the pager: remap to sparse anonymous zero RAM, release pool references,
+    /// then acknowledge guest reuse. Local UFFD compression only acknowledges
+    /// reports; ordinary balloon behavior is unchanged without a pager.
     /// Store calls must be bounded local operations. Known pending faults defer
     /// maintenance; faults racing a pause are rechecked after all CPU acknowledgements.
     /// Linux pager maintenance has a 30-second aggregate CPU-pause budget; normal

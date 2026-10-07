@@ -79,6 +79,10 @@ fn main() -> anyhow::Result<()> {
     let binary = hash(&std::env::current_exe()?)?;
     pvisor_vm::api::VmPlatform::init_logging("trace");
     let mut vm = pvisor_vm::api::VmBuilder::new(2, 256)?;
+    let directory = std::env::var_os("PVISOR_CASE_VM_LIBRARY_DIR").map(PathBuf::from);
+    vm.set_firmware_path(pvisor_vm::api::VmPlatform::resolve_firmware_path(
+        directory.as_deref(),
+    )?)?;
     vm.snapshot_profile()?;
     vm.disable_implicit_init()?;
     vm.filesystem("/dev/root", &root, 0)?;

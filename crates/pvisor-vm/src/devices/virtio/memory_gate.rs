@@ -1,8 +1,8 @@
 //! VM-local barrier for device RAM access, including retained descriptor slices.
 use std::collections::BTreeMap;
 use std::sync::{
-    atomic::{AtomicU64, AtomicUsize, Ordering},
     Arc, Condvar, Mutex, OnceLock, Weak,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
 use vm_memory::{GuestMemory, GuestMemoryMmap};
@@ -15,6 +15,57 @@ struct State {
     dedup_advised: bool,
     balloon_discard_disabled: bool,
     cold_faults: Option<Arc<ColdFaultActivity>>,
+    free_reports: Option<Arc<SharedFreeReports>>,
+}
+
+/// One outstanding balloon chain. The guest cannot reuse its pages before
+/// completion; no device lease is retained while the pager drains devices.
+#[derive(Default)]
+pub(crate) struct SharedFreeReports(Mutex<Option<Arc<FreeReport>>>);
+pub(crate) struct FreeReport {
+    pub(crate) ranges: Vec<(u64, usize)>,
+    done: AtomicBool,
+    event: Arc<crate::utils::eventfd::EventFd>,
+}
+impl FreeReport {
+    pub(crate) fn is_done(&self) -> bool {
+        self.done.load(Ordering::Acquire)
+    }
+}
+impl SharedFreeReports {
+    pub(crate) fn submit(
+        &self,
+        ranges: Vec<(u64, usize)>,
+        event: Arc<crate::utils::eventfd::EventFd>,
+    ) -> Arc<FreeReport> {
+        let report = Arc::new(FreeReport {
+            ranges,
+            done: AtomicBool::new(false),
+            event,
+        });
+        let mut pending = self.0.lock().unwrap();
+        assert!(
+            pending.is_none(),
+            "only one free-page report may be outstanding"
+        );
+        *pending = Some(report.clone());
+        report
+    }
+    pub(crate) fn pending(&self) -> Option<Arc<FreeReport>> {
+        self.0.lock().unwrap().clone()
+    }
+    /// Called after remapping and releasing all retired pool references.
+    pub(crate) fn complete(&self, report: &Arc<FreeReport>) -> std::io::Result<()> {
+        let mut pending = self.0.lock().unwrap();
+        assert!(
+            pending
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, report))
+        );
+        *pending = None;
+        report.done.store(true, Ordering::Release);
+        report.event.write(1)
+    }
 }
 /// Prepare RAM before any queue access, including descriptor-table reads.
 /// A preparation error terminates the isolated VMM process: queue APIs cannot
@@ -143,6 +194,20 @@ impl MemoryGate {
     pub(crate) fn cold_faults(&self) -> Option<Arc<ColdFaultActivity>> {
         self.state.lock().unwrap().cold_faults.clone()
     }
+    pub(crate) fn install_free_reports(
+        &self,
+        reports: Arc<SharedFreeReports>,
+    ) -> Result<(), &'static str> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "device memory gate poisoned")?;
+        if !state.closed || state.active != 0 || !state.balloon_discard_disabled {
+            return Err("shared free-page reports require a drained pager gate");
+        }
+        state.free_reports = Some(reports);
+        Ok(())
+    }
     /// Hold the strategy lock across registration so prepare cannot activate
     /// between eligibility checking and the first accepted mapping. Advice is
     /// safe with live CPU/device accesses; it does not replace their mappings.
@@ -177,6 +242,9 @@ impl MemoryGate {
     }
 }
 impl Access {
+    pub(crate) fn free_reports(&self) -> Option<Arc<SharedFreeReports>> {
+        self.gate.state.lock().unwrap().free_reports.clone()
+    }
     pub(crate) fn balloon_discard_allowed(&self) -> bool {
         !self.gate.state.lock().unwrap().balloon_discard_disabled
     }

@@ -18,6 +18,7 @@ use crate::runtime::OverlayHint;
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RunConfig {
+    pub features: crate::features::FeatureSettings,
     pub run: RunSettings,
     pub container: ContainerSettings,
     pub vm: VmSettings,
@@ -291,10 +292,10 @@ pub struct VmSettings {
     pub image_store: Option<PathBuf>,
     /// Reject apply operations that would mutate the configured rootfs lower.
     pub rootfs_immutable: bool,
-    /// Optional directory containing libkrunfw. Packaged glibc/macOS builds
-    /// discover it next to pVisor; source builds use a verified per-user
-    /// download cache. The x86_64 Linux musl build embeds the kernel bundle
-    /// and rejects this setting.
+    /// Optional local directory containing libkrunfw. Otherwise dynamic builds
+    /// require firmware next to pVisor; missing firmware is an error, never a
+    /// runtime download. The selected file is resolved before runner launch.
+    /// The x86_64 Linux musl build embeds the kernel and rejects this setting.
     pub library_dir: Option<PathBuf>,
     pub memory_mib: u32,
     pub cpus: u16,

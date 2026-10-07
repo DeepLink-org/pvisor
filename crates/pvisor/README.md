@@ -63,6 +63,74 @@ cross-platform emulation or artifact auto-discovery. A configured platform also
 requires the container executor rather than being ignored by host/VM execution.
 Without the option, native image preparation and container execution are unchanged.
 
+## Explicit runtime experiments
+
+Runtime feature names and metadata live in `src/features.rs::REGISTRY`, with
+`name`, `stage`, `default` and `description`. This borrows the centralized registry
+shape requested for Codex-style features; it is not a claim of verified upstream
+Codex behavior or compatibility. Runtime features are not Cargo build features.
+
+```bash
+pvisor feature                       # name / stage / default / enabled / description
+pvisor feature list --json           # same list as a JSON array
+pvisor --feature workload-aware-memory-offloading feature --json
+pvisor --feature workload-aware-memory-offloading run --executor vm -- /bin/sleep 10
+pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
+pvisor --feature workload-aware-memory-offloading --executor vm -- /bin/sleep 10
+```
+
+`--feature NAME` is global, repeatable, accepts comma-separated names and rejects
+unknown names. Arguments after `--` belong to the guest and are never feature
+options. Feature queries run locally without starting/contacting the Host Job
+service. Their `enabled` column means registry defaults plus this invocation's
+CLI enables, not a live VM status or a scan of personal/project config files.
+Global enables are supported by `run` and feature queries, not other Job actions
+or extensions/services; ordinary extension arguments and help forwarding remain
+unchanged. Companion help also supports leading feature options, without
+forwarding those options as runtime enables; use `pvisor help COMMAND` or
+`pvisor COMMAND --help`.
+
+Run TOML supports strict bool keys in a centralized table:
+
+```toml
+[run]
+executor = "vm"
+command = ["/bin/sleep", "10"]
+
+[features]
+workload-aware-memory-offloading = false
+```
+
+Configuration/personal Agent defaults are loaded by the existing Run path;
+omitting `--feature` preserves their value, while CLI enables override `false`.
+There is no CLI disable switch yet. VM-only features require the resolved VM
+executor (`--executor vm`, `--vm`, or existing VM inference/config); otherwise
+execution is refused, never silently ignored or switched from host/container.
+Host-only delegated JSON `--spec` cannot enable this feature.
+
+The registered name `workload-aware-memory-offloading` (workload aware memory
+offloading) registers **EXP-001 M0**, stage `experimental`, default `false`.
+The former CLI/config name is rejected; there is no compatibility alias.
+It travels as serialized `RunArgs.features` in the internal typed
+Host request, resolves into `RunConfig.features`, and is explicitly passed through
+`VmExecutor::with_features()` into `RunnerSpec.features`. Resume/execution-fork
+retain the stored Run feature settings. Embedded callers use public
+`features::Feature::WorkloadAwareMemoryOffloading`,
+`features::FeatureSettings::workload_aware_memory_offloading` and
+`VmExecutor::with_features()`; a stored RunConfig alone does not configure an
+independently constructed executor.
+
+The native runner calls the existing `pvisor_vm::api::VcpuObservationControl::
+set_vcpu_observation(true)` on the built VM handle. Failure aborts VM startup;
+default-off runs do not call the observer control. Supported builds are Linux
+x86_64/KVM and Apple Silicon macOS/HVF; other builds reject enabling it. This
+only turns on the runtime's wait observation: it neither samples/exports a new
+CLI status schema nor decides guest idleness, wake deadlines, cold reclamation,
+or automatic offload. The SDK's `vcpu_observation()` remains the observation API;
+no new Host VM observation operation is introduced. Existing cold/memory flags
+are not migrated or implicitly enabled. Parser/config/control unit tests are not
+real-guest, macOS platform, energy/density, or upstream validation evidence.
+
 ## Host Job service and AgentCtl
 
 All built-in Job CLI operations (`run`, `status`, `kill`, `suspend`, `resume`,

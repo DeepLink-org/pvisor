@@ -85,6 +85,7 @@ impl RuntimeJobService {
             .join(uuid::Uuid::new_v4().to_string());
         let (mut executor, mut overlay) =
             VmExecutor::restore(job.config.vm.clone(), checkpoint.clone(), &stage)?;
+        executor = executor.with_features(job.config.features.clone())?;
         if eager_ram {
             executor.materialize_restore_ram(&stage)?;
         }

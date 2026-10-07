@@ -23,14 +23,12 @@ impl RuntimeSupport for VmPlatform {
     fn firmware_name() -> &'static str {
         crate::firmware_store::firmware_name()
     }
-    fn firmware_version() -> &'static str {
-        crate::firmware_store::VERSION
-    }
+
     fn bundled_firmware_directory() -> Option<PathBuf> {
         crate::firmware_store::bundled_directory()
     }
-    fn prepare_firmware(cache_root: Option<&Path>) -> io::Result<PathBuf> {
-        crate::firmware_store::prepare(cache_root)
+    fn resolve_firmware_path(directory: Option<&Path>) -> io::Result<PathBuf> {
+        crate::firmware_store::resolve(directory)
     }
 
     fn cold_ram_activity() -> ColdRamActivity {
@@ -96,8 +94,8 @@ fn capabilities() -> Capabilities {
 mod cold_ram_tests {
     use super::*;
     use std::sync::{
-        Mutex, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        Mutex, Weak,
     };
 
     struct UnusedStore {
@@ -133,7 +131,9 @@ mod cold_ram_tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             panic!("unsupported pager must not query storage")
         }
-        fn shared_mapping(&self, _: &()) -> Option<SharedRamMapping> { None }
+        fn shared_mapping(&self, _: &()) -> Option<SharedRamMapping> {
+            None
+        }
     }
 
     fn inactive_handle() -> VmmHandle {
@@ -156,7 +156,10 @@ mod cold_ram_tests {
                         calls: calls.clone(),
                         drops: drops.clone(),
                     },
-                    ColdRamOptions { metrics, ..Default::default() },
+                    ColdRamOptions {
+                        metrics,
+                        ..Default::default()
+                    },
                 )
                 .unwrap_err();
             if cfg!(all(
@@ -246,6 +249,9 @@ impl VmConfiguration for VmBuilder {
         Ok(Self {
             inner: crate::builder::Builder::new(cpus, memory_mib)?,
         })
+    }
+    fn set_firmware_path(&mut self, path: PathBuf) -> io::Result<()> {
+        self.inner.set_firmware_path(path)
     }
     fn ram_backing(&mut self, file: File) -> io::Result<()> {
         self.inner.ram_backing(file)

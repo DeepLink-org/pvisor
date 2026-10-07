@@ -70,12 +70,8 @@ fn main() -> anyhow::Result<()> {
         .output()?;
     ensure!(output.status.success(), "host boot identity unavailable");
     let boot = String::from_utf8(output.stdout)?.trim().to_owned();
-    let libraries =
-        std::env::var_os("DYLD_LIBRARY_PATH").context("explicit firmware library path required")?;
-    let firmware = std::env::split_paths(&libraries)
-        .map(|path| path.join("libkrunfw.5.dylib"))
-        .find(|path| path.is_file())
-        .context("firmware library unavailable")?;
+    let directory = std::env::var_os("PVISOR_CASE_VM_LIBRARY_DIR").map(PathBuf::from);
+    let firmware = pvisor_vm::api::VmPlatform::resolve_firmware_path(directory.as_deref())?;
     let compatibility = Compatibility {
         host_boot: boot,
         build: file_hash(&std::env::current_exe()?)?,
@@ -126,6 +122,7 @@ fn main() -> anyhow::Result<()> {
     };
     pvisor_vm::api::VmPlatform::init_logging("trace");
     let mut vm = pvisor_vm::api::VmBuilder::new(2, 256)?;
+    vm.set_firmware_path(firmware)?;
     vm.snapshot_profile()?;
     vm.disable_implicit_init()?;
     vm.filesystem("/dev/root", &root, 0)?;

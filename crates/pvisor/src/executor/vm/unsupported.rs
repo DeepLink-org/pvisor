@@ -42,6 +42,11 @@ impl VmExecutor {
         anyhow::bail!("private VM RAM is unsupported on this platform")
     }
 
+    pub fn with_features(self, features: crate::features::FeatureSettings) -> anyhow::Result<Self> {
+        features.validate(crate::RunExecutorKind::Vm)?;
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
+
     pub fn new(_settings: VmSettings) -> anyhow::Result<Self> {
         anyhow::bail!(UNSUPPORTED_MESSAGE)
     }

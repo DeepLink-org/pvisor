@@ -26,11 +26,12 @@ const PUT_DUPLICATE: u8 = 7;
 
 /// A connection-owned reference, not an object ID that grants global access.
 pub struct RemoteObject {
-    session: [u8; 16],
+    session: Arc<[u8; 16]>,
     token: u64,
     id: ImageId,
     length: usize,
-    offset: Option<u64>,
+    // Offset + 1 leaves zero as the absent value without an extra tag word.
+    offset: Option<std::num::NonZeroU64>,
 }
 impl RemoteObject {
     pub fn id(&self) -> ImageId {
@@ -392,7 +393,7 @@ fn send_mapping_fd(stream: &UnixStream, fd: std::os::fd::RawFd) -> io::Result<()
 /// a fully consumed rejection preserves all previously established references.
 pub struct PoolClient {
     stream: Option<UnixStream>,
-    session: [u8; 16],
+    session: Arc<[u8; 16]>,
     timeout: Duration,
     shared_file: Option<Arc<std::fs::File>>,
 }
@@ -533,7 +534,7 @@ impl PoolClient {
         handshake.remaining()?;
         Ok(Self {
             stream: Some(stream),
-            session,
+            session: Arc::new(session),
             timeout,
             shared_file: None,
         })
@@ -569,7 +570,7 @@ impl PoolClient {
         if bytes.is_empty() || bytes.len() > BLOCK_BYTES {
             return Err(invalid("invalid pool input length"));
         }
-        let session = self.session;
+        let session = self.session.clone();
         let expected = identity(bytes);
         let shared_file = self.shared_file.clone();
         if shared_file.is_some() && bytes.len() != 4096 {
@@ -613,7 +614,7 @@ impl PoolClient {
                 if actual != bytes {
                     return Err(invalid("shared page publication content mismatch"));
                 }
-                Some(offset)
+                std::num::NonZeroU64::new(offset + 1)
             } else {
                 None
             };
@@ -664,7 +665,7 @@ impl PoolClient {
         }
         Some(pvisor_vm::api::SharedRamMapping {
             file: self.shared_file.as_ref()?.clone(),
-            offset: object.offset?,
+            offset: object.offset?.get() - 1,
         })
     }
     fn owns(&self, object: &RemoteObject) -> io::Result<()> {
@@ -726,6 +727,12 @@ impl PoolClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn remote_page_authority_uses_at_most_64_bytes() {
+        // A full 512 MiB guest can reference 131072 pages. Keep its per-page
+        // authority budget at 8 MiB, with session identity held once per client.
+        assert!(std::mem::size_of::<RemoteObject>() <= 64);
+    }
     #[test]
     #[cfg(target_os = "linux")]
     fn physical_pool_maps_one_page_and_cow_keeps_other_references_unchanged() {

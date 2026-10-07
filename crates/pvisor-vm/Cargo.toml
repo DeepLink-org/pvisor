@@ -24,10 +24,6 @@ virgl_resource_map2 = []
 
 [dependencies]
 anyhow.workspace = true
-dirs.workspace = true
-fs2.workspace = true
-reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
-tar.workspace = true
 tracing.workspace = true
 tempfile = "3"
 bitfield = { version = "0.19.4", optional = true }

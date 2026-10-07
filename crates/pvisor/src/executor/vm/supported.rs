@@ -70,6 +70,8 @@ compile_error!("static musl VM support currently targets x86_64 only");
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
     settings: VmSettings,
+    firmware_path: Option<PathBuf>,
+    features: crate::features::FeatureSettings,
     private_ram: bool,
     vsock_ports: BTreeMap<u32, PathBuf>,
     #[cfg(target_os = "linux")]
@@ -85,6 +87,8 @@ pub struct VmExecutor {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct RunnerSpec {
+    #[serde(default)]
+    pub(super) features: crate::features::FeatureSettings,
     #[serde(default)]
     vsock_ports: BTreeMap<u32, PathBuf>,
     #[serde(default)]
@@ -107,7 +111,8 @@ pub(super) struct RunnerSpec {
     pub(super) private_ram: bool,
     #[serde(default)]
     pub(super) cold_ram_compression: bool,
-    pub(super) library_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub(super) firmware_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) checkpoint: Option<super::checkpoint::LaunchBinding>,
     #[serde(default)]
@@ -392,7 +397,7 @@ impl VmExecutor {
             settings.library_dir.is_none(),
             "static musl checkpoints use the embedded kernel bundle"
         );
-        let firmware = settings.library_dir.clone().or_else(bundled_firmware_dir);
+        let firmware = resolve_firmware(settings)?;
         super::checkpoint::compatibility(firmware.as_deref())
     }
     pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
@@ -440,25 +445,11 @@ impl VmExecutor {
             "vm.rootfs is not a directory: {}",
             rootfs.display()
         );
-        if let Some(directory) = &settings.library_dir {
-            anyhow::ensure!(
-                directory.is_dir(),
-                "vm.library_dir is not a directory: {}",
-                directory.display()
-            );
-            anyhow::ensure!(
-                directory
-                    .join(pvisor_vm::api::VmPlatform::firmware_name())
-                    .is_file(),
-                "vm.library_dir does not contain {}: {}",
-                pvisor_vm::api::VmPlatform::firmware_name(),
-                directory.display()
-            );
-        } else if let Some(directory) = pvisor_vm::api::VmPlatform::bundled_firmware_directory() {
-            settings.library_dir = Some(directory);
-        }
+        let firmware_path = resolve_firmware(&settings)?;
         Ok(Self {
             settings,
+            firmware_path,
+            features: Default::default(),
             private_ram: false,
             vsock_ports: BTreeMap::new(),
             #[cfg(target_os = "linux")]
@@ -471,6 +462,16 @@ impl VmExecutor {
             ))]
             restore: None,
         })
+    }
+
+    /// Enable explicitly selected runtime experiments for this VM only.
+    pub fn with_features(
+        mut self,
+        features: crate::features::FeatureSettings,
+    ) -> anyhow::Result<Self> {
+        features.validate(crate::RunExecutorKind::Vm)?;
+        self.features = features;
+        Ok(self)
     }
 
     /// Publish explicit host Unix listeners connected to guest AF_VSOCK ports.
@@ -527,6 +528,7 @@ impl VmExecutor {
             let (prepared, overlay) = super::checkpoint::native::prepare_restore(
                 checkpoint,
                 &executor.settings,
+                executor.firmware_path.as_deref(),
                 storage,
             )?;
             executor.settings.rootfs = Some(
@@ -602,8 +604,76 @@ impl VmExecutor {
     }
 }
 
-pub(crate) fn bundled_firmware_dir() -> Option<PathBuf> {
-    pvisor_vm::api::VmPlatform::bundled_firmware_directory()
+fn resolve_firmware(settings: &VmSettings) -> anyhow::Result<Option<PathBuf>> {
+    if pvisor_vm::api::VmPlatform::embedded_kernel().is_some() {
+        return Ok(None);
+    }
+    if let Some(directory) = &settings.library_dir {
+        anyhow::ensure!(
+            directory.is_dir(),
+            "vm.library_dir is not a directory: {}",
+            directory.display()
+        );
+    }
+    pvisor_vm::api::VmPlatform::resolve_firmware_path(settings.library_dir.as_deref())
+        .map(Some)
+        .map_err(|error| {
+            let message = format!("resolve local VM firmware: {error}");
+            anyhow::Error::new(error).context(message)
+        })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn firmware_read_only_paths(firmware: Option<&Path>) -> Vec<PathBuf> {
+    // Grant the resolved target's parent, not the directory containing a packaging
+    // symlink. The exact file is also explicit in the runner's read-only policy.
+    firmware
+        .into_iter()
+        .flat_map(|file| {
+            file.parent()
+                .into_iter()
+                .chain(std::iter::once(file))
+                .map(Path::to_owned)
+        })
+        .collect()
+}
+
+fn configure_runner_firmware(
+    vm: &mut impl VmConfiguration,
+    firmware: Option<&Path>,
+) -> anyhow::Result<()> {
+    if let Some(path) = firmware {
+        anyhow::ensure!(
+            path.is_absolute(),
+            "selected VM firmware path must be absolute"
+        );
+        anyhow::ensure!(
+            path.canonicalize()
+                .context("resolve selected VM firmware file")?
+                == path,
+            "selected VM firmware path must be canonical"
+        );
+        vm.set_firmware_path(path.to_owned())
+            .context("configure selected VM firmware")?;
+    } else {
+        anyhow::ensure!(
+            pvisor_vm::api::VmPlatform::embedded_kernel().is_some(),
+            "VM runner requires an explicitly selected local firmware file"
+        );
+    }
+    Ok(())
+}
+
+fn scrub_runner_loader_environment(command: &mut Command) {
+    // Firmware selection travels only in RunnerSpec, never through the host's
+    // dynamic-loader search paths (including inherited values).
+    for key in [
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+    ] {
+        command.env_remove(key);
+    }
 }
 
 // Reserved runner status, accepted only alongside a verified suspend receipt.
@@ -1038,7 +1108,7 @@ impl RunExecutor for VmExecutor {
                 };
                 let run_id = spec.run_id.to_string();
                 let attempt_id = context.attempt_id().to_string();
-                let firmware = self.settings.library_dir.clone();
+                let firmware = self.firmware_path.clone();
                 let filesystem_pool = self.settings.snapshot_filesystem_pool.clone();
                 tokio::task::spawn_blocking(move || {
                     super::checkpoint::binding(
@@ -1111,6 +1181,7 @@ impl RunExecutor for VmExecutor {
             None
         };
         let mut runner = RunnerSpec {
+            features: self.features.clone(),
             vsock_ports: self.vsock_ports.clone(),
             cpu_qos: spec.runtime.cpu_qos,
             #[cfg(target_os = "linux")]
@@ -1129,7 +1200,7 @@ impl RunExecutor for VmExecutor {
                     && self.settings.ram_dedup
                     && self.settings.ram_backing.is_none(),
             cold_ram_compression: self.settings.cold_ram_compression,
-            library_dir: self.settings.library_dir.clone(),
+            firmware_path: self.firmware_path.clone(),
             checkpoint,
             restore: None,
         };
@@ -1299,12 +1370,8 @@ impl RunExecutor for VmExecutor {
         } else {
             command.env_remove("KRUN_ENOMEM_WORKAROUND");
         }
-        if let Some(directory) = &self.settings.library_dir {
-            #[cfg(target_os = "linux")]
-            command.env("LD_LIBRARY_PATH", directory);
-            #[cfg(target_os = "macos")]
-            command.env("DYLD_LIBRARY_PATH", directory);
-        }
+
+        scrub_runner_loader_environment(&mut command);
         crate::util::startup_mark_run("vm.spawn_begin", spec.run_id.as_str());
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -1902,6 +1969,7 @@ pub fn run_internal_if_requested() -> anyhow::Result<bool> {
 }
 
 fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
+    spec.features.validate(crate::RunExecutorKind::Vm)?;
     let direct_lowers = crate::image::cache::attach_runner_lowers(
         spec.root.lowers.iter().chain(
             spec.workspace
@@ -1996,11 +2064,8 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
         {
             read_write.push(PathBuf::from("/dev/userfaultfd"));
         }
-        crate::executor::sandbox::restrict_krun_runner(
-            read_only,
-            read_write,
-            spec.library_dir.clone(),
-        )?;
+        read_only.extend(firmware_read_only_paths(spec.firmware_path.as_deref()));
+        crate::executor::sandbox::restrict_krun_runner(read_only, read_write, None)?;
     }
     run_linked_krun(
         spec,
@@ -2085,6 +2150,7 @@ fn run_linked_krun(
     )))]
     let mut vm = pvisor_vm::api::VmBuilder::new(spec.cpus, spec.memory_mib)?;
 
+    configure_runner_firmware(&mut vm, spec.firmware_path.as_deref())?;
     crate::util::startup_mark_run("runner.context_ready", &spec.run_id);
     let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
     anyhow::ensure!(ram == RAM_CHILD_FD, "invalid RAM backing descriptor");
@@ -2181,6 +2247,7 @@ fn run_linked_krun(
     crate::util::startup_mark_run("runner.krun_enter", &spec.run_id);
     let started = vm.run( move |handle| {
         crate::util::startup_mark_run("runner.vmm_built", &spec.run_id);
+        enable_vcpu_observation(&handle, &spec.features)?;
         if spec.ram_dedup {
             match handle.advise_ram_dedup() {
                 Ok(report) => eprintln!(
@@ -2301,6 +2368,81 @@ fn run_linked_krun(
         return Err(error.into());
     }
     Ok(())
+}
+
+fn enable_vcpu_observation(
+    handle: &impl pvisor_vm::api::VcpuObservationControl,
+    features: &crate::features::FeatureSettings,
+) -> std::io::Result<()> {
+    if features.workload_aware_memory_offloading {
+        handle.set_vcpu_observation(true).map_err(|error| {
+            std::io::Error::other(format!(
+                "feature workload-aware-memory-offloading startup failed: {error}"
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod feature_tests {
+    use super::*;
+    use std::cell::Cell;
+    struct Observer {
+        calls: Cell<u32>,
+        fail: bool,
+    }
+    impl pvisor_vm::api::VcpuObservationControl for Observer {
+        fn set_vcpu_observation(&self, enabled: bool) -> Result<(), String> {
+            assert!(enabled);
+            self.calls.set(self.calls.get() + 1);
+            if self.fail {
+                Err("unsupported observation".into())
+            } else {
+                Ok(())
+            }
+        }
+        fn vcpu_observation(&self) -> Result<pvisor_vm::api::VcpuObservationSnapshot, String> {
+            unreachable!("startup does not sample or make offload decisions")
+        }
+    }
+    #[test]
+    fn explicit_serialized_feature_calls_real_control_and_propagates_failure() {
+        let observer = Observer {
+            calls: Cell::new(0),
+            fail: false,
+        };
+        enable_vcpu_observation(&observer, &Default::default()).unwrap();
+        assert_eq!(observer.calls.get(), 0);
+        let features = crate::features::FeatureSettings {
+            workload_aware_memory_offloading: true,
+        };
+        let mut runner: RunnerSpec = serde_json::from_value(serde_json::json!({
+            "setup_attestation": "/tmp/attestation",
+            "root": { "lowers": ["/tmp/root"], "upper": "/tmp/upper" },
+            "guest": pvisor_guest::GuestConfig::default(),
+            "cpus": 1, "memory_mib": 256,
+        }))
+        .unwrap();
+        assert!(!runner.features.workload_aware_memory_offloading);
+        runner.features = features;
+        let wire = serde_json::to_vec(&runner).unwrap();
+        let received: RunnerSpec = serde_json::from_slice(&wire).unwrap();
+        assert!(received.features.workload_aware_memory_offloading);
+        assert!(!received.cold_ram_compression && !received.ram_dedup);
+        enable_vcpu_observation(&observer, &received.features).unwrap();
+        assert_eq!(observer.calls.get(), 1);
+        let failing = Observer {
+            calls: Cell::new(0),
+            fail: true,
+        };
+        assert!(
+            enable_vcpu_observation(&failing, &received.features)
+                .unwrap_err()
+                .to_string()
+                .contains("feature workload-aware-memory-offloading startup failed")
+        );
+    }
 }
 
 fn add_vm_overlay(
@@ -2428,6 +2570,148 @@ fn guest_path_in_root(root: &Path, target: &Path) -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    fn local_firmware_settings(root: &Path) -> VmSettings {
+        let mut settings = VmSettings {
+            rootfs: Some(root.to_owned()),
+            ..Default::default()
+        };
+        if pvisor_vm::api::VmPlatform::embedded_kernel().is_none() {
+            std::fs::write(
+                root.join(pvisor_vm::api::VmPlatform::firmware_name()),
+                b"fixture firmware",
+            )
+            .unwrap();
+            settings.library_dir = Some(root.to_owned());
+        }
+        settings
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    #[test]
+    fn firmware_symlink_target_survives_serialization_and_locator_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let packaged = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let selected = target.path().join("versioned-firmware-payload");
+        std::fs::write(&selected, b"selected firmware").unwrap();
+        let selected = selected.canonicalize().unwrap();
+        let locator = packaged
+            .path()
+            .join(pvisor_vm::api::VmPlatform::firmware_name());
+        std::os::unix::fs::symlink(&selected, &locator).unwrap();
+        let settings = VmSettings {
+            rootfs: Some(root.path().to_owned()),
+            library_dir: Some(packaged.path().to_owned()),
+            ..Default::default()
+        };
+        let executor = VmExecutor::new(settings.clone()).unwrap();
+        assert_eq!(executor.settings().library_dir, settings.library_dir);
+        assert_eq!(executor.firmware_path.as_ref(), Some(&selected));
+        assert!(selected.is_absolute());
+
+        let mut spec: RunnerSpec = serde_json::from_value(serde_json::json!({
+            "run_id": "run", "setup_attestation": "/private/setup.json",
+            "root": {"lowers": [root.path()], "upper": root.path()},
+            "workspace": null, "workspace_target": null,
+            "guest": pvisor_guest::GuestConfig::default(), "cpus": 1, "memory_mib": 128
+        }))
+        .unwrap();
+        spec.firmware_path = executor.firmware_path.clone();
+        let encoded = serde_json::to_vec(&spec).unwrap();
+        let decoded: RunnerSpec = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.firmware_path.as_ref(), Some(&selected));
+        assert_eq!(
+            firmware_read_only_paths(decoded.firmware_path.as_deref()),
+            vec![selected.parent().unwrap().to_owned(), selected.clone()]
+        );
+
+        // Once selected, replacing the packaging locator must not select a
+        // different file for either the runner or checkpoint identity.
+        std::fs::remove_file(&locator).unwrap();
+        std::fs::write(&locator, b"different firmware").unwrap();
+        let binding =
+            super::super::checkpoint::compatibility(executor.firmware_path.as_deref()).unwrap();
+        assert_eq!(
+            binding.firmware,
+            crate::environment_snapshot::file_hash(&selected).unwrap()
+        );
+        let mut vm = pvisor_vm::api::VmBuilder::new(1, 128).unwrap();
+        configure_runner_firmware(&mut vm, decoded.firmware_path.as_deref()).unwrap();
+        std::fs::remove_file(&selected).unwrap();
+        assert!(configure_runner_firmware(&mut vm, decoded.firmware_path.as_deref()).is_err());
+    }
+
+    #[cfg(not(target_env = "musl"))]
+    #[test]
+    fn dynamic_firmware_missing_or_unselected_fails_closed_without_loading() {
+        let root = tempfile::tempdir().unwrap();
+        let error = VmExecutor::new(VmSettings {
+            rootfs: Some(root.path().to_owned()),
+            library_dir: Some(root.path().to_owned()),
+            ..Default::default()
+        })
+        .unwrap_err();
+        let cause = error.downcast_ref::<std::io::Error>().unwrap();
+        assert_eq!(cause.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            error
+                .to_string()
+                .contains(pvisor_vm::api::VmPlatform::firmware_name())
+        );
+
+        let settings = VmSettings {
+            rootfs: Some(root.path().to_owned()),
+            ..Default::default()
+        };
+        match pvisor_vm::api::VmPlatform::resolve_firmware_path(None) {
+            Ok(path) => assert_eq!(VmExecutor::new(settings).unwrap().firmware_path, Some(path)),
+            Err(_) => assert!(VmExecutor::new(settings).is_err()),
+        }
+        let mut vm = pvisor_vm::api::VmBuilder::new(1, 128).unwrap();
+        assert!(
+            configure_runner_firmware(&mut vm, None)
+                .unwrap_err()
+                .to_string()
+                .contains("explicitly selected local firmware file")
+        );
+        assert!(configure_runner_firmware(&mut vm, Some(Path::new("libkrunfw.so.5"))).is_err());
+        std::fs::write(root.path().join("payload"), b"firmware").unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(root.path().join("payload"), &link).unwrap();
+        assert!(
+            configure_runner_firmware(&mut vm, Some(&link))
+                .unwrap_err()
+                .to_string()
+                .contains("canonical")
+        );
+    }
+
+    #[test]
+    fn runner_loader_environment_is_removed_not_injected() {
+        let mut command = Command::new("unused-runner");
+        for key in [
+            "LD_LIBRARY_PATH",
+            "DYLD_LIBRARY_PATH",
+            "DYLD_FALLBACK_LIBRARY_PATH",
+        ] {
+            command.env(key, "/untrusted/firmware");
+        }
+        command.env("PVISOR_KRUN_LOG", "1");
+        scrub_runner_loader_environment(&mut command);
+        let environment = command.as_std().get_envs().collect::<BTreeMap<_, _>>();
+        for key in [
+            "LD_LIBRARY_PATH",
+            "DYLD_LIBRARY_PATH",
+            "DYLD_FALLBACK_LIBRARY_PATH",
+        ] {
+            assert_eq!(environment.get(std::ffi::OsStr::new(key)), Some(&None));
+        }
+        assert_eq!(
+            environment.get(std::ffi::OsStr::new("PVISOR_KRUN_LOG")),
+            Some(&Some(std::ffi::OsStr::new("1")))
+        );
+    }
+
     #[test]
     fn baseline_receipt_lease_requires_an_imported_readonly_generation() {
         let temp = tempfile::tempdir().unwrap();
@@ -2459,18 +2743,15 @@ mod tests {
     #[test]
     fn private_ram_control_rejects_explicit_backing_and_keeps_advice_disabled() {
         let root = tempfile::tempdir().unwrap();
-        let plain = VmExecutor::new(VmSettings {
-            rootfs: Some(root.path().to_owned()),
-            ..Default::default()
-        })
-        .unwrap()
-        .with_private_ram()
-        .unwrap();
+        let settings = local_firmware_settings(root.path());
+        let plain = VmExecutor::new(settings.clone())
+            .unwrap()
+            .with_private_ram()
+            .unwrap();
         assert!(!plain.settings().ram_dedup);
         let file = VmExecutor::new(VmSettings {
-            rootfs: Some(root.path().to_owned()),
             ram_backing: Some(root.path().join("ram")),
-            ..Default::default()
+            ..settings
         })
         .unwrap();
         assert!(file.with_private_ram().is_err());
@@ -2496,6 +2777,7 @@ mod tests {
         let encoded = serde_json::to_value(&spec).unwrap();
         assert!(encoded.get("checkpoint").is_none());
 
+        spec.firmware_path = Some("/private/firmware/libkrunfw.so.5.5.0".into());
         spec.ram_dedup = true;
         spec.private_ram = true;
         spec.checkpoint = Some(super::super::checkpoint::LaunchBinding {
@@ -2518,6 +2800,11 @@ mod tests {
         assert_eq!(decoded.checkpoint.unwrap().attempt_id, "attempt");
         assert!(decoded.ram_dedup);
         assert!(decoded.private_ram);
+        assert_eq!(
+            decoded.firmware_path,
+            Some("/private/firmware/libkrunfw.so.5.5.0".into())
+        );
+        assert!(encoded.get("library_dir").is_none());
     }
 
     #[test]
@@ -2881,10 +3168,7 @@ mod tests {
     #[test]
     fn settings_validate_resource_limits() {
         let rootfs = tempfile::tempdir().unwrap();
-        let settings = VmSettings {
-            rootfs: Some(rootfs.path().to_path_buf()),
-            ..VmSettings::default()
-        };
+        let settings = local_firmware_settings(rootfs.path());
         assert!(VmExecutor::new(settings.clone()).is_ok());
         assert!(VmExecutor::new(VmSettings::default()).is_err());
         assert!(

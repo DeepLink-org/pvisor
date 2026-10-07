@@ -8,6 +8,20 @@
 |---|---|---|---|
 | EXP-001 | [vCPU 空闲观测与自动内存卸载](vcpu-idle-offload/README.md) | M0：观测原型（KVM 实测，HVF 未验收） | 不修改 Agent 和 guest 内核，利用 VM 等待窗口自动 offload，并由宿主事件/deadline 恢复 |
 
+## CLI 特性入口
+
+```bash
+pvisor feature
+pvisor feature list --json
+pvisor run --executor vm --feature vm-vcpu-observe -- /bin/sleep 10
+```
+
+运行时 registry 在 `crates/pvisor/src/features.rs`，集中定义稳定名称、阶段、默认值与描述。`--feature NAME` 可重复或逗号分隔，默认不启用，未知名称明确拒绝；`--` 后保留给工作负载。查询中的 `enabled` 只表示注册默认值叠加本次 CLI 启用，不加载 Run 配置或验证实际运行。
+
+第一项注册为 `vm-vcpu-observe`，阶段 `experimental`、默认 `false`，开启 EXP-001 M0 观测，不开启自动卸载。最终 executor 必须为 VM；平台范围为 Linux x86_64/KVM 与 Apple Silicon macOS/HVF，HVF 尚未运行验收。配置支持 `[features]` 的 `vm-vcpu-observe = true`；CLI 启用覆盖配置的 false，省略保留配置。没有 CLI disable 或持久 feature enable 操作。既有 cold RAM 等参数不在本次迁移范围。
+
+功能选择通过 Host 请求、RunConfig、runner spec 显式传递；native runner 实际调用 `VcpuObservationControl`。新增实验能力需先完成真实接入和支持范围检查，再加入 registry，不能登记空开关。用户接口详见[CLI 参考](../docs/src/zh/reference/cli.md#features)。
+
 ## 状态与晋级
 
 - **方案登记**：明确问题、现有基础、缺口、范围、失败语义与验收门槛；不表示已实现。

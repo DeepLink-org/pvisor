@@ -1,7 +1,7 @@
 //! The sole guest-kernel ABI boundary, responsible for firmware data loading.
 //! The owner outlives every guest mapping.
 use crate::vmm::vmm_config::kernel_bundle::KernelBundle;
-use std::io;
+use std::{io, path::Path};
 
 #[derive(Default)]
 pub(crate) struct KernelOwner {
@@ -79,10 +79,15 @@ impl KernelOwner {
         })
     }
     #[cfg(not(target_env = "musl"))]
-    pub(crate) fn load(&mut self) -> io::Result<KernelBundle> {
-        let name = crate::firmware_store::firmware_name();
+    pub(crate) fn load(&mut self, path: &Path) -> io::Result<KernelBundle> {
+        if !path.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "firmware load requires an absolute file path",
+            ));
+        }
         // SAFETY: trusted pVisor firmware implements this versioned kernel ABI.
-        let library = unsafe { libloading::Library::new(name) }.map_err(io::Error::other)?;
+        let library = unsafe { libloading::Library::new(path) }.map_err(io::Error::other)?;
         let mut guest_addr = 0;
         let mut entry_addr = 0;
         let mut size = 0;
@@ -105,6 +110,11 @@ impl KernelOwner {
             entry_addr,
             size,
         })
+    }
+    #[cfg(target_env = "musl")]
+    pub(crate) fn load(&mut self, _path: &Path) -> io::Result<KernelBundle> {
+        Err(io::Error::new(io::ErrorKind::Unsupported,
+            "dynamic firmware loading is unavailable in this static build; configure an embedded kernel"))
     }
 }
 

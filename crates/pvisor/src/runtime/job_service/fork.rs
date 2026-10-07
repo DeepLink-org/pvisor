@@ -167,6 +167,7 @@ where
     );
     let (mut executor, mut overlay) =
         VmExecutor::restore(parent.config.vm.clone(), checkpoint.clone(), &stage)?;
+    executor = executor.with_features(parent.config.features.clone())?;
     if args.eager_ram {
         executor.materialize_restore_ram(&stage)?;
     }

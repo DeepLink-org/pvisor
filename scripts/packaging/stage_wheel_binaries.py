@@ -190,17 +190,27 @@ def expected_binaries(options: BuildOptions) -> tuple[str, ...]:
     return NATIVE_BINARIES if _is_macos(options) else EXPECTED_BINARIES
 
 
-def _build(options: BuildOptions, *, shim_vm: bool = False) -> dict[str, Path]:
-    artifacts = _build_component(options, shim_vm=shim_vm)
+def _build(
+    options: BuildOptions,
+    *,
+    shim_vm: bool = False,
+    firmware: firmware_build.ResolvedFirmware | None = None,
+) -> dict[str, Path]:
+    firmware = firmware if firmware is not None else _resolve_firmware(options)
+    artifacts = _build_component(options, shim_vm=shim_vm, firmware=firmware)
     if not shim_vm and not _is_macos(options):
         # Keep package selection separate; the daemon embeds pvisor's VM library,
         # while the CLI discovers the daemon executable without linking it back.
-        artifacts.update(_build_component(options, daemon=True))
+        artifacts.update(_build_component(options, daemon=True, firmware=firmware))
     return artifacts
 
 
 def _build_component(
-    options: BuildOptions, *, shim_vm: bool = False, daemon: bool = False
+    options: BuildOptions,
+    *,
+    shim_vm: bool = False,
+    daemon: bool = False,
+    firmware: firmware_build.ResolvedFirmware | None = None,
 ) -> dict[str, Path]:
     command = _cargo_command(options, shim_vm=shim_vm, daemon=daemon)
     expected = (
@@ -212,13 +222,16 @@ def _build_component(
     )
     print(f"Building native CLI: {shlex.join(command)}", file=sys.stderr)
     build_env = os.environ.copy()
-    macos_firmware = _firmware_source(options) if _is_macos(options) else None
+    firmware = firmware if firmware is not None else _resolve_firmware(options)
+    for selector in (
+        "PVISOR_LIBKRUNFW_PATH",
+        "PVISOR_KRUNFW_PATH",
+        "PVISOR_KRUNFW_KERNEL_BUNDLE",
+    ):
+        build_env.pop(selector, None)
+    build_env.update(firmware.cargo_env)
     if command[1] == "zigbuild":
         _prepare_zig_file_limit()
-        if not build_env.get("PVISOR_KRUNFW_KERNEL_BUNDLE") and not build_env.get(
-            "PVISOR_KRUNFW_PATH"
-        ):
-            build_env["PVISOR_KRUNFW_PATH"] = str(_firmware_source(options)[0])
     process = subprocess.Popen(
         command,
         cwd=ROOT,
@@ -252,11 +265,13 @@ def _build_component(
     missing = sorted(set(expected) - artifacts.keys())
     if missing:
         raise RuntimeError(f"Cargo did not report expected wheel binaries: {', '.join(missing)}")
-    if macos_firmware is not None:
-        source, name = macos_firmware
+    if _is_macos(options):
+        assert firmware.library_name is not None
         for directory in {path.parent for path in artifacts.values()}:
-            shutil.copy2(source, directory / name)
-            (directory / "libkrunfw.SOURCE").write_text(firmware_build.source_record(source))
+            destination = directory / firmware.library_name
+            if firmware.path != destination.resolve():
+                shutil.copy2(firmware.path, destination)
+            (directory / "libkrunfw.SOURCE").write_text(firmware.source_record)
     return artifacts
 
 
@@ -266,64 +281,17 @@ def _is_macos(options: BuildOptions) -> bool:
     )
 
 
-def _firmware_source(options: BuildOptions) -> tuple[Path, str]:
-    name = "libkrunfw.5.dylib" if _is_macos(options) else "libkrunfw.so.5"
-    configured = os.getenv("PVISOR_LIBKRUNFW_PATH")
-    if configured:
-        source = Path(configured).expanduser()
-        if source.is_dir():
-            directory = source
-            source = directory / name
-            if not source.is_file() and not _is_macos(options):
-                candidates = sorted(directory.glob("libkrunfw.so.5.*"))
-                if len(candidates) == 1:
-                    source = candidates[0]
-        source = source.resolve()
-        if not source.is_file():
-            raise RuntimeError(f"libkrunfw payload does not exist: {source}")
-        return source, name
-    return _build_firmware(options, name), name
-
-
-def firmware_source_record(options: BuildOptions) -> str:
-    if not _is_macos(options):
-        bundle = os.getenv("PVISOR_KRUNFW_KERNEL_BUNDLE")
-        if bundle:
-            directory = Path(bundle).expanduser().resolve()
-            return (
-                json.dumps(
-                    {
-                        "origin": "explicit-kernel-bundle",
-                        "path": str(directory),
-                        "files": {
-                            name: firmware_build.sha256(directory / name)
-                            for name in ("kernel.bin", "kernel.json")
-                        },
-                        "licenses": "GPL-2.0-only (Linux kernel)",
-                    },
-                    indent=2,
-                )
-                + "\n"
-            )
-        path = os.getenv("PVISOR_KRUNFW_PATH")
-        if path:
-            return firmware_build.source_record(Path(path).expanduser().resolve())
-    return firmware_build.source_record(_firmware_source(options)[0])
-
-
-def _host_target() -> str:
-    if sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"}:
-        return "aarch64-apple-darwin"
-    if sys.platform == "linux" and platform.machine().lower() in {"x86_64", "amd64"}:
-        return "x86_64-unknown-linux-musl"
-    raise RuntimeError(
-        f"automatic libkrunfw preparation is unsupported on {sys.platform}/{platform.machine()}"
+def _resolve_firmware(options: BuildOptions) -> firmware_build.ResolvedFirmware:
+    target = (
+        _normalize_target(options.target)
+        if options.target is not None
+        else "aarch64-apple-darwin"
+        if _is_macos(options)
+        else firmware_build.host_target()
     )
-
-
-def _build_firmware(options: BuildOptions, name: str) -> Path:
-    return firmware_build.build_firmware(
-        options.target or _host_target(),
+    assert target is not None
+    return firmware_build.resolve_firmware(
+        target,
         target_dir=options.target_dir,
         jobs=options.jobs,
         offline=options.offline or options.frozen,
@@ -347,8 +315,8 @@ def _sign_macos_pvisor(path: Path) -> None:
 
 def stage_wheel_binaries(options: BuildOptions) -> Path:
     """Build the host CLI and atomically replace the wheel scripts directory."""
-    firmware = _firmware_source(options) if options.bundle_firmware and _is_macos(options) else None
-    artifacts = _build(options)
+    firmware = _resolve_firmware(options)
+    artifacts = _build(options, firmware=firmware)
     ensure_wheel_data_directory()
     staged = WHEEL_DATA / f".scripts-{os.getpid()}"
     backup = WHEEL_DATA / f".scripts-old-{os.getpid()}"
@@ -366,21 +334,16 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
             )
             print(f"Staged {name}: {source} -> {destination}", file=sys.stderr)
 
-        if firmware is not None:
-            firmware_source, firmware_name = firmware
-            firmware_destination = staged / firmware_name
-            shutil.copy2(firmware_source, firmware_destination)
-            (staged / "libkrunfw.SOURCE").write_text(
-                firmware_build.source_record(firmware_source), encoding="utf-8"
-            )
-            print(
-                f"Staged libkrunfw: {firmware_source} -> {firmware_destination}",
-                file=sys.stderr,
-            )
-        if options.bundle_firmware and not _is_macos(options):
-            (staged / "libkrunfw.SOURCE").write_text(
-                firmware_source_record(options), encoding="utf-8"
-            )
+        if options.bundle_firmware:
+            if _is_macos(options):
+                assert firmware.library_name is not None
+                firmware_destination = staged / firmware.library_name
+                shutil.copy2(firmware.path, firmware_destination)
+                print(
+                    f"Staged libkrunfw: {firmware.path} -> {firmware_destination}",
+                    file=sys.stderr,
+                )
+            (staged / "libkrunfw.SOURCE").write_text(firmware.source_record, encoding="utf-8")
         if _is_macos(options):
             for name in NATIVE_BINARIES:
                 _sign_macos_pvisor(staged / name)

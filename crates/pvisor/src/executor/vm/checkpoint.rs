@@ -182,18 +182,15 @@ pub(super) fn binding(
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 pub(super) fn compatibility(firmware: Option<&Path>) -> anyhow::Result<Compatibility> {
     let mut compatibility_span = startup_profile::Span::start("vm.checkpoint.compatibility");
-    #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
-    let firmware_hash = {
+    let embedded = {
+        let mut span = startup_profile::Span::start("vm.checkpoint.embedded_kernel_acquire_init");
+        let kernel = pvisor_vm::api::VmPlatform::embedded_kernel();
+        span.success(kernel.as_ref().map(|kernel| kernel.bytes.len() as u64));
+        kernel
+    };
+    let firmware_hash = if let Some(kernel) = embedded {
         use sha2::{Digest, Sha256};
-        let _ = firmware;
-        let kernel = {
-            let mut span =
-                startup_profile::Span::start("vm.checkpoint.embedded_kernel_acquire_init");
-            let kernel = pvisor_vm::api::VmPlatform::embedded_kernel()
-                .context("static VM kernel is missing")?;
-            span.success(Some(kernel.bytes.len() as u64));
-            kernel
-        };
+
         let digest = {
             let mut span = startup_profile::Span::start("vm.checkpoint.embedded_kernel_sha256");
             let digest = Sha256::digest(&kernel.bytes);
@@ -201,16 +198,14 @@ pub(super) fn compatibility(firmware: Option<&Path>) -> anyhow::Result<Compatibi
             digest
         };
         crate::util::encode_hex(&digest)
-    };
-    #[cfg(not(all(target_os = "linux", target_env = "musl", target_arch = "x86_64")))]
-    let firmware_hash = {
+    } else {
         let mut span = startup_profile::Span::start("vm.checkpoint.firmware_file_hash");
-        let hash = file_hash(
-            &firmware
-                .context("checkpoint capture requires a bound firmware directory")?
-                .join(pvisor_vm::api::VmPlatform::firmware_name())
-                .canonicalize()?,
-        )?;
+        let firmware = firmware.context("checkpoint capture requires a bound firmware file")?;
+        ensure!(
+            firmware.is_absolute() && firmware.is_file(),
+            "checkpoint firmware must be an absolute regular-file path"
+        );
+        let hash = file_hash(firmware)?;
         span.success(None);
         hash
     };
@@ -778,6 +773,31 @@ pub(super) fn lookup_request(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[cfg(all(
+        not(target_env = "musl"),
+        not(all(target_os = "macos", target_arch = "x86_64"))
+    ))]
+    #[test]
+    fn compatibility_hashes_selected_versioned_file_not_parent_basename() {
+        let directory = tempfile::tempdir().unwrap();
+        let selected = directory.path().join("libkrunfw-versioned-target");
+        fs::write(&selected, b"selected firmware").unwrap();
+        let selected = selected.canonicalize().unwrap();
+        // A different ABI-name file beside the target must never be hashed.
+        let basename = directory
+            .path()
+            .join(pvisor_vm::api::VmPlatform::firmware_name());
+        fs::write(&basename, b"unselected firmware").unwrap();
+        let identity = compatibility(Some(&selected)).unwrap();
+        assert_eq!(identity.firmware, file_hash(&selected).unwrap());
+        assert_ne!(identity.firmware, file_hash(&basename).unwrap());
+        assert!(compatibility(None).is_err());
+        assert!(compatibility(Some(directory.path())).is_err());
+        assert!(compatibility(Some(Path::new("relative-firmware"))).is_err());
+        fs::remove_file(selected.clone()).unwrap();
+        assert!(compatibility(Some(&selected)).is_err());
+    }
 
     #[test]
     fn publication_rejects_another_attempt_before_creating_objects() {
@@ -1408,6 +1428,7 @@ pub(super) mod native {
     pub(in crate::executor::vm) fn prepare_restore(
         checkpoint: ExecutionCheckpoint,
         settings: &crate::VmSettings,
+        firmware: Option<&Path>,
         storage: &Path,
     ) -> anyhow::Result<(PreparedRestore, crate::OverlayHint)> {
         use std::os::unix::ffi::OsStrExt;
@@ -1428,7 +1449,7 @@ pub(super) mod native {
             storage.join("execution-snapshots"),
             "restore-preparation".into(),
             "restore-preparation".into(),
-            settings.library_dir.as_deref(),
+            firmware,
             settings.snapshot_filesystem_pool.as_deref(),
         )?;
         let compatibility = restore_binding.compatibility.clone();
@@ -1830,8 +1851,13 @@ pub(super) mod native {
                     .rebind_filesystem_shared_lowers(name, &copies, &shared)?
             };
             ensure!(count == 1, "restore requires exactly one {name} filesystem");
-            ensure!(saved.state.rebind_filesystem_exclusions(name, &overlay.excluded)? == 1,
-                "missing restored host-authority exclusions");
+            ensure!(
+                saved
+                    .state
+                    .rebind_filesystem_exclusions(name, &overlay.excluded)?
+                    == 1,
+                "missing restored host-authority exclusions"
+            );
             ensure!(
                 saved
                     .state
