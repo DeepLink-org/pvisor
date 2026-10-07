@@ -20,8 +20,8 @@ pub enum Error {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[allow(unused_unsafe)]
 pub fn get_cpuid(function: u32, count: u32) -> Result<CpuidResult, Error> {
-    // TODO: replace with validation based on `has_cpuid()` when it becomes stable:
-    //  https://doc.rust-lang.org/core/arch/x86/fn.has_cpuid.html
+    // Reject SGX, where CPUID is unavailable, and 32-bit x86 without the SSE
+    // target feature used below as the CPUID availability check.
     #[cfg(target_env = "sgx")]
     {
         return Err(Error::NotSupported);

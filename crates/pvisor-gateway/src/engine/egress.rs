@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use pvisor_journal::api::{Journal, JournalStore};
 use serde::{Deserialize, Serialize};
 
 use super::story::{RunId, Story, StoryId, TurnKind, TurnMachine};
@@ -69,7 +70,7 @@ pub fn story_call_ids(story: &Story) -> BTreeSet<String> {
 
 /// Read closed fact journals into dialogue projections.
 pub fn read_capture_records(path: &Path) -> Result<Vec<CaptureRecord>> {
-    pvisor_journal::Journal::read(path)?
+    Journal::read(path)?
         .into_iter()
         .filter(|record| crate::record::is_capture_event(&record.event))
         .map(|record| CaptureRecord::from_event(&record.event, record.position.offset))

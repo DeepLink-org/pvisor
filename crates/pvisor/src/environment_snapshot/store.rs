@@ -600,8 +600,8 @@ impl SnapshotStore {
             .compatibility
             .profile)
     }
-    /// Deletion is refused while any published object is referenced. The
-    /// first version deliberately uses one conservative store-wide gate.
+    /// Deletion is refused while any published object is referenced, including
+    /// objects other than `id`, because references share one store-wide gate.
     pub fn delete(&self, id: &str) -> anyhow::Result<()> {
         valid_id(id)?;
         let _exclusive = gate(&self.root, true)?;

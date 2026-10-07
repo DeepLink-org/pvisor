@@ -1,5 +1,5 @@
 //! One fact journal shared by Run and Gateway producers.
-use pvisor_journal::Journal;
+use pvisor_journal::api::{Journal, JournalStore};
 use std::path::Path;
 
 #[derive(Clone)]

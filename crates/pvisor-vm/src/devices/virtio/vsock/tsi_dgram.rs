@@ -149,7 +149,7 @@ impl TsiDgramProxy {
 
     fn recv_to_pkt(&self, pkt: &mut VsockPacket) -> RecvPkt {
         if let Some(buf) = pkt.buf_mut() {
-            // Disable UDP credit accounting until is fixed in the kernel
+            // UDP credit accounting is disabled for kernel compatibility.
             //let peer_credit = self.peer_avail_credit();
             //let max_len = std::cmp::min(buf.len(), peer_credit);
             let max_len = buf.len();

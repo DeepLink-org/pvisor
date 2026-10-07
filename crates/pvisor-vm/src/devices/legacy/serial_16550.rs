@@ -294,8 +294,7 @@ impl Subscriber for Serial {
         let source = event.fd();
         let event_set = event.event_set();
 
-        // TODO: also check for errors. Pending high level discussions on how we want
-        // to handle errors in devices.
+        // Only input readiness is handled; error events have no recovery path.
         let supported_events = EventSet::IN;
         if !supported_events.contains(event_set) {
             warn!("Received unknown event: {event_set:?} from source: {source:?}");

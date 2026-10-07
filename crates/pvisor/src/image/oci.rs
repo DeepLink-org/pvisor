@@ -7,6 +7,7 @@
 use anyhow::{Context, bail};
 use flate2::read::GzDecoder;
 use fs2::FileExt;
+use pvisor_journal::api::{DurableFiles, Persistence};
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{ACCEPT, AUTHORIZATION, WWW_AUTHENTICATE};
 use serde::{Deserialize, Serialize};
@@ -200,13 +201,13 @@ impl ImageStore {
         };
         let bytes = serde_json::to_vec(&record_data)?;
         fs::create_dir_all(record.parent().unwrap())?;
-        crate::util::atomic_write(&record, &bytes, 0o600)?;
+        Persistence::atomic_write(&record, &bytes, 0o600)?;
         // Also make the returned platform digest immediately usable offline.
         let pinned = ImageReference {
             reference: prepared.digest.clone(),
             ..image_ref
         };
-        crate::util::atomic_write(
+        Persistence::atomic_write(
             &self.prepared_record_path(&pinned, architecture)?,
             &bytes,
             0o600,
@@ -276,7 +277,7 @@ impl ImageStore {
             .with_context(|| format!("decode image manifest for {image}"))?;
         let manifest_dir = self.root.join("metadata/manifests-v1");
         fs::create_dir_all(&manifest_dir)?;
-        crate::util::atomic_write(
+        Persistence::atomic_write(
             &manifest_dir.join(format!("{}.json", digest_hex(&manifest_digest)?)),
             &body,
             0o600,

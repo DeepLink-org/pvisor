@@ -3,6 +3,8 @@
 //! Embedded callers configure a [`PVisor`] and invoke [`PVisor::run`]. CLI Job
 //! requests reach this runtime through the Host listener and authorized workers.
 
+#[cfg(test)]
+use pvisor_journal::api::JournalStore;
 #[path = "attempt_service.rs"]
 pub mod attempt_service;
 pub use attempt_service::AttemptService;
@@ -1606,7 +1608,10 @@ mod tests {
                 anyhow::bail!("simulated terminal commit failure");
             }
             self.kinds.lock().unwrap().push(event.name().to_string());
-            Ok(crate::trace::Journal::memory().append(event.clone())?)
+            Ok(JournalStore::append(
+                &crate::trace::Journal::memory(),
+                event.clone(),
+            )?)
         }
 
         fn classify_append_error(&self, _error: &anyhow::Error) -> crate::EventAppendErrorKind {
@@ -1626,7 +1631,10 @@ mod tests {
             if event.name() == "run.completed" {
                 anyhow::bail!("simulated acknowledgement loss after commit");
             }
-            Ok(crate::trace::Journal::memory().append(event.clone())?)
+            Ok(JournalStore::append(
+                &crate::trace::Journal::memory(),
+                event.clone(),
+            )?)
         }
     }
 
@@ -1641,7 +1649,10 @@ mod tests {
             ) {
                 anyhow::bail!("simulated terminal rejection");
             }
-            Ok(crate::trace::Journal::memory().append(event.clone())?)
+            Ok(JournalStore::append(
+                &crate::trace::Journal::memory(),
+                event.clone(),
+            )?)
         }
 
         fn classify_append_error(&self, _error: &anyhow::Error) -> crate::EventAppendErrorKind {
@@ -1667,7 +1678,10 @@ mod tests {
                     "audit gap was not persisted before terminal publication"
                 );
             }
-            Ok(crate::trace::Journal::memory().append(event.clone())?)
+            Ok(JournalStore::append(
+                &crate::trace::Journal::memory(),
+                event.clone(),
+            )?)
         }
     }
 
@@ -1702,7 +1716,10 @@ mod tests {
             if event.name() == "run.created" {
                 anyhow::bail!("simulated creation rejection");
             }
-            Ok(crate::trace::Journal::memory().append(event.clone())?)
+            Ok(JournalStore::append(
+                &crate::trace::Journal::memory(),
+                event.clone(),
+            )?)
         }
 
         fn classify_append_error(&self, _error: &anyhow::Error) -> crate::EventAppendErrorKind {

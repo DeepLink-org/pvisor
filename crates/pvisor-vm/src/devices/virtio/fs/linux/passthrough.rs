@@ -93,15 +93,11 @@ macro_rules! scoped_cred {
                 // setfsgid systems calls.   However since those calls have no way to
                 // return an error, it's preferable to do this instead.
 
-                // Remember the current effective id so Drop can restore it.
-                // Restoring a hardcoded 0 instead is wrong when the server
-                // runs as an unprivileged user granted CAP_SETUID/CAP_SETGID:
-                // the first Drop parks the thread at euid 0, the next switch
-                // to a non-zero uid then clears the thread's effective
-                // capability set (see capabilities(7), "Effect of user ID
-                // changes on capabilities"), and the restore after that fails
-                // with EPERM -- leaving the worker thread stuck with the guest
-                // uid's credentials for every subsequent request.
+                // Drop must restore the caller's effective id, including a
+                // non-root server with CAP_SETUID/CAP_SETGID. Restoring root
+                // would make the next non-root switch clear effective
+                // capabilities and prevent subsequent credential restoration
+                // (capabilities(7), "Effect of user ID changes on capabilities").
                 let old = unsafe { $get_current() } as $ty;
 
                 // This call is safe because it doesn't modify any memory and we
@@ -537,12 +533,10 @@ impl PassthroughFs {
             flags |= libc::O_RDWR;
         }
 
-        // When writeback caching is enabled the kernel is responsible for handling `O_APPEND`.
-        // However, this breaks atomicity as the file may have changed on disk, invalidating the
-        // cached copy of the data in the kernel and the offset that the kernel thinks is the end of
-        // the file. Just allow this for now as it is the user's responsibility to enable writeback
-        // caching only for directories that are not shared. It also means that we need to clear the
-        // `O_APPEND` flag.
+        // With writeback caching, the guest kernel handles O_APPEND, so clear
+        // it on the host descriptor. External writes can invalidate the cached
+        // end-of-file offset and break append atomicity; callers must enable
+        // writeback only for directories not shared with other writers.
         if writeback && flags & libc::O_APPEND != 0 {
             flags &= !libc::O_APPEND;
         }
@@ -1521,8 +1515,7 @@ impl FileSystem for PassthroughFs {
             .ok_or_else(ebadf)?;
 
         // Safe because this doesn't modify any memory and we check the return value.
-        // TODO: Switch to libc::renameat2 once https://github.com/rust-lang/libc/pull/1508 lands
-        // and we have glibc 2.28.
+        // The raw syscall avoids a dependency on the glibc 2.28 renameat2 wrapper.
         let res = unsafe {
             libc::syscall(
                 libc::SYS_renameat2,
@@ -2331,13 +2324,9 @@ mod tests {
             "precondition: thread should now run as the server uid"
         );
 
-        // From here the substrate is in place: anything wrong below is a
-        // real regression and must fail (assert), not skip.
-        //
-        // The server's per-request switch: a handful as a non-zero guest
-        // uid. Two already suffice to expose a hardcoded euid 0 restore
-        // (the second switch then clears the caps), but
-        // run more so a wedge is unmistakable.
+        // Credential setup has succeeded; subsequent failures must fail the
+        // test, not skip. Repeated guest-uid switches verify that Drop restores
+        // the non-root server uid without losing effective capabilities.
         for i in 0..4 {
             let scoped = ScopedUid::new(GUEST_UID)
                 .expect("switching to the guest uid should succeed while caps are held");

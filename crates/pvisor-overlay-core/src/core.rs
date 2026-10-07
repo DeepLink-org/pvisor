@@ -1,5 +1,6 @@
 use crate::sys;
 use pvisor_core::overlay::{PathFingerprint, PathPreimage, XattrFingerprint};
+use pvisor_journal::api::{DurableFiles, Persistence};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
@@ -78,7 +79,7 @@ pub(crate) fn persist_directory_preimage(
             .join(format!("{}.json", sha256_hex(&preimage.path)));
         let body = serde_json::to_vec(&preimage)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        pvisor_journal::atomic_write(&destination, &body, 0o600).map_err(io::Error::other)
+        Persistence::atomic_write(&destination, &body, 0o600).map_err(io::Error::other)
     }
 }
 
@@ -1358,7 +1359,7 @@ impl OverlayCore {
         self.profile.report()
     }
 
-    // ponytail: reject multiply-linked files when denials exist; an inode index would
+    // Reject multiply-linked files when denials exist; an inode index would
     // require scanning every lower and tracking external changes to avoid alias bypasses.
     fn require_unaliased(&self, path: &Path) -> io::Result<()> {
         if self.access.has_denials() {
@@ -3712,8 +3713,8 @@ fn resolved_metadata_and_directory_entries_preserve_layer_and_visibility() {
     let core = core.with_access_policy(
         &crate::FileAccessPolicy::new_with_ask(vec![], vec!["shared".into()], vec![]).unwrap(),
     );
-    // Name enumeration has historically retained ask names, but serving
-    // their attributes must still require authorization.
+    // Name enumeration retains ask names; serving their attributes requires
+    // authorization.
     assert!(
         core.list_names(Path::new(""))
             .unwrap()

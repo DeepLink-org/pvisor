@@ -10,6 +10,7 @@ use pvisor_core::{
     ExecutorObservations, ExecutorPlan, IsolationKind, ProcessOutput, ResourceLimits, RunFailure,
     RunFailureKind, RunInvocation, RunState,
 };
+use pvisor_journal::api::{DurableFiles, Persistence};
 use pvisor_vm::api::{RamDedupControl, SnapshotControl, VmControl};
 use pvisor_vm::api::{RuntimeSupport, VmConfiguration, VmRuntime};
 use serde::{Deserialize, Serialize};
@@ -522,7 +523,7 @@ impl VmExecutor {
         ))]
         {
             let mut settings = settings;
-            crate::util::create_dir_all_durable(storage)?;
+            Persistence::create_dir_all_durable(storage)?;
             settings.rootfs = Some(storage.to_owned());
             let mut executor = Self::new(settings)?;
             let (prepared, overlay) = super::checkpoint::native::prepare_restore(

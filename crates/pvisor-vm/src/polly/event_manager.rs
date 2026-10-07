@@ -99,12 +99,8 @@ impl EventManager {
             .cloned()
     }
 
-    /// Register a new subscriber. All events that the subscriber is interested are registered.
-    ///
-    // TODO: Remove this workaround method. The desired state in the future is for each
-    // subscriber to call `register` directly when it needs to register an event and not have
-    // all events registered at once. This way we can also remove the `interest_list` which is
-    // only used once in this function.
+    /// Register every event in the subscriber's current interest list.
+    /// Subsequent interest changes require explicit registration.
     pub fn add_subscriber(&mut self, subscriber: Arc<Mutex<dyn Subscriber>>) -> Result<()> {
         // Unwrapping here is safe because we want to panic in case the lock is poisoned.
         let interest_list = subscriber.lock().unwrap().interest_list();

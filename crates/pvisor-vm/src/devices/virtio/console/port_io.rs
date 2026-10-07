@@ -130,8 +130,8 @@ impl PortInput for PortInputFd {
         }
     }
     fn read_volatile(&mut self, buf: &mut VolatileSlice) -> io::Result<usize> {
-        // This source code is copied from vm-memory, except it fixes an issue, where
-        // the original code would does not handle handle EWOULDBLOCK
+        // Adapted from vm-memory. WouldBlock leaves the dirty bitmap unchanged;
+        // other read errors conservatively mark the whole buffer dirty.
 
         let fd = self.as_raw_fd();
         let guard = buf.ptr_guard_mut();

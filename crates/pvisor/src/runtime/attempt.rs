@@ -30,6 +30,9 @@ use pvisor_gateway::runtime::run_config::snapshot_proxy_config;
 use pvisor_gateway::runtime::run_env::write_run_session;
 #[cfg(feature = "gateway")]
 use pvisor_gateway::sink::JournalObserver;
+#[cfg(feature = "gateway")]
+use pvisor_journal::api::JournalStore;
+use pvisor_overlayfs::api::{FilesystemMetrics, FsMetrics};
 use pvisor_overlaynet::{
     BandwidthRegistry, EgressContext, EgressRuntime, InterceptionMetrics, NetworkConfig,
     NetworkPolicy,
@@ -51,7 +54,7 @@ pub(crate) struct AttemptSession {
     gateway: Option<InProcessCapture>,
     vm_network: Option<Arc<std::sync::Mutex<Option<VmNetworkAttachment>>>>,
     network_metrics: Option<InterceptionMetrics>,
-    fs_metrics: Option<pvisor_overlayfs::FsMetrics>,
+    fs_metrics: Option<FsMetrics>,
     overlay: Option<OverlayMount>,
     #[cfg(feature = "gateway")]
     sink: Option<Arc<dyn TrajectoryEventSink>>,
@@ -502,7 +505,7 @@ struct PreparedVmNetwork {
 struct PreparedOverlay {
     lease: RunLease,
     mount: Option<OverlayMount>,
-    fs_metrics: Option<pvisor_overlayfs::FsMetrics>,
+    fs_metrics: Option<FsMetrics>,
     hint: OverlayHint,
     record: Option<OverlayRecord>,
     lowers: Vec<std::path::PathBuf>,
@@ -1208,7 +1211,7 @@ fn prepare_overlay(
                     None,
                 )
             } else {
-                let metrics = pvisor_overlayfs::FsMetrics::default();
+                let metrics = FsMetrics::default();
                 let mount = mount_overlay_record_observed(
                     &record,
                     &lowers,

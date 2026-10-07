@@ -2,8 +2,8 @@
 
 `pvisor-cli` owns the `pvisor`, `pvisor-cache`, `pvisor-memory-pool`,
 `pvisor-tui`, and `pvisor-replay` executables and their argument parsing, terminal
-adapters, rendering, companion lookup and local resource-owner supervision. The TUI frontend is integrated here
-separately; it is not a dependency of the embeddable runtime.
+adapters, rendering, companion lookup and local resource-owner supervision.
+The TUI frontend lives here, not in the embeddable runtime.
 
 ## Boundary
 
@@ -13,6 +13,9 @@ modules, not a compatibility re-export of the runtime. Frontends call explicit
 runtime APIs and retain request-local cancellation, admission fences and terminal
 ownership. Neither the persistent Host Job listener nor the local node/pool
 supervisor is an implicit requirement of embedded execution.
+
+Recording callers import `Journal` and `JournalStore` from `pvisor_journal::api`;
+durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 
 ## Source layout
 
@@ -29,7 +32,7 @@ supervisor is an implicit requirement of embedded execution.
   including Zellij attribution and the adapted border-glyph license.
 - `src/bin/pvisor-replay.rs`: replay argument parsing and managed-run frontend;
   the independent replay engine remains in `pvisor-replay`.
-- `src/bin/`: executable entry points with unchanged installed names.
+- `src/bin/`: executable entry points.
 - `tests/`: executable/frontend integration tests, including tests that combine
   runtime APIs with command execution. Runtime-only tests remain in `pvisor`.
 

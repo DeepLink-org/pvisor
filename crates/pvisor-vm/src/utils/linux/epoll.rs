@@ -296,16 +296,16 @@ mod tests {
             .ctl(ControlOperation::Add, event_fd_3.as_raw_fd(), &event_3)
             .is_ok());
 
-        // Let's check `epoll_wait()` behavior for our epoll instance.
+
         let mut ready_events = vec![EpollEvent::default(); EVENT_BUFFER_SIZE];
         let mut ev_count = epoll
             .wait(MAX_EVENTS, DEFAULT__TIMEOUT, &mut ready_events[..])
             .unwrap();
 
-        // We expect to have 3 fds in the ready list of epoll instance.
+
         assert_eq!(ev_count, 3);
 
-        // Let's check also the Event values that are now returned in the ready list.
+
         assert_eq!(ready_events[0].data(), event_fd_1.as_raw_fd() as u64);
         // For this fd, `data` field was populated with random data instead of the
         // corresponding fd value.
@@ -323,10 +323,7 @@ mod tests {
         // greater than 0 to it).
         assert_eq!(ready_events[2].events(), EventSet::OUT.bits());
 
-        // Now we're gonna modify the Event instance for a fd to test EPOLL_CTL_MOD
-        // behavior.
-        // We create here a new Event with some events, other than those previously set,
-        // that we want to monitor this time on event_fd_1.
+        // EPOLL_CTL_MOD replaces both the interest mask and user data.
         event_1 = EpollEvent::new(EventSet::OUT, 20);
         assert!(epoll
             .ctl(ControlOperation::Modify, event_fd_1.as_raw_fd(), &event_1)
@@ -346,12 +343,12 @@ mod tests {
             .wait(MAX_EVENTS, DEFAULT__TIMEOUT, &mut ready_events[..])
             .unwrap();
 
-        // Let's check that Event fields were indeed changed for the `event_fd_1` fd.
+
         assert_eq!(ready_events[0].data(), 20);
-        // EPOLLOUT is now available for this fd as we've intended with EPOLL_CTL_MOD operation.
+
         assert_eq!(ready_events[0].events(), EventSet::OUT.bits());
 
-        // Now let's set for a fd to not have any events monitored.
+        // An empty interest mask excludes the fd from the ready list.
         assert!(epoll
             .ctl(
                 ControlOperation::Modify,

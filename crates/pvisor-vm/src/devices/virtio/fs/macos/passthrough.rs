@@ -778,12 +778,10 @@ impl PassthroughFs {
             flags |= libc::O_RDWR;
         }
 
-        // When writeback caching is enabled the kernel is responsible for handling `O_APPEND`.
-        // However, this breaks atomicity as the file may have changed on disk, invalidating the
-        // cached copy of the data in the kernel and the offset that the kernel thinks is the end of
-        // the file. Just allow this for now as it is the user's responsibility to enable writeback
-        // caching only for directories that are not shared. It also means that we need to clear the
-        // `O_APPEND` flag.
+        // With writeback caching, the guest kernel handles O_APPEND, so clear
+        // it on the host descriptor. External writes can invalidate the cached
+        // end-of-file offset and break append atomicity; callers must enable
+        // writeback only for directories not shared with other writers.
         if writeback && flags & libc::O_APPEND != 0 {
             flags &= !libc::O_APPEND;
         }
@@ -2302,19 +2300,11 @@ impl FileSystem for PassthroughFs {
         let old_cpath = self.name_to_path(olddir, oldname)?;
         let new_cpath = self.name_to_path(newdir, newname)?;
 
-        // macOS addresses inodes by their volfs path ("/.vol/{dev}/{ino}"),
-        // which only resolves while the inode still has a directory entry. A
-        // rename that REPLACES an existing target drops that target's last
-        // link, so any inode the guest still holds open there would afterwards
-        // resolve to a dangling volfs path and fail path-based ops
-        // (getattr/open/setattr/...) with ENOENT (e.g. apt/dpkg's atomic
-        // rewrite of /var/lib/dpkg/status, surfaced as
-        // "close (2: No such file or directory)"). `do_unlink` already guards
-        // the unlink case by stashing an fd to the doomed inode in
-        // `InodeData.unlinked_fd`; mirror that for the overwritten target. Grab
-        // it *before* the rename, while its entry still exists. RENAME_SWAP
-        // keeps both inodes linked and RENAME_EXCL never overwrites, so skip
-        // those; best-effort otherwise (a non-overwriting rename finds nothing).
+        // A volfs path ("/.vol/{dev}/{ino}") cannot resolve an inode after
+        // its last directory entry is removed. Preserve the target's fd before
+        // an overwriting rename so guest references remain usable through
+        // InodeData.unlinked_fd. RENAME_SWAP keeps both inodes linked and
+        // RENAME_EXCL never overwrites; other target lookups are best-effort.
         let doomed_fd = if (flags as i32)
             & (bindings::LINUX_RENAME_EXCHANGE | bindings::LINUX_RENAME_NOREPLACE)
             == 0

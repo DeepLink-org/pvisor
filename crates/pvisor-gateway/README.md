@@ -61,8 +61,7 @@ proxy must not be described as native inference-wait coordination.
 The controlled [`model_wait_http`](tests/model_wait_http.rs) tests cover HTTP
 ordering and cancellation, not VM density, resource reclamation or daemon
 integration. This interface alone does not provide RAM reclamation or networked
-VM hibernation. Any future adapter must supply the ownership, admission and
-cleanup contracts above. See [Gateway design](../../docs/src/en/design/gateway.md)
+VM hibernation. See [Gateway design](../../docs/src/en/design/gateway.md)
 and [daemon boundaries](../../docs/src/en/guides/daemon/boundaries.md).
 
 ## Capture admission budgets

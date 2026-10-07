@@ -620,9 +620,8 @@ impl VirtioGpu {
             return Err(ErrInvalidResourceId);
         }
 
-        // TODO(stevensd): use real uuids once the virtio wayland protocol is updated to
-        // handle more than 32 bits. For now, the virtwl driver knows that the uuid is
-        // actually just the resource id.
+        // The virtwl protocol uses a 32-bit resource id, not a full UUID.
+        // Encode that id in the final four bytes for driver compatibility.
         let mut uuid: [u8; 16] = [0; 16];
         for (idx, byte) in resource_id.to_be_bytes().iter().enumerate() {
             uuid[12 + idx] = *byte;
@@ -842,17 +841,10 @@ impl VirtioGpu {
         let addr = shm_region.host_addr + offset;
 
         if let Ok(export) = self.rutabaga.export_blob(resource_id) {
-            // SHM and DMABUF are both regular host fds whose pages can be exposed
-            // to the guest by mmap'ing them directly into the virtio shm region.
-            // For SHM (memfd) this has always worked. For DMABUF it had been
-            // delegated to virgl_renderer_resource_map2, which only handles
-            // virglrenderer-allocated GPU memory and silently no-ops for external
-            // dma-bufs — leaving the guest blob backed by zero pages. That broke
-            // muvm camera capture, where the v4l2 source exports kernel buffers
-            // via VIDIOC_EXPBUF as dma-bufs, the muvm bridge forwards the fd
-            // across SCM_RIGHTS, libkrun classifies it as DMABUF, and the guest's
-            // CREATE_BLOB allocates a host-backed-by-nothing blob. Mapping the
-            // dma-buf fd directly here gives the guest real, live pages.
+            // Map SHM and DMABUF descriptors directly into the guest's shared
+            // memory region. virgl_renderer_resource_map2 only maps memory
+            // allocated by virglrenderer; external dma-bufs require their own
+            // fd-backed mapping or the guest blob has no live backing pages.
             if export.handle_type == RUTABAGA_MEM_HANDLE_TYPE_SHM
                 || export.handle_type == RUTABAGA_MEM_HANDLE_TYPE_DMABUF
             {

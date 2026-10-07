@@ -415,25 +415,25 @@ mod tests {
             )
             .is_ok());
 
-        // Let's check `epoll_wait()` behavior for our epoll instance.
+
         let mut ready_events = vec![EpollEvent::default(); EVENT_BUFFER_SIZE];
         let mut ev_count = epoll
             .wait(MAX_EVENTS, DEFAULT_TIMEOUT, &mut ready_events[..])
             .unwrap();
 
-        // We expect to have 3 fds in the ready list of epoll instance.
+
         assert_eq!(ev_count, 2);
 
-        // Let's check also the Event values that are now returned in the ready list.
+
         assert_eq!(ready_events[0].data(), event_fd_1.as_raw_fd() as u64);
         assert_eq!(ready_events[1].data(), 10_u64);
 
-        // EPOLLIN and EPOLLOUT should be available for this fd.
+
         assert_eq!(ready_events[0].events(), EventSet::IN.bits());
-        // Only EPOLLOUT is expected because we didn't want to monitor EPOLLIN on this fd.
+
         assert_eq!(ready_events[1].events(), EventSet::IN.bits());
 
-        // Let's also delete a fd from the interest list.
+
         assert!(epoll
             .ctl(
                 ControlOperation::Delete,
@@ -442,7 +442,7 @@ mod tests {
             )
             .is_ok());
 
-        // We expect to have only one fd remained in the ready list (event_fd_3).
+
         ev_count = epoll
             .wait(MAX_EVENTS, DEFAULT_TIMEOUT, &mut ready_events[..])
             .unwrap();

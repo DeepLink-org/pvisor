@@ -17,6 +17,7 @@ use pvisor_core::host_protocol::{
 use pvisor_core::operation::{
     ExecutionCheckpoint, ExecutionSuspension, OperationKind, SnapshotRamStorage, Value,
 };
+use pvisor_journal::api::{DurableFiles, Persistence};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -357,10 +358,10 @@ impl Server {
             // A configured pool can be new. Initialize it through the store's
             // private-directory validation before persisting a canonical path.
             if let Some(parent) = store.parent() {
-                crate::util::create_dir_all_durable(parent)?;
+                Persistence::create_dir_all_durable(parent)?;
             }
             if let Some(parent) = pool.parent() {
-                crate::util::create_dir_all_durable(parent)?;
+                Persistence::create_dir_all_durable(parent)?;
             }
             crate::environment_snapshot::SnapshotStore::with_filesystem_pool(&store, pool)?;
             *pool = pool.canonicalize()?;

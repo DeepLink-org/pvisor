@@ -80,8 +80,7 @@ fn write_desc_to_output(
     output: &mut (dyn PortOutput + Send),
     interrupt: &InterruptTransport,
 ) -> Result<usize, GuestMemoryError> {
-    // TODO: Switch to using `get_slices()` with the next vm-memory
-    //       bump.
+    // try_access tracks partial progress across guest-memory regions.
     #[allow(deprecated)]
     desc.mem
         .try_access(desc.len as usize, desc.addr, |_, len, addr, region| {
@@ -89,7 +88,7 @@ fn write_desc_to_output(
             loop {
                 log::trace!("Tx {src:?}, write_volatile {len} bytes");
                 match output.write_volatile(&src) {
-                    // try_access seem to handle partial write for us (we will be invoked again with an offset)
+                    // try_access resumes partial writes at the remaining offset.
                     Ok(n) => break Ok(n),
                     // We can't return an error otherwise we would not know how many bytes were processed before WouldBlock
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {

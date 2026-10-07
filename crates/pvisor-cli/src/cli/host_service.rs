@@ -15,6 +15,8 @@ use pvisor_core::host_protocol::{
     AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
     AgentCtlHostResponse, AgentCtlTarget,
 };
+#[cfg(test)]
+use pvisor_journal::api::JournalStore;
 use serde::{Deserialize, Serialize};
 use std::os::{
     fd::{AsRawFd, FromRawFd, OwnedFd},

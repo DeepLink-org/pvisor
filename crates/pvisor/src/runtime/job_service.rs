@@ -39,8 +39,8 @@ pub use workspace::{
 pub type RecordCheck<'a> = dyn Fn(&RunRecord) -> anyhow::Result<()> + Send + Sync + 'a;
 
 /// Request-local admission hooks, never process-global runtime state.
-/// `check_record` allows a frontend to retain its existing admitted-target fence
-/// while migrating to `expected_target`; cancellation hooks must not acquire Job leases.
+/// `check_record` applies the caller's admission fence in addition to
+/// `expected_target`; cancellation hooks must not acquire Job leases.
 #[derive(Default)]
 pub struct ServiceContext<'a> {
     pub expected_target: Option<&'a AgentCtlTarget>,

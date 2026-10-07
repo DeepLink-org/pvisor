@@ -453,7 +453,7 @@ impl IrqChipT for GicV3 {
     ) -> Result<(), DeviceError> {
         if let Some(irq_line) = irq_line {
             assert!(irq_line < MAXIRQ, "[GICv3] intid out of range");
-            // TODO(p1-0tr): extract full MPID, but for now Aff0 will do
+            // Routing uses only Aff0; higher MPID affinity levels are not decoded.
             let mpid = self.gicd_irouter[irq_line as usize] & 0xff;
             self.vcpu_list.set_irq_common(mpid, irq_line);
             Ok(())

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use pvisor_journal::api::{Journal, JournalStore};
+
 use crate::dead_letter::read_trajectory_dead_letter_entries;
 use crate::engine::{CaptureEngine, Event, RequestEvent};
 use crate::session::index::SessionIndexStore;
@@ -72,8 +74,7 @@ async fn observer_failure_does_not_erase_committed_facts() {
         }),
     );
     engine.shutdown().await.unwrap();
-    let records =
-        pvisor_journal::Journal::read(&dir.path().join(".capture/events.trace.jsonl")).unwrap();
+    let records = Journal::read(&dir.path().join(".capture/events.trace.jsonl")).unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].event.name(), "llm.request");
 }

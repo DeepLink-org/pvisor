@@ -388,8 +388,8 @@ impl Vmm {
                 "previous transition failed; terminate VMM".into(),
             ));
         }
-        // ponytail: preserve wall-time clocks; freezing guest time requires the
-        // matching HVF WFE offset support and KVM clock handling, not just pause.
+        // Pause does not freeze guest time. Frozen-time semantics require
+        // coordinated HVF WFE offsets and KVM clock handling.
         #[cfg(target_os = "macos")]
         if self.ram_unmapped && !self.control_failed {
             self.control_failed = true;

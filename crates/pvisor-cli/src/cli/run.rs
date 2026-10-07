@@ -1,3 +1,4 @@
+use pvisor_journal::api::JournalStore;
 mod safe;
 
 use pvisor::job_service::policy::PolicySource;

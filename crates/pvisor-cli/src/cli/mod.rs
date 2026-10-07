@@ -98,8 +98,8 @@ fn root_command() -> anyhow::Result<clap::Command> {
         .help_template("{about}\n\n{usage-heading} {usage}\n\n{before-help}Options:\n{options}{after-help}\n"))
 }
 
-/// Display descriptions from the registered commands, including installed
-/// companions, while keeping the command syntax and parser unchanged.
+/// Group registered command descriptions, including installed companions,
+/// for help display without modifying the parser.
 fn grouped_commands(command: &clap::Command) -> String {
     const GROUPS: &[(&str, &[&str])] = &[
         (

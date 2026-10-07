@@ -8,7 +8,7 @@ pub use pvisor_core::overlay::{
     ChangeKind, OverlayRecord, OverlayState, OverlayStatus, OverlayUpper,
 };
 use pvisor_core::overlay::{PathFingerprint, PathPreimage};
-use pvisor_journal::atomic_write;
+use pvisor_journal::api::{DurableFiles, Persistence};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::os::unix::{
@@ -167,7 +167,7 @@ pub fn write_overlay_record_observed(
     let body = serde_json::to_string_pretty(record);
     observe("serialize", start.elapsed(), body.is_ok());
     let body = body.map_err(|e| OverlayError::Persist(format!("serialize meta: {e}")))?;
-    pvisor_journal::atomic_write_observed(&path, body.as_bytes(), 0o600, observe)
+    Persistence::atomic_write_observed(&path, body.as_bytes(), 0o600, observe)
         .map_err(|error| OverlayError::Persist(format!("{}: {error:#}", path.display())))?;
     Ok(())
 }
@@ -1702,7 +1702,7 @@ fn append_apply_record(
     let path = apply_ledger_path(&overlay.stage_dir);
     let body = serde_json::to_vec_pretty(&ledger)
         .map_err(|error| OverlayError::Persist(format!("serialize apply ledger: {error}")))?;
-    atomic_write(&path, &body, 0o600)
+    Persistence::atomic_write(&path, &body, 0o600)
         .map_err(|error| OverlayError::Persist(format!("{}: {error:#}", path.display())))
 }
 
@@ -1747,7 +1747,7 @@ fn update_apply_state(
     let path = apply_ledger_path(&overlay.stage_dir);
     let body = serde_json::to_vec_pretty(&ledger)
         .map_err(|error| OverlayError::Persist(format!("serialize apply ledger: {error}")))?;
-    atomic_write(&path, &body, 0o600)
+    Persistence::atomic_write(&path, &body, 0o600)
         .map_err(|error| OverlayError::Persist(format!("{}: {error:#}", path.display())))
 }
 

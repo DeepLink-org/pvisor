@@ -5,7 +5,7 @@ pub(crate) mod claude_resume;
 pub(crate) mod codex;
 pub(crate) mod opencode;
 
-// ponytail: buffering preserves agent compatibility; spool only if responses above 64 MiB are required.
+// Buffering preserves agent compatibility; responses are limited to 64 MiB.
 async fn read_response_limited(mut response: reqwest::Response) -> anyhow::Result<Vec<u8>> {
     const LIMIT: usize = 64 * 1024 * 1024;
     anyhow::ensure!(

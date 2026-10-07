@@ -1,5 +1,5 @@
-use pvisor::trace::{AppendError, Journal, Trace};
 use pvisor_core::event::{Durability, Fact};
+use pvisor_journal::api::{AppendError, Journal, JournalStore, Trace, TraceProducer};
 use std::io::Write;
 
 fn event(trace: &Trace) -> pvisor_core::event::Event {
@@ -63,7 +63,7 @@ fn complete_corruption_and_old_formats_are_never_silently_repaired() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("trace.jsonl");
     let trace = Trace::new(Journal::open(&path).unwrap(), "test");
-    trace.journal.append(event(&trace)).unwrap();
+    trace.journal().append(event(&trace)).unwrap();
     drop(trace);
     std::fs::OpenOptions::new()
         .append(true)
@@ -88,17 +88,17 @@ fn forward_causal_references_resolve_but_cycles_are_rejected() {
     let mut b = event(&trace);
     a.caused_by.push(b.id.clone());
     b.caused_by.push(a.id.clone());
-    trace.journal.append(a.clone()).unwrap();
+    trace.journal().append(a.clone()).unwrap();
     assert!(matches!(
-        trace.journal.append(b.clone()),
+        trace.journal().append(b.clone()),
         Err(AppendError::Rejected(_))
     ));
     b.caused_by.clear();
-    trace.journal.append(b).unwrap();
-    assert_eq!(trace.journal.records().unwrap().len(), 2);
+    trace.journal().append(b).unwrap();
+    assert_eq!(trace.journal().records().unwrap().len(), 2);
     a.id = "self".into();
     a.caused_by = vec!["self".into()];
-    assert!(trace.journal.append(a).is_err());
+    assert!(trace.journal().append(a).is_err());
 }
 
 #[tokio::test]
@@ -107,7 +107,7 @@ async fn concurrent_appends_have_unique_positions_and_duplicate_retries_converge
     let shared = event(&trace);
     let mut jobs = Vec::new();
     for i in 0..40 {
-        let journal = trace.journal.clone();
+        let journal = trace.journal().clone();
         let value = if i % 2 == 0 {
             shared.clone()
         } else {
@@ -127,7 +127,7 @@ async fn concurrent_appends_have_unique_positions_and_duplicate_retries_converge
             shared_position = Some(receipt.position);
         }
     }
-    let records = trace.journal.records().unwrap();
+    let records = trace.journal().records().unwrap();
     assert_eq!(records.len(), 21);
     assert_eq!(
         records

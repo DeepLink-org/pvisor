@@ -21,7 +21,7 @@ owns Session lifecycle, scheduling, policy adaptation and execution. The
 listener/worker adapters, terminal/rendering code, companion discovery, and local
 node/pool supervision. Cache storage and node resource protocols remain runtime
 components; their argument parsers and executable entry points live in the app.
-The installed commands are unchanged: Job commands use `pvisor`; local node
+Job commands use `pvisor`; local node
 lifecycle, cache and memory-pool tools use `pvisor service`. TUI and replay are
 Job frontends, not runtime dependencies. Cross-node placement and distributed scheduling
 belong to external orchestrators, not this crate.
@@ -67,14 +67,14 @@ native platform; an explicit non-native selection is rejected before execution,
 including with a prepared rootfs or custom injected pVisor. It does not enable
 cross-platform emulation or artifact auto-discovery. A configured platform also
 requires the container executor rather than being ignored by host/VM execution.
-Without the option, native image preparation and container execution are unchanged.
+Without the option, image preparation and container execution use the native platform.
 
 ## Explicit runtime experiments
 
 Runtime feature names and metadata live in `src/features.rs::REGISTRY`, with
-`name`, `stage`, `default` and `description`. This borrows the centralized registry
-shape requested for Codex-style features; it is not a claim of verified upstream
-Codex behavior or compatibility. Runtime features are not Cargo build features.
+`name`, `stage`, `default` and `description`. This registry does not imply
+upstream Codex behavior or compatibility. Runtime features are not Cargo build
+features.
 
 ```bash
 pvisor feature                       # name / stage / default / enabled / description
@@ -91,8 +91,8 @@ options. Feature queries run locally without starting/contacting the Host Job
 service. Their `enabled` column means registry defaults plus this invocation's
 CLI enables, not a live VM status or a scan of personal/project config files.
 Global enables are supported by `run` and feature queries, not other Job actions
-or extensions/services; ordinary extension arguments and help forwarding remain
-unchanged. Companion help also supports leading feature options, without
+or extensions/services; extension arguments and help requests are forwarded to
+companions. Companion help also supports leading feature options, without
 forwarding those options as runtime enables; use `pvisor help COMMAND` or
 `pvisor COMMAND --help`.
 
@@ -107,7 +107,7 @@ command = ["/bin/sleep", "10"]
 workload-aware-memory-offloading = false
 ```
 
-Configuration/personal Agent defaults are loaded by the existing Run path;
+Run configuration and personal Agent defaults are loaded during Run resolution;
 omitting `--feature` preserves their value, while CLI enables override `false`.
 There is no CLI disable switch yet. VM-only features require the resolved VM
 executor (`--executor vm`, `--vm`, or existing VM inference/config); otherwise
@@ -126,15 +126,15 @@ retain the stored Run feature settings. Embedded callers use public
 `VmExecutor::with_features()`; a stored RunConfig alone does not configure an
 independently constructed executor.
 
-The native runner calls the existing `pvisor_vm::api::VcpuObservationControl::
+The native runner calls `pvisor_vm::api::VcpuObservationControl::
 set_vcpu_observation(true)` on the built VM handle. Failure aborts VM startup;
 default-off runs do not call the observer control. Supported builds are Linux
 x86_64/KVM and Apple Silicon macOS/HVF; other builds reject enabling it. This
-only turns on the runtime's wait observation: it neither samples/exports a new
-CLI status schema nor decides guest idleness, wake deadlines, cold reclamation,
-or automatic offload. The SDK's `vcpu_observation()` remains the observation API;
-no new Host VM observation operation is introduced. Existing cold/memory flags
-are not migrated or implicitly enabled. Parser/config/control unit tests are not
+only turns on the runtime's wait observation: it neither samples/exports
+observations through CLI status nor decides guest idleness, wake deadlines, cold
+reclamation, or automatic offload. Embedded callers query observations through
+`vcpu_observation()`; there is no Host VM observation operation. Cold/memory
+flags are independent and are not implicitly enabled. Parser/config/control unit tests are not
 real-guest, macOS platform, energy/density, or upstream validation evidence.
 
 ## Host Job service and AgentCtl
@@ -248,8 +248,7 @@ credentials, and it is not an enforcement attestation. The reconstruction path
 currently supports standard host execution with an OverlayNet proxy; legacy Jobs
 without this snapshot and unsupported VM/container/custom executor, Gateway or
 unrepresentable controls are refused before checkpoint/stage mutation rather
-than silently downgraded. Existing workspace forks relying on those configurations
-must not be treated as supported by this change.
+than silently downgraded.
 
 Bundle validation checks identity and safety-summary consistency against recorded
 executor observations; it does not authenticate the producer or prove artifact
@@ -432,7 +431,14 @@ not depend on `pvisor-cli`; application enums are parsed by app-local Clap
 adapters. Clap is retained only as a development dependency for standalone
 runtime demonstration/measurement examples.
 
-Relocated paths are under `../pvisor-cli/`: `src/cli/`, `src/companions.rs`,
+Journal storage and trace production use `pvisor_journal::api::{JournalStore,
+TraceProducer}` alongside the opaque `Journal` and `Trace` owners. The existing
+`trace` module explicitly re-exports these contracts; trace identity is immutable
+and supplied through `Trace::with_id` when it must match a Run. Durable filesystem
+barriers call `Persistence` through `DurableFiles` directly, while runtime JSON
+publication and Run persistence diagnostics retain their own helpers.
+
+Application sources live under `../pvisor-cli/`: `src/cli/`, `src/companions.rs`,
 `src/service.rs`, `src/service_cgroup.rs`, and the `pvisor`, `pvisor-cache`, and
 `pvisor-memory-pool` entries in `src/bin/`. Feature listing and cache argument
 parsing also live in the application. Executable-dependent integration tests

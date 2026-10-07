@@ -2,6 +2,8 @@ use super::*;
 use crate::image::cache::MAX_READ;
 use crate::image::cache::backend::tests::fixture;
 #[cfg(target_os = "macos")]
+use pvisor_overlayfs::api::{OverlayFs, OverlayMounting};
+#[cfg(target_os = "macos")]
 use std::fs::OpenOptions;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::OpenOptionsExt;
@@ -45,7 +47,7 @@ fn native_mount_reads_lazily_and_unmounts() {
     let path = mount.path.clone();
     drop(mount);
     #[cfg(target_os = "macos")]
-    assert!(!pvisor_overlayfs::is_mountpoint(&path));
+    assert!(!OverlayFs::is_mountpoint(&path));
     #[cfg(target_os = "linux")]
     assert!(!path.exists());
 }

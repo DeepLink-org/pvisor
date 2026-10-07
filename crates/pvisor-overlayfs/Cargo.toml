@@ -36,3 +36,4 @@ fuser = { workspace = true, features = ["abi-7-19", "libfuse"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+syn = { version = "2", features = ["full", "visit"] }

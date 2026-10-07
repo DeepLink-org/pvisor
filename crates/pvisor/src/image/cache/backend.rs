@@ -49,8 +49,7 @@ impl HotBlocks {
         if self.get(file, block).is_some() {
             return;
         }
-        // ponytail: bounded FIFO avoids per-read LRU maintenance; use LRU if
-        // eviction of frequently reused blocks becomes a measured bottleneck.
+        // Bounded FIFO avoids per-read LRU maintenance; hits do not refresh eviction order.
         while self.bytes + bytes.len() > Self::MAX_BYTES || self.order.len() >= Self::MAX_ENTRIES {
             assert!(self.evict());
         }

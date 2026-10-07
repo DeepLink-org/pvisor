@@ -294,8 +294,8 @@ pub fn register(mem: &GuestMemoryMmap) -> Arc<MemoryGate> {
     registry.insert(key(mem), Arc::downgrade(&gate));
     gate
 }
-// ponytail: lookup per queue operation; cache the gate in queues if profiling
-// shows registry contention. Unregistered upstream/test memory needs no barrier.
+// Queue operations resolve the gate through the registry. Unregistered
+// upstream/test memory has no VM barrier.
 #[cfg(test)]
 pub(crate) fn access(mem: &GuestMemoryMmap) -> Option<Arc<Access>> {
     access_ranges(mem, &[])

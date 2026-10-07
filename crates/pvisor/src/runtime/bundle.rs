@@ -3,12 +3,12 @@
 use crate::runtime::{
     ChangeEntry, OverlayState, RunLineage, RunRecord, overlay_changes, overlay_status,
 };
-use crate::util::sync_directory;
 use crate::{AgentCtlSnapshot, unix_now_ms};
 use pvisor_core::{
     ArtifactRef, CapabilityDimension, ExecutorIdentity, ExecutorObservations, ExecutorPlan,
     IsolationKind, ProcessOutput, ResourceLimits, RunFailure, RunResult, RunState,
 };
+use pvisor_journal::api::{DurableFiles, Persistence};
 use pvisor_overlaynet::{InterceptionProfile, InterceptionSnapshot};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -420,7 +420,7 @@ impl RunBundle {
     pub(crate) fn invalidate(stage_dir: &Path) -> anyhow::Result<()> {
         let path = Self::path(stage_dir);
         match fs::remove_file(&path) {
-            Ok(()) => sync_directory(stage_dir),
+            Ok(()) => Persistence::sync_directory(stage_dir),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         }

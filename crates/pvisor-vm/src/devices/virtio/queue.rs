@@ -502,29 +502,9 @@ impl Queue {
             return None;
         }
 
-        // We'll need to find the first available descriptor, that we haven't yet popped.
-        // In a naive notation, that would be:
-        // `descriptor_table[avail_ring[next_avail]]`.
-        //
-        // First, we compute the byte-offset (into `self.avail_ring`) of the index of the next available
-        // descriptor. `self.avail_ring` stores the address of a `struct virtq_avail`, as defined by
-        // the VirtIO spec:
-        //
-        // ```C
-        // struct virtq_avail {
-        //   le16 flags;
-        //   le16 idx;
-        //   le16 ring[QUEUE_SIZE];
-        //   le16 used_event
-        // }
-        // ```
-        //
-        // We use `self.next_avail` to store the position, in `ring`, of the next available
-        // descriptor index, with a twist: we always only increment `self.next_avail`, so the
-        // actual position will be `self.next_avail % self.actual_size()`.
-        // We are now looking for the offset of `ring[self.next_avail % self.actual_size()]`.
-        // `ring` starts after `flags` and `idx` (4 bytes into `struct virtq_avail`), and holds
-        // 2-byte items, so the offset will be:
+        // virtq_avail.ring follows the 16-bit flags and idx fields (4 bytes).
+        // Its 16-bit descriptor indices wrap at the queue size; next_avail is
+        // a monotonically incremented, wrapping counter.
         let index_offset = 4 + 2 * (self.next_avail.0 % self.actual_size());
 
         // Make sure we catch all updates on the queue
@@ -669,26 +649,9 @@ impl Queue {
         }
     }
 
-    // TODO: Turn this into a doc comment/example.
-    // With the current implementation, a common way of consuming entries from the available ring
-    // while also leveraging notification suppression is to use a loop, for example:
-    //
-    // loop {
-    //     // We have to explicitly disable notifications if `VIRTIO_F_EVENT_IDX` has not been
-    //     // negotiated.
-    //     self.disable_notification()?;
-    //
-    //     for chain in self.iter()? {
-    //         // Do something with each chain ...
-    //         // Let's assume we process all available chains here.
-    //     }
-    //
-    //     // If `enable_notification` returns `true`, the driver has added more entries to the
-    //     // available ring.
-    //     if !self.enable_notification()? {
-    //         break;
-    //     }
-    // }
+    // Consumers disable notifications, drain available chains, then re-enable.
+    // A true return means chains remain available; continue draining rather
+    // than waiting for a kick that may have been suppressed.
     pub fn enable_notification(&mut self, mem: &GuestMemoryMmap) -> Result<bool, Error> {
         self.set_notification(mem, true)?;
         // Ensures the following read is not reordered before any previous write operation.

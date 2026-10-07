@@ -127,7 +127,7 @@ Rust supervisor 的可选私有 tmpfs 契约见 [pvisor-guest](../pvisor-guest/R
 
 为保持 Run/证据协议兼容，部分记录标识、trace stage、环境变量和 runner 参数使用 `krun` 命名；VM 控制通过 Rust API 实现。基准证据只描述其实际测量的实现，不能作为其他实现的验证结果。
 
-Clippy 清理以语义和契约为先：保留 `EAX/EBX/ECX/EDX`、`RTC` 等硬件专名以及诊断含义明确的错误名称，必要时使用带理由的局部豁免。优先删除失效豁免、整理配置与资源参数、修复实现问题，不为消除告警改变专有术语或持久化协议。生成的 ABI 定义、跨平台 libc 字段宽度和 FUSE 协议签名需单独判断。
+硬件专名（如 `EAX/EBX/ECX/EDX`、`RTC`）、诊断含义明确的错误名称和持久化协议不因 lint 告警而改变；必要的局部豁免须说明理由。生成的 ABI 定义、跨平台 libc 字段宽度和 FUSE 协议签名须保持兼容。
 
 ## EXP-001 M0：observe-only vCPU 观测
 
@@ -177,12 +177,10 @@ Unknown，返回后是 HandlingExit。不以调用未返回、低 CPU、抢占�
 clock conversion 或 wake latch，不能自动卸载，也不证明 Linux runqueue 空闲**。
 真实 HVF 任务、SMP guest 和性能验收仍需对应宿主实验，不以单测替代。
 
-**实测后源码修复（2026-10-07）：**当前 collector 已修复快照时间戳的锁内
-采集，以及关闭观测时逐 CPU 等待区间的截断/禁用退出记账。这些修改发生在
-冻结的真实 KVM 实验之后；旧实验仅验证其冻结 binary/source 对应的修复前
-版本，不能作为当前源码的实测通过记录。本次保留旧 binary、receipt 和
-实验数据；后续实测须另建制品/收据，不覆盖原实验。macOS/HVF 尚未实际
-编译或运行验证。
+**验证状态：**现有真实 KVM 实验仅覆盖其冻结的 binary/source，不覆盖
+当前 collector 的锁内时间戳采集、关闭时等待区间截断及禁用期间退出记账。
+当前源码尚无对应的真实 KVM 实测通过记录；macOS/HVF 尚未实际编译或运行
+验证。后续实测须使用独立制品和收据，不覆盖已有 binary、receipt 或实验数据。
 
 ## 验证入口
 

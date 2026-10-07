@@ -32,6 +32,71 @@ fn fixture(root: &Path) -> pvisor::RunRecord {
     record.write().unwrap();
     record
 }
+fn managed_fixture(root: &Path) -> pvisor::RunRecord {
+    let stage = root.join("stage");
+    let target = root.join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen = listener.local_addr().unwrap().to_string();
+    drop(listener);
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args([
+            "run",
+            "--filesystem",
+            "host",
+            "--overlaynet-deny-all",
+            "--overlaynet-listen",
+        ])
+        .arg(&listen)
+        .args(["--gateway-mode", "off", "--stdio", "capture", "--stage"])
+        .arg(&stage)
+        .args(["--", "/bin/sh", "-c", "printf staged > file"])
+        .current_dir(&target)
+        .env("PVISOR_RUN_HOME", root.join("runs"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stage.join("workspace-launch-policy.json").is_file());
+    assert_eq!(std::fs::read(stage.join("upper/file")).unwrap(), b"staged");
+    assert!(!target.join("file").exists());
+    pvisor::RunRecord::read(&stage).unwrap()
+}
+
+fn filesystem_snapshot(
+    root: &Path,
+) -> std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>> {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        snapshot: &mut std::collections::BTreeMap<std::path::PathBuf, Option<Vec<u8>>>,
+    ) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let is_dir = entry.file_type().unwrap().is_dir();
+            snapshot.insert(
+                path.strip_prefix(root).unwrap().to_path_buf(),
+                if is_dir {
+                    None
+                } else {
+                    Some(std::fs::read(&path).unwrap())
+                },
+            );
+            if is_dir {
+                visit(root, &path, snapshot);
+            }
+        }
+    }
+    let mut snapshot = std::collections::BTreeMap::new();
+    visit(root, root, &mut snapshot);
+    snapshot
+}
+
 fn parsed(output: Output) -> serde_json::Value {
     assert!(
         output.status.success(),
@@ -146,9 +211,57 @@ fn unsupported_execution_operations_cannot_change_the_job_or_capture_files() {
 }
 
 #[test]
-fn workspace_fork_copies_files_and_preimages_and_retains_source_checkpoint() {
+fn legacy_workspace_fork_rejects_missing_policy_without_mutation() {
     let temp = tempfile::tempdir().unwrap();
     let record = fixture(temp.path());
+    let stage = record.stage_dir();
+    let child = temp.path().join("child");
+    // Admission creates the lease file even when launch policy validation rejects the fork.
+    let (_, lease) = record.lock_current().unwrap();
+    drop(lease);
+    let original = filesystem_snapshot(temp.path());
+    let fork = |checkpoint: Option<&str>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
+        command.arg("fork");
+        if let Some(id) = checkpoint {
+            command.args(["--checkpoint", id]);
+        }
+        command
+            .arg("--stage")
+            .arg(&child)
+            .arg(&stage)
+            .args(["--", "/bin/sh", "-c", "printf child > file"])
+            .env("PVISOR_RUN_HOME", temp.path().join("runs"))
+            .output()
+            .unwrap()
+    };
+    let assert_rejected = |output: Output| {
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("requires persisted runtime-resolved launch policy"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!child.exists());
+    };
+    assert_rejected(fork(None));
+    assert_eq!(filesystem_snapshot(temp.path()), original);
+    assert!(!stage.join("checkpoints").exists());
+
+    let checkpoint = parsed(invoke(&["checkpoint", "create", "--json"], Some(&stage)));
+    let id = checkpoint["checkpoint_id"].as_str().unwrap();
+    let original = filesystem_snapshot(temp.path());
+    assert_rejected(fork(Some(id)));
+    assert_eq!(filesystem_snapshot(temp.path()), original);
+    let show = parsed(invoke(&["checkpoint", "show", "--json", id], Some(&stage)));
+    assert_eq!(show["branch_references"], 0);
+}
+
+#[test]
+fn workspace_fork_copies_files_and_preimages_and_retains_source_checkpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    let record = managed_fixture(temp.path());
     let stage = record.stage_dir();
     let checkpoint = parsed(invoke(&["checkpoint", "create", "--json"], Some(&stage)));
     let id = checkpoint["checkpoint_id"].as_str().unwrap();
@@ -167,6 +280,14 @@ fn workspace_fork_copies_files_and_preimages_and_retains_source_checkpoint() {
         String::from_utf8_lossy(&output.stderr)
     );
     let child_record = pvisor::RunRecord::read(&child).unwrap();
+    let child_listen: std::net::SocketAddr = child_record
+        .overlaynet_listen
+        .as_deref()
+        .expect("fork retains the parent's OverlayNet proxy")
+        .parse()
+        .unwrap();
+    assert!(child_listen.ip().is_loopback());
+    assert_ne!(child_listen.port(), 0);
     assert_ne!(child_record.run_id, record.run_id);
     assert_eq!(child_record.lineage.as_ref().unwrap().checkpoint_id, id);
     assert_eq!(std::fs::read(child.join("upper/file")).unwrap(), b"child");

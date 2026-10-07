@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use pvisor_core::event::{Durability, Event, Fact, Position, Receipt};
 use pvisor_core::{AttemptId, RunId};
-use pvisor_journal::{AppendError, Journal, Trace};
+use pvisor_journal::api::{AppendError, Journal, JournalStore, Trace, TraceProducer};
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,7 +21,8 @@ pub trait EventSink: Send + Sync {
         None
     }
     fn subscribe(&self) -> Option<broadcast::Receiver<Event>> {
-        self.journal().map(|journal| journal.subscribe())
+        self.journal()
+            .map(|journal| JournalStore::subscribe(&journal))
     }
     fn classify_append_error(&self, error: &anyhow::Error) -> EventAppendErrorKind {
         match error.downcast_ref::<AppendError>() {
@@ -54,7 +55,7 @@ impl Default for NoopEventSink {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             offset: AtomicU64::new(0),
-            // ponytail: 256-event ring; use a byte budget if maximum-size events are common.
+            // Capacity bounds event count, not retained payload bytes.
             live: broadcast::channel(256).0,
         }
     }
@@ -129,8 +130,7 @@ impl RunEventPublisher {
         sink: Arc<dyn EventSink>,
         live: broadcast::Sender<Event>,
     ) -> Self {
-        let mut trace = Trace::new(Journal::memory(), producer);
-        trace.id = run_id.to_string();
+        let trace = Trace::with_id(Journal::memory(), run_id.to_string(), producer);
         Self {
             trace,
             scope: vec![
@@ -152,7 +152,7 @@ impl RunEventPublisher {
             None => self.live.subscribe(),
         };
         super::run::RunEventStream {
-            trace_id: self.trace.id.clone(),
+            trace_id: self.trace.id().to_owned(),
             receiver,
         }
     }
@@ -302,21 +302,22 @@ mod tests {
             live,
         );
         let mut stream = publisher.subscribe();
-        let mut trace = Trace::new(journal.clone(), "pvisor-gateway");
+        let trace = Trace::with_id(journal.clone(), "other-run", "pvisor-gateway");
         let fact = Fact::Observation {
             domain: "llm".into(),
             name: "llm.request".into(),
             version: 1,
             payload: Value::Null,
         };
-        trace.id = "other-run".into();
-        journal
-            .append(trace.event(vec!["capture".into()], None, None, vec![], fact.clone()))
-            .unwrap();
-        trace.id = "run".into();
+        JournalStore::append(
+            &journal,
+            trace.event(vec!["capture".into()], None, None, vec![], fact.clone()),
+        )
+        .unwrap();
+        let trace = Trace::with_id(journal.clone(), "run", "pvisor-gateway");
         let event = trace.event(vec!["capture".into()], None, None, vec![], fact);
-        journal.append(event.clone()).unwrap();
-        journal.append(event.clone()).unwrap();
+        JournalStore::append(&journal, event.clone()).unwrap();
+        JournalStore::append(&journal, event.clone()).unwrap();
         assert_eq!(stream.recv().await.unwrap(), event);
         assert!(matches!(
             stream.try_recv(),

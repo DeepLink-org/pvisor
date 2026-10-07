@@ -7,6 +7,7 @@ use crate::runtime::checkpoint::{
     checkpoint_branch_refs, create_stopped_checkpoint_locked, list_checkpoints, resolve_checkpoint,
 };
 use anyhow::Context;
+use pvisor_journal::api::{DurableFiles, Persistence};
 
 pub struct WorkspaceCreateRequest {
     pub job: JobSelection,
@@ -122,7 +123,7 @@ fn create_fenced_workspace_request(
         Some(cp) => cp,
         None => create_stopped_checkpoint_locked(&record, Some(&id))?,
     };
-    crate::util::create_dir_all_durable(&requests)?;
+    Persistence::create_dir_all_durable(&requests)?;
     crate::util::write_private_json(
         &receipt,
         &WorkspaceReceipt {
@@ -155,9 +156,9 @@ fn delete_workspace_checkpoint(
     let parent = root.parent().context("checkpoint parent")?;
     let tombstone = parent.join(format!(".deleted-{}", uuid::Uuid::new_v4().simple()));
     std::fs::rename(root, &tombstone)?;
-    crate::util::sync_directory(parent)?;
+    Persistence::sync_directory(parent)?;
     std::fs::remove_dir_all(tombstone)?;
-    crate::util::sync_directory(parent)?;
+    Persistence::sync_directory(parent)?;
     Ok(checkpoint.checkpoint_id)
 }
 
@@ -191,6 +192,6 @@ fn collect_fenced_workspace_transactions(
             removed += 1;
         }
     }
-    crate::util::sync_directory(&root)?;
+    Persistence::sync_directory(&root)?;
     Ok(removed)
 }

@@ -2,7 +2,8 @@
 
 use crate::runtime::{OverlayState, RunRecord, restore_overlay_upper, snapshot_overlay_upper};
 use crate::unix_now_ms;
-use crate::util::{create_dir_all_durable, sync_directory, write_private_json};
+use crate::util::write_private_json;
+use pvisor_journal::api::{DurableFiles, Persistence};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
@@ -140,12 +141,12 @@ fn create_checkpoint(
         .join(CHECKPOINTS_DIR)
         .join(&checkpoint_id);
     let parent = root.parent().expect("checkpoint has a parent");
-    create_dir_all_durable(parent)?;
+    Persistence::create_dir_all_durable(parent)?;
     anyhow::ensure!(!root.exists(), "checkpoint {checkpoint_id} already exists");
     let pending = parent.join(format!(".pending-{}", uuid::Uuid::new_v4().simple()));
     fs::DirBuilder::new().mode(0o700).create(&pending)?;
     let result = (|| -> anyhow::Result<LogicalCheckpoint> {
-        sync_directory(parent)?;
+        Persistence::sync_directory(parent)?;
         let upper_snapshot = root.join("upper");
         snapshot_overlay_upper(overlay, &pending.join("upper"))?;
         let preimages_snapshot = root.join("preimages");
@@ -154,7 +155,7 @@ fn create_checkpoint(
             pvisor_overlay_core::stage::sync_journal(&journal)?;
             restore_overlay_upper(&journal, &pending.join("preimages"))?;
         } else {
-            create_dir_all_durable(&pending.join("preimages"))?;
+            Persistence::create_dir_all_durable(&pending.join("preimages"))?;
         }
         pvisor_overlay_core::stage::seal(&pending.join("upper"), &pending.join("preimages"))?;
         let checkpoint = LogicalCheckpoint {
@@ -180,7 +181,7 @@ fn create_checkpoint(
         };
         write_private_json(&pending.join(CHECKPOINT_FILENAME), &checkpoint)?;
         fs::rename(&pending, &root)?;
-        sync_directory(parent)?;
+        Persistence::sync_directory(parent)?;
         Ok(checkpoint)
     })();
     if result.is_err() {
@@ -291,7 +292,7 @@ pub fn resolve_checkpoint(record: &RunRecord, id: &str) -> anyhow::Result<Logica
 pub fn pin_checkpoint(checkpoint: &LogicalCheckpoint, child_stage: &Path) -> anyhow::Result<()> {
     fs::hard_link(checkpoint.manifest_path(), child_stage.join(SOURCE_CHECKPOINT_PIN))
         .map_err(|e| anyhow::anyhow!("retain source checkpoint: {e}; workspace branches currently require a stage on the same filesystem"))?;
-    sync_directory(child_stage)?;
+    Persistence::sync_directory(child_stage)?;
     Ok(())
 }
 

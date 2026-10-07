@@ -23,6 +23,50 @@ Linux-only container features are out of scope: UID/GID namespace mapping,
 `metacopy`, `redirect_dir`, SELinux labeling, and capability semantics are not
 emulated.
 
+## Public API boundary
+
+The only public module is `pvisor_overlayfs::api`. It contains declarations and
+contracts only: no method bodies, default trait implementations or conditional
+API shapes. All public methods are declared in API traits and implemented by
+private adapters; do not add public inherent methods or expose FUSE state.
+Low-level tests stay inside the crate. Linux and macOS share the same signatures;
+backend selection and platform checks remain private.
+
+| Trait | Implementing type | Responsibility |
+| --- | --- | --- |
+| `OverlayConfiguration` | `OverlayMountConfig` | Construct owned mount inputs without I/O |
+| `OverlayMounting` | `OverlayFs` | Background/foreground mount and mountpoint probe |
+| `OverlaySessionControl` | `OverlaySession` | Query and consume a background mount owner |
+| `FilesystemMetrics` | `FsMetrics` | Snapshot a shared, bounded-path observation sink |
+
+```rust
+use pvisor_overlayfs::api::{OverlayConfiguration, OverlayMountConfig};
+
+let config = OverlayMountConfig::new(
+    vec!["/workspace".into()],
+    "/stage/upper".into(),
+    Some("/stage/work".into()),
+    "/stage/merged".into(),
+);
+```
+
+Import `OverlayMounting` to use `OverlayFs::mount`, `run_foreground` or
+`is_mountpoint`; import `OverlaySessionControl` for session methods and
+`FilesystemMetrics` for `snapshot`. Configuration uses shared Core/overlay-core
+DTOs.
+
+Mount preparation is not transactional: errors may leave directories or journal
+initialization behind. Explicit unmount consumes ownership even on failure;
+drop attempts cleanup but discards errors. A finished request thread does not
+prove mount detachment. The macOS mount-table probe fails closed, while Linux's
+metadata heuristic can miss same-device bind mounts. Metrics clones share a
+thread-safe sink; snapshots do not freeze the filesystem, retain at most 8192
+paths, and do not represent all host filesystem activity. See `src/api.rs` for
+field-level security, platform and ownership contracts.
+
+`tests/api_contract.rs` checks the syntax boundary and portable public behavior
+without mounting FUSE.
+
 ## Develop
 
 ### Prerequisites

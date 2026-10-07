@@ -280,13 +280,10 @@ mod tests {
             ..Default::default()
         };
         let actual_fpu: kvm_fpu = vcpu.get_fpu().unwrap();
-        // TODO: auto-generate kvm related structures with PartialEq on.
+
         assert_eq!(expected_fpu.fcw, actual_fpu.fcw);
-        // Setting the mxcsr register from kvm_fpu inside setup_fpu does not influence anything.
-        // See 'kvm_arch_vcpu_ioctl_set_fpu' from arch/x86/kvm/x86.c.
-        // The mxcsr will stay 0 and the assert below fails. Decide whether or not we should
-        // remove it at all.
-        // assert!(expected_fpu.mxcsr == actual_fpu.mxcsr);
+        // MXCSR is not checked: kvm_arch_vcpu_ioctl_set_fpu in arch/x86/kvm/x86.c
+        // leaves the returned kvm_fpu.mxcsr at zero despite the configured value.
     }
 
     #[test]

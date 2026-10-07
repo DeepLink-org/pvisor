@@ -4,7 +4,7 @@ use crate::Call;
 use crate::config::CaptureLevel;
 use anyhow::Result;
 use pvisor_core::event::Event;
-use pvisor_journal::Journal;
+use pvisor_journal::api::Journal;
 use serde_json::Value;
 use std::sync::Arc;
 

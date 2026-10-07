@@ -164,7 +164,7 @@ impl ContainerExecutor {
                 "OCI rootfs does not exist: {}",
                 configured_rootfs.display()
             );
-            // ponytail: private copy avoids mount/session ownership; add COW when image copy cost warrants it.
+            // An independent rootfs copy avoids retaining a source mount/session owner.
             let private = bundle.join("rootfs");
             pvisor_overlay_core::apply::restore_overlay_upper(&configured_rootfs, &private)?;
             private

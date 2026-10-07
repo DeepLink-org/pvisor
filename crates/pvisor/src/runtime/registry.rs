@@ -8,8 +8,9 @@ use super::overlay::{
     OverlayRecord, ReadOnlyOverlayMount, load_overlay_record, mount_overlay_record_read_only,
     overlay_status,
 };
-use crate::util::create_dir_all_durable;
 use anyhow::Context;
+use pvisor_journal::api::{DurableFiles, Persistence};
+use pvisor_overlayfs::api::{FilesystemMetrics, FsMetrics};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
@@ -260,7 +261,7 @@ impl RunRecord {
                 File::open(&index_path)?.sync_all()
             })?;
             crate::util::persistence_step(&self.run_id, "run_index", "directory_sync", || {
-                crate::util::sync_directory(&index_dir)
+                Persistence::sync_directory(&index_dir)
             })?;
         } else {
             crate::util::write_run_bytes(&index_path, &contents, &self.run_id, "run_index")?;
@@ -352,7 +353,7 @@ impl RunLease {
         Ok(lease)
     }
     pub fn acquire(stage_dir: &Path) -> anyhow::Result<Self> {
-        create_dir_all_durable(stage_dir)?;
+        Persistence::create_dir_all_durable(stage_dir)?;
         let file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -450,7 +451,7 @@ impl RunControlServer {
 
     pub fn start_observed(
         record: &RunRecord,
-        filesystem: Option<pvisor_overlayfs::FsMetrics>,
+        filesystem: Option<FsMetrics>,
         network: Option<pvisor_overlaynet::InterceptionMetrics>,
     ) -> anyhow::Result<Option<Self>> {
         let Some(overlay) = record.overlay.clone() else {
@@ -527,7 +528,7 @@ struct ControlContext<'a> {
     overlay: &'a OverlayRecord,
     lowers: &'a [PathBuf],
     mounts: &'a mut HashMap<String, ReadOnlyOverlayMount>,
-    filesystem: Option<&'a pvisor_overlayfs::FsMetrics>,
+    filesystem: Option<&'a FsMetrics>,
     network: Option<&'a pvisor_overlaynet::InterceptionMetrics>,
 }
 
@@ -602,7 +603,7 @@ fn execute_control(
     overlay: &OverlayRecord,
     lowers: &[PathBuf],
     mounts: &mut HashMap<String, ReadOnlyOverlayMount>,
-    filesystem: Option<&pvisor_overlayfs::FsMetrics>,
+    filesystem: Option<&FsMetrics>,
     network: Option<&pvisor_overlaynet::InterceptionMetrics>,
 ) -> Result<HostOverlayResult, AgentCtlHostError> {
     match command {

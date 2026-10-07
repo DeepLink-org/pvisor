@@ -3,6 +3,7 @@
 //! of an upper that continues to change; live checkpoints seal their own copy.
 use crate::{load_preimages, preimage_journal_is_complete};
 pub use pvisor_core::overlay::StageDurability;
+use pvisor_journal::api::{DurableFiles, Persistence};
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
@@ -86,8 +87,7 @@ pub fn begin(journal: &Path, durability: StageDurability) -> io::Result<()> {
             StageDurability::Checkpoint => b"pvisor.stage.checkpoint/1\n",
             StageDurability::Strict => b"pvisor.stage.strict/1\n",
         };
-        pvisor_journal::atomic_write(&journal.join(POLICY), bytes, 0o600)
-            .map_err(io::Error::other)?;
+        Persistence::atomic_write(&journal.join(POLICY), bytes, 0o600).map_err(io::Error::other)?;
     }
     match fs::remove_file(journal.join(SEAL)) {
         Ok(()) => {}
@@ -176,7 +176,7 @@ pub fn seal(upper: &Path, journal: &Path) -> io::Result<()> {
     if let Some(parent) = upper.parent() {
         open(parent, true)?.sync_all()?;
     }
-    pvisor_journal::atomic_write(&journal.join(SEAL), SEALED, 0o600).map_err(io::Error::other)?;
+    Persistence::atomic_write(&journal.join(SEAL), SEALED, 0o600).map_err(io::Error::other)?;
     Ok(())
 }
 

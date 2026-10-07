@@ -3,6 +3,7 @@ use super::storage::{MAX_OBJECT, Storage, StoredObject};
 use super::{ImageTotals, MAX_READ, Request, Response, hash};
 use anyhow::{Context, bail, ensure};
 use lru::LruCache;
+use pvisor_journal::api::{DurableFiles, Persistence};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
@@ -455,7 +456,7 @@ fn read_local(path: &std::path::Path, limit: usize) -> anyhow::Result<Option<Vec
 fn cache_local(path: &std::path::Path, bytes: &[u8]) {
     let result = (|| -> anyhow::Result<()> {
         std::fs::create_dir_all(path.parent().context("cache object parent")?)?;
-        crate::util::atomic_write(path, bytes, 0o600)?;
+        Persistence::atomic_write(path, bytes, 0o600)?;
         Ok(())
     })();
     if let Err(e) = result {

@@ -16,4 +16,4 @@ Capacity is charged inside guest RAM; it does not allocate a second VM memory bu
 
 The pVisor VM executor selects a unique directory and sets default TMPDIR to it. Capacity is one quarter of effective guest RAM, capped at 64 MiB. An explicit invocation TMPDIR disables this default, as does overlap with the workspace. The original image `/tmp` remains available. Other GuestConfig consumers that omit the optional field retain their existing behavior; JSON serialization omits it when absent.
 
-The CLI snapshot launcher and container shim currently omit this option. Their defaults remain unchanged. RAM snapshot/fork validation for the new executor default is a separate acceptance gate, not established by the launch-message unit tests.
+The CLI snapshot launcher and container shim omit this option. Launch-message unit tests do not establish RAM snapshot/fork behavior with the executor-selected tmpfs.

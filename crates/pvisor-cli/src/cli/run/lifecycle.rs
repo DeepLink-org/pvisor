@@ -16,6 +16,8 @@ use pvisor::job_service::paths::fork_stage_candidate;
 use pvisor::{GatewayMode, OverlayFsCommit, OverlayFsSettings, OverlayNetPolicy, RunConfig};
 use pvisor::{NetworkDriverConfig, PVisor, RunBundle, restore_logical_checkpoint};
 use pvisor::{RunLineage, RunRecord, default_run_home, resolve_run};
+use pvisor_journal::api::JournalStore;
+use pvisor_journal::api::{DurableFiles, Persistence};
 
 use clap::Args;
 use pvisor_core::RunState;
@@ -104,6 +106,11 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     crate::cli::host_service::check_record(&source)?;
     // Fail before checkpoint/stage mutations when historical policy cannot be reconstructed.
     let (mut config, required_sandbox) = pvisor::job_service::policy::workspace_config(&source)?;
+    // Inherited policy omits attempt-local endpoints. Allocate before any stage
+    // mutation; normal launch validation must still reject user-supplied port 0.
+    if config.overlaynet.mode == pvisor::OverlayNetMode::Proxy {
+        config.overlaynet.listen = super::free_loopback_address()?;
+    }
     let parent_isolation = source
         .executor
         .as_ref()
@@ -173,7 +180,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
                 .all(|lower| !lower.starts_with(&stage)),
         "child stage must not overlap the source Job or contain its filesystem layers"
     );
-    pvisor_journal::create_dir_all_durable(&stage)?;
+    Persistence::create_dir_all_durable(&stage)?;
     let upper = stage.join("upper");
     // Exclusive pin creation arbitrates competing forks targeting one empty
     // directory. A loser must never remove the winner's files during cleanup.

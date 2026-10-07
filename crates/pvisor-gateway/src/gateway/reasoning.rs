@@ -23,7 +23,6 @@ impl ReasoningCache {
             if id.is_empty() || id.len() > 4096 {
                 continue;
             }
-            // ponytail: bounded cache resets on capacity; use LRU only if misses matter.
             if self.by_tool_call.len() >= 64 {
                 self.by_tool_call.clear();
             }

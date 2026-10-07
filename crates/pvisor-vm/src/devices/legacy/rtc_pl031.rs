@@ -1,12 +1,10 @@
 // Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! ARM PL031 Real Time Clock
+//! ARM PL031 real-time counter and register emulation.
 //!
-//! This module implements a PL031 Real Time Clock (RTC) that provides to provides long time base counter.
-//! This is achieved by generating an interrupt signal after counting for a programmed number of cycles of
-//! a real-time clock input.
-//!
+//! The match register is readable and writable, but timed alarm delivery is
+//! not implemented.
 
 use std::fmt;
 use std::time::Instant;
@@ -79,7 +77,7 @@ const COUNTER_PERIOD_NS: u64 = (1u64 << 32) * crate::utils::time::NANOS_PER_SECO
 pub struct RTC {
     previous_now: Instant,
     tick_offset: i64,
-    // This is used for implementing the RTC alarm. However, in Firecracker we do not need it.
+    // Retain the alarm match register for readback and snapshots, without scheduling alarms.
     match_value: u32,
     // Writes to this register load an update value into the RTC.
     load: u32,
@@ -180,11 +178,7 @@ impl RTC {
     fn handle_write(&mut self, offset: u64, val: u32) -> Result<()> {
         match offset {
             RTCMR => {
-                // The MR register is used for implementing the RTC alarm. A real time clock alarm is
-                // a feature that can be used to allow a computer to 'wake up' after shut down to execute
-                // tasks every day or on a certain day. It can sometimes be found in the 'Power Management'
-                // section of a motherboard's BIOS setup. This is functionality that extends beyond
-                // Firecracker intended use. However, we increment a metric just in case.
+                // Store the match value without scheduling an alarm interrupt.
                 self.match_value = val;
             }
             RTCLR => {

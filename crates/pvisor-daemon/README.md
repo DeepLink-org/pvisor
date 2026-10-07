@@ -251,7 +251,7 @@ do not erase reservations or fabricate ownership to bypass the guard.
 
 The list API reports the last durable observation; GET reconciles native state.
 The maintenance loop retries pending/expired deletion. Continuous native process
-monitoring and a density-optimized event-driven reconciliation path are future work.
+monitoring and event-driven reconciliation are not implemented.
 
 ## Run
 

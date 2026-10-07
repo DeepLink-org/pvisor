@@ -1,3 +1,5 @@
+use pvisor_journal::api::{Journal, JournalStore};
+
 use super::fixtures::*;
 use super::support::*;
 
@@ -25,7 +27,7 @@ async fn committed_facts_rebuild_story_without_rewriting_or_notifying() {
         .unwrap();
     engine.shutdown().await.unwrap();
     let path = dir.path().join(".capture/events.trace.jsonl");
-    let before = pvisor_journal::Journal::read(&path).unwrap();
+    let before = Journal::read(&path).unwrap();
     let sink = RecordingSink::new();
     let engine = test_engine(sink.clone(), dir.path()).await;
     let story = engine.story_snapshot(&test_context().story).await.unwrap();
@@ -35,7 +37,7 @@ async fn committed_facts_rebuild_story_without_rewriting_or_notifying() {
         "recovery must not notify a second time"
     );
     engine.shutdown().await.unwrap();
-    assert_eq!(before, pvisor_journal::Journal::read(&path).unwrap());
+    assert_eq!(before, Journal::read(&path).unwrap());
 }
 
 #[tokio::test]
@@ -77,8 +79,7 @@ async fn requests_and_responses_share_causal_identity_after_recovery() {
         .await
         .unwrap();
     engine.shutdown().await.unwrap();
-    let records =
-        pvisor_journal::Journal::read(&dir.path().join(".capture/events.trace.jsonl")).unwrap();
+    let records = Journal::read(&dir.path().join(".capture/events.trace.jsonl")).unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(
         records[1].event.caused_by,

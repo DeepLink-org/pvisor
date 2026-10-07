@@ -5,13 +5,11 @@ pub use pvisor_core::unix_now_ms;
 use std::fs;
 use std::path::Path;
 
-pub(crate) use pvisor_journal::{create_dir_all_durable, sync_directory};
-
-pub(crate) use pvisor_journal::atomic_write;
+use pvisor_journal::api::{DurableFiles, Persistence};
 
 /// Publish owner-only JSON using the same durable replacement as Run records.
 pub fn write_private_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
-    atomic_write(path, &serde_json::to_vec_pretty(value)?, 0o600)
+    Persistence::atomic_write(path, &serde_json::to_vec_pretty(value)?, 0o600)
 }
 
 /// Persistence diagnostics carry durations, not additional startup checkpoints.
@@ -67,7 +65,7 @@ pub(crate) fn write_run_bytes(
     run_id: &str,
     object: &str,
 ) -> anyhow::Result<()> {
-    pvisor_journal::atomic_write_observed(path, body, 0o600, |phase, elapsed, success| {
+    Persistence::atomic_write_observed(path, body, 0o600, |phase, elapsed, success| {
         persistence_log(run_id, object, phase, elapsed, success);
     })
 }
@@ -171,8 +169,8 @@ mod tests {
     fn atomic_write_replaces_private_file() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("record.json");
-        atomic_write(&path, b"first", 0o600).unwrap();
-        atomic_write(&path, b"second", 0o600).unwrap();
+        Persistence::atomic_write(&path, b"first", 0o600).unwrap();
+        Persistence::atomic_write(&path, b"second", 0o600).unwrap();
 
         assert_eq!(fs::read(&path).unwrap(), b"second");
         assert_eq!(
@@ -211,7 +209,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("one/two/three");
 
-        create_dir_all_durable(&path).unwrap();
+        Persistence::create_dir_all_durable(&path).unwrap();
         assert!(path.is_dir());
     }
 }

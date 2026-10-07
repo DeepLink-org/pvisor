@@ -4,6 +4,7 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
+use pvisor_journal::api::{Journal, JournalStore};
 use tokio::sync::oneshot;
 
 use super::fixtures::{RecordingSink, test_context, test_engine};
@@ -50,14 +51,14 @@ fn complete(text: &str) -> Event {
 }
 
 fn facts(storage: &std::path::Path) -> Vec<pvisor_core::event::Record> {
-    pvisor_journal::Journal::read(&storage.join(".capture/events.trace.jsonl")).unwrap()
+    Journal::read(&storage.join(".capture/events.trace.jsonl")).unwrap()
 }
 
 struct GatedSink {
     entered: Mutex<Option<oneshot::Sender<()>>>,
     released: Mutex<bool>,
     wake: Condvar,
-    journal: Option<pvisor_journal::Journal>,
+    journal: Option<Journal>,
     observed: Mutex<Vec<pvisor_core::event::Event>>,
     observed_ready: tokio::sync::Notify,
 }
@@ -80,7 +81,7 @@ impl GatedSink {
 }
 
 impl CaptureEventObserver for GatedSink {
-    fn journal(&self) -> Option<pvisor_journal::Journal> {
+    fn journal(&self) -> Option<Journal> {
         self.journal.clone()
     }
 
@@ -114,7 +115,7 @@ async fn gated_engine(storage: &std::path::Path) -> (CaptureEngine, ReleaseOnDro
 
 async fn gated_engine_with_journal(
     storage: &std::path::Path,
-    journal: Option<pvisor_journal::Journal>,
+    journal: Option<Journal>,
 ) -> (CaptureEngine, ReleaseOnDrop) {
     let (entered, ready) = oneshot::channel();
     let sink = Arc::new(GatedSink {
@@ -232,8 +233,7 @@ async fn cancelled_flush_does_not_cancel_accepted_work_or_poison_later_barriers(
 #[tokio::test]
 async fn dropping_last_runtime_without_shutdown_still_commits_accepted_tail() {
     let dir = tempfile::tempdir().unwrap();
-    let journal =
-        pvisor_journal::Journal::open(&dir.path().join(".capture/events.trace.jsonl")).unwrap();
+    let journal = Journal::open(&dir.path().join(".capture/events.trace.jsonl")).unwrap();
     let (engine, release) = gated_engine_with_journal(dir.path(), Some(journal.clone())).await;
     let ctx = test_context();
     engine.spawn_apply(ctx.clone(), request("owned tail"));

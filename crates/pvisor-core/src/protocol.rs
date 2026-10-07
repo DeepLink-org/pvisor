@@ -78,9 +78,9 @@
 //!
 //! # Debug plane
 //!
-//! A future interactive terminal belongs to a separately authorized Debug
-//! protocol and Session. PTY input, output, signals, and window size are not
-//! extensions of the Control request, response, state, or directive enums.
+//! Interactive terminals are outside this wire contract and require a separately
+//! authorized Debug protocol and Session. PTY input, output, signals, and window
+//! size are not extensions of the Control request, response, state, or directive enums.
 
 use serde::{Deserialize, Serialize};
 

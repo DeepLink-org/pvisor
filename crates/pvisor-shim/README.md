@@ -127,8 +127,6 @@ on vsock port 0x7076; libkrun proxies host connections from
 - killing an exec drops the connection; the agent SIGKILLs the process
 - tty exec in VMs is not supported yet
 
-Pod-level VM sandboxes (per-container rootfs and namespaces inside one VM
-per pod, TC/TAP pod networking) remain the open item for the VM path.
 
 ## Host pod-level sandboxes
 
@@ -191,10 +189,10 @@ root processes inside the guest. Those risks are not fixed by a frame cap.
 
 Admission inspects fields retained by `oci-spec`'s typed deserializer, not raw
 JSON schema validation. Unknown fields discarded by that library are not covered
-by this rejection policy. The shim still needs a broader audit of mount options,
-namespace/ID-map combinations and inherited descriptors; in particular, failure
-to enumerate inherited descriptors remains a warning. Common Docker/CRI specs
-request unsupported security defaults and now fail explicitly; remove a policy
+by this rejection policy. Mount options, namespace/ID-map combinations and
+inherited descriptors have not been comprehensively audited; in particular,
+failure to enumerate inherited descriptors remains a warning. Common Docker/CRI
+specs request unsupported security defaults and fail explicitly; remove a policy
 only if that weaker boundary is intentionally acceptable, or use a runtime that
 actually enforces it.
 

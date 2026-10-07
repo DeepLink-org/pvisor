@@ -19,5 +19,5 @@ pub use core::{
 };
 pub use pvisor_core::overlay::FileAccessPolicy;
 
-// Preserve the existing import paths; the shared records are owned by Control.
+// Shared records are owned by Core.
 pub use pvisor_core::overlay::{PathFingerprint, PathPreimage};

@@ -1098,8 +1098,8 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        // A unit-test executable cannot dispatch pVisor's internal VM runner.
-        // Use one real CLI process, independent of the future ctrl frontend.
+        // A unit-test executable cannot dispatch pVisor's internal VM runner;
+        // launch a real CLI process to exercise the native control endpoint.
         let binary = PathBuf::from(
             std::env::var_os("PVISOR_TEST_BINARY")
                 .expect("set PVISOR_TEST_BINARY to a built pvisor executable"),

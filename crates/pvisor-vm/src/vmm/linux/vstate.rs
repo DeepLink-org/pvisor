@@ -522,12 +522,10 @@ fn snapshot_msrs(kvm: &Kvm) -> Result<MsrList> {
     let filtered = crate::arch::x86_64::msr::supported_guest_msrs(kvm).map_err(Error::GuestMSRs)?;
     let supported = kvm.get_msr_index_list().map_err(Error::VcpuGetMsrs)?;
     let mut entries = filtered.as_slice().to_vec();
-    // The inherited whitelist predates supervisor XSAVE state. XCRS only
-    // includes XCR0, not IA32_XSS. Linux can enable CET xstate in XSS even when
-    // userspace shadow stacks are inactive. Losing XSS makes XRSTORS fault on
-    // the saved compacted task state during the first post-restore switch.
-    // KVM's userspace XSAVE ABI omits supervisor components. Preserve the CET
-    // registers explicitly too, rather than depending on XSAVE to contain them.
+    // XCRS contains XCR0, not IA32_XSS, and KVM's userspace XSAVE ABI omits
+    // supervisor components. Linux can enable CET xstate in XSS even without
+    // active userspace shadow stacks; missing XSS makes XRSTORS fault on a
+    // restored compacted task state. Snapshot XSS and CET registers explicitly.
     const SUPERVISOR_XSTATE_MSRS: &[u32] = &[
         0xda0, // IA32_XSS
         0x6a0, 0x6a2, // IA32_U_CET, IA32_S_CET
@@ -702,15 +700,10 @@ impl Vm {
         let start = region.start_addr().raw_value();
         let end = start + region.len();
 
-        // GuestMemfd is generally intended for either of two purposes:
-        // * sharing the memory with out-of-process components, and conversely,
-        // * hiding the memory completely from the VMM process (Confidential Computing).
-        //
-        // We only use it for the second use case currently, so don't even try to use it
-        // outside of TEE builds. Software-protected VMs are only available on x86_64 and
-        // are marked with strongly-worded warnings about them being for development only,
-        // as of late 2025. Also, on other architectures like aarch64, guest_memfd in
-        // general is unstable for now, so don't try to use it without a reason.
+        // GuestMemfd is reserved for TEE memory hidden from the VMM, not for
+        // sharing RAM with out-of-process components. Non-TEE builds use
+        // userspace mappings. Software-protected x86_64 VMs are development-only;
+        // this path does not provide stable aarch64 guest_memfd support.
 
         if cfg!(not(feature = "tee")) {
             let memory_region = kvm_userspace_memory_region {
@@ -1681,8 +1674,8 @@ impl Vcpu {
                     Ok(VcpuEmulation::Stopped)
                 }
                 r => {
-                    // TODO: Are we sure we want to finish running a vcpu upon
-                    // receiving a vm exit that is not necessarily an error?
+                    // Unhandled exits fail the vCPU even if KVM reports no error;
+                    // there is no generic continuation policy for these exits.
                     error!("Unexpected exit reason on vcpu run: {r:?}");
                     Err(Error::VcpuUnhandledKvmExit)
                 }
@@ -1755,8 +1748,8 @@ impl Vcpu {
                     .send(VcpuResponse::Paused)
                     .expect("failed to send pause status");
 
-                // TODO: we should call `KVM_KVMCLOCK_CTRL` here to make sure
-                // TODO continued: the guest soft lockup watchdog does not panic on Resume.
+                // KVM_KVMCLOCK_CTRL is not issued on pause; the guest soft-lockup
+                // watchdog may therefore report a lockup after resume.
 
                 // Move to 'paused' state.
                 state = StateMachine::next(Self::paused);

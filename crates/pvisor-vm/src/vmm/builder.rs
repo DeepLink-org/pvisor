@@ -1,7 +1,7 @@
 // Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Enables pre-boot setup, instantiation and booting of a Firecracker VMM.
+//! Configure, instantiate and boot the VM's CPUs and devices.
 
 use crate::kernel::cmdline::Cmdline;
 #[cfg(target_os = "macos")]
@@ -1913,11 +1913,9 @@ pub fn setup_serial_device(
     let serial = Arc::new(Mutex::new(Serial::new(interrupt_evt, out, input)));
     if has_input {
         if let Err(e) = event_manager.add_subscriber(serial.clone()) {
-            // TODO: We just log this message, and immediately return Ok, instead of returning the
-            // actual error because this operation always fails with EPERM when adding a fd which
-            // has been redirected to /dev/null via dup2 (this may happen inside the jailer).
-            // Find a better solution to this (and think about the state of the serial device
-            // while we're at it).
+            // Serial input registration is best-effort: epoll rejects /dev/null
+            // with EPERM when stdin is redirected via dup2, including in a jailer.
+            // Keep the serial device usable even without input event monitoring.
             warn!("Could not add serial input event to epoll: {e:?}");
         }
     }

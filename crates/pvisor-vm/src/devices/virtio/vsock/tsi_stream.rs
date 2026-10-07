@@ -532,8 +532,7 @@ impl Proxy for TsiStreamProxy {
         };
         push_packet(self.cid, rx, &self.rxq, &self.queue, &self.mem);
 
-        // Now that the vsock transport is fully established, start listening
-        // for events in the TCP socket again.
+        // Resume TCP event polling only after the vsock connection is established.
         Some(ProxyUpdate {
             polling: Some((self.id, self.fd.as_raw_fd(), EventSet::IN)),
             ..Default::default()

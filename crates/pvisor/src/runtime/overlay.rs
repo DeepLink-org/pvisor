@@ -12,11 +12,14 @@
 //! ```
 //!
 use super::implant::OverlayHint;
-use crate::util::create_dir_all_durable;
 use pvisor_core::overlay::OverlayConfig;
 pub use pvisor_core::overlay::{OverlayRecord, OverlayState, OverlayUpper};
+use pvisor_journal::api::{DurableFiles, Persistence};
 pub use pvisor_overlay_core::apply::*;
-use pvisor_overlayfs::{OverlayMountConfig, OverlaySession, mount as mount_embedded_overlay};
+use pvisor_overlayfs::api::{
+    FsMetrics, OverlayConfiguration, OverlayFs, OverlayMountConfig, OverlayMounting,
+    OverlaySession, OverlaySessionControl,
+};
 use std::fs;
 use std::io;
 #[cfg(not(target_os = "macos"))]
@@ -328,7 +331,7 @@ pub(crate) fn host_mountpoint(requested: &Path) -> PathBuf {
 pub(crate) fn mount_overlay_record_observed(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
-    observation: Option<pvisor_overlayfs::FsMetrics>,
+    observation: Option<FsMetrics>,
     durability: pvisor_core::overlay::StageDurability,
 ) -> Result<OverlayMount, OverlayError> {
     if lower_dirs.is_empty() {
@@ -342,12 +345,12 @@ pub(crate) fn mount_overlay_record_observed(
         }
     }
     for dir in lower_dirs.iter().chain([&record.stage_dir]) {
-        create_dir_all_durable(dir)
+        Persistence::create_dir_all_durable(dir)
             .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     }
-    create_dir_all_durable(&record.upper.upper_dir)
+    Persistence::create_dir_all_durable(&record.upper.upper_dir)
         .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
-    create_dir_all_durable(&record.upper.work_dir)
+    Persistence::create_dir_all_durable(&record.upper.work_dir)
         .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     pvisor_overlay_core::stage::begin(&record.stage_dir.join("preimages"), durability)
         .map_err(OverlayError::Prepare)?;
@@ -370,7 +373,7 @@ pub(crate) fn mount_overlay_record_observed(
     // Reopened legacy journals and nonempty uppers keep their existing format.
     config.compact_preimages = true;
     select_embedded_backend(&mut config)?;
-    let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
+    let session = OverlayFs::mount(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&record.merged_dir, &session)
         .map_err(|error| embedded_mount_error(error.into()))?;
 
@@ -415,7 +418,7 @@ fn prepare_overlay_record_mountless_inner(
     }
     for dir in lower_dirs.iter().chain([&record.stage_dir]) {
         crate::util::persistence_step(run_id, "overlay", "directory_prepare", || {
-            create_dir_all_durable(dir)
+            Persistence::create_dir_all_durable(dir)
         })
         .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
     }
@@ -498,7 +501,7 @@ pub fn mount_overlay_record_read_only(
     config.baseline_lower = record.baseline_lower.clone();
     config.read_only = true;
     select_embedded_backend(&mut config)?;
-    let session = mount_embedded_overlay(config).map_err(embedded_mount_error)?;
+    let session = OverlayFs::mount(config).map_err(embedded_mount_error)?;
     wait_merged_ready(&mountpoint, &session).map_err(|error| embedded_mount_error(error.into()))?;
     Ok(ReadOnlyOverlayMount {
         session: Some(session),
@@ -573,7 +576,7 @@ fn merged_root_is_ready(path: &Path) -> bool {
 
 #[cfg(target_os = "macos")]
 fn is_mountpoint(path: &Path) -> bool {
-    pvisor_overlayfs::is_mountpoint(path)
+    OverlayFs::is_mountpoint(path)
 }
 
 #[cfg(not(target_os = "macos"))]

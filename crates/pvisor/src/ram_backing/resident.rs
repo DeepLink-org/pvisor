@@ -389,7 +389,8 @@ impl ColdWindows {
         p.armed = None;
         Ok(())
     }
-    // ponytail: scans the page index; use a rotating bounded scan if sampling CPU is material.
+    // `limit` bounds returned candidates, not scan work: sparse candidates can
+    // require walking the entire page index.
     pub fn candidates(&self, now: Instant, limit: usize) -> Vec<ColdCandidate> {
         self.pages
             .iter()

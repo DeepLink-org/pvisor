@@ -14,6 +14,8 @@ use pvisor_core::{AttemptId, NetworkCapability, RunSpec};
 use pvisor_core::{ControlController, PolicyControlController};
 #[cfg(feature = "gateway")]
 use pvisor_gateway::config::ProxyConfig;
+#[cfg(feature = "gateway")]
+use pvisor_journal::api::JournalStore;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -678,6 +680,7 @@ mod tests {
     #[test]
     fn default_gateway_observations_reach_the_volatile_run_stream() {
         use crate::EventSink;
+        use pvisor_journal::api::TraceProducer;
         let sink = Arc::new(super::super::event::NoopEventSink::default());
         let mut receiver = sink.subscribe().unwrap();
         let builder = RuntimeSupervisorBuilder::default().live_events(Arc::clone(&sink));
@@ -698,7 +701,7 @@ mod tests {
         assert!(observer.journal().is_none());
         let observer = attempt_observer(observer);
         let journal = observer.journal().unwrap();
-        journal.append(event.clone()).unwrap();
+        JournalStore::append(&journal, event.clone()).unwrap();
         observer.observe(&event).unwrap();
         assert_eq!(receiver.try_recv().unwrap(), event);
         assert_eq!(journal.records().unwrap().len(), 1);

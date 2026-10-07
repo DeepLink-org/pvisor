@@ -422,9 +422,9 @@ pub struct OverlayFsSettings {
     pub durability: pvisor_core::overlay::StageDurability,
     #[serde(skip)]
     pub access_policy: pvisor_core::overlay::FileAccessPolicy,
-    /// New unified filesystem mounts. Runtime normalization converts these into executor capabilities.
+    /// Filesystem mounts. Runtime normalization converts these into executor capabilities.
     pub mount: Vec<FilesystemMount>,
-    /// New unified Agent-visible access rules.
+    /// Agent-visible access rules.
     pub access: Vec<FilesystemAccessRule>,
     /// Optional host base layer and default apply destination (normally the workspace).
     #[serde(skip)]

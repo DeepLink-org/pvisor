@@ -137,7 +137,6 @@ pub struct ReplayArgs {
     overlayfs_commit: Option<String>,
 
     /// Outer OverlayNet mode: auto, off, or proxy.
-    /// Outer OverlayNet driver: off, auto, or proxy.
     #[arg(
         long,
         value_name = "MODE",

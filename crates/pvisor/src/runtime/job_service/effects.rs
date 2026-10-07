@@ -252,8 +252,8 @@ mod tests {
         let mut overlay = record.overlay.clone().unwrap();
         let lowers = vec![overlay.target.clone()];
         apply_overlay_selected(&mut overlay, &lowers, &ApplySelection::default()).unwrap();
-        // Reconstruct the ledger side of the terminal-publication interruption.
-        // The core regression stops at the actual consume/commit boundary.
+        // Model terminal publication preceding ledger commit: the target is
+        // already applied, but the ledger still requires recovery.
         let ledger_path = root.path().join("apply-ledger.json");
         let mut ledger: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&ledger_path).unwrap()).unwrap();

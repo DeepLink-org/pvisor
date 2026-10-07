@@ -7,6 +7,8 @@ use fuser::{
     BackgroundSession, FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData,
     ReplyDirectory, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyXattr, Request, Session,
 };
+#[cfg(target_os = "macos")]
+use pvisor_overlayfs::api::{OverlayFs, OverlayMounting};
 use std::ffi::OsStr;
 use std::fs;
 #[cfg(target_os = "linux")]
@@ -268,7 +270,7 @@ fn mount(filesystem: RemoteFs, _store: &Path) -> anyhow::Result<FuseMount> {
     // FSKit attaches asynchronously after its request loop starts.
     #[cfg(target_os = "macos")]
     for _ in 0..250 {
-        if pvisor_overlayfs::is_mountpoint(&mountpoint) {
+        if OverlayFs::is_mountpoint(&mountpoint) {
             break;
         }
         if mount

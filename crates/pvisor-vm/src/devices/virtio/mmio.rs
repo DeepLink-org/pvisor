@@ -621,7 +621,7 @@ impl MmioTransport {
 
     fn update_queue_field<F: FnOnce(&mut Queue)>(&mut self, f: F) {
         if self.check_device_status(device_status::FEATURES_OK, device_status::FAILED) {
-            // FIXME: check if activated!
+            // Activation is not checked here; only the device status gates updates.
             self.with_queue_mut(f);
         } else {
             warn!(
@@ -642,10 +642,8 @@ impl MmioTransport {
         self.device_status = device_status::INIT;
         // Do not reset config_generation and keep it monotonically increasing.
         // Recreate queues from queue_config for the next negotiation cycle.
-        // Keep queue_evts as is - they are reused across reset cycles.
-        // TODO: consider resting the events when we refactor event handling
+        // Queue event descriptors and their counters are reused without reset.
         self.queues = Some(Self::create_queues(&self.queue_config));
-        // . Do not reset config_generation and keep it monotonically increasing
     }
 
     fn activate(&mut self) {
@@ -972,10 +970,7 @@ pub(crate) mod tests {
         let mut d =
             MmioTransport::new(m, DummyIrqChip::new().into(), Arc::new(Mutex::new(dummy))).unwrap();
 
-        // We just make sure here that the implementation of a mmio device behaves as we expect,
-        // given a known virtio device implementation (the dummy device).
-
-        // Transport now owns the queue_evts.
+        // Queue events are owned by the transport, not the device.
         assert_eq!(d.queue_evts().len(), 2);
 
         d.queue_select = 0;
@@ -1011,10 +1006,7 @@ pub(crate) mod tests {
         d.read(0, 0, &mut buf[..]);
         assert_eq!(buf[..4], buf_copy[..]);
 
-        // the length is ok again
         buf.pop();
-
-        // Now we test that reading at various predefined offsets works as intended.
 
         d.read(0, 0, &mut buf[..]);
         assert_eq!(read_le_u32(&buf[..]), MMIO_MAGIC_VALUE);
@@ -1119,7 +1111,7 @@ pub(crate) mod tests {
             device_status::ACKNOWLEDGE | device_status::DRIVER
         );
 
-        // now writes should work
+        // Feature selection writes require ACKNOWLEDGE | DRIVER.
         d.features_select = 0;
         write_le_u32(&mut buf[..], 1);
         d.write(0, 0x14, &buf[..]);
@@ -1283,8 +1275,6 @@ pub(crate) mod tests {
         }
         assert!(!d.locked_device().is_activated());
 
-        // Device should be ready for activation now.
-
         // A couple of invalid writes; will trigger warnings; shouldn't activate the device.
         d.write(0, 0xa8, &buf[..]);
         d.write(0, 0x1000, &buf[..]);
@@ -1327,7 +1317,6 @@ pub(crate) mod tests {
         }
         assert!(!d.locked_device().is_activated());
 
-        // Device should be ready for activation now.
         set_device_status(
             d,
             device_status::ACKNOWLEDGE

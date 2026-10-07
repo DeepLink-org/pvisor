@@ -906,7 +906,7 @@ mod tests {
             panic!("write_obj should not fail here");
         }
 
-        // Now create new descriptor chain pointing to the same memory and try to read it.
+        // The readable chain aliases the bytes written through the writable chain.
         let chain_reader = create_descriptor_chain(
             &memory,
             GuestAddress(0x0),

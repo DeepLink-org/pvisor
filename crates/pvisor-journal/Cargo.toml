@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Single-writer storage for pVisor trace facts"
+readme = "README.md"
 
 [dependencies]
 anyhow.workspace = true
@@ -18,5 +19,6 @@ tokio = { workspace = true, features = ["rt", "sync"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

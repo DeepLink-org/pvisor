@@ -6,6 +6,7 @@ use super::{
 };
 use anyhow::{Context, ensure};
 use fs2::FileExt;
+use pvisor_journal::api::{DurableFiles, Persistence};
 use pvisor_overlay_core::{
     backend::{BackendAttachment, FileAttr, FileType, ReadOnlyBackend},
     sys,
@@ -281,7 +282,7 @@ impl ReadOnlyBackend for Projection {
         // Publish only after the complete file is durable. A different VM
         // runner can reuse it without rewriting a checkpoint's backing inode.
         file.sync_all()?;
-        pvisor_journal::atomic_write(&marker, &receipt, 0o600).map_err(io::Error::other)?;
+        Persistence::atomic_write(&marker, &receipt, 0o600).map_err(io::Error::other)?;
         self.complete.lock().unwrap().insert(node.object_id);
         Ok(())
     }
@@ -346,7 +347,7 @@ impl DirectImage {
             metadata_cache: source.metadata_cache.clone(),
         };
         let descriptor = directory.path().join(DESCRIPTOR);
-        pvisor_journal::atomic_write(&descriptor, &serde_json::to_vec(&binding)?, 0o600)?;
+        Persistence::atomic_write(&descriptor, &serde_json::to_vec(&binding)?, 0o600)?;
         let attachment = attach(&root, source)?;
         Ok(Self {
             attachment,

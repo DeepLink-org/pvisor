@@ -250,8 +250,8 @@ impl Console {
                         self.control
                             .console_resize(cmd.id, VirtioConsoleResize { cols, rows });
                     } else {
-                        // We start with all ports open, this makes sense for now,
-                        // because underlying file descriptors STDIN, STDOUT, STDERR are always open too
+                        // Non-terminal ports start open to match their open
+                        // backing descriptors (stdin, stdout and stderr).
                         self.control.port_open(cmd.id, true)
                     }
 

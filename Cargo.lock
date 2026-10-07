@@ -3038,6 +3038,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "syn 2.0.117",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3076,6 +3077,7 @@ dependencies = [
  "log",
  "pvisor-core",
  "pvisor-overlay-core",
+ "syn 2.0.117",
  "tempfile",
 ]
 

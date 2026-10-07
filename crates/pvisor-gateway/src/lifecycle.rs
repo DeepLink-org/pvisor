@@ -1,5 +1,6 @@
 //! Session lifecycle events for the raw event log.
 
+use pvisor_journal::api::JournalStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 

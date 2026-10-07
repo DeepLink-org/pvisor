@@ -170,8 +170,9 @@ fn process_inventory_once() -> io::Result<ProcessInventory> {
         let end = address
             .checked_add(size)
             .ok_or_else(|| io::Error::other("region overflow"))?;
-        // ponytail: diagnostic caps (1 TiB virtual / 16 GiB rows on 16 KiB hosts),
-        // reject larger workloads; no silent truncation or zero-residency skipping.
+        // Cap the scan at 67,108,864 pages and retained rows at 1,048,576
+        // (1 TiB virtual / 16 GiB represented by rows on 16 KiB hosts).
+        // Exceeding either budget fails the query; never publish partial coverage.
         if size / page > 67_108_864 - result.scanned_pages {
             return Err(io::Error::other(
                 "process inventory virtual scan budget exceeded",

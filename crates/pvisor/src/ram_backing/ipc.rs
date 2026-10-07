@@ -375,12 +375,12 @@ fn send_mapping_fd(stream: &UnixStream, fd: std::os::fd::RawFd) -> io::Result<()
     message.msg_iov = &mut iov;
     message.msg_iovlen = 1;
     message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = unsafe { libc::CMSG_SPACE(4) } as usize;
+    message.msg_controllen = unsafe { libc::CMSG_SPACE(4) } as _;
     unsafe {
         let c = libc::CMSG_FIRSTHDR(&message);
         (*c).cmsg_level = libc::SOL_SOCKET;
         (*c).cmsg_type = libc::SCM_RIGHTS;
-        (*c).cmsg_len = libc::CMSG_LEN(4) as usize;
+        (*c).cmsg_len = libc::CMSG_LEN(4) as _;
         std::ptr::write_unaligned(libc::CMSG_DATA(c).cast(), fd);
         if libc::sendmsg(stream.as_raw_fd(), &message, libc::MSG_NOSIGNAL) != 1 {
             return Err(io::Error::last_os_error());
@@ -424,7 +424,7 @@ impl<'a> DeadlineStream<'a> {
             message.msg_iov = &mut iov;
             message.msg_iovlen = 1;
             message.msg_control = control.as_mut_ptr().cast();
-            message.msg_controllen = std::mem::size_of_val(&control);
+            message.msg_controllen = std::mem::size_of_val(&control) as _;
             let n =
                 unsafe { libc::recvmsg(stream.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
             if n < 0 {
@@ -436,9 +436,11 @@ impl<'a> DeadlineStream<'a> {
                 let mut c = libc::CMSG_FIRSTHDR(&message);
                 while !c.is_null() {
                     if (*c).cmsg_level == libc::SOL_SOCKET && (*c).cmsg_type == libc::SCM_RIGHTS {
-                        let size = (*c).cmsg_len.saturating_sub(libc::CMSG_LEN(0) as usize);
-                        bad |= (*c).cmsg_len < libc::CMSG_LEN(0) as usize
-                            || !size.is_multiple_of(std::mem::size_of::<RawFd>());
+                        let length = (*c).cmsg_len as usize;
+                        let header = libc::CMSG_LEN(0) as usize;
+                        let size = length.saturating_sub(header);
+                        bad |=
+                            length < header || !size.is_multiple_of(std::mem::size_of::<RawFd>());
                         for i in 0..size / std::mem::size_of::<RawFd>() {
                             fds.push(OwnedFd::from_raw_fd(std::ptr::read_unaligned(
                                 libc::CMSG_DATA(c).cast::<RawFd>().add(i),

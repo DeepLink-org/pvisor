@@ -26,8 +26,8 @@ decisions over intercepted requests are not non-bypassable enforcement.
 direct sockets and clients that remove proxy variables remain ambient.
 `InterceptionProfile::vm_smoltcp()` records the VM's implemented non-bypassable
 TCP/DNS surface. General UDP, IPv6, ICMP, QUIC, inbound forwarding, link-local,
-and other reserved destinations fail closed in the MVP. Accepted Linux-host
-netns and seccomp designs remain future independent drivers.
+and other reserved destinations fail closed. Linux-host netns and seccomp
+drivers are not implemented.
 
 ## Develop
 

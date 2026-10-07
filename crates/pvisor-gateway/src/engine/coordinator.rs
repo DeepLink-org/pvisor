@@ -16,7 +16,7 @@ use crate::dead_letter;
 use crate::session::index::SessionIndexHandle;
 use crate::sink::CaptureEventObserver;
 use crate::subagent_link::spawn_link_backfill_record;
-use pvisor_journal::Journal;
+use pvisor_journal::api::{Journal, JournalStore};
 
 pub(crate) struct CaptureRuntimeInner {
     preparer: CapturePreparer,

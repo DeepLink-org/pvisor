@@ -3,6 +3,8 @@ use crate::runtime::{RunRecord, job_execution::Server};
 use crate::{PVisor, RunCancellation, RunConfig, RunHandle};
 use anyhow::Context;
 use pvisor_core::{ExecutorKind, RunResult, RunSpec};
+#[cfg(test)]
+use pvisor_journal::api::JournalStore;
 use std::future::Future;
 use tokio::task::JoinHandle;
 
@@ -541,7 +543,10 @@ mod tests {
                 self.entered.send_replace(true);
                 signal(self.release.subscribe()).await;
             }
-            Ok(crate::trace::Journal::memory().append(event.clone())?)
+            Ok(JournalStore::append(
+                &crate::trace::Journal::memory(),
+                event.clone(),
+            )?)
         }
     }
 

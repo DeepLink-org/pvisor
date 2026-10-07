@@ -36,7 +36,7 @@ impl DelegatedRunFiles {
             .env
             .retain(|key, _| !key.starts_with("PVISOR_AGENTCTL_"));
         if capture {
-            // pVisor v1 does not support captured stdin. Null stdin also
+            // Captured stdin is unsupported. Null stdin also
             // prevents the nested host executor from attempting tty control.
             process.stdin = pvisor_core::StdioMode::Null;
             process.stdout = pvisor_core::StdioMode::Capture;

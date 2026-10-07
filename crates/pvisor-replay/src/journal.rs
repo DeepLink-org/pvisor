@@ -2,7 +2,7 @@
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
 use fs2::FileExt;
 use pvisor_core::event::Fact;
-use pvisor_journal::{Journal as FactJournal, Trace};
+use pvisor_journal::api::{JournalStore, Trace, TraceProducer};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -34,7 +34,7 @@ impl Journal {
         })?;
         let path = state_dir.join("replay-events.jsonl");
         // Recover an incomplete tail before checking tool execution safety.
-        let journal = FactJournal::open(&path)
+        let journal = pvisor_journal::api::Journal::open(&path)
             .replay_context(ReplayErrorKind::Executor, "open replay fact journal")?;
         let events = journal
             .records()
@@ -64,7 +64,7 @@ impl Journal {
     ) -> Result<(), ReplayError> {
         let payload = Value::Object(fields.into_iter().collect::<Map<_, _>>());
         let event = self.trace.event(
-            vec!["replay".into(), self.trace.id.clone()],
+            vec!["replay".into(), self.trace.id().to_owned()],
             None,
             None,
             self.cause.iter().cloned().collect(),
@@ -77,7 +77,7 @@ impl Journal {
         );
         let receipt = self
             .trace
-            .journal
+            .journal()
             .append(event)
             .replay_context(ReplayErrorKind::Executor, "commit replay fact")?;
         self.cause = Some(receipt.event);

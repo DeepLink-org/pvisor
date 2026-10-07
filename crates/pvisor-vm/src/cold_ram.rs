@@ -176,8 +176,7 @@ impl<S: ColdRamStore> Pager<S> {
             snapshot_max_us: 0,
             put_max_us: 0,
         };
-        // ponytail: at most 4 MiB of transient snapshots per VM. Increase only
-        // after measuring reclamation throughput and accounting the extra memory.
+        // Bound transient snapshot memory to 64 blocks (4 MiB) per VM.
         while sample.visited < self.pages.len()
             && sample.worked < 256
             && sample.snapshots.len() < 64

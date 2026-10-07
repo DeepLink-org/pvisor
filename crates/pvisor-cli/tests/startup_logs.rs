@@ -112,9 +112,8 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
         assert_eq!(output.stdout, b"WORKLOAD_READY\n");
     }
     let log = std::fs::read_to_string(temp.path().join("frontend.log")).unwrap();
-    // Execution now belongs to per-request host workers. Correlate those
-    // workers to the four local frontends rather than requiring one PID to own
-    // both parsing and execution.
+    // Parsing and execution have separate PIDs. Correlate each request worker
+    // with its originating frontend.
     let bindings: Vec<_> = log
         .lines()
         .filter(|line| line.starts_with("pvisor-host-request "))

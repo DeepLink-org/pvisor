@@ -479,9 +479,8 @@ pub(crate) fn network_isolation(spec: &RunSpec) -> std::io::Result<NetworkIsolat
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn filesystem_isolation(spec: &RunSpec) -> bool {
-    // Library users that construct a rootless executor directly retain the
-    // historical restricted default. CLI runs set this marker explicitly so
-    // filesystem access can be configured independently from networking.
+    // Filesystem isolation defaults to restricted unless the marker is "host".
+    // CLI runs set it explicitly, independently of network policy.
     !matches!(
         spec.metadata
             .get("pvisor.filesystem.mode")

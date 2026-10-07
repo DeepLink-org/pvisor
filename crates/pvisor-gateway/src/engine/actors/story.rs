@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use pvisor_journal::api::{Journal, JournalStore};
 
 use super::super::story::{StoryId, TurnMachine};
 use super::super::wire::{LocalStoryCommand, StoryReply};
@@ -15,7 +16,7 @@ use crate::sink::CaptureEventObserver;
 pub(crate) struct StoryActorDeps {
     pub sink: Arc<dyn CaptureEventObserver>,
     pub storage: Arc<PathBuf>,
-    pub journal: pvisor_journal::Journal,
+    pub journal: Journal,
     pub index: crate::session::index::SessionIndexHandle,
     requests: Arc<std::sync::Mutex<HashMap<(String, String), String>>>,
 }
@@ -24,7 +25,7 @@ impl StoryActorDeps {
     pub fn new(
         sink: Arc<dyn CaptureEventObserver>,
         storage: Arc<PathBuf>,
-        journal: pvisor_journal::Journal,
+        journal: Journal,
         index: crate::session::index::SessionIndexHandle,
     ) -> Self {
         Self {

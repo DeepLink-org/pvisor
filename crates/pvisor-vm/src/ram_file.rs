@@ -41,8 +41,8 @@ impl Mount {
             #[cfg(target_os = "macos")]
             MountOption::CUSTOM("backend=kernel".into()),
         ];
-        // ponytail: one mount/thread per VM; share a mount only if its overhead
-        // becomes material in density measurements. No decompressed userspace cache.
+        // Each VM owns its mount and session thread. There is no decompressed
+        // userspace cache.
         let session = fuser::spawn_mount2(
             RamFs {
                 store: store.clone(),

@@ -10,7 +10,7 @@
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use pvisor_overlayfs::{OverlayMountConfig, run_foreground};
+use pvisor_overlayfs::api::{OverlayConfiguration, OverlayFs, OverlayMountConfig, OverlayMounting};
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
@@ -155,7 +155,7 @@ fn main() -> Result<()> {
         config.backend = opts.backend;
     }
     config.debug = args.debug;
-    run_foreground(config)
+    OverlayFs::run_foreground(config)
 }
 
 #[cfg(test)]

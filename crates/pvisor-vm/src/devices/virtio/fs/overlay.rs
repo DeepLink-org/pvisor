@@ -1,8 +1,7 @@
 //! Portable copy-on-write overlay served directly over virtio-fs.
 //!
-//! The union semantics live in `pvisor-overlay-core`; the existing
-//! platform passthrough implementation is retained for Linux permission
-//! emulation and for the actual FUSE request I/O on each resolved layer.
+//! `pvisor-overlay-core` owns union semantics. Platform passthrough adapters
+//! provide Linux permission emulation and FUSE request I/O on each resolved layer.
 
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{CStr, CString, OsStr};
@@ -1324,8 +1323,7 @@ impl FileSystem for OverlayFs {
             if self.path(inode).is_ok() {
                 return None;
             }
-            // ponytail: scan open handles only for detached inodes; index by
-            // inode if workloads with many deleted-open files make this costly.
+            // Only detached inodes require a linear scan of open handles.
             self.handles.lock().unwrap().iter().find_map(|(id, h)| {
                 matches!(h, Handle::File(h) if h.overlay_inode == inode).then_some(*id)
             })

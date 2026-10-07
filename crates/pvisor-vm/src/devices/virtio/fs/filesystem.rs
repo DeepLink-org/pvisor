@@ -1015,9 +1015,6 @@ pub trait FileSystem {
     ///
     /// The lookup count for `Inode`s associated with the returned directory entries is **NOT**
     /// affected by this method.
-    ///
-    // TODO(chirantan): Change method signature to return `Iterator<DirEntry>` rather than using an
-    // `FnMut` for adding entries.
     fn readdir<F>(
         &self,
         ctx: Context,
@@ -1054,9 +1051,6 @@ pub trait FileSystem {
     /// Additionally, file systems that implement both `readdir` and `readdirplus` should enable the
     /// `FsOptions::READDIRPLUS_AUTO` feature to allow the kernel to issue both `readdir` and
     /// `readdirplus` requests, depending on how much information is expected to be required.
-    ///
-    /// TODO(chirantan): Change method signature to return `Iterator<(DirEntry, Entry)>` rather than
-    /// using an `FnMut` for adding entries.
     fn readdirplus<F>(
         &self,
         ctx: Context,
@@ -1212,32 +1206,32 @@ pub trait FileSystem {
         Err(io::Error::from_raw_os_error(libc::ENOTTY))
     }
 
-    /// TODO: support this
+    /// Querying file locks is not implemented; returns Linux ENOSYS.
     fn getlk(&self) -> io::Result<()> {
         Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
-    /// TODO: support this
+    /// Nonblocking file-lock acquisition is not implemented; returns Linux ENOSYS.
     fn setlk(&self) -> io::Result<()> {
         Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
-    /// TODO: support this
+    /// Blocking file-lock acquisition is not implemented; returns Linux ENOSYS.
     fn setlkw(&self) -> io::Result<()> {
         Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
-    /// TODO: support this
+    /// Block mapping is not implemented; returns Linux ENOSYS.
     fn bmap(&self) -> io::Result<()> {
         Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
-    /// TODO: support this
+    /// File polling is not implemented; returns Linux ENOSYS.
     fn poll(&self) -> io::Result<()> {
         Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
-    /// TODO: support this
+    /// Notification replies are not implemented; returns Linux ENOSYS.
     fn notify_reply(&self) -> io::Result<()> {
         Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }

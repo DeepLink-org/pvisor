@@ -432,8 +432,8 @@ impl SnapshotChain {
         {
             return Err(invalid("invalid parent or dirty block set"));
         }
-        // ponytail: flatten every eight layers; tune after measuring restore cost.
-        // Old generations remain owned by their caller; no implicit deletion.
+        // Capture a full base when the parent reaches COMPACT_DEPTH to bound chain depth.
+        // Existing generations remain owned by their caller; no implicit deletion.
         let delta = parent.filter(|chain| chain.depth() < COMPACT_DEPTH);
         let blocks: Box<dyn Iterator<Item = u64> + '_> = if delta.is_some() {
             Box::new(dirty.iter().copied())

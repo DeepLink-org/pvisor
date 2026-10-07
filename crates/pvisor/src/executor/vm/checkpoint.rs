@@ -3,6 +3,7 @@
 use crate::environment_snapshot::{Compatibility, SnapshotStore, file_hash};
 use anyhow::{Context, ensure};
 use pvisor_core::operation::{ExecutionCheckpoint, OperationKind, SnapshotRamStorage};
+use pvisor_journal::api::{DurableFiles, Persistence};
 use pvisor_vm::api::{RamDeltaState, RestoreState, RuntimeSupport, SnapshotCapture, SnapshotState};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -146,7 +147,7 @@ pub(super) fn binding(
     firmware: Option<&Path>,
     filesystem_pool: Option<&Path>,
 ) -> anyhow::Result<LaunchBinding> {
-    crate::util::create_dir_all_durable(&store)?;
+    Persistence::create_dir_all_durable(&store)?;
     let store = store.canonicalize()?;
     let filesystem_pool = filesystem_pool
         .map(|pool| -> anyhow::Result<_> {
@@ -154,7 +155,7 @@ pub(super) fn binding(
                 cfg!(all(target_os = "linux", target_arch = "x86_64")),
                 "native filesystem pool requires Linux x86-64"
             );
-            crate::util::create_dir_all_durable(pool)?;
+            Persistence::create_dir_all_durable(pool)?;
             let pool = pool.canonicalize()?;
             ensure!(
                 pool != store,
@@ -167,7 +168,7 @@ pub(super) fn binding(
     if filesystem_pool.is_none() {
         SnapshotStore::new(&store)?;
     }
-    crate::util::create_dir_all_durable(&store.join("captures"))?;
+    Persistence::create_dir_all_durable(&store.join("captures"))?;
     Ok(LaunchBinding {
         store,
         filesystem_pool,
@@ -734,7 +735,7 @@ pub(super) fn remember_request(
     request: &str,
     checkpoint: &ExecutionCheckpoint,
 ) -> anyhow::Result<()> {
-    crate::util::create_dir_all_durable(&binding.store.join("requests"))?;
+    Persistence::create_dir_all_durable(&binding.store.join("requests"))?;
     crate::util::write_private_json(&receipt_path(binding, request)?, checkpoint)
 }
 
@@ -1439,7 +1440,7 @@ pub(super) mod native {
                 && settings.ram_backing.is_none(),
             "snapshot restore requires private COW RAM, without a writable backing or cold pager"
         );
-        crate::util::create_dir_all_durable(storage)?;
+        Persistence::create_dir_all_durable(storage)?;
         let storage = storage.canonicalize()?;
         ensure!(
             !storage.starts_with(&checkpoint.store) && !checkpoint.store.starts_with(&storage),
@@ -1614,14 +1615,14 @@ pub(super) mod native {
                 .store
                 .join("restored-attempts")
                 .join(uuid::Uuid::new_v4().to_string());
-            crate::util::create_dir_all_durable(&forest)?;
+            Persistence::create_dir_all_durable(&forest)?;
             forest.join("rootfs")
         } else {
             preparation.join("rootfs")
         };
         fs::create_dir(&rootfs)?;
         let references = preparation.join("filesystem-references");
-        crate::util::create_dir_all_durable(&references)?;
+        Persistence::create_dir_all_durable(&references)?;
         let mut readonly = std::collections::BTreeSet::new();
         let mut private = std::collections::BTreeSet::new();
         for device in std::iter::once(&saved.root).chain(saved.workspace.iter()) {

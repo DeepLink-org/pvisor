@@ -1,4 +1,4 @@
-//! Serialization contracts used by the macOS VM snapshot work.
+//! Serialization contracts for macOS VM snapshots.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::devices::{
     legacy::{GicV3, IrqChipDevice, PendingInterrupts, VcpuList},

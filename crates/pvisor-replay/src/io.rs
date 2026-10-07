@@ -1,7 +1,8 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use pvisor_journal::api::{DurableFiles, Persistence};
 use sha2::{Digest, Sha256};
 
 use crate::error::{ReplayError, ReplayErrorKind, ResultExt};
@@ -163,45 +164,12 @@ pub fn sha256(bytes: &[u8]) -> String {
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ReplayError> {
-    let parent = path
-        .parent()
+    path.parent()
         .ok_or_else(|| ReplayError::configuration("output path has no parent"))?;
-    fs::create_dir_all(parent).replay_context(
+    Persistence::atomic_write(path, bytes, 0o600).replay_context(
         ReplayErrorKind::Executor,
-        format!("create {}", parent.display()),
-    )?;
-    let temporary = parent.join(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("output"),
-        uuid::Uuid::new_v4().simple()
-    ));
-    let mut options = OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temporary).replay_context(
-        ReplayErrorKind::Executor,
-        format!("create {}", temporary.display()),
-    )?;
-    file.write_all(bytes)
-        .and_then(|_| file.sync_all())
-        .replay_context(
-            ReplayErrorKind::Executor,
-            format!("write {}", temporary.display()),
-        )?;
-    fs::rename(&temporary, path).replay_context(
-        ReplayErrorKind::Executor,
-        format!("replace {}", path.display()),
-    )?;
-    if let Ok(directory) = File::open(parent) {
-        let _ = directory.sync_all();
-    }
-    Ok(())
+        format!("durably publish replay artifact {}", path.display()),
+    )
 }
 
 pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> Result<(), ReplayError> {
@@ -222,6 +190,41 @@ pub fn canonicalize(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replay_artifact_publication_creates_parents_and_replaces_contents() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("nested/output.json");
+        atomic_write(&path, b"old").unwrap();
+        atomic_write_json(&path, &serde_json::json!({"published": true})).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            serde_json::json!({"published": true})
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn replay_artifact_publication_failure_retains_executor_and_path_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("not-a-directory");
+        fs::write(&parent, b"retained").unwrap();
+        let path = parent.join("output.json");
+        let error = atomic_write(&path, b"new").unwrap_err();
+        assert_eq!(error.kind, ReplayErrorKind::Executor);
+        assert!(error.message.contains("durably publish replay artifact"));
+        assert!(error.message.contains(&path.display().to_string()));
+        assert_eq!(fs::read(&parent).unwrap(), b"retained");
+    }
 
     #[test]
     fn replay_input_accepts_only_bounded_regular_files() {
@@ -275,6 +278,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn confined_read_bounds_actual_bytes_of_a_large_sparse_file() {
+        use std::io::Write;
+
         let workspace = tempfile::tempdir().unwrap();
         let path = workspace.path().join("large");
         let mut file = File::create(&path).unwrap();

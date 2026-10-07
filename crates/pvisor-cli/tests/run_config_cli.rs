@@ -1,6 +1,7 @@
 use std::{net::TcpListener, process::Command};
 
 use pvisor::{RunBundle, RunConfig};
+use pvisor_journal::api::{Journal, JournalStore};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -178,7 +179,7 @@ fn network_run_uses_the_current_workspace_and_external_run_home() {
         .iter()
         .find(|artifact| artifact.kind == "capture")
         .expect("proxy run retains its event journal");
-    let journal = pvisor_journal::Journal::open(&capture.path.join("events.trace.jsonl")).unwrap();
+    let journal = Journal::open(&capture.path.join("events.trace.jsonl")).unwrap();
     assert!(!journal.records().unwrap().is_empty());
 }
 
@@ -631,7 +632,7 @@ fn recording_uses_one_fact_journal_with_execution_phases() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let records = pvisor_journal::Journal::read(&recording.join("events.trace.jsonl")).unwrap();
+    let records = Journal::read(&recording.join("events.trace.jsonl")).unwrap();
     assert!(
         records
             .iter()

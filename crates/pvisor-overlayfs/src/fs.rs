@@ -67,13 +67,13 @@ struct DirectoryEntry {
     attr: Option<FileAttr>,
 }
 
-pub struct OverlayFs {
+pub(crate) struct OverlayFs {
     core: FilesystemService,
     profile: pvisor_overlay_core::profile::Profile,
     read_only: bool,
     private_root: bool,
     access_policy: FileAccessPolicy,
-    observation: Option<crate::FsMetrics>,
+    observation: Option<crate::api::FsMetrics>,
     nodes: HashMap<u64, Node>,
     by_path: HashMap<PathBuf, u64>,
     by_object: HashMap<ObjectKey, u64>,
@@ -132,7 +132,7 @@ fn time_value(value: TimeOrNow) -> SystemTime {
 
 impl OverlayFs {
     #[cfg(test)]
-    pub fn new(
+    pub(crate) fn new(
         lowers: Vec<PathBuf>,
         upper: PathBuf,
         work: Option<PathBuf>,
@@ -140,7 +140,10 @@ impl OverlayFs {
         Self::from_core(OverlayCore::new(lowers, upper, work)?)
     }
 
-    pub fn with_access_policy(mut self, policy: &pvisor_overlay_core::FileAccessPolicy) -> Self {
+    pub(crate) fn with_access_policy(
+        mut self,
+        policy: &pvisor_overlay_core::FileAccessPolicy,
+    ) -> Self {
         self.core = self.core.with_access_policy(policy);
         self.access_policy = policy.clone();
         self
@@ -183,7 +186,7 @@ impl OverlayFs {
             .map(|(file, _)| file)
     }
 
-    pub fn with_observation(mut self, observation: Option<crate::FsMetrics>) -> Self {
+    pub(crate) fn with_observation(mut self, observation: Option<crate::api::FsMetrics>) -> Self {
         self.observation = observation;
         self
     }
@@ -275,7 +278,7 @@ impl OverlayFs {
         if ino == FUSE_ROOT_ID || self.nodes.get(&ino).is_some_and(|node| node.lookups != 0) {
             return;
         }
-        // ponytail: scan active handles on reclaim; index pins if handle counts make it costly.
+        // Active file and directory handles pin their inodes.
         if self.open_files.values().any(|file| file.ino == ino)
             || self
                 .open_directories
