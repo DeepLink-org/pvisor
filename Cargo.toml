@@ -103,6 +103,11 @@ codegen-units = 64
 strip = "none"
 split-debuginfo = "off"
 
+# Host admission hashes full executables; portable BLAKE3 in unoptimized tests
+# can exceed handshake deadlines under concurrent requests on macOS runners.
+[profile.dev.package.blake3]
+opt-level = 3
+
 [profile.test]
 debug = 0
 incremental = false
