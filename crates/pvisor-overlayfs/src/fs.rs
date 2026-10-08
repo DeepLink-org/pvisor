@@ -2268,7 +2268,8 @@ mod tests {
         let file = overlay
             .open_inode(ino, libc::O_WRONLY | libc::O_APPEND)
             .unwrap();
-        write_request(&file, b"efgh", 0, libc::O_APPEND).unwrap();
+        // macOS pwrite honors the offset even with O_APPEND.
+        write_request(&file, b"efgh", 4, libc::O_APPEND).unwrap();
         assert!(!overlay.by_path.contains_key(Path::new("z")));
         let (alias, metadata) = overlay.inode_for_path_with_metadata("z".into()).unwrap();
         assert_eq!(alias, ino);
@@ -2295,7 +2296,8 @@ mod tests {
         let appender = overlay
             .open_inode(old, libc::O_WRONLY | libc::O_APPEND)
             .unwrap();
-        write_request(&appender, b"efgh", 0, libc::O_APPEND).unwrap();
+        // macOS pwrite honors the offset even with O_APPEND.
+        write_request(&appender, b"efgh", 4, libc::O_APPEND).unwrap();
         drop(appender);
         // Apply the final FORGET's accounting and the same reclaim helper used
         // by the callback. No live handle, inode or by_object entry survives.

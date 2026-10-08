@@ -138,6 +138,8 @@ impl CacheHandle {
         }
     }
 
+    // Keep the atomic update spelling supported by Rust versions before 1.99.
+    #[allow(deprecated)]
     pub(crate) fn begin(&self) -> bool {
         if self.stopped() {
             return false;
