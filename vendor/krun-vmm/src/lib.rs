@@ -42,7 +42,7 @@ use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(target_arch = "x86_64")]
 use crate::device_manager::legacy::PortIODeviceManager;
@@ -240,6 +240,65 @@ impl Vmm {
         self.resume_vcpus()?;
 
         Ok(())
+    }
+
+    /// Pause every Linux vCPU and require every acknowledgement within one
+    /// shared deadline. No device can be declared quiescent before this.
+    #[cfg(target_os = "linux")]
+    pub fn pause_vcpus(&mut self, timeout: Duration) -> std::result::Result<(), String> {
+        self.transition_vcpus(true, timeout)
+    }
+
+    /// Runtime counterpart of the boot-time resume method, with a single
+    /// deadline for all vCPUs and diagnostics identifying the failed vCPU.
+    #[cfg(target_os = "linux")]
+    pub fn resume_vcpus_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> std::result::Result<(), String> {
+        self.transition_vcpus(false, timeout)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn transition_vcpus(
+        &mut self,
+        pause: bool,
+        timeout: Duration,
+    ) -> std::result::Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        let mut failure = None;
+        // Send to all before waiting. Even a failed kick must not prevent
+        // the remaining vCPUs from receiving their transition request.
+        for (index, handle) in self.vcpus_handles.iter().enumerate() {
+            let event = if pause {
+                VcpuEvent::Pause
+            } else {
+                VcpuEvent::Resume
+            };
+            if let Err(error) = handle.send_event(event) {
+                failure.get_or_insert_with(|| format!("vCPU {index} command failed: {error}"));
+            }
+        }
+        let expected = if pause {
+            VcpuResponse::Paused
+        } else {
+            VcpuResponse::Resumed
+        };
+        for (index, handle) in self.vcpus_handles.iter().enumerate() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match handle.response_receiver().recv_timeout(remaining) {
+                Ok(response) if response == expected => (),
+                result => {
+                    failure.get_or_insert_with(|| {
+                        format!("vCPU {index} expected {expected:?}, received {result:?}")
+                    });
+                }
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Sends a resume command to the vcpus.

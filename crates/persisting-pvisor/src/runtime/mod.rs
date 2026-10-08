@@ -14,6 +14,8 @@ pub(crate) mod plan;
 mod registry;
 pub(crate) mod run;
 mod supervisor;
+pub(crate) mod vm_control;
+pub(crate) mod vm_memory;
 pub(crate) mod zcode;
 
 pub(crate) use attempt::AttemptTeardown;
@@ -47,10 +49,12 @@ pub use overlay::{
 };
 #[cfg(target_os = "linux")]
 pub(crate) use registry::LEASE_FILENAME;
-pub(crate) use registry::control_observations;
 pub use registry::{
     EnvironmentProjection, RunLease, RunLineage, RunRecord, all_runs, control_mount_inspect,
     control_overlay_status, control_ping, control_unmount_inspect, default_run_home, is_live,
     resolve_run,
+};
+pub(crate) use registry::{
+    control_observations, control_vm, control_vm_offload, control_vm_status,
 };
 pub use supervisor::RuntimeCapabilities;

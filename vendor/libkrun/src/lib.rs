@@ -70,6 +70,9 @@ use devices::virtio::display::{DisplayInfoEdid, MAX_DISPLAYS, PhysicalSize};
 #[cfg(feature = "input")]
 use krun_input::{InputConfigBackend, InputEventProviderBackend};
 
+#[cfg(target_os = "linux")]
+mod runtime_control;
+
 // Value returned on success. We use libc's errors otherwise.
 const KRUN_SUCCESS: i32 = 0;
 // Maximum number of arguments/environment variables we allow
@@ -223,6 +226,8 @@ struct ContextConfig {
     tee_config_file: Option<PathBuf>,
     unix_ipc_port_map: Option<HashMap<u32, (PathBuf, bool)>>,
     shutdown_efd: Option<EventFd>,
+    #[cfg(target_os = "linux")]
+    runtime_control: Option<std::os::unix::net::UnixStream>,
     gpu_virgl_flags: Option<u32>,
     gpu_shm_size: Option<usize>,
     enable_snd: bool,
@@ -3115,6 +3120,49 @@ pub unsafe extern "C" fn krun_set_kernel_console(ctx_id: u32, console_id: *const
     KRUN_SUCCESS
 }
 
+/// Configure JSON-line pause/resume/status control on a connected Unix stream.
+/// The descriptor is duplicated; the caller retains ownership. Linux only.
+/// Only one VM may be started in a process using runtime control. This
+/// extension supports the pVisor fs/net/console/vsock device configuration;
+/// unaudited build features are conservatively rejected.
+#[no_mangle]
+pub extern "C" fn krun_set_runtime_control_fd(ctx_id: u32, fd: i32) -> i32 {
+    #[cfg(target_os = "linux")]
+    {
+        if cfg!(any(
+            feature = "blk",
+            feature = "gpu",
+            feature = "snd",
+            feature = "input",
+            feature = "tee",
+            feature = "aws-nitro"
+        )) {
+            return -libc::ENOTSUP;
+        }
+        let mut contexts = CTX_MAP.lock().unwrap();
+        let Some(config) = contexts.get_mut(&ctx_id) else {
+            return -libc::ENOENT;
+        };
+        let stream = match runtime_control::duplicate_stream(fd) {
+            Ok(stream) => stream,
+            Err(error) => return -error.raw_os_error().unwrap_or(libc::EINVAL),
+        };
+        config.runtime_control = Some(stream);
+        KRUN_SUCCESS
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (ctx_id, fd);
+        -libc::ENOTSUP
+    }
+}
+
+// The device admission gate is process-wide. Count ordinary starts too, so
+// mixing an uncontrolled VM and a controlled VM is rejected in either order.
+// Keep registrations after errors: the start-enter model ends its runner.
+#[cfg(target_os = "linux")]
+static VM_STARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 #[no_mangle]
 #[allow(unreachable_code)]
 pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
@@ -3142,6 +3190,20 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
         Some(ctx_cfg) => ctx_cfg,
         None => return -libc::ENOENT,
     };
+
+    #[cfg(target_os = "linux")]
+    {
+        let controlled = ctx_cfg.runtime_control.is_some();
+        #[cfg(target_arch = "x86_64")]
+        if controlled && ctx_cfg.vmr.split_irqchip {
+            error!("runtime control does not support split irqchip workers");
+            return -libc::ENOTSUP;
+        }
+        if runtime_control::register_vm_start(&VM_STARTS, controlled).is_err() {
+            error!("runtime control requires one VM per process");
+            return -libc::EBUSY;
+        }
+    }
 
     #[cfg(not(target_env = "musl"))]
     if ctx_cfg.vmr.external_kernel.is_none()
@@ -3325,7 +3387,35 @@ pub extern "C" fn krun_start_enter(ctx_id: u32) -> i32 {
     #[cfg(any(feature = "amd-sev", feature = "tdx"))]
     vmm::worker::start_worker_thread(_vmm.clone(), _receiver.clone()).unwrap();
 
+    #[cfg(target_os = "linux")]
+    let mut runtime_control = match ctx_cfg.runtime_control.take() {
+        Some(stream) => match runtime_control::RuntimeControl::new(stream, &mut event_manager) {
+            Ok(control) => Some(control),
+            Err(error) => {
+                error!("runtime control initialization failed: {error}");
+                return -libc::EIO;
+            }
+        },
+        None => None,
+    };
+
     loop {
+        #[cfg(target_os = "linux")]
+        if let Some(control) = runtime_control.as_mut() {
+            // Also handles requests queued during build_microvm. A status
+            // response is therefore a readiness handshake, never just spawn.
+            if let Err(error) = control.process_pending(&_vmm) {
+                error!("runtime control failed: {error}");
+                return -libc::EIO;
+            }
+            if !control.runs_devices() {
+                if let Err(error) = control.wait() {
+                    error!("runtime control wait failed: {error}");
+                    return -libc::EIO;
+                }
+                continue;
+            }
+        }
         match event_manager.run() {
             Ok(_) => {}
             Err(e) => {

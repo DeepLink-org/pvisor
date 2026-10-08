@@ -337,6 +337,9 @@ struct VmOverrides {
     /// Directory containing libkrunfw; packaged builds discover it automatically.
     #[arg(long = "vm-library-dir", value_name = "PATH")]
     vm_library_dir: Option<PathBuf>,
+    /// Delegated Linux cgroup v2 parent for per-VM memory offload.
+    #[arg(long = "vm-cgroup-parent", value_name = "PATH")]
+    vm_cgroup_parent: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -2131,7 +2134,8 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
 
     let enables_vm = rootfs_source.is_some()
         || args.vm.vm_image_store.is_some()
-        || args.vm.vm_library_dir.is_some();
+        || args.vm.vm_library_dir.is_some()
+        || args.vm.vm_cgroup_parent.is_some();
     if host_rootfs && !container_rootfs {
         config.vm.rootfs = Some(PathBuf::from("/"));
         config.vm.image = None;
@@ -2142,6 +2146,9 @@ fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     }
     if let Some(value) = args.vm.vm_library_dir {
         config.vm.library_dir = Some(value);
+    }
+    if let Some(value) = args.vm.vm_cgroup_parent {
+        config.vm.cgroup_parent = Some(value);
     }
     if let Some(value) = args.run.cpu {
         config.vm.cpus = value;

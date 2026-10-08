@@ -11,11 +11,32 @@ use clap::Args;
 use crate::runtime::{
     ApplySelection, OverlayState, ReadOnlyOverlayMount, RunLease, RunRecord,
     apply_overlay_selected, control_mount_inspect, control_observations, control_overlay_status,
-    control_ping, control_unmount_inspect, discard_overlay, is_live, load_apply_records,
-    mount_overlay_record_read_only, overlay_status, resolve_run,
+    control_ping, control_unmount_inspect, control_vm, control_vm_status, discard_overlay, is_live,
+    load_apply_records, mount_overlay_record_read_only, overlay_status, resolve_run,
 };
 
 const DEFAULT_STORAGE: &str = ".persisting/capture";
+
+#[derive(Debug, Clone, Args)]
+pub struct OffloadArgs {
+    #[command(flatten)]
+    pub job: KillArgs,
+    /// Amount to attempt to reclaim; completion is reported by status --json.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    pub mib: u64,
+}
+
+pub fn offload(args: OffloadArgs) -> anyhow::Result<()> {
+    let bytes = args
+        .mib
+        .checked_mul(1024 * 1024)
+        .context("offload size overflows bytes")?;
+    let record = selected(Some(&args.job.selector), &args.job.output_dir)?;
+    anyhow::ensure!(is_live(&record.stage_dir())?, "Job is not live");
+    let status = crate::runtime::control_vm_offload(&record.stage_dir(), bytes)?;
+    println!("{}", serde_json::to_string(&status)?);
+    Ok(())
+}
 
 #[derive(Debug, Clone, Args)]
 pub struct StatusArgs {
@@ -87,6 +108,14 @@ pub struct ApplyArgs {
     pub all: bool,
 }
 
+pub fn vm_lifecycle(args: KillArgs, pause: bool) -> anyhow::Result<()> {
+    let record = selected(Some(&args.selector), &args.output_dir)?;
+    anyhow::ensure!(is_live(&record.stage_dir())?, "Job is not live");
+    let status = control_vm(&record.stage_dir(), pause)?;
+    println!("{}", serde_json::to_string(&status)?);
+    Ok(())
+}
+
 pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     if args.review || args.diff {
         return super::product::review(super::product::ReviewArgs {
@@ -98,8 +127,16 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             max_diff_file_bytes: args.max_diff_file_bytes,
         });
     }
-    let record = selected(args.selector.as_deref(), &args.output_dir)?;
+    let mut record = selected(args.selector.as_deref(), &args.output_dir)?;
     let live = control_ping(&record.stage_dir()) || is_live(&record.stage_dir())?;
+    let vm_status = live
+        .then(|| control_vm_status(&record.stage_dir()).ok())
+        .flatten();
+    if let Some(status) = &vm_status
+        && status.supported
+    {
+        record.state = status.state.as_str().into();
+    }
     let apply_history = load_apply_records(&record.stage_dir())?;
     let fs = record
         .overlay
@@ -151,6 +188,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
             serde_json::to_string_pretty(&serde_json::json!({
                 "run": record,
                 "live": live,
+                "vm_status": vm_status,
                 "apply_history": apply_history,
                 "observations": {
                     "filesystem": file_observed,
@@ -170,7 +208,11 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     println!("job: {}", record.run_id);
     println!("session: {}", record.session_id);
     let state = if live {
-        "running"
+        vm_status
+            .as_ref()
+            .filter(|status| status.supported)
+            .map(|status| status.state.as_str())
+            .unwrap_or("running")
     } else if record.state == "running" {
         "stale"
     } else {
@@ -269,7 +311,10 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
         record.run_id
     );
     anyhow::ensure!(
-        record.state == "running" && is_live(&record.stage_dir())?,
+        matches!(
+            record.state.as_str(),
+            "running" | "starting" | "pausing" | "paused" | "suspended" | "resuming" | "faulted"
+        ) && is_live(&record.stage_dir())?,
         "Job {} is not live",
         record.run_id
     );

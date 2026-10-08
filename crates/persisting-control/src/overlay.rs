@@ -15,10 +15,19 @@ pub use crate::file_access::{FileAccessDecision, FileAccessPolicy};
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum RunControlRequest {
     Ping,
+    VmStatus,
+    Pause,
+    Resume,
+    /// Start asynchronous reclaim; completion is reported through VmStatus.
+    Offload {
+        bytes: u64,
+    },
     OverlayStatus,
     Observations,
     MountInspect,
-    UnmountInspect { id: String },
+    UnmountInspect {
+        id: String,
+    },
 }
 
 /// Response to a local Run inspection request. Existing optional fields remain
@@ -32,6 +41,85 @@ pub struct RunControlResponse {
     pub overlay_status: Option<OverlayStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observations: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vm_status: Option<VmRuntimeStatus>,
+}
+
+/// Resident VM lifecycle state; paused VMs still own their process and leases.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VmRuntimeState {
+    Unsupported,
+    Starting,
+    Running,
+    Pausing,
+    Paused,
+    Resuming,
+    Faulted,
+    Stopped,
+}
+
+impl VmRuntimeState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Pausing => "pausing",
+            Self::Paused => "paused",
+            Self::Resuming => "resuming",
+            Self::Faulted => "faulted",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VmRuntimeStatus {
+    pub supported: bool,
+    pub state: VmRuntimeState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<VmMemoryStatus>,
+}
+
+/// Cgroup accounting, not a byte-exact inventory of guest RAM.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VmMemorySample {
+    pub current_bytes: u64,
+    pub swap_bytes: u64,
+    pub anon_bytes: u64,
+    pub file_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VmOffloadState {
+    Reclaiming,
+    Completed,
+    Partial,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VmOffloadReport {
+    pub operation_id: u64,
+    pub state: VmOffloadState,
+    pub requested_bytes: u64,
+    pub before: VmMemorySample,
+    pub after: Option<VmMemorySample>,
+    pub elapsed_ms: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VmMemoryStatus {
+    pub cgroup: PathBuf,
+    pub sample: Option<VmMemorySample>,
+    pub sample_error: Option<String>,
+    pub last_offload: Option<VmOffloadReport>,
 }
 
 /// Durable record of one overlay staging workspace (survives Attempt teardown).

@@ -173,6 +173,9 @@ pub struct VmSettings {
     /// download cache. The x86_64 Linux musl build embeds the kernel bundle
     /// and rejects this setting.
     pub library_dir: Option<PathBuf>,
+    /// Linux cgroup v2 parent with memory already delegated. Enables offload;
+    /// only the VM runner enters a new child cgroup, before guest allocation.
+    pub cgroup_parent: Option<PathBuf>,
     pub memory_mib: u32,
     pub cpus: u16,
 }
@@ -185,6 +188,7 @@ impl Default for VmSettings {
             image_store: None,
             rootfs_immutable: false,
             library_dir: None,
+            cgroup_parent: None,
             memory_mib: 2048,
             cpus: 2,
         }

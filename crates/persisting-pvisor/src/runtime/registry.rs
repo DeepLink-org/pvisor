@@ -17,8 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use super::vm_control::{VmCommand, VmControl};
 pub use persisting_control::overlay::OverlayStatus as ControlOverlayStatus;
-use persisting_control::overlay::{RunControlRequest, RunControlResponse};
+use persisting_control::overlay::{RunControlRequest, RunControlResponse, VmRuntimeStatus};
 use persisting_control::{ExecutorDescriptor, ResourceLimits};
 
 pub const RUN_META_FILENAME: &str = "run.json";
@@ -190,20 +191,23 @@ pub struct RunControlServer {
 }
 
 impl RunControlServer {
+    #[cfg(test)]
     pub fn start(record: &RunRecord) -> anyhow::Result<Option<Self>> {
-        Self::start_observed(record, None, None)
+        Self::start_controlled(record, None, None, Arc::new(VmControl::new(false)))
     }
 
-    pub fn start_observed(
+    pub fn start_controlled(
         record: &RunRecord,
         filesystem: Option<persisting_overlayfs::FsMetrics>,
         network: Option<persisting_overlaynet::InterceptionMetrics>,
+        vm_control: Arc<VmControl>,
     ) -> anyhow::Result<Option<Self>> {
-        let Some(overlay) = record.overlay.clone() else {
-            return Ok(None);
-        };
+        let overlay = record.overlay.clone();
         let lowers = if record.overlay_lowers.is_empty() {
-            vec![overlay.target.clone()]
+            overlay
+                .as_ref()
+                .map(|overlay| vec![overlay.target.clone()])
+                .unwrap_or_default()
         } else {
             record.overlay_lowers.clone()
         };
@@ -233,11 +237,14 @@ impl RunControlServer {
                             serve_control(
                                 stream,
                                 &stage,
-                                &overlay,
+                                overlay.as_ref(),
                                 &lowers,
                                 &mut mounts,
-                                filesystem.as_ref(),
-                                network.as_ref(),
+                                ControlObservations {
+                                    filesystem: filesystem.as_ref(),
+                                    network: network.as_ref(),
+                                },
+                                vm_control.clone(),
                             );
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -268,24 +275,61 @@ impl Drop for RunControlServer {
     }
 }
 
+#[derive(Default)]
+struct ControlObservations<'a> {
+    filesystem: Option<&'a persisting_overlayfs::FsMetrics>,
+    network: Option<&'a persisting_overlaynet::InterceptionMetrics>,
+}
+
 fn serve_control(
     mut stream: std::os::unix::net::UnixStream,
     stage: &Path,
-    overlay: &OverlayRecord,
+    overlay: Option<&OverlayRecord>,
     lowers: &[PathBuf],
     mounts: &mut HashMap<String, ReadOnlyOverlayMount>,
-    filesystem: Option<&persisting_overlayfs::FsMetrics>,
-    network: Option<&persisting_overlaynet::InterceptionMetrics>,
+    observations: ControlObservations<'_>,
+    vm_control: Arc<VmControl>,
 ) {
-    use std::io::{BufRead, Write};
+    use std::io::{BufRead, Read};
+    let ControlObservations {
+        filesystem,
+        network,
+    } = observations;
     let request = (|| -> anyhow::Result<RunControlRequest> {
         // macOS accept inherits O_NONBLOCK from the listener. The line-based
         // protocol must wait for the complete request, including its newline.
         stream.set_nonblocking(false)?;
+        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(20)))?;
         let mut line = String::new();
-        std::io::BufReader::new(&stream).read_line(&mut line)?;
+        std::io::BufReader::new(&stream)
+            .take(16 * 1024 + 1)
+            .read_line(&mut line)?;
+        anyhow::ensure!(
+            line.len() <= 16 * 1024 && line.ends_with('\n'),
+            "incomplete or oversized control request"
+        );
         Ok(serde_json::from_str(&line)?)
     })();
+    let command = match &request {
+        Ok(RunControlRequest::Pause) => Some(VmCommand::Pause),
+        Ok(RunControlRequest::Resume) => Some(VmCommand::Resume),
+        _ => None,
+    };
+    if let Some(command) = command {
+        std::thread::spawn(move || {
+            let response = match vm_control.request(command) {
+                Ok(status) => vm_response(status),
+                Err(error) => {
+                    let mut response = control_error(error);
+                    response.vm_status = Some(vm_control.status());
+                    response
+                }
+            };
+            write_control_response(&mut stream, &response);
+        });
+        return;
+    }
     let response = match request {
         Ok(RunControlRequest::Ping) => RunControlResponse {
             ok: true,
@@ -294,8 +338,22 @@ fn serve_control(
             error: None,
             overlay_status: None,
             observations: None,
+            vm_status: None,
         },
-        Ok(RunControlRequest::OverlayStatus) => match overlay_status(overlay) {
+        Ok(RunControlRequest::VmStatus) => vm_response(vm_control.status()),
+        Ok(RunControlRequest::Offload { bytes }) => match vm_control.offload(bytes) {
+            Ok(status) => vm_response(status),
+            Err(error) => {
+                let mut response = control_error(error);
+                response.vm_status = Some(vm_control.status());
+                response
+            }
+        },
+        Ok(RunControlRequest::Pause | RunControlRequest::Resume) => unreachable!(),
+        Ok(RunControlRequest::OverlayStatus) => match overlay
+            .context("Job has no overlay")
+            .and_then(|overlay| overlay_status(overlay).map_err(Into::into))
+        {
             Ok(status) => RunControlResponse {
                 ok: true,
                 id: None,
@@ -303,6 +361,7 @@ fn serve_control(
                 error: None,
                 overlay_status: Some(status),
                 observations: None,
+                vm_status: None,
             },
             Err(error) => control_error(error),
         },
@@ -316,11 +375,14 @@ fn serve_control(
                 "filesystem": filesystem.map(|metrics| metrics.snapshot()),
                 "network": network.map(|metrics| metrics.snapshot()),
             })),
+            vm_status: None,
         },
         Ok(RunControlRequest::MountInspect) => {
             let id = uuid::Uuid::new_v4().to_string();
             let mountpoint = stage.join("inspect").join(&id).join("merged");
-            match mount_overlay_record_read_only(overlay, lowers, &mountpoint) {
+            match overlay.context("Job has no overlay").and_then(|overlay| {
+                mount_overlay_record_read_only(overlay, lowers, &mountpoint).map_err(Into::into)
+            }) {
                 Ok(mount) => {
                     let mountpoint = mount.mountpoint().to_path_buf();
                     mounts.insert(id.clone(), mount);
@@ -331,6 +393,7 @@ fn serve_control(
                         error: None,
                         overlay_status: None,
                         observations: None,
+                        vm_status: None,
                     }
                 }
                 Err(error) => control_error(error),
@@ -346,6 +409,7 @@ fn serve_control(
                         error: None,
                         overlay_status: None,
                         observations: None,
+                        vm_status: None,
                     },
                     Err(error) => control_error(error),
                 }
@@ -355,9 +419,29 @@ fn serve_control(
         }
         Err(error) => control_error(error),
     };
-    if let Ok(mut body) = serde_json::to_vec(&response) {
+    write_control_response(&mut stream, &response);
+}
+
+fn write_control_response(
+    stream: &mut std::os::unix::net::UnixStream,
+    response: &RunControlResponse,
+) {
+    use std::io::Write;
+    if let Ok(mut body) = serde_json::to_vec(response) {
         body.push(b'\n');
         let _ = stream.write_all(&body);
+    }
+}
+
+fn vm_response(status: VmRuntimeStatus) -> RunControlResponse {
+    RunControlResponse {
+        ok: true,
+        id: None,
+        mountpoint: None,
+        error: None,
+        overlay_status: None,
+        observations: None,
+        vm_status: Some(status),
     }
 }
 
@@ -369,6 +453,7 @@ fn control_error(error: impl std::fmt::Display) -> RunControlResponse {
         error: Some(error.to_string()),
         overlay_status: None,
         observations: None,
+        vm_status: None,
     }
 }
 
@@ -378,6 +463,8 @@ fn control_request(
 ) -> anyhow::Result<RunControlResponse> {
     use std::io::{BufRead, Write};
     let mut stream = std::os::unix::net::UnixStream::connect(stage.join(CONTROL_FILENAME))?;
+    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     serde_json::to_writer(&mut stream, request)?;
     stream.write_all(b"\n")?;
     let mut line = String::new();
@@ -390,6 +477,31 @@ fn control_request(
         );
     }
     Ok(response)
+}
+
+pub(crate) fn control_vm_status(stage: &Path) -> anyhow::Result<VmRuntimeStatus> {
+    control_request(stage, &RunControlRequest::VmStatus)?
+        .vm_status
+        .context("control response missing VM status")
+}
+
+pub(crate) fn control_vm_offload(stage: &Path, bytes: u64) -> anyhow::Result<VmRuntimeStatus> {
+    control_request(stage, &RunControlRequest::Offload { bytes })?
+        .vm_status
+        .context("control response missing VM status")
+}
+
+pub(crate) fn control_vm(stage: &Path, pause: bool) -> anyhow::Result<VmRuntimeStatus> {
+    control_request(
+        stage,
+        &if pause {
+            RunControlRequest::Pause
+        } else {
+            RunControlRequest::Resume
+        },
+    )?
+    .vm_status
+    .context("control response missing VM status")
 }
 
 pub fn control_ping(stage: &Path) -> bool {
@@ -724,6 +836,28 @@ mod tests {
     }
 
     #[test]
+    fn vm_control_exists_without_overlay_and_rejects_host_executor() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut record = record(temp.path(), temp.path(), &temp.path().join("upper"));
+        record.overlay = None;
+        let _server = RunControlServer::start(&record).unwrap().unwrap();
+        assert!(control_ping(temp.path()));
+        assert!(!control_vm_status(temp.path()).unwrap().supported);
+        assert!(
+            control_vm(temp.path(), true)
+                .unwrap_err()
+                .to_string()
+                .contains("Linux libkrun")
+        );
+        assert!(
+            control_overlay_status(temp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("no overlay")
+        );
+    }
+
+    #[test]
     fn local_control_waits_for_a_complete_request_on_a_nonblocking_connection() {
         use std::io::{BufRead, Write};
         use std::os::unix::net::UnixStream;
@@ -749,11 +883,11 @@ mod tests {
                 serve_control(
                     server,
                     temp.path(),
-                    record.overlay.as_ref().unwrap(),
+                    record.overlay.as_ref(),
                     &[],
                     &mut HashMap::new(),
-                    None,
-                    None,
+                    ControlObservations::default(),
+                    Arc::new(VmControl::new(false)),
                 );
                 done_tx.send(()).unwrap();
             });

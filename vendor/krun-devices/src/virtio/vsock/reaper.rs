@@ -25,6 +25,7 @@ impl ReaperThread {
     }
 
     fn check_expiration(&mut self) -> Duration {
+        let _activity = crate::virtio::pause::enter();
         let mut highest_elapsed = Duration::ZERO;
         let mut expired: Vec<u64> = Vec::new();
         let now = Instant::now();

@@ -148,6 +148,8 @@ pub enum Error {
     #[cfg(feature = "tee")]
     /// The TEE specified is not supported.
     InvalidTee,
+    /// The vCPU control channel disconnected.
+    VcpuControlDisconnected,
     /// Failed to signal Vcpu.
     SignalVcpu(utils::errno::Error),
     #[cfg(target_arch = "x86_64")]
@@ -318,6 +320,7 @@ impl Display for Error {
             #[cfg(feature = "amd-sev")]
             SnpSecVirtAttest(e) => write!(f, "Error attesting the Secure VM (SNP): {e:?}"),
 
+            VcpuControlDisconnected => write!(f, "vCPU control channel disconnected"),
             SignalVcpu(e) => write!(f, "Failed to signal Vcpu: {e}"),
             #[cfg(feature = "tdx")]
             TdxSecVirtPrepare(e) => write!(
@@ -1603,13 +1606,16 @@ impl Vcpu {
         match self.event_receiver.try_recv() {
             // Running ---- Pause ----> Paused
             Ok(VcpuEvent::Pause) => {
-                // Nothing special to do.
+                // Inform guest pvclock/watchdogs about host suspension. This
+                // does not freeze guest wall time; unsupported pvclock is a
+                // non-fatal condition, as in Firecracker.
+                #[cfg(target_arch = "x86_64")]
+                if let Err(error) = self.fd.kvmclock_ctrl() {
+                    warn!("KVM_KVMCLOCK_CTRL failed while pausing vCPU: {error}");
+                }
                 self.response_sender
                     .send(VcpuResponse::Paused)
                     .expect("failed to send pause status");
-
-                // TODO: we should call `KVM_KVMCLOCK_CTRL` here to make sure
-                // TODO continued: the guest soft lockup watchdog does not panic on Resume.
 
                 // Move to 'paused' state.
                 state = StateMachine::next(Self::paused);
@@ -1636,15 +1642,22 @@ impl Vcpu {
         match self.event_receiver.recv() {
             // Paused ---- Resume ----> Running
             Ok(VcpuEvent::Resume) => {
-                // Nothing special to do.
+                // A kick may arrive while already paused. Clear its pending
+                // immediate-exit flag before re-entering KVM_RUN.
+                self.fd.set_kvm_immediate_exit(0);
                 self.response_sender
                     .send(VcpuResponse::Resumed)
                     .expect("failed to send resume status");
                 // Move to 'running' state.
                 StateMachine::next(Self::running)
             }
-            // All other events have no effect on current 'paused' state.
-            Ok(_) => StateMachine::next(Self::paused),
+            // Pause is idempotent, including its completion acknowledgement.
+            Ok(VcpuEvent::Pause) => {
+                self.response_sender
+                    .send(VcpuResponse::Paused)
+                    .expect("failed to send pause status");
+                StateMachine::next(Self::paused)
+            }
             // Unhandled exit of the other end.
             Err(_) => {
                 // Move to 'exited' state.
@@ -1762,10 +1775,9 @@ impl VcpuHandle {
     }
 
     pub fn send_event(&self, event: VcpuEvent) -> Result<()> {
-        // Use expect() to crash if the other thread closed this channel.
         self.event_sender
             .send(event)
-            .expect("event sender channel closed on vcpu end.");
+            .map_err(|_| Error::VcpuControlDisconnected)?;
         // Kick the vcpu so it picks up the message.
         self.vcpu_thread
             .as_ref()

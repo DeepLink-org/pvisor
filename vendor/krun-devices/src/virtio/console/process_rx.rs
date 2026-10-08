@@ -24,7 +24,7 @@ pub(crate) fn process_rx(
 
     let mut input = input.lock().unwrap();
     loop {
-        let Some(head) = pop_head_blocking(&mut queue, mem, &interrupt, &stop) else {
+        let Some((head, activity)) = pop_head_blocking(&mut queue, mem, &interrupt, &stop) else {
             return;
         };
 
@@ -60,6 +60,9 @@ pub(crate) fn process_rx(
         } else if bytes_read == 0 {
             queue.undo_pop();
             interrupt.signal_used_queue();
+            // Waiting for host input must not prevent an otherwise idle VM
+            // from pausing. The descriptor has already been returned above.
+            drop(activity);
             input.wait_until_readable(Some(&stopfd));
         }
 
@@ -74,17 +77,22 @@ fn pop_head_blocking<'mem>(
     mem: &'mem GuestMemoryMmap,
     interrupt: &InterruptTransport,
     stop: &AtomicBool,
-) -> Option<DescriptorChain<'mem>> {
+) -> Option<(
+    DescriptorChain<'mem>,
+    crate::virtio::pause::ActivityGuard<'static>,
+)> {
     loop {
+        let activity = crate::virtio::pause::enter();
         match queue.pop(mem) {
-            Some(descriptor) => break Some(descriptor),
+            Some(descriptor) => break Some((descriptor, activity)),
             None => {
                 interrupt.signal_used_queue();
                 if stop.load(Ordering::Acquire) {
                     break None;
                 }
+                drop(activity);
                 thread::park();
-                log::trace!("rx unparked, queue len {}", queue.len(mem))
+                log::trace!("rx unparked")
             }
         }
     }

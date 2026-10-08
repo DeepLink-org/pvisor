@@ -227,6 +227,7 @@ impl FsWorker {
     }
 
     fn handle_event(&mut self, queue_index: usize) {
+        let _activity = crate::virtio::pause::enter();
         debug!("Fs: queue event: {queue_index}");
         if let Err(e) = self.queue_evts[queue_index].read() {
             error!("Failed to get queue event: {e:?}");

@@ -183,6 +183,7 @@ impl MuxerThread {
             {
                 Ok(ev_cnt) => {
                     for ev in &epoll_events[0..ev_cnt] {
+                        let _activity = crate::virtio::pause::enter();
                         debug!("Event: ev.data={} ev.fd={}", ev.data(), ev.fd());
                         let evset = EventSet::from_bits(ev.events).unwrap();
                         let id = ev.data();

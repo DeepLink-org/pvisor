@@ -28,6 +28,7 @@ pub mod gpu;
 #[cfg(feature = "input")]
 pub mod input;
 pub mod linux_errno;
+pub mod pause;
 mod mmio;
 #[cfg(feature = "net")]
 pub mod net;
