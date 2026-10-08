@@ -108,7 +108,11 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
         .collect();
     for child in children {
         let output = child.wait_with_output().unwrap();
-        assert!(output.status.success());
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(output.stdout, b"WORKLOAD_READY\n");
     }
     let log = std::fs::read_to_string(temp.path().join("frontend.log")).unwrap();
