@@ -14,6 +14,8 @@ pub enum EventAppendErrorKind {
     Unknown,
 }
 
+// async_trait adds #[must_use] to the already must-use boxed future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait EventSink: Send + Sync {
     async fn append(&self, event: &Event) -> Result<Receipt>;

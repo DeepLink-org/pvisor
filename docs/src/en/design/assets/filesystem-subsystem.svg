@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1270" viewBox="0 0 1440 1270" role="img" aria-labelledby="title desc">
+<title id="title">Filesystem Subsystem · Two Entries, Layered State</title><desc id="desc">Exported trees share FilesystemService; each adapter retains its protocol state</desc>
+<rect width="1440" height="1270" fill="#0d1b30"/>
+<g font-family="Arial,Helvetica,PingFang SC,Microsoft YaHei,sans-serif" text-anchor="middle">
+<text x="720" y="59" fill="#c8e0fc" font-size="39" font-weight="700">Filesystem Subsystem · Two Entries, Layered State</text>
+<text x="720" y="98" fill="#b7c6db" font-size="21" font-weight="500">Exported trees share FilesystemService; each adapter retains its protocol state</text>
+<rect x="30" y="126" width="1380" height="117" rx="38" fill="#244569" stroke="#416080" stroke-width="7"/>
+<text x="720" y="173" fill="#c8e0fc" font-size="31" font-weight="700">File Operation Entry Points</text>
+<rect x="54" y="187" width="650" height="39" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="379.0" y="215.5" fill="#e9eef8" font-size="25" font-weight="700">Guest · VFS → virtio-fs</text>
+<rect x="726" y="187" width="660" height="39" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1056.0" y="215.5" fill="#e9eef8" font-size="25" font-weight="700">Host staged · VFS → FUSE</text>
+<path d="M379 250 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<path d="M1056 250 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="284" width="690" height="163" rx="34" fill="#102138" stroke="#416080" stroke-width="7"/>
+<text x="375" y="329" fill="#c8e0fc" font-size="31" font-weight="700">pvisor-vm</text>
+<rect x="54" y="350" width="642" height="74" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="375.0" y="383.0" fill="#e9eef8" font-size="27" font-weight="700">virtqueue / worker</text>
+<text x="375.0" y="412.0" fill="#e9eef8" font-size="20" font-weight="500">descriptor · inode / handle · RAM lease</text>
+<rect x="739" y="284" width="671" height="163" rx="34" fill="#1a3d68" stroke="#416080" stroke-width="7"/>
+<text x="1074" y="329" fill="#c8e0fc" font-size="31" font-weight="700">Host FUSE Adapter</text>
+<rect x="763" y="350" width="623" height="74" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1074.5" y="383.0" fill="#e9eef8" font-size="27" font-weight="700">mount / request / reply</text>
+<text x="1074.5" y="412.0" fill="#e9eef8" font-size="20" font-weight="500">inode / handle · credentials &amp; errno</text>
+<path d="M379 454 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<path d="M1056 454 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="488" width="1380" height="219" rx="38" fill="#223852" stroke="#416080" stroke-width="7"/>
+<text x="720" y="535" fill="#c8e0fc" font-size="31" font-weight="700">pvisor-overlay-core · FilesystemService</text>
+<rect x="54" y="551" width="1332" height="61" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="590.5" fill="#e9eef8" font-size="28" font-weight="700">OverlayCore · path policy / lookup / merge / copy-up</text>
+<rect x="54" y="630" width="650" height="52" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="379.0" y="665.0" fill="#e9eef8" font-size="24" font-weight="700">Protocol-neutral operations &amp; backing identity</text>
+<rect x="726" y="630" width="660" height="52" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1056.0" y="665.0" fill="#e9eef8" font-size="25" font-weight="700">First observation → target preimage</text>
+<path d="M269 714 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<path d="M720 714 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<path d="M1171 714 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="748" width="1380" height="188" rx="38" fill="#1d3858" stroke="#416080" stroke-width="7"/>
+<rect x="54" y="771" width="430" height="138" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="269.0" y="836.0" fill="#e9eef8" font-size="28" font-weight="700">Local Lower</text>
+<text x="269.0" y="865.0" fill="#e9eef8" font-size="20" font-weight="500">Priority merge · read-only source</text>
+<rect x="505" y="771" width="430" height="138" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="836.0" fill="#e9eef8" font-size="27" font-weight="700">Immutable Image Lower</text>
+<text x="720.0" y="865.0" fill="#e9eef8" font-size="20" font-weight="500">metadata → chunks → cache</text>
+<rect x="956" y="771" width="430" height="138" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1171.0" y="836.0" fill="#e9eef8" font-size="27" font-weight="700">Attempt-private Upper</text>
+<text x="1171.0" y="865.0" fill="#e9eef8" font-size="20" font-weight="500">Writes · whiteout · work / seal</text>
+<path d="M1171 943 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="977" width="1380" height="148" rx="38" fill="#1a3d68" stroke="#416080" stroke-width="7"/>
+<text x="720" y="1024" fill="#c8e0fc" font-size="31" font-weight="700">Accepting Results After Execution</text>
+<rect x="54" y="1043" width="1332" height="59" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="1081.5" fill="#e9eef8" font-size="30" font-weight="700">review → preimage check → apply ledger → target</text>
+<rect x="30" y="1151" width="1380" height="77" rx="38" fill="#1c3c45" stroke="#416080" stroke-width="7"/>
+<text x="720" y="1198" fill="#c8e0fc" font-size="31" font-weight="700">Host Filesystem &amp; Content Storage</text>
+<text x="720" y="1253" fill="#c8e0fc" font-size="20" font-weight="700">Guest cache / procfs / tmpfs may serve locally; VM requests do not traverse host /dev/fuse.</text>
+</g></svg>

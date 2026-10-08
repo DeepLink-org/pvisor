@@ -60,7 +60,7 @@ pub fn tree_state(root: &Path) -> Result<String> {
                     crate::seal::hex(&hash.finalize())
                 )
             } else {
-                format!("other {:o} {name}", info.mode() & u32::from(libc::S_IFMT))
+                format!("other {:o} {name}", info.mode() & 0o170000)
             };
             out.push((relative, line));
             if kind.is_dir() {

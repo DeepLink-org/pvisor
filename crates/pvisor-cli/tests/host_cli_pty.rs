@@ -10,7 +10,8 @@ if pid == 0:
     os.chdir(root)
     original = os.tcgetpgrp(0)
     env = dict(os.environ, PVISOR_RUN_HOME=os.path.join(root, 'runs'), PVISOR_STARTUP_TIMING='0')
-    script = "printf 'INPUT_READY\\n'; read value; printf 'GOT:%s\\n' \"$value\"; /bin/sleep 60"
+    # Replace the shell instead of racing Ctrl-C against a new child fork.
+    script = "printf 'INPUT_READY\\n'; read value; printf 'GOT:%s\\n' \"$value\"; exec /bin/sleep 60"
     if mode == 'inspect':
         args = [binary, 'inspect', os.path.join(root, 'stage'), '--', '/bin/sh', '-c', script]
     else:

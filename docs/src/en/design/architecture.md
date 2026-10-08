@@ -4,6 +4,8 @@ pVisor processes Operations: it accepts requests, decides how to handle and plac
 
 There are two responsibilities: **core provides definitions; pvisor provides implementation.** External callers submit execution requests, control execution through a run handle and observe progress and results through Events.
 
+![Technical architecture centered on pvisor-vm: CPUs, memory, devices, consistent freeze and KVM/HVF adapters](assets/pvisor-architecture.svg)
+
 ## Definitions and implementation
 
 | Owner | Responsibility |
@@ -17,11 +19,32 @@ There are two responsibilities: **core provides definitions; pvisor provides imp
 | `pvisor-guest` | VM PID 1 and command launch contract |
 | `pvisor-gateway` | Optional model protocol routing, conversion and call observation |
 | `pvisor-daemon` | Separate single-node sandbox admission, durable ownership, native VM supervisor lifecycle and endpoint proxy |
-| `pvisor-tui`, `pvisor-replay` | Terminal frontend and agent trajectory replay tools depending on pvisor |
+| `pvisor-cli` | CLI, TUI, cache/replay frontends and Host Job application adapters; consumes the runtime |
+| `pvisor-vm` | VMs, devices, freezing, snapshots and RAM mappings; uniform api and private platform implementations |
+| `pvisor-replay` | Agent trajectory replay mechanisms; consumes Core/Journal contracts, with frontends in CLI |
 
 The [daemon](daemon/index.md) uses VM-only NativeRuntime: detached supervisors embed `PVisor::run` and retain RunHandles across daemon restart. The executable constructs NativeRuntime with native CLI settings; stage/apply, checkpoint/fork and Gateway APIs are absent, and node sharing is not automatically acquired. See [responsibility convergence](daemon/responsibility-convergence.md). External orchestration owns host choice and workflows.
 
 Core neither owns the execution loop nor starts processes or opens control sockets. pvisor implements AgentCtl clients/servers and approval sockets. Drivers implement file, network and isolation boundaries. The default core does not depend on Gateway, TUI or replay; the `gateway` feature enables capture.
+
+## API boundaries and migration status {#api-boundaries}
+
+Logical crate responsibilities and Rust visibility require separate checks. Only `pvisor-vm`, `pvisor-overlayfs` and `pvisor-journal` currently use a sole `api` entry point. Other crates retain existing interfaces; layering in an architecture diagram does not establish a completed workspace migration.
+
+| Crate | Current public boundary | Implementation and resource ownership |
+| --- | --- | --- |
+| `pvisor-vm` | `pvisor_vm::api`; trait-based use of `VmBuilder` and `VmmHandle` | Private backend, VMM, devices, RAM and platform dispatch |
+| `pvisor-overlayfs` | `pvisor_overlayfs::api`; configuration, mount, session and metrics contracts | Private `fs`, `mount` and `observation`; owns neither apply nor Run lifecycle |
+| `pvisor-journal` | `pvisor_journal::api`; `JournalStore`, `TraceProducer`, `DurableFiles` | Private `journal`, `trace`, `persistence`; Core owns Event/Receipt |
+| `pvisor-core` | Domain modules and root re-exports; not migrated | Shared identities, protocols, pure validation and policy definitions; no execution resources |
+| `pvisor-overlay-core`, `pvisor-overlaynet` | Existing public modules and root interfaces; not migrated | File semantics, dual-entry file service, proxies and egress data plane |
+| `pvisor`, Gateway, Replay, Daemon and others | Retain existing entries; no uniform sole-`api` model yet | Continue evolving within actual lifecycle and domain boundaries |
+
+Migrated `api` modules declare public data, fields and trait methods. Opaque owners may be re-exported from private implementations while retaining private state. Method bodies, validation, platform dispatch and resource management live in implementations; public traits have no default bodies. Callers import contracts from the owning crate's `api`. Declarations keep the same shape across supported platforms/features; capability queries and explicit unsupported errors describe actual support.
+
+Migration proceeds one crate at a time, updating its consumers, README, public documentation and boundary checks together while preserving external contract coverage. Unmigrated crates should not gain blanket re-export layers or duplicate DTOs merely to appear uniform, nor expose internals to bypass compilation boundaries. Hardware/private-state checks remain inside the crate; callers rely on ownership, lifecycle, post-failure state and synchronization contracts.
+
+This Rust boundary does not automatically establish stable wire protocols or old-record compatibility. CLI `JobCommand`/tickets still require exact build matching, and stored formats have independent readers. See [Records and version matrix](records-and-versions.md) and the VM rationale in [ADR 0005](decisions/0005-rust-vm-api.md). Status follows static inspection of `lib.rs`, VM `runtime_modules.rs`, `api.rs` and directory READMEs; it does not claim fresh contract-test or platform validation.
 
 ## Host and Guest AgentCtl {#host-agentctl}
 
@@ -143,15 +166,9 @@ full platform behavior; see above for macOS identity and cleanup limits.
 
 ## A production execution path
 
-```text
-CLI / embedded caller
-  → RunSpec
-  → pvisor: admission, policy rewrite, Placement → effective Operation
-  → Session: prepare drivers and run resources
-  → commit startup facts
-  → RunExecutor::execute
-  → clean up, check control observations, save results, publish terminal state
-```
+![Preparation, launch-fact commit, dispatch, cleanup and result ordering](assets/execution-sequence.svg)
+
+Driver preparation creates real file and network resources; executor dispatch starts the workload. Separating these steps lets a failed required launch-fact commit prevent dispatch while the Session reclaims prepared resources. Completion similarly converges resources and observations before terminal publication; cancelling a caller wait does not establish that those actions finished.
 
 `RunSpec` is execution configuration supplied by the caller; `Operation` is the structured operation description. The only current production operation is `run.execute`, with program, arguments and working directory. Executors consume the effective RunSpec and prepared driver attachments. `PVisor::resolve_operation` uses the same admission path for pre-launch review; it cannot replace execution or evidence that controls were installed.
 

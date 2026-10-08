@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="940" viewBox="0 0 1080 940" role="img" aria-labelledby="title desc"><title id="title">How a file read crosses the VM boundary</title><desc id="desc">One cache miss in an exported file tree; solid: requests; dashed: responses / completion.</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="1080" height="940" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">How a file read crosses the VM boundary</text>
+<text x="28" y="67" font-size="15">One cache miss in an exported file tree; solid: requests; dashed: responses / completion.</text>
+<rect x="20" y="100" width="1040" height="112" fill="#1a304c"/>
+<rect x="20" y="250" width="1040" height="126" fill="#12243b"/>
+<rect x="20" y="423" width="1040" height="142" fill="#1a304c"/>
+<rect x="20" y="621" width="1040" height="148" fill="#12243b"/>
+<rect x="348" y="143" width="380" height="53" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="538.0" y="163.5" font-size="17" font-weight="600" text-anchor="middle">Agent / script</text>
+<text x="538.0" y="187.5" font-size="14" text-anchor="middle">read(fd, buffer, length)</text>
+<rect x="138" y="295" width="310" height="63" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="293.0" y="320.5" font-size="17" font-weight="600" text-anchor="middle">Guest VFS / page cache</text>
+<text x="293.0" y="344.5" font-size="14" text-anchor="middle">return directly on a cache hit</text>
+<rect x="633" y="295" width="310" height="63" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="788.0" y="320.5" font-size="17" font-weight="600" text-anchor="middle">virtio-fs</text>
+<text x="788.0" y="344.5" font-size="14" text-anchor="middle">encode a FUSE READ request</text>
+<polyline points="538,196 538,231 293,231 293,295" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="309" y="218" font-size="14">1 syscall</text>
+<polyline points="448,327 633,327" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="463" y="312" font-size="14">2 cache miss</text>
+<rect x="249" y="468" width="583" height="77" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="540.5" y="488.5" font-size="17" font-weight="600" text-anchor="middle">virtqueue</text>
+<text x="540.5" y="512.5" font-size="14" text-anchor="middle">descriptor: addr / len / flags</text>
+<text x="540.5" y="536.5" font-size="14" text-anchor="middle">avail: submitted; used: completed</text>
+<polyline points="788,358 788,468" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="802" y="409" font-size="14">3 submit / notify</text>
+<rect x="44" y="668" width="284" height="81" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="186.0" y="702.5" font-size="17" font-weight="600" text-anchor="middle">virtio-fs worker</text>
+<text x="186.0" y="726.5" font-size="14" text-anchor="middle">validate descriptors / request</text>
+<rect x="395" y="668" width="284" height="81" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="537.0" y="702.5" font-size="17" font-weight="600" text-anchor="middle">FilesystemService</text>
+<text x="537.0" y="726.5" font-size="14" text-anchor="middle">path policy / OverlayCore</text>
+<rect x="746" y="668" width="284" height="81" rx="2" fill="#193d40" stroke="#74b7b0" stroke-width="1.4"/>
+<text x="888.0" y="702.5" font-size="17" font-weight="600" text-anchor="middle">Local or immutable lower</text>
+<text x="888.0" y="726.5" font-size="14" text-anchor="middle">verified content bytes</text>
+<polyline points="410,545 410,589 186,589 186,668" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="201" y="611" font-size="14">4 consume queue</text>
+<polyline points="328,709 395,709" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="340" y="694" font-size="14">5 call</text>
+<polyline points="679,709 746,709" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="685" y="694" font-size="14">read_at</text>
+<polyline points="1030,710 1055,710 1055,507 832,507" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<polyline points="249,507 47,507 47,169 348,169" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="80" y="468" font-size="14">6 response / wake</text>
+<text x="28" y="812" font-size="17" font-weight="600">Return: write response bytes → publish used → interrupt or wake the guest.</text>
+<text x="28" y="850" font-size="15">The device retains its RAM lease until response publication completes.</text>
+<text x="28" y="888" font-size="15">The VM frontend calls the file service directly; this path needs no host FUSE mount.</text>
+<text x="36" y="123" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">01  Guest userspace</text>
+<text x="36" y="273" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">02  Guest Linux kernel</text>
+<text x="36" y="446" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">03  Shared queue in guest RAM</text>
+<text x="36" y="644" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">04  Host runner · pvisor-vm and file service</text></g></svg>

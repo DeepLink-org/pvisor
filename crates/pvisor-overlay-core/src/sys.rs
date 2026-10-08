@@ -552,11 +552,14 @@ mod tests {
         let path = temp.path().join("file");
         std::fs::write(&path, b"content").unwrap();
         let name = OsStr::new("user.pvisor-buffer");
-        for size in [0, 1, 256, 257, 4096] {
+        // Exceed the read buffer without exceeding ext4's per-inode xattr budget.
+        for size in [0, 1, 256, 257, 1024] {
             let value: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
             set_xattr(&path, name, &value, 0).unwrap();
             assert_eq!(get_xattr(&path, name).unwrap(), value);
         }
+        remove_xattr(&path, name).unwrap();
+        assert!(get_xattr(&path, name).is_err());
         let names: Vec<String> = (0..40)
             .map(|i| format!("user.pvisor-buffer-long-name-{i:03}"))
             .collect();
@@ -568,8 +571,6 @@ mod tests {
         for name in &names {
             assert!(listed.iter().any(|item| item == name.as_bytes()));
         }
-        remove_xattr(&path, name).unwrap();
-        assert!(get_xattr(&path, name).is_err());
         assert!(list_xattrs(&temp.path().join("missing")).is_err());
     }
 

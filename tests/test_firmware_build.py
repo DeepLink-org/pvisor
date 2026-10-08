@@ -6,6 +6,7 @@ import io
 import json
 import platform
 import runpy
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -19,6 +20,41 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET = "x86_64-unknown-linux-musl"
 KERNEL_VERSION = "linux-6.12.1"
 LIBRARY_NAME = "libkrunfw.so.5.0.0"
+
+
+@pytest.mark.parametrize("builder", ["linux", "native", "krunvm"])
+def test_recursive_kernel_make_inherits_parallel_flags(tmp_path, builder):
+    make = shutil.which("gmake") or shutil.which("make")
+    if make is None:
+        pytest.skip("GNU make is not installed")
+    shutil.copy2(ROOT / "fw/Makefile", tmp_path / "Makefile")
+    (tmp_path / "config-libkrunfw_x86_64").touch()
+    kernel = tmp_path / "kernel"
+    kernel.mkdir()
+    (kernel / ".config").touch()
+    (kernel / "Makefile").write_text(
+        'vmlinux:\n\t@test -n "$(findstring jobserver,$(MAKEFLAGS))"\n\t@touch $@\n'
+    )
+    args = ["OS=Linux"] if builder == "linux" else ["OS=Darwin", f"MACOS_BUILDER={builder}"]
+    subprocess.run(
+        [
+            make,
+            "-C",
+            str(tmp_path),
+            "-j2",
+            "-w",
+            *args,
+            "ARCH=x86_64",
+            "KERNEL_SOURCES=kernel",
+            "KERNEL_TARBALL=Makefile",
+            f"KERNEL_MAKE={make}",
+            "kernel/vmlinux",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert (kernel / "vmlinux").is_file()
 
 
 @pytest.fixture

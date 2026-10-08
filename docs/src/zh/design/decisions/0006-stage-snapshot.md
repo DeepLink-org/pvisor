@@ -25,4 +25,4 @@ stage 是逻辑状态，不等于仅复制 upper 目录。可写 workspace 也�
 
 固定 stage/RAM、增长 base，warm save/fork 不应遍历或复制不变 base；再测 stage 大小、条目数、大文件 copy-up 和 1/8/64 分支。保持分支独立、删除/metadata/hardlink、打开句柄、依赖 GC、损坏拒绝和发布失败的契约。100 ms 等预算需注明规模、预备、持久化与 first useful work，不是本记录承诺。
 
-运行时依旧遵循唯一 `api`、跨平台一致 trait/struct、私有后端实现；镜像解析、base pin 与 store 发布不进入 VMM。见[完整环境快照的当前实现](../environment-snapshot.md)、[OverlayCore](../overlayfs.md)和[ADR 0005](index.md#adr-0005)。
+运行时依旧遵循唯一 `api`、跨平台一致 trait/struct、私有后端实现；镜像解析、base pin 与 store 发布不进入 VMM。见[完整环境快照的当前实现](../environment-snapshot.md)、[OverlayCore](../overlayfs.md)和[ADR 0005](0005-rust-vm-api.md#adr-0005)。

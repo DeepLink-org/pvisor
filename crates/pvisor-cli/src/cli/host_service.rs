@@ -15,7 +15,7 @@ use pvisor_core::host_protocol::{
     AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode, AgentCtlHostRequest,
     AgentCtlHostResponse, AgentCtlTarget,
 };
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 use pvisor_journal::api::JournalStore;
 use serde::{Deserialize, Serialize};
 use std::os::{
@@ -622,7 +622,7 @@ pub(crate) fn internal_if_requested() -> anyhow::Result<bool> {
     let mut channel = unsafe { UnixStream::from_raw_fd(INTERNAL_FD) };
     same_uid(&channel)?;
     channel.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let bootstrap: Bootstrap = read_frame(&mut channel)?;
+    let bootstrap: Bootstrap = read_frame(&mut channel).context("read internal bootstrap")?;
     ensure!(
         bootstrap.directory == directory()?,
         "capability directory mismatch"
@@ -712,7 +712,7 @@ fn unblock_worker_signals() -> anyhow::Result<()> {
 }
 
 fn run_worker(mut channel: UnixStream, dir: PathBuf, g: Generation) -> anyhow::Result<()> {
-    let request: Request = read_frame(&mut channel)?;
+    let request: Request = read_frame(&mut channel).context("read worker request")?;
     validate(&request, &g)?;
     ensure!(
         running_digest()? == request.command.executable.digest,
@@ -790,7 +790,7 @@ fn run_worker(mut channel: UnixStream, dir: PathBuf, g: Generation) -> anyhow::R
     if pending_signal != 0 {
         notify_cancel(pending_signal);
     }
-    let admit: WorkerInstruction = read_frame(&mut channel)?;
+    let admit: WorkerInstruction = read_frame(&mut channel).context("read worker admission")?;
     let result = if matches!(admit, WorkerInstruction::Admit) {
         (|| {
             check_cancelled()?;
@@ -839,7 +839,7 @@ fn run_worker(mut channel: UnixStream, dir: PathBuf, g: Generation) -> anyhow::R
     )?;
     // Keep the subreaper root alive until the service has quiesced/killed its
     // descendants. This also covers a frontend dying during completion.
-    let _: WorkerInstruction = read_frame(&mut channel)?;
+    let _: WorkerInstruction = read_frame(&mut channel).context("read worker finalization")?;
     Ok(())
 }
 struct Admission(Arc<AtomicUsize>);
@@ -960,7 +960,6 @@ fn serve(listener: UnixListener, dir: PathBuf, g: Generation) -> anyhow::Result<
                         worker.as_raw_fd(),
                     ],
                 )?;
-                drop(worker);
                 drop(fds);
                 authority.set_read_timeout(Some(Duration::from_secs(10)))?;
                 write_frame(
@@ -976,7 +975,9 @@ fn serve(listener: UnixListener, dir: PathBuf, g: Generation) -> anyhow::Result<
                 // owns a Child, foreground guard, and subreaper at this point.
                 let mut cancelled = None;
                 let pid = loop {
-                    match read_frame::<ClientControl>(&mut client)? {
+                    match read_frame::<ClientControl>(&mut client)
+                        .context("read frontend worker registration")?
+                    {
                         ClientControl::Started {
                             request_id: id,
                             pid,
@@ -995,11 +996,15 @@ fn serve(listener: UnixListener, dir: PathBuf, g: Generation) -> anyhow::Result<
                     }
                 };
                 let mut tree = OwnedTree::new(pid, request.command.client_pid as i32, false, 0)?;
-                let ready: WorkerEvent = read_frame(&mut authority)?;
+                let ready: WorkerEvent =
+                    read_frame(&mut authority).context("read worker readiness")?;
                 ensure!(
                     matches!(ready, WorkerEvent::Ready { pid: ready } if ready == pid),
                     "worker identity mismatch"
                 );
+                // Keep the original socket until bootstrap receipt is acknowledged:
+                // Darwin can disconnect it while SCM_RIGHTS is still in flight.
+                drop(worker);
                 // Retain filesystem cleanup ownership independently of worker
                 // destructors, which do not run after escalation to SIGKILL.
                 let _cancel_endpoint = super::host_cancel::own_endpoint(&dir, pid as u32)?;

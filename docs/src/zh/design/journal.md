@@ -6,7 +6,7 @@
 
 Journal 选择单写入者、JSONL 和逐条同步。提交接口返回包含事件 ID、Journal position 与 durability 的 Receipt。这样生产者可以在回执之后发布已提交事实，消费方可以在落后时读取历史。代价是每条磁盘事件一次同步，恢复和历史读取需要扫描文件。
 
-它保存执行事实，不把日志追加与外部请求绑成同一事务。LocalSync 不等于跨节点复制，不证明外部副作用 exactly-once，也不使 RunRecord、Bundle 和文件 apply 账本获得共同提交锚点。Event 字段合同见 [Operation 与 Event](operations-events.md)，本页说明存储、提交和恢复。
+它保存执行事实，不把日志追加与外部请求绑成同一事务。LocalSync 不等于跨节点复制，不证明外部副作用 exactly-once，也不使 RunRecord、Bundle 和文件 apply 账本获得共同提交锚点。Event 字段合同见 [Operation 与 Event](operations-events.md)，跨模块的去重与重试边界见[失败语义](failure-semantics.md#idempotency)。
 
 ## 2. 核心设计 {#core-design}
 
@@ -71,6 +71,8 @@ Fact 采用 `fact` tagged enum。Header、Record、Position、Event 和 Fact 的
 `Journal::read()` 用共享锁只读检查，要求 writer 已释放，不修复、不截断。`records()` 通过共享状态在 writer 句柄内读取，磁盘模式持 mutex 扫描，内存模式克隆 Vec。所有 Journal clone 和已接受的阻塞写任务都持有同一状态；只 drop 一个外层句柄不一定释放 writer 锁。
 
 ### 追加与回执 {#append}
+
+![磁盘 append 的同步提交点、Unknown 和同身份恢复](assets/journal-commit.svg)
 
 `append()` 的顺序为：
 

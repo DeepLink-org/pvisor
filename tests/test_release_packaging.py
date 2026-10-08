@@ -1046,3 +1046,22 @@ def test_daemon_helper_uses_shared_component_builder_without_cli_dependency():
     assert "service-build:" not in justfile
     assert "scripts/packaging/build_daemon.py --profile" in justfile
     assert "independently built daemon" not in justfile
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses POSIX executable lifecycle")
+def test_native_artifact_replacement_preserves_a_running_image(tmp_path):
+    destination = tmp_path / "pvisor"
+    # Do not import macOS system-only file flags into the owned fixture.
+    shutil.copy("/bin/sleep", destination)
+    source = tmp_path / "replacement"
+    shutil.copy("/usr/bin/true", source)
+    old_inode = destination.stat().st_ino
+    process = subprocess.Popen([str(destination), "30"])
+    try:
+        wheel_stage.copy_artifact(source, destination)
+        assert destination.stat().st_ino != old_inode
+        assert process.poll() is None
+        subprocess.run([str(destination)], check=True, timeout=3)
+    finally:
+        process.terminate()
+        process.wait(timeout=3)

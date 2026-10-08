@@ -696,7 +696,8 @@ fn shared_lower_restores_keep_handles_cookies_and_hard_link_copy_up_private() {
         path::Path,
     };
 
-    let workspace = tempfile::tempdir().unwrap();
+    // Snapshot source bindings use canonical paths, including on macOS.
+    let workspace = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let original = workspace.path().join("original");
     std::fs::create_dir_all(original.join("lower")).unwrap();
     std::fs::write(original.join("lower/a"), b"0123456789").unwrap();

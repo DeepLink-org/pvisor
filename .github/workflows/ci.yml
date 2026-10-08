@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, next]
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, next]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -169,6 +169,23 @@ jobs:
         with:
           shared-key: ci-rust-${{ matrix.shard }}
 
+      - name: Enable Linux runtime test prerequisites
+        if: runner.os == 'Linux' && matrix.prepare_pvisor
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends fuse3 util-linux
+          if sysctl kernel.unprivileged_userns_clone >/dev/null 2>&1; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          if sysctl kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          test -c /dev/fuse
+          unshare --user --map-root-user --mount --net /bin/true
+          sudo chown "$(id -u):$(id -g)" /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+
       # macOS needs the Hypervisor entitlement on the product binary. Running
       # the same recipe on Linux also keeps the smoke-test setup identical.
       - name: Build and smoke-test pVisor product binary
@@ -178,6 +195,10 @@ jobs:
       - name: Test Journal without workspace feature unification
         if: matrix.shard == 'core'
         run: just test pvisor-journal
+
+      - name: Report macOS Hypervisor availability
+        if: runner.os == 'macOS'
+        run: sysctl kern.hv_support
 
       - name: Run ${{ matrix.shard }} tests
         env:
@@ -222,7 +243,8 @@ jobs:
         run: |
           cargo build --release --locked -p pvisor --lib
           cargo build --release --locked -p pvisor-cli --bin pvisor
-          python3 scripts/ci/check_core_budget.py target/release/pvisor --max-dependencies 230 --max-workspace-lines 44423 --max-core-items 230 > target/pvisor-core-budget.json
+          # Rebaseline after moving the VM implementation into the runtime closure.
+          python3 scripts/ci/check_core_budget.py target/release/pvisor --max-dependencies 235 --max-workspace-lines 180000 --max-core-items 301 > target/pvisor-core-budget.json
       - uses: actions/upload-artifact@v4
         with:
           name: pvisor-core-budget-linux
@@ -232,6 +254,11 @@ jobs:
         env:
           PVISOR_RUN_HOME: ${{ runner.temp }}/pvisor-isolation-runs
         run: just test-isolation
+
+      - name: Stop debug Host listener before release scenarios
+        shell: bash
+        run: |
+          pkill -f "^${GITHUB_WORKSPACE}/target/debug/pvisor --pvisor-internal-host$" || [[ $? == 1 ]]
 
       - name: Run pVisor filesystem examples
         env:

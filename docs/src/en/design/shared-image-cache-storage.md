@@ -27,6 +27,10 @@ No performance A/B data exists yet for this direct backend. Measure cold-miss
 interference, warm-read cache hits and complete-task time separately; removing
 an intermediate layer does not establish overall acceleration.
 
+![A pinned revision resolves a path, content index and intersecting blocks](assets/image-read.svg)
+
+Arrows follow one content lookup and read. The image-key identifies the management scope, revision pins metadata, file-digest identifies whole-file bytes, and object-hash identifies a shared block. These separate identities allow cross-image sharing while preventing a tag update from changing an existing run.
+
 ## Complete tree
 
 ```text

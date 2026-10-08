@@ -1165,6 +1165,8 @@ mod tests {
         fn put(&mut self, bytes: &[u8]) -> io::Result<Vec<u8>> {
             if let Some(barrier) = &self.reject_barrier {
                 barrier.wait();
+                // Fault recovery must own pager before publication is rejected.
+                barrier.wait();
                 return Err(io::Error::new(io::ErrorKind::WouldBlock, "incompressible"));
             }
             let mut encoder =
@@ -1619,6 +1621,9 @@ mod tests {
         let resolver_state = state.clone();
         let resolver_pool = pool.clone();
         let resolver = std::thread::spawn(move || {
+            // Publication first checks pager metadata, then enters store.put.
+            // Only take the fault-recovery lock after that preflight completes.
+            barrier.wait();
             let _pager = resolver_state.lock().unwrap();
             barrier.wait();
             let deadline = Instant::now() + Duration::from_secs(1);

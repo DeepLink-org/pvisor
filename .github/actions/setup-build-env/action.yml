@@ -74,7 +74,7 @@ runs:
         volume="/Volumes/pvisor-fw-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
         if ! mount | grep -Fq " on $volume ("; then
           if [[ ! -f "$image" ]]; then
-            hdiutil create -size 32g -type SPARSE -fs APFSX -volname pvisor-fw "$image"
+            hdiutil create -size 32g -type SPARSE -fs "Case-sensitive APFS" -volname pvisor-fw "$image"
           fi
           hdiutil attach -nobrowse -mountpoint "$volume" "$image"
         fi

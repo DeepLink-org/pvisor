@@ -1,6 +1,8 @@
 # 共享工作集与按需加载
 
-按身份复用不可变内容，同时显式计算实际访问与私有修改的成本。原生 pVisor 缓存与 node 资源提供这一路径的机制；原生 VM daemon **未**获取这些资源，也未验证其密度收益。
+按身份复用不可变内容，同时显式计算实际访问与私有修改的成本。原生 pVisor 缓存与 node 资源提供这一路径的机制；Daemon 可显式启用自有 Linux physical pool；它尚无通用 node acquire/release 适配器，完整 API 路径的密度收益仍待验证。
+
+![Linux physical pool 的共享原文页与 COW 写入](../assets/memory-cow.svg)
 
 ## 三种不同机制 {#principles}
 

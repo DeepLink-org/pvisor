@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="820" viewBox="0 0 960 820" role="img" aria-labelledby="title desc"><title id="title">From entry points to execution and results</title><desc id="desc">Layers group responsibilities; arrows denote calls or artifact flow.</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="960" height="820" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">From entry points to execution and results</text>
+<text x="28" y="67" font-size="15">Layers group responsibilities; arrows denote calls or artifact flow.</text>
+<rect x="20" y="100" width="920" height="117" fill="#1a304c"/>
+<rect x="20" y="253" width="920" height="132" fill="#12243b"/>
+<rect x="20" y="422" width="920" height="126" fill="#1a304c"/>
+<rect x="20" y="594" width="920" height="116" fill="#12243b"/>
+<rect x="36" y="141" width="250" height="64" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="161.0" y="167.0" font-size="17" font-weight="600" text-anchor="middle">pvisor-cli</text>
+<text x="161.0" y="191.0" font-size="14" text-anchor="middle">CLI / TUI / companions</text>
+<rect x="355" y="141" width="250" height="64" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="480.0" y="167.0" font-size="17" font-weight="600" text-anchor="middle">Embedded application</text>
+<text x="480.0" y="191.0" font-size="14" text-anchor="middle">PVisor / Job service</text>
+<rect x="674" y="141" width="250" height="64" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="799.0" y="167.0" font-size="17" font-weight="600" text-anchor="middle">pvisor-daemon</text>
+<text x="799.0" y="191.0" font-size="14" text-anchor="middle">node-local sandbox API</text>
+<rect x="36" y="296" width="570" height="75" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="321.0" y="327.5" font-size="17" font-weight="600" text-anchor="middle">pvisor runtime</text>
+<text x="321.0" y="351.5" font-size="14" text-anchor="middle">Job / Attempt / Session</text>
+<rect x="674" y="296" width="250" height="75" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="799.0" y="327.5" font-size="17" font-weight="600" text-anchor="middle">Detached supervisor</text>
+<text x="799.0" y="351.5" font-size="14" text-anchor="middle">native VM + cgroup identity</text>
+<polyline points="161,205 161,296" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="480,205 480,296" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="799,205 799,296" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="674,334 606,334" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="617" y="319" font-size="14">embed</text>
+<rect x="36" y="464" width="250" height="70" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="161.0" y="493.0" font-size="17" font-weight="600" text-anchor="middle">Executor / VM</text>
+<text x="161.0" y="517.0" font-size="14" text-anchor="middle">host / OCI / pvisor-vm</text>
+<rect x="355" y="464" width="250" height="70" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="480.0" y="493.0" font-size="17" font-weight="600" text-anchor="middle">File data path</text>
+<text x="480.0" y="517.0" font-size="14" text-anchor="middle">OverlayCore / OverlayFS</text>
+<rect x="674" y="464" width="250" height="70" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="799.0" y="493.0" font-size="17" font-weight="600" text-anchor="middle">Network data path</text>
+<text x="799.0" y="517.0" font-size="14" text-anchor="middle">OverlayNet</text>
+<polyline points="320,371 320,402 161,402 161,464" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="320,371 320,402 480,402 480,464" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="320,371 320,402 799,402 799,464" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="36" y="635" width="570" height="61" rx="2" fill="#193d40" stroke="#74b7b0" stroke-width="1.4"/>
+<text x="321.0" y="659.5" font-size="17" font-weight="600" text-anchor="middle">Artifacts and records</text>
+<text x="321.0" y="683.5" font-size="14" text-anchor="middle">Effects / Bundle / Journal</text>
+<rect x="674" y="635" width="250" height="61" rx="2" fill="#193d40" stroke="#74b7b0" stroke-width="1.4"/>
+<text x="799.0" y="659.5" font-size="17" font-weight="600" text-anchor="middle">Immutable state / refs</text>
+<text x="799.0" y="683.5" font-size="14" text-anchor="middle">snapshot / image / pages</text>
+<polyline points="161,534 161,635" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="480,534 480,635" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="799,534 799,578 566,578 566,635" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="80,534 80,558 940,558 940,665 924,665" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="28" y="750" font-size="15">pvisor-core defines shared contracts; the runtime owns admission and completion.</text>
+<text x="28" y="780" font-size="15">Job results and daemon lifecycle are separate interfaces; cross-node orchestration stays external.</text>
+<text x="36" y="123" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">01  User and service entry points</text>
+<text x="36" y="276" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">02  Runtime lifecycle</text>
+<text x="36" y="445" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">03  Execution and access paths</text>
+<text x="36" y="617" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">04  State and records</text></g></svg>

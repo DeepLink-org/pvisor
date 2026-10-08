@@ -46,6 +46,8 @@ pub trait OverlaySink: Clone + Send + Sync + 'static {
         request: &Request,
     ) -> anyhow::Result<OverlayRequestContext<Self::RequestContext>>;
 
+    // async_trait adds #[must_use] to the already must-use boxed future.
+    #[allow(clippy::double_must_use)]
     async fn handle(
         &self,
         request: Request,

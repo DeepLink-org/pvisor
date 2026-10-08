@@ -1,4 +1,4 @@
-# OverlayCore design
+# Filesystem subsystem: OverlayCore and two entry points
 
 ## 1. Motivation {#motivation}
 
@@ -39,20 +39,7 @@ The current structure follows. Host FUSE and VM virtio-fs adapters use
 and backend reads. Protocol inode/handle tables, directory cursors and platform
 permission handling remain in their entry adapters.
 
-```mermaid
-flowchart TD
-    H[Host tools] --> HK[Host kernel FUSE]
-    HK --> HA[Host FUSE adapter]
-    G[Guest tools] --> GK[Guest kernel virtio-fs]
-    GK --> VQ[virtqueue]
-    VQ --> VA[VM virtio-fs adapter]
-    HA --> S[Shared filesystem service]
-    VA --> S
-    S --> O[OverlayCore: policy, merge, copy-up, journal]
-    O --> L[Local lower / upper]
-    O --> R[Immutable remote lower]
-    R --> C[Metadata / content cache]
-```
+![Two filesystem entries, shared service, lower/upper and result acceptance](assets/filesystem-subsystem.svg)
 
 The service receives requests requiring backend work within these exported trees.
 Kernel cache hits can avoid requests; guest procfs, tmpfs and network operations
@@ -111,6 +98,23 @@ task capacity has not been validated in those measurements.
 The shared filesystem service handles filesystems and lazy images; the page-fault path of
 [lazy snapshot RAM restore](environment-snapshot.md) as a separate mechanism.
 
+### Completing one virtio-fs request {#virtio-request}
+
+![From guest read through descriptors and the shared service to the used ring](assets/filesystem-request.svg)
+
+On a guest page-cache miss, virtio-fs places a FUSE READ request and response buffers in a descriptor chain. Addresses are guest physical addresses; the host adapter validates ranges, lengths and directions before invoking the service. Protocol adapters retain inodes and open handles; the file service uses explicit relative paths and backing identities for semantics.
+
+Workers may process requests, while the queue owner retains used-ring publication. A device RAM lease lasts until response bytes and the used entry are published. Freeze, offload and mapping replacement must therefore wait for outstanding device access. Guest-cache hits can return without entering this path.
+
+
+### Concurrency, caches and freezing {#concurrency}
+
+The virtio-fs queue owner accepts descriptors and publishes used entries. Overlappable large READs (at least 64 KiB) and directory reads can use bounded I/O workers; short metadata requests and serialized mutations remain inline. The default worker limit is the available host CPU count capped at 4, with at most twice that number of in-flight requests.
+
+Read-only operations may share an operation guard; copy-up, rename, writes and restore use an exclusive guard. Handle-map and directory-cache locks obtain stable references, while backing I/O executes outside those table locks. Native lookup references are released only after the last user leaves. A slow read therefore need not lock the whole handle table, and its handle cannot disappear during I/O.
+
+Freeze/reset stops intake, drains requests, publishes completions and joins workers; filesystem capture waits for operation guards to drain. Restore actively scans the available ring. Filesystem optimizations must preserve protocol identities, RAM leases and freezing as well as read latency. VM ordering is in [Devices and consistency](vm-runtime.md#virtio).
+
 ### Files and their actual relationships {#disk-layout}
 
 ![OverlayCore physical directories, files and projection relationships](../../zh/design/assets/overlaycore-layout.svg)
@@ -147,6 +151,8 @@ Upper stores complete copied-up files: a one-byte edit can copy the entire file.
 ## 3. Detailed data and mechanisms {#detailed-design}
 
 ### Merge, copy-up and POSIX nodes {#copy-up}
+
+![Original files, preimages, temporary copy-up and private writes](assets/overlay-copy-up.svg)
 
 Lookup validates each path component, rejecting absolute paths and `..`. Relative ancestors in every candidate layer must be actual directories; lookup does not follow ancestor symlinks outside a layer. Directory listing merges names and removes whiteouts, exclusions and unauthorized names. Lower ordering selects the source for conflicting names.
 
@@ -210,6 +216,8 @@ An empty new upper initializes `complete-v1`, containing `pvisor-overlay-preimag
 Opaque root replacement is unsupported; select explicit subdirectories. `ChangeEntry.path` is for display, with `path_bytes` preserving non-UTF-8 identity. Mutations use `relative_path()`. Non-UTF-8 selection/planned_paths encode as `{ "bytes": [...] }`; lossy display text must not determine mutation paths.
 
 ### Apply ledger and recovery {#apply-recovery}
+
+![Target conflict checks and the Prepared, TargetApplied and Committed phases](assets/apply-conflict.svg)
 
 `OverlayRecord` stores ID, generation, target, optional baseline_lower, upper/work, stage/merged, policies, exclusions and state. States are Active/Staged/Applied/Discarded. Generation identifies a new iteration of a reusable environment; a terminal Overlay is not reopened as Active.
 
@@ -288,3 +296,9 @@ Keep target and backing boundaries explicit and preserve stage metadata plus upp
 Stop actual writers before reviewing changes and contents. Inspect dependency expansion for selective apply, especially hard links and opaque directories; inventories do not replace content diffs. Stop other target writers during apply. After failure, preserve original stage and target-side backups and reenter apply recovery; drop is not rollback.
 
 For large files, large trees or frequent selective apply, measure copy-up, fingerprint hashing, installation and ledger synchronization separately. Consider segmentation or incremental ledgers only when measured scale requires them, preserving the recovery contract. Stronger concurrency/external-edit protection needs stable snapshots, directory-FD operations or stronger coordination; advisory locks do not establish full transactional isolation.
+
+## 6. System connections and source map {#integration}
+
+The file service connects the overall diagram's virtio-fs and host FUSE paths; the image cache supplies immutable lowers, and the RAM subsystem keeps request buffers valid through completion. After execution, stage sealing fixes reviewable state, while apply separately publishes into the host target. Machine snapshots must also preserve recoverable exported-tree and inode/handle relationships; copying upper alone does not restore execution.
+
+Source entries: `crates/pvisor-overlay-core/src/service.rs`, `core.rs` and `apply.rs` own shared operations, layering and publication. `crates/pvisor-vm/src/devices/virtio/fs/` owns VM protocol and queues. `crates/pvisor/src/image/cache/backend.rs`, `direct.rs` and `lazy.rs` connect shared images to their adapters.

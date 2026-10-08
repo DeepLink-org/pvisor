@@ -12,7 +12,7 @@ run_dir="$(find "$work_dir/runs" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -
 test -n "$run_dir"
 upstream_posts="$(grep -c 'POST /v1/chat/completions' "$work_dir/mock.log")"
 test "$upstream_posts" = 2
-PYTHONPATH="$example_dir" python3 - "$run_dir/.capture/events.jsonl" <<'PYTHON'
+PYTHONPATH="$example_dir" python3 - "$run_dir/.capture/events.trace.jsonl" <<'PYTHON'
 import json
 import sys
 from pathlib import Path
@@ -20,7 +20,16 @@ from pathlib import Path
 from dialogue_fixture import REPLIES, TURNS
 
 events = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines()]
-llm = [event for event in events if event["kind"] in {"llm.request", "llm.response"}]
+assert events[0]["format"] == "pvisor.trace/5"
+llm = [
+    {
+        "kind": record["event"]["data"]["name"],
+        "call_id": record["event"]["data"]["payload"]["correlation"]["call_id"],
+        "payload": record["event"]["data"]["payload"]["content"],
+    }
+    for record in events[1:]
+    if record["event"]["data"].get("name") in {"llm.request", "llm.response"}
+]
 assert [event["kind"] for event in llm] == ["llm.request", "llm.response"] * 2
 assert len({event["call_id"] for event in llm}) == 2
 messages = []

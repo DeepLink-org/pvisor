@@ -2,6 +2,8 @@
 
 Operation 描述请求及有效操作；Event 描述处理过程中发生的事实；Trace 是这些事实组成的记录。定义位于 `pvisor-core`，构造、调度和执行位于 pvisor，持久化位于 Journal。
 
+![请求、实际控制、运行观察与接受成果的证据层次](assets/evidence-flow.svg)
+
 ## Operation：处理对象
 
 当前 `OperationKind::RunExecute` 对应 `run.execute`。操作输入是程序、参数和工作目录；策略决定和 Placement 描述它将怎样执行。Operation schema 当前为 1。
@@ -81,7 +83,7 @@ Journal 使用单写入者和提交回执，支持事件去重及尾部恢复。
 
 事件快照可以重建已观察到的请求、改写、放置及结果。完整恢复外部行为还需要初始文件状态、实际环境、外部输入及对应执行机制；当前 Trace 不包含这些全部信息。事件日志、文件检查点和 Agent 轨迹 replay 各有不同的恢复范围。
 
-当前 Run Bundle 为 schema 4；旧 Bundle 和旧 Event／Journal 格式拒绝读取，不静默混用。版本由代码中的常量维护，详细强制力口径见[能力与证据](../concepts/capabilities-and-evidence.md)。
+当前 Run Bundle 为 schema 4；旧 Bundle 和旧 Event／Journal 格式拒绝读取，不静默混用。版本由代码中的常量维护，跨记录兼容边界见[记录与版本矩阵](records-and-versions.md#execution-records)，详细强制力口径见[能力与证据](../concepts/capabilities-and-evidence.md)。提交失败、断连和重试的核对顺序见[失败语义](failure-semantics.md)。
 
 ## 代码与验证
 

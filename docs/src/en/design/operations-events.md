@@ -2,6 +2,8 @@
 
 Operation describes the requested and effective operation; Event describes facts during processing; Trace records those facts. Definitions belong in `pvisor-core`, construction/scheduling/execution in pvisor and persistence in Journal.
 
+![Evidence levels from requests through controls and observations to accepted artifacts](assets/evidence-flow.svg)
+
 ## Operation: the object being processed
 
 `OperationKind::RunExecute` currently corresponds to `run.execute`. Inputs are the program, arguments and working directory; policy decisions and Placement describe how it will execute. Operation schema is currently 1.
@@ -81,7 +83,7 @@ Disabling file recording still permits an in-memory event stream, but produces n
 
 Snapshots reconstruct observed requests, rewrites, placement and outcomes. Reconstructing complete external behavior also requires initial files, actual environment, external inputs and execution mechanisms. Trace does not contain all of these. Event logs, filesystem checkpoints and agent trajectory replay have different recovery scopes.
 
-Run Bundle currently uses schema 4. Old Bundle and Event/Journal formats are rejected rather than silently mixed. Code constants maintain versions; see [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for enforcement rules.
+Run Bundle currently uses schema 4. Old Bundle and Event/Journal formats are rejected rather than silently mixed. Code constants maintain versions; see the [Records and version matrix](records-and-versions.md#execution-records) for compatibility boundaries and [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for enforcement rules. [Failure semantics](failure-semantics.md) explains reconciliation after commit failures, disconnects and retries.
 
 ## Code and validation
 

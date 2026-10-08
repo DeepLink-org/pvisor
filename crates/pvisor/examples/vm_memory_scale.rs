@@ -13,14 +13,13 @@ use pvisor_core::{RunInvocation, RunSpec, RunState, StdioMode};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::{BufRead, BufReader, BufWriter, Write},
-    os::unix::{
-        fs::{MetadataExt, OpenOptionsExt},
-        io::AsRawFd,
-    },
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,

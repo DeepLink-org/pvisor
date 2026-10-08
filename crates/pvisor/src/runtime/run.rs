@@ -1565,7 +1565,7 @@ mod tests {
         let record = crate::RunRecord::read(storage.path()).unwrap();
         assert!(record.network_interception_metrics.is_some());
         assert!(!storage.path().join("control.sock").exists());
-        let _lease = crate::runtime::RunLease::acquire(storage.path()).unwrap();
+        let _lease = crate::runtime::registry::RunLease::acquire(storage.path()).unwrap();
     }
 
     #[test]
@@ -1763,7 +1763,7 @@ mod tests {
                 .contains("event sink rejected run creation")
         );
         assert!(!storage.join("control.sock").exists());
-        let _lease = crate::runtime::RunLease::acquire(&storage).unwrap();
+        let _lease = crate::runtime::registry::RunLease::acquire(&storage).unwrap();
     }
 
     struct InconsistentExecutor;

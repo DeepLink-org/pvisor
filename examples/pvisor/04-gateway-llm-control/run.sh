@@ -34,6 +34,7 @@ echo 'Gateway counters:'
 jq '.network.intercepted' "$run_dir/run-bundle.json"
 
 echo 'Captured LLM events:'
-jq -c 'select(.kind == "llm.request" or .kind == "llm.response") |
-  {kind, call_id, user: .payload.user_content, assistant: .payload.assistant_content}' \
-  "$run_dir/.capture/events.jsonl"
+jq -c '.event.data | select(.name == "llm.request" or .name == "llm.response") |
+  {kind: .name, call_id: .payload.correlation.call_id,
+   user: .payload.content.user_content, assistant: .payload.content.assistant_content}' \
+  "$run_dir/.capture/events.trace.jsonl"

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1270" viewBox="0 0 1440 1270" role="img" aria-labelledby="title desc">
+<title id="title">网络子系统 · VM 受控出口</title><desc id="desc">当前 vm-smoltcp 路径：域名关联、授权、连接与双向字节桥接</desc>
+<rect width="1440" height="1270" fill="#0d1b30"/>
+<g font-family="Arial,Helvetica,PingFang SC,Microsoft YaHei,sans-serif" text-anchor="middle">
+<text x="720" y="59" fill="#c8e0fc" font-size="39" font-weight="700">网络子系统 · VM 受控出口</text>
+<text x="720" y="98" fill="#b7c6db" font-size="21" font-weight="500">当前 vm-smoltcp 路径：域名关联、授权、连接与双向字节桥接</text>
+<rect x="30" y="126" width="1380" height="128" rx="38" fill="#244569" stroke="#416080" stroke-width="7"/>
+<text x="720" y="173" fill="#c8e0fc" font-size="31" font-weight="700">Guest Linux · 应用 socket 与内核 TCP/IP</text>
+<rect x="54" y="190" width="1332" height="44" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="221.0" fill="#e9eef8" font-size="27" font-weight="700">192.0.2.2/24 → router 192.0.2.1 → virtio-net</text>
+<path d="M720 261 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="295" width="1380" height="120" rx="38" fill="#102138" stroke="#416080" stroke-width="7"/>
+<text x="720" y="342" fill="#c8e0fc" font-size="31" font-weight="700">pvisor-vm · virtio-net</text>
+<rect x="54" y="358" width="1332" height="39" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="386.5" fill="#e9eef8" font-size="25" font-weight="700">virtqueue ↔ Ethernet frame ↔ 带长度前缀的 UnixStream</text>
+<path d="M720 422 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="456" width="1380" height="498" rx="38" fill="#223852" stroke="#416080" stroke-width="7"/>
+<text x="720" y="503" fill="#c8e0fc" font-size="31" font-weight="700">pvisor-overlaynet · vm-smoltcp</text>
+<rect x="54" y="523" width="650" height="190" rx="28" fill="#2e4c70" stroke="#416080" stroke-width="7"/>
+<text x="379" y="568" fill="#e9eef8" font-size="28" font-weight="700">合成 DNS 与逻辑身份</text>
+<rect x="72" y="590" width="614" height="96" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="379.0" y="634.0" fill="#e9eef8" font-size="27" font-weight="700">名称 ↔ Attempt 内稳定地址</text>
+<text x="379.0" y="663.0" fill="#e9eef8" font-size="20" font-weight="500">198.18.0.0/15</text>
+<rect x="726" y="523" width="660" height="190" rx="28" fill="#284867" stroke="#416080" stroke-width="7"/>
+<text x="1056" y="568" fill="#e9eef8" font-size="28" font-weight="700">guest TCP 与 flow 状态</text>
+<rect x="744" y="590" width="624" height="96" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1056.0" y="634.0" fill="#e9eef8" font-size="26" font-weight="700">SYN 等待授权和宿主连接</text>
+<text x="1056.0" y="663.0" fill="#e9eef8" font-size="20" font-weight="500">独立握手 / 缓冲 / 关闭</text>
+<rect x="54" y="735" width="1332" height="74" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="768.0" fill="#e9eef8" font-size="27" font-weight="700">出口策略门 · hostname / IP + port + transport</text>
+<text x="720.0" y="797.0" fill="#e9eef8" font-size="20" font-weight="500">core 授权 → 解析地址检查；不透明 alias 的最终 IP 不可见</text>
+<rect x="54" y="830" width="1332" height="98" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="875.0" fill="#e9eef8" font-size="27" font-weight="700">宿主 connect 成功 → 推进 guest 握手 → 双向 relay</text>
+<text x="720.0" y="904.0" fill="#e9eef8" font-size="20" font-weight="500">策略、计数与带宽预算归属同一 Attempt</text>
+<path d="M720 961 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="995" width="1380" height="111" rx="38" fill="#1c3c45" stroke="#416080" stroke-width="7"/>
+<text x="720" y="1042" fill="#c8e0fc" font-size="31" font-weight="700">宿主 TCP socket → 外部服务</text>
+<text x="720" y="1081" fill="#c8e0fc" font-size="24" font-weight="700">TLS 密文原样桥接；模型捕获另走显式 Gateway 路由</text>
+<text x="720" y="1150" fill="#c8e0fc" font-size="21" font-weight="700">支持面：IPv4 TCP + 本地 DNS；通用 UDP / IPv6 / QUIC / 入站拒绝。</text>
+<text x="720" y="1191" fill="#c8e0fc" font-size="21" font-weight="700">Host / OCI 显式代理仍为 cooperative；netns 与 seccomp 属于后续设计。</text>
+<text x="720" y="1232" fill="#c8e0fc" font-size="21" font-weight="700">TSI 关闭；VM 虚拟网卡是当前 guest 出口的控制点。</text>
+</g></svg>

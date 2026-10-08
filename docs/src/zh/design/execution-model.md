@@ -7,6 +7,8 @@
 
 [单节点 daemon](daemon/index.md) 通过 VM-only NativeRuntime 管理 OpenSandbox profile 的 `sb-*` sandbox。私有 supervisor 记录把 generation 绑定到原生 Run/Attempt ID；sandbox ID 不是公开 Job ID。API 不实现 stage/apply、checkpoint 或 Run Bundle 导出。它嵌入原生执行，但不自动暴露下列 Job 工作流；跨主机身份属于外部编排。
 
+![Job 的执行完成与文件结果接受分别发布](assets/job-lifecycle.svg)
+
 ## Operation：核心处理对象
 
 Job 描述用户的一项工作，Operation 描述 pVisor 要处理的操作。当前生产操作是 `run.execute`，包含程序、参数和工作目录，以及有效策略决定和 Placement。pvisor 负责准入、实际改写、调度和执行；core 提供这些定义。
@@ -23,7 +25,9 @@ Attempt 标识由某个执行器完成的一次执行。当前 `PVisor::run` 每
 
 准入只解析一次驱动网络配置，应用分层策略后，将最终配置传入 Attempt 准备。Gateway、显式代理和 VM 网络消费这份配置，不重新读取原始配置。Guest workspace overlay 要求执行器显式声明支持；执行器名称是描述性记录，不是能力判断。网络不可绕过标记由实际 VM 网络 attachment 路径决定，后端名称不作为判断依据。
 
-Fork 根据逻辑检查点创建带有来源关系的新 Run，不会恢复原进程。
+Workspace fork 从逻辑检查点创建文件分支；execution fork 从支持的机器检查点恢复新 Job。两者保存来源关系，具体恢复范围由检查点种类决定。
+
+持久 Job 服务还负责完成结果的发布。`ManagedJobRun` 将实际 Attempt join 与 `Server::finish` 交给 runtime task，前端只持有等待适配。前端等待失败或被丢弃会请求取消，已接受的完成任务在 Tokio runtime 仍存活时继续核对和发布；runtime 关闭与宿主进程退出仍有自己的恢复边界。
 
 ## Effect：执行带来的后果
 

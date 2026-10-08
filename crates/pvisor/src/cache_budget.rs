@@ -25,6 +25,8 @@ impl Budget {
             misses: AtomicUsize::new(0),
         }))
     }
+    // Keep the atomic update spelling supported by Rust versions before 1.99.
+    #[allow(deprecated)]
     fn reserve(&self, bytes: usize) -> Result<Charge, ()> {
         self.0
             .used

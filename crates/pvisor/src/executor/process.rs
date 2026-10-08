@@ -1690,8 +1690,8 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn process_executor_respects_pty_session_boundaries() {
-        use std::io::Write;
-        use std::os::fd::FromRawFd;
+        use std::io::{Read, Write};
+        use std::os::fd::{AsRawFd, FromRawFd};
         use std::os::unix::process::CommandExt;
 
         const CASE_ENV: &str = "PVISOR_TEST_EXECUTOR_PTY_CASE";
@@ -1783,8 +1783,8 @@ mod tests {
                         &mut master,
                         &mut slave,
                         std::ptr::null_mut(),
-                        std::ptr::null(),
-                        std::ptr::null(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
                     )
                 },
                 0
@@ -1813,7 +1813,8 @@ mod tests {
                     if libc::setsid() < 0 {
                         return Err(std::io::Error::last_os_error());
                     }
-                    if case != "detached" && libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0) < 0
+                    if case != "detached"
+                        && libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as _, 0) < 0
                     {
                         return Err(std::io::Error::last_os_error());
                     }
@@ -1822,9 +1823,35 @@ mod tests {
             }
             let mut child = command.spawn().unwrap();
             master.write_all(b"ready\n").unwrap();
+            let flags = unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) };
+            assert!(flags >= 0);
+            assert_eq!(
+                unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) },
+                0
+            );
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while child.try_wait().unwrap().is_none() {
+                // Drain terminal echo while the child closes its slave. Darwin
+                // can wait for queued terminal output during process exit.
+                let mut echo = [0; 1024];
+                loop {
+                    match master.read(&mut echo) {
+                        Ok(0) => break,
+                        Ok(_) => {}
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                            ) =>
+                        {
+                            break;
+                        }
+                        Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+                        Err(error) => panic!("PTY echo read failed: {error}"),
+                    }
+                }
                 if std::time::Instant::now() >= deadline {
+                    drop(master);
                     let _ = child.kill();
                     let output = child.wait_with_output().unwrap();
                     panic!("PTY case {case} timed out: {output:?}");

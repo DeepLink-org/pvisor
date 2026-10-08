@@ -2487,7 +2487,7 @@ mod tests {
     #[test]
     fn copied_snapshot_discards_receipts_from_the_original_generation() {
         use sha2::{Digest, Sha256};
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let source = temp.path().join("source");
         let copied = temp.path().join("copied");
         std::fs::create_dir_all(source.join("lower")).unwrap();
@@ -3301,7 +3301,7 @@ mod tests {
                 self.materialize_file(Path::new("file"))
             }
         }
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let lower = temp.path().join("lower");
         std::fs::create_dir(&lower).unwrap();
         std::fs::write(lower.join("file"), [0; 15]).unwrap();

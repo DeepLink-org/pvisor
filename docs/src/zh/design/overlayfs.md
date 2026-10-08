@@ -1,4 +1,4 @@
-# OverlayCore 设计
+# 文件系统子系统：OverlayCore 与双入口
 
 ## 1. Motivation {#motivation}
 
@@ -37,20 +37,7 @@ FUSE 在这里同时指请求协议和宿主挂载入口：virtio-fs 使用 FUSE
 `pvisor-overlay-core::service::FilesystemService`，共享 OverlayCore 操作与
 后端读取。协议 inode/handle 表、目录游标和平台权限处理仍由各入口管理。
 
-```mermaid
-flowchart TD
-    H[Host tools] --> HK[Host kernel FUSE]
-    HK --> HA[Host FUSE adapter]
-    G[Guest tools] --> GK[Guest kernel virtio-fs]
-    GK --> VQ[virtqueue]
-    VQ --> VA[VM virtio-fs adapter]
-    HA --> S[Shared filesystem service]
-    VA --> S
-    S --> O[OverlayCore: policy, merge, copy-up, journal]
-    O --> L[Local lower / upper]
-    O --> R[Immutable remote lower]
-    R --> C[Metadata / content cache]
-```
+![文件系统双入口、共享文件服务、lower/upper 与结果接受](assets/filesystem-subsystem.svg)
 
 进入服务的是这些导出文件树中需要后端处理的请求。内核缓存命中可以不发
 请求，guest 的 procfs、tmpfs 和网络操作也不因这一结构进入文件服务。
@@ -96,6 +83,23 @@ virtio-fs 文件服务入口分开，随 VM teardown 释放。
 统一文件服务处理文件系统及 lazy image；[快照 RAM lazy 恢复](environment-snapshot.md)
 的缺页加载路径是独立机制。
 
+### 一次 virtio-fs 请求怎样完成 {#virtio-request}
+
+![从 guest read 到 descriptor、共享文件服务和 used ring](assets/filesystem-request.svg)
+
+Guest 页缓存未命中时，virtio-fs 将 FUSE READ 请求及响应缓冲区放入 descriptor chain。链里的地址是 guest 物理地址；宿主适配器校验范围、长度与方向，再将请求交给文件服务。inode 和已打开 handle 属于协议入口，文件服务使用明确的相对路径与 backing 身份执行语义。
+
+请求处理可以交给 worker，但 used-ring 发布仍由队列 owner 管理。响应写完并公布 used 条目之前，设备保留 RAM lease；冻结、offload 和页映射替换因此必须等待未完成设备访问。guest 内核缓存命中可以直接返回，不会每次都进入这条路径。
+
+
+### 并发、缓存与冻结的连接点 {#concurrency}
+
+virtio-fs 的 queue owner 负责描述符接收与 used-ring 发布。可重叠的大 READ（至少 64 KiB）和目录读取可交给有界 I/O worker；短元数据请求和需要串行的修改仍内联处理。默认 worker 上限取宿主可用 CPU 数且不超过 4，在途请求不超过 worker 数的两倍。
+
+只读操作可以持有共享 operation guard，copy-up、改名、写入与恢复等操作持有独占 guard。handle map 和目录缓存锁只用于取得稳定引用，实际 backing I/O 在这些表锁外执行；最后一个使用者离开后才释放原生 lookup 引用。这避免一条慢读取锁住整张 handle 表，同时阻止句柄在读取中途被释放。
+
+freeze/reset 停止接收、排空在途请求、发布完成并 join worker；文件系统快照等待 operation guard 释放。恢复后主动扫描 available ring。因此文件服务优化必须同时维持协议身份、RAM lease 和冻结合同，不能只比较 `read` 本身耗时。VM 侧顺序见[设备与一致性](vm-runtime.md#virtio)。
+
 ### 文件布局与实际关系 {#disk-layout}
 
 ![OverlayCore 的物理目录、文件与映射关系](assets/overlaycore-layout.svg)
@@ -130,6 +134,8 @@ upper 保存完整 copy-up 文件，修改一字节也可能复制整个文件�
 ## 3. 关键数据和核心机制详细设计 {#detailed-design}
 
 ### 合成、copy-up 与 POSIX 节点 {#copy-up}
+
+![原始文件、原像指纹、临时 copy-up 与私有写入](assets/overlay-copy-up.svg)
 
 查找逐组件验证路径，拒绝绝对路径和 `..`。每一层的祖先都必须是实际目录，不跟随祖先 symlink 去层外找子节点。目录读取合并名字，再移除 whiteout、排除项与不允许访问的名字。lower 顺序决定同名节点的读取来源。
 
@@ -193,6 +199,8 @@ xattrs 区分 Unsupported 与排序后的 `(name-bytes, value-sha256)`；内部 
 根 opaque replacement 不支持，要求选择明确子目录。`ChangeEntry.path` 是展示字符串；非 UTF-8 名称另存 `path_bytes`，实际变更调用 `relative_path()`。selection / planned_paths 中的非 UTF-8 路径编码为 `{ "bytes": [...] }`，不能从有损显示字符串反推操作路径。
 
 ### apply 账本与恢复 {#apply-recovery}
+
+![目标冲突检查和 Prepared、TargetApplied、Committed 的关系](assets/apply-conflict.svg)
 
 `OverlayRecord` 保存 id、generation、target、可选 baseline_lower、upper/work、stage/merged、策略、排除项和状态。状态为 Active / Staged / Applied / Discarded；generation 标识可复用环境的新一轮，终态 Overlay 不重新打开为 Active。
 
@@ -271,3 +279,9 @@ pending apply 存在时不能 drop，以免删掉恢复所需的 upper。已 Dis
 先结束实际写入，再审查 changeset 和文件内容。选择性 apply 前查看依赖扩展，尤其是硬链接组与 opaque 目录；展示清单不能替代内容 diff。apply 期间停止其他目标写入者，失败后保留 target 旁 backup 与原 stage，重新进入 apply 恢复流程，不能把 drop 当作回滚。
 
 对大文件、高文件数或频繁选择性 apply 的负载，分别量 copy-up、preimage 哈希、目标安装和 ledger 同步成本。只有测到索引或 ledger 规模确实成为瓶颈，再考虑分段或增量账本；当前格式清晰，优先保住恢复合同。需要更强并发或外部编辑保护时，应先建立稳定快照、目录 FD 操作或更强协调机制，不能从 advisory lock 推导完全事务隔离。
+
+## 6. 回到整体架构与源码 {#integration}
+
+文件服务承接总图中的 virtio-fs 和 Host FUSE，镜像缓存为它提供不可变 lower；RAM 子系统保证请求缓冲区在完成前有效。执行结束后，stage seal 固定可审查状态，apply 独立发布到宿主 target。机器快照还需要保留导出树与 inode/handle 的可恢复关系，单独拷贝 upper 不等于完整执行恢复。
+
+源码入口：`crates/pvisor-overlay-core/src/service.rs`、`core.rs` 和 `apply.rs` 分别拥有共享操作、分层语义和结果发布；`crates/pvisor-vm/src/devices/virtio/fs/` 拥有 VM 协议与队列；`crates/pvisor/src/image/cache/backend.rs`、`direct.rs`、`lazy.rs` 连接共享镜像与各适配器。

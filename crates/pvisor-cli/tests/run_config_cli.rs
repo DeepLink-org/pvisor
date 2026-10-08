@@ -413,6 +413,10 @@ exec "$PVISOR_TEST_PVISOR" run --executor host \
 
 #[cfg(unix)]
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "temporary OCI control mount is not visible to nested pVisor on macOS"
+)]
 fn container_executor_deadline_stops_the_runtime_client() {
     let temporary = tempfile::tempdir().expect("create CLI fixture");
     let workspace = temporary.path().join("workspace");

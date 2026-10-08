@@ -3,12 +3,11 @@
 
 import argparse
 import os
-import shutil
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "packaging"))
-from stage_wheel_binaries import ROOT, BuildOptions, _build
+from stage_wheel_binaries import ROOT, BuildOptions, _build, copy_artifact
 
 
 def main() -> None:
@@ -30,7 +29,7 @@ def main() -> None:
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         if source.resolve() != destination.resolve():
-            shutil.copy2(source, destination)
+            copy_artifact(source, destination)
     if sys.platform == "darwin":
         directory = artifacts["pvisor"].parent
         for name in ("libkrunfw.5.dylib", "libkrunfw.SOURCE"):
@@ -39,7 +38,7 @@ def main() -> None:
                 Path(args.target_dir) / ("debug" if args.profile == "dev" else args.profile) / name
             )
             if source.resolve() != destination.resolve():
-                shutil.copy2(source, destination)
+                copy_artifact(source, destination)
 
 
 if __name__ == "__main__":

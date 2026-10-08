@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1155" viewBox="0 0 1440 1155" role="img" aria-labelledby="title desc">
+<title id="title">VM 子系统 · 执行与设备</title><desc id="desc">放大总图中的 pvisor-vm：一个 runner 内的三类状态与一个共同冻结边界</desc>
+<rect width="1440" height="1155" fill="#0d1b30"/>
+<g font-family="Arial,Helvetica,PingFang SC,Microsoft YaHei,sans-serif" text-anchor="middle">
+<text x="720" y="59" fill="#c8e0fc" font-size="39" font-weight="700">VM 子系统 · 执行与设备</text>
+<text x="720" y="98" fill="#b7c6db" font-size="21" font-weight="500">放大总图中的 pvisor-vm：一个 runner 内的三类状态与一个共同冻结边界</text>
+<rect x="30" y="126" width="1380" height="116" rx="38" fill="#1a3d68" stroke="#416080" stroke-width="7"/>
+<text x="720" y="173" fill="#c8e0fc" font-size="31" font-weight="700">调用方 · pvisor VM executor / supervisor</text>
+<rect x="54" y="186" width="1332" height="40" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="215.0" fill="#e9eef8" font-size="26" font-weight="700">VmBuilder → run(on_ready) → VmmHandle</text>
+<path d="M720 249 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="283" width="1380" height="114" rx="38" fill="#244569" stroke="#416080" stroke-width="7"/>
+<text x="720" y="330" fill="#c8e0fc" font-size="31" font-weight="700">Guest Linux · 应用与内核</text>
+<rect x="54" y="343" width="650" height="38" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="379.0" y="371.0" fill="#e9eef8" font-size="24" font-weight="700">指令 · 页表 · 中断</text>
+<rect x="726" y="343" width="660" height="38" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1056.0" y="371.0" fill="#e9eef8" font-size="24" font-weight="700">VFS / TCP/IP → virtio 驱动</text>
+<rect x="30" y="423" width="1380" height="520" rx="38" fill="#102138" stroke="#416080" stroke-width="7"/>
+<text x="720" y="470" fill="#c8e0fc" font-size="31" font-weight="700">pvisor-vm · runner</text>
+<rect x="54" y="488" width="430" height="266" rx="28" fill="#2e4c70" stroke="#416080" stroke-width="7"/>
+<text x="269" y="530" fill="#e9eef8" font-size="28" font-weight="700">vCPU 与控制</text>
+<rect x="505" y="488" width="430" height="266" rx="28" fill="#284867" stroke="#416080" stroke-width="7"/>
+<text x="720" y="530" fill="#e9eef8" font-size="28" font-weight="700">RAM 地址空间</text>
+<rect x="956" y="488" width="430" height="266" rx="28" fill="#264956" stroke="#416080" stroke-width="7"/>
+<text x="1171" y="530" fill="#e9eef8" font-size="28" font-weight="700">设备与 I/O</text>
+<rect x="68" y="551" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="269.0" y="588.0" fill="#e9eef8" font-size="24" font-weight="700">CPU 线程</text>
+<text x="269.0" y="617.0" fill="#e9eef8" font-size="20" font-weight="500">run · exit · register state</text>
+<rect x="68" y="645" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="269.0" y="682.0" fill="#e9eef8" font-size="24" font-weight="700">EventManager / eventfd</text>
+<text x="269.0" y="711.0" fill="#e9eef8" font-size="20" font-weight="500">kick · pause / resume</text>
+<rect x="519" y="551" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="588.0" fill="#e9eef8" font-size="24" font-weight="700">GuestMemoryMmap</text>
+<text x="720.0" y="617.0" fill="#e9eef8" font-size="20" font-weight="500">GPA regions ↔ host mappings</text>
+<rect x="519" y="645" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="682.0" fill="#e9eef8" font-size="24" font-weight="700">MemoryGate / RAM lease</text>
+<text x="720.0" y="711.0" fill="#e9eef8" font-size="20" font-weight="500">映射存活 · 排空访问</text>
+<rect x="970" y="551" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1171.0" y="588.0" fill="#e9eef8" font-size="24" font-weight="700">virtqueue / queue owner</text>
+<text x="1171.0" y="617.0" fill="#e9eef8" font-size="20" font-weight="500">available → request → used</text>
+<rect x="970" y="645" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1171.0" y="682.0" fill="#e9eef8" font-size="24" font-weight="700">virtio-fs / net / console</text>
+<text x="1171.0" y="711.0" fill="#e9eef8" font-size="20" font-weight="500">文件服务 · 出口 · 通道</text>
+<rect x="54" y="776" width="1332" height="70" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="807.0" fill="#e9eef8" font-size="27" font-weight="700">完整冻结：vCPU 确认停驻 → worker 排空 → RAM gate 关闭</text>
+<text x="720.0" y="836.0" fill="#e9eef8" font-size="20" font-weight="500">捕获 CPU + RAM + 设备；恢复先安装状态，再显式 resume</text>
+<rect x="54" y="866" width="650" height="51" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="379.0" y="900.5" fill="#e9eef8" font-size="26" font-weight="700">KVM · vCPU / memory slots</text>
+<rect x="726" y="866" width="660" height="51" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1056.0" y="900.5" fill="#e9eef8" font-size="26" font-weight="700">HVF · vCPU / stage-2 / GIC</text>
+<path d="M720 950 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="984" width="1380" height="87" rx="38" fill="#1c3c45" stroke="#416080" stroke-width="7"/>
+<text x="720" y="1031" fill="#c8e0fc" font-size="31" font-weight="700">宿主 OS 与硬件虚拟化</text>
+<text x="720" y="1112" fill="#c8e0fc" font-size="22" font-weight="700">宿主服务拥有文件、出口与持久对象；普通 pause 仅停 vCPU。</text>
+</g></svg>

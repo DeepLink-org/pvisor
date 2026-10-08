@@ -9,7 +9,7 @@ policy = "public"
 [gateway]
 mode = "capture"
 admin_listen = "127.0.0.1:19082"
-level = "dialogue"
+level = "full"
 
 [[gateway.routes]]
 name = "*"

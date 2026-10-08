@@ -163,7 +163,7 @@ $(KERNEL_SOURCES)/.config: config-libkrunfw$(VARIANT)_$(GUESTARCH) | $(KERNEL_SO
 	cp config-libkrunfw$(VARIANT)_$(GUESTARCH) $(KERNEL_SOURCES)/.config
 ifeq ($(OS),Darwin)
 ifeq ($(MACOS_BUILDER),native)
-	cd $(KERNEL_SOURCES) && $(KERNEL_MAKE) $(KERNEL_KBUILD_FLAGS) $(KERNEL_HOSTFLAGS) olddefconfig
+	+cd $(KERNEL_SOURCES) && $(KERNEL_MAKE) $(KERNEL_KBUILD_FLAGS) $(KERNEL_HOSTFLAGS) olddefconfig
 else
 	cd $(KERNEL_SOURCES) ; $(MAKE) olddefconfig
 endif
@@ -174,12 +174,12 @@ endif
 $(KERNEL_BINARY_$(GUESTARCH)): $(KERNEL_SOURCES)/.config
 ifeq ($(OS),Darwin)
 ifeq ($(MACOS_BUILDER),native)
-	cd $(KERNEL_SOURCES) && rm -f .version && $(KERNEL_MAKE) $(MAKEFLAGS) $(KERNEL_KBUILD_FLAGS) $(KERNEL_HOSTFLAGS) $(KERNEL_BUILD_TARGET)
+	+cd $(KERNEL_SOURCES) && rm -f .version && $(KERNEL_MAKE) $(KERNEL_KBUILD_FLAGS) $(KERNEL_HOSTFLAGS) $(KERNEL_BUILD_TARGET)
 else
-	cd $(KERNEL_SOURCES) ; rm -f .version ; $(MAKE) $(MAKEFLAGS) $(KERNEL_FLAGS)
+	cd $(KERNEL_SOURCES) ; rm -f .version ; $(MAKE) $(KERNEL_FLAGS)
 endif
 else
-	cd $(KERNEL_SOURCES) ; rm -f .version ; $(MAKE) $(MAKEFLAGS) $(KERNEL_FLAGS) $(KERNEL_BUILD_TARGET)
+	cd $(KERNEL_SOURCES) ; rm -f .version ; $(MAKE) $(KERNEL_FLAGS) $(KERNEL_BUILD_TARGET)
 endif
 
 ifeq ($(OS),Darwin)

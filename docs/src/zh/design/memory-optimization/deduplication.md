@@ -10,9 +10,10 @@
 | --- | --- | --- |
 | 不可变基线＋私有 COW | 从相同基线恢复的未修改页 | 无需扫描，但修改后共享减少 |
 | Linux KSM | 内核发现的相同私有匿名页 | 不需要共享服务，但异步扫描消耗 CPU |
-| 池中内容去重 | 相同的编码冷对象 | 可以叠加压缩，但需要冷回收和恢复机制 |
+| Linux physical pool | 不同 VM 中相同的驻留原文页 | 扫描、slot/reference、kernel COW 与独立进程故障域 |
+| 编码池内容去重 | 相同的编码冷对象 | 可以叠加压缩，但需要冷回收和恢复机制 |
 
-池中的去重由[池化服务器压缩](compression-pool.md)定义，不把它当作活跃原文物理页合并。
+编码对象去重由[池化服务器压缩](compression-pool.md)定义；Linux physical pool 共享驻留原文页，两者有不同的所有权合同。
 
 ## 不可变基线共享 {#baseline}
 
@@ -21,6 +22,14 @@
 压缩 checkpoint 先物化为可映射的不可变基线，再复用该基线。内容相同但 inode 不同的文件不自动共享缓存页，磁盘 reflink 也不等于内存共享。基线缓存是可再生加速层，不替代持久 checkpoint。
 
 内容验证和不可变性是复用前提；实例持有自己的 backing 引用与租约，某实例退出或缓存淘汰不能破坏其他实例的映射。共享内容应由内核对象/存储引用维持，而不是依赖另一个实例的堆。
+
+## Linux daemon physical pool {#physical-pool}
+
+![两个 VM 读取同一槽位，写入时生成私有 COW 页](../assets/memory-cow.svg)
+
+显式 `serve --memory-pool` 启用 daemon 自有的原文页共享。候选只保留 hash；内容在不同 VM session 出现后才进入 bounded memfd slot。VM 在 CPU/device 排空后重新核对字节，使用只读 descriptor 和 `MAP_PRIVATE` 映射相同页。该路径不依赖 userfaultfd，不编码或压缩唯一页。
+
+Reference pin 保护槽位到撤销映射之后，断联时等待 pidfd 确认 peer 退出再回收。Pool 是活跃共享页的 owner，丢失会使依赖 VM 失败；它不提供 durable snapshot 或进程重启恢复。预算和故障范围见[共享工作集](../daemon/shared-working-set.md)。
 
 ## Linux KSM {#ksm}
 
@@ -35,7 +44,7 @@ KSM 不合并文件 page cache；当前 `MAP_SHARED` live backing 不能只添�
 - **主动共享与后台发现：** 相同基线无需重新发现；动态重复内容交给 KSM，但接受扫描延迟与 CPU 成本。
 - **节省与写入成本：** 高频写入会拆分共享，减少收益并增加 COW；不能只按初始共享率规划密度。
 - **共享与隔离：** 限定信任域并评估内容存在性侧信道。KSM advice 没有 pVisor 自定义域参数，产品标签不能单独证明隔离。
-- **简单与覆盖面：** 首版不自建任意热页即时合并器，也不要求 P2P。未来发现服务只协调内容，不进入必须在线的恢复路径。
+- **简单与覆盖面：** 当前 physical pool 采用有界 resident 扫描；任意热页即时合并与 P2P 不属于交付范围。主动共享槽位与完整机器持久恢复分别设计。
 
 同一区域首版不叠加 KSM 与用户态冷回收，避免先合并再复制压缩的重复工作。独特但可压缩的冷内容见[内存压缩](compression.md)。
 

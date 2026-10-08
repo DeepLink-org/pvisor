@@ -19,6 +19,8 @@ capture or restore. The macOS/HVF heap pool is a separate experimental path.
 
 ## Ownership and data flow {#architecture}
 
+![Two quiescent windows, compressed publication and userfaultfd restoration](../assets/cold-page-cycle.svg)
+
 The instance coordinator owns [complete checkpoints](../environment-snapshot.md),
 including CPU/device state, compatibility, and persistent storage. Checkpoint
 encoding may reuse codec code without adopting runtime cold-object lifetimes or
@@ -88,15 +90,19 @@ sudo setfacl -x u:reiase /dev/userfaultfd
 Admission rejects `vm.ram_backing`, `vm.ram_compression`, `vm.ram_dedup`,
 `vm.snapshot_filesystem_pool`, snapshot capture/restore and whole-VM
 [offload/FUSE backing](offload.md) combinations. Local compression and external
-`vm.memory_pool` are mutually exclusive. External pools use the same userfaultfd
-path with cold objects held by the pool process. Enable one through
-[the daemon's `--memory-pool`](../../guides/daemon/index.md#memory-pool).
-Ordinary RAM has no live backing file in this mode.
+`vm.memory_pool` are mutually exclusive. The current Linux daemon `--memory-pool`
+uses raw-page physical sharing: reference-pinned slots in a read-only,
+size-sealed memfd are mapped by VMs with `MAP_PRIVATE`. It registers no
+userfaultfd and does not compress unique contents. The paths reuse sampling
+and recheck barriers but have different restoration and object lifetimes.
+See [daemon memory pool](../../guides/daemon/index.md#memory-pool) for deployment.
 
 Selection is experimental eviction/refault probing, not a read-access heat
 detector: unchanged bytes can still be read frequently. Rechecks protect content,
-not workload latency. Client-owned sealed `memfd` pooling remains a
-[future proposal](compression-pool.md), and macOS has no delivered sealed equivalent.
+not workload latency. Historical encoded-object pooling and broader client-owned
+proposals remain in [pooled compression](compression-pool.md); they do not replace
+the current physical-pool contract. macOS has no equivalent delivered daemon
+physical-sharing path.
 
 ## Evidence boundary {#evidence}
 

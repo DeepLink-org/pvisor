@@ -2,6 +2,8 @@
 
 Operation is the object being processed, pvisor owns the execution lifecycle, and Event provides the observation interface.
 
+![Requests, effective decisions, installed controls and observations retain separate authority](assets/evidence-flow.svg)
+
 ## Separate definitions from execution
 
 Shared operations, policies, Placement, outcomes and interaction contracts belong in core. Admission, scheduling, process launch, sockets, resource preparation and lifecycle belong in pvisor and drivers. Find an existing production caller before adding a type; do not add another executor or control protocol for a future interface.

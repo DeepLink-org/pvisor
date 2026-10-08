@@ -855,6 +855,16 @@ mod tests {
 
     #[test]
     fn test_vm_memory_init() {
+        let support = std::process::Command::new("/usr/sbin/sysctl")
+            .args(["-n", "kern.hv_support"])
+            .output()
+            .expect("query Hypervisor availability");
+        assert!(support.status.success(), "kern.hv_support query failed");
+        if support.stdout.trim_ascii() == b"0" {
+            eprintln!("SKIP: host reports kern.hv_support=0; HVF memory mapping needs virtualization");
+            return;
+        }
+        assert_eq!(support.stdout.trim_ascii(), b"1");
         let mut vm = Vm::new(false).expect("Cannot create new vm");
 
         // Use a realistic guest physical address; hv_vm_map rejects GPA 0.

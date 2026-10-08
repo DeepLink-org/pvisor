@@ -2,7 +2,7 @@ name: pVisor Benchmark
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, next]
     paths:
       - 'Cargo.*'
       - '.cargo/**'
@@ -14,7 +14,7 @@ on:
       - '.github/actions/setup-build-env/**'
       - '.github/workflows/pvisor-benchmark.yml'
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, next]
     paths:
       - 'Cargo.*'
       - '.cargo/**'
@@ -82,6 +82,9 @@ jobs:
 
       - name: Benchmark main
         if: steps.baseline.outputs.supported == 'true'
+        env:
+          # Older baseline firmware recipes expand MAKEFLAGS as command arguments.
+          GNUMAKEFLAGS: --no-print-directory
         shell: bash
         run: |
           set -euo pipefail
@@ -90,6 +93,13 @@ jobs:
             --suite smoke \
             --output "${RUNNER_TEMP}/.data/pvisor-benchmark/main" \
             --target-dir "${GITHUB_WORKSPACE}/target/pvisor-benchmark-main"
+
+      - name: Stop baseline Host listener before switching binaries
+        if: steps.baseline.outputs.supported == 'true'
+        shell: bash
+        run: |
+          # The Host listener intentionally rejects a different executable digest.
+          pkill -f "^${GITHUB_WORKSPACE}/target/pvisor-benchmark-main/release/pvisor --pvisor-internal-host$" || [[ $? == 1 ]]
 
       - name: Benchmark candidate
         shell: bash

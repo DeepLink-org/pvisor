@@ -2370,7 +2370,12 @@ mod tests {
         fs::create_dir(&upper).unwrap();
         fs::create_dir(upper.join("dir")).unwrap();
         fs::write(upper.join("dir/a"), b"staged").unwrap();
-        let raw = PathBuf::from(OsString::from_vec(vec![b'b', 0xff]));
+        // APFS rejects invalid UTF-8 names; Linux still exercises raw-byte paths.
+        let raw = PathBuf::from(OsString::from_vec(if cfg!(target_os = "macos") {
+            "bé".as_bytes().to_vec()
+        } else {
+            vec![b'b', 0xff]
+        }));
         fs::hard_link(upper.join("dir/a"), upper.join(&raw)).unwrap();
         fs::write(upper.join(".wh.deleted"), b"").unwrap();
         std::os::unix::fs::symlink("dir", upper.join("symlink")).unwrap();
@@ -2383,11 +2388,9 @@ mod tests {
         let changes =
             overlay_changes_from_inventory(&record, std::slice::from_ref(&target), &inventory)
                 .unwrap();
-        assert!(
-            changes
-                .iter()
-                .any(|c| c.relative_path() == raw && c.path_bytes.is_some())
-        );
+        assert!(changes.iter().any(
+            |c| c.relative_path() == raw && c.path_bytes.is_some() != cfg!(target_os = "macos")
+        ));
         assert!(changes.iter().any(|c| c.relative_path() == Path::new("deleted") && c.kind == ChangeKind::Deleted));
         let selection = ApplySelection {
             paths: vec![PathBuf::from("dir/a")],

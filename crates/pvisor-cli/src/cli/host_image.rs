@@ -132,24 +132,22 @@ fn disk_uuid(file: &mut (impl Read + Seek), cpu: u32) -> anyhow::Result<[u8; 16]
 
 #[cfg(target_os = "macos")]
 pub(super) fn attest(file: &mut std::fs::File) -> anyhow::Result<()> {
-    let pointer = unsafe { libc::_dyld_get_image_header(0) };
+    unsafe extern "C" {
+        fn _dyld_get_image_header(index: u32) -> *const u8;
+    }
+    let pointer = unsafe { _dyld_get_image_header(0) };
     ensure!(!pointer.is_null(), "dyld has no loaded executable image");
     // The OS loader owns this mapping for process lifetime. Bound the command
     // region before creating a slice; only read the trusted main-image header.
-    let loaded = unsafe { &*pointer };
-    let size = match loaded.magic {
-        libc::MH_MAGIC => 28,
-        libc::MH_MAGIC_64 => 32,
-        _ => anyhow::bail!("unsupported loaded Mach-O image"),
-    };
+    let loaded = unsafe { std::slice::from_raw_parts(pointer, 28) };
+    let (little, size) = header(loaded)?;
+    let command_bytes = word(loaded, 20, little)? as usize;
     ensure!(
-        loaded.sizeofcmds as usize <= MAX_COMMAND_BYTES,
+        command_bytes <= MAX_COMMAND_BYTES,
         "loaded Mach-O commands exceed bound"
     );
-    let bytes = unsafe {
-        std::slice::from_raw_parts(pointer.cast::<u8>(), size + loaded.sizeofcmds as usize)
-    };
-    let cpu = loaded.cputype as u32;
+    let bytes = unsafe { std::slice::from_raw_parts(pointer, size + command_bytes) };
+    let cpu = word(loaded, 4, little)?;
     ensure!(
         image_uuid(bytes, cpu)? == disk_uuid(file, cpu)?,
         "on-disk executable differs from loaded Mach-O UUID; no Job admitted"
