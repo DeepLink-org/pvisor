@@ -38,6 +38,7 @@ pub(crate) struct AttemptSession {
     overlay_record: Option<OverlayRecord>,
     gateway: Option<InProcessCapture>,
     vm_network: Option<Arc<std::sync::Mutex<Option<VmNetworkAttachment>>>>,
+    vm_control: Arc<super::vm_control::VmControl>,
     network_metrics: Option<InterceptionMetrics>,
     fs_metrics: Option<persisting_overlayfs::FsMetrics>,
     overlay: Option<OverlayMount>,
@@ -56,6 +57,7 @@ impl AttemptSession {
     pub(crate) fn attachments(&self) -> crate::executor::AttemptAttachments {
         crate::executor::AttemptAttachments {
             vm_network: self.vm_network.clone(),
+            vm_control: Some(self.vm_control.clone()),
         }
     }
     pub(crate) fn checkpoint_record(&self) -> Option<RunRecord> {
@@ -451,10 +453,14 @@ pub(crate) fn prepare_attempt(
         run_plan: run_plan_from_spec(spec)?,
     };
     run_record.write()?;
-    let control = RunControlServer::start_observed(
+    let vm_control = Arc::new(super::vm_control::VmControl::new(
+        cfg!(target_os = "linux") && uses_krun_executor(spec),
+    ));
+    let control = RunControlServer::start_controlled(
         &run_record,
         fs_metrics.clone(),
         Some(network_metrics.clone()),
+        vm_control.clone(),
     )?;
 
     let RunInvocation::Process(ref process) = spec.invocation;
@@ -516,6 +522,7 @@ pub(crate) fn prepare_attempt(
         started_at: Instant::now(),
         run_record,
         _control: control,
+        vm_control,
         _lease: lease,
     })
 }
@@ -598,8 +605,15 @@ pub(crate) fn prepare_overlay_attempt(
         run_plan: run_plan_from_spec(spec)?,
     };
     run_record.write()?;
-    let control =
-        RunControlServer::start_observed(&run_record, fs_metrics.clone(), network_metrics.clone())?;
+    let vm_control = Arc::new(super::vm_control::VmControl::new(
+        cfg!(target_os = "linux") && uses_krun_executor(spec),
+    ));
+    let control = RunControlServer::start_controlled(
+        &run_record,
+        fs_metrics.clone(),
+        network_metrics.clone(),
+        vm_control.clone(),
+    )?;
 
     let mut plan = ImplantPlan {
         env: ImplantPlan::marker_env(),
@@ -659,6 +673,7 @@ pub(crate) fn prepare_overlay_attempt(
         started_at: Instant::now(),
         run_record,
         _control: control,
+        vm_control,
         _lease: lease,
     })
 }
@@ -721,7 +736,15 @@ pub(crate) fn prepare_storage_attempt(
         run_plan: run_plan_from_spec(spec)?,
     };
     run_record.write()?;
-    let control = RunControlServer::start(&run_record)?;
+    let vm_control = Arc::new(super::vm_control::VmControl::new(
+        cfg!(target_os = "linux") && uses_krun_executor(spec),
+    ));
+    let control = RunControlServer::start_controlled(
+        &run_record,
+        None,
+        network_metrics.clone(),
+        vm_control.clone(),
+    )?;
 
     let mut plan = ImplantPlan {
         env: ImplantPlan::marker_env(),
@@ -762,6 +785,7 @@ pub(crate) fn prepare_storage_attempt(
         started_at: Instant::now(),
         run_record,
         _control: control,
+        vm_control,
         _lease: lease,
     })
 }

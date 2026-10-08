@@ -15,7 +15,7 @@ pub(crate) fn process_tx(
     stop: Arc<AtomicBool>,
 ) {
     loop {
-        let Some(head) = pop_head_blocking(&mut queue, &mem, &interrupt, &stop) else {
+        let Some((head, _activity)) = pop_head_blocking(&mut queue, &mem, &interrupt, &stop) else {
             return;
         };
 
@@ -62,17 +62,22 @@ fn pop_head_blocking<'mem>(
     mem: &'mem GuestMemoryMmap,
     interrupt: &InterruptTransport,
     stop: &AtomicBool,
-) -> Option<DescriptorChain<'mem>> {
+) -> Option<(
+    DescriptorChain<'mem>,
+    crate::virtio::pause::ActivityGuard<'static>,
+)> {
     loop {
+        let activity = crate::virtio::pause::enter();
         match queue.pop(mem) {
-            Some(descriptor) => break Some(descriptor),
+            Some(descriptor) => break Some((descriptor, activity)),
             None => {
                 interrupt.signal_used_queue();
                 if stop.load(Ordering::Acquire) {
                     break None;
                 }
+                drop(activity);
                 thread::park();
-                log::trace!("tx unparked, queue len {}", queue.len(mem))
+                log::trace!("tx unparked")
             }
         }
     }

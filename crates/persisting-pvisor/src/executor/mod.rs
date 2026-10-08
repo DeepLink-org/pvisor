@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Default)]
 pub(crate) struct AttemptAttachments {
+    pub vm_control: Option<Arc<crate::runtime::vm_control::VmControl>>,
     pub vm_network: Option<Arc<std::sync::Mutex<Option<crate::runtime::VmNetworkAttachment>>>>,
 }
 
@@ -79,6 +80,10 @@ impl AttemptContext {
             .lock()
             .map_err(|_| anyhow::anyhow!("VM network attachment lock poisoned"))?;
         Ok(attachment.take())
+    }
+
+    pub(crate) fn vm_control(&self) -> Option<Arc<crate::runtime::vm_control::VmControl>> {
+        self.attachments.vm_control.clone()
     }
 
     pub fn events(&self) -> &RunEventPublisher {

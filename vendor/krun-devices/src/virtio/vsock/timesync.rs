@@ -36,6 +36,7 @@ impl TimesyncThread {
     }
 
     fn send_time(&self, time: u64) {
+        let _activity = crate::virtio::pause::enter();
         let mut queue = self.queue_mutex.lock().unwrap();
         if let Some(head) = queue.pop(&self.mem) {
             if let Ok(mut pkt) = VsockPacket::from_rx_virtq_head(&head) {

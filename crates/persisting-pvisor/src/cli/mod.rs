@@ -58,6 +58,12 @@ enum Command {
     Status(runtime::StatusArgs),
     /// Request graceful termination of a live Job.
     Kill(runtime::KillArgs),
+    /// Pause a resident Linux libkrun VM, retaining memory and open files.
+    Pause(runtime::KillArgs),
+    /// Resume a paused resident Linux libkrun VM.
+    Resume(runtime::KillArgs),
+    /// Reclaim memory from a confirmed paused VM; query status for completion.
+    Offload(runtime::OffloadArgs),
     /// Start a new safe Job from a stopped Job or a logical checkpoint.
     Fork(run::ForkArgs),
     /// Open a read-only shell or run a command against a Job filesystem view.
@@ -107,6 +113,9 @@ pub fn main() -> anyhow::Result<()> {
         Command::Drop(args) => runtime::drop_overlay(args)?,
         Command::Status(args) => runtime::status(args)?,
         Command::Kill(args) => runtime::kill(args)?,
+        Command::Pause(args) => runtime::vm_lifecycle(args, true)?,
+        Command::Resume(args) => runtime::vm_lifecycle(args, false)?,
+        Command::Offload(args) => runtime::offload(args)?,
         Command::Fork(args) => {
             let code = tokio::runtime::Runtime::new()?.block_on(run::fork(args))?;
             if code != 0 {
@@ -146,6 +155,9 @@ fn normalize_default_run(mut args: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsS
         "cache",
         "status",
         "kill",
+        "pause",
+        "resume",
+        "offload",
         "inspect",
         "review",
         "checkpoint",
@@ -176,6 +188,8 @@ mod tests {
             vec!["pvisor", "inspect", "run-1", "--", "rg", "TODO"],
             vec!["pvisor", "status", "run-1", "--review"],
             vec!["pvisor", "kill", "run-1"],
+            vec!["pvisor", "pause", "run-1"],
+            vec!["pvisor", "resume", "run-1"],
             vec!["pvisor", "fork", "run-1", "--", "codex"],
             vec!["pvisor", "apply", "run-1"],
             vec!["pvisor", "apply", "run-1", "--target", "/tmp/restored"],

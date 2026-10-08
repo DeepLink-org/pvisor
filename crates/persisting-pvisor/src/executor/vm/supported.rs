@@ -3,9 +3,13 @@
 use crate::config::VmSettings;
 use crate::executor::{AttemptContext, RunExecutor};
 use crate::executor::{join_capture, read_limited, stdio};
+#[cfg(target_os = "linux")]
+use crate::runtime::vm_control::VmCommand;
+use crate::runtime::vm_control::VmControl;
 use crate::util::write_private_json;
 use anyhow::Context as _;
 use async_trait::async_trait;
+use persisting_control::overlay::VmRuntimeState;
 use persisting_control::{
     CapabilityDimension, CapabilityEnforcementEvidence, ExecutorDescriptor, ExecutorKind,
     IsolationKind, ProcessOutput, ResourceLimits, RunFailure, RunFailureKind, RunInvocation,
@@ -16,6 +20,7 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 
@@ -23,6 +28,10 @@ const RUNNER_SPEC_ENV: &str = "PERSISTING_KRUN_RUNNER_SPEC";
 const WORKSPACE_TAG: &str = "pvisor-workspace";
 const NETWORK_FD_ENV: &str = "PERSISTING_KRUN_NETWORK_FD";
 const NETWORK_CHILD_FD: RawFd = 198;
+#[cfg(target_os = "linux")]
+const CONTROL_FD_ENV: &str = "PERSISTING_KRUN_CONTROL_FD";
+#[cfg(target_os = "linux")]
+const CONTROL_CHILD_FD: RawFd = 199;
 const NET_FLAG_DHCP_CLIENT: u32 = 1 << 1;
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -165,6 +174,10 @@ struct GuestSpec {
 
 impl VmExecutor {
     pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            cfg!(target_os = "linux") || settings.cgroup_parent.is_none(),
+            "vm.cgroup_parent requires Linux cgroup v2"
+        );
         anyhow::ensure!(settings.memory_mib > 0, "vm.memory_mib must be positive");
         anyhow::ensure!(settings.cpus > 0, "vm.cpus must be positive");
         anyhow::ensure!(settings.cpus <= 8, "libkrunfw supports at most 8 vCPUs");
@@ -625,6 +638,36 @@ impl RunExecutor for VmExecutor {
                 "pVisor VM network attachment is missing".into(),
             );
         }
+        let vm_control = context
+            .vm_control()
+            .unwrap_or_else(|| Arc::new(VmControl::new(cfg!(target_os = "linux"))));
+        #[cfg(target_os = "linux")]
+        let membership = match (|| -> anyhow::Result<Option<std::fs::File>> {
+            let Some(parent) = &self.settings.cgroup_parent else {
+                return Ok(None);
+            };
+            let memory = Arc::new(crate::runtime::vm_memory::VmMemory::create(parent)?);
+            let membership = memory.membership_file()?;
+            vm_control.set_memory(memory)?;
+            Ok(Some(membership))
+        })() {
+            Ok(file) => file,
+            Err(error) => {
+                return failed_to_start(
+                    &spec,
+                    context.attempt_id(),
+                    started_at,
+                    format!("prepare VM memory cgroup: {error:#}"),
+                );
+            }
+        };
+        #[cfg(target_os = "linux")]
+        let (control_parent, control_child) = match std::os::unix::net::UnixStream::pair() {
+            Ok(pair) => pair,
+            Err(error) => {
+                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+            }
+        };
         let mut command = Command::new(executable);
         command
             .env(RUNNER_SPEC_ENV, &runner_path)
@@ -632,15 +675,38 @@ impl RunExecutor for VmExecutor {
             .stdout(stdio(invocation.stdout))
             .stderr(stdio(invocation.stderr))
             .kill_on_drop(true);
-        if let Some(network) = &vm_network {
-            let source_fd = network.guest_stream().as_raw_fd();
+        if vm_network.is_some() {
             command.env(NETWORK_FD_ENV, NETWORK_CHILD_FD.to_string());
-            // The socketpair has CLOEXEC. Duplicate it to one fixed inherited
-            // descriptor after fork and before exec; the JSON runner spec never
-            // contains a process-local FD number.
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let control_fd = control_child.as_raw_fd();
+            let cgroup_fd = membership.as_ref().map(AsRawFd::as_raw_fd);
+            let network_fd = vm_network
+                .as_ref()
+                .map(|network| network.guest_stream().as_raw_fd());
+            command.env(CONTROL_FD_ENV, CONTROL_CHILD_FD.to_string());
             unsafe {
                 command.pre_exec(move || {
-                    if libc::dup2(source_fd, NETWORK_CHILD_FD) < 0 {
+                    // async-signal-safe placement before exec and guest RAM
+                    // allocation. Writing 0 moves this child, never the parent.
+                    if let Some(fd) = cgroup_fd
+                        && libc::write(fd, b"0".as_ptr().cast(), 1) != 1
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    inherit_runner_fds(control_fd, network_fd)
+                });
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        if let Some(network) = &vm_network {
+            let source_fd = network.guest_stream().as_raw_fd();
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::dup2(source_fd, NETWORK_CHILD_FD) < 0
+                        || libc::fcntl(NETWORK_CHILD_FD, libc::F_SETFD, 0) < 0
+                    {
                         return Err(std::io::Error::last_os_error());
                     }
                     Ok(())
@@ -669,6 +735,21 @@ impl RunExecutor for VmExecutor {
                 return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
             }
         };
+        #[cfg(target_os = "linux")]
+        {
+            drop(control_child);
+            if let Err(error) = vm_control.attach(control_parent) {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return failed_to_start(&spec, context.attempt_id(), started_at, error.to_string());
+            }
+            let control = vm_control.clone();
+            // Status is the readiness handshake: libkrun answers only after
+            // build_microvm completes. Cancellation is never blocked on it.
+            tokio::task::spawn_blocking(move || {
+                let _ = control.request(VmCommand::Status);
+            });
+        }
         let stdout_task = child.stdout.take().map(|stdout| {
             let limit = spec.runtime.max_output_bytes;
             tokio::spawn(async move { read_limited(stdout, limit).await })
@@ -677,6 +758,7 @@ impl RunExecutor for VmExecutor {
             let limit = spec.runtime.max_output_bytes;
             tokio::spawn(async move { read_limited(stderr, limit).await })
         });
+        #[cfg(not(target_os = "linux"))]
         context.transition(RunState::Running, None).await;
 
         enum End {
@@ -689,20 +771,50 @@ impl RunExecutor for VmExecutor {
                 .saturating_add(spec.runtime.termination_grace_ms)
                 .saturating_add(10_000)
         });
-        let end = if let Some(watchdog_ms) = watchdog_ms {
-            tokio::select! {
-                biased;
-                status = child.wait() => End::Exited(status),
-                _ = cancellation.cancelled() => End::Cancelled,
-                _ = tokio::time::sleep(Duration::from_millis(watchdog_ms)) => End::Watchdog,
-            }
-        } else {
-            tokio::select! {
-                biased;
-                status = child.wait() => End::Exited(status),
-                _ = cancellation.cancelled() => End::Cancelled,
+        #[cfg(target_os = "linux")]
+        let timeout_control = vm_control.clone();
+        let watchdog = async move {
+            match watchdog_ms {
+                Some(ms) => {
+                    #[cfg(target_os = "linux")]
+                    timeout_control
+                        .wait_active_timeout(Duration::from_millis(ms))
+                        .await;
+                    #[cfg(not(target_os = "linux"))]
+                    tokio::time::sleep(Duration::from_millis(ms)).await;
+                }
+                None => std::future::pending::<()>().await,
             }
         };
+        tokio::pin!(watchdog);
+        let mut control_changes = vm_control.subscribe();
+        // Process the initial state as well: the readiness ACK may have arrived
+        // before this receiver was installed.
+        let end = loop {
+            let control_status = control_changes.borrow_and_update().clone();
+            let run_state = match control_status.state {
+                VmRuntimeState::Starting => Some(RunState::Starting),
+                VmRuntimeState::Running => Some(RunState::Running),
+                VmRuntimeState::Pausing => Some(RunState::Pausing),
+                VmRuntimeState::Paused => Some(RunState::Suspended),
+                VmRuntimeState::Resuming => Some(RunState::Resuming),
+                VmRuntimeState::Faulted => Some(RunState::Faulted),
+                VmRuntimeState::Unsupported | VmRuntimeState::Stopped => None,
+            };
+            if let Some(state) = run_state {
+                context.transition(state, control_status.error).await;
+            }
+            tokio::select! {
+                biased;
+                status = child.wait() => break End::Exited(status),
+                _ = cancellation.cancelled() => break End::Cancelled,
+                _ = &mut watchdog => break End::Watchdog,
+                result = control_changes.changed() => {
+                    if result.is_err() { break End::Cancelled; }
+                }
+            }
+        };
+        vm_control.stop();
         if matches!(end, End::Cancelled | End::Watchdog) {
             if matches!(end, End::Cancelled) {
                 context
@@ -713,6 +825,12 @@ impl RunExecutor for VmExecutor {
             let _ = child.wait().await;
         }
         let transport_stdout = join_capture(stdout_task).await;
+        let memory_cleanup = vm_control.clone();
+        if let Err(error) =
+            tokio::task::spawn_blocking(move || memory_cleanup.release_memory()).await
+        {
+            tracing::warn!(%error, "VM memory cleanup failed");
+        }
         let transport_stderr = join_capture(stderr_task).await;
         let mut output = ProcessOutput::default();
         if let Some(captured) = transport_stdout {
@@ -782,6 +900,42 @@ impl RunExecutor for VmExecutor {
             event_stream_ref: None,
             warnings,
         }
+    }
+}
+
+/// Called only after fork. Move both sources out of the target range first:
+/// in a busy parent either source may itself be FD 198 or 199.
+#[cfg(target_os = "linux")]
+fn inherit_runner_fds(control: RawFd, network: Option<RawFd>) -> std::io::Result<()> {
+    unsafe {
+        let control_copy = libc::fcntl(control, libc::F_DUPFD_CLOEXEC, 200);
+        if control_copy < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let network_copy = match network {
+            Some(fd) => {
+                let copy = libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 200);
+                if copy < 0 {
+                    let error = std::io::Error::last_os_error();
+                    libc::close(control_copy);
+                    return Err(error);
+                }
+                Some(copy)
+            }
+            None => None,
+        };
+        let result = if libc::dup2(control_copy, CONTROL_CHILD_FD) < 0
+            || network_copy.is_some_and(|fd| libc::dup2(fd, NETWORK_CHILD_FD) < 0)
+        {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        };
+        libc::close(control_copy);
+        if let Some(fd) = network_copy {
+            libc::close(fd);
+        }
+        result
     }
 }
 
@@ -898,6 +1052,22 @@ fn run_linked_krun(spec: RunnerSpec) -> anyhow::Result<()> {
         },
         "krun_set_exec",
     )?;
+    #[cfg(target_os = "linux")]
+    if let Some(fd) = std::env::var_os(CONTROL_FD_ENV) {
+        let fd = fd
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("invalid {CONTROL_FD_ENV}"))?
+            .parse::<RawFd>()
+            .with_context(|| format!("parse {CONTROL_FD_ENV}"))?;
+        check_krun(
+            krun::krun_set_runtime_control_fd(ctx, fd),
+            "krun_set_runtime_control_fd",
+        )?;
+        // The library owns a duplicate. Do not retain an unused endpoint.
+        unsafe {
+            libc::close(fd);
+        }
+    }
     let started = krun::krun_start_enter(ctx);
     #[cfg(target_os = "macos")]
     if started == -libc::EINVAL {
@@ -1138,6 +1308,66 @@ fn check_krun(value: i32, operation: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runner_inheritance_handles_swapped_and_cloexec_target_fds() {
+        use std::io::Read;
+        use std::os::unix::net::UnixStream;
+        use std::os::unix::process::CommandExt;
+        for swapped in [false, true] {
+            let (mut control_reader, control_source) = UnixStream::pair().unwrap();
+            let (mut network_reader, network_source) = UnixStream::pair().unwrap();
+            control_reader
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            network_reader
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let control_fd = control_source.as_raw_fd();
+            let network_fd = network_source.as_raw_fd();
+            let mut command = std::process::Command::new("/bin/bash");
+            command.args(["-c", "printf control >&199; printf net >&198"]);
+            unsafe {
+                command.pre_exec(move || {
+                    // Only the child changes fixed descriptors; parallel tests
+                    // and the parent's other jobs retain their original table.
+                    let c = libc::fcntl(control_fd, libc::F_DUPFD_CLOEXEC, 300);
+                    let n = libc::fcntl(network_fd, libc::F_DUPFD_CLOEXEC, 300);
+                    if c < 0 || n < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let control_target = if swapped {
+                        NETWORK_CHILD_FD
+                    } else {
+                        CONTROL_CHILD_FD
+                    };
+                    let network_target = if swapped {
+                        CONTROL_CHILD_FD
+                    } else {
+                        NETWORK_CHILD_FD
+                    };
+                    if libc::dup2(c, control_target) < 0
+                        || libc::dup2(n, network_target) < 0
+                        || libc::fcntl(control_target, libc::F_SETFD, libc::FD_CLOEXEC) < 0
+                        || libc::fcntl(network_target, libc::F_SETFD, libc::FD_CLOEXEC) < 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    libc::close(c);
+                    libc::close(n);
+                    inherit_runner_fds(control_target, Some(network_target))
+                });
+            }
+            assert!(command.status().unwrap().success());
+            let mut control_bytes = [0; 7];
+            let mut network_bytes = [0; 3];
+            control_reader.read_exact(&mut control_bytes).unwrap();
+            network_reader.read_exact(&mut network_bytes).unwrap();
+            assert_eq!(&control_bytes, b"control");
+            assert_eq!(&network_bytes, b"net");
+        }
+    }
 
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]

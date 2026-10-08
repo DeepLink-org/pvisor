@@ -458,7 +458,13 @@ pub enum RunState {
     Starting,
     Running,
     Checkpointing,
+    /// A resident VM is moving toward a quiescent pause boundary.
+    Pausing,
+    /// The resident VM is paused; its process and leases remain live.
     Suspended,
+    Resuming,
+    /// Runtime control failed; VM state is uncertain and termination is required.
+    Faulted,
     Cancelling,
     Completed,
     Failed,
