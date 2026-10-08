@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -43,6 +44,14 @@ class BuildOptions:
     offline: bool = False
     jobs: str | None = None
     bundle_firmware: bool = True
+
+
+def copy_artifact(source: Path, destination: Path) -> None:
+    """Replace a built artifact without truncating an executable still in use."""
+    with tempfile.TemporaryDirectory(prefix=f".{destination.name}-", dir=destination.parent) as tmp:
+        staged = Path(tmp) / destination.name
+        shutil.copy2(source, staged)
+        os.replace(staged, destination)
 
 
 def ensure_wheel_data_directory() -> Path:
@@ -269,7 +278,7 @@ def _build_component(
         for directory in {path.parent for path in artifacts.values()}:
             destination = directory / firmware.library_name
             if firmware.path != destination.resolve():
-                shutil.copy2(firmware.path, destination)
+                copy_artifact(firmware.path, destination)
             (directory / "libkrunfw.SOURCE").write_text(firmware.source_record)
     return artifacts
 

@@ -10,7 +10,8 @@ if pid == 0:
     os.chdir(root)
     original = os.tcgetpgrp(0)
     env = dict(os.environ, PVISOR_RUN_HOME=os.path.join(root, 'runs'), PVISOR_STARTUP_TIMING='0')
-    script = "printf 'INPUT_READY\\n'; read value; printf 'GOT:%s\\n' \"$value\"; /bin/sleep 60"
+    # Replace the shell instead of racing Ctrl-C against a new child fork.
+    script = "printf 'INPUT_READY\\n'; read value; printf 'GOT:%s\\n' \"$value\"; exec /bin/sleep 60"
     if mode == 'inspect':
         args = [binary, 'inspect', os.path.join(root, 'stage'), '--', '/bin/sh', '-c', script]
     else:
@@ -39,19 +40,6 @@ try:
             if b'INPUT_READY' in output and not sent_input:
                 os.write(master, b'hello tty\n'); sent_input = True
             if b'GOT:hello tty' in output and not sent_cancel:
-                # Capture the actual foreground group and inherited signal masks
-                # before Ctrl-C, so a namespace-only failure is diagnosable.
-                output.extend(('TTY_FG:' + str(os.tcgetpgrp(master)) + '\n').encode())
-                for entry in os.scandir('/proc'):
-                    if not entry.name.isdigit(): continue
-                    try:
-                        stat = open(entry.path + '/stat').read().rsplit(')', 1)[1].split()
-                        if int(stat[3]) != pid: continue
-                        fields = open(entry.path + '/status').read().splitlines()
-                        details = [line for line in fields if line.startswith(
-                            ('Name:', 'Pid:', 'PPid:', 'NSpid:', 'SigBlk:', 'SigIgn:', 'SigCgt:'))]
-                        output.extend(('PROC:' + repr(details) + '\n').encode())
-                    except (FileNotFoundError, ProcessLookupError): pass
                 os.write(master, b'\x03'); sent_cancel = True
         if b'RESTORED:' in output: break
     else: raise AssertionError('PTY request timed out')

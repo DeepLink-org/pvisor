@@ -5,10 +5,9 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 from pathlib import Path
 
-from stage_wheel_binaries import ROOT, BuildOptions, _build_component
+from stage_wheel_binaries import ROOT, BuildOptions, _build_component, copy_artifact
 
 
 def main() -> None:
@@ -29,7 +28,7 @@ def main() -> None:
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     if source.resolve() != destination.resolve():
-        shutil.copy2(source, destination)
+        copy_artifact(source, destination)
 
 
 if __name__ == "__main__":
