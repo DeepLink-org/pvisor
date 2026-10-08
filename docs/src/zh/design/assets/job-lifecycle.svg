@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" viewBox="0 0 960 640" role="img" aria-labelledby="title desc"><title id="title">一项 Job：执行、发布与接受</title><desc id="desc">阶段从左到右；下层标明所有者与持续身份。</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="960" height="640" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">一项 Job：执行、发布与接受</text>
+<text x="28" y="67" font-size="15">阶段从左到右；下层标明所有者与持续身份。</text>
+<rect x="20" y="100" width="920" height="148" fill="#1a304c"/>
+<rect x="20" y="283" width="920" height="150" fill="#12243b"/>
+<rect x="20" y="471" width="920" height="113" fill="#1a304c"/>
+<rect x="36" y="149" width="165" height="79" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="118.5" y="182.5" font-size="17" font-weight="600" text-anchor="middle">① 准入</text>
+<text x="118.5" y="206.5" font-size="14" text-anchor="middle">有效策略 + capability</text>
+<polyline points="201,188 216,188" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="216" y="149" width="165" height="79" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="298.5" y="182.5" font-size="17" font-weight="600" text-anchor="middle">② 准备</text>
+<text x="298.5" y="206.5" font-size="14" text-anchor="middle">stage / network / VM</text>
+<polyline points="381,188 396,188" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="396" y="149" width="165" height="79" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="478.5" y="182.5" font-size="17" font-weight="600" text-anchor="middle">③ 执行</text>
+<text x="478.5" y="206.5" font-size="14" text-anchor="middle">Attempt + controls</text>
+<polyline points="561,188 576,188" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="576" y="149" width="165" height="79" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="658.5" y="182.5" font-size="17" font-weight="600" text-anchor="middle">④ 完成发布</text>
+<text x="658.5" y="206.5" font-size="14" text-anchor="middle">result + Job record</text>
+<polyline points="741,188 756,188" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="756" y="149" width="165" height="79" rx="2" fill="#193d40" stroke="#74b7b0" stroke-width="1.4"/>
+<text x="838.5" y="182.5" font-size="17" font-weight="600" text-anchor="middle">⑤ 结果接受</text>
+<text x="838.5" y="206.5" font-size="14" text-anchor="middle">review → apply/drop</text>
+<rect x="36" y="331" width="270" height="81" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="171.0" y="365.5" font-size="17" font-weight="600" text-anchor="middle">Session</text>
+<text x="171.0" y="389.5" font-size="14" text-anchor="middle">运行资源 / 取消 / 清理</text>
+<rect x="345" y="331" width="270" height="81" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="480.0" y="365.5" font-size="17" font-weight="600" text-anchor="middle">ManagedJobRun</text>
+<text x="480.0" y="389.5" font-size="14" text-anchor="middle">Attempt join → Server::finish</text>
+<rect x="654" y="331" width="270" height="81" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="789.0" y="365.5" font-size="17" font-weight="600" text-anchor="middle">开发者或验收器</text>
+<text x="789.0" y="389.5" font-size="14" text-anchor="middle">选择合入哪些文件结果</text>
+<polyline points="118,228 118,331" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="658,228 658,264 480,264 480,331" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="838,228 838,331" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="44" y="527" font-size="17" font-weight="600">execution resume → 保留 Job 身份，创建新 Attempt</text>
+<text x="44" y="559" font-size="15">execution fork → 新 Job 与独立分支；外部副作用由应用核对</text>
+<text x="28" y="619" font-size="15">完成回执、资源清理与文件合入各有自己的提交点。</text>
+<text x="36" y="123" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">01  阶段与提交点</text>
+<text x="36" y="306" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">02  各自的所有者</text>
+<text x="36" y="494" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">03  持续身份与分支</text></g></svg>

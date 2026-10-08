@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="705" viewBox="0 0 1080 705" role="img" aria-labelledby="title desc"><title id="title">Cold RAM: retain recovery data before reclaiming pages</title><desc id="desc">Linux per-instance userfaultfd compression, separate from daemon raw-page sharing.</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="1080" height="705" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">Cold RAM: retain recovery data before reclaiming pages</text>
+<text x="28" y="67" font-size="15">Linux per-instance userfaultfd compression, separate from daemon raw-page sharing.</text>
+<rect x="20" y="108" width="1040" height="134" fill="#1a304c"/>
+<rect x="20" y="300" width="1040" height="124" fill="#12243b"/>
+<rect x="20" y="477" width="1040" height="132" fill="#1a304c"/>
+<rect x="30" y="132" width="295" height="93" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="177.5" y="172.5" font-size="17" font-weight="600" text-anchor="middle">① Short quiescent window</text>
+<text x="177.5" y="196.5" font-size="14" text-anchor="middle">copy candidate RAM bytes</text>
+<rect x="391" y="132" width="295" height="93" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="538.5" y="172.5" font-size="17" font-weight="600" text-anchor="middle">② Guest runs again</text>
+<text x="538.5" y="196.5" font-size="14" text-anchor="middle">encode / publish outside barrier</text>
+<rect x="752" y="132" width="295" height="93" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="899.5" y="172.5" font-size="17" font-weight="600" text-anchor="middle">③ Quiesce and recheck</text>
+<text x="899.5" y="196.5" font-size="14" text-anchor="middle">live bytes == captured copy?</text>
+<polyline points="325,178 391,178" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="686,178 752,178" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="752" y="318" width="295" height="86" rx="2" fill="#443929" stroke="#c9a96e" stroke-width="1.4"/>
+<text x="899.5" y="355.0" font-size="17" font-weight="600" text-anchor="middle">Unchanged: discard</text>
+<text x="899.5" y="379.0" font-size="14" text-anchor="middle">retain cold object reference</text>
+<polyline points="900,225 900,318" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="913" y="285" font-size="14">unchanged</text>
+<rect x="391" y="254" width="295" height="40" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="538.5" y="280.0" font-size="17" font-weight="600" text-anchor="middle">Changed: retain RAM</text>
+<polyline points="900,239 714,239 714,274 686,274" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="391" y="318" width="295" height="86" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="538.5" y="355.0" font-size="17" font-weight="600" text-anchor="middle">Next access faults</text>
+<text x="538.5" y="379.0" font-size="14" text-anchor="middle">userfaultfd blocks the accessor</text>
+<polyline points="752,360 686,360" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="30" y="318" width="295" height="86" rx="2" fill="#193d40" stroke="#74b7b0" stroke-width="1.4"/>
+<text x="177.5" y="355.0" font-size="17" font-weight="600" text-anchor="middle">Decode and validate</text>
+<text x="177.5" y="379.0" font-size="14" text-anchor="middle">length + checksum</text>
+<polyline points="391,360 325,360" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="30" y="498" width="1017" height="92" rx="2" fill="#193d40" stroke="#74b7b0" stroke-width="1.4"/>
+<text x="538.5" y="538.0" font-size="17" font-weight="600" text-anchor="middle">UFFD_COPY</text>
+<text x="538.5" y="562.0" font-size="14" text-anchor="middle">confirm complete restoration → wake access → release cold reference</text>
+<polyline points="177,404 177,498" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="30" y="636" font-size="15">Two barriers protect content consistency; unchanged bytes may still be read frequently.</text>
+<text x="30" y="674" font-size="15">Savings must account for encoding CPU, scratch memory and refault latency; restore failure terminates the runner.</text></g></svg>

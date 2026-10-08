@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="705" viewBox="0 0 960 705" role="img" aria-labelledby="title desc"><title id="title">研究闭环：机制、负载与结论</title><desc id="desc">分层建立假设、运行对照、解释结果；反例返回假设。</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="960" height="705" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">研究闭环：机制、负载与结论</text>
+<text x="28" y="67" font-size="15">分层建立假设、运行对照、解释结果；反例返回假设。</text>
+<rect x="20" y="102" width="920" height="145" fill="#1a304c"/>
+<rect x="20" y="289" width="920" height="145" fill="#12243b"/>
+<rect x="20" y="476" width="920" height="145" fill="#1a304c"/>
+<rect x="70" y="153" width="360" height="76" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="250.0" y="185.0" font-size="17" font-weight="600" text-anchor="middle">① 问题与预算</text>
+<text x="250.0" y="209.0" font-size="14" text-anchor="middle">固定资源下的正确完成量</text>
+<rect x="530" y="153" width="360" height="76" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="710.0" y="185.0" font-size="17" font-weight="600" text-anchor="middle">② 假设</text>
+<text x="710.0" y="209.0" font-size="14" text-anchor="middle">重复、读多或长时间闲置</text>
+<polyline points="430,191 530,191" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="70" y="340" width="360" height="76" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="250.0" y="372.0" font-size="17" font-weight="600" text-anchor="middle">③ 机制</text>
+<text x="250.0" y="396.0" font-size="14" text-anchor="middle">共享 / offload / 可验收结果</text>
+<rect x="530" y="340" width="360" height="76" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="710.0" y="372.0" font-size="17" font-weight="600" text-anchor="middle">④ 实验对照</text>
+<text x="710.0" y="396.0" font-size="14" text-anchor="middle">版本、输出、失败与未知</text>
+<polyline points="430,378 530,378" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="70" y="527" width="360" height="76" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="250.0" y="559.0" font-size="17" font-weight="600" text-anchor="middle">⑤ 全生命周期度量</text>
+<text x="250.0" y="583.0" font-size="14" text-anchor="middle">CPU / peak / latency / review effort</text>
+<rect x="530" y="527" width="360" height="76" rx="2" fill="#443929" stroke="#c9a96e" stroke-width="1.4"/>
+<text x="710.0" y="559.0" font-size="17" font-weight="600" text-anchor="middle">⑥ 有条件结论</text>
+<text x="710.0" y="583.0" font-size="14" text-anchor="middle">在哪些负载值得使用？</text>
+<polyline points="430,565 530,565" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="710,229 710,269 250,269 250,340" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="710,416 710,455 250,455 250,527" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="890,565 935,565 935,134 710,134 710,153" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="28" y="666" font-size="14">机制探针、工作负载基准与生产证据分别保留；收益必须绑定负载与预算。</text>
+<text x="36" y="125" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">01  问题与可证伪假设</text>
+<text x="36" y="312" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">02  机制与实验对照</text>
+<text x="36" y="499" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">03  度量与有条件结论</text></g></svg>

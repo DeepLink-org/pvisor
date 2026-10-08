@@ -1,0 +1,1095 @@
+{
+  "agentctl": {
+    "attempt_id": "failed-run-attempt_id",
+    "clients": [],
+    "directive": {
+      "kind": "continue"
+    },
+    "run_id": "failed-run-run_id"
+  },
+  "artifacts": [
+    {
+      "kind": "run-record",
+      "path": "/tmp/pvisor-example/failed-run/run.json"
+    }
+  ],
+  "environment": {
+    "inherits_host": false,
+    "projected_keys": [
+      "COLORTERM",
+      "HOME",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+      "LOGNAME",
+      "PATH",
+      "SHELL",
+      "TERM",
+      "USER"
+    ],
+    "runtime_injected_keys": [
+      "ALL_PROXY",
+      "HTTPS_PROXY",
+      "HTTP_PROXY",
+      "NO_PROXY",
+      "PVISOR_AGENT",
+      "PVISOR_AGENTCTL_ENDPOINT",
+      "PVISOR_AGENTCTL_TOKEN",
+      "PVISOR_AGENTCTL_TRANSPORT",
+      "PVISOR_AGENTCTL_VERSION",
+      "PVISOR_OVERLAYNET_DRIVER",
+      "PVISOR_OVERLAYNET_STRENGTH",
+      "PVISOR_ROLE",
+      "PVISOR_RUNTIME",
+      "PVISOR_RUN_ID",
+      "PVISOR_STORAGE",
+      "all_proxy",
+      "http_proxy",
+      "https_proxy",
+      "no_proxy"
+    ]
+  },
+  "executor_observations": {
+    "enforcement": {
+      "dimensions": {
+        "filesystem_read": {
+          "level": "enforced",
+          "mechanisms": [
+            "linux-synthetic-root"
+          ]
+        },
+        "filesystem_write": {
+          "level": "enforced",
+          "mechanisms": [
+            "linux-synthetic-root"
+          ]
+        },
+        "network": {
+          "level": "enforced",
+          "mechanisms": [
+            "linux-network-namespace"
+          ]
+        }
+      }
+    },
+    "origin": "backend"
+  },
+  "executor_plan": {
+    "capability_plan": {
+      "dimensions": {
+        "filesystem_read": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "filesystem_write": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "network": {
+          "level": "planned",
+          "mechanisms": [
+            "explicit-proxy-environment",
+            "linux-network-namespace"
+          ]
+        },
+        "resources": {
+          "level": "planned",
+          "mechanisms": [
+            "posix-rlimit"
+          ]
+        }
+      }
+    },
+    "isolation": "rootless_process",
+    "kind": "process",
+    "name": "local-rootless-v1",
+    "supports_checkpoint": false,
+    "supports_migration": false
+  },
+  "filesystem": {
+    "access_policy": {
+      "context": {
+        "attempt_id": "failed-run-attempt_id",
+        "audit_socket": null,
+        "run_id": "failed-run-run_id",
+        "view": "workspace"
+      },
+      "deny": [
+        "**/.ssh",
+        "**/.gnupg",
+        "**/id_rsa",
+        "**/id_dsa",
+        "**/id_ecdsa",
+        "**/id_ecdsa_sk",
+        "**/id_ed25519",
+        "**/id_ed25519_sk"
+      ],
+      "warn": [
+        "**/.env",
+        "**/.env.*",
+        "**/*.pem",
+        "**/*.key",
+        "**/*.pub",
+        "**/*.p12",
+        "**/*.pfx",
+        "**/.aws/credentials",
+        "**/.netrc",
+        "**/.npmrc"
+      ]
+    },
+    "changed_files": 1,
+    "changes": [
+      {
+        "kind": "added",
+        "mode": 420,
+        "new_type": "file",
+        "path": "failed.txt",
+        "size_bytes": 10
+      }
+    ],
+    "excluded_paths": [],
+    "root_overlay": false,
+    "sample_paths": [
+      "failed.txt"
+    ],
+    "state": "staged",
+    "target": "/tmp/pvisor-example/workspace",
+    "upper": "/tmp/pvisor-example/failed-run/upper",
+    "whiteouts": 0
+  },
+  "generated_at_unix_ms": 0,
+  "network": {
+    "intercepted": {
+      "absolute_http_requests": 0,
+      "active_tcp_flows": 0,
+      "bytes_guest_to_host": 0,
+      "bytes_host_to_guest": 0,
+      "connect_requests": 0,
+      "dns_answers": 0,
+      "dns_queries": 0,
+      "failures": 0,
+      "peak_tcp_flows": 0,
+      "policy_allowed": 0,
+      "policy_denied": 0,
+      "requests_seen": 0,
+      "sink_requests": 0,
+      "target_overflow": 0,
+      "targets": {},
+      "tcp_connect_failures": 0,
+      "tcp_flows_denied": 0,
+      "tcp_flows_opened": 0,
+      "unsupported_packets": 0
+    },
+    "interception": {
+      "dns": false,
+      "driver": "explicit-proxy",
+      "http": true,
+      "inherited_by_children": false,
+      "strength": "cooperative",
+      "tcp_connect": true,
+      "udp": false
+    },
+    "policy": {
+      "allowed_hosts": [],
+      "deny_rules": [],
+      "limits": [],
+      "mode": "no-network",
+      "rules": []
+    }
+  },
+  "operation": {
+    "context": {
+      "bindings": {
+        "executor": {
+          "backend": "local-rootless-v1",
+          "contract": 1,
+          "generation": 0,
+          "resource": "failed-run-run_id"
+        }
+      },
+      "policy": "audit",
+      "principal": "sh",
+      "revision": 0,
+      "scope": [
+        "run",
+        "failed-run-run_id"
+      ]
+    },
+    "kind": {
+      "args": [
+        "-c",
+        "printf \"candidate\\n\" > failed.txt; exit 7"
+      ],
+      "cwd": null,
+      "op": "run.execute",
+      "program": "/bin/sh"
+    },
+    "placements": [
+      {
+        "name": "pvisor-stage",
+        "placement": "overlay"
+      }
+    ],
+    "rules": [
+      {
+        "action": "execute",
+        "dimension": "subprocess",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "run.execute",
+        "target": "failed-run-run_id"
+      },
+      {
+        "action": "stage",
+        "dimension": "filesystem_write",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.stage",
+        "target": "/tmp/pvisor-example/workspace"
+      },
+      {
+        "action": "deny",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.deny.0",
+        "target": "**/.ssh"
+      },
+      {
+        "action": "deny",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.deny.1",
+        "target": "**/.gnupg"
+      },
+      {
+        "action": "deny",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.deny.2",
+        "target": "**/id_rsa"
+      },
+      {
+        "action": "deny",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.deny.3",
+        "target": "**/id_dsa"
+      },
+      {
+        "action": "deny",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.deny.4",
+        "target": "**/id_ecdsa"
+      },
+      {
+        "action": "deny",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.deny.5",
+        "target": "**/id_ecdsa_sk"
+      },
+      {
+        "action": "deny",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.deny.6",
+        "target": "**/id_ed25519"
+      },
+      {
+        "action": "deny",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.deny.7",
+        "target": "**/id_ed25519_sk"
+      },
+      {
+        "action": "warn",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.warn.0",
+        "target": "**/.env"
+      },
+      {
+        "action": "warn",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.warn.1",
+        "target": "**/.env.*"
+      },
+      {
+        "action": "warn",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.warn.2",
+        "target": "**/*.pem"
+      },
+      {
+        "action": "warn",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.warn.3",
+        "target": "**/*.key"
+      },
+      {
+        "action": "warn",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.warn.4",
+        "target": "**/*.pub"
+      },
+      {
+        "action": "warn",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.warn.5",
+        "target": "**/*.p12"
+      },
+      {
+        "action": "warn",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.warn.6",
+        "target": "**/*.pfx"
+      },
+      {
+        "action": "warn",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.warn.7",
+        "target": "**/.aws/credentials"
+      },
+      {
+        "action": "warn",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.warn.8",
+        "target": "**/.netrc"
+      },
+      {
+        "action": "warn",
+        "dimension": "filesystem_read",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "linux-synthetic-root-landlock"
+          ]
+        },
+        "id": "fs.warn.9",
+        "target": "**/.npmrc"
+      },
+      {
+        "action": "deny",
+        "dimension": "network",
+        "enforcement_plan": {
+          "level": "planned",
+          "mechanisms": [
+            "explicit-proxy-environment",
+            "linux-network-namespace"
+          ]
+        },
+        "id": "net.aggregate",
+        "target": "egress"
+      },
+      {
+        "action": "project",
+        "dimension": "secrets",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "env.projection",
+        "target": "environment"
+      },
+      {
+        "action": "project",
+        "dimension": "secrets",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "env.key.0",
+        "target": "COLORTERM"
+      },
+      {
+        "action": "project",
+        "dimension": "secrets",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "env.key.1",
+        "target": "HOME"
+      },
+      {
+        "action": "project",
+        "dimension": "secrets",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "env.key.2",
+        "target": "LANG"
+      },
+      {
+        "action": "project",
+        "dimension": "secrets",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "env.key.3",
+        "target": "LC_ALL"
+      },
+      {
+        "action": "project",
+        "dimension": "secrets",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "env.key.4",
+        "target": "LC_CTYPE"
+      },
+      {
+        "action": "project",
+        "dimension": "secrets",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "env.key.5",
+        "target": "LOGNAME"
+      },
+      {
+        "action": "project",
+        "dimension": "secrets",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "env.key.6",
+        "target": "PATH"
+      },
+      {
+        "action": "project",
+        "dimension": "secrets",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "env.key.7",
+        "target": "SHELL"
+      },
+      {
+        "action": "project",
+        "dimension": "secrets",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "env.key.8",
+        "target": "TERM"
+      },
+      {
+        "action": "project",
+        "dimension": "secrets",
+        "enforcement_plan": {
+          "level": "unsupported",
+          "mechanisms": []
+        },
+        "id": "env.key.9",
+        "target": "USER"
+      }
+    ],
+    "run_id": "failed-run-run_id",
+    "version": 1
+  },
+  "resources": {
+    "effective": {},
+    "limitations": [
+      "executor did not observe installed resource controls"
+    ],
+    "mechanisms": [],
+    "requested": {}
+  },
+  "review_context": {
+    "attempt_id": "failed-run-attempt_id",
+    "checkpoint_id": null,
+    "execution_evidence": "historical_bundle",
+    "file_view": "staged_upper_with_external_lowers",
+    "job_id": "failed-run-run_id",
+    "workspace_generation": 0
+  },
+  "run": {
+    "agent": "sh",
+    "attempt_id": "failed-run-attempt_id",
+    "command": [
+      "/bin/sh",
+      "-c",
+      "printf \"candidate\\n\" > failed.txt; exit 7"
+    ],
+    "duration_ms": 38,
+    "executor": {
+      "isolation": "rootless_process",
+      "kind": "process",
+      "name": "local-rootless-v1"
+    },
+    "exit_code": 7,
+    "failure": {
+      "kind": "process_exit",
+      "message": "workload exited with exit status: 7",
+      "retryable": false
+    },
+    "finished_at_unix_ms": 0,
+    "metrics": {},
+    "output": {
+      "stderr": "pvisor-startup level=info timestamp_ms=1791062491029 pid=1118821 ppid=1118777 run_id=\"-\" stage=process.entry monotonic_us=16294967029 process_elapsed_us=32\n",
+      "stderr_truncated": false,
+      "stdout": "",
+      "stdout_truncated": false
+    },
+    "result_artifacts": [],
+    "run_id": "failed-run-run_id",
+    "session_id": "failed-run-run_id",
+    "started_at_unix_ms": 0,
+    "state": "failed",
+    "warnings": []
+  },
+  "run_observation": {
+    "filesystem": {
+      "overflow_hits": 0,
+      "paths": {
+        "": {
+          "getattr": {
+            "allowed": 2,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 2,
+            "succeeded": 2,
+            "uncertain_effects": 0
+          },
+          "opendir": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          }
+        },
+        "failed.txt": {
+          "create": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          },
+          "getxattr": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          },
+          "lookup": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 0,
+            "denied": 0,
+            "effects": 0,
+            "failed": 1,
+            "hits": 1,
+            "succeeded": 0,
+            "uncertain_effects": 0
+          },
+          "write": {
+            "allowed": 1,
+            "bytes_read": 0,
+            "bytes_written": 10,
+            "denied": 0,
+            "effects": 1,
+            "failed": 0,
+            "hits": 1,
+            "succeeded": 1,
+            "uncertain_effects": 0
+          }
+        }
+      },
+      "rules": {
+        "fs.stage": {
+          "allowed": 2,
+          "bytes_read": 0,
+          "bytes_written": 10,
+          "denied": 0,
+          "effects": 2,
+          "failed": 0,
+          "hits": 2,
+          "succeeded": 2,
+          "uncertain_effects": 0
+        }
+      }
+    },
+    "outcome": {
+      "failure": {
+        "code": "failed",
+        "domain": "run",
+        "effects": {
+          "exit_code": 7,
+          "failure": {
+            "kind": "process_exit",
+            "message": "workload exited with exit status: 7",
+            "retryable": false
+          }
+        },
+        "kind": "failed"
+      },
+      "status": "error"
+    },
+    "rules": {
+      "env.key.0": {
+        "allowed": null,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": null,
+        "effects": null,
+        "failed": null,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "env.key.1": {
+        "allowed": null,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": null,
+        "effects": null,
+        "failed": null,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "env.key.2": {
+        "allowed": null,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": null,
+        "effects": null,
+        "failed": null,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "env.key.3": {
+        "allowed": null,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": null,
+        "effects": null,
+        "failed": null,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "env.key.4": {
+        "allowed": null,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": null,
+        "effects": null,
+        "failed": null,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "env.key.5": {
+        "allowed": null,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": null,
+        "effects": null,
+        "failed": null,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "env.key.6": {
+        "allowed": null,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": null,
+        "effects": null,
+        "failed": null,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "env.key.7": {
+        "allowed": null,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": null,
+        "effects": null,
+        "failed": null,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "env.key.8": {
+        "allowed": null,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": null,
+        "effects": null,
+        "failed": null,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "env.key.9": {
+        "allowed": null,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": null,
+        "effects": null,
+        "failed": null,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "env.projection": {
+        "allowed": null,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": null,
+        "effects": null,
+        "failed": null,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "fs.deny.0": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.deny.1": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.deny.2": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.deny.3": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.deny.4": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.deny.5": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.deny.6": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.deny.7": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.stage": {
+        "allowed": 2,
+        "bytes_read": 0,
+        "bytes_written": 10,
+        "denied": 0,
+        "effects": 2,
+        "failed": 0,
+        "succeeded": 2,
+        "uncertain_effects": 0
+      },
+      "fs.warn.0": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.warn.1": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.warn.2": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.warn.3": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.warn.4": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.warn.5": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.warn.6": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.warn.7": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.warn.8": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "fs.warn.9": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": 0,
+        "failed": 0,
+        "succeeded": 0,
+        "uncertain_effects": 0
+      },
+      "net.aggregate": {
+        "allowed": 0,
+        "bytes_read": 0,
+        "bytes_written": 0,
+        "denied": 0,
+        "effects": null,
+        "failed": 0,
+        "succeeded": null,
+        "uncertain_effects": null
+      },
+      "run.execute": {
+        "allowed": 1,
+        "bytes_read": null,
+        "bytes_written": null,
+        "denied": 0,
+        "effects": null,
+        "failed": 1,
+        "succeeded": 0,
+        "uncertain_effects": null
+      }
+    }
+  },
+  "safety": {
+    "filesystem_changes_staged": true,
+    "filesystem_non_bypassable": true,
+    "filesystem_read_non_bypassable": true,
+    "filesystem_write_non_bypassable": true,
+    "host_process": false,
+    "network_non_bypassable": true,
+    "safe_profile_requested": true,
+    "warnings": [
+      "filesystem access and process-tree cleanup are kernel-enforced; the host kernel and syscall surface remain shared"
+    ]
+  },
+  "schema_version": 4
+}

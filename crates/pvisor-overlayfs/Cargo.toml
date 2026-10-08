@@ -1,0 +1,39 @@
+[package]
+name = "pvisor-overlayfs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Cross-platform FUSE overlay (macFUSE / libfuse) for pVisor staging"
+readme = "README.md"
+
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:env_logger"]
+
+[[bin]]
+name = "pvisor-overlayfs"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[dependencies]
+anyhow.workspace = true
+libc.workspace = true
+pvisor-overlay-core.workspace = true
+pvisor-core.workspace = true
+log.workspace = true
+env_logger = { workspace = true, optional = true }
+clap = { workspace = true, features = ["derive"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { workspace = true, features = ["abi-7-19", "libfuse", "macfuse-5"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { workspace = true, default-features = false, features = ["abi-7-31"] }
+
+[target.'cfg(not(any(target_os = "macos", target_os = "linux")))'.dependencies]
+fuser = { workspace = true, features = ["abi-7-19", "libfuse"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+syn = { version = "2", features = ["full", "visit"] }

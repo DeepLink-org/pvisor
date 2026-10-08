@@ -21,7 +21,7 @@ pvisor_example_init() {
 pvisor_example_reset() {
   rm -rf -- "$work_dir"
   mkdir -p "$work_dir"
-  export PERSISTING_RUN_HOME="$work_dir/runs"
+  export PVISOR_RUN_HOME="$work_dir/runs"
 }
 
 pvisor_free_ports() {

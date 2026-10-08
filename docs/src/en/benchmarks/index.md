@@ -1,0 +1,49 @@
+# Where does pVisor have an advantage over existing workflows?
+
+## Conclusions {#conclusions}
+
+**For frequently created large workspaces with sparse changes, pVisor stage completes the machine workflow sooner: changing twenty of 10,000 files and retaining ten takes 141 ms in stage, 248 ms with Git worktree and 343 ms with btrfs reflink. Native workflows are faster for small workspaces; pVisor VM tools still take longer than the tested Firecracker/QEMU configurations.**
+
+| Scenario | Selection implication |
+|---|---|
+| Large workspace, sparse changes, disposable view | Stage has a measured complete-workflow advantage |
+| Small workspace or tool execution alone | Compare native workflows and container costs |
+| VM or concurrent capacity | Require complete tool and resource measurements |
+
+## Motivation {#motivation}
+
+Selection requires the total cost of producing the same result, beyond startup or a single command. Review/application, execution boundaries and resource use determine which Agent workflows suit pVisor.
+
+## Experiment design {#interpretation}
+
+This reuses separately registered [startup](startup.md), [filesystem](filesystem.md), [repair](agent-tasks.md) and [complete review workflow](supervision-cost.md) experiments. The first three use 60 samples and three warmups per backend; review uses thirty samples and three warmups per size/condition/backend. Same host, CPUs 0,1, warm caches, randomized interleaving and complete correctness checks, with no speed-based exclusions. Workloads, resources and timing boundaries differ across topics; distributions are not pooled. Docker uses rootless overlay2; workflow controls are native Git/reflink, not container or VM security rankings.
+
+[Network](network.md) uses thirty independent batches and three warmups per condition; each small-request sample is the median of 256 requests. The origin is outside the payload CPU budget and memory is not identically capped. [Capacity](density.md) uses a shared two-core, 2 GiB, zero-swap budget, five rounds per concurrency and separate idle/useful-tool conditions; every failure, unknown outcome and OOM remains counted.
+
+[On-demand image startup](lazy-image-startup.md) measures cold/warm client-cache waits and content payloads for the same pinned image within separate Ubuntu shell and Python/NumPy cohorts. NumPy transfers less content, with no detected cold-Ready median difference; warm-cache Docker is faster. It uses prepared local registry/cache services, with different networking, Docker image store and memory configurations from the startup controls above; results remain separate rather than forming a single ranking.
+
+## Data and analysis {#results}
+
+The 2026-10-06 startup/filesystem/repair cohorts have 1,440 valid samples and review has 360; the separate 2026-10-07 stock-kernel startup cohort has 240 valid samples. All have zero measured failures. Cohorts are not pooled; topic pages provide median differences and paired-bootstrap 95% intervals.
+
+| Question | Measured level (timing is P50) |
+|---|---|
+| [Startup](startup.md) | Stock controls: VM 100.91 ms; Firecracker 285.04 ms; QEMU microvm 321.56 ms; q35 702.98 ms |
+| [Repair completion](agent-tasks.md) | staged 0.64 s; Docker 0.81 s; VM 3.25 s; QEMU microvm 1.40 s |
+| [Seven-tool completion](filesystem.md) | staged 1.09 s; Docker 0.82 s; VM 4.27 s; Firecracker 2.29 s |
+| [Review workflow](supervision-cost.md) | 10,000 files: stage 141 ms; Git 248 ms; reflink 343 ms |
+| [Network](network.md) | Eight-thread small requests: native 0.69 ms; host proxy 10.09 ms; VM 2.10 ms |
+| [Active capacity](density.md) | 2 GiB: stage/Podman pass all five rounds at 32; VM at 16 |
+
+
+Network has 510 valid batches. Capacity retains all 320 batches, including 57 failures. These experiments remain separate and do not form one capacity or speed ranking. Retired Controller/Worker results are [historical evidence](cluster-scalability.md), excluded from current comparisons and daemon sizing; daemon throughput, density and history costs are unmeasured.
+
+Net physical-memory savings and useful-task density from compression, trimmed-kernel benefits, full Ubuntu and macOS comparisons have not completed validation with current artifacts; no advantage is claimed for them. Cloud services, gVisor/Kata and complete RL throughput have no matched ranking. Apply, network, isolation and replay require their own evidence and cannot be inferred from these short tasks.
+
+[Network](network.md) · [Apply](supervision-cost.md#apply-cost) · [Density](density.md) · [VM memory](vm-memory/index.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md)
+
+[End-to-end tasks](agent-tasks.md) combines tool waiting, workspace lifecycle and CLI compatibility to analyze Agent sandbox, container, VM and cloud tradeoffs. [Reinforcement learning](compare-rl-infra.md) maps tool costs, active capacity and historical-prefix preparation to rollouts; full training throughput and reward are unmeasured.
+
+### Downloads and reproduction {#run}
+
+[Runtime statistics](runtime-summary.csv) · [Confidence intervals](runtime-comparisons.csv) · [Runtime provenance](runtime-provenance.csv) · [Workflow statistics](workflow-summary.csv) · [Workflow intervals](workflow-comparisons.csv) · [Workflow provenance](workflow-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

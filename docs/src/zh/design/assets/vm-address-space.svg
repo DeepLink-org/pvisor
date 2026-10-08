@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="900" viewBox="0 0 1080 900" role="img" aria-labelledby="title desc"><title id="title">Guest 地址、宿主映射与共享物理页</title><desc id="desc">按地址空间分层；数值仅作示意。虚线表示 A 写入前的共享关系。</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="1080" height="900" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">Guest 地址、宿主映射与共享物理页</text>
+<text x="28" y="67" font-size="15">按地址空间分层；数值仅作示意。虚线表示 A 写入前的共享关系。</text>
+<rect x="20" y="100" width="1040" height="114" fill="#1a304c"/>
+<rect x="20" y="263" width="1040" height="114" fill="#12243b"/>
+<rect x="20" y="426" width="1040" height="118" fill="#1a304c"/>
+<rect x="20" y="629" width="1040" height="137" fill="#12243b"/>
+<rect x="135" y="146" width="250" height="50" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="260.0" y="177.0" font-size="17" font-weight="600" text-anchor="middle">VM A · GVA 0x4000</text>
+<rect x="135" y="309" width="250" height="50" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="260.0" y="340.0" font-size="17" font-weight="600" text-anchor="middle">VM A · GPA 0x1000</text>
+<rect x="135" y="472" width="250" height="54" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="260.0" y="493.0" font-size="17" font-weight="600" text-anchor="middle">runner A · HVA</text>
+<text x="260.0" y="517.0" font-size="14" text-anchor="middle">MAP_PRIVATE</text>
+<polyline points="260,196 260,309" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="275" y="241" font-size="14">① Guest 页表</text>
+<polyline points="260,359 260,472" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="275" y="404" font-size="14">② VMM 注册内存区域</text>
+<rect x="695" y="146" width="250" height="50" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="820.0" y="177.0" font-size="17" font-weight="600" text-anchor="middle">VM B · GVA 0x4000</text>
+<rect x="695" y="309" width="250" height="50" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="820.0" y="340.0" font-size="17" font-weight="600" text-anchor="middle">VM B · GPA 0x1000</text>
+<rect x="695" y="472" width="250" height="54" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="820.0" y="493.0" font-size="17" font-weight="600" text-anchor="middle">runner B · HVA</text>
+<text x="820.0" y="517.0" font-size="14" text-anchor="middle">MAP_PRIVATE</text>
+<polyline points="820,196 820,309" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="835" y="241" font-size="14">① Guest 页表</text>
+<polyline points="820,359 820,472" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="835" y="404" font-size="14">② VMM 注册内存区域</text>
+<rect x="135" y="675" width="250" height="70" rx="2" fill="#443929" stroke="#c9a96e" stroke-width="1.4"/>
+<text x="260.0" y="704.0" font-size="17" font-weight="600" text-anchor="middle">A 的私有页 Q</text>
+<text x="260.0" y="728.0" font-size="14" text-anchor="middle">写后内容 Y</text>
+<rect x="670" y="675" width="300" height="70" rx="2" fill="#193d40" stroke="#74b7b0" stroke-width="1.4"/>
+<text x="820.0" y="704.0" font-size="17" font-weight="600" text-anchor="middle">共享物理页 P</text>
+<text x="820.0" y="728.0" font-size="14" text-anchor="middle">不可变 backing 内容 X</text>
+<polyline points="260,526 260,675" fill="none" stroke="#e2bd80" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#change)"/>
+<text x="275" y="598" font-size="14">③ A 写入 → 内核 COW</text>
+<polyline points="385,499 530,499 530,567 762,567 762,675" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="605" y="557" font-size="14">写入前</text>
+<polyline points="820,526 820,675" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="834" y="614" font-size="14">B 保持共享</text>
+<text x="28" y="803" font-size="14">硬件二阶段映射将 GPA 对应到 host 物理页；HVA 供 VMM / 设备访问 RAM。</text>
+<text x="28" y="837" font-size="15">图中箭头表示映射关系，不是 CPU 每次访存都执行的软件调用链。</text>
+<text x="28" y="871" font-size="14">相同 GPA 数值不表示共享；相同 backing 的未修改页才可能共享物理内容。</text>
+<text x="36" y="123" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">01  Guest 虚拟地址 · GVA</text>
+<text x="36" y="286" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">02  Guest 物理地址 · GPA</text>
+<text x="36" y="449" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">03  Host 虚拟映射 · HVA</text>
+<text x="36" y="652" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">04  Host 物理内容</text></g></svg>

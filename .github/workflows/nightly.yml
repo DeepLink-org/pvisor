@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   meta:
-    if: github.repository == 'DeepLink-org/Persisting' && github.ref == 'refs/heads/main'
+    if: github.repository == 'DeepLink-org/pvisor' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -62,6 +62,18 @@ jobs:
           merge-multiple: true
           path: dist
 
+      - name: Download corresponding firmware sources
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-source-nightly-wheel-*
+          merge-multiple: true
+          path: dist
+
+      - name: Require complete corresponding firmware source set
+        run: |
+          test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz
+          test -s dist/pvisor-firmware-source-macos-arm64.tar.gz
+
       - name: Verify complete nightly artifact set
         env:
           VERSION: ${{ needs.meta.outputs.version }}
@@ -78,7 +90,7 @@ jobs:
           prerelease: true
           removeArtifacts: true
           artifactErrorsFailBuild: true
-          artifacts: dist/*.whl
+          artifacts: dist/*.whl,dist/pvisor-firmware-source-*.tar.gz
           body: |
             Rolling nightly build from [`${{ github.sha }}`](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}) on **${{ github.ref_name }}**.
 
@@ -88,4 +100,6 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-nightly.sh | bash
             ```
 
-            The wheel includes the matched `pvisor` CLI. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).
+            The daemon included in the Linux x86_64 wheel embeds native `pvisor-vm` execution and requires Linux x86_64, KVM access and delegated cgroup v2. Provision a trusted prepared-image manifest and Linux rootfs with a bootstrap supervising real execd/egress services and guest vsock bridges; the bootstrap is not supplied or end-to-end validated. Docker/Podman are not used.
+
+            Both wheels install native `pvisor` and local companion scripts directly; only the Linux x86_64 wheel includes the independently built `pvisor-daemon` executable. The Python package is a version marker, not a launcher. Built with local version `+${{ needs.meta.outputs.local_version }}` (base version from `pyproject.toml`).

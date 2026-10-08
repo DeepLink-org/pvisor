@@ -2,7 +2,7 @@ name: pVisor Benchmark
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop, next]
     paths:
       - 'Cargo.*'
       - '.cargo/**'
@@ -14,7 +14,7 @@ on:
       - '.github/actions/setup-build-env/**'
       - '.github/workflows/pvisor-benchmark.yml'
   pull_request:
-    branches: [main]
+    branches: [main, develop, next]
     paths:
       - 'Cargo.*'
       - '.cargo/**'
@@ -49,6 +49,7 @@ jobs:
         uses: ./.github/actions/setup-build-env
         with:
           rust: "true"
+          static-musl: "true"
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -81,30 +82,40 @@ jobs:
 
       - name: Benchmark main
         if: steps.baseline.outputs.supported == 'true'
+        env:
+          # Older baseline firmware recipes expand MAKEFLAGS as command arguments.
+          GNUMAKEFLAGS: --no-print-directory
         shell: bash
         run: |
           set -euo pipefail
           cd "${{ steps.baseline.outputs.repo }}"
           bash benchmark/pvisor/run.sh run \
             --suite smoke \
-            --output "${RUNNER_TEMP}/pvisor-benchmark/main" \
+            --output "${RUNNER_TEMP}/.data/pvisor-benchmark/main" \
             --target-dir "${GITHUB_WORKSPACE}/target/pvisor-benchmark-main"
+
+      - name: Stop baseline Host listener before switching binaries
+        if: steps.baseline.outputs.supported == 'true'
+        shell: bash
+        run: |
+          # The Host listener intentionally rejects a different executable digest.
+          pkill -f "^${GITHUB_WORKSPACE}/target/pvisor-benchmark-main/release/pvisor --pvisor-internal-host$" || [[ $? == 1 ]]
 
       - name: Benchmark candidate
         shell: bash
         run: |
           just benchmark \
             smoke \
-            "${RUNNER_TEMP}/pvisor-benchmark/candidate" \
+            "${RUNNER_TEMP}/.data/pvisor-benchmark/candidate" \
             "${GITHUB_WORKSPACE}/target/pvisor-benchmark-candidate"
 
       - name: Compare reports
         shell: bash
         run: |
           set -euo pipefail
-          candidate="${RUNNER_TEMP}/pvisor-benchmark/candidate/raw-report.json"
-          baseline="${RUNNER_TEMP}/pvisor-benchmark/main/raw-report.json"
-          output="${RUNNER_TEMP}/pvisor-benchmark/comparison"
+          candidate="${RUNNER_TEMP}/.data/pvisor-benchmark/candidate/raw-report.json"
+          baseline="${RUNNER_TEMP}/.data/pvisor-benchmark/main/raw-report.json"
+          output="${RUNNER_TEMP}/.data/pvisor-benchmark/comparison"
           if [[ -f "$baseline" ]]; then
             just benchmark-compare "$candidate" "$baseline" "$output"
           else
@@ -117,6 +128,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: pvisor-benchmark-${{ github.run_id }}
-          path: ${{ runner.temp }}/pvisor-benchmark
+          path: ${{ runner.temp }}/.data/pvisor-benchmark
           retention-days: 30
           if-no-files-found: error

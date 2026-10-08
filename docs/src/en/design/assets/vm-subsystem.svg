@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1155" viewBox="0 0 1440 1155" role="img" aria-labelledby="title desc">
+<title id="title">VM Subsystem · Execution &amp; Devices</title><desc id="desc">Inside pvisor-vm: three state owners and one coordinated freeze boundary</desc>
+<rect width="1440" height="1155" fill="#0d1b30"/>
+<g font-family="Arial,Helvetica,PingFang SC,Microsoft YaHei,sans-serif" text-anchor="middle">
+<text x="720" y="59" fill="#c8e0fc" font-size="39" font-weight="700">VM Subsystem · Execution &amp; Devices</text>
+<text x="720" y="98" fill="#b7c6db" font-size="21" font-weight="500">Inside pvisor-vm: three state owners and one coordinated freeze boundary</text>
+<rect x="30" y="126" width="1380" height="116" rx="38" fill="#1a3d68" stroke="#416080" stroke-width="7"/>
+<text x="720" y="173" fill="#c8e0fc" font-size="31" font-weight="700">Caller · pvisor VM executor / supervisor</text>
+<rect x="54" y="186" width="1332" height="40" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="215.0" fill="#e9eef8" font-size="26" font-weight="700">VmBuilder → run(on_ready) → VmmHandle</text>
+<path d="M720 249 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="283" width="1380" height="114" rx="38" fill="#244569" stroke="#416080" stroke-width="7"/>
+<text x="720" y="330" fill="#c8e0fc" font-size="31" font-weight="700">Guest Linux · Applications &amp; Kernel</text>
+<rect x="54" y="343" width="650" height="38" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="379.0" y="371.0" fill="#e9eef8" font-size="24" font-weight="700">Instructions · page tables · interrupts</text>
+<rect x="726" y="343" width="660" height="38" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1056.0" y="371.0" fill="#e9eef8" font-size="24" font-weight="700">VFS / TCP/IP → virtio drivers</text>
+<rect x="30" y="423" width="1380" height="520" rx="38" fill="#102138" stroke="#416080" stroke-width="7"/>
+<text x="720" y="470" fill="#c8e0fc" font-size="31" font-weight="700">pvisor-vm · runner</text>
+<rect x="54" y="488" width="430" height="266" rx="28" fill="#2e4c70" stroke="#416080" stroke-width="7"/>
+<text x="269" y="530" fill="#e9eef8" font-size="28" font-weight="700">vCPU &amp; Control</text>
+<rect x="505" y="488" width="430" height="266" rx="28" fill="#284867" stroke="#416080" stroke-width="7"/>
+<text x="720" y="530" fill="#e9eef8" font-size="28" font-weight="700">RAM Address Space</text>
+<rect x="956" y="488" width="430" height="266" rx="28" fill="#264956" stroke="#416080" stroke-width="7"/>
+<text x="1171" y="530" fill="#e9eef8" font-size="28" font-weight="700">Devices &amp; I/O</text>
+<rect x="68" y="551" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="269.0" y="588.0" fill="#e9eef8" font-size="24" font-weight="700">CPU threads</text>
+<text x="269.0" y="617.0" fill="#e9eef8" font-size="20" font-weight="500">run · exit · register state</text>
+<rect x="68" y="645" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="269.0" y="682.0" fill="#e9eef8" font-size="24" font-weight="700">EventManager / eventfd</text>
+<text x="269.0" y="711.0" fill="#e9eef8" font-size="20" font-weight="500">kick · pause / resume</text>
+<rect x="519" y="551" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="588.0" fill="#e9eef8" font-size="24" font-weight="700">GuestMemoryMmap</text>
+<text x="720.0" y="617.0" fill="#e9eef8" font-size="20" font-weight="500">GPA regions ↔ host mappings</text>
+<rect x="519" y="645" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="682.0" fill="#e9eef8" font-size="24" font-weight="700">MemoryGate / RAM lease</text>
+<text x="720.0" y="711.0" fill="#e9eef8" font-size="20" font-weight="500">mapping lifetime · access drain</text>
+<rect x="970" y="551" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1171.0" y="588.0" fill="#e9eef8" font-size="24" font-weight="700">virtqueue / queue owner</text>
+<text x="1171.0" y="617.0" fill="#e9eef8" font-size="20" font-weight="500">available → request → used</text>
+<rect x="970" y="645" width="402" height="82" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1171.0" y="682.0" fill="#e9eef8" font-size="24" font-weight="700">virtio-fs / net / console</text>
+<text x="1171.0" y="711.0" fill="#e9eef8" font-size="20" font-weight="500">file service · egress · channels</text>
+<rect x="54" y="776" width="1332" height="70" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="807.0" fill="#e9eef8" font-size="27" font-weight="700">Full freeze: park / ACK vCPUs → drain workers → close RAM gate</text>
+<text x="720.0" y="836.0" fill="#e9eef8" font-size="20" font-weight="500">Capture CPU + RAM + devices; restore installs state before explicit resume</text>
+<rect x="54" y="866" width="650" height="51" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="379.0" y="900.5" fill="#e9eef8" font-size="26" font-weight="700">KVM · vCPU / memory slots</text>
+<rect x="726" y="866" width="660" height="51" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1056.0" y="900.5" fill="#e9eef8" font-size="26" font-weight="700">HVF · vCPU / stage-2 / GIC</text>
+<path d="M720 950 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="984" width="1380" height="87" rx="38" fill="#1c3c45" stroke="#416080" stroke-width="7"/>
+<text x="720" y="1031" fill="#c8e0fc" font-size="31" font-weight="700">Host OS &amp; Hardware Virtualization</text>
+<text x="720" y="1112" fill="#c8e0fc" font-size="22" font-weight="700">Host services own files, egress and durable objects; ordinary pause parks only vCPUs.</text>
+</g></svg>

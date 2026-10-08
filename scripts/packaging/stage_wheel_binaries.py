@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
-import hashlib
 import json
 import os
 import platform
@@ -13,35 +11,27 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
-import urllib.request
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+import firmware as firmware_build
+
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
-EXPECTED_BINARIES = ("pvisor",)
+NATIVE_BINARIES = (
+    "pvisor",
+    "pvisor-cache",
+    "pvisor-tui",
+    "pvisor-replay",
+)
+EXPECTED_BINARIES = (*NATIVE_BINARIES, "pvisor-daemon")
 SUPPORTED_TARGETS = {
-    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
     "aarch64-apple-darwin",
 }
-MACOS_ENTITLEMENTS = ROOT / "crates" / "persisting-pvisor" / "macos-hypervisor.entitlements"
-LIBKRUNFW_VERSION = "5.5.0"
-MACOS_DEPLOYMENT_TARGET = "11.0"
-LIBKRUNFW_RELEASE = f"https://github.com/libkrun/libkrunfw/releases/download/v{LIBKRUNFW_VERSION}"
-LIBKRUNFW_ARCHIVES = {
-    "x86_64-unknown-linux-gnu": (
-        "libkrunfw-x86_64.tgz",
-        "c169206b01c89fbe134f1728bf4f988702bc7f73b4cf73e6fdece447d6fceca1",
-        "lib64/libkrunfw.so.5.5.0",
-    ),
-    "aarch64-apple-darwin": (
-        "libkrunfw-prebuilt-aarch64.tgz",
-        "5bfae6efee63dbdf04a8fac2a69d772d9f900af2f54c4429b4acdfd6d86b9979",
-        "libkrunfw/kernel.c",
-    ),
-}
+MACOS_ENTITLEMENTS = ROOT / "crates" / "pvisor" / "macos-hypervisor.entitlements"
 
 
 @dataclass(frozen=True)
@@ -54,6 +44,14 @@ class BuildOptions:
     offline: bool = False
     jobs: str | None = None
     bundle_firmware: bool = True
+
+
+def copy_artifact(source: Path, destination: Path) -> None:
+    """Replace a built artifact without truncating an executable still in use."""
+    with tempfile.TemporaryDirectory(prefix=f".{destination.name}-", dir=destination.parent) as tmp:
+        staged = Path(tmp) / destination.name
+        shutil.copy2(source, staged)
+        os.replace(staged, destination)
 
 
 def ensure_wheel_data_directory() -> Path:
@@ -90,7 +88,7 @@ def _normalize_target(target: str | None) -> str | None:
     if target is None:
         machine = platform.machine().lower()
         if sys.platform == "linux" and machine in {"x86_64", "amd64"}:
-            return None
+            return "x86_64-unknown-linux-musl"
         if sys.platform == "darwin" and machine in {"arm64", "aarch64"}:
             return None
         raise RuntimeError(
@@ -98,10 +96,10 @@ def _normalize_target(target: str | None) -> str | None:
         )
 
     aliases = {
-        "x86_64": "x86_64-unknown-linux-gnu",
+        "x86_64": "x86_64-unknown-linux-musl",
         "aarch64": "aarch64-apple-darwin"
         if sys.platform == "darwin"
-        else "aarch64-unknown-linux-gnu",
+        else "aarch64-unknown-linux-musl",
         "arm64": "aarch64-apple-darwin",
     }
     normalized = aliases.get(target, target)
@@ -132,20 +130,35 @@ def options_from_build_backend(
     )
 
 
-def _cargo_command(options: BuildOptions) -> list[str]:
+def _cargo_command(
+    options: BuildOptions, *, shim_vm: bool = False, daemon: bool = False
+) -> list[str]:
+    target = (
+        _normalize_target(options.target)
+        if options.target is not None or sys.platform == "linux"
+        else None
+    )
+    if daemon and target != "x86_64-unknown-linux-musl":
+        raise RuntimeError("pvisor-daemon is supported only on Linux x86_64 (static musl)")
     command = [
         "cargo",
-        "build",
+        "zigbuild" if target == "x86_64-unknown-linux-musl" else "build",
         "--profile",
         options.profile,
         "--message-format=json-render-diagnostics",
         "-p",
-        "persisting-pvisor",
-        "--bin",
-        "pvisor",
+        "pvisor-daemon" if daemon else "pvisor-shim" if shim_vm else "pvisor-cli",
     ]
-    if options.target is not None:
-        command.extend(("--target", options.target))
+    if daemon:
+        command.extend(("--bin", "pvisor-daemon", "--no-default-features"))
+    elif shim_vm:
+        command.extend(("--bin", "containerd-shim-pvisor-v2", "--features", "vm"))
+    else:
+        command.extend(("--features", "pvisor-cli/gateway"))
+        for name in NATIVE_BINARIES:
+            command.extend(("--bin", name))
+    if target is not None:
+        command.extend(("--target", target))
     if options.target_dir is not None:
         command.extend(("--target-dir", options.target_dir))
     if options.frozen:
@@ -159,12 +172,78 @@ def _cargo_command(options: BuildOptions) -> list[str]:
     return command
 
 
-def _build(options: BuildOptions) -> dict[str, Path]:
-    command = _cargo_command(options)
-    print(f"Building wheel CLI component set: {shlex.join(command)}", file=sys.stderr)
+def _prepare_zig_file_limit() -> None:
+    import resource
+
+    # Thin-LTO links open thousands of object files. Cargo's job limit does not
+    # reduce the descriptors needed by an individual Zig linker process.
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    desired = 16_384
+    if soft == resource.RLIM_INFINITY or soft >= desired:
+        return
+    available = desired if hard == resource.RLIM_INFINITY else min(desired, hard)
+    if available <= soft:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (available, hard))
+    except (OSError, ValueError) as error:
+        raise RuntimeError(
+            f"Cannot raise the Zig build open-file limit from {soft} to {available} "
+            f"(hard limit {hard}); increase the build process's open-file limit"
+        ) from error
+    print(f"Zig build open-file limit: {soft} -> {available}", file=sys.stderr)
+
+
+def expected_binaries(options: BuildOptions) -> tuple[str, ...]:
+    return NATIVE_BINARIES if _is_macos(options) else EXPECTED_BINARIES
+
+
+def _build(
+    options: BuildOptions,
+    *,
+    shim_vm: bool = False,
+    firmware: firmware_build.ResolvedFirmware | None = None,
+) -> dict[str, Path]:
+    firmware = firmware if firmware is not None else _resolve_firmware(options)
+    artifacts = _build_component(options, shim_vm=shim_vm, firmware=firmware)
+    if not shim_vm and not _is_macos(options):
+        # Keep package selection separate; the daemon embeds pvisor's VM library,
+        # while the CLI discovers the daemon executable without linking it back.
+        artifacts.update(_build_component(options, daemon=True, firmware=firmware))
+    return artifacts
+
+
+def _build_component(
+    options: BuildOptions,
+    *,
+    shim_vm: bool = False,
+    daemon: bool = False,
+    firmware: firmware_build.ResolvedFirmware | None = None,
+) -> dict[str, Path]:
+    command = _cargo_command(options, shim_vm=shim_vm, daemon=daemon)
+    expected = (
+        ("pvisor-daemon",)
+        if daemon
+        else ("containerd-shim-pvisor-v2",)
+        if shim_vm
+        else NATIVE_BINARIES
+    )
+    print(f"Building native CLI: {shlex.join(command)}", file=sys.stderr)
+    build_env = os.environ.copy()
+    firmware = firmware if firmware is not None else _resolve_firmware(options)
+    for selector in (
+        "PVISOR_LIBKRUNFW_PATH",
+        "PVISOR_KRUNFW_PATH",
+        "PVISOR_KRUNFW_KERNEL_BUNDLE",
+    ):
+        build_env.pop(selector, None)
+    build_env.update(firmware.cargo_env)
+    if command[1] == "zigbuild":
+        _prepare_zig_file_limit()
     process = subprocess.Popen(
         command,
         cwd=ROOT,
+        env=build_env,
         stdout=subprocess.PIPE,
         text=True,
     )
@@ -185,15 +264,22 @@ def _build(options: BuildOptions) -> dict[str, Path]:
         executable = message.get("executable")
         name = message.get("target", {}).get("name")
         kinds = message.get("target", {}).get("kind", [])
-        if executable and name in EXPECTED_BINARIES and "bin" in kinds:
+        if executable and name in expected and "bin" in kinds:
             artifacts[name] = Path(executable)
 
     return_code = process.wait()
     if return_code != 0:
         raise subprocess.CalledProcessError(return_code, command)
-    missing = sorted(set(EXPECTED_BINARIES) - artifacts.keys())
+    missing = sorted(set(expected) - artifacts.keys())
     if missing:
         raise RuntimeError(f"Cargo did not report expected wheel binaries: {', '.join(missing)}")
+    if _is_macos(options):
+        assert firmware.library_name is not None
+        for directory in {path.parent for path in artifacts.values()}:
+            destination = directory / firmware.library_name
+            if firmware.path != destination.resolve():
+                copy_artifact(firmware.path, destination)
+            (directory / "libkrunfw.SOURCE").write_text(firmware.source_record)
     return artifacts
 
 
@@ -203,89 +289,21 @@ def _is_macos(options: BuildOptions) -> bool:
     )
 
 
-def _firmware_source(options: BuildOptions) -> tuple[Path, str]:
-    name = "libkrunfw.5.dylib" if _is_macos(options) else "libkrunfw.so.5"
-    configured = os.getenv("PERSISTING_LIBKRUNFW_PATH")
-    if configured:
-        source = Path(configured).expanduser()
-        if source.is_dir():
-            source = source / name
-        source = source.resolve()
-        if not source.is_file():
-            raise RuntimeError(f"libkrunfw payload does not exist: {source}")
-        return source, name
-    return _fetch_firmware(options, name), name
-
-
-def _host_target() -> str:
-    if sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"}:
-        return "aarch64-apple-darwin"
-    if sys.platform == "linux" and platform.machine().lower() in {"x86_64", "amd64"}:
-        return "x86_64-unknown-linux-gnu"
-    raise RuntimeError(
-        f"automatic libkrunfw preparation is unsupported on {sys.platform}/{platform.machine()}"
+def _resolve_firmware(options: BuildOptions) -> firmware_build.ResolvedFirmware:
+    target = (
+        _normalize_target(options.target)
+        if options.target is not None
+        else "aarch64-apple-darwin"
+        if _is_macos(options)
+        else firmware_build.host_target()
     )
-
-
-def _fetch_firmware(options: BuildOptions, name: str) -> Path:
-    target = options.target or _host_target()
-    try:
-        archive_name, expected_sha256, archive_member = LIBKRUNFW_ARCHIVES[target]
-    except KeyError as error:
-        raise RuntimeError(f"no downloadable libkrunfw payload for {target}") from error
-    cache_key = f"{LIBKRUNFW_VERSION}-{target}"
-    if _is_macos(options):
-        cache_key += f"-macos{MACOS_DEPLOYMENT_TARGET}"
-    build_root = ROOT / "target" / "libkrunfw" / cache_key
-    destination = build_root / name
-    if destination.is_file():
-        return destination
-    archive = build_root.parent / archive_name
-    build_root.parent.mkdir(parents=True, exist_ok=True)
-    if not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest() != expected_sha256:
-        archive.unlink(missing_ok=True)
-        print(f"Downloading wheel firmware: {LIBKRUNFW_RELEASE}/{archive_name}", file=sys.stderr)
-        urllib.request.urlretrieve(f"{LIBKRUNFW_RELEASE}/{archive_name}", archive)
-    actual_sha256 = hashlib.sha256(archive.read_bytes()).hexdigest()
-    if actual_sha256 != expected_sha256:
-        archive.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"libkrunfw checksum mismatch: expected {expected_sha256}, got {actual_sha256}"
-        )
-    build_root.mkdir(parents=True, exist_ok=True)
-    source_path = build_root / "kernel.c"
-    with tarfile.open(archive, "r:gz") as source:
-        try:
-            member = source.getmember(archive_member)
-        except KeyError as error:
-            raise RuntimeError(f"libkrunfw archive is missing {archive_member}") from error
-        if not member.isfile():
-            raise RuntimeError(f"libkrunfw archive member is not a file: {archive_member}")
-        payload = source.extractfile(member)
-        if payload is None:
-            raise RuntimeError(f"could not read libkrunfw archive member: {archive_member}")
-        extracted = source_path if _is_macos(options) else destination
-        with extracted.open("wb") as output:
-            shutil.copyfileobj(payload, output)
-
-    if _is_macos(options):
-        subprocess.run(
-            [
-                "/usr/bin/cc",
-                "-fPIC",
-                "-DABI_VERSION=5",
-                f"-mmacosx-version-min={MACOS_DEPLOYMENT_TARGET}",
-                "-shared",
-                "-Wl,-install_name,@rpath/libkrunfw.5.dylib",
-                "-o",
-                str(destination),
-                str(source_path),
-            ],
-            check=True,
-        )
-        source_path.unlink(missing_ok=True)
-    destination.chmod(0o755)
-    return destination
+    assert target is not None
+    return firmware_build.resolve_firmware(
+        target,
+        target_dir=options.target_dir,
+        jobs=options.jobs,
+        offline=options.offline or options.frozen,
+    )
 
 
 def _sign_macos_pvisor(path: Path) -> None:
@@ -305,8 +323,8 @@ def _sign_macos_pvisor(path: Path) -> None:
 
 def stage_wheel_binaries(options: BuildOptions) -> Path:
     """Build the host CLI and atomically replace the wheel scripts directory."""
-    firmware = _firmware_source(options) if options.bundle_firmware else None
-    artifacts = _build(options)
+    firmware = _resolve_firmware(options)
+    artifacts = _build(options, firmware=firmware)
     ensure_wheel_data_directory()
     staged = WHEEL_DATA / f".scripts-{os.getpid()}"
     backup = WHEEL_DATA / f".scripts-old-{os.getpid()}"
@@ -315,7 +333,7 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
     staged.mkdir()
 
     try:
-        for name in EXPECTED_BINARIES:
+        for name in expected_binaries(options):
             source = artifacts[name]
             destination = staged / name
             shutil.copy2(source, destination)
@@ -324,22 +342,19 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
             )
             print(f"Staged {name}: {source} -> {destination}", file=sys.stderr)
 
-        if firmware is not None:
-            firmware_source, firmware_name = firmware
-            firmware_destination = staged / firmware_name
-            shutil.copy2(firmware_source, firmware_destination)
-            (staged / "libkrunfw.SOURCE").write_text(
-                f"libkrunfw {LIBKRUNFW_VERSION}\n"
-                f"source: {LIBKRUNFW_RELEASE}/libkrunfw-<architecture>.tgz\n"
-                "licenses: GPL-2.0-only (Linux kernel), LGPL-2.1-only (library)\n",
-                encoding="utf-8",
-            )
-            print(
-                f"Staged libkrunfw: {firmware_source} -> {firmware_destination}",
-                file=sys.stderr,
-            )
+        if options.bundle_firmware:
+            if _is_macos(options):
+                assert firmware.library_name is not None
+                firmware_destination = staged / firmware.library_name
+                shutil.copy2(firmware.path, firmware_destination)
+                print(
+                    f"Staged libkrunfw: {firmware.path} -> {firmware_destination}",
+                    file=sys.stderr,
+                )
+            (staged / "libkrunfw.SOURCE").write_text(firmware.source_record, encoding="utf-8")
         if _is_macos(options):
-            _sign_macos_pvisor(staged / "pvisor")
+            for name in NATIVE_BINARIES:
+                _sign_macos_pvisor(staged / name)
 
         scripts = WHEEL_DATA / "scripts"
         if scripts.exists():
@@ -354,29 +369,3 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
         return scripts
     finally:
         shutil.rmtree(staged, ignore_errors=True)
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target")
-    parser.add_argument("--profile", default="release")
-    parser.add_argument("--target-dir")
-    parser.add_argument("--locked", action="store_true")
-    parser.add_argument("--frozen", action="store_true")
-    parser.add_argument("--offline", action="store_true")
-    parser.add_argument("--jobs")
-    args = parser.parse_args()
-    options = BuildOptions(
-        target=_normalize_target(args.target),
-        profile=args.profile,
-        target_dir=args.target_dir,
-        locked=args.locked,
-        frozen=args.frozen,
-        offline=args.offline,
-        jobs=args.jobs,
-    )
-    stage_wheel_binaries(options)
-
-
-if __name__ == "__main__":
-    main()

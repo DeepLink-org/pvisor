@@ -1,15 +1,11 @@
-# Capture Agent Trajectories
+# Capture agent trajectories
 
-Gateway capture is a pVisor Run driver. It is started and stopped with the Run;
-there is no standalone Gateway command or daemon. The
-[capability and evidence model](../concepts/capabilities-and-evidence.md)
-explains what capture proves and what it does not enforce.
+Gateway capture is a Run driver: the Run starts and stops it, and there is no standalone Gateway command or daemon. [Capabilities and evidence](../concepts/capabilities-and-evidence.md) explains what capture can prove and what it does not enforce.
 
-Install `pvisor` using the [installation guide](../start/installation.md), then run a real Agent:
+Install `pvisor` with the [installation guide](../start/installation.md). A real agent can be configured directly through `pvisor run`:
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
-
 pvisor run \
   --name deepseek \
   --gateway-mode capture \
@@ -18,31 +14,12 @@ pvisor run \
   -- claude
 ```
 
-pVisor starts the embedded Gateway, injects proxy/base-URL values into the
-child, waits for the child, flushes capture, and stops the Gateway. Each Run
-writes all metadata, trajectory, and optional filesystem state into the Run
-record directory (or the explicit `--stage` directory).
+pVisor starts an embedded Gateway, injects proxy or base-URL configuration into the child process, waits for execution, drains capture, and stops the Gateway. Use `--record-destination ./capture` to write the Trace Event journal to a chosen directory.
 
-Set `--record-destination ./capture` to write EventRecord JSONL to the specified
-directory. `--gateway-stream-markdown` is a compatibility flag; the current
-story actor does not produce a Markdown projection.
+### Event timestamps and order
 
-### Event timestamps
+The default output is `events.trace.jsonl`: it first writes a `pvisor.trace/5` header, then records containing an Event and its `{journal, offset}`. Observation time is `event.observed_at_unix_ms`; cross-producer causality uses `event.caused_by` and cannot be inferred from timestamps.
 
-Every newly persisted `EventRecord` carries both wall-clock fields:
+Gateway content lives in `event.data.payload.content`, story/session routing in `event.data.payload.story`, and call linkage in `event.data.payload.correlation`. A Run and its embedded Gateway share one Journal. Entering the queue is not persistence; `LocalSync` is returned only after the file is synchronized. Only formal Event Journals are supported; older JSONL is no longer read.
 
-- `timestamp`: an RFC3339 UTC timestamp;
-- `timestamp_unix_ms`: the same observation time as Unix milliseconds.
-
-Gateway timestamps request events when the request is accepted and response
-events when the response is captured. The final Gateway capture sink also
-backfills both fields for records from older producers, while pVisor runtime
-events generate the pair together. The two values must agree within one
-millisecond. Interpret `seq` within its producer/session scope and preserve Run, Attempt
-and session identities. Timestamps are for correlation, not a global order.
-
-Clients must use an injected proxy or base URL to be observed. Direct sockets
-can bypass the explicit proxy unless the selected executor provides an enforced
-network boundary; inspect the Run Bundle for the effective isolation level.
-
-Next: read the [Gateway implementation](../design/gateway.md).
+A client is observable only when it uses the injected proxy or base URL. Whether a direct socket is restricted depends on the executor, and the Run Bundle defines the actual isolation boundary.

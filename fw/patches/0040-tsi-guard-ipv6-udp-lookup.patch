@@ -1,0 +1,17 @@
+Subject: [PATCH] tsi: guard IPv6 UDP lookup when IPv6 is unavailable
+
+TSI depends on INET, not IPV6. Avoid referencing the IPv6 UDP lookup
+implementation when IPv6 is disabled or not reachable from TSI, so
+IPv4-only firmware can retain TSI support.
+
+--- a/net/tsi/af_tsi.c
++++ b/net/tsi/af_tsi.c
+@@ -1122,7 +1122,7 @@
+ 			sock_put(listener);  /* Release the reference */
+ 			return true;
+ 		}
+-	} else if (tsk->family == PF_INET6) {
++	} else if (IS_REACHABLE(CONFIG_IPV6) && tsk->family == PF_INET6) {
+ 		struct sockaddr_in6 *sin6;
+ 		const struct in6_addr *daddr;
+ 		__be16 dport;

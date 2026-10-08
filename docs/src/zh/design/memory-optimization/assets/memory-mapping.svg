@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1570" viewBox="0 0 1440 1570" role="img" aria-labelledby="title desc"><title id="title">冷块的 GPA、HVA、宿主页与原 RAM 文件布局</title><desc id="desc">同一64KiB块在驻留、冷态与恢复态的地址映射和文件关系。本机16KiB宿主页，物理页地址未实测，符号页不代表PFN。</desc><defs><style>text{font-family:system-ui,-apple-system,'PingFang SC',sans-serif;fill:#e9eef8}.h{font-size:28px;font-weight:600}.l{font-size:21px;font-weight:600}.b{font-size:18px}.s{font-size:16px;fill:#a8cefa}.m{font-family:ui-monospace,monospace;font-size:17px}</style><pattern id="holes" width="12" height="12" patternUnits="userSpaceOnUse"><path d="M0 12L12 0" stroke="#416080" stroke-width="2"/></pattern><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="none" stroke="#a8cefa" stroke-width="1.4"/></marker></defs><rect width="1440" height="1570" fill="#0d1b30"/>
+<text x="36" y="48" class="h">同一个 64 KiB 块：地址映射、宿主页与文件范围</text>
+<text x="36" y="80" class="s">g / h / f 分别为块起始 GPA、HVA、file offset。以下展示一个 runner；另一 VM 拥有独立映射。</text>
+<text x="36" y="107" class="s">本机宿主页为 16 KiB。P0…P3 / Q0…Q3 是示意页，未查询 PFN；不保证物理连续或始终驻留。</text>
+<rect x="24" y="132" width="1392" height="420" fill="#1a304c"/>
+<text x="44" y="169" class="l">① Resident：MAP_SHARED 文件映射；文件页缓存由系统管理</text>
+<text x="48" y="207" class="l">guest GPA 区间</text>
+<text x="494" y="207" class="l">runner HVA / 宿主页</text>
+<text x="968" y="207" class="l">原 RAM 文件 · inode A</text>
+<rect x="24" y="595" width="1392" height="420" fill="#12243b"/>
+<text x="44" y="632" class="l">② Cold：GPA 解映射；HVA 保留范围；原文件回收完成</text>
+<text x="48" y="670" class="l">guest GPA 区间</text>
+<text x="494" y="670" class="l">runner HVA / 宿主页</text>
+<text x="968" y="670" class="l">原 RAM 文件 · inode A</text>
+<rect x="24" y="1030" width="1392" height="420" fill="#1a304c"/>
+<text x="44" y="1067" class="l">③ Restored：相同 HVA，被私有匿名映射替换；不映回文件</text>
+<text x="48" y="1105" class="l">guest GPA 区间</text>
+<text x="494" y="1105" class="l">runner HVA / 宿主页</text>
+<text x="968" y="1105" class="l">原 RAM 文件 · inode A</text>
+<rect x="48" y="226" width="364" height="34" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="250" class="m">g + 0 KiB … 16 KiB</text>
+<rect x="48" y="264" width="364" height="34" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="288" class="m">g + 16 KiB … 32 KiB</text>
+<rect x="48" y="302" width="364" height="34" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="326" class="m">g + 32 KiB … 48 KiB</text>
+<rect x="48" y="340" width="364" height="34" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="364" class="m">g + 48 KiB … 64 KiB</text>
+<rect x="494" y="226" width="364" height="34" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="250" class="m">h + 0 KiB → P0</text>
+<rect x="494" y="264" width="364" height="34" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="288" class="m">h + 16 KiB → P1</text>
+<rect x="494" y="302" width="364" height="34" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="326" class="m">h + 32 KiB → P2</text>
+<rect x="494" y="340" width="364" height="34" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="364" class="m">h + 48 KiB → P3</text>
+<rect x="968" y="226" width="364" height="34" rx="2" fill="#443929" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="250" class="m">f + 0 KiB … 16 KiB</text>
+<rect x="968" y="264" width="364" height="34" rx="2" fill="#443929" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="288" class="m">f + 16 KiB … 32 KiB</text>
+<rect x="968" y="302" width="364" height="34" rx="2" fill="#443929" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="326" class="m">f + 32 KiB … 48 KiB</text>
+<rect x="968" y="340" width="364" height="34" rx="2" fill="#443929" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="364" class="m">f + 48 KiB … 64 KiB</text>
+<path d="M414 243L487 243" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M860 243L961 243" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M414 281L487 281" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M860 281L961 281" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M414 319L487 319" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M860 319L961 319" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M414 357L487 357" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M860 357L961 357" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="48" y="406" class="b">HVF stage-2 将 GPA 映射到 h；宿主 VM 再解析文件页。</text>
+<text x="48" y="437" class="b">这里的 P 页与右侧文件范围属于同一 backing；不能把 RAM 与页缓存重复计一份。</text>
+<text x="48" y="473" class="s">Observing：只将 HVF 权限置为 no-access，host 文件映射与原内容仍在。</text>
+<text x="48" y="505" class="s">Publishing：另有 64 KiB snapshot；CPU / 设备访问会取消该快照的回收资格。</text>
+<rect x="48" y="689" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="713" class="m">g + 0 KiB：未映射</text>
+<rect x="48" y="727" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="751" class="m">g + 16 KiB：未映射</text>
+<rect x="48" y="765" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="789" class="m">g + 32 KiB：未映射</text>
+<rect x="48" y="803" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="827" class="m">g + 48 KiB：未映射</text>
+<rect x="494" y="689" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="713" class="m">h + 0 KiB：PROT_NONE</text>
+<rect x="494" y="727" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="751" class="m">h + 16 KiB：PROT_NONE</text>
+<rect x="494" y="765" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="789" class="m">h + 32 KiB：PROT_NONE</text>
+<rect x="494" y="803" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="827" class="m">h + 48 KiB：PROT_NONE</text>
+<rect x="968" y="689" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="713" class="m">f + 0 KiB：hole</text>
+<rect x="968" y="727" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="751" class="m">f + 16 KiB：hole</text>
+<rect x="968" y="765" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="789" class="m">f + 32 KiB：hole</text>
+<rect x="968" y="803" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="827" class="m">f + 48 KiB：hole</text>
+<text x="48" y="868" class="b">GPA 不再连接 h；设备也须先 prepare。</text>
+<text x="494" y="868" class="b">匿名虚拟范围，不保存原内容。</text>
+<text x="968" y="868" class="b">读洞返回零，不是原块内容。</text>
+<text x="48" y="911" class="b">Cold(RemoteObject) → session / token → 池内对象；runner 没有池 payload 的 mmap。</text>
+<text x="48" y="944" class="s">图示为 punch 完成后的状态。discard 与 punch 之间，原文件数据仍可能占用页缓存 / 磁盘。</text>
+<text x="48" y="979" class="s">文件长度 L 不变；st_blocks 随回收变化。洞不存储 token、ID 或压缩数据。</text>
+<rect x="48" y="1124" width="364" height="34" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="1148" class="m">g + 0 KiB … 16 KiB</text>
+<rect x="48" y="1162" width="364" height="34" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="1186" class="m">g + 16 KiB … 32 KiB</text>
+<rect x="48" y="1200" width="364" height="34" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="1224" class="m">g + 32 KiB … 48 KiB</text>
+<rect x="48" y="1238" width="364" height="34" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<text x="60" y="1262" class="m">g + 48 KiB … 64 KiB</text>
+<rect x="494" y="1124" width="364" height="34" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="1148" class="m">h + 0 KiB → Q0</text>
+<rect x="494" y="1162" width="364" height="34" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="1186" class="m">h + 16 KiB → Q1</text>
+<rect x="494" y="1200" width="364" height="34" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="1224" class="m">h + 32 KiB → Q2</text>
+<rect x="494" y="1238" width="364" height="34" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<text x="506" y="1262" class="m">h + 48 KiB → Q3</text>
+<rect x="968" y="1124" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="1148" class="m">f + 0 KiB：hole</text>
+<rect x="968" y="1162" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="1186" class="m">f + 16 KiB：hole</text>
+<rect x="968" y="1200" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="1224" class="m">f + 32 KiB：hole</text>
+<rect x="968" y="1238" width="364" height="34" rx="2" fill="url(#holes)" stroke="#6485a8" stroke-width="1.5"/>
+<text x="980" y="1262" class="m">f + 48 KiB：hole</text>
+<path d="M414 1141L487 1141" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M414 1179L487 1179" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M414 1217L487 1217" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M414 1255L487 1255" fill="none" stroke="#a8cefa" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="48" y="1304" class="b">GET → scratch 校验 → MAP_PRIVATE | MAP_ANON → 内容复制 → icache 同步 → GPA 映射。</text>
+<text x="48" y="1341" class="b">Q 页为 VM 私有可写匿名 backing；HVA h 不变，backing 身份已改变；与原文件无映射线。</text>
+<text x="48" y="1375" class="s">另一 VM 恢复相同内容时获得自己的私有映射。全零块不主动写脏，实际驻留页由系统决定。</text>
+<text x="48" y="1408" class="s">原文件 FD / offset 仍在 RamBlock 中，用于生命周期与记账，不是恢复数据来源。</text>
+<text x="36" y="1491" class="b">文件几何：file_offset = region.file_start + block_offset；GPA = region.guest_start + block_offset。</text>
+<text x="36" y="1528" class="s">多个 guest region 在文件中按宿主页对齐紧凑排列；GPA 的间隔不要求在文件中保留同样的洞。</text>
+</svg>

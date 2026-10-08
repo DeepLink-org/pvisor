@@ -1,13 +1,8 @@
 # Installation
 
-PolicyVisor (pVisor) runs Agent CLIs, scripts, and automation commands with
-policy controls and an inspectable execution record. The CLI is `pvisor`;
-the Python package is also named `pvisor`. Existing repository URLs,
-crate names, and `PERSISTING_*` environment variables retain their current names.
+Once `pvisor` is installed, you can run Agent CLIs, scripts, and automation inside a policy boundary and get checkable execution records. The Python package, CLI, and core Rust crate are all named `pvisor`; other crates use `pvisor-*` and environment variables use `PVISOR_*`.
 
-If you previously installed `persisting`, run `python -m pip uninstall persisting`
-before installing `pvisor` (including nightly wheels). Both distributions install
-the same CLI path, so they should not coexist in one environment.
+When upgrading, update deployed `PVISOR_*` settings as well. Local state defaults to `.pvisor` and user caches to `pvisor/`; existing data is not migrated automatically.
 
 ## 1. Install the tools
 
@@ -15,15 +10,13 @@ the same CLI path, so they should not coexist in one environment.
 pip install pvisor
 ```
 
-Verify that the command is available:
+Check the command:
 
 ```bash
 pvisor --version
 ```
 
-The wheel installs matching versions of the Python package and the `pvisor`
-CLI into the active Python environment. Use a virtual environment when the
-project has other Python dependencies:
+The wheel installs a Python version marker and native CLI scripts directly in the current Python environment's bin directory; no Python launcher is involved. If your project has other Python dependencies, use a virtual environment:
 
 ```bash
 python3 -m venv .venv
@@ -32,78 +25,56 @@ python -m pip install --upgrade pip
 pip install pvisor
 ```
 
-!!! tip "Start with a Run"
+Published wheels target Linux x86_64 and macOS arm64. Check release artifacts or build from source for other architectures.
 
-    Continue with [Your first Run](first-run.md). You do not need
-    a separate history service to review a staged workspace.
+## 2. Check platform prerequisites
 
-Published wheels target Linux x86_64 and macOS arm64. Check the release artifacts before choosing another architecture.
-
-## 2. Check platform requirements
-
-The CLI supports macOS and Linux with Python 3.10 or newer. A normal host Run
-works without a filesystem extension. On macOS, install macFUSE before using a
-host-process staged Run (`pvisor run --stage …`):
+Wheel installation supports macOS and Linux and requires Python 3.10 or newer; the installed native CLI does not use a Python launcher. Ordinary host Jobs write directly to the workspace; only `--safe` or `--stage` uses filesystem staging. Install macFUSE before running a staged host Job on macOS:
 
 ```bash
 brew install --cask macfuse
 ```
 
-Approve the macFUSE system extension when macOS asks. Without `--stage`, the
-command may write the real project tree. With `--stage`, if the required mount
-capability is unavailable, the Run fails closed rather than silently writing
-the workspace without COW. The libkrun VM executor does not require macFUSE.
+macOS uses macFUSE's **FSKit backend** by default. Install macFUSE 5.4.0 or newer (older FSKit versions can corrupt small writes into zeroes), then enable it in System Settings → General → Login Items & Extensions → File System Extensions. This path loads no kernel extension and needs neither Recovery mode nor reduced boot security. Mounts use `/Volumes/pvisor-*`; data stays in the Job stage. If FSKit is unavailable, execution fails instead of switching to the kernel backend or direct writes. libkrun VM execution does not need macFUSE.
 
 ## 3. Install from source when needed
 
-Use the nightly wheel when you need the latest build published from `main`:
+Use the nightly wheel for the latest `main` build:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
+curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
 ```
 
 For local development, install the Python package from a checkout:
 
 ```bash
-git clone https://github.com/DeepLink-org/Persisting.git
-cd Persisting
+git clone https://github.com/DeepLink-org/pvisor.git
+cd pvisor
 pip install -e .
 ```
 
-A source build of the CLI is also available:
+Or build the CLI from source:
 
 ```bash
 just install-cli
 ```
 
-Use `PERSISTING_PVISOR_BIN` only when you deliberately need to test a specific
-pVisor binary. Keep the Python package and CLI from the same revision when
-debugging provider behavior.
+To test a specific native build, invoke its path directly (for example `target/debug/pvisor`) or put its directory first on `PATH`. The old launcher's `PVISOR_BIN` override is not used by installed native scripts. Editable Python installation is not a native CLI build; use `just build` or `just install-cli`.
+
+## Install the single-node daemon separately {#daemon}
+
+For an OpenSandbox-compatible lifecycle API on one Linux host, follow [daemon installation and startup](../guides/daemon/index.md). `pvisor-daemon` is a separate executable, included only in current Linux x86_64 wheels (stable or nightly) and also available through a local source build. macOS wheels do not include it, and no artifact supplies a ready-to-use sandbox image. Its partial OpenSandbox 1.1.0 profile has VM-only NativeRuntime embedding pVisor on Linux x86_64/KVM with delegated cgroup v2; the executable is integrated with native runtime construction and synchronous internal VM dispatch before Tokio.
+
+A working sandbox needs a trusted local manifest/rootfs and genuine execd/egress through guest CID 3 vsock bridges. Bootstrap and image recipe are not supplied or end-to-end validated; starting the API does not establish SDK conformance or density. Stage/apply and checkpoint APIs are not implemented, and node sharing is not automatically acquired. Controller/Worker and the Cluster SDK are retired; external schedulers own cross-node orchestration.
 
 ## 4. Enable VM or OCI execution when needed
 
-The default local workflow does not require Docker or Podman. To run an OCI
-image through the VM executor, provide an image explicitly:
+The default local workflow needs neither Docker nor Podman. To run an OCI image with the VM executor:
 
 ```bash
 pvisor run --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 ```
 
-`ubuntu:latest` is also the default VM image. `--image-store DIR` changes the
-local content-addressed cache, `--overlayfs-path` selects the guest workspace,
-and `--rootfs DIR` points to a prepared Linux rootfs. Linux hosts use KVM;
-Apple Silicon macOS hosts use HVF. Building the VM support from source on macOS
-also requires Zig:
+Without an explicit rootfs or image, Linux VM uses host `/` through virtio-fs and OverlayFS without pulling an image. macOS requires a Linux rootfs or image. `--image-store DIR` changes the content-addressed cache, `--mount SOURCE[:TARGET]:ACCESS` exposes host paths, and `--rootfs DIR` selects a prepared rootfs. Linux uses KVM; Apple Silicon uses HVF. The guest supervisor is a static musl Rust ELF built with Rust's linker; macOS does not require a C cross compiler. See [development](../community/development.md) for build prerequisites.
 
-```bash
-brew install zig
-```
-
-Treat these options as a separate platform step. First complete the staged host
-workflow so that you have a baseline Run Bundle to compare against.
-
-## 5. Choose the next step
-
-- [Your first Run](first-run.md) — stage, review, and selectively apply changes.
-- [Choose a workflow](index.md) — the shortest path from install to a reviewed Run.
-- [Execution environments](../guides/execution.md) — compare host, OCI, and VM boundaries.
+Treat these as separate platform steps: first complete a staged host workflow, then compare executor evidence in Run Bundles.

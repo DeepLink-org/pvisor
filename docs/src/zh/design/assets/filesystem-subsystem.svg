@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1270" viewBox="0 0 1440 1270" role="img" aria-labelledby="title desc">
+<title id="title">文件系统子系统 · 双入口与分层状态</title><desc id="desc">导出的文件树共用 FilesystemService；协议状态留在各自适配器</desc>
+<rect width="1440" height="1270" fill="#0d1b30"/>
+<g font-family="Arial,Helvetica,PingFang SC,Microsoft YaHei,sans-serif" text-anchor="middle">
+<text x="720" y="59" fill="#c8e0fc" font-size="39" font-weight="700">文件系统子系统 · 双入口与分层状态</text>
+<text x="720" y="98" fill="#b7c6db" font-size="21" font-weight="500">导出的文件树共用 FilesystemService；协议状态留在各自适配器</text>
+<rect x="30" y="126" width="1380" height="117" rx="38" fill="#244569" stroke="#416080" stroke-width="7"/>
+<text x="720" y="173" fill="#c8e0fc" font-size="31" font-weight="700">文件调用入口</text>
+<rect x="54" y="187" width="650" height="39" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="379.0" y="215.5" fill="#e9eef8" font-size="25" font-weight="700">Guest · VFS → virtio-fs</text>
+<rect x="726" y="187" width="660" height="39" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1056.0" y="215.5" fill="#e9eef8" font-size="25" font-weight="700">Host staged · VFS → FUSE</text>
+<path d="M379 250 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<path d="M1056 250 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="284" width="690" height="163" rx="34" fill="#102138" stroke="#416080" stroke-width="7"/>
+<text x="375" y="329" fill="#c8e0fc" font-size="31" font-weight="700">pvisor-vm</text>
+<rect x="54" y="350" width="642" height="74" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="375.0" y="383.0" fill="#e9eef8" font-size="27" font-weight="700">virtqueue / worker</text>
+<text x="375.0" y="412.0" fill="#e9eef8" font-size="20" font-weight="500">descriptor · inode / handle · RAM lease</text>
+<rect x="739" y="284" width="671" height="163" rx="34" fill="#1a3d68" stroke="#416080" stroke-width="7"/>
+<text x="1074" y="329" fill="#c8e0fc" font-size="31" font-weight="700">宿主 FUSE 适配器</text>
+<rect x="763" y="350" width="623" height="74" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1074.5" y="383.0" fill="#e9eef8" font-size="27" font-weight="700">mount / request / reply</text>
+<text x="1074.5" y="412.0" fill="#e9eef8" font-size="20" font-weight="500">inode / handle · 凭据与 errno</text>
+<path d="M379 454 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<path d="M1056 454 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="488" width="1380" height="219" rx="38" fill="#223852" stroke="#416080" stroke-width="7"/>
+<text x="720" y="535" fill="#c8e0fc" font-size="31" font-weight="700">pvisor-overlay-core · FilesystemService</text>
+<rect x="54" y="551" width="1332" height="61" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="590.5" fill="#e9eef8" font-size="28" font-weight="700">OverlayCore · 路径授权 / 查找 / 合并 / copy-up</text>
+<rect x="54" y="630" width="650" height="52" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="379.0" y="665.0" fill="#e9eef8" font-size="24" font-weight="700">协议无关的文件操作与 backing 身份</text>
+<rect x="726" y="630" width="660" height="52" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1056.0" y="665.0" fill="#e9eef8" font-size="25" font-weight="700">首次观察 → 目标原像 preimage</text>
+<path d="M269 714 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<path d="M720 714 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<path d="M1171 714 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="748" width="1380" height="188" rx="38" fill="#1d3858" stroke="#416080" stroke-width="7"/>
+<rect x="54" y="771" width="430" height="138" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="269.0" y="836.0" fill="#e9eef8" font-size="28" font-weight="700">本地 lower</text>
+<text x="269.0" y="865.0" fill="#e9eef8" font-size="20" font-weight="500">优先级合成 · 只读来源</text>
+<rect x="505" y="771" width="430" height="138" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="836.0" fill="#e9eef8" font-size="27" font-weight="700">不可变镜像 lower</text>
+<text x="720.0" y="865.0" fill="#e9eef8" font-size="20" font-weight="500">metadata → chunks → cache</text>
+<rect x="956" y="771" width="430" height="138" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1171.0" y="836.0" fill="#e9eef8" font-size="27" font-weight="700">Attempt 私有 upper</text>
+<text x="1171.0" y="865.0" fill="#e9eef8" font-size="20" font-weight="500">写入 · whiteout · work / seal</text>
+<path d="M1171 943 v18 m-10 -8 l10 10 10 -10" stroke="#a8cefa" stroke-width="4" fill="none"/>
+<rect x="30" y="977" width="1380" height="148" rx="38" fill="#1a3d68" stroke="#416080" stroke-width="7"/>
+<text x="720" y="1024" fill="#c8e0fc" font-size="31" font-weight="700">执行结束后的结果接受</text>
+<rect x="54" y="1043" width="1332" height="59" rx="20" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="720.0" y="1081.5" fill="#e9eef8" font-size="30" font-weight="700">review → preimage check → apply ledger → target</text>
+<rect x="30" y="1151" width="1380" height="77" rx="38" fill="#1c3c45" stroke="#416080" stroke-width="7"/>
+<text x="720" y="1198" fill="#c8e0fc" font-size="31" font-weight="700">宿主文件系统与内容存储</text>
+<text x="720" y="1253" fill="#c8e0fc" font-size="20" font-weight="700">Guest cache / procfs / tmpfs 可独立处理；VM 请求不经过宿主 /dev/fuse。</text>
+</g></svg>

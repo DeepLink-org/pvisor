@@ -1,0 +1,18 @@
+[package]
+name = "pvisor-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Operation definitions, policies, outcomes, events and external interaction protocols"
+
+[dependencies]
+globset.workspace = true
+anyhow.workspace = true
+ipnet.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

@@ -1,0 +1,9 @@
+batch,benchmark_id,mode,candidate,control,metric,unit,n,difference_ms,ci95_low_ms,ci95_high_ms,conclusion,confidence_method
+7sf2,B-STARTUP,ready,pvisor-vm,fc-system,ready_ms,ms,60,-184.12490000000003,-185.837207875,-181.60069507499998,candidate faster,"5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI"
+7sf2,B-STARTUP,ready,pvisor-vm,fc-system,result_ms,ms,60,-184.47292450000003,-186.22031499999997,-181.96612156250006,candidate faster,"5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI"
+7sf2,B-STARTUP,ready,pvisor-vm,qemu,ready_ms,ms,60,-602.0618065,-635.9905309999999,-582.168814425,candidate faster,"5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI"
+7sf2,B-STARTUP,ready,pvisor-vm,qemu,result_ms,ms,60,-602.6570625000002,-636.4895175,-582.7065298250001,candidate faster,"5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI"
+7sf2,B-STARTUP,ready,pvisor-vm,qemu,completion_ms,ms,60,-584.0244125,-621.684810025,-555.9229821875,candidate faster,"5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI"
+7sf2,B-STARTUP,ready,pvisor-vm,qemu-microvm,ready_ms,ms,60,-220.64284450000002,-251.73542985000003,-195.9147804375,candidate faster,"5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI"
+7sf2,B-STARTUP,ready,pvisor-vm,qemu-microvm,result_ms,ms,60,-221.14871350000004,-252.2756530625,-196.42009437500002,candidate faster,"5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI"
+7sf2,B-STARTUP,ready,pvisor-vm,qemu-microvm,completion_ms,ms,60,-206.46812100000002,-233.88848261249998,-172.50182249999997,candidate faster,"5000 paired-round bootstrap resamples, seed 20261006; percentile 95% CI"

@@ -10,11 +10,11 @@ Bundle 会记录请求的边界、实际安装的机制，以及限制 Run 能�
 ```bash
 pvisor status last
 pvisor inspect last -- git status --short
-pvisor review last
+pvisor status --review last
 ```
 
 `status` 告诉你 Run 仍在运行还是已经停止；`inspect` 在 Run view 中执行只读命令，
-可以区分 staged 修改与真实项目中的修改；`review` 展示持久化 Run Bundle 和 Evidence，
+可以区分 staged 修改与真实项目中的修改；`status --review` 展示持久化 Run Bundle 和 Evidence，
 帮助你在 apply 或 drop 之前做决定。
 
 ## Agent 直接修改了项目
@@ -22,21 +22,19 @@ pvisor review last
 先检查启动命令是否使用 stage：
 
 ```bash
-pvisor run --stage ./runs/task-001 -- AGENT_COMMAND
+pvisor run --stage ../stage-task-001 -- AGENT_COMMAND
 ```
 
 不使用 stage 时，host executor 不会产生可以审查和选择性 apply 的 staged filesystem Effect；
 默认也保留宿主机文件系统视图。需要文件系统访问限制时使用
-`--filesystem sandbox`，需要审查改动时再使用 `--stage`。如果本来就需要 stage，请检查
-记录的 stage 路径和 executor warning，再重新执行。
+`--filesystem sandbox`，需要审查改动时再使用 `--stage`。若本就需要 stage，检查
+记录的 stage 路径和 executor warning 后重新执行。
 
 ## 请求的 capability 没有被强制执行
 
-把请求参数理解为意图，而不是证据。打开 Run Bundle，查看实际 capability record 与对应机制。
-不同操作系统和 executor 的支持范围不同；例如 cooperative network proxy 不能保证所有
+把请求参数理解为意图，而不是证据；打开 Run Bundle，查看实际 capability record 与对应机制，证据口径见[能力与证据](../concepts/capabilities-and-evidence.md)。
+不同 executor 的支持范围不同，例如 cooperative network proxy 不能保证所有
 ambient connection 都被阻断。
-
-继续阅读[Capabilities 与 Evidence](../concepts/capabilities-and-evidence.md)和[执行环境](execution.md)。
 
 ## stage 为空或出现了错误文件
 
@@ -48,7 +46,7 @@ pvisor inspect last -- git status --short
 ```
 
 Agent 修改的是 Run-owned view。写入该 view 之外的路径可能被记录为 external Effect，也可能
-无法被 executor 提供。保持 stage 位于预期项目边界内，不要只按文件名比较生成的 Run 目录与项目根目录。
+无法被 executor 提供。保持 stage 位于项目目录之外，使用明确的 stage 路径定位 Job，不要只按文件名比较生成的 Run 目录与项目根目录。
 
 ## capture 输出缺失
 
@@ -60,6 +58,6 @@ capture 配置和传给 `--record-destination` 的目标路径。
 
 ## 提交 issue 前
 
-请提供 pVisor 版本、操作系统、executor、完整命令，以及相关的 `status` 和 `review` 输出，
+请提供 pVisor 版本、操作系统、executor、完整命令，以及相关的 `status` 和 `status --review` 输出，
 并移除凭据和私有 workspace 内容。最有帮助的问题描述会说明请求了什么 capability、Bundle
 记录了什么机制，以及实际结果在哪里不同。

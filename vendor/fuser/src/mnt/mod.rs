@@ -5,7 +5,7 @@
 #[cfg(fuser_mount_impl = "libfuse2")]
 mod fuse2;
 #[cfg(any(feature = "libfuse", test))]
-mod fuse2_sys;
+pub(crate) mod fuse2_sys;
 #[cfg(fuser_mount_impl = "libfuse3")]
 mod fuse3;
 #[cfg(fuser_mount_impl = "libfuse3")]
@@ -13,13 +13,21 @@ mod fuse3_sys;
 
 #[cfg(fuser_mount_impl = "pure-rust")]
 mod fuse_pure;
+#[cfg(fuser_mount_impl = "pure-rust")]
+mod fusermount_channel;
 pub mod mount_options;
 
 #[cfg(any(test, feature = "libfuse"))]
 use fuse2_sys::fuse_args;
-#[cfg(any(test, not(feature = "libfuse")))]
+#[cfg(all(
+    any(test, not(feature = "libfuse")),
+    not(all(target_os = "macos", feature = "macfuse-5"))
+))]
 use std::fs::File;
-#[cfg(any(test, fuser_mount_impl = "pure-rust", fuser_mount_impl = "libfuse2"))]
+#[cfg(all(
+    any(test, fuser_mount_impl = "pure-rust", fuser_mount_impl = "libfuse2"),
+    not(all(target_os = "macos", feature = "macfuse-5"))
+))]
 use std::io;
 
 #[cfg(any(feature = "libfuse", test))]
@@ -53,10 +61,16 @@ pub use fuse2::Mount;
 pub use fuse3::Mount;
 #[cfg(fuser_mount_impl = "pure-rust")]
 pub use fuse_pure::Mount;
-#[cfg(not(fuser_mount_impl = "libfuse3"))]
+#[cfg(all(
+    not(fuser_mount_impl = "libfuse3"),
+    not(all(target_os = "macos", feature = "macfuse-5"))
+))]
 use std::ffi::CStr;
 
-#[cfg(not(fuser_mount_impl = "libfuse3"))]
+#[cfg(all(
+    not(fuser_mount_impl = "libfuse3"),
+    not(all(target_os = "macos", feature = "macfuse-5"))
+))]
 #[inline]
 fn libc_umount(mnt: &CStr) -> io::Result<()> {
     #[cfg(any(
@@ -85,7 +99,10 @@ fn libc_umount(mnt: &CStr) -> io::Result<()> {
 
 /// Warning: This will return true if the filesystem has been detached (lazy unmounted), but not
 /// yet destroyed by the kernel.
-#[cfg(any(test, fuser_mount_impl = "pure-rust"))]
+#[cfg(all(
+    any(test, fuser_mount_impl = "pure-rust"),
+    not(all(target_os = "macos", feature = "macfuse-5"))
+))]
 fn is_mounted(fuse_device: &File) -> bool {
     use libc::{poll, pollfd};
     use std::os::unix::prelude::AsRawFd;
@@ -119,7 +136,9 @@ fn is_mounted(fuse_device: &File) -> bool {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::{ffi::CStr, mem::ManuallyDrop};
+    use std::ffi::CStr;
+    #[cfg(not(all(target_os = "macos", feature = "macfuse-5")))]
+    use std::mem::ManuallyDrop;
 
     #[test]
     fn fuse_args() {
@@ -140,6 +159,7 @@ mod test {
             },
         );
     }
+    #[cfg(not(all(target_os = "macos", feature = "macfuse-5")))]
     fn cmd_mount() -> String {
         std::str::from_utf8(
             std::process::Command::new("sh")
@@ -154,6 +174,7 @@ mod test {
         .to_owned()
     }
 
+    #[cfg(not(all(target_os = "macos", feature = "macfuse-5")))]
     #[test]
     fn mount_unmount() {
         // We use ManuallyDrop here to leak the directory on test failure.  We don't

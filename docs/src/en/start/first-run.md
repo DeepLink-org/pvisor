@@ -1,48 +1,70 @@
-# Your first Run
+# Your first run
 
-This example creates one file in a staged project, reviews it, and applies it. It needs no Agent account or model API. Complete [installation](installation.md) first, including FUSE/macFUSE for staged host execution.
+This demo needs no agent account or API key. A script plays a "fake agent": it edits source, deletes a file, adds another file, attempts to read a sensitive project path and reach the internet. You then review the result and apply only the changes you want. Complete [installation](installation.md) first, including the FUSE/macFUSE setup that staged host execution needs.
 
-## 1. Create a disposable project
+## 1. Prepare a project
 
 ```bash
-mkdir -p pvisor-demo/project
+mkdir -p pvisor-demo/project/src pvisor-demo/project/.ssh
 cd pvisor-demo/project
-printf 'original\n' > original.txt
+printf 'print("v1")\n' > src/app.py
+printf 'legacy\n' > src/legacy.txt
+printf 'FAKE-KEY\n' > .ssh/id_rsa
+git init -q && git add -A && git commit -qm init
 ```
 
-## 2. Run a command in a stage
+`.ssh/id_rsa` is a fake project fixture. This demo does not read or write your real `~/.ssh`.
+
+## 2. Write the fake agent
 
 ```bash
-pvisor run --stage ../stage-001 -- /bin/sh -c 'printf "hello from the stage\n" > hello.txt'
+cat > ../agent.sh <<'SH'
+#!/usr/bin/env bash
+set -u
+printf 'print("patched")\n' >> src/app.py     # 修改源码
+rm -f src/legacy.txt                          # 删除文件
+printf 'scratch\n' > scratch.txt              # 工作区根目录的额外改动
+cat .ssh/id_rsa >/dev/null 2>&1 || echo 'read .ssh/id_rsa: denied'
+curl -sS --max-time 5 https://example.com >/dev/null 2>&1 || echo 'reach example.com: blocked'
+SH
+chmod +x ../agent.sh
 ```
 
-The working-directory view is staged. The stage is outside the project so its metadata does not clutter the project tree. Use a new stage directory for another Run.
+## 3. Run unattended within the boundary
 
 ```bash
-test ! -e hello.txt
-pvisor review last
+pvisor run --safe --overlaynet-deny-all --stage ../stage-001 -- ../agent.sh
 ```
 
-`hello.txt` is absent from the base project and appears in the review. Read the reported isolation warnings as well as the file list. If the stage cannot be mounted, fix the platform setup before continuing.
+`--safe` requires filesystem and network isolation and rejects `.ssh`, `.gnupg`, and common private-key paths through its preset. It does not choose an executor or silently fall back to an unisolated host process. `--overlaynet-deny-all` independently installs a mandatory network boundary. Keep the stage outside the project and use a fresh directory for each run.
 
-## 3. Accept the change
+## 4. Review changes and blocked accesses
+
+This Job is stored in the stage directory; select it by path:
 
 ```bash
-pvisor apply last --path hello.txt
-cat hello.txt
+pvisor status --review ../stage-001
 ```
 
-The base project now contains `hello from the stage`. To reject an unapplied stage instead, use `pvisor drop last`. Drop does not undo files already applied.
+**File access observations** list operations reaching OverlayFS: writes to `src/app.py` and `scratch.txt`, deletion of `src/legacy.txt`, and denial of the `.ssh/id_rsa` read (`denied=1`). **Network access observations** list destinations reaching OverlayNet, including the rejected `example.com` request.
 
-## 4. Use your own command
+Selective proxies on ordinary host execution are cooperative: only requests through the proxy are recorded. An absent destination does not prove it was never accessed. Mandatory boundaries come from deny-all, container offline mode, or VM networking; see [network control](../guides/policies/network.md).
 
-From a real project, replace the shell example with your script or automation command. An installed Agent CLI works through the same entry point:
+## 5. Apply only what you want
 
 ```bash
-pvisor run --stage ../agent-stage-001 -- codex
-pvisor review last
+pvisor apply ../stage-001 --path src
+pvisor drop ../stage-001
+git status --short
 ```
 
-Review first, then choose `pvisor apply last --path PATH`, `--all`, or `pvisor drop last`. When working across several projects or Runs, use the explicit Run ID or stage path printed by the command instead of `last`.
+`apply --path src` writes only changes under `src` to the project. `drop` discards the remaining `scratch.txt`. If you changed the same file during the run, `apply` refuses to overwrite it rather than silently merging.
 
-Continue with [review and apply](../guides/review-apply.md) for batching, conflicts, and checkpoints.
+## 6. Use your own command
+
+```bash
+pvisor run --safe --stage ../agent-stage-001 -- codex
+pvisor status --review ../agent-stage-001
+```
+
+Installed Agent CLIs use the same entry point. With `--stage PATH`, pass that path or the printed Job ID (`run-*`) to later commands. `last` searches default storage only; do not rely on it when running projects in parallel.

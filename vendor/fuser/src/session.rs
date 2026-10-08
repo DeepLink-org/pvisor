@@ -9,7 +9,9 @@ use libc::{EAGAIN, EINTR, ENODEV, ENOENT};
 use log::{info, warn};
 use nix::unistd::geteuid;
 use std::fmt;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::OwnedFd;
+#[cfg(not(all(target_os = "macos", feature = "macfuse-5")))]
+use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -64,10 +66,13 @@ pub struct Session<FS: Filesystem> {
     pub(crate) proto_minor: u32,
     /// True if the filesystem is initialized (init operation done)
     pub(crate) initialized: bool,
+    /// FSKit sends requests without caller credentials.
+    pub(crate) fskit: bool,
     /// True if the filesystem was destroyed (destroy operation done)
     pub(crate) destroyed: bool,
 }
 
+#[cfg(not(all(target_os = "macos", feature = "macfuse-5")))]
 impl<FS: Filesystem> AsFd for Session<FS> {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.ch.as_fd()
@@ -116,6 +121,7 @@ impl<FS: Filesystem> Session<FS> {
             proto_major: 0,
             proto_minor: 0,
             initialized: false,
+            fskit: cfg!(target_os = "macos") && options.iter().any(|option| matches!(option, MountOption::CUSTOM(value) if value == "backend=fskit")),
             destroyed: false,
         })
     }
@@ -123,7 +129,7 @@ impl<FS: Filesystem> Session<FS> {
     /// Wrap an existing /dev/fuse file descriptor. This doesn't mount the
     /// filesystem anywhere; that must be done separately.
     pub fn from_fd(filesystem: FS, fd: OwnedFd, acl: SessionACL) -> Self {
-        let ch = Channel::new(Arc::new(fd.into()));
+        let ch = Channel::new(Arc::new(std::fs::File::from(fd)));
         Session {
             filesystem,
             ch,
@@ -133,6 +139,7 @@ impl<FS: Filesystem> Session<FS> {
             proto_major: 0,
             proto_minor: 0,
             initialized: false,
+            fskit: false,
             destroyed: false,
         }
     }
@@ -142,6 +149,28 @@ impl<FS: Filesystem> Session<FS> {
     /// having multiple buffers (which take up much memory), but the filesystem methods
     /// may run concurrent by spawning threads.
     pub fn run(&mut self) -> io::Result<()> {
+        self.run_with_receiver(Channel::receive)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run_interruptible(&mut self, stop: &OwnedFd) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        self.run_with_receiver(|channel, buffer| {
+            if crate::background_shutdown::wait_for_request(
+                channel.as_fd().as_raw_fd(),
+                stop.as_raw_fd(),
+            )? {
+                channel.receive(buffer)
+            } else {
+                Ok(0)
+            }
+        })
+    }
+
+    fn run_with_receiver(
+        &mut self,
+        mut receive: impl FnMut(&Channel, &mut [u8]) -> io::Result<usize>,
+    ) -> io::Result<()> {
         // Buffer for receiving requests from the kernel. Only one is allocated and
         // it is reused immediately after dispatching to conserve memory and allocations.
         let mut buffer = vec![0; BUFFER_SIZE];
@@ -152,7 +181,7 @@ impl<FS: Filesystem> Session<FS> {
         loop {
             // Read the next request from the given channel to kernel driver
             // The kernel driver makes sure that we get exactly one request per read
-            match self.ch.receive(buf) {
+            match receive(&self.ch, buf) {
                 Ok(size) => match Request::new(self.ch.sender(), &buf[..size]) {
                     // Dispatch request
                     Some(req) => req.dispatch(self),
@@ -247,6 +276,8 @@ pub struct BackgroundSession {
     sender: ChannelSender,
     /// Ensures the filesystem is unmounted when the session ends
     _mount: Option<Mount>,
+    #[cfg(target_os = "linux")]
+    stop: Option<crate::background_shutdown::StopSignal>,
 }
 
 impl BackgroundSession {
@@ -254,12 +285,46 @@ impl BackgroundSession {
     /// session loop in a background thread. If the returned handle is dropped,
     /// the filesystem is unmounted and the given session ends.
     pub fn new<FS: Filesystem + Send + 'static>(se: Session<FS>) -> io::Result<BackgroundSession> {
+        Self::start(
+            se,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+    }
+
+    /// Stop serving after the last owning consumer has finished, even when
+    /// unrelated mount namespaces retain copies of the mount. The owner must
+    /// keep this session alive until all legitimate users have released it.
+    /// Ordinary `new`/`spawn` retains its existing unmount-driven lifetime.
+    #[cfg(target_os = "linux")]
+    pub fn new_interruptible<FS: Filesystem + Send + 'static>(
+        se: Session<FS>,
+    ) -> io::Result<BackgroundSession> {
+        Self::start(se, Some(crate::background_shutdown::StopSignal::new()?))
+    }
+
+    fn start<FS: Filesystem + Send + 'static>(
+        se: Session<FS>,
+        #[cfg(target_os = "linux")] stop: Option<(
+            crate::background_shutdown::StopSignal,
+            Arc<OwnedFd>,
+        )>,
+    ) -> io::Result<BackgroundSession> {
+        #[cfg(target_os = "linux")]
+        let (stop, receiver) = match stop {
+            Some((signal, receiver)) => (Some(signal), Some(receiver)),
+            None => (None, None),
+        };
         #[cfg(feature = "abi-7-11")]
         let sender = se.ch.sender();
         // Take the fuse_session, so that we can unmount it
         let mount = std::mem::take(&mut *se.mount.lock().unwrap()).map(|(_, mount)| mount);
         let guard = thread::spawn(move || {
             let mut se = se;
+            #[cfg(target_os = "linux")]
+            if let Some(receiver) = receiver {
+                return se.run_interruptible(&receiver);
+            }
             se.run()
         });
         Ok(BackgroundSession {
@@ -267,6 +332,8 @@ impl BackgroundSession {
             #[cfg(feature = "abi-7-11")]
             sender,
             _mount: mount,
+            #[cfg(target_os = "linux")]
+            stop,
         })
     }
     /// Unmount the filesystem and wait for the request thread to exit.
@@ -276,11 +343,23 @@ impl BackgroundSession {
             #[cfg(feature = "abi-7-11")]
                 sender: _,
             _mount,
+            #[cfg(target_os = "linux")]
+            stop,
         } = self;
+        #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+        let unmount_result = match &_mount {
+            Some(mount) => mount.unmount_gracefully(),
+            None => Ok(()),
+        };
         drop(_mount);
-        guard
+        #[cfg(target_os = "linux")]
+        drop(stop);
+        let result = guard
             .join()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "FUSE request thread panicked"))?
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "FUSE request thread panicked"))?;
+        #[cfg(all(target_os = "macos", feature = "macfuse-5"))]
+        unmount_result?;
+        result
     }
 
     /// Unmount the filesystem and join the background thread.

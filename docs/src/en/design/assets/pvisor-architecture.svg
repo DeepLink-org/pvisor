@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2300" viewBox="0 0 1600 2300" role="img" aria-labelledby="title desc">
+<title id="title">pVisor Technical Architecture</title><desc id="desc">Technical architecture centered on pvisor-vm. Entry points, Session and host file, network and storage services sit above an expanded VM: guest, uniform API, vCPUs and event loop, RAM mappings and optional memory modes, virtio devices, freeze and snapshot restore, KVM and HVF adapters. Host and OCI are alternative execution paths. Contracts, Gateway and Replay appear only in the footer.</desc>
+<rect width="1600" height="2300" fill="#0d1b30"/>
+<g font-family="Arial,Helvetica,PingFang SC,Microsoft YaHei,sans-serif" text-anchor="middle">
+<text x="800" y="65" font-size="48" font-weight="700" fill="#c8e0fc" font-style="italic">pVisor Technical Architecture</text>
+<text x="800" y="102" font-size="23" font-weight="500" fill="#b7c6db">Execution lifecycle · Virtual devices · Memory &amp; snapshots</text>
+<rect x="36" y="128" width="1528" height="84" rx="42" fill="#244569" stroke="#416080" stroke-width="8"/>
+<text x="800" y="182" font-size="34" font-weight="700" fill="#c8e0fc" font-style="italic">Execution entry: CLI / Rust API / Node-local Daemon</text>
+<rect x="36" y="235" width="1528" height="146" rx="43" fill="#1a3d68" stroke="#416080" stroke-width="8"/>
+<text x="800" y="281" font-size="36" font-weight="700" fill="#c8e0fc" font-style="italic">pvisor Runtime · Session</text>
+<rect x="59" y="302" width="355" height="57" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="236.5" y="340.5" font-size="28" font-weight="700" fill="#e9eef8">Job / Attempt</text>
+<rect x="433" y="302" width="354" height="57" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="610.0" y="340.5" font-size="25" font-weight="700" fill="#e9eef8">Admission / Configuration</text>
+<rect x="806" y="302" width="354" height="57" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="983.0" y="340.5" font-size="25" font-weight="700" fill="#e9eef8">Prepare · Execute · Cleanup</text>
+<rect x="1179" y="302" width="361" height="57" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1359.5" y="340.5" font-size="28" font-weight="700" fill="#e9eef8">Bundle / Effects</text>
+<rect x="36" y="404" width="1528" height="178" rx="43" fill="#223852" stroke="#416080" stroke-width="8"/>
+<text x="800" y="449" font-size="36" font-weight="700" fill="#c8e0fc" font-style="italic">Host Data &amp; State Services</text>
+<rect x="59" y="472" width="355" height="85" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="236.5" y="511.5" font-size="26" font-weight="700" fill="#e9eef8">OverlayCore</text>
+<text x="236.5" y="540.5" font-size="20" font-weight="600" fill="#e9eef8">FilesystemService · stage / apply</text>
+<rect x="433" y="472" width="354" height="85" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="610.0" y="511.5" font-size="28" font-weight="700" fill="#e9eef8">OverlayNet</text>
+<text x="610.0" y="540.5" font-size="20" font-weight="600" fill="#e9eef8">smoltcp · DNS · TCP proxy</text>
+<rect x="806" y="472" width="354" height="85" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="983.0" y="511.5" font-size="28" font-weight="700" fill="#e9eef8">Image Cache</text>
+<text x="983.0" y="540.5" font-size="20" font-weight="600" fill="#e9eef8">Metadata · verified chunks</text>
+<rect x="1179" y="472" width="361" height="85" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1359.5" y="511.5" font-size="26" font-weight="700" fill="#e9eef8">Stores &amp; Records</text>
+<text x="1359.5" y="540.5" font-size="20" font-weight="600" fill="#e9eef8">snapshot · cold store · Journal</text>
+<rect x="36" y="603" width="1528" height="68" rx="34" fill="#253950" stroke="#416080" stroke-width="8"/>
+<text x="800" y="647" font-size="28" font-weight="700" fill="#c8e0fc" font-style="italic">Executor selection: Host process / OCI container / VM (expanded below)</text>
+<rect x="36" y="694" width="1528" height="1270" rx="48" fill="#102138" stroke="#416080" stroke-width="8"/>
+<text x="800" y="750" font-size="48" font-weight="700" fill="#c8e0fc" font-style="italic">pvisor-vm</text>
+<text x="800" y="786" font-size="24" font-weight="700" fill="#c8e0fc">Dedicated runner · owns VMM, devices and platform backends</text>
+<rect x="59" y="809" width="1481" height="58" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="799.5" y="848.0" font-size="30" font-weight="700" fill="#e9eef8">pvisor_vm::api  ·  VmBuilder · run(on_ready) · VmmHandle</text>
+<rect x="59" y="890" width="1481" height="134" rx="37" fill="#244569" stroke="#416080" stroke-width="8"/>
+<text x="800" y="934" font-size="32" font-weight="700" fill="#c8e0fc" font-style="italic">Guest Address Space</text>
+<rect x="80" y="951" width="690" height="50" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="425.0" y="986.0" font-size="27" font-weight="700" fill="#e9eef8">Agent / Processes · pvisor-guest (PID 1)</text>
+<rect x="791" y="951" width="725" height="50" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1153.5" y="986.0" font-size="27" font-weight="700" fill="#e9eef8">Guest Linux · VFS · TCP/IP · virtio drivers</text>
+<rect x="59" y="1044" width="472" height="494" rx="38" fill="#2e4c70" stroke="#416080" stroke-width="8"/>
+<text x="295.0" y="1092" font-size="31" font-weight="700" fill="#e9eef8" font-style="italic">vCPU &amp; Execution Control</text>
+<rect x="549" y="1044" width="474" height="494" rx="38" fill="#284867" stroke="#416080" stroke-width="8"/>
+<text x="786.0" y="1092" font-size="31" font-weight="700" fill="#e9eef8" font-style="italic">RAM &amp; Mappings</text>
+<rect x="1041" y="1044" width="499" height="494" rx="38" fill="#264956" stroke="#416080" stroke-width="8"/>
+<text x="1290.5" y="1092" font-size="31" font-weight="700" fill="#e9eef8" font-style="italic">Virtual Devices &amp; Queues</text>
+<rect x="78" y="1117" width="434" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="295.0" y="1155.0" font-size="24" font-weight="700" fill="#e9eef8">vCPU threads</text>
+<text x="295.0" y="1184.0" font-size="20" font-weight="600" fill="#e9eef8">run · VM exit · kick</text>
+<rect x="78" y="1214" width="434" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="295.0" y="1252.0" font-size="24" font-weight="700" fill="#e9eef8">Registers &amp; Interrupts</text>
+<text x="295.0" y="1281.0" font-size="20" font-weight="600" fill="#e9eef8">CPU state · IRQ · MMIO / PIO</text>
+<rect x="78" y="1311" width="434" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="295.0" y="1349.0" font-size="24" font-weight="700" fill="#e9eef8">Event Loop &amp; Control</text>
+<text x="295.0" y="1378.0" font-size="20" font-weight="600" fill="#e9eef8">EventManager · eventfd · pause / resume</text>
+<rect x="78" y="1408" width="434" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="295.0" y="1446.0" font-size="24" font-weight="700" fill="#e9eef8">Kernel &amp; Boot Layout</text>
+<text x="295.0" y="1475.0" font-size="20" font-weight="600" fill="#e9eef8">firmware · boot params · RAM regions</text>
+<rect x="568" y="1117" width="436" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="786.0" y="1155.0" font-size="24" font-weight="700" fill="#e9eef8">GuestMemoryMmap</text>
+<text x="786.0" y="1184.0" font-size="20" font-weight="600" fill="#e9eef8">GPA regions ↔ HVA</text>
+<rect x="568" y="1214" width="436" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="786.0" y="1252.0" font-size="24" font-weight="700" fill="#e9eef8">RAM Backing / Restore</text>
+<text x="786.0" y="1281.0" font-size="20" font-weight="600" fill="#e9eef8">anonymous · file · snapshot COW</text>
+<rect x="568" y="1311" width="436" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="786.0" y="1349.0" font-size="24" font-weight="700" fill="#e9eef8">Linux Physical Sharing *</text>
+<text x="786.0" y="1378.0" font-size="20" font-weight="600" fill="#e9eef8">pool slots · MAP_PRIVATE · write COW</text>
+<rect x="568" y="1408" width="436" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="786.0" y="1446.0" font-size="24" font-weight="700" fill="#e9eef8">Linux Per-instance Cold RAM *</text>
+<text x="786.0" y="1475.0" font-size="20" font-weight="600" fill="#e9eef8">userfaultfd · decode · UFFD_COPY</text>
+<rect x="1060" y="1117" width="461" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1290.5" y="1155.0" font-size="24" font-weight="700" fill="#e9eef8">virtio-fs → FilesystemService</text>
+<text x="1290.5" y="1184.0" font-size="20" font-weight="600" fill="#e9eef8">FUSE protocol · inode / handle</text>
+<rect x="1060" y="1214" width="461" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1290.5" y="1252.0" font-size="24" font-weight="700" fill="#e9eef8">virtio-net → OverlayNet</text>
+<text x="1290.5" y="1281.0" font-size="20" font-weight="600" fill="#e9eef8">Ethernet frames · UnixStream</text>
+<rect x="1060" y="1311" width="461" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1290.5" y="1349.0" font-size="24" font-weight="700" fill="#e9eef8">virtio-console / vsock</text>
+<text x="1290.5" y="1378.0" font-size="20" font-weight="600" fill="#e9eef8">stdio · host / guest transport</text>
+<rect x="1060" y="1408" width="461" height="82" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1290.5" y="1446.0" font-size="24" font-weight="700" fill="#e9eef8">virtio-rng / balloon</text>
+<text x="1290.5" y="1475.0" font-size="20" font-weight="600" fill="#e9eef8">randomness · free-page reporting</text>
+<text x="295" y="1513" font-size="20" font-weight="600" fill="#e9eef8">CPU threads own register state</text>
+<text x="786" y="1513" font-size="20" font-weight="600" fill="#e9eef8">Sample → recheck → share / reclaim</text>
+<text x="1290" y="1513" font-size="20" font-weight="600" fill="#e9eef8">virtqueue · workers · RAM leases</text>
+<rect x="59" y="1558" width="1481" height="232" rx="40" fill="#1d3858" stroke="#416080" stroke-width="8"/>
+<text x="800" y="1607" font-size="34" font-weight="700" fill="#c8e0fc" font-style="italic">Consistent Freeze · Snapshot Capture &amp; Restore</text>
+<rect x="79" y="1630" width="344" height="83" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="251.0" y="1668.5" font-size="26" font-weight="700" fill="#e9eef8">① Park vCPUs</text>
+<text x="251.0" y="1697.5" font-size="20" font-weight="600" fill="#e9eef8">wait for CPU acknowledgement</text>
+<rect x="442" y="1630" width="344" height="83" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="614.0" y="1668.5" font-size="26" font-weight="700" fill="#e9eef8">② Drain Devices</text>
+<text x="614.0" y="1697.5" font-size="20" font-weight="600" fill="#e9eef8">workers return queue ownership</text>
+<rect x="805" y="1630" width="344" height="83" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="977.0" y="1668.5" font-size="26" font-weight="700" fill="#e9eef8">③ Close RAM Gate</text>
+<text x="977.0" y="1697.5" font-size="20" font-weight="600" fill="#e9eef8">wait for RAM leases to drain</text>
+<rect x="1168" y="1630" width="344" height="83" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1340.0" y="1668.5" font-size="26" font-weight="700" fill="#e9eef8">④ Capture State</text>
+<text x="1340.0" y="1697.5" font-size="20" font-weight="600" fill="#e9eef8">CPU + RAM + devices</text>
+<text x="800" y="1759" font-size="25" font-weight="700" fill="#c8e0fc">Restore: validate compatibility → install mappings / state while paused → explicit resume</text>
+<rect x="59" y="1812" width="1481" height="130" rx="38" fill="#1d3858" stroke="#416080" stroke-width="8"/>
+<text x="800" y="1855" font-size="32" font-weight="700" fill="#c8e0fc" font-style="italic">Private Platform Adapters</text>
+<rect x="80" y="1875" width="690" height="47" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="425.0" y="1908.5" font-size="25" font-weight="700" fill="#e9eef8">KVM · vCPU / memory slots / irqchip</text>
+<rect x="791" y="1875" width="725" height="47" rx="22" fill="#142840" stroke="#416080" stroke-width="7"/>
+<text x="1153.5" y="1908.5" font-size="25" font-weight="700" fill="#e9eef8">HVF · vCPU / stage-2 mappings / GIC</text>
+<rect x="36" y="1987" width="1528" height="95" rx="43" fill="#253950" stroke="#416080" stroke-width="8"/>
+<text x="800" y="2047" font-size="32" font-weight="700" fill="#c8e0fc" font-style="italic">Host OS · Linux / KVM · macOS / Hypervisor.framework</text>
+<rect x="36" y="2103" width="1528" height="79" rx="39" fill="#1c3c45" stroke="#416080" stroke-width="8"/>
+<text x="800" y="2157" font-size="32" font-weight="700" fill="#c8e0fc" font-style="italic">Hardware · CPU / RAM / Storage / Network</text>
+<text x="800" y="2215" font-size="20" font-weight="500" fill="#b7c6db">Host storage owns snapshot persistence / publication; freeze and ordinary pause stop different activity.</text>
+<text x="800" y="2246" font-size="19" font-weight="500" fill="#b7c6db">* Linux physical sharing and UFFD cold RAM are distinct modes, mutually exclusive with the current full-snapshot path.</text>
+<text x="800" y="2277" font-size="19" font-weight="500" fill="#b7c6db">Contracts: pvisor-core  |  Optional: Gateway / Replay  |  Daemon exposes VM sandbox lifecycle</text>
+</g></svg>

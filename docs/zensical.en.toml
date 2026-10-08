@@ -1,0 +1,279 @@
+# Native Zensical configuration; no generated configuration or HTML post-processing.
+[project]
+site_name = "PolicyVisor"
+site_description = "Scaling autonomous agent execution for Agents, scripts, and automation."
+site_url = "https://deeplink-org.github.io/pvisor/en/"
+docs_dir = "src/en"
+site_dir = "site/en"
+cache_dir = ".cache/en"
+dev_addr = "127.0.0.1:3001"
+repo_name = "DeepLink-org/pvisor"
+repo_url = "https://github.com/DeepLink-org/pvisor"
+extra_css = ["assets/stylesheets/extra.css"]
+
+nav = [
+  { "Home" = "index.md" },
+  { "Quick start" = [
+    { "Getting started" = [
+      { "Start here" = "start/index.md" },
+      { "What is PolicyVisor?" = "start/what-is-pvisor.md" },
+      { "Installation" = "start/installation.md" },
+      { "Your first run" = "start/first-run.md" },
+      { "After your first run" = "start/next-steps.md" },
+    ] },
+    { "About pVisor" = [
+      { "Why pVisor" = "why/index.md" },
+      { "Trust ladder and scale" = "why/trust-ladder.md" },
+      { "Use cases" = "why/use-cases.md" },
+      { "Comparing existing approaches" = "why/comparisons.md" },
+      { "When you do not need pVisor" = "why/when-not-to-use.md" },
+      { "FAQ" = "why/faq.md" },
+    ] },
+  ] },
+  { "User guide" = [
+    { "Tasks" = [
+      { "Guides" = "guides/index.md" },
+      { "Review and apply changes" = "guides/review-apply.md" },
+      { "Logical checkpoints and forks" = "guides/fork-checkpoint.md" },
+      { "Capture agent trajectories" = "guides/capture.md" },
+      { "SandboxReplay" = "guides/replay.md" },
+      { "Run in CI" = "guides/ci.md" },
+      { "Parallel agents" = "guides/parallel-agents.md" },
+      { "RL rollouts" = "guides/rl-rollouts.md" },
+      { "Troubleshoot a Run" = "guides/troubleshooting.md" },
+    ] },
+    { "Connect your agent" = [
+      { "Connect your agent" = "guides/agents/index.md" },
+      { "Claude Code" = "guides/agents/claude-code.md" },
+      { "Codex CLI" = "guides/agents/codex.md" },
+      { "Gemini CLI" = "guides/agents/gemini-cli.md" },
+      { "aider" = "guides/agents/aider.md" },
+      { "OpenCode" = "guides/agents/opencode.md" },
+      { "Scripts and automation commands" = "guides/agents/custom-scripts.md" },
+    ] },
+    { "Policies" = [
+      { "File policies" = "guides/policies/files.md" },
+      { "Control network access with OverlayNet" = "guides/policies/network.md" },
+      { "Credentials and environment" = "guides/policies/credentials.md" },
+    ] },
+    { "Executors" = [
+      { "Choose an executor" = "guides/executors/index.md" },
+      { "Host executor" = "guides/executors/host.md" },
+      { "Native OCI containers" = "guides/executors/container.md" },
+      { "pVisor VM" = "guides/executors/vm.md" },
+    ] },
+    { "Daemon quickstart" = [
+      { "Run the single-node daemon" = "guides/daemon/index.md" },
+      { "Daemon and independent cache entry points" = "guides/daemon/service.md" },
+      { "Operate the single-node daemon" = "guides/daemon/operations.md" },
+      { "Daemon runtime and integration boundaries" = "guides/daemon/boundaries.md" },
+    ] },
+    { "Learning path" = [
+      { "Learn pVisor through tasks" = "cases/index.md" },
+      { "1. From a command to a Job" = "cases/01-first-job.md" },
+      { "2. Review and accept file changes" = "cases/02-review-and-decide.md" },
+      { "3. Save a proposal and explore a branch" = "cases/03-checkpoint-and-fork.md" },
+      { "4. Set boundaries for untrusted work" = "cases/04-boundaries.md" },
+      { "5. Replay trajectories and choose restoration tools" = "cases/05-tools-and-restoration.md" },
+    ] },
+    { "Command and configuration reference" = [
+      { "Commands and scenarios" = "reference/index.md" },
+      { "`pvisor` command reference" = "reference/cli.md" },
+      { "Configuration files" = "reference/config.md" },
+      { "Policy fields" = "reference/policy.md" },
+      { "Run Bundle format" = "reference/run-bundle.md" },
+      { "Machine-readable output" = "reference/json-output.md" },
+      { "Environment variables" = "reference/env-vars.md" },
+      { "Exit codes and errors" = "reference/exit-codes.md" },
+      { "Platforms and executor support" = "reference/platforms.md" },
+      { "Stability and compatibility" = "reference/stability.md" },
+      { "pVisor Job scenarios and regression examples" = "reference/cases.md" },
+      { "Shared image cache and storage backends" = "reference/shared-image-cache.md" },
+    ] },
+  ] },
+  { "Core concepts" = [
+    { "Execution concepts" = [
+      { "Concepts and boundaries" = "concepts/index.md" },
+      { "Jobs and storage" = "concepts/jobs.md" },
+      { "Staging and apply semantics" = "concepts/staging.md" },
+      { "Capabilities, evidence, and guarantees" = "concepts/capabilities-and-evidence.md" },
+      { "Policy model" = "concepts/policy-model.md" },
+      { "Glossary" = "concepts/glossary.md" },
+    ] },
+    { "Security" = [
+      { "Security overview" = "security/index.md" },
+      { "Threat model" = "security/threat-model.md" },
+      { "Executor boundaries" = "security/executor-boundaries.md" },
+      { "Hardening" = "security/hardening.md" },
+      { "Known limitations" = "security/known-limitations.md" },
+      { "Vulnerability disclosure policy" = "security/disclosure.md" },
+      { "Third-party audits" = "security/audits.md" },
+    ] },
+  ] },
+  { "Benchmarks" = [
+    { "Performance tests" = [
+      { "Overview" = "benchmarks/index.md" },
+      { "Methodology" = "benchmarks/methodology.md" },
+      { "Startup latency" = "benchmarks/startup.md" },
+      { "Lazy image" = "benchmarks/lazy-image-startup.md" },
+      { "Memory optimization" = "benchmarks/vm-memory/index.md" },
+      { "Filesystem" = "benchmarks/filesystem.md" },
+      { "Network overhead" = "benchmarks/network.md" },
+      { "Supervision cost" = "benchmarks/supervision-cost.md" },
+      { "Concurrency density" = "benchmarks/density.md" },
+    ] },
+    { "Scenario analysis" = [
+      { "End-to-end tasks" = "benchmarks/agent-tasks.md" },
+      { "Reinforcement learning" = "benchmarks/compare-rl-infra.md" },
+      { "Isolation effectiveness" = "benchmarks/isolation-tests.md" },
+      { "Replay fidelity" = "benchmarks/replay-fidelity.md" },
+    ] },
+  ] },
+  { "Design and research" = [
+    { "Architecture and execution" = [
+      { "Design and underlying mechanisms" = "design/index.md" },
+      { "Core design principles" = "design/principles.md" },
+      { "Core architecture" = "design/architecture.md" },
+      { "Job, Operation, Attempt and Event" = "design/execution-model.md" },
+    ] },
+    { "VM and virtual devices" = [
+      { "Execution, devices and consistency" = "design/vm-runtime.md" },
+      { "Isolation mechanisms and limits" = "design/isolation.md" },
+    ] },
+    { "Memory subsystem" = [
+      { "Memory architecture and mechanisms" = "design/memory-optimization/index.md" },
+      { "Memory deduplication" = "design/memory-optimization/deduplication.md" },
+      { "Shared working sets and lazy loading" = "design/daemon/shared-working-set.md" },
+      { "Memory compression" = "design/memory-optimization/compression.md" },
+      { "Per-instance compression" = "design/memory-optimization/compression-local.md" },
+      { "RAM offload" = "design/memory-optimization/offload.md" },
+      { "Offload file format" = "design/memory-optimization/offload-format.md" },
+      { "Pooled-server compression" = "design/memory-optimization/compression-pool.md" },
+      { "Experimental proof of concept" = "design/memory-optimization/proof-of-concept.md" },
+    ] },
+    { "Filesystem subsystem" = [
+      { "File architecture, requests and staging" = "design/overlayfs.md" },
+      { "Shared image cache v1: independent metadata and shared content" = "design/shared-image-cache-storage.md" },
+      { "Lazy Image V2: Directory-Local Packing and On-Demand Indexes" = "design/lazy-image-v2.md" },
+    ] },
+    { "Network subsystem" = [
+      { "Network architecture, egress and protocols" = "design/overlaynet.md" },
+    ] },
+    { "Snapshots and state" = [
+      { "Consistent freeze and state storage" = "design/environment-snapshot.md" },
+      { "Job checkpoints and forks" = "design/job-checkpoint-cli.md" },
+    ] },
+    { "Single-node daemon" = [
+      { "Single-node daemon architecture" = "design/daemon/index.md" },
+      { "Local state and restart recovery" = "design/daemon/state-and-recovery.md" },
+      { "Local sandbox admission" = "design/daemon/admission.md" },
+      { "Sandbox lifecycle" = "design/daemon/lifecycle.md" },
+      { "Daemon storage and reclamation" = "design/daemon/storage.md" },
+      { "Service responsibility convergence" = "design/daemon/responsibility-convergence.md" },
+      { "Daemon operations" = "design/daemon/operations.md" },
+    ] },
+    { "Interfaces, extensions and decisions" = [
+      { "pVisor command model" = "design/cli.md" },
+      { "Gateway implementation" = "design/gateway.md" },
+      { "Replay design" = "design/replay.md" },
+      { "Architecture decision records (ADR)" = "design/decisions/index.md" },
+    ] },
+    { "Records, versions and failure semantics" = [
+      { "Operation and Event" = "design/operations-events.md" },
+      { "Journal design" = "design/journal.md" },
+      { "Records and version matrix" = "design/records-and-versions.md" },
+      { "Failure semantics and retries" = "design/failure-semantics.md" },
+    ] },
+    { "Research directions" = [
+      { "Research directions" = "design/research/index.md" },
+      { "External orchestration and single-node execution" = "design/research/cluster-execution.md" },
+      { "RL execution substrate" = "design/research/rl-execution-substrate.md" },
+      { "Publications and reports" = "design/research/publications.md" },
+      { "Open-source design references" = "design/research/design-documents.md" },
+    ] },
+  ] },
+  { "Contributing" = [
+    { "Development guide" = [
+      { "Community" = "community/index.md" },
+      { "Contributing" = "community/contributing.md" },
+      { "Engineering guide" = "community/development.md" },
+      { "Testing and semspec" = "community/testing.md" },
+      { "Reproduce the Run lifecycle" = "community/examples.md" },
+      { "Release PolicyVisor" = "community/releasing.md" },
+      { "Roadmap" = "community/roadmap.md" },
+      { "Changelog" = "community/changelog.md" },
+      { "Code of conduct" = "community/code-of-conduct.md" },
+      { "Governance" = "community/governance.md" },
+      { "Adopters" = "community/adopters.md" },
+    ] },
+  ] },
+]
+
+[project.theme]
+language = "en"
+custom_dir = "overrides"
+logo = "assets/logos/pvisor-icon.png"
+favicon = "assets/logos/pvisor-icon.png"
+features = [
+  "navigation.tabs",
+  "navigation.sections",
+  "navigation.expand",
+  "navigation.indexes",
+  "navigation.path",
+  "navigation.tracking",
+  "navigation.top",
+  "search.highlight",
+  "content.code.copy",
+  "content.code.select",
+  "content.code.annotate",
+  "content.tabs.link",
+  "content.tooltips",
+  "content.footnote.tooltips",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "custom"
+accent = "custom"
+
+[[project.extra.alternate]]
+name = "English"
+link = "https://deeplink-org.github.io/pvisor/en/"
+lang = "en"
+
+[[project.extra.alternate]]
+name = "中文"
+link = "https://deeplink-org.github.io/pvisor/zh/"
+lang = "zh"
+
+[project.markdown_extensions."admonition"]
+
+[project.markdown_extensions."pymdownx.details"]
+
+[project.markdown_extensions."pymdownx.superfences"]
+
+[project.markdown_extensions."pymdownx.highlight"]
+anchor_linenums = true
+
+[project.markdown_extensions."pymdownx.inlinehilite"]
+
+[project.markdown_extensions."pymdownx.tabbed"]
+alternate_style = true
+
+[project.markdown_extensions."attr_list"]
+
+[project.markdown_extensions."md_in_html"]
+
+[project.markdown_extensions."def_list"]
+
+[project.markdown_extensions."tables"]
+
+[project.markdown_extensions."toc"]
+permalink = true
+
+[project.plugins.search]
+lang = ["en"]
+
+[project.plugins.exclude]
+regex = ["(^|/)\\.data(/|$)"]

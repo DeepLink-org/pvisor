@@ -2,18 +2,18 @@
 # Install the latest pVisor nightly wheel from GitHub Releases (tag: nightly).
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/DeepLink-org/Persisting/main/scripts/install-nightly.sh | bash
-#   PERSISTING_GITHUB_REPO=DeepLink-org/Persisting PERSISTING_NIGHTLY_TAG=nightly ./scripts/install-nightly.sh
+#   curl -fsSL https://raw.githubusercontent.com/DeepLink-org/pvisor/main/scripts/install-nightly.sh | bash
+#   PVISOR_GITHUB_REPO=DeepLink-org/pvisor PVISOR_NIGHTLY_TAG=nightly ./scripts/install-nightly.sh
 #
 # Environment:
 #   PYTHON                   Python interpreter (default: python3)
-#   PERSISTING_GITHUB_REPO   owner/repo (default: DeepLink-org/Persisting)
-#   PERSISTING_NIGHTLY_TAG   release tag (default: nightly)
+#   PVISOR_GITHUB_REPO   owner/repo (default: DeepLink-org/pvisor)
+#   PVISOR_NIGHTLY_TAG   release tag (default: nightly)
 
 set -euo pipefail
 
-REPO="${PERSISTING_GITHUB_REPO:-DeepLink-org/Persisting}"
-TAG="${PERSISTING_NIGHTLY_TAG:-nightly}"
+REPO="${PVISOR_GITHUB_REPO:-DeepLink-org/pvisor}"
+TAG="${PVISOR_NIGHTLY_TAG:-nightly}"
 PYTHON="${PYTHON:-python3}"
 
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
@@ -23,7 +23,7 @@ fi
 
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) platform_re='manylinux.*x86_64' ;;
-  Linux-aarch64) platform_re='manylinux.*aarch64' ;;
+
   Darwin-arm64) platform_re='macosx.*arm64' ;;
   *)
     echo "error: unsupported platform $(uname -s)-$(uname -m)" >&2
@@ -95,7 +95,9 @@ echo "Installing ${url}" >&2
 "$PYTHON" -c "import pvisor; print('pVisor', pvisor.__version__)"
 
 scripts_dir="$("$PYTHON" -c 'import sysconfig; print(sysconfig.get_path("scripts"))')"
-for binary in pvisor; do
+binaries=(pvisor pvisor-cache pvisor-tui pvisor-replay)
+if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then binaries+=(pvisor-daemon); fi
+for binary in "${binaries[@]}"; do
   if [ ! -x "$scripts_dir/$binary" ]; then
     echo "error: wheel did not install executable $scripts_dir/$binary" >&2
     exit 1

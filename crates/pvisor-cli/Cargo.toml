@@ -1,0 +1,74 @@
+[package]
+name = "pvisor-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license = "Apache-2.0 AND MIT"
+description = "pVisor command-line application frontends"
+readme = "README.md"
+default-run = "pvisor"
+
+[features]
+default = []
+gateway = ["pvisor/gateway", "dep:pvisor-gateway"]
+
+[dependencies]
+pvisor = { path = "../pvisor", default-features = false }
+anyhow.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+
+clap = { workspace = true, features = ["derive", "env", "string"] }
+dirs.workspace = true
+fs2.workspace = true
+libc.workspace = true
+pvisor-core.workspace = true
+pvisor-journal.workspace = true
+pvisor-replay.workspace = true
+pvisor-gateway = { workspace = true, default-features = false, optional = true }
+
+pvisor-overlaynet.workspace = true
+pvisor-overlay-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time", "net"] }
+tokio-util = { workspace = true, features = ["rt"] }
+toml.workspace = true
+toml_edit.workspace = true
+unicode-width = "0.2.2"
+vt100 = "0.16.2"
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
+pvisor-vm = { workspace = true, features = ["net"] }
+
+[dev-dependencies]
+
+proptest.workspace = true
+
+sha2.workspace = true
+
+tokio = { workspace = true, features = ["test-util"] }
+
+
+[target.'cfg(any(all(target_os = "linux", target_arch = "x86_64"), all(target_os = "macos", target_arch = "aarch64")))'.dev-dependencies]
+vm-memory = { version = "=0.17.1", features = ["backend-mmap"] }
+
+[[bin]]
+name = "pvisor"
+path = "src/bin/pvisor.rs"
+
+[[bin]]
+name = "pvisor-cache"
+path = "src/bin/pvisor-cache.rs"
+
+
+[[bin]]
+name = "pvisor-tui"
+path = "src/bin/pvisor-tui.rs"
+
+[[bin]]
+name = "pvisor-replay"
+path = "src/bin/pvisor-replay.rs"

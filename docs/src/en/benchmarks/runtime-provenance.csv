@@ -1,0 +1,101 @@
+batch,benchmark_id,field,value
+6r,B-STARTUP,recorded_at,2026-10-06T01:29:01.795769+08:00
+6r,B-STARTUP,source_commit,99fefbdac7f79c7b0c7d92bf67447e12fab3082c
+6r,B-STARTUP,pvisor_sha256,04d73057a0042bd965a4fc49555e6d24c30126ae59fc349153d4466286cfb66b
+6r,B-STARTUP,kernel_sha256,aa55fa2dbe2762a55020182560fabd16562d565392505b1986fc51326c741f3d
+6r,B-STARTUP,bzimage_sha256,99de4727b274d92232bd67f9e62b9744e67e99ca89d1bdb09a55e2deb7c80619
+6r,B-STARTUP,driver_sha256,ec8e5406d90c8fee02ef508080940b9588f7b7d450b35a3ac963f9c8f69bbb04
+6r,B-STARTUP,workload_sha256,a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8
+6r,B-STARTUP,host_kernel,7.2.8-200.fc44.x86_64
+6r,B-STARTUP,host_cpu_model,AMD Ryzen 7 9700X 8-Core Processor
+6r,B-STARTUP,docker_storage_driver,overlay2
+6r,B-STARTUP,docker_version,"Docker version 29.7.2, build 1.fc44"
+6r,B-STARTUP,firecracker_version,"Firecracker v1.13.1
+
+2026-10-06T01:29:01.862236163 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0"
+6r,B-STARTUP,qemu-system-x86_64_version,"QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)
+Copyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers"
+6r,B-STARTUP,report_sha256,aa2ab1f5a4938365895cc7528263f1949e2178fc9f4e13f9c9a7332509b960c1
+6r,B-STARTUP,raw_location,benchmark/.data/6r/report.json
+6r,B-STARTUP,arguments,"{""backends"": ""native,pvisor-host,pvisor-staged,pvisor-vm,docker,firecracker,qemu,qemu-microvm"", ""cpu_affinity"": ""0,1"", ""host_isolation"": ""rootless_process"", ""memory_mib"": ""16384"", ""modes"": ""ready"", ""samples"": ""60"", ""seed"": ""20261005"", ""staged_isolation"": ""rootless_process"", ""warmups"": ""3""}"
+6r,B-STARTUP,statistics,batches separate; P95 descriptive at N>=30; no P99; separated clusters replace P50
+6r,B-STARTUP,split_rule,"both clusters >=max(5,10% N); largest gap >=20% median and >3x median adjacent gap; cluster medians >=1.5x"
+6r,B-STARTUP,binary_source_commit,99fefbdac7f79c7b0c7d92bf67447e12fab3082c
+6r,B-STARTUP,binary_source_manifest_sha256,cad1cedb1c7b7745b53ad730a83bf5a3b69e35072f19969b0074dd66eace051f
+6r,B-STARTUP,input_manifest_sha256,1ddcf28fb142744aeb3f8c778558a276ea42bd7a51c51c1b87e02a0d920d91c9
+6r,B-STARTUP,source_commit_scope,runner worktree HEAD; measured binary source is recorded separately
+6f,B-FS-TOOLS,recorded_at,2026-10-06T01:30:22.982359+08:00
+6f,B-FS-TOOLS,source_commit,99fefbdac7f79c7b0c7d92bf67447e12fab3082c
+6f,B-FS-TOOLS,pvisor_sha256,04d73057a0042bd965a4fc49555e6d24c30126ae59fc349153d4466286cfb66b
+6f,B-FS-TOOLS,kernel_sha256,aa55fa2dbe2762a55020182560fabd16562d565392505b1986fc51326c741f3d
+6f,B-FS-TOOLS,bzimage_sha256,99de4727b274d92232bd67f9e62b9744e67e99ca89d1bdb09a55e2deb7c80619
+6f,B-FS-TOOLS,driver_sha256,ec8e5406d90c8fee02ef508080940b9588f7b7d450b35a3ac963f9c8f69bbb04
+6f,B-FS-TOOLS,workload_sha256,a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8
+6f,B-FS-TOOLS,host_kernel,7.2.8-200.fc44.x86_64
+6f,B-FS-TOOLS,host_cpu_model,AMD Ryzen 7 9700X 8-Core Processor
+6f,B-FS-TOOLS,docker_storage_driver,overlay2
+6f,B-FS-TOOLS,docker_version,"Docker version 29.7.2, build 1.fc44"
+6f,B-FS-TOOLS,firecracker_version,"Firecracker v1.13.1
+
+2026-10-06T01:30:23.035298366 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0"
+6f,B-FS-TOOLS,qemu-system-x86_64_version,"QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)
+Copyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers"
+6f,B-FS-TOOLS,report_sha256,199a0a0a5ac4a4d0863c9ae4c02807bf57e6a560aa4edc176a20ae83ae969d7e
+6f,B-FS-TOOLS,raw_location,benchmark/.data/6f/report.json
+6f,B-FS-TOOLS,arguments,"{""backends"": ""native,pvisor-host,pvisor-staged,pvisor-vm,docker,firecracker,qemu,qemu-microvm"", ""cpu_affinity"": ""0,1"", ""host_isolation"": ""rootless_process"", ""memory_mib"": ""16384"", ""modes"": ""filesystem"", ""samples"": ""60"", ""seed"": ""20261005"", ""staged_isolation"": ""rootless_process"", ""warmups"": ""3""}"
+6f,B-FS-TOOLS,statistics,batches separate; P95 descriptive at N>=30; no P99; separated clusters replace P50
+6f,B-FS-TOOLS,split_rule,"both clusters >=max(5,10% N); largest gap >=20% median and >3x median adjacent gap; cluster medians >=1.5x"
+6f,B-FS-TOOLS,binary_source_commit,99fefbdac7f79c7b0c7d92bf67447e12fab3082c
+6f,B-FS-TOOLS,binary_source_manifest_sha256,cad1cedb1c7b7745b53ad730a83bf5a3b69e35072f19969b0074dd66eace051f
+6f,B-FS-TOOLS,input_manifest_sha256,1ddcf28fb142744aeb3f8c778558a276ea42bd7a51c51c1b87e02a0d920d91c9
+6f,B-FS-TOOLS,source_commit_scope,runner worktree HEAD; measured binary source is recorded separately
+6t,B-AGENT-TASK,recorded_at,2026-10-06T01:44:21.586406+08:00
+6t,B-AGENT-TASK,source_commit,99fefbdac7f79c7b0c7d92bf67447e12fab3082c
+6t,B-AGENT-TASK,pvisor_sha256,04d73057a0042bd965a4fc49555e6d24c30126ae59fc349153d4466286cfb66b
+6t,B-AGENT-TASK,kernel_sha256,aa55fa2dbe2762a55020182560fabd16562d565392505b1986fc51326c741f3d
+6t,B-AGENT-TASK,bzimage_sha256,99de4727b274d92232bd67f9e62b9744e67e99ca89d1bdb09a55e2deb7c80619
+6t,B-AGENT-TASK,driver_sha256,ec8e5406d90c8fee02ef508080940b9588f7b7d450b35a3ac963f9c8f69bbb04
+6t,B-AGENT-TASK,workload_sha256,a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8
+6t,B-AGENT-TASK,host_kernel,7.2.8-200.fc44.x86_64
+6t,B-AGENT-TASK,host_cpu_model,AMD Ryzen 7 9700X 8-Core Processor
+6t,B-AGENT-TASK,docker_storage_driver,overlay2
+6t,B-AGENT-TASK,docker_version,"Docker version 29.7.2, build 1.fc44"
+6t,B-AGENT-TASK,firecracker_version,"Firecracker v1.13.1
+
+2026-10-06T01:44:21.636797467 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0"
+6t,B-AGENT-TASK,qemu-system-x86_64_version,"QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)
+Copyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers"
+6t,B-AGENT-TASK,report_sha256,176a8508dd2fc7bb358f95d54f1e25e8c0f1d18c521775240213bec8fdeaad77
+6t,B-AGENT-TASK,raw_location,benchmark/.data/6t/report.json
+6t,B-AGENT-TASK,arguments,"{""backends"": ""native,pvisor-host,pvisor-staged,pvisor-vm,docker,firecracker,qemu,qemu-microvm"", ""cpu_affinity"": ""0,1"", ""host_isolation"": ""rootless_process"", ""memory_mib"": ""16384"", ""modes"": ""tools"", ""samples"": ""60"", ""seed"": ""20261005"", ""staged_isolation"": ""rootless_process"", ""warmups"": ""3""}"
+6t,B-AGENT-TASK,statistics,batches separate; P95 descriptive at N>=30; no P99; separated clusters replace P50
+6t,B-AGENT-TASK,split_rule,"both clusters >=max(5,10% N); largest gap >=20% median and >3x median adjacent gap; cluster medians >=1.5x"
+6t,B-AGENT-TASK,binary_source_commit,99fefbdac7f79c7b0c7d92bf67447e12fab3082c
+6t,B-AGENT-TASK,binary_source_manifest_sha256,cad1cedb1c7b7745b53ad730a83bf5a3b69e35072f19969b0074dd66eace051f
+6t,B-AGENT-TASK,input_manifest_sha256,1ddcf28fb142744aeb3f8c778558a276ea42bd7a51c51c1b87e02a0d920d91c9
+6t,B-AGENT-TASK,source_commit_scope,runner worktree HEAD; measured binary source is recorded separately
+6c,B-AGENT-TASK,recorded_at,2026-10-06T02:16:18.495735+08:00
+6c,B-AGENT-TASK,source_commit,99fefbdac7f79c7b0c7d92bf67447e12fab3082c
+6c,B-AGENT-TASK,pvisor_sha256,04d73057a0042bd965a4fc49555e6d24c30126ae59fc349153d4466286cfb66b
+6c,B-AGENT-TASK,kernel_sha256,aa55fa2dbe2762a55020182560fabd16562d565392505b1986fc51326c741f3d
+6c,B-AGENT-TASK,bzimage_sha256,99de4727b274d92232bd67f9e62b9744e67e99ca89d1bdb09a55e2deb7c80619
+6c,B-AGENT-TASK,driver_sha256,427a85383dd28760924cd460b3f706a9b5bbeea3a67a5a263f6ded56d92ed233
+6c,B-AGENT-TASK,workload_sha256,a3b120813d58746e9da8594d71a45cdc093ac9bdbad9f4cf0edc741bb9b30fd8
+6c,B-AGENT-TASK,host_kernel,7.2.8-200.fc44.x86_64
+6c,B-AGENT-TASK,host_cpu_model,AMD Ryzen 7 9700X 8-Core Processor
+6c,B-AGENT-TASK,docker_storage_driver,overlay2
+6c,B-AGENT-TASK,docker_version,"Docker version 29.7.2, build 1.fc44"
+6c,B-AGENT-TASK,firecracker_version,"Firecracker v1.13.1
+
+2026-10-06T02:16:18.558884139 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0"
+6c,B-AGENT-TASK,qemu-system-x86_64_version,"QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)
+Copyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers"
+6c,B-AGENT-TASK,report_sha256,f95a6afcf4778afe71b6df53f788add1ebc4ad8edcead9ce810e9eec0a317e31
+6c,B-AGENT-TASK,raw_location,benchmark/.data/6c/report.json
+6c,B-AGENT-TASK,arguments,"{""backends"": ""native,pvisor-host,pvisor-staged,pvisor-vm,docker,firecracker,qemu,qemu-microvm"", ""cpu_affinity"": ""0,1"", ""host_isolation"": ""rootless_process"", ""memory_mib"": ""16384"", ""modes"": ""env,claude,codex"", ""samples"": ""30"", ""seed"": ""20261005"", ""staged_isolation"": ""rootless_process"", ""warmups"": ""3""}"
+6c,B-AGENT-TASK,statistics,batches separate; P95 descriptive at N>=30; no P99; separated clusters replace P50
+6c,B-AGENT-TASK,split_rule,"both clusters >=max(5,10% N); largest gap >=20% median and >3x median adjacent gap; cluster medians >=1.5x"
+6c,B-AGENT-TASK,binary_source_commit,99fefbdac7f79c7b0c7d92bf67447e12fab3082c
+6c,B-AGENT-TASK,binary_source_manifest_sha256,cad1cedb1c7b7745b53ad730a83bf5a3b69e35072f19969b0074dd66eace051f
+6c,B-AGENT-TASK,input_manifest_sha256,1ddcf28fb142744aeb3f8c778558a276ea42bd7a51c51c1b87e02a0d920d91c9
+6c,B-AGENT-TASK,source_commit_scope,runner worktree HEAD; measured binary source is recorded separately

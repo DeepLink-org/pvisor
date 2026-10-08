@@ -1,0 +1,279 @@
+# Native Zensical configuration; no generated configuration or HTML post-processing.
+[project]
+site_name = "PolicyVisor"
+site_description = "Scaling autonomous agent execution for Agents, scripts, and automation."
+site_url = "https://deeplink-org.github.io/pvisor/zh/"
+docs_dir = "src/zh"
+site_dir = "site/zh"
+cache_dir = ".cache/zh"
+dev_addr = "127.0.0.1:3000"
+repo_name = "DeepLink-org/pvisor"
+repo_url = "https://github.com/DeepLink-org/pvisor"
+extra_css = ["assets/stylesheets/extra.css"]
+
+nav = [
+  { "首页" = "index.md" },
+  { "快速开始" = [
+    { "快速上手" = [
+      { "从这里开始" = "start/index.md" },
+      { "PolicyVisor 是什么" = "start/what-is-pvisor.md" },
+      { "安装指南" = "start/installation.md" },
+      { "第一次运行" = "start/first-run.md" },
+      { "第一次运行之后" = "start/next-steps.md" },
+    ] },
+    { "了解 pVisor" = [
+      { "为什么是 pVisor" = "why/index.md" },
+      { "信任阶梯与规模轴" = "why/trust-ladder.md" },
+      { "用例" = "why/use-cases.md" },
+      { "与现成方案对比" = "why/comparisons.md" },
+      { "什么时候不需要 pVisor" = "why/when-not-to-use.md" },
+      { "常见问题" = "why/faq.md" },
+    ] },
+  ] },
+  { "用户指南" = [
+    { "任务操作" = [
+      { "任务指南" = "guides/index.md" },
+      { "审查并应用改动" = "guides/review-apply.md" },
+      { "逻辑检查点与分叉" = "guides/fork-checkpoint.md" },
+      { "捕获 Agent 轨迹" = "guides/capture.md" },
+      { "SandboxReplay" = "guides/replay.md" },
+      { "在 CI 中运行" = "guides/ci.md" },
+      { "并行 Agent" = "guides/parallel-agents.md" },
+      { "RL rollout" = "guides/rl-rollouts.md" },
+      { "排查一次 Run" = "guides/troubleshooting.md" },
+    ] },
+    { "接入你的 Agent" = [
+      { "接入你的 Agent" = "guides/agents/index.md" },
+      { "Claude Code" = "guides/agents/claude-code.md" },
+      { "Codex CLI" = "guides/agents/codex.md" },
+      { "Gemini CLI" = "guides/agents/gemini-cli.md" },
+      { "aider" = "guides/agents/aider.md" },
+      { "OpenCode" = "guides/agents/opencode.md" },
+      { "任意脚本与自动化命令" = "guides/agents/custom-scripts.md" },
+    ] },
+    { "策略" = [
+      { "文件策略" = "guides/policies/files.md" },
+      { "使用 OverlayNet 控制网络访问" = "guides/policies/network.md" },
+      { "凭据与环境变量" = "guides/policies/credentials.md" },
+    ] },
+    { "执行器" = [
+      { "选择执行环境" = "guides/executors/index.md" },
+      { "host 执行器" = "guides/executors/host.md" },
+      { "原生 OCI 容器" = "guides/executors/container.md" },
+      { "pVisor VM" = "guides/executors/vm.md" },
+    ] },
+    { "Daemon 上手" = [
+      { "运行单机 daemon" = "guides/daemon/index.md" },
+      { "Daemon 与独立缓存入口" = "guides/daemon/service.md" },
+      { "单机 daemon 运维" = "guides/daemon/operations.md" },
+      { "Daemon 运行时与集成边界" = "guides/daemon/boundaries.md" },
+    ] },
+    { "任务学习路线" = [
+      { "按任务学习 pVisor" = "cases/index.md" },
+      { "1. 从一个命令到一个 Job" = "cases/01-first-job.md" },
+      { "2. 先审查，再接受文件改动" = "cases/02-review-and-decide.md" },
+      { "3. 保存提案，探索另一条分支" = "cases/03-checkpoint-and-fork.md" },
+      { "4. 为不可信任务声明边界" = "cases/04-boundaries.md" },
+      { "5. 回放轨迹与选择恢复工具" = "cases/05-tools-and-restoration.md" },
+    ] },
+    { "命令与配置参考" = [
+      { "命令与场景参考" = "reference/index.md" },
+      { "`pvisor` 命令参考" = "reference/cli.md" },
+      { "配置文件参考" = "reference/config.md" },
+      { "策略字段参考" = "reference/policy.md" },
+      { "Run Bundle 格式" = "reference/run-bundle.md" },
+      { "机器可读输出" = "reference/json-output.md" },
+      { "环境变量" = "reference/env-vars.md" },
+      { "退出码与错误" = "reference/exit-codes.md" },
+      { "平台与执行器支持矩阵" = "reference/platforms.md" },
+      { "稳定性与兼容承诺" = "reference/stability.md" },
+      { "pVisor Job 用户场景与回归示例" = "reference/cases.md" },
+      { "共享镜像缓存与存储后端" = "reference/shared-image-cache.md" },
+    ] },
+  ] },
+  { "基础概念" = [
+    { "执行概念" = [
+      { "概念与边界" = "concepts/index.md" },
+      { "Job 与存储" = "concepts/jobs.md" },
+      { "暂存与 apply 语义" = "concepts/staging.md" },
+      { "能力、证据与保证边界" = "concepts/capabilities-and-evidence.md" },
+      { "策略模型" = "concepts/policy-model.md" },
+      { "术语表" = "concepts/glossary.md" },
+    ] },
+    { "安全" = [
+      { "安全概览" = "security/index.md" },
+      { "威胁模型" = "security/threat-model.md" },
+      { "执行器边界" = "security/executor-boundaries.md" },
+      { "加固建议" = "security/hardening.md" },
+      { "已知限制" = "security/known-limitations.md" },
+      { "漏洞披露政策" = "security/disclosure.md" },
+      { "第三方审计" = "security/audits.md" },
+    ] },
+  ] },
+  { "基准测试" = [
+    { "性能测试" = [
+      { "基准概览" = "benchmarks/index.md" },
+      { "测试方法" = "benchmarks/methodology.md" },
+      { "启动延迟" = "benchmarks/startup.md" },
+      { "惰性镜像" = "benchmarks/lazy-image-startup.md" },
+      { "内存优化" = "benchmarks/vm-memory/index.md" },
+      { "文件系统" = "benchmarks/filesystem.md" },
+      { "网络开销" = "benchmarks/network.md" },
+      { "监督成本" = "benchmarks/supervision-cost.md" },
+      { "并发密度" = "benchmarks/density.md" },
+    ] },
+    { "场景分析" = [
+      { "端到端任务" = "benchmarks/agent-tasks.md" },
+      { "强化学习训练" = "benchmarks/compare-rl-infra.md" },
+      { "隔离有效性" = "benchmarks/isolation-tests.md" },
+      { "回放保真度" = "benchmarks/replay-fidelity.md" },
+    ] },
+  ] },
+  { "设计与研究" = [
+    { "整体架构与执行" = [
+      { "设计与底层原理" = "design/index.md" },
+      { "核心设计原则" = "design/principles.md" },
+      { "核心架构" = "design/architecture.md" },
+      { "Job、Operation、Attempt 与 Event" = "design/execution-model.md" },
+    ] },
+    { "VM 与虚拟设备" = [
+      { "执行、设备与一致性" = "design/vm-runtime.md" },
+      { "隔离机制与限制" = "design/isolation.md" },
+    ] },
+    { "内存子系统" = [
+      { "内存架构与机制" = "design/memory-optimization/index.md" },
+      { "内存去重" = "design/memory-optimization/deduplication.md" },
+      { "共享工作集与按需加载" = "design/daemon/shared-working-set.md" },
+      { "内存压缩" = "design/memory-optimization/compression.md" },
+      { "实例内压缩" = "design/memory-optimization/compression-local.md" },
+      { "内存卸载" = "design/memory-optimization/offload.md" },
+      { "卸载文件格式" = "design/memory-optimization/offload-format.md" },
+      { "池化服务器压缩" = "design/memory-optimization/compression-pool.md" },
+      { "实验性概念验证" = "design/memory-optimization/proof-of-concept.md" },
+    ] },
+    { "文件系统子系统" = [
+      { "文件架构、请求与暂存" = "design/overlayfs.md" },
+      { "共享镜像缓存 v1：独立元数据与共享内容" = "design/shared-image-cache-storage.md" },
+      { "Lazy Image V2：目录局部化打包与按需索引" = "design/lazy-image-v2.md" },
+    ] },
+    { "网络子系统" = [
+      { "网络架构、出口与协议" = "design/overlaynet.md" },
+    ] },
+    { "快照与状态" = [
+      { "一致性冻结与状态存储" = "design/environment-snapshot.md" },
+      { "Job 检查点与分叉" = "design/job-checkpoint-cli.md" },
+    ] },
+    { "单节点 Daemon" = [
+      { "单节点 Daemon 架构" = "design/daemon/index.md" },
+      { "本机状态与重启恢复" = "design/daemon/state-and-recovery.md" },
+      { "本机 Sandbox 准入" = "design/daemon/admission.md" },
+      { "Sandbox 生命周期" = "design/daemon/lifecycle.md" },
+      { "Daemon 存储与回收" = "design/daemon/storage.md" },
+      { "服务职责收敛" = "design/daemon/responsibility-convergence.md" },
+      { "Daemon 运维" = "design/daemon/operations.md" },
+    ] },
+    { "接口、扩展与设计决策" = [
+      { "pVisor 命令模型" = "design/cli.md" },
+      { "Gateway 实现" = "design/gateway.md" },
+      { "回放设计" = "design/replay.md" },
+      { "设计决策记录（ADR）" = "design/decisions/index.md" },
+    ] },
+    { "记录、版本与失败语义" = [
+      { "Operation 与 Event" = "design/operations-events.md" },
+      { "Journal 设计" = "design/journal.md" },
+      { "记录与版本矩阵" = "design/records-and-versions.md" },
+      { "失败语义与重试" = "design/failure-semantics.md" },
+    ] },
+    { "研究方向" = [
+      { "研究方向" = "design/research/index.md" },
+      { "外部编排与单机执行" = "design/research/cluster-execution.md" },
+      { "RL 执行基座" = "design/research/rl-execution-substrate.md" },
+      { "论文与报告" = "design/research/publications.md" },
+      { "开源设计文档参考" = "design/research/design-documents.md" },
+    ] },
+  ] },
+  { "参与开发" = [
+    { "开发指南" = [
+      { "社区" = "community/index.md" },
+      { "贡献指南" = "community/contributing.md" },
+      { "工程说明" = "community/development.md" },
+      { "测试与 semspec" = "community/testing.md" },
+      { "复现 Run 生命周期" = "community/examples.md" },
+      { "发布 PolicyVisor" = "community/releasing.md" },
+      { "路线图" = "community/roadmap.md" },
+      { "变更日志" = "community/changelog.md" },
+      { "行为准则" = "community/code-of-conduct.md" },
+      { "治理" = "community/governance.md" },
+      { "使用者" = "community/adopters.md" },
+    ] },
+  ] },
+]
+
+[project.theme]
+language = "zh"
+custom_dir = "overrides"
+logo = "assets/logos/pvisor-icon.png"
+favicon = "assets/logos/pvisor-icon.png"
+features = [
+  "navigation.tabs",
+  "navigation.sections",
+  "navigation.expand",
+  "navigation.indexes",
+  "navigation.path",
+  "navigation.tracking",
+  "navigation.top",
+  "search.highlight",
+  "content.code.copy",
+  "content.code.select",
+  "content.code.annotate",
+  "content.tabs.link",
+  "content.tooltips",
+  "content.footnote.tooltips",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+scheme = "slate"
+primary = "custom"
+accent = "custom"
+
+[[project.extra.alternate]]
+name = "English"
+link = "https://deeplink-org.github.io/pvisor/en/"
+lang = "en"
+
+[[project.extra.alternate]]
+name = "中文"
+link = "https://deeplink-org.github.io/pvisor/zh/"
+lang = "zh"
+
+[project.markdown_extensions."admonition"]
+
+[project.markdown_extensions."pymdownx.details"]
+
+[project.markdown_extensions."pymdownx.superfences"]
+
+[project.markdown_extensions."pymdownx.highlight"]
+anchor_linenums = true
+
+[project.markdown_extensions."pymdownx.inlinehilite"]
+
+[project.markdown_extensions."pymdownx.tabbed"]
+alternate_style = true
+
+[project.markdown_extensions."attr_list"]
+
+[project.markdown_extensions."md_in_html"]
+
+[project.markdown_extensions."def_list"]
+
+[project.markdown_extensions."tables"]
+
+[project.markdown_extensions."toc"]
+permalink = true
+
+[project.plugins.search]
+lang = ["zh"]
+
+[project.plugins.exclude]
+regex = ["(^|/)\\.data(/|$)"]

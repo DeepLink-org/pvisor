@@ -26,5 +26,5 @@ OverlayFS 示例还需要 macFUSE 或 FUSE3。
 
 ## Links
 
-- [Reproducible examples](../docs/src/en/development/examples.md)
+- [Reproducible examples](../docs/src/zh/community/examples.md)
 - [pVisor get started](../docs/src/en/start/first-run.md)

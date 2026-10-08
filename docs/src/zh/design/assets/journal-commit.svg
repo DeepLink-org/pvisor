@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="655" viewBox="0 0 1080 655" role="img" aria-labelledby="title desc"><title id="title">Journal：提交点在同步之后</title><desc id="desc">单 writer 下的磁盘 append；时间从左到右，异常路径向下。</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="1080" height="655" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">Journal：提交点在同步之后</text>
+<text x="28" y="67" font-size="15">单 writer 下的磁盘 append；时间从左到右，异常路径向下。</text>
+<rect x="20" y="109" width="1040" height="132" fill="#1a304c"/>
+<rect x="20" y="291" width="1040" height="129" fill="#12243b"/>
+<rect x="20" y="441" width="1040" height="150" fill="#1a304c"/>
+<rect x="28" y="133" width="180" height="86" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="118.0" y="170.0" font-size="17" font-weight="600" text-anchor="middle">Event</text>
+<text x="118.0" y="194.0" font-size="14" text-anchor="middle">固定 ID 与内容</text>
+<polyline points="208,176 239,176" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="239" y="133" width="180" height="86" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="329.0" y="170.0" font-size="17" font-weight="600" text-anchor="middle">验证 / 去重</text>
+<text x="329.0" y="194.0" font-size="14" text-anchor="middle">ID → offset + digest</text>
+<polyline points="419,176 450,176" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="450" y="133" width="180" height="86" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="540.0" y="170.0" font-size="17" font-weight="600" text-anchor="middle">write_all</text>
+<text x="540.0" y="194.0" font-size="14" text-anchor="middle">Record JSON + LF</text>
+<polyline points="630,176 661,176" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="661" y="133" width="180" height="86" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="751.0" y="170.0" font-size="17" font-weight="600" text-anchor="middle">sync_all</text>
+<text x="751.0" y="194.0" font-size="14" text-anchor="middle">本地文件同步</text>
+<polyline points="841,176 872,176" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="872" y="133" width="180" height="86" rx="2" fill="#193d40" stroke="#74b7b0" stroke-width="1.4"/>
+<text x="962.0" y="170.0" font-size="17" font-weight="600" text-anchor="middle">Receipt</text>
+<text x="962.0" y="194.0" font-size="14" text-anchor="middle">position + LocalSync</text>
+<rect x="450" y="316" width="391" height="87" rx="2" fill="#443929" stroke="#c9a96e" stroke-width="1.4"/>
+<text x="645.5" y="353.5" font-size="17" font-weight="600" text-anchor="middle">Unknown + poisoned</text>
+<text x="645.5" y="377.5" font-size="14" text-anchor="middle">字节可能已写入；停止复用句柄</text>
+<polyline points="540,219 540,316" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="450" y="275" font-size="14">write 失败</text>
+<polyline points="751,219 751,316" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="765" y="275" font-size="14">sync 失败</text>
+<rect x="28" y="461" width="600" height="111" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="328.0" y="498.5" font-size="17" font-weight="600" text-anchor="middle">恢复：扫描完整行并重建索引</text>
+<text x="328.0" y="522.5" font-size="14" text-anchor="middle">header LF | record 0 LF | record 1 LF | tail...</text>
+<text x="328.0" y="546.5" font-size="14" text-anchor="middle">完整有效行保留；缺 LF 的末尾可截断</text>
+<polyline points="600,403 600,461" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<rect x="702" y="461" width="350" height="111" rx="2" fill="#193d40" stroke="#74b7b0" stroke-width="1.4"/>
+<text x="877.0" y="498.5" font-size="17" font-weight="600" text-anchor="middle">保留同一 Event 重试</text>
+<text x="877.0" y="522.5" font-size="14" text-anchor="middle">已存在 → 原 position</text>
+<text x="877.0" y="546.5" font-size="14" text-anchor="middle">不存在 → 新追加</text>
+<polyline points="628,517 702,517" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="28" y="618" font-size="14">成功同步后更新索引、发送 live 通知；通知丢失不删除记录，回执丢失不证明未提交。</text></g></svg>

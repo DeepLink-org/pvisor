@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Run and compare the pVisor process-level benchmark suite."""
+"""Run and compare the pVisor process-level benchmark suite.
+
+Benchmark: B-PROCESS (benchmark/README.md#b-process), role engineering A/B.
+Motivation: catch Run startup and Bundle read regressions during development.
+Conclusion sought: no candidate metric regresses past the threshold (15%).
+Design: same host and suite; smoke 2 warmups/10 samples, nightly 10/50.
+"""
 
 from __future__ import annotations
 
@@ -219,14 +225,10 @@ def benchmark(
     build_env["CARGO_TARGET_DIR"] = str(target_dir)
     run_command(
         [
-            "cargo",
-            "build",
-            "--release",
-            "--locked",
-            "-p",
-            "persisting-pvisor",
-            "--bin",
-            "pvisor",
+            sys.executable,
+            "scripts/build-pvisor.py",
+            "--profile",
+            "release",
         ],
         cwd=repo,
         env=build_env,
@@ -243,7 +245,7 @@ def benchmark(
         run_home = work / "runs"
         workspace.mkdir()
         run_env = os.environ.copy()
-        run_env["PERSISTING_RUN_HOME"] = str(run_home)
+        run_env["PVISOR_RUN_HOME"] = str(run_home)
 
         last_run: pathlib.Path | None = None
         for _ in range(config["warmups"]):

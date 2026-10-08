@@ -1,0 +1,10 @@
+benchmark_id,workers,metric,unit,planned_batches,completed_tasks,failed_batches,warmups,total_cpu_cores,memory_budget_mib,cpu_affinity,n,p50,p95_reference,minimum,maximum,distribution,low_n,low_p50,high_n,high_p50,report_sha256
+B-CLUSTER,1,completion_ms,ms,30,360,0,3,2,2048,"0,1",30,28280.9465675,28903.6465948,27071.166378,29093.142203,unsplit,,,,,066361fc57ef0febfd20d1ecc27a3273dfe1b1d94f6cccd523af99678abddec3
+B-CLUSTER,1,validated_tasks_per_second,tasks/s,30,360,0,3,2,2048,"0,1",30,0.4243139461399661,0.4384811393101898,0.41246833759890655,0.4432760610474498,unsplit,,,,,066361fc57ef0febfd20d1ecc27a3273dfe1b1d94f6cccd523af99678abddec3
+B-CLUSTER,1,complete_cgroup_peak_mib,MiB,30,360,0,3,2,2048,"0,1",30,221.341796875,225.1716796875,219.1328125,227.14453125,unsplit,,,,,066361fc57ef0febfd20d1ecc27a3273dfe1b1d94f6cccd523af99678abddec3
+B-CLUSTER,2,completion_ms,ms,30,360,0,3,2,2048,"0,1",30,12472.704219,14388.54509765,12147.969805,14604.030219,unsplit,,,,,066361fc57ef0febfd20d1ecc27a3273dfe1b1d94f6cccd523af99678abddec3
+B-CLUSTER,2,validated_tasks_per_second,tasks/s,30,360,0,3,2,2048,"0,1",30,0.9621488855016357,0.9876241870101865,0.8216909866694107,0.9878193799148975,unsplit,,,,,066361fc57ef0febfd20d1ecc27a3273dfe1b1d94f6cccd523af99678abddec3
+B-CLUSTER,2,complete_cgroup_peak_mib,MiB,30,360,0,3,2,2048,"0,1",30,388.966796875,393.239453125,385.90625,396.64453125,unsplit,,,,,066361fc57ef0febfd20d1ecc27a3273dfe1b1d94f6cccd523af99678abddec3
+B-CLUSTER,4,completion_ms,ms,30,360,0,3,2,2048,"0,1",30,6930.683595500001,7249.16252265,6552.177049,7545.172732,unsplit,,,,,066361fc57ef0febfd20d1ecc27a3273dfe1b1d94f6cccd523af99678abddec3
+B-CLUSTER,4,validated_tasks_per_second,tasks/s,30,360,0,3,2,2048,"0,1",30,1.7314309657837776,1.7849137631519747,1.5904208460472393,1.8314523417573785,unsplit,,,,,066361fc57ef0febfd20d1ecc27a3273dfe1b1d94f6cccd523af99678abddec3
+B-CLUSTER,4,complete_cgroup_peak_mib,MiB,30,360,0,3,2,2048,"0,1",30,710.595703125,719.66953125,695.60546875,720.24609375,unsplit,,,,,066361fc57ef0febfd20d1ecc27a3273dfe1b1d94f6cccd523af99678abddec3

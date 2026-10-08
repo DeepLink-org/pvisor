@@ -53,7 +53,13 @@ impl<'a> Request<'a> {
     /// This calls the appropriate filesystem operation method for the
     /// request and sends back the returned reply to the kernel
     pub(crate) fn dispatch<FS: Filesystem>(&self, se: &mut Session<FS>) {
-        debug!("{}", self.request);
+        debug!(
+            "{} uid={} gid={} pid={}",
+            self.request,
+            self.request.uid(),
+            self.request.gid(),
+            self.request.pid()
+        );
         let unique = self.request.unique();
 
         let res = match self.dispatch_req(se) {
@@ -74,10 +80,14 @@ impl<'a> Request<'a> {
     ) -> Result<Option<Response<'_>>, Errno> {
         let op = self.request.operation().map_err(|_| Errno::ENOSYS)?;
         // Implement allow_root & access check for auto_unmount
-        if (se.allowed == SessionACL::RootAndOwner
-            && self.request.uid() != se.session_owner
-            && self.request.uid() != 0)
-            || (se.allowed == SessionACL::Owner && self.request.uid() != se.session_owner)
+        // FSKit does not supply caller credentials. In this case file access
+        // is checked by macOS against the filesystem's returned permissions.
+        let missing_context = se.fskit && self.request.uid() == 0 && self.request.pid() == 0;
+        if !missing_context
+            && ((se.allowed == SessionACL::RootAndOwner
+                && self.request.uid() != se.session_owner
+                && self.request.uid() != 0)
+                || (se.allowed == SessionACL::Owner && self.request.uid() != se.session_owner))
         {
             #[cfg(feature = "abi-7-21")]
             {
@@ -669,5 +679,57 @@ impl<'a> Request<'a> {
     #[inline]
     pub fn pid(&self) -> u32 {
         self.request.pid()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs::OpenOptions, sync::Arc};
+
+    #[derive(Default)]
+    struct StatFs {
+        calls: usize,
+    }
+    impl Filesystem for StatFs {
+        fn statfs(&mut self, _: &Request<'_>, _: u64, reply: crate::ReplyStatfs) {
+            self.calls += 1;
+            reply.statfs(1, 1, 1, 1, 1, 4096, 255, 4096);
+        }
+    }
+
+    #[test]
+    fn fskit_statfs_without_credentials_does_not_bypass_regular_owner_checks() {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        let channel = crate::channel::Channel::new(Arc::new(file.try_clone().unwrap()));
+        let mut session = Session::from_fd(StatFs::default(), file.into(), SessionACL::Owner);
+        session.initialized = true;
+        session.session_owner = 501;
+        // Aligned FUSE header: len, opcode=STATFS, unique, nodeid, uid, gid, pid, padding.
+        let mut words = [0u64; 5];
+        let bytes = unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), 40) };
+        bytes[0..4].copy_from_slice(&40u32.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&17u32.to_ne_bytes());
+        bytes[8..16].copy_from_slice(&1u64.to_ne_bytes());
+        bytes[16..24].copy_from_slice(&1u64.to_ne_bytes());
+        let request = Request::new(channel.sender(), bytes).unwrap();
+        assert_eq!(
+            request.dispatch_req(&mut session).unwrap_err().0,
+            Errno::EACCES.0
+        );
+        session.fskit = true;
+        assert!(request.dispatch_req(&mut session).unwrap().is_none());
+        assert_eq!(session.filesystem.calls, 1);
+        bytes[24..28].copy_from_slice(&502u32.to_ne_bytes());
+        let request = Request::new(channel.sender(), bytes).unwrap();
+        assert_eq!(
+            request.dispatch_req(&mut session).unwrap_err().0,
+            Errno::EACCES.0
+        );
+        assert_eq!(session.filesystem.calls, 1);
     }
 }

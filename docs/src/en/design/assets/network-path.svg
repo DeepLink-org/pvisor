@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="922" viewBox="0 0 1080 922" role="img" aria-labelledby="title desc"><title id="title">Network egress: recover the target before connecting</title><desc id="desc">Implemented VM IPv4 TCP path; solid: requests; dashed: replies / connection success.</desc><defs><marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#a8cefa"/></marker><marker id="change" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7 Z" fill="#e2bd80"/></marker></defs><rect width="1080" height="922" fill="#0d1b30"/><g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,sans-serif" fill="#e9eef8">
+<text x="28" y="37" font-size="24" font-weight="600">Network egress: recover the target before connecting</text>
+<text x="28" y="67" font-size="15">Implemented VM IPv4 TCP path; solid: requests; dashed: replies / connection success.</text>
+<rect x="20" y="101" width="1040" height="134" fill="#1a304c"/>
+<rect x="20" y="287" width="1040" height="165" fill="#12243b"/>
+<rect x="20" y="504" width="1040" height="130" fill="#1a304c"/>
+<rect x="20" y="693" width="1040" height="111" fill="#12243b"/>
+<rect x="62" y="147" width="300" height="69" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="212.0" y="175.5" font-size="17" font-weight="600" text-anchor="middle">Agent</text>
+<text x="212.0" y="199.5" font-size="14" text-anchor="middle">getaddrinfo / connect</text>
+<rect x="714" y="147" width="300" height="69" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="864.0" y="175.5" font-size="17" font-weight="600" text-anchor="middle">virtio-net</text>
+<text x="864.0" y="199.5" font-size="14" text-anchor="middle">Ethernet frame + TCP SYN</text>
+<polyline points="362,182 714,182" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="414" y="168" font-size="14">use the returned synthetic address</text>
+<rect x="62" y="338" width="300" height="86" rx="2" fill="#193d40" stroke="#74b7b0" stroke-width="1.4"/>
+<text x="212.0" y="363.0" font-size="17" font-weight="600" text-anchor="middle">Synthetic DNS map</text>
+<text x="212.0" y="387.0" font-size="14" text-anchor="middle">name ↔ 198.18.x.y</text>
+<text x="212.0" y="411.0" font-size="14" text-anchor="middle">api.example.com</text>
+<rect x="714" y="338" width="300" height="86" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="864.0" y="375.0" font-size="17" font-weight="600" text-anchor="middle">smoltcp</text>
+<text x="864.0" y="399.0" font-size="14" text-anchor="middle">recover name; hold handshake</text>
+<polyline points="164,216 164,338" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="92" y="270" font-size="14">1 DNS</text>
+<polyline points="253,338 253,216" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="267" y="260" font-size="14">2 synthetic IP</text>
+<polyline points="864,216 864,338" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="878" y="274" font-size="14">3 TCP SYN</text>
+<polyline points="362,381 714,381" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="442" y="366" font-size="14">name ↔ address association</text>
+<rect x="62" y="550" width="560" height="67" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="342.0" y="577.5" font-size="17" font-weight="600" text-anchor="middle">Shared egress authorization</text>
+<text x="342.0" y="601.5" font-size="14" text-anchor="middle">name / port / transport + resolved address + scoped policy</text>
+<rect x="714" y="550" width="300" height="67" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="864.0" y="577.5" font-size="17" font-weight="600" text-anchor="middle">Host TCP connection</text>
+<text x="864.0" y="601.5" font-size="14" text-anchor="middle">connect upstream only if allowed</text>
+<polyline points="794,424 794,478 342,478 342,550" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="495" y="468" font-size="14">4 authorize</text>
+<polyline points="622,584 714,584" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<text x="635" y="570" font-size="14">5 connect</text>
+<rect x="247" y="737" width="590" height="49" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.4"/>
+<text x="542.0" y="767.5" font-size="17" font-weight="600" text-anchor="middle">Bridge bytes / counters · guest TCP ↔ host TCP</text>
+<polyline points="864,617 864,761 837,761" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)"/>
+<polyline points="1014,584 1045,584 1045,266 948,266 948,216" fill="none" stroke="#a8cefa" stroke-width="1.8" stroke-linejoin="round" marker-end="url(#a)" stroke-dasharray="5 4"/>
+<text x="28" y="846" font-size="15">6 Advance the guest handshake only after host connection succeeds; the service sees host egress.</text>
+<text x="28" y="885" font-size="15">Model payload capture requires explicit Gateway configuration; the TCP policy gate does not decrypt TLS.</text>
+<text x="36" y="124" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">01  Guest · name lookup and connect</text>
+<text x="36" y="310" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">02  OverlayNet · recover target identity</text>
+<text x="36" y="527" font-size="14" font-weight="600" stroke="#1a304c" stroke-width="6" stroke-linejoin="round" paint-order="stroke">03  Host · authorize before connecting</text>
+<text x="36" y="716" font-size="14" font-weight="600" stroke="#12243b" stroke-width="6" stroke-linejoin="round" paint-order="stroke">04  Bridge bytes across two TCP connections</text></g></svg>

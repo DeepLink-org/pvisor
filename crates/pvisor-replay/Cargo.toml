@@ -1,0 +1,27 @@
+[package]
+name = "pvisor-replay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Agent-native sandbox replay and continuation for pVisor"
+
+[dependencies]
+tempfile.workspace = true
+anyhow.workspace = true
+pvisor-core.workspace = true
+pvisor-journal.workspace = true
+chrono.workspace = true
+fs2.workspace = true
+libc.workspace = true
+axum = { workspace = true, features = ["http1", "tokio"] }
+reqwest = { workspace = true, features = ["rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"] }
+toml.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+axum = { workspace = true, features = ["json"] }

@@ -1,33 +1,35 @@
-# Design principles
+# Core design principles
 
-PolicyVisor connects policy intent, runtime controls, and reviewable results. These principles keep that connection explicit.
+Operation is the object being processed, pvisor owns the execution lifecycle, and Event provides the observation interface.
 
-## Boundaries are explicit
+![Requests, effective decisions, installed controls and observations retain separate authority](assets/evidence-flow.svg)
 
-pVisor describes the execution boundary that was actually installed. It does
-not silently upgrade a missing control into a stronger claim.
+## Separate definitions from execution
 
-## Staged files are reviewed before application
+Shared operations, policies, Placement, outcomes and interaction contracts belong in core. Admission, scheduling, process launch, sockets, resource preparation and lifecycle belong in pvisor and drivers. Find an existing production caller before adding a type; do not add another executor or control protocol for a future interface.
 
-With `--stage` enabled, workspace file changes remain staged until explicitly
-applied. Review belongs before those changes reach the project. This does not
-make remote API calls or other external side effects reversible.
+## Separate requests, decisions and facts
 
-## Evidence travels with the result
+Requests describe intent, policy decisions describe effective constraints, Placement describes the selected execution location, and observations describe what happened. Rewrites preserve both original and effective snapshots rather than overwriting the request. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for the boundary between plans and actual controls.
 
-A summary should point back to the Run that produced it. Lineage is useful
-only when it survives later inspection.
+## Preserve known causal dependencies
 
-## Capture stays optional
+If a step depends on an earlier result, it must wait for that result. Placement, forwarding and recording cannot reverse the dependency. Causal references express known dependencies, Journal positions express commit order, and timestamps express observation time. None replaces another or establishes a global order of effects across Jobs.
 
-pVisor can run without model-traffic capture. When capture is enabled, it is a
-narrow handoff into the same Run, not a second product.
+## One lifecycle owner
 
-## Portable data beats a privileged viewer
+Session owns resource preparation, execution, cancellation, cleanup and terminal publication for an Attempt. Drivers report output and observations rather than publishing the terminal state of the entire Job. Cancellation is a request; completion is a result. Recording failures and execution failures are reported separately.
 
-Run records should remain inspectable through the CLI and documented formats.
-A web view can improve discovery, but it should not be the only way to recover
-an answer.
+## Guarantees require actual boundaries
 
-See the [system overview](index.md) and the [roadmap](../development/roadmap.md) for how
-these principles shape current delivery.
+Actual interception mechanisms provide file and network controls. Guarantees must state platform and coverage. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for `null` counters, capture coverage and sources of enforcement.
+
+## Review files before applying them
+
+With staging enabled, workspace changes stay in the Overlay; explicit review and apply change the target. Failed execution can still leave reviewable changes. See [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for recovery scopes and irreversible external effects.
+
+## Records reconstruct facts
+
+Public records should explain requests, actual rewrites, placement, results and provenance. Snapshots and causal chains make facts reviewable. Deterministic replay of effects also requires initial state, external inputs and the corresponding execution mechanism; Event records alone are insufficient.
+
+See [Core architecture](architecture.md), [Operation and Event](operations-events.md) and [Isolation design](isolation.md) for mechanisms.

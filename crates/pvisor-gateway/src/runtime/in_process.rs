@@ -1,0 +1,174 @@
+//! In-process Gateway for one pVisor Attempt (no forked daemon).
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+
+use crate::config::ProxyConfig;
+use crate::sink::CaptureEventObserver;
+use pvisor_core::{ControlController, PolicyControlController};
+use pvisor_overlaynet::{BandwidthRegistry, InterceptionMetrics, InterceptionSnapshot};
+use tokio::sync::oneshot;
+
+pub struct InProcessCapture {
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    join: Option<JoinHandle<Result<()>>>,
+    pub listen: String,
+    pub admin_listen: String,
+    interception_metrics: InterceptionMetrics,
+}
+
+/// Attempt-scoped network services shared by Gateway and other interception
+/// drivers owned by pVisor.
+#[derive(Clone)]
+pub struct InProcessRuntime {
+    pub controller: Arc<dyn ControlController>,
+    pub interception_metrics: InterceptionMetrics,
+    pub bandwidth_registry: BandwidthRegistry,
+    pub attempt_id: Option<String>,
+    /// Disable LLM dispatch for pVisor runs that only need the network proxy.
+    pub gateway_enabled: bool,
+    pub model_wait: Option<Arc<dyn crate::model_wait::ModelWaitLifecycle>>,
+}
+
+impl Default for InProcessRuntime {
+    fn default() -> Self {
+        Self {
+            controller: Arc::new(PolicyControlController),
+            interception_metrics: InterceptionMetrics::default(),
+            bandwidth_registry: BandwidthRegistry::default(),
+            attempt_id: None,
+            gateway_enabled: true,
+            model_wait: None,
+        }
+    }
+}
+
+impl InProcessCapture {
+    pub fn start(
+        config: ProxyConfig,
+        storage: PathBuf,
+        sink: Arc<dyn CaptureEventObserver>,
+    ) -> Result<Self> {
+        Self::start_with_runtime(config, storage, sink, InProcessRuntime::default())
+    }
+
+    pub fn start_with_runtime(
+        config: ProxyConfig,
+        storage: PathBuf,
+        sink: Arc<dyn CaptureEventObserver>,
+        runtime: InProcessRuntime,
+    ) -> Result<Self> {
+        let listen = config.listen.clone();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let interception_metrics = runtime.interception_metrics.clone();
+        let thread_metrics = interception_metrics.clone();
+
+        let join = std::thread::Builder::new()
+            .name("pvisor-gateway".into())
+            .spawn(move || {
+                // One asynchronous I/O loop per Attempt, rather than a pool of
+                // CPU-count-sized runtime threads for every live sandbox.
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .context("tokio runtime")?;
+                rt.block_on(crate::gateway::serve_with_runtime_control_and_metrics(
+                    config,
+                    storage,
+                    sink,
+                    crate::gateway::GatewayRuntimeControl {
+                        controller: runtime.controller,
+                        interception_metrics: thread_metrics,
+                        bandwidth_registry: runtime.bandwidth_registry,
+                        attempt_id: runtime.attempt_id,
+                        gateway_enabled: runtime.gateway_enabled,
+                        model_wait: runtime.model_wait,
+                    },
+                    Some(Box::new(move |listen, admin_listen| {
+                        let _ = ready_tx.send((listen.to_string(), admin_listen.to_string()));
+                    })),
+                    async {
+                        let _ = shutdown_rx.await;
+                    },
+                ))
+            })
+            .context("spawn in-process capture")?;
+
+        let (listen, admin_listen) = match ready_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(addresses) => addresses,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                join.join()
+                    .map_err(|_| anyhow::anyhow!("in-process capture thread panicked"))??;
+                anyhow::bail!("capture proxy exited before becoming ready on http://{listen}");
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                anyhow::bail!("capture proxy did not become ready on http://{listen}");
+            }
+        };
+
+        Ok(Self {
+            shutdown_tx: Some(shutdown_tx),
+            join: Some(join),
+            listen,
+            admin_listen,
+            interception_metrics,
+        })
+    }
+
+    pub fn interception_snapshot(&self) -> InterceptionSnapshot {
+        self.interception_metrics.snapshot()
+    }
+
+    pub fn shutdown(mut self) -> Result<()> {
+        self.shutdown_inner()
+    }
+
+    fn shutdown_inner(&mut self) -> Result<()> {
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+        let Some(join) = self.join.take() else {
+            return Ok(());
+        };
+        join.join()
+            .map_err(|_| anyhow::anyhow!("in-process capture thread panicked"))??;
+        Ok(())
+    }
+}
+
+impl Drop for InProcessCapture {
+    fn drop(&mut self) {
+        if let Err(error) = self.shutdown_inner() {
+            tracing::warn!(%error, "failed to stop in-process Gateway during drop");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_reports_listener_errors_without_waiting_for_a_probe_timeout() {
+        let config: ProxyConfig =
+            toml::from_str("listen = 'invalid-address'\nmodels = []").unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let error = InProcessCapture::start(
+            config,
+            storage.path().to_path_buf(),
+            Arc::new(crate::sink::NoopCaptureObserver::new()),
+        )
+        .err()
+        .expect("invalid address should fail startup");
+        assert!(
+            error
+                .to_string()
+                .contains("invalid overlaynet listen address")
+        );
+    }
+}

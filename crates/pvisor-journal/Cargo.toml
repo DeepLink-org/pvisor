@@ -1,0 +1,24 @@
+[package]
+name = "pvisor-journal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Single-writer storage for pVisor trace facts"
+readme = "README.md"
+
+[dependencies]
+anyhow.workspace = true
+fs2.workspace = true
+libc.workspace = true
+pvisor-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

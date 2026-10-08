@@ -25,10 +25,19 @@ def run_task(tmp_path):
         "name, args = Path(sys.argv[0]).name, sys.argv[1:]\n"
         "with open(os.environ['JUST_TEST_LOG'], 'a') as log:\n"
         "    log.write(json.dumps([name, *args]) + '\\n')\n"
-        "if name == 'cargo' and args[0] == 'build':\n"
+        "if name == 'python3' and args[0] in ['scripts/build-pvisor.py', 'scripts/packaging/build_daemon.py']:\n"
         "    profile = args[args.index('--profile') + 1]\n"
         "    target = Path(args[args.index('--target-dir') + 1])\n"
-        "    binary = target / ('debug' if profile == 'dev' else profile) / 'pvisor'\n"
+        "    names = ['pvisor', 'pvisor-daemon', 'pvisor-cache', 'pvisor-tui', 'pvisor-replay']\n"
+        "    if args[0] == 'scripts/packaging/build_daemon.py': names = ['pvisor-daemon']\n"
+        "    for binary_name in names:\n"
+        "        binary = target / ('debug' if profile == 'dev' else profile) / binary_name\n"
+        "        binary.parent.mkdir(parents=True, exist_ok=True)\n"
+        "        binary.write_text('#!/bin/sh\\nexit 0\\n')\n"
+        "        binary.chmod(0o755)\n"
+        "if name == 'cargo' and args[:1] == ['build'] and '--example' in args:\n"
+        "    target = Path(args[args.index('--target-dir') + 1])\n"
+        "    binary = target / 'release/examples' / args[args.index('--example') + 1]\n"
         "    binary.parent.mkdir(parents=True, exist_ok=True)\n"
         "    binary.write_text('#!/bin/sh\\nexit 0\\n')\n"
         "    binary.chmod(0o755)\n"
@@ -48,6 +57,7 @@ def run_task(tmp_path):
                 "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
                 "CARGO_TARGET_DIR": str(tmp_path / "target with spaces"),
                 "JUST_TEST_LOG": str(log),
+                "CARGO_INSTALL_ROOT": str(tmp_path / "install"),
             },
             check=True,
             capture_output=True,
@@ -55,11 +65,13 @@ def run_task(tmp_path):
         )
         return [json.loads(line) for line in log.read_text().splitlines()]
 
+    run.target_dir = tmp_path / "target with spaces"
+    run.install_dir = tmp_path / "install"
     return run
 
 
 def test_test_routes_packages_and_python(run_task):
-    commands = run_task("test", "control", "capture", "persisting-overlay-core")
+    commands = run_task("test", "core", "capture", "pvisor-overlay-core")
     assert commands == [
         [
             "cargo",
@@ -67,34 +79,228 @@ def test_test_routes_packages_and_python(run_task):
             "run",
             "--locked",
             "-p",
-            "persisting-control",
+            "pvisor-core",
             "-p",
-            "persisting-gateway",
+            "pvisor-gateway",
             "-p",
-            "persisting-overlay-core",
+            "pvisor-overlay-core",
         ]
     ]
     commands = run_task("test")
-    assert commands[0] == ["cargo", "nextest", "run", "--locked", "--workspace"]
-    assert commands[1] == ["uv", "run", "--extra", "dev", "pytest", "tests/", "-q"]
+    signing = (
+        [["python3", "scripts/sign-vm-tests.py", "--workspace"]] if sys.platform == "darwin" else []
+    )
+    assert commands == signing + [
+        ["cargo", "nextest", "run", "--locked", "--workspace"],
+        ["uv", "run", "--extra", "dev", "pytest", "-q"],
+    ]
+
+
+def test_firmware_tasks_use_in_tree_sources_and_forward_make_arguments(run_task):
+    assert run_task("fw-build", "-j4", "--offline") == [
+        [
+            "python3",
+            "scripts/build-firmware.py",
+            "--target-dir",
+            str(run_task.target_dir),
+            "-j4",
+            "--offline",
+        ]
+    ]
+    assert run_task("test-fw") == [
+        [
+            "uv",
+            "run",
+            "--no-project",
+            "--with",
+            "pyelftools==0.33",
+            "python",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "fw/tests",
+            "-v",
+        ]
+    ]
+
+
+def test_vm_package_signs_before_running_native_tests(run_task):
+    commands = run_task("test", "pvisor-vm")
+    signing = (
+        [["python3", "scripts/sign-vm-tests.py", "-p", "pvisor-vm"]]
+        if sys.platform == "darwin"
+        else []
+    )
+    assert commands == signing + [["cargo", "nextest", "run", "--locked", "-p", "pvisor-vm"]]
+
+
+def test_daemon_build_routes_through_native_packaging_pipeline(run_task, tmp_path):
+    commands = run_task("daemon-build")
+    assert commands == [
+        [
+            "python3",
+            "scripts/packaging/build_daemon.py",
+            "--profile",
+            "dev",
+            "--target-dir",
+            str(tmp_path / "target with spaces"),
+        ]
+    ]
+    assert run_task("test-daemon") == [
+        ["cargo", "nextest", "run", "--locked", "-p", "pvisor-daemon"]
+    ]
+
+
+@pytest.mark.parametrize(
+    "selector,package", [("pvisor", "pvisor"), ("cli", "pvisor-cli"), ("pvisor-cli", "pvisor-cli")]
+)
+def test_native_executor_package_keeps_hvf_signing(run_task, selector, package):
+    commands = run_task("test", selector)
+    signing = (
+        [["python3", "scripts/sign-vm-tests.py", "-p", package]] if sys.platform == "darwin" else []
+    )
+    assert commands == signing + [["cargo", "nextest", "run", "--locked", "-p", package]]
+
+
+@pytest.mark.parametrize("profile", ["debug", "release", "performance"])
+def test_build_preserves_four_application_binaries_without_pool(run_task, profile):
+    run_task("build", profile)
+    names = {path.name for path in (run_task.target_dir / profile).iterdir()}
+    assert {"pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay"} <= names
+    assert "pvisor-memory-pool" not in names
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux installation has no dylib payload")
+def test_install_ignores_retired_target_artifact_and_preserves_components(run_task):
+    retired = run_task.target_dir / "release/pvisor-memory-pool"
+    retired.parent.mkdir(parents=True)
+    retired.write_bytes(b"old user artifact")
+    run_task("install-cli")
+    assert {path.name for path in (run_task.install_dir / "bin").iterdir()} == {
+        "pvisor",
+        "pvisor-cache",
+        "pvisor-tui",
+        "pvisor-replay",
+        "pvisor-daemon",
+    }
+    assert retired.read_bytes() == b"old user artifact"
+
+
+def test_product_check_selects_application(run_task):
+    assert run_task("check") == [["cargo", "check", "--locked", "-p", "pvisor-cli"]]
+
+
+def test_isolation_selects_moved_application_tests(run_task):
+    assert run_task("test-isolation") == [
+        [
+            "cargo",
+            "nextest",
+            "run",
+            "--locked",
+            "-p",
+            "pvisor-cli",
+            "--test",
+            "rootless_local",
+            "--test",
+            "run_config_cli",
+            "--no-capture",
+        ]
+    ]
+
+
+def test_retired_nativepvisor_is_not_a_vm_signing_selector():
+    for path in (ROOT / "justfile", ROOT / "scripts/sign-vm-tests.py"):
+        contents = path.read_text()
+        assert "nativepvisor" not in contents
+        assert "pvisor-vm" in contents
+
+
+def test_cluster_only_recipes_are_retired():
+    recipes = set(
+        subprocess.check_output(
+            ["just", "--justfile", str(ROOT / "justfile"), "--summary"], text=True
+        ).split()
+    )
+    assert not any("cluster" in name for name in recipes)
+    assert "test-service" not in recipes
+    assert "test-service-vm" not in recipes
+    assert not {"service-build", "service-check", "service-test"} & recipes
+    assert {"daemon-build", "daemon-install", "test-daemon"} <= recipes
+    assert {"test-hvf-cold-restore", "test-vm-snapshot-state", "vm-cases"} <= recipes
 
 
 def test_ci_checks_format_without_rewriting(run_task):
     commands = run_task("ci")
     assert ["cargo", "fmt", "--all", "--", "--check"] in commands
-    assert ["uvx", "ruff", "format", "pvisor", "tests", "examples", "--check"] in commands
+    assert [
+        "uvx",
+        "ruff",
+        "format",
+        "pvisor",
+        "tests",
+        "examples",
+        "conftest.py",
+        "--check",
+    ] in commands
     assert all(
         "--check" in command for command in commands if "fmt" in command or "format" in command
     )
-    assert any(command[:2] == ["cargo", "build"] for command in commands)
+    assert any(command[:2] == ["python3", "scripts/build-pvisor.py"] for command in commands)
 
 
 def test_cases_preserve_shell_characters_in_arguments(run_task, tmp_path):
     marker = tmp_path / "must-not-exist"
-    report = f"report with spaces $(touch {marker}).md"
-    commands = run_task("cases", "--report", report)
-    assert commands[-1][-2:] == ["--report", report]
+    selection = f"S-DOC-001,$(touch {marker})"
+    commands = run_task("cases", "--case", selection, "--keep", "--require-reviewed")
+    target = tmp_path / "target with spaces"
+    assert commands[-1] == [
+        "cargo",
+        "run",
+        "--quiet",
+        "--manifest-path",
+        "tools/semspec/Cargo.toml",
+        "--locked",
+        "--",
+        "--config",
+        "semspec-doc.toml",
+        "run",
+        "--domain",
+        "DOC",
+        "--subject-bin",
+        str(target / "release/pvisor"),
+        "--format",
+        "json",
+        "--output",
+        str(target / "pvisor-case-report.json"),
+        "--case",
+        selection,
+        "--keep",
+        "--require-reviewed",
+    ]
+    assert commands[0][0:2] == ["python3", "scripts/build-pvisor.py"]
+    assert commands[0][commands[0].index("--profile") + 1] == "release"
     assert not marker.exists()
+
+
+def test_vm_cases_build_driver_and_forward_selection(run_task, tmp_path):
+    commands = run_task("vm-cases", "--case", "S-DOC-060", "--keep")
+    target = tmp_path / "target with spaces"
+    assert [
+        "cargo",
+        "build",
+        "--locked",
+        "-p",
+        "pvisor",
+        "--release",
+        "--example",
+        "vm_control_case",
+        "--target-dir",
+        str(target),
+    ] in commands
+    assert commands[-1][-3:] == ["--case", "S-DOC-060", "--keep"]
+    assert "docs/src/zh/reference/cases-vm.md" in commands[-1]
+    assert str(target / "pvisor-vm-case-report.json") in commands[-1]
 
 
 def test_ci_and_task_reference_use_existing_recipes():
@@ -109,8 +315,7 @@ def test_ci_and_task_reference_use_existing_recipes():
             r"^\s*(?:-\s*)?(?:run:\s*)?just[ \t]+([\w-]+)", path.read_text(), re.MULTILINE
         )
         assert set(calls) <= recipes, f"Unknown recipes in {path}: {set(calls) - recipes}"
-    for language in ("en", "zh"):
-        path = ROOT / f"docs/src/{language}/development/engineering.md"
+    for path in sorted((ROOT / "docs/src").glob("*/development/engineering.md")):
         calls = set(re.findall(r"`just ([\w-]+)", path.read_text()))
         assert calls, f"Missing task reference in {path}"
         assert calls <= recipes, f"Unknown recipes in {path}: {calls - recipes}"

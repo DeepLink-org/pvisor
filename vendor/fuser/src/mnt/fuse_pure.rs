@@ -6,22 +6,22 @@
 #![warn(missing_debug_implementations)]
 #![allow(missing_docs)]
 
+use super::fusermount_channel::{inherit_helper_socket, receive_fusermount_message};
 use super::is_mounted;
 use super::mount_options::{option_to_string, MountOption};
-use libc::c_int;
 use log::{debug, error};
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::{Error, ErrorKind, Read};
+use std::mem;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::{mem, ptr};
 
 const FUSERMOUNT_BIN: &str = "fusermount";
 const FUSERMOUNT3_BIN: &str = "fusermount3";
@@ -141,108 +141,12 @@ fn detect_fusermount_bin() -> String {
     FUSERMOUNT3_BIN.to_string()
 }
 
-fn receive_fusermount_message(socket: &UnixStream) -> Result<File, Error> {
-    let mut io_vec_buf = [0u8];
-    let mut io_vec = libc::iovec {
-        iov_base: io_vec_buf.as_mut_ptr() as *mut libc::c_void,
-        iov_len: io_vec_buf.len(),
-    };
-    let cmsg_buffer_len = unsafe { libc::CMSG_SPACE(mem::size_of::<c_int>() as libc::c_uint) };
-    let mut cmsg_buffer = vec![0u8; cmsg_buffer_len as usize];
-    let mut message: libc::msghdr;
-    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-    {
-        message = libc::msghdr {
-            msg_name: ptr::null_mut(),
-            msg_namelen: 0,
-            msg_iov: &mut io_vec,
-            msg_iovlen: 1,
-            msg_control: cmsg_buffer.as_mut_ptr() as *mut libc::c_void,
-            msg_controllen: cmsg_buffer.len(),
-            msg_flags: 0,
-        };
-    }
-    #[cfg(all(target_os = "linux", target_env = "musl"))]
-    {
-        message = unsafe { std::mem::MaybeUninit::zeroed().assume_init() };
-        message.msg_name = ptr::null_mut();
-        message.msg_namelen = 0;
-        message.msg_iov = &mut io_vec;
-        message.msg_iovlen = 1;
-        message.msg_control = (&mut cmsg_buffer).as_mut_ptr() as *mut libc::c_void;
-        message.msg_controllen = cmsg_buffer.len() as u32;
-        message.msg_flags = 0;
-    }
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "freebsd",
-        target_os = "dragonfly",
-        target_os = "openbsd",
-        target_os = "netbsd"
-    ))]
-    {
-        message = libc::msghdr {
-            msg_name: ptr::null_mut(),
-            msg_namelen: 0,
-            msg_iov: &mut io_vec,
-            msg_iovlen: 1,
-            msg_control: (&mut cmsg_buffer).as_mut_ptr() as *mut libc::c_void,
-            msg_controllen: cmsg_buffer.len() as u32,
-            msg_flags: 0,
-        };
-    }
-
-    let mut result;
-    loop {
-        unsafe {
-            result = libc::recvmsg(socket.as_raw_fd(), &mut message, 0);
-        }
-        if result != -1 {
-            break;
-        }
-        let err = Error::last_os_error();
-        if err.kind() != ErrorKind::Interrupted {
-            return Err(err);
-        }
-    }
-    if result == 0 {
-        return Err(Error::new(
-            ErrorKind::UnexpectedEof,
-            "Unexpected EOF reading from fusermount",
-        ));
-    }
-
-    unsafe {
-        let control_msg = libc::CMSG_FIRSTHDR(&message);
-        if (*control_msg).cmsg_type != libc::SCM_RIGHTS {
-            return Err(Error::new(
-                ErrorKind::InvalidData,
-                format!(
-                    "Unknown control message from fusermount: {}",
-                    (*control_msg).cmsg_type
-                ),
-            ));
-        }
-        let fd_data = libc::CMSG_DATA(control_msg);
-
-        let fd = *(fd_data as *const c_int);
-        if fd < 0 {
-            Err(ErrorKind::InvalidData.into())
-        } else {
-            Ok(File::from_raw_fd(fd))
-        }
-    }
-}
 
 fn fuse_mount_fusermount(
     mountpoint: &OsStr,
     options: &[MountOption],
 ) -> Result<(File, Option<UnixStream>), Error> {
     let (child_socket, receive_socket) = UnixStream::pair()?;
-
-    unsafe {
-        libc::fcntl(child_socket.as_raw_fd(), libc::F_SETFD, 0);
-    }
 
     let mut builder = Command::new(detect_fusermount_bin());
     builder.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -256,6 +160,7 @@ fn fuse_mount_fusermount(
         .arg(mountpoint)
         .env(FUSERMOUNT_COMM_ENV, child_socket.as_raw_fd().to_string());
 
+    inherit_helper_socket(&mut builder, &child_socket);
     let fusermount_child = builder.spawn()?;
 
     drop(child_socket); // close socket in parent
@@ -308,10 +213,6 @@ fn fuse_mount_fusermount(
                 debug!("fusermount: {}", String::from_utf8_lossy(&buf[..len]));
             }
         }
-    }
-
-    unsafe {
-        libc::fcntl(file.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
     }
 
     Ok((file, receive_socket))

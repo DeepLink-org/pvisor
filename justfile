@@ -3,28 +3,41 @@ set positional-arguments
 
 repo := justfile_directory()
 target_dir := absolute_path(env("CARGO_TARGET_DIR", repo / "target"))
-python_paths := "pvisor tests examples"
+python_paths := "pvisor tests examples conftest.py"
+zensical_version := "0.0.67"
 
 default:
     @just --list --unsorted
 
-# Build pvisor (debug or release), including macOS Hypervisor signing.
+# Build pvisor (debug, release or performance), including macOS Hypervisor signing.
 build profile="debug":
     #!/usr/bin/env bash
     set -euo pipefail
     case "$1" in
       debug) cargo_profile=dev ;;
       release) cargo_profile=release ;;
-      *) echo "expected debug or release, got: $1" >&2; exit 2 ;;
+      performance) cargo_profile=performance ;;
+      *) echo "expected debug, release or performance, got: $1" >&2; exit 2 ;;
     esac
-    cargo build --locked --profile "$cargo_profile" --target-dir "{{ target_dir }}" -p persisting-pvisor --bin pvisor
-    binary="{{ target_dir }}/$1/pvisor"
-    test -x "$binary"
-    if [[ "$(uname -s)" == Darwin ]]; then
-      codesign --force --sign - --entitlements "{{ repo }}/crates/persisting-pvisor/macos-hypervisor.entitlements" "$binary"
-      codesign --verify --strict "$binary"
-      codesign -d --entitlements :- "$binary" 2>&1 | grep -q com.apple.security.hypervisor
-    fi
+    python3 scripts/build-pvisor.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
+    names=(pvisor pvisor-cache pvisor-tui pvisor-replay)
+    if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then names+=(pvisor-daemon); fi
+    for name in "${names[@]}"; do
+      binary="{{ target_dir }}/$1/$name"
+      test -x "$binary"
+      if [[ "$(uname -s)" == Darwin ]]; then
+        codesign --force --sign - --entitlements "{{ repo }}/crates/pvisor/macos-hypervisor.entitlements" "$binary"
+        codesign --verify --strict "$binary"
+      fi
+    done
+
+# Build the in-tree guest firmware; requires the platform Linux kernel toolchain.
+fw-build *args:
+    python3 scripts/build-firmware.py --target-dir "{{ target_dir }}" "$@"
+
+# Verify compact firmware storage and the compiled libkrunfw ABI roundtrip.
+test-fw:
+    uv run --no-project --with pyelftools==0.33 python -m unittest discover -s fw/tests -v
 
 # Install the signed release binary in CARGO_INSTALL_ROOT or ~/.cargo.
 install-cli: (build "release")
@@ -32,7 +45,15 @@ install-cli: (build "release")
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     mkdir -p "$install_root/bin"
-    install -m 755 "{{ target_dir }}/release/pvisor" "$install_root/bin/pvisor"
+    binaries=(pvisor pvisor-cache pvisor-tui pvisor-replay)
+    if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then binaries+=(pvisor-daemon); fi
+    for binary in "${binaries[@]}"; do
+      install -m 755 "{{ target_dir }}/release/$binary" "$install_root/bin/$binary"
+    done
+    if [[ "$(uname -s)" == Darwin ]]; then
+      install -m 755 "{{ target_dir }}/release/libkrunfw.5.dylib" "$install_root/bin/libkrunfw.5.dylib"
+      install -m 644 "{{ target_dir }}/release/libkrunfw.SOURCE" "$install_root/bin/libkrunfw.SOURCE"
+    fi
 
 # Build and verify a fresh wheel before placing it in dist/ (release or debug).
 wheel profile="release":
@@ -55,7 +76,31 @@ wheel profile="release":
 
 # Check the product and its dependencies without producing a binary.
 check:
-    cargo check --locked -p persisting-pvisor
+    cargo check --locked -p pvisor-cli
+
+# Linux x86_64 daemon embeds pvisor's VM/guest/kernel via the shared musl/Zig pipeline.
+daemon-build profile="debug":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$1" in
+      debug) cargo_profile=dev ;;
+      release|performance) cargo_profile="$1" ;;
+      *) echo "expected debug, release or performance, got: $1" >&2; exit 2 ;;
+    esac
+    python3 scripts/packaging/build_daemon.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
+
+# Install the native Linux daemon without building companion CLI executables.
+daemon-install: (daemon-build "release")
+    #!/usr/bin/env bash
+    set -euo pipefail
+    install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
+    mkdir -p "$install_root/bin"
+    install -m 755 "{{ target_dir }}/release/pvisor-daemon" "$install_root/bin/pvisor-daemon"
+
+# Conventional daemon contracts; does not enable the retired cluster feature.
+test-daemon:
+    just test pvisor-daemon
+
 
 # Format source files; use fmt-check for a read-only check.
 fmt: fmt-rust fmt-py
@@ -83,65 +128,116 @@ test *packages:
     just test-rust "$@"
     if [[ $# -eq 0 ]]; then just test-py; fi
 
-# Debug nextest; accepts Cargo names and pvisor/control/agentctl/capture aliases.
+# Debug nextest; accepts Cargo names and pvisor/cli/core/control/agentctl/capture/shim aliases.
 test-rust *packages:
     #!/usr/bin/env bash
     set -euo pipefail
     args=()
+    needs_vm_signature=0
     for package in "$@"; do
       case "$package" in
-        pvisor) package=persisting-pvisor ;;
-        control|agentctl) package=persisting-control ;;
-        capture) package=persisting-gateway ;;
+        pvisor) package=pvisor ;;
+                cli) package=pvisor-cli ;;
+        core|control|agentctl) package=pvisor-core ;;
+        capture) package=pvisor-gateway ;;
+        shim) package=pvisor-shim ;;
       esac
+      if [[ "$package" == pvisor-vm || "$package" == pvisor || "$package" == pvisor-cli ]]; then needs_vm_signature=1; fi
       args+=(-p "$package")
     done
-    if [[ $# -eq 0 ]]; then args+=(--workspace); fi
+    if [[ $# -eq 0 ]]; then args+=(--workspace); needs_vm_signature=1; fi
+    if [[ "$needs_vm_signature" == 1 && "$(uname -s)" == Darwin ]]; then
+      python3 scripts/sign-vm-tests.py "${args[@]}"
+    fi
     cargo nextest run --locked "${args[@]}"
+
+# Cross-check the containerd shim for Linux; full builds need a Linux host.
+shim-check:
+    cargo check --locked -p pvisor-shim --target x86_64-unknown-linux-musl
+    cargo clippy --locked -p pvisor-shim --all-targets --target x86_64-unknown-linux-musl -- -D warnings
+
+# Build the static musl shim with the pvisor-vm executor (needs zigbuild).
+shim-vm-build:
+    python3 scripts/build-pvisor.py --shim-vm --profile dev --target-dir "{{ target_dir }}"
 
 # Python tests; append pytest options such as -v or -k packaging.
 test-py *args:
-    uv run --extra dev pytest tests/ -q "$@"
+    uv run --extra dev pytest -q "$@"
 
 # Strict Linux rootless/FUSE regression: never skip missing user namespaces.
 test-isolation:
-    env -u PERSISTING_TEST_ALLOW_NO_USERNS cargo nextest run --locked -p persisting-pvisor --test rootless_local -- --nocapture
+    env -u PVISOR_TEST_ALLOW_NO_USERNS cargo nextest run --locked -p pvisor-cli --test rootless_local --test run_config_cli --no-capture
 
 # Build the debug CLI and check its main command surfaces.
 smoke: build
     #!/usr/bin/env bash
     set -euo pipefail
-    for command in run status review; do
+    for command in run status inspect apply drop tui replay; do
       "{{ target_dir }}/debug/pvisor" "$command" --help >/dev/null
     done
+    "{{ target_dir }}/debug/pvisor" status --help | grep -Fq -- '--review'
 
 # Run all examples, or pass scenario directory names to select a subset.
 examples *scenarios: (build "release")
     PVISOR_BIN="{{ target_dir }}/release/pvisor" bash examples/pvisor/test.sh "$@"
 
-# Run documented cases; accepts the case runner's options.
-cases *args: (build "release")
-    python3 scripts/run-pvisor-cases.py --pvisor "{{ target_dir }}/release/pvisor" --report target/pvisor-case-report.md "$@"
+# Run DOC specifications and save JSON; select S-DOC IDs with --case.
+cases *args: (build "release") vm-case-driver
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- --config semspec-doc.toml run --domain DOC --subject-bin "{{ target_dir }}/release/pvisor" --format json --output "{{ target_dir }}/pvisor-case-report.json" "$@"
+
+# Build/sign the native SDK driver and run VM control/backing DOC cases.
+vm-case-driver:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --locked -p pvisor --release --example vm_control_case --target-dir "{{ target_dir }}"
+    driver="{{ target_dir }}/release/examples/vm_control_case"
+    test -x "$driver"
+    if [[ "$(uname -s)" == Darwin ]]; then
+      codesign --force --sign - --entitlements "{{ repo }}/crates/pvisor/macos-hypervisor.entitlements" "$driver"
+      codesign --verify --strict "$driver"
+    fi
+
+vm-cases *args: (build "release") vm-case-driver
+    PVISOR_CASE_VM_DRIVER="{{ target_dir }}/release/examples/vm_control_case" cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- --config semspec-doc.toml run docs/src/zh/reference/cases-vm.md --domain DOC --subject-bin "{{ target_dir }}/release/pvisor" --format json --output "{{ target_dir }}/pvisor-vm-case-report.json" "$@"
 
 # Measure process startup and Run Bundle access (smoke or nightly).
-benchmark suite="smoke" output="target/pvisor-benchmark/current" build_dir="target/pvisor-benchmark-build":
+benchmark suite="smoke" output="benchmark/pvisor/.data/process-current" build_dir="target/pvisor-benchmark-build":
     bash benchmark/pvisor/run.sh run --suite "$1" --output "$2" --target-dir "$3"
 
+# Build, preflight, and benchmark all available sandbox cases in one command.
+benchmark-startup *args:
+    python3 benchmark/pvisor/run_all.py "$@"
+
+# Run the low-level startup harness with explicit rootfs/image inputs.
+benchmark-startup-raw *args:
+    python3 benchmark/pvisor/startup.py --output benchmark/pvisor/.data/startup "$@"
+
 # Compare reports from the same host; an empty baseline is allowed.
-benchmark-compare candidate baseline="" output="target/pvisor-benchmark/comparison" threshold="15":
+benchmark-compare candidate baseline="" output="benchmark/pvisor/.data/comparison" threshold="15":
     bash benchmark/pvisor/run.sh compare --candidate "$1" --baseline "$2" --output "$3" --regression-threshold "$4"
 
-test-benchmark:
-    PYTHONDONTWRITEBYTECODE=1 python3 benchmark/pvisor/test_bench.py
+test-benchmark *args:
+    just test-py benchmark/pvisor "$@"
 
-# Build both languages with the same pinned tool as CI, then validate links.
-docs-build:
-    uv run --no-project --with zensical==0.0.61 python scripts/build-docs.py
-    python3 scripts/check-docs.py
+# Clean-build both languages; pass --require-recorded to enforce reviewed translations.
+docs-build *check_args:
+    python3 scripts/check-reference.py
+    rm -rf docs/site
+    uv run --no-project --with zensical=={{ zensical_version }} zensical build --strict -f docs/zensical.zh.toml
+    uv run --no-project --with zensical=={{ zensical_version }} zensical build --strict -f docs/zensical.en.toml
+    cp docs/index.html docs/site/index.html
+    python3 scripts/check-docs.py "$@"
 
-# Watch and serve documentation on localhost:3000; accepts --port and --host.
-docs-serve *args: docs-build
-    uv run --no-project --with zensical==0.0.61 python scripts/serve-docs.py --directory docs/site --watch "$@"
+# Native zh/en preview; additional arguments go directly to Zensical.
+docs-serve locale="zh" *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$1" in
+      zh|en) config="docs/zensical.$1.toml" ;;
+      *) echo "expected zh or en, got: $1" >&2; exit 2 ;;
+    esac
+    shift
+    exec uv run --no-project --with zensical=={{ zensical_version }} zensical serve -f "$config" "$@"
 
 # Read-only local checks, followed by tests and a debug build.
 ci: fmt-check lint test build
@@ -150,3 +246,27 @@ ci: fmt-check lint test build
 clean:
     cargo clean
     rm -rf build dist
+
+# Build/test the independent semantic specification tool without product dependencies.
+test-semspec *args:
+    cargo nextest run --manifest-path tools/semspec/Cargo.toml --locked "$@"
+
+# Semantic specification CLI; approvals are interactive, human-only actions.
+semspec *args:
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- "$@"
+
+# Verify the first review domain in fresh temporary workspaces. DOC remains in just cases.
+semantics *args: (build "debug")
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run --domain STAGE --subject-bin "{{ target_dir }}/debug/pvisor" "$@"
+
+# New CLI learning path: every selected case must actually PASS (no SKIP/XFAIL).
+cases-v2 *args: (build "release")
+    python3 scripts/cases/run.py --subject-bin "{{ target_dir }}/release/pvisor" --output "{{ target_dir }}/pvisor-learning-report.json" "$@"
+
+# Real macOS HVF CPU/RAM cold-restore validation (M0, not full guest recovery).
+test-hvf-cold-restore:
+    python3 scripts/check-hvf-cold-restore.py --target-dir "{{ target_dir }}"
+
+# VMM owning-thread/GIC correctness checks.
+test-vm-snapshot-state:
+    python3 scripts/check-vm-snapshot-state.py --target-dir "{{ target_dir }}"

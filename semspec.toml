@@ -1,0 +1,15 @@
+[project]
+name = "pVisor"
+spec_dirs = ["tests/semantics"]
+ledger = "tests/semantics/REVIEWED.toml"
+
+[subject]
+bin = "target/debug/pvisor"
+language = "bash"
+vocab = ["tests/semantics/vocab/core.sh", "tests/semantics/vocab/pvisor.sh"]
+env = { RUST_LOG = "warn" }
+timeout = "180s"
+
+[platforms]
+macos = { os = "macos" }
+linux = { os = "linux" }

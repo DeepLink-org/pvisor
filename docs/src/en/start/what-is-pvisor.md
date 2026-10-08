@@ -1,32 +1,33 @@
 # What is PolicyVisor?
 
-**PolicyVisor (pVisor)** provides **policy-governed, reviewable execution** for existing Agent CLIs, scripts, and automation commands. You keep your tools; pVisor manages capability admission, runtime controls, optional workspace staging, and a local execution record.
+**PolicyVisor (pVisor) runs agents unattended; you decide which file changes to keep.**
 
-The **p** stands for **Policy**. A Run connects the authority you request with the controls actually installed and the effects available for review. See [the PolicyVisor model](../concepts/policyvisor.md) for how these fit together.
+It runs your existing Agent CLI, script, or automation command: the command runs unattended inside a policy boundary, and file changes go to a stage first. Afterwards you review changes and evidence like a pull request and apply only what you want to keep.
 
-```bash
-pvisor run --stage ../task-stage -- codex
-pvisor review last
-pvisor apply last --all
-```
-
-!!! tip "Use an explicit stage"
-
-    `--stage` creates the copy-on-write workspace view used by review/apply. Without it, a host command may modify the project directly.
+pVisor provides a shared file-review, selective-merge, and run-record workflow across agents and executors. See [why pVisor](../why/index.md) for the path to scaling autonomous execution, and [comparisons](../why/comparisons.md) for point-by-point comparisons with Docker, built-in agent sandboxes, and similar approaches.
 
 ## What you get
 
-- **Capability admission and runtime controls:** evaluate requested authority against the selected executor and record effective controls and any degradation.
+- **Hands off:** no babysitting approval prompts. Agent file changes go to a stage first; network and sensitive paths follow policy.
+- **Gate the result:** review changes like a pull request, choose which paths to apply, and discard the rest in one step. If you edited the same file meanwhile, pVisor refuses to overwrite your changes.
+- **Keep a record:** every run leaves a checkable record of the limits that actually applied, the accesses it blocked, and optionally the model requests.
 
-- **A Run record:** command, executor, outcome, warnings, and the controls actually installed.
-- **A staged workspace, when enabled:** inspect changed files and apply selected batches or discard the remainder.
-- **Optional network policy and Gateway capture:** control mediated traffic and record model requests and responses.
-- **Logical checkpoints and forks:** preserve a staged filesystem state and start a related Run.
+## Three commands
 
-## Where the guarantees stop
+```bash
+pvisor run --safe -- codex
+pvisor status --review last
+pvisor apply last --path src   # 或：pvisor drop last
+```
 
-The host, container, and VM executors have different boundaries. A staged directory does not prove that every host path or network connection is isolated. Read the warnings and capability evidence in `pvisor review`.
+!!! tip "Try a demo that needs no API key"
 
-`apply` and `drop` govern staged files. They cannot undo an external API call, a database write, or a message already sent. Logical checkpoints do not save process memory. Distributed scheduling and hostile multi-tenant operation are outside the current local workflow.
+    [Your first run](first-run.md) uses a "fake agent" script to walk the full loop: it edits source, deletes a file, attempts to read a sensitive path and reach the internet, and you see the changes and blocked accesses during review before applying only `src`.
 
-Start with [your first Run](first-run.md), then choose a [task guide](../guides/index.md).
+## Where we are today
+
+The current workflow uses local Jobs: run an agent, review the result, and selectively merge file changes. See the [trust ladder](../why/trust-ladder.md) for the roadmap and [executor boundaries](../security/executor-boundaries.md) for each executor's protection scope.
+
+## Guarantee scope
+
+A run's boundary comes from its capability evidence; `apply` and `drop` manage staged files only and do not undo external side effects. See [capabilities, evidence, and guarantee boundaries](../concepts/capabilities-and-evidence.md) for the full scope and [security](../security/index.md) for the threat model.

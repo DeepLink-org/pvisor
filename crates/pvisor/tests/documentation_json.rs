@@ -1,0 +1,116 @@
+//! Real, normalized documentation samples remain readable by the product reader.
+use pvisor::{RUN_BUNDLE_FILENAME, RunBundle};
+use serde_json::Value;
+
+fn sample() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../docs/overrides/assets/examples/json/run-bundle.json"
+    ))
+    .unwrap()
+}
+
+fn read(value: &Value) -> anyhow::Result<RunBundle> {
+    let directory = tempfile::tempdir()?;
+    std::fs::write(
+        directory.path().join(RUN_BUNDLE_FILENAME),
+        serde_json::to_vec(value)?,
+    )?;
+    RunBundle::read(directory.path())
+}
+
+#[test]
+fn real_review_sample_is_readable_and_distinguishes_deletion_from_success() {
+    let bundle = read(&sample()).expect("documented schema-4 review output");
+    assert_eq!(bundle.run.exit_code, Some(0));
+    assert!(bundle.safety.filesystem_read_non_bypassable);
+    assert!(bundle.safety.filesystem_write_non_bypassable);
+    assert!(bundle.safety.network_non_bypassable);
+    let changes = &bundle.filesystem.unwrap().changes;
+    assert!(
+        changes
+            .iter()
+            .any(|entry| entry.path == "obsolete.txt" && entry.kind == pvisor::ChangeKind::Deleted)
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|entry| entry.path == "src/result.txt" && entry.kind == pvisor::ChangeKind::Added)
+    );
+}
+
+#[test]
+fn bundle_timing_roundtrips_without_cross_clock_constraints() {
+    for (started, finished, duration) in [(0_u64, 0_u64, 37_u64), (10, 20, 11), (20, 10, 7)] {
+        let mut value = sample();
+        value["run"]["started_at_unix_ms"] = Value::from(started);
+        value["run"]["finished_at_unix_ms"] = Value::from(finished);
+        value["run"]["duration_ms"] = Value::from(duration);
+        let bundle = read(&value).expect("wall-clock samples do not constrain elapsed duration");
+        let directory = tempfile::tempdir().unwrap();
+        bundle.write(directory.path()).unwrap();
+        let restored = RunBundle::read(directory.path()).unwrap();
+        assert_eq!(restored.run.started_at_unix_ms, started);
+        assert_eq!(restored.run.finished_at_unix_ms, finished);
+        assert_eq!(restored.run.duration_ms, duration);
+    }
+    for field in ["started_at_unix_ms", "finished_at_unix_ms", "duration_ms"] {
+        let mut value = sample();
+        value["run"][field] = Value::from(-1);
+        assert!(read(&value).is_err(), "accepted negative {field}");
+    }
+}
+
+#[test]
+fn documented_reader_rejects_unknown_versions_and_missing_receipts() {
+    let mut value = sample();
+    value["schema_version"] = Value::from(99);
+    assert!(
+        read(&value)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported Run Bundle schema")
+    );
+    let mut value = sample();
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("executor_observations");
+    assert!(
+        read(&value)
+            .unwrap_err()
+            .to_string()
+            .contains("executor_observations")
+    );
+}
+
+#[test]
+fn documented_omission_is_different_from_an_observed_zero() {
+    let value = sample();
+    assert_eq!(value["network"]["intercepted"]["requests_seen"], 0);
+    let mut without_observations = value.clone();
+    without_observations["network"]
+        .as_object_mut()
+        .unwrap()
+        .remove("intercepted");
+    assert!(
+        read(&without_observations)
+            .unwrap()
+            .network
+            .intercepted
+            .is_none()
+    );
+    assert_eq!(value["run"]["exit_code"], 0);
+    let status: Value = serde_json::from_str(include_str!(
+        "../../../docs/overrides/assets/examples/json/status.json"
+    ))
+    .unwrap();
+    assert!(status.get("schema_version").is_none());
+    assert_eq!(status["observations"]["network"]["requests_seen"], 0);
+    let checkpoint: Value = serde_json::from_str(include_str!(
+        "../../../docs/overrides/assets/examples/json/checkpoint-list.json"
+    ))
+    .unwrap();
+    assert_eq!(checkpoint["schema_version"], 1);
+    assert_eq!(checkpoint["operation"], "checkpoint.list");
+    assert_eq!(checkpoint["checkpoints"], serde_json::json!([]));
+}

@@ -1,0 +1,14 @@
+field,value
+cohort,6au
+recorded_at,2026-10-06T11:41:21.838998+08:00
+report_sha256,4349e55bcca23752a7123906b6bfe43f91a397450a51b8fc2b5adfa6c647e6aa
+binary_sha256,004e261ab0fa3095aec64cdf1417f59031a3263101c8522a814b4ee220d8ece5
+source_manifest_sha256,3d9134e79e9e9cfa42e813f1d48982a6cf2930341521bcaf2a8a298c1caee5ba
+cpu_affinity,"0,1"
+memory_limit,no benchmark-specific host memory cap
+benchmark_id,B-APPLY
+host_platform,Linux-7.2.8-200.fc44.x86_64-x86_64-with-glibc2.43
+cpu,AMD Ryzen 7 9700X 8-Core Processor
+protocol,"{""actions"": [""apply"", ""drop"", ""conflict"", ""copy"", ""git-apply""], ""correctness"": ""full expected content; conflict refuses without any target writes"", ""interference"": ""retain every valid slow sample; no timing-based exclusions"", ""order"": ""seeded random order of all eligible size/action conditions per paired round"", ""preparation"": ""fresh independent stage/target per trial, outside timer"", ""samples_per_size"": {""10"": 30, ""1000"": 30, ""10000"": 30, ""100000"": 30}, ""seed"": 20261006, ""sizes"": [10, 1000, 10000, 100000], ""timing"": ""application/drop/copy command only, excludes creation of changes and patch"", ""warmups_per_size"": {""10"": 3, ""1000"": 3, ""10000"": 3, ""100000"": 3}}"
+crash_protocol,"{""files"": 10000, ""kill"": ""SIGKILL after observed ledger state; durable state recorded separately"", ""states"": [""prepared"", ""target_applied"", ""committed""]}"
+conflict_scope,this timing cohort tests external edits before apply; mid-apply external edits require a separate retained correctness cohort and audit

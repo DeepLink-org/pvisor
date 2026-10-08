@@ -17,7 +17,7 @@ jobs:
   build:
     name: Wheel / ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -31,7 +31,6 @@ jobs:
       - uses: ./.github/actions/setup-build-env
         with:
           rust: "true"
-          install-zig: "true"
       - uses: Swatinem/rust-cache@v2
 
       - name: Apply nightly local version (PEP 440)
@@ -44,6 +43,21 @@ jobs:
 
       - name: Build wheel
         uses: pypa/cibuildwheel@v4.1.0
+        env:
+          # Run inside the build environment to reuse its immutable firmware cache.
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
+            auditwheel repair -w {dest_dir} {wheel} &&
+            python -m pip install pyelftools==0.33 &&
+            mkdir -p /output &&
+            python {project}/scripts/build-firmware.py
+            --source-output {project}/target/libkrunfw.SOURCE
+            --source-archive /output/pvisor-firmware-source-linux-x86_64.tar.gz
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
+            cp {wheel} {dest_dir} &&
+            python -m pip install pyelftools==0.33 &&
+            python {project}/scripts/build-firmware.py
+            --source-output {project}/target/libkrunfw.SOURCE
+            --source-archive {project}/dist/pvisor-firmware-source-macos-arm64.tar.gz
         with:
           output-dir: dist
 
@@ -59,5 +73,14 @@ jobs:
         with:
           name: ${{ inputs.artifact_prefix }}-${{ matrix.platform }}
           path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+      # Deliberately outside the wheel artifact pattern: never send source tarballs to PyPI.
+      - name: Upload corresponding firmware source
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-source-${{ inputs.artifact_prefix }}-${{ matrix.platform }}
+          path: dist/pvisor-firmware-source-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
           retention-days: 14

@@ -2,11 +2,11 @@ name: Documentation
 
 on:
   push:
-    branches: [main]
-    paths: ['docs/**', 'scripts/*docs*.py', 'justfile', '.github/workflows/docs.yml']
+    branches: [main, develop, next]
+    paths: ['docs/**', 'scripts/*docs*.py', 'scripts/check-reference.py', 'tests/test_docs.py', 'justfile', '.github/actions/setup-build-env/**', '.github/workflows/docs.yml']
   pull_request:
-    branches: [main]
-    paths: ['docs/**', 'scripts/*docs*.py', 'justfile', '.github/workflows/docs.yml']
+    branches: [main, develop, next]
+    paths: ['docs/**', 'scripts/*docs*.py', 'scripts/check-reference.py', 'tests/test_docs.py', 'justfile', '.github/actions/setup-build-env/**', '.github/workflows/docs.yml']
   workflow_dispatch:
 
 permissions:
@@ -23,18 +23,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - name: Build documentation
-        working-directory: docs
-        run: uv run --no-project --with zensical==0.0.61 python ../scripts/build-docs.py
-      - name: Check generated pages
-        run: python scripts/check-docs.py
+      - uses: ./.github/actions/setup-build-env
+      - name: Test documentation checks
+        run: just test-py tests/test_docs.py
+      - name: Build and check documentation
+        run: just docs-build --require-recorded
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/site
 
   deploy:
-    if: github.repository == 'DeepLink-org/Persisting' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.repository == 'DeepLink-org/pvisor' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     needs: build
     concurrency:
       group: pages

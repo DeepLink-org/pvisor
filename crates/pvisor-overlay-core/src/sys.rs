@@ -1,0 +1,805 @@
+//! Small, cross-platform syscall wrappers.
+//!
+//! Keeping the unsafe boundary here makes the overlay logic easier to audit.
+
+use std::ffi::{CString, OsStr};
+use std::fs::File;
+use std::io;
+use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn c_path(path: &Path) -> io::Result<CString> {
+    CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))
+}
+
+fn c_name(name: &OsStr) -> io::Result<CString> {
+    CString::new(name.as_bytes()).map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))
+}
+
+fn cvt(rc: libc::c_int) -> io::Result<()> {
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Observe the type and physical identity of one parent without following its
+/// final symlink. Linux obtains the identity and mount context in one statx,
+/// rather than making a second query after symlink_metadata. This is fresh
+/// request-local evidence; it does not cache attributes or confer access.
+pub(crate) fn parent_directory_identity(
+    path: &Path,
+    profile: &crate::profile::Profile,
+) -> io::Result<Option<crate::BackingIdentity>> {
+    #[cfg(target_os = "linux")]
+    {
+        parent_directory_identity_with(path, profile, |path| {
+            // Use the kernel ABI: musl libc bindings do not expose statx.
+            use linux_raw_sys::general::{STATX_INO, STATX_MNT_ID, STATX_TYPE, statx};
+            // SAFETY: zero initializes the output; path and output remain
+            // valid throughout the syscall. No relaxed synchronization mode.
+            let mut stat: statx = unsafe { std::mem::zeroed() };
+            let rc = unsafe {
+                libc::syscall(
+                    libc::SYS_statx,
+                    libc::AT_FDCWD,
+                    path.as_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                    STATX_TYPE | STATX_INO | STATX_MNT_ID,
+                    &mut stat,
+                )
+            };
+            if rc == 0 {
+                Ok(stat)
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = profile;
+        parent_directory_identity_from_metadata(path)
+    }
+}
+
+fn parent_directory_identity_from_metadata(
+    path: &Path,
+) -> io::Result<Option<crate::BackingIdentity>> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)?;
+    Ok(metadata.is_dir().then_some(crate::BackingIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        // Without mount evidence Linux native-directory reuse is disabled.
+        mount_id: None,
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn parent_directory_identity_with(
+    path: &Path,
+    profile: &crate::profile::Profile,
+    query: impl FnOnce(&std::ffi::CStr) -> io::Result<linux_raw_sys::general::statx>,
+) -> io::Result<Option<crate::BackingIdentity>> {
+    use linux_raw_sys::general::{STATX_INO, STATX_MNT_ID, STATX_TYPE};
+    let name = c_path(path)?;
+    profile.add("parent_identity_statx_calls", 1);
+    match query(&name) {
+        Ok(stat) if stat.stx_mask & (STATX_TYPE | STATX_INO) == STATX_TYPE | STATX_INO => {
+            if u32::from(stat.stx_mode) & libc::S_IFMT != libc::S_IFDIR {
+                return Ok(None);
+            }
+            return Ok(Some(crate::BackingIdentity {
+                device: libc::makedev(stat.stx_dev_major, stat.stx_dev_minor),
+                inode: stat.stx_ino,
+                mount_id: (stat.stx_mask & STATX_MNT_ID != 0).then_some(stat.stx_mnt_id),
+            }));
+        }
+        // These are ordinary namespace results, not missing statx support.
+        // Probing an absent upper again would erase the saved lower query.
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => {
+            return Err(error);
+        }
+        _ => {}
+    }
+    // Unsupported kernels, filesystem fields or seccomp restrictions must not
+    // turn a previously accessible directory into an error. Fall back to the
+    // existing metadata operation, preserving its type and error semantics.
+    profile.add("parent_identity_metadata_fallbacks", 1);
+    parent_directory_identity_from_metadata(path)
+}
+
+/// Publish a complete temporary file without replacing an existing winner.
+/// Success consumes `source`. Both paths must be on the same filesystem.
+/// Older kernels/filesystems fall back to atomic link publication; never use
+/// a replacing rename or an existence check followed by rename.
+pub(crate) fn publish_no_replace(source: &Path, destination: &Path) -> io::Result<()> {
+    let source_c = c_path(source)?;
+    let destination_c = c_path(destination)?;
+    #[cfg(target_os = "macos")]
+    // SAFETY: both paths remain valid NUL-terminated strings during the call.
+    let result = cvt(unsafe {
+        libc::renamex_np(source_c.as_ptr(), destination_c.as_ptr(), libc::RENAME_EXCL)
+    });
+    #[cfg(target_os = "linux")]
+    // SAFETY: both paths remain valid NUL-terminated strings during the call.
+    let result = cvt(unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            source_c.as_ptr(),
+            libc::AT_FDCWD,
+            destination_c.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        ) as libc::c_int
+    });
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let result: io::Result<()> = {
+        let _ = (source_c, destination_c);
+        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+    };
+    match result {
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::ENOSYS | libc::EINVAL | libc::ENOTSUP)
+            ) =>
+        {
+            publish_by_link(source, destination)
+        }
+        result => result,
+    }
+}
+
+pub(crate) fn publish_by_link(source: &Path, destination: &Path) -> io::Result<()> {
+    std::fs::hard_link(source, destination)?;
+    std::fs::remove_file(source)
+}
+
+fn timespec(time: SystemTime) -> libc::timespec {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(value) => libc::timespec {
+            tv_sec: value.as_secs() as i64 as _,
+            tv_nsec: value.subsec_nanos() as libc::c_long,
+        },
+        Err(value) => {
+            let value = value.duration();
+            let fractional = value.subsec_nanos();
+            libc::timespec {
+                tv_sec: (-(value.as_secs() as i64) - i64::from(fractional != 0)) as _,
+                tv_nsec: if fractional == 0 {
+                    0
+                } else {
+                    1_000_000_000 - fractional as libc::c_long
+                },
+            }
+        }
+    }
+}
+
+pub fn unix_time(seconds: i64, nanoseconds: i64) -> SystemTime {
+    let offset = std::time::Duration::new(seconds.unsigned_abs(), 0);
+    let base = if seconds < 0 {
+        UNIX_EPOCH - offset
+    } else {
+        UNIX_EPOCH + offset
+    };
+    base + std::time::Duration::from_nanos(nanoseconds as u64)
+}
+
+pub fn unix_timestamp(time: SystemTime) -> (i64, i64) {
+    let value = timespec(time);
+    #[allow(clippy::unnecessary_cast)]
+    (value.tv_sec as i64, value.tv_nsec as i64)
+}
+
+pub fn set_times(
+    path: &Path,
+    atime: Option<SystemTime>,
+    mtime: Option<SystemTime>,
+    nofollow: bool,
+) -> io::Result<()> {
+    let path = c_path(path)?;
+    let omit = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: libc::UTIME_OMIT,
+    };
+    let times = [
+        atime.map(timespec).unwrap_or(omit),
+        mtime.map(timespec).unwrap_or(omit),
+    ];
+    let flags = if nofollow {
+        libc::AT_SYMLINK_NOFOLLOW
+    } else {
+        0
+    };
+    // SAFETY: path and times are valid for the duration of the call.
+    cvt(unsafe { libc::utimensat(libc::AT_FDCWD, path.as_ptr(), times.as_ptr(), flags) })
+}
+
+pub fn chown(path: &Path, uid: u32, gid: u32, nofollow: bool) -> io::Result<()> {
+    let path = c_path(path)?;
+    let flags = if nofollow {
+        libc::AT_SYMLINK_NOFOLLOW
+    } else {
+        0
+    };
+    // SAFETY: path is a valid NUL-terminated string.
+    cvt(unsafe {
+        libc::fchownat(
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            uid as libc::uid_t,
+            gid as libc::gid_t,
+            flags,
+        )
+    })
+}
+
+pub fn access(path: &Path, mask: i32) -> io::Result<()> {
+    let path = c_path(path)?;
+    // SAFETY: path is a valid NUL-terminated string.
+    cvt(unsafe { libc::access(path.as_ptr(), mask) })
+}
+
+pub fn mknod(path: &Path, mode: u32, rdev: u32) -> io::Result<()> {
+    let path = c_path(path)?;
+    // SAFETY: path is a valid NUL-terminated string.
+    cvt(unsafe { libc::mknod(path.as_ptr(), mode as libc::mode_t, rdev as libc::dev_t) })
+}
+
+pub struct StatFs {
+    pub blocks: u64,
+    pub bfree: u64,
+    pub bavail: u64,
+    pub files: u64,
+    pub ffree: u64,
+    pub bsize: u32,
+    pub namelen: u32,
+    pub frsize: u32,
+}
+
+pub fn statfs(path: &Path) -> io::Result<StatFs> {
+    let path = c_path(path)?;
+    // SAFETY: zero is a valid initial representation for statvfs.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: path and output pointer are valid.
+    let rc = unsafe { libc::statvfs(path.as_ptr(), &mut stat) };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(StatFs {
+        blocks: stat.f_blocks as u64,
+        bfree: stat.f_bfree as u64,
+        bavail: stat.f_bavail as u64,
+        files: stat.f_files as u64,
+        ffree: stat.f_ffree as u64,
+        bsize: stat.f_bsize as u32,
+        namelen: stat.f_namemax as u32,
+        frsize: stat.f_frsize as u32,
+    })
+}
+
+fn xattr_buffer<F>(mut call: F) -> io::Result<Vec<u8>>
+where
+    F: FnMut(*mut libc::c_void, usize) -> libc::ssize_t,
+{
+    // Most name lists and values fit here. Read them directly rather than
+    // making a size-query syscall for every tiny attribute. ERANGE retains
+    // the existing dynamically sized path; all other failures stay failures.
+    let mut small = [0u8; 256];
+    let actual = call(small.as_mut_ptr().cast(), small.len());
+    if actual >= 0 {
+        return Ok(small[..actual as usize].to_vec());
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() != Some(libc::ERANGE) {
+        return Err(error);
+    }
+    let needed = call(std::ptr::null_mut(), 0);
+    if needed < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut buffer = vec![0_u8; needed as usize];
+    if buffer.is_empty() {
+        return Ok(buffer);
+    }
+    let actual = call(buffer.as_mut_ptr().cast(), buffer.len());
+    if actual < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    buffer.truncate(actual as usize);
+    Ok(buffer)
+}
+
+pub fn list_xattrs(path: &Path) -> io::Result<Vec<Vec<u8>>> {
+    let path = c_path(path)?;
+    #[cfg(target_os = "macos")]
+    let data = xattr_buffer(|buf, size| {
+        // SAFETY: buffers are either null/zero or valid writable allocations.
+        unsafe { libc::listxattr(path.as_ptr(), buf.cast(), size, libc::XATTR_NOFOLLOW) }
+    })?;
+    #[cfg(not(target_os = "macos"))]
+    let data = xattr_buffer(|buf, size| {
+        // SAFETY: buffers are either null/zero or valid writable allocations.
+        unsafe { libc::llistxattr(path.as_ptr(), buf.cast(), size) }
+    })?;
+    Ok(data
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+        .map(<[u8]>::to_vec)
+        .collect())
+}
+
+pub fn get_xattr(path: &Path, name: &OsStr) -> io::Result<Vec<u8>> {
+    let path = c_path(path)?;
+    let name = c_name(name)?;
+    #[cfg(target_os = "macos")]
+    {
+        xattr_buffer(|buf, size| {
+            // SAFETY: arguments remain valid for the duration of the call.
+            unsafe {
+                libc::getxattr(
+                    path.as_ptr(),
+                    name.as_ptr(),
+                    buf,
+                    size,
+                    0,
+                    libc::XATTR_NOFOLLOW,
+                )
+            }
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        xattr_buffer(|buf, size| {
+            // SAFETY: arguments remain valid for the duration of the call.
+            unsafe { libc::lgetxattr(path.as_ptr(), name.as_ptr(), buf, size) }
+        })
+    }
+}
+
+pub fn set_xattr(path: &Path, name: &OsStr, value: &[u8], flags: i32) -> io::Result<()> {
+    let path = c_path(path)?;
+    let name = c_name(name)?;
+    #[cfg(target_os = "macos")]
+    let rc = unsafe {
+        // SAFETY: arguments remain valid for the duration of the call.
+        libc::setxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+            flags | libc::XATTR_NOFOLLOW,
+        )
+    };
+    #[cfg(not(target_os = "macos"))]
+    let rc = unsafe {
+        // SAFETY: arguments remain valid for the duration of the call.
+        libc::lsetxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            flags,
+        )
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+pub fn remove_xattr(path: &Path, name: &OsStr) -> io::Result<()> {
+    let path = c_path(path)?;
+    let name = c_name(name)?;
+    #[cfg(target_os = "macos")]
+    let rc = unsafe {
+        // SAFETY: arguments remain valid for the duration of the call.
+        libc::removexattr(path.as_ptr(), name.as_ptr(), libc::XATTR_NOFOLLOW)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let rc = unsafe {
+        // SAFETY: arguments remain valid for the duration of the call.
+        libc::lremovexattr(path.as_ptr(), name.as_ptr())
+    };
+    cvt(rc)
+}
+
+pub fn copy_xattrs(source: &Path, destination: &Path) -> io::Result<()> {
+    for name in list_xattrs(source)? {
+        let name = OsStr::from_bytes(&name);
+        let value = get_xattr(source, name)?;
+        set_xattr(destination, name, &value, 0)?;
+    }
+    Ok(())
+}
+
+/// Order a preimage's data before publishing its directory entry. This is not
+/// durable completion: the caller MUST full-sync the entries directory before
+/// permitting mutation. Unsupported Apple barriers fall back to a full drain.
+pub fn order_before_publish(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    loop {
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::EINVAL | libc::ENOTSUP | libc::ENOSYS) => return file.sync_all(),
+            _ => return Err(error),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    file.sync_all()
+}
+
+pub fn fsync(file: &File, datasync: bool) -> io::Result<()> {
+    if datasync {
+        file.sync_data()
+    } else {
+        file.sync_all()
+    }
+}
+
+/// Never report sparse length extension as physical space reservation.
+pub fn allocate(file: &File, offset: i64, length: i64) -> io::Result<()> {
+    if offset < 0 || length <= 0 || offset.checked_add(length).is_none() {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        cvt(unsafe { libc::fallocate(file.as_raw_fd(), 0, offset, length) })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = file;
+        Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+    }
+}
+
+/// Changes applied to an open file, in size/owner/mode/time/flags order.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FileMetadataUpdate {
+    pub mode: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub size: Option<u64>,
+    pub atime: Option<SystemTime>,
+    pub mtime: Option<SystemTime>,
+    pub flags: Option<u32>,
+}
+
+pub fn set_file_metadata(file: &File, update: FileMetadataUpdate) -> io::Result<()> {
+    let FileMetadataUpdate {
+        mode,
+        uid,
+        gid,
+        size,
+        atime,
+        mtime,
+        flags,
+    } = update;
+    if let Some(size) = size {
+        file.set_len(size)?;
+    }
+    if uid.is_some() || gid.is_some() {
+        cvt(unsafe {
+            libc::fchown(
+                file.as_raw_fd(),
+                uid.unwrap_or(u32::MAX),
+                gid.unwrap_or(u32::MAX),
+            )
+        })?;
+    }
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(mode & 0o7777))?;
+    }
+    if atime.is_some() || mtime.is_some() {
+        let omit = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        };
+        let times = [
+            atime.map(timespec).unwrap_or(omit),
+            mtime.map(timespec).unwrap_or(omit),
+        ];
+        cvt(unsafe { libc::futimens(file.as_raw_fd(), times.as_ptr()) })?;
+    }
+    if let Some(flags) = flags {
+        #[cfg(target_os = "macos")]
+        cvt(unsafe { libc::fchflags(file.as_raw_fd(), flags) })?;
+        #[cfg(not(target_os = "macos"))]
+        if flags != 0 {
+            return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+        }
+    }
+    Ok(())
+}
+
+pub fn seek(file: &File, offset: i64, whence: i32) -> io::Result<i64> {
+    // SAFETY: lseek only operates on the valid owned descriptor.
+    let result = unsafe { libc::lseek(file.as_raw_fd(), offset, whence) };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(result)
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn set_flags(path: &Path, flags: u32) -> io::Result<()> {
+    let path = c_path(path)?;
+    // SAFETY: path is a valid NUL-terminated string.
+    cvt(unsafe { libc::chflags(path.as_ptr(), flags) })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn xattrs_preserve_empty_small_large_values_and_large_name_lists() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("file");
+        std::fs::write(&path, b"content").unwrap();
+        let name = OsStr::new("user.pvisor-buffer");
+        // Exceed the read buffer without exceeding ext4's per-inode xattr budget.
+        for size in [0, 1, 256, 257, 1024] {
+            let value: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+            set_xattr(&path, name, &value, 0).unwrap();
+            assert_eq!(get_xattr(&path, name).unwrap(), value);
+        }
+        remove_xattr(&path, name).unwrap();
+        assert!(get_xattr(&path, name).is_err());
+        let names: Vec<String> = (0..40)
+            .map(|i| format!("user.pvisor-buffer-long-name-{i:03}"))
+            .collect();
+        for name in &names {
+            set_xattr(&path, OsStr::new(name), b"value", 0).unwrap();
+        }
+        let listed = list_xattrs(&path).unwrap();
+        assert!(listed.iter().map(|name| name.len() + 1).sum::<usize>() > 256);
+        for name in &names {
+            assert!(listed.iter().any(|item| item == name.as_bytes()));
+        }
+        assert!(list_xattrs(&temp.path().join("missing")).is_err());
+    }
+
+    use super::*;
+    #[test]
+    fn publication_consumes_source_and_preserves_existing_winner() {
+        for publish in [publish_no_replace, publish_by_link] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("pending");
+            let destination = temp.path().join("entry");
+            std::fs::write(&source, b"first").unwrap();
+            publish(&source, &destination).unwrap();
+            assert!(!source.exists());
+            assert_eq!(std::fs::read(&destination).unwrap(), b"first");
+            std::fs::write(&source, b"second").unwrap();
+            assert_eq!(
+                publish(&source, &destination).unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert_eq!(std::fs::read(&destination).unwrap(), b"first");
+            assert_eq!(std::fs::read(&source).unwrap(), b"second");
+        }
+    }
+
+    #[test]
+    fn negative_epoch_round_trips_integral_and_fractional_timestamps() {
+        for (seconds, nanos) in [(-2, 0), (-2, 123_456_789), (0, 0)] {
+            let value = timespec(unix_time(seconds, nanos));
+            assert_eq!(value.tv_sec, seconds);
+            assert_eq!(value.tv_nsec, nanos);
+        }
+    }
+}
+
+/// Materialize a fixed rootfs mountpoint without following image-provided links.
+/// Each create/open is anchored to an owned directory descriptor.
+pub fn prepare_rooted_path(
+    root: &Path,
+    relative: &Path,
+    directory: bool,
+    writable: bool,
+) -> io::Result<File> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::path::Component;
+    let components = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(name) => c_name(name),
+            _ => Err(io::Error::from_raw_os_error(libc::EINVAL)),
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    if components.is_empty() && !directory {
+        return Err(io::Error::from_raw_os_error(libc::EINVAL));
+    }
+    let mut parent = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(root)?;
+    for (index, name) in components.iter().enumerate() {
+        let is_dir = index + 1 != components.len() || directory;
+        if is_dir {
+            let rc = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o755) };
+            if rc != 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        let flags = libc::O_NOFOLLOW
+            | libc::O_CLOEXEC
+            | if is_dir {
+                libc::O_RDONLY | libc::O_DIRECTORY
+            } else {
+                (if writable {
+                    libc::O_RDWR
+                } else {
+                    libc::O_RDONLY
+                }) | libc::O_CREAT
+                    | libc::O_NONBLOCK
+            };
+        let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags, 0o644) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        parent = unsafe { File::from_raw_fd(fd) };
+        if !is_dir && !parent.metadata()?.is_file() {
+            return Err(io::Error::from_raw_os_error(libc::EINVAL));
+        }
+    }
+    Ok(parent)
+}
+
+#[cfg(test)]
+mod rooted_tests {
+    use super::*;
+    #[test]
+    fn rooted_preparation_rejects_links_and_type_conflicts_without_truncation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        let outside = temp.path().join("sentinel");
+        std::fs::write(&outside, b"keep").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        assert!(prepare_rooted_path(&root, Path::new("link"), false, false).is_err());
+        std::os::unix::fs::symlink(temp.path(), root.join("ancestor")).unwrap();
+        assert!(prepare_rooted_path(&root, Path::new("ancestor/new"), false, false).is_err());
+        assert!(prepare_rooted_path(&root, Path::new("../sentinel"), false, false).is_err());
+        let file = prepare_rooted_path(&root, Path::new("opt/pvisor"), false, false).unwrap();
+        assert!(file.metadata().unwrap().is_file());
+        assert!(prepare_rooted_path(&root, Path::new("opt/pvisor"), true, false).is_err());
+        assert_eq!(std::fs::read(outside).unwrap(), b"keep");
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod parent_identity_tests {
+    use super::*;
+    use crate::profile::Profile;
+    use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn parent_identity_matches_directory_and_rejects_links_and_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("directory");
+        std::fs::create_dir(&directory).unwrap();
+        let profile = Profile::enabled("parent-identity-test");
+        let identity = parent_directory_identity(&directory, &profile)
+            .unwrap()
+            .unwrap();
+        let metadata = std::fs::symlink_metadata(&directory).unwrap();
+        assert_eq!(identity.device, metadata.dev());
+        assert_eq!(identity.inode, metadata.ino());
+        let link = temp.path().join("link");
+        std::os::unix::fs::symlink(&directory, &link).unwrap();
+        let file = temp.path().join("file");
+        std::fs::write(&file, b"content").unwrap();
+        for path in [&link, &file] {
+            assert!(parent_directory_identity(path, &profile).unwrap().is_none());
+        }
+        std::fs::rename(&directory, temp.path().join("old-directory")).unwrap();
+        std::fs::create_dir(&directory).unwrap();
+        let replaced = parent_directory_identity(&directory, &profile)
+            .unwrap()
+            .unwrap();
+        assert_ne!(identity.inode, replaced.inode);
+        assert_eq!(replaced.inode, directory.symlink_metadata().unwrap().ino());
+        let before = profile.report().unwrap();
+        for (path, errno) in [
+            (temp.path().join("missing"), libc::ENOENT),
+            (file.join("child"), libc::ENOTDIR),
+        ] {
+            assert_eq!(
+                parent_directory_identity(&path, &profile)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(errno)
+            );
+        }
+        let after = profile.report().unwrap();
+        assert_eq!(
+            after
+                .measurements
+                .get("parent_identity_metadata_fallbacks")
+                .map(|m| m.units),
+            before
+                .measurements
+                .get("parent_identity_metadata_fallbacks")
+                .map(|m| m.units)
+        );
+    }
+
+    #[test]
+    fn restricted_statx_preserves_metadata_access_and_errors_without_mount_reuse() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = Profile::enabled("parent-identity-fallback-test");
+        let metadata = temp.path().symlink_metadata().unwrap();
+        for errno in [libc::ENOSYS, libc::EINVAL, libc::EPERM, libc::EACCES] {
+            let identity = parent_directory_identity_with(temp.path(), &profile, |_| {
+                Err(io::Error::from_raw_os_error(errno))
+            })
+            .unwrap()
+            .unwrap();
+            assert_eq!(identity.device, metadata.dev());
+            assert_eq!(identity.inode, metadata.ino());
+            assert_eq!(identity.mount_id, None);
+        }
+        assert_eq!(
+            parent_directory_identity_with(&temp.path().join("missing"), &profile, |_| {
+                Err(io::Error::from_raw_os_error(libc::ENOSYS))
+            })
+            .unwrap_err()
+            .raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        let file = temp.path().join("file");
+        std::fs::write(&file, b"content").unwrap();
+        assert_eq!(
+            parent_directory_identity_with(&file.join("child"), &profile, |_| {
+                Err(io::Error::from_raw_os_error(libc::ENOSYS))
+            })
+            .unwrap_err()
+            .raw_os_error(),
+            Some(libc::ENOTDIR)
+        );
+    }
+
+    #[test]
+    fn missing_statx_fields_fall_back_and_missing_mount_id_never_guesses() {
+        use linux_raw_sys::general::{STATX_INO, STATX_TYPE, statx};
+        let temp = tempfile::tempdir().unwrap();
+        let profile = Profile::default();
+        // SAFETY: the kernel ABI output has a valid zero representation.
+        let empty: statx = unsafe { std::mem::zeroed() };
+        let identity = parent_directory_identity_with(temp.path(), &profile, |_| Ok(empty))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            identity.inode,
+            temp.path().symlink_metadata().unwrap().ino()
+        );
+        assert_eq!(identity.mount_id, None);
+        let partial = statx {
+            stx_mask: STATX_TYPE | STATX_INO,
+            stx_mode: libc::S_IFDIR as u16,
+            stx_mnt_id: 42,
+            ..empty
+        };
+        let identity = parent_directory_identity_with(temp.path(), &profile, |_| Ok(partial))
+            .unwrap()
+            .unwrap();
+        assert_eq!(identity.mount_id, None);
+    }
+}

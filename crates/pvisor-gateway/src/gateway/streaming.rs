@@ -1,0 +1,334 @@
+//! SSE streaming upstream response: translate, forward, and capture the final response.
+
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse, Response};
+use bytes::{Bytes, BytesMut};
+use futures_util::StreamExt;
+use serde_json::Value;
+use tokio_stream::wrappers::ReceiverStream;
+
+use super::common::attach_capture_headers;
+use super::state::GatewayState;
+use crate::conversion::{MAX_STREAM_CAPTURE_BYTES, ProtocolBridge, StreamTranslator};
+use crate::engine::{CallContext, CancelEvent, CompleteEvent, Event, headers_to_vec};
+use crate::runtime::debug;
+use pvisor_overlaynet::headers::skip_response_header_after_reframing;
+
+/// Bounded queue between upstream reader and client SSE writer (backpressure).
+const STREAM_CLIENT_QUEUE: usize = 256;
+
+pub(super) fn request_wants_stream(body: &Bytes) -> bool {
+    serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("stream").and_then(|s| s.as_bool()))
+        .unwrap_or(false)
+}
+
+pub(super) fn should_stream_to_client(headers: &HeaderMap, request_body: &Bytes) -> bool {
+    if request_wants_stream(request_body) {
+        return true;
+    }
+    headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.contains("text/event-stream"))
+        .unwrap_or(false)
+}
+
+pub(super) async fn streaming_llm_response(
+    upstream_resp: reqwest::Response,
+    state: GatewayState,
+    ctx: CallContext,
+    bridge: ProtocolBridge,
+    first_chunk: Option<Bytes>,
+) -> anyhow::Result<Response> {
+    let status = upstream_resp.status();
+    let resp_headers = upstream_resp.headers().clone();
+    let recorded_resp_headers = headers_to_vec(&resp_headers);
+    let translate = bridge.needs_response_translation();
+    let session_id = ctx.route().session_id.clone();
+    let agent_id = ctx.agent_id().to_string();
+    let client_model = ctx.client_model.clone();
+    let debug_on = ctx.debug_on;
+
+    if debug_on {
+        debug::log_llm_stream_start(
+            state.storage.as_path(),
+            &session_id,
+            &agent_id,
+            &client_model,
+            status.as_u16(),
+        );
+    }
+
+    let byte_stream =
+        futures_util::stream::iter(first_chunk.into_iter().map(Ok::<Bytes, reqwest::Error>))
+            .chain(upstream_resp.bytes_stream());
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, String>>(STREAM_CLIENT_QUEUE);
+
+    let capture_engine = state.capture_engine.clone();
+
+    let ctx_bg: Arc<CallContext> = Arc::new(ctx.clone());
+    let storage = Arc::clone(&state.storage);
+    let reasoning_cache = Arc::clone(&state.reasoning_cache);
+
+    let mut stop = state.stop.clone();
+    tokio::spawn(async move {
+        let mut buf = BytesMut::new();
+        let mut translator = StreamTranslator::new(bridge, ctx_bg.protocol, &ctx_bg.client_model);
+
+        let mut client_disconnected = false;
+        let mut upstream_failed = false;
+        let mut stream = byte_stream;
+        loop {
+            let item = tokio::select! {
+                _ = tx.closed() => { client_disconnected = true; break; }
+                _ = stop.changed() => { upstream_failed = true; break; }
+                item = stream.next() => item,
+            };
+            let Some(item) = item else {
+                break;
+            };
+            match item {
+                Ok(chunk) => {
+                    let retained = translator
+                        .as_ref()
+                        .map(|translator| translator.upstream_snapshot().len())
+                        .unwrap_or(buf.len());
+                    if retained.saturating_add(chunk.len()) > MAX_STREAM_CAPTURE_BYTES {
+                        upstream_failed = true;
+                        let message = format!(
+                            "stream response exceeds durable capture limit of {MAX_STREAM_CAPTURE_BYTES} bytes"
+                        );
+                        let _ = send_stream_chunk(&tx, &mut stop, Err(message.clone())).await;
+                        if debug_on {
+                            debug::log_llm_upstream_error(
+                                storage.as_path(),
+                                &ctx_bg.route().session_id,
+                                ctx_bg.agent_id(),
+                                &ctx_bg.client_model,
+                                "stream",
+                                &message,
+                            );
+                        }
+                        break;
+                    }
+                    if translator.is_none() {
+                        buf.extend_from_slice(&chunk);
+                    }
+                    let out = if let Some(t) = translator.as_mut() {
+                        match t.push_chunk(&chunk) {
+                            Ok(bytes) if !bytes.is_empty() => bytes,
+                            Ok(_) => continue,
+                            Err(e) => {
+                                tracing::warn!("stream translate: {e:#}");
+                                upstream_failed = true;
+                                let message = format!("stream translation failed: {e:#}");
+                                let _ = send_stream_chunk(&tx, &mut stop, Err(message)).await;
+                                break;
+                            }
+                        }
+                    } else {
+                        chunk
+                    };
+
+                    if send_stream_chunk(&tx, &mut stop, Ok(out)).await.is_err() {
+                        client_disconnected = true;
+                        break;
+                    }
+                }
+                Err(e) => {
+                    upstream_failed = true;
+                    let msg = e.to_string();
+                    let _ = send_stream_chunk(&tx, &mut stop, Err(msg.clone())).await;
+                    if debug_on {
+                        debug::log_llm_upstream_error(
+                            storage.as_path(),
+                            &ctx_bg.route().session_id,
+                            ctx_bg.agent_id(),
+                            &ctx_bg.client_model,
+                            "stream",
+                            &msg,
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+
+        if client_disconnected {
+            let bytes_received = translator
+                .as_ref()
+                .map(|translator| translator.upstream_snapshot().len())
+                .unwrap_or(buf.len());
+            capture_engine.spawn_apply(
+                Arc::clone(&ctx_bg),
+                Event::Cancelled(CancelEvent {
+                    reason: Some("client_disconnected".into()),
+                    status: status.as_u16(),
+                    bytes_received,
+                    streaming: true,
+                }),
+            );
+            return;
+        }
+
+        if upstream_failed {
+            let bytes_received = translator
+                .as_ref()
+                .map(|translator| translator.upstream_snapshot().len())
+                .unwrap_or(buf.len());
+            capture_engine.spawn_apply(
+                Arc::clone(&ctx_bg),
+                Event::Cancelled(CancelEvent {
+                    reason: Some("stream_interrupted".into()),
+                    status: status.as_u16(),
+                    bytes_received,
+                    streaming: true,
+                }),
+            );
+            return;
+        }
+
+        let stream_metrics = translator.as_ref().map(|t| t.metrics().clone());
+        let mut stream_semantic = None;
+        if let Some(t) = translator.as_mut() {
+            match t.finish_stream() {
+                Ok(tail) => {
+                    if !tail.is_empty()
+                        && send_stream_chunk(&tx, &mut stop, Ok(tail)).await.is_err()
+                    {
+                        capture_engine.spawn_apply(
+                            Arc::clone(&ctx_bg),
+                            Event::Cancelled(CancelEvent {
+                                reason: Some("stream_interrupted".into()),
+                                status: status.as_u16(),
+                                bytes_received: t.upstream_snapshot().len(),
+                                streaming: true,
+                            }),
+                        );
+                        return;
+                    }
+                }
+                Err(error) => {
+                    let _ = send_stream_chunk(
+                        &tx,
+                        &mut stop,
+                        Err(format!("finish stream translation: {error:#}")),
+                    )
+                    .await;
+                    capture_engine.spawn_apply(
+                        Arc::clone(&ctx_bg),
+                        Event::Cancelled(CancelEvent {
+                            reason: Some("stream_interrupted".into()),
+                            status: status.as_u16(),
+                            bytes_received: t.upstream_snapshot().len(),
+                            streaming: true,
+                        }),
+                    );
+                    return;
+                }
+            }
+            stream_semantic = Some(Arc::new(t.semantic_response()));
+            let (tool_ids, reasoning) = t.drain_reasoning_snapshot();
+            if !reasoning.is_empty() {
+                reasoning_cache
+                    .scoped(&ctx_bg)
+                    .remember(&tool_ids, &reasoning);
+            }
+        }
+        let resp_bytes = translator
+            .as_ref()
+            .map(|t| Bytes::copy_from_slice(t.upstream_snapshot()))
+            .unwrap_or_else(|| buf.freeze());
+        let stream_assistant_text = translator
+            .as_ref()
+            .and_then(|t| t.streaming_capture_snapshot());
+        capture_engine.spawn_apply(
+            ctx_bg,
+            Event::ResponseComplete(CompleteEvent {
+                status: status.as_u16(),
+                resp_bytes,
+                streaming: true,
+                stream_metrics,
+                assistant_content: stream_assistant_text,
+                semantic: stream_semantic,
+                headers: recorded_resp_headers,
+            }),
+        );
+    });
+
+    let body_stream = ReceiverStream::new(rx).map(|item| item.map_err(std::io::Error::other));
+
+    let mut builder = Response::builder().status(status);
+    // The client-facing SSE body is a new stream. Upstream hop-by-hop framing and
+    // content length never cross that boundary; translated streams additionally
+    // replace stale encoding and media type metadata.
+    for (name, value) in resp_headers.iter() {
+        if skip_response_header_after_reframing(&resp_headers, name.as_str(), translate) {
+            continue;
+        }
+        builder = builder.header(name, value);
+    }
+    if translate {
+        builder = builder.header("content-type", "text/event-stream");
+    }
+    builder = attach_capture_headers(builder, &ctx.call);
+    Ok(builder
+        .body(Body::from_stream(body_stream))
+        .map_err(|e| anyhow::anyhow!("response body: {e}"))?
+        .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_request_enables_passthrough() {
+        let body = Bytes::from_static(br#"{"model":"m","stream":true,"messages":[]}"#);
+        assert!(should_stream_to_client(&HeaderMap::new(), &body));
+    }
+
+    #[test]
+    fn sse_response_enables_passthrough() {
+        let mut h = HeaderMap::new();
+        h.insert("content-type", "text/event-stream".parse().unwrap());
+        let body = Bytes::from_static(b"{}");
+        assert!(should_stream_to_client(&h, &body));
+    }
+}
+
+async fn send_stream_chunk(
+    tx: &tokio::sync::mpsc::Sender<Result<Bytes, String>>,
+    stop: &mut tokio::sync::watch::Receiver<()>,
+    chunk: Result<Bytes, String>,
+) -> Result<(), ()> {
+    tokio::select! {
+        _ = stop.changed() => Err(()),
+        result = tx.send(chunk) => result.map_err(|_| ()),
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::time::Duration;
+    #[tokio::test]
+    async fn shutdown_interrupts_a_backpressured_sender() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        tx.send(Ok(Bytes::new())).await.unwrap();
+        let (stop_tx, mut stop) = tokio::sync::watch::channel(());
+        stop_tx.send(()).unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            send_stream_chunk(&tx, &mut stop, Ok(Bytes::new())),
+        )
+        .await
+        .unwrap();
+        assert!(result.is_err());
+    }
+}

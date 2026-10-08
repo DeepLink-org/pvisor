@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1810" viewBox="0 0 1440 1810" role="img" aria-labelledby="title desc"><title id="title">OverlayCore：实际目录、增量文件与恢复账本</title><desc id="desc">OverlayCore：实际目录、增量文件与恢复账本；按当前源码展示文件内容、引用与恢复关系，字段块不是二进制 ABI offset。</desc><defs><style>text{font-family:system-ui,-apple-system,'PingFang SC',sans-serif;fill:#e9eef8}.h{font-size:28px;font-weight:600}.l{font-size:21px;font-weight:600}.b{font-size:18px}.s{font-size:16px;fill:#a8cefa}.m{font-family:ui-monospace,monospace;font-size:17px}</style><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="none" stroke="#a8cefa" stroke-width="1.4"/></marker></defs><rect width="1440" height="1810" fill="#0d1b30"/>
+<text x="36" y="48" class="h">OverlayCore：文件存在哪里，apply 从哪里读、向哪里写</text>
+<text x="36" y="80" class="s">文件树是真实节点；merged 是查找投影。以下以 config 的 visible B / target A / upper C 为例。</text>
+<rect x="24" y="108" width="1392" height="302" fill="#1a304c"/>
+<text x="44" y="145" class="l">① 执行视图：读 upper → compose lower → baseline；写只进入 upper</text>
+<rect x="48" y="169" width="408" height="155" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<text x="66" y="200" class="l">compose lower · 只读</text>
+<text x="66" y="237" class="s">config：B</text>
+<text x="66" y="268" class="s">同名遮盖 target / baseline</text>
+<text x="66" y="299" class="s">lower 顺序由 OverlayLayout 验证</text>
+<rect x="498" y="169" width="430" height="155" rx="2" fill="#443929" stroke="#6485a8" stroke-width="1.5"/>
+<text x="516" y="200" class="l">&lt;target&gt;/ · apply 目的地</text>
+<text x="516" y="237" class="s">config：A</text>
+<text x="516" y="268" class="s">first-touch 指纹必须取 A</text>
+<text x="516" y="299" class="s">可选 snapshot 是最后 lower</text>
+<rect x="954" y="169" width="430" height="155" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<text x="972" y="200" class="l">&lt;stage&gt;/upper/ · 实际文件</text>
+<text x="972" y="237" class="s">config：C（完整文件）</text>
+<text x="972" y="268" class="s">.wh.deleted：空文件，0 B</text>
+<text x="972" y="299" class="s">dir/.wh..wh..opq：0 B</text>
+<text x="48" y="364" class="b">merged/config → upper/config；upper 缺失时按 lowers 读取。merged 本身不复制三层数据。</text>
+<text x="48" y="396" class="s">apply upper/config → target/config；compose lower / baseline snapshot 不被 apply 修改。</text>
+<rect x="24" y="430" width="1392" height="283" fill="#12243b"/>
+<text x="44" y="467" class="l">② &lt;stage&gt;/ 内的目录与文件</text>
+<text x="48" y="510" class="m">upper/           文件、目录、symlink、POSIX 节点；普通文件大小 = 完整 copy-up 字节数</text>
+<text x="48" y="547" class="m">work/            .wh..pvisor-copyup-&lt;pid&gt;-&lt;counter&gt;；未完成复制节点，发布后移入 upper</text>
+<text x="48" y="584" class="m">merged/          host FUSE mount 或占位；VM virtio-fs 可直接服务 union，无宿主 union mount</text>
+<text x="48" y="621" class="m">preimages/       complete-v1 + entries/&lt;sha256(raw-path)&gt;.json</text>
+<text x="48" y="658" class="m">overlay.json     当前 OverlayRecord；apply-ledger.json 为所有 apply 批次的完整 JSON 文档</text>
+<text x="48" y="696" class="s">upper / work 同文件系统且不能互相包含；backing 位于目标内时须被 guest 视图排除。</text>
+<rect x="24" y="733" width="1392" height="310" fill="#1a304c"/>
+<text x="44" y="770" class="l">③ 元数据文件内部：JSON 字段，不是原文件副本</text>
+<rect x="48" y="793" width="408" height="218" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<text x="66" y="826" class="l">overlay.json · 0600</text>
+<text x="66" y="861" class="s">id / generation / target</text>
+<text x="66" y="891" class="s">baseline_lower（可选）</text>
+<text x="66" y="921" class="s">upper {upper_dir, work_dir}</text>
+<text x="66" y="951" class="s">stage_dir / merged_dir</text>
+<text x="66" y="981" class="s">policy / exclusions / state</text>
+<rect x="498" y="793" width="430" height="218" rx="2" fill="#443929" stroke="#6485a8" stroke-width="1.5"/>
+<text x="516" y="826" class="l">entries/&lt;path-hash&gt;.json · 0600</text>
+<text x="516" y="861" class="s">path：原始 Unix 字节数组</text>
+<text x="516" y="891" class="s">state：tagged fingerprint</text>
+<text x="516" y="921" class="s">file → SHA-256 / mode / uid / gid</text>
+<text x="516" y="951" class="s">directory → 元数据 + mtime</text>
+<text x="516" y="981" class="s">symlink → target bytes；另有 xattrs</text>
+<rect x="954" y="793" width="430" height="218" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<text x="972" y="826" class="l">complete-v1 · 标记文件</text>
+<text x="972" y="861" class="s">pvisor-overlay-preimage-</text>
+<text x="972" y="891" class="s">journal-v1 + LF</text>
+<text x="972" y="921" class="s">新空 upper 初始化此标记</text>
+<text x="972" y="951" class="s">完整日志缺 selected path → 拒绝</text>
+<text x="972" y="981" class="s">条目只保存指纹，不保存 A 的字节</text>
+<rect x="24" y="1063" width="1392" height="290" fill="#12243b"/>
+<text x="44" y="1100" class="l">④ apply-ledger.json · 0600 · 完整替换，不是追加 JSONL</text>
+<rect x="48" y="1122" width="1336" height="192" rx="2" fill="#193d40" stroke="#6485a8" stroke-width="1.5"/>
+<text x="68" y="1154" class="m">{ schema_version: 2, records: [ ApplyRecord, ApplyRecord, … ] }</text>
+<text x="68" y="1190" class="m">每条：apply_id / overlay_id / overlay_generation / target / selection</text>
+<text x="68" y="1224" class="m">      changes / planned_paths / preimages / state / remaining_changes</text>
+<text x="68" y="1260" class="b">Prepared：可恢复意图 → TargetApplied：先于 upper 裁剪 → Committed：批次完成</text>
+<text x="68" y="1293" class="s">临时完整 JSON → file fsync → rename → parent fsync；逻辑大小随批次与路径记录增长。</text>
+<text x="48" y="1333" class="s">preimage 文件 + upper + ledger 共同支持恢复；复制 upper 一个目录不等于完整恢复包。</text>
+<rect x="24" y="1373" width="1392" height="312" fill="#1a304c"/>
+<text x="44" y="1410" class="l">⑤ target 文件系统上的临时数据与原目录 backup</text>
+<rect x="48" y="1432" width="640" height="177" rx="2" fill="#443929" stroke="#6485a8" stroke-width="1.5"/>
+<rect x="728" y="1432" width="656" height="177" rx="2" fill="#142840" stroke="#6485a8" stroke-width="1.5"/>
+<text x="68" y="1466" class="m">&lt;target-parent&gt;/.pvisor-apply-backup-…/</text>
+<text x="68" y="1501" class="b">&lt;path-hash&gt;：原目录 / 节点，rename 保存</text>
+<text x="68" y="1536" class="b">&lt;path-hash&gt;.new：完整替换树，发布前组装</text>
+<text x="68" y="1574" class="s">同文件系统；失败保留，Committed 后清理</text>
+<text x="748" y="1466" class="m">&lt;target-subdir&gt;/.pvisor-apply-&lt;hash&gt;</text>
+<text x="748" y="1501" class="b">普通文件 / symlink / 特殊节点的临时替换</text>
+<text x="748" y="1536" class="b">file sync → rename 到目标名 → directory sync</text>
+<text x="748" y="1574" class="s">backup 不是所有路径的自动回滚日志</text>
+<text x="48" y="1648" class="s">目标锁：&lt;system temp&gt;/pvisor-apply-locks-&lt;uid&gt;/&lt;target-hash&gt;.lock；锁文件不保存恢复数据。</text>
+<text x="36" y="1730" class="b">恢复向前完成已准备批次。多文件目标更新不是整体原子；外部读者仍可看到中间状态。</text>
+<text x="36" y="1770" class="s">常规 payload / 临时目录大小取决于文件内容；JSON 长度取决于路径、指纹和批次，不存在固定磁盘容量。</text>
+</svg>

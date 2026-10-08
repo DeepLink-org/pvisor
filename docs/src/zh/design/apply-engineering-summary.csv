@@ -1,0 +1,9 @@
+files,operation,variant,profile_enabled,unit,n,p50,p95_reference,minimum,maximum,distribution,low_n,low_p50,high_n,high_p50
+1000,apply,baseline,False,ms,30,962.1240825,1067.88056845,901.688234,1087.326805,unsplit,,,,
+1000,apply,candidate,False,ms,30,944.0854915,994.71662295,872.631557,1037.804344,unsplit,,,,
+1000,conflict,baseline,False,ms,30,46.072902,52.62968725,43.273784,61.519292,unsplit,,,,
+1000,conflict,candidate,False,ms,30,21.982205,25.063239449999998,20.536428,26.738161,unsplit,,,,
+10000,apply,baseline,False,ms,30,13130.2503645,13838.9221776,12150.292924,14046.441094,unsplit,,,,
+10000,apply,candidate,False,ms,30,11031.8559125,11512.04257915,10035.149325,11529.206171,unsplit,,,,
+10000,conflict,baseline,False,ms,30,2651.0113295,2834.2025992,2535.42178,2921.685975,unsplit,,,,
+10000,conflict,candidate,False,ms,30,189.78083800000002,205.4386703,172.896314,210.17727,unsplit,,,,

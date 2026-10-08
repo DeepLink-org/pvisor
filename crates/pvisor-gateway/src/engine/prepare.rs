@@ -1,0 +1,379 @@
+//! Prepare phase — pure capture logic before story-local I/O.
+//!
+//! Runs in the story scheduling owner, before its typed persistence command.
+
+use super::actors::RunActor;
+use anyhow::Result;
+use serde_json::Value;
+use std::sync::Mutex;
+
+use super::wire::{LocalStoryCommand as StoryCommand, StoryScope, run_enrich};
+use super::{CallContext, CancelEvent, CompleteEvent, Event, RequestEvent};
+use crate::dialogue_extract::{extract_assistant_text_from_json, extract_assistant_turn_from_sse};
+use crate::runtime::debug;
+use crate::sink::{
+    attach_connection_and_client, attach_http_wire_request, attach_http_wire_response,
+    attach_recorded_headers, llm_request_summary_record, llm_response_record_with_content,
+    retain_capture_content,
+};
+use crate::subagent_link::SpawnLinkBackfill;
+use crate::usage::{
+    StreamMetrics, TokenUsage, estimate_cost_usd, extract_usage_from_response,
+    extract_usage_from_sse,
+};
+
+/// Storage for prepare diagnostics; the shared registry is accessed as typed state.
+pub(crate) struct CapturePreparer {
+    pub storage: std::sync::Arc<std::path::PathBuf>,
+}
+
+/// Outcome of prepare — at most one story command to dispatch.
+pub(crate) struct PreparedCapture {
+    pub ctx: CallContext,
+    pub backfills: Vec<SpawnLinkBackfill>,
+    story_cmd: Option<StoryCommand>,
+}
+
+impl CapturePreparer {
+    pub async fn prepare(
+        &self,
+        run: &Mutex<RunActor>,
+        ctx: &CallContext,
+        event: Event,
+    ) -> Result<PreparedCapture> {
+        match event {
+            Event::Request(e) => self.prepare_request(run, ctx, e).await,
+            // Drafts are not part of the canonical event stream.
+            Event::ResponseDraft(_) => Ok(PreparedCapture {
+                ctx: ctx.clone(),
+                backfills: vec![],
+                story_cmd: None,
+            }),
+            Event::ResponseComplete(e) => self.prepare_completed(run, ctx, e).await,
+            Event::Cancelled(e) => self.prepare_cancelled(ctx, e).await,
+        }
+    }
+
+    async fn prepare_request(
+        &self,
+        run: &Mutex<RunActor>,
+        ctx: &CallContext,
+        event: RequestEvent,
+    ) -> Result<PreparedCapture> {
+        // Live requests carry their once-parsed semantic payload. Current
+        // dead-letter records retain client JSON and reconstruct it here.
+        let semantic = event.semantic.clone().or_else(|| {
+            event.body_json.as_ref().and_then(|body| {
+                crate::understanding::understand_request_value(ctx.protocol, body)
+                    .ok()
+                    .map(std::sync::Arc::new)
+            })
+        });
+        let forward_to = event.model_rewritten.then_some(ctx.upstream_model.as_str());
+        let mut rec = llm_request_summary_record(
+            Some(ctx.route().session_id.clone()),
+            Some(ctx.agent_id().to_string()),
+            crate::sink::LlmRequestSummary {
+                model: &ctx.client_model,
+                path: &event.path,
+                body_bytes: event.body_bytes,
+                protocol: ctx.protocol.as_str(),
+                provider: ctx.provider.as_str(),
+                user_content: event.user_content,
+                forward_to,
+                body_json: event.body_json.as_ref(),
+            },
+            &ctx.call,
+            ctx.level,
+        );
+        attach_recorded_headers(&mut rec.payload, &event.headers);
+        // Prefer event headers for connection flags; fall back to ctx request headers.
+        let hdrs = if event.headers.is_empty() {
+            &ctx.request_headers
+        } else {
+            &event.headers
+        };
+        attach_connection_and_client(
+            &mut rec.payload,
+            hdrs,
+            ctx.http_version.as_deref(),
+            ctx.client_peer.as_deref(),
+            ctx.client_meta.as_ref(),
+        );
+        // Full retention preserves raw evidence; lower levels omit every body copy.
+        let body_for_wire = ctx
+            .level
+            .includes_full_body()
+            .then_some(event.body_json.as_ref())
+            .flatten();
+        attach_http_wire_request(
+            &mut rec.payload,
+            &event.method,
+            &event.path,
+            event.url.as_deref().or(ctx.upstream_url.as_deref()),
+            body_for_wire,
+            event.body_json.is_some() && !event.headers.is_empty(),
+        );
+        if let Some(semantic) = semantic.filter(|_| ctx.level.includes_full_body()) {
+            rec.payload["llm_request"] = serde_json::to_value(semantic.as_ref())?;
+        }
+        let backfills = run_enrich(run, &mut rec, ctx, event.body_json.as_ref(), None)?;
+        retain_capture_content(&mut rec.payload, ctx.level);
+        let scope = StoryScope::from_context(ctx);
+        let story_cmd = Some(StoryCommand::persist_record(scope, rec));
+        Ok(PreparedCapture {
+            ctx: ctx.clone(),
+            backfills,
+            story_cmd,
+        })
+    }
+
+    async fn prepare_completed(
+        &self,
+        run: &Mutex<RunActor>,
+        ctx: &CallContext,
+        event: CompleteEvent,
+    ) -> Result<PreparedCapture> {
+        let resp_text = std::str::from_utf8(&event.resp_bytes).unwrap_or("<non-utf8>");
+        let resp_json = if event.streaming {
+            Value::String(resp_text.to_string())
+        } else {
+            serde_json::from_slice(&event.resp_bytes)
+                .unwrap_or_else(|_| Value::String(resp_text.to_string()))
+        };
+
+        let usage = resolve_response_usage(
+            event.streaming,
+            event.stream_metrics.as_ref(),
+            resp_text,
+            &resp_json,
+        );
+        let cost = estimate_cost_usd(&ctx.upstream_model, ctx.provider, &usage);
+        if ctx.debug_on {
+            debug::log_llm_response(
+                self.storage.as_path(),
+                &ctx.route().session_id,
+                ctx.agent_id(),
+                &ctx.client_model,
+                event.status,
+                usage.total_tokens,
+                if ctx.level.includes_full_body() {
+                    resp_text
+                } else {
+                    "<content omitted by capture level>"
+                },
+            );
+        }
+
+        let mut resp_payload = serde_json::json!({
+            "status": event.status,
+            "protocol": ctx.protocol.as_str(),
+            "provider": ctx.provider.as_str(),
+            "usage": usage,
+            "estimated_cost_usd": cost,
+        });
+        if ctx.upstream_model != ctx.client_model {
+            resp_payload["forward_to"] = Value::String(ctx.upstream_model.clone());
+        }
+        if ctx.level.includes_full_body() {
+            resp_payload["body"] = crate::sink::redact_sensitive_body(&resp_json);
+        }
+        if let Some(m) = event.stream_metrics.as_ref() {
+            if let Some(ttft) = m.ttft_ms {
+                resp_payload["ttft_ms"] = Value::Number(ttft.into());
+            }
+            if m.usage.reasoning_tokens > 0 {
+                resp_payload["reasoning_tokens"] = Value::Number(m.usage.reasoning_tokens.into());
+            }
+        }
+
+        let assistant_content = if ctx.level.includes_assistant_text() {
+            let from_stream = event.assistant_content.filter(|s| !s.trim().is_empty());
+            from_stream.or_else(|| {
+                if event.streaming {
+                    let extracted = extract_assistant_turn_from_sse(resp_text);
+                    if extracted.trim().is_empty() {
+                        None
+                    } else {
+                        Some(extracted)
+                    }
+                } else {
+                    extract_assistant_text_from_json(&resp_json)
+                }
+            })
+        } else {
+            None
+        };
+
+        // Live responses carry the exact once-parsed semantic value used by the
+        // client renderer. The fallback is reserved for dead-letter import.
+        let semantic_response = event.semantic.or_else(|| {
+            if event.streaming {
+                Some(std::sync::Arc::new(
+                    crate::understanding::understand_stream_summary(
+                        ctx.protocol,
+                        &ctx.client_model,
+                        assistant_content.as_deref(),
+                        crate::llm::LlmUsage {
+                            input_tokens: usage.input_tokens,
+                            output_tokens: usage.output_tokens,
+                            total_tokens: usage.total_tokens,
+                            cache_read_tokens: usage.cache_read_tokens,
+                            cache_write_tokens: usage.cache_write_tokens,
+                            reasoning_tokens: usage.reasoning_tokens,
+                        },
+                    ),
+                ))
+            } else {
+                crate::understanding::understand_response_value(ctx.protocol, &resp_json)
+                    .ok()
+                    .map(std::sync::Arc::new)
+            }
+        });
+
+        let mut rec = llm_response_record_with_content(
+            Some(ctx.route().session_id.clone()),
+            Some(ctx.agent_id().to_string()),
+            crate::sink::LlmResponseContent {
+                status: event.status,
+                payload: &resp_payload,
+                streaming: event.streaming,
+                assistant_content: assistant_content.clone(),
+            },
+            &ctx.call,
+            ctx.level,
+        );
+        if let Some(semantic) = semantic_response.filter(|_| ctx.level.includes_full_body()) {
+            rec.payload["llm_response"] = serde_json::to_value(semantic.as_ref())?;
+        }
+        attach_recorded_headers(&mut rec.payload, &event.headers);
+        attach_connection_and_client(
+            &mut rec.payload,
+            &ctx.request_headers,
+            ctx.http_version.as_deref(),
+            ctx.client_peer.as_deref(),
+            ctx.client_meta.as_ref(),
+        );
+        // Raw response evidence follows the same retention boundary as requests.
+        let body_for_wire = ctx.level.includes_full_body().then_some(&resp_json);
+        attach_http_wire_response(
+            &mut rec.payload,
+            event.status,
+            ctx.upstream_url.as_deref(),
+            body_for_wire,
+            true,
+            event.streaming,
+            !event.headers.is_empty(),
+        );
+        let backfills = run_enrich(run, &mut rec, ctx, None, assistant_content.as_deref())?;
+        retain_capture_content(&mut rec.payload, ctx.level);
+        let scope = StoryScope::from_context(ctx);
+        let story_cmd = Some(StoryCommand::persist_record(scope, rec));
+        Ok(PreparedCapture {
+            ctx: ctx.clone(),
+            backfills,
+            story_cmd,
+        })
+    }
+
+    async fn prepare_cancelled(
+        &self,
+        ctx: &CallContext,
+        event: CancelEvent,
+    ) -> Result<PreparedCapture> {
+        let rec = crate::record::CaptureRecord {
+            event_id: None,
+            observed_at_unix_ms: None,
+
+            kind: "llm.call.cancelled".into(),
+            timestamp: Some(crate::record::now_rfc3339()),
+            session_id: Some(ctx.route().session_id.clone()),
+            agent_id: Some(ctx.agent_id().to_string()),
+            parent_uuid: None,
+            trace_id: Some(ctx.call.trace_id.clone()),
+            call_id: Some(ctx.call.call_id.clone()),
+            subagent_id: ctx.route().subagent_id.clone(),
+            parent_agent_id: None,
+            branch: None,
+            parent_call_id: None,
+            payload: serde_json::json!({
+                "status": event.status,
+                "streaming": event.streaming,
+                "bytes_received": event.bytes_received,
+                "reason": event.reason,
+            }),
+        };
+        let story_cmd = Some(StoryCommand::persist_record(
+            StoryScope::from_context(ctx),
+            rec,
+        ));
+        Ok(PreparedCapture {
+            ctx: ctx.clone(),
+            backfills: vec![],
+            story_cmd,
+        })
+    }
+}
+
+impl PreparedCapture {
+    pub fn take_story_command(&mut self) -> Option<StoryCommand> {
+        self.story_cmd.take()
+    }
+}
+
+fn resolve_response_usage(
+    streaming: bool,
+    stream_metrics: Option<&StreamMetrics>,
+    resp_text: &str,
+    resp_json: &Value,
+) -> TokenUsage {
+    if streaming {
+        stream_metrics
+            .map(|m| m.usage.clone())
+            .filter(|u| u.total_tokens > 0 || u.input_tokens > 0 || u.output_tokens > 0)
+            .unwrap_or_else(|| extract_usage_from_sse(resp_text))
+    } else {
+        extract_usage_from_response(resp_json)
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    #[test]
+    fn response_usage_reuses_json_without_changing_stream_fallback() {
+        let body = serde_json::json!({"usage": {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}});
+        let usage = resolve_response_usage(false, None, "not reparsed", &body);
+        assert_eq!(usage.input_tokens, 7);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.total_tokens, 10);
+        let malformed = Value::String("not json".into());
+        assert_eq!(
+            resolve_response_usage(false, None, "not json", &malformed).total_tokens,
+            0
+        );
+        let wire = "data: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\n";
+        assert_eq!(
+            resolve_response_usage(true, None, wire, &Value::Null).total_tokens,
+            10
+        );
+    }
+
+    #[test]
+    fn summary_omits_every_payload_copy_and_dialogue_keeps_only_visible_text() {
+        let payload = serde_json::json!({"model":"m","usage":{"total_tokens":3},"user_content":"unique-prompt","assistant_content":"unique-answer","body":{"messages":["unique-prompt"]},"llm_request":{"text":"unique-prompt"},"llm_response":{"text":"unique-answer"},"http":{"request_body":"unique-prompt","response_body":"unique-answer","status":200},"spawn_links":[{"description":"unique-prompt"}]});
+        let mut summary = payload.clone();
+        retain_capture_content(&mut summary, crate::config::CaptureLevel::Summary);
+        assert!(!summary.to_string().contains("unique-"));
+        assert_eq!(summary["usage"]["total_tokens"], 3);
+        let mut dialogue = payload.clone();
+        retain_capture_content(&mut dialogue, crate::config::CaptureLevel::Dialogue);
+        assert_eq!(dialogue["user_content"], "unique-prompt");
+        assert!(dialogue.get("llm_request").is_none());
+        assert!(dialogue["http"].get("request_body").is_none());
+        let mut full = payload.clone();
+        retain_capture_content(&mut full, crate::config::CaptureLevel::Full);
+        assert_eq!(full, payload);
+    }
+}

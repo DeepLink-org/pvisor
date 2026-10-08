@@ -1,0 +1,122 @@
+//! pVisor — embeddable execution runtime and durable Job service.
+//!
+//! Hosts call [`PVisor::run`] directly; pVisor assembles execution, control,
+//! network, filesystem, and the optional internal Gateway driver. Durable
+//! Trace Event output uses the shared Journal when recording is enabled.
+
+#![cfg_attr(all(target_os = "macos", target_arch = "x86_64"), allow(dead_code))]
+
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+#[doc(hidden)]
+pub mod environment_snapshot;
+mod runtime;
+pub mod session;
+pub mod trace;
+pub use session::Session;
+
+mod cache_budget;
+mod config;
+#[doc(hidden)]
+pub mod diagnostics;
+mod executor;
+pub mod features;
+mod image;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+pub mod node;
+pub mod ram_backing;
+
+#[doc(hidden)]
+pub use executor::sandbox;
+#[cfg(unix)]
+pub use image::cache;
+mod util;
+
+#[cfg(feature = "gateway")]
+pub use config::GatewayDriverConfig;
+pub use config::{
+    ContainerMount, ContainerNetwork, ContainerPlatform, ContainerSettings, FilesystemMode,
+    GatewayMode, GatewaySettings, NetworkDriverConfig, OverlayFsCommit, OverlayFsSettings,
+    OverlayNetMode, OverlayNetPolicy, OverlayNetSettings, PVisorConfig, RecordSettings, RunConfig,
+    RunExecutorKind, RunPolicy, RunSettings, RunStdio, VmSettings,
+};
+pub use executor::container::ContainerExecutor;
+pub use executor::process::ProcessExecutor;
+#[cfg(target_os = "linux")]
+pub use executor::vm::CpuQosGroup;
+pub use executor::vm::VmExecutor;
+/// Dispatch synchronous self-exec internal modes before creating a Tokio runtime,
+/// starting threads, or parsing CLI arguments.
+///
+/// On supported VM targets, this handles image access, the Linux CPU QoS anchor,
+/// restore-RAM watchdog/server modes, and the pvisor-vm runner. Return from `main`
+/// when it returns `true`; `false` means normal startup should continue. On Intel
+/// macOS, the VM stub returns `false` without dispatching these modes.
+pub use executor::vm::run_internal_if_requested as run_krun_internal_if_requested;
+#[cfg(target_os = "linux")]
+pub use executor::vm::sample_supervisor_memory;
+pub use executor::{ExecutorOutput, RunExecutor};
+pub use pvisor_core::host_protocol::{
+    AGENTCTL_HOST_MAX_FRAME_BYTES, AGENTCTL_HOST_VERSION, AgentCtlHostError, AgentCtlHostErrorCode,
+    AgentCtlHostRequest, AgentCtlHostResponse, AgentCtlTarget, HostVmCommand, HostVmResult,
+};
+pub use pvisor_core::overlay::StageDurability;
+pub use pvisor_core::{
+    AGENTCTL_ENDPOINT_ENV, AGENTCTL_MAX_FRAME_BYTES, AGENTCTL_TOKEN_ENV, AGENTCTL_TRANSPORT_ENV,
+    AGENTCTL_VERSION, AGENTCTL_VERSION_ENV, AgentDirective, AgentErrorCode, AgentRequest,
+    AgentResponse, AgentState, ControlController, ControlEffect, ControlMachine, ControlReason,
+    ControlRequest, ControlState, ControlTransition, NetworkGuard, NetworkHostRule, NetworkRule,
+    PolicyControlController, host_matches, is_public_egress_ip, normalize_host, parse_network_rule,
+};
+pub use pvisor_core::{
+    Event, Fact, Operation, OperationDecision, OperationKind, OperationObservation, Outcome,
+    Placement,
+};
+#[cfg(feature = "gateway")]
+pub use pvisor_gateway::sink::CaptureEventObserver as TrajectoryEventSink;
+pub use runtime::agentctl::{
+    AGENTCTL_MAX_SESSIONS, AgentClientSnapshot, AgentCtlControl, AgentCtlServer, AgentCtlSnapshot,
+};
+pub use runtime::agentctl_client::{AgentCtlClient, AgentCtlClientConfig, AgentCtlResponseError};
+pub use runtime::bundle::{
+    BundleArtifact, BundleRun, FilesystemSummary, NetworkSummary, RUN_BUNDLE_FILENAME,
+    RUN_BUNDLE_SCHEMA_VERSION, ResourceSummary, RunBundle, SafetySummary,
+};
+pub use runtime::checkpoint::{
+    CHECKPOINTS_DIR, CheckpointConsistency, LogicalCheckpoint, WorkspaceCheckpointKind,
+    create_logical_checkpoint, latest_logical_checkpoint, restore_logical_checkpoint,
+};
+pub use runtime::event::{
+    EventAppendErrorKind, EventSink, MemoryEventSink, NoopEventSink, RunEventPublisher,
+};
+#[cfg(unix)]
+pub use runtime::host_transport;
+#[cfg(unix)]
+pub use runtime::instance_control::exchange as host_vm_exchange;
+pub use runtime::job_service;
+pub use runtime::run::{
+    AttemptService, PVisor, PVisorBuilder, PVisorError, RunCancellation, RunControlHandle,
+    RunEventStream, RunHandle,
+};
+pub use runtime::{
+    ChangeEntry, ChangeEntryType, ChangeKind, ExecutionOverlayHint, ImplantPlan, OverlayHint,
+    RunLineage, RuntimeCapabilities,
+};
+pub use util::unix_now_ms;
+
+#[doc(hidden)]
+pub use runtime::{RunRecord, RunRecordState, control_observations};
+
+// Explicit frontend/embedding APIs; runtime implementation stays private.
+pub use config::{FilesystemAccessLevel, FilesystemAccessRule, FilesystemMount, GatewayProfile};
+pub use executor::delegated::DelegatedRunOutput;
+#[cfg(target_os = "linux")]
+pub use executor::process::rootless_runtime_available;
+pub use runtime::{
+    ApplySelection, ReadOnlyOverlayMount, control_mount_inspect, control_ping,
+    control_unmount_inspect, default_run_home, is_live, mount_overlay_record_read_only,
+    resolve_run,
+};
+#[cfg(target_os = "linux")]
+pub use runtime::{LEASE_FILENAME, RunLease};
+pub use runtime::{audit, checkpoint, job_execution};
+pub use util::{startup_mark, startup_mark_run, write_private_json};

@@ -1,0 +1,42 @@
+[package]
+name = "pvisor-shim"
+description = "containerd Runtime v2 shim for pVisor (binary: containerd-shim-pvisor-v2)"
+
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "pvisor_shim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "containerd-shim-pvisor-v2"
+path = "src/main.rs"
+
+[dependencies]
+pvisor-guest.workspace = true
+pvisor-overlay-core.workspace = true
+anyhow = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }
+oci-spec = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+async-trait = { workspace = true }
+containerd-shim = { workspace = true, features = ["async"] }
+containerd-shim-protos = { workspace = true, features = ["sandbox"] }
+pvisor-vm = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[features]
+# pvisor-vm microVM executor. Off by default: linking pvisor-vm requires the
+# VM toolchain and a libkrunfw kernel (embedded in static builds).
+vm = ["pvisor-vm"]
+
+[dev-dependencies]
+tempfile = { workspace = true }

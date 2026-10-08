@@ -1,9 +1,9 @@
-Persisting
+pVisor
 ==========
 
-Copyright 2026 Persisting contributors.
+Copyright 2026 pVisor contributors.
 
-Persisting first-party source code is licensed under the Apache License,
+pVisor first-party source code is licensed under the Apache License,
 Version 2.0. See the repository root `LICENSE` file.
 
 Third-party notices
@@ -19,29 +19,50 @@ https://github.com/cberner/fuser
 Copyright its authors and contributors. It is distributed under the MIT
 License; see `vendor/fuser/LICENSE.md`.
 
-libkrun, krun-vmm, and krun-devices
------------------------------------
+libkrun runtime components
+--------------------------
 
-`vendor/libkrun`, `vendor/krun-vmm`, and `vendor/krun-devices` contain pinned,
-modified copies of libkrun 1.19.3 and its VMM/device crates:
+`crates/pvisor-vm/src/` contains consolidated, modified libkrun 1.19.3
+VMM, device, architecture, HVF and supporting modules. Original manifests and
+synchronization records are retained in `crates/pvisor-vm/provenance/`:
 
 https://github.com/containers/libkrun
 
 Copyright Red Hat, Inc. and the upstream authors and contributors. They are
-distributed under the Apache License, Version 2.0. Persisting's modifications
-add the mountless copy-on-write virtio-fs backend used by pVisor.
+distributed under the Apache License, Version 2.0. pVisor's modifications
+add the mountless copy-on-write virtio-fs backend used by pVisor and embed
+the first-party Rust guest supervisor from `crates/pvisor-guest`.
+
+libkrunfw guest firmware
+-----------------------
+
+`fw/` contains a modified copy of libkrunfw, including pVisor's guest kernel
+configurations, patches and compact firmware storage generator:
+
+https://github.com/libkrun/libkrunfw
+
+Source identity and imported local modifications are recorded in `fw/IMPORT.md`.
+The Linux kernel and kernel patches are GPL-2.0-only; the library code,
+including generated library code, is LGPL-2.1-only. See
+`fw/LICENSE-GPL-2.0-only` and `fw/LICENSE-LGPL-2.1-only`.
+The macOS compatibility headers have separate terms in
+`fw/include/macos-host/LICENSE`.
+
+Firmware binary distributions must include the corresponding source and
+license materials. These components are not covered by the repository's
+first-party Apache-2.0 license.
 
 agentgateway test fixtures
 --------------------------
 
-Regression fixtures under `crates/persisting-gateway/tests/fixtures/` may
+Regression fixtures under `crates/pvisor-gateway/tests/fixtures/` may
 include materials originally published under Apache-2.0 by the agentgateway
 project. Those files remain under their upstream Apache-2.0 terms as noted in
-`crates/persisting-gateway/tests/fixtures/README.md`.
+`crates/pvisor-gateway/tests/fixtures/README.md`.
 
 dldb
 ----
 
-The standalone Python package under `persisting/dldb` is distributed under
-its existing MIT license declaration and is excluded from the main Persisting
+The standalone Python package named `dldb` is distributed under
+its existing MIT license declaration and is excluded from the main pVisor
 Python wheel. Its package metadata identifies its original author.

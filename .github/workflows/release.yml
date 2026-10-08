@@ -16,7 +16,7 @@ concurrency:
 jobs:
   validate:
     name: Validate release
-    if: github.repository == 'DeepLink-org/Persisting'
+    if: github.repository == 'DeepLink-org/pvisor'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -89,7 +89,8 @@ jobs:
   pypi-publish:
     name: Publish to PyPI
     if: github.event_name == 'push'
-    needs: [validate, verify]
+    # Publish binaries to PyPI only after their corresponding sources are public.
+    needs: [validate, verify, github-release]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -113,7 +114,7 @@ jobs:
   github-release:
     name: Publish GitHub Release
     if: github.event_name == 'push'
-    needs: [validate, pypi-publish]
+    needs: [validate, verify]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -125,16 +126,28 @@ jobs:
           name: release-wheels
           path: dist
 
+      - name: Download corresponding firmware sources
+        uses: actions/download-artifact@v4
+        with:
+          pattern: firmware-source-release-wheel-*
+          merge-multiple: true
+          path: dist
+
+      - name: Require complete corresponding firmware source set
+        run: |
+          test -s dist/pvisor-firmware-source-linux-x86_64.tar.gz
+          test -s dist/pvisor-firmware-source-macos-arm64.tar.gz
+
       - name: Create or repair GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/*.whl \
+            gh release upload "$GITHUB_REF_NAME" dist/*.whl dist/pvisor-firmware-source-*.tar.gz \
               --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/*.whl \
+            gh release create "$GITHUB_REF_NAME" dist/*.whl dist/pvisor-firmware-source-*.tar.gz \
               --repo "$GITHUB_REPOSITORY" \
               --verify-tag \
               --generate-notes \

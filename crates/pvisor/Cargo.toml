@@ -1,0 +1,79 @@
+[package]
+name = "pvisor"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license = "Apache-2.0 AND MIT"
+description = "pVisor embeddable execution runtime and durable Job service"
+readme = "README.md"
+
+[features]
+default = []
+gateway = ["dep:pvisor-gateway"]
+
+[dependencies]
+axum = { workspace = true, features = ["http1", "http2", "tokio"] }
+pvisor-guest.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+dirs.workspace = true
+flate2.workspace = true
+fs2.workspace = true
+libc.workspace = true
+lru = "0.12.5"
+object_store = { version = "=0.13.2", default-features = false, features = ["aws", "tls-webpki-roots"] }
+pvisor-core.workspace = true
+pvisor-journal.workspace = true
+pvisor-gateway = { workspace = true, default-features = false, optional = true }
+pvisor-overlaynet.workspace = true
+pvisor-overlayfs = { workspace = true, default-features = false }
+pvisor-overlay-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time", "net"] }
+tokio-util = { workspace = true, features = ["rt"] }
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+zstd.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+
+[target.'cfg(not(all(target_os = "macos", target_arch = "x86_64")))'.dependencies]
+pvisor-vm = { workspace = true, features = ["net"] }
+
+[dev-dependencies]
+# Example-only argument parsers; the runtime library does not link Clap.
+clap = { workspace = true, features = ["derive"] }
+
+proptest.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { workspace = true, features = ["abi-7-19", "libfuse", "macfuse-5"] }
+
+[target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "x86_64")))'.dependencies]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser = { workspace = true, default-features = false, features = ["abi-7-31"] }
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dev-dependencies]
+vm-memory = { version = "=0.17.1", features = ["backend-mmap"] }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dev-dependencies]
+
+vm-memory = { version = "=0.17.1", features = ["backend-mmap"] }
+
+
+[[example]]
+name = "vm_vcpu_observe"
+path = "examples/vm_vcpu_observe.rs"
+
+[[example]]
+name = "guest_init_bench"
+path = "../../benchmark/pvisor/guest_init.rs"

@@ -7,11 +7,11 @@ inputs:
   components:
     description: Additional Rust components (comma-separated)
     default: ""
+  static-musl:
+    description: Install Linux tools for static CLI/shim and firmware builds
+    default: "false"
   install-nextest:
     description: Install cargo-nextest
-    default: "false"
-  install-zig:
-    description: Install Zig for the macOS-to-Linux guest init cross-build
     default: "false"
 
 runs:
@@ -41,7 +41,42 @@ runs:
       with:
         tool: cargo-nextest@0.9.137
 
-    - name: Install Linux guest init cross-compiler
-      if: runner.os == 'macOS' && inputs.install-zig == 'true'
+    - name: Install guest Rust target
+      if: inputs.rust == 'true'
       shell: bash
-      run: brew install zig
+      run: |
+        case "$(uname -m)" in
+          arm64|aarch64) rustup target add aarch64-unknown-linux-musl ;;
+          x86_64) rustup target add x86_64-unknown-linux-musl ;;
+          *) echo "Unsupported guest architecture" >&2; exit 1 ;;
+        esac
+
+    - name: Install Linux static musl build tools
+      if: runner.os == 'Linux' && inputs.static-musl == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends build-essential flex bison libelf-dev libssl-dev curl
+        python -m pip install ziglang==0.13.0
+        echo "$(python -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)')" >> "$GITHUB_PATH"
+        cargo install cargo-zigbuild --locked
+
+    - name: Install macOS native firmware build tools
+      if: runner.os == 'macOS' && inputs.rust == 'true'
+      shell: bash
+      run: |
+        brew install llvm lld make gnu-sed gnu-tar
+        brew_prefix="$(brew --prefix)"
+        for tool_path in opt/llvm/bin opt/lld/bin opt/make/libexec/gnubin opt/gnu-sed/libexec/gnubin opt/gnu-tar/libexec/gnubin; do
+          echo "$brew_prefix/$tool_path" >> "$GITHUB_PATH"
+        done
+        image="$RUNNER_TEMP/pvisor-fw.sparseimage"
+        volume="/Volumes/pvisor-fw-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        if ! mount | grep -Fq " on $volume ("; then
+          if [[ ! -f "$image" ]]; then
+            hdiutil create -size 32g -type SPARSE -fs "Case-sensitive APFS" -volname pvisor-fw "$image"
+          fi
+          hdiutil attach -nobrowse -mountpoint "$volume" "$image"
+        fi
+        mkdir -p "$volume/build"
+        echo "PVISOR_FW_BUILD_DIR=$volume/build" >> "$GITHUB_ENV"
