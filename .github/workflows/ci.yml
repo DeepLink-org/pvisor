@@ -196,6 +196,10 @@ jobs:
         if: matrix.shard == 'core'
         run: just test pvisor-journal
 
+      - name: Report macOS Hypervisor availability
+        if: runner.os == 'macOS'
+        run: sysctl kern.hv_support
+
       - name: Run ${{ matrix.shard }} tests
         env:
           # GitHub-hosted Linux runners may disable unprivileged user
