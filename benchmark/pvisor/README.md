@@ -2,6 +2,119 @@
 
 Read [the benchmark registry and writing rules](../README.md) before measuring or publishing. User questions, controls and roles belong to that registry; this manual owns commands and retention. Entry scripts carry `Benchmark:` declarations. Preparation, publication and plotting helpers serve their caller’s ID.
 
+## Lazy image client startup
+
+`B-LAZY-STARTUP` compares a Distribution registry's complete-image Docker path with a real `pvisor-cache serve` lazy VM path for the same pinned linux/amd64 manifest and workload. The default `ubuntu-shell` cohort uses Ubuntu 26.04; `numpy-script` is a separate Python/NumPy cohort. `torch-import` remains optional but has no formal samples; its failed attempts are retained, not performance evidence. Never pool different workloads or their preflight and formal samples. This is not OpenSandbox `pvisor-daemon serve`. See [the retained Ubuntu local report](LAZY_STARTUP_REPORT.md) and [derived Ubuntu CSV](lazy-startup-summary.csv); they do not establish NumPy or torch performance. The [bilingual user article](../../docs/src/zh/benchmarks/lazy-image-startup.md#numpy) includes the independent NumPy cohort, with [derived statistics](../../docs/src/zh/benchmarks/lazy-numpy-summary.csv), [differences/preparation](../../docs/src/zh/benchmarks/lazy-numpy-details.csv) and [provenance](../../docs/src/zh/benchmarks/lazy-numpy-provenance.csv). Its retained evidence is `benchmark/pvisor/.data/lazy-numpy-local-20261007/`; `derive.py` audits all 136 launches and regenerates the paired NumPy CSVs without changing the immutable report.
+
+Finish other builds/tests before sampling. Docker access uses `sg docker -c`; KVM and both frozen executables must be usable. The successful NumPy preflight uses the existing `target/release/pvisor` launcher with the separately built `target/lazy-torch-build/release/pvisor-cache`, selected via `--cache-binary`. This static cache build includes Docker gzip compatibility; the directory name is historical and does not mean torch was measured. The commands below keep the default launcher directory `target/release` and override only the cache executable, not `--binary-dir`. A new launcher conflicts with the existing persistent Host listener: **do not kill or replace the user's listener** to run this benchmark. Preserve the compatible existing launcher/listener pairing. Finish artifact preparation and freeze the binaries before preflight; do not rebuild during sampling. Install `skopeo` and `openssl`; loopback ports 15000/15443/15444/15445 must be free. First pull the report's pinned Distribution image outside timing:
+
+```sh
+sg docker -c 'docker pull registry@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8'
+python3 benchmark/pvisor/lazy_startup.py \
+  --cache-binary target/lazy-torch-build/release/pvisor-cache \
+  --output benchmark/pvisor/.data/lazy-startup-preflight-new \
+  --samples 1 --warmups 0
+# Only after preflight succeeds; always choose a new output directory.
+python3 benchmark/pvisor/lazy_startup.py \
+  --cache-binary target/lazy-torch-build/release/pvisor-cache \
+  --output benchmark/pvisor/.data/lazy-startup-formal-new \
+  --samples 30 --warmups 3
+python3 benchmark/pvisor/lazy_startup.py \
+  --analyze benchmark/pvisor/.data/lazy-startup-formal-new/report.json
+just test-benchmark -q benchmark/pvisor/test_lazy_startup.py
+```
+
+Run the NumPy preflight and formal cohort separately, after other builds/tests have finished. The workload selects its own pinned source by default; do not reuse Ubuntu or failed torch output directories:
+
+```sh
+python3 benchmark/pvisor/lazy_startup.py \
+  --workload numpy-script \
+  --cache-binary target/lazy-torch-build/release/pvisor-cache \
+  --output benchmark/pvisor/.data/lazy-startup-numpy-preflight-new \
+  --samples 1 --warmups 0
+# Only after NumPy preflight succeeds; always choose a new output directory.
+python3 benchmark/pvisor/lazy_startup.py \
+  --workload numpy-script \
+  --cache-binary target/lazy-torch-build/release/pvisor-cache \
+  --output benchmark/pvisor/.data/lazy-startup-numpy-formal-new \
+  --samples 30 --warmups 3
+python3 benchmark/pvisor/lazy_startup.py \
+  --analyze benchmark/pvisor/.data/lazy-startup-numpy-formal-new/report.json
+```
+
+The NumPy source is the pinned linux/amd64 slim manifest `docker.io/amancevice/pandas@sha256:9a3a94039175ac799ad33c1a207997994ff9b24814e06508dddfa259b1ed9159`, with Python 3.13.14 and NumPy 2.5.2. Despite the image name, **pandas is not imported**. `/usr/local/bin/python -B -u` disables bytecode writes and buffers no stdout; explicit `OMP_NUM_THREADS`, `MKL_NUM_THREADS` and `OPENBLAS_NUM_THREADS` are 1, with `PYTHONHASHSEED=0`. Before its unique ready marker, the workload verifies exact Python/NumPy versions, constructs int64 `arange(16).reshape(4, 4)`, checks square sum 1240 and `(x @ x.T).sum()` 3680. Ready is the output after all checks; completion includes successful process exit. This is a small numerical script, not a pandas workload, training test or large computation.
+
+Optional `torch-import` remains supported with `docker.io/determinedai/pytorch-cpu@sha256:875cbd3391016a74c42cfb0b3712d3b70f5b803a04b80eebd7f2a46b9d53d18d`, a confirmed CPU-only older 2024 image with Python 3.10.14 and PyTorch 2.0.1+cpu, not latest torch. It validates versions, absence of CUDA and a single-thread CPU tensor operation before ready. **No formal torch samples are available.** Failed torch reports, logs and caches remain in `.data/`; failures cannot be analyzed as successful samples or pooled with NumPy. Any future optional torch measurement needs its own successful preflight and new independent output directories.
+
+Plan disk space before either NumPy invocation: the compressed slim image is approximately **115,924,658 bytes (116 MB)**, not a bound on total retention. Optional torch's compressed image is approximately 1 GB and retained failed torch caches may still contain imported libtorch files. Each new NumPy output directory retains its own preparation cache, prepared service image store and per-pair client caches containing imported Python/NumPy files; unpacked images, warmup caches, logs and provenance add further space. Preflight and formal directories are separate retained copies. Temporary registry storage and Docker image storage also require disk headroom during the run; normal cleanup removes the private registry container/volumes and benchmark image reference, not the retained output caches. Allow substantial additional disk headroom for these caches and Docker storage rather than budgeting only the compressed download. Keep reports, raw logs, image manifest, preparation timings, frozen harness and source/binary hashes in their ignored `.data/` directories; do not prune evidence during sampling. `blob_bytes` counts unique config/layer digests, including config and counting repeated layer descriptors only once, while `compressed_layer_bytes` sums layer descriptors.
+
+The default Ubuntu source digest freezes the observed `ubuntu:latest`, rather than resolving a moving tag each trial. Default firmware is embedded in the static musl CLI; `--firmware` is only for dynamic GNU builds. The runner starts/cleans its private registry container, bounds service/process lifetime and stores requests, logs, harness and source/binary hashes in the new ignored directory. It deletes only its benchmark workload image reference, never prunes Docker. Upstream image copying/cache preparation requires network access and can be substantial; it is retained separately from client times. Cache preparation imports the same manifest from Docker Hub, since the OCI reader requires trusted HTTPS. Registry client traffic uses HTTPS through a counting proxy, cache uses authenticated plain TCP; application response accounting excludes full transport overhead. No injected latency/bandwidth or true WAN measurement is supplied.
+
+A cold Docker sample must fetch every blob; a cold lazy sample must read content into a fresh client cache. Warm Docker must make no registry requests; warm lazy can make metadata requests but must fetch no file content. Correct output, successful exit and the VM Run Bundle are checked; failures invalidate the campaign, and slow valid samples are not discarded. `--warmups 3` also performs one initial excluded round. Container 2 GiB limits and VM 2 GiB guest RAM are not equal enclosing-memory controls; Docker daemon/containerd and proxy CPU work is not fully pinned. Build-time source relationships of preexisting artifacts remain unverified. Do not infer WAN, pure lazy-algorithm, whole-system equal-budget or checkout optimization claims.
+
+The immutable measurement report is kept as generated; `--analyze` writes separate `analysis.json` using the existing publication cluster rule and paired bootstrap. The original cohort's source/binary hashes and frozen harness identify its actual measurement implementation; later statistical fixes do not alter samples or replace the original harness.
+
+## Lazy image V2 engineering A/B
+
+`B-LAZY-ENG` compares the same frozen static release binary with bounded metadata
+prefetch and socket reuse disabled (`PVISOR_LAZY_IMAGE_V2=0`) versus enabled
+(`=1`, also the default). Both modes retain common correctness/pagination fixes;
+this is a V1-compatible control, not the historical Docker/old-binary cohort.
+See [the engineering report](LAZY_IMAGE_V2_REPORT.md) and
+[derived statistics](lazy-image-v2-summary.csv). Do not put engineering A/B
+samples into the user-facing Docker comparison.
+
+Prepare artifacts and run tests before sampling; stop concurrent builds and other
+benchmarks. This runner needs Linux x86_64/KVM, CPU 0–3, user/mount/PID namespaces,
+`mount`, `umount`, and `pivot_root` (or libc pivot_root). A new static build can be
+created without overwriting the existing launcher or its listener:
+
+```sh
+just test pvisor
+PVISOR_LAZY_IMAGE_V2=0 just test pvisor
+just test-benchmark -q benchmark/pvisor/test_lazy_image_v2.py
+python3 scripts/build-pvisor.py --profile release --target-dir target/lazy-image-v2-build
+python3 benchmark/pvisor/lazy_image_v2.py \
+  --binary-dir target/lazy-image-v2-build/release \
+  --prepared-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --output benchmark/pvisor/.data/lazy-image-v2-preflight-new \
+  --samples 1 --warmups 0
+# Only after a successful preflight; choose another new directory.
+python3 benchmark/pvisor/lazy_image_v2.py \
+  --binary-dir target/lazy-image-v2-build/release \
+  --prepared-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --output benchmark/pvisor/.data/lazy-image-v2-formal-new \
+  --samples 30 --warmups 3
+```
+
+`--prepared-store` is an existing supported cache image store containing the
+pinned NumPy image, not handcrafted cache metadata. If that local evidence is
+unavailable, first prepare a new store through the supported NumPy preflight
+above and pass its `service-store`. The runner preserves symlinks when copying
+the store, starts real `pvisor-cache serve`, then checks the immutable handle,
+platform and digest using its supported `prepare` command. That cached-service
+preparation is separate from client timing. Allow space for the copied store,
+complete frozen sources/binaries and 68 cold client caches at default settings.
+
+The entire A/B runs in one supervised private namespace with an owned tmpfs root
+and `pivot_root`, not a chroot: libkrun must be able to create nested namespaces.
+Required host trees are recursively bound privately; original host listeners and
+ownership remain unchanged. Executables launch from safe owned paths with hashes
+identical to the frozen binaries. A framed counting proxy supports V1 and V2,
+checks body hashes and records requests, connection counts and payloads; idle
+connections do not count as in-flight requests. Each launch checks NumPy output,
+exit and its VM Run Bundle; any proxy/correctness/cache failure invalidates the
+campaign. Namespace teardown is audited, with stable pre-launch PID/starttime
+receipts for already inaccessible unrelated processes; new/reused inaccessible
+identities are never exempted. Supervisor lifetime is bounded to 900 seconds.
+
+Formal evidence is retained at `.data/lazy-image-v2-formal-20261008/`; its
+`derive.py` audits all 136 launches, frozen hashes, build receipt and teardown,
+then regenerates the engineering CSV without changing the read-only report.
+Build command/log/input hashes are retained separately at
+`.data/lazy-image-v2-build-20261008/`. Failed smoke campaigns remain independent;
+no speed-based exclusions or cross-cohort causal comparisons are allowed.
+
 ## vCPU observation M0
 
 `B-VCPU-IDLE-ENG` / EXP-001 M0 的 [实验计划](vcpu_idle_plan.md)定义真实 guest sleep/busy/短 timer、1/2 CPU 与 SMP 单 CPU busy 负对照，以及 observer off/on seeded 随机配对。真实 SDK example 直接在 ready callback 接通 `VmmHandle` 的 `VcpuObservationControl`；不走产品 src 修改，不 pause/offload。KVM_RUN 内 Unknown、HVF WaitingForEvent 原样保留；卸载收益未测，M1/M2 未实现。
@@ -430,6 +543,245 @@ python3 benchmark/pvisor/kernel_comparison.py \
 Build only after unrelated timing ends. After all shell/tool preflight conditions pass, run into a fresh short `.data/` directory with 30 samples and three warmups. Configuration A/B is engineering evidence, separate from user runtime rankings. The runner verifies every frozen firmware source/build-input byte, actual firmware/kernel/config identities and required enabled kernel options, then checks the complete shared tool inputs before and after all tasks, including failed warmups. Raw outputs must stay under `.data/`. Default tool caches preserve executor TMPDIR; select `--tool-scratch workspace` only as a separate control. An established private parent can be declared with `--resource-budget`, `--budget-memory-mib`, `--budget-cpu-placement` and `--resource-observation`; sampled live checks retain unknown lifetimes and do not establish complete CPU placement or capacity. Keep measured binary source identity separate from runner HEAD. Report removed guest device/LSM capabilities and validate networking/suspend/restore separately; shell startup alone establishes none of those capabilities. Capability checks should retain three independent repetitions per condition: checked local small/bulk/stream HTTP and a deny-all direct-socket negative control, plus raw/compressed snapshots of repeated/random private memory with the same token and full checksum after restore. Use the versioned `v1/network_worker.py`, network origin and `vm_memory.py`/`memory_probe.rs` helpers, retaining exact commands/source/input manifests; tiny capability cohorts do not provide network latency, physical-memory or density rankings. The paired bootstrap compares matching rounds, and separated distributions remain separate.
 
 ## Engineering and diagnostics
+
+### Extended Linux HOST API kernel cache
+
+`kernel_cache_runner.py` / `kernel_cache_driver.rs` serve **B-FS-ENG**;
+`--profiles` serves independent **B-FS-DIAG**. The [engineering report](KERNEL_CACHE_REPORT.md)
+and derived [timing CSV](kernel-cache-summary.csv) / [counter CSV](kernel-cache-counters.csv)
+do not replace or modify the immutable-lower-cache experiment below. This is a direct
+Linux HOST API experiment, not `pvisor run`, VM, journaling or review guarantees.
+
+```sh
+python3 -m pytest benchmark/pvisor/test_kernel_cache_runner.py benchmark/pvisor/test_kernel_cache_report.py -q
+python3 benchmark/pvisor/kernel_cache_runner.py --build \
+  --output benchmark/pvisor/.data/kernel-cache-build-new
+python3 benchmark/pvisor/kernel_cache_runner.py \
+  --build-receipt benchmark/pvisor/.data/kernel-cache-build-new/build-receipt.json \
+  --output benchmark/pvisor/.data/kernel-cache-preflight-new \
+  --samples 1 --warmups 0 --seed 4207 --affinity 0,1
+# Announce the formal timing window; no concurrent builds/tests or editor cargo checks.
+python3 benchmark/pvisor/kernel_cache_runner.py \
+  --build-receipt benchmark/pvisor/.data/kernel-cache-build-new/build-receipt.json \
+  --output benchmark/pvisor/.data/kernel-cache-timing-new \
+  --samples 30 --warmups 3 --seed 4207 --affinity 0,1
+# Only after formal timing exits; never merge diagnostic elapsed times.
+python3 benchmark/pvisor/kernel_cache_runner.py \
+  --build-receipt benchmark/pvisor/.data/kernel-cache-build-new/build-receipt.json \
+  --output benchmark/pvisor/.data/kernel-cache-profile-new --profiles \
+  --samples 3 --warmups 0 --seed 4207 --affinity 0,1
+python3 benchmark/pvisor/kernel_cache_report.py \
+  --timing benchmark/pvisor/.data/kernel-cache-timing-new/report.json \
+  --profiles benchmark/pvisor/.data/kernel-cache-profile-new/report.json \
+  --output benchmark/pvisor/.data/kernel-cache-publication-new
+```
+
+Every output must be NEW. The isolated offline release build freezes dirty source
+bytes, vendor dependencies, compiler commands, binary and harness SHA-256 receipts;
+its default target directory is `benchmark/.data/kernel-cache-target`. One binary
+selects all five conditions through `api::OverlayMountConfig.kernel_cache`:
+legacy-writable uses default `Disabled`/1s, metadata-writable and metadata-readonly
+use `Metadata`/60s, metadata-and-data-readonly uses `MetadataAndData`/60s. Every
+physical lower is `Immutable` with the physical cache enabled. Enabled policies
+use explicit `OwnedViewContract { exclusive_upper_and_work: true,
+fixed_metadata_and_aliases: true }` and `StableView`; every mount has owner-only
+access and `default_permissions=true`. No journal, preimage, observation metrics,
+custom policy or exclusions are configured. Writable metadata requires its real
+fusectl abort endpoint; there is no guard bypass, namespace replacement or fallback.
+
+All native/lower/upper/work backing is genuine **noatime tmpfs**, mounted with
+`noatime,nosuid,nodev,mode=0700,size=512m` in a new private user/mount/PID namespace.
+The coordinator is PID 1; namespace uid 0 maps only to the invoking host user.
+`unshare --kill-child=KILL --propagation private --mount-proc` prevents exported
+mount propagation and ensures init/supervisor death kills all contained consumers,
+including tools in separate sessions. No external view/FD/bind/namespace aliases
+are allowed. Driver `has_exited()` watchers (5ms), active-server supervision while
+waiting (50ms), bounded shutdown and an outer 1800s lifetime enforce the contract.
+Process abort alone is not cache/FD revocation for external users; such users are
+outside this experiment and forbidden. Outer host-wide build/test checks run about
+every 250ms even though the inner private `/proc` only sees contained processes.
+The `containment-receipt.json` records commands, namespace identities, deadlines,
+checks, exit status, surviving users and host mount state.
+
+Live mountinfo/device proofs cover every lower/upper/work/native instance. A physical
+file and directory with old atime (1s after epoch, mtime 2s) undergo 20 reads/listings
+and must retain exact atime; future atime is not used to conceal relatime behavior.
+Both namespace-init death and unshare-supervisor death were separately exercised
+with independently sessioned descendants and zero live users left. These are
+containment tests, not injected notifier-failure tests. Every accepted cohort
+normally detaches its FUSE mounts, archives backing with xattrs/ACLs/numeric ownership
+outside all timers, hashes that archive, then normally unmounts tmpfs. Live inode/dev
+identities remain in inventories; extraction cannot recreate those original IDs.
+A fatal pre-archive failure may lose ephemeral tmpfs contents but durable logs remain.
+
+The 2048/32 half-deep fixture is independent of the unchanged immutable-cache
+experiment below. No global host mount flags change. Inputs are inventoried
+before/after; native writes use a private copy. **Old kernel-cache Btrfs/future-atime
+cohorts are unaccepted historical diagnostics** because upper backing atime violated
+`fixed_metadata_and_aliases`. Raw remains intact; old report/CSVs/harness and the
+status sidecar are retained under `.data/kernel-cache-btrfs-history-20261007/`.
+They must not be pooled with or used as an A/B baseline for noatime tmpfs.
+Overlay instances own fresh upper/work/mountpoint and the immutable lower remains
+stable until all sessions detach. Persistent timing mounts receive immediate priming
+before hot/readsearch/TTL commands. `ttl` waits 1.1s outside the operation timer:
+legacy metadata expires while extended 60s metadata remains warm; it does not test
+60s expiry. `whole-tools` times a new process/mount/verified git+rg+byte-read/unmount
+per sample, including coordinator launch/shutdown and backing-proof/supervision
+bookkeeping. Namespace/tmpfs preparation and archival are outside task timers.
+Warmups are retained separately.
+All samples must pass byte/tool validation; after sampling the persistent conditions
+must pass mutation or readonly namespace/EROFS probes before the cohort is accepted.
+These probes are narrower than the current crate contract/mount tests; they are
+not a replacement for those tests or fault-injected notifier failure tests.
+
+Profile mode creates one fresh process/mount per count case, plus `prime-only`.
+Warm deltas subtract the independently mounted prime-only case in the same round;
+all lifecycle counts and their ranges are retained, not just deltas. Profile times
+never enter formal distributions. Expected components are derived from frozen
+`core.rs`, `fs.rs`, `mount.rs`, `cache.rs`: one core profile and one adapter profile
+per overlay; Arc clones share state and current notifier threads construct no
+profile. All actual PID/component/instance records are retained and each final is
+required exactly once. Unexpected/missing instances fail the cohort. Other future
+profile constructors require explicit source/lifecycle review, not a relaxed guard.
+
+Inner build/test interference checks run before and after every case and preserve failures;
+these are process snapshots, not a proof against arbitrarily short unseen activity.
+Do not run builds/tests or other experiments during measurement. No slow valid
+sample is dropped. Cleanup reads mountinfo rather than stat-based `ismount`, which
+can miss disconnected FUSE mounts; only exact owned mountpoints are normally
+unmounted, without sudo, lazy detach or policy changes. Final receipt verification
+recomputes complete cohort membership, distributions/bootstrap intervals, all
+profile finals, input equality and artifact hashes before exporting derived CSVs.
+The earlier **pre-final-P1, limited performance evidence** commands use `kernel-cache-noatime-build-20261007`,
+`kernel-cache-noatime-preflight-20261007`, `kernel-cache-noatime-timing-20261007`,
+`kernel-cache-noatime-profile-20261007`, and `kernel-cache-noatime-publication-20261007`
+under `benchmark/pvisor/.data/`. The two termination checks and exact commands are
+in `kernel-cache-noatime-containment-check-20261007/receipt.json`. Publication also
+requires noatime proofs, containment exit/no-surviving-users, backing archive digest,
+complete stage proofs and an explicit `noatime-tmpfs-v1` acceptance marker; it rejects
+old Btrfs cohorts rather than weakening hashes. No old/failed/preflight/profile
+elapsed time enters formal statistics. Native and overlays share tmpfs characteristics;
+these results do not establish disk-backed performance or durability.
+
+Those earlier figures are **not final-P1-source acceptance**. Their raw directories
+remain intact, and `.data/kernel-cache-noatime-pre-p1-history-20261007/status.json`
+archives the report/CSVs with `final_fix_acceptance=false`. No cross-version pooling
+or performance attribution is permitted.
+
+The final P1 source is newly frozen under `kernel-cache-p1-final-build-20261007`,
+with `source-version.json` binding Core/service/host-FS implementation hashes,
+build receipt, full dirty-source inventory and binary. New preflight
+`kernel-cache-p1-final-preflight-20261007` and independent profile
+`kernel-cache-p1-final-profile-20261007` passed. Three formal attempts
+(`kernel-cache-p1-final-timing-20261007`, `kernel-cache-p1-final-timing-quiet-20261007`,
+`kernel-cache-p1-final-timing-isolated-20261007`) all failed build/test interference
+checks. **No final-source 30-sample performance distribution is available.** Current
+`kernel-cache-summary.csv` explicitly contains blocked cells and empty time/CI fields;
+`kernel-cache-counters.csv` contains only separately validated final-source diagnostics.
+
+Failure cleanup exposed a limitation: namespace kill can leave exiting FUSE tasks
+blocked in `request_wait_answer`, so the earlier simple-process death checks do not
+establish immediate bounded FUSE cleanup. Remaining-thread mountinfo precisely
+identified this experiment's four live endpoints; scoped abort removed all residual
+PIDs. The original failure receipts retain their survivor observations, and the
+additional cleanup evidence is in `kernel-cache-p1-final-failed-cleanup-20261007/`.
+No unrelated connection, global setting or admission guard was changed.
+
+Blocked publication is deliberately separate from successful formal publication:
+
+```sh
+python3 benchmark/pvisor/kernel_cache_report.py \
+  --failed-timings \
+    benchmark/pvisor/.data/kernel-cache-p1-final-timing-20261007/report.json \
+    benchmark/pvisor/.data/kernel-cache-p1-final-timing-quiet-20261007/report.json \
+    benchmark/pvisor/.data/kernel-cache-p1-final-timing-isolated-20261007/report.json \
+  --profiles benchmark/pvisor/.data/kernel-cache-p1-final-profile-20261007/report.json \
+  --source-version benchmark/pvisor/.data/kernel-cache-p1-final-build-20261007/source-version.json \
+  --output benchmark/pvisor/.data/kernel-cache-p1-final-publication-blocked-new
+```
+
+This path validates diagnostics and exact source/binary/harness/noatime/archive hashes,
+requires the timing attempts to be failed and refused by the normal validator, and
+exports no timing statistics. The retained run is
+`kernel-cache-p1-final-publication-blocked-20261007`. Normal performance publication
+still requires a complete passed cohort. To retry final-source timing, reuse its
+frozen build receipt and the measurement command above with a **new** output directory;
+keep editor auto-Cargo checks and every agent's tests stopped for the entire window.
+Do not combine partial failed rows or substitute earlier P50/percentages.
+
+### Owned immutable lower physical metadata cache
+
+`immutable_lower_cache.py` / `immutable_lower_cache_driver.rs` serve **B-FS-ENG**;
+`--profiles` serves **B-FS-DIAG**, never elapsed-time claims. The retained
+[engineering report](IMMUTABLE_LOWER_CACHE_REPORT.md) compares real Linux host
+FUSE native/mutable/immutable-cache-off/on. This is not a VM/OCI or user-facing
+benchmark. It uses the completed API traits with CLI disabled, no journal in all
+conditions, unchanged kernel TTL/KEEP_CACHE, and no permission workaround.
+
+Run from the repository root, using a **new** output directory for each command:
+
+```sh
+python3 -m pytest benchmark/pvisor/test_immutable_lower_cache.py -q
+python3 benchmark/pvisor/immutable_lower_cache.py --build \
+  --output benchmark/.data/immutable-cache-build-new
+python3 benchmark/pvisor/immutable_lower_cache.py \
+  --build-receipt benchmark/.data/immutable-cache-build-new/build-receipt.json \
+  --output benchmark/.data/immutable-cache-preflight-new --samples 1 --warmups 0
+# After successful preflight, announce the timing window; no concurrent build/test.
+python3 benchmark/pvisor/immutable_lower_cache.py \
+  --build-receipt benchmark/.data/immutable-cache-build-new/build-receipt.json \
+  --output benchmark/.data/immutable-cache-timing-new --samples 30 --warmups 3 \
+  --seed 4207 --affinity 0,1
+# Only after timing exits; profile timings are not included in engineering tables.
+python3 benchmark/pvisor/immutable_lower_cache.py \
+  --build-receipt benchmark/.data/immutable-cache-build-new/build-receipt.json \
+  --output benchmark/.data/immutable-cache-profile-new --profiles \
+  --samples 3 --warmups 0 --seed 4207 --affinity 0,1
+```
+
+Select allowed CPUs with `--affinity` on other hosts (default: first two allowed
+CPUs). The isolated generated manifest contains `[workspace]`, frozen path
+dependencies and the product's vendored fuser patch. Build is offline, release,
+CLI-disabled, with four build jobs; it reuses root `target` by default, or accepts
+`--target-dir benchmark/.data/immutable-cache-target` for fully isolated artifacts.
+All tracked/nonignored crate and vendor files, including current dirty bytes,
+are frozen and SHA-256 inventoried; build command/compiler/lock/manifest/binary
+and harness receipts are retained. Existing output directories are rejected.
+Fixture creation is outside timing: 2048 unique files in 32 branches, 1024 shallow
+and 1024 seven-level-nested files; private Git repo with automatic GC/maintenance
+disabled, optional Git locks disabled during tasks. Only generated fixture
+atimes are initialized beyond the run window to preserve physical metadata under
+relatime; no host mount policy is changed. Exact lower namespace, bytes, modes,
+ownership, inode/device/link identities, times and xattrs must match after runs.
+
+Each condition has an exclusively owned upper/work/mountpoint. Persistent mounts
+remain alive for seeded random interleaved rounds but only one workload runs at a
+time. Immediate untimed priming precedes hot and TTL-expiry operations; the latter
+waits 1.1 seconds before the first traversal, outside the operation timer. Each
+metadata/open/read command traverses all files twice and compares all bytes;
+readsearch traverses once. `tools` runs clean `git status`, exact-path-checked `rg`
+and all-byte verification; `whole-tools` uses a fresh mount per sample and measures
+coordinator launch-through-normal-unmount, with mount/tools/unmount fields kept
+separate. Persistent process lifetime includes all idle/shuffle/wait windows and
+is not task latency. Warmups are retained but not aggregated; slow valid samples
+are not discarded, paired bootstrap intervals and distribution checks are emitted.
+
+After sampling, warmed lower paths undergo append copy-up (old contents retained),
+rename, unlink/recreate and lower-only unlink. Immediate and post-TTL visible
+contents, metadata, ENOENT, directory names, exact upper file inventory and whiteout
+markers are checked; every physical lower remains unchanged. No preimage/review,
+concurrent upper modifier, eviction stress, VM, OCI or cold-disk claim is made.
+Independent profile stderr goes directly to regular files. All PID/component/
+instance cumulative records are retained; only the final record per instance is
+used for comparisons. Inclusive spans are not added into a total.
+
+The coordinator bounds responses to 90 seconds, builds to 600 seconds and
+shutdown to 15 seconds; the driver also has a finite 1800-second watchdog. Failure
+logs and stages are retained. Cleanup addresses only the exact generated owned
+mountpoint/process group, never sudo, lazy unmount or global policy changes. A
+failed real mount is not a valid performance sample; preserve it and report the
+FUSE gap rather than substituting a mocked view. The recorded host successfully
+mounted FUSE, so no core-only fallback was needed.
 
 B-FS-ENG engineering runners and B-FS-DIAG diagnostic helpers remain active: `filesystem_ab.py`, `filesystem_fuse_ab.py`, `filesystem_stage_ab.py`, `filesystem_stage_durability.py`, `filesystem_lazy_ab.py`, `filesystem_kernel_probe.py` and `filesystem_diagnostic.py`. The FUSE passthrough adapter is a diagnostic control without staging semantics, not a production mode. Record each engineering run’s ID and keep raw output in `.data/`; publish only when it changes a user conclusion, after a matching user-facing comparison.
 

@@ -13,11 +13,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
 use pvisor_overlay_core::{
     backend,
     service::{FilesystemService, OpenBacking},
 };
+use pvisor_overlay_core::{BackingIdentity, BackingResolution, OverlayCore};
 
 use super::super::linux_errno::linux_error;
 use super::bindings;
@@ -45,6 +45,8 @@ const RENAME_EXCHANGE: u32 = 2;
 )]
 pub struct Config {
     pub lower_dirs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lower_mutability: Vec<pvisor_overlay_core::LayerMutability>,
     #[serde(default)]
     pub apply_target: Option<String>,
     #[serde(default)]
@@ -314,6 +316,21 @@ impl OverlaySnapshot {
             .iter()
             .map(|root| relocate(root))
             .collect::<io::Result<_>>()?;
+        // Copies begin a new backing lifetime. Only explicitly retained, unchanged
+        // lower owners may keep an existing stability promise.
+        if !config.lower_mutability.is_empty() {
+            if config.lower_mutability.len() != config.lower_dirs.len() {
+                return Err(invalid("lower mutability length mismatch"));
+            }
+            for (index, promise) in config.lower_mutability.iter_mut().enumerate() {
+                let old = &self.config.lower_dirs[index];
+                if old != &config.lower_dirs[index]
+                    || !retained.iter().any(|root| root == Path::new(old))
+                {
+                    *promise = pvisor_overlay_core::LayerMutability::Mutable;
+                }
+            }
+        }
         config.work_dir = config.work_dir.as_deref().map(&relocate).transpose()?;
         config.preimage_dir = config.preimage_dir.as_deref().map(&relocate).transpose()?;
         config.apply_target = config.apply_target.as_deref().map(&relocate).transpose()?;
@@ -389,7 +406,8 @@ impl OverlaySnapshot {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(config.lower_dirs.last().unwrap())),
             config.baseline_lower.as_deref().map(Path::new),
-        )?;
+        )?
+        .with_lower_mutability(config.lower_mutability.clone())?;
         let core = OverlayCore::open_existing_for_layout(
             layout,
             PathBuf::from(&config.upper_dir),
@@ -578,7 +596,8 @@ impl OverlayFs {
             lowers.clone(),
             target,
             cfg.baseline_lower.as_deref().map(Path::new),
-        )?;
+        )?
+        .with_lower_mutability(cfg.lower_mutability.clone())?;
         let open = if restoring {
             OverlayCore::open_existing_for_layout
         } else {
@@ -1163,7 +1182,7 @@ impl FileSystem for OverlayFs {
         )))
     }
     fn restore_state(&self, state: &super::snapshot::FsSnapshot) -> io::Result<()> {
-        use super::snapshot::{FsSnapshot, invalid};
+        use super::snapshot::{invalid, FsSnapshot};
         let FsSnapshot::Overlay(state) = state else {
             return Err(invalid("overlay filesystem type mismatch"));
         };
@@ -2366,6 +2385,7 @@ mod tests {
             let stage = temp.path().join(format!("stage-{legacy}"));
             let journal = stage.join("preimages");
             let cfg = Config {
+                lower_mutability: Vec::new(),
                 lower_dirs: vec![target.to_str().unwrap().into()],
                 apply_target: None,
                 baseline_lower: None,
@@ -2410,6 +2430,7 @@ mod tests {
     fn parent_cache_fixture(root: &Path) -> OverlayFs {
         let fs = OverlayFs::new(
             Config {
+                lower_mutability: Vec::new(),
                 lower_dirs: vec![root.join("lower").to_string_lossy().into_owned()],
                 apply_target: None,
                 baseline_lower: None,
@@ -2437,7 +2458,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir(temp.path().join("lower")).unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let super::super::snapshot::FsSnapshot::Overlay(mut state) = fs.capture_state().unwrap() else {
+        let super::super::snapshot::FsSnapshot::Overlay(mut state) = fs.capture_state().unwrap()
+        else {
             panic!("overlay expected")
         };
         state.nodes.push((123, b"visible/file".to_vec()));
@@ -2909,10 +2931,9 @@ mod tests {
         };
         let entry = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap();
         for _ in 0..16 {
-            assert!(
-                fs.open(ctx, entry.inode, false, libc::O_WRONLY as u32)
-                    .is_err()
-            );
+            assert!(fs
+                .open(ctx, entry.inode, false, libc::O_WRONLY as u32)
+                .is_err());
         }
         assert!(fs.handles.lock().unwrap().is_empty());
         let super::super::snapshot::FsSnapshot::Overlay(snapshot) = fs.capture_state().unwrap()
@@ -2924,12 +2945,10 @@ mod tests {
                 panic!("expected a native layer");
             };
             assert!(native.handles.is_empty());
-            assert!(
-                native
-                    .inodes
-                    .iter()
-                    .all(|inode| inode.inode == fuse::ROOT_ID)
-            );
+            assert!(native
+                .inodes
+                .iter()
+                .all(|inode| inode.inode == fuse::ROOT_ID));
         }
     }
 
@@ -2937,6 +2956,7 @@ mod tests {
     fn overlay_snapshot_preserves_the_unboxed_json_contract() {
         let state = OverlaySnapshot {
             config: Config {
+                lower_mutability: Vec::new(),
                 lower_dirs: vec!["/lower".into()],
                 apply_target: None,
                 baseline_lower: None,
@@ -2955,6 +2975,15 @@ mod tests {
             handles: vec![],
             next_handle: 2,
         };
+        let legacy = serde_json::to_value(&state.config).unwrap();
+        assert!(legacy.get("lower_mutability").is_none());
+        let decoded: Config = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.lower_mutability.is_empty());
+        let mut declared = decoded;
+        declared.lower_mutability = vec![pvisor_overlay_core::LayerMutability::Immutable];
+        let roundtrip: Config =
+            serde_json::from_value(serde_json::to_value(&declared).unwrap()).unwrap();
+        assert_eq!(roundtrip.lower_mutability, declared.lower_mutability);
         // Box must add no wrapper to the tagged enum's persisted state format,
         // including when nested in layers.
         let old_wire = serde_json::json!({
@@ -2978,6 +3007,7 @@ mod tests {
         std::os::unix::fs::symlink("private.key", lower.join("alias")).unwrap();
         let fs = OverlayFs::new(
             Config {
+                lower_mutability: Vec::new(),
                 lower_dirs: vec![lower.to_string_lossy().into_owned()],
                 apply_target: None,
                 baseline_lower: None,
@@ -3002,24 +3032,52 @@ mod tests {
             gid: 0,
             pid: 1,
         };
-        assert!(
-            fs.lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
-                .is_err()
-        );
+        assert!(fs
+            .lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
+            .is_err());
         let alias = fs
             .lookup(ctx, fuse::ROOT_ID, &CString::new("alias").unwrap())
             .unwrap();
-        assert!(
-            fs.open(ctx, alias.inode, false, libc::O_RDONLY as u32)
-                .is_err()
-        );
+        assert!(fs
+            .open(ctx, alias.inode, false, libc::O_RDONLY as u32)
+            .is_err());
         let env = fs
             .lookup(ctx, fuse::ROOT_ID, &CString::new(".env").unwrap())
             .unwrap();
-        assert!(
-            fs.open(ctx, env.inode, false, libc::O_RDONLY as u32)
-                .is_ok()
-        );
+        assert!(fs
+            .open(ctx, env.inode, false, libc::O_RDONLY as u32)
+            .is_ok());
+    }
+
+    #[test]
+    fn explicit_immutable_lower_reaches_core_without_caching_merged_whiteouts() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        std::fs::create_dir(&lower).unwrap();
+        std::fs::write(lower.join("file"), b"stable").unwrap();
+        let fixture = parent_cache_fixture(temp.path());
+        let super::super::snapshot::FsSnapshot::Overlay(state) = fixture.capture_state().unwrap()
+        else {
+            panic!("overlay expected")
+        };
+        let mut config = state.config;
+        config.lower_mutability = vec![pvisor_overlay_core::LayerMutability::Immutable];
+        let mut fs = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
+        let profile = pvisor_overlay_core::profile::Profile::enabled("immutable-adapter");
+        fs.core = fs.core.with_profile(profile.clone());
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
+        fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
+        assert!(profile.report().unwrap().measurements["immutable_lower_cache_hits"].units > 0);
+        fs.unlink(ctx, fuse::ROOT_ID, c"file").unwrap();
+        assert!(fs.lookup(ctx, fuse::ROOT_ID, c"file").is_err());
+        assert_eq!(std::fs::read(lower.join("file")).unwrap(), b"stable");
+        assert!(temp.path().join("upper/.wh.file").is_file());
     }
 
     #[test]
@@ -3032,6 +3090,7 @@ mod tests {
         std::fs::write(lower.join("original"), b"lower").unwrap();
         let fs = OverlayFs::new(
             Config {
+                lower_mutability: Vec::new(),
                 lower_dirs: vec![lower.to_string_lossy().into_owned()],
                 apply_target: None,
                 baseline_lower: None,
@@ -3117,6 +3176,7 @@ mod tests {
             std::fs::create_dir(&lower).unwrap();
             let fs = OverlayFs::new(
                 Config {
+                    lower_mutability: Vec::new(),
                     lower_dirs: vec![lower.to_string_lossy().into_owned()],
                     apply_target: None,
                     baseline_lower: None,
@@ -3212,6 +3272,7 @@ mod tests {
         let inode_alloc = Arc::new(InodeAllocator::new());
         let fs = OverlayFs::new(
             Config {
+                lower_mutability: Vec::new(),
                 lower_dirs: vec![lower.to_string_lossy().into_owned()],
                 apply_target: None,
                 baseline_lower: None,
@@ -3325,8 +3386,8 @@ mod tests {
         assert_eq!(entry.attr.st_gid, 2345);
         assert_eq!(entry.attr.st_mode as u32 & 0o7777, 0o755);
         fs.access(ctx, entry.inode, libc::X_OK as u32).unwrap();
-        assert!(
-            fs.access(
+        assert!(fs
+            .access(
                 Context {
                     uid: 3456,
                     gid: 3456,
@@ -3335,8 +3396,7 @@ mod tests {
                 entry.inode,
                 libc::W_OK as u32
             )
-            .is_err()
-        );
+            .is_err());
         let handle = fs
             .open(ctx, entry.inode, false, libc::O_RDONLY as u32)
             .unwrap()
@@ -3411,6 +3471,7 @@ fn small_file_adapter_benchmark() {
             };
             let mut fs = OverlayFs::new(
                 Config {
+                    lower_mutability: Vec::new(),
                     lower_dirs: vec![backing_root.to_string_lossy().into_owned()],
                     apply_target: None,
                     baseline_lower: None,

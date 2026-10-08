@@ -54,6 +54,8 @@ host 和 staged 的等待为十几到几十毫秒，适合频繁启动的短命�
 
 差异为两组中位数之差；对匹配轮次做 5,000 次配对 bootstrap 得到 95% 区间。三个区间均不含零，支持这些配置下 pVisor VM 启动更快。专用固件和精简初始化提供较短的启动路径；这个对照不能分别量化内核、文件系统和 VMM 的贡献。
 
+冷镜像的客户端等待与内容下载见独立的[镜像按需启动](lazy-image-startup.md)实验；镜像服务准备成本单列，样本不与这里的预准备环境合并。
+
 ### 数据下载与复现 {#run}
 
 [启动统计](startup.csv) · [VM 差异与 95% 区间](startup-stock-comparisons.csv) · [VM 源码与制品来源](startup-stock-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls)。二进制、完整输入和原始日志保留在本地忽略的 `.data/`；CSV 保留统计来源与样本数，来源记录保留 CPU/RAM 配置、报告和制品摘要。

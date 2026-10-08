@@ -54,6 +54,8 @@ Host and staged wait tens of milliseconds, making them suitable for frequently l
 
 Differences are differences between the two medians, with 95% intervals from 5,000 bootstrap resamples of matching rounds. All three intervals exclude zero, supporting faster pVisor VM startup for these configurations. Dedicated firmware and simplified initialization provide a shorter startup path; this comparison cannot separately quantify kernel, filesystem and VMM contributions.
 
+For cold-image client waiting and content downloads, see the separate [on-demand image startup](lazy-image-startup.md) experiment. Image-service preparation is recorded separately, and its samples are not pooled with these prepared-environment results.
+
 ### Downloads and reproduction {#run}
 
 [Startup statistics](startup.csv) · [VM differences and 95% intervals](startup-stock-comparisons.csv) · [VM source and artifact provenance](startup-stock-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls). Binaries, complete inputs and raw logs stay in local ignored `.data/`; CSVs retain statistical sources and sample counts, and provenance records retain CPU/RAM configuration and report/artifact digests.

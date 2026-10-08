@@ -8,7 +8,10 @@ use std::io::{Read, Write};
 pub(super) const MAX_FRAME: usize = 1024 * 1024;
 pub const MAX_READ: u32 = 1024 * 1024;
 
-/// One request per connection. All paths are Unix bytes, relative to image root.
+/// All paths are Unix bytes, relative to image root. Envelope version 1 uses
+/// one request per connection; version 2 permits sequential framed exchanges.
+/// A `Read` response frame is followed by exactly `Data.length` raw bytes before
+/// the next request/response frame. There is no pipelining or automatic replay.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
@@ -41,9 +44,16 @@ pub enum Request {
     },
 }
 
+/// Version 1 closes after one exchange; version 2 retains the connection for
+/// sequential exchanges until EOF, idle timeout, or a transport/framing failure.
+/// Clients negotiate with version-2 `Ping` exchanges on a fresh connection,
+/// confirming persistence before sending any actual request. Authorization is
+/// checked on every envelope, and the version cannot change within a connection.
+/// Responses keep the v1 wire shape.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Envelope {
+    /// Connection semantics: 1 (single exchange) or 2 (persistent exchanges).
     pub(super) version: u32,
     pub(super) token: Option<String>,
     pub(super) request: Request,

@@ -196,6 +196,34 @@ fn runner_handoff_reopens_the_backend_and_retires_with_its_owner() {
 }
 
 #[test]
+fn metadata_probes_do_not_project_unvisited_siblings_or_materialize_content() {
+    let (temp, server, client, digest) = fixture();
+    let original = temp
+        .path()
+        .join("store/rootfs-v3/sha256")
+        .join(&digest[7..]);
+    fs::hard_link(original.join("large"), original.join("linked")).unwrap();
+    fs::write(original.join("unvisited"), b"stay lazy").unwrap();
+    let image = image(client, digest, temp.path());
+    let root = image.root();
+    backend::symlink_metadata(root.join("large")).unwrap();
+    backend::symlink_metadata(root.join("linked")).unwrap();
+    let large = backend::attributes(&root.join("large")).unwrap().unwrap();
+    let linked = backend::attributes(&root.join("linked")).unwrap().unwrap();
+    assert_eq!(large.ino, linked.ino);
+    assert_eq!(large.size, linked.size);
+    assert_eq!(large.nlink, 2);
+    assert_eq!(server.reads.load(Ordering::Relaxed), 0);
+    assert!(
+        !root.join("unvisited").exists(),
+        "metadata prefetch must not project siblings"
+    );
+
+    assert!(backend::symlink_metadata(root.join("alias/child")).is_err());
+    assert_eq!(server.reads.load(Ordering::Relaxed), 0);
+}
+
+#[test]
 fn hot_metadata_does_not_rewrite_projection_identity() {
     let (temp, _server, client, digest) = fixture();
     let image = image(client, digest, temp.path());

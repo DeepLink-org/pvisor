@@ -1,18 +1,19 @@
-# 一次完整修复任务要多久？
+# 端到端 Agent 任务：什么时候选择 pVisor？
 
 ## 主要结论 {#conclusions}
 
-**固定修复任务到退出，pVisor staged 为 0.64 s，短于 Docker 的 0.81 s；pVisor VM 为 3.25 s，长于 Firecracker 的 2.20 s 和 QEMU microvm 的 1.40 s。优势随执行模式与负载变化。**
+**需要频繁创建任务视图、保留少量改动并审查合入时，评估 pVisor staged：固定修复任务为 0.64 s，Docker 为 0.81 s；但七项工具任务 staged 为 1.09 s，Docker 为 0.82 s。pVisor VM 的修复为 3.25 s，长于 Firecracker 的 2.20 s 和 QEMU microvm 的 1.40 s，独立 guest 边界需要额外预算。**
 
 | 需求 | 选型含义 |
 | --- | --- |
-| 本机执行并保留改动 | 评估 host/staged 与完整审查流程 |
-| 独立 guest 内核 | 同时预算启动和 VM 工具等待 |
-| 并发或闲置环境 | 需要固定资源下的吞吐与物理内存实测 |
+| 大工作区、稀疏改动、每次新建任务视图 | staged 有完整机器流程优势；同时预算工具开销 |
+| 小工作区、现成容器或原生 Agent 沙箱 | 保留已有 Git/工具流程，不为单项速度全面替换 |
+| 独立 guest 内核 | 选择 VM 前验证 CLI 兼容性和完整工具成本 |
+| 远端 API 与托管弹性 | 按仓库同步、部署和运维需求评估云端；同条件性能与账单未测 |
 
 ## Motivation {#motivation}
 
-修复代码还需要搜索、安装依赖、运行测试和输出 diff。固定工具计划排除推理和公网波动，让你判断执行环境增加的等待。
+一次任务包括环境准备、模型与工具交互、测试验证、审查合入和清理。只看启动会漏掉工具与结果处理；只看工具速度，又会漏掉反复创建工作区的成本。固定工具计划排除推理和公网波动，独立的完整审查流程衡量同样改动如何进入原工作区。
 
 ## 实验设计 {#interpretation}
 
@@ -23,6 +24,8 @@ Linux x86_64，AMD Ryzen 7 9700X，Fedora 7.2.8-200.fc44.x86_64。执行进程�
 固定计划检查和搜索仓库、修复 Python、执行 Python/Rust/Node 测试、安装 32 个离线 npm 包并生成 diff。Result 截止到校验后的结果返回，Completion 包括退出；测试和预期改动必须通过。该工具计划没有测量真实模型推理，也不能证明真实 Agent CLI 的兼容性。
 
 这些样本未验证 Node/npm 编译缓存跨后端一致。新工作区不等于空工具缓存；完整任务的差值包含各配置下的缓存行为，不能全部归因于 stage 或 VMM。
+
+场景分析还引用[文件系统](filesystem.md)、[完整审查流程](supervision-cost.md)、[启动](startup.md)、[惰性镜像](lazy-image-startup.md)和[隔离有效性](isolation-tests.md)的独立注册实验。审查流程每格 30 次，计时含视图创建、20 次修改、审查、合入 10 个文件与清理；Git/reflink 不提供同一隔离。各实验分别统计，不能相加中位数估算一次真实 Agent 任务，也不沿用它们的资源配置做统一排名。
 
 ## 实验数据和分析 {#results}
 
@@ -42,6 +45,30 @@ Linux x86_64，AMD Ryzen 7 9700X，Fedora 7.2.8-200.fc44.x86_64。执行进程�
 | QEMU microvm | 60 / 0 | 1.35 | 1.40 | 1.42 |
 
 staged 相对 Docker 的完整任务中位数差为 −175.84 ms，95% 配对 bootstrap 区间 [−178.85, −174.55] ms。VM 相对 QEMU microvm 为 +1849.00 ms，区间 [+1834.43, +1855.78] ms。该优势限于这套已准备的修复负载；不代表所有工具或并发吞吐。
+
+### 工具速度与完整改动流程的取舍 {#workflow-tradeoffs}
+
+前三个工具行来自 2026-10-06 的任务/文件系统实验；审查行来自同日独立实验。单位、P50 与每格样本数分别标注，各行只比较同一实验内的配置。
+
+| 负载 | pVisor P50 | 对照 P50 | 每格 N | 选型含义 |
+|---|---:|---:|---:|---|
+| 固定修复到退出 | 0.64 s | Docker 0.81 s | 60 | 这套修复计划 staged 等待较短 |
+| 七项工具到退出 | 1.09 s | Docker 0.82 s | 60 | 文件密集工具开销可能抵消短启动 |
+| 七项工具到退出 | VM 4.27 s | QEMU microvm 1.50 s | 60 | guest 边界不能只按 shell-ready 选型 |
+| 10,000 文件中改 20、合入 10，含视图创建/清理 | 140.82 ms | Git worktree 248.10 ms；reflink 343.00 ms | 30 | 大工作区的整树处理成本超过 stage 的额外开销 |
+| 100 文件中改 20、合入 10，含视图创建/清理 | 109.02 ms | Git worktree 22.02 ms；reflink 23.66 ms | 30 | 小工作区原生流程更快 |
+| 已准备的 20 文件视图，只审查/合入/丢弃 | 27.71 ms | Git worktree 4.69 ms | 30 | 视图准备完成后，stage 无单独审查速度优势 |
+
+[七项工具](filesystem.md#complete-task)中 staged-minus-Docker 的中位数差为 +268.81 ms，95% CI [+264.64, +271.15] ms；[大工作区流程](supervision-cost.md#baseline-meaning)中 stage-minus-Git 为 −107.27 ms，95% CI [−109.02, −105.60] ms。小工作区为 +86.99 ms，95% CI [+77.28, +87.57] ms。优势来自负载和流程选择，不能推导全面替代 Docker、worktree 或 VMM。完整流程只合入 10 个文件；大量合入的额外成本见 [apply](supervision-cost.md#apply-cost)。机器计时不包含人的阅读时间。
+
+[启动](startup.md)与[惰性镜像](lazy-image-startup.md)分别回答环境已准备和客户端镜像未缓存的等待。冷 lazy 的 183.7 ms 不含首次服务准备；热客户端通常是 Docker 更快。镜像按需读取不能消除后续仓库工具开销。
+
+### 如何接入现有工具链 {#existing-workflows}
+
+- **原生 Agent 沙箱：** 保留客户端权限与审批机制；需要跨 Agent 统一暂存、按路径合入和记录时再评估 pVisor。内置沙箱结合 Git/worktree 也能审查改动。下方 CLI 实测使用受控模式，默认双层沙箱兼容性未测。能力说明见 [Claude Code](https://code.claude.com/docs/en/sandboxing)、[Codex](https://developers.openai.com/codex/security/)、[Gemini CLI](https://geminicli.com/docs/cli/sandbox/)。
+- **Docker / devcontainer：** 依赖环境与现有 Git 流程可以继续使用；可写 bind mount 直接修改宿主，需自行组织独立工作区和恢复。所测 staged/safe/VM 在路径与 Unix socket fixture 中各 3/3 保留暂存并阻止列出的视图外访问，OCI/Podman 的授权可写工作区则写穿，见[隔离矩阵](isolation-tests.md)。这不证明内核逃逸防护或远端副作用可回滚。
+- **Firecracker / QEMU / gVisor / Kata：** 先确定 guest/容器边界，再预算完整任务；上述修复对照的内核、文件系统与加固不同。原版内核 shell-ready 与工具批次独立，gVisor/Kata 同条件任务未测，不作安全或速度统一排名。
+- **云端沙箱：** [E2B](https://docs.e2b.dev/)、[Daytona](https://www.daytona.io/docs/en/)、[Modal](https://modal.com/docs/guide/sandboxes)可按远端环境和托管容量需求评估。真实任务需计环境构建、仓库上传、依赖缓存、执行、结果下载及本地合入；本机数据不能替代云端区域延迟、账单或可用性测试。模型费用、本地硬件和运维也属于成本；长期复用环境会改变准备成本的摊销。
 
 ### 真实 CLI 兼容性 {#cli-compatibility}
 
@@ -69,4 +96,4 @@ Claude 使用 `--bare`、只允许 Bash；Codex 使用 `--ephemeral` 和 `danger
 
 ### 数据下载与复现 {#run}
 
-[整理后的统计 CSV](agent-tasks.csv) · [全部运行时统计](runtime-summary.csv) · [差异与 95% 置信区间](runtime-comparisons.csv) · [源码与制品来源](runtime-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[场景证据 CSV](task-scenarios.csv) · [整理后的统计 CSV](agent-tasks.csv) · [全部运行时统计](runtime-summary.csv) · [差异与 95% 置信区间](runtime-comparisons.csv) · [源码与制品来源](runtime-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

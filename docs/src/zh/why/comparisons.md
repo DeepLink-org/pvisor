@@ -11,4 +11,4 @@
 
 已有 worktree、patch 检查和合并流程时，可以继续使用 Docker 与 `git diff`。通过 bind mount 写入的内容需要自行恢复。pVisor 提供暂存、按路径提交、preimage 冲突检查和能力观察，运行成本见实测。
 
-第一版对比于 2026-10-04 核对官方文档；本机 Podman/CLI 实测和云端未测范围分别标注。来源、配置与适用边界见：[Agent 自带沙箱](../benchmarks/compare-agent-sandboxes.md) · [Docker/devcontainer](../benchmarks/compare-containers.md) · [云端沙箱](../benchmarks/compare-cloud-sandboxes.md) · [隔离基座](../benchmarks/compare-runtimes.md) · [RL 基础设施](../benchmarks/compare-rl-infra.md)。
+按任务流程判断额外成本：[端到端任务](../benchmarks/agent-tasks.md)结合修复、文件工具、工作区审查和 CLI 兼容性的实测，分析 Agent 沙箱、Docker/devcontainer、VM 与云端的取舍；[强化学习训练](../benchmarks/compare-rl-infra.md)结合活跃容量和回放数据，说明执行层如何影响 rollout 的环境预算。云端费用、默认双层 Agent 沙箱及完整训练性能尚无同条件对照。

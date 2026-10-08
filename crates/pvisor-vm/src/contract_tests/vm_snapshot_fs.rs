@@ -408,6 +408,7 @@ fn overlay_rebinds_owned_layers_handles_cookies_and_future_hard_link_copy_up() {
     std::fs::write(original.join("target/unvisited"), b"owned archive entry").unwrap();
     let original = original.canonicalize().unwrap();
     let config = |root: &Path| OverlayConfig {
+        lower_mutability: Vec::new(),
         lower_dirs: vec![
             root.join("toolkit").to_str().unwrap().into(),
             root.join("base").to_str().unwrap().into(),
@@ -714,6 +715,7 @@ fn shared_lower_restores_keep_handles_cookies_and_hard_link_copy_up_private() {
             false,
             vec![],
             Some(OverlayConfig {
+                lower_mutability: Vec::new(),
                 lower_dirs: vec![lower.to_str().unwrap().into()],
                 apply_target: None,
                 baseline_lower: None,
@@ -1228,6 +1230,7 @@ fn overlay_preserves_directory_cookies_and_consumed_virtual_names() {
                 },
             }],
             Some(OverlayConfig {
+                lower_mutability: Vec::new(),
                 lower_dirs: vec![lower.path().to_str().unwrap().into()],
                 apply_target: None,
                 baseline_lower: None,
@@ -1415,6 +1418,7 @@ fn virtiofs_content_open_preserves_target_preimage_across_restore_and_composed_l
                 baseline.clone()
             });
             let config = OverlayConfig {
+                lower_mutability: Vec::new(),
                 lower_dirs: vec![
                     top.to_str().unwrap().into(),
                     baseline_lower
@@ -1578,6 +1582,7 @@ fn overlay_stage_retains_lower_and_restores_open_handles_and_future_alias_copy_u
             false,
             vec![],
             Some(OverlayConfig {
+                lower_mutability: Vec::new(),
                 lower_dirs: vec![base.to_str().unwrap().into()],
                 upper_dir: stage.join("upper").to_str().unwrap().into(),
                 work_dir: Some(stage.join("work").to_str().unwrap().into()),

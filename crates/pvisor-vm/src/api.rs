@@ -585,6 +585,13 @@ pub struct BaselineContentIndex {
 /// atomically before replacing configuration for the backend that requires it.
 pub struct OverlayConfig {
     pub lower_dirs: Vec<PathBuf>,
+    /// Stability promises in physical lower order (highest priority first).
+    /// Empty defaults to all mutable; a nonempty length mismatch is InvalidInput
+    /// before configuration replacement. Caller guarantees contents, metadata,
+    /// namespace, ancestors and mount identities until device teardown, including
+    /// restore lifetimes. Read-only mounts and frozen baselines are not proof.
+    /// This never describes upper or merged-view stability.
+    pub lower_mutability: Vec<pvisor_overlay_core::LayerMutability>,
     pub upper_dir: PathBuf,
     pub work_dir: Option<PathBuf>,
     pub preimage_dir: Option<PathBuf>,

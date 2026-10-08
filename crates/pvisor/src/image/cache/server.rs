@@ -13,6 +13,7 @@ use std::net::TcpListener;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 #[cfg(test)]
@@ -64,51 +65,238 @@ fn ensure_same_user(socket: &UnixStream) -> anyhow::Result<()> {
     Ok(())
 }
 
+const CONNECTION_LIMIT: usize = 64;
+const REQUEST_QUEUE_LIMIT: usize = 16;
+const FILE_WORKERS: usize = 16;
+const PREPARE_WORKERS: usize = 2;
+type ExchangeResult = anyhow::Result<(Response, Vec<u8>)>;
+
+// Only legacy V1 preparation hands its stream to a worker. Persistent stream
+// reads, writes, idle waits and result waits belong to bounded connection handlers.
+enum PrepareReply {
+    Connection(Stream, Option<ConnectionPermit>),
+    Result(mpsc::SyncSender<ExchangeResult>),
+}
+type PrepareJob = (PrepareReply, Request);
+
+struct ConnectionPermit(Arc<AtomicUsize>);
+impl ConnectionPermit {
+    // Keep the atomic update spelling supported by Rust versions before 1.99.
+    #[allow(deprecated)]
+    fn acquire(active: &Arc<AtomicUsize>) -> anyhow::Result<Self> {
+        active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < CONNECTION_LIMIT).then_some(count + 1)
+            })
+            .map_err(|_| anyhow::anyhow!("cache connection limit reached"))?;
+        Ok(Self(active.clone()))
+    }
+}
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+struct ConnectionHandlers {
+    active: Arc<AtomicUsize>,
+    store: Arc<PortableCache>,
+    token: Arc<Option<String>>,
+    files: mpsc::SyncSender<PrepareJob>,
+    prepare: mpsc::SyncSender<PrepareJob>,
+}
+impl ConnectionHandlers {
+    fn dispatch(&self, stream: Stream) -> anyhow::Result<std::thread::JoinHandle<()>> {
+        // Admission does not queue sockets or spawn a thread above the cap.
+        // Excess connections close without reading or executing any request.
+        let permit = ConnectionPermit::acquire(&self.active)?;
+        let store = self.store.clone();
+        let token = self.token.clone();
+        let files = self.files.clone();
+        let prepare = self.prepare.clone();
+        Ok(std::thread::Builder::new()
+            .name("cache-connection".into())
+            .spawn(move || {
+                if let Err(error) = serve_connection_queued(
+                    stream,
+                    &store,
+                    token.as_deref(),
+                    Some(&prepare),
+                    Some(&files),
+                    Some(permit),
+                ) {
+                    eprintln!("cache connection: {error}");
+                }
+            })?)
+    }
+}
+
+fn start_request_workers(
+    count: usize,
+    execute: impl Fn(Request) -> ExchangeResult + Send + Sync + 'static,
+) -> (
+    mpsc::SyncSender<PrepareJob>,
+    Vec<std::thread::JoinHandle<()>>,
+) {
+    let (send, receive) = mpsc::sync_channel::<PrepareJob>(REQUEST_QUEUE_LIMIT);
+    let receive = Arc::new(Mutex::new(receive));
+    let execute = Arc::new(execute);
+    let workers = (0..count)
+        .map(|_| {
+            let receive = receive.clone();
+            let execute = execute.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let job = receive.lock().unwrap().recv();
+                    let Ok((reply, request)) = job else { break };
+                    let result = execute(request);
+                    match reply {
+                        PrepareReply::Connection(stream, _permit) => {
+                            if let Err(error) = reply_result(stream, result) {
+                                eprintln!("cache preparation: {error}");
+                            }
+                        }
+                        PrepareReply::Result(send) => {
+                            let _ = send.send(result);
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+    (send, workers)
+}
+
+#[cfg(test)]
 fn serve_connection(
+    stream: Stream,
+    store: &PortableCache,
+    token: Option<&str>,
+    prepare: Option<&mpsc::SyncSender<PrepareJob>>,
+) -> anyhow::Result<()> {
+    serve_connection_queued(stream, store, token, prepare, None, None)
+}
+
+fn serve_connection_queued(
     mut stream: Stream,
     store: &PortableCache,
     token: Option<&str>,
-    prepare: Option<&mpsc::SyncSender<(Stream, Request)>>,
+    prepare: Option<&mpsc::SyncSender<PrepareJob>>,
+    files: Option<&mpsc::SyncSender<PrepareJob>>,
+    mut permit: Option<ConnectionPermit>,
 ) -> anyhow::Result<()> {
+    stream.nodelay()?;
     stream.timeouts(Duration::from_secs(5))?;
     if let Stream::Unix(socket) = &stream {
         ensure_same_user(socket)?;
     }
-    let result = (|| {
-        let envelope: Envelope = read_frame(&mut stream)?;
-        ensure!(envelope.version == 1, "unsupported cache protocol version");
-        ensure!(
-            token.is_none() || envelope.token.as_deref() == token,
-            "cache authentication failed"
-        );
-        Ok(envelope.request)
-    })();
-    stream.timeouts(TIMEOUT)?;
-    let request = match result {
-        Ok(request) => request,
-        Err(error) => return reply_result(stream, Err(error)),
-    };
-    if matches!(request, Request::Prepare { .. })
-        && let Some(queue) = prepare
-    {
-        return match queue.try_send((stream, request)) {
-            Ok(()) => Ok(()),
-            Err(
-                mpsc::TrySendError::Full((stream, _))
-                | mpsc::TrySendError::Disconnected((stream, _)),
-            ) => reply_result(
-                stream,
-                Err(anyhow::anyhow!(
+    let mut version = None;
+    loop {
+        // Also bounds idle persistent connections and incomplete request frames.
+        stream.timeouts(Duration::from_secs(5))?;
+        let envelope: Envelope = match read_frame(&mut stream) {
+            Ok(envelope) => envelope,
+            Err(error)
+                if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                    matches!(
+                        error.kind(),
+                        std::io::ErrorKind::UnexpectedEof
+                            | std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::TimedOut
+                    )
+                }) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return reply_result(stream, Err(error)),
+        };
+        stream.timeouts(TIMEOUT)?;
+        // Check authorization before version refusal so downgrade cannot mask it.
+        if token.is_some() && envelope.token.as_deref() != token {
+            write_frame(
+                &mut stream,
+                &Response::Error {
+                    code: "permission_denied".into(),
+                    message: "cache authentication failed".into(),
+                },
+            )?;
+            return Ok(());
+        }
+        if !matches!(envelope.version, 1 | 2)
+            || version.is_some_and(|version| version != envelope.version)
+        {
+            write_frame(
+                &mut stream,
+                &Response::Error {
+                    code: "unsupported_version".into(),
+                    message: "unsupported cache protocol version".into(),
+                },
+            )?;
+            return Ok(());
+        }
+        version = Some(envelope.version);
+        let request = envelope.request;
+        let result = if matches!(request, Request::Prepare { .. })
+            && let Some(queue) = prepare
+        {
+            if envelope.version == 1 {
+                // Keep admission counted across the legacy queue handoff too.
+                return match queue
+                    .try_send((PrepareReply::Connection(stream, permit.take()), request))
+                {
+                    Ok(()) => Ok(()),
+                    Err(
+                        mpsc::TrySendError::Full((PrepareReply::Connection(stream, _permit), _))
+                        | mpsc::TrySendError::Disconnected((
+                            PrepareReply::Connection(stream, _permit),
+                            _,
+                        )),
+                    ) => reply_result(
+                        stream,
+                        Err(anyhow::anyhow!(
+                            "image preparation queue is busy; retry later"
+                        )),
+                    ),
+                    _ => unreachable!(),
+                };
+            }
+            let (send, receive) = mpsc::sync_channel(1);
+            match queue.try_send((PrepareReply::Result(send), request)) {
+                Ok(()) => receive
+                    .recv_timeout(TIMEOUT)
+                    .context("wait for image preparation; outcome may be unknown")?,
+                Err(_) => Err(anyhow::anyhow!(
                     "image preparation queue is busy; retry later"
                 )),
-            ),
+            }
+        } else if let Some(queue) = files {
+            let (send, receive) = mpsc::sync_channel(1);
+            match queue.try_send((PrepareReply::Result(send), request)) {
+                Ok(()) => receive
+                    .recv_timeout(TIMEOUT)
+                    .context("wait for cache request; outcome may be unknown")?,
+                // The request has not been admitted or executed on this path.
+                Err(_) => Err(anyhow::anyhow!("cache request queue is busy; retry later")),
+            }
+        } else {
+            store.request(request)
         };
+        write_result(&mut stream, result)?;
+        if envelope.version == 1 {
+            return Ok(());
+        }
     }
-    reply_result(stream, store.request(request))
 }
 
 fn reply_result(
     mut stream: Stream,
+    result: anyhow::Result<(Response, Vec<u8>)>,
+) -> anyhow::Result<()> {
+    write_result(&mut stream, result)
+}
+
+fn write_result(
+    stream: &mut Stream,
     result: anyhow::Result<(Response, Vec<u8>)>,
 ) -> anyhow::Result<()> {
     let (response, body) = result.unwrap_or_else(|error: anyhow::Error| {
@@ -125,7 +313,7 @@ fn reply_result(
             Vec::new(),
         )
     });
-    write_frame(&mut stream, &response)?;
+    write_frame(stream, &response)?;
     stream.write_all(&body)?;
     Ok(())
 }
@@ -135,15 +323,8 @@ pub(super) fn serve(
     store: ImageStore,
     token: Option<String>,
 ) -> anyhow::Result<()> {
-    let (send, receive) = mpsc::sync_channel::<Stream>(16);
-    let receive = Arc::new(Mutex::new(receive));
     let store = Arc::new(reader(&store)?);
     let token = Arc::new(token);
-    let dispatch = |stream| -> anyhow::Result<()> {
-        // A full queue closes the connection instead of allocating unbounded workers.
-        send.try_send(stream)
-            .map_err(|_| anyhow::anyhow!("cache server busy"))
-    };
     // Bind before starting workers so address conflicts fail without orphan workers.
     enum Listener {
         Unix(UnixListener, File),
@@ -192,49 +373,32 @@ pub(super) fn serve(
             Listener::Tcp(TcpListener::bind(address)?)
         }
     };
-    // Slow registry/extraction work must not consume the file-service workers.
-    let (prepare_send, prepare_receive) = mpsc::sync_channel::<(Stream, Request)>(16);
-    let prepare_receive = Arc::new(Mutex::new(prepare_receive));
-    for _ in 0..2 {
-        let receive = prepare_receive.clone();
-        let store = store.clone();
-        std::thread::spawn(move || {
-            loop {
-                let job = receive.lock().unwrap().recv();
-                let Ok((stream, request)) = job else { break };
-                if let Err(error) = reply_result(stream, store.request(request)) {
-                    eprintln!("cache preparation: {error}");
-                }
-            }
-        });
-    }
-    for _ in 0..16 {
-        let prepare_send = prepare_send.clone();
-        let receive = receive.clone();
-        let store = store.clone();
-        let token = token.clone();
-        std::thread::spawn(move || {
-            loop {
-                let request = receive.lock().unwrap().recv();
-                let Ok(stream) = request else { break };
-                if let Err(error) =
-                    serve_connection(stream, &store, token.as_deref(), Some(&prepare_send))
-                {
-                    eprintln!("cache connection: {error}");
-                }
-            }
-        });
-    }
+    // File workers only execute admitted requests. Idle peers and V2 preparation
+    // waits consume a connection permit, never a file-service worker.
+    let file_store = store.clone();
+    let (files, _file_workers) =
+        start_request_workers(FILE_WORKERS, move |request| file_store.request(request));
+    let prepare_store = store.clone();
+    let (prepare, _prepare_workers) = start_request_workers(PREPARE_WORKERS, move |request| {
+        prepare_store.request(request)
+    });
+    let handlers = ConnectionHandlers {
+        active: Arc::new(AtomicUsize::new(0)),
+        store,
+        token,
+        files,
+        prepare,
+    };
     eprintln!("pvisor-cache listening on {address}");
     match listener {
         Listener::Unix(listener, _lock) => {
             for stream in listener.incoming() {
-                let _ = dispatch(Stream::Unix(stream?));
+                let _ = handlers.dispatch(Stream::Unix(stream?));
             }
         }
         Listener::Tcp(listener) => {
             for stream in listener.incoming() {
-                let _ = dispatch(Stream::Tcp(stream?));
+                let _ = handlers.dispatch(Stream::Tcp(stream?));
             }
         }
     }

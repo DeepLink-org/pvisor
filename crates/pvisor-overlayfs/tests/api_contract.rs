@@ -74,6 +74,7 @@ fn private_adapters_do_not_add_public_inherent_methods_or_modules() {
         include_str!("../src/fs.rs"),
         include_str!("../src/mount.rs"),
         include_str!("../src/observation.rs"),
+        include_str!("../src/cache.rs"),
     ] {
         Guard.visit_file(&syn::parse_file(source).unwrap());
     }
@@ -112,6 +113,7 @@ fn construction_retains_paths_and_defaults_without_io() {
         mountpoint.clone(),
     );
     assert_eq!(config.lower_dirs, lowers);
+    assert!(config.lower_mutability.is_empty());
     assert_eq!(config.apply_target, lowers.last().cloned());
     assert_eq!(config.upper_dir, upper);
     assert_eq!(config.work_dir, Some(work));
@@ -134,6 +136,32 @@ fn construction_retains_paths_and_defaults_without_io() {
     let copy = config.clone();
     assert_eq!(copy.lower_dirs, config.lower_dirs);
     assert_eq!(copy.mountpoint, config.mountpoint);
+}
+
+#[test]
+fn invalid_lower_mutability_fails_before_preparation() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = OverlayMountConfig::new(
+        vec![root.path().join("lower")],
+        root.path().join("upper"),
+        None,
+        root.path().join("merged"),
+    );
+    config.backend = None;
+    config.lower_mutability = vec![pvisor_overlay_core::LayerMutability::Immutable; 2];
+    for foreground in [false, true] {
+        let error = if foreground {
+            OverlayFs::run_foreground(config.clone()).unwrap_err()
+        } else {
+            OverlayFs::mount(config.clone()).unwrap_err()
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("lower mutability length mismatch")
+        );
+        assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
+    }
 }
 
 #[test]

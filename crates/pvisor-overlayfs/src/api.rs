@@ -10,9 +10,87 @@
 //! host permissions and macFUSE installation are checked at runtime.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub use crate::mount::OverlaySession;
 pub use crate::observation::FsMetrics;
+
+/// Explicit host-kernel caching strategy; never inferred from source classification.
+/// No strategy enables writeback caching. Extended strategies require a Linux
+/// owned view. Metadata supports adapter-mediated writes; MetadataAndData is
+/// read-only. macOS is explicitly rejected.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum KernelCachePolicy {
+    /// Preserve legacy behavior: one-second entry/attribute TTL, no negative
+    /// caching, no KEEP_CACHE and no additional ownership requirements.
+    #[default]
+    Disabled,
+    /// Explicit metadata-cache-off A/B control: zero entry/attribute/negative
+    /// TTL, no KEEP_CACHE. Normal page caching within an open file remains on.
+    /// Like Disabled, does not require an owned-view contract.
+    Uncached,
+    /// Bounded entry, attribute and negative caching; no KEEP_CACHE across opens.
+    /// Writable Linux views use asynchronous mutation invalidation and forced
+    /// teardown on transport failure. Mount admission exercises detach/abort;
+    /// catastrophic OS teardown failure still requires caller containment of users.
+    Metadata,
+    /// Metadata caching plus KEEP_CACHE for stable read-only regular-file mappings.
+    /// Writable configurations are explicitly rejected.
+    MetadataAndData,
+}
+
+/// Caller-owned proof, not a property established by an advisory coordination lock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OwnedViewContract {
+    /// Upper/work and their physical ancestors/mount identities are exclusively
+    /// owned until actual mount detachment, including aliases and other sessions.
+    /// No host-side writer, apply, checkpoint restore or backing replacement may
+    /// run concurrently. All mutations must go through this adapter. Writable
+    /// cached views must not be exported through bind mounts/namespace copies,
+    /// overmounted or replaced; forced teardown must cover their only view.
+    /// Preserve mount namespace, credentials, helper availability and detach
+    /// permissions for the session lifetime. Callers must supervise all users
+    /// and stop them if the server exits or termination fails: process abort
+    /// alone cannot revoke another process's warm metadata or held descriptors.
+    /// Do not opt in if that failure-containment contract cannot be honored.
+    pub exclusive_upper_and_work: bool,
+    /// Permissions, ownership, xattrs, namespace and all hardlink aliases of
+    /// every backing object remain fixed except for adapter-mediated mutations.
+    /// Reads must not change backing atime (caller must arrange noatime or an
+    /// equivalent guarantee). Read-only FUSE alone does not establish this.
+    pub fixed_metadata_and_aliases: bool,
+}
+
+/// Which observations the caller expects when kernel caches satisfy requests.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ReadObservationSemantics {
+    /// Preserve per-request callback observations; incompatible with extended
+    /// kernel caching. Journals and metrics are never silently disabled.
+    #[default]
+    RequestCallbacks,
+    /// Caller accepts that cache hits do not reach the adapter. This is not an
+    /// audit of reads or a first-content-observation journal. Existing journal,
+    /// metrics and custom path-policy configurations are still rejected.
+    StableView,
+}
+
+/// Explicit cache admission inputs. Default is disabled, with no ownership proof.
+/// Validation is side-effect free. For enabled policies TTL must be greater than
+/// zero and at most 60 seconds; it applies equally to entry/attr/negative replies.
+/// No environment variable can enable this policy. VM virtio-fs has no equivalent
+/// mode: this DTO belongs only to the host FUSE adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KernelCacheConfig {
+    /// Same-artifact A/B strategy; changing it does not alter lower declarations.
+    pub policy: KernelCachePolicy,
+    /// Reviewable, finite kernel TTL; ignored for Disabled/Uncached. Default is
+    /// 60 seconds. Writable replies temporarily use zero while effects are pending.
+    pub ttl: Duration,
+    /// Explicit lifetime promise; `None` is rejected for enabled policies.
+    pub owned_view: Option<OwnedViewContract>,
+    /// Explicit agreement to cached-read observations; defaults to callbacks.
+    pub read_observation: ReadObservationSemantics,
+}
 
 /// Owned mount inputs. Cloning copies configuration but shares any metrics sink.
 /// Lower paths are canonicalized and checked during mounting, not construction.
@@ -25,6 +103,16 @@ pub struct OverlayMountConfig {
     pub baseline_lower: Option<PathBuf>,
     /// Nonempty ordered lower directories, highest priority first (below upper).
     pub lower_dirs: Vec<PathBuf>,
+    /// Per-physical-lower stability promises, in `lower_dirs` order. Empty means
+    /// all mutable; any other length mismatch is rejected during mounting.
+    /// Caller must preserve contents, metadata, namespace and mount identities
+    /// until session teardown. Read-only mounts and frozen baselines do not prove
+    /// this promise. Upper and merged views are never covered by it.
+    pub lower_mutability: Vec<pvisor_overlay_core::LayerMutability>,
+    /// Explicit host kernel cache admission and lifetime contract. Defaults to
+    /// disabled. Enabled policies reject unsupported configurations before any
+    /// preparation I/O; they never silently fall back or skip journals.
+    pub kernel_cache: KernelCacheConfig,
     /// Writable stage directory; created if absent, even for inspection mounts.
     pub upper_dir: PathBuf,
     /// Optional copy-up work directory, created if absent. Must differ from upper
@@ -84,6 +172,27 @@ pub trait OverlayConfiguration: Sized {
         work_dir: Option<PathBuf>,
         mountpoint: PathBuf,
     ) -> Self;
+
+    /// Validate cache admission without filesystem I/O or acquiring locks. This
+    /// does not prove the caller's ownership contract, validate canonical paths,
+    /// mount FUSE or negotiate kernel support. Enabled modes require explicit
+    /// immutable declarations for every lower, an affirmed owned-view contract,
+    /// stable-view read semantics, OS permission checks, owner-only access and
+    /// no path policy, exclusions, journal or metrics. Linux Metadata permits
+    /// writes; MetadataAndData requires read-only. Actual writable mounting also
+    /// requires the connection's fusectl abort file and a successful sacrificial
+    /// mount/detach/abort probe at the actual mountpoint before serving requests.
+    /// On notification/queue failure, a worker detaches using Linux umount or
+    /// fusermount3/fusermount, verifies absence in mountinfo, then writes abort.
+    /// Rejected admission performs no further mutation; already-mutated failed
+    /// replies await completed teardown. Normal/stop queues and effects are
+    /// bounded; helper, termination and shutdown waits have deadlines. Fatal
+    /// teardown failure/deadline terminates the server, but is NOT a guarantee
+    /// that other processes' caches were revoked: the caller's user-containment
+    /// obligation still applies. EIO is not a general mount-detachment fence.
+    /// Held descriptors must be released on failure; changes may remain in upper.
+    /// Validation failure leaves configuration unchanged.
+    fn validate_kernel_cache(&self) -> anyhow::Result<()>;
 }
 
 /// Marker for host FUSE mounting services; contains no filesystem state.
@@ -123,7 +232,10 @@ pub trait OverlaySessionControl: Sized {
     /// Consume the owner, unmount and stop the request loop, then poll detachment
     /// for up to about five seconds. The underlying unmount/join can take longer.
     /// Errors do not return ownership or guarantee detachment; callers must
-    /// retain stage paths for recovery. Drop attempts the same cleanup but
+    /// retain stage paths for recovery. Writable cache notification failures are
+    /// reported here even if the mount was already forcibly detached; mutations
+    /// may have reached upper before failure, and are not rolled back. Drop
+    /// attempts the same cleanup but
     /// discards errors. Shutdown should be serialized by the owning caller.
     fn unmount(self) -> anyhow::Result<()>;
 }

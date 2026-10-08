@@ -131,6 +131,24 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 完整 Ubuntu 只作为"完整 OS 启动成本"的对照，不与最小 VM 做 VMM 排名。
 - **入口脚本：** `reference_baselines.py --modes ready`（`firecracker_kernels.py` 为独立制品准备 helper）、`startup.py`、`linux_vm_ready.py`、`vm_ready.py`、`run_all.py`、`ubuntu_baselines.py`；启动工程实验与诊断见下列独立条目。
 
+### B-LAZY-STARTUP：远程镜像按需读取能缩短多少启动等待 {#b-lazy-startup}
+
+- **文档：** `lazy-image-startup.md`（中英文同步）。
+- **角色：** user-facing。
+- **Motivation：** 频繁创建短任务环境时，用户需要判断客户端按需读取是否比完整拉取、解包更划算，以及镜像服务端准备成本如何摊销。
+- **想要的结论：** 同一固定 linux/amd64 digest、同一负载下（Ubuntu shell、Python/NumPy 脚本与可选 PyTorch CPU 导入分别成批，不合并），Docker 与 pVisor cache-service lazy VM 的客户端冷/热缓存 ready、completion 和传输量；明确服务端预准备成本，不解释为纯 VMM 差异。
+- **实验设计：** 开源 Distribution registry 提供固定 OCI 镜像，pvisor-cache serve 提供同镜像文件索引和内容。两服务均为本机 loopback，无人工延迟时只能解释为本机模拟远程协议，不是 WAN。按独立网络条件分批；配置两核/2 GiB（容器硬限制与 VM guest RAM 不等价，Docker daemon/containerd 未作整机两核约束，必须披露），随机交替每组至少 30 次，冷客户端缓存后紧接热缓存，新 guest/容器与工作区。Ubuntu 负载校验发行版身份和 shell 输出；Python 负载禁用 bytecode 写入，固定单线程，校验 Python/库版本和确定性 NumPy 数组与矩阵运算（可选 PyTorch 还须校验 CPU-only build 和张量运算），ready 为全部校验后的唯一输出。两组均要求成功退出；失败单列，不剔除慢有效样本。预热/预检不纳入正式样本；非分离分布 P50、分离分布各簇比例和中位数、参考 P95、配对 bootstrap 95% CI。镜像服务端拉取/解包/索引时间单独保留，原始日志、源码和制品摘要放 `.data/`。不回答完整 OS 引导、真实 WAN、并发或大型任务性能。
+- **入口脚本：** `lazy_startup.py`。
+
+### B-LAZY-ENG：小文件 lazy image V2 的工程对照 {#b-lazy-eng}
+
+- **文档：** 工程结果保留 `benchmark/pvisor/LAZY_IMAGE_V2_REPORT.md` 和 `.data/`；不混入用户启动页的历史 Docker 对照。
+- **角色：** engineering A/B。
+- **Motivation：** 判断有界目录元数据预取与持久连接是否减少 Python 导入的小文件请求成本。
+- **想要的结论：** 同一冻结制品、同一 NumPy 镜像及脚本下，关闭/开启 V2 的冷/热 ready、completion、请求数、连接数和内容量变化，附配对 bootstrap 95% CI；不宣称 Docker/WAN 或吞吐排名。
+- **实验设计：** 私有 user/mount/PID namespace 隔离 Host listener；新 VM/workspace/stage，CPU 0/1、2 vCPU、2 GiB guest RAM，预准备 cache 服务在 CPU 2/3，本机 loopback TCP，无延迟注入。每轮随机交替 V1-compatible（`PVISOR_LAZY_IMAGE_V2=0`）/V2（默认启用），每模式冷客户端后紧接热，至少 30 轮，另有初始轮与 3 warmups。两模式均包含正确分页等共同修复，开关只比较元数据预取与连接复用。唯一正确 NumPy 输出、退出码、Run Bundle、冷内容非零、热内容为零全部通过才有效；任何失败使批次无效，不剔除慢有效样本。分布规则同 B-LAZY-STARTUP，P95 仅参考。冻结源码、制品、harness、请求和原始报告在 `.data/`，不与历史批次合并。
+- **入口脚本：** `lazy_image_v2.py`。
+
 ### B-FS-TOOLS：开发工具在各执行模式下要多花多少时间 {#b-fs-tools}
 
 - **文档：** `filesystem.md`
@@ -158,15 +176,17 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 分解实验在同一批次内对照原生、FUSE 直通和 staged，同时打开 profile 计数器另跑一批；带计数器的批次不计入计时结论。
   - lazy 镜像、stage 持久化策略、内核缓存探针各自独立成批。
   - 只有当结果改变了 B-FS-TOOLS 的用户结论时，才更新 `filesystem.md`。
-- **入口脚本：** `filesystem_ab.py`、`filesystem_stage_durability.py`、`filesystem_lazy_ab.py`。
+- **新增独立 kernel-cache 实验：** `kernel_cache_runner.py` / `kernel_cache_driver.rs`，同一冻结 release 制品 native、legacy-writable（immutable 物理缓存开启，默认 1s）、metadata-writable60s、metadata-readonly60s、metadata-and-data-readonly60s；2048/32 half-deep、全字节验证、3 warmups/30 seed-shuffled samples、CPU 0,1；hot、legacy-TTL-expired/extended-TTL-warm、single-pass readsearch、verified git/rg 与 startup/mount/task/unmount。 全部 native/lower/upper/work 使用相同 private user/mount/PID namespace 的真正 noatime tmpfs backing；保留 mountinfo、past-atime 读验证、监督/终止回执；旧 Btrfs/future-atime kernel-cache 批次未验收，只作历史诊断，raw 保留且不可拼接。writable 必须保留 fusectl abort guard；独占 fresh upper/work、稳定 immutable lower，无 journal/preimage/metrics/custom policy/exclusions；KEEP_CACHE 只在两种 readonly 条件间归因。报告 `benchmark/pvisor/KERNEL_CACHE_REPORT.md` 仅属 Linux HOST API 工程实验，不代表 pvisor run/VM/review guarantees。
+- **入口脚本：** `filesystem_ab.py`、`filesystem_stage_durability.py`、`filesystem_lazy_ab.py`、`immutable_lower_cache.py`（同一 release 二进制 native/mutable/immutable-cache-off/on，独占 immutable lower，真实 host FUSE 的 hot/TTL-expiry 重复 metadata/open/read、readsearch 与 upper 正确性；无 journal，排除 review；工程报告 `benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md`）。
 
 ### B-FS-DIAG：文件系统请求成本分解 {#b-fs-diag}
 
 - **角色：** diagnostic
 - **Motivation：** 定位 FUSE 传输、OverlayCore、持久化、内容指纹和缓存路径的成本。
 - **想要的结论：** 请求与 inclusive span 的成本分解，不能相加为精确归因，不作为用户性能数据。
-- **实验设计：** 独立诊断批次，直通 FUSE 仅为不含暂存语义的下限；插桩计时与正式性能采样分开。
-- **入口脚本：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_exec_probe.py`、`filesystem_counters.py`、`filesystem_diagnostic.py`。`filesystem_stage_durability.py --profiles` 也服务此诊断条目；不开启 profile 时服务 B-FS-ENG。`filesystem_exec_probe.py` 在新 VM 中比较相同可执行文件、loader 和全部动态库从 virtio-fs 与匿名 RAM 执行；两组都先复制并校验所有输入、传递相同 fd，避免将准备成本混入 exec。准备来源分为原始文件和独立副本：前者预热原 inode，后者从工作区独立 inode 读入相同字节，保留原工具文件首次映射的机会；共同的 Python 准备仍会预热解释器及部分共享库，不能称为完全冷启动。首个 exec 与后续重复 exec 分开，且不由热路径的零差异否定首次映射成本。guest `/dev/shm` 保持 noexec，使用显式 executable memfd；不重挂载或放宽策略。独立 VM 的完整计数器包含相同准备与指定次数 exec，差异用于请求归因，不能当作完整 Agent 启动水位。
+- **Kernel-cache 诊断入口：** `kernel_cache_runner.py --profiles`；每个 count case 使用独立 fresh mount，记录 warm priming 与操作的完整请求总数，另测 prime-only 以分离 warm 增量。源码推导 expected instances（包括 notifier 是否创建 profile），核查全部 PID/component/instance 的唯一 final record，不能固定忽略额外线程实例；任何缺失/额外实例或失败都拒绝。诊断耗时绝不进入正式 distribution。
+- **实验设计：** 独立诊断批次，直通 FUSE 仅为不含暂存语义的下限；插桩计时与正式性能采样分开。`immutable_lower_cache.py --profiles` 保留每个 PID/component/instance 的所有累计 records，以各实例 final record 比较 physical parent/leaf stats 和 cache hits/misses/evictions；inclusive spans 不相加。真实 mount 若被拒绝，保留失败并仅以明确标记的 core 机制实验补充，不替代 FUSE 结果。
+- **入口脚本：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_exec_probe.py`、`filesystem_counters.py`、`filesystem_diagnostic.py`、`immutable_lower_cache.py --profiles`。`filesystem_stage_durability.py --profiles` 也服务此诊断条目；不开启 profile 时服务 B-FS-ENG。`filesystem_exec_probe.py` 在新 VM 中比较相同可执行文件、loader 和全部动态库从 virtio-fs 与匿名 RAM 执行；两组都先复制并校验所有输入、传递相同 fd，避免将准备成本混入 exec。准备来源分为原始文件和独立副本：前者预热原 inode，后者从工作区独立 inode 读入相同字节，保留原工具文件首次映射的机会；共同的 Python 准备仍会预热解释器及部分共享库，不能称为完全冷启动。首个 exec 与后续重复 exec 分开，且不由热路径的零差异否定首次映射成本。guest `/dev/shm` 保持 noexec，使用显式 executable memfd；不重挂载或放宽策略。独立 VM 的完整计数器包含相同准备与指定次数 exec，差异用于请求归因，不能当作完整 Agent 启动水位。
 
 ### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
 
@@ -388,13 +408,13 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 相同 rootfs、firmware 与预算，随机交替、检查输出与隔离；诊断另列。
 - **入口脚本：** `macos_migration.py`。
 
-### B-COMPARE：与其他工具的对比页 {#b-compare}
+### B-COMPARE：端到端任务与强化学习训练的场景分析 {#b-compare}
 
-- **文档：** `compare-*.md`
+- **文档：** `agent-tasks.md`（整合 B-AGENT-TASK 的实测与任务场景分析）、`compare-rl-infra.md`（强化学习训练）；隔离和回放证据分别由 B-ISOLATION、B-REPLAY 维护。
 - **角色：** user-facing（综合页）
-- **Motivation：** 用户通常带着"我已经用 X，要不要换"的问题来。对比页把各主题的结论按对方工具重新组织。
-- **想要的结论：** "相对 X，pVisor 在哪些场景下更合适、在哪些场景下 X 更合适"，每条都要链接到某个 user-facing benchmark 的数据。
-- **实验设计：** 对比页本身不做新测量。没有同条件数据的工具，只比较能力差异，不给数值排名，也不引用厂商宣传的数字。
+- **Motivation：** 用户需要按完整任务或 rollout 流程选择执行层，判断现有 Agent 沙箱、容器、VM、Git 工作区和训练系统是否需要改变。
+- **想要的结论：** pVisor 在两类场景中的实测优势、额外成本、兼容性失败和选型边界；每条定量结论链接到 owning user-facing benchmark 的数据与条件。
+- **实验设计：** 场景分析不做新测量，复用启动、惰性镜像、文件系统、审查合入、容量、隔离、回放等独立实验，不合并批次或相加中位数。原生 Agent 沙箱、Docker/devcontainer、云端和隔离基座的分析整合进端到端任务；OpenHands/SWE-Gym/verl 的职责与限制整合进强化学习训练。没有同条件数据的方案只说明适用需求和缺失验证，不给数值排名、不引用宣传数字。未执行完整 RL 训练时，不推导有效 rollout 吞吐、reward、任务成功率或账单收益。
 
 ### B-PROCESS：Run 本身的进程级开销（CI 回归门禁） {#b-process}
 

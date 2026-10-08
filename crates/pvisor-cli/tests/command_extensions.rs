@@ -61,12 +61,15 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(!help.contains("\n  env "));
     assert!(help.contains("Run agents, review changes, and manage Jobs"));
+    assert!(output.stderr.is_empty());
+    assert!(!help.contains("--vm-"), "{help}");
     let headings = [
         "Execution:",
         "Changes:",
         "Checkpoints:",
         "Tools:",
         "Options:",
+        "Examples:",
     ];
     let positions: Vec<_> = headings
         .iter()
@@ -109,7 +112,9 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
             .output()
             .unwrap();
         assert!(output.status.success());
+        assert!(output.stderr.is_empty(), "{:?}", output.stderr);
         let text = String::from_utf8_lossy(&output.stdout);
+        assert!(!text.contains("--vm-"), "{text}");
         for heading in headings {
             assert!(text.contains(heading), "{text}");
         }

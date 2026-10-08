@@ -233,6 +233,7 @@ pub fn hint_from_record(record: &OverlayRecord, lower_dirs: Vec<PathBuf>) -> Ove
         execution_snapshot: None,
         access_policy: record.access_policy.clone(),
         lower_dirs,
+        lower_mutability: Vec::new(),
         stage_dir: Some(record.stage_dir.clone()),
         upper_dir: Some(record.upper.upper_dir.clone()),
         work_dir: Some(record.upper.work_dir.clone()),
@@ -332,6 +333,7 @@ pub(crate) fn mount_overlay_record_observed(
     record: &OverlayRecord,
     lower_dirs: &[PathBuf],
     observation: Option<FsMetrics>,
+    lower_mutability: &[pvisor_overlay_core::LayerMutability],
     durability: pvisor_core::overlay::StageDurability,
 ) -> Result<OverlayMount, OverlayError> {
     if lower_dirs.is_empty() {
@@ -367,6 +369,7 @@ pub(crate) fn mount_overlay_record_observed(
     config.apply_target = Some(record.target.clone());
     config.baseline_lower = record.baseline_lower.clone();
     config.observation = observation;
+    config.lower_mutability = lower_mutability.to_vec();
     config.preimage_dir = Some(record.stage_dir.join("preimages"));
     // Match the mountless/VM initializer: the owned stage can publish one
     // compact log, retaining first observations under the stage's policy.
@@ -881,6 +884,7 @@ mod tests {
             &record,
             std::slice::from_ref(&lower),
             None,
+            &[],
             Default::default(),
         )
         .unwrap();

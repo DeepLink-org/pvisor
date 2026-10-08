@@ -306,6 +306,14 @@ impl VmConfiguration for VmBuilder {
     fn overlay(&mut self, tag: &str, overlay: OverlayConfig, shm_size: usize) -> io::Result<()> {
         #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
         {
+            if !overlay.lower_mutability.is_empty()
+                && overlay.lower_mutability.len() != overlay.lower_dirs.len()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "lower mutability length mismatch",
+                ));
+            }
             let path = |path: &Path| -> io::Result<String> {
                 path.to_str().map(str::to_owned).ok_or_else(|| {
                     io::Error::new(
@@ -322,6 +330,7 @@ impl VmConfiguration for VmBuilder {
                         .iter()
                         .map(|p| path(p))
                         .collect::<io::Result<_>>()?,
+                    lower_mutability: overlay.lower_mutability,
                     upper_dir: path(&overlay.upper_dir)?,
                     work_dir: overlay.work_dir.as_deref().map(path).transpose()?,
                     preimage_dir: overlay.preimage_dir.as_deref().map(path).transpose()?,

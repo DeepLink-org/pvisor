@@ -10,6 +10,11 @@ pub struct OverlayHint {
     pub access_policy: pvisor_core::overlay::FileAccessPolicy,
     /// Shared read-only lower layers (host paths).
     pub lower_dirs: Vec<PathBuf>,
+    /// Explicit physical-lower lifetime stability promises in `lower_dirs` order.
+    /// Empty means all mutable. Caller owns proof and backing lifetime; a read-only
+    /// mount, image digest or frozen baseline alone is insufficient. Runtime
+    /// rejects nonempty declarations unless the final normalized stack matches.
+    pub lower_mutability: Vec<pvisor_overlay_core::LayerMutability>,
     /// Durable staging root containing upper storage and the merged mount.
     pub stage_dir: Option<PathBuf>,
     /// Writable upper directory for this Attempt.

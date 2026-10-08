@@ -20,6 +20,8 @@ This reuses separately registered [startup](startup.md), [filesystem](filesystem
 
 [Network](network.md) uses thirty independent batches and three warmups per condition; each small-request sample is the median of 256 requests. The origin is outside the payload CPU budget and memory is not identically capped. [Capacity](density.md) uses a shared two-core, 2 GiB, zero-swap budget, five rounds per concurrency and separate idle/useful-tool conditions; every failure, unknown outcome and OOM remains counted.
 
+[On-demand image startup](lazy-image-startup.md) measures cold/warm client-cache waits and content payloads for the same pinned image within separate Ubuntu shell and Python/NumPy cohorts. NumPy transfers less content, with no detected cold-Ready median difference; warm-cache Docker is faster. It uses prepared local registry/cache services, with different networking, Docker image store and memory configurations from the startup controls above; results remain separate rather than forming a single ranking.
+
 ## Data and analysis {#results}
 
 The 2026-10-06 startup/filesystem/repair cohorts have 1,440 valid samples and review has 360; the separate 2026-10-07 stock-kernel startup cohort has 240 valid samples. All have zero measured failures. Cohorts are not pooled; topic pages provide median differences and paired-bootstrap 95% intervals.
@@ -40,7 +42,7 @@ Net physical-memory savings and useful-task density from compression, trimmed-ke
 
 [Network](network.md) · [Apply](supervision-cost.md#apply-cost) · [Density](density.md) · [VM memory](vm-memory/index.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md)
 
-[Docker/devcontainer](compare-containers.md) · [Firecracker/QEMU/gVisor/Kata](compare-runtimes.md) · [Agent sandboxes](compare-agent-sandboxes.md) · [E2B/Daytona/Modal](compare-cloud-sandboxes.md) · [Agent RL infrastructure](compare-rl-infra.md)
+[End-to-end tasks](agent-tasks.md) combines tool waiting, workspace lifecycle and CLI compatibility to analyze Agent sandbox, container, VM and cloud tradeoffs. [Reinforcement learning](compare-rl-infra.md) maps tool costs, active capacity and historical-prefix preparation to rollouts; full training throughput and reward are unmeasured.
 
 ### Downloads and reproduction {#run}
 

@@ -3,6 +3,7 @@
 #![deny(missing_docs)]
 
 pub mod api;
+mod cache;
 mod fs;
 mod mount;
 mod observation;

@@ -654,7 +654,13 @@ fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<(
     {
         let input = File::open(blob)?;
         let mut output = tar_file.reopen()?;
-        if media_type.ends_with("+gzip") {
+        if media_type.ends_with("+gzip")
+            || matches!(
+                media_type,
+                "application/vnd.docker.image.rootfs.diff.tar.gzip"
+                    | "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip"
+            )
+        {
             std::io::copy(&mut GzDecoder::new(input), &mut output)?;
         } else if media_type.ends_with("+zstd") {
             std::io::copy(&mut zstd::stream::read::Decoder::new(input)?, &mut output)?;
@@ -1171,6 +1177,50 @@ mod tests {
         .unwrap();
         assert!(!root.path().join("etc/old").exists());
         assert_eq!(fs::read(root.path().join("etc/new")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn applies_gzipped_oci_and_docker_layers_and_rejects_unsupported_media_types() {
+        let layer = tempfile::NamedTempFile::new().unwrap();
+        let body = b"gzip layer contents";
+        {
+            let encoder = flate2::write::GzEncoder::new(
+                layer.reopen().unwrap(),
+                flate2::Compression::default(),
+            );
+            let mut archive = tar::Builder::new(encoder);
+            let mut file = tar::Header::new_gnu();
+            file.set_mode(0o644);
+            file.set_size(body.len() as u64);
+            file.set_cksum();
+            archive
+                .append_data(&mut file, "etc/new", body.as_slice())
+                .unwrap();
+            archive.into_inner().unwrap().finish().unwrap();
+        }
+
+        for media_type in [
+            "application/vnd.oci.image.layer.v1.tar+gzip",
+            "application/vnd.docker.image.rootfs.diff.tar.gzip",
+            "application/vnd.docker.image.rootfs.foreign.diff.tar.gzip",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            apply_layer(layer.path(), media_type, root.path()).unwrap();
+            assert_eq!(fs::read(root.path().join("etc/new")).unwrap(), body);
+        }
+
+        for media_type in [
+            "application/vnd.docker.image.rootfs.unknown.tar.gzip",
+            "application/vnd.oci.image.layer.v1.tar+bzip2",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let error = apply_layer(layer.path(), media_type, root.path()).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!("unsupported OCI layer media type `{media_type}`")
+            );
+            assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+        }
     }
 
     #[cfg(unix)]

@@ -426,6 +426,86 @@ The detailed command, platform, storage and memory limits above remain relevant
 to embedded callers where they describe runtime behavior, and to the installed
 application where they describe frontend behavior.
 
+## Lazy image V2
+
+Lazy images keep the existing immutable published-image format and handles.
+V2 optimizes the private host reader; it does not change OCI contents, guest
+commands, copy-up/export ownership, or the physical-lower stability declaration.
+
+- On the second uncached child lookup in a directory, fetch up to two validated
+  directory metadata pages. At most 64 directories are admitted per backend
+  lifetime, and only eight pages remain resident. Retained nodes and exact
+  persistent positive/negative metadata hits take precedence over prefetch.
+  Complete inventories can establish absence; partial, evicted or failed
+  inventories fall back to exact stat. Looked-up attributes and proven negative
+  results are persisted under the immutable metadata identity for remounts.
+  Prefetch never downloads file content or projects speculative guest names.
+- Remote list continuations are opaque and separate from local directory/FUSE
+  cookies. Resume after page eviction replays from a retained boundary or zero;
+  local ordinals are never passed to the portable B-tree as remote cursors.
+- TCP/Unix readers negotiate framed protocol 2 with harmless Ping requests and
+  reuse up to four connections per client. TCP uses NODELAY on both endpoints.
+  Idle client streams expire after four seconds, before the server's five-second
+  idle timeout. Authorization is checked on every envelope; bodies remain
+  length-bounded and SHA-256 verified. Fully framed application errors preserve
+  their error kinds and permit reuse; framing, transport or integrity errors
+  discard the stream. Failed actual requests are never automatically replayed.
+- Protocol 1 remains one-request-per-connection. A V2 client falls back before
+  sending the actual request when an old service rejects the version or closes
+  the harmless handshake. Authentication failures, malformed replies and
+  handshake timeouts are not downgrade signals. Filesystem/S3 object transports
+  do not use the socket pool; metadata prefetch still applies.
+- The service admits at most 64 connections, separates their framing/idle waits
+  from 16 file workers and two preparation workers, and bounds each pending
+  request queue to 16. Saturation returns a busy error or closes an unadmitted
+  connection; callers must handle these failures. Idle connections and long
+  preparations do not occupy file workers.
+
+V2 is enabled by default. For engineering comparison only, set
+`PVISOR_LAZY_IMAGE_V2=0` before constructing the client and VM runner to disable
+metadata prefetch and connection reuse; other values retain V2. This is a private
+rollout/benchmark override, not a persisted image-format version or CLI feature.
+Both A/B modes retain the shared pagination and correctness fixes. The inherited
+host environment carries the setting through private runner reconstruction.
+See `benchmark/pvisor/lazy_image_v2.py` for same-artifact NumPy A/B; historical
+Docker measurements are a different cohort. Contract tests cover real portable
+pagination, negative-cache remounts, bounded prefetch, Unix/TCP framing, legacy
+fallback and concurrent service progress. Linux KVM performance measurements do
+not establish macOS/HVF, live S3 or WAN coverage.
+
+## Physical lower stability (explicit experiment contract)
+
+Embedded callers may set `OverlayHint::lower_mutability` to a per-physical-lower
+`Vec<pvisor_overlay_core::LayerMutability>` in `lower_dirs` order. Empty defaults
+to all mutable. Attempt preparation validates nonempty length and exact canonical
+identity/order against the final normalized stack; promises cannot silently
+transfer to inserted targets or frozen copies. Host mounts receive the declarations
+through `OverlayMountConfig`; native VM handoff serializes `lower_mutability`
+alongside `lowers`, retains it in `OverlayDeviceSpec`, and projects it into
+`pvisor_vm::api::OverlayConfig`. Legacy runner metadata omitting the field defaults
+to mutable. Restored/rebound copies are not automatically promoted. The enum
+lives only in overlay-core; no duplicate runtime contract is introduced.
+
+**No automatic image/frozen promotion in this first version.** Host rootfs and
+arbitrary prepared `--rootfs` directories are mutable. OCI extraction uses
+content-addressed atomic publication (`image/oci.rs`) but retains writable host
+permissions and does not enforce a lifetime lease against external changes.
+VM lazy images have immutable remote logical metadata, but their physical
+projection (`image/cache/direct.rs::Projection::project`) creates names/links and
+updates metadata on demand; that projection is not a stable physical lower.
+Host lazy read-only mounting alone is not a lifetime stability proof. Frozen
+baseline selects observation semantics, not an immutability guarantee. All
+these paths therefore conservatively retain mutable declarations; an owned,
+externally stabilized experimental lower can use the explicit contract.
+
+For same-artifact/same-input A/B keep declarations unchanged and set
+`PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE=1` before constructing the serving host
+process/VM runner for the no-cache control; unset for caching. No formal CLI was
+added. `PVISOR_FS_PROFILE=1` reports `overlay-core` hit/miss/eviction `units`; see
+that crate's README for exact names and capacity. This is a metadata/path/parent
+cache only: no directory inventory/content cache, kernel TTL or KEEP_CACHE change,
+or claimed real-FUSE speedup. Upper/merged state must never be labeled immutable.
+
 ## Develop
 
 ```bash

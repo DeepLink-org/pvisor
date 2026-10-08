@@ -68,7 +68,7 @@ Stage and Podman each complete 160/160 tasks at concurrency 32. Both encounter O
 
 Stage passes five rounds at idle concurrency 128, but adding private data and Git work reduces its highest wholly successful tested level to 32. Plan the two workloads separately; discrete levels also do not establish an exact maximum.
 
-Compressed parked snapshots versus container pause have not completed validation. Snapshot file size or single-VM reclamation cannot establish capacity. Firecracker/QEMU density under this budget is unmeasured; their single-task latency is in the [runtime comparison](compare-runtimes.md). Matching macOS capacity is unmeasured.
+Compressed parked snapshots versus container pause have not completed validation. Snapshot file size or single-VM reclamation cannot establish capacity. Firecracker/QEMU density under this budget is unmeasured; their single-task latency is in the [end-to-end tasks](agent-tasks.md). Matching macOS capacity is unmeasured.
 
 ### Downloads and reproduction {#run}
 

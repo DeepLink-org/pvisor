@@ -168,6 +168,7 @@ fn invalid_overlay_path_does_not_poison_the_builder() {
     std::fs::create_dir_all(&upper).unwrap();
     let mut builder = VmBuilder::new(1, 64).unwrap();
     let mut overlay = api::OverlayConfig {
+        lower_mutability: Vec::new(),
         lower_dirs: vec![lower],
         upper_dir: upper,
         work_dir: None,
@@ -179,7 +180,17 @@ fn invalid_overlay_path_does_not_poison_the_builder() {
         access_policy: Default::default(),
         semantics: api::PermissionSemantics::LinuxComplete,
     };
+    assert!(overlay.lower_mutability.is_empty());
     let valid = overlay.clone();
+    let mut invalid_mutability = valid.clone();
+    invalid_mutability.lower_mutability = vec![pvisor_overlay_core::LayerMutability::Immutable; 2];
+    assert_eq!(
+        builder
+            .overlay("workspace", invalid_mutability, 0)
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
     overlay
         .excluded_paths
         .push(std::ffi::OsString::from_vec(vec![0xff]).into());

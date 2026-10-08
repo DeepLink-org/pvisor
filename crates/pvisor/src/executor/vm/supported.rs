@@ -124,6 +124,8 @@ pub(super) struct RunnerSpec {
 pub(super) struct OverlayDeviceSpec {
     pub(super) lowers: Vec<PathBuf>,
     #[serde(default)]
+    pub(super) lower_mutability: Vec<pvisor_overlay_core::LayerMutability>,
+    #[serde(default)]
     pub(super) apply_target: Option<PathBuf>,
     #[serde(default)]
     pub(super) baseline_lower: Option<PathBuf>,
@@ -801,6 +803,7 @@ impl RunExecutor for VmExecutor {
         let (root_overlay, mut workspace) = if overlay_target.is_none() {
             (
                 configured_overlay.unwrap_or_else(|| OverlayDeviceSpec {
+                    lower_mutability: Vec::new(),
                     lowers: vec![root.clone()],
                     apply_target: None,
                     baseline_lower: None,
@@ -815,6 +818,7 @@ impl RunExecutor for VmExecutor {
         } else {
             (
                 OverlayDeviceSpec {
+                    lower_mutability: Vec::new(),
                     lowers: vec![root.clone()],
                     apply_target: None,
                     baseline_lower: None,
@@ -904,6 +908,7 @@ impl RunExecutor for VmExecutor {
         let mut root_overlay = if root_overlay.upper.as_os_str().is_empty() {
             OverlayDeviceSpec {
                 lowers: root_overlay.lowers,
+                lower_mutability: root_overlay.lower_mutability,
                 apply_target: root_overlay.apply_target,
                 baseline_lower: root_overlay.baseline_lower,
                 upper: root_upper.clone(),
@@ -2457,6 +2462,7 @@ fn add_vm_overlay(
         tag,
         OverlayConfig {
             lower_dirs: overlay.lowers.clone(),
+            lower_mutability: overlay.lower_mutability.clone(),
             upper_dir: overlay.upper.clone(),
             work_dir: overlay.work.clone(),
             preimage_dir: overlay.preimages.clone(),
@@ -2571,6 +2577,21 @@ fn guest_path_in_root(root: &Path, target: &Path) -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn runner_lower_mutability_is_ordered_and_legacy_metadata_defaults_mutable() {
+        use super::OverlayDeviceSpec;
+        use pvisor_overlay_core::LayerMutability::{Immutable, Mutable};
+        let legacy =
+            serde_json::json!({ "lowers": ["/stable", "/live"], "upper": "/upper", "work": null });
+        let mut decoded: OverlayDeviceSpec = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.lower_mutability.is_empty());
+        decoded.lower_mutability = vec![Immutable, Mutable];
+        let roundtrip: OverlayDeviceSpec =
+            serde_json::from_value(serde_json::to_value(&decoded).unwrap()).unwrap();
+        assert_eq!(roundtrip.lower_mutability, [Immutable, Mutable]);
+        assert_eq!(roundtrip.lowers, decoded.lowers);
+    }
+
     fn local_firmware_settings(root: &Path) -> VmSettings {
         let mut settings = VmSettings {
             rootfs: Some(root.to_owned()),
@@ -2878,6 +2899,7 @@ mod tests {
             socket.display().to_string(),
         )]);
         let make = |lower: PathBuf| OverlayDeviceSpec {
+            lower_mutability: Vec::new(),
             lowers: vec![lower],
             apply_target: None,
             baseline_lower: None,
@@ -2947,6 +2969,7 @@ mod tests {
         let old_stage = project.join("old-stage");
         let paths = vec![authority.clone(), custom.clone(), stage.clone(), old_stage];
         let make = |lower: PathBuf| OverlayDeviceSpec {
+            lower_mutability: Vec::new(),
             lowers: vec![lower],
             apply_target: None,
             baseline_lower: None,
@@ -3027,6 +3050,7 @@ mod tests {
         let _listener =
             std::os::unix::net::UnixListener::bind(directory.join("ctrl.sock")).unwrap();
         let mut device = OverlayDeviceSpec {
+            lower_mutability: Vec::new(),
             lowers: vec![root.path().to_owned()],
             apply_target: None,
             baseline_lower: None,
@@ -3134,6 +3158,7 @@ mod tests {
                 root.join("project[1]")
             };
             let workspace = OverlayDeviceSpec {
+                lower_mutability: Vec::new(),
                 lowers: vec![baseline.clone()],
                 apply_target: Some(root.join("project[1]")),
                 baseline_lower: frozen.then_some(baseline),
@@ -3144,6 +3169,7 @@ mod tests {
                 access_policy: policy.clone(),
             };
             let mut device = OverlayDeviceSpec {
+                lower_mutability: Vec::new(),
                 lowers: vec![root.clone()],
                 apply_target: None,
                 baseline_lower: None,

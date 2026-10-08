@@ -102,7 +102,8 @@ pub struct Resolved {
 
 /// One checked namespace resolution and its already-read backing metadata.
 /// Layer 0 is the writable upper; layers 1.. follow `OverlayLayout::lowers`.
-/// This is a request-local observation, not a cache or an immutable capability.
+/// The merged selection is request-local; physical metadata may come from an
+/// explicitly immutable lower's bounded cache. This is not an authorization capability.
 #[derive(Debug)]
 pub struct ResolvedMetadata {
     pub resolved: Resolved,
@@ -111,7 +112,8 @@ pub struct ResolvedMetadata {
 }
 
 /// Physical identity observed while checking a backing parent directory.
-/// Request-local evidence, not a permission capability or cached attributes.
+/// Identity evidence, possibly reused under an explicit physical-lower stability
+/// promise; never a permission capability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BackingIdentity {
     pub device: u64,
@@ -135,6 +137,19 @@ pub struct DirectoryEntry {
     pub backing: ResolvedMetadata,
 }
 
+/// Caller-owned stability promise for one physical lower, not a read-only mount proof.
+/// The promise covers contents, metadata, namespace, ancestors and mount identity
+/// for the entire overlay lifetime. It is independent of baseline observation semantics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LayerMutability {
+    /// External modifications must remain visible; no cross-request caching.
+    #[default]
+    Mutable,
+    /// Caller guarantees lifetime stability, including all hardlink aliases.
+    Immutable,
+}
+
 /// Validated lower ordering and its explicit apply baseline.
 #[derive(Debug)]
 pub struct OverlayLayout {
@@ -142,6 +157,7 @@ pub struct OverlayLayout {
     target: PathBuf,
     baseline: PathBuf,
     frozen_baseline: bool,
+    lower_mutability: Vec<LayerMutability>,
 }
 impl OverlayLayout {
     pub fn new(lowers: Vec<PathBuf>, target: PathBuf) -> io::Result<Self> {
@@ -168,12 +184,34 @@ impl OverlayLayout {
         let frozen_baseline = baseline != fs::canonicalize(&target)?;
         let baseline = last.clone();
         Ok(Self {
+            lower_mutability: vec![LayerMutability::Mutable; lowers.len()],
             lowers,
             target,
             baseline,
             frozen_baseline,
         })
     }
+    /// Declare stability in highest-to-lowest lower order. Empty means all mutable
+    /// for legacy callers. A nonempty length mismatch returns InvalidInput without
+    /// filesystem side effects. The caller, not this validation, proves stability.
+    pub fn with_lower_mutability(mut self, declarations: Vec<LayerMutability>) -> io::Result<Self> {
+        if !declarations.is_empty() && declarations.len() != self.lowers.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "lower mutability length mismatch",
+            ));
+        }
+        if !declarations.is_empty() {
+            self.lower_mutability = declarations;
+        }
+        Ok(self)
+    }
+
+    /// Validated per-lower declarations, in the same order as `lowers`.
+    pub fn lower_mutability(&self) -> &[LayerMutability] {
+        &self.lower_mutability
+    }
+
     pub fn lowers(&self) -> &[PathBuf] {
         &self.lowers
     }
@@ -193,6 +231,8 @@ pub struct OverlayCore {
     profile: crate::profile::Profile,
     layout: OverlayLayout,
     content_index: Option<crate::content_index::ContentIndex>,
+    immutable_lower_cache: Mutex<HashMap<(usize, PathBuf), CachedLower>>,
+    immutable_lower_cache_enabled: bool,
     upper: PathBuf,
     work: Option<PathBuf>,
     excluded: BTreeSet<PathBuf>,
@@ -227,6 +267,15 @@ fn layer_metadata(root: &Path, rel: &Path) -> io::Result<Option<(PathBuf, Metada
         layer_metadata_with_parents(root, rel, None, &crate::profile::Profile::default(), None)?
             .into_entry(),
     )
+}
+
+const IMMUTABLE_LOWER_CACHE_LIMIT: usize = 4096;
+
+#[derive(Clone, Debug)]
+struct CachedLower {
+    path: PathBuf,
+    metadata: Metadata,
+    parents: Vec<BackingIdentity>,
 }
 
 enum LayerMetadata {
@@ -862,6 +911,10 @@ impl OverlayCore {
             profile: crate::profile::Profile::from_env("overlay-core"),
             layout,
             content_index: None,
+            immutable_lower_cache: Mutex::new(HashMap::new()),
+            immutable_lower_cache_enabled: std::env::var("PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE")
+                .as_deref()
+                != Ok("1"),
             upper,
             work,
             excluded,
@@ -1480,6 +1533,74 @@ impl OverlayCore {
         is_opaque_directory(&self.upper_path(rel))
     }
 
+    // Only successful physical-lower observations are retained. Never retain a
+    // merged winner, absence, authorization, journal decision or upper state.
+    fn lower_metadata_cached(
+        &self,
+        index: usize,
+        rel: &Path,
+        parents: Option<&mut Vec<BackingIdentity>>,
+        checked_directories: Option<&mut CheckedDirectories>,
+    ) -> io::Result<LayerMetadata> {
+        let root = &self.layout.lowers[index];
+        // Bound key and parent-vector storage too; oversized paths stay uncached.
+        let eligible = self.immutable_lower_cache_enabled
+            && self.layout.lower_mutability[index] == LayerMutability::Immutable
+            && root.as_os_str().len() + rel.as_os_str().len() <= 4096
+            && rel.components().count() <= 256;
+        if !eligible {
+            return layer_metadata_with_parents(
+                root,
+                rel,
+                parents,
+                &self.profile,
+                checked_directories,
+            );
+        }
+        let key = (index, rel.to_path_buf());
+        let cached = self
+            .immutable_lower_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&key)
+            .cloned();
+        if let Some(cached) = cached {
+            self.profile.add("immutable_lower_cache_hits", 1);
+            if let Some(parents) = parents {
+                *parents = cached.parents;
+            }
+            return Ok(LayerMetadata::Entry(cached.path, cached.metadata));
+        }
+        self.profile.add("immutable_lower_cache_misses", 1);
+        let mut identities = Vec::new();
+        // Always collect complete identities, never a request-local shortened prefix.
+        let result =
+            layer_metadata_with_parents(root, rel, Some(&mut identities), &self.profile, None)?;
+        if let LayerMetadata::Entry(path, metadata) = &result {
+            let mut cache = self
+                .immutable_lower_cache
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if cache.len() >= IMMUTABLE_LOWER_CACHE_LIMIT && !cache.contains_key(&key) {
+                // Coarse bounded eviction keeps this first version simple.
+                cache.clear();
+                self.profile.add("immutable_lower_cache_evictions", 1);
+            }
+            cache.insert(
+                key,
+                CachedLower {
+                    path: path.clone(),
+                    metadata: metadata.clone(),
+                    parents: identities.clone(),
+                },
+            );
+        }
+        if let Some(parents) = parents {
+            *parents = identities;
+        }
+        Ok(result)
+    }
+
     fn resolve_component_metadata(&self, rel: &Path) -> io::Result<Option<ResolvedMetadata>> {
         self.resolve_component_metadata_with_parents(rel, None, None)
     }
@@ -1523,15 +1644,15 @@ impl OverlayCore {
                 self.profile.add("unavailable_upper_marker_skips", 1);
             }
         }
-        for (index, lower) in self.layout.lowers.iter().enumerate() {
-            if let Some((path, metadata)) = layer_metadata_with_parents(
-                lower,
-                rel,
-                parents.as_deref_mut(),
-                &self.profile,
-                checked_directories.as_deref_mut(),
-            )?
-            .into_entry()
+        for index in 0..self.layout.lowers.len() {
+            if let Some((path, metadata)) = self
+                .lower_metadata_cached(
+                    index,
+                    rel,
+                    parents.as_deref_mut(),
+                    checked_directories.as_deref_mut(),
+                )?
+                .into_entry()
             {
                 return Ok(Some(ResolvedMetadata {
                     resolved: Resolved {
@@ -1591,11 +1712,11 @@ impl OverlayCore {
         let mut current = PathBuf::new();
         let mut resolved = None;
         let count = rel.components().count();
-        // Reuse only successful directory checks within this walk. Every
-        // logical prefix still gets fresh leaf metadata and alias checks.
-        // The final component rechecks ALL physical ancestors, including
-        // those in losing layers; neither attributes nor absence are cached.
-        // This retains the existing non-atomic host namespace contract.
+        // Every logical prefix still checks merged precedence and aliases.
+        // Mutable layers reuse directory checks only within this walk, and the
+        // final component rechecks all their physical ancestors. Immutable
+        // physical observations alone may survive between requests; absence
+        // never does. The mutable host namespace remains non-atomic.
         let mut checked = (REUSE_DIRECTORIES && count > 2).then(CheckedDirectories::default);
         for (index, component) in rel.components().enumerate() {
             self.profile.add("resolve_components", 1);
@@ -1634,8 +1755,9 @@ impl OverlayCore {
     }
 
     /// Reuse identities already read by the selected layer's parent checks.
-    /// Callers must still resolve policy and backing metadata on every request;
-    /// these identities permit reuse of an inode reference, not its attributes.
+    /// Callers must still resolve merged precedence and policy on every request.
+    /// Explicitly immutable physical lowers may reuse metadata and identities;
+    /// all other backing checks stay fresh. These are not authorization tokens.
     pub fn metadata_for_backing_lookup(&self, rel: &Path) -> io::Result<BackingResolution> {
         let mut parents = Vec::with_capacity(rel.components().count().saturating_sub(1));
         let entry = self.metadata_resolved_with_parents(rel, Some(&mut parents))?;
@@ -1652,7 +1774,7 @@ impl OverlayCore {
         self.prepare_file_read_with_parents(rel, None)
     }
 
-    /// Like `prepare_file_read`, also return freshly checked physical parents
+    /// Like `prepare_file_read`, also return physical parent identity evidence
     /// for a native adapter's bounded directory-reference cache.
     pub fn prepare_file_read_for_backing_lookup(
         &self,
@@ -1665,13 +1787,14 @@ impl OverlayCore {
 
     /// Record a read observation and return this request's fresh backing.
     /// The final object may be a symlink; consumers must not follow it.
-    /// Live journals retain publication followed by a fresh resolution, while
-    /// frozen/no-journal views resolve once. No attributes are cached.
+    /// Live journals retain publication followed by a new merged resolution,
+    /// while frozen/no-journal views resolve once. Only explicitly immutable
+    /// physical-lower attributes can be reused; observations are never cached.
     pub fn observe_read_resolved(&self, rel: &Path) -> io::Result<ResolvedMetadata> {
         self.prepare_read_with_parents(rel, None, false)
     }
 
-    /// Record a read observation and return freshly resolved backing metadata
+    /// Record a read observation and return newly selected backing metadata
     /// and parents for that same request. Unlike `prepare_file_read`, the final
     /// object may be a symlink: readlink/xattr adapters must not follow it.
     /// Live observations retain preimage publication and a subsequent fresh
@@ -1727,6 +1850,41 @@ impl OverlayCore {
 
     pub fn metadata(&self, rel: &Path) -> io::Result<Metadata> {
         Ok(self.metadata_resolved(rel)?.metadata)
+    }
+
+    /// Query the current upper object for a still-lower regular-file hardlink.
+    /// The copy-up group belongs to this Core owner, independent of adapter inode
+    /// lookup/handle lifetimes. Performs checked merged resolution and hardlink
+    /// authorization, then reads fresh no-follow upper metadata under the group
+    /// lock. Returns `None` for upper winners or no surviving copied-up alias.
+    /// Does not materialize an alias, capture content or change namespace; callers
+    /// that need a physical upper alias must use `copy_up` and observe its effects.
+    /// Namespace, policy and I/O errors propagate; a poisoned group lock is EIO.
+    pub fn copied_hard_link_metadata(&self, rel: &Path) -> io::Result<Option<Metadata>> {
+        let entry = self.metadata_resolved(rel)?;
+        if entry.resolved.is_upper || !entry.metadata.is_file() {
+            return Ok(None);
+        }
+        let identity = (entry.metadata.dev(), entry.metadata.ino());
+        let groups = self
+            .copied_hard_links
+            .lock()
+            .map_err(|_| error(libc::EIO))?;
+        if let Some(paths) = groups.get(&identity) {
+            for path in paths {
+                let metadata = match crate::backend::symlink_metadata(path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error),
+                };
+                if !metadata.is_file() {
+                    return Err(error(libc::EIO));
+                }
+                self.require_unaliased_metadata(path, &metadata)?;
+                return Ok(Some(metadata));
+            }
+        }
+        Ok(None)
     }
 
     pub fn exists_in_lower(&self, rel: &Path) -> bool {

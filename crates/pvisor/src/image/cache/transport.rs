@@ -71,6 +71,15 @@ impl Write for Stream {
     }
 }
 impl Stream {
+    pub(super) fn nodelay(&self) -> std::io::Result<()> {
+        // Frames write their prefix and JSON separately. Disable Nagle so small
+        // persistent exchanges cannot stall behind the peer's delayed ACK.
+        match self {
+            Self::Unix(_) => Ok(()),
+            Self::Tcp(s) => s.set_nodelay(true),
+        }
+    }
+
     pub(super) fn timeouts(&self, timeout: Duration) -> std::io::Result<()> {
         match self {
             Self::Unix(s) => {

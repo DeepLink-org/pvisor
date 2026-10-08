@@ -1,0 +1,32 @@
+field,value
+benchmark_id,B-LAZY-STARTUP
+cohort,lazy-numpy-local-20261007
+measurement_date,2026-10-07
+raw_location,benchmark/pvisor/.data/lazy-numpy-local-20261007/report.json
+report_sha256,92667144356e30b730bc5770d68e23688628a6bcd754de82d615746abc10a13a
+analysis_location,benchmark/pvisor/.data/lazy-numpy-local-20261007/analysis.json
+statistics,30 formal samples per cell; 120 total; zero formal failures or speed exclusions; unsplit by existing publication rule; P95 reference-only
+seed,20261007
+warmups,one initial excluded round plus three warmup rounds
+workload,"Python 3.13.14 NumPy 2.5.2; arange(16,int64).reshape(4,4); square sum=1240; (x @ x.T) sum=3680; pandas not imported"
+workload_controls,-B -u; PYTHONHASHSEED=0; OMP_NUM_THREADS=MKL_NUM_THREADS=OPENBLAS_NUM_THREADS=1; unique checked marker then exit 0
+correctness,all 136 including excluded launches checked: unique stdout marker; exit 0; lazy VM/staging Run Bundle; complete cold Docker blob transfer; no warm content transfer
+host_kernel,7.2.8-200.fc44.x86_64
+host_architecture,linux/amd64
+docker_version,29.7.2
+docker_storage_driver,overlayfs/containerd image store
+source_image,docker.io/amancevice/pandas@sha256:9a3a94039175ac799ad33c1a207997994ff9b24814e06508dddfa259b1ed9159
+selected_amd64_manifest,sha256:9a3a94039175ac799ad33c1a207997994ff9b24814e06508dddfa259b1ed9159
+registry_image,registry@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
+pvisor_sha256,d3f09687cca60b617629c215fa1359c441ab6ac19f8c63b68f1dcdf7614e6b30
+pvisor_cache_sha256,fd8dc36fce2a1b59b8028b40896b2cfbefee337f1011dce7e4ea66addc81de5c
+measurement_harness_sha256,14adad4be449de37527383bf0ccb3c15458ab719df6a34347b91f1dcef316a0d
+firmware,embedded in hashed pvisor binary; separate bundle hash unavailable
+binary_source_relationship,preexisting pvisor launcher preserved; separately built cache includes Docker gzip compatibility; current dirty source manifest is not complete build-time proof; not an OverlayFS kernel-cache A/B
+cache_build_command,python3 scripts/build-pvisor.py --profile release --target-dir target/lazy-torch-build
+current_source_head_at_measurement,cd9827af8fa3a975e3b3974e38be747e91a097e2
+current_source_dirty,true
+current_source_manifest_location,benchmark/pvisor/.data/lazy-numpy-local-20261007/source-manifest.json
+confidence_interval,5000 paired complete-round bootstrap samples; Docker minus lazy marginal median Ready difference
+protocol,"{""binary_source_relationship"": ""pre-existing release artifacts; build-time source relationship unverified; current source identity recorded separately"", ""budget"": ""2 CPUs (0,1) and 2 GiB; Docker hard limit versus pVisor guest RAM, not equivalent enclosing VM limit"", ""cache"": ""Docker image removed before each cold pair; cold validity requires complete registry blob responses. Lazy fresh XDG cache per pair, reused warm; new guest/stage/workspace each launch"", ""invalidation"": ""any failed correctness, missing cold transfer, warm content transfer or timeout invalidates campaign; configured resource controls are not independently audited; no performance outliers dropped"", ""network"": ""local loopback HTTPS registry / authenticated unencrypted TCP cache; no latency or bandwidth injection; warm host page cache. Count HTTP bodies versus cache response frames, excluding TLS/TCP/IP overhead"", ""service_preparation"": ""Registry mirror and cache preparation separate. Cache imports identical digest from upstream Docker Hub because OCI client requires public-trusted HTTPS; not from insecure local registry.""}"
+unsupported_claims,WAN; training; numerical throughput; full OS boot; concurrency; equal whole-system budgets; pure lazy or VMM causality; cross-cohort speedup; cache-reader patch causality

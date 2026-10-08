@@ -60,7 +60,7 @@ N=3 个独立进程/规模，表内为 P50；括号是观察到的最小–最�
 
 ### 与已有调度方案的比较边界 {#limits}
 
-Kubernetes、Ray 和云端沙箱的相同负载、共同预算对照未测，不提供数值排名。历史测量不能规划当前 daemon 的容量，也不能作为替换通用调度平台的依据。单任务的 Docker、Firecracker、QEMU 对照见[运行时对比](compare-runtimes.md)。
+Kubernetes、Ray 和云端沙箱的相同负载、共同预算对照未测，不提供数值排名。历史测量不能规划当前 daemon 的容量，也不能作为替换通用调度平台的依据。单任务的 Docker、Firecracker、QEMU 对照见[端到端任务](agent-tasks.md)。
 
 ### 历史数据下载与来源 {#run}
 

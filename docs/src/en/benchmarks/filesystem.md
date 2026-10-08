@@ -10,6 +10,8 @@
 | Independent guest kernel | Budget both startup and VM tool waiting |
 | Concurrent or idle environments | Require fixed-budget throughput and physical-memory measurements |
 
+These timings are the 2026-10-06 cross-runtime baseline and do not include subsequent cache optimizations. Current cache experiments do not establish new performance conclusions for default staged, VM or complete review tasks; use this baseline for selection.
+
 ## Motivation {#motivation}
 
 Agent tool loops traverse, read, write, search, compile and install dependencies. Compare individual operations and complete waiting so that fast startup does not hide file-heavy task costs.
@@ -59,6 +61,12 @@ Staged minus Docker completion median is +268.81 ms, with a paired-bootstrap 95%
 
 <a id="full-ubuntu"></a>
 Full Ubuntu filesystem workloads have not been retested with the current artifacts.
+
+### Where cache optimizations apply {#cache-status}
+
+Immutable-lower physical metadata caching has an independent engineering A/B, with gains limited to Linux HOST FUSE configurations that explicitly declare and maintain lower stability. Host rootfs, OCI extraction directories and lazy-image local projections receive no automatic immutability promise. The experiment does not cover the complete review workflow and cannot be used to rescale staged or VM timings above. See the [immutable-lower cache analysis](../design/filesystem-performance-analysis.md#immutable-lower-cache) for the design, results and confidence intervals.
+
+Extended kernel caching is an explicit Linux HOST API option. Writable long-lived metadata caching requires immutable lowers, exclusive upper/work ownership and stable backing metadata; KEEP_CACHE supports stable read-only regular files only. Configurations incompatible with journals, read-observation metrics or custom path policies are rejected rather than silently omitting observations. Current-source formal timing was contaminated by concurrent build checks, so no speedup magnitude has passed acceptance. This mode is not integrated into default `pvisor run` or VM execution. See the [kernel-cache analysis](../design/filesystem-performance-analysis.md#host-kernel-cache) for capability boundaries and validation status.
 
 ### Downloads and reproduction {#run}
 
