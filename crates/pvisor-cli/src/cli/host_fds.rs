@@ -113,6 +113,43 @@ pub(super) fn receive(stream: &UnixStream, expected: usize) -> anyhow::Result<Ve
     Ok(fds)
 }
 
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+    use pvisor::host_transport::{
+        read_host_frame_sync as read_frame, write_host_frame_sync as write_frame,
+    };
+
+    #[test]
+    fn worker_socket_stays_connected_after_acknowledged_transfer() {
+        for _ in 0..1000 {
+            let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+            let (mut authority, worker) = UnixStream::pair().unwrap();
+            write_frame(&mut sender, &42u32).unwrap();
+            send(&sender, &[worker.as_raw_fd()]).unwrap();
+            let writer = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                write_frame(&mut authority, &"bootstrap").unwrap();
+                authority
+            });
+            assert_eq!(read_frame::<u32>(&mut receiver).unwrap(), 42);
+            let mut rights = receive(&receiver, 1).unwrap();
+            let mut received = UnixStream::from(rights.remove(0));
+            received
+                .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                .unwrap();
+            assert_eq!(read_frame::<String>(&mut received).unwrap(), "bootstrap");
+            let mut authority = writer.join().unwrap();
+            drop(worker);
+            write_frame(&mut authority, &"after acknowledgment").unwrap();
+            assert_eq!(
+                read_frame::<String>(&mut received).unwrap(),
+                "after acknowledgment"
+            );
+        }
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;

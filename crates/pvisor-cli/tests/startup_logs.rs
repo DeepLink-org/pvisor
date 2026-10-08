@@ -72,7 +72,11 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
     }
 
     let output = command.env("PVISOR_STARTUP_TIMING", "0").output().unwrap();
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(!String::from_utf8_lossy(&output.stderr).contains("pvisor-startup "));
     assert!(!String::from_utf8_lossy(&output.stderr).contains("pvisor-persistence "));
 
