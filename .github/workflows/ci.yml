@@ -251,6 +251,11 @@ jobs:
           PVISOR_RUN_HOME: ${{ runner.temp }}/pvisor-isolation-runs
         run: just test-isolation
 
+      - name: Stop debug Host listener before release scenarios
+        shell: bash
+        run: |
+          pkill -f "^${GITHUB_WORKSPACE}/target/debug/pvisor --pvisor-internal-host$" || [[ $? == 1 ]]
+
       - name: Run pVisor filesystem examples
         env:
           WORK_ROOT: ${{ runner.temp }}/pvisor-filesystem-examples
