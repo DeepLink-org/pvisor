@@ -147,6 +147,19 @@ fn make_pipe() -> Result<(RawFd, RawFd)> {
     Ok((fds[0], fds[1]))
 }
 
+/// Mark a descriptor close-on-exec. Ends the shim keeps for itself (the
+/// ready-report read end and the start-pipe write end) must never survive
+/// into the internal parent: a long-lived runner holding the start write
+/// end would block the EOF that tells it the shim is gone.
+fn set_cloexec(fd: RawFd) {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        }
+    }
+}
+
 /// The stdio descriptors the shim handed over, parsed back in the child.
 #[derive(Clone, Copy, Debug)]
 pub struct StdioFds {
@@ -202,6 +215,12 @@ pub fn spawn_internal_opts(
     let (ready_r, ready_w) = make_pipe()?;
     let (start_r, start_w) = make_pipe()?;
     let (fork_r, fork_w) = make_pipe()?;
+    // Parent-only ends. The exec'd internal parent must inherit exactly the
+    // env-documented descriptors (ready_w, start_r, fork_w, fork_r); keeping
+    // the start write end would silence the shim-exit EOF for VM runners,
+    // and the ready read end would let the child consume its own report.
+    set_cloexec(ready_r);
+    set_cloexec(start_w);
 
     let exe = std::env::current_exe().context("current exe")?;
     let mut command = Command::new(exe);
@@ -235,8 +254,8 @@ pub fn spawn_internal_opts(
         .spawn()
         .context("spawn internal process")?;
 
-    // The internal parent inherited every end; drop the copies this
-    // process must not hold.
+    // Drop this process's copies of the child-side ends (CLOEXEC already
+    // kept the parent-only ends out of the child).
     for fd in [ready_w, start_r, fork_r, fork_w] {
         unsafe { libc::close(fd) };
     }

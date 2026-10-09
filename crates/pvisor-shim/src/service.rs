@@ -700,13 +700,27 @@ impl Task for PvisorTask {
         let internal = tokio::task::spawn_blocking({
             let plan_path = plan_path.clone();
             move || {
-                child::spawn_internal(
-                    runner_arg,
-                    &plan_path,
-                    &plan_bytes,
-                    Some(stdio),
-                    sandbox_pid,
-                )
+                if wants_vm {
+                    // The VM runner lives for the whole task (it hosts the
+                    // VMM), so Create must not wait for its exit; waiting is
+                    // only correct for init/exec parents that relay and quit.
+                    child::spawn_internal_opts(
+                        runner_arg,
+                        &plan_path,
+                        &plan_bytes,
+                        Some(stdio),
+                        sandbox_pid,
+                        false,
+                    )
+                } else {
+                    child::spawn_internal(
+                        runner_arg,
+                        &plan_path,
+                        &plan_bytes,
+                        Some(stdio),
+                        sandbox_pid,
+                    )
+                }
             }
         })
         .await
@@ -1173,6 +1187,7 @@ impl Task for PvisorTask {
         let mut tasks = self.inner.tasks.lock().expect("tasks mutex");
         let live = tasks.get_mut(&req.id).ok_or_else(|| not_found(&req.id))?;
         if req.exec_id.is_empty() {
+            info!("task {} CloseIO(stdin): releasing keepalive", req.id);
             live.io.close_stdin();
         } else if let Some(exec) = live.execs.get_mut(&req.exec_id) {
             exec.io.close_stdin();
