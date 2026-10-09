@@ -1,16 +1,15 @@
 """Conventional runner tests; these do not start Docker or VMs."""
 
 import contextlib
-import io
-import hashlib
 import gzip
-import tarfile
+import hashlib
+import io
 import json
-import struct
-
 import os
 import socket
+import struct
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
