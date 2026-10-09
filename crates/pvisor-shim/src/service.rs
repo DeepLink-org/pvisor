@@ -338,10 +338,6 @@ fn vm_exec_connect_and_start(
     plan: &ExecPlan,
 ) -> Result<(u32, std::os::unix::net::UnixStream)> {
     crate::plan::guest_config(&plan.process, false)?;
-    anyhow::ensure!(
-        plan.process.rlimits.is_empty(),
-        "VM exec rlimits are unsupported"
-    );
     let mut stream = None;
     for _ in 0..300 {
         match std::os::unix::net::UnixStream::connect(socket_path) {
@@ -359,6 +355,12 @@ fn vm_exec_connect_and_start(
         argv: plan.process.argv.clone(),
         env: plan.process.env.clone(),
         cwd: plan.process.cwd.to_string_lossy().to_string(),
+        limits: plan
+            .process
+            .rlimits
+            .iter()
+            .map(|limit| (limit.typ.clone(), (limit.soft, limit.hard)))
+            .collect(),
     })?;
     let message = FrameReader::new(&mut stream)
         .read_control()?

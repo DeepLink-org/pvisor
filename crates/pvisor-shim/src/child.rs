@@ -484,12 +484,38 @@ fn vm_runner_main() -> Result<i32> {
         return Ok(255);
     }
 
-    // The virtio-console host side is wired to this process's stdio.
+    // The virtio-console host side is wired to this process's stdio. Task
+    // output travels the named console ports, so stderr remains free for
+    // VMM logging: the `io.pvisor.vm.log` annotation (a log filter or "1")
+    // redirects it to <bundle>/pvisor-vm.log.
     let stdio = StdioFds::from_env()?;
     unsafe {
         libc::dup2(stdio.stdin, libc::STDIN_FILENO);
         libc::dup2(stdio.stdout, libc::STDOUT_FILENO);
         libc::dup2(stdio.stderr, libc::STDERR_FILENO);
+    }
+    if let Some(filter) = plan.annotations.get("io.pvisor.vm.log").map(|value| {
+        if value.is_empty() || value == "1" {
+            "debug".to_string()
+        } else {
+            value.clone()
+        }
+    }) {
+        let path = plan.bundle.join("pvisor-vm.log");
+        if let Ok(file) = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+        {
+            use std::os::fd::AsRawFd;
+            unsafe {
+                libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+            }
+            use pvisor_vm::api::RuntimeSupport;
+            pvisor_vm::api::VmPlatform::init_logging(&filter);
+            eprintln!("pvisor VM runner logging to {}", path.display());
+        }
     }
 
     crate::vm::boot_vm(&plan)

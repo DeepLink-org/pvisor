@@ -539,23 +539,18 @@ pub fn vm_agent_enabled(annotations: &HashMap<String, String>) -> bool {
 /// Build the same launch contract used by pVisor's VM executor.
 pub fn validate_vm_process(
     process: &oci_spec::runtime::Process,
-    exec: bool,
+    _exec: bool,
 ) -> Result<(), PlanError> {
     validate_process_constraints(process)?;
     // Identity (uid/gid/groups/umask), capabilities, and
     // no_new_privileges are host-process concepts the VM boundary already
     // subsumes; accepting them matches how every VM runtime (kata,
-    // firecracker) treats OCI process-level security.
+    // firecracker) treats OCI process-level security. Rlimits (init and
+    // exec alike) travel to the guest: init through the launch config,
+    // exec through the agent's ExecStart message.
     let _ = process.no_new_privileges();
     let _ = process.capabilities();
-    if exec
-        && process
-            .rlimits()
-            .as_ref()
-            .is_some_and(|limits| !limits.is_empty())
-    {
-        return Err(PlanError::UnsupportedVmProcess("exec rlimits"));
-    }
+    let _ = process.rlimits();
     Ok(())
 }
 
@@ -936,8 +931,9 @@ mod tests {
         exec["process"]["rlimits"] =
             serde_json::json!([{"type":"RLIMIT_NOFILE","soft":32,"hard":64}]);
         let spec: Spec = serde_json::from_value(exec).unwrap();
+        // Rlimits are carried into the guest for both init and exec.
         assert!(validate_vm_process(spec.process().as_ref().unwrap(), false).is_ok());
-        assert!(validate_vm_process(spec.process().as_ref().unwrap(), true).is_err());
+        assert!(validate_vm_process(spec.process().as_ref().unwrap(), true).is_ok());
     }
     use super::*;
 
