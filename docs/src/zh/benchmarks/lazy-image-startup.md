@@ -2,14 +2,13 @@
 
 ## 主要结论 {#conclusions}
 
-**在 Linux/KVM、镜像服务已准备、宿主页缓存热的本机协议模拟中，pVisor lazy VM 上 Ubuntu shell 的冷客户端首条正确输出 P50 为 183.7 ms，全部 30 次均早于 Docker 冷客户端；小型 Python/NumPy 脚本虽减少内容传输，但未检出冷客户端 Ready 中位数差异；热客户端 Docker 更快。**
+**在 Linux/KVM、镜像服务已准备、宿主页缓存热的本机协议模拟中，pVisor lazy VM 的冷客户端正确输出 P50 为 Ubuntu shell 186.1 ms、NumPy 小脚本 778.0 ms；两种负载的同批 Docker 对照均支持更短的冷客户端中位等待，热客户端则是 Docker 更快。**
 
 | 需求 | 选型含义 |
 |---|---|
-| 未缓存镜像，启动短 shell 任务 | 按需读取减少客户端内容下载和启动等待 |
-| 未缓存镜像，启动小型 Python/NumPy 脚本 | 内容传输更少，未证明冷启动收益 |
-| 已有完整本地镜像 | Docker 通常更早输出 shell 标记，NumPy 则是 Docker 更快 |
-| 首次部署镜像服务 | 另计拉取、解包和索引成本；客户端时间不包含准备 |
+| 未缓存镜像，启动短 shell 或 NumPy 任务 | 这些条件下，按需读取减少内容下载和冷客户端中位等待 |
+| 已有完整本地镜像 | Docker 更早输出正确标记；lazy VM 仍需 VM/Job 启动和收尾 |
+| 首次部署镜像服务 | 另计上游下载、解包和索引成本；缓存准备不衡量这些工作 |
 
 ## Motivation {#motivation}
 
@@ -17,90 +16,82 @@
 
 ## 实验设计 {#interpretation}
 
-Linux x86_64 / KVM，Fedora 内核 7.2.8-200.fc44.x86_64，Docker 29.7.2，overlayfs/containerd image store。`ubuntu:latest` 固定为 Ubuntu 26.04 的同一个 amd64 manifest。Docker 从开源 Distribution `registry:3` 副本完整拉取；pVisor 通过真实 `pvisor-cache serve` 按需读取。该服务与 OpenSandbox 的 `pvisor-daemon serve` 不同。
+`B-LAZY-STARTUP`，Linux x86_64/KVM、Fedora 内核 7.2.8-200.fc44.x86_64、Docker 29.7.2、overlayfs/containerd image store。每种负载两条路径使用同一个固定 amd64 manifest：Ubuntu 26.04 shell，以及 `amancevice/pandas` 中的 Python 3.13.14 / NumPy 2.5.2（不导入 pandas）。Docker 从新建 Distribution registry 拉取完整压缩 blobs；pVisor 通过真实 `pvisor-cache serve` 按需读取，启用客户端二进制索引页、上游连接池和持久私有桥。静态 release 制品与内嵌 firmware 对应保留的独立新构建证据。
 
-Ubuntu shell 批次的两条路径运行相同的 `/bin/sh`：读取 `/etc/os-release`，校验 Ubuntu 26.04，输出一次正确标记并成功退出。**Ready** 从启动 CLI 到观察到完整标记；**Completion** 到进程退出与输出流关闭，包含收尾。负载代表短命令环境初始化，完整发行版引导、Agent CLI 和大型工具任务未测。
+Shell 先校验 `/etc/os-release` 再输出唯一标记。NumPy 使用 `-B -u`、`PYTHONHASHSEED=0`、数值库各单线程，检查版本并校验 int64 4×4 数组的平方和 1240、矩阵乘积和 3680，再输出标记；所有启动必须退出 0。**Ready** 到观察到正确输出，**Completion** 到进程退出与输出流关闭，包含收尾。
 
-独立的 Python/NumPy 批次使用公开镜像 `amancevice/pandas:slim-3.0.5`，固定为 amd64 digest `sha256:9a3a94039175ac799ad33c1a207997994ff9b24814e06508dddfa259b1ed9159`。两条路径运行同一小型脚本，使用 Python 3.13.14、NumPy 2.5.2；镜像包含 pandas，但不导入。脚本使用 `-B -u`，设置 `OMP_NUM_THREADS=1`、`MKL_NUM_THREADS=1`、`OPENBLAS_NUM_THREADS=1` 和 `PYTHONHASHSEED=0`，校验两个版本，创建 `x = np.arange(16, dtype=np.int64).reshape(4, 4)`，断言 `np.square(x).sum() == 1240` 与 `(x @ x.T).sum() == 3680`，随后输出一次唯一标记并以退出码 0 结束。Ready 因而包含导入和数值正确性校验，代表小型数值脚本环境，不代表大型计算。下述 CPU/内存预算、loopback 协议和缓存/采样控制同样适用于 NumPy。NumPy 正式采样期间无并发测试、构建或内核 benchmark。两种负载批次分别统计，跨批次比较不证明负载或实现变化的因果影响。
-
-每个批次的每路径/缓存状态 30 个正式样本，同轮随机交替 Docker/lazy，每路径冷后紧接热；一次初始预检和三轮预热不计入统计。每次新容器或 VM、工作区和 stage。Docker 冷启动前只删除测试镜像，并要求完整获取全部 blob；lazy 每对使用新客户端缓存，热启动复用它。服务端和宿主页缓存保持热；全机冷磁盘及 Docker snapshotter 完全冷状态未独立证明。
+每种负载独立成批，30 轮随机交替 Docker/lazy，每路径冷后紧接热，每次新容器/VM/workspace/stage；初始轮及三轮预热不计入统计。Docker 冷启动必须获取全部 blobs；lazy 冷启动使用新客户端缓存，热启动复用对应缓存且不得传输文件内容。任一正确性、计数或清理失败使批次无效，慢有效样本全部保留。采样期间无并发构建或测试。
 
 | 控制项 | 实际配置与范围 |
 |---|---|
-| 负载 CPU / 内存 | Docker：CPU 0/1、两核 quota、2 GiB 硬限制、零额外 swap；pVisor：launch affinity 0/1、2 vCPU、2 GiB guest RAM |
-| 服务与客户端 | registry/cache 固定 CPU 2/3；Docker daemon/containerd 和计数代理未作完整两核约束；guest RAM 与宿主进程树硬上限不等价 |
-| 网络 | 本机 loopback；Docker 经计数代理使用 HTTPS，cache 使用认证、未加密 TCP；无 RTT 或带宽注入 |
-| 校验与拒绝 | 输出、成功退出、完整冷下载与热缓存命中；lazy 另校验 Run Bundle 的 VM/暂存声明。失败或超时使实验失败，慢有效样本不剔除 |
+| 负载预算 | CPU 0/1；Docker 两核 quota、2 GiB 硬限制且无额外 swap；VM 2 vCPU、2 GiB guest RAM，与整个宿主进程树上限不同 |
+| 服务 | registry/cache 固定 CPU 2/3；daemon/containerd、代理未作相同整机预算约束 |
+| 网络与缓存 | 本机 loopback，HTTPS registry 与认证、未加密 TCP cache；无 RTT/带宽注入；服务与宿主页缓存热 |
+| 隔离与校验 | 私有 user/mount/PID namespace、pivot_root 保留已有 listener；校验输出、Run Bundle、冻结摘要、冷/热计数与 namespace 清理 |
 
-计入样本不代表独立资源执法或宿主完整性验证。可比较的是这些实际启动配置；真实 WAN、并发、相同整机预算、纯 lazy 算法或纯 VMM 贡献未测。服务端准备独立记录：cache 从 Docker Hub 导入同 digest，可信 HTTPS 的 OCI 客户端未从本机不安全 registry 导入。
+Registry 准备使用校验后的保留**原始压缩 OCI blobs**，cache 服务复制支持的 store 后执行缓存 Prepare；没有测量上游拉取、解包、建索引时间。宿主目录为 read/write bind，上述检查不证明完整宿主完整性。真实 WAN、并发、完整发行版引导、大型计算、相同整机预算以及纯 VMM/lazy 算法贡献未测。不同负载和历史批次不合并，也不据其差值计算实现加速比。
 
 ## 实验数据和分析 {#results}
 
 ### Ubuntu shell 客户端启动等待 {#startup}
 
-测量日期 2026-10-07，每格 n=30，共 120 个有效样本、零正式失败、零按速度剔除。单位 ms；非分离分布报告 P50，分离分布报告各簇中位数与样本比例。P95 仅供参考。
+测量日期 2026-10-10，每格 n=30、共 120 正式样本，零正式失败、零按速度剔除。单位 ms；非分离分布报告 P50，分离分布报告各簇中位数与样本比例。P95 仅参考，分簇原因未确定。
 
 | 路径 / 缓存 | Ready：P50 或簇中位数（占比） | Ready P95 | Completion：P50 或簇中位数（占比） | Completion P95 |
 |---|---:|---:|---:|---:|
-| Docker 冷 | 582.9（23/30）；1,524.4（7/30） | 1,855.1 | 600.6（19/30）；1,465.1（11/30） | 1,944.8 |
-| pVisor lazy 冷 | 183.7 | 229.2 | 331.0 | 381.2 |
-| Docker 热 | 82.6（25/30）；202.3（5/30） | 210.3 | 119.6 | 311.0 |
-| pVisor lazy 热 | 162.7 | 182.1 | 295.5 | 330.6 |
+| Docker 冷 | 597.2 (23/30); 1,563.5 (7/30) | 1,923.6 | 690.2 (25/30); 1,744.7 (5/30) | 2,032.0 |
+| pVisor lazy 冷 | 186.1 | 256.5 | 312.5 | 381.2 |
+| Docker 热 | 85.0 (24/30); 212.6 (6/30) | 225.5 | 113.6 (22/30); 280.3 (8/30) | 317.2 |
+| pVisor lazy 热 | 151.0 | 184.2 | 267.3 | 310.0 |
 
-| 冷客户端 Ready 范围，n=30 | 最小 ms | 最大 ms |
-|---|---:|---:|
-| Docker | 528.2 | 2,052.4 |
-| pVisor lazy | 170.1 | 302.1 |
-
-冷 lazy 的全部观测早于冷 Docker，方向不依赖单个总体中位数。热 Docker 的多数样本等待更短，但存在较慢簇。Completion 显示 VM/Job 收尾成本也需要纳入短任务预算。分簇使用既有描述性规则，簇的原因尚未确定。
-
-按完整轮配对 bootstrap 5,000 次，Docker 减 lazy 的**边际总体中位数差**的 95% 区间为：冷缓存 **389.2–833.9 ms**，热缓存 **−86.1 至 −48.2 ms**。区间不代表 Docker 各簇的中心，不据此给出统一倍数或纯 lazy 的因果收益。
-
-### 客户端内容传输 {#transfer}
-
-单位 bytes，每格 n=30，条件内所有样本计数相同；统计截至 Completion。
-
-| 路径 / 缓存 | OCI blob 或文件内容 | 相关响应计数 |
-|---|---:|---:|
-| Docker 冷 | 41,842,292 | 41,843,684 |
-| pVisor lazy 冷 | 2,580,417 | 2,588,104 |
-| Docker 热 | 0 | 0 |
-| pVisor lazy 热 | 0 | 575 |
-
-Docker 内容列为压缩 OCI 层及 config，lazy 为解压后文件读取载荷。短 shell 仅需 shell、动态链接器、libc 等文件，lazy 内容载荷比完整 OCI blobs 少 **93.8%**。这描述两种交付方式的应用载荷；完整网络流量减少率未测。Docker 响应计数不含 HTTP headers/TLS，lazy 含协议帧和元数据，两者均不含 TCP/IP。热 lazy 仍需 ping/prepare 请求。
-
-### 镜像服务准备成本 {#preparation}
-
-单位 s，每项 n=1，单次观察值。
-
-| 准备操作 | 耗时 | 包含的工作 |
-|---|---:|---|
-| Docker Hub → Distribution 副本 | 12.483 | skopeo 拉取并推送所选平台镜像 |
-| Docker Hub → cache 首次准备 | 15.130 | 拉取、解包、建立索引并返回读取句柄 |
-
-**183.7 ms 的冷客户端 Ready 不包含 15.130 s 的首次 cache 准备。** 两项准备的路径与工作不同，不做准备速度排名或摊销临界次数估计。
+按完整轮配对 bootstrap 5,000 次，**Docker 减 lazy 的边际 Ready 中位数差**为：冷：**575.0 ms**，95% CI **[384.5, 841.3] ms**；热：**-60.9 ms**，95% CI **[-68.3, -30.4] ms**。区间描述总体中位数，不代表单个簇的中心或每次启动。
 
 ### 小型 Python/NumPy 脚本 {#numpy}
 
-独立批次测量日期 2026-10-07，共 120 个正式样本，每格 n=30，零正式失败、零按速度剔除。单位 ms；按发布规则，Ready 和 Completion 分布均未分离，报告 P50。P95 仅供参考。
+独立批次同样测于 2026-10-10，每格 n=30、共 120 正式样本，无失败或按速度剔除；单位 ms，沿用相同分布规则。
 
-| 路径 / 缓存 | Ready P50 | Ready P95 | Completion P50 | Completion P95 |
+| 路径 / 缓存 | Ready：P50 或簇中位数（占比） | Ready P95 | Completion：P50 或簇中位数（占比） | Completion P95 |
 |---|---:|---:|---:|---:|
-| Docker 冷 | 1,077.6 | 2,367.1 | 1,118.1 | 2,417.8 |
-| pVisor lazy 冷 | 1,213.0 | 1,312.1 | 1,400.8 | 1,532.4 |
-| Docker 热 | 120.8 | 151.5 | 157.3 | 206.9 |
-| pVisor lazy 热 | 520.5 | 626.7 | 686.9 | 825.1 |
+| Docker 冷 | 1,001.5 (19/30); 2,233.3 (11/30) | 2,836.5 | 1,041.7 (19/30); 2,305.9 (11/30) | 2,877.1 |
+| pVisor lazy 冷 | 778.0 | 1,086.1 | 925.0 | 1,307.3 |
+| Docker 热 | 120.7 (24/30); 196.6 (6/30) | 211.5 | 161.9 (24/30); 271.1 (6/30) | 276.7 |
+| pVisor lazy 热 | 462.2 | 521.3 | 606.8 | 677.0 |
 
-按完整轮配对 bootstrap 5,000 次，冷客户端 **Docker 减 lazy 的边际 Ready 中位数差**为 **−135.3 ms**，95% CI **[−204.1, 176.7] ms**。区间跨零：**未检出冷 Ready 中位数差异**，不能判定任一路径可靠地更快。热客户端差异为 **−399.7 ms**，95% CI **[−408.0, −389.8] ms**，Docker 更快。
+Docker 减 lazy 的边际 Ready 中位数差为：冷：**396.6 ms**，95% CI **[231.7, 1,055.3] ms**；热：**-339.2 ms**，95% CI **[-345.9, -332.4] ms**。这些配置下，冷客户端中位等待支持 lazy，热客户端支持 Docker。lazy 冷 Ready 范围为 682.8–2,397.3 ms，中位数更小不承诺每次启动都更快；Completion 还应计入 Job 收尾成本。
 
-截至 Completion，冷内容量为 Docker **115,930,809 bytes**、lazy **36,951,980 bytes**，减少 **68.1%**；相关响应计数分别为 **115,932,435** 和 **37,153,682 bytes**。热内容量两者均为 **0 bytes**，响应计数 Docker 为 **0**、lazy 为 **750 bytes**。每格 n=30，条件内计数相同；沿用上述内容/响应口径与网络开销排除范围。内容减少未证明该脚本的冷启动等待减少。独立的服务端准备耗时为 Docker Hub → Distribution 副本 **33.944 s**、Docker Hub → cache **46.189 s**，各 n=1，均不计入客户端时间；单次观测不支持准备速度排名。
+### 客户端载荷 {#transfer}
+
+单位 bytes，计数截至 Completion，每格 n=30，条件内所有样本计数相同。
+
+| 负载 / 路径 / 缓存 | 文件内容或 OCI blobs | 二进制 Metadata Data | 总响应 |
+|---|---:|---:|---:|
+| Shell / docker / 冷 | 41,842,292 | 0 | 41,843,684 |
+| Shell / docker / 热 | 0 | 0 | 0 |
+| Shell / lazy / 冷 | 2,580,417 | 1,117,945 | 3,702,376 |
+| Shell / lazy / 热 | 0 | 0 | 641 |
+| NumPy / docker / 冷 | 115,930,809 | 0 | 115,932,435 |
+| NumPy / docker / 热 | 0 | 0 | 0 |
+| NumPy / lazy / 冷 | 36,957,665 | 3,085,982 | 40,072,915 |
+| NumPy / lazy / 热 | 0 | 0 | 816 |
+
+Docker 内容是压缩层及 config，lazy 内容仅为解压后 Read Data。二进制索引页单列为 Metadata Data，并计入总响应，因此文件内容减少不能直接解释为完整网络流量减少。Docker 响应不含 HTTP headers/TLS，两路径均不含 TCP/IP 开销。热 lazy 仍有 Prepare/Ping。
+
+### 服务端缓存准备 {#preparation}
+
+单位 s，每项 n=1，均在客户端计时之外。Registry 发布不含此前校验/归档步骤；完整准备阶段保留在原始证据中。
+
+| 缓存准备操作 | Shell | NumPy |
+|---|---:|---:|
+| 复制 cache store | 5.503 | 3.562 |
+| 原始 OCI blobs → registry | 0.501 | 0.301 |
+| cache-service 缓存 Prepare | 2.385 | 0.002 |
+
+这些是本地缓存准备成本。当前制品的首次上游下载、解包、索引成本未测，历史首次拉取使用不同制品，不代入这里。
 
 ### 数据下载与来源 {#run}
 
-[启动与载荷统计 CSV](lazy-startup-summary.csv) · [差异与准备成本 CSV](lazy-startup-details.csv) · [制品与实验来源 CSV](lazy-startup-provenance.csv) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#lazy-image-client-startup)
+[Shell 统计 CSV](lazy-startup-summary.csv) · [Shell 差异与准备 CSV](lazy-startup-details.csv) · [Shell 来源 CSV](lazy-startup-provenance.csv)
 
-[NumPy 启动与载荷统计 CSV](lazy-numpy-summary.csv) · [NumPy 差异与准备成本 CSV](lazy-numpy-details.csv) · [NumPy 制品与实验来源 CSV](lazy-numpy-provenance.csv)
+[NumPy 统计 CSV](lazy-numpy-summary.csv) · [NumPy 差异与准备 CSV](lazy-numpy-details.csv) · [NumPy 来源 CSV](lazy-numpy-provenance.csv) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#current-implementation-dockerlazy-comparison)
 
-NumPy 与 Ubuntu shell 使用同一预存 launcher 及内嵌 firmware，cache-service 使用另行构建、兼容 Docker gzip 层的二进制；该对照不衡量实现改动的收益。精确制品摘要分别保留在来源 CSV。
-
-`B-LAZY-STARTUP` 使用固定 manifest、预存 release 静态 musl 制品和内嵌 firmware；构建时源码关系未验证，当前源码摘要不证明制品来自该 checkout。制品摘要在采样后复核一致。原始样本、日志、Run Bundles、制品副本与冻结 harness 保留在本地忽略的 `.data/`，CSV 保留批次、条件、统计口径及原始报告摘要；不与[预准备环境启动](startup.md)的样本合并。
+原始证据保留在 `benchmark/pvisor/.data/lazy-shell-current-formal-20261010/` 和 `lazy-numpy-current-formal-20261010-2/`，各批 `derive.py` 重查全部 136 次启动、冻结输入、保留 OCI 摘要和清理收据后生成 CSV。构建证据为 `.data/lazy-current-build-20261010/`：1,193 个冻结源码输入及实测二进制摘要与独立新构建一致，核验记录的来源关系但不证明 hermetic 可复现。失败预检/批次及 2026-10-07 历史数据独立保留。这些观测也不与[预准备环境启动](startup.md)合并。

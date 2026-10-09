@@ -20,7 +20,7 @@
 
 [网络](network.md)每条件 30 个独立批次、3 次预热；小请求以每批 256 请求的中位数作为一个样本，origin 在负载 CPU 预算之外，内存没有统一限额。[容量](density.md)在共同两核、2 GiB、零 swap 预算下，按并发度和空闲/有效工具负载分别运行五轮，保留所有失败、未知和 OOM。
 
-[镜像按需启动](lazy-image-startup.md)按 Ubuntu shell 和 Python/NumPy 负载分别测量同一固定镜像的客户端冷/热缓存等待与内容载荷；NumPy 内容传输减少，但未检出冷 Ready 中位数差异，热缓存 Docker 更快。它使用预准备的本机 registry/cache 服务，网络、Docker image store 和内存配置与上述启动对照不同，分别报告，不合并为统一排名。
+[镜像按需启动](lazy-image-startup.md)按 Ubuntu shell 和 Python/NumPy 负载分别测量同一固定镜像的客户端冷/热缓存等待与内容载荷；当前制品的两种负载均支持 lazy 冷客户端中位等待更短，热缓存 Docker 更快；文件内容、二进制索引和总响应分别计数。它使用预准备的本机 registry/cache 服务，网络、Docker image store 和内存配置与上述启动对照不同，分别报告，不合并为统一排名。
 
 ## 实验数据和分析 {#results}
 

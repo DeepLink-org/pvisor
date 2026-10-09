@@ -9,6 +9,7 @@ fn image(client: CacheClient, digest: String, base: &Path) -> DirectImage {
         digest,
         base.join("blocks"),
         Some(base.join("metadata")),
+        false,
     )
     .unwrap();
     DirectImage::new(source, base).unwrap()
@@ -237,4 +238,46 @@ fn hot_metadata_does_not_rewrite_projection_identity() {
         (before.ino(), before.ctime(), before.ctime_nsec()),
         (after.ino(), after.ctime(), after.ctime_nsec())
     );
+}
+
+#[test]
+fn index_page_capability_survives_direct_handoff_without_reopening_revision() {
+    let (temp, server, client, handle, _pages) =
+        crate::image::cache::backend::tests::portable_fixture(false);
+    let source = RemoteFs::new(
+        client,
+        handle.clone(),
+        temp.path().join("blocks"),
+        Some(temp.path().join("metadata")),
+        true,
+    )
+    .unwrap();
+    let DirectImage {
+        attachment,
+        _directory,
+    } = DirectImage::new(source, temp.path()).unwrap();
+    let root = attachment.root().to_owned();
+    let descriptor = root.parent().unwrap().join(DESCRIPTOR);
+    let binding: Binding = serde_json::from_slice(&fs::read(&descriptor).unwrap()).unwrap();
+    assert!(binding.metadata_pages);
+    assert_eq!(binding.handle, handle);
+    drop(attachment);
+    // Reconstruction must use the pinned capability; the fixture supports no OCI preparation.
+    let roots = [root.clone()];
+    let owner = attach_runner_lowers(roots.iter()).unwrap();
+    backend::symlink_metadata(root.join("large")).unwrap();
+    backend::symlink_metadata(root.join("linked")).unwrap();
+    let large = backend::attributes(&root.join("large")).unwrap().unwrap();
+    let linked = backend::attributes(&root.join("linked")).unwrap().unwrap();
+    assert_eq!(large.ino, linked.ino);
+    assert_eq!(large.perm, 0o640);
+    assert_eq!(large.nlink, 2);
+    assert_eq!(server.reads.load(Ordering::Relaxed), 0);
+    drop(owner);
+    // Pre-capability runner descriptors remain readable and select legacy RPC.
+    let mut legacy: serde_json::Value =
+        serde_json::from_slice(&fs::read(descriptor).unwrap()).unwrap();
+    legacy.as_object_mut().unwrap().remove("metadata_pages");
+    let legacy: Binding = serde_json::from_value(legacy).unwrap();
+    assert!(!legacy.metadata_pages);
 }

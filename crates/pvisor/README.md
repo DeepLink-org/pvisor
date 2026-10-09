@@ -432,8 +432,24 @@ Lazy images keep the existing immutable published-image format and handles.
 V2 optimizes the private host reader; it does not change OCI contents, guest
 commands, copy-up/export ownership, or the physical-lower stability declaration.
 
-- On the second uncached child lookup in a directory, fetch up to two validated
-  directory metadata pages. At most 64 directories are admitted per backend
+- Capable TCP/Unix services advertise optional `metadata_pages` in Prepared.
+  The client reads the existing 64 KiB binary B+tree and file records locally,
+  including permissions, ownership and symlink metadata, instead of issuing
+  Stat/List RPCs. The pinned COMMIT authenticates the checksum catalog and pages;
+  only eight immutable metadata basenames are readable, with bounded ranges.
+  Legacy JSON response receipts are neither trusted nor written in this mode.
+  Invalid metadata propagates an error without silently falling back to RPC;
+  invalid local binary cache entries may be refetched and authenticated.
+  Authenticated raw pages and decoded B+tree nodes share a 256-entry LRU.
+  Nodes are validated once per residency rather than decoded on every lookup;
+  raw/node allocations remain budget-charged through their last active reference.
+  Persistent disk caches have no aggregate eviction quota. File-content reads remain unchanged. Initial immutable-object,
+  header and root-page reads are synchronous: runner lower reconstruction happens
+  before Linux user-namespace setup, which requires kernel-level single-threadedness;
+  joining temporary reader threads is not a safe substitute.
+- Services without the capability, older private bindings and non-socket
+  transports retain the RPC path. On the second uncached child lookup in a
+  directory, fetch up to two validated directory metadata pages. At most 64 directories are admitted per backend
   lifetime, and only eight pages remain resident. Retained nodes and exact
   persistent positive/negative metadata hits take precedence over prefetch.
   Complete inventories can establish absence; partial, evicted or failed
@@ -449,7 +465,8 @@ commands, copy-up/export ownership, or the physical-lower stability declaration.
   idle timeout. Authorization is checked on every envelope; bodies remain
   length-bounded and SHA-256 verified. Fully framed application errors preserve
   their error kinds and permit reuse; framing, transport or integrity errors
-  discard the stream. Failed actual requests are never automatically replayed.
+  discard the stream. Ordinary cache clients do not replay failed actual requests;
+    the private bridge's pinned read clients have the bounded exception below.
 - Protocol 1 remains one-request-per-connection. A V2 client falls back before
   sending the actual request when an old service rejects the version or closes
   the harmless handshake. Authentication failures, malformed replies and
@@ -461,10 +478,41 @@ commands, copy-up/export ownership, or the physical-lower stability declaration.
   connection; callers must handle these failures. Idle connections and long
   preparations do not occupy file workers.
 
+The Linux private host-network bridge accepts envelope 1 (one exchange) and
+2 (sequential persistent exchanges). It admits at most 32 connection handlers,
+separates frame/idle/write waits from four execution workers, and bounds queued
+requests to 16. Queue saturation returns a framed busy error; unadmitted
+connections close. Each exchange is confined to the pinned immutable handle
+and metadata whitelist. Bridge V2 is enabled by default. On both bridge hops,
+private clients retry an exact-handle Stat/List/Read or whitelisted Metadata at
+most once on EOF, broken/reset/aborted/disconnected transport or connect refusal.
+The failed lease is released, and retry uses a fresh stream (negotiated V2, or
+already-established V1 fallback). Pool wait, connect, handshake and body I/O
+share the original per-hop deadline. Timeout, busy/not-found/auth errors,
+malformed frames/digest declarations and verified-body digest mismatches are
+not retryable. Prepare/Open and ordinary clients retain no-replay semantics.
+Old private bindings without retry context default to no replay.
+
+The allowance is per hop, not a propagated end-to-end budget: failure on both
+legs can produce up to four upstream read attempts. A downstream timeout does
+not cancel already queued/executing upstream work, whose outcome may be unknown.
+Only immutable read operations qualify; no mutation is replayed. Detached bridge
+threads live in the dedicated child process, never the pre-namespace VM runner.
+
+For private engineering A/B, `PVISOR_LAZY_BRIDGE_V2=0` retains the previous
+single-exchange bridge and socket-worker scheduling independently of upstream
+V2. Optional `PVISOR_LAZY_BRIDGE_METRICS_DIR` must name an existing same-user
+private directory. Bridge-created shared counter files contain only aggregate
+counts/timings, not credentials or image paths; read after process teardown.
+Live snapshots are approximate, killed-process gauges may remain nonzero,
+and files are not reboot-durable. The benchmark caller owns file cleanup.
+
 V2 is enabled by default. For engineering comparison only, set
 `PVISOR_LAZY_IMAGE_V2=0` before constructing the client and VM runner to disable
-metadata prefetch and connection reuse; other values retain V2. This is a private
-rollout/benchmark override, not a persisted image-format version or CLI feature.
+client index pages, metadata prefetch and connection reuse; other values retain
+V2. Set `PVISOR_LAZY_INDEX_PAGES=0` with V2 enabled to retain the previous
+RPC/prefetch path and pooling. These are private
+rollout/benchmark overrides, not a persisted image-format version or CLI feature.
 Both A/B modes retain the shared pagination and correctness fixes. The inherited
 host environment carries the setting through private runner reconstruction.
 See `benchmark/pvisor/lazy_image_v2.py` for same-artifact NumPy A/B; historical

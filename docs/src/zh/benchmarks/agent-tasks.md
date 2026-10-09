@@ -61,7 +61,7 @@ staged 相对 Docker 的完整任务中位数差为 −175.84 ms，95% 配对 bo
 
 [七项工具](filesystem.md#complete-task)中 staged-minus-Docker 的中位数差为 +268.81 ms，95% CI [+264.64, +271.15] ms；[大工作区流程](supervision-cost.md#baseline-meaning)中 stage-minus-Git 为 −107.27 ms，95% CI [−109.02, −105.60] ms。小工作区为 +86.99 ms，95% CI [+77.28, +87.57] ms。优势来自负载和流程选择，不能推导全面替代 Docker、worktree 或 VMM。完整流程只合入 10 个文件；大量合入的额外成本见 [apply](supervision-cost.md#apply-cost)。机器计时不包含人的阅读时间。
 
-[启动](startup.md)与[惰性镜像](lazy-image-startup.md)分别回答环境已准备和客户端镜像未缓存的等待。冷 lazy 的 183.7 ms 不含首次服务准备；热客户端通常是 Docker 更快。镜像按需读取不能消除后续仓库工具开销。
+[启动](startup.md)与[惰性镜像](lazy-image-startup.md)分别回答环境已准备和客户端镜像未缓存的等待。冷客户端数据不含首次上游下载、解包和索引；热客户端是 Docker 更快。镜像按需读取不能消除后续仓库工具开销。
 
 ### 如何接入现有工具链 {#existing-workflows}
 

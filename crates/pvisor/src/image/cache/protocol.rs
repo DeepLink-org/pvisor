@@ -10,8 +10,9 @@ pub const MAX_READ: u32 = 1024 * 1024;
 
 /// All paths are Unix bytes, relative to image root. Envelope version 1 uses
 /// one request per connection; version 2 permits sequential framed exchanges.
-/// A `Read` response frame is followed by exactly `Data.length` raw bytes before
-/// the next request/response frame. There is no pipelining or automatic replay.
+/// A `Read` or `Metadata` response frame is followed by exactly `Data.length` raw bytes before
+/// the next request/response frame. There is no pipelining or protocol-level replay;
+/// private pinned-read clients may retry a transport disconnect once per hop.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
@@ -35,6 +36,21 @@ pub enum Request {
     Stat {
         digest: String,
         path: Vec<u8>,
+    },
+    /// Read immutable portable metadata, never file content or arbitrary keys.
+    /// Supported in both envelope versions when Prepared advertises metadata_pages.
+    /// Length must be 1..=MAX_READ; offset + length must not overflow. Offsets
+    /// beyond the object are rejected, and reads crossing EOF are shortened.
+    /// The Data frame is followed by its length of SHA-256 authenticated bytes.
+    Metadata {
+        /// Immutable revision handle; mutable image references are not accepted.
+        handle: String,
+        /// Exact whitelisted metadata basename, not a storage key or path.
+        object_name: String,
+        /// Byte offset within the named object, including its EOF boundary.
+        offset: u64,
+        /// Maximum number of bytes returned in the following Data body.
+        length: u32,
     },
     Read {
         digest: String,
@@ -67,6 +83,10 @@ pub enum Response {
         /// Immutable image/platform/revision handle used by every reader.
         image_handle: String,
         metadata_generation: String,
+        /// This immutable handle supports Metadata reads in either envelope version.
+        /// Missing capabilities from older services default to false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        metadata_pages: bool,
         #[serde(default)]
         totals: Option<ImageTotals>,
         digest: String,
@@ -133,6 +153,99 @@ pub(super) fn hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_pages_capability_defaults_false_and_is_optional_on_the_wire() {
+        let old = serde_json::json!({
+            "status": "prepared", "image_handle": "pvisor-v1:revision",
+            "metadata_generation": "sha256:revision", "digest": "sha256:manifest",
+            "architecture": "amd64", "env": {}, "entrypoint": [], "cmd": []
+        });
+        let response: Response = serde_json::from_value(old.clone()).unwrap();
+        assert!(matches!(
+            &response,
+            Response::Prepared {
+                metadata_pages: false,
+                ..
+            }
+        ));
+        assert!(
+            serde_json::to_value(response)
+                .unwrap()
+                .get("metadata_pages")
+                .is_none()
+        );
+        let mut capable = old;
+        capable["metadata_pages"] = serde_json::json!(true);
+        let response: Response = serde_json::from_value(capable).unwrap();
+        assert!(matches!(
+            &response,
+            Response::Prepared {
+                metadata_pages: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            serde_json::to_value(response).unwrap()["metadata_pages"],
+            true
+        );
+    }
+
+    #[test]
+    fn metadata_frames_and_data_bodies_work_in_both_envelope_versions() {
+        for version in [1, 2] {
+            let mut wire = Vec::new();
+            write_frame(
+                &mut wire,
+                &Envelope {
+                    version,
+                    token: Some("secret".into()),
+                    request: Request::Metadata {
+                        handle: "pvisor-v1:revision".into(),
+                        object_name: "index.bin".into(),
+                        offset: 65536,
+                        length: 65536,
+                    },
+                },
+            )
+            .unwrap();
+            let envelope: Envelope = read_frame(&mut wire.as_slice()).unwrap();
+            assert_eq!(envelope.version, version);
+            assert!(matches!(
+                envelope.request,
+                Request::Metadata {
+                    offset: 65536,
+                    length: 65536,
+                    ..
+                }
+            ));
+
+            let body = b"metadata";
+            wire.clear();
+            write_frame(
+                &mut wire,
+                &Response::Data {
+                    length: body.len() as u32,
+                    sha256: hash(body),
+                },
+            )
+            .unwrap();
+            wire.extend_from_slice(body);
+            write_frame(&mut wire, &Response::Ready).unwrap();
+            let mut stream = wire.as_slice();
+            let response: Response = read_frame(&mut stream).unwrap();
+            assert!(
+                matches!(response, Response::Data { length: 8, sha256 } if sha256 == hash(body))
+            );
+            let mut received = [0; 8];
+            stream.read_exact(&mut received).unwrap();
+            assert_eq!(&received, body);
+            assert!(matches!(
+                read_frame::<Response>(&mut stream).unwrap(),
+                Response::Ready
+            ));
+        }
+    }
 
     #[test]
     fn prepared_responses_require_an_immutable_handle_and_generation() {

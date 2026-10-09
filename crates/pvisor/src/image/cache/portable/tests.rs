@@ -1,5 +1,6 @@
 use super::*;
 use crate::image::oci::{ImageStore, PreparedImage};
+use sha2::{Digest, Sha256};
 use std::fs;
 
 fn fixture() -> (tempfile::TempDir, PortableCache, ImageStore, PreparedImage) {
@@ -34,6 +35,558 @@ fn read_handle(cache: &PortableCache) -> String {
             ..
         } => handle,
         _ => panic!("missing v1 read handle"),
+    }
+}
+
+struct MetadataSocket {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    requests: Arc<Mutex<Vec<(String, u64, u32)>>>,
+}
+
+impl Drop for MetadataSocket {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.worker.take().unwrap().join().unwrap();
+    }
+}
+
+// A deliberately V1-only service exercises the adapter independently of pooling.
+// Faults are rehashed at the transport layer to test revision/page authentication.
+fn metadata_socket(
+    root: &std::path::Path,
+    cache: PortableCache,
+    corrupt: Option<(&'static str, u64)>,
+) -> (MetadataSocket, Arc<crate::image::cache::CacheClient>) {
+    use crate::image::cache::protocol::{Envelope, read_frame, write_frame};
+    use std::io::Write;
+    use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let path = root.join("metadata.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let worker_stop = stop.clone();
+    let worker_requests = requests.clone();
+    let worker = std::thread::spawn(move || {
+        while !worker_stop.load(Ordering::Relaxed) {
+            let (mut socket, _) = match listener.accept() {
+                Ok(connection) => connection,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    continue;
+                }
+                Err(error) => panic!("{error}"),
+            };
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let envelope: Envelope = read_frame(&mut socket).unwrap();
+            if envelope.version != 1 {
+                write_frame(
+                    &mut socket,
+                    &Response::Error {
+                        code: "unsupported_version".into(),
+                        message: "V1 only".into(),
+                    },
+                )
+                .unwrap();
+                continue;
+            }
+            let fault = match &envelope.request {
+                Request::Metadata {
+                    object_name,
+                    offset,
+                    length,
+                    ..
+                } => {
+                    worker_requests
+                        .lock()
+                        .unwrap()
+                        .push((object_name.clone(), *offset, *length));
+                    corrupt == Some((object_name.as_str(), *offset))
+                }
+                Request::Ping => false,
+                _ => panic!("socket metadata reader requested non-metadata operation"),
+            };
+            let (mut response, mut body) =
+                cache.request(envelope.request).unwrap_or_else(|error| {
+                    (
+                        Response::Error {
+                            code: "request_failed".into(),
+                            message: format!("{error:#}"),
+                        },
+                        Vec::new(),
+                    )
+                });
+            assert!(
+                cache.blobs.lock().unwrap().is_empty(),
+                "metadata fetched file content"
+            );
+            if fault && !body.is_empty() {
+                body[0] ^= 1;
+                response = Response::Data {
+                    length: body.len() as u32,
+                    sha256: hash(&body),
+                };
+            }
+            write_frame(&mut socket, &response).unwrap();
+            socket.write_all(&body).unwrap();
+        }
+    });
+    let client = Arc::new(crate::image::cache::client::tests::use_server_reuse(
+        crate::image::cache::CacheClient::new(format!("unix://{}", path.display()), None).unwrap(),
+        false,
+    ));
+    (
+        MetadataSocket {
+            stop,
+            worker: Some(worker),
+            requests,
+        },
+        client,
+    )
+}
+
+// Run the irreversible seccomp restriction in a fresh test process, not in the
+// shared harness. Unlike counting /proc tasks after joins, this catches even
+// short-lived workers deterministically and does not need namespace authority.
+#[cfg(target_os = "linux")]
+#[test]
+fn root_metadata_loading_does_not_create_threads_before_user_namespace() {
+    const CHILD: &str = "PVISOR_TEST_THREADLESS_METADATA";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "image::cache::portable::tests::root_metadata_loading_does_not_create_threads_before_user_namespace",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "threadless metadata child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
+    let (tmp, cache, store, image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = read_handle(&cache);
+    // The service is external to the client lifecycle under test. Start it before
+    // restricting only this calling thread (no SECCOMP_FILTER_FLAG_TSYNC).
+    let (_server, client) = metadata_socket(tmp.path(), cache, None);
+    let local = tmp.path().join("binary-cache");
+    let storage = Storage::filesystem(tmp.path().join("shared"), false).unwrap();
+    let filter = [
+        libc::sock_filter {
+            code: (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16,
+            jt: 0,
+            jf: 0,
+            k: 0, // seccomp_data.nr
+        },
+        libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 1,
+            jf: 0,
+            k: libc::SYS_clone as u32,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 1,
+            k: libc::SYS_clone3 as u32,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_RET | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_ERRNO | libc::EPERM as u32,
+        },
+        libc::sock_filter {
+            code: (libc::BPF_RET | libc::BPF_K) as u16,
+            jt: 0,
+            jf: 0,
+            k: libc::SECCOMP_RET_ALLOW,
+        },
+    ];
+    let program = libc::sock_fprog {
+        len: filter.len() as u16,
+        filter: filter.as_ptr() as *mut libc::sock_filter,
+    };
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) },
+        0
+    );
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER, &program) },
+        0,
+        "install thread-creation guard: {}",
+        std::io::Error::last_os_error()
+    );
+    for _ in 0..2 {
+        // A new reader each time forces both cold loading and authenticated disk
+        // cache reuse through the same path used by runner lower reconstruction.
+        let reader =
+            MetadataReader::new(client.clone(), handle.clone(), Some(local.clone())).unwrap();
+        assert!(matches!(
+            reader
+                .request(Request::Stat { digest: handle.clone(), path: vec![] })
+                .unwrap(),
+            Response::Metadata { ref kind, .. } if kind == "directory"
+        ));
+        let objects = PortableCache::new(storage.clone(), None, true);
+        assert!(matches!(
+            objects
+                .request(Request::Stat { digest: handle.clone(), path: vec![] })
+                .unwrap().0,
+            Response::Metadata { ref kind, .. } if kind == "directory"
+        ));
+    }
+}
+
+#[test]
+fn metadata_service_serves_only_immutable_objects_with_bounded_data_bodies() {
+    let (tmp, cache, store, image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = read_handle(&cache);
+    let parsed = Handle::parse(&handle).unwrap();
+    assert!(matches!(
+        cache.load(&parsed).unwrap().prepared(),
+        Response::Prepared {
+            metadata_pages: true,
+            ..
+        }
+    ));
+    fs::remove_dir_all(&store.root).unwrap();
+    for name in [
+        "COMMIT.json",
+        "manifest.json",
+        "config.json",
+        "checksums.bin",
+        "files.bin",
+        "contents.bin",
+        "index.bin",
+        "objects.bin",
+    ] {
+        let expected =
+            fs::read(tmp.path().join("shared").join(parsed.prefix()).join(name)).unwrap();
+        let (response, body) = cache
+            .request(Request::Metadata {
+                handle: handle.clone(),
+                object_name: name.into(),
+                offset: 0,
+                length: MAX_READ,
+            })
+            .unwrap();
+        assert_eq!(body, expected[..expected.len().min(MAX_READ as usize)]);
+        assert!(
+            matches!(response, Response::Data { length, sha256 } if length as usize == body.len() && sha256 == hash(&body))
+        );
+        let (_, tail) = cache
+            .request(Request::Metadata {
+                handle: handle.clone(),
+                object_name: name.into(),
+                offset: expected.len() as u64 - 1,
+                length: 10,
+            })
+            .unwrap();
+        assert_eq!(tail, expected[expected.len() - 1..]);
+        let (_, eof) = cache
+            .request(Request::Metadata {
+                handle: handle.clone(),
+                object_name: name.into(),
+                offset: expected.len() as u64,
+                length: 1,
+            })
+            .unwrap();
+        assert!(eof.is_empty());
+        assert!(
+            cache
+                .request(Request::Metadata {
+                    handle: handle.clone(),
+                    object_name: name.into(),
+                    offset: expected.len() as u64 + 1,
+                    length: 1,
+                })
+                .is_err()
+        );
+    }
+    for name in [
+        "HEAD.json",
+        "format.json",
+        "identity.json",
+        "../COMMIT.json",
+        "directory/files.bin",
+        "/files.bin",
+        "data/aa/content",
+        "files.bin\0",
+    ] {
+        assert!(!metadata_object_name(name));
+        assert!(
+            cache
+                .request(Request::Metadata {
+                    handle: handle.clone(),
+                    object_name: name.into(),
+                    offset: 0,
+                    length: 1,
+                })
+                .is_err()
+        );
+    }
+    for (offset, length) in [(0, 0), (0, MAX_READ + 1), (u64::MAX, 1), (u64::MAX - 1, 3)] {
+        assert!(
+            cache
+                .request(Request::Metadata {
+                    handle: handle.clone(),
+                    object_name: "index.bin".into(),
+                    offset,
+                    length,
+                })
+                .is_err()
+        );
+    }
+    assert!(
+        cache
+            .request(Request::Metadata {
+                handle: "example:test".into(),
+                object_name: "COMMIT.json".into(),
+                offset: 0,
+                length: 1,
+            })
+            .is_err()
+    );
+    assert!(cache.blobs.lock().unwrap().is_empty());
+}
+
+#[test]
+fn metadata_reader_and_storage_validate_without_io_and_reject_unbound_operations() {
+    let tmp = tempfile::tempdir().unwrap();
+    let client = Arc::new(
+        crate::image::cache::CacheClient::new(
+            format!("unix://{}", tmp.path().join("absent.sock").display()),
+            None,
+        )
+        .unwrap(),
+    );
+    let handle = format!(
+        "pvisor-v1:{}:linux-amd64:{}",
+        "a".repeat(64),
+        "b".repeat(64)
+    );
+    let other = format!(
+        "pvisor-v1:{}:linux-amd64:{}",
+        "a".repeat(64),
+        "c".repeat(64)
+    );
+    let local = tmp.path().join("not-created");
+    let reader = MetadataReader::new(client.clone(), handle.clone(), Some(local.clone())).unwrap();
+    assert!(!local.exists());
+    for request in [
+        Request::Stat {
+            digest: other.clone(),
+            path: Vec::new(),
+        },
+        Request::List {
+            digest: other.clone(),
+            path: Vec::new(),
+            offset: 0,
+        },
+        Request::Read {
+            digest: handle.clone(),
+            path: b"small".to_vec(),
+            offset: 0,
+            length: 1,
+        },
+        Request::Metadata {
+            handle: handle.clone(),
+            object_name: "COMMIT.json".into(),
+            offset: 0,
+            length: 1,
+        },
+        Request::Open {
+            handle: handle.clone(),
+            architecture: "amd64".into(),
+        },
+        Request::Prepare {
+            image: "example:test".into(),
+            architecture: "amd64".into(),
+            refresh: false,
+        },
+        Request::Ping,
+    ] {
+        let error = reader.request(request).unwrap_err();
+        assert!(
+            error.downcast_ref::<std::io::Error>().is_none(),
+            "request reached absent socket"
+        );
+    }
+    assert!(MetadataReader::new(client.clone(), "example:test".into(), None).is_err());
+    assert!(Storage::metadata(client.clone(), "example:test".into()).is_err());
+    let storage = Storage::metadata(client, handle.clone()).unwrap();
+    let prefix = Handle::parse(&handle).unwrap().prefix();
+    for key in [
+        "format.json".into(),
+        format!("{prefix}/HEAD.json"),
+        format!("{prefix}/../COMMIT.json"),
+        format!("{}/COMMIT.json", Handle::parse(&other).unwrap().prefix()),
+    ] {
+        assert!(storage.get(&key).is_err());
+    }
+    for name in BINARY_NAMES {
+        assert!(storage.get(&format!("{prefix}/{name}")).is_err());
+    }
+    let key = format!("{prefix}/index.bin");
+    for range in [
+        0..0,
+        std::ops::Range { start: 2, end: 1 },
+        0..MAX_READ as u64 + 1,
+    ] {
+        assert!(storage.range(&key, range).is_err());
+    }
+    for result in [
+        storage.put(&key, vec![1], true),
+        storage.put(&key, vec![1], false),
+        storage.compare_and_swap(&key, vec![1], None),
+    ] {
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+    assert!(!local.exists());
+}
+
+#[test]
+fn v1_socket_metadata_reader_reuses_binary_pages_and_never_reads_content() {
+    let (tmp, cache, store, image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = read_handle(&cache);
+    fs::remove_dir_all(&store.root).unwrap();
+    let (server, client) = metadata_socket(tmp.path(), cache, None);
+    let storage = Storage::metadata(client.clone(), handle.clone()).unwrap();
+    let prefix = Handle::parse(&handle).unwrap().prefix();
+    let commit = storage
+        .get(&format!("{prefix}/COMMIT.json"))
+        .unwrap()
+        .unwrap();
+    assert!(
+        storage
+            .range(
+                &format!("{prefix}/COMMIT.json"),
+                commit.len() as u64 - 1..commit.len() as u64 + 1
+            )
+            .is_err(),
+        "exact storage ranges must reject wire EOF clipping"
+    );
+    server.requests.lock().unwrap().clear();
+    let local = tmp.path().join("client-pages");
+    let reader = MetadataReader::new(client.clone(), handle.clone(), Some(local.clone())).unwrap();
+    assert!(server.requests.lock().unwrap().is_empty());
+    let stat = || Request::Stat {
+        digest: handle.clone(),
+        path: b"small".to_vec(),
+    };
+    assert!(matches!(
+        reader.request(stat()).unwrap(),
+        Response::Metadata { size: 5, .. }
+    ));
+    let count = server.requests.lock().unwrap().len();
+    reader.request(stat()).unwrap();
+    assert_eq!(server.requests.lock().unwrap().len(), count);
+    assert!(
+        matches!(reader.request(Request::List { digest: handle.clone(), path: Vec::new(), offset: 0 }).unwrap(), Response::Entries { names, .. } if names.contains(&b"small".to_vec()))
+    );
+    let error = reader
+        .request(Request::Stat {
+            digest: handle.clone(),
+            path: b"absent".to_vec(),
+        })
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(
+        server
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(name, _, length)| metadata_object_name(name) && *length <= MAX_READ)
+    );
+
+    // A damaged persistent page is refetched rather than trusted or made ENOENT.
+    let parsed = Handle::parse(&handle).unwrap();
+    fs::write(
+        local
+            .join("pages")
+            .join(&parsed.revision)
+            .join("index.bin/0"),
+        b"corrupt",
+    )
+    .unwrap();
+    let count = server.requests.lock().unwrap().len();
+    let remount = MetadataReader::new(client, handle, Some(local)).unwrap();
+    assert!(matches!(
+        remount
+            .request(Request::Stat {
+                digest: parsed.encode(),
+                path: b"small".to_vec()
+            })
+            .unwrap(),
+        Response::Metadata { size: 5, .. }
+    ));
+    assert!(server.requests.lock().unwrap().len() > count);
+}
+
+#[test]
+fn socket_metadata_reader_authenticates_commit_catalog_and_binary_pages() {
+    for name in ["COMMIT.json", "checksums.bin", "index.bin"] {
+        let (tmp, cache, store, image) = fixture();
+        let canonical = crate::image::oci::cache_reference("example:test")
+            .unwrap()
+            .0;
+        cache.publish(&store, &image, "amd64", &canonical).unwrap();
+        let handle = read_handle(&cache);
+        let (_server, client) = metadata_socket(tmp.path(), cache, Some((name, 0)));
+        let reader = MetadataReader::new(client, handle.clone(), None).unwrap();
+        let error = reader
+            .request(Request::Stat {
+                digest: handle,
+                path: b"small".to_vec(),
+            })
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("digest mismatch"),
+            "{name}: {error:#}"
+        );
+        assert!(
+            !error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        );
     }
 }
 
@@ -577,6 +1130,354 @@ fn cold_start_fetches_pages_instead_of_deserializing_the_complete_file_tree() {
 }
 
 #[test]
+fn decoded_index_nodes_are_reused_for_positive_and_negative_lookups() {
+    let (tmp, cache, store, image) = fixture();
+    for i in 0..600 {
+        fs::write(image.rootfs.join("directory").join(format!("f-{i:05}")), []).unwrap();
+    }
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = Handle::parse(&read_handle(&cache)).unwrap();
+    let reader = PortableCache::new(
+        Storage::filesystem(tmp.path().join("shared"), false).unwrap(),
+        None,
+        true,
+    );
+    let loaded = reader.load(&handle).unwrap();
+    let check = || {
+        for path in [
+            b"directory/f-00000".as_slice(),
+            b"directory/f-00599",
+            b"link",
+            b"hard",
+        ] {
+            assert_eq!(loaded.entry(path).unwrap().path, path);
+        }
+        for path in [
+            b"directory/f-00232x".as_slice(),
+            b"directory/z-missing",
+            b"missing",
+        ] {
+            let error = loaded.entry(path).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::NotFound
+            );
+        }
+        assert!(matches!(loaded.entry(b"link").unwrap().metadata,
+            Response::Metadata { target: Some(target), .. } if target == b"small"));
+        assert!(
+            loaded
+                .entry(b"small/child")
+                .unwrap_err()
+                .to_string()
+                .contains("not a directory")
+        );
+    };
+    check();
+    let before = loaded.cached_nodes();
+    assert!(before.len() >= 3, "exercise internal and leaf nodes");
+    check();
+    let after = loaded.cached_nodes();
+    assert_eq!(before.len(), after.len());
+    for (id, node, _) in &before {
+        let (_, reused, _) = after.iter().find(|(other, _, _)| other == id).unwrap();
+        assert!(Arc::ptr_eq(node, reused), "node {id} was decoded again");
+    }
+
+    // Raw and decoded entries share this capacity, including during re-admission.
+    loaded.resize_metadata_cache(1);
+    for _ in 0..2 {
+        check();
+        assert!(loaded.cached_page_count() <= 1);
+    }
+    let after_eviction = loaded.cached_nodes();
+    for (id, node, _) in after_eviction {
+        if let Some((_, old, _)) = before.iter().find(|(other, _, _)| *other == id) {
+            assert!(
+                !Arc::ptr_eq(old, &node),
+                "evicted node must be decoded anew"
+            );
+        }
+    }
+}
+
+#[test]
+fn decoded_index_node_budget_is_bounded_and_survives_eviction_until_last_arc() {
+    const CHILD: &str = "PVISOR_TEST_DECODED_NODE_BUDGET";
+    let Some(mode) = std::env::var_os(CHILD) else {
+        for mode in ["retained", "exhausted"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "image::cache::portable::tests::decoded_index_node_budget_is_bounded_and_survives_eviction_until_last_arc", "--nocapture"])
+                .env(CHILD, mode).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    };
+    let (tmp, cache, store, image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = Handle::parse(&read_handle(&cache)).unwrap();
+    drop(cache);
+    let limit = if mode == "exhausted" {
+        1
+    } else {
+        8 * binary::PAGE_BYTES
+    };
+    crate::cache_budget::configure(limit).unwrap();
+    let reader = PortableCache::new(
+        Storage::filesystem(tmp.path().join("shared"), false).unwrap(),
+        None,
+        true,
+    );
+    let loaded = reader.load(&handle).unwrap();
+    if mode == "exhausted" {
+        for _ in 0..2 {
+            assert_eq!(loaded.entry(b"small").unwrap().path, b"small");
+            assert!(
+                loaded
+                    .entry(b"missing")
+                    .unwrap_err()
+                    .downcast_ref::<std::io::Error>()
+                    .is_some()
+            );
+            assert_eq!(loaded.cached_page_count(), 0);
+        }
+        let (used, actual_limit, misses) = crate::cache_budget::stats();
+        assert_eq!((used, actual_limit), (0, limit));
+        assert!(misses > 0);
+    } else {
+        let mut nodes = loaded.cached_nodes();
+        assert_eq!(nodes.len(), 1);
+        let (_, held, bytes) = nodes.pop().unwrap();
+        assert!(bytes > 0 && bytes < binary::PAGE_BYTES);
+        loaded.resize_metadata_cache(1);
+        assert_eq!(crate::cache_budget::stats().0, bytes);
+        // Root file reads evict the index node, but the traversal's Arc still owns its charge.
+        loaded.entry(b"").unwrap();
+        assert!(loaded.cached_nodes().is_empty());
+        let used = crate::cache_budget::stats().0;
+        assert!(used >= bytes && used <= limit);
+        loaded.entry(b"small").unwrap();
+        assert!(crate::cache_budget::stats().0 <= limit);
+        drop(loaded);
+        drop(reader);
+        assert_eq!(crate::cache_budget::stats().0, bytes);
+        drop(held);
+        assert_eq!(crate::cache_budget::stats().0, 0);
+    }
+}
+
+#[test]
+fn held_raw_pages_keep_budget_charge_after_eviction_and_decoded_replacement() {
+    const CHILD: &str = "PVISOR_TEST_RAW_PAGE_CHARGE";
+    let Some(mode) = std::env::var_os(CHILD) else {
+        for mode in ["eviction", "replacement"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "image::cache::portable::tests::held_raw_pages_keep_budget_charge_after_eviction_and_decoded_replacement", "--nocapture"])
+                .env(CHILD, mode).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        return;
+    };
+    let (tmp, cache, store, image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = Handle::parse(&read_handle(&cache)).unwrap();
+    drop(cache);
+    let limit = 8 * binary::PAGE_BYTES;
+    crate::cache_budget::configure(limit).unwrap();
+    let reader = PortableCache::new(
+        Storage::filesystem(tmp.path().join("shared"), false).unwrap(),
+        None,
+        true,
+    );
+    let loaded = reader.load(&handle).unwrap();
+    loaded.clear_metadata_cache();
+    assert_eq!(crate::cache_budget::stats().0, 0);
+    let (held, bytes) = loaded.hold_raw_page("index.bin", 1);
+    let concurrent_reader = held.clone();
+    assert!(bytes >= binary::PAGE_BYTES);
+    assert_eq!(crate::cache_budget::stats().0, bytes);
+    if mode == "eviction" {
+        loaded.clear_metadata_cache();
+        assert_eq!(loaded.cached_page_count(), 0);
+        assert_eq!(crate::cache_budget::stats().0, bytes);
+    } else {
+        // Decode the same raw page while another reader retains its shared owner.
+        loaded.entry(b"small").unwrap();
+        let nodes = loaded.cached_nodes();
+        assert_eq!(nodes.len(), 1);
+        assert!(crate::cache_budget::stats().0 >= bytes + nodes[0].2);
+    }
+    assert!(crate::cache_budget::stats().0 <= limit);
+    drop(loaded);
+    drop(reader);
+    assert_eq!(crate::cache_budget::stats().0, bytes);
+    drop(held);
+    assert_eq!(crate::cache_budget::stats().0, bytes);
+    drop(concurrent_reader);
+    assert_eq!(crate::cache_budget::stats().0, 0);
+}
+
+#[test]
+fn evicted_decoded_index_nodes_reauthenticate_pages_before_reuse() {
+    let (tmp, cache, store, image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = Handle::parse(&read_handle(&cache)).unwrap();
+    let reader = PortableCache::new(
+        Storage::filesystem(tmp.path().join("shared"), false).unwrap(),
+        None,
+        true,
+    );
+    let loaded = reader.load(&handle).unwrap();
+    loaded.entry(b"small").unwrap();
+    let remote = tmp
+        .path()
+        .join("shared")
+        .join(handle.prefix())
+        .join("index.bin");
+    let mut bytes = fs::read(&remote).unwrap();
+    bytes[binary::PAGE_BYTES + 24] ^= 1;
+    fs::write(remote, bytes).unwrap();
+    // An already authenticated immutable node is unaffected by backing-file changes.
+    loaded.entry(b"small").unwrap();
+    loaded.resize_metadata_cache(1);
+    loaded.entry(b"").unwrap();
+    assert!(loaded.cached_nodes().is_empty());
+    for _ in 0..2 {
+        assert!(
+            loaded
+                .entry(b"small")
+                .unwrap_err()
+                .to_string()
+                .contains("page digest mismatch")
+        );
+        assert!(
+            loaded.cached_nodes().is_empty(),
+            "failed authentication must not admit a node"
+        );
+    }
+}
+
+#[test]
+fn cached_index_nodes_do_not_bypass_index_file_relationship_validation() {
+    let (tmp, cache, store, image) = fixture();
+    let canonical = crate::image::oci::cache_reference("example:test")
+        .unwrap()
+        .0;
+    cache.publish(&store, &image, "amd64", &canonical).unwrap();
+    let handle = Handle::parse(&read_handle(&cache)).unwrap();
+    let storage = Storage::filesystem(tmp.path().join("shared"), false).unwrap();
+    let mut commit: Commit = serde_json::from_slice(
+        &storage
+            .get(&format!("{}/COMMIT.json", handle.prefix()))
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let mut objects: BTreeMap<String, Vec<u8>> = commit
+        .metadata
+        .keys()
+        .map(|name| {
+            (
+                name.clone(),
+                storage
+                    .get(&format!("{}/{name}", handle.prefix()))
+                    .unwrap()
+                    .unwrap(),
+            )
+        })
+        .collect();
+    let index = objects.get_mut("index.bin").unwrap();
+    let count = u32::from_le_bytes(
+        index[binary::PAGE_BYTES + 4..binary::PAGE_BYTES + 8]
+            .try_into()
+            .unwrap(),
+    ) as usize;
+    let find_record = |name: &[u8]| {
+        (0..count)
+            .map(|slot| binary::PAGE_BYTES + 16 + slot * 280)
+            .find(|start| &index[*start + 18..*start + 18 + name.len()] == name)
+            .unwrap()
+    };
+    let small = find_record(b"small");
+    let large = find_record(b"large");
+    let wrong_file: [u8; 8] = index[large + 8..large + 16].try_into().unwrap();
+    index[small + 8..small + 16].copy_from_slice(&wrong_file);
+    // Re-seal the malicious, structurally valid index through the real trust chain.
+    let mut checksums = objects["checksums.bin"][..80].to_vec();
+    for name in BINARY_NAMES {
+        for page in objects[name].chunks(binary::PAGE_BYTES) {
+            checksums.extend_from_slice(&Sha256::digest(page));
+        }
+    }
+    objects.insert("checksums.bin".into(), checksums);
+    for (name, bytes) in &objects {
+        commit.metadata.get_mut(name).unwrap().sha256 = hash(bytes);
+    }
+    let commit_bytes = serde_json::to_vec(&commit).unwrap();
+    let malicious = Handle {
+        revision: hash(&commit_bytes)[7..].into(),
+        ..handle
+    };
+    for (name, bytes) in objects {
+        storage
+            .put(&format!("{}/{name}", malicious.prefix()), bytes, true)
+            .unwrap();
+    }
+    storage
+        .put(
+            &format!("{}/COMMIT.json", malicious.prefix()),
+            commit_bytes,
+            true,
+        )
+        .unwrap();
+    let reader = PortableCache::new(storage, None, true);
+    let loaded = reader.load_revision(&malicious).unwrap();
+    let before = loaded.cached_nodes();
+    assert_eq!(before.len(), 1);
+    for _ in 0..2 {
+        assert!(
+            loaded
+                .entry(b"small")
+                .unwrap_err()
+                .to_string()
+                .contains("index/file relationship")
+        );
+        assert!(
+            loaded
+                .list(b"", 0)
+                .unwrap_err()
+                .to_string()
+                .contains("directory index relationship"),
+            "warm listings must recheck the cached index against file records"
+        );
+    }
+    let after = loaded.cached_nodes();
+    assert!(Arc::ptr_eq(&before[0].1, &after[0].1));
+}
+
+#[test]
 fn corrupt_remote_pages_fail_and_corrupt_local_pages_are_refetched() {
     let (tmp, cache, store, image) = fixture();
     let canonical = crate::image::oci::cache_reference("example:test")
@@ -744,6 +1645,7 @@ fn remote_backend_uses_opaque_portable_cursors_with_local_resume_and_eviction() 
         handle.clone(),
         tmp.path().join("blocks"),
         Some(tmp.path().join("metadata")),
+        false,
     )
     .unwrap();
     let directory = remote.child(1, OsStr::new("directory")).unwrap();

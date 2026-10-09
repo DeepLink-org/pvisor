@@ -20,7 +20,7 @@ This reuses separately registered [startup](startup.md), [filesystem](filesystem
 
 [Network](network.md) uses thirty independent batches and three warmups per condition; each small-request sample is the median of 256 requests. The origin is outside the payload CPU budget and memory is not identically capped. [Capacity](density.md) uses a shared two-core, 2 GiB, zero-swap budget, five rounds per concurrency and separate idle/useful-tool conditions; every failure, unknown outcome and OOM remains counted.
 
-[On-demand image startup](lazy-image-startup.md) measures cold/warm client-cache waits and content payloads for the same pinned image within separate Ubuntu shell and Python/NumPy cohorts. NumPy transfers less content, with no detected cold-Ready median difference; warm-cache Docker is faster. It uses prepared local registry/cache services, with different networking, Docker image store and memory configurations from the startup controls above; results remain separate rather than forming a single ranking.
+[On-demand image startup](lazy-image-startup.md) measures cold/warm client-cache waits and content payloads for the same pinned image within separate Ubuntu shell and Python/NumPy cohorts. Both workloads on the current artifacts support shorter lazy cold-client median waits; warm-cache Docker is faster. File content, binary indexes and total responses are counted separately. It uses prepared local registry/cache services, with different networking, Docker image store and memory configurations from the startup controls above; results remain separate rather than forming a single ranking.
 
 ## Data and analysis {#results}
 

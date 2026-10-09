@@ -4,7 +4,7 @@ Read [the benchmark registry and writing rules](../README.md) before measuring o
 
 ## Lazy image client startup
 
-`B-LAZY-STARTUP` compares a Distribution registry's complete-image Docker path with a real `pvisor-cache serve` lazy VM path for the same pinned linux/amd64 manifest and workload. The default `ubuntu-shell` cohort uses Ubuntu 26.04; `numpy-script` is a separate Python/NumPy cohort. `torch-import` remains optional but has no formal samples; its failed attempts are retained, not performance evidence. Never pool different workloads or their preflight and formal samples. This is not OpenSandbox `pvisor-daemon serve`. See [the retained Ubuntu local report](LAZY_STARTUP_REPORT.md) and [derived Ubuntu CSV](lazy-startup-summary.csv); they do not establish NumPy or torch performance. The [bilingual user article](../../docs/src/zh/benchmarks/lazy-image-startup.md#numpy) includes the independent NumPy cohort, with [derived statistics](../../docs/src/zh/benchmarks/lazy-numpy-summary.csv), [differences/preparation](../../docs/src/zh/benchmarks/lazy-numpy-details.csv) and [provenance](../../docs/src/zh/benchmarks/lazy-numpy-provenance.csv). Its retained evidence is `benchmark/pvisor/.data/lazy-numpy-local-20261007/`; `derive.py` audits all 136 launches and regenerates the paired NumPy CSVs without changing the immutable report.
+`B-LAZY-STARTUP` compares a Distribution registry's complete-image Docker path with a real `pvisor-cache serve` lazy VM path for the same pinned linux/amd64 manifest and workload. The default `ubuntu-shell` cohort uses Ubuntu 26.04; `numpy-script` is a separate Python/NumPy cohort. `torch-import` remains optional but has no formal samples; its failed attempts are retained, not performance evidence. Never pool different workloads or their preflight and formal samples. This is not OpenSandbox `pvisor-daemon serve`. See [the retained Ubuntu local report](LAZY_STARTUP_REPORT.md) and [derived Ubuntu CSV](lazy-startup-summary.csv); they do not establish NumPy or torch performance. The [bilingual user article](../../docs/src/zh/benchmarks/lazy-image-startup.md#numpy) includes the independent NumPy cohort, with [derived statistics](../../docs/src/zh/benchmarks/lazy-numpy-summary.csv), [differences/preparation](../../docs/src/zh/benchmarks/lazy-numpy-details.csv) and [provenance](../../docs/src/zh/benchmarks/lazy-numpy-provenance.csv). Historical evidence is retained at `benchmark/pvisor/.data/lazy-numpy-local-20261007/`. Its legacy `derive.py` writes historical CSVs; do not use it to overwrite current site downloads. The current implementation rerun below supplies the user article and current CSVs.
 
 Finish other builds/tests before sampling. Docker access uses `sg docker -c`; KVM and both frozen executables must be usable. The successful NumPy preflight uses the existing `target/release/pvisor` launcher with the separately built `target/lazy-torch-build/release/pvisor-cache`, selected via `--cache-binary`. This static cache build includes Docker gzip compatibility; the directory name is historical and does not mean torch was measured. The commands below keep the default launcher directory `target/release` and override only the cache executable, not `--binary-dir`. A new launcher conflicts with the existing persistent Host listener: **do not kill or replace the user's listener** to run this benchmark. Preserve the compatible existing launcher/listener pairing. Finish artifact preparation and freeze the binaries before preflight; do not rebuild during sampling. Install `skopeo` and `openssl`; loopback ports 15000/15443/15444/15445 must be free. First pull the report's pinned Distribution image outside timing:
 
@@ -53,6 +53,76 @@ The default Ubuntu source digest freezes the observed `ubuntu:latest`, rather th
 A cold Docker sample must fetch every blob; a cold lazy sample must read content into a fresh client cache. Warm Docker must make no registry requests; warm lazy can make metadata requests but must fetch no file content. Correct output, successful exit and the VM Run Bundle are checked; failures invalidate the campaign, and slow valid samples are not discarded. `--warmups 3` also performs one initial excluded round. Container 2 GiB limits and VM 2 GiB guest RAM are not equal enclosing-memory controls; Docker daemon/containerd and proxy CPU work is not fully pinned. Build-time source relationships of preexisting artifacts remain unverified. Do not infer WAN, pure lazy-algorithm, whole-system equal-budget or checkout optimization claims.
 
 The immutable measurement report is kept as generated; `--analyze` writes separate `analysis.json` using the existing publication cluster rule and paired bootstrap. The original cohort's source/binary hashes and frozen harness identify its actual measurement implementation; later statistical fixes do not alter samples or replace the original harness.
+
+### Current implementation Docker/lazy comparison
+
+`B-LAZY-STARTUP` reruns each workload independently with both new static release
+executables and the current default client index pages, upstream pooling and
+persistent private bridge. Run the whole campaign with primary Docker GID in a
+private user/mount/PID namespace and `pivot_root`; preserve the existing Host
+listener and `target/release`. Finish builds and tests before sampling.
+
+The retained fresh build is `.data/lazy-current-build-20261010/`: measured
+`pvisor` and `pvisor-cache` bytes match its frozen binaries and build input
+receipt. The current harness has independent conventional tests:
+
+```sh
+just test-py benchmark/pvisor/test_lazy_startup.py benchmark/pvisor/test_lazy_image_v2.py
+sg docker -c 'python3 benchmark/pvisor/lazy_startup.py --isolate-host \
+  --workload numpy-script --binary-dir target/lazy-current-build/release \
+  --build-receipt benchmark/pvisor/.data/lazy-current-build-20261010/build-receipt.tar.gz \
+  --prepared-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --registry-source-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --output benchmark/pvisor/.data/lazy-numpy-current-preflight-new --samples 1 --warmups 0'
+# After preflight passes and its ports have been released, choose a new directory.
+sg docker -c 'python3 benchmark/pvisor/lazy_startup.py --isolate-host \
+  --workload numpy-script --binary-dir target/lazy-current-build/release \
+  --build-receipt benchmark/pvisor/.data/lazy-current-build-20261010/build-receipt.tar.gz \
+  --prepared-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --registry-source-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --output benchmark/pvisor/.data/lazy-numpy-current-formal-new --samples 30 --warmups 3'
+```
+
+For a separate Ubuntu shell campaign, select `--workload ubuntu-shell`, replace
+both store paths with `.data/lazy-startup-local-20261007/service-store`, add
+`--source docker.io/library/ubuntu@sha256:88a381d5b5eeb2b35d3ad70925a362c37ce569daf43ede89ff818ec20e4d3794`
+(the retained selected amd64 manifest, rather than its multi-platform index), and use
+new shell preflight/formal directories. Campaigns run sequentially; allow prior
+connections' TIME_WAIT state to clear before the next port reservation. Do not
+terminate other listeners to reclaim ports.
+
+`--registry-source-store` validates and independently archives the pinned
+manifest, config and original compressed layer blobs, then uses skopeo to publish
+them to a fresh Distribution registry. It never reconstructs layers from rootfs
+or falls back to network. `--prepared-store` copies supported service records
+with symlinks and validates a cached Prepare. These measurements exclude first
+upstream download/unpack/index costs; store copying, registry publication and
+cached Prepare are recorded separately. Omitting the store options requests
+full upstream preparation, requiring a separate successful preflight.
+
+File content counts Read Data only; binary Metadata Data and total responses
+are reported separately. Cold/warm correctness, Run Bundles, frozen inputs and
+namespace teardown are checked. Failed campaigns remain independent evidence,
+never zero-time samples. Thirty paired rounds, one initial excluded round and
+three warmups produce 120 formal / 136 checked launches per workload. No
+speed-based exclusions, P99, cross-batch speedup or WAN claim is supplied.
+
+Current formal evidence: `.data/lazy-numpy-current-formal-20261010-2/` and
+`.data/lazy-shell-current-formal-20261010/`. Each retained `derive.py` audits all
+136 launches, frozen hashes, original OCI blobs, build input/binary correspondence
+and teardown before regenerating its locale CSVs:
+
+```sh
+python3 benchmark/pvisor/.data/lazy-numpy-current-formal-20261010-2/derive.py \
+  benchmark/pvisor/.data/lazy-numpy-current-formal-20261010-2
+python3 benchmark/pvisor/.data/lazy-shell-current-formal-20261010/derive.py \
+  benchmark/pvisor/.data/lazy-shell-current-formal-20261010
+```
+
+Failed preparation/port-reservation campaigns and preflights remain independent
+under `.data/`; none contribute performance samples. Current default flags are
+all enabled. These user comparisons do not estimate the causal effect of an
+individual implementation change; use the engineering A/B below for that.
 
 ## Lazy image V2 engineering A/B
 
@@ -114,6 +184,92 @@ then regenerates the engineering CSV without changing the read-only report.
 Build command/log/input hashes are retained separately at
 `.data/lazy-image-v2-build-20261008/`. Failed smoke campaigns remain independent;
 no speed-based exclusions or cross-cohort causal comparisons are allowed.
+
+### Client index-page comparison
+
+`--comparison v2-index` isolates client-side binary metadata pages from the
+previous V2 RPC/prefetch implementation. Both variants enable V2 and pooling;
+`rpc` sets `PVISOR_LAZY_INDEX_PAGES=0`, and `pages` sets it to `1`. The default
+`v1-v2` comparison explicitly disables pages in both variants so it continues
+measuring prefetch/pooling, not this additional optimization.
+
+See [the index-page engineering report](LAZY_INDEX_PAGES_REPORT.md) and
+[derived statistics](lazy-index-pages-summary.csv). File content counts only
+Read Data; `metadata_bytes` counts Metadata Data. RPC metadata is in JSON frames,
+so compare total `response_bytes` as well. Do not combine these independent
+samples with previous V1/V2 or Docker cohorts.
+
+```sh
+just test pvisor
+PVISOR_LAZY_IMAGE_V2=0 just test pvisor
+PVISOR_LAZY_INDEX_PAGES=0 just test pvisor
+just test-py benchmark/pvisor/test_lazy_image_v2.py
+CARGO_TARGET_DIR=target/lazy-index-pages-build just build release
+python3 benchmark/pvisor/lazy_image_v2.py \
+  --comparison v2-index \
+  --binary-dir target/lazy-index-pages-build/release \
+  --prepared-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --output benchmark/pvisor/.data/lazy-index-pages-preflight-new \
+  --samples 1 --warmups 0
+# Only after preflight passes and builds/tests finish; choose a new directory.
+python3 benchmark/pvisor/lazy_image_v2.py \
+  --comparison v2-index \
+  --binary-dir target/lazy-index-pages-build/release \
+  --prepared-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --output benchmark/pvisor/.data/lazy-index-pages-formal-new \
+  --samples 30 --warmups 3
+```
+
+Final evidence: `.data/lazy-index-pages-formal-20261009-2/`, with a reproducible
+`derive.py` audit, immutable report and frozen binaries/source. Matching build
+receipt: `.data/lazy-index-pages-build-20261009-4/`. The earlier independent
+formal cohort and failed/successful smoke directories remain retained; they are
+not pooled with the final cohort. The final measured frozen harness predates
+only the later explicit page-disable pin for `v1-v2`; its `v2-index` controls
+are identical. No performance sample is collected while builds/tests run.
+
+### Private host-network bridge comparison
+
+`--comparison bridge-pages` and `bridge-rpc` compare legacy versus persistent
+Unix bridge connections with client/upstream V2 enabled in both variants.
+They fix index pages on/off respectively and remain independent cohorts.
+`PVISOR_LAZY_BRIDGE_V2=0/1` also selects legacy socket workers versus separated
+connection handlers/execution workers; it is not a protocol-only comparison.
+Older `v1-v2` and `v2-index` comparisons pin bridge V1 to preserve their scope.
+
+See [the bridge report](LAZY_BRIDGE_REPORT.md),
+[pages statistics](lazy-bridge-pages-summary.csv) and
+[RPC statistics](lazy-bridge-rpc-summary.csv). `bridge_connections` counts Unix
+accepts; existing proxy `connections` counts upstream TCP including host Prepare.
+Each launch gets a private metrics directory. Raw shared `.stats` files are read
+only after verified namespace teardown; forwarded operations reconcile after
+excluding the entire host Prepare connection group. Live gauges are not peaks
+and can remain nonzero after SIGKILL. Telemetry is opt-in; its overhead is unmeasured.
+
+```sh
+just test pvisor
+PVISOR_LAZY_IMAGE_V2=0 just test pvisor
+PVISOR_LAZY_BRIDGE_V2=0 just test pvisor
+just test-py benchmark/pvisor/test_lazy_image_v2.py
+CARGO_TARGET_DIR=target/lazy-bridge-build just build release
+python3 benchmark/pvisor/lazy_image_v2.py \
+  --comparison bridge-pages --binary-dir target/lazy-bridge-build/release \
+  --prepared-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --output benchmark/pvisor/.data/lazy-bridge-pages-smoke-new \
+  --samples 1 --warmups 0
+# After smoke passes and builds/tests finish, choose a new output directory.
+python3 benchmark/pvisor/lazy_image_v2.py \
+  --comparison bridge-pages --binary-dir target/lazy-bridge-build/release \
+  --prepared-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
+  --output benchmark/pvisor/.data/lazy-bridge-pages-formal-new \
+  --samples 30 --warmups 3
+# Repeat smoke/formal with bridge-rpc and separate new output directories.
+```
+
+Evidence is retained in `.data/lazy-bridge-{pages,rpc}-formal-20261009/`, each
+with an independent `derive.py` audit and immutable raw report. Matching build
+proof: `.data/lazy-bridge-build-20261009/`. Do not pool these cohorts with each
+other or historical index/V2/Docker evidence.
 
 ## vCPU observation M0
 

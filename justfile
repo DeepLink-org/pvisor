@@ -360,6 +360,7 @@ benchmark *suites:
 [group("10. 文档")]
 docs-build *check_args:
     python3 scripts/check-reference.py
+    python3 scripts/check-docs.py --preflight-build
     rm -rf docs/site
     uv run --no-project --with zensical=={{ zensical_version }} zensical build --strict -f docs/zensical.zh.toml
     uv run --no-project --with zensical=={{ zensical_version }} zensical build --strict -f docs/zensical.en.toml
@@ -376,6 +377,7 @@ docs-serve locale="zh" *args:
       *) echo "expected zh or en, got: $1" >&2; exit 2 ;;
     esac
     shift
+    python3 scripts/check-docs.py --preflight-build
     exec uv run --no-project --with zensical=={{ zensical_version }} zensical serve -f "$config" "$@"
 
 # ============================================================
