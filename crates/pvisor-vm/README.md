@@ -211,7 +211,7 @@ performance claim is made by these contract tests.
 
 `repository_boundary` 检查所有工作区 manifest 与外部 Rust 调用者，保证 VM 核心组件只在本 crate 内编译。`api_contract` 保证 API 无条件编译、无方法体，并禁止私有适配器另设公开固有方法。
 
-真实 Linux guest 的独立 rootfs/RAM 保存与恢复验证使用 `python3 scripts/check-environment-snapshot.py --report target/vm-validation/environment-linux.json`（Apple Silicon HVF）。guest 探针在 `src/probes/guest_linux.rs`，readiness 使用原子 rename 发布，避免把探针写文件的中间状态误判为恢复失败。底层 CPU/RAM 与 VMM-thread CPU/RAM/GIC 检查分别使用 `check-hvf-cold-restore.py` 和 `check-vm-snapshot-state.py`，它们的报告只描述各自覆盖的范围。
+真实 Linux guest 的独立 rootfs/RAM 保存与恢复验证使用 `just test-environment-snapshot`，整机冷恢复使用 `just test-linux-cold-restore`（均为 Apple Silicon HVF 的私有专项入口）。报告保存到 `${CARGO_TARGET_DIR:-target}/vm-validation/`，可传 `--report PATH` 覆盖；固件需先通过 `just fw build` 准备，并将 `PVISOR_CASE_VM_LIBRARY_DIR` 指向生成的 dylib 目录，默认读取构建目录的 `release/`。guest 探针在 `src/probes/guest_linux.rs`，readiness 使用原子 rename 发布，避免把探针写文件的中间状态误判为恢复失败。底层 CPU/RAM 与 VMM-thread CPU/RAM/GIC 检查分别使用 `just test-hvf-cold-restore` 和 `just test-vm-snapshot-state`，它们的报告只描述各自覆盖的范围。Just 负责编译、签名与签名校验；Python 只运行已构建的探针并检查状态和报告。环境快照验证仍为源进程与恢复进程复制同一个已签名 runner 到私有目录。
 
 ## Stage snapshot rebinding
 

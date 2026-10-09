@@ -3,7 +3,7 @@
 **问题：pVisor 的事务工作区、changeset、显式网络代理和 Gateway 能否用 `run.sh` 定量复现？可复现结论：四个场景分别断言 lower/upper、review/apply/drop、cooperative proxy 边界，以及 Gateway 捕获计数。**
 
 这组示例依次展示 pVisor 的事务工作区、changeset、显式网络代理和 Gateway。每个
-`run.sh` 只保留场景准备、pVisor 命令和产物展示；对应的 `test.sh`
+`run.sh` 只保留场景准备、pVisor 命令和产物展示；`just examples` 中的场景配方
 调用同一个 `run.sh`，再对 lower/upper、Run Bundle、日志或事件日志 执行回归断言。
 这里不拥有隔离后端或 Gateway 实现。
 
@@ -30,8 +30,8 @@ just examples 03-network-isolation 04-gateway-llm-control    # 03/04，普通 CI
 just examples 03-network-isolation
 ```
 
-`examples/pvisor/run.sh` 可批量演示场景，`examples/pvisor/test.sh` 可批量验证场景。两者都
-能通过 `PVISOR_BIN` 复用已经构建好的 binary，并通过 `WORK_ROOT` 把临时产物放到指定目录。
+`just examples` 统一构建、运行并验证场景，也可直接运行各场景的 `run.sh` 演示；
+通过 `WORK_ROOT` 把临时产物放到指定目录。
 
 ## Links
 
@@ -40,4 +40,4 @@ just examples 03-network-isolation
 - [Isolation architecture](../../docs/src/zh/design/isolation.md)
 
 `05-zcode-cli` 需要额外安装 ZCode CLI 和 Node.js，默认批量运行仍只包含 01–04。配置方式见该示例的 README。
-`06-tui-interception` 需要交互式终端，需单独运行；其 `test.sh` 可无 TUI 回归同一拦截路径。
+`06-tui-interception` 需要交互式终端，需单独运行；`just examples 06-tui-interception` 可无 TUI 回归同一拦截路径。

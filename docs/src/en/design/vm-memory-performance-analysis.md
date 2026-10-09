@@ -151,7 +151,9 @@ physical-memory acceptance threshold lowered.
 
 Pairs run sequentially on one host, but pressure levels and background load are not guaranteed identical. The pressure table exposes each mode and repetition; this is not a causal pressure experiment on an isolated host.
 
-### Reproduce {#reproduce}
+### Historical experiment commands {#reproduce}
+
+The experiment scripts under `tools/experiments/macos-memory/` have been removed. The launch, extended-observation and summary commands below preserve the original procedure and cannot run in the current working tree. Raw data, artifact identities and experimental conclusions are retained.
 
 Set the existing firmware directory first. The output directory must not
 exist, preserving historical data. This command requires Apple Silicon macOS
@@ -180,7 +182,7 @@ successful performance comparisons.
 
 Copy signed executables to isolate concurrent builds. Formal cases check CLI SHA-256 at startup and exit; every pair must match the single digest recorded by the matrix. Do not keep launching samples from a `target/release` directory that another build may replace.
 
-### Reproducing the extended 2 GiB observation {#long-idle-reproduce}
+### Historical commands for the extended 2 GiB observation {#long-idle-reproduce}
 
 Use the same frozen executables in a separate output directory, retaining two pairs and reversed order. The default remains 35 seconds; the follow-up only extends waiting and matching timeouts. Replace the executable, firmware and output paths below. The [results page](#long-idle-2048) separates predefined windows from the descriptive endpoint.
 
@@ -513,7 +515,7 @@ Observed pressure levels: [1, 2] (1=NORMAL, 2=WARN, 4=CRITICAL). Host swap at th
 
 Complete commands and logs live under repository directory `review_project/06-evidence/macos-memory/cli-decision-frozen-matrix-2026-10-03/`. Every case contains `raw.json` and each VM's stdout/stderr. The summary retains successful raw-record SHA-256 hashes, and failed directories are not overwritten. Historical experiments remain in the evidence parent directory and do not substitute for this run.
 
-After the [reproduction command](#reproduce), use this read-only summarizer to recheck contents, pairing and accounting:
+Historical records used this read-only summarizer to recheck contents, pairing and accounting; the script has been removed with the [historical experiment entry points](#reproduce):
 
 ```bash
 python3 tools/experiments/macos-memory/cli_decision_report.py \

@@ -4,14 +4,14 @@
 
 `run.sh` 启动无需 API key 的 Mock LLM，再通过配置好的 pVisor Gateway 执行两轮 Agent，
 并展示 Mock server 日志、Run Bundle 和 `.capture/events.trace.jsonl` 中的请求与响应事件。日志采用 `pvisor.trace/5` 的 Event/Position 记录格式；配置使用 `full` 捕获以验证两轮请求的完整消息历史。
-`test.sh` 检查这些产物的指标。
+`just examples 04-gateway-llm-control` 检查这些产物的指标。
 `configs/` 另外保留真实 DeepSeek、多厂商和 allowlist 配置模板。
 
 ## Run
 
 ```bash
 ./run.sh
-./test.sh  # 执行同一场景并验证预期结果
+just examples 04-gateway-llm-control  # 从仓库根执行并验证
 ```
 
 ## Links

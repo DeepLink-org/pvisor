@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import platform
@@ -369,3 +370,41 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
         return scripts
     finally:
         shutil.rmtree(staged, ignore_errors=True)
+
+
+def main() -> None:
+    """Build components and publish artifacts into the selected profile directory."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", choices=("dev", "release", "performance"), default="release")
+    parser.add_argument("--target-dir", default=os.getenv("CARGO_TARGET_DIR", str(ROOT / "target")))
+    parser.add_argument("--target", default=os.getenv("CARGO_BUILD_TARGET"))
+    component = parser.add_mutually_exclusive_group()
+    component.add_argument("--daemon", action="store_true")
+    component.add_argument("--shim-vm", action="store_true")
+    args = parser.parse_args()
+    target = _normalize_target(args.target) if args.target else None
+    if args.daemon or args.shim_vm:
+        if target and target != "x86_64-unknown-linux-musl":
+            parser.error("daemon and VM shim builds require x86_64-unknown-linux-musl")
+        target = "x86_64-unknown-linux-musl"
+    options = BuildOptions(target=target, profile=args.profile, target_dir=args.target_dir)
+    artifacts = (
+        _build_component(options, daemon=True)
+        if args.daemon
+        else _build(options, shim_vm=args.shim_vm)
+    )
+    if _is_macos(options):
+        directory = artifacts["pvisor"].parent
+        artifacts.update(
+            {name: directory / name for name in ("libkrunfw.5.dylib", "libkrunfw.SOURCE")}
+        )
+    directory = Path(args.target_dir) / ("debug" if args.profile == "dev" else args.profile)
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, source in artifacts.items():
+        destination = directory / name
+        if source.resolve() != destination.resolve():
+            copy_artifact(source, destination)
+
+
+if __name__ == "__main__":
+    main()

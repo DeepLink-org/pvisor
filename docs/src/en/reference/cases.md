@@ -37,16 +37,16 @@ cd /tmp/pvisor-cases/workspace
 Run automated checks from the repository root:
 
 ```bash
-just semspec list --domain DOC
+just semspec --spec-dir docs/src/zh/reference list --domain DOC
 just semspec run docs/src/zh/reference/cases.md --subject-bin target/release/pvisor
 just cases --case S-DOC-001,S-DOC-012 --keep
 just cases
-just semspec show S-DOC-001
+just semspec --spec-dir docs/src/zh/reference show S-DOC-001
 ```
 
-`just cases` builds release pVisor, discovers the 54 active DOC specifications on this page and [six VM control and RAM backing cases](cases-vm.md) and writes JSON to `target/pvisor-case-report.json`. Select by S-DOC ID: A01 is S-DOC-001, C01 is S-DOC-012. See `tests/semantics/README.md` for the full mapping. An existing binary can be used with `just semspec run --domain DOC --subject-bin PATH`. L01/L02 and S-DOC-053/S-DOC-054 were removed with `env`; their IDs are retired and never reused.
+`just cases` builds release pVisor, discovers the 54 active DOC specifications on this page and [six VM control and RAM backing cases](cases-vm.md) and writes JSON to `target/pvisor-case-report.json`. Select by S-DOC ID: A01 is S-DOC-001, C01 is S-DOC-012. Headings retain each original scenario label. An existing binary can be used with `just semspec --spec-dir docs/src/zh/reference run --domain DOC --subject-bin PATH`. L01/L02 and S-DOC-053/S-DOC-054 were removed with `env`; their IDs are retired and never reused.
 
-Each specification includes original commands, expected exits and all assertions in one review digest. Expected nonzero exits must actually occur and satisfy the original assertions; they are not xfail. The reviewed assertion vocabulary comes from `cases.sh`, which reads this case's Bundle, run record and command logs. Configuration, Jobs and fixtures live in temporary CASE_ROOT. Failures retain their workspace; `--keep` retains every workspace. Missing declared prerequisites report SKIP.
+Each specification includes original commands, expected exits and all assertions in one review digest. Expected nonzero exits must actually occur and satisfy the original assertions; they are not xfail. The reviewed assertion functions come from preparation blocks in the sibling `index.md`, which reads this case's Bundle, run record and command logs. Configuration, Jobs and fixtures live in temporary CASE_ROOT. Failures retain their workspace; `--keep` retains every workspace. Missing declared prerequisites report SKIP.
 
 New cases remain UNREVIEWED. Passing checks are separate from human approval. Use `just cases --require-reviewed` as a gate only after humans review cases, vocabulary and engine. See `just semspec run --help` for supported options.
 
@@ -68,7 +68,6 @@ Start with A01. Use subsequent examples only when you need a fixed display name,
 
 ### S-DOC-001: A01 Minimal invocation without run
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: First use: verify commands and Job identity.
 
@@ -78,6 +77,7 @@ Suggested use: First use: verify commands and Job identity.
 
 **Violation example**: Exit 0 while printing the parent directory, or start staging by default.
 
+<!-- semspec: case id=S-DOC-001 -->
 ```bash
 require_python3
 case_setup
@@ -94,7 +94,6 @@ bundle_expect network.policy.mode ambient
 
 ### S-DOC-002: A02 Explicit run equals the short form
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: First use: verify commands and Job identity.
 
@@ -104,6 +103,7 @@ Suggested use: First use: verify commands and Job identity.
 
 **Violation example**: Working directory output differs between the two forms.
 
+<!-- semspec: case id=S-DOC-002 -->
 ```bash
 require_python3
 case_setup
@@ -119,7 +119,6 @@ bundle_expect run.agent pwd
 
 ### S-DOC-003: A03 Job name and stdio capture
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: First use: verify commands and Job identity.
 
@@ -129,6 +128,7 @@ Suggested use: First use: verify commands and Job identity.
 
 **Violation example**: Lose the agent name or mark hello truncated.
 
+<!-- semspec: case id=S-DOC-003 -->
 ```bash
 require_python3
 case_setup
@@ -143,7 +143,6 @@ bundle_expect run.output.stdout_truncated false
 
 ### S-DOC-004: A04 Timeout
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: First use: verify commands and Job identity.
 
@@ -153,6 +152,7 @@ Suggested use: First use: verify commands and Job identity.
 
 **Violation example**: The timed-out command succeeds or records an ordinary retryable process_exit failure.
 
+<!-- semspec: case id=S-DOC-004 -->
 ```bash
 require_python3
 case_setup
@@ -167,7 +167,6 @@ bundle_expect run.failure.retryable false
 
 ### S-DOC-005: A05 Strict mode rejects best-effort boundaries
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: First use: verify commands and Job identity.
 
@@ -179,6 +178,7 @@ Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
 **Violation example**: Launch despite missing evidence, or reject without naming the missing capability.
 
+<!-- semspec: case id=S-DOC-005 -->
 ```bash
 require_python3
 case_setup
@@ -191,7 +191,6 @@ stdout_has "lacks enforced evidence for requested capability dimensions"
 
 ### S-DOC-006: A06 Explicit environment projection
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: First use: verify commands and Job identity.
 
@@ -201,6 +200,7 @@ Suggested use: First use: verify commands and Job identity.
 
 **Violation example**: Omit the permitted variable or incorrectly claim complete host inheritance.
 
+<!-- semspec: case id=S-DOC-006 -->
 ```bash
 require_python3
 case_setup
@@ -215,7 +215,6 @@ bundle_expect environment.inherits_host false
 
 ### S-DOC-007: A07 Default writes reach the workspace
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 **Semantics**: After exit, `direct.txt` exists in the original workspace and records contain no OverlayFS stage.
 
@@ -223,6 +222,7 @@ bundle_expect environment.inherits_host false
 
 **Violation example**: A host write without a staging request does not reach the workspace.
 
+<!-- semspec: case id=S-DOC-007 -->
 ```bash
 require_python3
 case_setup
@@ -240,7 +240,6 @@ These cases distinguish requested limits from actual enforcement. B01 inspects c
 
 ### S-DOC-008: B01 Combine all resource limits
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Control or verify resource limits.
 
@@ -250,6 +249,7 @@ Suggested use: Control or verify resource limits.
 
 **Violation example**: Accept options but record incorrect requests, or omit the effective file-size limit/rlimit mechanism.
 
+<!-- semspec: case id=S-DOC-008 -->
 ```bash
 require_python3
 case_setup
@@ -274,7 +274,6 @@ bundle_contains resources.mechanisms rlimit
 
 ### S-DOC-009: B02 File-size limit is enforced
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Control or verify resource limits.
 
@@ -284,6 +283,7 @@ Suggested use: Control or verify resource limits.
 
 **Violation example**: dd writes 4KiB successfully or leaves more than 1024 bytes after failure.
 
+<!-- semspec: case id=S-DOC-009 -->
 ```bash
 require_python3
 case_setup
@@ -299,7 +299,6 @@ test ! -f large || [ "$(wc -c < large)" -le 1024 ]
 
 ### S-DOC-010: B03 Short memory alias
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Control or verify resource limits.
 
@@ -309,6 +308,7 @@ Suggested use: Control or verify resource limits.
 
 **Violation example**: Parse --mem 256MiB differently from --memory.
 
+<!-- semspec: case id=S-DOC-010 -->
 ```bash
 require_python3
 case_setup
@@ -321,7 +321,6 @@ bundle_expect resources.requested.memory_bytes 268435456
 
 ### S-DOC-011: B04 Total stage size limit
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Control or verify resource limits.
 
@@ -333,6 +332,7 @@ Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
 **Violation example**: The command succeeds without staged filesystem state or with the wrong storage path.
 
+<!-- semspec: case id=S-DOC-011 -->
 ```bash
 require_python3
 require_stage
@@ -352,7 +352,6 @@ Use these when an agent should modify files without changing the current workspa
 
 ### S-DOC-012: C01 Persistent stage
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Isolate file changes, retain a stage or verify whole-rootfs behavior.
 
@@ -364,6 +363,7 @@ Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
 **Violation example**: result.txt reaches the original workspace or is omitted from changes.
 
+<!-- semspec: case id=S-DOC-012 -->
 ```bash
 require_python3
 require_stage
@@ -381,7 +381,6 @@ test -f "$PVISOR_CASE_ROOT/stage-keep/run-bundle.json"
 
 ### S-DOC-013: C02 Retain the stage by default
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Isolate file changes, retain a stage or verify whole-rootfs behavior.
 
@@ -393,6 +392,7 @@ Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
 **Violation example**: The logged Bundle disappears after exit or result.txt reaches the original workspace.
 
+<!-- semspec: case id=S-DOC-013 -->
 ```bash
 require_python3
 require_stage
@@ -409,7 +409,6 @@ test ! -e result.txt
 
 ### S-DOC-014: C03 Explicitly discard a persistent stage
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Isolate file changes, retain a stage or verify whole-rootfs behavior.
 
@@ -421,6 +420,7 @@ Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
 **Violation example**: Records stay staged after drop or result.txt reaches the original workspace.
 
+<!-- semspec: case id=S-DOC-014 -->
 ```bash
 require_python3
 require_stage
@@ -437,7 +437,6 @@ test -f "$PVISOR_CASE_ROOT/stage-drop/run-bundle.json"
 
 ### S-DOC-015: C04 Preserve existing stage directory contents
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Isolate file changes, retain a stage or verify whole-rootfs behavior.
 
@@ -447,6 +446,7 @@ Suggested use: Isolate file changes, retain a stage or verify whole-rootfs behav
 
 **Violation example**: Cleanup deletes the original user-file.
 
+<!-- semspec: case id=S-DOC-015 -->
 ```bash
 require_python3
 require_stage
@@ -463,7 +463,6 @@ test -f "$PVISOR_CASE_ROOT/existing-stage/run-bundle.json"
 
 ### S-DOC-016: C05 Whole-rootfs capture and tmpfs isolation
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Isolate file changes, retain a stage or verify whole-rootfs behavior.
 
@@ -475,6 +474,7 @@ Preparation: Linux user/mount namespaces; macOS Seatbelt does not provide this w
 
 **Violation example**: Workspace changes are not staged or sandbox /tmp writes reach host /tmp.
 
+<!-- semspec: case id=S-DOC-016 -->
 ```bash
 require_python3
 require_rootless
@@ -491,7 +491,6 @@ test ! -e "$CASE_TMP_PATH"
 
 ### S-DOC-017: C06 Safe isolates HOME writes
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Preparation: Linux user/mount namespaces available.
 
@@ -501,6 +500,7 @@ Preparation: Linux user/mount namespaces available.
 
 **Violation example**: Write HOME/state to host HOME or prevent the agent from reading its own write.
 
+<!-- semspec: case id=S-DOC-017 -->
 ```bash
 require_python3
 require_rootless
@@ -529,7 +529,6 @@ In Permissions, select with j/k and press x twice to remove a decision; another 
 
 ### S-DOC-018: D01 Advanced OverlayFS composition
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Inspect OverlayFS views and host security boundaries.
 
@@ -541,6 +540,7 @@ Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
 **Violation example**: Reverse layer/base order or omit the workspace snapshot directory.
 
+<!-- semspec: case id=S-DOC-018 -->
 ```bash
 require_python3
 require_stage
@@ -563,7 +563,6 @@ test -d "$(record_get overlay_lowers.2)"
 
 ### S-DOC-019: D02 Explicit host executor
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Inspect OverlayFS views and host security boundaries.
 
@@ -575,6 +574,7 @@ Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
 **Violation example**: Downgrade to host_process while recording isolation success.
 
+<!-- semspec: case id=S-DOC-019 -->
 ```bash
 require_python3
 case_setup
@@ -593,7 +593,6 @@ bundle_expect safety.host_process false
 
 ### S-DOC-020: D03 Host stage hides the original workspace path
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Inspect OverlayFS views and host security boundaries.
 
@@ -605,6 +604,7 @@ Preparation: Linux user/mount namespaces; macOS lacks this procfs/mount-namespac
 
 **Violation example**: procfs cwd exposes the original workspace path.
 
+<!-- semspec: case id=S-DOC-020 -->
 ```bash
 require_python3
 require_rootless
@@ -622,7 +622,6 @@ test "$(sed -n 3p views.txt)" = "$merged"
 
 ### S-DOC-021: D04 Deny sensitive file reads explicitly
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Preparation: Linux user/mount namespaces available.
 
@@ -632,6 +631,7 @@ Preparation: Linux user/mount namespaces available.
 
 **Violation example**: Allow private/token or omit the denied target from review.
 
+<!-- semspec: case id=S-DOC-021 -->
 ```bash
 require_python3
 require_rootless
@@ -651,7 +651,6 @@ test "$(cat private/token)" = secret
 
 ### S-DOC-022: D05 Direct writes to an explicit share
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Preparation: Linux user/mount namespaces available.
 
@@ -661,6 +660,7 @@ Preparation: Linux user/mount namespaces available.
 
 **Violation example**: An explicit write share fails to receive mounted content.
 
+<!-- semspec: case id=S-DOC-022 -->
 ```bash
 require_python3
 require_rootless
@@ -676,7 +676,6 @@ test "$(cat "$PVISOR_CASE_ROOT/shared/out")" = mounted
 
 ### S-DOC-023: D06 Ask prompt and directory permission for this Job
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Preparation: Linux user/mount namespaces and Python 3. A pseudo-terminal sends 2/Enter automatically; manually choose and confirm with Enter.
 
@@ -686,6 +685,7 @@ Preparation: Linux user/mount namespaces and Python 3. A pseudo-terminal sends 2
 
 **Violation example**: Prompt again for the sibling or persist directory permission with the wrong scope.
 
+<!-- semspec: case id=S-DOC-023 -->
 ```bash
 require_python3
 require_rootless
@@ -762,7 +762,6 @@ Use VM for a stronger boundary, separate guest kernel or OCI rootfs. E01 resembl
 
 ### S-DOC-024: E01 VM shorthand with host rootfs
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Use a guest kernel, separate rootfs or stronger isolation.
 
@@ -774,6 +773,7 @@ Preparation: Linux with access to /dev/kvm.
 
 **Violation example**: A successful VM returns different cwd or omits vm-smoltcp evidence.
 
+<!-- semspec: case id=S-DOC-024 -->
 ```bash
 require_python3
 require_linux
@@ -793,7 +793,6 @@ bundle_expect safety.network_non_bypassable true
 
 ### S-DOC-025: E02 Explicit VM and directory rootfs
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Use a guest kernel, separate rootfs or stronger isolation.
 
@@ -805,6 +804,7 @@ Preparation: Linux with access to /dev/kvm. Prepare a Linux rootfs and set PVISO
 
 **Violation example**: Directory-rootfs VM returns cwd outside the host workspace.
 
+<!-- semspec: case id=S-DOC-025 -->
 ```bash
 require_python3
 require_linux
@@ -821,7 +821,6 @@ bundle_expect run.executor.isolation virtual_machine
 
 ### S-DOC-026: E03 Image rootfs
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Use a guest kernel, separate rootfs or stronger isolation.
 
@@ -833,6 +832,7 @@ Preparation: Linux with access to /dev/kvm. Set PVISOR_CASE_IMAGE for the script
 
 **Violation example**: Image VM returns wrong cwd or lacks virtual_machine result.
 
+<!-- semspec: case id=S-DOC-026 -->
 ```bash
 require_python3
 require_linux
@@ -849,7 +849,6 @@ bundle_expect run.executor.isolation virtual_machine
 
 ### S-DOC-027: E04 VM resources
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Use a guest kernel, separate rootfs or stronger isolation.
 
@@ -861,6 +860,7 @@ Preparation: Linux with access to /dev/kvm. Prepare a Linux rootfs and set PVISO
 
 **Violation example**: Record a different memory value.
 
+<!-- semspec: case id=S-DOC-027 -->
 ```bash
 require_python3
 require_linux
@@ -881,7 +881,6 @@ bundle_expect resources.requested.memory_bytes 2147483648
 
 ### S-DOC-028: E05 VM workspace and whole-rootfs stage
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Use a guest kernel, separate rootfs or stronger isolation.
 
@@ -893,6 +892,7 @@ Preparation: Linux with access to /dev/kvm. Set PVISOR_CASE_IMAGE for the script
 
 **Violation example**: Stage path or guest cwd differs from the request.
 
+<!-- semspec: case id=S-DOC-028 -->
 ```bash
 require_python3
 require_linux
@@ -913,7 +913,6 @@ record_expect storage "$PVISOR_CASE_ROOT/vm-stage"
 
 ### S-DOC-029: E06 Reject conflicting executors
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Use a guest kernel, separate rootfs or stronger isolation.
 
@@ -923,6 +922,7 @@ Suggested use: Use a guest kernel, separate rootfs or stronger isolation.
 
 **Violation example**: Ignore the conflict and launch the workload.
 
+<!-- semspec: case id=S-DOC-029 -->
 ```bash
 require_python3
 case_setup
@@ -943,7 +943,6 @@ F04's explicit `--container-platform linux/amd64` assumes Linux x86_64. This opt
 
 ### S-DOC-030: F01 Minimal image container
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Launch native OCI containers directly with runc/crun.
 
@@ -955,6 +954,7 @@ Preparation: Working OCI runtime; set PVISOR_CASE_CONTAINER_IMAGE for the script
 
 **Violation example**: Minimal container exits nonzero or records a different executor.
 
+<!-- semspec: case id=S-DOC-030 -->
 ```bash
 require_python3
 require_container
@@ -970,7 +970,6 @@ bundle_expect run.exit_code 0
 
 ### S-DOC-031: F02 Container rootfs and isolated network
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Launch native OCI containers directly with runc/crun.
 
@@ -982,6 +981,7 @@ Preparation: Working OCI runtime; set PVISOR_CASE_CONTAINER_IMAGE for the script
 
 **Violation example**: Network isolation prevents simple container startup/completion.
 
+<!-- semspec: case id=S-DOC-031 -->
 ```bash
 require_python3
 require_container
@@ -998,7 +998,6 @@ bundle_expect run.state completed
 
 ### S-DOC-032: F03 OCI bundle with host rootfs
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Launch native OCI containers directly with runc/crun.
 
@@ -1010,6 +1009,7 @@ Preparation: Linux with a working OCI runtime and rootless-container user namesp
 
 **Violation example**: Host-rootfs OCI bundle fails to complete as container.
 
+<!-- semspec: case id=S-DOC-032 -->
 ```bash
 require_python3
 require_container_runtime
@@ -1028,7 +1028,6 @@ bundle_expect run.state completed
 
 ### S-DOC-033: F04 Explicit runtime and advanced container options
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Launch native OCI containers directly with runc/crun.
 
@@ -1040,6 +1039,7 @@ Preparation: Working OCI runtime; set PVISOR_CASE_CONTAINER_IMAGE for the script
 
 **Violation example**: Accepted advanced options fail container execution or record another executor.
 
+<!-- semspec: case id=S-DOC-033 -->
 ```bash
 require_python3
 require_container
@@ -1069,7 +1069,6 @@ These cases concern networking only. Proxy suits cooperative access needing host
 
 ### S-DOC-034: G01 Enable default proxy
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Configure egress, proxy access or network denial.
 
@@ -1079,6 +1078,7 @@ Suggested use: Configure egress, proxy access or network denial.
 
 **Violation example**: Omit explicit-proxy/cooperative records or capture artifacts.
 
+<!-- semspec: case id=S-DOC-034 -->
 ```bash
 require_python3
 case_setup
@@ -1093,7 +1093,6 @@ bundle_contains artifacts capture
 
 ### S-DOC-035: G02 Custom proxy listener
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Configure egress, proxy access or network denial.
 
@@ -1103,6 +1102,7 @@ Suggested use: Configure egress, proxy access or network denial.
 
 **Violation example**: Listen on a different loopback address.
 
+<!-- semspec: case id=S-DOC-035 -->
 ```bash
 require_python3
 case_setup
@@ -1116,7 +1116,6 @@ bundle_expect network.interception.driver explicit-proxy
 
 ### S-DOC-036: G03 Combine allow, deny and bandwidth
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Configure egress, proxy access or network denial.
 
@@ -1126,6 +1125,7 @@ Suggested use: Configure egress, proxy access or network denial.
 
 **Violation example**: Lose or rewrite host/port/rate values.
 
+<!-- semspec: case id=S-DOC-036 -->
 ```bash
 require_python3
 case_setup
@@ -1146,7 +1146,6 @@ bundle_expect network.policy.limits.0.bytes_per_second 125000
 
 ### S-DOC-037: G04 Deny-all cannot be bypassed through environment
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Configure egress, proxy access or network denial.
 
@@ -1158,6 +1157,7 @@ Preparation: curl installed.
 
 **Violation example**: curl reaches external networking after clearing variables, or artifacts omit mandatory boundary.
 
+<!-- semspec: case id=S-DOC-037 -->
 ```bash
 require_python3
 require_curl
@@ -1174,7 +1174,6 @@ bundle_expect run.state failed
 
 ### S-DOC-038: G05 VM OverlayNet auto
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Configure egress, proxy access or network denial.
 
@@ -1186,6 +1185,7 @@ Preparation: Linux with access to /dev/kvm. Prepare a Linux rootfs and set PVISO
 
 **Violation example**: Record VM networking as cooperative proxy.
 
+<!-- semspec: case id=S-DOC-038 -->
 ```bash
 require_python3
 require_linux
@@ -1202,7 +1202,6 @@ bundle_expect network.interception.strength non-bypassable
 
 ### S-DOC-039: G06 Reject policy when OverlayNet is off
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Configure egress, proxy access or network denial.
 
@@ -1212,6 +1211,7 @@ Suggested use: Configure egress, proxy access or network denial.
 
 **Violation example**: Silently accept allow policy while off.
 
+<!-- semspec: case id=S-DOC-039 -->
 ```bash
 require_python3
 case_setup
@@ -1224,7 +1224,6 @@ stdout_has "OverlayNet policy options require --overlaynet auto or proxy"
 
 ### S-DOC-040: G07 Review a specific denied proxy target
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Preparation: curl installed.
 
@@ -1234,6 +1233,7 @@ Preparation: curl installed.
 
 **Violation example**: Fail without recording the specific denied target/count.
 
+<!-- semspec: case id=S-DOC-040 -->
 ```bash
 require_python3
 require_curl
@@ -1253,7 +1253,6 @@ Use these for audit, model routing or replay. H01 configures Gateway; H02 record
 
 ### S-DOC-041: H01 Combined Gateway capture
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Connect Gateway, route models or record trajectories.
 
@@ -1265,6 +1264,7 @@ Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
 **Violation example**: Fail Gateway/stage creation or record an invalid loopback gateway_listen.
 
+<!-- semspec: case id=S-DOC-041 -->
 ```bash
 require_python3
 require_stage
@@ -1288,7 +1288,6 @@ bundle_expect filesystem.state staged
 
 ### S-DOC-042: H02 JSON recording
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Connect Gateway, route models or record trajectories.
 
@@ -1298,6 +1297,7 @@ Suggested use: Connect Gateway, route models or record trajectories.
 
 **Violation example**: Create an empty file or a non-object first line.
 
+<!-- semspec: case id=S-DOC-042 -->
 ```bash
 require_python3
 case_setup
@@ -1315,7 +1315,6 @@ Use these for automation/control planes or file-based RunSpec handoff. I01 uses 
 
 ### S-DOC-043: I01 TOML config
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Execute TOML/JSON configuration or RunSpec through a control plane.
 
@@ -1325,6 +1324,7 @@ Suggested use: Execute TOML/JSON configuration or RunSpec through a control plan
 
 **Violation example**: Ignore file command or return wrong name/terminal state.
 
+<!-- semspec: case id=S-DOC-043 -->
 ```bash
 require_python3
 case_setup
@@ -1338,7 +1338,6 @@ bundle_expect run.agent true
 
 ### S-DOC-044: I02 JSON RunSpec
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Execute TOML/JSON configuration or RunSpec through a control plane.
 
@@ -1350,6 +1349,7 @@ Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
 **Violation example**: Omit the result or misrepresent delegation as an isolated ordinary Job.
 
+<!-- semspec: case id=S-DOC-044 -->
 ```bash
 require_python3
 case_setup
@@ -1364,7 +1364,6 @@ test -s run-result.json
 
 ### S-DOC-045: I03 Extensionless spec
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Execute TOML/JSON configuration or RunSpec through a control plane.
 
@@ -1374,6 +1373,7 @@ Suggested use: Execute TOML/JSON configuration or RunSpec through a control plan
 
 **Violation example**: Reject the same TOML due to its filename.
 
+<!-- semspec: case id=S-DOC-045 -->
 ```bash
 require_python3
 case_setup
@@ -1390,7 +1390,6 @@ These regress multiple capabilities: J01 host, J02 VM, J03 container. Short test
 
 ### S-DOC-046: J01 Host + persistent stage + deny-all + capture + limits
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Validate combined capabilities before deployment.
 
@@ -1402,6 +1401,7 @@ Preparation: Linux user/mount namespaces or macOS Seatbelt available.
 
 **Violation example**: Leak result.txt into the workspace or omit trajectory/resource/network evidence.
 
+<!-- semspec: case id=S-DOC-046 -->
 ```bash
 require_python3
 require_stage
@@ -1434,7 +1434,6 @@ test -s "$PVISOR_CASE_ROOT/host-full/trajectory/events.jsonl"
 
 ### S-DOC-047: J02 VM + image rootfs + stage + OverlayNet + Gateway
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Validate combined capabilities before deployment.
 
@@ -1446,6 +1445,7 @@ Preparation: Linux with access to /dev/kvm. Set PVISOR_CASE_IMAGE for the script
 
 **Violation example**: Lose stage/trajectory or 4GiB memory request.
 
+<!-- semspec: case id=S-DOC-047 -->
 ```bash
 require_python3
 require_linux
@@ -1478,7 +1478,6 @@ test -d "$PVISOR_CASE_ROOT/vm-full/trajectory"
 
 ### S-DOC-048: J03 Container + stage + read-only root + no network
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Suggested use: Validate combined capabilities before deployment.
 
@@ -1490,6 +1489,7 @@ Preparation: Working OCI runtime; set PVISOR_CASE_CONTAINER_IMAGE for the script
 
 **Violation example**: Fail container completion/stage retention.
 
+<!-- semspec: case id=S-DOC-048 -->
 ```bash
 require_python3
 require_container
@@ -1516,7 +1516,6 @@ Job is the user-facing object. These commands use its stage path directly as sel
 
 ### S-DOC-049: K01 Review and inspect staged files read-only
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Preparation: Linux user/mount namespaces available.
 
@@ -1526,6 +1525,7 @@ Preparation: Linux user/mount namespaces available.
 
 **Violation example**: Allow inspect writes or put note.txt in the original workspace.
 
+<!-- semspec: case id=S-DOC-049 -->
 ```bash
 require_python3
 require_rootless
@@ -1546,7 +1546,6 @@ python3 -c 'import json; d=json.load(open("status.json")); assert d["filesystem"
 
 ### S-DOC-050: K02 Selective apply then discard remaining changes
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Preparation: Linux user/mount namespaces available.
 
@@ -1556,6 +1555,7 @@ Preparation: Linux user/mount namespaces available.
 
 **Violation example**: Apply two.txt alongside one.txt or fail to discard the remaining stage.
 
+<!-- semspec: case id=S-DOC-050 -->
 ```bash
 require_python3
 require_rootless
@@ -1574,7 +1574,6 @@ record_expect overlay.state discarded "$PVISOR_CASE_ROOT/partial-stage"
 
 ### S-DOC-051: K03 Fork a stopped Job
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Preparation: Linux user/mount namespaces available.
 
@@ -1584,6 +1583,7 @@ Preparation: Linux user/mount namespaces available.
 
 **Violation example**: Lose source changes or leak child writes into original workspace.
 
+<!-- semspec: case id=S-DOC-051 -->
 ```bash
 require_python3
 require_rootless
@@ -1603,7 +1603,6 @@ bundle_contains filesystem.changes child.txt "$PVISOR_CASE_RECORDS"
 
 ### S-DOC-052: K04 Terminate a running Job
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Preparation: Linux user/mount namespaces available.
 
@@ -1613,6 +1612,7 @@ Preparation: Linux user/mount namespaces available.
 
 **Violation example**: Remain live after kill or report a different terminal state.
 
+<!-- semspec: case id=S-DOC-052 -->
 ```bash
 require_python3
 require_rootless
@@ -1640,7 +1640,6 @@ The env feature was removed. S-DOC-053/S-DOC-054 are registered retired and neve
 
 ### S-DOC-055: M01 Prepare a replay prefix offline
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 **Semantics**: Output phase is prepared; historical commands did not create marker.
 
@@ -1648,6 +1647,7 @@ The env feature was removed. S-DOC-053/S-DOC-054 are registered retired and neve
 
 **Violation example**: Execute history/create marker or report replayed calls in prepare-only.
 
+<!-- semspec: case id=S-DOC-055 -->
 ```bash
 require_python3
 case_setup
@@ -1667,7 +1667,6 @@ python3 -c 'import json; d=json.load(open("prepared.json")); assert d["phase"] =
 
 ### S-DOC-056: M02 TUI preserves output and opens Log
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh -->
 
 Preparation: Linux and Python 3.
 
@@ -1677,6 +1676,7 @@ Preparation: Linux and Python 3.
 
 **Violation example**: Lose output or fail to show footer/Log after Ctrl-].
 
+<!-- semspec: case id=S-DOC-056 -->
 ```bash
 require_python3
 require_linux

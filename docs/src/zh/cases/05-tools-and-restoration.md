@@ -10,6 +10,7 @@
 
 **违反示例**：prepare-only 执行历史命令。
 
+<!-- semspec: case id=S-USE-015 -->
 ```bash
 journey_setup
 cat > trajectory.json <<'JSON'
@@ -29,6 +30,7 @@ json_expect "$CASE_ROOT/prepared.json" /replayed_tool_calls 0
 
 **违反示例**：忽略 execution 选项或拒绝后修改 Job。
 
+<!-- semspec: case id=S-USE-016 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'

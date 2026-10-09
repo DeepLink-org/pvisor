@@ -8,6 +8,7 @@
 
 **违反示例**：删除穿透 lower，或异常清理把 upper 自动合并到工作区。
 
+<!-- semspec: case id=S-STAGE-001 -->
 ```bash
 require_stage
 printf original > edit; mkdir d; printf keep > d/keep
@@ -26,6 +27,7 @@ assert_unchanged before "$WS"
 
 **违反示例**：写完读取旧内容，删除后仍可见，或重命名后找不到新路径。
 
+<!-- semspec: case id=S-STAGE-002 -->
 ```bash
 require_stage
 printf original > edit; printf gone > deleted; printf moved > old
@@ -40,6 +42,7 @@ assert_unchanged before "$WS"
 
 **违反示例**：临时文件泄漏进 review，遗漏删除，或只记录被触碰而无净效果的路径。
 
+<!-- semspec: case id=S-STAGE-003 -->
 ```bash
 require_stage
 printf original > edit; printf gone > deleted
@@ -57,6 +60,7 @@ EXPECTED
 
 **违反示例**：内容相同但权限或链接丢失，或者 rename、目录删除结果不同。
 
+<!-- semspec: case id=S-STAGE-004 -->
 ```bash
 require_stage
 printf original > edit; mkdir d; printf gone > d/file; printf moved > old
@@ -74,6 +78,7 @@ assert_same_tree "$WS" "$CASE_ROOT/direct"
 
 **违反示例**：drop 把变更落地，或丢弃后还能 apply。
 
+<!-- semspec: case id=S-STAGE-005 -->
 ```bash
 require_stage
 printf original > edit
@@ -91,6 +96,7 @@ assert_unchanged before "$WS"
 
 **违反示例**：选择目录时修改兄弟文件，或第一次 apply 消耗未选变更。
 
+<!-- semspec: case id=S-STAGE-006 -->
 ```bash
 require_stage
 mkdir chosen other; printf a > chosen/a; printf b > other/b
@@ -113,6 +119,7 @@ assert_same_tree "$WS" "$CASE_ROOT/all"
 
 **违反示例**：重复删除或重复复制引入新修改。
 
+<!-- semspec: case id=S-STAGE-007 -->
 ```bash
 require_stage
 printf original > edit
@@ -130,6 +137,7 @@ assert_unchanged applied "$WS"
 
 **违反示例**：覆盖外部修改，覆盖外部新建文件，或恢复外部删除文件。
 
+<!-- semspec: case id=S-STAGE-008 -->
 ```bash
 require_stage
 printf original > modified; printf original > removed
@@ -148,6 +156,7 @@ done
 
 **违反示例**：先应用无冲突路径，后发现冲突退出，留下部分落地。
 
+<!-- semspec: case id=S-STAGE-009 -->
 ```bash
 require_stage
 printf original > a; printf original > z
@@ -164,6 +173,7 @@ assert_unchanged external "$WS"
 
 **违反示例**：整树冲突检查误拒绝，或 apply 恢复无关外部删除。
 
+<!-- semspec: case id=S-STAGE-010 -->
 ```bash
 require_stage
 printf original > touched; mkdir other; printf base > other/edit; printf base > other/deleted
@@ -181,6 +191,7 @@ assert_unchanged external "$WS/other"
 
 **违反示例**：仅核对目录旧文件，递归删除新文件。
 
+<!-- semspec: case id=S-STAGE-011 -->
 ```bash
 require_stage
 mkdir d; printf base > d/base
@@ -197,6 +208,7 @@ assert_unchanged external "$WS"
 
 **违反示例**：沿替换的链接把 staged 内容写入工作区之外。
 
+<!-- semspec: case id=S-STAGE-012 -->
 ```bash
 require_stage
 mkdir d; printf base > d/file
@@ -210,12 +222,12 @@ assert_unchanged workspace "$WS"; assert_unchanged outside "$CASE_ROOT/outside"
 
 ### S-STAGE-013：调用返回值与链接效果一致
 
-<!-- semantic-case: xfail-on=macos xfail-reason="macFUSE 创建链接返回 EPERM 但已有实际效果；tools/semspec/DESIGN.md §12" -->
 
 **语义**：创建链接的调用成功必须产生对应链接，失败则不得产生链接；返回值和可观察效果一致。
 
 **违反示例**：ln 返回 EPERM，却已创建可 apply 的链接。
 
+<!-- semspec: case id=S-STAGE-013 xfail-on=macos 'xfail-reason=macFUSE 创建链接返回 EPERM 但已有实际效果；tools/semspec/DESIGN.md §12' -->
 ```bash
 require_stage
 stage "$CASE_ROOT/stage" 'code=0; ln -s /etc/hosts link || code=$?; if test "$code" = 0; then test -L link; test "$(readlink link)" = /etc/hosts; else test ! -e link; test ! -L link; fi'
@@ -228,6 +240,7 @@ assert_absent link
 
 **违反示例**：可执行文件失去 x 位，或链接落地为 /etc/hosts 内容副本。
 
+<!-- semspec: case id=S-STAGE-014 -->
 ```bash
 require_stage
 stage "$CASE_ROOT/stage" 'printf executable > executable; chmod 755 executable; ln -s executable link'
@@ -236,3 +249,64 @@ assert_content executable executable
 [ -x executable ] || fail 'executable bit lost'
 [ -L link ] && [ "$(readlink link)" = executable ] || fail 'link was dereferenced or changed'
 ```
+
+## 准备与执行
+
+先按第二章学习 stage、review、apply 与 drop，再运行这些独立检查验证净效果、冲突与链接行为。macOS 需要 macFUSE；Linux 需要 /dev/fuse 和 user/mount namespace。缺少前提时退出 77；S-STAGE-013 保留已知 macOS xfail。检查和准备函数仍需人工审核。
+
+```bash
+just cases --suite stage
+just cases --suite stage --case S-STAGE-008 --keep
+```
+
+<!-- semspec: setup -->
+````bash
+export RUST_LOG=warn
+# Public CLI only; all personal settings and Job records stay in CASE_ROOT.
+pvisor() { XDG_DATA_HOME="$CASE_ROOT/data" XDG_CONFIG_HOME="$CASE_ROOT/config" command "${SUBJECT_BIN:-pvisor}" "$@"; }
+stage() { pvisor run --no-agent-defaults --executor host --gateway-mode off --stage "$1" -- /bin/sh -eu -c "$2"; }
+review_changes() {
+  pvisor status --review --json "$1" > "$CASE_ROOT/review.json"
+  python3 - "$CASE_ROOT/review.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as f:
+    changes = json.load(f)["filesystem"]["changes"]
+for row in sorted(f'{item["kind"]} {item["path"]}' for item in changes):
+    print(row)
+PY
+}
+assert_changes() {
+  cat > "$CASE_ROOT/expected.changes"
+  review_changes "$1" > "$CASE_ROOT/actual.changes"
+  "$SEMSPEC_BIN" helper diff "$CASE_ROOT/expected.changes" "$CASE_ROOT/actual.changes" || fail 'review differs from net changes'
+}
+
+# Environment prerequisites: exit 77 skips this check, never changes its assertions.
+skip() { printf 'SKIP: %s\n' "$*" >&2; exit 77; }
+require_python3() { python3 --version >/dev/null 2>&1 || skip 'python3 unavailable'; }
+require_linux() { [ "$(uname -s)" = Linux ] || skip 'Linux required'; }
+require_stage() {
+  require_python3
+  case "$(uname -s)" in
+    Darwin) [ -e /Library/Filesystems/macfuse.fs ] || skip 'macFUSE unavailable' ;;
+    Linux) [ -e /dev/fuse ] && unshare -Ur -m true || skip 'FUSE/user namespaces unavailable' ;;
+    *) skip 'stage unsupported on this OS' ;;
+  esac
+}
+require_rootless() { require_linux; unshare --user --mount --pid --fork true || skip 'user namespaces unavailable'; }
+require_kvm() { require_linux; [ -e /dev/kvm ] || skip '/dev/kvm unavailable'; }
+require_rootfs() { require_linux; [ -d "${PVISOR_CASE_ROOTFS:-/}" ] || skip 'rootfs unavailable'; }
+require_image() { require_linux; [ -n "${PVISOR_CASE_IMAGE:-ubuntu:latest}" ] || skip 'image unavailable'; }
+require_agent() { require_linux; [ -n "${PVISOR_CASE_AGENT:-}" ] || skip 'agent unavailable'; }
+require_container() {
+  require_linux
+  if [ -n "${PVISOR_CASE_CONTAINER_RUNTIME:-}" ]; then
+    command -v "$PVISOR_CASE_CONTAINER_RUNTIME" || skip 'container runtime unavailable'
+  else
+    command -v crun || command -v runc || skip 'container runtime unavailable'
+  fi
+}
+require_container_runtime() { require_container; }
+require_runc() { require_linux; command -v runc || skip 'runc unavailable'; }
+require_curl() { curl --version >/dev/null 2>&1 || skip 'curl unavailable'; }
+````

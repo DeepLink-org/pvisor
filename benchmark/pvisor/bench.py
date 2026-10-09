@@ -224,12 +224,7 @@ def benchmark(
     build_env = os.environ.copy()
     build_env["CARGO_TARGET_DIR"] = str(target_dir)
     run_command(
-        [
-            sys.executable,
-            "scripts/build-pvisor.py",
-            "--profile",
-            "release",
-        ],
+        ["just", "build", "release"],
         cwd=repo,
         env=build_env,
         log=output / "logs" / "build.log",

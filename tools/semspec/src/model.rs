@@ -15,12 +15,13 @@ pub struct Case {
     pub rationale: Option<String>,
     pub script: String,
     pub annotation: Annotation,
+    pub preparation: Vec<String>,
 }
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Annotation {
     pub xfail_on: BTreeSet<String>,
     pub xfail_reason: Option<String>,
-    pub vocab: Option<Vec<String>>,
+    pub timeout: Option<String>,
 }
 pub fn valid_case_id(id: &str) -> bool {
     let parts: Vec<_> = id.split('-').collect();
@@ -33,11 +34,11 @@ pub fn valid_case_id(id: &str) -> bool {
 }
 pub fn valid_vocab_name(name: &str) -> bool {
     !name.is_empty()
-        && name != "."
-        && name != ".."
-        && name
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
+        && !name.contains('\\')
+        && !name.chars().any(char::is_control)
+        && std::path::Path::new(name)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -114,13 +115,28 @@ pub struct RunReport {
     pub results: Vec<CaseResult>,
 }
 impl RunReport {
-    pub fn exit_code(&self, require_reviewed: bool) -> i32 {
+    /// Require a complete, unique report inventory; ERROR keeps precedence over gate failures.
+    /// Strict PASS and human review are independent requirements and never modify approvals.
+    pub fn exit_code(&self, expected: &[&str], require_reviewed: bool, require_pass: bool) -> i32 {
         if self
             .results
             .iter()
             .any(|r| matches!(r.verdict, Verdict::Error { .. }))
         {
             return 3;
+        }
+        let actual: BTreeSet<_> = self.results.iter().map(|row| row.id.as_str()).collect();
+        if actual.is_empty()
+            || actual.len() != self.results.len()
+            || actual.len() != expected.len()
+            || actual != expected.iter().copied().collect()
+            || (require_pass
+                && self
+                    .results
+                    .iter()
+                    .any(|row| !matches!(row.verdict, Verdict::Pass)))
+        {
+            return 1;
         }
         if self
             .results

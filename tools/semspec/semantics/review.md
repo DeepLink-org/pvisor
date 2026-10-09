@@ -9,6 +9,7 @@ S-REVIEW-004 只能由人在交互环境外验证；AI 不得运行包含它的 
 
 **违反示例**：只给检查块计算摘要，改写语义文字仍然显示 REVIEWED。
 
+<!-- semspec: case timeout=30s id=S-REVIEW-001 -->
 ```bash
 require_python
 fixture
@@ -26,11 +27,12 @@ fixture_state | grep -q STALE
 
 **违反示例**：断言词汇变成空实现，但 case 审核状态不变。
 
+<!-- semspec: case timeout=30s id=S-REVIEW-002 -->
 ```bash
 require_python
 fixture
 fixture_state | grep -q REVIEWED
-printf '# changed vocabulary\n' >> "$CASE_ROOT/project/spec/vocab/fixture.sh"
+printf '# changed vocabulary\n' >> "$CASE_ROOT/project/spec/index.md"
 fixture_state | grep -q STALE
 ```
 
@@ -40,14 +42,15 @@ fixture_state | grep -q STALE
 
 **违反示例**：通过的 xfail 静默变为 PASS，旧例外永远不需重审。
 
+<!-- semspec: case timeout=30s id=S-REVIEW-003 -->
 ```bash
 require_python
 fixture
 python3 - "$CASE_ROOT/project/spec/case.md" <<'PY'
 import pathlib, sys
-p = pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace('**语义**', '<!-- semantic-case: xfail-on=all xfail-reason="fixture" -->\n\n**语义**'))
+p = pathlib.Path(sys.argv[1]); p.write_text(p.read_text().replace('id=S-FIXTURE-001', 'id=S-FIXTURE-001 xfail-on=all xfail-reason="fixture"'))
 PY
-expect_exit 1 "$SUBJECT_BIN" --config "$CASE_ROOT/project/semspec.toml" run --format json --output "$CASE_ROOT/report.json"
+expect_exit 1 "$SUBJECT_BIN" --spec-dir "$CASE_ROOT/project/spec" run --format json --output "$CASE_ROOT/report.json"
 [ "$("$SEMSPEC_BIN" helper json-get "$CASE_ROOT/report.json" /results/0/verdict/verdict)" = '"XPASS"' ] || fail 'XPASS missing'
 ```
 
@@ -57,10 +60,11 @@ expect_exit 1 "$SUBJECT_BIN" --config "$CASE_ROOT/project/semspec.toml" run --fo
 
 **违反示例**：流水线或自动化脚本无需人确认即可创建审批记录。
 
+<!-- semspec: case timeout=30s id=S-REVIEW-004 -->
 ```bash
 require_python
 fixture
-cp "$CASE_ROOT/project/REVIEWED.toml" "$CASE_ROOT/before.toml"
-expect_exit 2 "$SUBJECT_BIN" --config "$CASE_ROOT/project/semspec.toml" approve S-FIXTURE-001 --reviewer simulated < /dev/null
-cmp "$CASE_ROOT/before.toml" "$CASE_ROOT/project/REVIEWED.toml" || fail 'ledger changed without human review'
+cp "$CASE_ROOT/project/spec/REVIEWED.toml" "$CASE_ROOT/before.toml"
+expect_exit 2 "$SUBJECT_BIN" --spec-dir "$CASE_ROOT/project/spec" approve S-FIXTURE-001 --reviewer simulated < /dev/null
+cmp "$CASE_ROOT/before.toml" "$CASE_ROOT/project/spec/REVIEWED.toml" || fail 'ledger changed without human review'
 ```

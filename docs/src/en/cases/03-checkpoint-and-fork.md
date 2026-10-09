@@ -10,6 +10,7 @@ Automation may retry a request. Keep --request-id stable and use list/show to in
 
 **Violation**: A retry creates a duplicate checkpoint or a different ID.
 
+<!-- semspec: case id=S-USE-009 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'
@@ -33,6 +34,7 @@ Create a checkpoint before accepting a proposal so you can review the saved view
 
 **Violation**: apply or drop rewrites the immutable savepoint.
 
+<!-- semspec: case id=S-USE-010 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'
@@ -57,6 +59,7 @@ Compare implementations by forking twice from one checkpoint. Keep the source pr
 
 **Violation**: Branches contaminate each other, edit the source, or delete a referenced savepoint.
 
+<!-- semspec: case id=S-USE-011 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf seed > report.txt'

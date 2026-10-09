@@ -38,36 +38,19 @@ jobs:
         env:
           LOCAL_VERSION: ${{ inputs.local_version }}
         run: |
-          python scripts/ci/set_nightly_local_version.py "$LOCAL_VERSION"
-          cargo metadata --format-version 1 >/dev/null
+          just set-nightly-version "$LOCAL_VERSION"
 
       - name: Build wheel
-        uses: pypa/cibuildwheel@v4.1.0
+        run: just wheel
         env:
+          PVISOR_WHEEL_PORTABLE: "1"
           # Run inside the build environment to reuse its immutable firmware cache.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
-            auditwheel repair -w {dest_dir} {wheel} &&
-            python -m pip install pyelftools==0.33 &&
-            mkdir -p /output &&
-            python {project}/scripts/build-firmware.py
-            --source-output {project}/target/libkrunfw.SOURCE
-            --source-archive /output/pvisor-firmware-source-linux-x86_64.tar.gz
+            PVISOR_FW_SOURCE_ARCHIVE=/output/pvisor-firmware-source-linux-x86_64.tar.gz
+            just --justfile {project}/justfile repair-wheel {wheel} {dest_dir}
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
-            cp {wheel} {dest_dir} &&
-            python -m pip install pyelftools==0.33 &&
-            python {project}/scripts/build-firmware.py
-            --source-output {project}/target/libkrunfw.SOURCE
-            --source-archive {project}/dist/pvisor-firmware-source-macos-arm64.tar.gz
-        with:
-          output-dir: dist
-
-      - name: Verify wheel and installation
-        shell: bash
-        run: |
-          shopt -s nullglob
-          wheels=(dist/*.whl)
-          test "${#wheels[@]}" -eq 1
-          python scripts/packaging/verify_wheel.py "${wheels[0]}" --install-smoke
+            PVISOR_FW_SOURCE_ARCHIVE={project}/dist/pvisor-firmware-source-macos-arm64.tar.gz
+            just --justfile {project}/justfile repair-wheel {wheel} {dest_dir}
 
       - uses: actions/upload-artifact@v4
         with:

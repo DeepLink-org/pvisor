@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
 use semspec::{
     helpers,
@@ -11,6 +11,7 @@ use std::{
     fs,
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
+    time::Duration,
 };
 #[derive(Parser)]
 #[command(
@@ -18,39 +19,58 @@ use std::{
     about = "Human-reviewed black-box semantic preservation specifications"
 )]
 struct Cli {
-    #[arg(long, global = true, default_value = "semspec.toml")]
-    config: PathBuf,
+    /// Explicit Markdown inputs; repeat, or pass paths after the command. At least one path is required.
+    #[arg(long, global = true, value_name = "PATH")]
+    spec_dir: Vec<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
 #[derive(Subcommand)]
 enum Commands {
-    Init,
+    Init {
+        directory: PathBuf,
+    },
     List {
+        #[arg(value_name = "PATH")]
+        spec: Vec<PathBuf>,
         #[arg(long)]
         domain: Option<String>,
     },
     Show {
         item: String,
+        #[arg(value_name = "PATH")]
+        spec: Vec<PathBuf>,
     },
-    Lint,
+    Lint {
+        #[arg(value_name = "PATH")]
+        spec: Vec<PathBuf>,
+    },
     Review {
+        #[arg(value_name = "PATH")]
+        spec: Vec<PathBuf>,
         #[arg(long)]
         strict: bool,
     },
     Run {
-        /// Run cases from this Markdown file in the configured spec_dirs.
-        spec: Option<PathBuf>,
+        /// Extract and run cases from a Markdown file or directory.
+        #[arg(value_name = "PATH")]
+        spec: Vec<PathBuf>,
         #[arg(long, value_delimiter = ',')]
         case: Vec<String>,
         #[arg(long)]
         domain: Option<String>,
         #[arg(long, env = "SEMSPEC_SUBJECT_BIN")]
         subject_bin: Option<PathBuf>,
+        /// Maximum duration of each case (ms/s/m; defaults to 180s for Markdown).
+        #[arg(long, default_value = "180s", value_parser = semspec::parse::parse_timeout)]
+        timeout: Duration,
         #[arg(long)]
         keep: bool,
         #[arg(long)]
         require_reviewed: bool,
+        /// Require every selected case to PASS; SKIP and XFAIL fail this gate.
+        #[arg(long)]
+        require_pass: bool,
         #[arg(long, default_value = "1")]
         jobs: usize,
         #[arg(long,default_value="human",value_parser=["human","json"])]
@@ -73,9 +93,21 @@ enum Commands {
 }
 #[derive(Subcommand)]
 enum Helper {
-    TreeState { directory: PathBuf },
-    JsonGet { file: PathBuf, pointer: String },
-    Diff { a: PathBuf, b: PathBuf },
+    /// Print Markdown preparation blocks for manual execution or fixture checks.
+    Setup {
+        file: PathBuf,
+    },
+    TreeState {
+        directory: PathBuf,
+    },
+    JsonGet {
+        file: PathBuf,
+        pointer: String,
+    },
+    Diff {
+        a: PathBuf,
+        b: PathBuf,
+    },
 }
 fn main() {
     let cli = Cli::parse();
@@ -95,6 +127,13 @@ fn dispatch(cli: Cli) -> Result<i32> {
                     print!("{}", helpers::tree_state(&directory)?);
                     Ok(0)
                 }
+                Helper::Setup { file } => {
+                    print!(
+                        "{}",
+                        semspec::parse::parse_setup(&fs::read_to_string(file)?)?
+                    );
+                    Ok(0)
+                }
                 Helper::JsonGet { file, pointer } => {
                     println!("{}", helpers::json_get(&file, &pointer)?);
                     Ok(0)
@@ -106,8 +145,8 @@ fn dispatch(cli: Cli) -> Result<i32> {
                 }
             };
         }
-        Commands::Init => {
-            init(&cli.config)?;
+        Commands::Init { directory } => {
+            init(&directory)?;
             return Ok(0);
         }
         Commands::Approve { .. } => {
@@ -115,9 +154,22 @@ fn dispatch(cli: Cli) -> Result<i32> {
         }
         _ => {}
     }
-    let mut project = Project::load(&cli.config)?;
+    let mut inputs = cli.spec_dir;
+    match &cli.command {
+        Commands::Run { spec, .. }
+        | Commands::List { spec, .. }
+        | Commands::Lint { spec }
+        | Commands::Show { spec, .. }
+        | Commands::Review { spec, .. } => inputs.extend(spec.iter().cloned()),
+        _ => {}
+    }
+    ensure!(
+        !inputs.is_empty(),
+        "specify at least one Markdown file or directory"
+    );
+    let mut project = Project::load(&inputs)?;
     match cli.command {
-        Commands::List { domain } => {
+        Commands::List { domain, .. } => {
             if let Some(d) = &domain {
                 ensure!(
                     project.cases.iter().any(|c| c.domain == *d),
@@ -136,19 +188,19 @@ fn dispatch(cli: Cli) -> Result<i32> {
             }
             Ok(0)
         }
-        Commands::Show { item } => {
+        Commands::Show { item, .. } => {
             show(&project, &item)?;
             Ok(0)
         }
-        Commands::Lint => {
+        Commands::Lint { .. } => {
             println!(
-                "{} cases, {} vocabulary files: valid",
+                "{} cases, {} preparation documents: valid",
                 project.cases.len(),
-                project.vocab.len()
+                project.preparation.len()
             );
             Ok(0)
         }
-        Commands::Review { strict } => {
+        Commands::Review { strict, .. } => {
             let mut pending = false;
             for id in project.items() {
                 let item = project.item(&id)?;
@@ -158,28 +210,44 @@ fn dispatch(cli: Cli) -> Result<i32> {
             Ok(i32::from(strict && pending))
         }
         Commands::Run {
-            spec,
+            spec: _,
             case,
             domain,
             subject_bin,
+            timeout,
             keep,
             require_reviewed,
+            require_pass,
             jobs,
             format,
             output,
         } => {
             ensure!(jobs == 1, "v0.1 is serial; --jobs > 1 requires v0.2");
+            let cases = project.select(&case, domain.as_deref())?;
+            let expected: Vec<_> = cases.iter().map(|case| case.id.as_str()).collect();
+            let output = output.map(|path| -> Result<PathBuf> {
+                let path = absolute(&path)?;
+                if path.exists() {
+                    let target = path.canonicalize()?;
+                    ensure!(target != project.root.join("REVIEWED.toml")
+                        && !project.cases.iter().any(|case| project.root.join(&case.file) == target)
+                        && !project.preparation.keys().any(|name| project.root.join(name) == target),
+                        "report output must not overwrite specifications, preparation or the review ledger");
+                    fs::remove_file(&path)?;
+                }
+                fs::create_dir_all(path.parent().unwrap())?;
+                Ok(path)
+            }).transpose()?;
             let report = runner::run(
                 &project,
+                &cases,
                 &runner::Options {
-                    spec,
+                    timeout,
                     subject: subject_bin,
                     keep,
-                    case_ids: case,
-                    domain,
                 },
             )?;
-            let code = report.exit_code(require_reviewed);
+            let code = report.exit_code(&expected, require_reviewed, require_pass);
             let text = if format == "json" {
                 format!("{}\n", serde_json::to_string_pretty(&report)?)
             } else {
@@ -190,7 +258,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
                     report.platform
                 );
                 for (name, review) in &report.vocab_review {
-                    text.push_str(&format!("vocabulary {name} [{}]\n", review.label()));
+                    text.push_str(&format!("preparation {name} [{}]\n", review.label()));
                 }
                 for result in &report.results {
                     text.push_str(&format!(
@@ -219,7 +287,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
                 text
             };
             if let Some(path) = output {
-                atomic_write(&absolute(&path)?, text.as_bytes())?;
+                atomic_write(&path, text.as_bytes())?;
             } else {
                 print!("{text}");
             }
@@ -251,7 +319,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
             }
             Ok(0)
         }
-        Commands::Helper { .. } | Commands::Init => unreachable!(),
+        Commands::Helper { .. } | Commands::Init { .. } => unreachable!(),
     }
 }
 fn absolute(path: &Path) -> Result<PathBuf> {
@@ -286,7 +354,7 @@ fn show(project: &Project, id: &str) -> Result<()> {
     Ok(())
 }
 fn edit_ledger(project: &mut Project, edit: impl FnOnce(&mut Ledger)) -> Result<()> {
-    let path = project.root.join(&project.config.project.ledger);
+    let path = project.root.join("REVIEWED.toml");
     fs::create_dir_all(path.parent().unwrap())?;
     let lock_path = path.with_extension("toml.lock");
     let lock = fs::OpenOptions::new()
@@ -306,40 +374,27 @@ fn edit_ledger(project: &mut Project, edit: impl FnOnce(&mut Ledger)) -> Result<
     project.ledger = ledger;
     Ok(())
 }
-fn init(config: &Path) -> Result<()> {
-    let config = absolute(config)?;
-    let root = config.parent().context("config needs a directory")?;
-    let files = [
-        (config.clone(), include_str!("../templates/semspec.toml")),
-        (
-            root.join("semantics/example.md"),
-            include_str!("../templates/example.md"),
-        ),
-        (
-            root.join("semantics/vocab/core.sh"),
-            include_str!("../templates/vocab/core.sh"),
-        ),
-        (
-            root.join("semantics/REVIEWED.toml"),
-            "# Human-owned review ledger; no approvals yet.\nformat = 1\n",
-        ),
-    ];
+fn init(directory: &Path) -> Result<()> {
+    let directory = absolute(directory)?;
     ensure!(
-        files.iter().all(|(p, _)| !p.exists()),
+        !directory.join("example.md").exists() && !directory.join("index.md").exists(),
         "init refuses to overwrite existing files"
     );
-    for (path, text) in files {
-        fs::create_dir_all(path.parent().unwrap())?;
+    fs::create_dir_all(&directory)?;
+    for (name, text) in [
+        ("example.md", include_str!("../templates/example.md")),
+        ("index.md", include_str!("../templates/index.md")),
+    ] {
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(path)?;
+            .open(directory.join(name))?;
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
     }
     println!(
-        "Initialized unreviewed specifications at {}",
-        root.display()
+        "Initialized unreviewed Markdown cases at {}",
+        directory.display()
     );
     Ok(())
 }

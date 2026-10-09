@@ -5,11 +5,11 @@
 `crates/pvisor/examples/vm_control_case.rs`，应连同规格一起审查。
 
 `just cases` 发现本页；SDK 驱动未准备时，四条 SDK 场景明确报告 SKIP。
-`just vm-cases` 构建并在 macOS 签名驱动，再执行本页的全部六条场景。
+`just cases --suite vm` 构建并在 macOS 签名驱动，再执行本页的全部六条场景。
 也可以对已有二进制运行：
 
 ```sh
-just semspec --config semspec-doc.toml run docs/src/zh/reference/cases-vm.md --subject-bin target/release/pvisor
+just semspec run docs/src/zh/reference/cases-vm.md --subject-bin target/release/pvisor
 ```
 
 macOS 必须设置 `PVISOR_CASE_ROOTFS` 为 Linux guest rootfs；Linux 默认使用 `/`。
@@ -21,12 +21,12 @@ SDK 场景需要 guest `/usr/bin/python3`，可用 `PVISOR_CASE_VM_PYTHON` 改�
 
 ### S-DOC-057：N01 启动指定 RAM 文件，退出后保留
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh,vm.sh -->
 
 **语义**：指定新的 RAM 文件后，guest 成功执行；文件权限为 0600，包含非空 RAM backing，正常退出后仍存在。
 
 **违反示例**：文件未被创建、权限向其他用户开放，或正常退出删除了调用者指定的文件。
 
+<!-- semspec: case id=S-DOC-057 -->
 ```bash
 require_vm_case
 vm_case_setup
@@ -45,12 +45,12 @@ PY
 
 ### S-DOC-058：N02 已有 RAM 文件不能被启动覆盖
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh,vm.sh -->
 
 **语义**：启动时指定已有文件必须失败，文件内容保持，guest 命令不执行。
 
 **违反示例**：截断已有文件以建立 RAM backing，或者报错后仍执行 guest。
 
+<!-- semspec: case id=S-DOC-058 -->
 ```bash
 require_vm_case
 vm_case_setup
@@ -71,12 +71,12 @@ PY
 
 ### S-DOC-059：N03 pause/resume 幂等，使用启动 backing 回收
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh,vm.sh -->
 
 **语义**：重复 pause 停止 guest 推进；重复 resume 继续执行；沿用启动文件的两次 offload 保持 guest 内存完整，暂停/恢复状态与控制完成事件一致。
 
 **违反示例**：暂停返回成功但 heartbeat 继续变化、恢复不推进，或第二次回收后 guest 内存校验失败。
 
+<!-- semspec: case id=S-DOC-059 -->
 ```bash
 require_vm_sdk
 vm_case_setup
@@ -87,12 +87,12 @@ test -s "$CASE_ROOT/startup.ram"
 
 ### S-DOC-060：N04 offload 发布新文件并保持 live inode
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh,vm.sh -->
 
 **语义**：offload 选定同一文件系统中的新路径，文件与启动 backing 属于同一 inode；结果路径和 RAM 范围正确，恢复后 guest 内存完整，重复 offload 保持文件选择。
 
 **违反示例**：复制到了另一个 inode、回报错误的路径、回收后 guest 内存损坏，或下次 offload 悄悄换回原文件。
 
+<!-- semspec: case id=S-DOC-060 -->
 ```bash
 require_vm_sdk
 vm_case_setup
@@ -107,12 +107,12 @@ PY
 
 ### S-DOC-061：N05 offload 拒绝覆盖，VM 继续运行
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh,vm.sh -->
 
 **语义**：offload 选定已有文件时拒绝操作，已有内容、Running 状态和未取消状态保持；guest 继续推进，之后 pause/resume 仍可完成。
 
 **违反示例**：拒绝路径后截断目标、暂停或取消了 VM，或使后续命令的确认串线。
 
+<!-- semspec: case id=S-DOC-061 -->
 ```bash
 require_vm_sdk
 vm_case_setup
@@ -123,12 +123,12 @@ assert_content "$CASE_ROOT/occupied.ram" keep
 
 ### S-DOC-062：N06 Seekable 增量 backing 回收与恢复
 
-<!-- semantic-case: vocab=core.sh,cases.sh,pvisor.sh,vm.sh -->
 
 **语义**：启动时启用压缩，offload 返回合法 PVZRAM v2 manifest 与不可变 base/delta bundle；逻辑 RAM 大小完整，每次 offload 后整个 bundle 实际分配的磁盘空间均小于该测试负载的 RAM 范围。每次恢复后修改产生不同的 generation，其链可读取原文；十次回收、恢复覆盖从八层到一层的 compaction，不可达 generation 被回收，最多保留八层。guest 的固定数据 SHA-256 和持续更新的 1 MiB 页面内容在全部循环后均保持，暂停/恢复事件与状态一致。generation 不宣称跨设备的原子快照。
 
 **违反示例**：写入的只是普通 RAM 文件、缺失父层被当作零、manifest 未生成新的 head、Seekable 索引损坏、guest 缺页读回压缩字节而不是原文、回收后可变页面丢失，或 compaction 后旧层持续累积。
 
+<!-- semspec: case id=S-DOC-062 -->
 ```bash
 require_vm_compression
 vm_case_setup
@@ -179,3 +179,57 @@ while head is not None:
 assert {p.name for p in root.glob('*.pvdelta')} == {h.hex() + '.pvdelta' for h in seen}
 PY
 ```
+
+## VM 检查准备
+
+下列准备块声明硬件前提并保留 SDK 失败诊断。
+
+<!-- semspec: setup -->
+````bash
+# VM case prerequisites and SDK driver selection; no product failure becomes SKIP.
+require_vm_case() {
+  require_python3
+  case "$(uname -s)" in
+    Linux)
+      [ -r /dev/kvm ] && [ -w /dev/kvm ] || skip '/dev/kvm unavailable'
+      export PVISOR_CASE_ROOTFS="${PVISOR_CASE_ROOTFS:-/}"
+      ;;
+    Darwin)
+      [ "$(uname -m)" = arm64 ] || skip 'Apple Silicon required'
+      [ -n "${PVISOR_CASE_ROOTFS:-}" ] || skip 'explicit Linux guest rootfs required'
+      ;;
+    *) skip 'VM unsupported on this OS' ;;
+  esac
+  [ -d "$PVISOR_CASE_ROOTFS" ] || skip 'guest rootfs unavailable'
+}
+
+vm_case_setup() {
+  case_setup
+  export XDG_CACHE_HOME="$CASE_ROOT/cache"
+  mkdir -p "$XDG_CACHE_HOME"
+}
+
+require_vm_sdk() {
+  require_vm_case
+  export VM_CASE_DRIVER="${PVISOR_CASE_VM_DRIVER:-$(dirname "$SUBJECT_BIN")/examples/vm_control_case}"
+  [ -x "$VM_CASE_DRIVER" ] || skip 'SDK driver unavailable; prepare with just cases --suite vm'
+  export PVISOR_CASE_VM_PYTHON="${PVISOR_CASE_VM_PYTHON:-/usr/bin/python3}"
+  [ -x "$PVISOR_CASE_ROOTFS/$PVISOR_CASE_VM_PYTHON" ] || skip 'guest Python unavailable'
+}
+
+require_vm_compression() {
+  require_vm_sdk
+  case "$(uname -s)" in
+    Linux) [ -r /dev/fuse ] && [ -w /dev/fuse ] || skip '/dev/fuse unavailable' ;;
+    Darwin) [ -d /Library/Filesystems/macfuse.fs ] || skip 'macFUSE kernel backend unavailable' ;;
+  esac
+}
+
+# Preserve driver diagnostics even when errexit aborts a failing DOC case.
+vm_run_sdk() {
+  local status=0
+  "$VM_CASE_DRIVER" "$1" > "$CASE_ROOT/sdk.log" 2>&1 || status=$?
+  cat "$CASE_ROOT/sdk.log"
+  [ "$status" -eq 0 ] || fail "VM SDK driver failed: exit=$status"
+}
+````

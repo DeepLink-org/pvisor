@@ -74,7 +74,7 @@ jobs:
           git worktree add --detach "$baseline_repo" "$baseline_sha"
           echo "repo=$baseline_repo" >> "$GITHUB_OUTPUT"
           echo "sha=$baseline_sha" >> "$GITHUB_OUTPUT"
-          if [[ -x "$baseline_repo/benchmark/pvisor/run.sh" ]]; then
+          if [[ -f "$baseline_repo/benchmark/pvisor/bench.py" ]]; then
             echo "supported=true" >> "$GITHUB_OUTPUT"
           else
             echo "supported=false" >> "$GITHUB_OUTPUT"
@@ -85,14 +85,13 @@ jobs:
         env:
           # Older baseline firmware recipes expand MAKEFLAGS as command arguments.
           GNUMAKEFLAGS: --no-print-directory
+          PVISOR_BENCHMARK_REPO: ${{ steps.baseline.outputs.repo }}
+          PVISOR_BENCHMARK_OUTPUT: ${{ runner.temp }}/.data/pvisor-benchmark/main
+          PVISOR_BENCHMARK_BUILD_DIR: ${{ github.workspace }}/target/pvisor-benchmark-main
         shell: bash
         run: |
           set -euo pipefail
-          cd "${{ steps.baseline.outputs.repo }}"
-          bash benchmark/pvisor/run.sh run \
-            --suite smoke \
-            --output "${RUNNER_TEMP}/.data/pvisor-benchmark/main" \
-            --target-dir "${GITHUB_WORKSPACE}/target/pvisor-benchmark-main"
+          just benchmark smoke
 
       - name: Stop baseline Host listener before switching binaries
         if: steps.baseline.outputs.supported == 'true'
@@ -102,19 +101,17 @@ jobs:
           pkill -f "^${GITHUB_WORKSPACE}/target/pvisor-benchmark-main/release/pvisor --pvisor-internal-host$" || [[ $? == 1 ]]
 
       - name: Benchmark candidate
-        shell: bash
-        run: |
-          just benchmark \
-            smoke \
-            "${RUNNER_TEMP}/.data/pvisor-benchmark/candidate" \
-            "${GITHUB_WORKSPACE}/target/pvisor-benchmark-candidate"
+        env:
+          PVISOR_BENCHMARK_OUTPUT: ${{ runner.temp }}/.data/pvisor-benchmark/candidate
+          PVISOR_BENCHMARK_BUILD_DIR: ${{ github.workspace }}/target/pvisor-benchmark-candidate
+        run: just benchmark smoke
 
       - name: Compare reports
         shell: bash
         run: |
           set -euo pipefail
-          candidate="${RUNNER_TEMP}/.data/pvisor-benchmark/candidate/raw-report.json"
-          baseline="${RUNNER_TEMP}/.data/pvisor-benchmark/main/raw-report.json"
+          candidate="${RUNNER_TEMP}/.data/pvisor-benchmark/candidate/smoke/raw-report.json"
+          baseline="${RUNNER_TEMP}/.data/pvisor-benchmark/main/smoke/raw-report.json"
           output="${RUNNER_TEMP}/.data/pvisor-benchmark/comparison"
           if [[ -f "$baseline" ]]; then
             just benchmark-compare "$candidate" "$baseline" "$output"

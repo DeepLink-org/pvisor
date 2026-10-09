@@ -277,7 +277,9 @@ exclusions/metrics remain explicitly rejected; no read logging is silently skipp
 `validate_kernel_cache()` is portable and side-effect free; mount entry points
 perform it before macFUSE installation probing or directory/journal preparation.
 macOS is rejected even with `backend=kernel`, since no notification capability
-has been validated there. **No VM mode exists**: virtio-fs has NotifyOpcode
+has been validated there. Production notification workers and the termination
+probe compile only on Linux; portable worker tests also run on macOS.
+**No VM mode exists**: virtio-fs has NotifyOpcode
 declarations but no equivalent verified output notification transport; this
 host-only DTO is not propagated through runtime/VM configuration. Runtime source
 classification is not changed, and no environment variable enables this policy.

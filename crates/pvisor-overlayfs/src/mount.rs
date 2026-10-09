@@ -269,6 +269,7 @@ fn start_notifications(
     }
 }
 
+#[cfg(target_os = "linux")]
 fn verify_termination(mountpoint: &Path, options: &[MountOption]) -> Result<()> {
     // No filesystem users may start until mount() returns. Exercise the actual
     // mountpoint, credentials, fusectl and detach route before publishing TTLs.
@@ -277,16 +278,16 @@ fn verify_termination(mountpoint: &Path, options: &[MountOption]) -> Result<()> 
     impl fuser::Filesystem for Probe {}
     let session =
         Session::new(Probe, mountpoint, options).context("mount kernel cache termination probe")?;
-    #[cfg(target_os = "linux")]
-    {
-        let abort = connection_abort_file(mountpoint)?;
-        crate::cache::abort_and_detach(&abort, mountpoint)
-            .context("writable Metadata termination admission probe failed")?;
-    }
-    #[cfg(not(target_os = "linux"))]
-    bail!("Linux termination capability required");
+    let abort = connection_abort_file(mountpoint)?;
+    crate::cache::abort_and_detach(&abort, mountpoint)
+        .context("writable Metadata termination admission probe failed")?;
     drop(session);
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn verify_termination(_mountpoint: &Path, _options: &[MountOption]) -> Result<()> {
+    bail!("Linux termination capability required")
 }
 
 #[cfg(target_os = "linux")]

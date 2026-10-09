@@ -1,9 +1,18 @@
-# Engine semantics 2
+# Engine semantics 6
 
 Review the implementation as well as this contract before approving @engine.
 
-- Markdown h3 cases stop at the next h1/h2/h3, excluding headings in code fences.
-  Each has a unique S-DOMAIN-NNN ID, nonempty 语义/违反示例 and exactly one bash check.
+- Input is one or more explicitly supplied Markdown files/directories, with no
+  default search path. Overlapping files are loaded once; distinct files with
+  duplicate IDs fail. Their nearest common directory is the review root.
+  Explicit case selections must be unique and belong to the selected domain.
+  One-line semspec: case comments with unique id=S-DOMAIN-NNN mark the immediately
+  following Bash fence. Headings and unmarked examples do not declare tests.
+  timeout and paired xfail parameters are validated; multiple cases may share a
+  section. Case review binds its entire enclosing heading section (or document).
+  semspec: setup comments mark preparation: sibling index.md first, then the
+  case document, each in source order. Full preparation documents are sealed.
+  Configuration input and legacy heading/semantic-case discovery are unsupported.
 - Digests follow DESIGN.md §8: trim line-end whitespace, remove trailing
   blank lines, append one LF, no Unicode normalization, SHA-256 domain separation.
   Case digests bind the complete case, sorted vocabulary digests and engine version.
@@ -12,9 +21,9 @@ Review the implementation as well as this contract before approving @engine.
   vocabulary and engine, including SKIP/XFAIL. Reapproval replaces the current
   digest; Git preserves review history.
 - Bash checks run with set -euo pipefail, sourced vocabulary, null stdin,
-  inherited environment plus configured variables and reserved runner variables.
-  Vocabulary is copied from hashed bytes into the case directory and sourced in
-  filename order, independent of configuration order (digests bind the set).
+  inherited environment plus reserved runner variables.
+  Preparation is extracted from hashed, normalized Markdown into the case
+  directory and sourced in the fixed index/local order.
   CASE_ROOT/ws is a fresh cwd. Workspace snapshots/logs live outside ws. Bash -n
   checks syntax; source/dot commands are allowed. Checks are trusted code and
   additional sourced files need project review; this is not a security sandbox.
@@ -25,9 +34,20 @@ Review the implementation as well as this contract before approving @engine.
 - Without timeout, 0 means PASS and 77 means SKIP (output explains why). Other
   nonzero exits, signals or timeout mean FAIL. SKIP takes precedence over xfail. Expected failures map only
   these results to XFAIL/XPASS, never launch or engine errors. XPASS fails the run.
-- Prerequisites are ordinary Bash checks, without probes or requires annotations. Invalid configuration,
+- Default timeout is 180s, --timeout sets the default, comment timeout wins.
+  Markdown input needs no subject setting; checks resolve commands through PATH.
+  Explicit subject paths must be available executables. The optional review ledger
+  lives at that review root; init requires an explicit output directory and
+  creates only Markdown, never an approval ledger.
+- Prerequisites are ordinary Bash checks, without probes or requires annotations. Unknown configuration arguments,
   unknown cases/domains, malformed specs and unavailable subject paths exit 2.
-  ERROR has exit 3 precedence; FAIL/XPASS/unreviewed-required exit 1, otherwise 0.
+  Reports must contain exactly the selected IDs, once each, with a nonempty inventory.
+  --require-pass rejects every non-PASS, including SKIP/XFAIL, independently of review.
+  ERROR has exit 3 precedence; FAIL/XPASS/inventory errors/strict gate failures exit 1,
+  otherwise 0. After valid selection, --output clears a previous report before
+  execution and atomically writes a fresh report, including failures. Invalid
+  selection preserves existing output; launch failure/interruption leaves no stale
+  report. Output cannot replace loaded specifications, preparation or the ledger.
 - FAIL/XFAIL/XPASS/ERROR always retain their case directory; --keep retains every executed
   case. Outputs are human or JSON. v0.1 is serial; signing/JUnit/parallelism are rejected.
 - tree-state includes relative paths, types, permissions, full SHA-256 contents and

@@ -10,6 +10,7 @@ Before resuming an Agent conversation, use prepare-only to check that prefix par
 
 **Violation**: prepare-only executes historical commands.
 
+<!-- semspec: case id=S-USE-015 -->
 ```bash
 journey_setup
 cat > trajectory.json <<'JSON'
@@ -29,6 +30,7 @@ The host Job in this example does not support CPU/RAM save and restore; compatib
 
 **Violation**: An execution option is ignored or a refusal changes the Job.
 
+<!-- semspec: case id=S-USE-016 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'

@@ -10,12 +10,13 @@ import subprocess
 import sys
 import tempfile
 import time
+import unittest
+from contextlib import ExitStack
 from pathlib import Path
-
-import pytest
+from unittest import mock
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples/pvisor/05-zcode-cli"
-WORK = None  # Assigned to pytest's isolated temporary directory before execution.
+WORK = None  # Assigned to an isolated temporary directory before execution.
 PVISOR = os.environ.get("PVISOR_BIN", str(EXAMPLE.parents[2] / "target/release/pvisor"))
 
 
@@ -237,24 +238,29 @@ def verify_write(work, decision="apply"):
     assert not (base / ".zcode-state").exists()
 
 
-def test_zcode_integration(tmp_path, request, monkeypatch):
-    if not request.config.getoption("--zcode-integration"):
-        pytest.skip("requires --zcode-integration, zcode and a built pvisor CLI")
-    if sys.platform != "linux":
-        pytest.fail("zcode integration requires Linux rootless isolation and /proc")
-    monkeypatch.setattr(sys.modules[__name__], "WORK", tmp_path)
-    verify_normal_command()
-    write = run_case("write", "60s")
-    verify_write(write)
-    dropped = run_case("write", "60s", case="drop")
-    verify_write(dropped, decision="drop")
-    timeout = run_case("timeout", "10s")
-    bundle = read_json(timeout / "stage/run-bundle.json")
-    assert bundle["run"]["state"] == "failed"
-    assert bundle["run"]["failure"]["kind"] == "deadline_exceeded"
-    assert_base_unchanged(timeout)
-    subprocess.run([PVISOR, "drop", str(timeout / "stage")], check=True)
-    print(
-        "RESULT example=zcode-cli tool_write=1 sse_requests=2 applied=1 dropped=1 "
-        "state_persisted=1 normal_command=1 normal_baseline=1 timeout=passed survivors=0"
-    )
+class ZcodeIntegrationTests(unittest.TestCase):
+    def test_zcode_integration(self):
+        with ExitStack() as resources:
+            tmp_path = Path(
+                resources.enter_context(tempfile.TemporaryDirectory(prefix="pvisor-test-"))
+            ).resolve()
+            if not os.environ.get("PVISOR_TEST_ZCODE") == "1":
+                self.skipTest("requires PVISOR_TEST_ZCODE=1, zcode and a built pvisor CLI")
+            if sys.platform != "linux":
+                self.fail("zcode integration requires Linux rootless isolation and /proc")
+            resources.enter_context(mock.patch.object(sys.modules[__name__], "WORK", tmp_path))
+            verify_normal_command()
+            write = run_case("write", "60s")
+            verify_write(write)
+            dropped = run_case("write", "60s", case="drop")
+            verify_write(dropped, decision="drop")
+            timeout = run_case("timeout", "10s")
+            bundle = read_json(timeout / "stage/run-bundle.json")
+            assert bundle["run"]["state"] == "failed"
+            assert bundle["run"]["failure"]["kind"] == "deadline_exceeded"
+            assert_base_unchanged(timeout)
+            subprocess.run([PVISOR, "drop", str(timeout / "stage")], check=True)
+            print(
+                "RESULT example=zcode-cli tool_write=1 sse_requests=2 applied=1 dropped=1 "
+                "state_persisted=1 normal_command=1 normal_baseline=1 timeout=passed survivors=0"
+            )

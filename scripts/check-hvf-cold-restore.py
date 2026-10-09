@@ -13,43 +13,12 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target-dir", type=Path, default=Path("target"))
+    parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         parser.error("requires Apple Silicon macOS with Hypervisor entitlement")
-    root = Path(__file__).resolve().parents[1]
-    target = args.target_dir.resolve()
-    subprocess.run(
-        [
-            "cargo",
-            "build",
-            "--locked",
-            "-p",
-            "pvisor-vm",
-            "--example",
-            "hvf_cold_restore_case",
-            "--target-dir",
-            str(target),
-        ],
-        cwd=root,
-        check=True,
-        timeout=300,
-    )
-    binary = target / "debug/examples/hvf_cold_restore_case"
-    subprocess.run(
-        [
-            "codesign",
-            "--force",
-            "--sign",
-            "-",
-            "--entitlements",
-            str(root / "crates/pvisor/macos-hypervisor.entitlements"),
-            str(binary),
-        ],
-        check=True,
-        timeout=30,
-    )
+    binary = args.binary.resolve(strict=True)
     results = []
 
     def run(name, mode, path, expected_error=None):
@@ -130,7 +99,9 @@ def main():
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n")
-    print(f"{len(results)} M0 checks passed; CPU/RAM only; full VM restore is outside this probe scope")
+    print(
+        f"{len(results)} M0 checks passed; CPU/RAM only; full VM restore is outside this probe scope"
+    )
 
 
 if __name__ == "__main__":

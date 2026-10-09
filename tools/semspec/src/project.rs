@@ -1,8 +1,7 @@
 use crate::{
-    config::Config,
     ledger::Ledger,
-    model::{Case, ReviewState, valid_vocab_name},
-    parse::parse_spec,
+    model::{Case, ReviewState},
+    parse::{parse_document, parse_setup},
     seal,
 };
 use anyhow::{Context, Result, ensure};
@@ -11,16 +10,16 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-pub struct Vocab {
+pub struct Preparation {
     pub name: String,
     pub text: String,
     pub digest: String,
+    pub script: String,
 }
 pub struct Project {
     pub root: PathBuf,
-    pub config: Config,
     pub cases: Vec<Case>,
-    pub vocab: BTreeMap<String, Vocab>,
+    pub preparation: BTreeMap<String, Preparation>,
     pub ledger: Ledger,
 }
 pub struct Item {
@@ -47,69 +46,91 @@ pub fn markdown_files(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 impl Project {
-    pub fn load(config_file: &Path) -> Result<Self> {
-        let config_file = config_file.canonicalize().context("find semspec.toml")?;
-        let root = config_file.parent().unwrap().to_path_buf();
-        let config = Config::parse(&fs::read_to_string(&config_file)?)?;
-        let mut cases = vec![];
+    /// Load explicitly selected Markdown inputs. Overlapping files are read once.
+    /// Preparation names and REVIEWED.toml are relative to their nearest common directory.
+    pub fn load(inputs: &[impl AsRef<Path>]) -> Result<Self> {
+        ensure!(
+            !inputs.is_empty(),
+            "specify at least one Markdown file or directory"
+        );
+        let mut root = None;
         let mut files = BTreeSet::new();
-        let mut ids = BTreeSet::new();
-        for dir in &config.project.spec_dirs {
-            for path in markdown_files(&root.join(dir))? {
+        for input in inputs {
+            let input = input
+                .as_ref()
+                .canonicalize()
+                .context("find Markdown specifications")?;
+            let directory = if input.is_dir() {
+                files.extend(markdown_files(&input)?);
+                input
+            } else {
                 ensure!(
-                    files.insert(path.canonicalize()?),
-                    "overlapping spec directories"
+                    input.is_file() && input.extension().is_some_and(|s| s == "md"),
+                    "expected Markdown file or directory"
                 );
-                cases.extend(parse_spec(
-                    path.strip_prefix(&root)?,
-                    &fs::read_to_string(&path)?,
-                )?);
+                files.insert(input.clone());
+                input.parent().unwrap().to_path_buf()
+            };
+            let root = root.get_or_insert_with(|| directory.clone());
+            while !directory.starts_with(&*root) {
+                ensure!(root.pop(), "inputs must share a filesystem root");
             }
+        }
+        let root = root.unwrap();
+        let mut cases = vec![];
+        let mut preparation = BTreeMap::new();
+        let mut ids = BTreeSet::new();
+        for path in files {
+            let source = fs::read_to_string(&path)?;
+            let relative = path.strip_prefix(&root)?;
+            let mut parsed = parse_document(relative, &source)?;
+            let mut names = vec![];
+            let index = path.parent().unwrap().join("index.md");
+            let setup_paths = if index == path {
+                vec![path.clone()]
+            } else {
+                vec![index, path.clone()]
+            };
+            for setup_path in setup_paths {
+                if !setup_path.is_file() {
+                    continue;
+                }
+                let text = seal::normalize(&fs::read_to_string(&setup_path)?);
+                let script = parse_setup(&text)?;
+                if script.is_empty() {
+                    continue;
+                }
+                let name = setup_path
+                    .strip_prefix(&root)?
+                    .to_str()
+                    .context("Markdown path must be UTF8")?
+                    .to_owned();
+                names.push(name.clone());
+                preparation
+                    .entry(name.clone())
+                    .or_insert_with(|| Preparation {
+                        digest: seal::vocab_digest(&name, &text),
+                        name,
+                        text,
+                        script,
+                    });
+            }
+            for case in &mut parsed {
+                ensure!(ids.insert(case.id.clone()), "duplicate case {}", case.id);
+                for platform in &case.annotation.xfail_on {
+                    ensure!(
+                        ["all", "linux", "macos"].contains(&platform.as_str()),
+                        "{}: unknown platform {platform}",
+                        case.id
+                    );
+                }
+                case.preparation = names.clone();
+            }
+            cases.extend(parsed);
         }
         ensure!(!cases.is_empty(), "no semantic cases found");
-        for case in &cases {
-            ensure!(ids.insert(case.id.clone()), "duplicate case {}", case.id);
-            for platform in &case.annotation.xfail_on {
-                ensure!(
-                    platform == "all" || config.platforms.contains_key(platform),
-                    "{}: unknown platform {platform}",
-                    case.id
-                );
-            }
-        }
         cases.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut vocab = BTreeMap::new();
-        for path in &config.subject.vocab {
-            load_vocab(&root.join(path), &mut vocab)?;
-        }
-        for case in &cases {
-            if let Some(names) = &case.annotation.vocab {
-                ensure!(
-                    names.iter().collect::<BTreeSet<_>>().len() == names.len(),
-                    "{}: duplicate vocabulary",
-                    case.id
-                );
-                for name in names {
-                    ensure!(valid_vocab_name(name), "invalid vocab name {name}");
-                    if vocab.contains_key(name) {
-                        continue;
-                    }
-                    let found: Vec<_> = config
-                        .project
-                        .spec_dirs
-                        .iter()
-                        .map(|d| root.join(d).join("vocab").join(name))
-                        .filter(|p| p.is_file())
-                        .collect();
-                    ensure!(
-                        found.len() == 1,
-                        "vocabulary {name} must resolve to one file"
-                    );
-                    load_vocab(&found[0], &mut vocab)?;
-                }
-            }
-        }
-        let ledger_path = root.join(&config.project.ledger);
+        let ledger_path = root.join("REVIEWED.toml");
         let ledger = if ledger_path.exists() {
             Ledger::parse(&fs::read_to_string(ledger_path)?)?
         } else {
@@ -117,32 +138,52 @@ impl Project {
         };
         Ok(Self {
             root,
-            config,
             cases,
-            vocab,
+            preparation,
             ledger,
         })
     }
-    pub fn vocab_names(&self, case: &Case) -> Vec<String> {
-        let mut names: Vec<String> = case.annotation.vocab.clone().unwrap_or_else(|| {
-            self.config
-                .subject
-                .vocab
-                .iter()
-                .map(|p| p.file_name().unwrap().to_str().unwrap().to_owned())
-                .collect()
-        });
-        // Digests bind a set: configuration ordering must not change execution.
-        names.sort();
-        names
+    /// Select a nonempty inventory. Explicit IDs must be unique and belong to the selected domain.
+    pub fn select(&self, ids: &[String], domain: Option<&str>) -> Result<Vec<&Case>> {
+        ensure!(
+            ids.iter().collect::<BTreeSet<_>>().len() == ids.len(),
+            "selected case IDs must be unique"
+        );
+        if let Some(domain) = domain {
+            ensure!(
+                self.cases.iter().any(|case| case.domain == domain),
+                "unknown domain {domain}"
+            );
+        }
+        for id in ids {
+            ensure!(
+                self.cases
+                    .iter()
+                    .any(|case| case.id == *id && domain.is_none_or(|d| case.domain == d)),
+                "unknown case or excluded by domain: {id}"
+            );
+        }
+        let cases: Vec<_> = self
+            .cases
+            .iter()
+            .filter(|case| {
+                (ids.is_empty() || ids.contains(&case.id))
+                    && domain.is_none_or(|d| case.domain == d)
+            })
+            .collect();
+        ensure!(!cases.is_empty(), "selection contains no cases");
+        Ok(cases)
+    }
+    pub fn preparation_names(&self, case: &Case) -> Vec<String> {
+        case.preparation.clone()
     }
     pub fn case_digest(&self, case: &Case) -> String {
         seal::case_digest(
             &case.text,
             &self
-                .vocab_names(case)
+                .preparation_names(case)
                 .iter()
-                .map(|n| self.vocab[n].digest.clone())
+                .map(|n| self.preparation[n].digest.clone())
                 .collect::<Vec<_>>(),
         )
     }
@@ -150,7 +191,10 @@ impl Project {
         let (digest, text) = if id == "@engine" {
             (seal::engine_digest(), seal::normalize(seal::ENGINE_TEXT))
         } else if let Some(name) = id.strip_prefix("@vocab:") {
-            let vocab = self.vocab.get(name).context("unknown vocabulary")?;
+            let vocab = self
+                .preparation
+                .get(name)
+                .context("unknown preparation document")?;
             (vocab.digest.clone(), vocab.text.clone())
         } else {
             let case = self
@@ -163,10 +207,10 @@ impl Project {
                 "\n---\nEngine semantics: {}\n",
                 seal::ENGINE_SEMANTICS
             ));
-            for name in self.vocab_names(case) {
+            for name in self.preparation_names(case) {
                 text.push_str(&format!(
-                    "Vocabulary {name}: {}\n",
-                    self.vocab[&name].digest
+                    "Preparation {name}: {}\n",
+                    self.preparation[&name].digest
                 ));
             }
             (self.case_digest(case), text)
@@ -180,34 +224,10 @@ impl Project {
     }
     pub fn items(&self) -> Vec<String> {
         std::iter::once("@engine".into())
-            .chain(self.vocab.keys().map(|n| format!("@vocab:{n}")))
+            .chain(self.preparation.keys().map(|n| format!("@vocab:{n}")))
             .chain(self.cases.iter().map(|c| c.id.clone()))
             .collect()
     }
-}
-fn load_vocab(path: &Path, vocab: &mut BTreeMap<String, Vocab>) -> Result<()> {
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .context("vocab filename must be UTF8")?
-        .to_owned();
-    ensure!(valid_vocab_name(&name), "invalid vocabulary filename");
-    ensure!(
-        !vocab.contains_key(&name),
-        "duplicate vocabulary filename {name}"
-    );
-    let text = seal::normalize(
-        &fs::read_to_string(path).with_context(|| format!("read vocabulary {}", path.display()))?,
-    );
-    vocab.insert(
-        name.clone(),
-        Vocab {
-            digest: seal::vocab_digest(&name, &text),
-            name,
-            text,
-        },
-    );
-    Ok(())
 }
 pub fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
     use std::io::Write;

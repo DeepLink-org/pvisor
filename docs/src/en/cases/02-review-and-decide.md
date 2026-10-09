@@ -10,6 +10,7 @@ Before accepting an edited report, compare staged content with the original. `in
 
 **Violation**: The edit reaches the original or review omits it.
 
+<!-- semspec: case id=S-USE-005 -->
 ```bash
 journey_setup
 printf original > report.txt
@@ -31,6 +32,7 @@ When an Agent edits a report and an experiment, accept only the report and disca
 
 **Violation**: Selective apply commits everything or drop removes the Job record.
 
+<!-- semspec: case id=S-USE-006 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf accepted > report.txt; printf scratch > scratch.txt'
@@ -53,6 +55,7 @@ If you edit the same file during review, apply must protect your new content and
 
 **Violation**: The old proposal overwrites the human edit or disappears on failure.
 
+<!-- semspec: case id=S-USE-007 -->
 ```bash
 journey_setup
 printf base > report.txt
@@ -72,6 +75,7 @@ For a stuck task, kill it, confirm it has stopped, then discard files. Do not ap
 
 **Violation**: Live apply succeeds, the task remains alive after kill, or writes escape staging.
 
+<!-- semspec: case id=S-USE-008 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/live" -- /bin/sh -c 'printf ready > ready.txt; exec /bin/sleep 30' > "$CASE_ROOT/live.log" 2>&1 &

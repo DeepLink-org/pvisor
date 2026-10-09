@@ -21,7 +21,7 @@ python3 benchmark/pvisor/lazy_startup.py \
   --samples 30 --warmups 3
 python3 benchmark/pvisor/lazy_startup.py \
   --analyze benchmark/pvisor/.data/lazy-startup-formal-new/report.json
-just test-benchmark -q benchmark/pvisor/test_lazy_startup.py
+just test-py benchmark/pvisor/test_lazy_startup.py
 ```
 
 Run the NumPy preflight and formal cohort separately, after other builds/tests have finished. The workload selects its own pinned source by default; do not reuse Ubuntu or failed torch output directories:
@@ -72,8 +72,8 @@ created without overwriting the existing launcher or its listener:
 ```sh
 just test pvisor
 PVISOR_LAZY_IMAGE_V2=0 just test pvisor
-just test-benchmark -q benchmark/pvisor/test_lazy_image_v2.py
-python3 scripts/build-pvisor.py --profile release --target-dir target/lazy-image-v2-build
+just test-py benchmark/pvisor/test_lazy_image_v2.py
+CARGO_TARGET_DIR=target/lazy-image-v2-build just build release
 python3 benchmark/pvisor/lazy_image_v2.py \
   --binary-dir target/lazy-image-v2-build/release \
   --prepared-store benchmark/pvisor/.data/lazy-numpy-local-20261007/service-store \
@@ -122,7 +122,7 @@ no speed-based exclusions or cross-cohort causal comparisons are allowed.
 先在仓库根构建并冻结（不启动 VM），输出必须为 NEW；GNU debug build 可用于可运行性预检，正式性能比较必须使用同批同制品，不能把 debug 数字当 release 成本。
 
 ```sh
-python3 -m unittest discover -s benchmark/pvisor -p test_vcpu_idle.py -v
+just test-py benchmark/pvisor/test_vcpu_idle.py -v
 CARGO_BUILD_JOBS=4 python3 benchmark/pvisor/vcpu_idle.py --build \
   --output benchmark/pvisor/.data/vcpu-build-new
 benchmark/pvisor/.data/vcpu-build-new/vm_vcpu_observe --describe
@@ -185,7 +185,7 @@ python3 benchmark/pvisor/memory_scale.py \
 `firecracker_ksm.py` serves B-MEMORY-SCALE engineering A/B. It boots at most four fresh Firecracker PCI VMs (256 MiB / 1 vCPU each), with a 64 MiB byte-validated payload using the pVisor page generator, a 20-second observation window, and 25/100% mutation plus peer/survivor verification. Its complete worker group uses four CPU quota / 2 GiB / zero swap. KSM configuration is read-only and must match the administrator-enabled `run=1`, `pages_to_scan=100`, `sleep_millisecs=20`. This is not a same-kernel/runtime/backing comparison or a production density measurement.
 
 ```sh
-python3 -m unittest discover -s benchmark/pvisor -p test_firecracker_ksm.py -v
+just test-py benchmark/pvisor/test_firecracker_ksm.py -v
 python3 benchmark/pvisor/firecracker_ksm.py \
   --assets /home/reiase/workspace/pvisor/benchmark/.data/full-retest-20261006/assets \
   --output /home/reiase/workspace/pvisor/benchmark/.data/f4k-new
@@ -211,7 +211,7 @@ Use a NEW ignored evidence directory, record prechosen order, affinity and compl
 `B-COLD-RUNTIME-ENG` now validates the experimental Linux x86_64 kernel-fault userfaultfd pager with instance-local storage. Enable `[vm].cold_ram_compression = true` or `--vm-cold-ram-compression`; it is default-off and distinct from FUSE `ram_compression`. Userfaultfd authority must be granted by the administrator. Local compression rejects file/COW backing, KSM advice and snapshot/offload combinations; the external daemon pool is a separate store choice on the same Linux pager path. The policy uses eviction/refault probing, not full read-heat tracking.
 
 ```sh
-python3 -m unittest discover -s benchmark/pvisor -p test_linux_cold_runtime.py -v
+just test-py benchmark/pvisor/test_linux_cold_runtime.py -v
 CARGO_BUILD_JOBS=4 cargo build --locked -p pvisor --example vm_cold_runtime
 # Freeze source and binary receipts before measuring; use a NEW short output path.
 python3 benchmark/pvisor/linux_cold_runtime.py \
@@ -254,7 +254,7 @@ python3 benchmark/pvisor/retained_snapshot_archive.py \
 python3 benchmark/pvisor/publication.py \
   --report benchmark/.data/reference-new/report.json \
   --output docs/src/zh/benchmarks
-just test-benchmark
+just test-py discover -s benchmark/pvisor
 ```
 
 CSV summaries are not substitutes for raw evidence: a fresh checkout can read tables and inspect derived provenance, but rerunning requires prepared tools, firmware and local raw inputs. Do not create public links to ignored `.data/` paths. Site builds explicitly exclude them.
@@ -364,7 +364,7 @@ Only after all selected backends pass, repeat into a new short output with at le
 Run only targeted conventional tests now; do not start preflights or formal sampling while parent builds/tests run:
 
 ```sh
-python3 -m pytest -q benchmark/pvisor/test_reference_baselines.py benchmark/pvisor/test_firecracker_kernels.py
+just test-py -q benchmark/pvisor/test_reference_baselines.py benchmark/pvisor/test_firecracker_kernels.py
 ```
 
 After parent build/test completion and capability/input review, run a separate preflight, then at least 30 seeded interleaved formal samples with three warmups in a new output. No measurements are supplied by these corrections. Formal stock/reference samples must not be merged with historical user numbers.
@@ -553,7 +553,7 @@ do not replace or modify the immutable-lower-cache experiment below. This is a d
 Linux HOST API experiment, not `pvisor run`, VM, journaling or review guarantees.
 
 ```sh
-python3 -m pytest benchmark/pvisor/test_kernel_cache_runner.py benchmark/pvisor/test_kernel_cache_report.py -q
+just test-py benchmark/pvisor/test_kernel_cache_runner.py benchmark/pvisor/test_kernel_cache_report.py -q
 python3 benchmark/pvisor/kernel_cache_runner.py --build \
   --output benchmark/pvisor/.data/kernel-cache-build-new
 python3 benchmark/pvisor/kernel_cache_runner.py \
@@ -721,7 +721,7 @@ conditions, unchanged kernel TTL/KEEP_CACHE, and no permission workaround.
 Run from the repository root, using a **new** output directory for each command:
 
 ```sh
-python3 -m pytest benchmark/pvisor/test_immutable_lower_cache.py -q
+just test-py benchmark/pvisor/test_immutable_lower_cache.py -q
 python3 benchmark/pvisor/immutable_lower_cache.py --build \
   --output benchmark/.data/immutable-cache-build-new
 python3 benchmark/pvisor/immutable_lower_cache.py \
@@ -834,11 +834,11 @@ Build frozen sources with only the proposed change between versions; report pair
 
 ## CI regression gate
 
-B-PROCESS uses `bench.py` through `run.sh`. It checks a successful minimal Run and Bundle access, with 2 warmups/10 samples for smoke or 10 warmups/50 samples for nightly. It does not establish cross-runtime user rankings.
+B-PROCESS uses `bench.py` through `just benchmark`. It checks a successful minimal Run and Bundle access, with 2 warmups/10 samples for smoke or 10 warmups/50 samples for nightly. It does not establish cross-runtime user rankings.
 
 ```bash
 just benchmark
-just benchmark nightly benchmark/pvisor/.data/nightly
+OUTPUT=benchmark/pvisor/.data/nightly just benchmark nightly
 just benchmark-compare \
   benchmark/pvisor/.data/candidate/raw-report.json \
   benchmark/pvisor/.data/main/raw-report.json
@@ -1028,7 +1028,7 @@ Every condition creates a fresh 256 MiB VM with 64 MiB fully checked private dat
 
 Host quiet admission and sampling interference rejection are mandatory and recorded in `report.json` before launch. Before **every** condition, the coordinator requires 30 continuous seconds without visible same-user KVM users or build/test processes, within a 180-second admission bound; competing work resets the window. During the service attempt, a coordinator thread **outside the measured cgroup** checks every 0.5 seconds, with checks immediately before launch and after completion. Only the UUID-owned service cgroup and its descendants are excluded, never the coordinator's parent cgroup. No additional host memory observer is placed inside the product footprint. Any detected foreign VM/build during sampling rejects that condition and stops the campaign, retaining previous rows only as diagnostic evidence: do not cherry-pick, replace rejected conditions, or pool partial formal cohorts. Admission timeout or guard failure also stops the campaign; owned-service teardown remains required.
 
-Retain `prelaunch-wait.jsonl`, `host-guard.jsonl`, launch/result JSON, and final service-quiescence evidence with the raw cohort. The guard inspects same-user command lines and visible KVM FDs; inaccessible process/FD errors are logged, so this is not proof of host-wide quiet, and jobs shorter than the polling interval may be missed. Coordinate an otherwise idle host before rerunning. Use a NEW short absolute disk output path (replace `/short/disk/lmp` above); retain numeric `trials/<round>-<case>` directories and keep trial paths at most 70 characters for VM socket headroom. After all four preflight conditions pass, use another NEW short output path and omit `--samples 1 --warmups 0` for the unchanged 30-sample/3-warmup formal protocol. Run focused guard tests without hardware using `.venv/bin/python -m pytest -q benchmark/pvisor/test_live_vm_memory.py`.
+Retain `prelaunch-wait.jsonl`, `host-guard.jsonl`, launch/result JSON, and final service-quiescence evidence with the raw cohort. The guard inspects same-user command lines and visible KVM FDs; inaccessible process/FD errors are logged, so this is not proof of host-wide quiet, and jobs shorter than the polling interval may be missed. Coordinate an otherwise idle host before rerunning. Use a NEW short absolute disk output path (replace `/short/disk/lmp` above); retain numeric `trials/<round>-<case>` directories and keep trial paths at most 70 characters for VM socket headroom. After all four preflight conditions pass, use another NEW short output path and omit `--samples 1 --warmups 0` for the unchanged 30-sample/3-warmup formal protocol. Run focused guard tests without hardware using `just test-py benchmark/pvisor/test_live_vm_memory.py`.
 
 ## Prepared inputs for network and isolation controls
 

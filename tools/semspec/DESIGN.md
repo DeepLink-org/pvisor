@@ -17,9 +17,9 @@ Bash 检查。单元测试验证实现意图，语义规格验证产品承诺；
 | 对象 | 含义 |
 |---|---|
 | Case | 唯一 ID、语义陈述、违反示例、一个 Bash 检查块 |
-| Vocabulary | 项目的 Bash 函数文件，供检查复用断言及前提判断 |
-| Subject | 被测程序、环境变量和超时配置 |
-| Digest | case、词汇或引擎的规范化 SHA-256 摘要 |
+| Preparation | Markdown 中标记的 Bash 准备块，复用断言与前提判断 |
+| Subject | 经 PATH 或运行时参数选择的被测程序 |
+| Digest | case、准备文档或引擎的规范化 SHA-256 摘要 |
 | Ledger | `REVIEWED.toml`，记录批准摘要、审核人和日期 |
 | Verdict | PASS、FAIL、SKIP、XFAIL、XPASS、ERROR |
 | Review state | REVIEWED、UNREVIEWED、STALE，与执行结果独立 |
@@ -37,116 +37,112 @@ TTY 只阻止非交互误用，不能认证审核者。
 替换旧摘要；变更历史由 Git 保留。只维护台账，不再创建批准文本快照，不提供
 `diff`、`revoke` 或 `retired`。审查差异使用 Git；已有台账与快照不由迁移自动改写。
 
-## 4. Spec 文件格式
+## 4. Markdown 文档与代码块
+
+pVisor 的输入是命令行明确选定的用户 case 文档，例如 `docs/src/zh/cases`：先说明使用场景、操作步骤与预期行为，再用代码块给出操作和断言。复制这些 Markdown 即可运行，不需要配置文件、外部 shell 词汇或独立测试脚本。
 
 ~~~~markdown
-### S-STAGE-001：暂存的 Job 不改变工作区
+## 第一次运行一个 Job
 
-**语义**：暂存的 Job 结束后、apply 前，工作区的完整状态与 Job 开始前相同。
+你已有可信脚本，希望记录执行结果。
 
-**理由**：先审查再落地要求写入不穿透到工作区。
+**语义**：命令退出 0，文件内容为 hello。
 
-**违反示例**：删除直接作用于 lower，或清理路径自动合并 upper。
+**违反示例**：退出码被吞掉，或文件写到别处。
 
+<!-- semspec: case id=S-USE-001 timeout=60s -->
 ```bash
-require_stage
-printf orig > keep.txt
-snapshot before .
-expect_exit 3 pvisor --stage "$CASE_ROOT/stage" -- /bin/sh -c 'printf new > new.txt; exit 3'
-assert_unchanged before .
+journey_setup
+pvisor -- /bin/sh -c 'printf hello > hello.txt'
+assert_content hello.txt hello
 ```
 ~~~~
 
-1. 三级标题格式为 `### S-<DOMAIN>-<NNN>：标题`，可用半角冒号，ID 在项目内唯一。
-2. case 到下一个一至三级标题前结束，代码块里的标题不计。
-3. 必须有非空 `**语义**`、`**违反示例**` 段落和恰好一个 `bash` 检查块。
-4. 可选单行注解 `<!-- semantic-case: key=value ... -->`，按 shell 规则解析。
+- **代码块定义 case**：一行 `<!-- semspec: case ... -->` 注释紧接普通 `bash` fence。空白行允许，注释与代码块之间不能插入其他内容。标题只负责叙事，不决定发现、ID 或执行范围。
+- `id=S-<DOMAIN>-<NNN>` 必填、唯一；参数按 shell 规则解析，含空格的值加引号。重复、空值和未知参数报错。
+- 每个标记绑定一个代码块。同一标题下可有多个 case；未标记的教程示例不执行，代码块里的注释/标题也不被当成 case。
+- 摘要绑定 case 所在的完整标题段落（到下一个同级或更高级标题），以及依赖的准备文档。无标题时绑定全文。讲解文字、其他示例与参数变化都使审核失效。
+- 普通教程叙事即可承载行为说明。已有的 `**语义**`、`**违反示例**` 和断言保持完整；结构化段落存在时必须非空且不能重复。
 
-| 注解 | 含义 |
+| 参数 | 含义 |
 |---|---|
-| `xfail-on` | 逗号分隔的平台名或 `all` |
-| `xfail-reason` | 与 xfail-on 同时出现，描述已知违反及跟踪信息 |
-| `vocab` | 逗号分隔的词汇文件名，覆盖默认词汇集合 |
+| `id` | 项目内唯一的 case ID，域用于选择 |
+| `timeout` | 当前 case 的最大执行时间，正数，单位 ms/s/m；覆盖运行时默认值 |
+| `xfail-on` | 逗号分隔的 linux、macos，或 all |
+| `xfail-reason` | 与 xfail-on 同时出现，说明已知违反与跟踪信息 |
 
-前提条件写在普通 Bash 中，不使用 `requires` 注解或 probe 配置。删除的 ID 不复用，
-历史以 Git 为准，runner 不另建退役清单。
+前提条件写在检查中，不采用 requires 或 probe 配置；缺失条件可退出 77。删除的 ID 不复用，历史以 Git 为准。
 
-## 5. Bash 与断言词汇
+## 5. 文档中的准备步骤与断言
 
-检查在 `set -euo pipefail` 下执行，词汇按文件名排序，从参与摘要的规范化字节
-复制后 source。检查本身可以使用 `source` 或 `.`；被引用文件的审查由项目负责，
-自动摘要仅绑定 case 和声明的词汇。语法校验用 `bash -n`，不依赖 tree-sitter。
+共用函数、fixture 服务和断言都放在 Markdown 中，代码块前用一行 `<!-- semspec: setup -->` 标记：
 
-前提判断复用普通 Bash 函数。例如：
+~~~~markdown
+## 准备步骤
 
+以下函数供同目录 case 共用。
+
+<!-- semspec: setup -->
 ```bash
-skip() { printf 'SKIP: %s\n' "$*" >&2; exit 77; }
-require_python3() { python3 --version >/dev/null 2>&1 || skip 'python3 unavailable'; }
+assert_content() {
+  [ -f "$1" ] && [ ! -L "$1" ] || exit 1
+  cmp -s -- "$1" <(printf '%s' "$2")
+}
 ```
+~~~~
 
-仅检查进程的退出码 77 表示 SKIP；在检查中用 `expect_exit 77 CMD` 验证产品退出码
-不会跳过 case。SKIP 原因来自检查输出。前提判断也受 case/词汇审核约束。
+每个 case 先 source 同目录 `index.md` 的准备块，再 source 本文档的准备块；同一文档按源码顺序执行，index 自身只执行一次。准备块在每个独立工作区中重跑。完整准备文档参与摘要并作为 `@vocab:相对路径.md` 审核对象；执行代码从相同规范化文档字节中抽取。准备叙事发生变化也要求重审。
+
+Markdown 中的 Bash 在 `set -euo pipefail` 下执行。`source` 和 `.` 仍可用于可信规格，但默认学习路线不引用外部脚本；自行引用文件的项目须另行审核这些依赖。runner 不充当安全沙箱。语法检查用 `bash -n`。
 
 | 内置 helper | 行为 |
 |---|---|
+| `setup FILE.md` | 输出该文档明确标记的准备块，供手动使用与常规回归检查 |
 | `tree-state DIR` | 排序记录路径、类型、权限、完整内容 SHA-256、链接目标，不跟随链接，不含时间戳/inode |
 | `json-get FILE POINTER` | RFC 6901 JSON Pointer，输出规范 JSON；缺失值报错 |
 | `diff A B` | 统一 diff，相同退出 0，不同退出 1 |
 
-`core.sh` 提供 fail、expect_exit、expect_refused、snapshot、assert_unchanged、
-assert_same_tree、assert_content、assert_absent。这里的 snapshot 是检查工作区状态，
-与已删除的批准文本快照机制无关。pVisor 的 pvisor.sh 提供领域断言和前提函数。
+学习路线的 index.md 定义 fail、expect_exit、expect_refused、snapshot、assert_unchanged、assert_same_tree、assert_content、assert_absent 及 JSON/fixture 函数。全部 Markdown 就是完整输入，函数没有藏在另一套 shell 文件中。
 
-## 6. 配置：semspec.toml
+仅检查进程退出 77 表示 SKIP；`expect_exit 77 CMD` 验证产品退出码不会跳过 case。SKIP 原因来自检查输出，受 case/准备文档审核约束。
 
-```toml
-[project]
-name = "pvisor"
-spec_dirs = ["tests/semantics"]
-ledger = "tests/semantics/REVIEWED.toml"
+## 6. 约定与运行时输入
 
-[subject]
-bin = "target/debug/pvisor"
-language = "bash"
-vocab = ["tests/semantics/vocab/core.sh", "tests/semantics/vocab/pvisor.sh"]
-env = { RUST_LOG = "warn" }
-timeout = "180s"
-
-[platforms]
-macos = { os = "macos" }
-linux = { os = "linux" }
-```
-
-配置不参与摘要；词汇集合决定 case 摘要。当前 OS 必须恰好匹配一个平台。
-环境变量继承调用者再叠加配置与 runner 变量；配置不能覆盖 SEMSPEC_*、CASE_ROOT、
-WS、SUBJECT_BIN。仅支持 Bash；签名、JUnit 和并行尚未实现，不接受伪装成功。
+- 命令行必须明确提供一个或多个 Markdown 文件/目录，不推断默认路径。目录递归读取 Markdown，忽略隐藏目录与 README.md；重叠路径的同一文件只加载一次，不同文件重复 ID 报错。
+- 单文件运行只读取该文件的 case 及其同目录 index.md 准备步骤，不加载其他章节的 case。
+- 默认 PATH 提供产品命令；需要指定构建产物时用 `--subject-bin PATH` 或 `SEMSPEC_SUBJECT_BIN`，runner 校验后提供绝对 `SUBJECT_BIN`。不使用该变量的 case 无需配置待测程序。
+- 默认每个 case 最多运行 180 秒；`--timeout` 设置默认值，case 注释中的 timeout 优先。当前平台直接使用 linux/macos 名称，不要求平台映射配置。
+- 环境继承调用者，runner 提供 CASE_ROOT、WS、SEMSPEC_BIN、SEMSPEC_PROJECT_ROOT；SUBJECT_BIN 只在显式指定时提供。参数不从配置文件读取。
+- 输入目录（文件取父目录）的最近公共目录是审核根；准备文档相对路径及 `REVIEWED.toml` 都以它为基准。单输入仍使用原目录。没有台账就是 UNREVIEWED；台账是人工审核输出，不是执行配置，init/lint/run 不创建它。
 
 ## 7. CLI
 
 ```text
-semspec init                         创建配置、示例、core.sh 和空台账
-semspec list [--domain D]            列出 case 和审核状态
-semspec show ITEM                    当前全文、摘要、依赖与审核状态
-semspec lint                         解析、结构检查和 Bash 语法检查，不执行规格
-semspec review [--strict]            待审项在 strict 模式下退出 1
-semspec run [FILE.md] [OPTIONS]      执行全部或指定 Markdown 文件的 case
-    --case ID,... --domain D        选择交集
-    --subject-bin PATH              覆盖被测程序（或 SEMSPEC_SUBJECT_BIN）
-    --keep --require-reviewed       保留现场、审核门禁
+semspec init DIR                     在指定目录创建 index.md 和 example.md，不创建配置、脚本或台账
+semspec list PATH... [--domain D]     从文档发现 case 和审核状态
+semspec show ITEM PATH...            当前全文、摘要、依赖与审核状态
+semspec lint PATH...                  结构检查与 Bash 语法检查，不执行规格
+semspec review PATH... [--strict]            待审项在 strict 模式下退出 1
+semspec run PATH... [OPTIONS]         执行全部或指定 Markdown 文件/目录
+    --case ID,... --domain D         选择 case；显式 ID 必须唯一且属于所选域
+    --subject-bin PATH --timeout T  运行时待测程序和默认超时
+    --keep --require-reviewed       保留现场、人工审核门禁
+    --require-pass                  每条选定 case 必须 PASS，SKIP/XFAIL 也使门禁失败
     --format human|json --output F  报告输出
-semspec approve ITEM... --reviewer NAME
+semspec --spec-dir PATH COMMAND      显式输入，可重复；人工 approve 使用此选项
+semspec --spec-dir PATH approve ITEM... --reviewer NAME
                                      仅人工交互批准
-semspec helper NAME [ARGS...]        tree-state、json-get、diff
+semspec helper NAME [ARGS...]        setup、tree-state、json-get、diff
 ```
 
 | runner 退出码 | 含义 |
 |---|---|
 | 0 | 无失败，SKIP/XFAIL 不算失败 |
-| 1 | FAIL/XPASS，或 require-reviewed 下存在待审项 |
-| 2 | 用法、配置或规格错误，包括被测程序不可用 |
+| 1 | FAIL/XPASS、报告清单不完整，或 require-pass 下存在非 PASS，或 require-reviewed 下存在待审项 |
+| 2 | 用法或规格错误，包括显式待测程序不可用 |
 | 3 | ERROR，引擎错误，优先于 1 |
 
-77 是 Bash 检查的退出码，runner 报告 SKIP 后仍按上表返回。
+77 是 Bash 检查的退出码；runner 报告 SKIP 后仍按上表返回。SSH 签名、JUnit、并行执行仍不支持。
 
 ## 8. Digest 规范
 
@@ -183,7 +179,7 @@ date = "2026-10-02"
 
 ## 10. 执行语义
 
-当前 `ENGINE_SEMANTICS=2`。以下变更需要升级该版本并更新摘要稳定性测试：
+当前 `ENGINE_SEMANTICS=6`。以下变更需要升级该版本并更新摘要稳定性测试：
 
 1. 每个 case 创建独立 CASE_ROOT，空 ws/ 是 cwd；stdin 为 /dev/null。
 2. 子进程独立进程组；超时 TERM，5 秒后 KILL。正常退出也清理剩余子孙进程。
@@ -192,17 +188,21 @@ date = "2026-10-02"
 4. SKIP 优先于 xfail。预期失败平台上，成功为 XPASS，失败为 XFAIL；启动错误为 ERROR。
 5. FAIL/XFAIL/XPASS/ERROR 保留现场及日志；其余自动删除，除非指定 --keep。
 6. 执行结果和审核独立；require-reviewed 检查全部所用对象，包括跳过的 case。
+7. runner 报告必须包含选定 ID 的精确集合，每个只出现一次，空报告、漏项、重复或多余结果都使门禁失败。选定集合来自相同 Markdown 解析结果，不另建解析脚本。
+8. `--require-pass` 要求所有选定 case 都是 PASS；SKIP/XFAIL 保留原 verdict，但退出 1，ERROR 仍优先退出 3。审核状态与此门禁独立。
+9. 指定 `--output` 时，选择校验通过后、执行前删除旧报告，再原子发布本次报告。非法选择保留旧报告；启动失败或中断不会留下旧成功结果。报告不能覆盖已加载的 case、准备文档或审核台账。
+
 
 ## 11. 实现与验证
 
-`tools/semspec` 是独立 Cargo 包，model/config/parse/seal/ledger/project/runner/helpers
+`tools/semspec` 是独立 Cargo 包，model/parse/seal/ledger/project/runner/helpers
 及 CLI 分模块；不另建工作区子 crate 或执行器抽象。常规测试可以由 AI 维护。
 
 ```sh
 just test-semspec
-just semspec lint
-just semspec --config semspec-doc.toml lint
-just semspec --config tools/semspec/semantics/semspec.toml lint
+just semspec lint docs/src/zh/cases
+just semspec lint docs/src/zh/reference
+just semspec --spec-dir tools/semspec/semantics lint
 ```
 
 自举规格在 tools/semspec/semantics/review.md，必须人工审核。
@@ -244,3 +244,12 @@ overlay-core 的 `create_symlink` 本身成功，错误出现在 FUSE 回复之�
 先 lint，再运行受影响的 case。摘要变化使已有批准 STALE，PASS 不会重新批准。
 人工审查差异和新语义后才更新台账；发布门禁要求真实人工批准。
 AI 不得执行 approve 或编辑真实 REVIEWED.toml、遗留 .approved 文件。
+
+## 14. 旧配置退场
+
+不再支持 `--config`、配置文件、标题发现或 `semantic-case` 注解。STAGE 检查迁入
+`docs/src/zh/cases/06-stage-apply.md`；DOC、VM 和 runner 自举规格统一使用代码块前的
+`semspec: case` 注释及 Markdown 准备块。原陈述、检查和 xfail 保持完整；迁移回归
+固定核对 74 条原有产品检查的内容摘要，不代替人工审核。引擎语义升级为 6，已有
+审核须人工重审；迁移不改写真实台账或快照。`@vocab:` 和 JSON 的 `vocab_review`
+保留为审核记录的字段名，其内容现在指向准备文档。

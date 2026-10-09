@@ -1,4 +1,4 @@
-//! Black-box SDK driver for S-DOC-059..062. Invoke via `just vm-cases`.
+//! Black-box SDK driver for S-DOC-059..062. Invoke via `just cases --suite vm`.
 use anyhow::{Context, ensure};
 use pvisor::{MemoryEventSink, OverlayHint, PVisor, RunHandle, VmExecutor, VmSettings};
 use pvisor_core::{RunInvocation, RunSpec, RunState};

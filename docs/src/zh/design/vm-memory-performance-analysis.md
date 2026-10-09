@@ -140,7 +140,9 @@ CPU 原始值不能直接当作纳秒。本机 Mach timebase 为 125/3；使用�
 
 配对在同一宿主顺序执行，但不保证压力等级或后台负载完全一致；压力表逐模式、逐重复公开环境变化，不能把这个实验当作隔离主机上的因果压力实验。
 
-### 复现 {#reproduce}
+### 历史实验命令 {#reproduce}
+
+`tools/experiments/macos-memory/` 的实验脚本已移除。下面的启动、延长观察和汇总命令保留当时的执行方式，不能在当前工作树运行；原始数据、制品身份和实验结论仍保留。
 
 先设置已有固件目录；输出目录必须不存在，避免覆盖旧数据。命令只适用于
 可运行 HVF 的 Apple Silicon macOS，需要允许宿主 socket 与 Hypervisor。
@@ -166,7 +168,7 @@ stderr、进程身份与时钟计数、宿主 `vm_stat`、池统计和校验结�
 
 复制签名后的可执行文件是为了隔离同时发生的构建。正式案例启动与结束均核验 CLI SHA-256，所有配对必须匹配矩阵记录中的同一摘要。不要从正在被构建覆盖的 `target/release` 持续启动样本。
 
-### 2 GiB 延长观察复现 {#long-idle-reproduce}
+### 2 GiB 延长观察历史命令 {#long-idle-reproduce}
 
 在独立输出目录运行同一固定二进制，保留两次配对与反转顺序。默认仍为 35 秒；补测只增加等待时长和与之匹配的超时。下列路径需替换为实际的固定二进制、固件及输出目录。[结果页](#long-idle-2048)区分预设窗口和描述性末段。
 
@@ -499,7 +501,7 @@ RAM 代理回答“冷 guest RAM 是否已回收”；footprint 回答 macOS 对
 
 完整命令与日志保存在仓库目录 `review_project/06-evidence/macos-memory/cli-decision-frozen-matrix-2026-10-03/`，每个 case 含 `raw.json` 和各 VM 的 stdout/stderr。汇总保留成功原始记录的 SHA-256；失败目录不覆盖。历史实验仍留在同一 evidence 父目录，不能替代本轮数据。
 
-在完成[复现命令](#reproduce)后，用下面的只读汇总器重验内容、配对和计量：
+历史记录使用下面的只读汇总器重验内容、配对和计量；该脚本已随[历史实验入口](#reproduce)移除：
 
 ```bash
 python3 tools/experiments/macos-memory/cli_decision_report.py \

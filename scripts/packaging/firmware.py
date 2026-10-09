@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import fcntl
 import hashlib
 import importlib.util
@@ -16,6 +17,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
@@ -145,8 +147,30 @@ def metadata() -> dict[str, str]:
     return result
 
 
-def build_tools(target: str) -> tuple[list[str], dict[str, str]]:
+def build_tools(target: str) -> tuple[list[str], dict[str, str], dict[str, str]]:
     macos = target == "aarch64-apple-darwin"
+    search_path = os.environ.get("PATH", os.defpath)
+    if macos and (brew := shutil.which("brew")):
+        try:
+            prefix = Path(
+                subprocess.check_output(
+                    [brew, "--prefix"], text=True, stderr=subprocess.PIPE, timeout=5
+                ).strip()
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass  # A manually configured toolchain can still build without Homebrew.
+        else:
+            directories = [
+                prefix / "opt/llvm/bin",
+                prefix / "opt/lld/bin",
+                prefix / "opt/make/libexec/gnubin",
+                prefix / "opt/gnu-sed/libexec/gnubin",
+                prefix / "opt/gnu-tar/libexec/gnubin",
+                prefix / "bin",
+            ]
+            search_path = os.pathsep.join(
+                [str(path) for path in directories if path.is_dir()] + [search_path]
+            )
     compiler = "/usr/bin/cc" if macos else "gcc"
     command = [
         "gmake" if macos else "make",
@@ -177,11 +201,15 @@ def build_tools(target: str) -> tuple[list[str], dict[str, str]]:
             "KERNEL_STRIP": "llvm-strip",
             "KERNEL_READELF": "llvm-readelf",
         }.items():
-            path = shutil.which(tool)
+            path = shutil.which(tool, path=search_path)
             if not path:
-                raise RuntimeError(f"Missing firmware tool {tool}; see fw/README.md")
+                raise RuntimeError(
+                    f"Missing firmware tool {tool}; install with "
+                    "brew install llvm lld make gnu-sed gnu-tar; see fw/README.md"
+                )
             command.append(f"{key}={path}")
             tools[key] = path
+        command[0] = tools["make"] = tools["KERNEL_MAKE"]
     else:
         tools.update(ld="ld", strip="strip")
     identities = {}
@@ -200,7 +228,7 @@ def build_tools(target: str) -> tuple[list[str], dict[str, str]]:
         command.append("PYTHON=python")
     else:
         command.append(f"PYTHON={sys.executable}")
-    return command, identities
+    return command, identities, {"PATH": search_path} if macos else {}
 
 
 def download_kernel(cache: Path, info: dict[str, str], *, offline: bool) -> Path:
@@ -229,6 +257,58 @@ def download_kernel(cache: Path, info: dict[str, str], *, offline: bool) -> Path
     return archive
 
 
+@contextmanager
+def firmware_build_directory(work: Path, macos: bool):
+    """Keep case-sensitive kernel trees on a temporary volume when the host needs it."""
+    if not macos:
+        yield work
+        return
+    with tempfile.TemporaryDirectory(dir=work) as directory:
+        probe = Path(directory) / "CaseProbe"
+        probe.touch()
+        case_sensitive = not probe.with_name("caseprobe").exists()
+    if case_sensitive:
+        yield work
+        return
+
+    temporary = Path(tempfile.mkdtemp(prefix=".macos-fw-", dir=work.parent))
+    image = temporary / "build.sparseimage"
+    volume = temporary / "volume"
+    attached = False
+    try:
+        print("Preparing case-sensitive APFS firmware build volume", file=sys.stderr)
+        subprocess.run(
+            [
+                "hdiutil",
+                "create",
+                "-size",
+                "32g",
+                "-type",
+                "SPARSE",
+                "-fs",
+                "Case-sensitive APFS",
+                "-volname",
+                "pvisor-fw",
+                str(image),
+            ],
+            check=True,
+        )
+        volume.mkdir()
+        subprocess.run(
+            ["hdiutil", "attach", "-nobrowse", "-mountpoint", str(volume), str(image)],
+            check=True,
+        )
+        attached = True
+        build = volume / "fw"
+        shutil.copytree(work, build, symlinks=True)
+        yield build
+    finally:
+        # Do not remove a mounted volume if detach fails, including a partial attach.
+        if attached or volume.is_mount():
+            subprocess.run(["hdiutil", "detach", str(volume)], check=True)
+        shutil.rmtree(temporary)
+
+
 def build_firmware(
     target: str, *, target_dir: str | None = None, jobs: str | None = None, offline: bool = False
 ) -> Path:
@@ -247,7 +327,7 @@ def build_firmware(
         raise RuntimeError(
             f"Cannot build {target} firmware on {host}; supply an explicit firmware input"
         )
-    command, tools = build_tools(target)
+    command, tools, tool_env = build_tools(target)
     if offline and command[0] == "uv":
         command.insert(2, "--offline")
     info = metadata()
@@ -269,14 +349,6 @@ def build_firmware(
     cache.mkdir(parents=True, exist_ok=True)
     with (cache / ".build.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if target == "aarch64-apple-darwin":
-            with tempfile.TemporaryDirectory(dir=cache) as directory:
-                probe = Path(directory) / "CaseProbe"
-                probe.touch()
-                if probe.with_name("caseprobe").exists():
-                    raise RuntimeError(
-                        "macOS firmware needs a case-sensitive PVISOR_FW_BUILD_DIR; see fw/README.md"
-                    )
         work = cache / f"{target}-{key}"
         name = (
             f"libkrunfw.{info['ABI_VERSION']}.dylib"
@@ -299,8 +371,8 @@ def build_firmware(
             shutil.copy2(source, destination)
         (work / "tarballs").mkdir()
         (work / "tarballs" / archive.name).symlink_to(archive)
-        command.extend(["-C", str(work), "-j", jobs or str(min(os.cpu_count() or 1, 8)), "all"])
         env = os.environ.copy()
+        env.update(tool_env)
         # Cargo target flags and inherited Make overrides must not select a different guest.
         for variable in (
             "MAKEFLAGS",
@@ -331,11 +403,20 @@ def build_firmware(
             "LDFLAGS",
         ):
             env.pop(variable, None)
-        print(f"Building in-tree firmware: {shlex.join(command)}", file=sys.stderr)
-        subprocess.run(command, check=True, env=env)
-        if not output.is_file():
-            raise RuntimeError(f"Firmware build did not produce {output}")
         config = work / info["KERNEL_VERSION"] / ".config"
+        with firmware_build_directory(work, target == "aarch64-apple-darwin") as build:
+            command.extend(
+                ["-C", str(build), "-j", jobs or str(min(os.cpu_count() or 1, 8)), "all"]
+            )
+            print(f"Building in-tree firmware: {shlex.join(command)}", file=sys.stderr)
+            subprocess.run(command, check=True, env=env)
+            built_output = build / name
+            if not built_output.is_file():
+                raise RuntimeError(f"Firmware build did not produce {built_output}")
+            if build != work:
+                shutil.copy2(built_output, output)
+                config.parent.mkdir(parents=True)
+                shutil.copy2(build / info["KERNEL_VERSION"] / ".config", config)
         record = {
             "origin": "pvisor/fw",
             "libkrunfw_version": info["FULL_VERSION"],
@@ -407,3 +488,31 @@ def source_archive(source: Path, destination: Path) -> None:
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def main() -> None:
+    """Build firmware and optionally export its receipt and corresponding sources."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", default=os.getenv("CARGO_BUILD_TARGET"))
+    parser.add_argument("--target-dir", default=os.getenv("CARGO_TARGET_DIR"))
+    parser.add_argument("--jobs", "-j")
+    parser.add_argument("--offline", action="store_true")
+    parser.add_argument("--source-output", type=Path)
+    parser.add_argument("--source-archive", type=Path)
+    args = parser.parse_args()
+    source = build_firmware(
+        args.target or host_target(),
+        target_dir=args.target_dir,
+        jobs=args.jobs,
+        offline=args.offline,
+    )
+    if args.source_output:
+        args.source_output.parent.mkdir(parents=True, exist_ok=True)
+        args.source_output.write_text(source_record(source))
+    if args.source_archive:
+        source_archive(source, args.source_archive)
+    print(source)
+
+
+if __name__ == "__main__":
+    main()

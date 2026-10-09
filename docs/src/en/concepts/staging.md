@@ -2,7 +2,7 @@
 
 Staging keeps a Job's workspace changes in a copy-on-write upper layer. Only an explicit `apply` changes the target workspace. This makes file changes reversible before apply: select what to merge, discard the stage, or fork it.
 
-This page defines the staging contract. Each promise corresponds to a case in `tests/semantics/stage-apply.md`, reproducible with `just semantics`. For the workflow, see [Review and apply changes](../guides/review-apply.md).
+This page defines the staging contract. Each promise corresponds to a case in `docs/src/zh/cases/06-stage-apply.md`, reproducible with `just cases --suite stage`. For the workflow, see [Review and apply changes](../guides/review-apply.md).
 
 ## Promises
 

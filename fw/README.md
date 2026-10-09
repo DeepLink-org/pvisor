@@ -13,8 +13,8 @@ its source revision and the local changes included in the import.
 From the pVisor repository root:
 
 ```sh
-just fw-build -j4
-just test-fw
+just fw build -j4
+just fw test
 ```
 
 CLI, daemon and single-wheel builds use firmware compiled from this directory
@@ -23,18 +23,24 @@ Linux x86-64 builds embed the kernel in the executable. macOS ARM64 builds ship
 the built dylib beside the executables. Installing a published wheel does not
 require a kernel compiler.
 
-`fw-build` uses the native host's default firmware target and supplies
+`fw build` uses the native host's default firmware target and supplies
 `pyelftools`; the platform kernel toolchain must be installed separately.
 The first build downloads the pinned Linux source archive and verifies its
 SHA-256 checksum. Build snapshots and outputs live under `target/fw/` (or
 `PVISOR_FW_BUILD_DIR`), not in this source directory. Sources, configurations,
 patches, generator and toolchain identities determine the cache key; changed
-inputs build in a fresh tree. `just fw-build -j4 --offline` requires cached
+inputs build in a fresh tree. `just fw build -j4 --offline` requires cached
 verified kernel sources and locally available Python dependencies.
 
-On macOS, install Homebrew `llvm`, `lld`, `make`, `gnu-sed` and `gnu-tar`, put their
-LLVM/GNU executables on `PATH`, and set `PVISOR_FW_BUILD_DIR` to a directory on a
-case-sensitive filesystem. CI provisions a case-sensitive APFS image. The native
+On macOS, install Homebrew `llvm`, `lld`, `make`, `gnu-sed` and `gnu-tar`. The pVisor
+builder discovers Homebrew's prefix and prefers its LLVM/GNU tools within the
+firmware build, without changing your shell's `PATH`. If Homebrew is unavailable,
+it uses tools on `PATH`. On case-insensitive filesystems, it creates and mounts a
+temporary case-sensitive APFS sparse image (32 GiB maximum, allocated as needed),
+copies the completed firmware and actual kernel configuration back to the build
+cache, then unmounts and removes the image, including after build failures.
+`PVISOR_FW_BUILD_DIR` is optional; an existing case-sensitive cache builds directly.
+If unmounting fails, the image is retained and the error is reported. The native
 macOS kernel build path remains experimental; it does not bootstrap with a
 prebuilt firmware or a VM.
 
@@ -44,7 +50,7 @@ The lower-level `PVISOR_KRUNFW_PATH` accepts a library file;
 `kernel.bin` and `kernel.json`. Set at most one selector: conflicting inputs are
 rejected. The selected input is resolved once and shared by compilation, payload
 staging and source attribution. These overrides are optional, not required for
-normal builds; `just fw-build` always builds the maintained in-tree firmware.
+normal builds; `just fw build` always builds the maintained in-tree firmware.
 Cross-build and SEV/TDX variants remain available through the standalone Makefile.
 
 At runtime, the build-embedded kernel takes priority. Dynamic builds require a
@@ -57,7 +63,7 @@ Each default build retains a `libkrunfw.SOURCE` receipt with artifact, input and
 actual kernel configuration hashes. To export the matching sources:
 
 ```sh
-python3 scripts/build-firmware.py --source-output target/libkrunfw.SOURCE \
+just fw build --source-output target/libkrunfw.SOURCE \
   --source-archive target/pvisor-firmware-source.tar.gz
 ```
 
@@ -129,7 +135,7 @@ To compare with a flat bundle, run `bin2cbundle.py -t vmlinux` without
 `--compact`. The compiled ABI roundtrip tests require `cc` and `pyelftools`:
 
 ```sh
-python3 -m unittest discover -s tests -v
+just fw test
 ```
 
 ### Linux (SEV variant)
