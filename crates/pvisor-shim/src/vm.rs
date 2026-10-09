@@ -23,7 +23,15 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
     let config = plan.vm_config();
 
     let agent = vm_agent_enabled(&plan.annotations);
-    let guest_config = serde_json::to_vec(&guest_config(&plan.process, agent)?)?;
+    let mut guest = guest_config(&plan.process, agent)?;
+    // Named console ports (krun-stdin/stdout/stderr) are how non-terminal
+    // task IO reaches the runner's FIFOs; their names arrive asynchronously,
+    // so PID 1 must wait for every stream that is not a tty. Terminal tasks
+    // keep stdio on the console itself.
+    guest.stdio_ports = Some(std::array::from_fn(|fd| unsafe {
+        libc::isatty(fd as libc::c_int) != 1
+    }));
+    let guest_config = serde_json::to_vec(&guest)?;
     if agent {
         // The static musl shim binary doubles as the guest agent: copy it
         // into the rootfs so exec works without image requirements.

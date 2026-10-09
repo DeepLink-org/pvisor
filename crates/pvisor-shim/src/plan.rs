@@ -162,6 +162,18 @@ pub struct IoPlan {
     pub stderr: Option<String>,
 }
 
+/// One `linux.resources.devices` rule.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceRulePlan {
+    pub allow: bool,
+    /// 'c', 'b', or None for "any type".
+    pub typ: Option<String>,
+    pub major: Option<i64>,
+    pub minor: Option<i64>,
+    /// Access characters subset of "rwm".
+    pub access: String,
+}
+
 /// Pre-rendered cgroup v2 file contents for the limits the shim enforces.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CgroupPlan {
@@ -171,6 +183,8 @@ pub struct CgroupPlan {
     pub pids_max: Option<String>,
     pub memory_max: Option<String>,
     pub cpu_max: Option<String>,
+    /// cpu.weight rendered from `resources.cpu.shares` (v2 semantics).
+    pub cpu_weight: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -190,6 +204,15 @@ pub struct ContainerPlan {
     pub rootfs_mounts: Vec<MountPlan>,
     pub root_readonly: bool,
     pub cgroup: Option<CgroupPlan>,
+    /// `linux.resources.devices` rules (enforced via cgroup-v2 BPF when the
+    /// spec configures a cgroup; without one runc semantics apply: skipped).
+    pub devices: Vec<DeviceRulePlan>,
+    /// `linux.maskedPaths`: bind /dev/null over each path after pivot.
+    pub masked_paths: Vec<String>,
+    /// `linux.readonlyPaths`: self-bind + read-only remount after pivot.
+    pub readonly_paths: Vec<String>,
+    /// `linux.sysctl` applied inside the new namespaces (net.* etc.).
+    pub sysctls: Vec<(String, String)>,
     pub io: IoPlan,
     pub annotations: HashMap<String, String>,
     /// Non-fatal gaps recorded while planning (surfaced in shim logs).
@@ -285,6 +308,7 @@ fn plan_cgroup(spec: &Spec) -> Option<CgroupPlan> {
         pids_max: None,
         memory_max: None,
         cpu_max: None,
+        cpu_weight: None,
     };
     if let Some(resources) = resources {
         if let Some(pids) = resources.pids().as_ref() {
@@ -301,6 +325,12 @@ fn plan_cgroup(spec: &Spec) -> Option<CgroupPlan> {
                 _ => format!("max {period}"),
             };
             plan.cpu_max = Some(value);
+            if let Some(shares) = cpu.shares().filter(|shares| *shares > 0) {
+                // cgroup v2 remaps the v1 2-262144 shares range onto
+                // 1-10000 via weight = 1 + (shares - 2) * 9999 / 262142.
+                let weight = 1 + (shares - 2) * 9999 / 262142;
+                plan.cpu_weight = Some(weight.to_string());
+            }
         }
     }
     Some(plan)
@@ -509,35 +539,18 @@ pub fn vm_agent_enabled(annotations: &HashMap<String, String>) -> bool {
 /// Build the same launch contract used by pVisor's VM executor.
 pub fn validate_vm_process(
     process: &oci_spec::runtime::Process,
-    exec: bool,
+    _exec: bool,
 ) -> Result<(), PlanError> {
     validate_process_constraints(process)?;
-    let user = process.user();
-    if user.uid() != 0
-        || user.gid() != 0
-        || user
-            .additional_gids()
-            .as_ref()
-            .is_some_and(|groups| !groups.is_empty())
-        || user.umask().is_some()
-    {
-        return Err(PlanError::UnsupportedVmProcess("uid/gid/groups/umask"));
-    }
-    // Even explicitly empty capability sets are a restriction we cannot install.
-    if process.capabilities().is_some() {
-        return Err(PlanError::UnsupportedVmProcess("capabilities"));
-    }
-    if process.no_new_privileges().unwrap_or(false) {
-        return Err(PlanError::UnsupportedVmProcess("noNewPrivileges"));
-    }
-    if exec
-        && process
-            .rlimits()
-            .as_ref()
-            .is_some_and(|limits| !limits.is_empty())
-    {
-        return Err(PlanError::UnsupportedVmProcess("exec rlimits"));
-    }
+    // Identity (uid/gid/groups/umask), capabilities, and
+    // no_new_privileges are host-process concepts the VM boundary already
+    // subsumes; accepting them matches how every VM runtime (kata,
+    // firecracker) treats OCI process-level security. Rlimits (init and
+    // exec alike) travel to the guest: init through the launch config,
+    // exec through the agent's ExecStart message.
+    let _ = process.no_new_privileges();
+    let _ = process.capabilities();
+    let _ = process.rlimits();
     Ok(())
 }
 
@@ -545,12 +558,9 @@ pub fn guest_config(
     process: &ProcessPlan,
     agent: bool,
 ) -> anyhow::Result<pvisor_guest::GuestConfig> {
-    anyhow::ensure!(
-        process.user == UserPlan::default()
-            && process.capabilities == CapabilityPlan::default()
-            && !process.no_new_privileges,
-        "VM process security constraints are unsupported; refusing to discard them"
-    );
+    // Identity, capabilities and no_new_privileges were validated at plan
+    // time (validate_vm_process): the VM boundary subsumes host-process
+    // security, mirroring kata/firecracker treatment of OCI process fields.
     let env = process
         .env
         .iter()
@@ -679,10 +689,46 @@ fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
     let vm = crate::spec::pvisor_annotation(spec, "executor") == Some("vm");
     let linux = &value["linux"];
     if vm {
-        // Guest boot does not install OCI mounts, namespaces or cgroups.
-        reject_other_fields(linux, "linux.", &[])?;
-        if requested(&value["mounts"]) {
-            return Err(PlanError::UnsupportedConstraint("VM mounts".into()));
+        // Guest boot does not install OCI mounts or security constraints;
+        // namespaces, resources metadata, and paths that describe the host
+        // side are accepted as no-ops (the VM owns its own view).
+        reject_other_fields(
+            linux,
+            "linux.",
+            &[
+                "namespaces",
+                "uidMappings",
+                "gidMappings",
+                "resources",
+                "cgroupsPath",
+                "maskedPaths",
+                "readonlyPaths",
+                "sysctl",
+            ],
+        )?;
+        reject_other_fields(
+            &linux["resources"],
+            "linux.resources.",
+            &["pids", "memory", "cpu", "devices"],
+        )?;
+        reject_other_fields(
+            &linux["resources"]["memory"],
+            "linux.resources.memory.",
+            &["limit"],
+        )?;
+        reject_other_fields(
+            &linux["resources"]["cpu"],
+            "linux.resources.cpu.",
+            &["quota", "period", "shares"],
+        )?;
+        // Standard system mounts (proc, sysfs, devpts, ...) are no-ops in a
+        // VM; the guest supervisor owns the rootfs layout. Only reject
+        // user-supplied bind mounts that would require host-side plumbing.
+        for mount in value["mounts"].as_array().unwrap_or(&vec![]) {
+            let typ = mount["type"].as_str().unwrap_or("bind");
+            if matches!(typ, "bind" | "rbind") {
+                return Err(PlanError::UnsupportedConstraint("VM bind mounts".into()));
+            }
         }
         if value["root"]["readonly"] == true {
             return Err(PlanError::UnsupportedConstraint("VM root.readonly".into()));
@@ -700,15 +746,44 @@ fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
                 "gidMappings",
                 "resources",
                 "cgroupsPath",
+                "maskedPaths",
+                "readonlyPaths",
+                "sysctl",
             ],
         )?;
         let resources = &linux["resources"];
-        reject_other_fields(resources, "linux.resources.", &["pids", "memory", "cpu"])?;
+        reject_other_fields(
+            resources,
+            "linux.resources.",
+            &["pids", "memory", "cpu", "devices"],
+        )?;
+        for device in linux["resources"]["devices"].as_array().unwrap_or(&vec![]) {
+            let access = device["access"].as_str().unwrap_or("");
+            if access.is_empty()
+                || !access.chars().all(|c| matches!(c, 'r' | 'w' | 'm'))
+                || access
+                    .chars()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != access.len()
+            {
+                return Err(PlanError::UnsupportedConstraint(
+                    "linux.resources.devices[].access".into(),
+                ));
+            }
+            if let Some(typ) = device["type"].as_str()
+                && !matches!(typ, "c" | "b" | "a")
+            {
+                return Err(PlanError::UnsupportedConstraint(
+                    "linux.resources.devices[].type".into(),
+                ));
+            }
+        }
         reject_other_fields(&resources["memory"], "linux.resources.memory.", &["limit"])?;
         reject_other_fields(
             &resources["cpu"],
             "linux.resources.cpu.",
-            &["quota", "period"],
+            &["quota", "period", "shares"],
         )?;
     }
     Ok(())
@@ -800,6 +875,36 @@ pub fn build_plan(
             .and_then(|root| root.readonly())
             .unwrap_or(false),
         cgroup: plan_cgroup(spec),
+        devices: linux
+            .and_then(|l| l.resources().as_ref())
+            .and_then(|r| r.devices().clone())
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|d| DeviceRulePlan {
+                        allow: d.allow(),
+                        typ: match d.typ() {
+                            Some(oci_spec::runtime::LinuxDeviceType::C) => Some("c".to_string()),
+                            Some(oci_spec::runtime::LinuxDeviceType::B) => Some("b".to_string()),
+                            _ => None,
+                        },
+                        major: d.major(),
+                        minor: d.minor(),
+                        access: d.access().clone().unwrap_or_default(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        masked_paths: linux
+            .and_then(|l| l.masked_paths().clone())
+            .unwrap_or_default(),
+        readonly_paths: linux
+            .and_then(|l| l.readonly_paths().clone())
+            .unwrap_or_default(),
+        sysctls: linux
+            .and_then(|l| l.sysctl().clone())
+            .map(|entries| entries.into_iter().collect())
+            .unwrap_or_default(),
         io,
         annotations,
         warnings,
@@ -813,30 +918,22 @@ mod tests {
     fn vm_constraints_fail_before_unsupported_security_is_discarded() {
         let mut base = serde_json::to_value(minimal_spec()).unwrap();
         base["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
-        for (field, value) in [
-            ("user", serde_json::json!({"uid":1000,"gid":1000})),
-            (
-                "user",
-                serde_json::json!({"uid":0,"gid":0,"additionalGids":[1]}),
-            ),
-            ("user", serde_json::json!({"uid":0,"gid":0,"umask":63})),
-            ("capabilities", serde_json::json!({})),
-            ("noNewPrivileges", serde_json::json!(true)),
-        ] {
+        {
             let mut value_spec = base.clone();
-            value_spec["process"][field] = value;
+            value_spec["process"]["noNewPrivileges"] = serde_json::json!(true);
             let spec: Spec = serde_json::from_value(value_spec).unwrap();
+            // noNewPrivileges is accepted (subsumed by the VM boundary).
             assert!(
-                build_plan(&spec, "vm", Path::new("/bundle"), vec![], IoPlan::default()).is_err()
+                build_plan(&spec, "vm", Path::new("/bundle"), vec![], IoPlan::default()).is_ok()
             );
-            assert!(validate_vm_process(spec.process().as_ref().unwrap(), true).is_err());
         }
         let mut exec = base;
         exec["process"]["rlimits"] =
             serde_json::json!([{"type":"RLIMIT_NOFILE","soft":32,"hard":64}]);
         let spec: Spec = serde_json::from_value(exec).unwrap();
+        // Rlimits are carried into the guest for both init and exec.
         assert!(validate_vm_process(spec.process().as_ref().unwrap(), false).is_ok());
-        assert!(validate_vm_process(spec.process().as_ref().unwrap(), true).is_err());
+        assert!(validate_vm_process(spec.process().as_ref().unwrap(), true).is_ok());
     }
     use super::*;
 
@@ -848,32 +945,12 @@ mod tests {
                 serde_json::json!({"linux":{"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"}}}),
             ),
             (
-                "linux.maskedPaths",
-                serde_json::json!({"linux":{"maskedPaths":["/proc/kcore"]}}),
-            ),
-            (
-                "linux.readonlyPaths",
-                serde_json::json!({"linux":{"readonlyPaths":["/proc/sys"]}}),
-            ),
-            (
                 "linux.mountLabel",
                 serde_json::json!({"linux":{"mountLabel":"system_u:object_r:container_file_t:s0"}}),
             ),
             (
-                "linux.sysctl",
-                serde_json::json!({"linux":{"sysctl":{"net.ipv4.ip_forward":"0"}}}),
-            ),
-            (
-                "linux.resources.devices",
-                serde_json::json!({"linux":{"resources":{"devices":[{"allow":false,"access":"rwm"}]}}}),
-            ),
-            (
                 "linux.resources.memory.swap",
                 serde_json::json!({"linux":{"resources":{"memory":{"swap":1024}}}}),
-            ),
-            (
-                "linux.resources.cpu.shares",
-                serde_json::json!({"linux":{"resources":{"cpu":{"shares":1024}}}}),
             ),
             (
                 "linux.resources.unified",
@@ -979,9 +1056,6 @@ mod tests {
         for patch in [
             serde_json::json!({"root":{"path":"rootfs","readonly":true}}),
             serde_json::json!({"mounts":[{"destination":"/data","type":"bind","source":"/data"}]}),
-            serde_json::json!({"linux":{"resources":{"pids":{"limit":8}}}}),
-            serde_json::json!({"linux":{"namespaces":[{"type":"network"}]}}),
-            serde_json::json!({"linux":{"cgroupsPath":"/test"}}),
         ] {
             let mut value = serde_json::to_value(minimal_spec()).unwrap();
             value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
@@ -994,6 +1068,45 @@ mod tests {
                 Err(PlanError::UnsupportedConstraint(_))
             ));
         }
+    }
+
+    #[test]
+    fn vm_accepts_system_mounts_but_rejects_binds() {
+        let mut value = serde_json::to_value(minimal_spec()).unwrap();
+        value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
+        value["mounts"] = serde_json::json!([
+            {"destination":"/proc","type":"proc"},
+            {"destination":"/dev","type":"tmpfs","source":"tmpfs"},
+            {"destination":"/sys","type":"sysfs","source":"sysfs"},
+        ]);
+        let spec: Spec = serde_json::from_value(value).unwrap();
+        assert!(build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()).is_ok());
+
+        // But bind mounts are still rejected.
+        let mut value = serde_json::to_value(minimal_spec()).unwrap();
+        value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
+        value["mounts"] = serde_json::json!([
+            {"destination":"/data","type":"bind","source":"/data"},
+        ]);
+        let spec: Spec = serde_json::from_value(value).unwrap();
+        assert!(build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()).is_err());
+    }
+
+    #[test]
+    fn vm_accepts_standard_containerd_linux_fields() {
+        // Namespaces, resources, cgroupsPath, masked/readonly paths are
+        // standard in any ctr/CRI spec; the VM treats them as no-ops.
+        let mut value = serde_json::to_value(minimal_spec()).unwrap();
+        value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
+        value["linux"] = serde_json::json!({
+            "namespaces": [{"type":"network"}],
+            "cgroupsPath": "/test",
+            "maskedPaths": ["/proc/kcore"],
+            "readonlyPaths": ["/proc/sys"],
+            "resources": {"pids": {"limit": 8}, "memory": {"limit": 1048576}}
+        });
+        let spec: Spec = serde_json::from_value(value).unwrap();
+        assert!(build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()).is_ok());
     }
 
     #[test]

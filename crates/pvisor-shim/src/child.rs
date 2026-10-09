@@ -147,6 +147,19 @@ fn make_pipe() -> Result<(RawFd, RawFd)> {
     Ok((fds[0], fds[1]))
 }
 
+/// Mark a descriptor close-on-exec. Ends the shim keeps for itself (the
+/// ready-report read end and the start-pipe write end) must never survive
+/// into the internal parent: a long-lived runner holding the start write
+/// end would block the EOF that tells it the shim is gone.
+fn set_cloexec(fd: RawFd) {
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        }
+    }
+}
+
 /// The stdio descriptors the shim handed over, parsed back in the child.
 #[derive(Clone, Copy, Debug)]
 pub struct StdioFds {
@@ -202,6 +215,12 @@ pub fn spawn_internal_opts(
     let (ready_r, ready_w) = make_pipe()?;
     let (start_r, start_w) = make_pipe()?;
     let (fork_r, fork_w) = make_pipe()?;
+    // Parent-only ends. The exec'd internal parent must inherit exactly the
+    // env-documented descriptors (ready_w, start_r, fork_w, fork_r); keeping
+    // the start write end would silence the shim-exit EOF for VM runners,
+    // and the ready read end would let the child consume its own report.
+    set_cloexec(ready_r);
+    set_cloexec(start_w);
 
     let exe = std::env::current_exe().context("current exe")?;
     let mut command = Command::new(exe);
@@ -235,8 +254,8 @@ pub fn spawn_internal_opts(
         .spawn()
         .context("spawn internal process")?;
 
-    // The internal parent inherited every end; drop the copies this
-    // process must not hold.
+    // Drop this process's copies of the child-side ends (CLOEXEC already
+    // kept the parent-only ends out of the child).
     for fd in [ready_w, start_r, fork_r, fork_w] {
         unsafe { libc::close(fd) };
     }
@@ -382,6 +401,20 @@ fn init_parent_main() -> Result<()> {
         return Err(error).context("install requested cgroup limits");
     }
 
+    // Device rules need a cgroup for the BPF filter; without one runc
+    // semantics apply and enforcement is skipped.
+    if !plan.devices.is_empty()
+        && let Some(cgroup_plan) = plan.cgroup.as_ref()
+        && let Some(dir) = crate::cgroup::cgroup_dir(cgroup_plan)
+        && let Err(error) = crate::cgroup::device_bpf::attach_device_filter(&dir, &plan.devices)
+    {
+        unsafe {
+            libc::kill(g_pid as i32, libc::SIGKILL);
+            libc::waitpid(g_pid as i32, std::ptr::null_mut(), 0);
+        }
+        return Err(error).context("attach device filter");
+    }
+
     relay_fork_report(fork_report_fd, g_pid)
 }
 
@@ -451,12 +484,38 @@ fn vm_runner_main() -> Result<i32> {
         return Ok(255);
     }
 
-    // The virtio-console host side is wired to this process's stdio.
+    // The virtio-console host side is wired to this process's stdio. Task
+    // output travels the named console ports, so stderr remains free for
+    // VMM logging: the `io.pvisor.vm.log` annotation (a log filter or "1")
+    // redirects it to <bundle>/pvisor-vm.log.
     let stdio = StdioFds::from_env()?;
     unsafe {
         libc::dup2(stdio.stdin, libc::STDIN_FILENO);
         libc::dup2(stdio.stdout, libc::STDOUT_FILENO);
         libc::dup2(stdio.stderr, libc::STDERR_FILENO);
+    }
+    if let Some(filter) = plan.annotations.get("io.pvisor.vm.log").map(|value| {
+        if value.is_empty() || value == "1" {
+            "debug".to_string()
+        } else {
+            value.clone()
+        }
+    }) {
+        let path = plan.bundle.join("pvisor-vm.log");
+        if let Ok(file) = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+        {
+            use std::os::fd::AsRawFd;
+            unsafe {
+                libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO);
+            }
+            use pvisor_vm::api::RuntimeSupport;
+            pvisor_vm::api::VmPlatform::init_logging(&filter);
+            eprintln!("pvisor VM runner logging to {}", path.display());
+        }
     }
 
     crate::vm::boot_vm(&plan)
@@ -659,6 +718,10 @@ fn collect_unshare_flags(plan: &ContainerPlan) -> libc::c_int {
         match namespace.kind {
             // CLONE_NEWNS is always part of the unshare call above.
             NamespaceKind::Mount => {}
+            // The cgroup namespace is unshared by the init child (G): the
+            // parent must keep the host cgroup view to install limits and
+            // the device filter.
+            NamespaceKind::Cgroup => {}
             other => flags |= other.clone_flag(),
         }
     }
@@ -806,12 +869,49 @@ fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawF
         stdio.stderr,
     ]);
 
+    // G needs its own mount namespace: pivot_root must not change the root
+    // for A (which shares this namespace after fork), or the parent's
+    // cgroup and BPF setup loses the host view.
+    if unsafe { libc::unshare(libc::CLONE_NEWNS) } != 0 {
+        fail(format!(
+            "unshare mount namespace: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if let Err(error) = mount::make_mounts_private() {
+        fail(format!("{error:#}"));
+    }
+
+    // The cgroup namespace is unshared here (after the parent installed
+    // limits in the host view): the remapped root only affects this
+    // process's own view.
+    if plan
+        .namespaces
+        .iter()
+        .any(|ns| ns.kind == NamespaceKind::Cgroup && ns.path.is_none())
+        && unsafe { libc::unshare(libc::CLONE_NEWCGROUP) } != 0
+    {
+        fail(format!(
+            "unshare cgroup namespace: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
     // procfs must be mounted by a member of the new pid namespace, i.e. G.
     if let Err(error) = mount::mount_proc(&plan.rootfs) {
         fail(format!("{error:#}"));
     }
     if let Err(error) = mount::pivot_root(&plan.rootfs) {
         fail(format!("{error:#}"));
+    }
+    if let Err(error) = mount::apply_masked_paths(&plan.masked_paths) {
+        fail(format!("masked paths failed: {error:#}"));
+    }
+    if let Err(error) = mount::apply_readonly_paths(&plan.readonly_paths) {
+        fail(format!("read-only paths failed: {error:#}"));
+    }
+    if let Err(error) = mount::apply_sysctls(&plan.sysctls) {
+        fail(format!("sysctls failed: {error:#}"));
     }
     if plan.root_readonly
         && let Err(error) = mount::remount_root_readonly()

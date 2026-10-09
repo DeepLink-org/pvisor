@@ -45,6 +45,20 @@ fn pass_to_child(file: &File) -> Result<File> {
     Ok(clone)
 }
 
+/// Set FD_CLOEXEC on a shim-retained descriptor. The keepalive/master ends
+/// outlive Create and must never leak into an internal child: an inherited
+/// stdin keepalive holds a FIFO write end open, so the workload (a VM guest
+/// reading krun-stdin) would never observe the CloseIO EOF.
+fn shim_only(file: &File) {
+    unsafe {
+        let fd = file.as_raw_fd();
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+        }
+    }
+}
+
 /// Open a FIFO without `O_CLOEXEC` so the descriptor survives into the
 /// re-exec'd children.
 unsafe fn open_fifo(path: &str, flags: libc::c_int) -> Result<File> {
@@ -222,6 +236,7 @@ impl ContainerIo {
             let (master, slave) = open_pty(0, 0)?;
             send_console_master(console_socket, &master)?;
             let keepalive_master = master.try_clone().context("dup pty master")?;
+            shim_only(&keepalive_master);
             let stdin = pass_to_child(&slave)?;
             let stdout = pass_to_child(&slave)?;
             let stderr = pass_to_child(&slave)?;
@@ -237,7 +252,11 @@ impl ContainerIo {
         // The keepalive writer must exist before the child's O_RDONLY open,
         // otherwise the open would block waiting for a writer.
         let stdin_keepalive = match io.stdin.as_deref() {
-            Some(path) => Some(unsafe { open_fifo(path, libc::O_RDWR | libc::O_NONBLOCK) }?),
+            Some(path) => {
+                let keepalive = unsafe { open_fifo(path, libc::O_RDWR | libc::O_NONBLOCK)? };
+                shim_only(&keepalive);
+                Some(keepalive)
+            }
             None => None,
         };
         let stdin = open_child_stdin(io.stdin.as_deref())?;
@@ -301,6 +320,7 @@ impl ContainerIo {
         let stdin = pass_to_child(&slave)?;
         let stdout = pass_to_child(&slave)?;
         let stderr = pass_to_child(&slave)?;
+        shim_only(&master);
         Ok(ContainerIo {
             stdin: Some(stdin),
             stdin_keepalive: None,

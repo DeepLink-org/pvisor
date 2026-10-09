@@ -103,12 +103,25 @@ just shim-vm-build
 Host requirement: `/dev/kvm`. The static musl binary embeds its libkrunfw kernel.
 Cross-builds need `PVISOR_KRUNFW_KERNEL_BUNDLE` pointing to extracted
 `kernel.bin` and `kernel.json`; native Linux builds prepare firmware automatically.
-OCI spec mounts, nonempty Linux configuration (including namespaces,
-ID mappings and cgroups), `root.readonly=true`, and hostname configuration
-are rejected for VM tasks: the runner does not install them. Snapshotter
+Standard containerd/CRI Linux fields (namespaces, resources, cgroupsPath,
+masked/readonly paths, sysctls, system mounts like proc/sysfs/tmpfs) are
+accepted as no-ops for VM tasks — the guest owns that view — while bind/rbind
+mounts, `root.readonly=true` and hostname configuration are rejected: the
+runner does not install them. Snapshotter
 request mounts used to materialize the rootfs are distinct from OCI spec
 mounts and remain accepted. VM CPU/RAM annotations select VM shape; they
-are not enforcement of OCI cgroup limits.
+are not enforcement of OCI cgroup limits. The `io.pvisor.vm.log` annotation
+(optional log filter, or `1` for `debug`) makes the VM runner write VMM and
+early console diagnostics to `<bundle>/pvisor-vm.log` instead of stderr.
+
+VM task lifecycle: the runner is spawned detached at `Create` (it hosts the
+VMM for the whole task), waits on a start pipe for `Start`, and exits with
+the guest workload's exit code. The runner holds no end of the start pipe,
+so a shim exit delivers EOF and the runner terminates instead of leaking.
+Non-terminal task IO rides the named virtio-console ports
+(`krun-stdin/stdout/stderr`); the guest supervisor waits for them, so
+`CloseIO` EOF and piped stdin reach the workload with runc-compatible
+semantics.
 
 ## Guest agent and exec-in-VM (feature `vm`)
 
@@ -125,6 +138,11 @@ on vsock port 0x7076; libkrun proxies host connections from
 - the guest process starts at `Exec` time (containerd's `Start` reports
   the pid; there is no two-phase gate across the VM boundary)
 - killing an exec drops the connection; the agent SIGKILLs the process
+- exec rlimits travel in the `exec_start` control message and are applied
+  in the guest before the process runs (same `prlimit64` contract as init)
+- agent boot/session failures are recorded in `/.pvisor-agent.log` inside
+  the rootfs (visible on the host through virtio-fs); spawn errors are
+  returned to the caller as `Error` control messages
 - tty exec in VMs is not supported yet
 
 
@@ -172,12 +190,13 @@ validated by the unit suite. Host namespace joins and supported mount/root
 read-only operations use syscalls; these are not evidence that every mount
 option or nested mount restriction is correctly enforced.
 
-VM init currently accepts only root uid/gid, no supplementary groups or umask,
-no explicitly supplied capability sets (even empty ones), and no
-`noNewPrivileges=true`. Init rlimits are passed to the guest supervisor.
-VM exec additionally rejects nonempty rlimits, since the agent protocol carries
-only argv/env/cwd. Neither the VM boundary nor VM shape substitutes for a
-requested OCI process security policy.
+VM init and exec accept OCI process identity fields (uid/gid, supplementary
+groups, umask), capability sets and `noNewPrivileges`: they describe host
+processes, which the VM boundary subsumes (the same treatment kata and
+firecracker apply). They are not installed inside the guest. Init and exec
+rlimits travel to the guest supervisor/agent and are applied with
+`prlimit64` before the workload runs. Neither the VM boundary nor VM shape
+substitutes for a requested OCI process security policy.
 
 Agent frame readers and writers limit each payload to **1 MiB**, including
 control JSON, and reject larger lengths before payload allocation or reading.

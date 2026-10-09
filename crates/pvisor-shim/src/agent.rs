@@ -66,10 +66,14 @@ impl Channel {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Control {
     /// Host -> guest: run this process; reply `started`, then stream.
+    /// `limits` carries OCI rlimits by POSIX name; the guest applies them
+    /// before exec (same contract as the init workload).
     ExecStart {
         argv: Vec<String>,
         env: Vec<String>,
         cwd: String,
+        #[serde(default)]
+        limits: Vec<(String, (u64, u64))>,
     },
     /// Guest -> host: the process is running with this guest pid.
     Started { pid: u32 },
@@ -187,6 +191,8 @@ impl<W: Write> FrameWriter<W> {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
+    use std::os::fd::FromRawFd;
+    use std::os::unix::process::CommandExt;
 
     /// Guest agent entry; Ok(false) when not invoked in agent mode,
     /// otherwise never returns.
@@ -198,7 +204,13 @@ mod linux {
         let code = match guest_agent_main() {
             Ok(()) => 0,
             Err(error) => {
-                eprintln!("pvisor shim guest agent: {error:#}");
+                // The supervisor runs the agent with null stdio; the rootfs
+                // log is the only way a boot failure becomes observable
+                // (it is shared with the host through virtio-fs).
+                let _ = std::fs::write(
+                    "/.pvisor-agent.log",
+                    format!("pvisor guest agent failed: {error:#}\n"),
+                );
                 1
             }
         };
@@ -208,20 +220,39 @@ mod linux {
     /// Listen on the vsock port and serve one exec per connection.
     fn guest_agent_main() -> anyhow::Result<()> {
         let listener = vsock_listen(AGENT_VSOCK_PORT)?;
-        eprintln!("pvisor shim guest agent listening on vsock:{AGENT_VSOCK_PORT}");
         loop {
-            let (stream, _) = listener.accept()?;
+            // Raw accept: wrapping the listening fd in UnixListener would
+            // make accept() reject the AF_VSOCK peer address ("did not
+            // correspond to a Unix socket"). The accepted stream is safe as
+            // a UnixStream: only read/write/timeout methods are used.
+            let stream = unsafe {
+                libc::accept4(
+                    listener,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    libc::SOCK_CLOEXEC,
+                )
+            };
+            if stream < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                anyhow::bail!("vsock accept: {error}");
+            }
+            let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(stream) };
             std::thread::spawn(move || {
                 if let Err(error) = serve_connection(stream) {
-                    eprintln!("pvisor shim guest agent session: {error:#}");
+                    let _ = std::fs::write(
+                        "/.pvisor-agent.log",
+                        format!("pvisor guest agent session: {error:#}\n"),
+                    );
                 }
             });
         }
     }
 
-    fn vsock_listen(port: u32) -> anyhow::Result<std::os::unix::net::UnixListener> {
-        use std::os::fd::FromRawFd;
-        use std::os::unix::net::UnixListener as VsockListener;
+    fn vsock_listen(port: u32) -> anyhow::Result<libc::c_int> {
         // AF_VSOCK has the same socket API shape as AF_UNIX on Linux; use a
         // sockaddr_vm built by hand.
         let fd = unsafe { libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
@@ -247,11 +278,32 @@ mod linux {
             unsafe { libc::close(fd) };
             anyhow::bail!("vsock listen on {port}: {error}");
         }
-        // SAFETY-ish: the fd is a listening AF_VSOCK socket; treating it as
-        // a UnixListener keeps the I/O methods without touching path logic.
-        // We never call path-based methods on it.
-        let listener = unsafe { VsockListener::from_raw_fd(fd) };
-        Ok(listener)
+        Ok(fd)
+    }
+
+    /// POSIX limit names accepted in `ExecStart.limits`; mirrors the guest
+    /// supervisor's workload contract.
+    fn rlimit_resource(name: &str) -> Option<libc::c_int> {
+        let value = match name {
+            "RLIMIT_AS" => libc::RLIMIT_AS,
+            "RLIMIT_CORE" => libc::RLIMIT_CORE,
+            "RLIMIT_CPU" => libc::RLIMIT_CPU,
+            "RLIMIT_DATA" => libc::RLIMIT_DATA,
+            "RLIMIT_FSIZE" => libc::RLIMIT_FSIZE,
+            "RLIMIT_MEMLOCK" => libc::RLIMIT_MEMLOCK,
+            "RLIMIT_NOFILE" => libc::RLIMIT_NOFILE,
+            "RLIMIT_NPROC" => libc::RLIMIT_NPROC,
+            "RLIMIT_RSS" => libc::RLIMIT_RSS,
+            "RLIMIT_STACK" => libc::RLIMIT_STACK,
+            "RLIMIT_LOCKS" => libc::RLIMIT_LOCKS,
+            "RLIMIT_SIGPENDING" => libc::RLIMIT_SIGPENDING,
+            "RLIMIT_MSGQUEUE" => libc::RLIMIT_MSGQUEUE,
+            "RLIMIT_NICE" => libc::RLIMIT_NICE,
+            "RLIMIT_RTPRIO" => libc::RLIMIT_RTPRIO,
+            "RLIMIT_RTTIME" => libc::RLIMIT_RTTIME,
+            _ => return None,
+        };
+        Some(value as libc::c_int)
     }
 
     /// Serve one exec: read the start request, spawn, stream, report exit.
@@ -259,8 +311,12 @@ mod linux {
         let read_half = stream.try_clone()?;
         let mut writer = FrameWriter::new(stream);
 
-        let Some(Control::ExecStart { argv, env, cwd }) =
-            FrameReader::new(&read_half).read_control()?
+        let Some(Control::ExecStart {
+            argv,
+            env,
+            cwd,
+            limits,
+        }) = FrameReader::new(&read_half).read_control()?
         else {
             anyhow::bail!("expected exec start request");
         };
@@ -270,16 +326,68 @@ mod linux {
             })?;
             return Ok(());
         }
+        let rlimits = limits
+            .iter()
+            .map(|(name, (soft, hard))| match rlimit_resource(name) {
+                Some(resource) => Ok((
+                    resource as libc::c_int,
+                    libc::rlimit {
+                        rlim_cur: *soft,
+                        rlim_max: *hard,
+                    },
+                )),
+                None => Err(format!("unsupported limit {name}")),
+            })
+            .collect::<Result<Vec<_>, String>>();
+        let rlimits = match rlimits {
+            Ok(rlimits) => rlimits,
+            Err(message) => {
+                writer.write_control(&Control::Error { message })?;
+                return Ok(());
+            }
+        };
 
-        let mut child = std::process::Command::new(&argv[0])
+        let mut command = std::process::Command::new(&argv[0]);
+        command
             .args(&argv[1..])
             .env_clear()
             .envs(env.iter().map(|entry| split_env(entry)))
             .current_dir(&cwd)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
+            .stderr(std::process::Stdio::piped());
+        if !rlimits.is_empty() {
+            // syscall's varargs avoid glibc vs musl setrlimit argument type
+            // differences; identical to the guest supervisor's workload path.
+            unsafe {
+                command.pre_exec(move || {
+                    for (resource, limit) in &rlimits {
+                        if libc::syscall(
+                            libc::SYS_prlimit64,
+                            0,
+                            *resource,
+                            limit,
+                            std::ptr::null::<libc::rlimit>(),
+                        ) < 0
+                        {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(error) => {
+                // Surface the failure on the control channel instead of
+                // dropping the connection: the host reports it to the caller.
+                writer.write_control(&Control::Error {
+                    message: format!("spawn {:#}", error),
+                })?;
+                return Ok(());
+            }
+        };
 
         let pid = child.id();
         writer.write_control(&Control::Started { pid })?;
@@ -468,6 +576,7 @@ mod tests {
                 argv: vec!["/bin/cat".into()],
                 env: Vec::new(),
                 cwd: "/".into(),
+                limits: Vec::new(),
             })
             .unwrap();
         let mut reader = FrameReader::new(client);
@@ -537,6 +646,7 @@ mod tests {
                 argv: vec!["/bin/ls".to_string(), "-l /tmp with space".to_string()],
                 env: vec!["A=b c".to_string()],
                 cwd: "/work dir".to_string(),
+                limits: vec![("RLIMIT_NOFILE".to_string(), (32, 64))],
             },
             Control::Started { pid: 1 },
             Control::Exited { status: 137 },
