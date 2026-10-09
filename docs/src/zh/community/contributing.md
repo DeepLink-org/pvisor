@@ -14,7 +14,7 @@
 just build            # debug 构建
 just test             # 通过 cargo nextest 运行 Rust 测试，再运行 Python 测试
 just test pvisor-core # 只运行一个包的 Rust 测试
-just fmt-check        # 格式检查
+just ci "fmt-rust --check" "fmt-py --check"        # 格式检查
 just lint             # clippy 与 ruff
 just docs-build       # 构建并检查文档站点
 ```
@@ -23,7 +23,7 @@ just docs-build       # 构建并检查文档站点
 
 ## 语义规格的规则
 
-产品承诺写成语义规格（semspec），位于 `tests/semantics/` 与 [`reference/cases.md`](../reference/cases.md)。测试通过不等于人工批准：
+产品承诺写成语义规格（semspec），位于 `docs/src/zh/cases/` 与 [`reference/cases.md`](../reference/cases.md)。测试通过不等于人工批准：
 
 - 可以起草新用例、修复实现；
 - 不得为了通过而削弱已有的声明、检查或 `xfail` 标注；
@@ -32,7 +32,7 @@ just docs-build       # 构建并检查文档站点
 ## 提交 PR
 
 - 每个 PR 聚焦一件事，说明行为变化以及你如何验证；
-- 运行 `just fmt-check`、`just lint` 和相关的 `just test`；
+- 运行 `just ci "fmt-rust --check" "fmt-py --check"`、`just lint` 和相关的 `just test`；
 - 同步更新负责该行为的权威文档页，遵守 `docs/README.md` 的约定：每个主题只有一篇权威页面，其他页面一句话加链接。
 
 贡献内容按 [Apache License 2.0](https://github.com/DeepLink-org/pvisor/blob/main/LICENSE) 授权。

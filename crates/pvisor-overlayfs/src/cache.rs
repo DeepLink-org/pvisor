@@ -4,6 +4,7 @@
 //! entry worker may wait on kernel namespace locks; it must never be responsible
 //! for sending the replies that release those locks. See libfuse's lowlevel
 //! notify_inval_entry/notify_inval_inode deadlock contracts.
+#[cfg(target_os = "linux")]
 use fuser::Notifier;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -12,6 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::thread::JoinHandle;
 
+#[cfg(any(target_os = "linux", test))]
 const QUEUE_LIMIT: usize = 256;
 const PENDING_LIMIT: usize = 512;
 pub(crate) const EFFECT_LIMIT: usize = 4096;
@@ -24,11 +26,13 @@ pub(crate) struct Effects {
     pub(crate) overflow: bool,
 }
 
+#[cfg(any(target_os = "linux", test))]
 trait NotificationBackend: Send + Sync {
     fn attributes(&self, ino: u64) -> io::Result<()>;
     fn entry(&self, parent: u64, name: &std::ffi::OsStr) -> io::Result<()>;
 }
 
+#[cfg(target_os = "linux")]
 impl NotificationBackend for Notifier {
     fn attributes(&self, ino: u64) -> io::Result<()> {
         self.inval_inode(ino, -1, 0)
@@ -49,6 +53,7 @@ struct State {
 }
 
 impl State {
+    #[cfg(any(target_os = "linux", test))]
     fn notification_error(&self, error: io::Error) {
         if self.shutdown.load(Ordering::SeqCst) && error.raw_os_error() == Some(libc::ENODEV) {
             return; // Normal notification race with the completed mount detachment.
@@ -113,6 +118,13 @@ impl State {
 }
 
 type Reply = Box<dyn FnOnce(bool) + Send>;
+#[cfg_attr(
+    not(any(target_os = "linux", test)),
+    expect(
+        dead_code,
+        reason = "payloads are consumed by Linux workers or portable worker tests"
+    )
+)]
 struct Task {
     effects: Effects,
     reply: Reply,
@@ -211,6 +223,7 @@ impl std::fmt::Debug for CacheWorkers {
 }
 
 impl CacheWorkers {
+    #[cfg(target_os = "linux")]
     pub(crate) fn start(
         notifier: Notifier,
         abort: std::fs::File,
@@ -223,6 +236,7 @@ impl CacheWorkers {
         )
     }
 
+    #[cfg(any(target_os = "linux", test))]
     fn start_backend(
         backend: Arc<dyn NotificationBackend>,
         abort: Box<dyn Fn() -> io::Result<()> + Send + Sync>,
@@ -375,27 +389,17 @@ impl CacheWorkers {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn abort_and_detach(
     abort: &std::fs::File,
     mountpoint: &std::path::Path,
 ) -> io::Result<()> {
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (abort, mountpoint);
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Linux HOST FUSE abort/detach is required",
-        ))
-    }
-    #[cfg(target_os = "linux")]
-    {
-        // Aborting alone leaves warm kernel attributes usable. Detach the actual
-        // mount as well. Held descriptors/users remain the caller's lifecycle
-        // responsibility; exporting bind/namespace view aliases is forbidden.
-        // Detach before abort wakes the failed syscall: after it returns EIO,
-        // its mount pathname must no longer expose long-TTL cached attributes.
-        finish_termination(abort, || detach(mountpoint))
-    }
+    // Aborting alone leaves warm kernel attributes usable. Detach the actual
+    // mount as well. Held descriptors/users remain the caller's lifecycle
+    // responsibility; exporting bind/namespace view aliases is forbidden.
+    // Detach before abort wakes the failed syscall: after it returns EIO,
+    // its mount pathname must no longer expose long-TTL cached attributes.
+    finish_termination(abort, || detach(mountpoint))
 }
 
 #[cfg(target_os = "linux")]
@@ -415,48 +419,36 @@ fn finish_termination(
     })
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn detach(mountpoint: &std::path::Path) -> io::Result<()> {
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = mountpoint;
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Linux detach required",
-        ))
+    let path = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(
+        mountpoint.as_os_str(),
+    ))?;
+    if unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 {
+        return verify_detached(mountpoint);
     }
-    #[cfg(target_os = "linux")]
-    {
-        let path = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(
-            mountpoint.as_os_str(),
-        ))?;
-        if unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 {
-            return verify_detached(mountpoint);
-        }
-        let error = io::Error::last_os_error();
-        if matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOENT)) {
-            return verify_detached(mountpoint);
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        for helper in [
-            "fusermount3",
-            "fusermount",
-            "/bin/fusermount3",
-            "/bin/fusermount",
-        ] {
-            if run_helper(helper, mountpoint, deadline).is_ok()
-                && verify_detached(mountpoint).is_ok()
-            {
-                return Ok(());
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-        }
-        Err(io::Error::other(format!(
-            "cannot detach FUSE mount {} within deadline",
-            mountpoint.display()
-        )))
+    let error = io::Error::last_os_error();
+    if matches!(error.raw_os_error(), Some(libc::EINVAL | libc::ENOENT)) {
+        return verify_detached(mountpoint);
     }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    for helper in [
+        "fusermount3",
+        "fusermount",
+        "/bin/fusermount3",
+        "/bin/fusermount",
+    ] {
+        if run_helper(helper, mountpoint, deadline).is_ok() && verify_detached(mountpoint).is_ok() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+    }
+    Err(io::Error::other(format!(
+        "cannot detach FUSE mount {} within deadline",
+        mountpoint.display()
+    )))
 }
 
 #[cfg(target_os = "linux")]

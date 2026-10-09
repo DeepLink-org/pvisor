@@ -10,6 +10,7 @@ workspace checkpoint 保存文件提案与冲突 preimage。它适合重构方�
 
 **违反示例**：重试产生重复 checkpoint 或不同 ID。
 
+<!-- semspec: case id=S-USE-009 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'
@@ -33,6 +34,7 @@ json_expect "$CASE_ROOT/show.json" /branch_references 0
 
 **违反示例**：apply/drop 改写不可变保存点。
 
+<!-- semspec: case id=S-USE-010 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'
@@ -57,6 +59,7 @@ pvisor checkpoint show "$CASE_ROOT/source" "$checkpoint" --json > "$CASE_ROOT/sh
 
 **违反示例**：分支互相污染、修改源提案或删除仍被引用的保存点。
 
+<!-- semspec: case id=S-USE-011 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf seed > report.txt'

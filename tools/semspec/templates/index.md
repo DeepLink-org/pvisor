@@ -1,3 +1,9 @@
+# Case preparation
+
+The runner sources these functions before each case. Ordinary tutorial fences are not executed.
+
+<!-- semspec: setup -->
+```bash
 # Sealed assertion vocabulary. Exact bytes matter, including final newlines.
 fail() { printf 'SEMANTIC VIOLATION: %s\n' "$*" >&2; exit 1; }
 expect_exit() {
@@ -25,3 +31,4 @@ assert_content() {
   cmp -s -- "$1" <(printf '%s' "$2") || fail "content differs: $1"
 }
 assert_absent() { if [ -e "$1" ] || [ -L "$1" ]; then fail "path exists: $1"; fi; }
+```

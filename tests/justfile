@@ -1,0 +1,419 @@
+# Conventional script regressions. Imported by the repository justfile.
+[private]
+test-scripts: test-task-routing test-vocabulary test-nightly-installer test-fw-make
+
+[private]
+test-task-routing:
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+    work=$(mktemp -d)
+    work=$(cd "$work" && pwd -P)
+    trap 'echo "FAIL: $BASH_COMMAND" >&2; cat "$work/stdout" "$work/stderr" >&2 2>/dev/null || true' ERR
+    trap 'rm -rf "$work"' EXIT
+    export JUST_TEST_LOG="$work/commands" CARGO_TARGET_DIR="$work/target with spaces" CARGO_INSTALL_ROOT="$work/install"
+    mkdir "$work/bin" "$work/tests"
+    cp "{{ repo }}/justfile" "$work/justfile"
+    cp "{{ repo }}/tests/justfile" "$work/tests/justfile"
+    cat > "$work/bin/tool" <<'SH'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name=${0##*/}
+    printf '%q\t' "$name" "$@" >> "$JUST_TEST_LOG"
+    printf '\n' >> "$JUST_TEST_LOG"
+    args=("$@")
+    if [[ "$name" == python3 && "$1" == scripts/packaging/stage_wheel_binaries.py ]]; then
+      profile=debug
+      for ((i=0; i<$#; i++)); do
+        if [[ "${args[$i]}" == --profile ]]; then profile=${args[$((i+1))]}; fi
+      done
+      if [[ "$profile" == dev ]]; then profile=debug; fi
+      names=(pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-daemon)
+      mkdir -p "$CARGO_TARGET_DIR/$profile"
+      for binary in "${names[@]}"; do
+        printf '#!/bin/sh\nexit 0\n' > "$CARGO_TARGET_DIR/$profile/$binary"
+        chmod +x "$CARGO_TARGET_DIR/$profile/$binary"
+      done
+    fi
+    if [[ "$name" == cargo && "$1" == nextest && "$2" == list ]]; then
+      if [[ "${JUST_TEST_BAD_LIST:-0}" == 1 ]]; then exit 1; fi
+      jq -n --arg directory "${JUST_TEST_LOG%/*}/tests with spaces" '{"rust-suites": (["pvisor-vm", "pvisor", "pvisor-cli", "nativepvisor", "pvisor-daemon", "pvisor-core"] | map({key: ., value: {"package-name": ., "binary-path": ($directory + "/" + . + "\nfixture")}}) | from_entries)}'
+    fi
+    if [[ "$name" == cargo && "$1" == run && "${JUST_TEST_BAD_RUN:-0}" == 1 ]]; then exit 1; fi
+    if [[ "$name" == codesign && "${JUST_TEST_BAD_CODESIGN:-0}" == 1 ]]; then exit 1; fi
+    if [[ "$name" == codesign && "$1" == --verify && "${JUST_TEST_BAD_VERIFY:-0}" == 1 ]]; then exit 1; fi
+    if [[ "$name" == cargo && "$1" == build ]]; then
+      if [[ "${JUST_TEST_BAD_BUILD:-0}" == 1 ]]; then exit 1; fi
+      profile=debug
+      for ((i=0; i<$#; i++)); do
+        if [[ "${args[$i]}" == --release ]]; then profile=release; fi
+        if [[ "${args[$i]}" == --example ]]; then example=${args[$((i+1))]}; fi
+      done
+      if [[ -n "${example:-}" ]]; then
+        mkdir -p "$CARGO_TARGET_DIR/$profile/examples"
+        printf '#!/bin/sh\nexit 0\n' > "$CARGO_TARGET_DIR/$profile/examples/$example"
+        chmod +x "$CARGO_TARGET_DIR/$profile/examples/$example"
+      fi
+    fi
+    if [[ "$name" == uv || "$name" == uvx ]]; then
+      for ((i=0; i<$#; i++)); do
+        if [[ "${args[$i]}" == --out-dir || "${args[$i]}" == --output-dir ]]; then
+          staging=${args[$((i+1))]}
+          touch "$staging/pvisor-a.whl" "$staging/pvisor-b.whl" "$staging/pvisor-firmware-source-linux-x86_64.tar.gz"
+        fi
+      done
+    fi
+    if [[ "$name" == python3 && "$1" == scripts/packaging/verify_wheel.py && "${JUST_TEST_BAD_WHEEL:-0}" == 1 && "$2" == */pvisor-b.whl ]]; then exit 1; fi
+    SH
+    chmod +x "$work/bin/tool"
+    for name in cargo rustc uv uvx python3 codesign; do ln -s tool "$work/bin/$name"; done
+    export PATH="$work/bin:$PATH"
+    command_line() { printf '%q\t' "$@"; printf '\n'; }
+    run() { : > "$JUST_TEST_LOG"; just --justfile "$work/justfile" --working-directory "$work" "$@" > "$work/stdout" 2> "$work/stderr"; }
+    expect_failure() { if run "$@"; then echo "expected failure: $*" >&2; exit 1; fi; }
+    check_line() { command_line "$@" > "$work/expected-line"; grep -Fxq -- "$(cat "$work/expected-line")" "$JUST_TEST_LOG"; }
+    signature_lines() {
+      command_line cargo nextest list --locked --message-format json "$@"
+      for package in pvisor-vm pvisor pvisor-cli; do
+        command_line codesign --force --sign - --entitlements "$work/crates/pvisor/macos-hypervisor.entitlements" "$work/tests with spaces/$package"$'\nfixture'
+      done
+    }
+
+    # Public inventory and group order are real Just output, without a mock parser.
+    just --justfile "{{ repo }}/justfile" --summary | tr ' ' '\n' | LC_ALL=C sort > "$work/public"
+    printf '%s\n' default ci clean build check wheel fw fmt fmt-rust fmt-py lint lint-rust lint-py lint-workflows test test-rust test-py test-isolation smoke examples cases test-hvf-cold-restore test-vm-snapshot-state benchmark docs-build docs-serve check-core-budget check-release-version check-release-artifacts doctor | LC_ALL=C sort > "$work/expected"
+    diff -u "$work/expected" "$work/public"
+    just --justfile "{{ repo }}/justfile" --list --unsorted | sed -nE 's/.*\[([0-9]{2})\..*/\1/p' > "$work/groups"
+    printf '%s\n' 01 02 03 04 05 06 07 08 09 10 11 12 > "$work/expected"
+    diff -u "$work/expected" "$work/groups"
+
+    run test core capture pvisor-overlay-core
+    command_line cargo nextest run --locked -p pvisor-core -p pvisor-gateway -p pvisor-overlay-core > "$work/expected"
+    diff -u "$work/expected" "$JUST_TEST_LOG"
+    for package in pvisor-vm pvisor cli pvisor-cli; do
+      actual=$package
+      if [[ "$package" == cli ]]; then actual=pvisor-cli; fi
+      run test "$package"
+      if [[ "$(uname -s)" == Darwin ]]; then
+        signature_lines -p "$actual" > "$work/expected"
+      else
+        : > "$work/expected"
+      fi
+      command_line cargo nextest run --locked -p "$actual" >> "$work/expected"
+      diff -u "$work/expected" "$JUST_TEST_LOG"
+    done
+    run test-rust
+    check_line cargo nextest run --locked --workspace
+    if [[ "$(uname -s)" == Darwin ]]; then check_line cargo nextest list --locked --message-format json --workspace; fi
+    run sign-vm-tests --workspace
+    signature_lines --workspace > "$work/expected"
+    diff -u "$work/expected" "$JUST_TEST_LOG"
+    JUST_TEST_BAD_LIST=1 expect_failure sign-vm-tests --workspace
+    command_line cargo nextest list --locked --message-format json --workspace > "$work/expected"
+    diff -u "$work/expected" "$JUST_TEST_LOG"
+    JUST_TEST_BAD_CODESIGN=1 expect_failure sign-vm-tests --workspace
+    test "$(wc -l < "$JUST_TEST_LOG")" -eq 2
+    run test-rust capture -- --test llm_fixtures
+    check_line cargo nextest run --locked -p pvisor-gateway --test llm_fixtures
+    run test-py
+    check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s tests
+    check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark/pvisor
+    for flags in selected leading filter; do
+      case "$flags" in
+        selected) run test-py tests/test_docs.py -k reference -v; check_line uv run --no-project --with 'setuptools>=77' python -m unittest tests/test_docs.py -k reference -v ;;
+        leading) run test-py -q tests/test_docs.py; check_line uv run --no-project --with 'setuptools>=77' python -m unittest -q tests/test_docs.py ;;
+        filter) run test-py -k packaging; check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s tests -k packaging; check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark/pvisor -k packaging ;;
+      esac
+    done
+    for recipe in test-hvf-cold-restore test-vm-snapshot-state test-linux-cold-restore test-environment-snapshot; do
+      if [[ "$(uname -s)-$(uname -m)" != Darwin-arm64 ]]; then
+        expect_failure "$recipe"
+        test ! -s "$JUST_TEST_LOG"
+        continue
+      fi
+      package=pvisor-vm
+      case "$recipe" in
+        test-hvf-cold-restore) example=hvf_cold_restore_case ;;
+        test-vm-snapshot-state) example=threaded_cold_restore_case ;;
+        test-linux-cold-restore) example=vm_linux_cold_restore; package=pvisor ;;
+        test-environment-snapshot) example=vm_environment_snapshot; package=pvisor ;;
+      esac
+      run "$recipe"
+      if [[ "$recipe" == test-hvf-cold-restore ]]; then
+        check_line cargo build --locked -p "$package" --example "$example" --target-dir "$CARGO_TARGET_DIR"
+      else
+        check_line cargo build --locked -p "$package" --example "$example" --target-dir "$CARGO_TARGET_DIR" --offline
+      fi
+      binary="$CARGO_TARGET_DIR/debug/examples/$example"
+      check_line codesign --force --sign - --entitlements "$work/crates/pvisor/macos-hypervisor.entitlements" "$binary"
+      check_line codesign --verify --strict "$binary"
+      if [[ "$package" == pvisor ]]; then
+        check_line rustc --edition 2024 --target aarch64-unknown-linux-musl -C linker=rust-lld -C opt-level=2 crates/pvisor-vm/src/probes/guest_linux.rs -o "$CARGO_TARGET_DIR/debug/probes/guest_linux"
+        report=linux-machine
+        if [[ "$recipe" == test-environment-snapshot ]]; then report=environment-linux; fi
+        check_line python3 "scripts/check-${recipe#test-}.py" --binary "$binary" --guest-bin "$CARGO_TARGET_DIR/debug/probes/guest_linux" --firmware-dir "$CARGO_TARGET_DIR/release" --report "$CARGO_TARGET_DIR/vm-validation/$report.json"
+        PVISOR_CASE_VM_LIBRARY_DIR="$work/firmware with spaces" run "$recipe" --report "$work/custom report.json"
+        check_line python3 "scripts/check-${recipe#test-}.py" --binary "$binary" --guest-bin "$CARGO_TARGET_DIR/debug/probes/guest_linux" --firmware-dir "$work/firmware with spaces" --report "$CARGO_TARGET_DIR/vm-validation/$report.json" --report "$work/custom report.json"
+      else
+        check_line python3 "scripts/check-${recipe#test-}.py" --binary "$binary"
+      fi
+      JUST_TEST_BAD_BUILD=1 expect_failure "$recipe"
+      test "$(wc -l < "$JUST_TEST_LOG")" -eq 1
+      JUST_TEST_BAD_CODESIGN=1 expect_failure "$recipe"
+      test "$(wc -l < "$JUST_TEST_LOG")" -eq 2
+      JUST_TEST_BAD_VERIFY=1 expect_failure "$recipe"
+      test "$(wc -l < "$JUST_TEST_LOG")" -eq 3
+    done
+
+    for profile in debug release performance; do
+      run build "$profile"
+      cargo_profile=$profile
+      if [[ "$profile" == debug ]]; then cargo_profile=dev; fi
+      check_line python3 scripts/packaging/stage_wheel_binaries.py --profile "$cargo_profile" --target-dir "$CARGO_TARGET_DIR"
+      for binary in pvisor pvisor-cache pvisor-tui pvisor-replay; do test -x "$CARGO_TARGET_DIR/$profile/$binary"; done
+      test ! -e "$CARGO_TARGET_DIR/$profile/pvisor-memory-pool"
+    done
+    if [[ "$(uname -s)" == Linux ]]; then
+      printf retained > "$CARGO_TARGET_DIR/release/pvisor-memory-pool"
+      run install-cli
+      for binary in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-daemon; do test -x "$CARGO_INSTALL_ROOT/bin/$binary"; done
+      test "$(find "$CARGO_INSTALL_ROOT/bin" -type f | wc -l)" -eq 5
+      test ! -e "$CARGO_INSTALL_ROOT/bin/pvisor-memory-pool"
+      test "$(cat "$CARGO_TARGET_DIR/release/pvisor-memory-pool")" == retained
+    fi
+
+    run ci check 'test core'
+    { command_line cargo check --locked -p pvisor-cli; command_line cargo nextest run --locked -p pvisor-core; } > "$work/expected"
+    diff -u "$work/expected" "$JUST_TEST_LOG"
+    expect_failure ci "check;touch $work/injected" build
+    test ! -e "$work/injected"
+    test ! -s "$JUST_TEST_LOG"
+    for recipe in fw cases benchmark doctor; do
+      case "$recipe" in
+        cases) expect_failure cases --suite unknown ;;
+        benchmark) expect_failure benchmark smoke unknown ;;
+        *) expect_failure "$recipe" unknown ;;
+      esac
+      test ! -s "$JUST_TEST_LOG"
+    done
+    selection="S-DOC-001,\$(touch $work/injected)"
+    run cases --case "$selection" --keep --require-reviewed
+    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/reference --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-case-report.json" --case "$selection" --keep --require-reviewed
+    test ! -e "$work/injected"
+    run cases --suite vm --case S-DOC-060 --keep
+    check_line cargo build --locked -p pvisor --release --example vm_control_case --target-dir "$CARGO_TARGET_DIR"
+    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/reference/cases-vm.md --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-vm-case-report.json" --case S-DOC-060 --keep
+    run cases --suite stage --case S-STAGE-001 --keep
+    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/cases/06-stage-apply.md --domain STAGE --subject-bin "$CARGO_TARGET_DIR/debug/pvisor" --case S-STAGE-001 --keep
+    run cases --suite use
+    run cases --suite use --case S-USE-001,S-USE-002 --case=S-USE-003 --output "$work/report with spaces.json" --keep --require-reviewed
+    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$work/report with spaces.json" --case S-USE-001,S-USE-002 --case S-USE-003 --keep --require-reviewed
+    JUST_TEST_BAD_RUN=1 expect_failure cases --suite use --case S-USE-001 --require-reviewed
+    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-learning-report.json" --case S-USE-001 --require-reviewed
+    expect_failure cases --suite use --case
+    if grep -Fq $'cargo\trun\t' "$JUST_TEST_LOG"; then echo 'invalid selection reached semspec' >&2; exit 1; fi
+
+    run wheel
+    test -f "$work/dist/pvisor-a.whl"
+    test -f "$work/dist/pvisor-b.whl"
+    test -f "$work/dist/pvisor-firmware-source-linux-x86_64.tar.gz"
+    grep -Fq 'scripts/packaging/verify_wheel.py' "$JUST_TEST_LOG"
+    grep -Fq $'uvx\ttwine\tcheck\t' "$JUST_TEST_LOG"
+    test "$(find "$CARGO_TARGET_DIR" -maxdepth 1 -name 'wheel.*' | wc -l)" -eq 0
+    rm -rf "$work/dist"
+    PVISOR_WHEEL_PORTABLE=1 run wheel debug
+    grep -Fq $'uvx\t--from\tcibuildwheel==4.1.0\tcibuildwheel\t' "$JUST_TEST_LOG"
+    rm -rf "$work/dist"
+    mkdir "$work/dist"
+    printf previous > "$work/dist/existing.whl"
+    JUST_TEST_BAD_WHEEL=1 expect_failure wheel
+    test "$(cat "$work/dist/existing.whl")" == previous
+    test "$(find "$work/dist" -type f | wc -l)" -eq 1
+    test "$(find "$CARGO_TARGET_DIR" -maxdepth 1 -name 'wheel.*' | wc -l)" -eq 0
+
+    mkdir -p "$work/.venv" "$CARGO_TARGET_DIR/pvisor-examples" "$work/benchmark/pvisor/.data" "$work/build" "$work/docs/site" "$CARGO_TARGET_DIR/fw"
+    for path in "$work/.venv/state" "$CARGO_TARGET_DIR/pvisor-examples/evidence" "$work/benchmark/pvisor/.data/report.json" "$work/build/output" "$work/docs/site/output" "$CARGO_TARGET_DIR/fw/kernel"; do touch "$path"; done
+    run clean
+    for path in "$work/.venv/state" "$CARGO_TARGET_DIR/pvisor-examples/evidence" "$work/benchmark/pvisor/.data/report.json"; do test -f "$path"; done
+    for path in "$work/build" "$work/dist" "$work/docs/site" "$CARGO_TARGET_DIR/fw"; do test ! -e "$path"; done
+    echo 'PASS: Just routing, public groups, argument ownership, wheel publication and cleanup'
+
+[private]
+test-vocabulary:
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+    work=$(mktemp -d)
+    trap 'echo "FAIL: $BASH_COMMAND" >&2; cat "$work/stdout" "$work/stderr" >&2 2>/dev/null || true' ERR
+    trap 'rm -rf "$work"' EXIT
+    just --justfile "{{ repo }}/justfile" semspec helper setup "{{ repo }}/docs/src/zh/reference/index.md" > "$work/reference.bash"
+    just --justfile "{{ repo }}/justfile" semspec helper setup "{{ repo }}/docs/src/zh/reference/cases-vm.md" > "$work/vm.bash"
+    export CASE_ROOT="$work/case with spaces" WS="$work/case with spaces/ws" SUBJECT_BIN=/usr/bin/true
+    mkdir -p "$WS"
+    cd "$WS"
+    run_vocab() {
+      got=0
+      bash -euo pipefail -c 'source "$1"; source /dev/stdin' vocab-test "$work/reference.bash" "$work/vm.bash" > "$work/stdout" 2> "$work/stderr" || got=$?
+      test "$got" -eq "$1"
+    }
+    run_vocab 0 <<'SH'
+    case_setup
+    case_run nonzero <<'COMMAND'
+    printf before; false; printf leaked > leaked
+    COMMAND
+    SH
+    test ! -e "$WS/leaked"
+    test "$(cat "$CASE_ROOT/command.log")" == before
+    run_vocab 1 <<'SH'
+    case_setup
+    case_run success <<'COMMAND'
+    false; printf leaked > leaked
+    COMMAND
+    SH
+    test ! -e "$WS/leaked"
+    run_vocab 1 <<'SH'
+    case_setup
+    case_run nonzero <<'COMMAND'
+    true
+    COMMAND
+    SH
+    export SUBJECT_BIN="$work/subject with spaces"
+    printf '#!/bin/sh\nprintf "chosen subject\\n"\n' > "$SUBJECT_BIN"
+    chmod +x "$SUBJECT_BIN"
+    run_vocab 0 <<'SH'
+    case_setup
+    case_run success <<'COMMAND'
+    pvisor
+    COMMAND
+    stdout_has 'chosen subject'
+    mkdir -p "$PVISOR_CASE_RECORDS/job"
+    printf '%s' '{"run":{"state":"completed","exit_code":0},"safety":{"enabled":true},"changes":[{"path":"note"}]}' > "$PVISOR_CASE_RECORDS/job/run-bundle.json"
+    printf '%s' '{"overlay":null}' > "$PVISOR_CASE_RECORDS/job/run.json"
+    bundle_expect run.state completed
+    bundle_expect run.exit_code 0
+    bundle_expect safety.enabled true
+    bundle_expect changes.0.path note
+    bundle_contains changes note
+    record_expect overlay null
+    SH
+    diff -u <(printf 'chosen subject\n') "$CASE_ROOT/command.log"
+    jq -e '.invocation.program | startswith("/")' "$WS/run-spec.json" >/dev/null
+    read -r proxy gateway < "$CASE_ROOT/ports"
+    test "$proxy" != "$gateway"
+
+    got=0
+    PVISOR_CASE_ROOTFS="$work/missing" PVISOR_CASE_VM_DRIVER="$work/missing-driver" bash -euo pipefail -c 'source "$1"; source "$2"; require_vm_sdk; echo reached' vocab-test "$work/reference.bash" "$work/vm.bash" > "$work/stdout" 2> "$work/stderr" || got=$?
+    test "$got" -eq 77
+    grep -Fq SKIP: "$work/stderr"
+    ! grep -Fq reached "$work/stdout"
+    got=0
+    PVISOR_CASE_AGENT='' bash -euo pipefail -c 'source "$1"; require_agent; echo reached' vocab-test "$work/reference.bash" "$work/vm.bash" > "$work/stdout" 2> "$work/stderr" || got=$?
+    test "$got" -eq 77
+    grep -Fq SKIP: "$work/stderr"
+    ! grep -Fq reached "$work/stdout"
+    export VM_CASE_DRIVER="$work/driver"
+    printf '#!/bin/sh\nprintf "sdk-failure-detail\\n"\nexit 23\n' > "$VM_CASE_DRIVER"
+    chmod +x "$VM_CASE_DRIVER"
+    got=0
+    bash -euo pipefail -c 'source "$1"; source "$2"; vm_run_sdk compressed' vocab-test "$work/reference.bash" "$work/vm.bash" > "$work/stdout" 2> "$work/stderr" || got=$?
+    test "$got" -ne 0
+    grep -Fq sdk-failure-detail "$work/stdout"
+    grep -Fq exit=23 "$work/stderr"
+
+    just --justfile "{{ repo }}/justfile" semspec helper setup "{{ repo }}/docs/src/zh/cases/06-stage-apply.md" > "$work/stage.bash"
+    mkdir "$work/bin"
+    cp "$SUBJECT_BIN" "$work/bin/pvisor"
+    bash -euo pipefail -c 'unset SUBJECT_BIN; export PATH="$2:$PATH"; source "$1"; pvisor' vocab-test "$work/stage.bash" "$work/bin" > "$work/stdout"
+    test "$(cat "$work/stdout")" == 'chosen subject'
+
+    just --justfile "{{ repo }}/justfile" semspec helper setup "{{ repo }}/docs/src/zh/cases/index.md" > "$work/journey.bash"
+    export DOCUMENT="$work/value.json"
+    printf '%s' '{"flag":true,"changes":[]}' > "$DOCUMENT"
+    for assertion in 'json_expect "$DOCUMENT" /flag 1' 'json_expect "$DOCUMENT" /missing null' 'json_paths "$DOCUMENT"'; do
+      got=0
+      bash -euo pipefail -c 'source "$1"; journey_setup; source /dev/stdin' vocab-test "$work/journey.bash" <<< "$assertion" > "$work/stdout" 2> "$work/stderr" || got=$?
+      test "$got" -ne 0
+    done
+    bash -euo pipefail -c 'source "$1"; journey_setup; printf "%s" "$HOME"; json_expect "$DOCUMENT" /flag true' vocab-test "$work/journey.bash" > "$work/stdout" 2> "$work/stderr"
+    test "$(cat "$work/stdout")" == "$CASE_ROOT/home"
+    echo 'PASS: vocabulary errexit, subject paths, JSON assertions, prerequisites and SDK diagnostics'
+
+[private]
+test-nightly-installer:
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+    work=$(mktemp -d)
+    trap 'echo "FAIL: $BASH_COMMAND" >&2; cat "$work/stdout" "$work/stderr" >&2 2>/dev/null || true' ERR
+    trap 'rm -rf "$work"' EXIT
+    export INSTALL_TEST_ROOT="$work" INSTALL_TEST_REPO="{{ repo }}"
+    cat > "$work/python" <<'PY'
+    #!/usr/bin/env python3
+    import io, json, os, sys, sysconfig, urllib.request
+    from pathlib import Path
+    root = Path(os.environ['INSTALL_TEST_ROOT'])
+    sys.path.insert(0, os.environ['INSTALL_TEST_REPO'])
+    if sys.argv[1:3] == ['-m', 'pip']:
+        with (root / 'pip.log').open('a') as log:
+            log.write(json.dumps(sys.argv[3:]) + '\n')
+    elif sys.argv[1] == '-c':
+        sysconfig.get_path = lambda name: str(root)
+        exec(sys.argv[2])
+    elif sys.argv[1] == '-':
+        names = ('legacy-package', 'pvisor') if os.environ['INSTALL_TEST_INCLUDE_PVISOR'] == '1' else ('legacy-package',)
+        assets = [{'name': f'{name}-0.3.0-py3-none-{platform}.whl', 'browser_download_url': f'https://example.test/{name}-{platform}.whl'}
+                  for name in names for platform in ('macosx_11_0_arm64', 'manylinux_2_28_x86_64')]
+        urllib.request.urlopen = lambda *a, **k: io.BytesIO(json.dumps({'assets': assets}).encode())
+        sys.argv = sys.argv[1:]
+        exec(sys.stdin.read())
+    PY
+    chmod +x "$work/python"
+    for included in 1 0; do
+      for missing in none pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-daemon; do
+        rm -f "$work/pip.log"
+        for binary in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-daemon; do
+          printf '#!/bin/sh\necho "pvisor 0.3.0"\n' > "$work/$binary"
+          chmod +x "$work/$binary"
+        done
+        if [[ "$missing" != none ]]; then rm "$work/$missing"; fi
+        got=0
+        INSTALL_TEST_INCLUDE_PVISOR="$included" PYTHON="$work/python" bash "{{ repo }}/scripts/install-nightly.sh" > "$work/stdout" 2> "$work/stderr" || got=$?
+        if [[ "$included" == 0 ]]; then
+          test "$got" -ne 0
+          grep -Fq 'no platform wheel' "$work/stderr"
+          test ! -e "$work/pip.log"
+        elif [[ "$missing" != none && ( "$missing" != pvisor-daemon || "$(uname -s)" == Linux ) ]]; then
+          test "$got" -ne 0
+          grep -Fq "wheel did not install executable $work/$missing" "$work/stderr"
+        else
+          test "$got" -eq 0
+          ! grep -Fq pvisor-memory-pool "$work/stdout" "$work/stderr"
+          grep -Fq https://example.test/pvisor- "$work/pip.log"
+          ! grep -Fq legacy-package "$work/pip.log"
+          grep -Fq 'pVisor 0.3.0' "$work/stdout"
+        fi
+      done
+    done
+    echo 'PASS: nightly platform selection, retired distribution rejection and installed CLI inventory'
+
+[private]
+test-fw-make:
+    #!/usr/bin/env bash
+    set -Eeuo pipefail
+    make_bin=$(command -v gmake || command -v make || true)
+    if [[ -z "$make_bin" ]]; then echo 'SKIP: GNU make is not installed'; exit 0; fi
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' EXIT
+    for builder in linux native krunvm; do
+      fixture="$work/$builder"
+      mkdir -p "$fixture/kernel"
+      cp "{{ repo }}/fw/Makefile" "$fixture/Makefile"
+      touch "$fixture/config-libkrunfw_x86_64" "$fixture/kernel/.config"
+      cat > "$fixture/kernel/Makefile" <<'MAKE'
+    vmlinux:
+    	@test -n "$(findstring jobserver,$(MAKEFLAGS))"
+    	@touch $@
+    MAKE
+      args=(OS=Linux)
+      if [[ "$builder" != linux ]]; then args=(OS=Darwin "MACOS_BUILDER=$builder"); fi
+      "$make_bin" -C "$fixture" -j2 -w "${args[@]}" ARCH=x86_64 KERNEL_SOURCES=kernel KERNEL_TARBALL=Makefile "KERNEL_MAKE=$make_bin" kernel/vmlinux
+      test -f "$fixture/kernel/vmlinux"
+    done
+    echo 'PASS: recursive firmware make inherits the jobserver for every builder'

@@ -25,7 +25,7 @@ just build release
 需要 Linux rootless namespace、FUSE、`curl` 和交互式终端。无终端的回归使用同一脚本的 `--once` 模式：
 
 ```bash
-./examples/pvisor/06-tui-interception/test.sh
+just examples 06-tui-interception
 ```
 
 host 上的 OverlayNet 代理是协作式的；此示例证明**经过代理**的请求被拒绝，不代表所有直接 socket 访问都被拦截。

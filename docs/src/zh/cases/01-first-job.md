@@ -10,6 +10,7 @@
 
 **违反示例**：命令成功但文件写到别处，或出现隐式 stage。
 
+<!-- semspec: case id=S-USE-001 -->
 ```bash
 journey_setup
 pvisor --name hello --stdio capture -- /bin/sh -c 'printf hello > hello.txt; cat hello.txt'
@@ -27,6 +28,7 @@ json_expect "$CASE_ROOT/status.json" /run/overlay null
 
 **违反示例**：退出码被吞掉或 failed 被记录为 completed。
 
+<!-- semspec: case id=S-USE-002 -->
 ```bash
 journey_setup
 expect_exit 7 pvisor run --stdio capture -- /bin/sh -c 'printf failed >&2; exit 7'
@@ -42,6 +44,7 @@ json_expect "$CASE_ROOT/status.json" /run/state '"failed"'
 
 **违反示例**：任务睡到结束或被记成普通成功。
 
+<!-- semspec: case id=S-USE-003 -->
 ```bash
 journey_setup
 expect_refused pvisor run --timeout 100ms --stdio capture -- /bin/sleep 30
@@ -57,6 +60,7 @@ json_expect "$CASE_ROOT/bundle.json" /run/failure/kind '"deadline_exceeded"'
 
 **违反示例**：偷偷读取隐式配置或忽略 CLI 覆盖。
 
+<!-- semspec: case id=S-USE-004 -->
 ```bash
 journey_setup
 cat > task.toml <<'TOML'

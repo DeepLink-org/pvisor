@@ -10,6 +10,7 @@
 
 **违反示例**：外部文件被覆盖，或未执行隔离却报告边界有效。
 
+<!-- semspec: case id=S-USE-012 -->
 ```bash
 journey_setup
 printf sentinel > "$CASE_ROOT/outside.txt"
@@ -29,6 +30,7 @@ json_paths "$CASE_ROOT/review.json" report.txt
 
 **违反示例**：拒绝规则只记录日志而仍返回秘密。
 
+<!-- semspec: case id=S-USE-013 -->
 ```bash
 journey_setup
 printf sentinel > secret.txt
@@ -47,6 +49,7 @@ assert_content "$CASE_ROOT/public.txt" public
 
 **违反示例**：网络隔离静默退化，Agent 仍连到宿主监听器。
 
+<!-- semspec: case id=S-USE-014 -->
 ```bash
 journey_setup
 journey_tools listen "$CASE_ROOT/port" &

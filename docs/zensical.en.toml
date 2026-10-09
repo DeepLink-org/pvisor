@@ -75,6 +75,7 @@ nav = [
       { "3. Save a proposal and explore a branch" = "cases/03-checkpoint-and-fork.md" },
       { "4. Set boundaries for untrusted work" = "cases/04-boundaries.md" },
       { "5. Replay trajectories and choose restoration tools" = "cases/05-tools-and-restoration.md" },
+      { "6. Check staging, apply and drop contracts" = "cases/06-stage-apply.md" },
     ] },
     { "Command and configuration reference" = [
       { "Commands and scenarios" = "reference/index.md" },

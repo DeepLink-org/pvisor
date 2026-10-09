@@ -246,7 +246,7 @@ RAM＋pool 代理为两 runner 的 `resident_bytes + pending_file_bytes` 之和�
 
 优先用在同用户、同信任域、内容重复且有明显静默期的实验 VM。只需要整 VM 等待期回收时，可先选择 [offload](../offload/index.md)；需要运行中的部分冷块回收，才评估这条 pager 路径。随机内容、频繁全量写入和连续设备访问必须各自建立基线。
 
-实验环境变量 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 指向私有目录中的池 socket；所有参与 runner 连接同一个池。实验入口在 `tools/experiments/macos-memory/`，服务示例为 `crates/pvisor/examples/memory_pool_case.rs`。当前 `vm-server` 接受两个连接，payload 预算 16 MiB、对象上限 8,192、每连接引用上限 8,192，是双 VM fixture，不是通用生产服务。不要仅扩大预算就推导可支持更多租户。
+实验环境变量 `PVISOR_EXPERIMENTAL_MEMORY_POOL` 指向私有目录中的池 socket；所有参与 runner 连接同一个池。历史实验脚本 `tools/experiments/macos-memory/` 已移除，原始证据仍保留。服务示例为 `crates/pvisor/examples/memory_pool_case.rs`。当前 `vm-server` 接受两个连接，payload 预算 16 MiB、对象上限 8,192、每连接引用上限 8,192，是双 VM fixture，不是通用生产服务。不要仅扩大预算就推导可支持更多租户。
 
 `PVISOR_EXPERIMENTAL_MEMORY_METRICS` 打开每秒 RAM 驻留计量。`PVISOR_EXPERIMENTAL_MEMORY_PAGE_INVENTORY` 与 `PVISOR_EXPERIMENTAL_MEMORY_PROCESS_INVENTORY` 指向诊断目录；完整页查询会增加暂停，启用诊断的结果应独立归档，不混入 pager 性能基线。权限、页大小、构建模式、运行时源码 hash 和宿主压力状态都应随数据记录。
 

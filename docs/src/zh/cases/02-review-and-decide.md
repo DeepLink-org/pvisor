@@ -10,6 +10,7 @@ Agent 会修改代码时，先加 `--stage`，再用 `review` 和 `inspect` 看�
 
 **违反示例**：写入穿透原件或 review 漏报改动。
 
+<!-- semspec: case id=S-USE-005 -->
 ```bash
 journey_setup
 printf original > report.txt
@@ -31,6 +32,7 @@ Agent 同时修改正文和实验文件时，可以只接受正文，再丢弃�
 
 **违反示例**：选择性 apply 提交所有文件，或 drop 删除记录。
 
+<!-- semspec: case id=S-USE-006 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf accepted > report.txt; printf scratch > scratch.txt'
@@ -53,6 +55,7 @@ json_paths "$CASE_ROOT/review.json"
 
 **违反示例**：用旧提案覆盖人类的新改动，或失败时丢掉提案。
 
+<!-- semspec: case id=S-USE-007 -->
 ```bash
 journey_setup
 printf base > report.txt
@@ -72,6 +75,7 @@ assert_content "$CASE_ROOT/view.txt" agent
 
 **违反示例**：live apply 成功，kill 后仍在运行或文件穿透。
 
+<!-- semspec: case id=S-USE-008 -->
 ```bash
 journey_setup
 pvisor run --stage "$CASE_ROOT/live" -- /bin/sh -c 'printf ready > ready.txt; exec /bin/sleep 30' > "$CASE_ROOT/live.log" 2>&1 &

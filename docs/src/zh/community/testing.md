@@ -6,16 +6,18 @@ pVisor 把正确性分成两层：代码层面由单元测试和集成测试保�
 
 | 命令 | 作用 |
 | --- | --- |
-| `just test` | 通过 `cargo nextest` 运行全部 Rust 测试（debug 模式），再运行 Python 测试 |
+| `just test` | 通过 `cargo nextest` 运行全部 Rust 测试（debug 模式）、原生脚本回归和 Python 测试 |
 | `just test pvisor-core` | 只运行一个包；别名 `pvisor`、`core`（`control`、`agentctl`）、`capture`（Gateway）、`shim` |
-| `just test-py -k NAME` | 只运行 Python 测试，可附加 pytest 参数 |
+| `just test-py -k NAME` | Python unittest 检查；支持 -k/-v、文件或测试名 |
 | `just test-isolation` | Linux rootless/FUSE 严格回归，缺少 user namespace 时不跳过 |
 | `just smoke` | 构建 debug CLI 并检查主要子命令 |
 | `just examples [场景]` | 运行 `examples/pvisor/` 下的端到端示例 |
-| `just semantics` | 在全新临时工作区运行 STAGE 领域的语义规格 |
+| `just cases --suite stage` | 在全新临时工作区运行 STAGE 领域的语义规格 |
 | `just cases` | 运行文档语义规格（S-DOC，来源 [`reference/cases.md`](../reference/cases.md)） |
-| `just semspec lint` | 静态检查规格格式 |
+| `just semspec lint docs/src/zh/cases` | 静态检查规格格式 |
 | `just test-semspec` | 测试 semspec 工具本身 |
+
+`tests/justfile` 中的私有配方检查 Just 参数转发、Bash 断言词汇和离线安装器。单独运行用 `just test-scripts`；CI 同时运行 `just test-scripts` 与 `just test-py`。Python 测试负责 Python 契约、结构化数据、PTY 交互和进程生命周期。
 
 只有需要 doctest 或文档明确要求的特殊 runner 时，才直接使用 `cargo test`。
 
@@ -23,7 +25,7 @@ pVisor 把正确性分成两层：代码层面由单元测试和集成测试保�
 
 语义规格是 Markdown 用例，每条包含编号（如 `S-STAGE-008`）、**语义**、**违反示例**和一段可执行脚本。当前领域：
 
-- **STAGE**（`tests/semantics/stage-apply.md`）：暂存、apply、drop 的承诺，见[暂存与 apply 语义](../concepts/staging.md)；
+- **STAGE**（`docs/src/zh/cases/06-stage-apply.md`）：暂存、apply、drop 的承诺，见[暂存与 apply 语义](../concepts/staging.md)；
 - **DOC**（`docs/src/zh/reference/cases.md`）：文档中可执行示例的行为。
 
 结果分为 PASS、FAIL、SKIP、XFAIL、XPASS、ERROR；审核状态分为 UNREVIEWED、STALE、REVIEWED。

@@ -1,6 +1,6 @@
 # 工程说明
 
-从仓库根目录运行命令。`just` 列出支持的任务，每种工作流保留一个入口。
+从仓库根目录运行命令。`just` 按十二组展示公开配方。`just ci` 执行默认本地检查序列；`just ci check "test pvisor-core"` 顺序执行指定命令，失败即停止。内部配方仍可调用，但不在默认帮助中展示。
 
 ## 仓库结构与代码归属
 
@@ -146,22 +146,24 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 | `just build` / `just build release` | 构建 debug/release CLI，并在 macOS 上签署 Hypervisor entitlement |
 | `just install-cli` | 将已签名的 release CLI 安装到 `CARGO_INSTALL_ROOT` 或 `~/.cargo` |
 | `just wheel` / `just wheel debug` | 构建全新 wheel，通过安装验证后再放入 `dist/` |
+| `just fw build` / `just fw test` | 构建固件或运行 bundle/ABI 回归 |
+| `just doctor` / `just doctor test` | 只读工具诊断，不安装工具 |
 | `just check` | 检查产品及其依赖能否通过编译检查 |
-| `just fmt` / `just fmt-check` | 格式化 Rust/Python 源码，或仅检查格式 |
-| `just lint` | 运行 Clippy 和 Python 包 lint 检查 |
+| `just fmt` / `just ci "fmt-rust --check" "fmt-py --check"` | 格式化 Rust/Python 源码，或仅检查格式 |
+| `just lint` | 运行 Clippy、Python 和 workflow lint 检查 |
 | `just test` | 通过 nextest 跑工作区 Rust 测试，再跑 Python 测试 |
 | `just test core pvisor cli` | 测试指定 Rust 包：共享契约、运行时和应用 |
 | `just test cli` / `just test pvisor-cli` | 可执行文件／前端测试；`just test pvisor` 选择运行时测试 |
 | `just test pvisor-vm` | VM 所有者测试；macOS 在 nextest 前签署 Hypervisor entitlement |
-| `just test-py -k packaging` | 将选项传给 pytest |
-| `just test-benchmark` | 用 pytest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
-| `just test-py --vm-bin target/release/pvisor` | 启用真实 VM 的普通终端和 TUI 交互回归 |
-| `just test-py tests/test_zcode_integration.py --zcode-integration` | 显式运行需要 Linux rootless、FUSE3 和 zcode 的集成测试 |
+| `just test-py -k packaging` | 在两个测试目录中筛选 unittest 检查 |
+| `just test-py discover -s benchmark/pvisor` | 用 unittest 单独运行 benchmark 工具测试；默认 Python 测试已包含这些检查 |
+| `PVISOR_TEST_VM_BIN=target/release/pvisor just test-py tests/test_vm_terminal.py` | 启用真实 VM 的普通终端和 TUI 交互回归 |
+| `PVISOR_TEST_ZCODE=1 just test-py tests/test_zcode_integration.py` | 显式运行需要 Linux rootless、FUSE3 和 zcode 的集成测试 |
 | `just test-isolation` | 运行严格的 Linux rootless/FUSE 回归，不跳过缺失的用户命名空间能力 |
 | `just smoke` | 构建 debug CLI 并检查主要命令入口 |
 | `just examples` | 构建 release CLI 并运行全部示例；追加场景名可选择子集 |
 | `just cases --case S-DOC-001,S-DOC-002` | 运行选定的文档场景 |
-| `just benchmark` / `just benchmark nightly` | 运行进程与 Run Bundle 基准 |
+| `just benchmark` / `just benchmark smoke nightly` | 运行进程与 Run Bundle 基准 |
 | `just docs-build` | 构建双语文档并检查链接 |
 | `just docs-serve` / `just docs-serve en` | Zensical 原生预览与自动刷新；中文端口 3000，英文端口 3001 |
 | `just ci` | 检查格式、lint、测试并构建，不改写源码 |
@@ -177,14 +179,14 @@ CI 先检查默认运行时和应用的依赖边界，再构建带捕获的分�
 混合文件中的纯运行时用例仍保留在 `pvisor`。
 原生 VM 和依赖环境的测试保留原有前置条件及跳过／ignore 门槛；编译检查不代表真实 guest 验证。
 
-默认 pytest 收集 `tests/` 和 `benchmark/pvisor/`；共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
+默认 unittest 收集 `tests/` 和 `benchmark/pvisor/`；共享 Operation 和 Overlay 契约由 `pvisor-core` 的 Rust 测试验证。
 benchmark 中依赖 `/proc` 和 Linux rootfs 工具的测试仅在 Linux 上运行。
-VM 文件系统检查在 Linux guest 内运行，需要 root、Python、pytest 和 tar；
-在仓库目录执行 `python3 -m pytest -q tests/test_vm_filesystem.py --guest-fs-dir /var/tmp --guest-fs-dir .`，
-分别检查 guest 根文件系统与挂载工作区。未指定目录时跳过，显式启用后检查失败会报错。
+VM 文件系统检查在 Linux guest 内运行，需要 root、Python 和 tar；
+在仓库目录执行 `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. just test-py tests/test_vm_filesystem.py`，
+分别检查 guest 根文件系统与挂载工作区。未配置目录时跳过，显式启用后检查失败会报错。
 
-需要指定 Rust 集成测试或过滤条件时，直接调用 nextest，例如：
-`cargo nextest run --locked -p pvisor-gateway --test llm_fixtures`。
+需要指定 Rust 集成测试或过滤条件时，在 `--` 后传给 nextest，例如：
+`just test-rust pvisor-gateway -- --test llm_fixtures`。
 nextest 不运行 doctest；需要时使用 `cargo test --doc -p <package>`。
 
 ## CI 分工

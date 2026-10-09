@@ -10,6 +10,7 @@ Use this for a trusted script whose execution you want to record. The original c
 
 **Violation**: A successful command writes elsewhere or silently stages the file.
 
+<!-- semspec: case id=S-USE-001 -->
 ```bash
 journey_setup
 pvisor --name hello --stdio capture -- /bin/sh -c 'printf hello > hello.txt; cat hello.txt'
@@ -27,6 +28,7 @@ When a script fails, inspect its Job exit code instead of treating a file as suc
 
 **Violation**: The exit code is lost or failure is recorded as completion.
 
+<!-- semspec: case id=S-USE-002 -->
 ```bash
 journey_setup
 expect_exit 7 pvisor run --stdio capture -- /bin/sh -c 'printf failed >&2; exit 7'
@@ -42,6 +44,7 @@ Use `--timeout` for unattended work to bound a stalled script.
 
 **Violation**: The task sleeps to completion or reports success.
 
+<!-- semspec: case id=S-USE-003 -->
 ```bash
 journey_setup
 expect_refused pvisor run --timeout 100ms --stdio capture -- /bin/sleep 30
@@ -57,6 +60,7 @@ Use explicit `--config` to keep a stable task command and name; CLI arguments ca
 
 **Violation**: Implicit configuration is loaded or CLI overrides are ignored.
 
+<!-- semspec: case id=S-USE-004 -->
 ```bash
 journey_setup
 cat > task.toml <<'TOML'

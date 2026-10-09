@@ -224,7 +224,7 @@ sudo ctr run --runtime io.containerd.pvisor.v2 -t --rm \
 ```
 
 For VM support, replace the build command with
-`python3 scripts/build-pvisor.py --shim-vm --profile release` and install
+`just shim-vm-build release` and install
 `target/release/containerd-shim-pvisor-v2`. This entry point prepares the
 embedded kernel and builds the Rust guest automatically.
 

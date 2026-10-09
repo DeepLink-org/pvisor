@@ -1,73 +1,113 @@
 # semspec
 
-A standalone Rust CLI for human-reviewed, black-box semantic preservation tests.
-See [the design](DESIGN.md) and the reviewable [engine contract](ENGINE.md).
-It has no pVisor dependency. The core, runner and CLI are modules in one package.
-Requires Rust 1.89+, Unix and Bash. A specification is trusted executable code,
-not a security sandbox; passing checks do not establish complete semantic coverage.
+A standalone Rust CLI that extracts human-reviewed, black-box checks from user
+Markdown documentation. Requires Rust 1.89+, Unix and Bash. Specifications are
+trusted executable code; PASS does not establish complete coverage or human approval.
+See [the design](DESIGN.md) and [engine contract](ENGINE.md).
 
 ```sh
 cargo install --path tools/semspec --locked
-semspec init                         # in a new project
-semspec lint
-semspec list
-semspec show S-EXAMPLE-001
-semspec run --format json --output report.json
-semspec run semantics/example.md     # select a Markdown file in spec_dirs
-semspec review --strict
+semspec init cases                   # creates only cases/*.md in a new project
+semspec lint cases
+semspec list cases
+semspec run cases
+semspec run cases/example.md --subject-bin /usr/bin/true
+semspec review cases --strict
 ```
 
-Each Markdown case combines a claim, a violation example and exactly one Bash
-check. Its SHA-256 digest includes the entire normalized case, its vocabulary
-and the engine version. A successful check remains UNREVIEWED until a person
-reviews the prose, the check, the vocabulary and engine implementation.
-
-Only a human may run these commands from a terminal:
+No configuration file or external script is needed. Paths are mandatory: semspec
+never searches docs/src/zh/cases, cases or cwd implicitly. `run`, `lint`, `list`
+and `review` accept one or more Markdown files/directories, and `show ITEM`
+accepts paths after the item. `--spec-dir PATH` also supplies explicit inputs and
+can be repeated, including for human approval. Directories are scanned recursively;
+overlapping files are processed once, while duplicate IDs in distinct files fail.
 
 ```sh
-semspec approve @engine @vocab:core.sh S-EXAMPLE-001 --reviewer YOUR_NAME
+semspec run cases/first.md cases/second.md
+semspec lint docs/src/zh/cases docs/src/zh/reference
 ```
 
-Approval displays current text/dependencies, requires typing the item,
-and atomically writes only the ledger. Use Git for review diffs and history. Changing
-normalized case/vocabulary bytes invalidates case approval. An engine semantic
-change requires incrementing ENGINE_SEMANTICS. v0.1 relies on human review and
-repository permissions; TTY checks alone cannot authenticate a reviewer.
-Protect ledgers, config, vocabulary and engine with repository review
-rules and a human CODEOWNER before making reviewed results a release gate.
+~~~~markdown
+## Record a successful command
 
-`run [FILE.md]` supports Markdown file/case/domain selection, subject override, Bash exit-77 skips,
-timeouts, retained failure directories (including XFAIL), human/JSON reports and reviewed gating.
-PASS/SKIP/XFAIL exit 0; FAIL/XPASS or required pending review exit 1;
-usage/config/spec errors exit 2; ERROR verdicts exit 3. Each check has a fresh
-workspace and process group. Timeout sends TERM, then KILL after five seconds;
-ordinary exit also clears remaining group descendants. Do not detach processes.
-Checks and vocab run using the same normalized bytes that are hashed. Vocabulary
-is sourced in filename order, so configuration reordering cannot silently change
-execution while preserving the digest.
+The public command must succeed.
 
-SSH signing, JUnit and parallel execution belong to v0.2 and are explicitly
-rejected by this version. Default Bash environment is inherited; use config
-`subject.env` for project settings. Runner-owned variables cannot be configured.
-Write environment prerequisites in Bash and exit 77 when unavailable. SKIP takes
-precedence over xfail; timeouts remain failures. Syntax lint uses bash -n. Checks
-may source other files; those files must be included in project review. There is
-no probe configuration, retired list, revoke command or approved snapshot store.
+<!-- semspec: case id=S-EXAMPLE-001 timeout=10s -->
+```bash
+true
+```
+~~~~
 
-From the pVisor repository:
+The comment occupies one line immediately before the Bash fence. The ID is required;
+`timeout`, paired `xfail-on`/`xfail-reason` are optional. Headings are ordinary prose
+and unmarked fences are never executed. One section may contain multiple cases.
+The surrounding section, including prose, parameters and examples, is sealed.
+
+Shared preparation is a normal Bash fence preceded by `<!-- semspec: setup -->`.
+A case sources preparation from its sibling `index.md`, then its own document,
+in source order, in a fresh temporary workspace. Definitions, fixture services and
+assertions belong in these Markdown blocks. Their complete documents participate
+in review digests. `helper setup FILE.md` prints the extracted preparation for
+manual use. Checks call installed commands through PATH; optional `--subject-bin`
+(or SEMSPEC_SUBJECT_BIN) supplies an absolute SUBJECT_BIN to checks that use it.
+`--timeout` sets the default per-case timeout, otherwise 180 seconds; a comment’s
+timeout takes precedence. Environment prerequisites are Bash checks; exit 77 skips.
+
+Each check runs with `set -euo pipefail`, null stdin and its own process group.
+Timeout sends TERM, then KILL after five seconds; ordinary exit also kills remaining
+group descendants. Do not detach persistent processes. Failure directories and
+logs are retained, including XFAIL; `--keep` retains successful checks too.
+PASS/SKIP/XFAIL exit 0 by default; `--require-pass` makes every non-PASS fail.
+FAIL/XPASS, inventory errors or required pending review exit 1;
+usage/spec errors exit 2; ERROR verdicts exit 3. Human and JSON reports are supported.
+SSH signing, JUnit and parallel execution remain unsupported.
+
+The runner requires the report to contain exactly the selected case IDs, once each.
+Explicit `--case` IDs must be unique and belong to `--domain` when specified.
+With `--output`, valid selection clears the previous report before execution and
+publishes the fresh report atomically, even on case failure. Invalid selections
+preserve an existing report; launch failure/interruption leaves no stale result.
+Output must not replace loaded specifications, preparation or the review ledger.
+The USE entry runs semspec with `--require-pass`; no separate catalog parser or
+report-validation script is used. Strict PASS does not approve cases and can be
+combined with `--require-reviewed` for human review requirements.
+
+The nearest common directory of the supplied directories (or file parents) is
+the review root: preparation names are relative to it and REVIEWED.toml lives there.
+With a single input this is its directory, as before. A missing ledger means UNREVIEWED. Only a person
+may approve from an interactive terminal:
+
+```sh
+semspec show S-EXAMPLE-001 cases
+semspec --spec-dir cases approve @engine @vocab:index.md S-EXAMPLE-001 --reviewer YOUR_NAME
+```
+
+Approval shows current content/dependencies, requires typing the item and atomically
+updates only the ledger. Tests never create approval records. Changed case prose,
+preparation documents or engine semantics make existing approvals STALE.
+TTY checks cannot authenticate a reviewer; repository review rules must protect
+specifications, the engine and human ledgers. AI must not execute approve or edit
+real ledgers/snapshots, or weaken claims/checks/xfail to obtain PASS.
+
+From pVisor:
 
 ```sh
 just test-semspec
-just semspec lint
-just semspec review --strict         # intentionally fails until human review
-just semantics --case S-STAGE-001
-just cases --case S-DOC-001,S-DOC-012 # documented DOC scenarios
-just semantics --require-reviewed --format json --output target/semantics.json
-just semspec --config tools/semspec/semantics/semspec.toml lint
+just semspec lint docs/src/zh/cases
+just semspec run docs/src/zh/cases/01-first-job.md --subject-bin target/release/pvisor
+just cases --suite use               # builds product; semspec requires every selected case to PASS
+just semspec run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
+just semspec review docs/src/zh/cases --strict         # fails until human review
 ```
 
-Conventional tests cover digest golden values, parsing, ledger state transitions,
-CLI verdict/review handling, exact content/tree helpers and process cleanup.
-The self-specifications in `semantics/review.md` are drafts for human review.
-AI must not execute S-REVIEW-004 or approve, change real ledgers/snapshots,
-or weaken existing claims/checks to fit the implementation.
+STAGE checks live in docs/src/zh/cases/06-stage-apply.md. DOC and VM appendices
+use the same Markdown format and preparation from reference/index.md:
+
+```sh
+just semspec lint docs/src/zh/reference
+just semspec lint tools/semspec/semantics
+```
+
+Self-specifications in semantics/review.md are drafts. AI must not execute
+S-REVIEW-004. Conventional tests cover Markdown inputs, parsing, digest golden
+values, review transitions, verdicts, timeout cleanup and exact content/tree helpers.

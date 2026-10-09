@@ -4,7 +4,7 @@
 
 ```bash
 ./run.sh
-./test.sh  # 执行同一场景并验证预期结果
+just examples 03-network-isolation  # 从仓库根执行并验证
 ```
 
 脚本启动一个本地 HTTP server，然后平铺执行三个场景：
@@ -28,7 +28,7 @@ Bundle 则独立保存在 `PVISOR_RUN_HOME` 下。
 
 `run.sh` 中的短 `bash -c` 只负责让 curl 显式读取 pVisor 注入的 `$HTTP_PROXY`。
 它把 allow、deny 和 direct 三次执行的 stdout、stderr 与退出码保存在工作目录中，便于
-直接观察。`test.sh` 再检查响应、预期失败和三个 Run Bundle。
+直接观察。`just examples 03-network-isolation` 再检查响应、预期失败和三个 Run Bundle。
 
 预期结论：
 

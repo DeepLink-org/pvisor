@@ -25,7 +25,6 @@ build/
 .worktrees/
 review_project/
 review/
-tools/experiments/
 crates/pvisor-vm/upstream/
 *.tar.gz
 *.log

@@ -31,10 +31,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-clippy
-      - name: Lint GitHub Actions workflows
-        uses: docker://rhysd/actionlint:1.7.7
+      - uses: taiki-e/install-action@v2
         with:
-          args: -color
+          tool: actionlint@1.7.7
+      - run: just lint-workflows
       - run: just fmt-rust --check
       - run: just lint-rust
 
@@ -55,13 +55,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tools/semspec
-      - run: cargo fmt --manifest-path tools/semspec/Cargo.toml --check
-      - run: cargo clippy --manifest-path tools/semspec/Cargo.toml --all-targets --locked -- -D warnings
+      - run: just fmt-semspec
+      - run: just lint-semspec
       - run: just test-semspec
-      - run: just semspec lint
-      - run: just semspec --config semspec-doc.toml lint
-      - run: just semspec --config semspec-use.toml lint
-      - run: just semspec --config tools/semspec/semantics/semspec.toml lint
+      - run: just semspec --spec-dir docs/src/zh/reference lint
+      - run: just semspec lint docs/src/zh/cases
+      - run: just semspec --spec-dir tools/semspec/semantics lint
       # Human review must approve STAGE, its vocabulary and engine before enabling reviewed release gates.
 
   python:
@@ -72,6 +71,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
       - run: just lint-py
+      - run: just test-scripts
       - run: just test-py
 
   firmware:
@@ -83,7 +83,7 @@ jobs:
       - uses: ./.github/actions/setup-build-env
       - name: Install firmware test compiler
         run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends build-essential
-      - run: just test-fw
+      - run: just fw test
 
   daemon:
     name: Native daemon / Linux x86_64
@@ -102,7 +102,7 @@ jobs:
       # Shared native pipeline prepares the embedded kernel and Rust guest.
       # Conventional tests are not an end-to-end KVM/prepared-image deployment gate.
       - run: just daemon-build
-      - run: just test-daemon
+      - run: just test pvisor-daemon
 
   rust-test:
     name: Rust Test / ${{ matrix.platform }} / ${{ matrix.shard }}
@@ -241,11 +241,10 @@ jobs:
 
       - name: Record isolated core budget
         run: |
-          cargo build --release --locked -p pvisor --lib
-          cargo build --release --locked -p pvisor-cli --bin pvisor
+          just build release
           # Rebaseline after moving the VM implementation into the runtime closure.
           # Filesystem caching and lazy-image V2 bring the runtime closure to ~183,530 lines.
-          python3 scripts/ci/check_core_budget.py target/release/pvisor --max-dependencies 235 --max-workspace-lines 185000 --max-core-items 301 > target/pvisor-core-budget.json
+          just check-core-budget target/release/pvisor --max-dependencies 235 --max-workspace-lines 185000 --max-core-items 301 > target/pvisor-core-budget.json
       - uses: actions/upload-artifact@v4
         with:
           name: pvisor-core-budget-linux
@@ -280,7 +279,7 @@ jobs:
             --case S-DOC-048
 
       - name: Run the CLI learning path (all cases must PASS)
-        run: just cases-v2
+        run: just cases --suite use
 
       - name: Upload learning-path report
         if: always()

@@ -17,79 +17,48 @@ use std::{
 };
 
 pub struct Options {
-    pub spec: Option<PathBuf>,
+    pub timeout: Duration,
     pub subject: Option<PathBuf>,
     pub keep: bool,
-    pub case_ids: Vec<String>,
-    pub domain: Option<String>,
 }
-pub fn run(project: &Project, options: &Options) -> Result<RunReport> {
-    let platform = project.config.platform()?;
-    let subject = match &options.subject {
-        Some(path) => path.clone(),
-        None => project.root.join(&project.config.subject.bin),
-    }
-    .canonicalize()
-    .context("subject binary unavailable")?;
-    ensure!(subject.is_file(), "subject must be a file");
-    #[cfg(unix)]
+pub fn run(project: &Project, cases: &[&Case], options: &Options) -> Result<RunReport> {
+    let platform = std::env::consts::OS.to_owned();
     ensure!(
-        fs::metadata(&subject)?.permissions().mode() & 0o111 != 0,
-        "subject is not executable"
+        ["linux", "macos"].contains(&platform.as_str()),
+        "Bash checks require Linux or macOS"
     );
-    for id in &options.case_ids {
-        ensure!(
-            project.cases.iter().any(|c| c.id == *id),
-            "unknown case {id}"
-        );
-    }
-    if let Some(domain) = &options.domain {
-        ensure!(
-            project.cases.iter().any(|c| c.domain == *domain),
-            "unknown domain {domain}"
-        );
-    }
-    let file_cases = if let Some(path) = &options.spec {
-        let path = path
-            .canonicalize()
-            .context("Markdown specification unavailable")?;
-        let ids: BTreeSet<_> = project
-            .cases
-            .iter()
-            .filter(|case| {
-                project.root.join(&case.file).canonicalize().ok().as_ref() == Some(&path)
-            })
-            .map(|case| case.id.as_str())
-            .collect();
-        ensure!(
-            !ids.is_empty(),
-            "Markdown file contains no cases in configured spec_dirs: {}",
-            path.display()
-        );
-        Some(ids)
-    } else {
-        None
-    };
-    let cases: Vec<_> = project
-        .cases
-        .iter()
-        .filter(|c| {
-            (options.case_ids.is_empty() || options.case_ids.contains(&c.id))
-                && options.domain.as_ref().is_none_or(|d| c.domain == *d)
-                && file_cases
-                    .as_ref()
-                    .is_none_or(|ids| ids.contains(c.id.as_str()))
+    let subject = options.subject.clone();
+    let subject = subject
+        .map(|path| -> Result<PathBuf> {
+            let path = path.canonicalize().context("subject binary unavailable")?;
+            ensure!(path.is_file(), "subject must be a file");
+            #[cfg(unix)]
+            ensure!(
+                fs::metadata(&path)?.permissions().mode() & 0o111 != 0,
+                "subject is not executable"
+            );
+            Ok(path)
         })
-        .collect();
+        .transpose()?;
     ensure!(!cases.is_empty(), "selection contains no cases");
-    let vocab: BTreeSet<_> = cases.iter().flat_map(|c| project.vocab_names(c)).collect();
+    let vocab: BTreeSet<_> = cases
+        .iter()
+        .flat_map(|c| project.preparation_names(c))
+        .collect();
     let vocab_review = vocab
         .iter()
         .map(|n| Ok((n.clone(), project.item(&format!("@vocab:{n}"))?.review)))
         .collect::<Result<_>>()?;
     let mut results = vec![];
     for case in cases {
-        results.push(run_case(project, case, &platform, &subject, options.keep)?);
+        results.push(run_case(
+            project,
+            case,
+            &platform,
+            subject.as_deref(),
+            options.keep,
+            options.timeout,
+        )?);
     }
     Ok(RunReport {
         engine_semantics: ENGINE_SEMANTICS,
@@ -103,8 +72,9 @@ fn run_case(
     project: &Project,
     case: &Case,
     platform: &str,
-    subject: &Path,
+    subject: Option<&Path>,
     keep: bool,
+    default_timeout: Duration,
 ) -> Result<CaseResult> {
     let started = Instant::now();
     let review = project.item(&case.id)?.review;
@@ -131,9 +101,12 @@ fn run_case(
         let mut script = String::from("set -euo pipefail\n");
         let vocab_dir = root.path().join("vocab");
         fs::create_dir(&vocab_dir)?;
-        for name in project.vocab_names(case) {
+        for name in project.preparation_names(case) {
             let path = vocab_dir.join(&name);
-            fs::write(&path, &project.vocab[&name].text)?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&path, &project.preparation[&name].script)?;
             let quoted = shell_words::quote(path.to_str().context("vocabulary path must be UTF8")?);
             script.push_str(&format!("builtin source {quoted}\n"));
         }
@@ -144,14 +117,23 @@ fn run_case(
         command
             .arg(&script_path)
             .current_dir(&ws)
-            .envs(&project.config.subject.env)
-            .env("SUBJECT_BIN", subject)
             .env("CASE_ROOT", root.path())
             .env("WS", &ws)
             .env("SEMSPEC_BIN", std::env::current_exe()?)
             .env("SEMSPEC_PROJECT_ROOT", &project.root);
+        command.env_remove("SUBJECT_BIN");
+        if let Some(subject) = subject {
+            command.env("SUBJECT_BIN", subject);
+        }
         let log = root.path().join("case.log");
-        let (status, timed_out) = execute_process(command, &log, project.config.timeout()?)?;
+        let timeout = case
+            .annotation
+            .timeout
+            .as_deref()
+            .map(crate::parse::parse_timeout)
+            .transpose()?
+            .unwrap_or(default_timeout);
+        let (status, timed_out) = execute_process(command, &log, timeout)?;
         let passed = status.success() && !timed_out;
         let detail = if passed {
             String::new()

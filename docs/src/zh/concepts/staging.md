@@ -2,7 +2,7 @@
 
 暂存把 Job 的工作区改动留在写时复制的 upper 层。只有显式的 `apply` 才会改变目标工作区。因此文件改动在 apply 之前是可逆的：选择合入、丢弃，或分叉。
 
-这里定义暂存契约，每条承诺对应 `tests/semantics/stage-apply.md` 中的一个用例，可用 `just semantics` 复现。操作流程见[审查与应用](../guides/review-apply.md)。
+这里定义暂存契约，每条承诺对应 `docs/src/zh/cases/06-stage-apply.md` 中的一个用例，可用 `just cases --suite stage` 复现。操作流程见[审查与应用](../guides/review-apply.md)。
 
 ## 承诺
 

@@ -76,5 +76,5 @@ Follow `tools/semspec/DESIGN.md` for semspec. AI may draft new cases, repair the
 subject implementation and maintain conventional runner tests. AI must not run
 `semspec approve`/`revoke`, edit real `REVIEWED.toml` ledgers or `.approved/`
 snapshots, or weaken existing claims/checks/xfail annotations to obtain PASS.
-Use `just test-semspec` to validate the standalone runner and `just semspec lint`
+Use `just test-semspec` to validate the standalone runner and `just semspec lint docs/src/zh/cases`
 for specifications. Human approval is distinct from a passing test.

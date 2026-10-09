@@ -15,11 +15,6 @@ Documentation = "https://deeplink-org.github.io/pvisor/"
 Repository = "https://github.com/DeepLink-org/pvisor"
 Issues = "https://github.com/DeepLink-org/pvisor/issues"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.0.0",
-]
-
 [tool.setuptools.packages.find]
 include = ["pvisor*"]
 
@@ -45,6 +40,7 @@ before-all = [
     "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable",
     "$HOME/.cargo/bin/rustup target add x86_64-unknown-linux-musl",
     "$HOME/.cargo/bin/cargo install cargo-zigbuild --locked",
+    "$HOME/.cargo/bin/cargo install just --version 1.57.0 --locked",
 ]
 # Static musl CLI, with its kernel embedded. Keep the manylinux wheel tag
 # for glibc Python installers; the CLI has no glibc runtime dependency.
@@ -75,7 +71,3 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E501"]
-
-[tool.pytest.ini_options]
-pythonpath = ["."]
-testpaths = ["tests", "benchmark/pvisor"]

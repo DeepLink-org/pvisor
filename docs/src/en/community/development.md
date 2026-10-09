@@ -1,6 +1,6 @@
 # Engineering guide
 
-Run commands from the repository root. `just` lists supported tasks, with one entry per workflow.
+Run commands from the repository root. `just` lists public recipes in twelve groups. `just ci` runs the local check sequence; `just ci check "test pvisor-core"` runs selected commands in order and stops on failure. Internal recipes stay callable but are hidden from the default help.
 
 ## Repository layout and ownership
 
@@ -125,22 +125,24 @@ CI checks the default runtime and application dependency boundaries before the c
 | `just build` / `just build release` | Build debug/release CLI and sign Hypervisor entitlement on macOS |
 | `just install-cli` | Install signed release CLI to `CARGO_INSTALL_ROOT` or `~/.cargo` |
 | `just wheel` / `just wheel debug` | Build a fresh wheel; place it in `dist/` after installation validation |
+| `just fw build` / `just fw test` | Build firmware or run bundle/ABI regressions |
+| `just doctor` / `just doctor test` | Read-only tool diagnostics; no installation |
 | `just check` | Compilation checks for the product and its dependencies |
-| `just fmt` / `just fmt-check` | Format Rust/Python or check formatting |
-| `just lint` | Clippy and Python package lint |
+| `just fmt` / `just ci "fmt-rust --check" "fmt-py --check"` | Format Rust/Python or check formatting |
+| `just lint` | Clippy, Python and workflow lint |
 | `just test` | Workspace Rust tests via nextest, followed by Python tests |
 | `just test core pvisor cli` | Selected Rust packages: shared contracts, runtime and application |
 | `just test cli` / `just test pvisor-cli` | Executable/frontend tests; `just test pvisor` selects runtime tests |
 | `just test pvisor-vm` | VM-owner tests; macOS signs Hypervisor entitlement before nextest |
-| `just test-py -k packaging` | Pass options to pytest |
-| `just test-benchmark` | Benchmark tool tests via pytest; also included in default Python tests |
-| `just test-py --vm-bin target/release/pvisor` | Real VM terminal/TUI interaction regressions |
-| `just test-py tests/test_zcode_integration.py --zcode-integration` | Explicit integration requiring Linux rootless, FUSE3 and zcode |
+| `just test-py -k packaging` | Filter Python unittest checks in both test directories |
+| `just test-py discover -s benchmark/pvisor` | Benchmark tool unittest checks; also included in default Python tests |
+| `PVISOR_TEST_VM_BIN=target/release/pvisor just test-py tests/test_vm_terminal.py` | Real VM terminal/TUI interaction regressions |
+| `PVISOR_TEST_ZCODE=1 just test-py tests/test_zcode_integration.py` | Explicit integration requiring Linux rootless, FUSE3 and zcode |
 | `just test-isolation` | Strict Linux rootless/FUSE regressions; missing user namespaces do not skip checks |
 | `just smoke` | Build debug CLI and check main commands |
 | `just examples` | Build release CLI and run all examples; append names for a subset |
 | `just cases --case S-DOC-001,S-DOC-002` | Selected documentation cases |
-| `just benchmark` / `just benchmark nightly` | Process and Run Bundle benchmarks |
+| `just benchmark` / `just benchmark smoke nightly` | Process and Run Bundle benchmarks |
 | `just docs-build` | Build bilingual documentation and check links |
 | `just docs-serve` / `just docs-serve en` | Native Zensical preview with live reload; Chinese on port 3000, English on port 3001 |
 | `just ci` | Check format/lint/tests and build without rewriting source |
@@ -150,11 +152,11 @@ CI checks the default runtime and application dependency boundaries before the c
 
 Runtime-only Rust tests remain in `crates/pvisor/tests/`. The 19 executable/frontend integration test files, including mixed runtime/command tests, live in `crates/pvisor-cli/tests/`; mixed files retain their runtime-only cases in `pvisor`. Native VM and environment-dependent tests keep their existing prerequisites and skip/ignore gates; compile checks do not validate real guests.
 
-Default pytest collection includes `tests/` and `benchmark/pvisor/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
+Default unittest discovery includes `tests/` and `benchmark/pvisor/`. Rust tests in `pvisor-core` verify shared Operation/Overlay contracts. Benchmark tests requiring `/proc` and Linux rootfs tools run only on Linux.
 
-VM filesystem checks run inside the Linux guest and require root, Python, pytest and tar. From the repository run `python3 -m pytest -q tests/test_vm_filesystem.py --guest-fs-dir /var/tmp --guest-fs-dir .` to check guest root/workspace filesystems separately. Checks skip without directory arguments; explicitly enabled failures are errors.
+VM filesystem checks run inside the Linux guest and require root, Python and tar. From the repository run `PVISOR_TEST_GUEST_FS_DIRS=/var/tmp:. just test-py tests/test_vm_filesystem.py` to check guest root/workspace filesystems separately. Checks skip without directory configuration; explicitly enabled failures are errors.
 
-For a specific Rust integration test/filter, call nextest directly, for example `cargo nextest run --locked -p pvisor-gateway --test llm_fixtures`. nextest excludes doctests; use `cargo test --doc -p <package>` when needed.
+For a specific Rust integration test/filter, pass nextest arguments after `--`, for example `just test-rust pvisor-gateway -- --test llm_fixtures`. nextest excludes doctests; use `cargo test --doc -p <package>` when needed.
 
 ## CI responsibilities
 

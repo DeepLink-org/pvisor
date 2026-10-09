@@ -75,6 +75,7 @@ nav = [
       { "3. 保存提案，探索另一条分支" = "cases/03-checkpoint-and-fork.md" },
       { "4. 为不可信任务声明边界" = "cases/04-boundaries.md" },
       { "5. 回放轨迹与选择恢复工具" = "cases/05-tools-and-restoration.md" },
+      { "6. 验证暂存、应用与丢弃契约" = "cases/06-stage-apply.md" },
     ] },
     { "命令与配置参考" = [
       { "命令与场景参考" = "reference/index.md" },

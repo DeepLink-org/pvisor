@@ -10,6 +10,7 @@ An untrusted script may write absolute paths. Use safe and verify outside files 
 
 **Violation**: An outside file is overwritten or evidence claims a boundary that was not enforced.
 
+<!-- semspec: case id=S-USE-012 -->
 ```bash
 journey_setup
 printf sentinel > "$CASE_ROOT/outside.txt"
@@ -29,6 +30,7 @@ Credentials may be inside the workspace. Protect matching paths with --access an
 
 **Violation**: The deny rule logs an event but returns the secret.
 
+<!-- semspec: case id=S-USE-013 -->
 ```bash
 journey_setup
 printf sentinel > secret.txt
@@ -47,6 +49,7 @@ Use deny-all for offline work that needs no API. Test against a local listener t
 
 **Violation**: Network isolation silently degrades and the Agent reaches the host listener.
 
+<!-- semspec: case id=S-USE-014 -->
 ```bash
 journey_setup
 journey_tools listen "$CASE_ROOT/port" &
