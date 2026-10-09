@@ -162,6 +162,18 @@ pub struct IoPlan {
     pub stderr: Option<String>,
 }
 
+/// One `linux.resources.devices` rule.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceRulePlan {
+    pub allow: bool,
+    /// 'c', 'b', or None for "any type".
+    pub typ: Option<String>,
+    pub major: Option<i64>,
+    pub minor: Option<i64>,
+    /// Access characters subset of "rwm".
+    pub access: String,
+}
+
 /// Pre-rendered cgroup v2 file contents for the limits the shim enforces.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CgroupPlan {
@@ -171,6 +183,8 @@ pub struct CgroupPlan {
     pub pids_max: Option<String>,
     pub memory_max: Option<String>,
     pub cpu_max: Option<String>,
+    /// cpu.weight rendered from `resources.cpu.shares` (v2 semantics).
+    pub cpu_weight: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -190,6 +204,15 @@ pub struct ContainerPlan {
     pub rootfs_mounts: Vec<MountPlan>,
     pub root_readonly: bool,
     pub cgroup: Option<CgroupPlan>,
+    /// `linux.resources.devices` rules (enforced via cgroup-v2 BPF when the
+    /// spec configures a cgroup; without one runc semantics apply: skipped).
+    pub devices: Vec<DeviceRulePlan>,
+    /// `linux.maskedPaths`: bind /dev/null over each path after pivot.
+    pub masked_paths: Vec<String>,
+    /// `linux.readonlyPaths`: self-bind + read-only remount after pivot.
+    pub readonly_paths: Vec<String>,
+    /// `linux.sysctl` applied inside the new namespaces (net.* etc.).
+    pub sysctls: Vec<(String, String)>,
     pub io: IoPlan,
     pub annotations: HashMap<String, String>,
     /// Non-fatal gaps recorded while planning (surfaced in shim logs).
@@ -285,6 +308,7 @@ fn plan_cgroup(spec: &Spec) -> Option<CgroupPlan> {
         pids_max: None,
         memory_max: None,
         cpu_max: None,
+        cpu_weight: None,
     };
     if let Some(resources) = resources {
         if let Some(pids) = resources.pids().as_ref() {
@@ -301,6 +325,12 @@ fn plan_cgroup(spec: &Spec) -> Option<CgroupPlan> {
                 _ => format!("max {period}"),
             };
             plan.cpu_max = Some(value);
+            if let Some(shares) = cpu.shares().filter(|shares| *shares > 0) {
+                // cgroup v2 remaps the v1 2-262144 shares range onto
+                // 1-10000 via weight = 1 + (shares - 2) * 9999 / 262142.
+                let weight = 1 + (shares - 2) * 9999 / 262142;
+                plan.cpu_weight = Some(weight.to_string());
+            }
         }
     }
     Some(plan)
@@ -700,15 +730,44 @@ fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
                 "gidMappings",
                 "resources",
                 "cgroupsPath",
+                "maskedPaths",
+                "readonlyPaths",
+                "sysctl",
             ],
         )?;
         let resources = &linux["resources"];
-        reject_other_fields(resources, "linux.resources.", &["pids", "memory", "cpu"])?;
+        reject_other_fields(
+            resources,
+            "linux.resources.",
+            &["pids", "memory", "cpu", "devices"],
+        )?;
+        for device in linux["resources"]["devices"].as_array().unwrap_or(&vec![]) {
+            let access = device["access"].as_str().unwrap_or("");
+            if access.is_empty()
+                || !access.chars().all(|c| matches!(c, 'r' | 'w' | 'm'))
+                || access
+                    .chars()
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    != access.len()
+            {
+                return Err(PlanError::UnsupportedConstraint(
+                    "linux.resources.devices[].access".into(),
+                ));
+            }
+            if let Some(typ) = device["type"].as_str()
+                && !matches!(typ, "c" | "b" | "a")
+            {
+                return Err(PlanError::UnsupportedConstraint(
+                    "linux.resources.devices[].type".into(),
+                ));
+            }
+        }
         reject_other_fields(&resources["memory"], "linux.resources.memory.", &["limit"])?;
         reject_other_fields(
             &resources["cpu"],
             "linux.resources.cpu.",
-            &["quota", "period"],
+            &["quota", "period", "shares"],
         )?;
     }
     Ok(())
@@ -800,6 +859,36 @@ pub fn build_plan(
             .and_then(|root| root.readonly())
             .unwrap_or(false),
         cgroup: plan_cgroup(spec),
+        devices: linux
+            .and_then(|l| l.resources().as_ref())
+            .and_then(|r| r.devices().clone())
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|d| DeviceRulePlan {
+                        allow: d.allow(),
+                        typ: match d.typ() {
+                            Some(oci_spec::runtime::LinuxDeviceType::C) => Some("c".to_string()),
+                            Some(oci_spec::runtime::LinuxDeviceType::B) => Some("b".to_string()),
+                            _ => None,
+                        },
+                        major: d.major(),
+                        minor: d.minor(),
+                        access: d.access().clone().unwrap_or_default(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        masked_paths: linux
+            .and_then(|l| l.masked_paths().clone())
+            .unwrap_or_default(),
+        readonly_paths: linux
+            .and_then(|l| l.readonly_paths().clone())
+            .unwrap_or_default(),
+        sysctls: linux
+            .and_then(|l| l.sysctl().clone())
+            .map(|entries| entries.into_iter().collect())
+            .unwrap_or_default(),
         io,
         annotations,
         warnings,
@@ -864,16 +953,8 @@ mod tests {
                 serde_json::json!({"linux":{"sysctl":{"net.ipv4.ip_forward":"0"}}}),
             ),
             (
-                "linux.resources.devices",
-                serde_json::json!({"linux":{"resources":{"devices":[{"allow":false,"access":"rwm"}]}}}),
-            ),
-            (
                 "linux.resources.memory.swap",
                 serde_json::json!({"linux":{"resources":{"memory":{"swap":1024}}}}),
-            ),
-            (
-                "linux.resources.cpu.shares",
-                serde_json::json!({"linux":{"resources":{"cpu":{"shares":1024}}}}),
             ),
             (
                 "linux.resources.unified",

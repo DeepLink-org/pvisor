@@ -258,6 +258,134 @@ mod linux {
         Ok(())
     }
 
+    /// Bind-mount /dev/null over each masked path (runc semantics: reading a
+    /// masked directory fails with ENOTDIR). Missing paths are skipped, matching
+    /// runc's tolerance for absent kernel paths.
+    /// Extract the raw OS error from an anyhow chain (mount syscall errors).
+    fn errno_of(error: &anyhow::Error) -> Option<i32> {
+        error
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .find_map(|io_error| io_error.raw_os_error())
+    }
+
+    pub fn apply_masked_paths(paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        ensure_minimal_dev_nodes()?;
+        let source = Path::new("/dev/null");
+        for path in paths {
+            let target = Path::new(path);
+            if !target.exists() {
+                continue;
+            }
+            if let Err(error) = mount(Some(source), target, None, libc::MS_BIND, None) {
+                // Kernel-proc entries that are symlinks or don't support
+                // bind mounts are skipped, matching runc's tolerance.
+                if errno_of(&error) == Some(libc::ENOENT) || errno_of(&error) == Some(libc::ENOTDIR)
+                {
+                    continue;
+                }
+                return Err(error).with_context(|| format!("mask {path}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Self-bind each readonly path and remount it read-only.
+    pub fn apply_readonly_paths(paths: &[String]) -> Result<()> {
+        for path in paths {
+            let target = Path::new(path);
+            if !target.exists() {
+                continue;
+            }
+            let bind = mount(Some(target), target, None, libc::MS_BIND, None);
+            let mount = || {
+                mount(
+                    None,
+                    target,
+                    None,
+                    libc::MS_BIND
+                        | libc::MS_REMOUNT
+                        | libc::MS_RDONLY
+                        | libc::MS_NOSUID
+                        | libc::MS_NODEV
+                        | libc::MS_NOEXEC,
+                    None,
+                )
+            };
+            match bind.and_then(|()| mount()) {
+                Ok(()) => {}
+                Err(error)
+                    if errno_of(&error) == Some(libc::ENOENT)
+                        || errno_of(&error) == Some(libc::ENOTDIR) =>
+                {
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("read-only {path}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Create the minimal device set inside a fresh tmpfs /dev (only when the
+    /// root did not bring its own nodes): null, zero, full, random, urandom,
+    /// tty and the fd/std{in,out,err} indirections runc provides.
+    fn ensure_minimal_dev_nodes() -> Result<()> {
+        let dev = Path::new("/dev");
+        if dev.join("null").exists() {
+            return Ok(());
+        }
+        let nodes: [(&str, u32, u32); 6] = [
+            ("null", 1, 3),
+            ("zero", 1, 5),
+            ("full", 1, 7),
+            ("random", 1, 8),
+            ("urandom", 1, 9),
+            ("tty", 5, 0),
+        ];
+        for (name, major, minor) in nodes {
+            let path = dev.join(name);
+            if path.exists() {
+                continue;
+            }
+            let c_name = std::ffi::CString::new(name).expect("device name");
+            let ret = unsafe {
+                libc::mknod(
+                    c_name.as_ptr(),
+                    libc::S_IFCHR | 0o666,
+                    libc::makedev(major, minor),
+                )
+            };
+            let _ = path; // silence unused when ret checked below
+            if ret != 0 {
+                let error = std::io::Error::last_os_error();
+                // Missing CAP_MKNOD or a read-only /dev must not mask paths
+                // silently differently — surface the failure.
+                return Err(error).with_context(|| format!("mknod /dev/{name}"));
+            }
+        }
+        let _ = std::os::unix::fs::symlink("/proc/self/fd", dev.join("fd"));
+        let _ = std::os::unix::fs::symlink("/proc/self/fd/0", dev.join("stdin"));
+        let _ = std::os::unix::fs::symlink("/proc/self/fd/1", dev.join("stdout"));
+        let _ = std::os::unix::fs::symlink("/proc/self/fd/2", dev.join("stderr"));
+        Ok(())
+    }
+
+    /// Apply `linux.sysctl` entries by writing them under /proc/sys; a write
+    /// error fails the container (fail-closed, like runc rejecting
+    /// non-namespaced sysctls).
+    pub fn apply_sysctls(entries: &[(String, String)]) -> Result<()> {
+        for (key, value) in entries {
+            let proc_path = format!("/proc/sys/{}", key.replace('.', "/"));
+            std::fs::write(&proc_path, value).with_context(|| format!("sysctl {key}={value}"))?;
+        }
+        Ok(())
+    }
+
     /// Remount the (new) root read-only when the spec asks for it.
     pub fn remount_root_readonly() -> Result<()> {
         mount(
@@ -282,7 +410,8 @@ mod linux {
 
 #[cfg(target_os = "linux")]
 pub use linux::{
-    apply_mounts, make_mounts_private, mount, mount_proc, pivot_root, remount_root_readonly,
+    apply_masked_paths, apply_mounts, apply_readonly_paths, apply_sysctls, make_mounts_private,
+    mount, mount_proc, pivot_root, remount_root_readonly,
 };
 
 #[cfg(test)]

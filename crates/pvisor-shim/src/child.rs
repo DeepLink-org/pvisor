@@ -382,6 +382,20 @@ fn init_parent_main() -> Result<()> {
         return Err(error).context("install requested cgroup limits");
     }
 
+    // Device rules need a cgroup for the BPF filter; without one runc
+    // semantics apply and enforcement is skipped.
+    if !plan.devices.is_empty()
+        && let Some(cgroup_plan) = plan.cgroup.as_ref()
+        && let Some(dir) = crate::cgroup::cgroup_dir(cgroup_plan)
+        && let Err(error) = crate::cgroup::device_bpf::attach_device_filter(&dir, &plan.devices)
+    {
+        unsafe {
+            libc::kill(g_pid as i32, libc::SIGKILL);
+            libc::waitpid(g_pid as i32, std::ptr::null_mut(), 0);
+        }
+        return Err(error).context("attach device filter");
+    }
+
     relay_fork_report(fork_report_fd, g_pid)
 }
 
@@ -659,6 +673,10 @@ fn collect_unshare_flags(plan: &ContainerPlan) -> libc::c_int {
         match namespace.kind {
             // CLONE_NEWNS is always part of the unshare call above.
             NamespaceKind::Mount => {}
+            // The cgroup namespace is unshared by the init child (G): the
+            // parent must keep the host cgroup view to install limits and
+            // the device filter.
+            NamespaceKind::Cgroup => {}
             other => flags |= other.clone_flag(),
         }
     }
@@ -806,12 +824,49 @@ fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawF
         stdio.stderr,
     ]);
 
+    // G needs its own mount namespace: pivot_root must not change the root
+    // for A (which shares this namespace after fork), or the parent's
+    // cgroup and BPF setup loses the host view.
+    if unsafe { libc::unshare(libc::CLONE_NEWNS) } != 0 {
+        fail(format!(
+            "unshare mount namespace: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if let Err(error) = mount::make_mounts_private() {
+        fail(format!("{error:#}"));
+    }
+
+    // The cgroup namespace is unshared here (after the parent installed
+    // limits in the host view): the remapped root only affects this
+    // process's own view.
+    if plan
+        .namespaces
+        .iter()
+        .any(|ns| ns.kind == NamespaceKind::Cgroup && ns.path.is_none())
+        && unsafe { libc::unshare(libc::CLONE_NEWCGROUP) } != 0
+    {
+        fail(format!(
+            "unshare cgroup namespace: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
     // procfs must be mounted by a member of the new pid namespace, i.e. G.
     if let Err(error) = mount::mount_proc(&plan.rootfs) {
         fail(format!("{error:#}"));
     }
     if let Err(error) = mount::pivot_root(&plan.rootfs) {
         fail(format!("{error:#}"));
+    }
+    if let Err(error) = mount::apply_masked_paths(&plan.masked_paths) {
+        fail(format!("masked paths failed: {error:#}"));
+    }
+    if let Err(error) = mount::apply_readonly_paths(&plan.readonly_paths) {
+        fail(format!("read-only paths failed: {error:#}"));
+    }
+    if let Err(error) = mount::apply_sysctls(&plan.sysctls) {
+        fail(format!("sysctls failed: {error:#}"));
     }
     if plan.root_readonly
         && let Err(error) = mount::remount_root_readonly()
