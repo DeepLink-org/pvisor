@@ -31,9 +31,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-clippy
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: actionlint@1.7.7
+      - name: Install actionlint
+        run: |
+          mkdir -p "$RUNNER_TEMP/actionlint-bin"
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash -o "$RUNNER_TEMP/download-actionlint.bash"
+          bash "$RUNNER_TEMP/download-actionlint.bash" 1.7.7 "$RUNNER_TEMP/actionlint-bin"
+          echo "$RUNNER_TEMP/actionlint-bin" >> "$GITHUB_PATH"
       - run: just lint-workflows
       - run: just fmt-rust --check
       - run: just lint-rust
