@@ -91,6 +91,10 @@ fn lazy_image_v2(value: Option<&OsStr>) -> bool {
     value != Some(OsStr::new("0"))
 }
 
+fn index_pages_enabled(socket: bool, capability: bool, v2: bool, value: Option<&OsStr>) -> bool {
+    socket && capability && v2 && lazy_image_v2(value)
+}
+
 pub(super) struct RemoteFs {
     pub(super) downloads: Arc<Mutex<super::progress::Downloads>>,
     pub(super) reader: Arc<ContentReader>,
@@ -98,6 +102,8 @@ pub(super) struct RemoteFs {
     pub(super) digest: String,
     pub(super) cache: PathBuf,
     pub(super) metadata_cache: Option<PathBuf>,
+    pub(super) metadata_pages: bool,
+    metadata_reader: Option<super::portable::MetadataReader>,
     // Looked-up nodes remain addressable by inode: the backend has no forget
     // contract. Listings retain only bounded pages, not every child's Node.
     // Lightweight object identities survive eviction to preserve hard links.
@@ -119,8 +125,41 @@ impl RemoteFs {
         digest: String,
         cache: PathBuf,
         metadata_cache: Option<PathBuf>,
+        metadata_pages: bool,
     ) -> anyhow::Result<Self> {
+        Self::new_with_overrides(
+            client,
+            digest,
+            cache,
+            metadata_cache,
+            metadata_pages,
+            std::env::var_os("PVISOR_LAZY_IMAGE_V2").as_deref(),
+            std::env::var_os("PVISOR_LAZY_INDEX_PAGES").as_deref(),
+        )
+    }
+
+    fn new_with_overrides(
+        client: CacheClient,
+        digest: String,
+        cache: PathBuf,
+        metadata_cache: Option<PathBuf>,
+        metadata_pages: bool,
+        v2_override: Option<&OsStr>,
+        pages_override: Option<&OsStr>,
+    ) -> anyhow::Result<Self> {
+        let v2 = lazy_image_v2(v2_override);
         let client = Arc::new(client);
+        let metadata_reader =
+            if index_pages_enabled(client.is_socket(), metadata_pages, v2, pages_override) {
+                Some(super::portable::MetadataReader::new(
+                    client.clone(),
+                    digest.clone(),
+                    metadata_cache.as_ref().map(|cache| cache.join("binary")),
+                )?)
+            } else {
+                None
+            };
+        let prefetch_enabled = v2 && metadata_reader.is_none();
         let downloads = Arc::new(Mutex::new(super::progress::Downloads::default()));
         let reader = Arc::new(ContentReader {
             client: client.clone(),
@@ -135,13 +174,15 @@ impl RemoteFs {
             digest,
             cache,
             metadata_cache,
+            metadata_pages,
+            metadata_reader,
             nodes: HashMap::new(),
             paths: HashMap::new(),
             objects: HashMap::new(),
             directories: HashMap::new(),
             directory_order: VecDeque::new(),
             // Reconstructed runner backends read the same host engineering env.
-            prefetch_enabled: lazy_image_v2(std::env::var_os("PVISOR_LAZY_IMAGE_V2").as_deref()),
+            prefetch_enabled,
             prefetch_probes: HashMap::new(),
             prefetch_pages: 0,
             next_inode: 1,
@@ -154,17 +195,30 @@ impl RemoteFs {
         Ok(fs)
     }
 
+    fn uncached_metadata(&self, request: CacheRequest) -> anyhow::Result<Response> {
+        match &self.metadata_reader {
+            Some(reader) => reader.request(request),
+            None => self.client.request(request).map(|(response, _)| response),
+        }
+    }
+
     fn metadata_request(&self, request: CacheRequest) -> anyhow::Result<Response> {
+        // Legacy receipts have only a colocated checksum, not COMMIT provenance.
+        if let Some(reader) = &self.metadata_reader {
+            return reader.request(request).and_then(Self::metadata_response);
+        }
         let Some(directory) = &self.metadata_cache else {
-            return self.client.request(request).map(|(response, _)| response);
+            return self
+                .uncached_metadata(request)
+                .and_then(Self::metadata_response);
         };
         let path = directory.join(&hash(&serde_json::to_vec(&request)?)[7..]);
         let cached = self.cached_metadata(&request);
         let response = if let Some(response) = cached {
             response
         } else {
-            let response = match self.client.request(request) {
-                Ok((response, _)) => response,
+            let response = match self.uncached_metadata(request) {
+                Ok(response) => response,
                 Err(error)
                     if error
                         .downcast_ref::<std::io::Error>()
@@ -222,6 +276,9 @@ impl RemoteFs {
         path: &Path,
         response: &Response,
     ) -> anyhow::Result<()> {
+        if self.metadata_reader.is_some() {
+            return Ok(());
+        }
         fs::create_dir_all(directory)?;
         let bytes = serde_json::to_vec(response)?;
         let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
@@ -411,7 +468,9 @@ impl RemoteFs {
             path: path.clone(),
         };
         // Exact persistent positive AND negative hits precede speculative I/O.
-        if let Some(response) = self.cached_metadata(&request) {
+        if self.metadata_reader.is_none()
+            && let Some(response) = self.cached_metadata(&request)
+        {
             return self.insert_node(path, Self::metadata_response(response)?);
         }
         if self.directory_complete(ino) {

@@ -45,6 +45,8 @@ struct Binding {
     handle: String,
     cache: PathBuf,
     metadata_cache: Option<PathBuf>,
+    #[serde(default)]
+    metadata_pages: bool,
 }
 
 struct Projection {
@@ -345,6 +347,7 @@ impl DirectImage {
             handle: source.digest.clone(),
             cache: source.cache.clone(),
             metadata_cache: source.metadata_cache.clone(),
+            metadata_pages: source.metadata_pages,
         };
         let descriptor = directory.path().join(DESCRIPTOR);
         Persistence::atomic_write(&descriptor, &serde_json::to_vec(&binding)?, 0o600)?;
@@ -451,6 +454,7 @@ pub(crate) fn attach_runner_lowers<'a>(
             binding.handle,
             binding.cache,
             binding.metadata_cache,
+            binding.metadata_pages,
         )?;
         owners._attachments.push(attach(&root, source)?);
     }

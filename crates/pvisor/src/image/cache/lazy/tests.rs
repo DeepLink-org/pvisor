@@ -13,7 +13,8 @@ use std::sync::atomic::Ordering;
 fn native_mount_reads_lazily_and_unmounts() {
     use std::io::Read;
     let (temp, server, client, digest) = fixture();
-    let filesystem = RemoteFs::new(client, digest, temp.path().join("client"), None).unwrap();
+    let filesystem =
+        RemoteFs::new(client, digest, temp.path().join("client"), None, false).unwrap();
     let mount = mount(filesystem, temp.path()).unwrap();
     assert_eq!(
         fs::metadata(mount.path.join("large")).unwrap().len(),
@@ -50,4 +51,27 @@ fn native_mount_reads_lazily_and_unmounts() {
     assert!(!OverlayFs::is_mountpoint(&path));
     #[cfg(target_os = "linux")]
     assert!(!path.exists());
+}
+
+#[test]
+fn old_prepared_responses_default_to_rpc_without_metadata_capability_probe() {
+    let (temp, server, client, handle) = fixture();
+    let digest = handle.clone();
+    let response = serde_json::json!({
+        "status": "prepared", "image_handle": handle,
+        "metadata_generation": "legacy", "digest": digest,
+        "architecture": architecture(), "env": {}, "entrypoint": [], "cmd": []
+    });
+    let response: Response = serde_json::from_value(response).unwrap();
+    let (_, source) = prepare_remote(
+        client,
+        response,
+        super::super::progress::Downloads::default(),
+        None,
+    )
+    .unwrap();
+    assert!(!source.metadata_pages);
+    assert_eq!(server.reads.load(Ordering::Relaxed), 0);
+    drop(source);
+    drop(temp);
 }

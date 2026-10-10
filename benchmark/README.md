@@ -138,15 +138,18 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 频繁创建短任务环境时，用户需要判断客户端按需读取是否比完整拉取、解包更划算，以及镜像服务端准备成本如何摊销。
 - **想要的结论：** 同一固定 linux/amd64 digest、同一负载下（Ubuntu shell、Python/NumPy 脚本与可选 PyTorch CPU 导入分别成批，不合并），Docker 与 pVisor cache-service lazy VM 的客户端冷/热缓存 ready、completion 和传输量；明确服务端预准备成本，不解释为纯 VMM 差异。
 - **实验设计：** 开源 Distribution registry 提供固定 OCI 镜像，pvisor-cache serve 提供同镜像文件索引和内容。两服务均为本机 loopback，无人工延迟时只能解释为本机模拟远程协议，不是 WAN。按独立网络条件分批；配置两核/2 GiB（容器硬限制与 VM guest RAM 不等价，Docker daemon/containerd 未作整机两核约束，必须披露），随机交替每组至少 30 次，冷客户端缓存后紧接热缓存，新 guest/容器与工作区。Ubuntu 负载校验发行版身份和 shell 输出；Python 负载禁用 bytecode 写入，固定单线程，校验 Python/库版本和确定性 NumPy 数组与矩阵运算（可选 PyTorch 还须校验 CPU-only build 和张量运算），ready 为全部校验后的唯一输出。两组均要求成功退出；失败单列，不剔除慢有效样本。预热/预检不纳入正式样本；非分离分布 P50、分离分布各簇比例和中位数、参考 P95、配对 bootstrap 95% CI。镜像服务端拉取/解包/索引时间单独保留，原始日志、源码和制品摘要放 `.data/`。不回答完整 OS 引导、真实 WAN、并发或大型任务性能。
+- **当前实现复测：** 新静态 release 的 Docker/lazy 对照按负载独立成批，显式启用客户端索引页、上游连接池及持久私有桥；私有 namespace 隔离已有 Host listener。可使用校验后的原始压缩 OCI blobs 发布新 registry，并复制支持的 cache store，此时仅报告缓存准备成本，不沿用历史首次拉取耗时；Read Data、Metadata Data 和总响应分别计数。旧批次保留且不与新批次合并或计算实现加速比。
 - **入口脚本：** `lazy_startup.py`。
 
 ### B-LAZY-ENG：小文件 lazy image V2 的工程对照 {#b-lazy-eng}
 
-- **文档：** 工程结果保留 `benchmark/pvisor/LAZY_IMAGE_V2_REPORT.md` 和 `.data/`；不混入用户启动页的历史 Docker 对照。
+- **文档：** 工程结果保留 `benchmark/pvisor/LAZY_IMAGE_V2_REPORT.md`、`benchmark/pvisor/LAZY_INDEX_PAGES_REPORT.md`、`benchmark/pvisor/LAZY_BRIDGE_REPORT.md` 和 `.data/`；不混入用户启动页的历史 Docker 对照。
 - **角色：** engineering A/B。
 - **Motivation：** 判断有界目录元数据预取与持久连接是否减少 Python 导入的小文件请求成本。
 - **想要的结论：** 同一冻结制品、同一 NumPy 镜像及脚本下，关闭/开启 V2 的冷/热 ready、completion、请求数、连接数和内容量变化，附配对 bootstrap 95% CI；不宣称 Docker/WAN 或吞吐排名。
-- **实验设计：** 私有 user/mount/PID namespace 隔离 Host listener；新 VM/workspace/stage，CPU 0/1、2 vCPU、2 GiB guest RAM，预准备 cache 服务在 CPU 2/3，本机 loopback TCP，无延迟注入。每轮随机交替 V1-compatible（`PVISOR_LAZY_IMAGE_V2=0`）/V2（默认启用），每模式冷客户端后紧接热，至少 30 轮，另有初始轮与 3 warmups。两模式均包含正确分页等共同修复，开关只比较元数据预取与连接复用。唯一正确 NumPy 输出、退出码、Run Bundle、冷内容非零、热内容为零全部通过才有效；任何失败使批次无效，不剔除慢有效样本。分布规则同 B-LAZY-STARTUP，P95 仅参考。冻结源码、制品、harness、请求和原始报告在 `.data/`，不与历史批次合并。
+- **实验设计：** 私有 user/mount/PID namespace 隔离 Host listener；新 VM/workspace/stage，CPU 0/1、2 vCPU、2 GiB guest RAM，预准备 cache 服务在 CPU 2/3，本机 loopback TCP，无延迟注入。每轮随机交替 V1-compatible（`PVISOR_LAZY_IMAGE_V2=0`）/V2（默认启用），每模式冷客户端后紧接热，至少 30 轮，另有初始轮与 3 warmups。两模式均包含正确分页等共同修复，开关只比较元数据预取与连接复用；当前 harness 在此对照中显式关闭客户端索引页（`PVISOR_LAZY_INDEX_PAGES=0`）。唯一正确 NumPy 输出、退出码、Run Bundle、冷内容非零、热内容为零全部通过才有效；任何失败使批次无效，不剔除慢有效样本。分布规则同 B-LAZY-STARTUP，P95 仅参考。冻结源码、制品、harness、请求和原始报告在 `.data/`，不与历史批次合并。
+- **客户端索引页对照：** 独立批次比较 V2 RPC（`PVISOR_LAZY_IMAGE_V2=1, PVISOR_LAZY_INDEX_PAGES=0`）与 V2 客户端页（两项均为 1），隔离索引页带来的增量收益；另保留 V1/旧服务能力缺省回退测试。复用同一 NumPy、预算、正确性和 30 轮协议，文件内容载荷与二进制元数据载荷分别计数，不将索引页计为文件内容；原始证据及工程报告独立于已有 V1/V2 和 Docker 批次。
+- **私有网络桥对照：** 独立批次比较桥 V1 单次连接与桥 V2 持久连接，V2 客户端与上游连接池均开启；分别在 RPC 与索引页模式测量，不跨模式合并。桥的连接读帧/idle 等待与四个执行 worker 分离，有界接入和队列。分别记录 runner→桥 Unix 连接/请求以及桥→服务 TCP 连接/请求，校验文件与元数据字节一致；同制品开关、预算、NumPy、30 轮、正确性和 bootstrap 规则同上，不混入历史批次。
 - **入口脚本：** `lazy_image_v2.py`。
 
 ### B-FS-TOOLS：开发工具在各执行模式下要多花多少时间 {#b-fs-tools}

@@ -232,6 +232,10 @@ Linux host, Cursor occupied about 270,412 watches against a 271,298 limit;
 reading the article tree. This is a host resource failure, not a Markdown error.
 The page checker must still run after the generator.
 
+`just docs-build` and `just docs-serve` check available native watches before
+invoking Zensical. A failed preflight stops before deleting the existing site.
+The check cannot reserve capacity against concurrent editor activity.
+
 Check `cat /proc/sys/fs/inotify/max_user_watches`. Free unnecessary editor watches
 or increase the host limit, for example `sudo sysctl -w fs.inotify.max_user_watches=524288`.
 This command applies until reboot; permanent system policy belongs to the host

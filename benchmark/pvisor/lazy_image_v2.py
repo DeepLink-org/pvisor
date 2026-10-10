@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Benchmark: B-LAZY-ENG (benchmark/README.md#b-lazy-eng), role engineering A/B.
-Motivation: evaluate bounded metadata prefetch and persistent cache connections.
+Motivation: evaluate bounded metadata prefetch, persistent cache connections,
+client index pages, and legacy versus persistent private bridge RPC.
 Conclusion sought: same-binary NumPy cold/warm ready, completion, request,
-connection and content differences with paired bootstrap uncertainty.
-Design: shuffled paired V1-compatible/V2, initial excluded round + 3 warmups,
+connection, file content and metadata differences with paired bootstrap uncertainty.
+Design: shuffled paired V1-compatible/V2, V2 RPC/client pages, or bridge RPC/pages in independent
+cohorts, initial excluded round + 3 warmups,
 30 samples, CPU 0/1, 2 vCPU, 2048 MiB, loopback cache on CPU 2/3. Private
 user/mount/PID namespaces and tmpfs /tmp contain the Host listener. Any failure
 invalidates the batch; no speed exclusions, Docker, TLS registry, or WAN claims.
@@ -38,7 +40,34 @@ from reference_baselines import validate_bundle_execution
 ROOT = lazy_startup.ROOT
 SEED = 20261008
 VARIANTS = ('v1', 'v2')
-METRICS = ('ready_ms', 'completion_ms', 'requests', 'connections', 'content_bytes', 'response_bytes')
+COMPARISONS = {
+    'v1-v2': {
+        'v1': dict(PVISOR_LAZY_IMAGE_V2='0', PVISOR_LAZY_INDEX_PAGES='0'),
+        'v2': dict(PVISOR_LAZY_IMAGE_V2='1', PVISOR_LAZY_INDEX_PAGES='0'),
+    },
+    'v2-index': {
+        'rpc': dict(PVISOR_LAZY_IMAGE_V2='1', PVISOR_LAZY_INDEX_PAGES='0'),
+        'pages': dict(PVISOR_LAZY_IMAGE_V2='1', PVISOR_LAZY_INDEX_PAGES='1'),
+    },
+}
+# Pin historical controls to legacy bridge semantics, never an ambient default.
+for _variants in COMPARISONS.values():
+    for _env in _variants.values():
+        _env['PVISOR_LAZY_BRIDGE_V2'] = '0'
+for _comparison, _pages in (('bridge-rpc', '0'), ('bridge-pages', '1')):
+    COMPARISONS[_comparison] = {
+        label: dict(PVISOR_LAZY_IMAGE_V2='1', PVISOR_LAZY_INDEX_PAGES=_pages,
+                    PVISOR_LAZY_BRIDGE_V2=mode)
+        for label, mode in (('bridge_v1', '0'), ('bridge_v2', '1'))
+    }
+BRIDGE_WORDS = ('schema', 'accepted_connections', 'v1_frames', 'v2_frames',
+                'forwarded_stat', 'forwarded_list', 'forwarded_read', 'forwarded_metadata',
+                'queue_wait_ns', 'upstream_execution_ns', 'rejected_connections', 'queue_full',
+                'active_connections', 'active_workers', 'queued_requests', 'reserved')
+BRIDGE_METRICS = ('bridge_connections', 'bridge_requests') + tuple(
+    'bridge_' + name for name in BRIDGE_WORDS[2:12])
+METRICS = ('ready_ms', 'completion_ms', 'requests', 'connections', 'content_bytes',
+           'metadata_bytes', 'response_bytes')
 MAX_FRAME = 1024 * 1024
 
 
@@ -144,7 +173,9 @@ class CacheProxy(socketserver.BaseRequestHandler):
                     counts.rows.append(dict(connection_id=connection_id, version=version,
                                             op=request['op'], path=request.get('path'),
                                             request=request, response=response,
-                                            content_bytes=length, response_bytes=len(wire) + length,
+                                            content_bytes=length if request['op'] == 'read' else 0,
+                                            metadata_bytes=length if request['op'] == 'metadata' else 0,
+                                            response_bytes=len(wire) + length,
                                             server_body_sha256=response.get('sha256'),
                                             forwarded_body_sha256=body_hash,
                                             elapsed_ms=(time.perf_counter() - started) * 1000))
@@ -170,9 +201,90 @@ class TCPServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def summarize(rows, samples, warmups):
+def create_bridge_metrics_dir(folder):
+    directory = folder / 'bridge-metrics'
+    directory.mkdir(mode=0o700)
+    directory.chmod(0o700)
+    return directory
+
+
+def parse_bridge_stats(data):
+    """Stable post-teardown ABI; SIGKILL may leave nonzero gauges."""
+    if len(data) != 128:
+        raise ValueError('bridge stats must contain 16 native-endian u64 words')
+    result = dict(zip(BRIDGE_WORDS, struct.unpack('=16Q', data)))
+    if result['schema'] != 1 or result['reserved'] != 0:
+        raise ValueError('unsupported bridge stats schema/reserved word')
+    return result
+
+
+def reconcile_bridge(stats, requests):
+    # Host preparation and initial root loads share connections with Prepare;
+    # none of that connection's requests passed through the private bridge.
+    host_connections = {r['connection_id'] for r in requests if r['op'] == 'prepare'}
+    forwarded = Counter(r['op'] for r in requests
+                        if r['connection_id'] not in host_connections
+                        and r['op'] in ('stat', 'list', 'read', 'metadata'))
+    for op in ('stat', 'list', 'read', 'metadata'):
+        if stats['forwarded_' + op] != forwarded[op]:
+            raise ValueError('bridge/proxy forwarded operation mismatch: ' + op)
+    if sum(forwarded.values()) > stats['v1_frames'] + stats['v2_frames']:
+        raise ValueError('forwarded operations exceed accepted bridge frames')
+    return dict(host_prelaunch_connections=sorted(host_connections),
+                forwarded_operations=dict(forwarded))
+
+
+def collect_bridge_metrics(output, rows, teardown_verified, required=False):
+    """Only called by the outer parent after the namespace has no remaining users."""
+    if not teardown_verified:
+        raise ValueError('bridge stats require verified namespace teardown')
+    totals = Counter()
+    for row in rows:
+        folder = output / f'trial-{row["trial"]}-{row["variant"]}' / row['cache']
+        directory = folder / 'bridge-metrics'
+        metadata = directory.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise ValueError('unsafe bridge metrics directory')
+        files = sorted(directory.iterdir())
+        if not files and required:
+            raise ValueError('missing bridge stats (including zero-request warm launches)')
+        snapshots = []
+        for path in files:
+            metadata = path.lstat()
+            if (path.suffix != '.stats' or not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o600):
+                raise ValueError('unsafe bridge stats file')
+            snapshots.append(dict(file=str(path.relative_to(output)), **parse_bridge_stats(path.read_bytes())))
+        if not snapshots:
+            continue
+        stats = {name: sum(s[name] for s in snapshots) for name in BRIDGE_WORDS[1:]}
+        requests = json.loads((folder / 'requests.json').read_text())['rows']
+        # The bridge cohorts pin IMAGE_V2=1, so host root loads use the
+        # Prepare connection. Historical V1 has unpooled host connections and
+        # cannot use that attribution rule; retain its telemetry without it.
+        reconciliation = (reconcile_bridge(stats, requests) if required else
+                          dict(status='not checked outside bridge comparisons'))
+        if row['variant'] == 'bridge_v1' and stats['v2_frames']:
+            raise ValueError('legacy bridge accepted V2 frames')
+        # A denied initial V2 probe is an accepted connection, not a V2 frame.
+        row.update(bridge_connections=stats['accepted_connections'],
+                   bridge_requests=stats['v1_frames'] + stats['v2_frames'],
+                   bridge_stats=snapshots, bridge_reconciliation=reconciliation,
+                   bridge_telemetry_validated=True)
+        row.update({'bridge_' + name: stats[name] for name in BRIDGE_WORDS[2:12]})
+        totals.update({metric: row[metric] for metric in BRIDGE_METRICS})
+    return dict(totals)
+
+
+def summarize(rows, samples, warmups, variants=VARIANTS):
+    if len(variants) != 2 or len(set(variants)) != 2:
+        raise ValueError('two distinct comparison variants required')
+    baseline, candidate = variants
+    bridge = tuple(variants) == ('bridge_v1', 'bridge_v2')
+    metrics = METRICS + BRIDGE_METRICS if bridge else METRICS
+    delta_label = f'delta_{candidate}_minus_{baseline}'
     expected = {(trial, variant, cache) for trial in range(-warmups - 1, samples)
-                for variant in VARIANTS for cache in ('cold', 'warm')}
+                for variant in variants for cache in ('cold', 'warm')}
     indexed = {}
     for row in rows:
         key = (row['trial'], row['variant'], row['cache'])
@@ -182,10 +294,22 @@ def summarize(rows, samples, warmups):
             raise ValueError('wrong correctness')
         if row.get('proxy_errors') or not row.get('bundle_validated'):
             raise ValueError('unverified request or Run Bundle')
-        for metric in METRICS:
-            value = row[metric]
+        if bridge and not row.get('bridge_telemetry_validated'):
+            raise ValueError('unverified bridge telemetry')
+        for metric in metrics:
+            # Older V1/V2 reports predate separate metadata accounting.
+            value = row.get(metric, 0) if metric == 'metadata_bytes' else row.get(metric)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
                 raise ValueError('invalid metric')
+            if bridge and metric in BRIDGE_METRICS and type(value) is not int:
+                raise ValueError('bridge counters must be integers')
+        if bridge:
+            if row['bridge_requests'] != row['bridge_v1_frames'] + row['bridge_v2_frames']:
+                raise ValueError('bridge frame total mismatch')
+            if sum(row['bridge_forwarded_' + op] for op in ('stat', 'list', 'read', 'metadata')) > row['bridge_requests']:
+                raise ValueError('bridge forwarding exceeds frames')
+            if row['variant'] == 'bridge_v1' and row['bridge_v2_frames']:
+                raise ValueError('legacy bridge accepted V2 frames')
         if row['completion_ms'] < row['ready_ms']:
             raise ValueError('completion precedes ready')
         if (row['cache'] == 'cold' and row['content_bytes'] <= 0) or (row['cache'] == 'warm' and row['content_bytes'] != 0):
@@ -196,10 +320,10 @@ def summarize(rows, samples, warmups):
     result = {}
     for cache in ('cold', 'warm'):
         result[cache] = {}
-        for metric in METRICS:
+        for metric in metrics:
             # Sort by trial before shared-index paired resampling.
-            a = [indexed[t, 'v1', cache][metric] for t in range(samples)]
-            b = [indexed[t, 'v2', cache][metric] for t in range(samples)]
+            a = [indexed[t, baseline, cache].get(metric, 0) for t in range(samples)]
+            b = [indexed[t, candidate, cache].get(metric, 0) for t in range(samples)]
             rng = random.Random(SEED)
             bootstrap = []
             for _ in range(5000):
@@ -207,11 +331,11 @@ def summarize(rows, samples, warmups):
                 bootstrap.append(statistics.median([b[i] for i in indices]) -
                                  statistics.median([a[i] for i in indices]))
             lo, hi = percentile(bootstrap, 2.5), percentile(bootstrap, 97.5)
-            distributions = {variant: distribution(values) for variant, values in zip(VARIANTS, (a, b))}
+            distributions = {variant: distribution(values) for variant, values in zip(variants, (a, b))}
             for value in distributions.values():
                 if value['distribution'] == 'separated-clusters':
                     value.update(low_fraction=value['low_n'] / samples, high_fraction=value['high_n'] / samples)
-            result[cache][metric] = dict(**distributions, delta_v2_minus_v1=statistics.median(b) - statistics.median(a),
+            result[cache][metric] = dict(**distributions, **{delta_label: statistics.median(b) - statistics.median(a)},
                                         ci95=[lo, hi], bootstrap_resamples=5000,
                                         conclusion='no detected difference' if lo <= 0 <= hi else 'detected difference',
                                         estimand='difference of marginal medians; paired trial resampling, not cluster ranking')
@@ -227,7 +351,8 @@ def namespace_command(args):
             '--kill-child=KILL', '--mount-proc', '--propagation', 'private',
             sys.executable, str(args.output / 'frozen/source/benchmark/pvisor/lazy_image_v2.py'), '--namespace-child',
             '--binary-dir', str(args.binary_dir), '--prepared-store', str(args.prepared_store),
-            '--output', str(args.output), '--samples', str(args.samples), '--warmups', str(args.warmups)]
+            '--output', str(args.output), '--samples', str(args.samples), '--warmups', str(args.warmups),
+            '--comparison', args.comparison]
 
 
 def process_starttime(path):
@@ -608,7 +733,9 @@ def enter_private_chroot(output, cwd):
 
 def child(args):
     output = args.output
-    report = dict(rows=[], failures=[], status='running', preparation={})
+    variant_envs = COMPARISONS[args.comparison]
+    report = dict(comparison=args.comparison, variant_envs=variant_envs,
+                  rows=[], failures=[], status='running', preparation={})
     server = service = None
     service_log = None
     counts = Counts()
@@ -692,7 +819,7 @@ def child(args):
         workload, marker = lazy_startup.workload('numpy-script')
         rng = random.Random(SEED)
         for trial in range(-args.warmups - 1, args.samples):
-            variants = list(VARIANTS)
+            variants = list(variant_envs)
             rng.shuffle(variants)
             for variant in variants:
                 pair = output / f'trial-{trial}-{variant}'
@@ -702,8 +829,9 @@ def child(args):
                     folder = pair / state
                     workspace = folder / 'workspace'
                     workspace.mkdir(parents=True)
-                    local_env = env | dict(PVISOR_LAZY_IMAGE_V2='0' if variant == 'v1' else '1',
-                        XDG_CACHE_HOME=str(cache), XDG_CONFIG_HOME=str(folder / 'config'),
+                    metrics_dir = create_bridge_metrics_dir(folder)
+                    local_env = env | variant_envs[variant] | dict(
+                        PVISOR_LAZY_BRIDGE_METRICS_DIR=str(metrics_dir), XDG_CACHE_HOME=str(cache), XDG_CONFIG_HOME=str(folder / 'config'),
                         XDG_RUNTIME_DIR='/tmp', TMPDIR='/tmp', PVISOR_RUN_HOME=str(folder / 'runs'),
                         PVISOR_IMAGE_STORE=str(folder / 'store'))
                     before = counts.snapshot()
@@ -735,7 +863,8 @@ def child(args):
                     if (state == 'cold' and content <= 0) or (state == 'warm' and content != 0):
                         raise RuntimeError('invalid cold/warm content transfer')
                     report['rows'].append(dict(trial=trial, variant=variant, cache=state, **timing,
-                        content_bytes=content, response_bytes=sum(r['response_bytes'] for r in requests),
+                        content_bytes=content, metadata_bytes=sum(r['metadata_bytes'] for r in requests),
+                        response_bytes=sum(r['response_bytes'] for r in requests),
                         requests=len(requests), connections=after['connections'] - before['connections'],
                         operations=dict(Counter(r['op'] for r in requests)),
                         correctness='passed', bundle_validated=True, proxy_errors=[]))
@@ -745,7 +874,10 @@ def child(args):
             raise RuntimeError('cache service exited during campaign')
         validate_launch_tree(Path('/'))
         verify_launch_binaries(chroot_receipt['binaries'])
-        report['summary'] = summarize(report['rows'], args.samples, args.warmups)
+        # Bridge mmap counters are not stable until the outer supervisor has
+        # reaped PID 1 and audited that no namespace users remain.
+        if not args.comparison.startswith('bridge-'):
+            report['summary'] = summarize(report['rows'], args.samples, args.warmups, tuple(variant_envs))
         report['status'] = 'passed' if args.samples >= 30 else 'smoke-only'
     except Exception as error:
         report['failures'].append(repr(error))
@@ -788,6 +920,8 @@ def main():
     parser.add_argument('--binary-dir', type=Path, required=True)
     parser.add_argument('--prepared-store', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True, help='new evidence directory (never reused)')
+    parser.add_argument('--comparison', choices=tuple(COMPARISONS), default='v1-v2',
+                        help='v1-v2: prefetch/socket reuse; v2-index: client pages (both pin legacy bridge=0); bridge-rpc/bridge-pages: legacy versus persistent bridge with pages=0/1 respectively')
     parser.add_argument('--samples', type=int, default=30)
     parser.add_argument('--warmups', type=int, default=3)
     parser.add_argument('--namespace-child', action='store_true', help=argparse.SUPPRESS)
@@ -805,14 +939,25 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     output = args.output
     report = dict(benchmark='B-LAZY-ENG', role='engineering A/B', source=lazy_startup.NUMPY_SOURCE,
-                  workload='numpy-script', samples=args.samples, warmups=args.warmups,
+                  workload='numpy-script', comparison=args.comparison,
+                  variant_envs=COMPARISONS[args.comparison], samples=args.samples, warmups=args.warmups,
                   initial_excluded_round=True, seed=SEED, status='failed', rows=[], failures=[],
                   protocol=dict(client_cpu=[0, 1], service_and_proxy_cpu=[2, 3], vcpu=2,
                   guest_ram_mib=2048, launch_timeout_seconds=90, supervisor_timeout_seconds=900,
                   network='loopback TCP; no Docker, TLS registry, artificial delay, or WAN claim',
                   cache='fresh XDG cache per variant/trial pair; cold then warm; fresh stage/workspace each launch',
-                  comparison='same frozen static binary; only PVISOR_LAZY_IMAGE_V2=0/1 differs',
-                  accounting='response JSON frames plus raw Data bytes; excludes TCP/IP overhead; pings counted and op-separated',
+                  comparison={
+                      'v1-v2': 'IMAGE_V2=0/1, INDEX_PAGES=0 both, BRIDGE_V2=0 both (historical control)',
+                         'v2-index': 'IMAGE_V2=1 both, INDEX_PAGES=0/1, BRIDGE_V2=0 both (prior control)',
+                         'bridge-rpc': 'IMAGE_V2=1 both, INDEX_PAGES=0 both, BRIDGE_V2=0/1',
+                         'bridge-pages': 'IMAGE_V2=1 both, INDEX_PAGES=1 both, BRIDGE_V2=0/1'}[args.comparison],
+                  bridge_telemetry=dict(abi='schema 1; 16 native-endian u64 words; 128 bytes',
+                      words=BRIDGE_WORDS, directory_mode='0700; same user; new per launch',
+                      file_mode='0600; bridge-created .stats mmap survives _exit/SIGKILL',
+                      collection='outer parent after reaping and verified namespace teardown',
+                      gauges='retained per file; nonzero after SIGKILL is allowed, not an invalidation',
+                      totals='all launches, including initial round/warmups; timing counters in ns'),
+                  accounting='bridge_*: runner to Unix bridge, post-namespace-teardown mmap totals (all launches including excluded rounds); requests/connections: separate upstream TCP proxy counts including host Prepare/root loads; bridge forwarded operations reconcile after removing Prepare connections; content_bytes: Read Data only; metadata_bytes: Metadata Data only; response_bytes: JSON frames plus all raw Data bytes; excludes TCP/IP overhead; pings counted and op-separated',
                   exclusions='initial round and configured warmups only; any failure invalidates batch; no speed exclusions',
                   limits='warm host page cache; guest RAM is not enclosing memory limit; no concurrency/throughput claim'))
     save(output / 'containment-parent.json', dict(namespaces=namespaces(), pid=os.getpid(), uid=os.getuid()))
@@ -830,7 +975,11 @@ def main():
         if receipt['timed_out'] or receipt['exit_code'] != 0 or not receipt['teardown_verified']:
             raise RuntimeError('namespace child failed, timed out, or teardown could not be verified')
         verify_frozen(output, report['provenance'])
-        report['summary'] = summarize(report['rows'], args.samples, args.warmups)
+        report['bridge_totals'] = collect_bridge_metrics(
+            output, report['rows'], receipt['teardown_verified'],
+            required=args.comparison.startswith('bridge-'))
+        report['summary'] = summarize(report['rows'], args.samples, args.warmups,
+                                      tuple(COMPARISONS[args.comparison]))
         report['containment'] = receipt
     except Exception as error:
         report['status'] = 'failed'

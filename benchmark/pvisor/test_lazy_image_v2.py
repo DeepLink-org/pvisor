@@ -80,15 +80,16 @@ def wait_rows(counts, number):
     raise AssertionError("proxy did not finish bounded test exchange")
 
 
-def cohort(samples=3, warmups=0):
+def cohort(samples=3, warmups=0, variants=harness.VARIANTS):
     return [
         dict(
             trial=trial,
             variant=variant,
             cache=cache,
-            ready_ms=100 + trial + (10 if variant == "v2" else 0),
+            ready_ms=100 + trial + (10 if variant == variants[1] else 0),
             completion_ms=200 + trial,
             content_bytes=100 if cache == "cold" else 0,
+            metadata_bytes=20 if variant == variants[0] else 40,
             response_bytes=300,
             requests=10,
             connections=2,
@@ -97,7 +98,7 @@ def cohort(samples=3, warmups=0):
             proxy_errors=[],
         )
         for trial in range(-warmups - 1, samples)
-        for variant in harness.VARIANTS
+        for variant in variants
         for cache in ("cold", "warm")
     ]
 
@@ -152,6 +153,45 @@ class ProxyTests(unittest.TestCase):
             self.assertGreaterEqual(row["elapsed_ms"], 0)
             self.assertEqual(snapshot["rows"][2]["content_bytes"], 0)
             self.assertEqual(seen, requests)
+            self.assertEqual(failures, [])
+
+    def test_file_and_metadata_data_accounting_is_separate(self):
+        body = b"\x00\xffindex-or-file-payload"
+        data = (
+            encode(
+                dict(
+                    status="data",
+                    length=len(body),
+                    sha256="sha256:" + hashlib.sha256(body).hexdigest(),
+                )
+            )
+            + body
+        )
+        ready = encode(dict(status="ready"))
+        error = encode(dict(status="error", code="not_found", message="missing"))
+        exchanges = [
+            ("read", data, len(body), 0),
+            ("metadata", data, 0, len(body)),
+            ("stat", data, 0, 0),
+            ("read", ready, 0, 0),
+            ("metadata", error, 0, 0),
+        ]
+        with proxy_with([reply for _, reply, _, _ in exchanges]) as (client, counts, _, failures):
+            for number, (op, reply, content, metadata) in enumerate(exchanges, 1):
+                client.sendall(encode(envelope(2, op)))
+                self.assertEqual(harness.exact(client, len(reply)), reply)
+                row = wait_rows(counts, number)["rows"][-1]
+                self.assertEqual(row["content_bytes"], content)
+                self.assertEqual(row["metadata_bytes"], metadata)
+                self.assertEqual(row["response_bytes"], len(reply))
+            snapshot = counts.snapshot()
+            self.assertEqual(snapshot["errors"], [])
+            self.assertEqual(sum(r["content_bytes"] for r in snapshot["rows"]), len(body))
+            self.assertEqual(sum(r["metadata_bytes"] for r in snapshot["rows"]), len(body))
+            self.assertEqual(
+                sum(r["response_bytes"] for r in snapshot["rows"]),
+                sum(len(reply) for _, reply, _, _ in exchanges),
+            )
             self.assertEqual(failures, [])
 
     def test_partial_response_is_rejected_and_recorded(self):
@@ -211,8 +251,43 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(metric["v1"]["p50"], 101)
         self.assertEqual(metric["v1"]["p95_reference"], "")
         self.assertEqual(metric["ci95"], [10, 10])
+        self.assertEqual(metric["delta_v2_minus_v1"], 10)
         self.assertEqual(metric["bootstrap_resamples"], 5000)
         self.assertEqual(result, harness.summarize(rows, 3, 0))
+
+    def test_index_pairing_summary_labels_and_warm_metadata(self):
+        variants = tuple(harness.COMPARISONS["v2-index"])
+        rows = cohort(3, 2, variants)
+        for row in rows:
+            if row["trial"] < 0:
+                row.update(ready_ms=9000, completion_ms=10000, metadata_bytes=9000)
+        result = harness.summarize(list(reversed(rows)), 3, 2, variants)
+        self.assertEqual(result, harness.summarize(rows, 3, 2, variants))
+        for cache in ("cold", "warm"):
+            metric = result[cache]["ready_ms"]
+            self.assertEqual(metric["rpc"]["p50"], 101)
+            self.assertEqual(metric["pages"]["p50"], 111)
+            self.assertEqual(metric["delta_pages_minus_rpc"], 10)
+            self.assertEqual(metric["ci95"], [10, 10])
+            self.assertNotIn("v1", metric)
+            self.assertNotIn("delta_v2_minus_v1", metric)
+            metadata = result[cache]["metadata_bytes"]
+            self.assertEqual(metadata["rpc"]["p50"], 20)
+            self.assertEqual(metadata["pages"]["p50"], 40)
+            self.assertEqual(metadata["ci95"], [20, 20])
+        for bad in (rows[1:], rows + [rows[0]], [dict(row, variant="v2") for row in rows]):
+            with self.subTest(bad=bad[:1]), self.assertRaises(ValueError):
+                harness.summarize(bad, 3, 2, variants)
+        with self.assertRaises(ValueError):
+            harness.summarize(rows, 3, 2)
+
+    def test_legacy_rows_without_metadata_remain_supported(self):
+        rows = cohort()
+        for row in rows:
+            del row["metadata_bytes"]
+        result = harness.summarize(rows, 3, 0)
+        self.assertEqual(result["cold"]["ready_ms"]["delta_v2_minus_v1"], 10)
+        self.assertEqual(result["warm"]["metadata_bytes"]["v2"]["p50"], 0)
 
     def test_duplicate_incomplete_unexpected_wrong_correctness(self):
         rows = cohort()
@@ -236,6 +311,9 @@ class SummaryTests(unittest.TestCase):
             dict(ready_ms=float("nan")),
             dict(completion_ms=1),
             dict(connections=-1),
+            dict(metadata_bytes=-1),
+            dict(metadata_bytes=float("nan")),
+            dict(metadata_bytes=True),
         ):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 harness.summarize([dict(rows[0], **changes), *rows[1:]], 3, 0)
@@ -258,6 +336,270 @@ class SummaryTests(unittest.TestCase):
         self.assertAlmostEqual(result["v1"]["low_fraction"], 23 / 30)
         self.assertNotEqual(result["v1"]["p95_reference"], "")
         self.assertEqual(result["conclusion"], "no detected difference")
+
+
+def stats_bytes(**changes):
+    words = dict.fromkeys(harness.BRIDGE_WORDS, 0)
+    words.update(schema=1, **changes)
+    return struct.pack("=16Q", *(words[name] for name in harness.BRIDGE_WORDS))
+
+
+class BridgeTelemetryTests(unittest.TestCase):
+    def test_native_abi_schema_size_reserved_and_killed_gauges(self):
+        data = stats_bytes(
+            accepted_connections=7,
+            v1_frames=3,
+            v2_frames=4,
+            forwarded_stat=1,
+            forwarded_list=2,
+            forwarded_read=3,
+            forwarded_metadata=1,
+            queue_wait_ns=123,
+            upstream_execution_ns=456,
+            rejected_connections=2,
+            queue_full=1,
+            active_connections=9,
+            active_workers=4,
+            queued_requests=8,
+        )
+        parsed = harness.parse_bridge_stats(data)
+        self.assertEqual(list(parsed), list(harness.BRIDGE_WORDS))
+        self.assertEqual(parsed["upstream_execution_ns"], 456)
+        self.assertEqual(parsed["queued_requests"], 8)  # SIGKILL need not decrement gauges.
+        for bad in (
+            data[:-1],
+            data + b"\0",
+            struct.pack("=16Q", 2, *([0] * 15)),
+            stats_bytes(reserved=1),
+        ):
+            with self.subTest(data=bad), self.assertRaises(ValueError):
+                harness.parse_bridge_stats(bad)
+
+    def test_reconcile_excludes_entire_prepare_connection_not_all_root_stats(self):
+        requests = [dict(connection_id=1, op=op) for op in ("prepare", "stat", "list")]
+        requests += [dict(connection_id=2, op=op) for op in ("ping", "stat", "read", "metadata")]
+        stats = harness.parse_bridge_stats(
+            stats_bytes(
+                accepted_connections=5,
+                v1_frames=4,
+                forwarded_stat=1,
+                forwarded_read=1,
+                forwarded_metadata=1,
+            )
+        )
+        result = harness.reconcile_bridge(stats, requests)
+        self.assertEqual(result["host_prelaunch_connections"], [1])
+        self.assertEqual(result["forwarded_operations"], dict(stat=1, read=1, metadata=1))
+        # Legacy's denied V2 probe increases connections, never v2_frames.
+        self.assertEqual(stats["v2_frames"], 0)
+        with self.assertRaises(ValueError):
+            harness.reconcile_bridge(dict(stats, forwarded_stat=2), requests)
+        with self.assertRaises(ValueError):
+            harness.reconcile_bridge(dict(stats, v1_frames=2), requests)
+
+    def fixture(self, output, **changes):
+        row = dict(trial=0, variant="bridge_v1", cache="warm", requests=2, connections=1)
+        folder = output / "trial-0-bridge_v1" / "warm"
+        folder.mkdir(parents=True)
+        directory = harness.create_bridge_metrics_dir(folder)
+        harness.save(
+            folder / "requests.json",
+            dict(rows=[dict(connection_id=1, op=op) for op in ("prepare", "stat")]),
+        )
+        path = directory / "bridge-test.stats"
+        path.write_bytes(stats_bytes(**changes))
+        path.chmod(0o600)
+        return row, directory, path
+
+    def test_collect_zero_request_warm_bridge_after_teardown_and_keep_upstream(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            row, directory, path = self.fixture(output, active_connections=1)
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(directory.stat().st_uid, os.getuid())
+            with self.assertRaises(ValueError):
+                harness.collect_bridge_metrics(output, [row], False, required=True)
+            totals = harness.collect_bridge_metrics(output, [row], True, required=True)
+            self.assertEqual(row["bridge_connections"], 0)
+            self.assertEqual(row["bridge_requests"], 0)
+            self.assertEqual(row["requests"], 2)
+            self.assertEqual(row["connections"], 1)
+            self.assertTrue(row["bridge_telemetry_validated"])
+            self.assertEqual(row["bridge_stats"][0]["active_connections"], 1)
+            self.assertEqual(totals["bridge_requests"], 0)
+            path.unlink()
+            with self.assertRaisesRegex(ValueError, "missing bridge stats"):
+                harness.collect_bridge_metrics(output, [row], True, required=True)
+
+    def test_collect_sums_all_files_and_retains_each_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp)
+            row, directory, path = self.fixture(
+                output,
+                accepted_connections=2,
+                v1_frames=1,
+                queue_wait_ns=4,
+                upstream_execution_ns=8,
+            )
+            second = directory / "bridge-second.stats"
+            second.write_bytes(
+                stats_bytes(
+                    accepted_connections=3, v1_frames=2, queue_wait_ns=5, upstream_execution_ns=9
+                )
+            )
+            second.chmod(0o600)
+            totals = harness.collect_bridge_metrics(output, [row], True, required=True)
+            self.assertEqual(len(row["bridge_stats"]), 2)
+            self.assertEqual(row["bridge_connections"], 5)
+            self.assertEqual(row["bridge_requests"], 3)
+            self.assertEqual(totals["bridge_queue_wait_ns"], 9)
+            self.assertEqual(totals["bridge_upstream_execution_ns"], 17)
+
+    def test_collect_malformed_unsafe_and_unexpected_v2_fail(self):
+        for case in ("short", "mode", "symlink", "directory", "v2", "mismatch"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp)
+                row, directory, path = self.fixture(output)
+                if case == "short":
+                    path.write_bytes(b"bad")
+                elif case == "mode":
+                    path.chmod(0o644)
+                elif case == "symlink":
+                    target = directory / "target"
+                    path.rename(target)
+                    path.symlink_to(target)
+                elif case == "directory":
+                    directory.chmod(0o755)
+                elif case == "v2":
+                    path.write_bytes(stats_bytes(v2_frames=1))
+                else:
+                    path.write_bytes(stats_bytes(v1_frames=1, forwarded_stat=1))
+                with self.assertRaises(ValueError):
+                    harness.collect_bridge_metrics(output, [row], True, required=True)
+
+    def test_bridge_summary_paired_telemetry_and_validation(self):
+        variants = tuple(harness.COMPARISONS["bridge-rpc"])
+        rows = cohort(3, 0, variants)
+        for row in rows:
+            row.update(dict.fromkeys(harness.BRIDGE_METRICS, 0))
+            candidate = row["variant"] == "bridge_v2"
+            row.update(
+                bridge_connections=2 if candidate else 6,
+                bridge_requests=4,
+                bridge_v2_frames=4 if candidate else 0,
+                bridge_v1_frames=0 if candidate else 4,
+                bridge_forwarded_stat=1,
+                bridge_queue_wait_ns=10,
+                bridge_upstream_execution_ns=20,
+                bridge_telemetry_validated=True,
+            )
+        result = harness.summarize(list(reversed(rows)), 3, 0, variants)
+        self.assertEqual(result, harness.summarize(rows, 3, 0, variants))
+        for cache in ("cold", "warm"):
+            metric = result[cache]["bridge_connections"]
+            self.assertEqual(metric["delta_bridge_v2_minus_bridge_v1"], -4)
+            self.assertEqual(metric["ci95"], [-4, -4])
+            self.assertEqual(result[cache]["bridge_requests"]["bridge_v2"]["p50"], 4)
+        for changes in (
+            dict(bridge_telemetry_validated=False),
+            dict(bridge_requests=5),
+            dict(bridge_queue_wait_ns=-1),
+            dict(bridge_connections=True),
+            dict(bridge_upstream_execution_ns=float("nan")),
+            dict(bridge_requests=None),
+            dict(bridge_v2_frames=1),
+            dict(bridge_forwarded_metadata=10),
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                harness.summarize([dict(rows[0], **changes), *rows[1:]], 3, 0, variants)
+        # Telemetry never replaces the unchanged cold/warm content checks.
+        with self.assertRaises(ValueError):
+            harness.summarize([dict(rows[0], content_bytes=0), *rows[1:]], 3, 0, variants)
+
+
+class ComparisonTests(unittest.TestCase):
+    def test_variant_environments_and_inherited_overrides(self):
+        self.assertEqual(
+            harness.COMPARISONS["v1-v2"],
+            {
+                "v1": {
+                    "PVISOR_LAZY_IMAGE_V2": "0",
+                    "PVISOR_LAZY_INDEX_PAGES": "0",
+                    "PVISOR_LAZY_BRIDGE_V2": "0",
+                },
+                "v2": {
+                    "PVISOR_LAZY_IMAGE_V2": "1",
+                    "PVISOR_LAZY_INDEX_PAGES": "0",
+                    "PVISOR_LAZY_BRIDGE_V2": "0",
+                },
+            },
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "PVISOR_LAZY_IMAGE_V2": "0",
+                "PVISOR_LAZY_INDEX_PAGES": "unexpected",
+                "PVISOR_LAZY_BRIDGE_V2": "unexpected",
+                "PVISOR_LAZY_BRIDGE_METRICS_DIR": "/stale",
+            },
+        ):
+            base = harness.clean_env()
+        self.assertNotIn("PVISOR_LAZY_IMAGE_V2", base)
+        self.assertNotIn("PVISOR_LAZY_INDEX_PAGES", base)
+        self.assertNotIn("PVISOR_LAZY_BRIDGE_V2", base)
+        self.assertNotIn("PVISOR_LAZY_BRIDGE_METRICS_DIR", base)
+        for comparison in ("v1-v2", "v2-index"):
+            for env in harness.COMPARISONS[comparison].values():
+                self.assertEqual(env["PVISOR_LAZY_BRIDGE_V2"], "0")
+        for comparison, pages in (("bridge-rpc", "0"), ("bridge-pages", "1")):
+            for variant, mode in (("bridge_v1", "0"), ("bridge_v2", "1")):
+                env = base | harness.COMPARISONS[comparison][variant]
+                self.assertEqual(env["PVISOR_LAZY_IMAGE_V2"], "1")
+                self.assertEqual(env["PVISOR_LAZY_INDEX_PAGES"], pages)
+                self.assertEqual(env["PVISOR_LAZY_BRIDGE_V2"], mode)
+        for variant, v2 in (("v1", "0"), ("v2", "1")):
+            env = base | harness.COMPARISONS["v1-v2"][variant]
+            self.assertEqual(env["PVISOR_LAZY_IMAGE_V2"], v2)
+            self.assertEqual(env["PVISOR_LAZY_INDEX_PAGES"], "0")
+        for variant, pages in (("rpc", "0"), ("pages", "1")):
+            env = base | harness.COMPARISONS["v2-index"][variant]
+            self.assertEqual(env["PVISOR_LAZY_IMAGE_V2"], "1")
+            self.assertEqual(env["PVISOR_LAZY_INDEX_PAGES"], pages)
+
+    def test_cli_comparison_default_and_explicit_forwarding(self):
+        argv = [
+            "lazy_image_v2.py",
+            "--binary-dir",
+            "/release",
+            "--prepared-store",
+            "/prepared",
+            "--output",
+            "/evidence",
+            "--namespace-child",
+        ]
+        for flags, expected in (
+            ([], "v1-v2"),
+            (["--comparison", "v1-v2"], "v1-v2"),
+            (["--comparison", "v2-index"], "v2-index"),
+            (["--comparison", "bridge-rpc"], "bridge-rpc"),
+            (["--comparison", "bridge-pages"], "bridge-pages"),
+        ):
+            with (
+                self.subTest(comparison=expected),
+                patch.object(sys, "argv", argv + flags),
+                patch.object(harness, "child", return_value=0) as child,
+            ):
+                self.assertEqual(harness.main(), 0)
+                args = child.call_args.args[0]
+                self.assertEqual(args.comparison, expected)
+                command = harness.namespace_command(args)
+                self.assertEqual(command[command.index("--comparison") + 1], expected)
+        with (
+            patch.object(sys, "argv", argv + ["--comparison", "unknown"]),
+            contextlib.redirect_stderr(None),
+            self.assertRaises(SystemExit),
+        ):
+            harness.main()
 
 
 class ChrootTests(unittest.TestCase):
@@ -588,6 +930,7 @@ class NamespaceTests(unittest.TestCase):
             output=Path("/evidence"),
             samples=30,
             warmups=3,
+            comparison="v1-v2",
         )
         command = harness.namespace_command(args)
         self.assertEqual(

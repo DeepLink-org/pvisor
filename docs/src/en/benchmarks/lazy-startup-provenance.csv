@@ -1,37 +1,28 @@
 field,value
 benchmark_id,B-LAZY-STARTUP
-cohort,lazy-startup-local-20261007
-measurement_date,2026-10-07
-raw_location,benchmark/pvisor/.data/lazy-startup-local-20261007/report.json
-report_sha256,629a518417a82d90ab26894edcf214f27430bcde89719382c6f231ba48509fa6
-analysis_location,benchmark/pvisor/.data/lazy-startup-local-20261007/analysis.json
-statistics,"30 formal samples per path/cache cell; 120 total; separated clusters replace P50; P95 reference-only; zero failures and zero speed-based exclusions"
-cluster_rule,"each cluster >=max(5,ceil(N*0.1)); largest eligible gap >=20% overall median and >3x median adjacent gap; cluster medians >=1.5x; descriptive only"
-confidence_interval,"5000 paired complete-round bootstrap resamples; Docker minus lazy marginal median ready difference; not cluster-center comparison"
+cohort,lazy-shell-current-formal-20261010
+measurement_date,2026-10-10
+raw_location,benchmark/pvisor/.data/lazy-shell-current-formal-20261010/report.json
+report_sha256,6291e892eef25e3e55a73933f977a4bdc9157f7d0c92cfccf56c33025ef3f2b0
+statistics,30 formal samples per cell; 120 formal / 136 checked launches; no failures or speed exclusions; P95 reference only; distribution rule frozen
 seed,20261007
-warmups,"one initial excluded round plus three warmup rounds"
-workload,"/bin/sh reads /etc/os-release; verifies Ubuntu 26.04; exactly one LAZY_READY ubuntu 26.04 marker; exit 0"
-correctness,"checked stdout and exit; cold Docker full blob download; cold lazy content download; warm content hits; lazy Run Bundle VM and staging declarations; no independent host-integrity or resource-enforcement audit"
+warmups,one initial excluded round plus three warmup rounds
+workload,ubuntu-shell
+workload_argv,"[""/bin/sh"", ""-c"", "". /etc/os-release; test \""$ID\"" = ubuntu && test \""$VERSION_ID\"" = 26.04 || exit 41; printf \""LAZY_READY %s %s\\n\"" \""$ID\"" \""$VERSION_ID\""""]"
 host_kernel,7.2.8-200.fc44.x86_64
-host_architecture,linux/amd64
-host_distribution,Fedora
-pvisor_sha256,d3f09687cca60b617629c215fa1359c441ab6ac19f8c63b68f1dcdf7614e6b30
-pvisor_cache_sha256,1d29e6b85cf4789557253851a84a3086cb3394eec5995d47bd630ae36b6f9e22
-measurement_harness_sha256,6f19828e5057d3e15afaf8c13081d3213b8ed764096794ef9c0abfef7914694b
-firmware,"embedded in hashed static musl pvisor binary; separate firmware digest unavailable"
-binary_source_relationship,"preexisting release artifacts; build-time source unverified; current source HEAD/manifest are not build proof; binary hashes rechecked after sampling and copies retained"
-current_source_head_at_measurement,cd9827af8fa3a975e3b3974e38be747e91a097e2
-current_source_dirty,true
-current_source_manifest_location,benchmark/pvisor/.data/lazy-startup-local-20261007/source-manifest.json
-docker_version,29.7.2
-docker_storage_driver,overlayfs/containerd image store
-registry_image,registry@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
-source_image,docker.io/library/ubuntu@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+source_image,docker.io/library/ubuntu@sha256:88a381d5b5eeb2b35d3ad70925a362c37ce569daf43ede89ff818ec20e4d3794
 selected_amd64_manifest,sha256:88a381d5b5eeb2b35d3ad70925a362c37ce569daf43ede89ff818ec20e4d3794
-service_preparation,"local registry mirror via skopeo; cache imports identical selected manifest from Docker Hub due to trusted-HTTPS requirement; separate operations and no preparation A/B ranking"
-network,"loopback HTTPS Distribution counting proxy versus authenticated unencrypted TCP cache counting proxy; no injected latency or bandwidth limit; not WAN"
-cache_state,"prepared services and warm host page cache; Docker image reference removed and complete blob transfer checked; fresh lazy XDG cache per pair reused warm; Docker snapshotter fully cold state unverified"
-cpu_budget,"Docker container CPUs 0/1 and two-core quota; pvisor launch affinity 0/1 and 2 vCPU; services CPUs 2/3; Docker daemon/containerd and proxies not fully pinned"
-memory_budget,"Docker hard 2 GiB and no additional swap; pvisor guest RAM 2 GiB; unequal enclosing process-tree budgets"
-byte_accounting,"through completion; Docker content counts compressed OCI blobs incl config and response counts HTTP bodies; lazy content counts uncompressed reads and response counts frames incl metadata; excludes full transport overhead"
-unsupported_claims,"actual WAN; full OS boot; OpenSandbox bootstrap; concurrency; large workloads; equal whole-system resource budgets; pure lazy or VMM causality; attribution to current checkout"
+registry_image,registry@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
+pvisor_sha256,335ad528434537a9b72db2287f8b2bd364082edc50fe724d6e052ecf7d00651e
+pvisor_cache_sha256,b301778dda6c10a2699627d4b0a80a1a148da1b311f7dc07f5ddad72a66685ec
+measurement_harness_sha256,ebcde63c51497749e1faff0146ad457924e91fc9faefadd697520e579a7f7097
+firmware,embedded in static binary; no external firmware override
+lazy_env,"{""PVISOR_LAZY_BRIDGE_V2"": ""1"", ""PVISOR_LAZY_IMAGE_V2"": ""1"", ""PVISOR_LAZY_INDEX_PAGES"": ""1""}"
+build_receipt_sha256,504cfd8a569e707494a7ad61a0cc33b73fd9f523ab500b3cd2ef88b64583bb16
+build_source_proof_location,benchmark/pvisor/.data/lazy-current-build-20261010/build-source-proof.json
+binary_source_relationship,1193 frozen build source inputs matched independent fresh release receipt and measured binaries; endpoint hashes and retained logs; not hermetic reproducible build
+containment,private user/mount/PID namespace; pivot_root; teardown verified; host read/write binds; no complete host integrity audit
+service_preparation,retained original compressed OCI blobs validated and published to fresh registry; supported prepared cache store copied; no upstream download timing
+confidence_interval,5000 paired complete-round bootstrap; Docker minus lazy marginal median Ready
+protocol,"{""binary_source_relationship"": ""preexisting artifacts; build-time source relationship unverified"", ""budget"": ""2 CPUs (0,1) and 2 GiB; Docker hard limit versus pVisor guest RAM, not equivalent enclosing VM limit"", ""cache"": ""Docker image removed before each cold pair; cold validity requires complete registry blob responses. Lazy fresh XDG cache per pair, reused warm; new guest/stage/workspace each launch"", ""docker_daemon"": ""local unix:///run/docker.sock; daemon/containerd not constrained to client two-CPU budget"", ""invalidation"": ""any failed correctness, missing cold transfer, warm content transfer or timeout invalidates campaign; configured resource controls are not independently audited; no performance outliers dropped; namespace teardown and frozen bytes audited by outer parent"", ""network"": ""local loopback HTTPS registry / authenticated unencrypted TCP cache; no latency or bandwidth injection; warm host page cache. Count HTTP bodies versus cache response frames, excluding TLS/TCP/IP overhead"", ""service_preparation"": ""Registry publication from cached-oci; cache uses copied supported store and cached prepare""}"
+unsupported_claims,WAN; concurrency; numerical throughput; full OS boot; equal whole-system budgets; pure lazy/VMM causality; cross-cohort implementation speedup; first image preparation

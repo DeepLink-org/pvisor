@@ -42,10 +42,30 @@ struct Header {
     bytes: u64,
 }
 struct CachedPage {
-    bytes: Arc<Vec<u8>>,
+    bytes: Vec<u8>,
+    // Readers and decoders retain the charge even after eviction or replacement.
     _charge: Option<crate::cache_budget::Charge>,
 }
-type PageCache = Mutex<LruCache<(String, u64), CachedPage>>;
+impl CachedPage {
+    fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + 2 * std::mem::size_of::<usize>() // Arc reference counts
+            + self.bytes.capacity()
+    }
+}
+impl std::ops::Deref for CachedPage {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.bytes
+    }
+}
+// Raw pages and decoded nodes share one bound; decoding replaces the raw entry.
+enum CachedMetadata {
+    Page(Arc<CachedPage>),
+    Node(Arc<Node>),
+}
+type PageCache = Mutex<LruCache<(String, u64), CachedMetadata>>;
 struct Pages {
     storage: Storage,
     handle: Handle,
@@ -109,10 +129,10 @@ impl Pages {
             cache: Mutex::new(LruCache::new(NonZeroUsize::new(256).unwrap())),
         })
     }
-    fn page(&self, name: &str, id: u64) -> anyhow::Result<Arc<Vec<u8>>> {
+    fn page(&self, name: &str, id: u64) -> anyhow::Result<Arc<CachedPage>> {
         let key = (name.to_string(), id);
-        if let Some(page) = self.cache.lock().unwrap().get(&key) {
-            return Ok(page.bytes.clone());
+        if let Some(CachedMetadata::Page(page)) = self.cache.lock().unwrap().get(&key) {
+            return Ok(page.clone());
         }
         let expected = self
             .hashes
@@ -148,20 +168,21 @@ impl Pages {
             }
             bytes
         };
-        let bytes = Arc::new(bytes);
+        let mut page = CachedPage {
+            bytes,
+            _charge: None,
+        };
         let mut cache = self.cache.lock().unwrap();
-        if let Ok(charge) =
-            crate::cache_budget::reserve_replacing(bytes.len(), || cache.pop_lru().is_some())
-        {
-            cache.put(
-                key,
-                CachedPage {
-                    bytes: bytes.clone(),
-                    _charge: charge,
-                },
-            );
+        let charge = crate::cache_budget::reserve_replacing(page.retained_bytes(), || {
+            cache.pop_lru().is_some()
+        });
+        let admitted = charge.is_ok();
+        page._charge = charge.ok().flatten();
+        let page = Arc::new(page);
+        if admitted {
+            cache.put(key, CachedMetadata::Page(page.clone()));
         }
-        Ok(bytes)
+        Ok(page)
     }
     fn read(&self, name: &str, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {
         ensure!(
@@ -255,6 +276,37 @@ impl LoadedImage {
     pub(super) fn cached_page_count(&self) -> usize {
         self.pages.cache.lock().unwrap().len()
     }
+    #[cfg(test)]
+    pub(super) fn resize_metadata_cache(&self, capacity: usize) {
+        self.pages
+            .cache
+            .lock()
+            .unwrap()
+            .resize(NonZeroUsize::new(capacity).unwrap());
+    }
+    #[cfg(test)]
+    pub(super) fn clear_metadata_cache(&self) {
+        self.pages.cache.lock().unwrap().clear();
+    }
+    #[cfg(test)]
+    pub(super) fn hold_raw_page(&self, name: &str, id: u64) -> (impl Clone + use<>, usize) {
+        let page = self.pages.page(name, id).unwrap();
+        let bytes = page.retained_bytes();
+        (page, bytes)
+    }
+    #[cfg(test)]
+    pub(super) fn cached_nodes(&self) -> Vec<(u64, Arc<Node>, usize)> {
+        self.pages
+            .cache
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|((_, id), entry)| match entry {
+                CachedMetadata::Node(node) => Some((*id, node.clone(), node.retained_bytes())),
+                CachedMetadata::Page(_) => None,
+            })
+            .collect()
+    }
     pub(super) fn new(
         storage: Storage,
         local: Option<PathBuf>,
@@ -264,25 +316,11 @@ impl LoadedImage {
         catalog: &[u8],
     ) -> anyhow::Result<Self> {
         let pages = Pages::new(storage, local, handle.clone(), &commit, catalog)?;
-        let (files, contents, index) = std::thread::scope(|scope| {
-            let files =
-                scope.spawn(|| pages.header("files.bin", 1, FILE_WIDTH, MAX_ENTRIES as u64));
-            let contents =
-                scope.spawn(|| pages.header("contents.bin", 2, CONTENT_WIDTH, MAX_ENTRIES as u64));
-            let index =
-                scope.spawn(|| pages.header("index.bin", 3, NODE_WIDTH, MAX_ENTRIES as u64));
-            Ok::<_, anyhow::Error>((
-                files
-                    .join()
-                    .map_err(|_| anyhow::anyhow!("file header reader panicked"))??,
-                contents
-                    .join()
-                    .map_err(|_| anyhow::anyhow!("content header reader panicked"))??,
-                index
-                    .join()
-                    .map_err(|_| anyhow::anyhow!("index header reader panicked"))??,
-            ))
-        })?;
+        // This also runs before the VM runner enters its user namespace; do not
+        // introduce worker threads while authenticating the initial pages.
+        let files = pages.header("files.bin", 1, FILE_WIDTH, MAX_ENTRIES as u64)?;
+        let contents = pages.header("contents.bin", 2, CONTENT_WIDTH, MAX_ENTRIES as u64)?;
+        let index = pages.header("index.bin", 3, NODE_WIDTH, MAX_ENTRIES as u64)?;
         ensure!(
             index.count + 1 == files.count,
             "file/index entry count mismatch"
@@ -296,17 +334,8 @@ impl LoadedImage {
             contents,
             index,
         };
-        let root = std::thread::scope(|scope| {
-            let root = scope.spawn(|| image.file(0));
-            let index = scope.spawn(|| image.node(image.index.root));
-            let root = root
-                .join()
-                .map_err(|_| anyhow::anyhow!("root metadata reader panicked"))??;
-            index
-                .join()
-                .map_err(|_| anyhow::anyhow!("root index reader panicked"))??;
-            Ok::<_, anyhow::Error>(root)
-        })?;
+        let root = image.file(0)?;
+        image.node(image.index.root)?;
         ensure!(
             root.path.is_empty()
                 && root.parent == NONE
@@ -319,6 +348,7 @@ impl LoadedImage {
         Response::Prepared {
             image_handle: self.handle.encode(),
             metadata_generation: format!("sha256:{}", self.handle.revision),
+            metadata_pages: true,
             totals: Some(self.config.totals),
             digest: self.commit.manifest_digest.clone(),
             architecture: self.config.architecture.clone(),
@@ -465,8 +495,7 @@ impl LoadedImage {
                 parent: entry.id,
                 name: component.to_vec(),
             };
-            let (page, slot) = self.seek(&key)?;
-            let node = self.node(page)?;
+            let (_, slot, node) = self.seek(&key)?;
             let Some(record) = node.entries.get(slot) else {
                 return Err(not_found().into());
             };
@@ -492,13 +521,14 @@ impl LoadedImage {
             matches!(&parent.metadata,Response::Metadata{kind,..} if kind=="directory"),
             "list requires a directory"
         );
-        let (mut page, mut slot) = if offset == 0 {
+        let (mut page, mut slot, mut node) = if offset == 0 {
             self.seek(&Key {
                 parent: parent.id,
                 name: Vec::new(),
             })?
         } else {
-            ((offset / 256) as u64, offset % 256)
+            let page = (offset / 256) as u64;
+            (page, offset % 256, self.node(page)?)
         };
         ensure!(page > 0, "invalid directory cookie");
         let mut names = Vec::new();
@@ -509,7 +539,6 @@ impl LoadedImage {
         loop {
             visits += 1;
             ensure!(visits <= 4, "directory page traversal limit");
-            let node = self.node(page)?;
             ensure!(
                 node.level == 0 && slot <= node.entries.len(),
                 "invalid directory cookie"
@@ -570,13 +599,18 @@ impl LoadedImage {
             ensure!(node.next > page, "invalid leaf chain");
             page = node.next;
             slot = 0;
+            node = self.node(page)?;
         }
     }
-    fn node(&self, id: u64) -> anyhow::Result<Node> {
+    fn node(&self, id: u64) -> anyhow::Result<Arc<Node>> {
         ensure!(
             id > 0 && id < self.index.bytes / PAGE_BYTES as u64,
             "index page out of bounds"
         );
+        let key = ("index.bin".to_string(), id);
+        if let Some(CachedMetadata::Node(node)) = self.pages.cache.lock().unwrap().get(&key) {
+            return Ok(node.clone());
+        }
         let p = self.pages.page("index.bin", id)?;
         let level = u32_at(&p, 0)?;
         let count = u32_at(&p, 4)? as usize;
@@ -589,7 +623,7 @@ impl LoadedImage {
                 && (next == 0 || next < self.index.bytes / PAGE_BYTES as u64),
             "invalid B+tree page"
         );
-        let mut entries = Vec::new();
+        let mut entries = Vec::with_capacity(count);
         for slot in 0..count {
             let start = 16 + slot * NODE_WIDTH;
             let b = &p[start..start + NODE_WIDTH];
@@ -627,13 +661,31 @@ impl LoadedImage {
             p[16 + count * NODE_WIDTH..].iter().all(|v| *v == 0),
             "unknown index flags"
         );
-        Ok(Node {
+        let mut node = Node {
             level,
             next,
             entries,
-        })
+            _charge: None,
+        };
+        drop(p);
+        let mut cache = self.pages.cache.lock().unwrap();
+        // A concurrent decoder may already have admitted the same validated node.
+        if let Some(CachedMetadata::Node(node)) = cache.get(&key) {
+            return Ok(node.clone());
+        }
+        cache.pop(&key);
+        let charge = crate::cache_budget::reserve_replacing(node.retained_bytes(), || {
+            cache.pop_lru().is_some()
+        });
+        let admitted = charge.is_ok();
+        node._charge = charge.ok().flatten();
+        let node = Arc::new(node);
+        if admitted {
+            cache.put(key, CachedMetadata::Node(node.clone()));
+        }
+        Ok(node)
     }
-    fn seek(&self, key: &Key) -> anyhow::Result<(u64, usize)> {
+    fn seek(&self, key: &Key) -> anyhow::Result<(u64, usize, Arc<Node>)> {
         let mut page = self.index.root;
         let mut previous = None;
         for _ in 0..33 {
@@ -650,9 +702,9 @@ impl LoadedImage {
                         next.level == 0 && next.entries.first().is_some_and(|r| r.key >= *key),
                         "invalid leaf boundary"
                     );
-                    return Ok((node.next, 0));
+                    return Ok((node.next, 0, next));
                 }
-                return Ok((page, slot));
+                return Ok((page, slot, node));
             }
             let slot = node
                 .entries
@@ -673,10 +725,20 @@ struct NodeRecord {
     key: Key,
     value: u64,
 }
-struct Node {
+pub(super) struct Node {
     level: u32,
     next: u64,
     entries: Vec<NodeRecord>,
+    // Keep the allocation charged while a traversal holds an evicted Arc.
+    _charge: Option<crate::cache_budget::Charge>,
+}
+impl Node {
+    fn retained_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + 2 * std::mem::size_of::<usize>() // Arc reference counts
+            + self.entries.capacity() * std::mem::size_of::<NodeRecord>()
+            + self.entries.iter().map(|entry| entry.key.name.capacity()).sum::<usize>()
+    }
 }
 
 pub(super) fn encode(

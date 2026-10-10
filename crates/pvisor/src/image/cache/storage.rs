@@ -1,4 +1,4 @@
-//! Small object API shared by filesystem and S3 caches; keys are internal only.
+//! Internal filesystem/S3 object API and pinned read-only socket metadata adapter.
 use anyhow::{Context, ensure};
 use object_store::{GetOptions, GetRange, ObjectStore, PutMode, PutOptions, UpdateVersion};
 use std::fs::{self, OpenOptions};
@@ -14,8 +14,98 @@ pub(super) const MAX_OBJECT: usize = 64 * 1024 * 1024;
 pub(crate) enum Storage {
     Filesystem(PathBuf),
     S3(Arc<S3>),
+    Metadata(Arc<MetadataStorage>),
 }
+
+/// Internal read-only adapter; neither arbitrary keys nor mutations reach its client.
+pub(crate) struct MetadataStorage {
+    client: Arc<super::CacheClient>,
+    handle: String,
+    prefix: String,
+}
+
+impl MetadataStorage {
+    fn read(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+        limit: usize,
+    ) -> anyhow::Result<Option<StoredObject>> {
+        let name = key
+            .strip_prefix(&self.prefix)
+            .context("metadata key belongs to another handle")?;
+        ensure!(
+            super::portable::metadata_object_name(name),
+            "invalid metadata object name"
+        );
+        let (offset, length) = if let Some(range) = range {
+            ensure!(
+                range.end > range.start && range.end - range.start <= super::MAX_READ as u64,
+                "invalid metadata range"
+            );
+            (range.start, (range.end - range.start) as u32)
+        } else {
+            ensure!(
+                matches!(
+                    name,
+                    "COMMIT.json" | "manifest.json" | "config.json" | "checksums.bin"
+                ),
+                "whole binary metadata reads are forbidden"
+            );
+            (0, limit.min(super::portable::MAX_CONTROL) as u32)
+        };
+        let (response, bytes) = match self.client.request(super::Request::Metadata {
+            handle: self.handle.clone(),
+            object_name: name.into(),
+            offset,
+            length,
+        }) {
+            Ok(result) => result,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let super::Response::Data {
+            length: received,
+            sha256,
+        } = response
+        else {
+            anyhow::bail!("expected metadata data response");
+        };
+        ensure!(
+            received <= length && bytes.len() == received as usize && super::hash(&bytes) == sha256,
+            "invalid metadata data body"
+        );
+        // No CAS token is available or needed: this adapter rejects every write.
+        Ok(Some(StoredObject {
+            bytes,
+            version: UpdateVersion {
+                e_tag: None,
+                version: None,
+            },
+        }))
+    }
+}
+
 impl Storage {
+    /// Pin an immutable revision without I/O. Only whitelisted metadata reads
+    /// are supported; valid writes and CAS fail with PermissionDenied.
+    pub(super) fn metadata(
+        client: Arc<super::CacheClient>,
+        handle: String,
+    ) -> anyhow::Result<Self> {
+        let prefix = format!("{}/", super::portable::metadata_prefix(&handle)?);
+        Ok(Self::Metadata(Arc::new(MetadataStorage {
+            client,
+            handle,
+            prefix,
+        })))
+    }
     pub(crate) fn filesystem(root: PathBuf, create: bool) -> anyhow::Result<Self> {
         ensure!(
             root.is_absolute(),
@@ -86,6 +176,7 @@ impl Storage {
     ) -> anyhow::Result<Option<StoredObject>> {
         validate_key(key)?;
         match self {
+            Self::Metadata(metadata) => metadata.read(key, range, limit),
             Self::S3(s3) => s3.request(
                 key,
                 if range.is_none() && limit != MAX_OBJECT {
@@ -161,6 +252,13 @@ impl Storage {
         validate_key(key)?;
         ensure!(bytes.len() <= MAX_OBJECT, "cache object exceeds size limit");
         match self {
+            Self::Metadata(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "socket metadata storage is read-only",
+                )
+                .into());
+            }
             Self::S3(s3) => {
                 s3.request(key, Operation::Put(bytes, mode))?;
             }

@@ -15,6 +15,33 @@ ROOT = Path(__file__).resolve().parents[1] / "docs/site"
 FENCES = re.compile(r"(?m)^([ \t]*)(`{3,}|~{3,})([^\n]*)\n((?s:.*?))^\1\2[ \t]*$")
 
 
+def check_build_resources(docs=ROOT.parent):
+    """Check native Linux watches before a build removes the existing site."""
+    if sys.platform != "linux":
+        return
+    import ctypes
+    import os
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.inotify_init1.argtypes = [ctypes.c_int]
+    libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+    fd = libc.inotify_init1(os.O_CLOEXEC)
+    if fd < 0:
+        raise SystemExit(f"Cannot initialize document watches: {os.strerror(ctypes.get_errno())}")
+    try:
+        for source in (docs / "src/en", docs / "src/zh", docs / "overrides"):
+            for directory, children, _ in os.walk(source):
+                children[:] = [name for name in children if name != ".data"]
+                if libc.inotify_add_watch(fd, os.fsencode(directory), 0x100) < 0:
+                    raise SystemExit(
+                        f"Cannot watch documentation: {os.strerror(ctypes.get_errno())}. "
+                        "Existing site preserved. Free editor watches or increase "
+                        "fs.inotify.max_user_watches; see docs/README.md."
+                    )
+    finally:
+        os.close(fd)
+
+
 def check_translations(docs=ROOT.parent, record=False, strict=False):
     """Pin reviewed pairs so a later one-language edit cannot pass unnoticed.
 
@@ -260,11 +287,13 @@ def check(strict=False):
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--record-translations"]:
+    if sys.argv[1:] == ["--preflight-build"]:
+        check_build_resources()
+    elif sys.argv[1:] == ["--record-translations"]:
         print(f"Recorded {check_translations(record=True)} reviewed bilingual pairs.")
     elif sys.argv[1:] == ["--require-recorded"]:
         check(strict=True)
     elif sys.argv[1:]:
-        raise SystemExit("usage: check-docs.py [--record-translations | --require-recorded]")
+        raise SystemExit("usage: check-docs.py [--preflight-build | --record-translations | --require-recorded]")
     else:
         check()

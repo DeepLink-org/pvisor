@@ -74,6 +74,32 @@ def _make_generated_site(tmp_path, resources):
 
 
 class DocsTests(unittest.TestCase):
+    def test_exhausted_watches_stop_before_touching_site_and_close_probe(self):
+        import ctypes
+        import errno
+
+        probe = runpy.run_path(str(ROOT / "scripts/check-docs.py"))["check_build_resources"]
+        with workspace() as (tmp_path, resources):
+            (tmp_path / "src/zh").mkdir(parents=True)
+            (tmp_path / "site").mkdir()
+            page = tmp_path / "site/index.html"
+            page.write_text("existing complete site")
+            libc = mock.Mock()
+            libc.inotify_init1.return_value = 37
+
+            def exhausted(*args):
+                ctypes.set_errno(errno.ENOSPC)
+                return -1
+
+            libc.inotify_add_watch.side_effect = exhausted
+            resources.enter_context(mock.patch("ctypes.CDLL", return_value=libc))
+            resources.enter_context(mock.patch("sys.platform", "linux"))
+            close = resources.enter_context(mock.patch("os.close"))
+            with self.assertRaisesRegex(SystemExit, "Existing site preserved"):
+                probe(tmp_path)
+            close.assert_called_once_with(37)
+            self.assertEqual(page.read_text(), "existing complete site")
+
     def test_reference_field_parser_honors_wire_names_and_skips(self):
         source = """pub struct Example {
     #[serde(rename = "max_size")]

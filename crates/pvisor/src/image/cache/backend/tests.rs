@@ -145,6 +145,7 @@ fn cold_directory_batches_attributes_and_preserves_file_boundaries() {
         digest,
         temp.path().join("blocks"),
         Some(temp.path().join("metadata")),
+        false,
     )
     .unwrap();
     assert_eq!(filesystem.entries(1).unwrap().len(), 604);
@@ -207,7 +208,8 @@ fn directory_cookies_resume_after_eviction_without_retaining_child_nodes() {
         fs::write(root.join(format!("file-{index:04}")), [index as u8]).unwrap();
     }
     fs::hard_link(root.join("file-0000"), root.join("linked")).unwrap();
-    let mut filesystem = RemoteFs::new(client, digest, temp.path().join("blocks"), None).unwrap();
+    let mut filesystem =
+        RemoteFs::new(client, digest, temp.path().join("blocks"), None, false).unwrap();
     let first = filesystem.entries_page(1, 0).unwrap();
     assert_eq!(first.len(), 258);
     assert_eq!(server.lists.load(Ordering::Relaxed), 1);
@@ -250,6 +252,7 @@ fn directory_pages_reject_nonprogressing_cursors_and_invalid_names() {
         digest.clone(),
         temp.path().join("blocks"),
         Some(metadata.clone()),
+        false,
     )
     .unwrap();
     let request = CacheRequest::List {
@@ -312,6 +315,7 @@ fn persistent_metadata_survives_remount_and_rejects_corruption() {
         digest.clone(),
         blocks.clone(),
         Some(metadata.clone()),
+        false,
     )
     .unwrap();
     let expected = cold.child(1, OsStr::new("large")).unwrap().attr.size;
@@ -324,6 +328,7 @@ fn persistent_metadata_survives_remount_and_rejects_corruption() {
         digest.clone(),
         blocks.clone(),
         Some(metadata.clone()),
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -342,7 +347,8 @@ fn persistent_metadata_survives_remount_and_rejects_corruption() {
             client(),
             digest.clone(),
             blocks.clone(),
-            Some(temp.path().join("new-generation"))
+            Some(temp.path().join("new-generation")),
+            false
         )
         .is_err()
     );
@@ -355,14 +361,14 @@ fn persistent_metadata_survives_remount_and_rejects_corruption() {
         b"corrupt",
     )
     .unwrap();
-    assert!(RemoteFs::new(client(), digest, blocks, Some(metadata)).is_err());
+    assert!(RemoteFs::new(client(), digest, blocks, Some(metadata), false).is_err());
 }
 
 #[test]
 fn reads_only_requested_blocks_and_reuses_verified_cache() {
     let (temp, server, client, digest) = fixture();
     let cache = temp.path().join("client");
-    let mut filesystem = RemoteFs::new(client, digest, cache, None).unwrap();
+    let mut filesystem = RemoteFs::new(client, digest, cache, None, false).unwrap();
     let file = filesystem.child(1, OsStr::new("large")).unwrap();
     assert_eq!(filesystem.entries(1).unwrap().len(), 4);
     assert_eq!(
@@ -423,6 +429,7 @@ fn reads_only_requested_blocks_and_reuses_verified_cache() {
         filesystem.digest.clone(),
         filesystem.cache.clone(),
         None,
+        false,
     )
     .unwrap();
     let warm_file = warm.child(1, OsStr::new("large")).unwrap();
@@ -482,7 +489,7 @@ fn auto_probe_distinguishes_absence_from_explicit_failure() {
 fn remote_linux_identity_reaches_the_override_stat_contract() {
     let (_temp, _server, client, digest) = fixture();
     let cache = tempfile::tempdir().unwrap();
-    let mut fs = RemoteFs::new(client, digest, cache.path().to_path_buf(), None).unwrap();
+    let mut fs = RemoteFs::new(client, digest, cache.path().to_path_buf(), None, false).unwrap();
     let node = fs
         .insert_node(
             b"owned".to_vec(),
@@ -516,6 +523,7 @@ fn v2_warm_positive_and_negative_stat_hits_never_trigger_lists() {
         digest.clone(),
         temp.path().join("blocks"),
         Some(metadata.clone()),
+        false,
     )
     .unwrap();
     cold.prefetch_enabled = false;
@@ -527,6 +535,7 @@ fn v2_warm_positive_and_negative_stat_hits_never_trigger_lists() {
         digest.clone(),
         temp.path().join("blocks"),
         Some(metadata.clone()),
+        false,
     )
     .unwrap();
     warm.prefetch_enabled = true;
@@ -546,6 +555,7 @@ fn v2_warm_positive_and_negative_stat_hits_never_trigger_lists() {
         digest,
         temp.path().join("blocks"),
         Some(metadata),
+        false,
     )
     .unwrap();
     recovered.prefetch_enabled = true;
@@ -568,6 +578,7 @@ fn v2_inventory_negative_stat_survives_offline_remount() {
             digest.clone(),
             blocks.clone(),
             Some(metadata.clone()),
+            false,
         )
         .unwrap();
         cold.prefetch_enabled = true;
@@ -606,6 +617,7 @@ fn v2_inventory_negative_stat_survives_offline_remount() {
             digest,
             blocks,
             Some(metadata),
+            false,
         )
         .unwrap();
         warm.prefetch_enabled = true;
@@ -632,6 +644,7 @@ fn v2_inventory_negative_receipt_write_failure_is_not_enoent() {
         digest.clone(),
         temp.path().join("blocks"),
         Some(metadata.clone()),
+        false,
     )
     .unwrap();
     filesystem.prefetch_enabled = true;
@@ -674,6 +687,7 @@ fn v2_second_cold_probe_batches_metadata_but_never_content() {
         digest,
         temp.path().join("blocks"),
         Some(temp.path().join("metadata")),
+        false,
     )
     .unwrap();
     filesystem.prefetch_enabled = true;
@@ -701,6 +715,7 @@ fn v2_second_cold_probe_batches_metadata_but_never_content() {
         digest,
         temp.path().join("blocks"),
         Some(temp.path().join("metadata")),
+        false,
     )
     .unwrap();
     warm.prefetch_enabled = true;
@@ -722,7 +737,8 @@ fn v2_oversized_inventory_falls_back_and_does_not_retrigger_after_eviction() {
     for index in 0..900 {
         fs::write(root.join(format!("file-{index:04}")), []).unwrap();
     }
-    let mut filesystem = RemoteFs::new(client, digest, temp.path().join("blocks"), None).unwrap();
+    let mut filesystem =
+        RemoteFs::new(client, digest, temp.path().join("blocks"), None, false).unwrap();
     filesystem.prefetch_enabled = true;
     filesystem.child(1, OsStr::new("file-0899")).unwrap();
     filesystem.child(1, OsStr::new("file-0898")).unwrap();
@@ -763,7 +779,8 @@ fn v2_trigger_admission_is_bounded_and_disabled_mode_remains_exact_stat() {
     for index in 0..RemoteFs::PREFETCH_DIRECTORIES + 4 {
         fs::create_dir(root.join(format!("dir-{index}"))).unwrap();
     }
-    let mut filesystem = RemoteFs::new(client, digest, temp.path().join("blocks"), None).unwrap();
+    let mut filesystem =
+        RemoteFs::new(client, digest, temp.path().join("blocks"), None, false).unwrap();
     filesystem.prefetch_enabled = false;
     filesystem.child(1, OsStr::new("large")).unwrap();
     filesystem.child(1, OsStr::new("alias")).unwrap();
@@ -804,6 +821,7 @@ fn v2_speculative_errors_fall_back_without_inventing_absence() {
         digest,
         temp.path().join("blocks"),
         Some(temp.path().join("metadata")),
+        false,
     )
     .unwrap();
     filesystem.prefetch_enabled = true;
@@ -851,6 +869,7 @@ fn v2_non_utf8_listed_metadata_preserves_the_exact_contract() {
         digest,
         temp.path().join("blocks"),
         Some(temp.path().join("metadata")),
+        false,
     )
     .unwrap();
     filesystem.prefetch_enabled = true;
@@ -923,6 +942,7 @@ fn v2_corrupt_cached_pages_refetch_and_metadata_matches_exact_stat() {
         digest.clone(),
         temp.path().join("blocks"),
         Some(temp.path().join("metadata")),
+        false,
     )
     .unwrap();
     filesystem.prefetch_enabled = true;
@@ -946,4 +966,570 @@ fn v2_corrupt_cached_pages_refetch_and_metadata_matches_exact_stat() {
     assert_eq!(linked.attr.size, expected.attr.size);
     assert_eq!(linked.attr.nlink, expected.attr.nlink);
     assert_eq!(server.reads.load(Ordering::Relaxed), 0);
+}
+
+// APFS rejects invalid UTF-8; keep byte-name coverage on Linux.
+const PORTABLE_RAW_NAME: &[u8] = if cfg!(target_os = "linux") {
+    b"raw-\xff"
+} else {
+    b"raw-utf8"
+};
+
+pub(crate) fn portable_fixture(
+    tcp: bool,
+) -> (
+    tempfile::TempDir,
+    Server,
+    CacheClient,
+    String,
+    Arc<AtomicUsize>,
+) {
+    use crate::image::cache::{portable::PortableCache, storage::Storage, transport::Stream};
+    use crate::image::oci::PreparedImage;
+    use std::collections::BTreeMap;
+    use std::net::TcpListener;
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let store = ImageStore::new(Some(temp.path().join("publisher"))).unwrap();
+    let digest = format!("sha256:{}", "c".repeat(64));
+    let root = store.root.join("rootfs-v3/sha256").join(&digest[7..]);
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("large"), vec![42; MAX_READ as usize + 9]).unwrap();
+    fs::set_permissions(root.join("large"), fs::Permissions::from_mode(0o640)).unwrap();
+    fs::hard_link(root.join("large"), root.join("linked")).unwrap();
+    fs::write(root.join(OsStr::from_bytes(PORTABLE_RAW_NAME)), b"raw").unwrap();
+    std::os::unix::fs::symlink("large", root.join("alias")).unwrap();
+    let image = PreparedImage {
+        rootfs: root,
+        digest,
+        env: BTreeMap::new(),
+        entrypoint: vec![],
+        cmd: vec![],
+    };
+    let cache = PortableCache::new(
+        Storage::filesystem(temp.path().join("shared"), true).unwrap(),
+        None,
+        false,
+    );
+    let (response, _) = cache.publish(&store, &image, "amd64", "fixture").unwrap();
+    let Response::Prepared {
+        image_handle,
+        metadata_pages,
+        ..
+    } = response
+    else {
+        panic!()
+    };
+    assert!(metadata_pages);
+    fs::remove_dir_all(&store.root).unwrap();
+
+    enum Listener {
+        Unix(UnixListener),
+        Tcp(TcpListener),
+    }
+    let (listener, address) = if tcp {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = format!("tcp://{}", listener.local_addr().unwrap());
+        (Listener::Tcp(listener), address)
+    } else {
+        let path = temp.path().join("portable.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        (
+            Listener::Unix(listener),
+            format!("unix://{}", path.display()),
+        )
+    };
+    let token = tcp.then(|| "portable-fixture-token".to_owned());
+    let worker_token = token.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let stats = Arc::new(AtomicUsize::new(0));
+    let lists = Arc::new(AtomicUsize::new(0));
+    let pages = Arc::new(AtomicUsize::new(0));
+    let worker_stop = stop.clone();
+    let worker_reads = reads.clone();
+    let worker_stats = stats.clone();
+    let worker_lists = lists.clone();
+    let worker_pages = pages.clone();
+    let worker = std::thread::spawn(move || {
+        while !worker_stop.load(Ordering::Relaxed) {
+            let accepted = match &listener {
+                Listener::Unix(listener) => listener.accept().map(|(s, _)| Stream::Unix(s)),
+                Listener::Tcp(listener) => listener.accept().map(|(s, _)| Stream::Tcp(s)),
+            };
+            let mut socket = match accepted {
+                Ok(socket) => socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                Err(error) => panic!("{error}"),
+            };
+            // Accepted sockets inherit nonblocking mode on macOS.
+            match &socket {
+                Stream::Unix(socket) => socket.set_nonblocking(false).unwrap(),
+                Stream::Tcp(socket) => socket.set_nonblocking(false).unwrap(),
+            }
+            socket.timeouts(Duration::from_secs(5)).unwrap();
+            let envelope: Envelope = read_frame(&mut socket).unwrap();
+            assert_eq!(envelope.token, worker_token);
+            let counter = match &envelope.request {
+                CacheRequest::Read { .. } => Some(&worker_reads),
+                CacheRequest::Stat { .. } => Some(&worker_stats),
+                CacheRequest::List { .. } => Some(&worker_lists),
+                CacheRequest::Metadata { .. } => Some(&worker_pages),
+                _ => None,
+            };
+            if let Some(counter) = counter {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+            let (response, bytes) = cache.request(envelope.request).unwrap_or_else(|error| {
+                let code = match error
+                    .downcast_ref::<std::io::Error>()
+                    .map(std::io::Error::kind)
+                {
+                    Some(std::io::ErrorKind::NotFound) => "not_found",
+                    Some(std::io::ErrorKind::PermissionDenied) => "permission_denied",
+                    _ => "request_failed",
+                };
+                (
+                    Response::Error {
+                        code: code.into(),
+                        message: error.to_string(),
+                    },
+                    vec![],
+                )
+            });
+            write_frame(&mut socket, &response).unwrap();
+            socket.write_all(&bytes).unwrap();
+        }
+    });
+    let client = crate::image::cache::client::tests::use_server_reuse(
+        CacheClient::new(address, token).unwrap(),
+        false,
+    );
+    (
+        temp,
+        Server {
+            stop,
+            worker: Some(worker),
+            reads,
+            stats,
+            lists,
+        },
+        client,
+        image_handle,
+        pages,
+    )
+}
+
+#[test]
+fn socket_index_pages_preserve_metadata_without_guest_rpcs_or_content() {
+    for tcp in [false, true] {
+        let (temp, server, client, handle, pages) = portable_fixture(tcp);
+        let binding = client.binding();
+        let blocks = temp.path().join("blocks");
+        let metadata = temp.path().join("metadata");
+        let mut source = portable_backend(
+            client,
+            handle.clone(),
+            blocks.clone(),
+            metadata.clone(),
+            true,
+        )
+        .unwrap();
+        assert!(source.metadata_reader.is_some());
+        assert!(!source.prefetch_enabled);
+        let large = source.child(1, OsStr::new("large")).unwrap();
+        let linked = source.child(1, OsStr::new("linked")).unwrap();
+        assert_eq!(large.attr.ino, linked.attr.ino);
+        assert_eq!(large.attr.nlink, 2);
+        assert_eq!(large.attr.perm, 0o640);
+        assert_eq!(
+            source
+                .child(1, OsStr::from_bytes(PORTABLE_RAW_NAME))
+                .unwrap()
+                .attr
+                .size,
+            3
+        );
+        assert_eq!(
+            source
+                .child(1, OsStr::new("alias"))
+                .unwrap()
+                .target
+                .as_deref(),
+            Some(b"large".as_slice())
+        );
+        assert!(source.lookup_path(b"alias/child".to_vec()).is_err());
+        for path in [b"../large".as_slice(), b"/large", b"large\0"] {
+            assert!(source.lookup_path(path.to_vec()).is_err());
+        }
+        assert!(source.child(1, OsStr::new("absent")).is_err());
+        assert_eq!(source.entries(1).unwrap().len(), 6);
+        let fetched = pages.load(Ordering::Relaxed);
+        assert!(fetched > 0);
+        assert_eq!(server.stats.load(Ordering::Relaxed), 0);
+        assert_eq!(server.lists.load(Ordering::Relaxed), 0);
+        assert_eq!(server.reads.load(Ordering::Relaxed), 0);
+        drop(source);
+        drop(server);
+        let offline = || {
+            crate::image::cache::client::tests::use_server_reuse(
+                CacheClient::from_binding(binding.clone()).unwrap(),
+                false,
+            )
+        };
+        let mut warm = portable_backend(
+            offline(),
+            handle.clone(),
+            blocks.clone(),
+            metadata.clone(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(warm.child(1, OsStr::new("large")).unwrap().attr.perm, 0o640);
+        assert!(warm.child(1, OsStr::new("absent")).is_err());
+        assert_eq!(warm.entries(1).unwrap().len(), 6);
+        // Exercise the persistent binary subtree rather than exact-response receipts.
+        for entry in fs::read_dir(&metadata).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                fs::remove_file(entry.path()).unwrap();
+            }
+        }
+        let mut binary_warm = portable_backend(offline(), handle, blocks, metadata, true).unwrap();
+        assert_eq!(
+            binary_warm
+                .child(1, OsStr::from_bytes(PORTABLE_RAW_NAME))
+                .unwrap()
+                .attr
+                .size,
+            3
+        );
+        assert!(binary_warm.child(1, OsStr::new("absent")).is_err());
+        assert_eq!(binary_warm.entries(1).unwrap().len(), 6);
+    }
+}
+
+fn portable_backend(
+    client: CacheClient,
+    handle: String,
+    blocks: PathBuf,
+    metadata: PathBuf,
+    pages: bool,
+) -> anyhow::Result<RemoteFs> {
+    RemoteFs::new_with_overrides(client, handle, blocks, Some(metadata), pages, None, None)
+}
+
+fn json_receipts(directory: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut receipts: Vec<_> = fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_type().unwrap().is_file())
+        .map(|entry| (entry.path(), fs::read(entry.path()).unwrap()))
+        .collect();
+    receipts.sort_by(|a, b| a.0.cmp(&b.0));
+    receipts
+}
+
+#[test]
+fn index_pages_ignore_rechecksummed_positive_and_negative_receipts_after_reconstruction() {
+    for child_lookup in [false, true] {
+        let (temp, server, client, handle, pages) = portable_fixture(false);
+        let binding = client.binding();
+        let blocks = temp.path().join("blocks");
+        let metadata = temp.path().join("metadata");
+        let mut legacy = portable_backend(
+            client,
+            handle.clone(),
+            blocks.clone(),
+            metadata.clone(),
+            false,
+        )
+        .unwrap();
+        legacy.prefetch_enabled = false;
+        let expected = legacy.child(1, OsStr::new("large")).unwrap();
+        legacy.entries(1).unwrap();
+        let list_request = CacheRequest::List {
+            digest: handle.clone(),
+            path: Vec::new(),
+            offset: 0,
+        };
+        let list = metadata.join(&hash(&serde_json::to_vec(&list_request).unwrap())[7..]);
+        legacy
+            .store_metadata_at(
+                &metadata,
+                &list,
+                &Response::Entries {
+                    names: Vec::new(),
+                    metadata: Vec::new(),
+                    next_offset: None,
+                },
+            )
+            .unwrap();
+        let request = CacheRequest::Stat {
+            digest: handle.clone(),
+            path: b"large".to_vec(),
+        };
+        let mut forged = legacy.cached_metadata(&request).unwrap();
+        let Response::Metadata { size, mode, .. } = &mut forged else {
+            panic!()
+        };
+        *size = 1;
+        *mode = 0o100777;
+        let positive = metadata.join(&hash(&serde_json::to_vec(&request).unwrap())[7..]);
+        legacy
+            .store_metadata_at(&metadata, &positive, &forged)
+            .unwrap();
+        let negative_request = CacheRequest::Stat {
+            digest: handle.clone(),
+            path: b"linked".to_vec(),
+        };
+        let negative = metadata.join(&hash(&serde_json::to_vec(&negative_request).unwrap())[7..]);
+        legacy
+            .store_metadata_at(
+                &metadata,
+                &negative,
+                &Response::Error {
+                    code: "not_found".into(),
+                    message: "forged absence".into(),
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            legacy.cached_metadata(&request),
+            Some(Response::Metadata { size: 1, .. })
+        ));
+        assert!(
+            matches!(legacy.cached_metadata(&negative_request), Some(Response::Error { code, .. }) if code == "not_found")
+        );
+        let receipts = json_receipts(&metadata);
+        let stats = server.stats.load(Ordering::Relaxed);
+        let lists = server.lists.load(Ordering::Relaxed);
+        drop(legacy);
+        let client = crate::image::cache::client::tests::use_server_reuse(
+            CacheClient::from_binding(binding).unwrap(),
+            false,
+        );
+        let mut reconstructed =
+            portable_backend(client, handle, blocks, metadata.clone(), true).unwrap();
+        assert!(reconstructed.metadata_reader.is_some());
+        let large = if child_lookup {
+            reconstructed.child(1, OsStr::new("large"))
+        } else {
+            reconstructed.lookup_path(b"large".to_vec())
+        }
+        .unwrap();
+        let linked = if child_lookup {
+            reconstructed.child(1, OsStr::new("linked"))
+        } else {
+            reconstructed.lookup_path(b"linked".to_vec())
+        }
+        .unwrap();
+        assert_eq!(large.attr.size, expected.attr.size);
+        assert_eq!(large.attr.perm, expected.attr.perm);
+        assert_eq!(large.attr.ino, linked.attr.ino);
+        assert_eq!(large.attr.nlink, linked.attr.nlink);
+        assert_eq!(reconstructed.entries(1).unwrap().len(), 6);
+        // Listed positives and complete-inventory negatives must not write receipts either.
+        reconstructed.child(1, OsStr::new("alias")).unwrap();
+        let error = reconstructed
+            .child(1, OsStr::new("absent"))
+            .err()
+            .expect("missing path");
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert_eq!(json_receipts(&metadata), receipts);
+        assert!(pages.load(Ordering::Relaxed) > 0);
+        assert_eq!(server.stats.load(Ordering::Relaxed), stats);
+        assert_eq!(server.lists.load(Ordering::Relaxed), lists);
+        assert_eq!(server.reads.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[test]
+fn index_pages_old_receipts_cannot_mask_corrupt_remote_metadata() {
+    for name in ["COMMIT.json", "checksums.bin", "index.bin"] {
+        let (temp, server, client, handle, pages) = portable_fixture(false);
+        let binding = client.binding();
+        let blocks = temp.path().join("blocks");
+        let metadata = temp.path().join("metadata");
+        let mut legacy = portable_backend(
+            client,
+            handle.clone(),
+            blocks.clone(),
+            metadata.clone(),
+            false,
+        )
+        .unwrap();
+        legacy.prefetch_enabled = false;
+        legacy.child(1, OsStr::new("large")).unwrap();
+        legacy.entries(1).unwrap();
+        let receipts = json_receipts(&metadata);
+        assert!(!receipts.is_empty());
+        assert!(!metadata.join("binary").exists());
+        let stats = server.stats.load(Ordering::Relaxed);
+        let lists = server.lists.load(Ordering::Relaxed);
+        drop(legacy);
+        let prefix = crate::image::cache::portable::metadata_prefix(&handle).unwrap();
+        let object = temp.path().join("shared").join(prefix).join(name);
+        let mut bytes = fs::read(&object).unwrap();
+        bytes[0] ^= 1;
+        fs::write(object, bytes).unwrap();
+        let client = crate::image::cache::client::tests::use_server_reuse(
+            CacheClient::from_binding(binding).unwrap(),
+            false,
+        );
+        let error = portable_backend(client, handle, blocks, metadata.clone(), true)
+            .err()
+            .expect("old receipts must not mask remote metadata corruption");
+        assert!(
+            format!("{error:#}").contains("digest mismatch"),
+            "{name}: {error:#}"
+        );
+        assert!(
+            !error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        );
+        assert_eq!(json_receipts(&metadata), receipts);
+        assert!(pages.load(Ordering::Relaxed) > 0);
+        assert_eq!(server.stats.load(Ordering::Relaxed), stats);
+        assert_eq!(server.lists.load(Ordering::Relaxed), lists);
+        assert_eq!(server.reads.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[test]
+fn unknown_metadata_capability_keeps_socket_metadata_on_rpc_without_probe() {
+    let (temp, server, client, handle, pages) = portable_fixture(false);
+    let mut source =
+        RemoteFs::new(client, handle, temp.path().join("blocks"), None, false).unwrap();
+    source.prefetch_enabled = false;
+    assert!(source.metadata_reader.is_none());
+    source.child(1, OsStr::new("large")).unwrap();
+    source.entries(1).unwrap();
+    assert!(server.stats.load(Ordering::Relaxed) >= 2);
+    assert!(server.lists.load(Ordering::Relaxed) > 0);
+    assert_eq!(pages.load(Ordering::Relaxed), 0);
+    assert_eq!(server.reads.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn index_page_rollout_requires_all_gates_and_only_exact_zero_disables() {
+    assert!(index_pages_enabled(true, true, true, None));
+    assert!(index_pages_enabled(
+        true,
+        true,
+        true,
+        Some(OsStr::new("false"))
+    ));
+    assert!(index_pages_enabled(true, true, true, Some(OsStr::new(""))));
+    assert!(!index_pages_enabled(
+        true,
+        true,
+        true,
+        Some(OsStr::new("0"))
+    ));
+    assert!(!index_pages_enabled(false, true, true, None));
+    assert!(!index_pages_enabled(true, false, true, None));
+    assert!(!index_pages_enabled(true, true, false, None));
+}
+
+#[test]
+fn index_page_corruption_and_transport_failure_never_fall_back_to_guest_rpcs() {
+    let (temp, server, client, handle, pages) = portable_fixture(false);
+    let prefix = crate::image::cache::portable::metadata_prefix(&handle).unwrap();
+    let index = temp.path().join("shared").join(prefix).join("index.bin");
+    let mut bytes = fs::read(&index).unwrap();
+    bytes[0] ^= 1;
+    fs::write(index, bytes).unwrap();
+    assert!(
+        RemoteFs::new_with_overrides(
+            client,
+            handle.clone(),
+            temp.path().join("blocks"),
+            None,
+            true,
+            None,
+            None,
+        )
+        .is_err()
+    );
+    assert!(pages.load(Ordering::Relaxed) > 0);
+    assert_eq!(server.stats.load(Ordering::Relaxed), 0);
+    assert_eq!(server.lists.load(Ordering::Relaxed), 0);
+    assert_eq!(server.reads.load(Ordering::Relaxed), 0);
+    drop(server);
+    let client = crate::image::cache::client::tests::use_server_reuse(
+        CacheClient::new(
+            format!("unix://{}", temp.path().join("portable.sock").display()),
+            None,
+        )
+        .unwrap(),
+        false,
+    );
+    assert!(
+        RemoteFs::new_with_overrides(
+            client,
+            handle,
+            temp.path().join("blocks"),
+            None,
+            true,
+            None,
+            None,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn index_page_authorization_failure_is_not_a_legacy_downgrade_signal() {
+    let (temp, server, client, handle, _pages) = portable_fixture(false);
+    drop(client);
+    drop(server);
+    let path = temp.path().join("denied.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let worker = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let envelope: Envelope = read_frame(&mut socket).unwrap();
+        assert!(matches!(envelope.request, CacheRequest::Metadata { .. }));
+        write_frame(
+            &mut socket,
+            &Response::Error {
+                code: "permission_denied".into(),
+                message: "denied metadata".into(),
+            },
+        )
+        .unwrap();
+    });
+    let client = crate::image::cache::client::tests::use_server_reuse(
+        CacheClient::new(format!("unix://{}", path.display()), None).unwrap(),
+        false,
+    );
+    let error = RemoteFs::new_with_overrides(
+        client,
+        handle,
+        temp.path().join("blocks"),
+        None,
+        true,
+        None,
+        None,
+    )
+    .err()
+    .expect("metadata authorization must fail");
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    worker.join().unwrap();
 }

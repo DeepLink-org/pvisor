@@ -175,6 +175,7 @@ fn prepare_remote(
     let Response::Prepared {
         image_handle,
         metadata_generation,
+        metadata_pages,
         totals,
         digest,
         architecture: platform,
@@ -221,7 +222,7 @@ fn prepare_remote(
             .join(&hash(generation.as_bytes())[7..])
     });
     let filesystem = super::progress::loading("loading root metadata", || {
-        RemoteFs::new(client, read_handle, cache, metadata_cache)
+        RemoteFs::new(client, read_handle, cache, metadata_cache, metadata_pages)
     })?;
     *filesystem.downloads.lock().unwrap() = downloads;
     Ok((

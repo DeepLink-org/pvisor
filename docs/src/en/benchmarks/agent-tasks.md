@@ -61,7 +61,7 @@ The first three tool rows come from the 2026-10-06 task/filesystem experiments; 
 
 [Seven-tool completion](filesystem.md#complete-task) has a staged-minus-Docker median difference of +268.81 ms, 95% CI [+264.64, +271.15] ms. The [large-workspace workflow](supervision-cost.md#baseline-meaning) has stage-minus-Git −107.27 ms, 95% CI [−109.02, −105.60] ms; the small workspace has +86.99 ms, 95% CI [+77.28, +87.57] ms. Advantages depend on workload and workflow choice and do not justify replacing Docker, worktrees or VMMs universally. The complete workflow applies only ten files; see [apply costs](supervision-cost.md#apply-cost) for bulk changes. Machine timings exclude human reading.
 
-[Startup](startup.md) and [lazy images](lazy-image-startup.md) separately address prepared environments and uncached client images. Lazy cold-client 183.7 ms excludes initial service preparation; warm-client Docker is usually faster. On-demand image reads do not remove subsequent repository-tool costs.
+[Startup](startup.md) and [lazy images](lazy-image-startup.md) separately address prepared environments and uncached client images. Cold-client data excludes initial upstream download, unpack and indexing; warm-client Docker is faster. On-demand image reads do not remove subsequent repository-tool costs.
 
 ### Integrating existing toolchains {#existing-workflows}
 

@@ -17,9 +17,82 @@ mod tests;
 use binary::LoadedImage;
 const MAX_ENTRIES: usize = 200_000;
 const MAX_SPANS: usize = 500_000;
-const MAX_CONTROL: usize = 1024 * 1024;
+pub(super) const MAX_CONTROL: usize = 1024 * 1024;
 const BINARY_NAMES: [&str; 4] = ["files.bin", "contents.bin", "index.bin", "objects.bin"];
 const FORMAT: &[u8] = b"{\"format_version\":1,\"hash_algorithm\":\"sha256\",\"encoding\":\"raw\",\"chunk_bytes\":1048576,\"shard_prefix_bytes\":2,\"metadata_encoding\":\"pvisor-paged-v1\",\"metadata_page_bytes\":65536}";
+/// Exact immutable metadata basenames accepted by services and pinned proxies.
+pub(super) fn metadata_object_name(name: &str) -> bool {
+    matches!(
+        name,
+        "COMMIT.json"
+            | "manifest.json"
+            | "config.json"
+            | "checksums.bin"
+            | "files.bin"
+            | "contents.bin"
+            | "index.bin"
+            | "objects.bin"
+    )
+}
+
+pub(super) fn metadata_prefix(handle: &str) -> anyhow::Result<String> {
+    Ok(Handle::parse(handle)?.prefix())
+}
+
+/// A lazy socket metadata reader pinned to one immutable revision. Its client
+/// owns only the transport, never this reader, so retaining the client is acyclic.
+pub(super) struct MetadataReader {
+    handle: Handle,
+    cache: PortableCache,
+}
+
+impl MetadataReader {
+    /// Validate the handle without connecting or touching the optional cache.
+    pub(super) fn new(
+        client: Arc<super::CacheClient>,
+        handle: String,
+        cache: Option<PathBuf>,
+    ) -> anyhow::Result<Self> {
+        let storage = Storage::metadata(client, handle.clone())?;
+        Ok(Self {
+            handle: Handle::parse(&handle)?,
+            cache: PortableCache::new(storage, None, true).with_local_objects(cache),
+        })
+    }
+
+    /// Only exact-handle Stat/List are accepted. Cached objects and pages are
+    /// authenticated on use; loading errors propagate without RPC fallback.
+    pub(super) fn request(&self, request: Request) -> anyhow::Result<Response> {
+        match request {
+            Request::Stat { digest, path } => {
+                ensure!(
+                    digest == self.handle.encode(),
+                    "metadata reader handle mismatch"
+                );
+                validate_path(&path)?;
+                Ok(self
+                    .cache
+                    .load_revision(&self.handle)?
+                    .entry(&path)?
+                    .metadata)
+            }
+            Request::List {
+                digest,
+                path,
+                offset,
+            } => {
+                ensure!(
+                    digest == self.handle.encode(),
+                    "metadata reader handle mismatch"
+                );
+                validate_path(&path)?;
+                self.cache.load_revision(&self.handle)?.list(&path, offset)
+            }
+            _ => bail!("metadata reader accepts only Stat/List"),
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Descriptor {
@@ -156,6 +229,12 @@ impl PortableCache {
                 architecture,
                 refresh,
             } => self.prepare(&image, &architecture, refresh),
+            Request::Metadata {
+                handle,
+                object_name,
+                offset,
+                length,
+            } => self.metadata(&handle, &object_name, offset, length),
             Request::Stat { digest, path } => {
                 validate_path(&path)?;
                 Ok((
@@ -227,6 +306,63 @@ impl PortableCache {
             }
         }
     }
+    fn metadata(
+        &self,
+        handle: &str,
+        object_name: &str,
+        offset: u64,
+        length: u32,
+    ) -> anyhow::Result<(Response, Vec<u8>)> {
+        ensure!(
+            metadata_object_name(object_name),
+            "invalid metadata object name"
+        );
+        ensure!(
+            length > 0 && length <= MAX_READ,
+            "invalid metadata read length"
+        );
+        let end = offset
+            .checked_add(length as u64)
+            .context("metadata range overflow")?;
+        let handle = Handle::parse(handle)?;
+        let key = format!("{}/{object_name}", handle.prefix());
+        let body = if object_name == "COMMIT.json" {
+            let bytes = self.immutable(
+                &key,
+                &format!("sha256:{}", handle.revision),
+                None,
+                MAX_CONTROL,
+            )?;
+            ensure!(offset <= bytes.len() as u64, "metadata offset beyond EOF");
+            bytes[offset as usize..end.min(bytes.len() as u64) as usize].to_vec()
+        } else {
+            let image = self.load_revision(&handle)?;
+            let descriptor = &image.commit.metadata[object_name];
+            ensure!(offset <= descriptor.bytes, "metadata offset beyond EOF");
+            let end = end.min(descriptor.bytes);
+            if !BINARY_NAMES.contains(&object_name) {
+                let bytes = self.immutable(
+                    &key,
+                    &descriptor.sha256,
+                    Some(descriptor.bytes),
+                    MAX_CONTROL,
+                )?;
+                bytes[offset as usize..end as usize].to_vec()
+            } else if offset == end {
+                Vec::new()
+            } else {
+                self.storage.range(&key, offset..end)?
+            }
+        };
+        Ok((
+            Response::Data {
+                length: body.len() as u32,
+                sha256: hash(&body),
+            },
+            body,
+        ))
+    }
+
     fn prepare(
         &self,
         image: &str,
@@ -287,6 +423,16 @@ impl PortableCache {
             Some(FORMAT.len() as u64),
             MAX_CONTROL,
         )?;
+        self.load_revision(handle)
+    }
+
+    // Socket readers have no access to global format.json. The pinned COMMIT,
+    // inventory, catalog and binary headers authenticate the supported schema.
+    fn load_revision(&self, handle: &Handle) -> anyhow::Result<Arc<LoadedImage>> {
+        let key = handle.encode();
+        if let Some(image) = self.images.lock().unwrap().get(&key).cloned() {
+            return Ok(image);
+        }
         let prefix = handle.prefix();
         let bytes = self.immutable(
             &format!("{prefix}/COMMIT.json"),
@@ -339,22 +485,11 @@ impl PortableCache {
                 MAX_CONTROL,
             )
         };
-        let (manifest_bytes, config_bytes, checksums) = std::thread::scope(|scope| {
-            let manifest = scope.spawn(|| get("manifest.json"));
-            let config = scope.spawn(|| get("config.json"));
-            let checksums = scope.spawn(|| get("checksums.bin"));
-            Ok::<_, anyhow::Error>((
-                manifest
-                    .join()
-                    .map_err(|_| anyhow::anyhow!("manifest reader panicked"))??,
-                config
-                    .join()
-                    .map_err(|_| anyhow::anyhow!("configuration reader panicked"))??,
-                checksums
-                    .join()
-                    .map_err(|_| anyhow::anyhow!("checksum reader panicked"))??,
-            ))
-        })?;
+        // Runner lower attachment loads metadata before CLONE_NEWUSER, which
+        // requires kernel-level single-threadedness even after userspace joins.
+        let manifest_bytes = get("manifest.json")?;
+        let config_bytes = get("config.json")?;
+        let checksums = get("checksums.bin")?;
         let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
         ensure!(
             manifest.format_version == 1
