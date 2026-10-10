@@ -27,6 +27,25 @@ impl FilesystemService {
     pub fn new(core: OverlayCore) -> Self {
         Self { core }
     }
+    /// Prepare byte copying without publishing namespace entries. The adapter
+    /// serializes mutations while metadata may continue; see Core for policy,
+    /// source-change, truncation and cancellation contracts.
+    pub fn prepare_copy_ups(
+        &self,
+        paths: &[PathBuf],
+        truncate: bool,
+    ) -> io::Result<Vec<crate::PreparedCopyUp>> {
+        self.core.prepare_copy_ups(paths, truncate)
+    }
+    /// Install request-scoped copies on their original owner. Normal operations
+    /// perform validation and publication; drop cancels unused copies. Mutation
+    /// serialization is the caller's responsibility, including through drop.
+    pub fn use_prepared_copy_ups(
+        &self,
+        copies: Vec<crate::PreparedCopyUp>,
+    ) -> io::Result<crate::PreparedCopyUps<'_>> {
+        self.core.use_prepared_copy_ups(copies)
+    }
     pub fn with_profile(mut self, profile: crate::profile::Profile) -> Self {
         self.core = self.core.with_profile(profile);
         self
@@ -199,6 +218,18 @@ impl FilesystemService {
     }
     pub fn rename(&self, old: &Path, new: &Path, no_replace: bool) -> io::Result<()> {
         self.core.rename(old, new, no_replace)
+    }
+    /// Validate and observe a serialized rename/exchange without publishing it;
+    /// returned roots need recursive copy preparation. See Core for ordering.
+    pub fn prepare_rename_copy_up(
+        &self,
+        old: &Path,
+        new: &Path,
+        no_replace: bool,
+        exchange: bool,
+    ) -> io::Result<Vec<PathBuf>> {
+        self.core
+            .prepare_rename_copy_up(old, new, no_replace, exchange)
     }
     pub fn resolve(&self, rel: &Path) -> Option<Resolved> {
         self.core.resolve(rel)

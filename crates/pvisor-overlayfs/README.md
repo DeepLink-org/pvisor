@@ -67,6 +67,60 @@ field-level security, platform and ownership contracts.
 `tests/api_contract.rs` checks the syntax boundary and portable public behavior
 without mounting FUSE.
 
+## Host request scheduling
+
+The FUSE receive thread serves LOOKUP, GETATTR, ACCESS, STATFS, macOS GETXTIMES,
+READDIR/READDIRPLUS, FORGET and atime-only SETATTR through the shared state lock.
+Directory GETXATTR/LISTXATTR use that path too: macOS stat can probe parent
+FinderInfo before LOOKUP, and directories have no regular-file bytes to hash.
+Other callbacks enter one bounded FIFO worker. Writable OPEN, mutating SETATTR, xattr changes,
+LINK, unlink of held files and rename/exchange prepare regular-file contents
+outside that lock, including files in merged directory trees. Metadata requests
+can run during content copying and baseline capture. Journal-observing directory
+xattr reads can still wait on Core's journal lock during baseline fingerprinting.
+Publication, inode maps,
+hardlink groups, open-handle rebinding and cache effects remain serialized by
+the existing operation handlers. macOS EXCHANGE uses the same held-handle and
+inode-remapping path as RENAME_EXCHANGE.
+
+Preparation records durable baseline observations, copies each physical file
+once into one exclusively created private directory per batch, and preserves
+metadata. Receipts share its directory FD instead of retaining one FD per file.
+The original operation consumes those copies only when its normal validation
+reaches copy-up. Lower identity/content metadata changes detected before
+publication return EAGAIN. Remote projections check logical metadata so newly
+projected native aliases do not cause false source-change errors. Late LOOKUP
+aliases reuse the prepared inode.
+Unused preparations are removed; failed operations can retain observations or
+already-published upper changes. Temporary ownership is checked using a held
+directory descriptor and its device/inode, with no sweeping of reserved names.
+Writable cache preparation reserves pending before temporary upper-root changes
+and invalidates that root even on failure. A second reservation holds zero TTL
+through unused-copy cleanup, followed by another root invalidation; preparation
+errors also reply through the cache fence. The original publication/reply cache
+ordering still applies.
+
+Admission bounds active plus queued requests to 128 and their write/xattr
+payloads to 16 MiB. Saturation replies EAGAIN without waiting for the worker;
+shutdown/worker failure replies EIO. Accepted requests pin only their referenced
+inodes, so FORGET can reclaim unrelated nodes while a copy runs. Unmount/drop
+stop admission and drain the worker before shutting down cache notifications.
+This drain does not cancel backing I/O and has no copy deadline.
+
+This removes the state lock from regular-file preparation, not all filesystem
+I/O: publication of large trees, normal reads/writes, directory snapshot creation,
+policy checks and backing metadata can still occupy it. Journal-observing reads
+(including readlink and regular-file xattr reads) stay ordered because they can fingerprint
+content. Core's `copy_up_prepare` profile covers prepared copying; protocol
+callback spans exclude that preparation and queue time. Gate-controlled backend
+tests prove independent metadata completes during preparation, FIFO mutation
+ordering, admission bounds, failure cleanup and drain. Private inode tests cover
+FORGET and existing descriptor rebinding; these are not mounted latency results.
+A macOS FSKit mount smoke check also verified stat completion while a 2 GiB
+copy remained in progress, hardlink sharing, held descriptors and rename. This
+is a concurrency/correctness check, not a performance A/B; Linux mounting is
+not covered by that check.
+
 ## Lower stability and cache experiments
 
 Set `api::OverlayMountConfig::lower_mutability` using the shared

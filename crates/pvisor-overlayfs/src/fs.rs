@@ -3,9 +3,9 @@ use crate::cache::{CacheHandle, EFFECT_LIMIT, Effects};
 #[cfg(target_os = "macos")]
 use fuser::ReplyXTimes;
 use fuser::{
-    FUSE_ROOT_ID, FileAttr, FileType, Filesystem, ReplyAttr, ReplyCreate, ReplyData,
-    ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyStatfs,
-    ReplyWrite, ReplyXattr, Request, TimeOrNow,
+    FUSE_ROOT_ID, FileAttr, FileType, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
+    ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyStatfs, ReplyWrite,
+    ReplyXattr, TimeOrNow,
 };
 use pvisor_core::overlay::FileAccessPolicy;
 use pvisor_overlay_core::service::FilesystemService;
@@ -132,7 +132,7 @@ struct DirectoryEntry {
     attr: Option<FileAttr>,
 }
 
-struct Mutation {
+pub(super) struct Mutation {
     handle: CacheHandle,
     effects: Effects,
     objects: BTreeSet<u64>,
@@ -141,7 +141,10 @@ struct Mutation {
 }
 
 pub(crate) struct OverlayFs {
-    core: FilesystemService,
+    core: Arc<FilesystemService>,
+    pub(super) pending_requests: usize,
+    pub(super) pending_bytes: usize,
+    pub(super) pending_inodes: HashMap<u64, usize>,
     profile: pvisor_overlay_core::profile::Profile,
     read_only: bool,
     private_root: bool,
@@ -166,7 +169,7 @@ fn errno(error: &io::Error) -> i32 {
     error.raw_os_error().unwrap_or(libc::EIO)
 }
 
-fn setattr_requires_copy_up(
+pub(super) fn setattr_requires_copy_up(
     mode: Option<u32>,
     uid: Option<u32>,
     gid: Option<u32>,
@@ -210,6 +213,121 @@ fn time_value(value: TimeOrNow) -> SystemTime {
 }
 
 impl OverlayFs {
+    pub(super) fn finish_request(&mut self, bytes: usize, inodes: &[u64]) {
+        self.pending_requests -= 1;
+        self.pending_bytes -= bytes;
+        for ino in inodes {
+            if let Some(pins) = self.pending_inodes.get_mut(ino) {
+                *pins -= 1;
+                if *pins == 0 {
+                    self.pending_inodes.remove(ino);
+                    self.reclaim_inode(*ino);
+                }
+            }
+        }
+    }
+
+    pub(super) fn begin_copy_preparation(&self, needed: bool) -> io::Result<Option<Mutation>> {
+        if !needed {
+            return Ok(None);
+        }
+        // Without a work directory, private staging changes upper-root attrs.
+        // Reserve pending before preparation so metadata replies cannot cache
+        // these transient attrs; invalidate the root even on preparation error.
+        self.begin_mutation(&[Some(Path::new(""))], &[FUSE_ROOT_ID], false)
+    }
+
+    pub(super) fn finish_copy_preparation(
+        &mut self,
+        mutation: Option<Mutation>,
+        reply: impl FnOnce(bool) + Send + 'static,
+    ) {
+        self.mutation_reply(mutation, reply);
+    }
+
+    pub(super) fn copy_plan(
+        &self,
+        request: &crate::dispatch::CopyRequest,
+    ) -> io::Result<(Arc<FilesystemService>, crate::dispatch::CopyPlan)> {
+        use crate::dispatch::{CopyPlan, CopyRequest};
+        let mut paths = Vec::new();
+        let mut truncate = false;
+        if self.read_only {
+            return Ok((self.core.clone(), CopyPlan::Files(paths, false)));
+        }
+        let inode = match request {
+            CopyRequest::None => None,
+            CopyRequest::Inode(ino) => Some(*ino),
+            CopyRequest::Open { ino, flags } => {
+                truncate = flags & libc::O_TRUNC != 0;
+                (flags & libc::O_ACCMODE != libc::O_RDONLY
+                    || flags & (libc::O_APPEND | libc::O_TRUNC) != 0)
+                    .then_some(*ino)
+            }
+            CopyRequest::Setattr { ino, fh } => {
+                if fh.is_some_and(|fh| {
+                    !self
+                        .open_files
+                        .get(&fh)
+                        .is_some_and(|file| file.ino == *ino)
+                }) {
+                    return Ok((self.core.clone(), CopyPlan::Files(paths, false)));
+                }
+                self.node_path(*ino).ok().map(|_| *ino)
+            }
+            CopyRequest::Unlink { parent, name } => {
+                let path = self.child_path(*parent, name)?;
+                self.by_path
+                    .get(&path)
+                    .copied()
+                    .filter(|ino| self.open_files.values().any(|file| file.ino == *ino))
+            }
+            #[cfg(test)]
+            CopyRequest::Paths(targets) => {
+                paths.extend(targets.iter().cloned());
+                None
+            }
+            CopyRequest::Rename {
+                parent,
+                name,
+                newparent,
+                newname,
+                flags,
+            } => {
+                if flags & !3 != 0 || *flags == 3 {
+                    return Ok((self.core.clone(), CopyPlan::Files(paths, false)));
+                }
+                let old = self.child_path(*parent, name)?;
+                let new = self.child_path(*newparent, newname)?;
+                for prefix in [&old, &new] {
+                    for (path, ino) in &self.by_path {
+                        if path.starts_with(prefix)
+                            && self.open_files.values().any(|file| file.ino == *ino)
+                        {
+                            paths.extend(self.nodes[ino].paths.iter().cloned());
+                        }
+                    }
+                }
+                return Ok((
+                    self.core.clone(),
+                    CopyPlan::Rename {
+                        old,
+                        new,
+                        flags: *flags,
+                        open_paths: paths,
+                    },
+                ));
+            }
+        };
+        if let Some(ino) = inode {
+            self.node_path(ino)?;
+            paths.extend(self.nodes[&ino].paths.iter().cloned());
+        }
+        paths.sort();
+        paths.dedup();
+        Ok((self.core.clone(), CopyPlan::Files(paths, truncate)))
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         lowers: Vec<PathBuf>,
@@ -223,7 +341,12 @@ impl OverlayFs {
         mut self,
         policy: &pvisor_overlay_core::FileAccessPolicy,
     ) -> Self {
-        self.core = self.core.with_access_policy(policy);
+        self.core = Arc::new(
+            Arc::try_unwrap(self.core)
+                .ok()
+                .expect("configuration precedes dispatch")
+                .with_access_policy(policy),
+        );
         self.access_policy = policy.clone();
         self
     }
@@ -508,7 +631,10 @@ impl OverlayFs {
         let mut by_path = HashMap::new();
         by_path.insert(PathBuf::new(), FUSE_ROOT_ID);
         Ok(Self {
-            core: FilesystemService::new(core),
+            core: Arc::new(FilesystemService::new(core)),
+            pending_requests: 0,
+            pending_bytes: 0,
+            pending_inodes: HashMap::new(),
             profile: pvisor_overlay_core::profile::Profile::from_env("host-fuse"),
             read_only: false,
             private_root: false,
@@ -546,6 +672,9 @@ impl OverlayFs {
     fn reclaim_inode(&mut self, ino: u64) {
         let profile = self.profile.clone();
         let _span = profile.span("reclaim_inode");
+        if self.pending_inodes.contains_key(&ino) {
+            return;
+        }
         if ino == FUSE_ROOT_ID || self.nodes.get(&ino).is_some_and(|node| node.lookups != 0) {
             return;
         }
@@ -565,6 +694,11 @@ impl OverlayFs {
         self.nodes.remove(&ino);
         self.by_path.retain(|_, value| *value != ino);
         self.by_object.retain(|_, value| *value != ino);
+    }
+
+    pub(super) fn is_directory_inode(&self, ino: u64) -> bool {
+        self.inode_metadata(ino, None)
+            .is_ok_and(|metadata| metadata.is_dir())
     }
 
     fn inode_metadata(&self, ino: u64, fh: Option<u64>) -> io::Result<fs::Metadata> {
@@ -1006,8 +1140,10 @@ impl OverlayFs {
     }
 }
 
-impl Filesystem for OverlayFs {
-    fn forget(&mut self, _request: &Request<'_>, ino: u64, nlookup: u64) {
+// Keep handlers aligned with the native FUSE callback signatures.
+#[allow(clippy::too_many_arguments)]
+impl OverlayFs {
+    pub(super) fn forget(&mut self, ino: u64, nlookup: u64) {
         let profile = self.profile.clone();
         let _span = profile.span("forget");
         if let Some(node) = self.nodes.get_mut(&ino) {
@@ -1015,7 +1151,7 @@ impl Filesystem for OverlayFs {
         }
         self.reclaim_inode(ino);
     }
-    fn lookup(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    pub(super) fn lookup(&mut self, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let profile = self.profile.clone();
         let _span = profile.span("lookup");
         let observed_path = self.child_path(parent, name).ok();
@@ -1051,7 +1187,7 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn getattr(&mut self, _request: &Request<'_>, ino: u64, fh: Option<u64>, reply: ReplyAttr) {
+    pub(super) fn getattr(&mut self, ino: u64, fh: Option<u64>, reply: ReplyAttr) {
         let profile = self.profile.clone();
         let _span = profile.span("getattr");
         let observed_path = self.node_path(ino).ok();
@@ -1065,9 +1201,8 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn setattr(
+    pub(super) fn setattr(
         &mut self,
-        _request: &Request<'_>,
         ino: u64,
         mode: Option<u32>,
         uid: Option<u32>,
@@ -1196,7 +1331,7 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn readlink(&mut self, _request: &Request<'_>, ino: u64, reply: ReplyData) {
+    pub(super) fn readlink(&mut self, ino: u64, reply: ReplyData) {
         let profile = self.profile.clone();
         let _span = profile.span("readlink");
         let observed_path = self.node_path(ino).ok();
@@ -1211,9 +1346,8 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn mknod(
+    pub(super) fn mknod(
         &mut self,
-        _request: &Request<'_>,
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -1252,9 +1386,8 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn mkdir(
+    pub(super) fn mkdir(
         &mut self,
-        _request: &Request<'_>,
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -1292,7 +1425,7 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn unlink(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    pub(super) fn unlink(&mut self, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let profile = self.profile.clone();
         let _span = profile.span("unlink");
         let observed_path = self.child_path(parent, name).ok();
@@ -1326,7 +1459,7 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn rmdir(&mut self, _request: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    pub(super) fn rmdir(&mut self, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let profile = self.profile.clone();
         let _span = profile.span("rmdir");
         let observed_path = self.child_path(parent, name).ok();
@@ -1355,14 +1488,7 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn symlink(
-        &mut self,
-        _request: &Request<'_>,
-        parent: u64,
-        name: &OsStr,
-        target: &Path,
-        reply: ReplyEntry,
-    ) {
+    pub(super) fn symlink(&mut self, parent: u64, name: &OsStr, target: &Path, reply: ReplyEntry) {
         let profile = self.profile.clone();
         let _span = profile.span("symlink");
         let observed_path = self.child_path(parent, name).ok();
@@ -1394,9 +1520,8 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn rename(
+    pub(super) fn rename(
         &mut self,
-        _request: &Request<'_>,
         parent: u64,
         name: &OsStr,
         newparent: u64,
@@ -1474,14 +1599,7 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn link(
-        &mut self,
-        _request: &Request<'_>,
-        ino: u64,
-        newparent: u64,
-        newname: &OsStr,
-        reply: ReplyEntry,
-    ) {
+    pub(super) fn link(&mut self, ino: u64, newparent: u64, newname: &OsStr, reply: ReplyEntry) {
         let profile = self.profile.clone();
         let _span = profile.span("link");
         let observed_path = self.child_path(newparent, newname).ok();
@@ -1513,7 +1631,7 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn open(&mut self, _request: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
+    pub(super) fn open(&mut self, ino: u64, flags: i32, reply: ReplyOpen) {
         let profile = self.profile.clone();
         let _span = profile.span("open");
         let observed_path = self.node_path(ino).ok();
@@ -1566,9 +1684,8 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn read(
+    pub(super) fn read(
         &mut self,
-        _request: &Request<'_>,
         ino: u64,
         fh: u64,
         offset: i64,
@@ -1626,9 +1743,8 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn write(
+    pub(super) fn write(
         &mut self,
-        _request: &Request<'_>,
         ino: u64,
         fh: u64,
         offset: i64,
@@ -1691,14 +1807,7 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn flush(
-        &mut self,
-        _request: &Request<'_>,
-        _ino: u64,
-        fh: u64,
-        _lock_owner: u64,
-        reply: ReplyEmpty,
-    ) {
+    pub(super) fn flush(&mut self, _ino: u64, fh: u64, _lock_owner: u64, reply: ReplyEmpty) {
         let profile = self.profile.clone();
         let _span = profile.span("flush");
         if self.open_files.contains_key(&fh) {
@@ -1708,9 +1817,8 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn release(
+    pub(super) fn release(
         &mut self,
-        _request: &Request<'_>,
         _ino: u64,
         fh: u64,
         _flags: i32,
@@ -1728,14 +1836,7 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn fsync(
-        &mut self,
-        _request: &Request<'_>,
-        _ino: u64,
-        fh: u64,
-        datasync: bool,
-        reply: ReplyEmpty,
-    ) {
+    pub(super) fn fsync(&mut self, _ino: u64, fh: u64, datasync: bool, reply: ReplyEmpty) {
         let profile = self.profile.clone();
         let _span = profile.span("fsync");
         match self.open_files.get(&fh) {
@@ -1751,7 +1852,7 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn opendir(&mut self, _request: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
+    pub(super) fn opendir(&mut self, ino: u64, _flags: i32, reply: ReplyOpen) {
         let profile = self.profile.clone();
         let _span = profile.span("opendir");
         let observed_path = self.node_path(ino).ok();
@@ -1767,14 +1868,7 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn readdir(
-        &mut self,
-        _request: &Request<'_>,
-        _ino: u64,
-        fh: u64,
-        offset: i64,
-        mut reply: ReplyDirectory,
-    ) {
+    pub(super) fn readdir(&mut self, _ino: u64, fh: u64, offset: i64, mut reply: ReplyDirectory) {
         let profile = self.profile.clone();
         let _span = profile.span("readdir");
         if offset < 0 {
@@ -1793,9 +1887,8 @@ impl Filesystem for OverlayFs {
         reply.ok();
     }
 
-    fn readdirplus(
+    pub(super) fn readdirplus(
         &mut self,
-        _request: &Request<'_>,
         _ino: u64,
         fh: u64,
         offset: i64,
@@ -1813,14 +1906,7 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn releasedir(
-        &mut self,
-        _request: &Request<'_>,
-        _ino: u64,
-        fh: u64,
-        _flags: i32,
-        reply: ReplyEmpty,
-    ) {
+    pub(super) fn releasedir(&mut self, _ino: u64, fh: u64, _flags: i32, reply: ReplyEmpty) {
         let profile = self.profile.clone();
         let _span = profile.span("releasedir");
         if let Some(entries) = self.open_directories.remove(&fh) {
@@ -1833,14 +1919,7 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn fsyncdir(
-        &mut self,
-        _request: &Request<'_>,
-        ino: u64,
-        _fh: u64,
-        datasync: bool,
-        reply: ReplyEmpty,
-    ) {
+    pub(super) fn fsyncdir(&mut self, ino: u64, _fh: u64, datasync: bool, reply: ReplyEmpty) {
         let profile = self.profile.clone();
         let _span = profile.span("fsyncdir");
         let result = self.node_path(ino).and_then(|path| {
@@ -1858,7 +1937,7 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn statfs(&mut self, _request: &Request<'_>, _ino: u64, reply: ReplyStatfs) {
+    pub(super) fn statfs(&mut self, _ino: u64, reply: ReplyStatfs) {
         let profile = self.profile.clone();
         let _span = profile.span("statfs");
         match sys::statfs(self.core.upper()) {
@@ -1876,9 +1955,8 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn setxattr(
+    pub(super) fn setxattr(
         &mut self,
-        _request: &Request<'_>,
         ino: u64,
         name: &OsStr,
         value: &[u8],
@@ -1920,14 +1998,7 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn getxattr(
-        &mut self,
-        _request: &Request<'_>,
-        ino: u64,
-        name: &OsStr,
-        size: u32,
-        reply: ReplyXattr,
-    ) {
+    pub(super) fn getxattr(&mut self, ino: u64, name: &OsStr, size: u32, reply: ReplyXattr) {
         let profile = self.profile.clone();
         let _span = profile.span("getxattr");
         let observed_path = self.node_path(ino).ok();
@@ -1944,7 +2015,7 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn listxattr(&mut self, _request: &Request<'_>, ino: u64, size: u32, reply: ReplyXattr) {
+    pub(super) fn listxattr(&mut self, ino: u64, size: u32, reply: ReplyXattr) {
         let profile = self.profile.clone();
         let _span = profile.span("listxattr");
         let result = self.node_path(ino).and_then(|path| {
@@ -1965,7 +2036,7 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn removexattr(&mut self, _request: &Request<'_>, ino: u64, name: &OsStr, reply: ReplyEmpty) {
+    pub(super) fn removexattr(&mut self, ino: u64, name: &OsStr, reply: ReplyEmpty) {
         let profile = self.profile.clone();
         let _span = profile.span("removexattr");
         let observed_path = self.node_path(ino).ok();
@@ -1990,7 +2061,7 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn access(&mut self, _request: &Request<'_>, ino: u64, mask: i32, reply: ReplyEmpty) {
+    pub(super) fn access(&mut self, ino: u64, mask: i32, reply: ReplyEmpty) {
         let profile = self.profile.clone();
         let _span = profile.span("access");
         let observed_path = self.node_path(ino).ok();
@@ -2008,9 +2079,8 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn create(
+    pub(super) fn create(
         &mut self,
-        _request: &Request<'_>,
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -2064,9 +2134,8 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn fallocate(
+    pub(super) fn fallocate(
         &mut self,
-        _request: &Request<'_>,
         ino: u64,
         fh: u64,
         offset: i64,
@@ -2111,9 +2180,8 @@ impl Filesystem for OverlayFs {
         });
     }
 
-    fn lseek(
+    pub(super) fn lseek(
         &mut self,
-        _request: &Request<'_>,
         _ino: u64,
         fh: u64,
         offset: i64,
@@ -2131,9 +2199,8 @@ impl Filesystem for OverlayFs {
         }
     }
 
-    fn copy_file_range(
+    pub(super) fn copy_file_range(
         &mut self,
-        _request: &Request<'_>,
         _ino_in: u64,
         fh_in: u64,
         offset_in: i64,
@@ -2209,9 +2276,8 @@ impl Filesystem for OverlayFs {
     }
 
     #[cfg(target_os = "macos")]
-    fn exchange(
+    pub(super) fn exchange(
         &mut self,
-        _request: &Request<'_>,
         parent: u64,
         name: &OsStr,
         newparent: u64,
@@ -2219,25 +2285,11 @@ impl Filesystem for OverlayFs {
         _options: u64,
         reply: ReplyEmpty,
     ) {
-        let profile = self.profile.clone();
-        let _span = profile.span("exchange");
-        let result = (|| {
-            let first = self.child_path(parent, name)?;
-            let second = self.child_path(newparent, newname)?;
-            self.core.exchange(&first, &second)?;
-            Ok((first, second))
-        })();
-        match result {
-            Ok((first, second)) => {
-                self.exchange_inode_prefixes(&first, &second);
-                reply.ok();
-            }
-            Err(error) => reply.error(errno(&error)),
-        }
+        self.rename(parent, name, newparent, newname, RENAME_EXCHANGE, reply);
     }
 
     #[cfg(target_os = "macos")]
-    fn getxtimes(&mut self, _request: &Request<'_>, ino: u64, reply: ReplyXTimes) {
+    pub(super) fn getxtimes(&mut self, ino: u64, reply: ReplyXTimes) {
         let profile = self.profile.clone();
         let _span = profile.span("getxtimes");
         let result = self
@@ -2255,6 +2307,94 @@ impl Filesystem for OverlayFs {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn queued_requests_pin_only_their_referenced_inodes() {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("held"), b"held").unwrap();
+        fs::write(lower.join("unrelated"), b"other").unwrap();
+        let mut fs = OverlayFs::new(vec![lower], root.path().join("upper"), None).unwrap();
+        let held = fs.inode_for_path_with_metadata("held".into()).unwrap().0;
+        let unrelated = fs
+            .inode_for_path_with_metadata("unrelated".into())
+            .unwrap()
+            .0;
+        fs.retain_lookup(held);
+        fs.retain_lookup(unrelated);
+        fs.pending_requests = 1;
+        fs.pending_inodes.insert(held, 1);
+        fs.forget(held, 1);
+        fs.forget(unrelated, 1);
+        assert!(fs.nodes.contains_key(&held));
+        assert!(!fs.nodes.contains_key(&unrelated));
+        fs.finish_request(0, &[held]);
+        assert!(!fs.nodes.contains_key(&held));
+    }
+
+    #[test]
+    fn prepared_copy_rebinds_open_handles_and_aliases_added_during_preparation() {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("file"), b"original").unwrap();
+        fs::hard_link(lower.join("file"), lower.join("alias")).unwrap();
+        let mut overlay =
+            OverlayFs::new(vec![lower.clone()], root.path().join("upper"), None).unwrap();
+        let ino = overlay
+            .inode_for_path_with_metadata("file".into())
+            .unwrap()
+            .0;
+        let (file, backing) = overlay
+            .open_inode_with_backing(ino, libc::O_RDONLY)
+            .unwrap();
+        sys::seek(&file, 3, libc::SEEK_SET).unwrap();
+        overlay.open_files.insert(
+            1,
+            OpenFile {
+                file,
+                ino,
+                backing,
+                flags: libc::O_RDONLY,
+                path: "file".into(),
+            },
+        );
+        let (core, plan) = overlay
+            .copy_plan(&crate::dispatch::CopyRequest::Open {
+                ino,
+                flags: libc::O_RDWR,
+            })
+            .unwrap();
+        let crate::dispatch::CopyPlan::Files(paths, truncate) = plan else {
+            panic!("file plan")
+        };
+        let copies = core.prepare_copy_ups(&paths, truncate).unwrap();
+        assert!(!root.path().join("upper/file").exists());
+        assert_eq!(
+            overlay
+                .inode_for_path_with_metadata("alias".into())
+                .unwrap()
+                .0,
+            ino
+        );
+        let guard = core.use_prepared_copy_ups(copies).unwrap();
+        overlay.copy_up_inode(ino).unwrap();
+        assert_eq!(
+            sys::seek(&overlay.open_files[&1], 0, libc::SEEK_CUR).unwrap(),
+            3
+        );
+        fs::write(root.path().join("upper/file"), b"updated").unwrap();
+        let mut bytes = [0; 7];
+        overlay.open_files[&1].read_at(&mut bytes, 0).unwrap();
+        assert_eq!(&bytes, b"updated");
+        assert_eq!(
+            overlay.inode_metadata(ino, Some(1)).unwrap().ino(),
+            fs::metadata(root.path().join("upper/alias")).unwrap().ino()
+        );
+        assert_eq!(fs::read(lower.join("file")).unwrap(), b"original");
+        drop(guard);
+    }
+
     #[test]
     fn late_lower_alias_binds_upper_before_attributes_and_open() {
         let root = tempfile::tempdir().unwrap();
@@ -2488,6 +2628,8 @@ mod tests {
             vec![],
         );
         let slot = filesystem.cache_slot();
+        let filesystem = crate::dispatch::DispatchFs::new(filesystem).unwrap();
+        let dispatch = filesystem.control.clone();
         let session = fuser::Session::new(
             filesystem,
             &mount,
@@ -2513,6 +2655,7 @@ mod tests {
             fs::metadata(lower.join("a")).unwrap().accessed().unwrap(),
             atime
         );
+        dispatch.shutdown().unwrap();
         workers.shutdown();
         background.unmount().unwrap();
         workers.join().unwrap();
@@ -2559,6 +2702,8 @@ mod tests {
                 );
             filesystem.copy_fault_after = Some(limit);
             let slot = filesystem.cache_slot();
+            let filesystem = crate::dispatch::DispatchFs::new(filesystem).unwrap();
+            let dispatch = filesystem.control.clone();
             let session = fuser::Session::new(
                 filesystem,
                 &mount,
@@ -2616,6 +2761,7 @@ mod tests {
                 "fault fixture must preserve backing atime"
             );
             drop((input, output, cached));
+            dispatch.shutdown().unwrap();
             workers.shutdown();
             background.unmount().unwrap();
             workers.join().unwrap();

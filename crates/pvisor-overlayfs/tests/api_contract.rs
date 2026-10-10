@@ -75,6 +75,7 @@ fn private_adapters_do_not_add_public_inherent_methods_or_modules() {
         include_str!("../src/mount.rs"),
         include_str!("../src/observation.rs"),
         include_str!("../src/cache.rs"),
+        include_str!("../src/dispatch.rs"),
     ] {
         Guard.visit_file(&syn::parse_file(source).unwrap());
     }

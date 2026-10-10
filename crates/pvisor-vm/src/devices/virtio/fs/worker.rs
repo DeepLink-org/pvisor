@@ -161,7 +161,8 @@ impl Execution {
 }
 
 /// Keep short metadata operations inline to avoid a thread handoff. Directory
-/// enumeration and large reads can use the pool when multiple requests exist.
+/// enumeration and large reads use the pool even when they arrive alone, so
+/// the queue owner stays available for metadata and high-priority requests.
 fn parallel_candidate(header: &InHeader, body: &Reader) -> bool {
     match header.opcode {
         x if x == Opcode::Read as u32 => body
@@ -211,10 +212,16 @@ impl RequestPool {
     fn new(
         handle: impl Fn(&Request) -> usize + Send + Sync + 'static,
         workers: usize,
+        limit: usize,
         profile: pvisor_overlay_core::profile::Profile,
     ) -> io::Result<Self> {
+        if workers == 0 || limit == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "empty filesystem pool",
+            ));
+        }
         let handle = Arc::new(handle);
-        let limit = workers * 2;
         let (jobs, receive) = crossbeam_channel::bounded::<Request>(limit);
         // Although this channel is unbounded, at most `limit` accepted requests
         // can exist, including queued, executing and unpublished completions.
@@ -610,11 +617,8 @@ impl FsWorker {
                             continue;
                         }
                     };
-                    let parallel = index == REQ_INDEX
-                        && workers > 1
-                        && parallel_candidate(&header, &reader)
-                        && (pool.as_ref().is_some_and(|p| p.in_flight != 0)
-                            || !self.queues[index].is_empty(&self.execution.mem));
+                    let parallel =
+                        index == REQ_INDEX && workers > 1 && parallel_candidate(&header, &reader);
                     if parallel && pool.as_ref().is_some_and(|p| p.in_flight == p.limit) {
                         // Short inline requests may run even at pool capacity.
                         // Leave an expensive head in the ring rather than
@@ -636,6 +640,10 @@ impl FsWorker {
                             match RequestPool::new(
                                 move |request| execution.handle(request),
                                 workers,
+                                // Admit a complete bounded virtqueue, not just
+                                // 2*workers: an I/O burst must not hide metadata
+                                // behind the next long request in the avail ring.
+                                usize::from(self.queues[REQ_INDEX].actual_size()),
                                 self.dispatch_profile.clone(),
                             ) {
                                 Ok(new_pool) => {
@@ -661,7 +669,7 @@ impl FsWorker {
                             continue;
                         }
                     }
-                    // Inline for a lone request, and for hiprio FORGET/INTERRUPT.
+                    // Inline for short requests and hiprio FORGET/INTERRUPT.
                     // This retains the low-latency path and cannot queue behind
                     // an exhausted normal-request pool.
                     self.dispatch_profile.add("inline_requests", 1);
@@ -715,17 +723,21 @@ mod tests {
         worker
     }
 
-    #[test]
-    fn full_pool_admits_inline_metadata_but_leaves_expensive_head_in_ring() {
+    fn check_metadata_admission(opcodes: [Opcode; 2], limit: usize, pooled: usize, remaining: u16) {
         use crate::devices::virtio::queue::tests::VirtQueue;
         use vm_memory::Bytes;
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
         let high = VirtQueue::new(GuestAddress(0), &mem, 8);
         let normal = VirtQueue::new(GuestAddress(0x400), &mem, 8);
-        for (slot, opcode) in [(0, Opcode::Getattr), (2, Opcode::Opendir)] {
+        for (slot, opcode) in opcodes.into_iter().enumerate().map(|(i, op)| (i * 2, op)) {
             let address = 0x4000 + slot as u64 * 0x200;
+            let len = if matches!(opcode, Opcode::Read) {
+                std::mem::size_of::<InHeader>() + std::mem::size_of::<ReadIn>()
+            } else {
+                64
+            } as u32;
             normal.dtable[slot].addr.set(address);
-            normal.dtable[slot].len.set(64);
+            normal.dtable[slot].len.set(len);
             normal.dtable[slot]
                 .flags
                 .set(crate::devices::virtio::queue::VIRTQ_DESC_F_NEXT);
@@ -737,7 +749,7 @@ mod tests {
                 .set(crate::devices::virtio::queue::VIRTQ_DESC_F_WRITE);
             mem.write_obj(
                 InHeader {
-                    len: 64,
+                    len,
                     opcode: opcode as u32,
                     nodeid: 1,
                     ..Default::default()
@@ -745,6 +757,16 @@ mod tests {
                 GuestAddress(address),
             )
             .unwrap();
+            if matches!(opcode, Opcode::Read) {
+                mem.write_obj(
+                    ReadIn {
+                        size: 64 * 1024,
+                        ..Default::default()
+                    },
+                    GuestAddress(address + std::mem::size_of::<InHeader>() as u64),
+                )
+                .unwrap();
+            }
         }
         normal.avail.ring[0].set(0);
         normal.avail.ring[1].set(2);
@@ -760,10 +782,12 @@ mod tests {
                 0
             },
             2,
+            limit,
             Default::default(),
         )
         .unwrap();
-        for index in 0..full.limit {
+        // Fill the old 2*workers budget, without releasing either I/O worker.
+        for index in 0..4 {
             let chain = create_descriptor_chain(
                 &mem,
                 GuestAddress(0x1000 + index as u64 * 0x100),
@@ -782,15 +806,90 @@ mod tests {
         }
         let mut pool = Some(full);
         worker.service_queues(&mut pool, 2, &Epoll::new().unwrap());
-        for _ in 0..4 {
+        let in_flight = pool.as_ref().unwrap().in_flight;
+        for _ in 0..in_flight {
             resume.send(()).unwrap();
         }
         let report = worker.dispatch_profile.report().unwrap();
         drop(pool);
         assert_eq!(normal.used.idx.get(), 1);
-        assert_eq!(worker.queues[REQ_INDEX].len(&mem), 1);
+        assert_eq!(worker.queues[REQ_INDEX].len(&mem), remaining);
         assert_eq!(report.measurements["inline_requests"].units, 1);
-        assert_eq!(report.measurements["pool_capacity_stalls"].units, 1);
+        assert_eq!(in_flight, 4 + pooled);
+        if pooled == 0 {
+            assert_eq!(report.measurements["pool_capacity_stalls"].units, 1);
+        } else {
+            assert_eq!(report.measurements["pool_requests"].units, pooled as u64);
+            assert!(!report.measurements.contains_key("pool_capacity_stalls"));
+        }
+    }
+
+    #[test]
+    fn full_pool_admits_inline_metadata_but_leaves_expensive_head_in_ring() {
+        check_metadata_admission([Opcode::Getattr, Opcode::Opendir], 4, 0, 1);
+    }
+
+    #[test]
+    fn metadata_behind_a_long_request_bypasses_busy_io_workers() {
+        check_metadata_admission([Opcode::Opendir, Opcode::Getattr], 8, 1, 0);
+    }
+
+    #[test]
+    fn metadata_behind_a_large_read_bypasses_busy_io_workers() {
+        check_metadata_admission([Opcode::Read, Opcode::Getattr], 8, 1, 0);
+    }
+
+    #[test]
+    fn lone_directory_request_is_offloaded_and_published_by_the_owner() {
+        use crate::devices::virtio::queue::tests::VirtQueue;
+        use vm_memory::Bytes;
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let high = VirtQueue::new(GuestAddress(0), &mem, 8);
+        let normal = VirtQueue::new(GuestAddress(0x400), &mem, 8);
+        normal.dtable[0].addr.set(0x4000);
+        normal.dtable[0].len.set(64);
+        normal.dtable[0]
+            .flags
+            .set(crate::devices::virtio::queue::VIRTQ_DESC_F_NEXT);
+        normal.dtable[0].next.set(1);
+        normal.dtable[1].addr.set(0x4100);
+        normal.dtable[1].len.set(256);
+        normal.dtable[1]
+            .flags
+            .set(crate::devices::virtio::queue::VIRTQ_DESC_F_WRITE);
+        mem.write_obj(
+            InHeader {
+                len: 64,
+                opcode: Opcode::Opendir as u32,
+                nodeid: 1,
+                ..Default::default()
+            },
+            GuestAddress(0x4000),
+        )
+        .unwrap();
+        normal.avail.ring[0].set(0);
+        normal.avail.idx.set(1);
+        let mut worker = queue_worker(
+            mem.clone(),
+            vec![high.create_queue(), normal.create_queue()],
+        );
+        let mut pool = None;
+        worker.service_queues(&mut pool, 2, &Epoll::new().unwrap());
+        assert_eq!(normal.used.idx.get(), 0);
+        assert_eq!(worker.queues[REQ_INDEX].len(&mem), 0);
+        let pool = pool
+            .as_mut()
+            .expect("lone directory request must use I/O pool");
+        assert_eq!(pool.limit, 8);
+        assert_eq!(pool.in_flight, 1);
+        let completion = pool.completed.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(completion.len >= std::mem::size_of::<super::super::fuse::OutHeader>());
+        worker.complete(completion);
+        pool.in_flight -= 1;
+        assert_eq!(normal.used.idx.get(), 1);
+        let report = worker.dispatch_profile.report().unwrap();
+        assert_eq!(report.measurements["pool_requests"].units, 1);
+        assert!(!report.measurements.contains_key("inline_requests"));
     }
 
     #[test]
@@ -994,6 +1093,7 @@ mod tests {
                 8
             },
             2,
+            4,
             pvisor_overlay_core::profile::Profile::default(),
         )
         .unwrap();

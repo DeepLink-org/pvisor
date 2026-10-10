@@ -245,9 +245,9 @@ jobs:
       - name: Record isolated core budget
         run: |
           just build release
-          # Client index pages and the private bridge, including contract tests,
-          # bring the runtime closure to ~187,560 lines; retain ~1,440 lines of headroom.
-          just check-core-budget target/release/pvisor --max-dependencies 235 --max-workspace-lines 189000 --max-core-items 301 > target/pvisor-core-budget.json
+          # Host copy-up scheduling and VM admission, including contract tests,
+          # bring the runtime closure to ~189,544 lines; retain ~1,456 lines of headroom.
+          just check-core-budget target/release/pvisor --max-dependencies 235 --max-workspace-lines 191000 --max-core-items 301 > target/pvisor-core-budget.json
       - uses: actions/upload-artifact@v4
         with:
           name: pvisor-core-budget-linux

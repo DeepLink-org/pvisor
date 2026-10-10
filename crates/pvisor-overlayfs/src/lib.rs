@@ -4,6 +4,7 @@
 
 pub mod api;
 mod cache;
+mod dispatch;
 mod fs;
 mod mount;
 mod observation;

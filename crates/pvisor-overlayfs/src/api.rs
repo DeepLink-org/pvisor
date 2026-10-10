@@ -186,7 +186,7 @@ pub trait OverlayConfiguration: Sized {
     /// fusermount3/fusermount, verifies absence in mountinfo, then writes abort.
     /// Rejected admission performs no further mutation; already-mutated failed
     /// replies await completed teardown. Normal/stop queues and effects are
-    /// bounded; helper, termination and shutdown waits have deadlines. Fatal
+    /// bounded; cache helper, termination and notification shutdown waits have deadlines. Fatal
     /// teardown failure/deadline terminates the server, but is NOT a guarantee
     /// that other processes' caches were revoked: the caller's user-containment
     /// obligation still applies. EIO is not a general mount-detachment fence.
@@ -205,6 +205,13 @@ pub trait OverlayMounting {
     /// overlapping layouts, incompatible flags, journal or FUSE failures return
     /// errors; preparation side effects are not rolled back. On macOS, FSKit
     /// version checking precedes path validation.
+    /// Mutations use one bounded worker: 128 accepted requests, including the
+    /// active request, and 16 MiB of queued/active write and xattr payloads.
+    /// Saturated admission replies EAGAIN; stopped/failed workers reply EIO.
+    /// Regular-file copy preparation runs outside the state lock so metadata
+    /// queries can proceed; publication and handle rebinding remain serialized.
+    /// Preparation can retain baseline observations on failure; unused private
+    /// copies are cleaned. Subsequent operation failures do not roll back upper.
     fn mount(config: OverlayMountConfig) -> anyhow::Result<OverlaySession>;
 
     /// Consume configuration and serve requests on the calling thread until
@@ -230,7 +237,9 @@ pub trait OverlaySessionControl: Sized {
     fn has_exited(&self) -> bool;
 
     /// Consume the owner, unmount and stop the request loop, then poll detachment
-    /// for up to about five seconds. The underlying unmount/join can take longer.
+    /// for up to about five seconds. Accepted requests drain before cache
+    /// notifications and the request loop stop. Copy preparation and underlying
+    /// unmount/join can take longer; drain does not cancel backing reads.
     /// Errors do not return ownership or guarantee detachment; callers must
     /// retain stage paths for recovery. Writable cache notification failures are
     /// reported here even if the mount was already forcibly detached; mutations

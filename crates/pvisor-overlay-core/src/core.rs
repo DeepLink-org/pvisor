@@ -9,13 +9,13 @@ use std::io::{self, Read, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub const WHITEOUT_PREFIX: &str = ".wh.";
 pub const OPAQUE_NAME: &str = ".wh..wh..opq";
 pub const ROOT_METADATA_NAME: &str = ".wh..pvisor-root-metadata";
-const TEMP_PREFIX: &str = ".wh..pvisor-copyup-";
+pub(crate) const TEMP_PREFIX: &str = ".wh..pvisor-copyup-";
 const PREIMAGE_COMPLETE_MARKER: &str = "complete-v1";
 pub(crate) const PREIMAGE_LOG_NAME: &str = "log-v2";
 const PREIMAGE_FORMAT_NAME: &str = "format-v2.json";
@@ -226,6 +226,8 @@ impl OverlayLayout {
 
 #[derive(Debug)]
 pub struct OverlayCore {
+    copy_up_owner: Arc<()>,
+    prepared_copy_ups: Mutex<Option<HashMap<PathBuf, PreparedCopyUp>>>,
     durability: crate::stage::StageDurability,
     stage_writable: bool,
     profile: crate::profile::Profile,
@@ -246,6 +248,113 @@ pub struct OverlayCore {
     // Read observations are published without fsync. Before the first upper
     // mutation, their file and directory are synced under this lock.
     preimage_lock: Mutex<BTreeSet<PathBuf>>,
+}
+
+/// Private file contents prepared without publishing an upper namespace entry.
+/// Drop attempts to remove its private file and, for the last receipt, the
+/// exclusively created batch directory. Baseline observations survive failure.
+#[derive(Debug)]
+pub struct PreparedCopyUp {
+    owner: Arc<()>,
+    rel: PathBuf,
+    source: PathBuf,
+    metadata: Metadata,
+    attributes: Option<crate::backend::FileAttr>,
+    truncate: bool,
+    directory: Arc<CopyDirectory>,
+    temporary: PathBuf,
+}
+
+#[derive(Debug)]
+struct CopyDirectory {
+    path: PathBuf,
+    identity: (u64, u64),
+    _file: File,
+}
+
+impl CopyDirectory {
+    fn owned(&self) -> bool {
+        fs::symlink_metadata(&self.path)
+            .is_ok_and(|metadata| (metadata.dev(), metadata.ino()) == self.identity)
+    }
+}
+
+impl Drop for CopyDirectory {
+    fn drop(&mut self) {
+        if self.owned() {
+            let _ = fs::remove_dir(&self.path);
+        }
+    }
+}
+
+impl PreparedCopyUp {
+    fn content(&self) -> PathBuf {
+        self.temporary.clone()
+    }
+
+    fn matches(&self, path: &Path, metadata: &Metadata) -> io::Result<bool> {
+        let Some(attributes) = &self.attributes else {
+            return Ok(same_copy_source(&self.metadata, metadata));
+        };
+        let Some(current) = crate::backend::attributes(path)? else {
+            return Ok(false);
+        };
+        // Projecting another remote alias changes native nlink/ctime without
+        // changing the read-only object. Check its logical metadata instead.
+        Ok(same_copy_source_metadata(&self.metadata, metadata)
+            && (path != self.source || attributes.ino == current.ino)
+            && attributes.size == current.size
+            && attributes.kind == current.kind
+            && attributes.perm == current.perm
+            && attributes.uid == current.uid
+            && attributes.gid == current.gid
+            && attributes.nlink == current.nlink
+            && attributes.mtime == current.mtime
+            && attributes.ctime == current.ctime
+            && attributes.rdev == current.rdev
+            && attributes.flags == current.flags)
+    }
+}
+
+impl Drop for PreparedCopyUp {
+    fn drop(&mut self) {
+        if self.directory.owned() {
+            let _ = fs::remove_file(self.content());
+        }
+    }
+}
+
+/// Request-scoped installation of prepared copies on one Core owner.
+/// The adapter must serialize mutations while this guard exists; ordinary
+/// metadata queries may run concurrently. Drop cancels all unused copies.
+pub struct PreparedCopyUps<'a> {
+    core: &'a OverlayCore,
+}
+
+impl Drop for PreparedCopyUps<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut prepared) = self.core.prepared_copy_ups.lock() {
+            *prepared = None;
+        }
+    }
+}
+
+fn same_copy_source(first: &Metadata, second: &Metadata) -> bool {
+    same_copy_source_metadata(first, second)
+        && first.nlink() == second.nlink()
+        && first.ctime() == second.ctime()
+        && first.ctime_nsec() == second.ctime_nsec()
+}
+
+fn same_copy_source_metadata(first: &Metadata, second: &Metadata) -> bool {
+    first.dev() == second.dev()
+        && first.ino() == second.ino()
+        && first.len() == second.len()
+        && first.mode() == second.mode()
+        && first.uid() == second.uid()
+        && first.gid() == second.gid()
+        && first.mtime() == second.mtime()
+        && first.mtime_nsec() == second.mtime_nsec()
 }
 
 fn error(errno: i32) -> io::Error {
@@ -912,6 +1021,8 @@ impl OverlayCore {
             layout,
             content_index: None,
             immutable_lower_cache: Mutex::new(HashMap::new()),
+            copy_up_owner: Arc::new(()),
+            prepared_copy_ups: Mutex::new(None),
             immutable_lower_cache_enabled: std::env::var("PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE")
                 .as_deref()
                 != Ok("1"),
@@ -1978,6 +2089,173 @@ impl OverlayCore {
             .join(format!("{TEMP_PREFIX}{}-{id}", std::process::id()))
     }
 
+    /// Prepare regular-file contents and durable baseline observations without
+    /// publishing upper entries or changing hardlink groups. `truncate` may
+    /// omit bytes only for a single-link source. Missing entries are skipped;
+    /// nonregular, upper and copied hardlink entries need observations only.
+    /// Each physical file is copied once, including aliases learned later.
+    /// Policy/I/O failures drop all partial copies but may retain observations.
+    /// Adapters serialize mutations while metadata may continue. Install the
+    /// returned receipts only for that request, then drop its installation.
+    pub fn prepare_copy_ups(
+        &self,
+        paths: &[PathBuf],
+        truncate: bool,
+    ) -> io::Result<Vec<PreparedCopyUp>> {
+        let mut identities = BTreeSet::new();
+        let mut directory = None;
+        let mut copies = Vec::new();
+        for path in paths {
+            self.require_visible(path)?;
+            Self::validate_rel(path)?;
+            let Some(resolved) = self.resolve(path) else {
+                continue;
+            };
+            let metadata = self.metadata(path)?;
+            self.record_preimage(path)?;
+            if resolved.is_upper
+                || !metadata.is_file()
+                || !identities.insert((metadata.dev(), metadata.ino()))
+            {
+                continue;
+            }
+            if let Some(copy) = self.prepare_copy_up(path, truncate, &mut directory)? {
+                copies.push(copy);
+            }
+        }
+        Ok(copies)
+    }
+
+    fn prepare_copy_up(
+        &self,
+        rel: &Path,
+        truncate: bool,
+        directory: &mut Option<Arc<CopyDirectory>>,
+    ) -> io::Result<Option<PreparedCopyUp>> {
+        let _span = self.profile.span("copy_up_prepare");
+        self.require_visible(rel)?;
+        Self::validate_rel(rel)?;
+        let Some(resolved) = self.resolve(rel) else {
+            return Ok(None);
+        };
+        if resolved.is_upper {
+            return Ok(None);
+        }
+        let metadata = self.metadata(rel)?;
+        if !metadata.is_file() || self.copied_hard_link_metadata(rel)?.is_some() {
+            return Ok(None);
+        }
+        self.record_preimage(rel)?;
+        let links = crate::backend::link_count(&resolved.path, metadata.nlink())?;
+        let attributes = crate::backend::attributes(&resolved.path)?;
+        let skip_contents = truncate && links == 1;
+        if !skip_contents {
+            crate::backend::materialize_file(&resolved.path)?;
+        }
+        let current = crate::backend::symlink_metadata(&resolved.path)?;
+        if !current.is_file()
+            || metadata.dev() != current.dev()
+            || metadata.ino() != current.ino()
+            || crate::backend::link_count(&resolved.path, current.nlink())? != links
+            || (attributes.is_none() && !same_copy_source(&metadata, &current))
+        {
+            return Err(error(libc::EAGAIN));
+        }
+        let metadata = current;
+        if directory.is_none() {
+            let path = self
+                .work
+                .as_deref()
+                .unwrap_or(&self.upper)
+                .join(format!("{TEMP_PREFIX}{}", uuid::Uuid::new_v4()));
+            use std::os::unix::fs::DirBuilderExt;
+            fs::DirBuilder::new().mode(0o700).create(&path)?;
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+                .open(&path)?;
+            let metadata = file.metadata()?;
+            *directory = Some(Arc::new(CopyDirectory {
+                path,
+                identity: (metadata.dev(), metadata.ino()),
+                _file: file,
+            }));
+        }
+        let directory = directory.as_ref().ok_or_else(|| error(libc::EIO))?.clone();
+        let temporary = directory.path.join(uuid::Uuid::new_v4().to_string());
+        let prepared = PreparedCopyUp {
+            owner: self.copy_up_owner.clone(),
+            rel: rel.to_owned(),
+            source: resolved.path,
+            metadata,
+            attributes,
+            truncate,
+            directory,
+            temporary,
+        };
+        let mut destination = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(prepared.content())?;
+        if skip_contents {
+            self.profile
+                .add("copy_up_truncate_skipped_bytes", prepared.metadata.len());
+        } else {
+            let mut source = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&prepared.source)?;
+            if !prepared.matches(&prepared.source, &source.metadata()?)? {
+                return Err(error(libc::EAGAIN));
+            }
+            let copied = io::copy(&mut source, &mut destination)?;
+            self.profile.add("copy_up_bytes", copied);
+            if !prepared.matches(&prepared.source, &source.metadata()?)? {
+                return Err(error(libc::EAGAIN));
+            }
+        }
+        self.copy_metadata(&prepared.source, &prepared.content(), &prepared.metadata)?;
+        if !prepared.matches(
+            &prepared.source,
+            &crate::backend::symlink_metadata(&prepared.source)?,
+        )? {
+            return Err(error(libc::EAGAIN));
+        }
+        Ok(Some(prepared))
+    }
+
+    /// Install copies for one serialized request on their originating Core.
+    /// Normal operations retain their validation, journal ordering and atomic
+    /// publication; only their byte copying is replaced. Foreign receipts are
+    /// `EINVAL`, overlapping installations are `EBUSY`. Drop cancels unused
+    /// receipts. Source changes before consumption fail with `EAGAIN`.
+    pub fn use_prepared_copy_ups(
+        &self,
+        copies: Vec<PreparedCopyUp>,
+    ) -> io::Result<PreparedCopyUps<'_>> {
+        if copies
+            .iter()
+            .any(|copy| !Arc::ptr_eq(&copy.owner, &self.copy_up_owner))
+        {
+            return Err(error(libc::EINVAL));
+        }
+        let mut prepared = self
+            .prepared_copy_ups
+            .lock()
+            .map_err(|_| error(libc::EIO))?;
+        if prepared.is_some() {
+            return Err(error(libc::EBUSY));
+        }
+        *prepared = Some(
+            copies
+                .into_iter()
+                .map(|copy| (copy.rel.clone(), copy))
+                .collect(),
+        );
+        Ok(PreparedCopyUps { core: self })
+    }
+
     pub fn copy_up(&self, rel: &Path) -> io::Result<PathBuf> {
         self.copy_up_for_open(rel, false)
     }
@@ -1997,10 +2275,56 @@ impl OverlayCore {
         if resolved.is_upper {
             return Ok(resolved.path);
         }
+        let prepared = {
+            let mut installed = self
+                .prepared_copy_ups
+                .lock()
+                .map_err(|_| error(libc::EIO))?;
+            if let Some(copies) = installed.as_mut() {
+                let key = if copies.contains_key(rel) {
+                    Some(rel.to_owned())
+                } else if !copies.is_empty() {
+                    // LOOKUP can add a lower alias before publication. Reuse
+                    // that inode's prepared bytes even through the new alias.
+                    let source_metadata = crate::backend::symlink_metadata(&resolved.path)?;
+                    copies
+                        .iter()
+                        .find(|(_, copy)| {
+                            source_metadata.nlink() > 1
+                                && copy.metadata.dev() == source_metadata.dev()
+                                && copy.metadata.ino() == source_metadata.ino()
+                        })
+                        .map(|(path, _)| path.clone())
+                } else {
+                    None
+                };
+                key.and_then(|key| copies.remove(&key))
+            } else {
+                None
+            }
+        };
+        if let Some(prepared) = &prepared
+            && (prepared.truncate != truncate
+                || (prepared.rel == rel && prepared.source != resolved.path)
+                || !prepared.matches(
+                    &resolved.path,
+                    &crate::backend::symlink_metadata(&resolved.path)?,
+                )?)
+        {
+            return Err(error(libc::EAGAIN));
+        }
         self.ensure_upper_parents(rel)?;
         let metadata = crate::backend::symlink_metadata(&resolved.path)?;
+        if let Some(prepared) = &prepared
+            && !prepared.matches(&resolved.path, &metadata)?
+        {
+            return Err(error(libc::EAGAIN));
+        }
         let parent = upper.parent().ok_or_else(|| error(libc::EINVAL))?;
-        let temporary = self.temporary_path(parent);
+        let temporary = prepared.as_ref().map_or_else(
+            || self.temporary_path(parent),
+            |copy| copy.temporary.with_extension("publication"),
+        );
         let result = (|| {
             let kind = metadata.file_type();
             let mut reused_upper_inode = false;
@@ -2025,6 +2349,8 @@ impl OverlayCore {
                 if let Some(existing) = existing {
                     fs::hard_link(existing, &temporary)?;
                     reused_upper_inode = true;
+                } else if let Some(prepared) = &prepared {
+                    fs::rename(prepared.content(), &temporary)?;
                 } else {
                     let mut options = OpenOptions::new();
                     options
@@ -2053,7 +2379,7 @@ impl OverlayCore {
             } else {
                 sys::mknod(&temporary, metadata.mode(), metadata.rdev() as u32)?;
             }
-            if !reused_upper_inode {
+            if !reused_upper_inode && prepared.is_none() {
                 self.copy_metadata(&resolved.path, &temporary, &metadata)?;
             }
             fs::rename(&temporary, &upper)?;
@@ -2599,6 +2925,52 @@ impl OverlayCore {
         self.forget_copied_hard_links(&self.upper_path(new));
         self.remap_copied_hard_links(&self.upper_path(old), &self.upper_path(new));
         Ok(())
+    }
+
+    /// Validate a rename/exchange and record its logical baseline mappings
+    /// before off-lock file preparation. This publishes no upper entries.
+    /// The adapter must serialize mutations through the subsequent operation;
+    /// that operation still repeats validation and can fail after preparation.
+    pub fn prepare_rename_copy_up(
+        &self,
+        old: &Path,
+        new: &Path,
+        no_replace: bool,
+        exchange: bool,
+    ) -> io::Result<Vec<PathBuf>> {
+        self.require_visible(old)?;
+        self.require_visible(new)?;
+        Self::validate_rel(old)?;
+        Self::validate_rel(new)?;
+        if old == new {
+            return Ok(Vec::new());
+        }
+        let source = self.metadata(old)?;
+        if exchange {
+            if old.starts_with(new) || new.starts_with(old) {
+                return Err(error(libc::EINVAL));
+            }
+            self.metadata(new)?;
+            self.require_tree_access(old, new)?;
+            self.require_tree_access(new, old)?;
+            self.record_logical_tree_mapping(old, old)?;
+            self.record_logical_tree_mapping(new, new)?;
+            self.record_logical_tree_mapping(old, new)?;
+            self.record_logical_tree_mapping(new, old)?;
+            Ok(vec![old.to_owned(), new.to_owned()])
+        } else {
+            if source.is_dir() && new.starts_with(old) {
+                return Err(error(libc::EINVAL));
+            }
+            self.validate_replacement(old, new, no_replace)?;
+            self.require_tree_access(old, new)?;
+            if self.resolve(new).is_some() {
+                self.require_tree_access(new, new)?;
+            }
+            self.record_logical_tree_mapping(old, old)?;
+            self.record_logical_tree_mapping(old, new)?;
+            Ok(vec![old.to_owned()])
+        }
     }
 
     pub fn hard_link(&self, source: &Path, destination: &Path) -> io::Result<()> {
