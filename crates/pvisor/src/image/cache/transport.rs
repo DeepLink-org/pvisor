@@ -81,15 +81,43 @@ impl Stream {
     }
 
     pub(super) fn timeouts(&self, timeout: Duration) -> std::io::Result<()> {
-        match self {
-            Self::Unix(s) => {
-                s.set_read_timeout(Some(timeout))?;
-                s.set_write_timeout(Some(timeout))
-            }
-            Self::Tcp(s) => {
-                s.set_read_timeout(Some(timeout))?;
-                s.set_write_timeout(Some(timeout))
-            }
+        let result = match self {
+            Self::Unix(s) => s
+                .set_read_timeout(Some(timeout))
+                .and_then(|()| s.set_write_timeout(Some(timeout))),
+            Self::Tcp(s) => s
+                .set_read_timeout(Some(timeout))
+                .and_then(|()| s.set_write_timeout(Some(timeout))),
+        };
+        // Darwin rejects sockopts after shutdown; let I/O drain buffered frames
+        // and report EOF/EPIPE instead, preserving response validation and retry.
+        #[cfg(target_os = "macos")]
+        if !timeout.is_zero()
+            && result
+                .as_ref()
+                .is_err_and(|error| error.raw_os_error() == Some(libc::EINVAL))
+        {
+            return Ok(());
         }
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_update_after_disconnect_preserves_buffered_bytes_and_eof() {
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        peer.write_all(b"partial frame").unwrap();
+        drop(peer);
+        let mut stream = Stream::Unix(socket);
+        assert!(stream.timeouts(Duration::ZERO).is_err());
+        stream.timeouts(Duration::from_millis(50)).unwrap();
+        let mut bytes = [0; 13];
+        stream.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"partial frame");
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
     }
 }

@@ -968,6 +968,13 @@ fn v2_corrupt_cached_pages_refetch_and_metadata_matches_exact_stat() {
     assert_eq!(server.reads.load(Ordering::Relaxed), 0);
 }
 
+// APFS rejects invalid UTF-8; keep byte-name coverage on Linux.
+const PORTABLE_RAW_NAME: &[u8] = if cfg!(target_os = "linux") {
+    b"raw-\xff"
+} else {
+    b"raw-utf8"
+};
+
 pub(crate) fn portable_fixture(
     tcp: bool,
 ) -> (
@@ -991,7 +998,7 @@ pub(crate) fn portable_fixture(
     fs::write(root.join("large"), vec![42; MAX_READ as usize + 9]).unwrap();
     fs::set_permissions(root.join("large"), fs::Permissions::from_mode(0o640)).unwrap();
     fs::hard_link(root.join("large"), root.join("linked")).unwrap();
-    fs::write(root.join(OsStr::from_bytes(b"raw-\xff")), b"raw").unwrap();
+    fs::write(root.join(OsStr::from_bytes(PORTABLE_RAW_NAME)), b"raw").unwrap();
     std::os::unix::fs::symlink("large", root.join("alias")).unwrap();
     let image = PreparedImage {
         rootfs: root,
@@ -1061,6 +1068,11 @@ pub(crate) fn portable_fixture(
                 }
                 Err(error) => panic!("{error}"),
             };
+            // Accepted sockets inherit nonblocking mode on macOS.
+            match &socket {
+                Stream::Unix(socket) => socket.set_nonblocking(false).unwrap(),
+                Stream::Tcp(socket) => socket.set_nonblocking(false).unwrap(),
+            }
             socket.timeouts(Duration::from_secs(5)).unwrap();
             let envelope: Envelope = read_frame(&mut socket).unwrap();
             assert_eq!(envelope.token, worker_token);
@@ -1138,7 +1150,7 @@ fn socket_index_pages_preserve_metadata_without_guest_rpcs_or_content() {
         assert_eq!(large.attr.perm, 0o640);
         assert_eq!(
             source
-                .child(1, OsStr::from_bytes(b"raw-\xff"))
+                .child(1, OsStr::from_bytes(PORTABLE_RAW_NAME))
                 .unwrap()
                 .attr
                 .size,
@@ -1192,7 +1204,7 @@ fn socket_index_pages_preserve_metadata_without_guest_rpcs_or_content() {
         let mut binary_warm = portable_backend(offline(), handle, blocks, metadata, true).unwrap();
         assert_eq!(
             binary_warm
-                .child(1, OsStr::from_bytes(b"raw-\xff"))
+                .child(1, OsStr::from_bytes(PORTABLE_RAW_NAME))
                 .unwrap()
                 .attr
                 .size,

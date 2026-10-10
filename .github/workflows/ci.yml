@@ -245,9 +245,9 @@ jobs:
       - name: Record isolated core budget
         run: |
           just build release
-          # Rebaseline after moving the VM implementation into the runtime closure.
-          # Filesystem caching and lazy-image V2 bring the runtime closure to ~183,530 lines.
-          just check-core-budget target/release/pvisor --max-dependencies 235 --max-workspace-lines 185000 --max-core-items 301 > target/pvisor-core-budget.json
+          # Client index pages and the private bridge, including contract tests,
+          # bring the runtime closure to ~187,560 lines; retain ~1,440 lines of headroom.
+          just check-core-budget target/release/pvisor --max-dependencies 235 --max-workspace-lines 189000 --max-core-items 301 > target/pvisor-core-budget.json
       - uses: actions/upload-artifact@v4
         with:
           name: pvisor-core-budget-linux

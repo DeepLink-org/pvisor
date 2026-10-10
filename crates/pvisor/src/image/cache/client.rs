@@ -767,6 +767,7 @@ pub(super) mod retry_tests {
         loop {
             match listener.accept() {
                 Ok((socket, _)) => {
+                    socket.set_nonblocking(false).unwrap();
                     socket
                         .set_read_timeout(Some(Duration::from_secs(3)))
                         .unwrap();
