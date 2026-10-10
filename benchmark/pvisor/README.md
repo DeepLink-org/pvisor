@@ -752,6 +752,68 @@ failed preflights. No profiles or builds/tests run during timing. Report medians
 and paired bootstrap intervals, distribution splits and descriptive P95 only at
 30 samples; never P99, Linux/VM speedup, cold disk or complete staged-task claims.
 
+### Read dispatch and journal fingerprint locks on macOS
+
+See the [engineering report](HOST_READ_JOURNAL_REPORT.md),
+[read statistics](host-read-summary.csv) and
+[journal-lock statistics](journal-lock-summary.csv). They retain the legacy
+hash-time increase, uncertain long-operation tails and all slow valid samples.
+
+`host_read_journal_ab.py` / `host_read_journal_driver.rs` serve **B-FS-ENG**.
+Freeze two new release builds from the same working tree; restore only the five
+listed read-dispatch/journal sources from the explicit pre-change baseline.
+The shared build helper preserves source, compiler, dependencies, binary and
+harness receipts. Do not reuse the earlier copy-up preparation cohort for this
+comparison or mix the read and journal modes.
+
+```sh
+just test-py benchmark/pvisor/test_host_copy_up_ab.py benchmark/pvisor/test_host_read_journal_ab.py
+python3 benchmark/pvisor/host_read_journal_ab.py --build \
+  --baseline-ref f109dd25f9b22165a4330fea489bd51e59996661 \
+  --output benchmark/pvisor/.data/read-journal-build-new
+python3 benchmark/pvisor/host_read_journal_ab.py --mode reads \
+  --build-receipt benchmark/pvisor/.data/read-journal-build-new/build-receipt.json \
+  --output benchmark/pvisor/.data/read-preflight-new --samples 1 --warmups 0
+python3 benchmark/pvisor/host_read_journal_ab.py --mode journal \
+  --build-receipt benchmark/pvisor/.data/read-journal-build-new/build-receipt.json \
+  --output benchmark/pvisor/.data/journal-preflight-new --samples 1 --warmups 0
+# Only after both preflights pass and all builds/tests finish.
+python3 benchmark/pvisor/host_read_journal_ab.py --mode reads \
+  --build-receipt benchmark/pvisor/.data/read-journal-build-new/build-receipt.json \
+  --output benchmark/pvisor/.data/read-formal-new --samples 30 --warmups 3
+python3 benchmark/pvisor/host_read_journal_ab.py --mode journal \
+  --build-receipt benchmark/pvisor/.data/read-journal-build-new/build-receipt.json \
+  --output benchmark/pvisor/.data/journal-formal-new --samples 30 --warmups 3
+```
+
+Reads use real fresh FSKit mounts with no journal, legacy or compact strict
+journaling. Three simultaneous probes measure first read-only open, complete
+open/read/close, a 64 KiB pread on an unread held descriptor, and enumeration
+of a fresh 64-entry directory. Each probe must start while an actual partially
+written copy-up temporary exists. The corresponding idle probes and writable
+open are retained. Kernel caching defaults and mutable lowers are unchanged.
+Full lower/upper digests, held-descriptor rebinding, hardlinks, rename, unused
+copy cleanup, required observations and normal unmount must pass.
+
+The independent journal mode uses one shared native Core, not FUSE or a mocked
+delay: fingerprint a warmed allocated 1 GiB file while recording 64 other small
+paths. Reset only the owned source's access time before capture; its first
+atime change proves content reading has begun, and the capture thread must
+still be active at probe start. Measure the first observation, 64-path batch,
+idle 64-path batch and hash completion; verify all 129 retained fingerprints
+against the native files after timing. These use public `observe_read` calls;
+read observations remain non-durable until the final untimed `sync_preimages`.
+A missing read window fails the cohort.
+This measures lock contention, not full staged-task latency or a cold disk.
+
+Use independent NEW outputs, 3 warmups/30 seed-shuffled paired rounds, unchanged
+release/harness bytes and no profiling. Build/test interference is checked
+before, every 250 ms during, and after each trial; any error fails the batch,
+with slow valid samples retained. CPU affinity/memory caps are not enforced on
+macOS, and snapshots cannot exclude all brief/inaccessible host activity.
+Report paired bootstrap intervals and separated distributions; P95 at 30
+samples is descriptive only. Raw receipts, failures and stages remain in `.data/`.
+
 ### Extended Linux HOST API kernel cache
 
 `kernel_cache_runner.py` / `kernel_cache_driver.rs` serve **B-FS-ENG**;

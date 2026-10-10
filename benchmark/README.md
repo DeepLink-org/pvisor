@@ -184,6 +184,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 - **宿主 copy-up 调度对照：** `host_copy_up_ab.py` / `host_copy_up_driver.rs`；从同一工作树冻结两份 release 源码，只撤销/保留宿主调度和 prepared copy-up 改动。macOS FSKit，同一 APFS lower，1 GiB 非稀疏固定数据、64 个独立 metadata 路径，关闭日志与 compact strict 日志分别成条件；3 次预热、30 个随机配对轮次。观察实际临时文件后立即测首次 stat 与 64-path metadata，另测 writable-open 完成和空闲 metadata；完整 upper/lower 内容、基线观察和卸载校验。任何错误、未命中复制窗口或检测到构建/测试干扰使批次失败；保留慢有效样本，不外推 Linux、冷磁盘、并发吞吐或整个 staged 任务。报告和加工 CSV 留在 `benchmark/pvisor/`，原始证据在 `.data/`。
 
+- **读队列与 journal 锁对照：** `host_read_journal_ab.py` / `host_read_journal_driver.rs`；冻结同一源码，仅撤销/保留读调度与指纹锁改动。macOS FSKit 的实际部分 copy-up 窗口中并发测只读 OPEN、已打开描述符 READ、OPENDIR，关闭日志、legacy 与 compact strict 分条件；另以共享 Core 的真实 1 GiB 原生文件指纹计算测 unrelated journal 观测，legacy/compact 独立成批。原生文件访问时间变化证明首次读已发生，开始探测时哈希线程必须仍在运行，不人工延迟。每格 3 次预热、30 个 seeded 随机配对样本，空闲对照、完整内容/观察/卸载和干扰门禁、配对 bootstrap 95% CI；不合并复制与哈希条件，不宣称冷磁盘、Linux、VM、吞吐或端到端工具收益。报告/加工 CSV 在 `benchmark/pvisor/`，原始来源和失败在 `.data/`。
+
 ### B-FS-DIAG：文件系统请求成本分解 {#b-fs-diag}
 
 - **角色：** diagnostic

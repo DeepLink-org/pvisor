@@ -73,11 +73,17 @@ The FUSE receive thread serves LOOKUP, GETATTR, ACCESS, STATFS, macOS GETXTIMES,
 READDIR/READDIRPLUS, FORGET and atime-only SETATTR through the shared state lock.
 Directory GETXATTR/LISTXATTR use that path too: macOS stat can probe parent
 FinderInfo before LOOKUP, and directories have no regular-file bytes to hash.
-Other callbacks enter one bounded FIFO worker. Writable OPEN, mutating SETATTR, xattr changes,
+Read-only OPEN, READ, OPENDIR, READLINK and regular-file xattr queries enter a
+separate bounded read worker. RELEASEDIR and readonly-handle FLUSH/RELEASE/
+LSEEK also use it: otherwise completing a read or closing a directory can still
+wait behind copy-up. FSYNC/FSYNCDIR and writable-handle lifecycle requests keep
+mutation ordering.
+Other callbacks enter the mutation FIFO worker. Writable OPEN, mutating SETATTR, xattr changes,
 LINK, unlink of held files and rename/exchange prepare regular-file contents
 outside that lock, including files in merged directory trees. Metadata requests
-can run during content copying and baseline capture. Journal-observing directory
-xattr reads can still wait on Core's journal lock during baseline fingerprinting.
+and read-worker callbacks can run during content copying and baseline capture.
+Core hashes file fingerprints outside its journal locks; directory xattr
+observations do not wait for an unrelated file's fingerprint computation.
 Publication, inode maps,
 hardlink groups, open-handle rebinding and cache effects remain serialized by
 the existing operation handlers. macOS EXCHANGE uses the same held-handle and
@@ -100,24 +106,32 @@ through unused-copy cleanup, followed by another root invalidation; preparation
 errors also reply through the cache fence. The original publication/reply cache
 ordering still applies.
 
-Admission bounds active plus queued requests to 128 and their write/xattr
-payloads to 16 MiB. Saturation replies EAGAIN without waiting for the worker;
+Each worker admits at most 128 active plus queued requests (256 total); write/xattr
+payloads remain bounded to 16 MiB. Read admission is independent of mutation
+saturation. Saturation replies EAGAIN without waiting for queue space;
 shutdown/worker failure replies EIO. Accepted requests pin only their referenced
 inodes, so FORGET can reclaim unrelated nodes while a copy runs. Unmount/drop
-stop admission and drain the worker before shutting down cache notifications.
+stop admission and drain both workers before shutting down cache notifications.
 This drain does not cancel backing I/O and has no copy deadline.
 
-This removes the state lock from regular-file preparation, not all filesystem
-I/O: publication of large trees, normal reads/writes, directory snapshot creation,
-policy checks and backing metadata can still occupy it. Journal-observing reads
-(including readlink and regular-file xattr reads) stay ordered because they can fingerprint
-content. Core's `copy_up_prepare` profile covers prepared copying; protocol
+This removes the state lock from regular-file copy preparation, not all filesystem
+I/O: publication of large trees, normal reads/writes and opens, directory snapshot creation,
+policy checks and backing metadata can still occupy it. Read-worker operations
+retain journal observations and may fingerprint content. Reads and mutations in
+different queues have no arrival-order guarantee
+when they overlap; state changes and descriptor rebinding still serialize under
+the state lock. Requests completed before a later submission retain that ordering.
+Core's `copy_up_prepare` profile covers prepared copying; protocol
 callback spans exclude that preparation and queue time. Gate-controlled backend
 tests prove independent metadata completes during preparation, FIFO mutation
-ordering, admission bounds, failure cleanup and drain. Private inode tests cover
+ordering, admission bounds, failure cleanup and drain. A saturated mutation-lane
+regression exercises readonly-open admission, backing reads and directory
+enumeration during blocked copy preparation; a separate test checks read-worker drain.
+Private inode tests cover
 FORGET and existing descriptor rebinding; these are not mounted latency results.
-A macOS FSKit mount smoke check also verified stat completion while a 2 GiB
-copy remained in progress, hardlink sharing, held descriptors and rename. This
+A macOS FSKit mount smoke check also verified stat, read-only open/read and
+directory enumeration completion while a 2 GiB copy remained in progress,
+hardlink sharing, held descriptors and rename. This
 is a concurrency/correctness check, not a performance A/B; Linux mounting is
 not covered by that check.
 

@@ -61,7 +61,15 @@ def file_digest(path):
     return result.hexdigest()
 
 
-def build(out, target, baseline_ref):
+def build(
+    out,
+    target,
+    baseline_ref,
+    *,
+    baseline_files=BASELINE_FILES,
+    driver_name="host_copy_up_driver.rs",
+    harness=HARNESS,
+):
     baseline_commit = (
         subprocess.check_output(
             ["git", "rev-parse", "--verify", "--end-of-options", f"{baseline_ref}^{{commit}}"],
@@ -86,7 +94,7 @@ def build(out, target, baseline_ref):
         shutil.copy2(ROOT / name, dst)
     baseline = out / "baseline/source"
     shutil.copytree(candidate, baseline)
-    for name in BASELINE_FILES:
+    for name in baseline_files:
         old = subprocess.run(
             ["git", "show", f"{baseline_commit}:{name}"], cwd=ROOT, capture_output=True
         )
@@ -108,7 +116,7 @@ def build(out, target, baseline_ref):
         write_json(directory / "source-manifest.json", inventories[arm])
         driver = directory / "driver"
         driver.mkdir()
-        shutil.copy2(HERE / "host_copy_up_driver.rs", driver / "main.rs")
+        shutil.copy2(HERE / driver_name, driver / "main.rs")
         (driver / "Cargo.toml").write_text(f"""[package]
 name = "host-copy-up-ab-driver"
 version = "0.1.0"
@@ -153,12 +161,12 @@ fuser = {{ path = {json.dumps(str(source / "vendor/fuser"))} }}
         for name in set(inventories["baseline"]) | set(inventories["candidate"])
         if inventories["baseline"].get(name) != inventories["candidate"].get(name)
     )
-    assert set(changed) <= set(BASELINE_FILES) and changed
+    assert set(changed) <= set(baseline_files) and changed
     receipt["changed_sources"] = changed
     (out / "harness").mkdir()
-    for name in HARNESS:
+    for name in harness:
         shutil.copy2(HERE / name, out / "harness" / name)
-    receipt["harness"] = {name: sha(out / "harness" / name) for name in HARNESS}
+    receipt["harness"] = {name: sha(out / "harness" / name) for name in harness}
     write_json(out / "build-receipt.json", receipt)
     return receipt
 

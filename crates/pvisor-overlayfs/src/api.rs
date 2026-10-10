@@ -207,6 +207,13 @@ pub trait OverlayMounting {
     /// version checking precedes path validation.
     /// Mutations use one bounded worker: 128 accepted requests, including the
     /// active request, and 16 MiB of queued/active write and xattr payloads.
+    /// Read-only OPEN, READ, OPENDIR, readlink and file xattr queries use a worker
+    /// with its own 128-request bound; a full mutation queue does not consume read admission.
+    /// Directory release and read-only-handle flush/release/lseek share that
+    /// queue. Fsync/fsyncdir and writable-handle lifecycle requests retain mutation ordering.
+    /// The two workers serialize inode/handle access through the state lock;
+    /// ordinary read/open/directory I/O can still hold that lock. There is no
+    /// cross-queue arrival ordering for overlapping reads and mutations.
     /// Saturated admission replies EAGAIN; stopped/failed workers reply EIO.
     /// Regular-file copy preparation runs outside the state lock so metadata
     /// queries can proceed; publication and handle rebinding remain serialized.
@@ -237,8 +244,8 @@ pub trait OverlaySessionControl: Sized {
     fn has_exited(&self) -> bool;
 
     /// Consume the owner, unmount and stop the request loop, then poll detachment
-    /// for up to about five seconds. Accepted requests drain before cache
-    /// notifications and the request loop stop. Copy preparation and underlying
+    /// for up to about five seconds. Both workers drain accepted requests before
+    /// cache notifications and the request loop stop. Copy preparation and underlying
     /// unmount/join can take longer; drain does not cancel backing reads.
     /// Errors do not return ownership or guarantee detachment; callers must
     /// retain stage paths for recovery. Writable cache notification failures are

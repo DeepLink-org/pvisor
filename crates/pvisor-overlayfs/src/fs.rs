@@ -143,6 +143,7 @@ pub(super) struct Mutation {
 pub(crate) struct OverlayFs {
     core: Arc<FilesystemService>,
     pub(super) pending_requests: usize,
+    pub(super) pending_read_requests: usize,
     pub(super) pending_bytes: usize,
     pub(super) pending_inodes: HashMap<u64, usize>,
     profile: pvisor_overlay_core::profile::Profile,
@@ -544,6 +545,12 @@ impl OverlayFs {
         }
     }
 
+    pub(super) fn is_readonly_handle(&self, fh: u64) -> bool {
+        self.open_files
+            .get(&fh)
+            .is_some_and(|file| !FilesystemService::is_write_open(file.flags))
+    }
+
     fn open_inode_with_backing(&mut self, ino: u64, flags: i32) -> io::Result<(File, PathBuf)> {
         // FSKit may send O_RDWR even for a read. A read-only inspection must
         // never copy lower files into the persistent upper merely by opening.
@@ -633,6 +640,7 @@ impl OverlayFs {
         Ok(Self {
             core: Arc::new(FilesystemService::new(core)),
             pending_requests: 0,
+            pending_read_requests: 0,
             pending_bytes: 0,
             pending_inodes: HashMap::new(),
             profile: pvisor_overlay_core::profile::Profile::from_env("host-fuse"),

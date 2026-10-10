@@ -51,6 +51,17 @@ mixed precedence, upper mutations, hardlink denials, capacity and disabled contr
 
 ## Copy-up and truncation
 
+Both legacy file journals and compact logs perform missing-entry checks under
+their journal lock, release it while computing full-file fingerprints, then
+recheck and publish under the lock. Concurrent observations may compute duplicate
+fingerprints; the first published observation wins, and durable promotion syncs
+that actual winner. Capture failures publish nothing and do not poison the compact
+log; append/sync failures retain its existing reopen requirement. Unrelated
+observations and sync of already published entries can proceed during capture.
+This does not serialize external lower writers or replace the stage/target
+transaction contract. The shared-Core concurrency regression covers both formats,
+including an earlier winning read and a later durable losing candidate.
+
 `FilesystemService::prepare_copy_ups(paths, truncate)` prepares durable baseline
 observations and regular-file bytes without publishing upper entries or changing
 hardlink groups. Physical hardlink aliases share one prepared copy but retain
