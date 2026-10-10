@@ -972,6 +972,8 @@ mod tests {
             .unwrap()
             .with_kernel_cache(config, vec![]);
         let slot = filesystem.cache_slot();
+        let filesystem = crate::dispatch::DispatchFs::new(filesystem).unwrap();
+        let dispatch = filesystem.control.clone();
         let session = fuser::Session::new(
             filesystem,
             &mountpoint,
@@ -1020,6 +1022,7 @@ mod tests {
             0o600,
             "mutation effects are not rolled back or silently discarded"
         );
+        dispatch.shutdown().unwrap();
         background.unmount().unwrap();
         assert!(
             workers

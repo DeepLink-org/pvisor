@@ -2628,6 +2628,8 @@ mod tests {
             vec![],
         );
         let slot = filesystem.cache_slot();
+        let filesystem = crate::dispatch::DispatchFs::new(filesystem).unwrap();
+        let dispatch = filesystem.control.clone();
         let session = fuser::Session::new(
             filesystem,
             &mount,
@@ -2653,6 +2655,7 @@ mod tests {
             fs::metadata(lower.join("a")).unwrap().accessed().unwrap(),
             atime
         );
+        dispatch.shutdown().unwrap();
         workers.shutdown();
         background.unmount().unwrap();
         workers.join().unwrap();
@@ -2699,6 +2702,8 @@ mod tests {
                 );
             filesystem.copy_fault_after = Some(limit);
             let slot = filesystem.cache_slot();
+            let filesystem = crate::dispatch::DispatchFs::new(filesystem).unwrap();
+            let dispatch = filesystem.control.clone();
             let session = fuser::Session::new(
                 filesystem,
                 &mount,
@@ -2756,6 +2761,7 @@ mod tests {
                 "fault fixture must preserve backing atime"
             );
             drop((input, output, cached));
+            dispatch.shutdown().unwrap();
             workers.shutdown();
             background.unmount().unwrap();
             workers.join().unwrap();
