@@ -1,4 +1,4 @@
-//! One ordered worker; regular-file preparation releases filesystem state.
+//! Separate bounded read and mutation workers; preparation releases state.
 use crate::fs::{OverlayFs, setattr_requires_copy_up};
 #[cfg(test)]
 use fuser::FUSE_ROOT_ID;
@@ -161,28 +161,29 @@ fn complete_preparation(
 #[derive(Debug)]
 pub(crate) struct DispatchControl {
     stopped: AtomicBool,
-    sender: Mutex<Option<mpsc::SyncSender<Job>>>,
-    worker: Mutex<Option<JoinHandle<()>>>,
+    senders: Mutex<Vec<mpsc::SyncSender<Job>>>,
+    workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl DispatchControl {
     pub(crate) fn shutdown(&self) -> io::Result<()> {
         self.stopped.store(true, Ordering::Release);
-        self.sender
+        self.senders
             .lock()
             .map_err(|_| io::Error::other("request admission poisoned"))?
-            .take();
-        if let Some(worker) = self
-            .worker
+            .clear();
+        let mut result = Ok(());
+        for worker in self
+            .workers
             .lock()
             .map_err(|_| io::Error::other("request worker poisoned"))?
-            .take()
+            .drain(..)
         {
-            worker
-                .join()
-                .map_err(|_| io::Error::other("overlay request worker panicked"))?;
+            if worker.join().is_err() {
+                result = Err(io::Error::other("overlay request worker panicked"));
+            }
         }
-        Ok(())
+        result
     }
 }
 
@@ -235,12 +236,35 @@ impl DispatchFs {
                     }
                 }
             })?;
+        let read_state = state.clone();
+        let (read_sender, read_receiver) = mpsc::sync_channel::<Job>(REQUEST_LIMIT);
+        let read_worker = match std::thread::Builder::new()
+            .name("overlay-reads".into())
+            .spawn(move || {
+                while let Ok(job) = read_receiver.recv() {
+                    match read_state.lock() {
+                        Ok(mut fs) => {
+                            (job.callback)(Ok(&mut fs));
+                            fs.pending_read_requests -= 1;
+                            fs.finish_request(job.bytes, &job.inodes);
+                        }
+                        Err(_) => (job.callback)(Err(libc::EIO)),
+                    }
+                }
+            }) {
+            Ok(worker) => worker,
+            Err(error) => {
+                drop(sender);
+                let _ = worker.join();
+                return Err(error);
+            }
+        };
         Ok(Self {
             state,
             control: Arc::new(DispatchControl {
                 stopped: AtomicBool::new(false),
-                sender: Mutex::new(Some(sender)),
-                worker: Mutex::new(Some(worker)),
+                senders: Mutex::new(vec![sender, read_sender]),
+                workers: Mutex::new(vec![worker, read_worker]),
             }),
         })
     }
@@ -265,30 +289,74 @@ impl DispatchFs {
             Ok(mut fs) if fs.is_directory_inode(ino) => {
                 // macOS stat probes parent FinderInfo; directory observations
                 // have no regular-file contents to fingerprint.
-                // shortcut: baseline hashing can hold Core's journal lock;
-                // separate journal fingerprinting to remove that remaining wait.
                 callback(Ok(&mut fs));
             }
             Ok(fs) => {
                 drop(fs);
-                self.enqueue(CopyRequest::None, 0, &[ino], callback);
+                self.enqueue_read(&[ino], callback);
             }
             Err(_) => callback(Err(libc::EIO)),
         }
     }
 
     fn enqueue(&self, preparation: CopyRequest, bytes: usize, inodes: &[u64], callback: Callback) {
+        self.enqueue_on(false, preparation, bytes, inodes, callback);
+    }
+
+    fn enqueue_read(&self, inodes: &[u64], callback: Callback) {
+        self.enqueue_on(true, CopyRequest::None, 0, inodes, callback);
+    }
+
+    fn enqueue_open(&self, ino: u64, flags: i32, callback: Callback) {
+        if FilesystemService::is_write_open(flags) {
+            self.enqueue(CopyRequest::Open { ino, flags }, 0, &[ino], callback);
+        } else {
+            self.enqueue_read(&[ino], callback);
+        }
+    }
+
+    fn enqueue_handle(&self, ino: u64, fh: u64, callback: Callback) {
+        if self.control.stopped.load(Ordering::Acquire) {
+            callback(Err(libc::EIO));
+            return;
+        }
+        let reading = match self.state.lock() {
+            Ok(fs) => fs.is_readonly_handle(fh),
+            Err(_) => {
+                callback(Err(libc::EIO));
+                return;
+            }
+        };
+        if reading {
+            self.enqueue_read(&[ino], callback);
+        } else {
+            self.enqueue(CopyRequest::None, 0, &[ino], callback);
+        }
+    }
+
+    fn enqueue_on(
+        &self,
+        reading: bool,
+        preparation: CopyRequest,
+        bytes: usize,
+        inodes: &[u64],
+        callback: Callback,
+    ) {
         let job = Job {
             preparation,
             bytes,
             inodes: inodes.to_owned(),
             callback,
         };
-        let Ok(sender) = self.control.sender.lock() else {
+        let Ok(senders) = self.control.senders.lock() else {
             (job.callback)(Err(libc::EIO));
             return;
         };
-        let Some(sender) = sender.as_ref() else {
+        if self.control.stopped.load(Ordering::Acquire) {
+            (job.callback)(Err(libc::EIO));
+            return;
+        }
+        let Some(sender) = senders.get(usize::from(reading)) else {
             (job.callback)(Err(libc::EIO));
             return;
         };
@@ -296,7 +364,12 @@ impl DispatchFs {
             (job.callback)(Err(libc::EIO));
             return;
         };
-        if fs.pending_requests >= REQUEST_LIMIT || bytes > BYTE_LIMIT - fs.pending_bytes {
+        let pending = if reading {
+            fs.pending_read_requests
+        } else {
+            fs.pending_requests - fs.pending_read_requests
+        };
+        if pending >= REQUEST_LIMIT || bytes > BYTE_LIMIT - fs.pending_bytes {
             drop(fs);
             (job.callback)(Err(libc::EAGAIN));
             return;
@@ -305,12 +378,18 @@ impl DispatchFs {
             *fs.pending_inodes.entry(*ino).or_default() += 1;
         }
         fs.pending_requests += 1;
+        if reading {
+            fs.pending_read_requests += 1;
+        }
         fs.pending_bytes += bytes;
         if let Err(error) = sender.try_send(job) {
             let (job, errno) = match error {
                 mpsc::TrySendError::Full(job) => (job, libc::EAGAIN),
                 mpsc::TrySendError::Disconnected(job) => (job, libc::EIO),
             };
+            if reading {
+                fs.pending_read_requests -= 1;
+            }
             fs.finish_request(bytes, &job.inodes);
             drop(fs);
             (job.callback)(Err(errno));
@@ -385,13 +464,7 @@ impl Filesystem for DispatchFs {
     }
 
     fn readlink(&mut self, _request: &Request<'_>, ino: u64, reply: ReplyData) {
-        let preparation = CopyRequest::None;
-        self.enqueue(
-            preparation,
-            0,
-            &[ino],
-            Box::new(reply_callback!(reply, readlink(ino))),
-        );
+        self.enqueue_read(&[ino], Box::new(reply_callback!(reply, readlink(ino))));
     }
 
     fn mknod(
@@ -529,11 +602,9 @@ impl Filesystem for DispatchFs {
     }
 
     fn open(&mut self, _request: &Request<'_>, ino: u64, flags: i32, reply: ReplyOpen) {
-        let preparation = CopyRequest::Open { ino, flags };
-        self.enqueue(
-            preparation,
-            0,
-            &[ino],
+        self.enqueue_open(
+            ino,
+            flags,
             Box::new(reply_callback!(reply, open(ino, flags))),
         );
     }
@@ -549,10 +620,7 @@ impl Filesystem for DispatchFs {
         _lock_owner: Option<u64>,
         reply: ReplyData,
     ) {
-        let preparation = CopyRequest::None;
-        self.enqueue(
-            preparation,
-            0,
+        self.enqueue_read(
             &[ino],
             Box::new(reply_callback!(
                 reply,
@@ -594,11 +662,9 @@ impl Filesystem for DispatchFs {
         _lock_owner: u64,
         reply: ReplyEmpty,
     ) {
-        let preparation = CopyRequest::None;
-        self.enqueue(
-            preparation,
-            0,
-            &[_ino],
+        self.enqueue_handle(
+            _ino,
+            fh,
             Box::new(reply_callback!(reply, flush(_ino, fh, _lock_owner))),
         );
     }
@@ -613,11 +679,9 @@ impl Filesystem for DispatchFs {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
-        let preparation = CopyRequest::None;
-        self.enqueue(
-            preparation,
-            0,
-            &[_ino],
+        self.enqueue_handle(
+            _ino,
+            fh,
             Box::new(reply_callback!(
                 reply,
                 release(_ino, fh, _flags, _lock_owner, _flush)
@@ -633,9 +697,8 @@ impl Filesystem for DispatchFs {
         datasync: bool,
         reply: ReplyEmpty,
     ) {
-        let preparation = CopyRequest::None;
         self.enqueue(
-            preparation,
+            CopyRequest::None,
             0,
             &[_ino],
             Box::new(reply_callback!(reply, fsync(_ino, fh, datasync))),
@@ -643,10 +706,7 @@ impl Filesystem for DispatchFs {
     }
 
     fn opendir(&mut self, _request: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
-        let preparation = CopyRequest::None;
-        self.enqueue(
-            preparation,
-            0,
+        self.enqueue_read(
             &[ino],
             Box::new(reply_callback!(reply, opendir(ino, _flags))),
         );
@@ -682,10 +742,7 @@ impl Filesystem for DispatchFs {
         _flags: i32,
         reply: ReplyEmpty,
     ) {
-        let preparation = CopyRequest::None;
-        self.enqueue(
-            preparation,
-            0,
+        self.enqueue_read(
             &[_ino],
             Box::new(reply_callback!(reply, releasedir(_ino, fh, _flags))),
         );
@@ -833,11 +890,9 @@ impl Filesystem for DispatchFs {
         whence: i32,
         reply: ReplyLseek,
     ) {
-        let preparation = CopyRequest::None;
-        self.enqueue(
-            preparation,
-            0,
-            &[_ino],
+        self.enqueue_handle(
+            _ino,
+            fh,
             Box::new(reply_callback!(reply, lseek(_ino, fh, offset, whence))),
         );
     }
@@ -1128,6 +1183,69 @@ mod tests {
             replies.recv_timeout(Duration::from_secs(1)).unwrap(),
             Some(libc::EAGAIN)
         );
+        // A full mutation lane cannot reject an unrelated open, backing read
+        // or directory enumeration; exercise the shared service on that lane.
+        let (sent, reads) = mpsc::channel();
+        f.dispatch.enqueue_open(
+            FUSE_ROOT_ID,
+            libc::O_RDONLY,
+            Box::new(move |state| {
+                let core = service(state.unwrap());
+                let backing = core
+                    .prepare_open(Path::new("quick"), libc::O_RDONLY)
+                    .unwrap();
+                let file = fs::File::open(&backing).unwrap();
+                sent.send((core, backing, file)).unwrap();
+            }),
+        );
+        let (core, backing, file) = reads.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (sent, reads) = mpsc::channel();
+        f.dispatch.enqueue_read(
+            &[FUSE_ROOT_ID],
+            Box::new(move |state| {
+                assert!(state.is_ok());
+                let mut bytes = [0; 8];
+                assert_eq!(core.read_at(&backing, &file, &mut bytes, 0).unwrap(), 8);
+                sent.send(bytes).unwrap();
+            }),
+        );
+        assert_eq!(
+            reads.recv_timeout(Duration::from_secs(2)).unwrap(),
+            *b"metadata"
+        );
+        let (sent, reads) = mpsc::channel();
+        f.dispatch.enqueue_read(
+            &[FUSE_ROOT_ID],
+            Box::new(move |state| {
+                sent.send(
+                    service(state.unwrap())
+                        .directory_candidates(Path::new(""))
+                        .unwrap(),
+                )
+                .unwrap();
+            }),
+        );
+        assert!(
+            reads
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .iter()
+                .any(|(name, _)| name == "quick")
+        );
+        for flags in [libc::O_WRONLY, libc::O_RDWR, libc::O_TRUNC, libc::O_APPEND] {
+            let (sent, reads) = mpsc::channel();
+            f.dispatch.enqueue_open(
+                FUSE_ROOT_ID,
+                flags,
+                Box::new(move |state| {
+                    sent.send(state.err()).unwrap();
+                }),
+            );
+            assert_eq!(
+                reads.recv_timeout(Duration::from_secs(1)).unwrap(),
+                Some(libc::EAGAIN)
+            );
+        }
         f.dispatch.metadata(|state| {
             assert_eq!(
                 service(state.unwrap())
@@ -1143,7 +1261,62 @@ mod tests {
             assert_eq!(replies.recv().unwrap(), None);
         }
         assert_eq!(f.dispatch.state.lock().unwrap().pending_requests, 0);
+        assert_eq!(f.dispatch.state.lock().unwrap().pending_read_requests, 0);
         assert!(f.dispatch.state.lock().unwrap().pending_inodes.is_empty());
+    }
+
+    #[test]
+    fn shutdown_drains_the_read_worker_and_rejects_new_reads() {
+        let f = fixture(false);
+        let (entered, active) = mpsc::channel();
+        let (resume, gate) = mpsc::channel();
+        f.dispatch.enqueue_read(
+            &[FUSE_ROOT_ID],
+            Box::new(move |state| {
+                assert!(state.is_ok());
+                entered.send(()).unwrap();
+                gate.recv_timeout(Duration::from_secs(5)).unwrap();
+            }),
+        );
+        active.recv_timeout(Duration::from_secs(2)).unwrap();
+        let control = f.dispatch.control.clone();
+        let (done, joined) = mpsc::channel();
+        let shutdown = std::thread::spawn(move || done.send(control.shutdown()).unwrap());
+        while !f.dispatch.control.stopped.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        let (rejected, response) = mpsc::channel();
+        f.dispatch.enqueue_read(
+            &[FUSE_ROOT_ID],
+            Box::new(move |state| {
+                rejected.send(state.err()).unwrap();
+            }),
+        );
+        assert_eq!(
+            response.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Some(libc::EIO)
+        );
+        let (rejected, response) = mpsc::channel();
+        f.dispatch.enqueue_handle(
+            FUSE_ROOT_ID,
+            0,
+            Box::new(move |state| rejected.send(state.err()).unwrap()),
+        );
+        assert_eq!(
+            response.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Some(libc::EIO)
+        );
+        assert!(joined.try_recv().is_err());
+        resume.send(()).unwrap();
+        joined
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        shutdown.join().unwrap();
+        let state = f.dispatch.state.lock().unwrap();
+        assert_eq!(state.pending_requests, 0);
+        assert_eq!(state.pending_read_requests, 0);
+        assert!(state.pending_inodes.is_empty());
     }
 
     #[test]

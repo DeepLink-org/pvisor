@@ -360,10 +360,18 @@ impl PreimageLog {
         durable: bool,
         capture: impl FnOnce() -> io::Result<PathFingerprint>,
     ) -> io::Result<()> {
-        use std::os::unix::ffi::OsStrExt;
+        if self.contains_or_promote(path, durable)? {
+            return Ok(());
+        }
+        self.publish_observation(path, durable, capture()?)
+    }
+
+    // Split the transaction so OverlayCore can also release its handle mutex
+    // while capturing bytes; both halves still refresh under flock.
+    pub(crate) fn contains_or_promote(&mut self, path: &Path, durable: bool) -> io::Result<bool> {
         validate_path(path)?;
         let key = path.as_os_str().as_bytes();
-        let found = self.locked(|file, state| {
+        self.locked(|file, state| {
             if let Some(existing) = state.observations.get(key) {
                 if durable && existing.end > state.synced {
                     sync(file, state)?;
@@ -372,13 +380,20 @@ impl PreimageLog {
             } else {
                 Ok(false)
             }
-        })?;
-        if found {
-            return Ok(());
-        }
+        })
+    }
+
+    pub(crate) fn publish_observation(
+        &mut self,
+        path: &Path,
+        durable: bool,
+        fingerprint: PathFingerprint,
+    ) -> io::Result<()> {
+        validate_path(path)?;
+        let key = path.as_os_str().as_bytes();
         let candidate = PathPreimage {
             path: key.to_vec(),
-            state: capture()?,
+            state: fingerprint,
         };
         self.locked(|file, state| {
             if let Some(existing) = state.observations.get(key) {

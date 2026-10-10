@@ -1265,6 +1265,10 @@ impl OverlayCore {
                 .map_err(|_| io::Error::other("preimage log lock poisoned"))?
                 .sync_all()
         } else if let Some(journal) = &self.preimage_dir {
+            let _publication = self
+                .preimage_lock
+                .lock()
+                .map_err(|_| io::Error::other("preimage journal lock poisoned"))?;
             crate::stage::sync_journal(journal)
         } else {
             Ok(())
@@ -1294,24 +1298,30 @@ impl OverlayCore {
         Self::validate_rel(rel)?;
         if let Some(log) = &self.preimage_log {
             let _span = self.profile.span("journal_log");
+            if log
+                .lock()
+                .map_err(|_| io::Error::other("preimage log lock poisoned"))?
+                .contains_or_promote(rel, durable)?
+            {
+                return Ok(());
+            }
+            after_missing()?;
+            let state = if observed_absent {
+                PathFingerprint::Absent
+            } else {
+                let state = fingerprint_with_index(
+                    self.layout.baseline(),
+                    rel,
+                    &self.profile,
+                    self.content_index.as_ref(),
+                )?;
+                self.profile.add("fingerprinted_paths", 1);
+                state
+            };
             return log
                 .lock()
                 .map_err(|_| io::Error::other("preimage log lock poisoned"))?
-                .observe(rel, durable, || {
-                    after_missing()?;
-                    if observed_absent {
-                        Ok(PathFingerprint::Absent)
-                    } else {
-                        let state = fingerprint_with_index(
-                            self.layout.baseline(),
-                            rel,
-                            &self.profile,
-                            self.content_index.as_ref(),
-                        )?;
-                        self.profile.add("fingerprinted_paths", 1);
-                        Ok(state)
-                    }
-                });
+                .publish_observation(rel, durable, state);
         }
         let lock_wait = self.profile.span("journal_lock_wait");
         let mut synced = self
@@ -1342,10 +1352,8 @@ impl OverlayCore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
+        drop(synced);
         after_missing()?;
-        // An apply may consume this entry while the core remains open. A new
-        // mutation then starts a new observation, rather than reusing a cache.
-        synced.remove(rel);
         let preimage = PathPreimage {
             path: path_bytes.to_vec(),
             state: if observed_absent {
@@ -1362,6 +1370,13 @@ impl OverlayCore {
                 result
             },
         };
+        let mut synced = self
+            .preimage_lock
+            .lock()
+            .map_err(|_| io::Error::other("preimage journal lock poisoned"))?;
+        // Apply may consume an entry while this Core stays open. Publication
+        // arbitrates again; never reuse a previous generation's sync cache.
+        synced.remove(rel);
         let serialize = self.profile.span("journal_serialize");
         let body = serde_json::to_vec_pretty(&preimage)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -3412,6 +3427,82 @@ mod tests {
             };
             assert!(apply_overlay(&mut record).is_err());
             assert_eq!(fs::read(target.join("value")).unwrap(), b"host edit");
+        }
+    }
+
+    #[test]
+    fn one_core_can_publish_and_sync_other_observations_during_capture() {
+        use super::*;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        for compact in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let lower = temp.path().join("lower");
+            let journal = temp.path().join("preimages");
+            fs::create_dir(&lower).unwrap();
+            fs::write(lower.join("value"), b"original").unwrap();
+            fs::write(lower.join("other"), b"unrelated").unwrap();
+            let original = fingerprint_at(&lower, Path::new("value")).unwrap();
+            let core = OverlayCore::new_with_exclusions_and_preimages(
+                vec![lower.clone()],
+                temp.path().join("upper"),
+                None,
+                vec![],
+                Some(journal.clone()),
+            )
+            .unwrap();
+            let core = Arc::new(if compact {
+                core.with_compact_preimages().unwrap()
+            } else {
+                core
+            });
+            let (entered, active) = mpsc::channel();
+            let (resume, gate) = mpsc::channel();
+            let loser = core.clone();
+            let capture = std::thread::spawn(move || {
+                loser.capture_preimage_after_check(Path::new("value"), true, false, || {
+                    entered.send(()).unwrap();
+                    gate.recv_timeout(Duration::from_secs(5)).unwrap();
+                    Ok(())
+                })
+            });
+            active.recv_timeout(Duration::from_secs(2)).unwrap();
+            let winner = core.clone();
+            let (sent, received) = mpsc::channel();
+            let probe = std::thread::spawn(move || {
+                let result = (|| {
+                    winner.record_preimage(Path::new("other"))?;
+                    winner.observe_read(Path::new("value"))?;
+                    winner.sync_preimages()?;
+                    fs::write(lower.join("value"), b"host edit")
+                })();
+                sent.send(result).unwrap();
+            });
+            let completed_during_capture = received.recv_timeout(Duration::from_secs(2));
+            // Release the gate even on regression, so the failed test can join.
+            resume.send(()).unwrap();
+            capture.join().unwrap().unwrap();
+            probe.join().unwrap();
+            completed_during_capture.unwrap().unwrap();
+            let entries = load_preimages(&journal).unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(
+                entries
+                    .iter()
+                    .find(|entry| entry.path == b"value")
+                    .unwrap()
+                    .state,
+                original
+            );
+            // The durable loser promotes the earlier read's actual winner.
+            if !compact {
+                assert!(
+                    core.preimage_lock
+                        .lock()
+                        .unwrap()
+                        .contains(Path::new("value"))
+                );
+            }
         }
     }
 
