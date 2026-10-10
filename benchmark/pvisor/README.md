@@ -700,6 +700,58 @@ Build only after unrelated timing ends. After all shell/tool preflight condition
 
 ## Engineering and diagnostics
 
+### Host copy-up scheduling A/B on macOS
+
+The [retained engineering report](HOST_COPY_UP_REPORT.md) and
+[derived statistics](host-copy-up-summary.csv) cover the frozen 2026-10-10 cohort.
+They include the measured strict-journal idle-metadata regression and open-tail
+uncertainty, alongside copy-time responsiveness. User benchmark tables are unchanged.
+
+`host_copy_up_ab.py` / `host_copy_up_driver.rs` serve **B-FS-ENG**. They freeze
+the actual working tree, then restore only the listed host/prepared-copy sources
+from `--baseline-ref` (default HEAD) for the baseline. The command below pins the
+pre-change commit, so committing the candidate does not replace the baseline.
+Other changes (including VM dispatch) stay identical.
+Both drivers use the same offline release compiler, dependencies and harness.
+The source manifests and explicit changed-source allowlist bind attribution.
+
+```sh
+just test-py benchmark/pvisor/test_host_copy_up_ab.py
+python3 benchmark/pvisor/host_copy_up_ab.py --build \
+  --baseline-ref 392c9d99b2044e1b25bfafd789e93eb297d8e82f \
+  --output benchmark/pvisor/.data/host-copy-up-build-new
+python3 benchmark/pvisor/host_copy_up_ab.py \
+  --build-receipt benchmark/pvisor/.data/host-copy-up-build-new/build-receipt.json \
+  --output benchmark/pvisor/.data/host-copy-up-preflight-new --samples 1 --warmups 0
+# After preflight passes and all builds/tests finish, use a new directory.
+python3 benchmark/pvisor/host_copy_up_ab.py \
+  --build-receipt benchmark/pvisor/.data/host-copy-up-build-new/build-receipt.json \
+  --output benchmark/pvisor/.data/host-copy-up-formal-new --samples 30 --warmups 3
+```
+
+This cohort requires macOS/macFUSE FSKit, uses UUID-owned `/Volumes` mounts and
+fresh private upper/work for every trial, and changes no global settings.
+No-journal and compact strict-journal conditions stay separate. A 1 GiB allocated
+deterministic source has warmed host cache; 64 new metadata paths are first
+queried after a genuinely partial copy is observed. The first stat and complete
+64-path pass measure responsiveness; writable-open wall time includes journal
+baseline capture, and an independent idle pass checks normal metadata overhead.
+The start waits for byte copying, so the metadata result does not measure waiting
+during earlier baseline hashing. Default kernel caching and mutable lowers remain
+identical. macOS CPU affinity/memory limits are not enforced; this is an identical
+configuration comparison on one scheduler, not a strict whole-host budget.
+
+Every trial checks full source/upper SHA-256, source identity except access time,
+hardlink sharing, held descriptors, rename, work cleanup, journal observations and
+normal detachment. Disposable successful upper bytes are removed only after
+verification; hashes, journals, logs, source and build receipts remain in `.data/`.
+Errors/missed copy windows or visible build/test interference (before, every
+250 ms during, and after each trial) fail the entire cohort. Sampling cannot prove
+absence of arbitrarily short/inaccessible activity. Keep slow valid samples and
+failed preflights. No profiles or builds/tests run during timing. Report medians
+and paired bootstrap intervals, distribution splits and descriptive P95 only at
+30 samples; never P99, Linux/VM speedup, cold disk or complete staged-task claims.
+
 ### Extended Linux HOST API kernel cache
 
 `kernel_cache_runner.py` / `kernel_cache_driver.rs` serve **B-FS-ENG**;

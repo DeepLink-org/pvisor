@@ -9,6 +9,7 @@ use crate::api::{
     OverlayMounting, OverlaySessionControl, ReadObservationSemantics,
 };
 use crate::cache::{CacheHandle, CacheWorkers};
+use crate::dispatch::{DispatchControl, DispatchFs};
 use crate::fs::OverlayFs;
 use anyhow::{Context, Result, bail};
 use fuser::{BackgroundSession, MountOption, Session};
@@ -130,6 +131,7 @@ pub struct OverlaySession {
     background: Option<BackgroundSession>,
     mountpoint: PathBuf,
     cache_workers: Option<CacheWorkers>,
+    dispatch: Arc<DispatchControl>,
 }
 
 impl OverlaySessionControl for OverlaySession {
@@ -152,6 +154,7 @@ impl OverlaySessionControl for OverlaySession {
 impl OverlaySession {
     fn unmount_inner(&mut self) -> Result<()> {
         if let Some(background) = self.background.take() {
+            let drained = self.dispatch.shutdown();
             let _deadline = self
                 .cache_workers
                 .as_ref()
@@ -166,6 +169,7 @@ impl OverlaySession {
                     .context("stop kernel cache notification workers")?;
             }
             result.context("unmount FUSE session and stop request loop")?;
+            drained.context("drain overlay mutation requests")?;
             for _ in 0..250 {
                 if !is_mountpoint(&self.mountpoint) {
                     break;
@@ -197,6 +201,8 @@ impl OverlayMounting for crate::api::OverlayFs {
         if writable_cache {
             verify_termination(&mountpoint, &options)?;
         }
+        let filesystem = DispatchFs::new(filesystem).context("start overlay mutation worker")?;
+        let dispatch = filesystem.control.clone();
         let session = Session::new(filesystem, &mountpoint, &options)
             .with_context(|| format!("mount {}", mountpoint.display()))?;
         let cache_workers = start_notifications(&session, &mountpoint, slot, writable_cache)?;
@@ -206,6 +212,7 @@ impl OverlayMounting for crate::api::OverlayFs {
             background: Some(background),
             mountpoint,
             cache_workers,
+            dispatch,
         })
     }
 
@@ -220,10 +227,13 @@ impl OverlayMounting for crate::api::OverlayFs {
         if writable_cache {
             verify_termination(&mountpoint, &options)?;
         }
+        let filesystem = DispatchFs::new(filesystem).context("start overlay mutation worker")?;
+        let dispatch = filesystem.control.clone();
         let mut session = Session::new(filesystem, &mountpoint, &options)
             .with_context(|| format!("mount {}", mountpoint.display()))?;
         let workers = start_notifications(&session, &mountpoint, slot, writable_cache)?;
         let result = session.run();
+        let drained = dispatch.shutdown();
         let _deadline = workers
             .as_ref()
             .map(|_| crate::cache::LifecycleDeadline::start(Duration::from_secs(15)));
@@ -236,6 +246,7 @@ impl OverlayMounting for crate::api::OverlayFs {
                 .join()
                 .context("stop kernel cache notification workers")?;
         }
+        drained.context("drain overlay mutation requests")?;
         result.context("FUSE session")
     }
 
@@ -245,7 +256,7 @@ impl OverlayMounting for crate::api::OverlayFs {
 }
 
 fn start_notifications(
-    session: &Session<OverlayFs>,
+    session: &Session<DispatchFs>,
     mountpoint: &Path,
     slot: Arc<OnceLock<CacheHandle>>,
     writable: bool,

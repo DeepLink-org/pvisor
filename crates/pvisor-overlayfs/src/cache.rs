@@ -612,6 +612,56 @@ mod tests {
         assert!(workers.join().is_err());
     }
 
+    #[test]
+    fn copy_preparation_keeps_pending_until_private_directory_cleanup() {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        let upper = root.path().join("upper");
+        std::fs::create_dir(&lower).unwrap();
+        std::fs::write(lower.join("file"), b"original").unwrap();
+        let mut fs = crate::fs::OverlayFs::new(vec![lower], upper.clone(), None).unwrap();
+        let (core, _) = fs.copy_plan(&crate::dispatch::CopyRequest::None).unwrap();
+        let backend = backend(false);
+        let (handle, workers) =
+            CacheWorkers::start_backend(backend.clone(), Box::new(|| Ok(()))).unwrap();
+        assert!(fs.cache_slot().set(handle.clone()).is_ok());
+        let initial = fs.begin_copy_preparation(true).unwrap();
+        let copies = core.prepare_copy_ups(&["file".into()], false).unwrap();
+        assert_eq!(std::fs::read_dir(&upper).unwrap().count(), 1);
+        let cleanup = fs.begin_copy_preparation(true).unwrap();
+        let (done, ready) = mpsc::channel();
+        fs.finish_copy_preparation(initial, move |valid| {
+            done.send(valid).unwrap();
+        });
+        assert!(ready.recv_timeout(Duration::from_secs(2)).unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while handle.state.pending.load(Ordering::SeqCst) != 1 {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(handle.pending());
+        drop(copies);
+        assert_eq!(std::fs::read_dir(&upper).unwrap().count(), 0);
+        let log = backend.clone();
+        let (done, ready) = mpsc::channel();
+        fs.finish_copy_preparation(cleanup, move |valid| {
+            log.log.lock().unwrap().push("cleanup-reply".into());
+            done.send(valid).unwrap();
+        });
+        assert!(ready.recv_timeout(Duration::from_secs(2)).unwrap());
+        let log = backend.log.lock().unwrap();
+        let reply = log
+            .iter()
+            .position(|event| event == "cleanup-reply")
+            .unwrap();
+        assert!(reply >= 3); // Initial pre/post expiry, then cleanup pre-reply expiry.
+        assert!(log[..reply].iter().all(|event| event == "attr:1"));
+        drop(log);
+        drop(fs);
+        drop(handle);
+        workers.join().unwrap();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn failed_detach_never_writes_abort_endpoint() {

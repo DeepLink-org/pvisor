@@ -182,6 +182,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **新增独立 kernel-cache 实验：** `kernel_cache_runner.py` / `kernel_cache_driver.rs`，同一冻结 release 制品 native、legacy-writable（immutable 物理缓存开启，默认 1s）、metadata-writable60s、metadata-readonly60s、metadata-and-data-readonly60s；2048/32 half-deep、全字节验证、3 warmups/30 seed-shuffled samples、CPU 0,1；hot、legacy-TTL-expired/extended-TTL-warm、single-pass readsearch、verified git/rg 与 startup/mount/task/unmount。 全部 native/lower/upper/work 使用相同 private user/mount/PID namespace 的真正 noatime tmpfs backing；保留 mountinfo、past-atime 读验证、监督/终止回执；旧 Btrfs/future-atime kernel-cache 批次未验收，只作历史诊断，raw 保留且不可拼接。writable 必须保留 fusectl abort guard；独占 fresh upper/work、稳定 immutable lower，无 journal/preimage/metrics/custom policy/exclusions；KEEP_CACHE 只在两种 readonly 条件间归因。报告 `benchmark/pvisor/KERNEL_CACHE_REPORT.md` 仅属 Linux HOST API 工程实验，不代表 pvisor run/VM/review guarantees。
 - **入口脚本：** `filesystem_ab.py`、`filesystem_stage_durability.py`、`filesystem_lazy_ab.py`、`immutable_lower_cache.py`（同一 release 二进制 native/mutable/immutable-cache-off/on，独占 immutable lower，真实 host FUSE 的 hot/TTL-expiry 重复 metadata/open/read、readsearch 与 upper 正确性；无 journal，排除 review；工程报告 `benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md`）。
 
+- **宿主 copy-up 调度对照：** `host_copy_up_ab.py` / `host_copy_up_driver.rs`；从同一工作树冻结两份 release 源码，只撤销/保留宿主调度和 prepared copy-up 改动。macOS FSKit，同一 APFS lower，1 GiB 非稀疏固定数据、64 个独立 metadata 路径，关闭日志与 compact strict 日志分别成条件；3 次预热、30 个随机配对轮次。观察实际临时文件后立即测首次 stat 与 64-path metadata，另测 writable-open 完成和空闲 metadata；完整 upper/lower 内容、基线观察和卸载校验。任何错误、未命中复制窗口或检测到构建/测试干扰使批次失败；保留慢有效样本，不外推 Linux、冷磁盘、并发吞吐或整个 staged 任务。报告和加工 CSV 留在 `benchmark/pvisor/`，原始证据在 `.data/`。
+
 ### B-FS-DIAG：文件系统请求成本分解 {#b-fs-diag}
 
 - **角色：** diagnostic

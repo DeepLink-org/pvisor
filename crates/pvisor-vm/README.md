@@ -233,10 +233,16 @@ without treating their changed names as a change to the captured workload.
 
 每个文件系统设备仍提供一个普通 request queue 和一个 hiprio queue。
 普通队列对可重叠的大 READ（请求至少 64 KiB）和目录读取，自动启动有界
-blocking I/O 线程池；短元数据请求和需要串行的修改由队列 owner 内联处理。
+blocking I/O 线程池；即使只有一个长请求也交给线程池，避免后续 metadata
+和 hiprio 到达时队列 owner 仍在执行长 I/O。短元数据请求和需要串行的修改
+由队列 owner 内联处理。
 完成结果异步返回队列 owner，由 owner 独占 available/used ring 的更新。
-默认 worker 数为宿主可用 CPU 数，上限 4；最多接收 `2 × workers` 个在途请求。
-没有可重叠请求时走内联路径，hiprio 的 FORGET/INTERRUPT 也不占普通线程池容量。
+默认 worker 数为宿主可用 CPU 数，上限 4；在途请求（待执行、执行中、待发布）
+总数最多为已协商普通 virtqueue 的大小，设备最大 1024。worker 数不随队列
+深度增加。接纳完整有界队列避免长请求突发用满旧 `2 × workers` 额度后，
+停在下一条长请求上，挡住其后的短 metadata。短请求走内联路径，hiprio 的
+FORGET/INTERRUPT 也不占普通线程池容量。满额时仍停止接纳下一条长请求，
+防止异常 driver 导致无界 backlog；已接纳长请求按 FIFO 交给 worker。
 这里的异步指请求完成与队列分发解耦；文件 I/O 仍使用既有 pread/pwrite。
 
 线程间传递已校验的 descriptor 地址与长度，在执行线程内创建借用的
@@ -256,7 +262,8 @@ Core 的逐路径 journal 事务同步，快照必须等待所有 operation guar
 替换已返回的 inode，以及 final forget 与引用固定之间的竞争。
 
 freeze/reset 停止接收新请求，排空已接收请求、回填所有完成结果并 join
-全部 I/O worker 后才能返回。thaw/restore 主动扫描 available ring，不依赖
+全部 I/O worker 后才能返回。接纳窗口扩大后，冻结可能需等待更多已接纳
+I/O；不以丢弃这些请求缩短冻结。thaw/restore 主动扫描 available ring，不依赖
 guest 再发 kick。正在执行的请求不序列化进入快照；超时由现有 runner
 失败契约处理。公开 `api` 的结构和方法不随平台或 worker 数改变。
 
@@ -264,6 +271,11 @@ guest 再发 kick。正在执行的请求不序列化进入快照；超时由现
 `1` 禁用线程池分发。生产调用方通常不需要设置。`PVISOR_FS_PROFILE=1`
 会额外记录 `virtio-fs-dispatch` 的 inline/pool 请求数及创建的 worker 数；
 带 profiling 的运行只用于诊断，不作为性能验收。
+
+本次调度变化只覆盖 VM virtio-fs，不改变宿主 FUSE 回调循环或写入/copy-up
+的独占锁约束。新增确定性回归检查长请求突发后的 GETATTR 可先完成、单条
+目录请求不占住 owner，保留满额回压、乱序完成及 RAM lease 检查；没有当前
+制品的真实 guest 性能验收，不能据单测宣称 benchmark 提速。
 
 设计参考 [virtiofsd 的线程池和 EVENT_IDX 处理](https://gitlab.com/virtio-fs/virtiofsd/-/blob/main/src/vhost_user.rs)
 及 [passthrough 的资源持有方式](https://gitlab.com/virtio-fs/virtiofsd/-/blob/main/src/passthrough/mod.rs)。

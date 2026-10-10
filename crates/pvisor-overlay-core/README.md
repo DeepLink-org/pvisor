@@ -51,6 +51,38 @@ mixed precedence, upper mutations, hardlink denials, capacity and disabled contr
 
 ## Copy-up and truncation
 
+`FilesystemService::prepare_copy_ups(paths, truncate)` prepares durable baseline
+observations and regular-file bytes without publishing upper entries or changing
+hardlink groups. Physical hardlink aliases share one prepared copy but retain
+per-path observations. `use_prepared_copy_ups` installs opaque receipts for one
+serialized operation; its guard cancels unused copies on drop. Normal operations
+retain their own policy checks, journal ordering and upper publication. The
+adapter must serialize mutations throughout preparation, installation and drop;
+metadata queries may continue. Receipts belong to one Core owner (foreign
+installation is EINVAL, overlapping installation EBUSY), and changed source
+identity/size/mode/ownership/link count/mtime/ctime fails consumption with EAGAIN.
+Remote read-only projections use their logical attributes for nlink/ctime:
+projecting another native cache alias must not look like a content mutation.
+Backing identity and content metadata still have to match. This checks observed
+changes rather than locking external mutable lower writers.
+
+Preparations use exclusively created random private directories in work, or
+upper when work is absent. A batch shares one directory descriptor across all
+receipts, so large directory renames do not consume one FD per file. The held
+descriptor prevents directory identity reuse during cleanup. Names are hidden
+from merged enumeration; cleanup never
+adopts unrelated reserved-looking paths. Cancellation/failure may retain journal
+observations, and interruption can leave private directories for manual recovery.
+Review/apply ignore reserved copy-up directories instead of interpreting them as
+deletion whiteouts; ordinary file whiteouts keep their deletion semantics.
+They do not adopt or sweep those leftovers.
+The host adapter reserves cache pending before preparation and owns request
+ordering; VM callers retain their ordinary copy-up path. `copy_up_prepare`
+profiles prepared byte work, while `copy_up_bytes` counts both serving paths.
+`tests/prepared_copy_up.rs` checks publication, cancellation, source changes,
+owner isolation, hardlink reuse/deduplication, remote projection aliases,
+truncation, baseline ordering and 300-file publication with a 48-FD limit.
+
 Fresh regular-file copy-up for `O_TRUNC` can omit the content copy only when the
 source has one link. Baseline preimage capture and journal ordering precede
 upper publication. Existing uppers and shared hardlink inodes keep the normal

@@ -1529,7 +1529,10 @@ fn apply_selected_directory_checked(
     let entries = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
     for entry in &entries {
         let name = entry.file_name();
-        if name == OPAQUE_WHITEOUT || name == crate::ROOT_METADATA_NAME {
+        if name == OPAQUE_WHITEOUT
+            || name == crate::ROOT_METADATA_NAME
+            || is_copy_up_directory(entry)?
+        {
             continue;
         }
         if let Some(victim) = whiteout_target(&name) {
@@ -1621,6 +1624,9 @@ fn prune_selected_directory(
             if selected.contains(relative) {
                 remove_path(&entry.path())?;
             }
+            continue;
+        }
+        if is_copy_up_directory(&entry)? {
             continue;
         }
         if let Some(victim) = whiteout_target(&name) {
@@ -1776,6 +1782,14 @@ fn ensure_directory(path: &Path) -> io::Result<()> {
     }
 }
 
+fn is_copy_up_directory(entry: &fs::DirEntry) -> io::Result<bool> {
+    Ok(entry
+        .file_name()
+        .as_bytes()
+        .starts_with(crate::core::TEMP_PREFIX.as_bytes())
+        && entry.file_type()?.is_dir())
+}
+
 fn whiteout_target(name: &OsStr) -> Option<&OsStr> {
     let bytes = name.as_bytes();
     bytes
@@ -1802,7 +1816,10 @@ fn apply_directory(
     // Whiteouts are processed first, independent of host readdir order.
     for entry in &entries {
         let name = entry.file_name();
-        if name == OPAQUE_WHITEOUT || name == crate::ROOT_METADATA_NAME {
+        if name == OPAQUE_WHITEOUT
+            || name == crate::ROOT_METADATA_NAME
+            || is_copy_up_directory(entry)?
+        {
             continue;
         }
         if let Some(victim) = whiteout_target(&name) {
@@ -2244,6 +2261,10 @@ fn walk_upper_metadata(
     };
     for entry in entries {
         let entry = entry?;
+        // Interrupted copy-up artifacts are neither changes nor deletion markers.
+        if is_copy_up_directory(&entry)? {
+            continue;
+        }
         let path = entry.path();
         let rel = path
             .strip_prefix(root)
@@ -2320,6 +2341,40 @@ mod tests {
             );
             remove_path(&collision).unwrap();
         }
+    }
+
+    #[test]
+    fn interrupted_copy_up_is_not_a_host_deletion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        let upper = tmp.path().join("upper");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&upper).unwrap();
+        fs::write(target.join(".pvisor-copyup-directory"), b"keep").unwrap();
+        fs::write(target.join(".pvisor-copyup-file"), b"keep").unwrap();
+        fs::create_dir(upper.join(".wh..pvisor-copyup-directory")).unwrap();
+        fs::write(
+            upper.join(".wh..pvisor-copyup-directory/content"),
+            b"partial",
+        )
+        .unwrap();
+        fs::write(upper.join(".wh..pvisor-copyup-file"), b"").unwrap();
+        fs::write(upper.join("ordinary"), b"staged").unwrap();
+        let record = late_conflict_record(&target, &upper);
+        let changes = overlay_changes(&record, std::slice::from_ref(&target)).unwrap();
+        assert_eq!(changes.len(), 2);
+        assert!(changes.iter().any(|change| change.relative_path()
+            == Path::new(".pvisor-copyup-file")
+            && change.kind == ChangeKind::Deleted));
+        apply_directory(&upper, &target, &mut HashMap::new(), false).unwrap();
+        assert_eq!(
+            fs::read(target.join(".pvisor-copyup-directory")).unwrap(),
+            b"keep"
+        );
+        assert!(!target.join(".pvisor-copyup-file").exists());
+        assert_eq!(fs::read(target.join("ordinary")).unwrap(), b"staged");
+        assert!(upper.join(".wh..pvisor-copyup-directory/content").exists());
+        assert!(upper.join(".wh..pvisor-copyup-file").exists());
     }
 
     #[test]
