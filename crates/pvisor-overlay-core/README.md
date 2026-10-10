@@ -96,3 +96,22 @@ Host FUSE uses the service's names/type directory candidates and loads
 attributes on demand for READDIRPLUS. Protected directory views validate
 children at snapshot creation to hide denied hardlink aliases. See the host
 adapter README for cookie and inode lifetime details.
+
+## Experimental parallel stage sealing
+
+`PVISOR_STAGE_SYNC_WORKERS=2|4|8` in the supervisor opts into a bounded pool
+for regular-file `sync_all` during `stage::seal`. Unset or `1` retains the
+original serial traversal; other values fail explicitly. Journal validation and
+persistence still finish first. All independent upper-file drains must succeed
+and all workers must join before bottom-up directory drains, parent persistence
+and atomic `sealed-v1` publication. Errors (including worker startup/panic) do
+not publish a new seal. Explicit workload fsync and journal synchronization do
+not use this pool. The caller still owns the stage lease and must stop writers.
+
+The inventory holds O(files + directories) paths and inode identities; regular-file
+descriptors and worker threads are bounded by the selected worker count. Directory
+iteration additionally holds O(tree depth) directory descriptors. Hard links are deduplicated, symlink/FIFO/device targets are never synced, and reopened
+entries must retain their inode identity and type. This is an opt-in experiment,
+not a change to the persistence contract or the default. Measure fresh-stage,
+same-binary serial/parallel trials without tracing; retain failures and verify
+lower immutability, upper bytes and completion markers before claiming a gain.

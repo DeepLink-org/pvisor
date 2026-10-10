@@ -9,7 +9,8 @@ use std::{
     fs::{self, File, OpenOptions},
     io,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
-    path::Path,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 const POLICY: &str = "durability-v1";
@@ -163,7 +164,41 @@ pub fn sync_journal(journal: &Path) -> io::Result<()> {
 
 /// Journal first, upper contents and namespace second, acknowledgement last.
 /// On failure no new seal is published. Call only with all writers stopped.
+/// `PVISOR_STAGE_SYNC_WORKERS=2|4|8` opts into bounded parallel upper-file
+/// drains; unset or `1` retains serial traversal. Other values are errors.
+/// Parallel drains join before bottom-up directory sync and seal publication.
 pub fn seal(upper: &Path, journal: &Path) -> io::Result<()> {
+    let workers = sync_workers(std::env::var_os("PVISOR_STAGE_SYNC_WORKERS"))?;
+    seal_with_upper(upper, journal, |upper| {
+        if workers == 1 {
+            sync_tree(upper, &mut HashSet::new())
+        } else {
+            sync_upper_parallel(upper, workers, &|file, _, _| file.sync_all())
+        }
+    })
+}
+
+// Experimental opt-in. The default retains the original traversal, allowing a
+// same-binary control. Reject typos rather than silently changing durability.
+fn sync_workers(value: Option<std::ffi::OsString>) -> io::Result<usize> {
+    match value.as_deref().and_then(|value| value.to_str()) {
+        None if value.is_none() => Ok(1),
+        Some("1") => Ok(1),
+        Some("2") => Ok(2),
+        Some("4") => Ok(4),
+        Some("8") => Ok(8),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PVISOR_STAGE_SYNC_WORKERS must be 1, 2, 4 or 8",
+        )),
+    }
+}
+
+fn seal_with_upper(
+    upper: &Path,
+    journal: &Path,
+    sync_upper: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
     if !managed(journal)? {
         return Ok(());
     }
@@ -172,11 +207,118 @@ pub fn seal(upper: &Path, journal: &Path) -> io::Result<()> {
     }
     sync_journal(journal)?;
     open(upper, true)?;
-    sync_tree(upper, &mut HashSet::new())?;
+    sync_upper(upper)?;
     if let Some(parent) = upper.parent() {
         open(parent, true)?.sync_all()?;
     }
     Persistence::atomic_write(&journal.join(SEAL), SEALED, 0o600).map_err(io::Error::other)?;
+    Ok(())
+}
+
+struct UpperEntry {
+    path: PathBuf,
+    identity: (u64, u64),
+}
+
+impl UpperEntry {
+    fn open_checked(&self, directory: bool) -> io::Result<File> {
+        let file = open(&self.path, directory)?;
+        let metadata = file.metadata()?;
+        if (metadata.dev(), metadata.ino()) != self.identity
+            || if directory {
+                !metadata.is_dir()
+            } else {
+                !metadata.is_file()
+            }
+        {
+            return Err(invalid("stage entry changed during persistence"));
+        }
+        Ok(file)
+    }
+}
+
+fn collect_upper(
+    path: &Path,
+    seen: &mut HashSet<(u64, u64)>,
+    files: &mut Vec<UpperEntry>,
+    directories: &mut Vec<UpperEntry>,
+) -> io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    let identity = (metadata.dev(), metadata.ino());
+    let entry = UpperEntry {
+        path: path.to_owned(),
+        identity,
+    };
+    if metadata.is_dir() {
+        // Validate now and again when syncing. Do not keep an FD per entry.
+        entry.open_checked(true)?;
+        for child in fs::read_dir(path)? {
+            collect_upper(&child?.path(), seen, files, directories)?;
+        }
+        directories.push(entry); // Children must be durable before parents.
+    } else if metadata.is_file() && seen.insert(identity) {
+        files.push(entry);
+    }
+    // Symlinks and special files are persisted by their directory entries.
+    Ok(())
+}
+
+fn sync_upper_parallel(
+    upper: &Path,
+    workers: usize,
+    sync: &(impl Fn(&File, &Path, bool) -> io::Result<()> + Sync),
+) -> io::Result<()> {
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    collect_upper(upper, &mut HashSet::new(), &mut files, &mut directories)?;
+    let next = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        let mut error = None;
+        for _ in 0..workers.min(files.len()) {
+            let task = || -> io::Result<()> {
+                while !failed.load(Ordering::Relaxed) {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(entry) = files.get(index) else { break };
+                    let result = entry
+                        .open_checked(false)
+                        .and_then(|file| sync(&file, &entry.path, false));
+                    if let Err(error) = result {
+                        failed.store(true, Ordering::Relaxed);
+                        return Err(error);
+                    }
+                }
+                Ok(())
+            };
+            match std::thread::Builder::new()
+                .name("stage-sync".into())
+                .spawn_scoped(scope, task)
+            {
+                Ok(handle) => handles.push(handle),
+                Err(cause) => {
+                    failed.store(true, Ordering::Relaxed);
+                    error = Some(cause);
+                    break;
+                }
+            }
+        }
+        // Join every worker even after an error. No background writes survive
+        // this boundary, and no directories/seal are committed after failure.
+        for handle in handles {
+            if let Err(cause) = handle
+                .join()
+                .unwrap_or_else(|_| Err(io::Error::other("stage sync worker panicked")))
+            {
+                failed.store(true, Ordering::Relaxed);
+                error.get_or_insert(cause);
+            }
+        }
+        error.map_or(Ok(()), Err)
+    })?;
+    for entry in directories {
+        sync(&entry.open_checked(true)?, &entry.path, true)?;
+    }
     Ok(())
 }
 
@@ -206,6 +348,160 @@ mod tests {
     use super::*;
     use crate::{OverlayCore, OverlayLayout, apply::apply_overlay, fingerprint_at};
     use pvisor_core::overlay::{OverlayRecord, OverlayState, OverlayUpper};
+
+    #[test]
+    fn worker_configuration_is_bounded_and_explicit() {
+        assert_eq!(sync_workers(None).unwrap(), 1);
+        for value in [1, 2, 4, 8] {
+            assert_eq!(sync_workers(Some(value.to_string().into())).unwrap(), value);
+        }
+        for value in ["", "0", "3", "9", "-1", "unlimited"] {
+            assert!(sync_workers(Some(value.into())).is_err());
+        }
+    }
+
+    #[test]
+    fn parallel_sync_is_bounded_deduplicates_and_orders_directories_after_files() {
+        use std::sync::{Barrier, Mutex};
+        let temp = tempfile::tempdir().unwrap();
+        let upper = temp.path().join("upper");
+        fs::create_dir_all(upper.join("child/grandchild")).unwrap();
+        for index in 0..8 {
+            fs::write(upper.join(format!("child/grandchild/{index}")), b"payload").unwrap();
+        }
+        fs::hard_link(upper.join("child/grandchild/0"), upper.join("alias")).unwrap();
+        std::os::unix::fs::symlink("/does-not-exist", upper.join("symlink")).unwrap();
+        let fifo =
+            std::ffi::CString::new(upper.join("fifo").as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let first_wave = Barrier::new(4);
+        let started = AtomicUsize::new(0);
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let completed = AtomicUsize::new(0);
+        let directories = Mutex::new(Vec::new());
+        sync_upper_parallel(&upper, 4, &|file, path, directory| {
+            if directory {
+                assert_eq!(completed.load(Ordering::SeqCst), 8);
+                assert_eq!(active.load(Ordering::SeqCst), 0);
+                directories.lock().unwrap().push(path.to_owned());
+            } else {
+                let count = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(count, Ordering::SeqCst);
+                if started.fetch_add(1, Ordering::SeqCst) < 4 {
+                    first_wave.wait();
+                }
+            }
+            file.sync_all()?;
+            if !directory {
+                active.fetch_sub(1, Ordering::SeqCst);
+                completed.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(started.load(Ordering::SeqCst), 8);
+        assert_eq!(peak.load(Ordering::SeqCst), 4);
+        assert_eq!(
+            *directories.lock().unwrap(),
+            vec![upper.join("child/grandchild"), upper.join("child"), upper]
+        );
+    }
+
+    #[test]
+    fn parallel_file_error_joins_workers_and_never_syncs_directories_or_seals() {
+        use std::sync::Barrier;
+        let temp = tempfile::tempdir().unwrap();
+        let (core, record) = fixture(temp.path(), StageDurability::Checkpoint);
+        for index in 0..4 {
+            fs::write(record.upper.path().join(index.to_string()), b"payload").unwrap();
+        }
+        drop(core);
+        let journal = temp.path().join("preimages");
+        let barrier = Barrier::new(4);
+        let joined_work = AtomicUsize::new(0);
+        let directories = AtomicUsize::new(0);
+        let result = seal_with_upper(record.upper.path(), &journal, |upper| {
+            sync_upper_parallel(upper, 4, &|file, path, directory| {
+                if directory {
+                    directories.fetch_add(1, Ordering::SeqCst);
+                    return file.sync_all();
+                }
+                barrier.wait();
+                let result = if path.file_name().unwrap() == "0" {
+                    Err(io::Error::from_raw_os_error(libc::EIO))
+                } else {
+                    file.sync_all()
+                };
+                joined_work.fetch_add(1, Ordering::SeqCst);
+                result
+            })
+        });
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EIO));
+        assert_eq!(joined_work.load(Ordering::SeqCst), 4);
+        assert_eq!(directories.load(Ordering::SeqCst), 0);
+        assert!(!journal.join(SEAL).exists());
+        assert!(require_sealed(&journal).is_err());
+    }
+
+    #[test]
+    fn parallel_directory_failure_or_worker_panic_never_publishes_seal() {
+        for panic_worker in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let (core, record) = fixture(temp.path(), StageDurability::Checkpoint);
+            fs::write(record.upper.path().join("payload"), b"data").unwrap();
+            drop(core);
+            let journal = temp.path().join("preimages");
+            let result = seal_with_upper(record.upper.path(), &journal, |upper| {
+                sync_upper_parallel(upper, 2, &|file, _, directory| {
+                    assert!(!panic_worker, "injected worker panic");
+                    if directory {
+                        Err(io::Error::from_raw_os_error(libc::EIO))
+                    } else {
+                        file.sync_all()
+                    }
+                })
+            });
+            assert!(result.is_err());
+            assert!(!journal.join(SEAL).exists());
+            assert!(begin(&journal, StageDurability::Checkpoint).is_err());
+        }
+    }
+
+    #[test]
+    fn parallel_seal_supports_empty_uppers_and_both_durability_modes() {
+        for durability in [StageDurability::Strict, StageDurability::Checkpoint] {
+            for populated in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let (core, record) = fixture(temp.path(), durability);
+                if populated {
+                    fs::write(core.copy_up(Path::new("value")).unwrap(), b"staged").unwrap();
+                }
+                drop(core);
+                let journal = temp.path().join("preimages");
+                seal_with_upper(record.upper.path(), &journal, |upper| {
+                    sync_upper_parallel(upper, 4, &|file, _, _| file.sync_all())
+                })
+                .unwrap();
+                require_sealed(&journal).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_inventory_rejects_inode_replacement_before_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("value");
+        fs::write(&path, b"original").unwrap();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        let entry = UpperEntry {
+            path: path.clone(),
+            identity: (metadata.dev(), metadata.ino()),
+        };
+        fs::rename(&path, temp.path().join("old")).unwrap();
+        fs::write(&path, b"replacement").unwrap();
+        assert!(entry.open_checked(false).is_err());
+    }
 
     fn fixture(root: &Path, durability: StageDurability) -> (OverlayCore, OverlayRecord) {
         let target = root.join("target");
