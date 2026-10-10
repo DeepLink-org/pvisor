@@ -1061,6 +1061,8 @@ pub(super) mod retry_tests {
 
     #[test]
     fn retry_shares_deadline_and_timeout_and_pool_wait_do_not_retry() {
+        // Keep the timing ratios, with enough budget for shared CI runners.
+        let timeout = Duration::from_millis(2500);
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("cache.sock");
         let listener = UnixListener::bind(&path).unwrap();
@@ -1070,26 +1072,24 @@ pub(super) mod retry_tests {
             let mut first = accept(&listener);
             tests::handshake(&mut first);
             let _: Envelope = read_frame(&mut first).unwrap();
-            std::thread::sleep(Duration::from_millis(120));
+            std::thread::sleep(Duration::from_millis(1200));
             drop(first);
             let mut fresh = accept(&listener);
             tests::handshake(&mut fresh);
             let _: Envelope = read_frame(&mut fresh).unwrap();
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(Duration::from_millis(3000));
         });
         let start = Instant::now();
-        let error = client
-            .request_timeout(read(), Duration::from_millis(250))
-            .unwrap_err();
+        let error = client.request_timeout(read(), timeout).unwrap_err();
         assert!(matches!(
             error.downcast_ref::<std::io::Error>().unwrap().kind(),
             std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
         ));
         assert!(
-            start.elapsed() < Duration::from_millis(350),
-            "retry multiplied the deadline"
+            start.elapsed() < Duration::from_millis(3500),
+            "retry multiplied the deadline: {error:#}"
         );
-        assert!(error.to_string().contains("after 1 retry"));
+        assert!(error.to_string().contains("after 1 retry"), "{error:#}");
         server.join().unwrap();
         check.set_nonblocking(true).unwrap();
         assert_eq!(
