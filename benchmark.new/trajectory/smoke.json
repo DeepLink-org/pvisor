@@ -1,0 +1,3 @@
+{
+  "single-condition": "$ python3 @REPO@/benchmark/pvisor/trajectory_benchmark.py @CONDITION@ --row-output"
+}

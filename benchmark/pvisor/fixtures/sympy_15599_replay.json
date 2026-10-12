@@ -1,0 +1,19 @@
+{
+  "schema": "pvisor-trajectory-fixture/v1",
+  "instance_id": "sympy__sympy-15599",
+  "base_commit": "5e17a90c19f7eecfa10c1ab872648ae7e2131323",
+  "image_digest": "sha256:068c2c597f9dffc4344f276d9a9d1e0557b9e32b15b8ff4c4ffba76995ce6853",
+  "steps_sha256": "a1a5ed34e295d89f738acde97451b2fd2ca1da8e3f5f463376b7fdcace0c3c39",
+  "recorded_patch_sha256": "a59d2220e38e39a5c5a9e1f3d943207a7cbe93840eadbd39fdac70d265625797",
+  "commands_sha256": "887fd7cd970960a30c78686189a8885904cd299905d54d2bb33923f9c939eedb",
+  "steps": 44,
+  "smoke_barriers": [1, 17, 39],
+  "historical_nonzero": {"5": 127, "19": 1, "20": 1, "33": 1, "35": 1},
+  "python": "3.9.20",
+  "timeout_seconds": 60,
+  "comparison": {
+    "exact": ["command_sha256", "returncode", "source_sha256", "final.patch", "files.json"],
+    "raw_stdout": "Preserve every byte; test timing/seed/order and expected preflight warnings need explicit comparison review.",
+    "official_swebench_evaluation": "not performed by this fixture"
+  }
+}

@@ -2,6 +2,14 @@
 
 Read [the benchmark registry and writing rules](../README.md) before measuring or publishing. User questions, controls and roles belong to that registry; this manual owns commands and retention. Entry scripts carry `Benchmark:` declarations. Preparation, publication and plotting helpers serve their caller’s ID.
 
+## Fixed trajectory pause/offload engineering smoke
+
+`B-TRAJECTORY-ENG` uses `prepare_replay_rootfs.py`, the Python 3.9 guest worker,
+and the `vm_trajectory_replay` Rust example. The single-condition coordinator
+`trajectory_benchmark.py` keeps the sampler outside the service cgroup and
+retains failed samples. Current entry, prerequisites, and negative checks are
+documented in [benchmark.new/trajectory](../../benchmark.new/trajectory/README.md).
+
 ## Lazy image client startup
 
 `B-LAZY-STARTUP` compares a Distribution registry's complete-image Docker path with a real `pvisor-cache serve` lazy VM path for the same pinned linux/amd64 manifest and workload. The default `ubuntu-shell` cohort uses Ubuntu 26.04; `numpy-script` is a separate Python/NumPy cohort. `torch-import` remains optional but has no formal samples; its failed attempts are retained, not performance evidence. Never pool different workloads or their preflight and formal samples. This is not OpenSandbox `pvisor-daemon serve`. See [the retained Ubuntu local report](LAZY_STARTUP_REPORT.md) and [derived Ubuntu CSV](lazy-startup-summary.csv); they do not establish NumPy or torch performance. The [bilingual user article](../../docs/src/zh/benchmarks/lazy-image-startup.md#numpy) includes the independent NumPy cohort, with [derived statistics](../../docs/src/zh/benchmarks/lazy-numpy-summary.csv), [differences/preparation](../../docs/src/zh/benchmarks/lazy-numpy-details.csv) and [provenance](../../docs/src/zh/benchmarks/lazy-numpy-provenance.csv). Historical evidence is retained at `benchmark/pvisor/.data/lazy-numpy-local-20261007/`. Its legacy `derive.py` writes historical CSVs; do not use it to overwrite current site downloads. The current implementation rerun below supplies the user article and current CSVs.

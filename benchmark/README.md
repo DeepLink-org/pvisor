@@ -98,6 +98,14 @@
 
 ## 注册表 {#registry}
 
+### B-TRAJECTORY-ENG：固定工具轨迹的暂停与卸载连续性 {#b-trajectory-eng}
+
+- **角色：** engineering A/B。
+- **Motivation：** 固定 SWE-bench 工具命令经过宿主屏障及同一 VM pause/offload/resume 后，是否仍产生相同结果？
+- **想要的结论：** 环境、文件握手、执行连续性和补丁一致性是否通过，以及指定等待窗口下的整服务计费内存和恢复成本；不推导模型成绩或训练吞吐。
+- **实验设计：** 固定 sympy__sympy-15599 的 44 条命令，独立 root overlay/upper/raw RAM backing，2 vCPU/2 GiB Guest、4 CPU/4 GiB/zero-swap 服务 cgroup；采样器在组外。先环境和负向握手，再无等待 resident，再第 1/17/39 步三点 resident/pause/offload。保留所有失败、原始输出、native 状态和源码/制品摘要；完整 43 点与统计发布另行运行。
+- **入口：** `benchmark.new/trajectory/smoke.json`、`benchmark/pvisor/trajectory_benchmark.py`；单次调用只执行一个条件。原始证据写入用户指定的新 `.data/` 目录；不进入用户 benchmark 页面。
+
 以下条目定义每个 benchmark **要回答的问题和期望得到的结论形式**。它们是需求，不是现有数据的摘要：如果现有实验不能支撑某条结论，应补实验或在文档中写明未测，而不是改写需求去迁就数据。
 
 每个条目的入口脚本开头都有同名的 `Benchmark:` 注释块，格式如下：
