@@ -202,6 +202,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-FS-DIAG：文件系统请求成本分解 {#b-fs-diag}
 
+- **SWE 轨迹对照：** 复用 PR #23 的固定 44 命令轨迹，对比 PR #24 缓存配置的 pVisor VM 与 AgentENV；命令端到端计时与 guest syscall 跟踪分别成批。逐步校验退出码、输出、源文件及最终补丁，保留每次结果和插桩扰动校准。跟踪区间不能解释为无插桩耗时或完整文件访问成本；记录继承环境、内核及缓存边界。加工结果见 `docs/src/*/design/agent-task-performance-analysis.md#swe-trajectory`，冻结执行/解析脚本与原始证据保留在 `.data/`。
+
 - **角色：** diagnostic
 - **Motivation：** 定位 FUSE 传输、OverlayCore、持久化、内容指纹和缓存路径的成本。
 - **想要的结论：** 请求与 inclusive span 的成本分解，不能相加为精确归因，不作为用户性能数据。

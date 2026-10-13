@@ -1,0 +1,69 @@
+{
+  "benchmark": "B-FS-DIAG",
+  "date": "2026-10-13",
+  "scope": "Fixed 44-command sympy__sympy-15599 replay; independent end-to-end and instrumented filesystem cohorts; no official SWE-bench scoring",
+  "host": {
+    "cpu": "Intel Xeon Gold 6526Y",
+    "kernel": "6.14.0-27-generic",
+    "identity_observed_at_report_time": true,
+    "affinity": "0,1",
+    "cpu_quota_cores": 2,
+    "memory_gib": 24,
+    "swap": 0
+  },
+  "guest": {
+    "vcpus": 2,
+    "memory_mib": 2048,
+    "pvisor_kernel": "6.12.109",
+    "agentenv_kernel": "6.1.175"
+  },
+  "pvisor": {
+    "commit": "b5e27a6670c37120592409bf3fd6ec36cdf9b38c",
+    "pr": 24,
+    "driver_origin_pr": 23,
+    "driver_origin_commit": "2cdefa8d38f78960fc5cdec5c65bb59348c3f883",
+    "binary_sha256": "812d5ab5380ceeb3cca0715f8675127a6cc6a371eeb3da0e3808028a0a2ad1ef",
+    "firmware_sha256": "351545030629d41cf901905b491f2ec059ab36bb73eeacce6bc3b6a71ec00a58",
+    "driver_sha256": "a8c11edbe70d0830480a52dae1092a92062478aa4fb2eb50a99835872b1fe9c8",
+    "cache": "root-data; immutable physical lower; default metadata cache; whole-root stage including /testbed; guest writes to upper"
+  },
+  "agentenv": {
+    "release": "v0.2.0",
+    "mode": "official cold start",
+    "sdk": "e2b 2.50.0",
+    "server_sha256": "0d8980af726e38a25612a4b3a13021eae76832710d4bda5ad063f1409684c1ca"
+  },
+  "input": {
+    "oci_digest": "sha256:068c2c597f9dffc4344f276d9a9d1e0557b9e32b15b8ff4c4ffba76995ce6853",
+    "commands_sha256": "887fd7cd970960a30c78686189a8885904cd299905d54d2bb33923f9c939eedb",
+    "final_patch_sha256": "a59d2220e38e39a5c5a9e1f3d943207a7cbe93840eadbd39fdac70d265625797"
+  },
+  "cohorts": [
+    {
+      "id": "swe24-20261013",
+      "samples_per_backend": 3,
+      "validated_steps": 264,
+      "timing": "sum of command child wall times; excludes VM lifecycle, seal, log export and model waits",
+      "environment": "same explicit variables; different inherited Conda state, with two extra dirname executions per command in pVisor shell setup",
+      "evidence_sha256": "71b21d1698375875dd3f16e349d10829ac5e532aac3af41af53e7d0ef2fa696b"
+    },
+    {
+      "id": "swe-fstime-aligned-20261013",
+      "samples_per_backend_per_mode": 1,
+      "validated_steps": 176,
+      "trace_files": 88,
+      "environment": "clear inherited environment and load common-environment.json; trace mode is the only mode variable",
+      "tracer": "strace -f -qq --seccomp-bpf -ttt -T -yy -s 256 -e trace=%file,%desc,%memory,%process",
+      "timing": "merge overlapping file syscall intervals across threads per command; sum 44 commands",
+      "limitations": [
+        "tracing increases command time by 17.3%/32.6%; fails 5% untraced-estimate gate",
+        "mmap demand-fault latency unmeasured",
+        "category intervals may overlap; coverage is not critical-path attribution",
+        "frozen design retains stale N3/orders fields; actual samples=1 and sequence define this cohort"
+      ],
+      "evidence_sha256": "94adc0b16af24b5e2017b9503d5c99ce72a731a3793d604b333fbc8a15d6cd7e"
+    }
+  ],
+  "raw_evidence": "Retained locally under benchmark/.data/swe-comparison-20261013; not a public download; each archive contains frozen run/verification/analysis harness and step outputs",
+  "validation": "Existing measurements only; no new performance samples collected for this documentation PR; raw evidence SHA256, 88 trace files, 176 step timing rows and diagnostic audit verified before publication"
+}

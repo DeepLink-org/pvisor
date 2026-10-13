@@ -2,6 +2,66 @@
 
 Complete repair/testing takes about **4.61 s** in image-free pVisor VM and **8.51 s** on Firecracker / complete Ubuntu; staging takes **0.72 s**. Ubuntu boot affects short jobs, while pVisor retains substantial tool-execution costs: fast startup does not establish leading tools. Claude/VM: initialization timeout / N=0; real Codex tool-loop results follow below.
 
+
+## SWE trajectory: pVisor VM and AgentENV {#swe-trajectory}
+
+**Results on my server:** the 44-command SymPy replay takes a median **35.898 s / 24.611 s** in pVisor VM / AgentENV. A separate filesystem diagnostic records **13.682 s / 3.474 s** of file-call intervals under tracing, with the largest gaps in open/close and metadata queries. The two cohorts have different measurement conditions and are not subtracted or combined.
+
+This uses the fixed `sympy__sympy-15599` trajectory from [PR #23](https://github.com/DeepLink-org/pvisor/pull/23) with the immutable-lower caching merged in [PR #24](https://github.com/DeepLink-org/pvisor/pull/24), compared with AgentENV v0.2.0. PR #23 supplies the replay method, not the AgentENV implementation. The purpose is to locate costs in a real tool sequence; it does not measure model inference, task success rates, or the full SWE-bench suite. Registered as **B-FS-DIAG**.
+
+### Overall tool-call time {#swe-tool-time}
+
+Seconds for all 44 command subprocesses, including shell setup, computation, I/O and waiting; three complete replays per backend. VM startup/shutdown, `stage::seal`, result export, model waits and pause/resume/offload are outside this timer.
+
+| Run | pVisor VM + PR #24 | AgentENV |
+| --- | ---: | ---: |
+| 1 | 34.037 | 27.289 |
+| 2 | 37.223 | 24.611 |
+| 3 | 35.898 | 22.351 |
+| Median | **35.898** | **24.611** |
+
+The observed medians differ by 11.287 s (ratio 1.46). The descriptive paired-bootstrap 95% interval for the median paired difference is [6.747, 13.547] s; three pairs do not establish stable uncertainty or a general ranking. All 264 steps passed output/source/final-patch checks; no valid slow run was removed.
+
+The explicit environment variables match, but inherited Conda state differs: pVisor's shell setup executes two additional `dirname` commands per step. These are end-to-end observations of the configurations as run, not an attribution of the whole gap to the filesystem. The independent diagnostic below clears inherited variables and applies the same canonical environment to both backends.
+
+### Filesystem-call time {#swe-file-time}
+
+One traced replay per backend, using identical private strace binaries and libraries. Seconds are the union of file-syscall intervals across threads within each command, summed over 44 commands. Category intervals may overlap; this is observed interval coverage, not a removable critical-path contribution.
+
+| File operation | pVisor VM + PR #24 | AgentENV |
+| --- | ---: | ---: |
+| All identified file-call intervals | **13.682** | **3.474** |
+| Open / close | 6.450 | 0.553 |
+| Metadata / directory queries | 4.810 | 1.861 |
+| Read | 1.044 | 0.539 |
+| FD operations (`lseek`, `fcntl`, `ioctl`) | 1.361 | 0.519 |
+| Write | 0.007 | 0.002 |
+| Namespace / attribute changes | 0.013 | 0.001 |
+| Explicit synchronization calls | 0 | 0 |
+
+The traced interval totals differ by 10.208 s (ratio 3.94). Open/close and metadata/directory queries have the largest observed gaps: 5.897 s and 2.949 s. File-call counts are similar overall: 435,990 / 434,746. `openat` counts are 35,534 / 35,533, `read` counts 50,137 / 50,137, and `stat` counts 112,805 / 112,805. This supports investigating the latency of common operations, rather than assuming a large overall request-count increase. Guest syscall counts are not virtio-fs request counts.
+
+Rootfs-path interval coverage is 8.147 / 2.251 s; workspace-path coverage is 5.535 / 1.223 s. These are pathname classes, not separate devices. Close latency does not establish `fsync` cost: pVisor's `flush_leased` uses dup/close, while explicit synchronization is a separate path. This diagnostic does not attribute time between host checks, VM transport, guest scheduling and required access-control/preimage work.
+
+Tracing calibration uses one untraced and one traced replay per backend:
+
+| Backend | Untraced command total (s) | Traced command total (s) | Observed increase |
+| --- | ---: | ---: | ---: |
+| pVisor VM | 39.237 | 46.024 | 17.3% |
+| AgentENV | 24.974 | 33.104 | 32.6% |
+
+Both exceed the predefined 5% perturbation gate. The file-call table is therefore an **instrumented diagnostic**, not an estimate of untraced filesystem time or of the earlier end-to-end gap. File-backed `mmap` setup and `exec` are recorded separately; mapped-file demand faults are not timed. Pseudo-files, pipes/sockets and measurement-log paths are excluded; unresolved-path intervals (0.026 / 0.022 s) are also excluded. All 176 steps across the four calibration/traced runs passed checks, and all 88 traces parsed without unresolved errors.
+
+### Configuration and evidence {#swe-evidence}
+
+Measured on 2026-10-13: 2 vCPUs / 2 GiB per guest; host CPUs 0,1, two-core quota, 24 GiB and zero swap. pVisor uses Linux 6.12.109; AgentENV uses 6.1.175 and official cold start. Both use the same source OCI, Python 3.9.20, repository baseline and original commands, with fresh writable state per replay. Preflight warms some files; host caches are not cleared. Measurement logs use guest tmpfs and are exported outside the command timer. End-to-end and diagnostic tmpfs capacities are 32 and 384 MiB respectively.
+
+pVisor uses merged commit `b5e27a6670c37120592409bf3fd6ec36cdf9b38c`. The driver declares its private physical lower immutable through `OverlayHint`; `root-data` caching and default metadata caching are enabled. All guest writes enter a private upper; no apply occurs. The whole-root stage includes `/testbed`, so its initial lower files are eligible for this contract too. No new no-open, long-TTL or DAX experiment is included. This comparison does not measure the incremental speedup from PR #24.
+
+[Processed tables and syscall summaries](swe-trajectory-comparison.csv) · [Configuration, artifact and evidence hashes](../assets/benchmarks/swe-trajectory-20261013-provenance.json).
+Frozen runners, commands, per-step outputs, raw traces and verification scripts are retained in the local evidence archives under `benchmark/.data/swe-comparison-20261013`; these are not public download links. The original replay setup is documented in [PR #23's README](https://github.com/DeepLink-org/pvisor/blob/2cdefa8d38f78960fc5cdec5c65bb59348c3f883/benchmark.new/trajectory/README.md); the archived cross-backend harness additionally pins the immutable lower, tmpfs logging and diagnostic environment. This documentation change adds no performance samples or product changes.
+
+
 ## Motivation
 
 To detect interference, first fix tool actions and remove inference/Internet variability, then measure real-model tasks. This supplies a repeatable tool-loop baseline.

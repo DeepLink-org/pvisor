@@ -1,5 +1,7 @@
 # Filesystem performance: technical analysis and experiment records
 
+SWE trajectory diagnostics: [pVisor VM with PR #24 versus AgentENV](agent-task-performance-analysis.md#swe-trajectory), with separate command totals and traced file-call intervals.
+
 ## Current conclusions and measurement coverage {#filesystem-status}
 
 **Latest independent N30 paired comparison: Selected C3 (new-VM writeback off by default): Launch through normal exit changes by -1.73%, 95% CI [-5.70, -0.22]%; Write 256 files changes by -14.19%, 95% CI [-17.58, -9.82]%. Results apply to the measured combined code/default configuration; complete recovery of historical performance is not established.**
