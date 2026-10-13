@@ -73,6 +73,16 @@ class RegistryTests(unittest.TestCase):
                 })
                 self.assertTrue(path.with_suffix(".py").is_file())
                 continue
+            if row["status"] == "prepared-python-single-condition":
+                self.assertEqual(row["benchmark_id"], "B-TRAJECTORY-ENG")
+                self.assertEqual(row["role"], "engineering A/B")
+                self.assertEqual(row["entry"], "trajectory/trajectory_smoke.json")
+                self.assertEqual(table, {
+                    "single-condition": "$ python3 @REPO@/benchmark/pvisor/trajectory_benchmark.py @CONDITION@ --row-output"
+                })
+                self.assertTrue(path.with_name("prepare.py").is_file())
+                self.assertTrue((ROOT.parent / "benchmark/pvisor/trajectory_benchmark.py").is_file())
+                continue
             if isinstance(next(iter(table.values())), str):
                 for command in table.values():
                     self.assertTrue(command.startswith("$ hyperfine "))

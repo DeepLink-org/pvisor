@@ -19,6 +19,10 @@ compatible `libkrunfw.so.5` directory for the GNU example. Point both
 uses the latter) at the dedicated data volume. The example dispatches internal
 VM re-exec before creating Tokio.
 
+The template is `trajectory_smoke.json`; its distinct name preserves the existing
+`just benchmark smoke` shortcut for the process benchmark. Use the explicit
+preparation flow below for this VM trajectory.
+
 Materialize and execute exactly one condition:
 
 ```sh

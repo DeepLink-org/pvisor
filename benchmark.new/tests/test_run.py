@@ -109,6 +109,14 @@ class TableRunnerContracts(unittest.TestCase):
                         RUN.run_table(template, "/semspec", row=value)
                 prepare.assert_not_called()
 
+    def test_smoke_shortcut_and_default_still_select_process(self):
+        process = ROOT / "process/smoke.json"
+        self.assertEqual(RUN.resolve_entry("smoke"), process)
+        self.assertEqual(RUN.resolve_selection([]), ([process], None))
+        self.assertEqual(
+            RUN.resolve_entry("trajectory_smoke"), ROOT / "trajectory/trajectory_smoke.json"
+        )
+
     def test_entry_resolution_rejects_results_and_unknown_names(self):
         self.assertEqual(RUN.resolve_entry("startup/timing"), ROOT / "startup/timing.json")
         self.assertEqual(RUN.resolve_entry("docker_timing"), ROOT / "startup/docker_timing.json")

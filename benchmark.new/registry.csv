@@ -1,5 +1,5 @@
 benchmark_id,role,entry,status
-B-TRAJECTORY-ENG,engineering A/B,trajectory/smoke.json,prepared-python-single-condition
+B-TRAJECTORY-ENG,engineering A/B,trajectory/trajectory_smoke.json,prepared-python-single-condition
 B-LAZY-STARTUP,user-facing,startup/lazy_startup.json,requires-single-condition-command
 B-STARTUP-ENG,engineering A/B,startup/guest_init.json,requires-single-condition-command
 B-KERNEL-ENG,engineering A/B,startup/kernel.json,requires-single-condition-command

@@ -20,7 +20,7 @@ def main():
     batch = args.batch.resolve()
     batch.mkdir(parents=True, exist_ok=False)
     repo = Path(__file__).resolve().parents[2]
-    template = Path(__file__).with_name('smoke.json')
+    template = Path(__file__).with_name('trajectory_smoke.json')
     command = json.loads(template.read_text())['single-condition']
     command = command.replace('@REPO@', shlex.quote(str(repo))).replace(
         '@CONDITION@', shlex.join(condition + ['--output', str(batch / 'sample')]))
