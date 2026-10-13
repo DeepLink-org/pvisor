@@ -1066,6 +1066,19 @@ pub trait FileSystem {
         Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
+    /// Lookup-only names that are not part of the backing directory stream.
+    ///
+    /// `READINDEX` merges these in front of `readdirplus`, using stable inode
+    /// cookies separate from backing cookies. A finished guest
+    /// directory image treats any name missing from that merged stream as
+    /// absent, so an injected file such as `init.krun` must appear here.
+    /// Ordinary `readdir` stays unchanged. The returned order is stable.
+    /// Listing does not consume a one-shot name; `lookup` still does.
+    /// Zero entry validity makes the guest use host LOOKUP for that name.
+    fn synthetic_entries(&self, _inode: Self::Inode) -> Vec<(Vec<u8>, Entry)> {
+        Vec::new()
+    }
+
     /// Synchronize the contents of a directory.
     ///
     /// File systems must ensure that the directory contents have been flushed to disk before

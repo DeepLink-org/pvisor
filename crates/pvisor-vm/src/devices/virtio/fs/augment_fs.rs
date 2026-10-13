@@ -4,8 +4,10 @@
 // FUSE operations for virtual inodes — synthetic read-only files that exist
 // only in memory. All other operations are delegated to the inner filesystem.
 //
-// Virtual inodes are injected into the root directory (parent = ROOT_ID) and
-// are currently only accessible via lookup (they do not appear in readdir).
+// Virtual inodes are injected into the root directory (parent = ROOT_ID).
+// Ordinary readdir does not list them. READINDEX does: a finished guest
+// directory image treats a missing name as absent, so `/init.krun` has to be
+// part of that stream or the kernel cannot exec it.
 //
 // One-shot files can only be looked up once — the name is removed from the
 // directory on first lookup so subsequent lookups return ENOENT.
@@ -259,26 +261,27 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> 
 
     fn lookup(&self, ctx: Context, parent: Inode, name: &CStr) -> io::Result<Entry> {
         let key = (parent, CString::from(name));
-        let inode = self.name_to_inode.read().unwrap().get(&key).copied();
-        if let Some(inode) = inode {
-            let inodes = self.inodes.read().unwrap();
-            if let Some(vnode) = inodes.get(&inode) {
-                let one_shot = vnode.one_shot;
-                let (st, timeout) = Self::virtual_stat(inode, vnode);
+        {
+            let mut names = self.name_to_inode.write().unwrap();
+            if let Some(&inode) = names.get(&key) {
+                let inodes = self.inodes.read().unwrap();
+                if let Some(vnode) = inodes.get(&inode) {
+                    let one_shot = vnode.one_shot;
+                    let (st, timeout) = Self::virtual_stat(inode, vnode);
 
-                if one_shot {
-                    drop(inodes);
-                    self.name_to_inode.write().unwrap().remove(&key);
+                    if one_shot {
+                        names.remove(&key);
+                    }
+
+                    return Ok(Entry {
+                        inode,
+                        generation: 0,
+                        attr: st,
+                        attr_flags: 0,
+                        attr_timeout: timeout,
+                        entry_timeout: timeout,
+                    });
                 }
-
-                return Ok(Entry {
-                    inode,
-                    generation: 0,
-                    attr: st,
-                    attr_flags: 0,
-                    attr_timeout: timeout,
-                    entry_timeout: timeout,
-                });
             }
         }
         self.inner.lookup(ctx, parent, name)
@@ -542,10 +545,12 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> 
         lock_owner: Option<u64>,
     ) -> io::Result<()> {
         {
+            let mut names = self.name_to_inode.write().unwrap();
             let mut inodes = self.inodes.write().unwrap();
             if let Some(vnode) = inodes.get(&inode) {
                 if vnode.one_shot {
                     inodes.remove(&inode);
+                    names.retain(|_, child| *child != inode);
                 }
                 return Ok(());
             }
@@ -600,6 +605,35 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> 
             return Err(linux_errno::eperm());
         }
         self.inner.removexattr(ctx, inode, name)
+    }
+
+    fn synthetic_entries(&self, inode: Inode) -> Vec<(Vec<u8>, Entry)> {
+        let names = self.name_to_inode.read().unwrap();
+        let inodes = self.inodes.read().unwrap();
+        let mut found: Vec<(Vec<u8>, Inode)> = names
+            .iter()
+            .filter(|((parent, _), _)| *parent == inode)
+            .map(|((_, name), ino)| (name.to_bytes().to_vec(), *ino))
+            .collect();
+        found.sort_by(|left, right| left.0.cmp(&right.0));
+        found
+            .into_iter()
+            .filter_map(|(name, ino)| {
+                let vnode = inodes.get(&ino)?;
+                let (attr, timeout) = Self::virtual_stat(ino, vnode);
+                Some((
+                    name,
+                    Entry {
+                        inode: ino,
+                        generation: 0,
+                        attr,
+                        attr_flags: 0,
+                        attr_timeout: timeout,
+                        entry_timeout: timeout,
+                    },
+                ))
+            })
+            .collect()
     }
 
     fn opendir(

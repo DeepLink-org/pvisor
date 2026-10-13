@@ -31,6 +31,15 @@ use crate::devices::virtio::VirtioShmRegion;
 
 const MAX_BUFFER_SIZE: u32 = 1 << 20;
 const BUFFER_HEADER_SIZE: u32 = 0x1000;
+/// FUSE counts `InitOut.max_pages` in guest pages. The firmware guest uses
+/// 4 KiB pages and accepts at most 256 pages in one request. Deriving the
+/// count from the host page size advertises 64 pages on a 16 KiB host, which
+/// that guest treats as a 256 KiB read.
+const GUEST_PAGE_SIZE: u32 = 4096;
+const FUSE_MAX_MAX_PAGES: u32 = 256;
+const NEGOTIATED_MAX_PAGES: u16 = (MAX_BUFFER_SIZE / GUEST_PAGE_SIZE) as u16;
+const _: () = assert!(NEGOTIATED_MAX_PAGES as u32 == FUSE_MAX_MAX_PAGES);
+const _: () = assert!(NEGOTIATED_MAX_PAGES as u32 * GUEST_PAGE_SIZE == MAX_BUFFER_SIZE);
 const DIRENT_PADDING: [u8; 8] = [0; 8];
 
 struct ZCReader<'a>(Reader<'a>);
@@ -149,6 +158,7 @@ impl<F: FileSystem + Sync> Server<F> {
             x if x == Opcode::Statfs as u32 => "STATFS",
             x if x == Opcode::BatchForget as u32 => "BATCHFORGET",
             x if x == Opcode::Releasedir as u32 => "RELEASEDIR",
+            x if x == Opcode::ReadIndex as u32 => "READINDEX",
             _ => "OTHER",
         };
         let _span = self.profile.span(label);
@@ -205,6 +215,7 @@ impl<F: FileSystem + Sync> Server<F> {
             x if x == Opcode::BatchForget as u32 => self.batch_forget(in_header, r, w),
             x if x == Opcode::Fallocate as u32 => self.fallocate(in_header, r, w),
             x if x == Opcode::Readdirplus as u32 => self.readdirplus(in_header, r, w),
+            x if x == Opcode::ReadIndex as u32 => self.read_index(in_header, r, w),
             x if x == Opcode::Rename2 as u32 => self.rename2(in_header, r, w),
             x if x == Opcode::Lseek as u32 => self.lseek(in_header, r, w),
             x if x == Opcode::CopyFileRange as u32 => self.copyfilerange(in_header, r, w),
@@ -975,7 +986,8 @@ impl<F: FileSystem + Sync> Server<F> {
             | FsOptions::MAX_PAGES
             | FsOptions::SUBMOUNTS
             | FsOptions::HANDLE_KILLPRIV_V2
-            | FsOptions::INIT_EXT;
+            | FsOptions::INIT_EXT
+            | FsOptions::PVISOR_META;
 
         if allow_idmap {
             supported |= FsOptions::ALLOW_IDMAP;
@@ -989,7 +1001,6 @@ impl<F: FileSystem + Sync> Server<F> {
         let capable = FsOptions::from_bits_truncate(flags_64);
 
         let page_size: u32 = unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() };
-        let max_pages = ((MAX_BUFFER_SIZE - 1) / page_size) + 1;
 
         match self.fs.init(capable) {
             Ok(want) => {
@@ -1005,7 +1016,7 @@ impl<F: FileSystem + Sync> Server<F> {
                     congestion_threshold: (u16::MAX / 4) * 3,
                     max_write: MAX_BUFFER_SIZE,
                     time_gran: 1, // nanoseconds
-                    max_pages: max_pages.try_into().unwrap(),
+                    max_pages: NEGOTIATED_MAX_PAGES,
                     map_alignment: if enabled & FsOptions::MAP_ALIGNMENT.bits() != 0 {
                         page_size.trailing_zeros() as u16
                     } else {
@@ -1114,6 +1125,52 @@ impl<F: FileSystem + Sync> Server<F> {
 
     fn readdirplus(&self, in_header: InHeader, r: Reader, w: Writer) -> Result<usize> {
         self.do_readdir(in_header, r, w, true)
+    }
+
+    fn read_index(&self, in_header: InHeader, mut r: Reader, mut w: Writer) -> Result<usize> {
+        let options = FsOptions::from_bits_truncate(self.options.load(Ordering::Relaxed));
+        if !options.contains(FsOptions::PVISOR_META) {
+            return reply_error(
+                linux_error(io::Error::from_raw_os_error(libc::ENOSYS)),
+                in_header.unique,
+                w,
+            );
+        }
+        let ReadIn { offset, size, .. } = r.read_obj().map_err(Error::DecodeMessage)?;
+        if size > MAX_BUFFER_SIZE {
+            return reply_error(
+                linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
+                in_header.unique,
+                w,
+            );
+        }
+        match super::guest_index::read_directory_page(
+            &self.fs,
+            Context::from(in_header),
+            in_header.nodeid.into(),
+            offset,
+            size,
+        ) {
+            Ok(page) => {
+                let payload = super::guest_index::encode_page(&page);
+                if w.available_bytes() < size_of::<OutHeader>() + payload.len() {
+                    return reply_error(
+                        linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
+                        in_header.unique,
+                        w,
+                    );
+                }
+                let out = OutHeader {
+                    len: (size_of::<OutHeader>() + payload.len()) as u32,
+                    error: 0,
+                    unique: in_header.unique,
+                };
+                w.write_all(out.as_slice()).map_err(Error::EncodeMessage)?;
+                w.write_all(&payload).map_err(Error::EncodeMessage)?;
+                Ok(out.len as usize)
+            }
+            Err(error) => reply_error(error, in_header.unique, w),
+        }
     }
 
     fn releasedir(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {

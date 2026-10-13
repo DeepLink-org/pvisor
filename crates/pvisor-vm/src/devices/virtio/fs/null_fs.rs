@@ -88,4 +88,99 @@ mod tests {
             .is_empty());
         assert_eq!(exit.load(Ordering::SeqCst), 17);
     }
+
+    fn injected_init() -> AugmentFs<NullFs> {
+        use super::super::virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent};
+        use std::ffi::CString;
+
+        AugmentFs::new(
+            NullFs,
+            &InodeAllocator::new(),
+            vec![VirtualDirEntry {
+                name: CString::new("init.krun").unwrap(),
+                entry: VirtualEntry {
+                    mode: 0o755,
+                    one_shot: true,
+                    content: VirtualEntryContent::File {
+                        data: Arc::<[u8]>::from(&b"init"[..]),
+                    },
+                },
+            }],
+        )
+    }
+
+    #[test]
+    fn listing_injected_init_does_not_consume_the_one_shot_name() {
+        let fs = injected_init();
+        let listed = fs.synthetic_entries(fuse::ROOT_ID);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].0, b"init.krun");
+        assert_eq!(listed[0].1.attr.st_size, 4);
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let found = fs.lookup(ctx, fuse::ROOT_ID, c"init.krun").unwrap();
+        assert_eq!(found.inode, listed[0].1.inode);
+        match fs.lookup(ctx, fuse::ROOT_ID, c"init.krun") {
+            Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ENOENT)),
+            Ok(_) => panic!("one-shot name still resolves"),
+        }
+        assert!(fs.synthetic_entries(fuse::ROOT_ID).is_empty());
+    }
+
+    #[test]
+    fn releasing_an_imported_one_shot_inode_removes_its_name() {
+        let fs = injected_init();
+        let listed = fs.synthetic_entries(fuse::ROOT_ID);
+        let inode = listed[0].1.inode;
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        // Directory import may instantiate an inode without a host LOOKUP.
+        let (handle, _) = fs.open(ctx, inode, false, libc::O_RDONLY as u32).unwrap();
+        fs.release(ctx, inode, 0, handle.unwrap(), false, false, None)
+            .unwrap();
+        let super::super::snapshot::FsSnapshot::Augment { names, inodes, .. } =
+            fs.capture_state().unwrap()
+        else {
+            panic!("wrong snapshot type")
+        };
+        assert!(names.is_empty());
+        assert!(inodes.is_empty());
+        assert!(fs.lookup(ctx, fuse::ROOT_ID, c"init.krun").is_err());
+    }
+
+    #[test]
+    fn concurrent_lookups_consume_a_one_shot_name_once() {
+        let fs = injected_init();
+        let barrier = std::sync::Barrier::new(8);
+        let successes = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        fs.lookup(
+                            Context {
+                                uid: 0,
+                                gid: 0,
+                                pid: 1,
+                            },
+                            fuse::ROOT_ID,
+                            c"init.krun",
+                        )
+                        .is_ok()
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|thread| usize::from(thread.join().unwrap()))
+                .sum::<usize>()
+        });
+        assert_eq!(successes, 1);
+    }
 }

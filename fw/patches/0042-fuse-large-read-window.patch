@@ -1,0 +1,212 @@
+From: pVisor <pvisor@local>
+Subject: fuse: fill READINDEX and sequential READ up to 1 MiB
+
+A directory import asked for one 4 KiB page, and sequential reads kept
+the 128 KiB readahead default. Request the negotiated FUSE page budget,
+at most 256 pages, and raise readahead to that budget. The directory
+reply is carried in pages so virtio-fs does not kmalloc the whole buffer
+with GFP_ATOMIC. out_argvar is required: fuse_simple_request returns the
+byte count only for a variable-sized reply.
+
+diff -ruN a/fs/fuse/inode.c b/fs/fuse/inode.c
+--- a/fs/fuse/inode.c	2026-10-13 18:02:28
++++ b/fs/fuse/inode.c	2026-10-13 18:02:28
+@@ -1359,6 +1359,12 @@
+ 
+ 		fm->sb->s_bdi->ra_pages =
+ 				min(fm->sb->s_bdi->ra_pages, ra_pages);
++		/*
++		 * Sequential reads use the whole window the server granted.
++		 * The block-layer default is 128 KiB; fc->max_pages is up to 1 MiB.
++		 */
++		if (fc->max_pages > fm->sb->s_bdi->ra_pages)
++			fm->sb->s_bdi->ra_pages = fc->max_pages;
+ 		fc->minor = arg->minor;
+ 		fc->max_write = arg->minor < 5 ? 4096 : arg->max_write;
+ 		fc->max_write = max_t(unsigned, 4096, fc->max_write);
+diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
+--- a/fs/fuse/pvisor_meta.c	2026-10-13 18:02:28
++++ b/fs/fuse/pvisor_meta.c	2026-10-13 18:02:28
+@@ -4,8 +4,9 @@
+  *
+  * The host publishes one merged directory page at a time. This cache answers
+  * lookup, readdir, and read-only open from that image. A name that is not in
+- * a finished image is absent. A missing page, a read, and every stage change
+- * still go to the host. Rename drops the image and the next lookup uses the
++ * a finished image is absent. A missing page is one request of the negotiated
++ * FUSE budget, at most 1 MiB. File bytes and every stage change still go to
++ * the host. Rename drops the image and the next lookup uses the
+  * host, because exchanging two directories safely is the host overlay's job.
+  */
+ 
+@@ -13,10 +14,13 @@
+ 
+ #include <linux/mutex.h>
+ #include <linux/slab.h>
++#include <linux/vmalloc.h>
+ 
+ #define PVISOR_MAX_ENTRIES 65536
+ #define PVISOR_MAX_PAGES 32
+ #define PVISOR_VALID_SEC 86400ULL
++/* Matches FUSE_MAX_MAX_PAGES and the host's 1 MiB request buffer. */
++#define PVISOR_MAX_TRANSFER_PAGES 256U
+ 
+ struct pvisor_entry {
+ 	struct rb_node node;
+@@ -424,17 +428,44 @@
+ 	return 0;
+ }
+ 
++static unsigned int pvisor_transfer_bytes(struct fuse_conn *fc)
++{
++	unsigned int pages = fc->max_pages;
++
++	if (pages < 1)
++		pages = 1;
++	if (pages > PVISOR_MAX_TRANSFER_PAGES)
++		pages = PVISOR_MAX_TRANSFER_PAGES;
++	return pages << PAGE_SHIFT;
++}
++
++static void pvisor_free_pages(struct page **pages, unsigned int npages,
++			      struct fuse_page_desc *descs)
++{
++	unsigned int i;
++
++	if (pages) {
++		for (i = 0; i < npages; i++) {
++			if (pages[i])
++				__free_page(pages[i]);
++		}
++		kvfree(pages);
++	}
++	kvfree(descs);
++}
++
+ static int pvisor_fetch(struct inode *dir, struct dentry *parent,
+ 			const struct qstr *skip, struct fuse_entry_out *skipped)
+ {
+ 	struct fuse_mount *fm = get_fuse_mount(dir);
+ 	struct pvisor_dir *pd = get_fuse_inode(dir)->pvisor;
+ 	struct fuse_read_in inarg;
+-	struct {
+-		struct fuse_readindex_out hdr;
+-		char body[PAGE_SIZE];
+-	} *buf;
+-	struct fuse_args args = {};
++	struct fuse_args_pages ap = {};
++	struct fuse_readindex_out *hdr;
++	struct page **pages = NULL;
++	struct fuse_page_desc *descs = NULL;
++	unsigned int budget, npages, i;
++	void *mapped = NULL;
+ 	u64 offset;
+ 	ssize_t res;
+ 	bool complete;
+@@ -444,21 +475,45 @@
+ 	offset = pd->next_offset;
+ 	mutex_unlock(&pd->lock);
+ 
+-	buf = kmalloc(sizeof(*buf), GFP_KERNEL);
+-	if (!buf)
+-		return -ENOMEM;
++	budget = pvisor_transfer_bytes(fm->fc);
++	npages = budget >> PAGE_SHIFT;
++	pages = kvmalloc_array(npages, sizeof(*pages), GFP_KERNEL | __GFP_ZERO);
++	descs = kvmalloc_array(npages, sizeof(*descs), GFP_KERNEL);
++	if (!pages || !descs) {
++		err = -ENOMEM;
++		goto out;
++	}
++	for (i = 0; i < npages; i++) {
++		pages[i] = alloc_page(GFP_KERNEL | __GFP_ZERO);
++		if (!pages[i]) {
++			err = -ENOMEM;
++			goto out;
++		}
++		descs[i].length = PAGE_SIZE;
++		descs[i].offset = 0;
++	}
+ 	memset(&inarg, 0, sizeof(inarg));
+ 	inarg.offset = offset;
+-	inarg.size = sizeof(*buf);
+-	args.opcode = FUSE_READINDEX;
+-	args.nodeid = get_node_id(dir);
+-	args.in_numargs = 1;
+-	args.in_args[0].size = sizeof(inarg);
+-	args.in_args[0].value = &inarg;
+-	args.out_numargs = 1;
+-	args.out_args[0].size = sizeof(*buf);
+-	args.out_args[0].value = buf;
+-	res = fuse_simple_request(fm, &args);
++	inarg.size = budget;
++	ap.args.opcode = FUSE_READINDEX;
++	ap.args.nodeid = get_node_id(dir);
++	ap.args.in_numargs = 1;
++	ap.args.in_args[0].size = sizeof(inarg);
++	ap.args.in_args[0].value = &inarg;
++	ap.args.out_numargs = 1;
++	ap.args.out_args[0].size = budget;
++	ap.args.out_pages = true;
++	ap.args.out_argvar = true;
++	ap.args.page_zeroing = true;
++	ap.pages = pages;
++	ap.descs = descs;
++	ap.num_pages = npages;
++	/*
++	 * out_argvar makes fuse_simple_request return the byte count. Without
++	 * it a successful reply returns 0 and the image would treat that as
++	 * a short read.
++	 */
++	res = fuse_simple_request(fm, &ap.args);
+ 	if (res < 0) {
+ 		err = res;
+ 		if (err == -ENOSYS) {
+@@ -470,19 +525,26 @@
+ 		}
+ 		goto out;
+ 	}
+-	if (res < (ssize_t)sizeof(buf->hdr)) {
++	if (res < (ssize_t)sizeof(struct fuse_readindex_out)) {
+ 		err = -EIO;
+ 		goto out;
+ 	}
+-	complete = buf->hdr.flags & FUSE_READINDEX_COMPLETE;
+-	if (!complete && buf->hdr.next_offset <= offset &&
+-	    res > (ssize_t)sizeof(buf->hdr)) {
++	mapped = vmap(pages, npages, VM_MAP, PAGE_KERNEL);
++	if (!mapped) {
++		err = -ENOMEM;
++		goto out;
++	}
++	hdr = mapped;
++	complete = hdr->flags & FUSE_READINDEX_COMPLETE;
++	if (!complete && hdr->next_offset <= offset &&
++	    res > (ssize_t)sizeof(*hdr)) {
+ 		err = -EIO;
+ 		goto out;
+ 	}
+-	err = pvisor_publish_page(dir, parent, skip, buf->body,
+-				  res - sizeof(buf->hdr), complete,
+-				  buf->hdr.next_offset);
++	err = pvisor_publish_page(dir, parent, skip,
++				  (char *)mapped + sizeof(*hdr),
++				  res - sizeof(*hdr), complete,
++				  hdr->next_offset);
+ 	if (err == 1 && skipped) {
+ 		struct pvisor_entry *entry;
+ 		struct qstr name = *skip;
+@@ -506,10 +568,11 @@
+ 		mutex_unlock(&pd->lock);
+ 	}
+ out:
+-	kfree(buf);
++	if (mapped)
++		vunmap(mapped);
++	pvisor_free_pages(pages, npages, descs);
+ 	return err;
+ }
+-
+ int pvisor_lookup(struct inode *dir, struct dentry *entry,
+ 		  struct fuse_entry_out *outarg, struct inode **inode)
+ {

@@ -294,6 +294,34 @@ guest 物理写入产生 MMIO exit。宿主映射保留 MAP_PRIVATE 的 COW 保�
 不通过省略映射状态生成不可恢复快照。该阶段只提供显式不可变 share 的
 数据路径，不声明现有 CLI 工作负载或启动时间已经加快。
 
+## Guest 目录镜像
+
+协商 `FUSE_PVISOR_META`（init flag bit 41）后，guest 把宿主合并后的目录
+页缓存在 virtio-fs 内部。已导入且完整的目录上，lookup、getattr 所依赖的
+dentry、readdir，以及普通文件和目录的只读 open，都在 guest 内核内完成。
+缺页时 guest 发送 `FUSE_READINDEX`。一次请求使用协商得到的 FUSE 页预算，
+最大 1 MiB（256 个 4 KiB 客机页）。宿主用一次 `readdirplus` 填满这次预算，
+并在返回前关闭这次目录句柄。只有带 `COMPLETE` 的页能证明某个名字不存在。这一页包含
+`synthetic_entries` 里的注入文件（例如 `/init.krun` 和
+`/.pvisor-guest.json`）；它们不在底层目录的 `readdir` 结果中，但完整镜像
+仍必须能按名字找到它们。
+一次性注入文件保留零 entry/attribute 缓存期限；guest 只记录其名字，
+不预先创建 dentry，也不在 readdir 中列出，查找仍交给宿主 LOOKUP
+消费名字。RELEASE 同时移除注入 inode 和残留名字，不能被完整镜像复活。
+注入名字使用稳定 inode cookie，底层 cookie 使用独立的正数区间；
+分页之间消费注入文件不会使后续目录项跳过或重放。
+顺序读取的 readahead 使用同一个页预算，大文件的 `READ` 以最多 1 MiB 往返。
+旧宿主若通告更少的 `max_pages`，guest 按那个较小预算请求。
+文件字节、可写 open、create、unlink、rmdir 和 copy-up 仍到宿主。create
+和 unlink 成功后，guest 在本地目录镜像里记下新名字或 whiteout，后续
+lookup 不再为这个名字询问宿主。rename 直接丢弃相关目录镜像，下一次
+lookup 回到宿主。
+
+未打补丁的 guest 不置该 flag，行为与逐请求 FUSE 相同。旧宿主不回该
+flag，或对 `FUSE_READINDEX` 返回 `ENOSYS` 时，新 guest 关闭目录镜像。
+该镜像不解析 Lazy Image 的页格式，也不把元数据放进 DAX 窗口。固件需
+重新执行 `just fw build` 后，guest 才会带上这部分 FUSE 改动。
+
 公开 API 的真实 guest 正确性用例为 `readonly_dax_case`：
 
 ```bash

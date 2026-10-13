@@ -82,6 +82,11 @@ downloaded tarballs. Default pVisor builds handle this through isolated snapshot
 The standalone upstream GitHub workflows and CODEOWNERS were not imported;
 pVisor's root CI runs the firmware bundle regression tests.
 
+The virtio-fs directory image preserves zero-validity lookup-only entries for
+one-shot injected files. Even after a COMPLETE import, these names use host
+LOOKUP and stay hidden from readdir. READINDEX rejects replies beyond its page
+budget and incomplete replies without forward progress.
+
 ## Building
 
 ### Linux (generic variant)
