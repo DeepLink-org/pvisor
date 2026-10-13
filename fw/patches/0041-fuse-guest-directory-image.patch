@@ -1,15 +1,21 @@
 From: pVisor <pvisor@local>
 Subject: fuse: keep a guest directory image inside virtio-fs
 
-Negotiate FUSE_PVISOR_META. The guest answers lookup, readdir and
-read-only open from imported directory pages, and sends FUSE_READINDEX
-only for a missing page. File bytes and stage changes still go to the
-host. Rename drops the image. A stock client never sets the flag, and
-an old server answering ENOSYS disables the image.
+Negotiate FUSE_PVISOR_META. Import directory pages through FUSE_READINDEX
+using the negotiated FUSE page budget, at most 1 MiB. Lookup, readdir
+and read-only open use the guest image; file bytes and stage changes
+still go to the host. Rename disables the affected directory image.
+A stock client never sets the flag, and ENOSYS falls back to the host.
 
-diff -ruN a/fs/fuse/Makefile b/fs/fuse/Makefile
---- a/fs/fuse/Makefile	2026-10-13 16:43:20
-+++ b/fs/fuse/Makefile	2026-10-13 16:43:20
+Carry variable-sized READINDEX replies in pages and raise sequential
+readahead to the negotiated window. Preserve zero-validity lookup-only
+entries for one-shot injected files: COMPLETE must not hide their names,
+but LOOKUP must reach the host and readdir must not list them. Reject
+replies outside the page budget and incomplete replies without progress.
+
+diff --git a/fs/fuse/Makefile b/fs/fuse/Makefile
+--- a/fs/fuse/Makefile
++++ b/fs/fuse/Makefile
 @@ -11,7 +11,7 @@
  obj-$(CONFIG_VIRTIO_FS) += virtiofs.o
  
@@ -19,9 +25,9 @@ diff -ruN a/fs/fuse/Makefile b/fs/fuse/Makefile
  fuse-$(CONFIG_FUSE_DAX) += dax.o
  fuse-$(CONFIG_FUSE_PASSTHROUGH) += passthrough.o
  
-diff -ruN a/fs/fuse/dir.c b/fs/fuse/dir.c
---- a/fs/fuse/dir.c	2026-10-13 16:43:20
-+++ b/fs/fuse/dir.c	2026-10-13 16:44:15
+diff --git a/fs/fuse/dir.c b/fs/fuse/dir.c
+--- a/fs/fuse/dir.c
++++ b/fs/fuse/dir.c
 @@ -426,8 +426,13 @@
  		return ERR_PTR(-EIO);
  
@@ -125,9 +131,9 @@ diff -ruN a/fs/fuse/dir.c b/fs/fuse/dir.c
  
  	return fuse_ioctl_common(file, cmd, arg, FUSE_IOCTL_DIR);
  }
-diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
---- a/fs/fuse/file.c	2026-10-13 16:43:20
-+++ b/fs/fuse/file.c	2026-10-13 17:02:50
+diff --git a/fs/fuse/file.c b/fs/fuse/file.c
+--- a/fs/fuse/file.c
++++ b/fs/fuse/file.c
 @@ -108,7 +108,10 @@
  		if (ra && ra->inode)
  			fuse_file_io_release(ff, ra->inode);
@@ -140,7 +146,7 @@ diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
  			/* Do nothing when server does not implement 'opendir' */
  		} else if (args->opcode == FUSE_RELEASE && ff->fm->fc->no_open) {
  			fuse_release_end(ff->fm, args, 0);
-@@ -181,6 +184,34 @@
+@@ -187,6 +190,34 @@
  	return ff;
  }
  
@@ -175,10 +181,11 @@ diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
  int fuse_do_open(struct fuse_mount *fm, u64 nodeid, struct file *file,
  		 bool isdir)
  {
-@@ -260,6 +291,22 @@
+@@ -265,6 +296,22 @@
+ 	err = generic_file_open(inode, file);
  	if (err)
  		return err;
- 
++
 +	if (fc->pvisor_meta && S_ISREG(inode->i_mode) &&
 +	    !(file->f_flags & (O_WRONLY | O_RDWR | O_TRUNC | O_APPEND))) {
 +		ff = fuse_file_alloc(fm, true);
@@ -194,11 +201,10 @@ diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
 +			fuse_sync_release(fi, ff, file->f_flags);
 +		return err;
 +	}
-+
+ 
  	if (is_wb_truncate || dax_truncate)
  		inode_lock(inode);
- 
-@@ -534,6 +581,9 @@
+@@ -540,6 +587,9 @@
  	if (fuse_is_bad(inode))
  		return -EIO;
  
@@ -208,18 +214,18 @@ diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
  	if (ff->open_flags & FOPEN_NOFLUSH && !fm->fc->writeback_cache)
  		return 0;
  
-@@ -609,6 +659,10 @@
+@@ -614,6 +664,10 @@
+ 
  	if (fuse_is_bad(inode))
  		return -EIO;
- 
++
 +	err = fuse_pvisor_bind(file);
 +	if (err)
 +		return err;
-+
+ 
  	inode_lock(inode);
  
- 	/*
-@@ -1747,10 +1801,15 @@
+@@ -1753,9 +1807,14 @@
  	struct file *file = iocb->ki_filp;
  	struct fuse_file *ff = file->private_data;
  	struct inode *inode = file_inode(file);
@@ -227,15 +233,14 @@ diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
  
  	if (fuse_is_bad(inode))
  		return -EIO;
- 
++
 +	err = fuse_pvisor_bind(file);
 +	if (err)
 +		return err;
-+
+ 
  	if (FUSE_IS_DAX(inode))
  		return fuse_dax_read_iter(iocb, to);
- 
-@@ -1768,10 +1827,15 @@
+@@ -1774,9 +1833,14 @@
  	struct file *file = iocb->ki_filp;
  	struct fuse_file *ff = file->private_data;
  	struct inode *inode = file_inode(file);
@@ -243,39 +248,36 @@ diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
  
  	if (fuse_is_bad(inode))
  		return -EIO;
- 
++
 +	err = fuse_pvisor_bind(file);
 +	if (err)
 +		return err;
-+
+ 
  	if (FUSE_IS_DAX(inode))
  		return fuse_dax_write_iter(iocb, from);
- 
-@@ -1789,7 +1853,11 @@
+@@ -1795,6 +1859,10 @@
  				unsigned int flags)
  {
  	struct fuse_file *ff = in->private_data;
 +	int err = fuse_pvisor_bind(in);
- 
++
 +	if (err)
 +		return err;
-+
+ 
  	/* FOPEN_DIRECT_IO overrides FOPEN_PASSTHROUGH */
  	if (fuse_file_passthrough(ff) && !(ff->open_flags & FOPEN_DIRECT_IO))
- 		return fuse_passthrough_splice_read(in, ppos, pipe, len, flags);
-@@ -1801,7 +1869,11 @@
+@@ -1807,6 +1875,10 @@
  				 loff_t *ppos, size_t len, unsigned int flags)
  {
  	struct fuse_file *ff = out->private_data;
 +	int err = fuse_pvisor_bind(out);
- 
++
 +	if (err)
 +		return err;
-+
+ 
  	/* FOPEN_DIRECT_IO overrides FOPEN_PASSTHROUGH */
  	if (fuse_file_passthrough(ff) && !(ff->open_flags & FOPEN_DIRECT_IO))
- 		return fuse_passthrough_splice_write(pipe, out, ppos, len, flags);
-@@ -2603,6 +2675,10 @@
+@@ -2609,6 +2681,10 @@
  	struct inode *inode = file_inode(file);
  	int rc;
  
@@ -286,7 +288,7 @@ diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
  	/* DAX mmap is superior to direct_io mmap */
  	if (FUSE_IS_DAX(inode))
  		return fuse_dax_mmap(file, vma);
-@@ -2765,6 +2841,10 @@
+@@ -2771,6 +2847,10 @@
  	struct fuse_conn *fc = get_fuse_conn(inode);
  	int err;
  
@@ -297,30 +299,29 @@ diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
  	if (cmd == F_CANCELLK) {
  		err = 0;
  	} else if (cmd == F_GETLK) {
-@@ -2788,6 +2868,10 @@
+@@ -2793,6 +2873,10 @@
+ 	struct inode *inode = file_inode(file);
  	struct fuse_conn *fc = get_fuse_conn(inode);
  	int err;
- 
++
 +	err = fuse_pvisor_bind(file);
 +	if (err)
 +		return err;
-+
+ 
  	if (fc->no_flock) {
  		err = locks_lock_file_wait(file, fl);
- 	} else {
-@@ -2879,7 +2963,11 @@
+@@ -2885,6 +2969,10 @@
  {
  	loff_t retval;
  	struct inode *inode = file_inode(file);
 +	int err = fuse_pvisor_bind(file);
- 
++
 +	if (err)
 +		return err;
-+
+ 
  	switch (whence) {
  	case SEEK_SET:
- 	case SEEK_CUR:
-@@ -2961,11 +3049,18 @@
+@@ -2967,10 +3055,17 @@
  {
  	struct fuse_file *ff = file->private_data;
  	struct fuse_mount *fm = ff->fm;
@@ -329,44 +330,44 @@ diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
  	struct fuse_poll_out outarg;
  	FUSE_ARGS(args);
  	int err;
- 
++
 +	err = fuse_pvisor_bind(file);
 +	if (err)
 +		return err;
 +	memset(&inarg, 0, sizeof(inarg));
 +	inarg.fh = ff->fh;
 +	inarg.kh = ff->kh;
-+
+ 
  	if (fm->fc->no_poll)
  		return DEFAULT_POLLMASK;
- 
-@@ -3169,6 +3264,10 @@
+@@ -3174,6 +3269,10 @@
+ 	bool block_faults = FUSE_IS_DAX(inode) &&
  		(!(mode & FALLOC_FL_KEEP_SIZE) ||
  		 (mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE)));
- 
++
 +	err = fuse_pvisor_bind(file);
 +	if (err)
 +		return err;
-+
+ 
  	if (mode & ~(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE |
  		     FALLOC_FL_ZERO_RANGE))
- 		return -EOPNOTSUPP;
-@@ -3359,7 +3458,11 @@
+@@ -3365,6 +3464,10 @@
  				    size_t len, unsigned int flags)
  {
  	ssize_t ret;
 +	int err = fuse_pvisor_bind(src_file);
- 
++
 +	if (err)
 +		return err;
-+
+ 
  	ret = __fuse_copy_file_range(src_file, src_off, dst_file, dst_off,
  				     len, flags);
- 
-@@ -3369,6 +3472,26 @@
+@@ -3373,6 +3476,26 @@
+ 		ret = splice_copy_file_range(src_file, src_off, dst_file,
+ 					     dst_off, len);
  	return ret;
- }
- 
++}
++
 +static long fuse_pvisor_file_ioctl(struct file *file, unsigned int cmd,
 +				   unsigned long arg)
 +{
@@ -385,12 +386,10 @@ diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
 +	if (err)
 +		return err;
 +	return fuse_file_compat_ioctl(file, cmd, arg);
-+}
-+
+ }
+ 
  static const struct file_operations fuse_file_operations = {
- 	.llseek		= fuse_file_llseek,
- 	.read_iter	= fuse_file_read_iter,
-@@ -3383,8 +3506,8 @@
+@@ -3389,8 +3512,8 @@
  	.flock		= fuse_file_flock,
  	.splice_read	= fuse_splice_read,
  	.splice_write	= fuse_splice_write,
@@ -401,9 +400,9 @@ diff -ruN a/fs/fuse/file.c b/fs/fuse/file.c
  	.poll		= fuse_file_poll,
  	.fallocate	= fuse_file_fallocate,
  	.copy_file_range = fuse_copy_file_range,
-diff -ruN a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
---- a/fs/fuse/fuse_i.h	2026-10-13 16:43:20
-+++ b/fs/fuse/fuse_i.h	2026-10-13 16:43:20
+diff --git a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
 @@ -87,6 +87,8 @@
  };
  
@@ -459,18 +458,18 @@ diff -ruN a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
  
  /**
   * Send FORGET command
-diff -ruN a/fs/fuse/inode.c b/fs/fuse/inode.c
---- a/fs/fuse/inode.c	2026-10-13 16:43:20
-+++ b/fs/fuse/inode.c	2026-10-13 16:44:15
-@@ -150,6 +150,8 @@
+diff --git a/fs/fuse/inode.c b/fs/fuse/inode.c
+--- a/fs/fuse/inode.c
++++ b/fs/fuse/inode.c
+@@ -149,6 +149,8 @@
+ static void fuse_evict_inode(struct inode *inode)
  {
  	struct fuse_inode *fi = get_fuse_inode(inode);
- 
-+	pvisor_evict(inode);
 +
++	pvisor_evict(inode);
+ 
  	/* Will write inode on close/munmap and in all other dirtiers */
  	WARN_ON(inode->i_state & I_DIRTY_INODE);
- 
 @@ -1351,6 +1353,8 @@
  				else
  					ok = false;
@@ -480,7 +479,20 @@ diff -ruN a/fs/fuse/inode.c b/fs/fuse/inode.c
  		} else {
  			ra_pages = fc->max_read / PAGE_SIZE;
  			fc->no_lock = 1;
-@@ -1398,7 +1402,8 @@
+@@ -1359,6 +1363,12 @@
+ 
+ 		fm->sb->s_bdi->ra_pages =
+ 				min(fm->sb->s_bdi->ra_pages, ra_pages);
++		/*
++		 * Sequential reads use the whole window the server granted.
++		 * The block-layer default is 128 KiB; fc->max_pages is up to 1 MiB.
++		 */
++		if (fc->max_pages > fm->sb->s_bdi->ra_pages)
++			fm->sb->s_bdi->ra_pages = fc->max_pages;
+ 		fc->minor = arg->minor;
+ 		fc->max_write = arg->minor < 5 ? 4096 : arg->max_write;
+ 		fc->max_write = max_t(unsigned, 4096, fc->max_write);
+@@ -1398,7 +1408,8 @@
  		FUSE_HANDLE_KILLPRIV_V2 | FUSE_SETXATTR_EXT | FUSE_INIT_EXT |
  		FUSE_SECURITY_CTX | FUSE_CREATE_SUPP_GROUP |
  		FUSE_HAS_EXPIRE_ONLY | FUSE_DIRECT_IO_ALLOW_MMAP |
@@ -490,18 +502,20 @@ diff -ruN a/fs/fuse/inode.c b/fs/fuse/inode.c
  #ifdef CONFIG_FUSE_DAX
  	if (fm->fc->dax)
  		flags |= FUSE_MAP_ALIGNMENT;
-diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
---- a/fs/fuse/pvisor_meta.c	1970-01-01 08:00:00
-+++ b/fs/fuse/pvisor_meta.c	2026-10-13 16:53:25
-@@ -0,0 +1,774 @@
+diff --git a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
+new file mode 100644
+--- /dev/null
++++ b/fs/fuse/pvisor_meta.c
+@@ -0,0 +1,851 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Directory image inside virtio-fs.
 + *
 + * The host publishes one merged directory page at a time. This cache answers
 + * lookup, readdir, and read-only open from that image. A name that is not in
-+ * a finished image is absent. A missing page, a read, and every stage change
-+ * still go to the host. Rename drops the image and the next lookup uses the
++ * a finished image is absent. A missing page is one request of the negotiated
++ * FUSE budget, at most 1 MiB. File bytes and every stage change still go to
++ * the host. Rename drops the image and the next lookup uses the
 + * host, because exchanging two directories safely is the host overlay's job.
 + */
 +
@@ -509,10 +523,13 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +
 +#include <linux/mutex.h>
 +#include <linux/slab.h>
++#include <linux/vmalloc.h>
 +
 +#define PVISOR_MAX_ENTRIES 65536
 +#define PVISOR_MAX_PAGES 32
 +#define PVISOR_VALID_SEC 86400ULL
++/* Matches FUSE_MAX_MAX_PAGES and the host's 1 MiB request buffer. */
++#define PVISOR_MAX_TRANSFER_PAGES 256U
 +
 +struct pvisor_entry {
 +	struct rb_node node;
@@ -527,6 +544,7 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +	bool whiteout;
 +	bool local;
 +	bool accounted;
++	bool lookup_only;
 +	struct fuse_attr attr;
 +	char name[];
 +};
@@ -824,7 +842,7 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +		size_t reclen = FUSE_DIRENTPLUS_SIZE(direntplus);
 +		struct qstr name = QSTR_INIT(dirent->name, dirent->namelen);
 +		struct pvisor_entry *entry, *existing;
-+		bool active;
++		bool active, lookup_only;
 +
 +		if (!dirent->namelen || dirent->namelen > FUSE_NAME_MAX ||
 +		    reclen > len ||
@@ -846,6 +864,9 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +		entry->ino = dirent->ino;
 +		entry->type = dirent->type;
 +		entry->attr = direntplus->entry_out.attr;
++		lookup_only = !direntplus->entry_out.entry_valid &&
++			      !direntplus->entry_out.entry_valid_nsec;
++		entry->lookup_only = lookup_only;
 +
 +		mutex_lock(&pd->lock);
 +		if (pd->passthrough || pd->count >= PVISOR_MAX_ENTRIES) {
@@ -878,6 +899,13 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +			return -EIO;
 +		}
 +		mutex_unlock(&pd->lock);
++
++		/* One-shot names must be consumed by the host LOOKUP. */
++		if (lookup_only) {
++			pvisor_forget_one(fm, direntplus->entry_out.nodeid);
++			pvisor_mark(pd, &name);
++			continue;
++		}
 +
 +		if (active) {
 +			have_skip = true;
@@ -920,17 +948,44 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +	return 0;
 +}
 +
++static unsigned int pvisor_transfer_bytes(struct fuse_conn *fc)
++{
++	unsigned int pages = fc->max_pages;
++
++	if (pages < 1)
++		pages = 1;
++	if (pages > PVISOR_MAX_TRANSFER_PAGES)
++		pages = PVISOR_MAX_TRANSFER_PAGES;
++	return pages << PAGE_SHIFT;
++}
++
++static void pvisor_free_pages(struct page **pages, unsigned int npages,
++			      struct fuse_page_desc *descs)
++{
++	unsigned int i;
++
++	if (pages) {
++		for (i = 0; i < npages; i++) {
++			if (pages[i])
++				__free_page(pages[i]);
++		}
++		kvfree(pages);
++	}
++	kvfree(descs);
++}
++
 +static int pvisor_fetch(struct inode *dir, struct dentry *parent,
 +			const struct qstr *skip, struct fuse_entry_out *skipped)
 +{
 +	struct fuse_mount *fm = get_fuse_mount(dir);
 +	struct pvisor_dir *pd = get_fuse_inode(dir)->pvisor;
 +	struct fuse_read_in inarg;
-+	struct {
-+		struct fuse_readindex_out hdr;
-+		char body[PAGE_SIZE];
-+	} *buf;
-+	struct fuse_args args = {};
++	struct fuse_args_pages ap = {};
++	struct fuse_readindex_out *hdr;
++	struct page **pages = NULL;
++	struct fuse_page_desc *descs = NULL;
++	unsigned int budget, npages, i;
++	void *mapped = NULL;
 +	u64 offset;
 +	ssize_t res;
 +	bool complete;
@@ -940,21 +995,45 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +	offset = pd->next_offset;
 +	mutex_unlock(&pd->lock);
 +
-+	buf = kmalloc(sizeof(*buf), GFP_KERNEL);
-+	if (!buf)
-+		return -ENOMEM;
++	budget = pvisor_transfer_bytes(fm->fc);
++	npages = budget >> PAGE_SHIFT;
++	pages = kvmalloc_array(npages, sizeof(*pages), GFP_KERNEL | __GFP_ZERO);
++	descs = kvmalloc_array(npages, sizeof(*descs), GFP_KERNEL);
++	if (!pages || !descs) {
++		err = -ENOMEM;
++		goto out;
++	}
++	for (i = 0; i < npages; i++) {
++		pages[i] = alloc_page(GFP_KERNEL | __GFP_ZERO);
++		if (!pages[i]) {
++			err = -ENOMEM;
++			goto out;
++		}
++		descs[i].length = PAGE_SIZE;
++		descs[i].offset = 0;
++	}
 +	memset(&inarg, 0, sizeof(inarg));
 +	inarg.offset = offset;
-+	inarg.size = sizeof(*buf);
-+	args.opcode = FUSE_READINDEX;
-+	args.nodeid = get_node_id(dir);
-+	args.in_numargs = 1;
-+	args.in_args[0].size = sizeof(inarg);
-+	args.in_args[0].value = &inarg;
-+	args.out_numargs = 1;
-+	args.out_args[0].size = sizeof(*buf);
-+	args.out_args[0].value = buf;
-+	res = fuse_simple_request(fm, &args);
++	inarg.size = budget;
++	ap.args.opcode = FUSE_READINDEX;
++	ap.args.nodeid = get_node_id(dir);
++	ap.args.in_numargs = 1;
++	ap.args.in_args[0].size = sizeof(inarg);
++	ap.args.in_args[0].value = &inarg;
++	ap.args.out_numargs = 1;
++	ap.args.out_args[0].size = budget;
++	ap.args.out_pages = true;
++	ap.args.out_argvar = true;
++	ap.args.page_zeroing = true;
++	ap.pages = pages;
++	ap.descs = descs;
++	ap.num_pages = npages;
++	/*
++	 * out_argvar makes fuse_simple_request return the byte count. Without
++	 * it a successful reply returns 0 and the image would treat that as
++	 * a short read.
++	 */
++	res = fuse_simple_request(fm, &ap.args);
 +	if (res < 0) {
 +		err = res;
 +		if (err == -ENOSYS) {
@@ -966,19 +1045,25 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +		}
 +		goto out;
 +	}
-+	if (res < (ssize_t)sizeof(buf->hdr)) {
++	if (res < (ssize_t)sizeof(struct fuse_readindex_out) || res > budget) {
 +		err = -EIO;
 +		goto out;
 +	}
-+	complete = buf->hdr.flags & FUSE_READINDEX_COMPLETE;
-+	if (!complete && buf->hdr.next_offset <= offset &&
-+	    res > (ssize_t)sizeof(buf->hdr)) {
++	mapped = vmap(pages, npages, VM_MAP, PAGE_KERNEL);
++	if (!mapped) {
++		err = -ENOMEM;
++		goto out;
++	}
++	hdr = mapped;
++	complete = hdr->flags & FUSE_READINDEX_COMPLETE;
++	if (!complete && hdr->next_offset <= offset) {
 +		err = -EIO;
 +		goto out;
 +	}
-+	err = pvisor_publish_page(dir, parent, skip, buf->body,
-+				  res - sizeof(buf->hdr), complete,
-+				  buf->hdr.next_offset);
++	err = pvisor_publish_page(dir, parent, skip,
++				  (char *)mapped + sizeof(*hdr),
++				  res - sizeof(*hdr), complete,
++				  hdr->next_offset);
 +	if (err == 1 && skipped) {
 +		struct pvisor_entry *entry;
 +		struct qstr name = *skip;
@@ -1002,10 +1087,11 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +		mutex_unlock(&pd->lock);
 +	}
 +out:
-+	kfree(buf);
++	if (mapped)
++		vunmap(mapped);
++	pvisor_free_pages(pages, npages, descs);
 +	return err;
 +}
-+
 +int pvisor_lookup(struct inode *dir, struct dentry *entry,
 +		  struct fuse_entry_out *outarg, struct inode **inode)
 +{
@@ -1030,6 +1116,10 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +			break;
 +		}
 +		found = pvisor_find(pd, &entry->d_name);
++		if (found && found->lookup_only) {
++			err = -EAGAIN;
++			break;
++		}
 +		if (found && found->whiteout) {
 +			pvisor_negative(outarg);
 +			err = 0;
@@ -1242,7 +1332,7 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +		return err ? err : -EAGAIN;
 +	}
 +	list_for_each_entry(entry, &pd->order, list) {
-+		if (entry->whiteout || entry->cookie <= ctx->pos)
++		if (entry->lookup_only || entry->whiteout || entry->cookie <= ctx->pos)
 +			continue;
 +		if (!dir_emit(ctx, entry->name, entry->namelen, entry->ino,
 +			      entry->type))
@@ -1268,9 +1358,9 @@ diff -ruN a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
 +	mutex_destroy(&pd->lock);
 +	kfree(pd);
 +}
-diff -ruN a/fs/fuse/readdir.c b/fs/fuse/readdir.c
---- a/fs/fuse/readdir.c	2026-10-13 16:43:20
-+++ b/fs/fuse/readdir.c	2026-10-13 16:44:15
+diff --git a/fs/fuse/readdir.c b/fs/fuse/readdir.c
+--- a/fs/fuse/readdir.c
++++ b/fs/fuse/readdir.c
 @@ -596,6 +596,15 @@
  	if (fuse_is_bad(inode))
  		return -EIO;
@@ -1287,9 +1377,9 @@ diff -ruN a/fs/fuse/readdir.c b/fs/fuse/readdir.c
  	err = UNCACHED;
  	if (ff->open_flags & FOPEN_CACHE_DIR)
  		err = fuse_readdir_cached(file, ctx);
-diff -ruN a/include/uapi/linux/fuse.h b/include/uapi/linux/fuse.h
---- a/include/uapi/linux/fuse.h	2026-10-13 16:43:20
-+++ b/include/uapi/linux/fuse.h	2026-10-13 16:43:20
+diff --git a/include/uapi/linux/fuse.h b/include/uapi/linux/fuse.h
+--- a/include/uapi/linux/fuse.h
++++ b/include/uapi/linux/fuse.h
 @@ -220,6 +220,9 @@
   *
   *  7.41
@@ -1316,11 +1406,10 @@ diff -ruN a/include/uapi/linux/fuse.h b/include/uapi/linux/fuse.h
  
  	/* CUSE specific operations */
  	CUSE_INIT		= 4096,
-@@ -1048,6 +1053,15 @@
- 	offsetof(struct fuse_direntplus, dirent.name)
+@@ -1049,6 +1054,15 @@
  #define FUSE_DIRENTPLUS_SIZE(d) \
  	FUSE_DIRENT_ALIGN(FUSE_NAME_OFFSET_DIRENTPLUS + (d)->dirent.namelen)
-+
+ 
 +struct fuse_readindex_out {
 +	uint64_t	next_offset;
 +	uint32_t	flags;
@@ -1329,6 +1418,7 @@ diff -ruN a/include/uapi/linux/fuse.h b/include/uapi/linux/fuse.h
 +
 +/* This page contains the last directory record. */
 +#define FUSE_READINDEX_COMPLETE	(1 << 0)
- 
++
  struct fuse_notify_inval_inode_out {
  	uint64_t	ino;
+ 	int64_t		off;
