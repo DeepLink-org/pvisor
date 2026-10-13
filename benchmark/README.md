@@ -202,12 +202,14 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-FS-DIAG：文件系统请求成本分解 {#b-fs-diag}
 
+- **AgentENV 接入预检：** `agentenv_backend.py` 使用 E2B 兼容 API 创建独立 sandbox，执行同一 `v1/workload.py` 的七项负载两遍；保留每次 guest 操作/子进程时间、API 时间、输入摘要和失败。`prepare_agentenv.py` 仅导出已有 rootfs，不修改源输入。完整输入校验会预热文件，模板可能恢复内存缓存；在整组资源、真实存储路径与冷暖起点验证之前，仅作为 capability diagnostic，不进入 B-FS-TOOLS 排名，不与历史批次计算加速比。
+
 - **角色：** diagnostic
 - **Motivation：** 定位 FUSE 传输、OverlayCore、持久化、内容指纹和缓存路径的成本。
 - **想要的结论：** 请求与 inclusive span 的成本分解，不能相加为精确归因，不作为用户性能数据。
 - **Kernel-cache 诊断入口：** `kernel_cache_runner.py --profiles`；每个 count case 使用独立 fresh mount，记录 warm priming 与操作的完整请求总数，另测 prime-only 以分离 warm 增量。源码推导 expected instances（包括 notifier 是否创建 profile），核查全部 PID/component/instance 的唯一 final record，不能固定忽略额外线程实例；任何缺失/额外实例或失败都拒绝。诊断耗时绝不进入正式 distribution。
 - **实验设计：** 独立诊断批次，直通 FUSE 仅为不含暂存语义的下限；插桩计时与正式性能采样分开。`immutable_lower_cache.py --profiles` 保留每个 PID/component/instance 的所有累计 records，以各实例 final record 比较 physical parent/leaf stats 和 cache hits/misses/evictions；inclusive spans 不相加。真实 mount 若被拒绝，保留失败并仅以明确标记的 core 机制实验补充，不替代 FUSE 结果。
-- **入口脚本：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_exec_probe.py`、`filesystem_counters.py`、`filesystem_diagnostic.py`、`immutable_lower_cache.py --profiles`。`filesystem_stage_durability.py --profiles` 也服务此诊断条目；不开启 profile 时服务 B-FS-ENG。`filesystem_exec_probe.py` 在新 VM 中比较相同可执行文件、loader 和全部动态库从 virtio-fs 与匿名 RAM 执行；两组都先复制并校验所有输入、传递相同 fd，避免将准备成本混入 exec。准备来源分为原始文件和独立副本：前者预热原 inode，后者从工作区独立 inode 读入相同字节，保留原工具文件首次映射的机会；共同的 Python 准备仍会预热解释器及部分共享库，不能称为完全冷启动。首个 exec 与后续重复 exec 分开，且不由热路径的零差异否定首次映射成本。guest `/dev/shm` 保持 noexec，使用显式 executable memfd；不重挂载或放宽策略。独立 VM 的完整计数器包含相同准备与指定次数 exec，差异用于请求归因，不能当作完整 Agent 启动水位。
+- **入口脚本：** `agentenv_backend.py`、`filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_exec_probe.py`、`filesystem_counters.py`、`filesystem_diagnostic.py`、`immutable_lower_cache.py --profiles`。`filesystem_stage_durability.py --profiles` 也服务此诊断条目；不开启 profile 时服务 B-FS-ENG。`filesystem_exec_probe.py` 在新 VM 中比较相同可执行文件、loader 和全部动态库从 virtio-fs 与匿名 RAM 执行；两组都先复制并校验所有输入、传递相同 fd，避免将准备成本混入 exec。准备来源分为原始文件和独立副本：前者预热原 inode，后者从工作区独立 inode 读入相同字节，保留原工具文件首次映射的机会；共同的 Python 准备仍会预热解释器及部分共享库，不能称为完全冷启动。首个 exec 与后续重复 exec 分开，且不由热路径的零差异否定首次映射成本。guest `/dev/shm` 保持 noexec，使用显式 executable memfd；不重挂载或放宽策略。独立 VM 的完整计数器包含相同准备与指定次数 exec，差异用于请求归因，不能当作完整 Agent 启动水位。
 
 ### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
 
