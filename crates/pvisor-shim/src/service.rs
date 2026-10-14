@@ -100,6 +100,7 @@ struct SandboxState {
     id: String,
     internal: InternalChild,
     exit_tx: watch::Sender<Option<ExitInfo>>,
+    created_at: SystemTime,
 }
 
 struct TaskInner {
@@ -1304,6 +1305,7 @@ impl Sandbox for PvisorSandbox {
             id: req.sandbox_id.clone(),
             internal,
             exit_tx,
+            created_at: SystemTime::now(),
         });
         Ok(CreateSandboxResponse::new())
     }
@@ -1328,8 +1330,12 @@ impl Sandbox for PvisorSandbox {
             .start()
             .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
         state.internal = internal;
+        state.created_at = SystemTime::now();
         let mut response = StartSandboxResponse::new();
         response.set_pid(state.internal.pid.unwrap_or(0));
+        // The CRI server copies this into its sandbox store; without it the
+        // pod's creation time surfaces as the epoch.
+        response.set_created_at(timestamp_from(state.created_at));
         Ok(response)
     }
 
@@ -1455,6 +1461,18 @@ impl Sandbox for PvisorSandbox {
         let mut response = SandboxStatusResponse::new();
         response.set_sandbox_id(state.id.clone());
         response.set_pid(state.internal.pid.unwrap_or(0));
+        // The CRI server resolves this string through the PodSandboxState
+        // enum names and defaults to NOTREADY for anything unrecognized, so
+        // a missing state flips every PodSandboxStatus caller (kubelet PLEG)
+        // into killing and recreating the sandbox.
+        let exit = state.exit_tx.borrow();
+        if let Some(exit) = exit.as_ref() {
+            response.set_state("SANDBOX_NOTREADY".to_string());
+            response.set_exited_at(timestamp_from(exit.exited_at));
+        } else {
+            response.set_state("SANDBOX_READY".to_string());
+            response.set_created_at(timestamp_from(state.created_at));
+        }
         Ok(response)
     }
 }
