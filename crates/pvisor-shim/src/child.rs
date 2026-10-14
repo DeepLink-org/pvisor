@@ -74,6 +74,9 @@ pub const ENV_STDIO_IN: &str = "PVISOR_SHIM_STDIO_IN";
 pub const ENV_STDIO_OUT: &str = "PVISOR_SHIM_STDIO_OUT";
 pub const ENV_STDIO_ERR: &str = "PVISOR_SHIM_STDIO_ERR";
 pub const ENV_STDIO_TERMINAL: &str = "PVISOR_SHIM_STDIO_TERMINAL";
+/// VM runner only: descriptor of the guest-side egress stream owned by the
+/// shim's `VmNetworkAttachment`. Absent when the task runs without egress.
+pub const ENV_VM_NET_FD: &str = "PVISOR_SHIM_VM_NET_FD";
 
 /// Message exchanged over the ready/fork-report pipes, one JSON line.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -196,7 +199,7 @@ pub fn spawn_internal(
     stdio: Option<StdioFds>,
     sandbox_pid: Option<u32>,
 ) -> Result<InternalChild> {
-    spawn_internal_opts(arg, plan_path, plan_bytes, stdio, sandbox_pid, true)
+    spawn_internal_opts(arg, plan_path, plan_bytes, stdio, sandbox_pid, true, None)
 }
 
 /// [`spawn_internal`] with control over waiting for the internal parent to
@@ -209,6 +212,7 @@ pub fn spawn_internal_opts(
     stdio: Option<StdioFds>,
     sandbox_pid: Option<u32>,
     wait_parent_exit: bool,
+    vm_net_fd: Option<i32>,
 ) -> Result<InternalChild> {
     fs::write(plan_path, plan_bytes).with_context(|| format!("write {}", plan_path.display()))?;
 
@@ -247,6 +251,9 @@ pub fn spawn_internal_opts(
             .env(ENV_STDIO_OUT, stdio.stdout.to_string())
             .env(ENV_STDIO_ERR, stdio.stderr.to_string())
             .env(ENV_STDIO_TERMINAL, if stdio.terminal { "1" } else { "0" });
+    }
+    if let Some(fd) = vm_net_fd {
+        command.env(ENV_VM_NET_FD, fd.to_string());
     }
     let mut child = command
         .stdin(Stdio::null())
@@ -484,10 +491,10 @@ fn vm_runner_main() -> Result<i32> {
         return Ok(255);
     }
 
-    // The virtio-console host side is wired to this process's stdio. Task
-    // output travels the named console ports, so stderr remains free for
-    // VMM logging: the `io.pvisor.vm.log` annotation (a log filter or "1")
-    // redirects it to <bundle>/pvisor-vm.log.
+    // Task stdio travels the named console ports bound to the task's own
+    // descriptors (passed to boot_vm explicitly), so this process's stderr
+    // is free for VMM diagnostics: the `io.pvisor.vm.log` annotation (a
+    // log filter or "1") redirects it to <bundle>/pvisor-vm.log.
     let stdio = StdioFds::from_env()?;
     unsafe {
         libc::dup2(stdio.stdin, libc::STDIN_FILENO);
@@ -518,7 +525,25 @@ fn vm_runner_main() -> Result<i32> {
         }
     }
 
-    crate::vm::boot_vm(&plan)
+    // Egress tasks inherit the smoltcp guest stream from the shim; the
+    // descriptor is only meaningful together with the plan's network mode.
+    let network = if plan.vm_network_plan().map_err(anyhow::Error::msg)?.mode
+        != crate::plan::VmNetworkMode::Off
+    {
+        let fd = fd_from_env(ENV_VM_NET_FD)?;
+        Some(unsafe { crate::network::stream_from_fd(fd) })
+    } else {
+        None
+    };
+
+    // The task's stdio descriptors reach the VMM explicitly, so redirecting
+    // the runner's stderr to the vm.log file below cannot capture workload
+    // output anymore.
+    let stdio = StdioFds::from_env()
+        .ok()
+        .map(|fds| (fds.stdin, fds.stdout, fds.stderr));
+
+    crate::vm::boot_vm(&plan, network, stdio)
 }
 
 /// Sandbox holder entry; never returns when invoked in holder mode.

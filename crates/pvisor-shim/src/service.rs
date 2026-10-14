@@ -90,6 +90,10 @@ struct LiveTask {
     internal: Option<InternalChild>,
     io: ContainerIo,
     execs: HashMap<String, LiveExec>,
+    /// Host-side egress backend when the VM task opted into networking;
+    /// shut down when the task is deleted.
+    #[cfg(feature = "vm")]
+    vm_network: Option<crate::network::VmNetworkAttachment>,
     /// Task runs in a libkrun VM: exec goes through the guest agent.
     vm: bool,
 }
@@ -671,6 +675,24 @@ impl Task for PvisorTask {
         // `io.pvisor.executor=vm` routes the task to the libkrun runner;
         // everything else (lifecycle, events, kill, wait) is identical.
         let wants_vm = plan.wants_vm();
+        #[cfg(feature = "vm")]
+        let vm_network = if wants_vm {
+            crate::network::VmNetworkAttachment::start(&plan)
+                .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, format!("{error:#}")))?
+        } else {
+            None
+        };
+        #[cfg(not(feature = "vm"))]
+        let vm_net_fd: Option<i32> = None;
+        #[cfg(feature = "vm")]
+        let vm_net_fd = match vm_network.as_ref() {
+            Some(attachment) => Some(
+                attachment
+                    .guest_fd_for_child()
+                    .map_err(|error| rpc_error(Code::INTERNAL, format!("{error}")))?,
+            ),
+            None => None,
+        };
         let runner_arg = if wants_vm {
             if !cfg!(feature = "vm") {
                 return Err(rpc_error(
@@ -707,14 +729,22 @@ impl Task for PvisorTask {
                     // The VM runner lives for the whole task (it hosts the
                     // VMM), so Create must not wait for its exit; waiting is
                     // only correct for init/exec parents that relay and quit.
-                    child::spawn_internal_opts(
+                    let spawned = child::spawn_internal_opts(
                         runner_arg,
                         &plan_path,
                         &plan_bytes,
                         Some(stdio),
                         sandbox_pid,
                         false,
-                    )
+                        vm_net_fd,
+                    );
+                    // The runner owns its descriptor now; closing the
+                    // parent-side duplicate leaves the attachment's original
+                    // as the only host-side reference.
+                    if let Some(fd) = vm_net_fd {
+                        unsafe { libc::close(fd) };
+                    }
+                    spawned
                 } else {
                     child::spawn_internal(
                         runner_arg,
@@ -752,6 +782,8 @@ impl Task for PvisorTask {
                 io: owned_io,
                 execs: HashMap::new(),
                 vm: wants_vm,
+                #[cfg(feature = "vm")]
+                vm_network,
             },
         );
 
@@ -1142,6 +1174,24 @@ impl Task for PvisorTask {
             internal.close_start();
         }
         let _ = std::fs::remove_file(live.entry.bundle.join("pvisor-plan.json"));
+        if live.vm {
+            let _ = std::fs::remove_file(crate::agent::agent_socket_path(&req.id));
+        }
+        #[cfg(feature = "vm")]
+        if let Some(attachment) = live.vm_network {
+            match attachment.shutdown() {
+                Ok(snapshot) => info!(
+                    "vm network snapshot for {}: flows_opened={} denied={} connect_failures={} dns_queries={} targets={:?}",
+                    req.id,
+                    snapshot.tcp_flows_opened,
+                    snapshot.tcp_flows_denied,
+                    snapshot.tcp_connect_failures,
+                    snapshot.dns_queries,
+                    snapshot.targets
+                ),
+                Err(error) => warn!("vm network shutdown for {}: {error:#}", req.id),
+            }
+        }
 
         let mut event = TaskDelete::new();
         event.set_container_id(req.id.clone());
@@ -1289,6 +1339,7 @@ impl Sandbox for PvisorSandbox {
                     None,
                     None,
                     false,
+                    None,
                 )
             }
         })

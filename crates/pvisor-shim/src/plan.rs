@@ -528,6 +528,93 @@ impl ContainerPlan {
         }
         config
     }
+
+    /// VM egress mode from `io.pvisor.vm.network` (`off`/unset, `public`,
+    /// `allowlist`) with entries from `io.pvisor.vm.network.allow`
+    /// (`host[:port]`, comma separated). Errors on unknown modes or
+    /// malformed entries so a typo cannot silently disable policy.
+    pub fn vm_network_plan(&self) -> Result<VmNetworkPlan, PlanError> {
+        let Some(mode) = self
+            .annotations
+            .get(format!("{ANNOTATION_PREFIX}vm.network").as_str())
+        else {
+            return Ok(VmNetworkPlan::default());
+        };
+        match mode.trim() {
+            "off" | "none" => Ok(VmNetworkPlan::default()),
+            "public" => Ok(VmNetworkPlan {
+                mode: VmNetworkMode::Public,
+                allow: Vec::new(),
+                allow_private: false,
+            }),
+            "allowlist" => {
+                // Intranet mirrors and model hubs commonly resolve to
+                // private space; hostname rules reject private resolutions
+                // unless the task opts in.
+                let allow_private = self
+                    .annotations
+                    .get(format!("{ANNOTATION_PREFIX}vm.network.allow-private").as_str())
+                    .is_some_and(|value| value == "true");
+                let allow = self
+                    .annotations
+                    .get(format!("{ANNOTATION_PREFIX}vm.network.allow").as_str())
+                    .map(String::as_str)
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter(|entry| !entry.trim().is_empty())
+                    .map(|entry| entry.trim())
+                    .map(|entry| match entry.split_once(':') {
+                        Some((host, port)) => port
+                            .parse::<u16>()
+                            .map(|port| (host.to_string(), port))
+                            .map_err(|_| {
+                                PlanError::UnsupportedConstraint(format!(
+                                    "invalid io.pvisor.vm.network.allow port in `{entry}`"
+                                ))
+                            }),
+                        None => Ok((entry.to_string(), 0)),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if allow.is_empty() {
+                    return Err(PlanError::UnsupportedConstraint(
+                        "io.pvisor.vm.network=allowlist requires io.pvisor.vm.network.allow entries"
+                            .into(),
+                    ));
+                }
+                Ok(VmNetworkPlan {
+                    mode: VmNetworkMode::Allowlist,
+                    allow,
+                    allow_private,
+                })
+            }
+            other => Err(PlanError::UnsupportedConstraint(format!(
+                "unsupported io.pvisor.vm.network mode `{other}` (off, public, allowlist)"
+            ))),
+        }
+    }
+}
+
+/// Egress policy attached to a VM task. `Off` boots no network device at
+/// all; the other modes ride pvisor-overlaynet's virtio-net smoltcp backend,
+/// where every flow terminates on the host and is re-originated only when
+/// policy authorizes it (non-bypassable: the device is the guest's only
+/// network path).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct VmNetworkPlan {
+    #[serde(default)]
+    pub mode: VmNetworkMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<(String, u16)>,
+    #[serde(default)]
+    pub allow_private: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum VmNetworkMode {
+    #[default]
+    Off,
+    Public,
+    Allowlist,
 }
 
 /// True unless `io.pvisor.vm.agent=off`: VMs boot the guest agent so exec
@@ -1512,5 +1599,84 @@ mod tests {
         assert_eq!(plan.process.capabilities.bounding.len(), 2);
         assert_eq!(plan.process.rlimits.len(), 1);
         assert_eq!(plan.process.rlimits[0].typ, "RLIMIT_NOFILE");
+    }
+
+    #[test]
+    fn vm_network_annotation_parses_modes_and_entries() {
+        let plan = |annotations: &[(&str, &str)]| {
+            let mut spec = serde_json::to_value(minimal_spec()).unwrap();
+            spec["annotations"] = serde_json::json!(
+                annotations
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect::<std::collections::HashMap<_, _>>()
+            );
+            let spec: Spec = serde_json::from_value(spec).unwrap();
+            build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()).unwrap()
+        };
+
+        // Absent, explicit off and none all keep egress disabled.
+        assert_eq!(plan(&[]).vm_network_plan().unwrap(), Default::default());
+        assert_eq!(
+            plan(&[("io.pvisor.vm.network", "off")])
+                .vm_network_plan()
+                .unwrap(),
+            Default::default()
+        );
+        assert_eq!(
+            plan(&[("io.pvisor.vm.network", "none")])
+                .vm_network_plan()
+                .unwrap(),
+            Default::default()
+        );
+
+        assert_eq!(
+            plan(&[("io.pvisor.vm.network", "public")])
+                .vm_network_plan()
+                .unwrap()
+                .mode,
+            VmNetworkMode::Public
+        );
+
+        let allowlist = plan(&[
+            ("io.pvisor.vm.network", "allowlist"),
+            (
+                "io.pvisor.vm.network.allow",
+                "pypi.example.com, registry.internal:443 ,10.0.0.0/8",
+            ),
+        ])
+        .vm_network_plan()
+        .unwrap();
+        assert_eq!(allowlist.mode, VmNetworkMode::Allowlist);
+        assert_eq!(
+            allowlist.allow,
+            vec![
+                ("pypi.example.com".to_string(), 0),
+                ("registry.internal".to_string(), 443),
+                ("10.0.0.0/8".to_string(), 0),
+            ]
+        );
+
+        // Unknown modes and malformed ports are rejected, never downgraded.
+        assert!(
+            plan(&[("io.pvisor.vm.network", "open")])
+                .vm_network_plan()
+                .is_err()
+        );
+        assert!(
+            plan(&[
+                ("io.pvisor.vm.network", "allowlist"),
+                ("io.pvisor.vm.network.allow", "host:notaport"),
+            ])
+            .vm_network_plan()
+            .is_err()
+        );
+        // Allowlist mode without entries would deny everything silently;
+        // reject it so the operator notices.
+        assert!(
+            plan(&[("io.pvisor.vm.network", "allowlist")])
+                .vm_network_plan()
+                .is_err()
+        );
     }
 }

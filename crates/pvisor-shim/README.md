@@ -119,6 +119,18 @@ are not enforcement of OCI cgroup limits. The `io.pvisor.vm.log` annotation
 (optional log filter, or `1` for `debug`) makes the VM runner write VMM and
 early console diagnostics to `<bundle>/pvisor-vm.log` instead of stderr.
 
+VM egress networking (feature `vm`): `io.pvisor.vm.network` selects the
+task's network posture — `off`/unset (default: no network device at all),
+`public`, or `allowlist` with `io.pvisor.vm.network.allow`
+(`host[:port]`, comma separated) and optionally
+`io.pvisor.vm.network.allow-private: "true"` for entries that resolve to
+private space (intranet mirrors). Egress rides pvisor-overlaynet's virtio-net
+smoltcp backend: the device is the guest's only network path, DNS is served
+synthetically from the in-VM router (`/etc/resolv.conf` points at
+192.0.2.1), every TCP flow terminates on the host and is re-originated only
+when policy authorizes it, and per-task counters are logged at task delete
+(`vm network snapshot ...`).
+
 VM task lifecycle: the runner is spawned detached at `Create` (it hosts the
 VMM for the whole task), waits on a start pipe for `Start`, and exits with
 the guest workload's exit code. The runner holds no end of the start pipe,
