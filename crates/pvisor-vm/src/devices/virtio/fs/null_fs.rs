@@ -20,6 +20,10 @@ type Inode = u64;
 type Handle = u64;
 
 impl FileSystem for NullFs {
+    fn supports_directory_image(&self) -> bool {
+        true
+    }
+
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         Ok(super::snapshot::FsSnapshot::Null)
     }

@@ -607,6 +607,10 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> 
         self.inner.removexattr(ctx, inode, name)
     }
 
+    fn supports_directory_image(&self) -> bool {
+        self.inner.supports_directory_image()
+    }
+
     fn synthetic_entries(&self, inode: Inode) -> Vec<(Vec<u8>, Entry)> {
         let names = self.name_to_inode.read().unwrap();
         let inodes = self.inodes.read().unwrap();

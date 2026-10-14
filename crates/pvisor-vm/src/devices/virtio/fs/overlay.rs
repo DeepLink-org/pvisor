@@ -1372,6 +1372,15 @@ impl OverlayFs {
 }
 
 impl FileSystem for OverlayFs {
+    fn supports_directory_image(&self) -> bool {
+        !self.snapshot_config.lower_mutability.is_empty()
+            && self
+                .snapshot_config
+                .lower_mutability
+                .iter()
+                .all(|mutability| *mutability == pvisor_overlay_core::LayerMutability::Immutable)
+    }
+
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         let _operation = self.write_operation().unwrap();
         let _io = self.io_activity.fence(Vec::new(), true);
@@ -2425,6 +2434,51 @@ impl FileSystem for OverlayFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_images_require_every_physical_lower_to_be_immutable() {
+        use pvisor_overlay_core::LayerMutability::{Immutable, Mutable};
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let other = temp.path().join("other");
+        std::fs::create_dir(&lower).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        for (i, (mutability, allowed)) in [
+            (vec![], false),
+            (vec![Mutable, Mutable], false),
+            (vec![Immutable, Mutable], false),
+            (vec![Immutable, Immutable], true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let fs = OverlayFs::new(
+                Config {
+                    lower_dirs: vec![
+                        lower.to_string_lossy().into(),
+                        other.to_string_lossy().into(),
+                    ],
+                    lower_mutability: mutability,
+                    upper_dir: temp
+                        .path()
+                        .join(format!("upper-{i}"))
+                        .to_string_lossy()
+                        .into(),
+                    work_dir: None,
+                    preimage_dir: None,
+                    apply_target: None,
+                    baseline_lower: None,
+                    baseline_content_index: None,
+                    excluded_paths: vec![],
+                    access_policy: Default::default(),
+                    semantics: passthrough::PermissionSemantics::LinuxComplete,
+                },
+                Arc::new(InodeAllocator::new()),
+            )
+            .unwrap();
+            assert_eq!(fs.supports_directory_image(), allowed);
+        }
+    }
 
     struct ReadWriter {
         gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,

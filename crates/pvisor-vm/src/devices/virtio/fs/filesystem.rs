@@ -1066,6 +1066,16 @@ pub trait FileSystem {
         Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
+    /// Whether directory images may retain names and attributes until guest mutation.
+    ///
+    /// Return true only when external writers cannot change the backing namespace
+    /// during this session. Mutable or unspecified backing layers retain ordinary
+    /// FUSE lookup and directory semantics. Returning false makes READINDEX report
+    /// ENOSYS before opening a directory; it does not disable lazy file opens.
+    fn supports_directory_image(&self) -> bool {
+        false
+    }
+
     /// Lookup-only names that are not part of the backing directory stream.
     ///
     /// `READINDEX` merges these in front of `readdirplus`, using stable inode

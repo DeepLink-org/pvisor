@@ -87,6 +87,14 @@ one-shot injected files. Even after a COMPLETE import, these names use host
 LOOKUP and stay hidden from readdir. READINDEX rejects replies beyond its page
 budget and incomplete replies without forward progress.
 
+Deferred regular-file opens retain their original credentials and bind before
+unlink, rename, copy-up, or attribute changes so existing guest descriptors keep the
+original host object. Binding and release share an inode-local lock. Simple
+seeks stay local, and unbound attribute refreshes do not send a fictitious handle.
+Directory images hold no child dentry references; ordinary inode eviction frees
+the image. Hosts decline READINDEX for mutable or unspecified backings, retaining
+ordinary FUSE namespace visibility and metadata timeouts.
+
 ## Building
 
 ### Linux (generic variant)

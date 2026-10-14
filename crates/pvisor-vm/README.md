@@ -215,12 +215,14 @@ declaration. The default does not promote host `/`, arbitrary prepared rootfs,
 OCI extraction, lazy physical projections or frozen baselines to immutable.
 `rootfs_immutable`'s apply restriction alone is not this lifetime guarantee.
 
-OPEN still resolves merged precedence, checks policy/aliases and permissions,
+Host OPEN still resolves merged precedence, checks policy/aliases and permissions,
 records the baseline observation and acquires its normal native descriptor.
 Writable or privilege-changing OPENs, copy-up and reads from upper/mutable
 layers retain the original cache-invalidating OPEN behavior. Workspace devices
 retain their original data policy even if a lower is explicitly immutable.
-Metadata TTLs remain unchanged; no-open is not enabled. New VM writeback and
+The root-data setting itself leaves metadata TTLs and FUSE no-open negotiation
+unchanged; directory images and deferred opens follow the separate contract below.
+New VM writeback and
 DAX remain default-off; existing explicit choices and saved writeback sessions
 keep their documented behavior.
 
@@ -296,8 +298,14 @@ guest 物理写入产生 MMIO exit。宿主映射保留 MAP_PRIVATE 的 COW 保�
 
 ## Guest 目录镜像
 
-协商 `FUSE_PVISOR_META`（init flag bit 41）后，guest 把宿主合并后的目录
-页缓存在 virtio-fs 内部。已导入且完整的目录上，lookup、getattr 所依赖的
+协商 `FUSE_PVISOR_META`（init flag bit 41）后，guest 可以把宿主合并后的目录
+页缓存在 virtio-fs 内部。Overlay 的全部物理 lower 必须显式声明为
+`Immutable`，且 upper 的命名空间修改只通过该 VM 的文件系统连接进行；
+独立 `immutable_filesystem` share 和虚拟-only 文件系统也支持目录镜像。
+任一 lower 可变或未声明、普通 passthrough 或仅只读的挂载都在枚举前对
+`READINDEX` 返回 `ENOSYS`，该目录回到普通 FUSE lookup/readdir 和原有
+元数据期限，避免永久隐藏宿主新增文件。惰性只读 open 独立于此资格。
+已导入且完整的目录上，lookup、getattr 所依赖的
 dentry、readdir，以及普通文件和目录的只读 open，都在 guest 内核内完成。
 缺页时 guest 发送 `FUSE_READINDEX`。一次请求使用协商得到的 FUSE 页预算，
 最大 1 MiB（256 个 4 KiB 客机页）。宿主用一次 `readdirplus` 填满这次预算，
@@ -316,6 +324,32 @@ dentry、readdir，以及普通文件和目录的只读 open，都在 guest 内�
 和 unlink 成功后，guest 在本地目录镜像里记下新名字或 whiteout，后续
 lookup 不再为这个名字询问宿主。rename 直接丢弃相关目录镜像，下一次
 lookup 回到宿主。
+
+只读普通文件的宿主句柄延迟到第一次 I/O；guest 保存其原始打开凭据，
+在 unlink、rename、copy-up 或属性修改前绑定仍未使用的 fd，关闭与绑定串行化。
+因此 `open → unlink → read(fd)` 和覆盖重命名仍读取原对象。实际绑定
+失败时取消该次修改，已经成功绑定的 fd 仍然有效；原始凭据在绑定或关闭时释放。
+绑定遵守宿主的 data-cache flags，不把可变对象强制改为 KEEP_CACHE。
+`SEEK_SET/CUR` 和有效元数据下的 `SEEK_END` 不触发 OPEN；需要刷新属性
+时，尚未绑定的 fd 按 inode 查询，不使用不存在的 fh。稀疏文件
+`SEEK_DATA/HOLE` 仍先绑定。目录镜像不持有子 dentry 的强引用，目录可随
+正常 inode 回收释放其镜像。
+
+真实 guest 回归探针覆盖惰性打开、unlink/覆盖 rename、copy-up、并发读取与关闭、
+可变 lower 的外部创建，以及扫描后卸载稳定目录：
+
+```bash
+rustc --edition=2021 --target aarch64-unknown-linux-musl -C linker=rust-lld \
+  crates/pvisor-vm/src/probes/guest_metadata_guest.rs -o /tmp/metadata-guest
+cargo build --locked -p pvisor-vm --example guest_metadata_case
+target/debug/examples/guest_metadata_case ROOTFS FIRMWARE /tmp/metadata-guest full
+```
+
+Linux x86_64 使用 `x86_64-unknown-linux-musl`；macOS 必须给宿主探针签名，
+使用 `crates/pvisor/macos-hypervisor.entitlements`。ROOTFS 须为调用方保持
+不变的 Linux 根目录；探针写入独立临时 upper。设置 `PVISOR_FS_PROFILE=1`，
+分别运行 `baseline` 和 `warm`，可核对重复 1,000 次 open/stat/普通 seek
+没有增加宿主 OPEN/GETATTR/FLUSH/RELEASE 请求；这不是性能基准。
 
 未打补丁的 guest 不置该 flag，行为与逐请求 FUSE 相同。旧宿主不回该
 flag，或对 `FUSE_READINDEX` 返回 `ENOSYS` 时，新 guest 关闭目录镜像。

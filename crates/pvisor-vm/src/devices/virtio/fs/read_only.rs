@@ -85,6 +85,14 @@ impl PassthroughFsRo {
 }
 
 impl FileSystem for PassthroughFsRo {
+    fn supports_directory_image(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if self.dax.is_some() {
+            return true;
+        }
+        false
+    }
+
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         #[cfg(target_os = "linux")]
         if self.dax.is_some() {

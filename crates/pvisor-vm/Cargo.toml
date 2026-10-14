@@ -99,3 +99,7 @@ path = "src/probes/threaded_cold_restore_case.rs"
 [[example]]
 name = "readonly_dax_case"
 path = "src/probes/readonly_dax_case.rs"
+
+[[example]]
+name = "guest_metadata_case"
+path = "src/probes/guest_metadata_case.rs"

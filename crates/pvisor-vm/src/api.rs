@@ -626,9 +626,15 @@ pub struct OverlayConfig {
     /// This never describes upper or merged-view stability.
     /// On the root device, read-only regular-file OPENs from an explicitly
     /// immutable lower retain guest data pages across opens by default. OPEN
-    /// authorization and baseline observations still run; metadata TTLs stay
-    /// unchanged. Mutable lowers and upper files do not use this optimization.
+    /// authorization and baseline observations still run. When every physical
+    /// lower is explicitly immutable, the guest may also import directory images
+    /// with long metadata validity. Mutable or unspecified lowers use ordinary
+    /// FUSE metadata timeouts and lookup. Upper files do not use the data-cache
+    /// optimization.
     pub lower_mutability: Vec<pvisor_overlay_core::LayerMutability>,
+    /// Writable stage. When directory images are enabled, callers must keep its
+    /// namespace mutations within this VM's filesystem connection; external
+    /// writers require mutable lower declarations and ordinary FUSE lookup.
     pub upper_dir: PathBuf,
     pub work_dir: Option<PathBuf>,
     pub preimage_dir: Option<PathBuf>,

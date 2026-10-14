@@ -55,6 +55,9 @@ pub fn read_directory_page<F: FileSystem>(
     if (max_bytes as usize) < header {
         return Err(linux_error(io::Error::from_raw_os_error(libc::EINVAL)));
     }
+    if !fs.supports_directory_image() {
+        return Err(linux_error(io::Error::from_raw_os_error(libc::ENOSYS)));
+    }
     let budget = (max_bytes as usize) - header;
     let inode = inode.into();
     let (handle, _) = fs.opendir(ctx, inode.into(), 0)?;
@@ -303,6 +306,10 @@ mod tests {
     impl FileSystem for FakeFs {
         type Inode = u64;
         type Handle = u64;
+
+        fn supports_directory_image(&self) -> bool {
+            true
+        }
 
         fn opendir(
             &self,
@@ -717,11 +724,36 @@ mod tests {
     }
 
     #[test]
+    fn mutable_backing_rejects_import_before_enumeration() {
+        struct Mutable;
+        impl FileSystem for Mutable {
+            type Inode = u64;
+            type Handle = u64;
+            fn opendir(
+                &self,
+                _: Context,
+                _: u64,
+                _: u32,
+            ) -> io::Result<(Option<u64>, super::super::fuse::OpenOptions)> {
+                panic!("mutable backing must not be enumerated for a permanent image");
+            }
+        }
+        let error = read_directory_page(&Mutable, context(), 1, 0, 1 << 20).unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(super::super::bindings::LINUX_ENOSYS)
+        );
+    }
+
+    #[test]
     fn release_runs_when_reading_entries_fails() {
         struct Broken;
         impl FileSystem for Broken {
             type Inode = u64;
             type Handle = u64;
+            fn supports_directory_image(&self) -> bool {
+                true
+            }
             fn opendir(
                 &self,
                 _ctx: Context,
