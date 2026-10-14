@@ -385,8 +385,11 @@ fn plan_namespaces(spec: &Spec) -> Result<Vec<NamespacePlan>, PlanError> {
 ///
 /// Shared by the init container (`config.json`) and exec processes (the
 /// `ExecProcessRequest` spec).
-pub fn process_plan_from(process: &oci_spec::runtime::Process) -> Result<ProcessPlan, PlanError> {
-    validate_process_constraints(process)?;
+pub fn process_plan_from(
+    process: &oci_spec::runtime::Process,
+    vm: bool,
+) -> Result<ProcessPlan, PlanError> {
+    validate_process_constraints(process, vm)?;
     let argv = process.args().clone().ok_or(PlanError::MissingArgs)?;
     if argv.is_empty() {
         return Err(PlanError::MissingArgs);
@@ -541,7 +544,7 @@ pub fn validate_vm_process(
     process: &oci_spec::runtime::Process,
     _exec: bool,
 ) -> Result<(), PlanError> {
-    validate_process_constraints(process)?;
+    validate_process_constraints(process, true)?;
     // Identity (uid/gid/groups/umask), capabilities, and
     // no_new_privileges are host-process concepts the VM boundary already
     // subsumes; accepting them matches how every VM runtime (kata,
@@ -603,19 +606,21 @@ pub struct ExecPlan {
     pub io: IoPlan,
 }
 
-/// Build an exec plan from the OCI process spec of the exec request.
+/// Build an exec plan from the OCI process spec of the exec request. `vm`
+/// selects the VM process allowlist (host LSM fields are no-ops in a VM).
 pub fn build_exec_plan(
     process: &oci_spec::runtime::Process,
     container_id: &str,
     exec_id: &str,
     init_pid: u32,
     io: IoPlan,
+    vm: bool,
 ) -> Result<ExecPlan, PlanError> {
     Ok(ExecPlan {
         container_id: container_id.to_string(),
         exec_id: exec_id.to_string(),
         init_pid,
-        process: process_plan_from(process)?,
+        process: process_plan_from(process, vm)?,
         io,
     })
 }
@@ -647,23 +652,32 @@ fn reject_other_fields(
     Ok(())
 }
 
-fn validate_process_constraints(process: &oci_spec::runtime::Process) -> Result<(), PlanError> {
+fn validate_process_constraints(
+    process: &oci_spec::runtime::Process,
+    vm: bool,
+) -> Result<(), PlanError> {
     let value = serde_json::to_value(process)?;
-    reject_other_fields(
-        &value,
-        "process.",
-        &[
-            "args",
-            "env",
-            "cwd",
-            "user",
-            "capabilities",
-            "rlimits",
-            "noNewPrivileges",
-            "terminal",
-            "consoleSize",
-        ],
-    )?;
+    // Host LSM labels and the OOM score are host-kernel concepts: the host
+    // path fails closed on them (dropping a constraint would silently weaken
+    // confinement), while a VM task cannot honor them at all — the guest owns
+    // its kernel — so they are accepted as no-ops, matching how kata and
+    // firecracker treat OCI process-level security. Kubelet/CRI set them on
+    // standard clusters (AppArmor nodes, SELinux nodes, QoS oom_score_adj).
+    let mut allowed = vec![
+        "args",
+        "env",
+        "cwd",
+        "user",
+        "capabilities",
+        "rlimits",
+        "noNewPrivileges",
+        "terminal",
+        "consoleSize",
+    ];
+    if vm {
+        allowed.extend_from_slice(&["apparmorProfile", "selinuxLabel", "oomScoreAdj"]);
+    }
+    reject_other_fields(&value, "process.", &allowed)?;
     reject_other_fields(
         &value["user"],
         "process.user.",
@@ -691,7 +705,10 @@ fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
     if vm {
         // Guest boot does not install OCI mounts or security constraints;
         // namespaces, resources metadata, and paths that describe the host
-        // side are accepted as no-ops (the VM owns its own view).
+        // side are accepted as no-ops (the VM owns its own view). Seccomp
+        // filters and SELinux mount labels are host-LSM/kernel concepts the
+        // guest cannot execute; refusing them would block every
+        // PodSecurity-restricted or SELinux cluster pod from VM tasks.
         reject_other_fields(
             linux,
             "linux.",
@@ -704,32 +721,20 @@ fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
                 "maskedPaths",
                 "readonlyPaths",
                 "sysctl",
+                "seccomp",
+                "mountLabel",
             ],
         )?;
-        reject_other_fields(
-            &linux["resources"],
-            "linux.resources.",
-            &["pids", "memory", "cpu", "devices"],
-        )?;
-        reject_other_fields(
-            &linux["resources"]["memory"],
-            "linux.resources.memory.",
-            &["limit"],
-        )?;
-        reject_other_fields(
-            &linux["resources"]["cpu"],
-            "linux.resources.cpu.",
-            &["quota", "period", "shares"],
-        )?;
-        // Standard system mounts (proc, sysfs, devpts, ...) are no-ops in a
-        // VM; the guest supervisor owns the rootfs layout. Only reject
-        // user-supplied bind mounts that would require host-side plumbing.
-        for mount in value["mounts"].as_array().unwrap_or(&vec![]) {
-            let typ = mount["type"].as_str().unwrap_or("bind");
-            if matches!(typ, "bind" | "rbind") {
-                return Err(PlanError::UnsupportedConstraint("VM bind mounts".into()));
-            }
-        }
+        // The whole resources subtree describes host-cgroup enforcement the
+        // VM path does not install (kubelet sends unified maps, swap and
+        // device rules on cgroup v2 nodes); VM shape comes from the
+        // io.pvisor.vm.* annotations instead. The host branch below keeps
+        // validating the subfields it actually enforces.
+        // System mounts (proc, sysfs, devpts, ...) and bind mounts are both
+        // no-ops in a VM: the guest supervisor owns the rootfs layout, and
+        // kubelet unconditionally bind-mounts /etc/hosts, /etc/hostname,
+        // /etc/resolv.conf and /dev/termination-log into every pod — the
+        // guest keeps its rootfs's own files for those paths.
         if value["root"]["readonly"] == true {
             return Err(PlanError::UnsupportedConstraint("VM root.readonly".into()));
         }
@@ -798,15 +803,15 @@ pub fn build_plan(
 ) -> Result<ContainerPlan, PlanError> {
     validate_spec_constraints(spec)?;
     let process = spec.process().as_ref().ok_or(PlanError::MissingProcess)?;
-    if spec
+    let vm = spec
         .annotations()
         .as_ref()
         .and_then(|annotations| annotations.get("io.pvisor.executor"))
-        .is_some_and(|executor| executor == "vm")
-    {
+        .is_some_and(|executor| executor == "vm");
+    if vm {
         validate_vm_process(process, false)?;
     }
-    let process_plan = process_plan_from(process)?;
+    let process_plan = process_plan_from(process, vm)?;
 
     let warnings = Vec::new();
     let namespaces = plan_namespaces(spec)?;
@@ -939,29 +944,11 @@ mod tests {
 
     #[test]
     fn unsupported_container_constraints_fail_closed_for_host_and_vm() {
-        let cases = [
-            (
-                "linux.seccomp",
-                serde_json::json!({"linux":{"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"}}}),
-            ),
-            (
-                "linux.mountLabel",
-                serde_json::json!({"linux":{"mountLabel":"system_u:object_r:container_file_t:s0"}}),
-            ),
-            (
-                "linux.resources.memory.swap",
-                serde_json::json!({"linux":{"resources":{"memory":{"swap":1024}}}}),
-            ),
-            (
-                "linux.resources.unified",
-                serde_json::json!({"linux":{"resources":{"unified":{"memory.high":"1024"}}}}),
-            ),
-            (
-                "hooks",
-                serde_json::json!({"hooks":{"prestart":[{"path":"/bin/true"}]}}),
-            ),
-        ];
-        for (field, patch) in cases {
+        let both_rejected = [(
+            "hooks",
+            serde_json::json!({"hooks":{"prestart":[{"path":"/bin/true"}]}}),
+        )];
+        for (field, patch) in both_rejected {
             for vm in [false, true] {
                 let mut value = serde_json::to_value(minimal_spec()).unwrap();
                 for (key, val) in patch.as_object().unwrap() {
@@ -973,30 +960,69 @@ mod tests {
                 let spec: Spec = serde_json::from_value(value).unwrap();
                 let error = build_plan(&spec, "test", Path::new("/b"), vec![], IoPlan::default())
                     .unwrap_err();
-                // VM rejects the whole nonempty linux section before translating it.
                 assert!(
-                    error
-                        .to_string()
-                        .contains(if vm && field.starts_with("linux.") {
-                            field.split('.').nth(1).unwrap()
-                        } else {
-                            field
-                        }),
-                    "{field}: {error}"
+                    error.to_string().contains(field),
+                    "{field} (vm={vm}): {error}"
                 );
             }
         }
     }
 
     #[test]
+    fn host_lsm_constraints_are_no_ops_for_vm_only() {
+        // Seccomp filters, SELinux mount labels and cgroup resource details
+        // (unified maps, swap) are host-kernel concepts a guest cannot
+        // execute or install; VM tasks accept them as no-ops while the host
+        // path keeps failing closed on them.
+        let host_only_rejected = [
+            (
+                "linux.seccomp",
+                serde_json::json!({"linux":{"seccomp":{"defaultAction":"SCMP_ACT_ERRNO"}}}),
+            ),
+            (
+                "linux.mountLabel",
+                serde_json::json!({"linux":{"mountLabel":"system_u:object_r:container_file_t:s0"}}),
+            ),
+            (
+                "linux.resources.unified",
+                serde_json::json!({"linux":{"resources":{"unified":{"memory.high":"1024"}}}}),
+            ),
+            (
+                "linux.resources.memory.swap",
+                serde_json::json!({"linux":{"resources":{"memory":{"swap":1024}}}}),
+            ),
+        ];
+        for (field, patch) in host_only_rejected {
+            let mut value = serde_json::to_value(minimal_spec()).unwrap();
+            for (key, val) in patch.as_object().unwrap() {
+                value[key] = val.clone();
+            }
+            let host_spec: Spec = serde_json::from_value(value.clone()).unwrap();
+            assert!(
+                build_plan(
+                    &host_spec,
+                    "test",
+                    Path::new("/b"),
+                    vec![],
+                    IoPlan::default()
+                )
+                .unwrap_err()
+                .to_string()
+                .contains(field),
+                "host must reject {field}"
+            );
+            value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
+            let vm_spec: Spec = serde_json::from_value(value).unwrap();
+            assert!(
+                build_plan(&vm_spec, "test", Path::new("/b"), vec![], IoPlan::default()).is_ok(),
+                "vm must accept {field} as a no-op"
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_process_constraints_are_rejected_on_create_and_exec() {
         for (field, value) in [
-            ("apparmorProfile", serde_json::json!("restricted")),
-            (
-                "selinuxLabel",
-                serde_json::json!("system_u:system_r:container_t:s0"),
-            ),
-            ("oomScoreAdj", serde_json::json!(500)),
             ("scheduler", serde_json::json!({"policy":"SCHED_OTHER"})),
             (
                 "ioPriority",
@@ -1015,7 +1041,7 @@ mod tests {
                     .contains(field)
             );
             assert!(
-                build_exec_plan(process, "c", "e", 1, IoPlan::default())
+                build_exec_plan(process, "c", "e", 1, IoPlan::default(), false)
                     .unwrap_err()
                     .to_string()
                     .contains(field)
@@ -1041,6 +1067,56 @@ mod tests {
     }
 
     #[test]
+    fn host_lsm_process_fields_are_no_ops_for_vm_only() {
+        // AppArmor profiles, SELinux labels and the OOM score constrain host
+        // processes; a VM task cannot honor them, so they are no-ops there
+        // while the host path keeps failing closed on them.
+        for (field, value) in [
+            ("apparmorProfile", serde_json::json!("restricted")),
+            (
+                "selinuxLabel",
+                serde_json::json!("system_u:system_r:container_t:s0"),
+            ),
+            ("oomScoreAdj", serde_json::json!(500)),
+        ] {
+            let mut spec = serde_json::to_value(minimal_spec()).unwrap();
+            spec["process"][field] = value;
+            let host_spec: Spec = serde_json::from_value(spec.clone()).unwrap();
+            assert!(
+                build_plan(&host_spec, "c", Path::new("/b"), vec![], IoPlan::default())
+                    .unwrap_err()
+                    .to_string()
+                    .contains(field),
+                "host must reject {field}"
+            );
+            assert!(
+                build_exec_plan(
+                    host_spec.process().as_ref().unwrap(),
+                    "c",
+                    "e",
+                    1,
+                    IoPlan::default(),
+                    false
+                )
+                .unwrap_err()
+                .to_string()
+                .contains(field),
+                "host exec must reject {field}"
+            );
+            spec["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
+            let vm_spec: Spec = serde_json::from_value(spec).unwrap();
+            assert!(
+                build_plan(&vm_spec, "c", Path::new("/b"), vec![], IoPlan::default()).is_ok(),
+                "vm must accept {field} as a no-op"
+            );
+            assert!(
+                validate_vm_process(vm_spec.process().as_ref().unwrap(), true).is_ok(),
+                "vm exec must accept {field} as a no-op"
+            );
+        }
+    }
+
+    #[test]
     fn time_namespace_is_rejected_not_warned() {
         let mut value = serde_json::to_value(minimal_spec()).unwrap();
         value["linux"] = serde_json::json!({"namespaces":[{"type":"time"}]});
@@ -1053,43 +1129,34 @@ mod tests {
 
     #[test]
     fn vm_rejects_host_only_enforcement_requests() {
-        for patch in [
-            serde_json::json!({"root":{"path":"rootfs","readonly":true}}),
-            serde_json::json!({"mounts":[{"destination":"/data","type":"bind","source":"/data"}]}),
-        ] {
-            let mut value = serde_json::to_value(minimal_spec()).unwrap();
-            value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
-            for (key, val) in patch.as_object().unwrap() {
-                value[key] = val.clone();
-            }
-            let spec: Spec = serde_json::from_value(value).unwrap();
-            assert!(matches!(
-                build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()),
-                Err(PlanError::UnsupportedConstraint(_))
-            ));
-        }
+        let mut value = serde_json::to_value(minimal_spec()).unwrap();
+        value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
+        value["root"]["readonly"] = serde_json::json!(true);
+        let spec: Spec = serde_json::from_value(value).unwrap();
+        assert!(matches!(
+            build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()),
+            Err(PlanError::UnsupportedConstraint(_))
+        ));
     }
 
     #[test]
-    fn vm_accepts_system_mounts_but_rejects_binds() {
+    fn vm_accepts_system_and_bind_mounts_as_no_ops() {
+        // kubelet unconditionally bind-mounts /etc/hosts, /etc/hostname,
+        // /etc/resolv.conf and /dev/termination-log into every pod, so a VM
+        // that rejected bind mounts could never run a real pod; the guest
+        // keeps its rootfs's own files for those paths.
         let mut value = serde_json::to_value(minimal_spec()).unwrap();
         value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
         value["mounts"] = serde_json::json!([
             {"destination":"/proc","type":"proc"},
             {"destination":"/dev","type":"tmpfs","source":"tmpfs"},
             {"destination":"/sys","type":"sysfs","source":"sysfs"},
+            {"destination":"/etc/hosts","type":"bind","source":"/var/lib/kubelet/pods/.../etc-hosts"},
+            {"destination":"/etc/resolv.conf","type":"bind","source":"/var/lib/kubelet/pods/.../resolv.conf"},
+            {"destination":"/dev/termination-log","type":"bind","source":"/var/lib/kubelet/pods/.../containers/vmc/..."},
         ]);
         let spec: Spec = serde_json::from_value(value).unwrap();
         assert!(build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()).is_ok());
-
-        // But bind mounts are still rejected.
-        let mut value = serde_json::to_value(minimal_spec()).unwrap();
-        value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
-        value["mounts"] = serde_json::json!([
-            {"destination":"/data","type":"bind","source":"/data"},
-        ]);
-        let spec: Spec = serde_json::from_value(value).unwrap();
-        assert!(build_plan(&spec, "c", Path::new("/b"), vec![], IoPlan::default()).is_err());
     }
 
     #[test]
@@ -1386,6 +1453,7 @@ mod tests {
                 stdout: Some("/bundle/stdout".to_string()),
                 stderr: Some("/bundle/stderr".to_string()),
             },
+            false,
         )
         .expect("exec plan");
         assert_eq!(plan.init_pid, 4242);
@@ -1401,7 +1469,7 @@ mod tests {
         )
         .expect("parse process");
         assert!(matches!(
-            build_exec_plan(&no_args, "c1", "e1", 1, IoPlan::default()),
+            build_exec_plan(&no_args, "c1", "e1", 1, IoPlan::default(), false),
             Err(PlanError::MissingArgs)
         ));
     }

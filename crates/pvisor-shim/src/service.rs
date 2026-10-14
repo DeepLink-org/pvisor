@@ -248,7 +248,7 @@ impl PvisorTask {
         crate::plan::validate_vm_process(&process, true)
             .map_err(|error| rpc_error(Code::UNIMPLEMENTED, error.to_string()))?;
         let io = io_plan_from(false, &req.stdin, &req.stdout, &req.stderr);
-        let plan = build_exec_plan(&process, &req.id, &req.exec_id, 0, io)
+        let plan = build_exec_plan(&process, &req.id, &req.exec_id, 0, io, true)
             .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error.to_string()))?;
 
         let mut owned_io = ContainerIo::open(&plan.io)
@@ -970,7 +970,7 @@ impl Task for PvisorTask {
                 )
             })?;
         let io = io_plan_from(req.terminal, &req.stdin, &req.stdout, &req.stderr);
-        let plan = build_exec_plan(&process, &req.id, &req.exec_id, init_pid, io)
+        let plan = build_exec_plan(&process, &req.id, &req.exec_id, init_pid, io, false)
             .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error.to_string()))?;
 
         let mut owned_io = ContainerIo::open(&plan.io)

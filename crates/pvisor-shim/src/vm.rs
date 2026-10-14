@@ -52,8 +52,10 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
 
     let mut vm = pvisor_vm::api::VmBuilder::new(config.cpus, config.ram_mib)?;
 
-    // Use the shim's default 512 MiB DAX window.
-    vm.filesystem("/dev/root", &plan.rootfs, 1 << 29)?;
+    // The rootfs is shared read-write, so it rides plain virtio-fs without a
+    // DAX window: writable DAX requires a lifecycle contract the shim does
+    // not provide.
+    vm.filesystem("/dev/root", &plan.rootfs, 0)?;
     vm.virtual_file(
         "/dev/root",
         "/.pvisor-guest.json",

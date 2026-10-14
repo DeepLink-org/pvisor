@@ -104,10 +104,15 @@ Host requirement: `/dev/kvm`. The static musl binary embeds its libkrunfw kernel
 Cross-builds need `PVISOR_KRUNFW_KERNEL_BUNDLE` pointing to extracted
 `kernel.bin` and `kernel.json`; native Linux builds prepare firmware automatically.
 Standard containerd/CRI Linux fields (namespaces, resources, cgroupsPath,
-masked/readonly paths, sysctls, system mounts like proc/sysfs/tmpfs) are
-accepted as no-ops for VM tasks — the guest owns that view — while bind/rbind
-mounts, `root.readonly=true` and hostname configuration are rejected: the
-runner does not install them. Snapshotter
+masked/readonly paths, sysctls, seccomp, SELinux mount labels, system mounts
+like proc/sysfs/tmpfs) and host-LSM process fields (`apparmorProfile`,
+`selinuxLabel`, `oomScoreAdj`) are accepted as no-ops for VM tasks — the
+guest kernel cannot honor host constraints — while `root.readonly=true` and
+hostname configuration are rejected (the runner does not install them).
+Bind mounts are accepted as no-ops: kubelet unconditionally bind-mounts
+`/etc/hosts`, `/etc/hostname`, `/etc/resolv.conf` and `/dev/termination-log`
+into every pod, and the guest keeps its rootfs's own files for those paths
+(host paths, ConfigMaps and emptyDir volumes do not appear in the guest). Snapshotter
 request mounts used to materialize the rootfs are distinct from OCI spec
 mounts and remain accepted. VM CPU/RAM annotations select VM shape; they
 are not enforcement of OCI cgroup limits. The `io.pvisor.vm.log` annotation
