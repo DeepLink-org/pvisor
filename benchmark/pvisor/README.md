@@ -427,6 +427,83 @@ python3 benchmark/pvisor/publish_reference_campaign.py \
 
 ## Same-host runtime comparison
 
+### AgentENV capability preflight
+
+`agentenv_backend.py` is an optional, separate **B-FS-DIAG** adapter. It does not
+change existing reference backends or pVisor runtime defaults. Its question is
+whether a prepared AgentENV template executes all seven common workloads and
+returns valid per-call guest timings separately from API timings. No comparative
+speedup, cold-cache latency or whole-system equal-budget claim is produced.
+
+The [retained diagnostic summary](agentenv-filesystem-summary.csv) contains
+historical child-process and operation timings for pVisor VM, AgentENV and a
+separately sampled Firecracker control. Rows preserve cohort, configuration,
+sample count and the source CSV hash. These are observations from frozen
+artifacts, not current-main or hyperfine results; do not pool the two cohorts
+or interpret their differences as pure filesystem or VMM overhead.
+
+Prepare on Linux from the same pristine reference rootfs used by the other
+backends. Use a fresh directory on a disk with enough free space; neither the
+rootfs nor previous benchmark artifacts are modified:
+
+```sh
+python3 benchmark/pvisor/prepare_agentenv.py \
+  --rootfs /absolute/path/to/reference/rootfs \
+  --output /data/your-user/pvisor-agentenv/context
+just test-py benchmark/pvisor/test_agentenv_backend.py
+```
+
+The context contains a complete rootfs archive, unchanged `v1/workload.py`, a
+guest driver, input manifest and preparation receipt. Import/build it with a
+pinned AgentENV release's supported template workflow. The v0.2.0 CLI rejects
+Dockerfile COPY/ADD: package this context as an OCI image, expose it through a
+private registry and use `aenv pull <image@sha256:digest> --name pvisor-fs
+--cpu 2 --memory 16384`. Use `/usr/bin/python3 -c pass` as the no-op readiness
+command; the reference rootfs does not include `/bin/true`. Check the installed
+CLI's help, not current-main docs. Set the OCI image's `config.User` to the
+name `root`, not the numeric string `0`: envd 0.5.15 rejects `0` as an invalid
+username. OverlayBD tools also validate `/etc/overlaybd/overlaybd.json` before
+using an explicit config; provide the release's default-path placeholder in
+the dedicated service's filesystem view.
+Record actual source/release, server/Firecracker/kernel/ublk identities and the
+resulting immutable template ID. Never capture a template after running this
+benchmark, since that would preload workload caches. Downloads/conversion and
+template preparation are outside tool timers.
+
+For AgentENV v0.2.0, install `agentenv-requirements.txt` into an isolated venv
+(`pip install -r benchmark/pvisor/agentenv-requirements.txt`), freeze the resolved
+dependencies, and use its Python for the adapter. This pins E2B 2.50.0: SDK
+2.51 and later switched create/connect to v2 endpoints that this AgentENV
+release does not implement. The SDK is optional for all
+other benchmarks. Run only against the explicitly configured endpoint:
+
+```sh
+/absolute/path/to/venv/bin/python benchmark/pvisor/agentenv_backend.py \
+  --endpoint http://127.0.0.1:18080 --template IMMUTABLE_TEMPLATE_ID \
+  --api-key-file /absolute/path/to/private/api-key \
+  --prepared /data/your-user/pvisor-agentenv/context \
+  --output benchmark/.data/agentenv-preflight-new --calls 2
+```
+
+The key is never included in reports or CLI arguments. Plain HTTP is limited to
+loopback. One fresh sandbox runs a full seven-tool pass and repeats it, resetting
+only owned tool caches and generated outputs. Input hashes/modes, worker output,
+all npm package bytes and final clean Git state must pass. Full input hashing
+prewarms files: label both passes accordingly. Host API time includes transport;
+guest child time includes interpreter startup and validation; worker time keeps
+the existing operation boundary. They are not interchangeable.
+
+Retain `report.json`, `stdout.log`, `stderr.log` and `per-call.csv` (14 rows at
+two passes). Any missing/duplicate call, nonfinite timing, changed manifest,
+failed command or cleanup failure rejects the run. On create timeout, retain
+the metadata token for manual reconciliation; do not delete unrelated sandboxes.
+Destroy acknowledgement does not prove all ublk devices/processes have exited.
+Before formal interleaving, separately verify template RAM, entire server/ublk
+resource accounting, mounts/cache/restore state and host cleanup. Use a common
+fresh cohort for pVisor, plain Firecracker and AgentENV; existing historical
+figures cannot fill missing control cells. Snapshot and durability equivalence
+remain untested. Never install/reconfigure the host from this runner.
+
 B-STARTUP, B-FS-TOOLS and B-AGENT-TASK use `reference_baselines.py`. Native, pVisor host/staged/VM, rootless Docker, Firecracker PCI, QEMU q35 and QEMU microvm share offline tools and fixtures. The daemon and images are already prepared. Use two allowed host CPUs, 2 vCPU per VM, 128 MiB for the shell-ready probe and equal configured memory for all tool VMs. Use 16 GiB for Python/Node/Rust tools. Docker/native memory is not capped: this is a CPU-controlled comparison, not identical resource enforcement.
 
 Prepare a private rootless Docker daemon on a short socket path. Supply its actual host PID so the runner checks ownership and pins only that daemon’s tree. Existing system Docker is not required or modified. Docker tasks also use the in-container affinity helper. Images, ext4 templates and pVisor firmware differ in execution semantics; the results are not pure VMM or security rankings.
