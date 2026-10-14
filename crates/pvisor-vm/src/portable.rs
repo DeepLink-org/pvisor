@@ -3,6 +3,7 @@ use crate::api::*;
 use std::{
     fs::File,
     io,
+    os::fd::RawFd,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -275,6 +276,9 @@ impl VmConfiguration for VmBuilder {
     }
     fn network(&mut self, stream: std::os::unix::net::UnixStream, mac: [u8; 6]) -> io::Result<()> {
         self.network_with_options(stream, mac, NetworkOptions::default())
+    }
+    fn task_stdio(&mut self, stdin: RawFd, stdout: RawFd, stderr: RawFd) -> io::Result<()> {
+        self.inner.task_stdio(stdin, stdout, stderr)
     }
     fn network_with_options(
         &mut self,
