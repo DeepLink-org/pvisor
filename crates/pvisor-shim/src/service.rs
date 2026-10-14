@@ -219,11 +219,11 @@ impl PvisorTask {
 #[cfg(feature = "vm")]
 impl PvisorTask {
     /// Exec inside a libkrun VM task: connect to the guest agent over the
-    /// bundle's agent socket, run the process there, and relay its IO.
+    /// task's agent socket, run the process there, and relay its IO.
     async fn exec_in_vm(
         &self,
         req: ExecProcessRequest,
-        bundle: PathBuf,
+        _bundle: PathBuf,
         _init_pid: u32,
     ) -> ttrpc::Result<Empty> {
         if !cfg!(feature = "vm") {
@@ -257,7 +257,7 @@ impl PvisorTask {
             return Err(rpc_error(Code::INTERNAL, "exec io without child fds"));
         };
 
-        let socket_path = bundle.join("pvisor-agent.sock");
+        let socket_path = crate::agent::agent_socket_path(&plan.container_id);
         let (pid, stream) = tokio::task::spawn_blocking({
             let plan = plan.clone();
             let socket_path = socket_path.clone();

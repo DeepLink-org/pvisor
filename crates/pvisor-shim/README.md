@@ -130,8 +130,11 @@ VM tasks boot the shim binary itself as a guest agent: at boot the
 `pvisor-guest` supervisor starts it from `/.pvisor-guest.json`, without
 a shell helper (`io.pvisor.vm.agent=off` disables it). The agent listens
 on vsock port 0x7076; libkrun proxies host connections from
-`<bundle>/pvisor-agent.sock` into the guest (so `docker exec` /
-`kubectl exec` work on VM tasks):
+`/run/pvisor-agent-<task-id-hash>.sock` into the guest (so `docker exec` /
+`kubectl exec` work on VM tasks; the socket cannot live in the bundle
+because Unix socket paths are capped at 108 bytes and containerd bundle
+paths exceed that; without `/run`, e.g. rootless, it falls back to the temp
+directory):
 
 - one agent connection per exec; frames are `[channel][length][payload]`
   with JSON control messages (`exec_start`/`started`/`exited`)

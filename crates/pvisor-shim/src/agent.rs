@@ -27,6 +27,29 @@ pub const AGENT_ARG: &str = "--pvisor-shim-guest-agent";
 /// Guest-side path the agent binary is copied to at VM boot.
 pub const AGENT_GUEST_PATH: &str = "/.pvisor-agent";
 
+/// Host-side unix socket that pvisor-vm binds as the vsock proxy for
+/// [`AGENT_VSOCK_PORT`]. Unix socket paths are capped at 108 bytes
+/// (`sockaddr_un::sun_path`), and containerd bundle paths (prefix plus a
+/// 64-byte task id) exceed that, so the socket lives keyed by a hash of the
+/// task id. `/run` is preferred: it is root-owned, so unprivileged local
+/// users cannot pre-create (squat) the predictable path the way they could
+/// in a world-writable temp directory; the temp directory is the fallback
+/// for rootless setups without `/run`. The name is derived deterministically
+/// from the task id, so the VM runner (creator) and exec path (connector)
+/// agree. Callers own its lifecycle: remove it when the task is deleted.
+pub fn agent_socket_path(task_id: &str) -> std::path::PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    task_id.hash(&mut hasher);
+    let name = format!("pvisor-agent-{:016x}.sock", hasher.finish());
+    let directory = if std::path::Path::new("/run").is_dir() {
+        std::path::PathBuf::from("/run")
+    } else {
+        std::env::temp_dir()
+    };
+    directory.join(name)
+}
+
 /// Maximum payload in either direction, including JSON control messages.
 /// Stream pumps use small chunks; no peer may request an unbounded allocation.
 pub const MAX_FRAME_PAYLOAD: usize = 1024 * 1024;
@@ -731,5 +754,27 @@ mod tests {
         let mut reader = FrameReader::new(&buffer[..]);
         let error = reader.read_frame().expect_err("invalid channel");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn agent_socket_paths_fit_sun_path_and_stay_distinct() {
+        // sockaddr_un::sun_path caps a unix socket path at 108 bytes;
+        // containerd task ids are 64 hex chars, so bundle-relative paths
+        // cannot be used and even hashed names must stay short.
+        let a =
+            agent_socket_path("87e32039d31fca9c8f74e400f14b624876e2a4876ece1434ecdfd2aa4876e95a");
+        let b = agent_socket_path("ctr-provided-id");
+        assert_eq!(
+            a,
+            agent_socket_path("87e32039d31fca9c8f74e400f14b624876e2a4876ece1434ecdfd2aa4876e95a")
+        );
+        assert_ne!(a, b);
+        for path in [&a, &b] {
+            assert!(
+                path.as_os_str().len() < 108,
+                "{} exceeds sun_path",
+                path.display()
+            );
+        }
     }
 }
