@@ -386,6 +386,14 @@ lease，普通 namespace 修改不使用 mount-wide I/O drain。
 继续保护 I/O、release 和 freeze；快照保留原有 File handle 的序列化格式。
 GETATTR 与 backing attributes 的重复查询只在同一请求内复用，不缓存
 可变 backing 的跨请求结果。
+携带 FH 的大小变更沿已打开的 upper 文件句柄执行，保留 unlink/rename
+后的 ftruncate 语义，不重新解析旧路径或修改同名替代文件。句柄必须匹配
+overlay inode；lower 文件句柄不能通过这条路径写入。回归覆盖删除、替换
+和 inode/handle 不匹配，以及无效、只读 upper 和 lower 句柄拒绝。
+rootless OCI 的 virtual metadata 模式下，新建目录记录 guest 创建者的
+UID/GID，并从虚拟父目录继承 setgid；不把宿主 UID 当成 guest 所有者返回。
+Linux 回归通过临时目录检查这些行为及普通 metadata、排除路径，不依赖
+OCI 镜像、外部模型或 guest 启动。
 Linux regular-file LOOKUP 和无 FH GETATTR 保留 Core 的 namespace、
 父目录、hardlink 与策略检查，再通过原生父目录的强引用 FD 对最终名称
 执行 no-follow fstatat。每次查询重新读取属性，省去仅用于 metadata 回复
