@@ -1,0 +1,255 @@
+From: pVisor maintainers
+Subject: [PATCH] fuse: negotiate read-only lower local flush completion
+
+Preserve write_inode_now, fuse_sync_writes and filemap_check_errors before
+using a per-open promise that backend FLUSH has no work or errors to report.
+Do not use FOPEN_NOFLUSH's early return. Keep RELEASE and its lifetime rules
+unchanged, and reject negotiation with writeback or remote file locks.
+
+diff --git a/fs/fuse/file.c b/fs/fuse/file.c
+--- a/fs/fuse/file.c
++++ b/fs/fuse/file.c
+@@ -809,166 +809,183 @@
+ 		fuse_pvisor_wb_error(fc,
+ 			filemap_fdatawrite(ff->pvisor_wb_inode->i_mapping));
+ 
+ 	list_for_each_entry_safe(ff, next, &batch, pvisor_wb_entry) {
+ 		struct inode *inode = ff->pvisor_wb_inode;
+ 		bool released;
+ 
+ 		fuse_pvisor_wb_error(fc, write_inode_now(inode, 1));
+ 		inode_lock(inode);
+ 		fuse_sync_writes(inode);
+ 		inode_unlock(inode);
+ 		fuse_pvisor_wb_error(fc, filemap_check_errors(inode->i_mapping));
+ 
+ 		spin_lock(&fc->pvisor_wb_lock);
+ 		list_del_init(&ff->pvisor_wb_entry);
+ 		fc->pvisor_wb_bytes -= ff->pvisor_wb_submitted;
+ 		ff->pvisor_wb_submitted = 0;
+ 		if (ff->pvisor_wb_bytes) {
+ 			list_add_tail(&ff->pvisor_wb_entry, &fc->pvisor_wb_pending);
+ 			spin_unlock(&fc->pvisor_wb_lock);
+ 			wake_up_all(&fc->pvisor_wb_wait);
+ 			continue;
+ 		}
+ 		released = ff->pvisor_wb_released;
+ 		ff->pvisor_wb_queued = false;
+ 		ff->pvisor_wb_inode = NULL;
+ 		fc->pvisor_wb_count--;
+ 		spin_unlock(&fc->pvisor_wb_lock);
+ 		if (released) {
+ 			fuse_pvisor_wb_error(fc, fuse_pvisor_wb_flush(inode, ff));
+ 			fuse_file_release(inode, ff, ff->pvisor_wb_flags, 0, false);
+ 		}
+ 		fuse_file_put(ff, fc->auto_submounts);
+ 		iput(inode);
+ 		wake_up_all(&fc->pvisor_wb_wait);
+ 	}
+ }
+ 
+ int fuse_pvisor_wb_enable(struct fuse_mount *fm)
+ {
+ 	struct fuse_conn *fc = fm->fc;
+ 	struct backing_dev_info *bdi = fm->sb->s_bdi;
+ 
+ 	INIT_DELAYED_WORK(&fc->pvisor_wb_work, fuse_pvisor_wb_work);
+ 	fc->pvisor_wb_wq = alloc_workqueue("fuse-pvisor-wb",
+ 					 WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
+ 	if (!fc->pvisor_wb_wq)
+ 		return -ENOMEM;
+ 
+ 	/* Keep strict accounting, reserving our working set if budgets permit. */
+ 	bdi_set_max_ratio(bdi, 100);
+ 	bdi_set_min_bytes(bdi, PVISOR_WB_HIGH_WATER);
+ 	return 0;
+ }
+ 
+ int fuse_pvisor_wb_drain(struct fuse_conn *fc)
+ {
+ 	if (fc->pvisor_wb_wq) {
+ 		do {
+ 			flush_delayed_work(&fc->pvisor_wb_work);
+ 		} while (READ_ONCE(fc->pvisor_wb_count));
+ 	}
+ 	return READ_ONCE(fc->pvisor_wb_error);
+ }
+ 
++/*
++ * Host promises no backend close work for this negotiated lower handle.
++ * Keep guest writeback/error checks in fuse_flush() before using this promise.
++ */
++static bool fuse_pvisor_local_flush_enabled(struct file *file)
++{
++	struct inode *inode = file_inode(file);
++	struct fuse_file *ff = file->private_data;
++	struct fuse_conn *fc = ff->fm->fc;
++
++	return fc->pvisor_local_flush &&
++		(ff->open_flags & FOPEN_PVISOR_LOCAL_FLUSH) &&
++		S_ISREG(inode->i_mode) && !(file->f_mode & FMODE_WRITE) &&
++		!fc->writeback_cache && !FUSE_IS_DAX(inode) &&
++		fc->no_lock && fc->no_flock;
++}
++
+ static int fuse_flush(struct file *file, fl_owner_t id)
+ {
+ 	struct inode *inode = file_inode(file);
+ 	struct fuse_mount *fm = get_fuse_mount(inode);
+ 	struct fuse_file *ff = file->private_data;
+ 	struct fuse_flush_in inarg;
+ 	FUSE_ARGS(args);
+ 	int err;
+ 
+ 	if (fuse_is_bad(inode))
+ 		return -EIO;
+ 
+ 	if (ff->pvisor_unbound)
+ 		return 0;
+ 
+ 	/* Remote lock owners still require the ordinary synchronous FLUSH. */
+ 	if (fuse_pvisor_wb_enabled(inode, ff))
+ 		return READ_ONCE(fm->fc->pvisor_wb_error);
+ 
+ 	if (ff->open_flags & FOPEN_NOFLUSH && !fm->fc->writeback_cache)
+ 		return 0;
+ 
+ 	err = write_inode_now(inode, 1);
+ 	if (err)
+ 		return err;
+ 
+ 	inode_lock(inode);
+ 	fuse_sync_writes(inode);
+ 	inode_unlock(inode);
+ 
+ 	err = filemap_check_errors(file->f_mapping);
+ 	if (err)
+ 		return err;
+ 
+ 	err = 0;
+-	if (fm->fc->no_flush)
++	if (fuse_pvisor_local_flush_enabled(file) || fm->fc->no_flush)
+ 		goto inval_attr_out;
+ 
+ 	memset(&inarg, 0, sizeof(inarg));
+ 	inarg.fh = ff->fh;
+ 	inarg.lock_owner = fuse_lock_owner_id(fm->fc, id);
+ 	args.opcode = FUSE_FLUSH;
+ 	args.nodeid = get_node_id(inode);
+ 	args.in_numargs = 1;
+ 	args.in_args[0].size = sizeof(inarg);
+ 	args.in_args[0].value = &inarg;
+ 	args.force = true;
+ 
+ 	err = fuse_simple_request(fm, &args);
+ 	if (err == -ENOSYS) {
+ 		fm->fc->no_flush = 1;
+ 		err = 0;
+ 	}
+ 
+ inval_attr_out:
+ 	/*
+ 	 * In memory i_blocks is not maintained by fuse, if writeback cache is
+ 	 * enabled, i_blocks from cached attr may not be accurate.
+ 	 */
+ 	if (!err && fm->fc->writeback_cache)
+ 		fuse_invalidate_attr_mask(inode, STATX_BLOCKS);
+ 	return err;
+ }
+ 
+ int fuse_fsync_common(struct file *file, loff_t start, loff_t end,
+ 		      int datasync, int opcode)
+ {
+ 	struct inode *inode = file->f_mapping->host;
+ 	struct fuse_mount *fm = get_fuse_mount(inode);
+ 	struct fuse_file *ff = file->private_data;
+ 	FUSE_ARGS(args);
+ 	struct fuse_fsync_in inarg;
+ 
+ 	memset(&inarg, 0, sizeof(inarg));
+ 	inarg.fh = ff->fh;
+ 	inarg.fsync_flags = datasync ? FUSE_FSYNC_FDATASYNC : 0;
+ 	args.opcode = opcode;
+ 	args.nodeid = get_node_id(inode);
+ 	args.in_numargs = 1;
+ 	args.in_args[0].size = sizeof(inarg);
+ 	args.in_args[0].value = &inarg;
+ 	return fuse_simple_request(fm, &args);
+ }
+ 
+ static int fuse_fsync(struct file *file, loff_t start, loff_t end,
+ 		      int datasync)
+ {
+ 	struct inode *inode = file->f_mapping->host;
+ 	struct fuse_conn *fc = get_fuse_conn(inode);
+ 	int err;
+ 
+ 	if (fuse_is_bad(inode))
+ 		return -EIO;
+ 
+ 	err = fuse_pvisor_bind(file);
+ 	if (err)
+ 		return err;
+ 
+ 	inode_lock(inode);
+ 
+ 	/*
+diff --git a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
+@@ -889,6 +889,8 @@
+ 
+ 	/** Guest resolves imported directory metadata locally. */
+ 	unsigned int pvisor_meta:1;
++	/* Read-only lower handles may skip only backend FLUSH after local checks. */
++	unsigned int pvisor_local_flush:1;
+ 	/* ENOSYS disables directory images, independently of lazy open. */
+ 	bool pvisor_no_readindex;
+ 	struct workqueue_struct *pvisor_wb_wq;
+diff --git a/fs/fuse/inode.c b/fs/fuse/inode.c
+--- a/fs/fuse/inode.c
++++ b/fs/fuse/inode.c
+@@ -1368,6 +1368,12 @@
+ 				else
+ 					ok = false;
+ 			}
++			if (flags & FUSE_PVISOR_LOCAL_FLUSH) {
++				if (fc->writeback_cache || !fc->no_lock || !fc->no_flock)
++					ok = false;
++				else
++					fc->pvisor_local_flush = 1;
++			}
+ 			if (flags & FUSE_PVISOR_META)
+ 				fc->pvisor_meta = 1;
+ 			if ((flags & FUSE_PVISOR_WRITEBACK) && fc->writeback_cache &&
+@@ -1428,7 +1434,8 @@
+ 		FUSE_SECURITY_CTX | FUSE_CREATE_SUPP_GROUP |
+ 		FUSE_HAS_EXPIRE_ONLY | FUSE_DIRECT_IO_ALLOW_MMAP |
+ 		FUSE_NO_EXPORT_SUPPORT | FUSE_HAS_RESEND | FUSE_ALLOW_IDMAP |
+-		FUSE_PVISOR_META | FUSE_PVISOR_WRITEBACK;
++		FUSE_PVISOR_META | FUSE_PVISOR_WRITEBACK |
++		FUSE_PVISOR_LOCAL_FLUSH;
+ #ifdef CONFIG_FUSE_DAX
+ 	if (fm->fc->dax)
+ 		flags |= FUSE_MAP_ALIGNMENT;
+diff --git a/include/uapi/linux/fuse.h b/include/uapi/linux/fuse.h
+--- a/include/uapi/linux/fuse.h
++++ b/include/uapi/linux/fuse.h
+@@ -373,6 +373,8 @@
+ #define FOPEN_CACHE_DIR		(1 << 3)
+ /* Original lower handle, negotiated with FUSE_PVISOR_WRITEBACK. */
+ #define FOPEN_PVISOR_LOWER	(1U << 30)
++/* Backend FLUSH is unnecessary; guest checks still run. Negotiated bit 43. */
++#define FOPEN_PVISOR_LOCAL_FLUSH	(1U << 29)
+ #define FOPEN_STREAM		(1 << 4)
+ #define FOPEN_NOFLUSH		(1 << 5)
+ #define FOPEN_PARALLEL_DIRECT_WRITES	(1 << 6)
+@@ -479,6 +481,8 @@
+ #define FUSE_PVISOR_META	(1ULL << 41)
+ /* Guest-owned asynchronous, cross-file writeback. */
+ #define FUSE_PVISOR_WRITEBACK	(1ULL << 42)
++/* Read-only lower close: preserve guest checks, omit only backend FLUSH. */
++#define FUSE_PVISOR_LOCAL_FLUSH	(1ULL << 43)
+ 
+ /**
+  * CUSE INIT request/reply flags

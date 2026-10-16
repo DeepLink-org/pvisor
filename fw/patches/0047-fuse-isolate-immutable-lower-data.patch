@@ -1,0 +1,692 @@
+From: pVisor maintainers
+Subject: [PATCH] fuse: isolate immutable lower data pages from namespace inodes
+
+Negotiate fixed-size OPEN receipts and stable lower object IDs. Keep native
+fh/nodeid and namespace identity. Use reclaimable data inodes and backing
+files for read/splice/mmap without retaining closed host handles for cached
+pages, sharing upper pages, or changing namespace EOF from lower reads.
+
+diff --git a/fs/fuse/file.c b/fs/fuse/file.c
+--- a/fs/fuse/file.c
++++ b/fs/fuse/file.c
+@@ -9,6 +9,7 @@
+ #include "fuse_i.h"
+ 
+ #include <linux/cred.h>
++#include <linux/backing-file.h>
+ 
+ #include <linux/pagemap.h>
+ #include <linux/slab.h>
+@@ -28,11 +29,18 @@
+ static bool fuse_pvisor_wb_queue(struct inode *inode, struct fuse_file *ff,
+ 			       u64 bytes, bool released, unsigned int flags);
+ 
++static ssize_t fuse_direct_read_iter(struct kiocb *iocb, struct iov_iter *to);
++static const struct file_operations fuse_pvisor_data_fops;
++static const struct address_space_operations fuse_pvisor_data_aops;
++
+ static int fuse_send_open(struct fuse_mount *fm, u64 nodeid,
+ 			  unsigned int open_flags, int opcode,
+-			  struct fuse_open_out *outargp)
++			  struct fuse_open_out *outargp, u64 *data_size)
+ {
+ 	struct fuse_open_in inarg;
++	struct fuse_pvisor_open_out extended = {};
++	bool data_reply = fm->fc->pvisor_data_object && opcode == FUSE_OPEN;
++	int err;
+ 	FUSE_ARGS(args);
+ 
+ 	memset(&inarg, 0, sizeof(inarg));
+@@ -51,10 +59,15 @@
+ 	args.in_args[0].size = sizeof(inarg);
+ 	args.in_args[0].value = &inarg;
+ 	args.out_numargs = 1;
+-	args.out_args[0].size = sizeof(*outargp);
+-	args.out_args[0].value = outargp;
+-
+-	return fuse_simple_request(fm, &args);
++	args.out_args[0].size = data_reply ? sizeof(extended) : sizeof(*outargp);
++	args.out_args[0].value = data_reply ? (void *)&extended : outargp;
++
++	err = fuse_simple_request(fm, &args);
++	if (!err && data_reply) {
++		*outargp = extended.open;
++		*data_size = extended.size;
++	}
++	return err;
+ }
+ 
+ struct fuse_file *fuse_file_alloc(struct fuse_mount *fm, bool release)
+@@ -138,6 +151,7 @@
+ 						   GFP_KERNEL | __GFP_NOFAIL))
+ 				fuse_release_end(ff->fm, args, -ENOTCONN);
+ 		}
++		iput(ff->pvisor_data_inode);
+ 		kfree(ff);
+ 	}
+ }
+@@ -171,10 +185,12 @@
+ 		struct fuse_open_out *outargp = &ff->args->open_outarg;
+ 		int err;
+ 
+-		err = fuse_send_open(fm, nodeid, open_flags, opcode, outargp);
++		err = fuse_send_open(fm, nodeid, open_flags, opcode, outargp,
++				     &ff->pvisor_data_size);
+ 		if (!err) {
+ 			ff->fh = outargp->fh;
+ 			ff->open_flags = outargp->open_flags;
++			ff->pvisor_data_id = (u32)outargp->backing_id;
+ 		} else if (err != -ENOSYS) {
+ 			fuse_file_free(ff);
+ 			return ERR_PTR(err);
+@@ -199,6 +215,166 @@
+ }
+ 
+ 
++/* The receipt is validated without consulting merged inode size. */
++static int fuse_pvisor_data_valid(struct inode *inode, struct fuse_file *ff,
++				  unsigned int flags)
++{
++	struct fuse_conn *fc = ff->fm->fc;
++
++	if (!(ff->open_flags & FOPEN_PVISOR_DATA_OBJECT))
++		return 0;
++	if (!fc->pvisor_data_object || fc->writeback_cache ||
++	    !fc->no_lock || !fc->no_flock || FUSE_IS_DAX(inode) ||
++	    !S_ISREG(inode->i_mode) || (flags & (O_ACCMODE | O_TRUNC)) ||
++	    (ff->open_flags & (FOPEN_DIRECT_IO | FOPEN_PASSTHROUGH |
++			       FOPEN_NONSEEKABLE | FOPEN_STREAM)) ||
++	    !ff->pvisor_data_id || ff->pvisor_data_size > inode->i_sb->s_maxbytes)
++		return -EIO;
++	return 0;
++}
++
++static int fuse_pvisor_data_eq(struct inode *inode, void *data)
++{
++	return get_fuse_inode(inode)->pvisor_data_id == *(u32 *)data;
++}
++
++static int fuse_pvisor_data_set(struct inode *inode, void *data)
++{
++	get_fuse_inode(inode)->pvisor_data_id = *(u32 *)data;
++	return 0;
++}
++
++/* Prepare under the namespace open lock; allocation never retries OPEN. */
++static struct file *fuse_pvisor_data_file(struct file *user_file)
++{
++	struct fuse_file *ff = user_file->private_data;
++	struct inode *ns = file_inode(user_file), *inode;
++	struct fuse_inode *fi = get_fuse_inode(ns);
++	struct file *file;
++	struct path path;
++
++	mutex_lock(&fi->pvisor_open_lock);
++	file = ff->pvisor_data_file;
++	if (file)
++		goto out;
++	inode = ff->pvisor_data_inode;
++	if (!inode) {
++		inode = iget5_locked(ns->i_sb, ff->pvisor_data_id,
++				    fuse_pvisor_data_eq, fuse_pvisor_data_set,
++				    &ff->pvisor_data_id);
++		if (!inode) {
++			file = ERR_PTR(-ENOMEM);
++			goto out;
++		}
++		if (inode->i_state & I_NEW) {
++			inode->i_ino = ff->pvisor_data_id;
++			inode->i_mode = S_IFREG | 0444;
++			inode->i_flags |= S_NOATIME | S_NOCMTIME;
++			set_nlink(inode, 1);
++			i_size_write(inode, ff->pvisor_data_size);
++			fuse_init_file_inode(inode, 0);
++			inode->i_fop = &fuse_pvisor_data_fops;
++			inode->i_mapping->a_ops = &fuse_pvisor_data_aops;
++			unlock_new_inode(inode);
++		} else if (i_size_read(inode) != ff->pvisor_data_size) {
++			iput(inode);
++			file = ERR_PTR(-EIO);
++			goto out;
++		}
++		ff->pvisor_data_inode = inode;
++		ff->pvisor_namespace_inode = ns;
++	}
++	path.dentry = d_alloc_anon(ns->i_sb);
++	if (!path.dentry) {
++		file = ERR_PTR(-ENOMEM);
++		goto out;
++	}
++	d_instantiate(path.dentry, igrab(inode));
++	path.mnt = user_file->f_path.mnt;
++	file = backing_file_open(user_file, user_file->f_flags, &path,
++				 user_file->f_cred);
++	dput(path.dentry);
++	if (!IS_ERR(file)) {
++		file->f_mode |= FMODE_CAN_ODIRECT;
++		/* The inner file owns a ref distinct from the outer fd. */
++		file->private_data = fuse_file_get(ff);
++		ff->pvisor_data_file = file;
++	}
++out:
++	if (!IS_ERR(file)) {
++		/* F_SETFL may change O_DIRECT after the native OPEN. */
++		spin_lock(&file->f_lock);
++		file->f_flags = (file->f_flags & ~O_DIRECT) |
++			(user_file->f_flags & O_DIRECT);
++		file->f_iocb_flags = iocb_flags(file);
++		spin_unlock(&file->f_lock);
++	}
++	mutex_unlock(&fi->pvisor_open_lock);
++	return file;
++}
++
++static void fuse_pvisor_read_atime(struct fuse_file *ff, struct inode *inode)
++{
++	if (ff && inode == ff->pvisor_data_inode)
++		inode = ff->pvisor_namespace_inode;
++	fuse_invalidate_atime(inode);
++}
++
++static int fuse_pvisor_data_release(struct inode *inode, struct file *file)
++{
++	struct fuse_file *ff = file->private_data;
++
++	if (ff)
++		fuse_file_put(ff, ff->fm->fc->auto_submounts);
++	return 0;
++}
++
++/* A procfs magic link must not grant an unchecked data-object open. */
++static int fuse_pvisor_data_open(struct inode *inode, struct file *file)
++{
++	return (file->f_mode & FMODE_BACKING) ? 0 : -EACCES;
++}
++
++static ssize_t fuse_pvisor_data_read_iter(struct kiocb *iocb, struct iov_iter *to)
++{
++	if (!iocb->ki_filp->private_data)
++		return -EIO;
++	if (iocb->ki_flags & IOCB_DIRECT)
++		return fuse_direct_read_iter(iocb, to);
++	return generic_file_read_iter(iocb, to);
++}
++
++static ssize_t fuse_pvisor_data_splice(struct file *file, loff_t *ppos,
++		struct pipe_inode_info *pipe, size_t len, unsigned int flags)
++{
++	if (!file->private_data)
++		return -EIO;
++	return filemap_splice_read(file, ppos, pipe, len, flags);
++}
++
++static int fuse_pvisor_data_mmap(struct file *file, struct vm_area_struct *vma)
++{
++	if (!file->private_data)
++		return -EIO;
++	return generic_file_readonly_mmap(file, vma);
++}
++
++static loff_t fuse_pvisor_data_llseek(struct file *file, loff_t off, int whence)
++{
++	if (!file->private_data)
++		return -EIO;
++	return generic_file_llseek(file, off, whence);
++}
++
++static const struct file_operations fuse_pvisor_data_fops = {
++	.open = fuse_pvisor_data_open,
++	.read_iter = fuse_pvisor_data_read_iter,
++	.splice_read = fuse_pvisor_data_splice,
++	.mmap = fuse_pvisor_data_mmap,
++	.llseek = fuse_pvisor_data_llseek,
++	.release = fuse_pvisor_data_release,
++};
++
+ /* The inode's deferred-open lock also keeps release from publishing fh=0. */
+ static int fuse_pvisor_bind_locked(struct inode *inode, struct fuse_file *ff,
+                                   unsigned int flags)
+@@ -208,10 +384,11 @@
+ 	int opcode, err;
+ 
+ 	if (!ff->pvisor_unbound)
+-		return 0;
++		return fuse_pvisor_data_valid(inode, ff, flags);
+ 	opcode = S_ISDIR(inode->i_mode) ? FUSE_OPENDIR : FUSE_OPEN;
+ 	saved = ff->pvisor_cred ? override_creds(ff->pvisor_cred) : NULL;
+-	err = fuse_send_open(ff->fm, ff->nodeid, flags, opcode, &outarg);
++	err = fuse_send_open(ff->fm, ff->nodeid, flags, opcode, &outarg,
++			     &ff->pvisor_data_size);
+ 	if (saved)
+ 		revert_creds(saved);
+ 	if (err)
+@@ -219,6 +396,7 @@
+ 
+ 	ff->fh = outarg.fh;
+ 	ff->open_flags = outarg.open_flags;
++	ff->pvisor_data_id = (u32)outarg.backing_id;
+ 	if (S_ISREG(inode->i_mode) && !(outarg.open_flags & FOPEN_KEEP_CACHE))
+ 		invalidate_inode_pages2(inode->i_mapping);
+ 	list_del_init(&ff->pvisor_entry);
+@@ -226,8 +404,9 @@
+ 		put_cred(ff->pvisor_cred);
+ 		ff->pvisor_cred = NULL;
+ 	}
++	/* Publish fh and the complete data receipt before readers use them. */
+ 	smp_store_release(&ff->pvisor_unbound, false);
+-	return 0;
++	return fuse_pvisor_data_valid(inode, ff, flags);
+ }
+ 
+ int fuse_pvisor_bind(struct file *file)
+@@ -237,8 +416,11 @@
+ 	struct fuse_inode *fi = get_fuse_inode(inode);
+ 	int err;
+ 
+-	if (!ff || !smp_load_acquire(&ff->pvisor_unbound))
++	if (!ff)
+ 		return 0;
++	/* Paired with publication of fh and the receipt by bind_locked(). */
++	if (!smp_load_acquire(&ff->pvisor_unbound))
++		return fuse_pvisor_data_valid(inode, ff, file->f_flags);
+ 	mutex_lock(&fi->pvisor_open_lock);
+ 	err = fuse_pvisor_bind_locked(inode, ff, file->f_flags);
+ 	mutex_unlock(&fi->pvisor_open_lock);
+@@ -333,6 +515,9 @@
+ 	struct fuse_conn *fc = get_fuse_conn(inode);
+ 	int err;
+ 
++	err = fuse_pvisor_data_valid(inode, ff, file->f_flags);
++	if (err)
++		return err;
+ 	err = fuse_file_io_open(file, inode);
+ 	if (err)
+ 		return err;
+@@ -562,6 +747,12 @@
+ {
+ 	struct fuse_conn *fc = get_fuse_conn(inode);
+ 	struct fuse_file *ff = file->private_data;
++	struct file *data_file = ff->pvisor_data_file;
++
++	/* Break ff -> inner -> ff before preparing the sole native RELEASE. */
++	ff->pvisor_data_file = NULL;
++	if (data_file)
++		fput(data_file);
+ 
+ 	if (fuse_pvisor_wb_enabled(inode, ff)) {
+ 		if (file->f_mode & FMODE_WRITE)
+@@ -1256,6 +1447,16 @@
+ 	}
+ }
+ 
++/* A partial native read must not turn an immutable receipt into a new EOF. */
++static bool fuse_pvisor_early_short(struct inode *inode, loff_t pos,
++				    size_t num_read, size_t count)
++{
++	loff_t size = i_size_read(inode);
++	size_t expected = pos >= size ? 0 : min_t(u64, count, size - pos);
++
++	return num_read < expected;
++}
++
+ static int fuse_do_readpage(struct file *file, struct page *page)
+ {
+ 	struct inode *inode = page->mapping->host;
+@@ -1289,11 +1490,13 @@
+ 	res = fuse_simple_request(fm, &ia.ap.args);
+ 	if (res < 0)
+ 		return res;
+-	/*
+-	 * Short read means EOF.  If file size is larger, truncate it
+-	 */
+-	if (res < desc.length)
++	/* Ordinary short reads may shrink EOF; data objects keep receipt EOF. */
++	if (get_fuse_inode(inode)->pvisor_data_id) {
++		if (fuse_pvisor_early_short(inode, pos, res, desc.length))
++			return -EIO;
++	} else if (res < desc.length) {
+ 		fuse_short_read(inode, attr_ver, res, &ia.ap);
++	}
+ 
+ 	SetPageUptodate(page);
+ 
+@@ -1307,11 +1510,11 @@
+ 	int err;
+ 
+ 	err = -EIO;
+-	if (fuse_is_bad(inode))
++	if (!file || !file->private_data || fuse_is_bad(inode))
+ 		goto out;
+ 
+ 	err = fuse_do_readpage(file, page);
+-	fuse_invalidate_atime(inode);
++	fuse_pvisor_read_atime(file->private_data, inode);
+  out:
+ 	unlock_page(page);
+ 	return err;
+@@ -1333,13 +1536,17 @@
+ 	if (mapping) {
+ 		struct inode *inode = mapping->host;
+ 
+-		/*
+-		 * Short read means EOF. If file size is larger, truncate it
+-		 */
+-		if (!err && num_read < count)
++		/* Ordinary short reads may shrink EOF; data objects keep receipt EOF. */
++		if (!err && get_fuse_inode(inode)->pvisor_data_id) {
++			/* Conservatively fail the batch; no zero-filled page is valid. */
++			if (fuse_pvisor_early_short(inode, ia->read.in.offset,
++						   num_read, count))
++				err = -EIO;
++		} else if (!err && num_read < count) {
+ 			fuse_short_read(inode, ia->read.attr_ver, num_read, ap);
+-
+-		fuse_invalidate_atime(inode);
++		}
++
++		fuse_pvisor_read_atime(ia->ff, inode);
+ 	}
+ 
+ 	for (i = 0; i < ap->num_pages; i++) {
+@@ -1349,7 +1556,10 @@
+ 		folio_put(folio);
+ 	}
+ 	if (ia->ff)
+-		fuse_file_put(ia->ff, false);
++		fuse_file_put(ia->ff, ia->pvisor_data_file &&
++			      ia->ff->fm->fc->auto_submounts);
++	if (ia->pvisor_data_file)
++		fput(ia->pvisor_data_file);
+ 
+ 	fuse_io_free(ia);
+ }
+@@ -1377,8 +1587,12 @@
+ 
+ 	fuse_read_args_fill(ia, file, pos, count, FUSE_READ);
+ 	ia->read.attr_ver = fuse_get_attr_version(fm->fc);
++	if (file_inode(file) == ff->pvisor_data_inode)
++		ia->pvisor_data_file = get_file(file);
++	/* I/O and the pinned inner file each own a distinct ff reference. */
++	if (fm->fc->async_read || ia->pvisor_data_file)
++		ia->ff = fuse_file_get(ff);
+ 	if (fm->fc->async_read) {
+-		ia->ff = fuse_file_get(ff);
+ 		ap->args.end = fuse_readpages_end;
+ 		err = fuse_simple_background(fm, &ap->args, GFP_KERNEL);
+ 		if (!err)
+@@ -1396,7 +1610,7 @@
+ 	struct fuse_conn *fc = get_fuse_conn(inode);
+ 	unsigned int i, max_pages, nr_pages = 0;
+ 
+-	if (fuse_is_bad(inode))
++	if (!rac->file || !rac->file->private_data || fuse_is_bad(inode))
+ 		return;
+ 
+ 	max_pages = min_t(unsigned int, fc->max_pages,
+@@ -2078,7 +2292,7 @@
+ 
+ 	res = fuse_direct_io(io, iter, ppos, 0);
+ 
+-	fuse_invalidate_atime(inode);
++	fuse_pvisor_read_atime(io->iocb->ki_filp->private_data, inode);
+ 
+ 	return res;
+ }
+@@ -2147,6 +2361,17 @@
+ 	if (err)
+ 		return err;
+ 
++	if (ff->open_flags & FOPEN_PVISOR_DATA_OBJECT) {
++		struct file *data = fuse_pvisor_data_file(file);
++		struct backing_file_ctx ctx = {
++			.cred = file->f_cred, .user_file = file,
++		};
++
++		if (IS_ERR(data))
++			return PTR_ERR(data);
++		return backing_file_read_iter(data, to, iocb, iocb->ki_flags, &ctx);
++	}
++
+ 	/* A lower fd retains its original object after upper copy-up. */
+ 	if (fuse_pvisor_lower_read(file))
+ 		return fuse_direct_read_iter(iocb, to);
+@@ -2197,6 +2422,17 @@
+ 
+ 	if (err)
+ 		return err;
++
++	if (ff->open_flags & FOPEN_PVISOR_DATA_OBJECT) {
++		struct file *data = fuse_pvisor_data_file(in);
++		struct backing_file_ctx ctx = {
++			.cred = in->f_cred, .user_file = in,
++		};
++
++		if (IS_ERR(data))
++			return PTR_ERR(data);
++		return backing_file_splice_read(data, ppos, pipe, len, flags, &ctx);
++	}
+ 
+ 	/* FOPEN_DIRECT_IO overrides FOPEN_PASSTHROUGH */
+ 	if (fuse_pvisor_lower_read(in))
+@@ -3021,6 +3257,17 @@
+ 	if (rc)
+ 		return rc;
+ 
++	if (ff->open_flags & FOPEN_PVISOR_DATA_OBJECT) {
++		struct file *data = fuse_pvisor_data_file(file);
++		struct backing_file_ctx ctx = {
++			.cred = file->f_cred, .user_file = file,
++		};
++
++		if (IS_ERR(data))
++			return PTR_ERR(data);
++		return backing_file_mmap(data, vma, &ctx);
++	}
++
+ 	/* DAX mmap is superior to direct_io mmap */
+ 	if (FUSE_IS_DAX(inode))
+ 		return fuse_dax_mmap(file, vma);
+@@ -3294,6 +3541,10 @@
+ 	return vfs_setpos(file, outarg.offset, inode->i_sb->s_maxbytes);
+ 
+ fallback:
++	if (ff->open_flags & FOPEN_PVISOR_DATA_OBJECT)
++		return generic_file_llseek_size(file, offset, whence,
++					       inode->i_sb->s_maxbytes,
++					       ff->pvisor_data_size);
+ 	err = fuse_update_attributes(inode, file, STATX_SIZE);
+ 	if (!err)
+ 		return generic_file_llseek(file, offset, whence);
+@@ -3313,6 +3564,16 @@
+ 		retval = generic_file_llseek(file, offset, whence);
+ 		break;
+ 	case SEEK_END:
++		if (get_fuse_conn(inode)->pvisor_data_object) {
++			struct fuse_file *ff = file->private_data;
++
++			retval = fuse_pvisor_bind(file);
++			if (retval)
++				return retval;
++			if (ff->open_flags & FOPEN_PVISOR_DATA_OBJECT)
++				return generic_file_llseek_size(file, offset, whence,
++					inode->i_sb->s_maxbytes, ff->pvisor_data_size);
++		}
+ 		inode_lock(inode);
+ 		retval = fuse_update_attributes(inode, file, STATX_SIZE);
+ 		if (!retval)
+@@ -3833,6 +4094,27 @@
+ 	return fuse_file_compat_ioctl(file, cmd, arg);
+ }
+ 
++/* WILLNEED/readahead(2) must not feed lower bytes to the merged cache. */
++static int fuse_pvisor_fadvise(struct file *file, loff_t offset, loff_t len,
++			       int advice)
++{
++	struct fuse_file *ff = file->private_data;
++	struct file *data;
++	int err;
++
++	if (!ff->fm->fc->pvisor_data_object)
++		return generic_fadvise(file, offset, len, advice);
++	err = fuse_pvisor_bind(file);
++	if (err)
++		return err;
++	if (!(ff->open_flags & FOPEN_PVISOR_DATA_OBJECT))
++		return generic_fadvise(file, offset, len, advice);
++	data = fuse_pvisor_data_file(file);
++	if (IS_ERR(data))
++		return PTR_ERR(data);
++	return vfs_fadvise(data, offset, len, advice);
++}
++
+ static const struct file_operations fuse_file_operations = {
+ 	.llseek		= fuse_file_llseek,
+ 	.read_iter	= fuse_file_read_iter,
+@@ -3852,6 +4134,14 @@
+ 	.poll		= fuse_file_poll,
+ 	.fallocate	= fuse_file_fallocate,
+ 	.copy_file_range = fuse_copy_file_range,
++	.fadvise	= fuse_pvisor_fadvise,
++};
++
++/* Data mappings are read-only; no writeback or merged attribute refresh. */
++static const struct address_space_operations fuse_pvisor_data_aops = {
++	.read_folio = fuse_read_folio,
++	.readahead = fuse_readahead,
++	.migrate_folio = filemap_migrate_folio,
+ };
+ 
+ static const struct address_space_operations fuse_file_aops  = {
+diff --git a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
+@@ -204,6 +204,8 @@
+ 	wait_queue_head_t pvisor_open_wait;
+ 	bool pvisor_mutating;
+ 	struct list_head pvisor_opens;
++	/* Hidden data inodes use nodeid=0 and never own host LOOKUP refs. */
++	u32 pvisor_data_id;
+ };
+ 
+ /** FUSE inode state bits */
+@@ -298,6 +300,12 @@
+ 	struct list_head pvisor_entry;
+ 	u32 pvisor_flags;
+ 	const struct cred *pvisor_cred;
++	/* Receipt survives native binding even if local allocation fails. */
++	u32 pvisor_data_id;
++	u64 pvisor_data_size;
++	struct inode *pvisor_data_inode;
++	struct inode *pvisor_namespace_inode;
++	struct file *pvisor_data_file;
+ };
+ 
+ /** One input argument of a request */
+@@ -891,6 +899,7 @@
+ 	unsigned int pvisor_meta:1;
+ 	/* Read-only lower handles may skip only backend FLUSH after local checks. */
+ 	unsigned int pvisor_local_flush:1;
++	unsigned int pvisor_data_object:1;
+ 	/* ENOSYS disables directory images, independently of lazy open. */
+ 	bool pvisor_no_readindex;
+ 	struct workqueue_struct *pvisor_wb_wq;
+@@ -1134,6 +1143,8 @@
+ 	struct fuse_args_pages ap;
+ 	struct fuse_io_priv *io;
+ 	struct fuse_file *ff;
++	/* Pin hidden mapping and its mount throughout async readahead. */
++	struct file *pvisor_data_file;
+ };
+ 
+ void fuse_read_args_fill(struct fuse_io_args *ia, struct file *file, loff_t pos,
+diff --git a/fs/fuse/inode.c b/fs/fuse/inode.c
+--- a/fs/fuse/inode.c
++++ b/fs/fuse/inode.c
+@@ -416,7 +416,8 @@
+ static int fuse_inode_eq(struct inode *inode, void *_nodeidp)
+ {
+ 	u64 nodeid = *(u64 *) _nodeidp;
+-	if (get_node_id(inode) == nodeid)
++	if (!get_fuse_inode(inode)->pvisor_data_id &&
++	    get_node_id(inode) == nodeid)
+ 		return 1;
+ 	else
+ 		return 0;
+@@ -1170,12 +1171,19 @@
+ 	.get_parent	= fuse_get_parent,
+ };
+ 
++static int fuse_drop_inode(struct inode *inode)
++{
++	if (get_fuse_inode(inode)->pvisor_data_id)
++		return generic_drop_inode(inode);
++	return generic_delete_inode(inode);
++}
++
+ static const struct super_operations fuse_super_operations = {
+ 	.alloc_inode    = fuse_alloc_inode,
+ 	.free_inode     = fuse_free_inode,
+ 	.evict_inode	= fuse_evict_inode,
+ 	.write_inode	= fuse_write_inode,
+-	.drop_inode	= generic_delete_inode,
++	.drop_inode	= fuse_drop_inode,
+ 	.umount_begin	= fuse_umount_begin,
+ 	.statfs		= fuse_statfs,
+ 	.sync_fs	= fuse_sync_fs,
+@@ -1374,6 +1382,14 @@
+ 				else
+ 					fc->pvisor_local_flush = 1;
+ 			}
++			if (flags & FUSE_PVISOR_DATA_OBJECT) {
++				if (fc->writeback_cache || !fc->no_lock || !fc->no_flock ||
++				    (flags & (FUSE_PASSTHROUGH | FUSE_HAS_INODE_DAX |
++					      FUSE_MAP_ALIGNMENT)))
++					ok = false;
++				else
++					fc->pvisor_data_object = 1;
++			}
+ 			if (flags & FUSE_PVISOR_META)
+ 				fc->pvisor_meta = 1;
+ 			if ((flags & FUSE_PVISOR_WRITEBACK) && fc->writeback_cache &&
+@@ -1435,7 +1451,7 @@
+ 		FUSE_HAS_EXPIRE_ONLY | FUSE_DIRECT_IO_ALLOW_MMAP |
+ 		FUSE_NO_EXPORT_SUPPORT | FUSE_HAS_RESEND | FUSE_ALLOW_IDMAP |
+ 		FUSE_PVISOR_META | FUSE_PVISOR_WRITEBACK |
+-		FUSE_PVISOR_LOCAL_FLUSH;
++		FUSE_PVISOR_LOCAL_FLUSH | FUSE_PVISOR_DATA_OBJECT;
+ #ifdef CONFIG_FUSE_DAX
+ 	if (fm->fc->dax)
+ 		flags |= FUSE_MAP_ALIGNMENT;
+diff --git a/include/uapi/linux/fuse.h b/include/uapi/linux/fuse.h
+--- a/include/uapi/linux/fuse.h
++++ b/include/uapi/linux/fuse.h
+@@ -375,6 +375,8 @@
+ #define FOPEN_PVISOR_LOWER	(1U << 30)
+ /* Backend FLUSH is unnecessary; guest checks still run. Negotiated bit 43. */
+ #define FOPEN_PVISOR_LOCAL_FLUSH	(1U << 29)
++/* Independent immutable data mapping, negotiated with bit 44. */
++#define FOPEN_PVISOR_DATA_OBJECT	(1U << 28)
+ #define FOPEN_STREAM		(1 << 4)
+ #define FOPEN_NOFLUSH		(1 << 5)
+ #define FOPEN_PARALLEL_DIRECT_WRITES	(1 << 6)
+@@ -483,6 +485,8 @@
+ #define FUSE_PVISOR_WRITEBACK	(1ULL << 42)
+ /* Read-only lower close: preserve guest checks, omit only backend FLUSH. */
+ #define FUSE_PVISOR_LOCAL_FLUSH	(1ULL << 43)
++/* FUSE_OPEN replies append a fixed u64 size, including unmarked opens. */
++#define FUSE_PVISOR_DATA_OBJECT	(1ULL << 44)
+ 
+ /**
+  * CUSE INIT request/reply flags
+@@ -797,6 +801,11 @@
+ 	int32_t		backing_id;
+ };
+ 
++struct fuse_pvisor_open_out {
++	struct fuse_open_out open;
++	uint64_t size;
++};
++
+ struct fuse_release_in {
+ 	uint64_t	fh;
+ 	uint32_t	flags;

@@ -1,0 +1,445 @@
+From: pVisor maintainers
+Subject: [PATCH] fuse: preserve lookup and deferred-open lifetime protocols
+
+Reuse parallel lookup and alias splicing for directory imports. Serialize
+deferred-open publication through host copy-up and namespace replies, including
+time and xattr changes. Preserve synchronous final RELEASE for virtio-fs
+submounts, and return poll error events instead of negative errno masks.
+
+diff --git a/fs/fuse/dir.c b/fs/fuse/dir.c
+--- a/fs/fuse/dir.c
++++ b/fs/fuse/dir.c
+@@ -439,15 +439,19 @@
+ 	if (fuse_is_bad(dir))
+ 		return ERR_PTR(-EIO);
+ 
+-	locked = fuse_lock_inode(dir);
++	/* Import may wait for another parallel lookup. Do not hold fi->mutex:
++	 * that lookup must be able to finish its ordinary host request.
++	 */
+ 	if (get_fuse_conn(dir)->pvisor_meta)
+ 		err = pvisor_lookup(dir, entry, &outarg, &inode);
+ 	else
+ 		err = -EAGAIN;
+-	if (err == -EAGAIN)
++	if (err == -EAGAIN) {
++		locked = fuse_lock_inode(dir);
+ 		err = fuse_lookup_name(dir->i_sb, get_node_id(dir), &entry->d_name,
+ 				       &outarg, &inode);
+-	fuse_unlock_inode(dir, locked);
++		fuse_unlock_inode(dir, locked);
++	}
+ 	if (err == -ENOENT) {
+ 		outarg_valid = false;
+ 		err = 0;
+@@ -1010,7 +1014,7 @@
+ 	if (fuse_is_bad(dir))
+ 		return -EIO;
+ 
+-	err = fuse_pvisor_bind_pending(d_inode(entry));
++	err = fuse_pvisor_mutation_begin(d_inode(entry));
+ 	if (err)
+ 		return err;
+ 
+@@ -1020,6 +1024,7 @@
+ 	args.in_args[0].size = entry->d_name.len + 1;
+ 	args.in_args[0].value = entry->d_name.name;
+ 	err = fuse_simple_request(fm, &args);
++	fuse_pvisor_mutation_end(d_inode(entry));
+ 	if (!err) {
+ 		pvisor_note_unlink(dir, &entry->d_name);
+ 		fuse_dir_changed(dir);
+@@ -1062,11 +1067,21 @@
+ 	struct fuse_mount *fm = get_fuse_mount(olddir);
+ 	FUSE_ARGS(args);
+ 
+-	err = fuse_pvisor_bind_pending(d_inode(oldent));
+-	if (!err)
+-		err = fuse_pvisor_bind_pending(d_inode(newent));
++	struct inode *first = d_inode(oldent), *second = d_inode(newent);
++
++	/* Stable ordering also covers an exchange or two hardlink aliases. */
++	if ((unsigned long)first > (unsigned long)second)
++		swap(first, second);
++	if (first == second)
++		second = NULL;
++	err = fuse_pvisor_mutation_begin(first);
+ 	if (err)
+ 		return err;
++	err = fuse_pvisor_mutation_begin(second);
++	if (err) {
++		fuse_pvisor_mutation_end(first);
++		return err;
++	}
+ 
+ 	memset(&inarg, 0, argsize);
+ 	inarg.newdir = get_node_id(newdir);
+@@ -1081,6 +1096,8 @@
+ 	args.in_args[2].size = newent->d_name.len + 1;
+ 	args.in_args[2].value = newent->d_name.name;
+ 	err = fuse_simple_idmap_request(idmap, fm, &args);
++	fuse_pvisor_mutation_end(second);
++	fuse_pvisor_mutation_end(first);
+ 	if (!err) {
+ 		/* ctime changes */
+ 		fuse_update_ctime(d_inode(oldent));
+@@ -1161,7 +1178,11 @@
+ 	args.in_args[0].value = &inarg;
+ 	args.in_args[1].size = newent->d_name.len + 1;
+ 	args.in_args[1].value = newent->d_name.name;
++	err = fuse_pvisor_mutation_begin(inode);
++	if (err)
++		return err;
+ 	err = create_new_entry(&invalid_mnt_idmap, fm, &args, newdir, newent, inode->i_mode);
++	fuse_pvisor_mutation_end(inode);
+ 	if (!err)
+ 		fuse_update_ctime_in_cache(inode);
+ 	else if (err == -EINTR)
+@@ -1994,11 +2015,6 @@
+ 
+ 	if (fc->pvisor_wb_wq && (attr->ia_valid & ATTR_SIZE))
+ 		WRITE_ONCE(fi->pvisor_written, true);
+-	if (attr->ia_valid & (ATTR_MODE | ATTR_UID | ATTR_GID | ATTR_SIZE)) {
+-		err = fuse_pvisor_bind_pending(inode);
+-		if (err)
+-			return err;
+-	}
+ 
+ 	if (attr->ia_valid & ATTR_SIZE) {
+ 		if (WARN_ON(!S_ISREG(inode->i_mode)))
+@@ -2044,6 +2060,10 @@
+ 		fuse_release_nowrite(inode);
+ 	}
+ 
++	err = fuse_pvisor_mutation_begin(inode);
++	if (err)
++		goto unlock;
++
+ 	if (is_truncate) {
+ 		fuse_set_nowrite(inode);
+ 		set_bit(FUSE_I_SIZE_UNSTABLE, &fi->state);
+@@ -2080,6 +2100,7 @@
+ 	attr_version = fuse_get_attr_version(fm->fc);
+ 	fuse_setattr_fill(fc, &args, inode, &inarg, &outarg);
+ 	err = fuse_simple_request(fm, &args);
++	fuse_pvisor_mutation_end(inode);
+ 	if (err) {
+ 		if (err == -EINTR)
+ 			fuse_invalidate_attr(inode);
+diff --git a/fs/fuse/file.c b/fs/fuse/file.c
+--- a/fs/fuse/file.c
++++ b/fs/fuse/file.c
+@@ -245,25 +245,59 @@
+ 	return err;
+ }
+ 
+-/* Pin host objects before unlink, replacement, or permission changes. */
+-int fuse_pvisor_bind_pending(struct inode *inode)
++/* Caller returns holding the ordinary registration/bind mutex. */
++static void fuse_pvisor_lock_idle(struct fuse_inode *fi)
++{
++	mutex_lock(&fi->pvisor_open_lock);
++	while (READ_ONCE(fi->pvisor_mutating)) {
++		mutex_unlock(&fi->pvisor_open_lock);
++		wait_event(fi->pvisor_open_wait, !READ_ONCE(fi->pvisor_mutating));
++		mutex_lock(&fi->pvisor_open_lock);
++	}
++}
++
++static bool fuse_pvisor_deferred_inode(struct inode *inode)
++{
++	return inode && S_ISREG(inode->i_mode) && get_fuse_conn(inode)->pvisor_meta;
++}
++
++/* No new deferred descriptor may return between draining and host mutation. */
++int fuse_pvisor_mutation_begin(struct inode *inode)
+ {
+ 	struct fuse_inode *fi;
+ 	struct fuse_file *ff;
+ 	int err = 0;
+ 
+-	if (!inode || !S_ISREG(inode->i_mode) || !get_fuse_conn(inode)->pvisor_meta)
++	if (!fuse_pvisor_deferred_inode(inode))
+ 		return 0;
+ 	fi = get_fuse_inode(inode);
+-	mutex_lock(&fi->pvisor_open_lock);
++	fuse_pvisor_lock_idle(fi);
++	WRITE_ONCE(fi->pvisor_mutating, true);
+ 	while (!list_empty(&fi->pvisor_opens)) {
+ 		ff = list_first_entry(&fi->pvisor_opens, struct fuse_file, pvisor_entry);
+ 		err = fuse_pvisor_bind_locked(inode, ff, ff->pvisor_flags);
+ 		if (err)
+ 			break;
+ 	}
++	if (err)
++		WRITE_ONCE(fi->pvisor_mutating, false);
+ 	mutex_unlock(&fi->pvisor_open_lock);
++	if (err)
++		wake_up_all(&fi->pvisor_open_wait);
+ 	return err;
++}
++
++void fuse_pvisor_mutation_end(struct inode *inode)
++{
++	struct fuse_inode *fi;
++
++	if (!fuse_pvisor_deferred_inode(inode))
++		return;
++	fi = get_fuse_inode(inode);
++	mutex_lock(&fi->pvisor_open_lock);
++	WRITE_ONCE(fi->pvisor_mutating, false);
++	mutex_unlock(&fi->pvisor_open_lock);
++	wake_up_all(&fi->pvisor_open_wait);
+ }
+ 
+ int fuse_do_open(struct fuse_mount *fm, u64 nodeid, struct file *file,
+@@ -357,21 +391,23 @@
+ 		file->private_data = ff;
+ 		ff->pvisor_flags = file->f_flags;
+ 		ff->pvisor_cred = get_current_cred();
+-		mutex_lock(&fi->pvisor_open_lock);
++		err = fuse_finish_open(inode, file);
++		if (err) {
++			fuse_sync_release(fi, ff, file->f_flags);
++			return err;
++		}
++		/* Publish only after local setup: no inode/I/O lock is acquired
++		 * while waiting for a mutation that may already hold those locks.
++		 */
++		fuse_pvisor_lock_idle(fi);
+ 		list_add_tail(&ff->pvisor_entry, &fi->pvisor_opens);
+ 		mutex_unlock(&fi->pvisor_open_lock);
+-		err = fuse_finish_open(inode, file);
+-		if (err)
+-			fuse_sync_release(fi, ff, file->f_flags);
+-		return err;
++		return 0;
+ 	}
+ 
+ 	if ((file->f_mode & FMODE_WRITE) || is_truncate) {
+ 		if (fc->pvisor_wb_wq)
+ 			WRITE_ONCE(fi->pvisor_written, true);
+-		err = fuse_pvisor_bind_pending(inode);
+-		if (err)
+-			return err;
+ 	}
+ 
+ 	if (is_wb_truncate || dax_truncate)
+@@ -384,10 +420,17 @@
+ 			goto out_unlock;
+ 	}
+ 
++	if ((file->f_mode & FMODE_WRITE) || is_truncate) {
++		err = fuse_pvisor_mutation_begin(inode);
++		if (err)
++			goto out_unlock;
++	}
+ 	if (is_wb_truncate || dax_truncate)
+ 		fuse_set_nowrite(inode);
+ 
+ 	err = fuse_do_open(fm, get_node_id(inode), file, false);
++	if ((file->f_mode & FMODE_WRITE) || is_truncate)
++		fuse_pvisor_mutation_end(inode);
+ 	if (!err) {
+ 		ff = file->private_data;
+ 		err = fuse_finish_open(inode, file);
+@@ -795,7 +838,7 @@
+ 			fuse_pvisor_wb_error(fc, fuse_pvisor_wb_flush(inode, ff));
+ 			fuse_file_release(inode, ff, ff->pvisor_wb_flags, 0, false);
+ 		}
+-		fuse_file_put(ff, false);
++		fuse_file_put(ff, fc->auto_submounts);
+ 		iput(inode);
+ 		wake_up_all(&fc->pvisor_wb_wait);
+ 	}
+@@ -3337,7 +3380,7 @@
+ 
+ 	err = fuse_pvisor_bind(file);
+ 	if (err)
+-		return err;
++		return EPOLLERR;
+ 	memset(&inarg, 0, sizeof(inarg));
+ 	inarg.fh = ff->fh;
+ 	inarg.kh = ff->kh;
+diff --git a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
+@@ -201,6 +201,8 @@
+ 	bool pvisor_written;
+ 	/* Serializes deferred opens with release and namespace mutations. */
+ 	struct mutex pvisor_open_lock;
++	wait_queue_head_t pvisor_open_wait;
++	bool pvisor_mutating;
+ 	struct list_head pvisor_opens;
+ };
+ 
+@@ -1097,7 +1099,12 @@
+ int fuse_pvisor_wb_enable(struct fuse_mount *fm);
+ int fuse_pvisor_wb_drain(struct fuse_conn *fc);
+ int fuse_pvisor_bind(struct file *file);
+-int fuse_pvisor_bind_pending(struct inode *inode);
++/* Successful begin must be paired with end, after the host mutation replies. */
++int fuse_pvisor_mutation_begin(struct inode *inode);
++void fuse_pvisor_mutation_end(struct inode *inode);
++int fuse_direntplus_link(struct dentry *parent,
++			 struct fuse_direntplus *direntplus,
++			 u64 attr_version, bool prefetch);
+ 
+ /**
+  * Send FORGET command
+diff --git a/fs/fuse/inode.c b/fs/fuse/inode.c
+--- a/fs/fuse/inode.c
++++ b/fs/fuse/inode.c
+@@ -102,6 +102,8 @@
+ 	atomic_set(&fi->pvisor_prefetch_hits, 0);
+ 	mutex_init(&fi->mutex);
+ 	mutex_init(&fi->pvisor_open_lock);
++	init_waitqueue_head(&fi->pvisor_open_wait);
++	fi->pvisor_mutating = false;
+ 	INIT_LIST_HEAD(&fi->pvisor_opens);
+ 	spin_lock_init(&fi->lock);
+ 	fi->forget = fuse_alloc_forget();
+diff --git a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
+--- a/fs/fuse/pvisor_meta.c
++++ b/fs/fuse/pvisor_meta.c
+@@ -223,62 +223,7 @@
+ static int pvisor_link(struct dentry *parent, struct fuse_direntplus *direntplus,
+ 		       u64 attr_version)
+ {
+-	struct fuse_entry_out *out = &direntplus->entry_out;
+-	struct fuse_dirent *dirent = &direntplus->dirent;
+-	struct qstr name = QSTR_INIT(dirent->name, dirent->namelen);
+-	struct dentry *dentry;
+-	struct inode *inode;
+-
+-	if (!out->nodeid)
+-		return 0;
+-	if (name.name[0] == '.' &&
+-	    (name.len == 1 || (name.len == 2 && name.name[1] == '.')))
+-		return 0;
+-	if (invalid_nodeid(out->nodeid) || fuse_invalid_attr(&out->attr))
+-		return -EIO;
+-
+-	name.hash = full_name_hash(parent, name.name, name.len);
+-	dentry = d_lookup(parent, &name);
+-	if (dentry) {
+-		if (d_in_lookup(dentry)) {
+-			dput(dentry);
+-			return 1;
+-		}
+-		inode = d_inode(dentry);
+-		if (inode && get_node_id(inode) == out->nodeid &&
+-		    !fuse_stale_inode(inode, (int)out->generation, &out->attr)) {
+-			struct fuse_inode *fi = get_fuse_inode(inode);
+-
+-			spin_lock(&fi->lock);
+-			fi->nlookup++;
+-			spin_unlock(&fi->lock);
+-			fuse_change_attributes(inode, &out->attr, NULL,
+-					       ATTR_TIMEOUT(out), attr_version);
+-			fuse_change_entry_timeout(dentry, out);
+-			clear_bit(FUSE_I_PVISOR_PREFETCHED, &fi->state);
+-			/* This name was already demanded before importing its metadata. */
+-			atomic_inc(&get_fuse_inode(d_inode(parent))->pvisor_prefetch_hits);
+-			dput(dentry);
+-			return 0;
+-		}
+-		dput(dentry);
+-	}
+-
+-	dentry = d_alloc(parent, &name);
+-	if (!dentry)
+-		return -ENOMEM;
+-	inode = fuse_iget(d_inode(parent)->i_sb, out->nodeid,
+-			  (int)out->generation, &out->attr, ATTR_TIMEOUT(out),
+-			  attr_version);
+-	if (!inode) {
+-		dput(dentry);
+-		return -ENOMEM;
+-	}
+-	d_add(dentry, inode);
+-	fuse_change_entry_timeout(dentry, out);
+-	set_bit(FUSE_I_PVISOR_PREFETCHED, &get_fuse_inode(inode)->state);
+-	dput(dentry);
+-	return 0;
++	return fuse_direntplus_link(parent, direntplus, attr_version, true);
+ }
+ 
+ static void pvisor_drain(struct fuse_mount *fm, void *body, size_t len)
+diff --git a/fs/fuse/readdir.c b/fs/fuse/readdir.c
+--- a/fs/fuse/readdir.c
++++ b/fs/fuse/readdir.c
+@@ -151,13 +151,12 @@
+ 	return 0;
+ }
+ 
+-static int fuse_direntplus_link(struct file *file,
+-				struct fuse_direntplus *direntplus,
+-				u64 attr_version)
++int fuse_direntplus_link(struct dentry *parent,
++			 struct fuse_direntplus *direntplus,
++			 u64 attr_version, bool prefetch)
+ {
+ 	struct fuse_entry_out *o = &direntplus->entry_out;
+ 	struct fuse_dirent *dirent = &direntplus->dirent;
+-	struct dentry *parent = file->f_path.dentry;
+ 	struct qstr name = QSTR_INIT(dirent->name, dirent->namelen);
+ 	struct dentry *dentry;
+ 	struct dentry *alias;
+@@ -225,6 +224,10 @@
+ 		spin_lock(&fi->lock);
+ 		fi->nlookup++;
+ 		spin_unlock(&fi->lock);
++		if (prefetch) {
++			clear_bit(FUSE_I_PVISOR_PREFETCHED, &fi->state);
++			atomic_inc(&get_fuse_inode(dir)->pvisor_prefetch_hits);
++		}
+ 
+ 		forget_all_cached_acls(inode);
+ 		fuse_change_attributes(inode, &o->attr, NULL,
+@@ -257,6 +260,9 @@
+ 			}
+ 			return PTR_ERR(dentry);
+ 		}
++		if (prefetch)
++			set_bit(FUSE_I_PVISOR_PREFETCHED,
++				&get_fuse_inode(inode)->state);
+ 	}
+ 	if (fc->readdirplus_auto)
+ 		set_bit(FUSE_I_INIT_RDPLUS, &get_fuse_inode(inode)->state);
+@@ -323,7 +329,7 @@
+ 		buf += reclen;
+ 		nbytes -= reclen;
+ 
+-		ret = fuse_direntplus_link(file, direntplus, attr_version);
++		ret = fuse_direntplus_link(file->f_path.dentry, direntplus, attr_version, false);
+ 		if (ret)
+ 			fuse_force_forget(file, direntplus->entry_out.nodeid);
+ 	}
+diff --git a/fs/fuse/xattr.c b/fs/fuse/xattr.c
+--- a/fs/fuse/xattr.c
++++ b/fs/fuse/xattr.c
+@@ -37,7 +37,11 @@
+ 	args.in_args[1].value = name;
+ 	args.in_args[2].size = size;
+ 	args.in_args[2].value = value;
++	err = fuse_pvisor_mutation_begin(inode);
++	if (err)
++		return err;
+ 	err = fuse_simple_request(fm, &args);
++	fuse_pvisor_mutation_end(inode);
+ 	if (err == -ENOSYS) {
+ 		fm->fc->no_setxattr = 1;
+ 		err = -EOPNOTSUPP;
+@@ -167,7 +171,11 @@
+ 	args.in_numargs = 1;
+ 	args.in_args[0].size = strlen(name) + 1;
+ 	args.in_args[0].value = name;
++	err = fuse_pvisor_mutation_begin(inode);
++	if (err)
++		return err;
+ 	err = fuse_simple_request(fm, &args);
++	fuse_pvisor_mutation_end(inode);
+ 	if (err == -ENOSYS) {
+ 		fm->fc->no_removexattr = 1;
+ 		err = -EOPNOTSUPP;
