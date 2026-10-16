@@ -17,6 +17,7 @@ B-NETWORK,user-facing,network/network.json,requires-single-condition-command
 B-DENSITY,user-facing,density/density.json,requires-single-condition-command
 B-ISOLATION,user-facing,isolation/isolation.json,requires-single-condition-command
 B-AGENT-TASK,user-facing,agent/agent.json,requires-single-condition-command
+B-SWE-RESIDENT-ENG,engineering A/B,agent/swe_resident.json,requires-single-condition-command
 B-REPLAY,user-facing,replay/replay.json,prepared-binary-required
 B-VM-MEMORY,user-facing,memory/memory.json,requires-single-condition-command
 B-MEMORY-SCALE,engineering A/B,memory/scale.json,requires-single-condition-command
