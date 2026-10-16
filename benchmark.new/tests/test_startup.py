@@ -102,13 +102,18 @@ class StartupContracts(unittest.TestCase):
                 self.assertFalse((root / "docs").exists())
 
     def test_non_native_preparation_requires_explicit_current_inputs(self):
-        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {}, clear=True):
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(os, "sched_getaffinity", return_value={0}, create=True),
+            patch.object(os, "sched_setaffinity", create=True),
+        ):
             destination = Path(temporary) / ".data/batch"
             with self.assertRaisesRegex(ValueError, "prepared inputs required"):
                 STARTUP.prepare_template(
                     ROOT / "startup/pvisor_vm_timing.json",
                     destination,
-                    cpu_affinity=str(min(os.sched_getaffinity(0))),
+                    cpu_affinity="0",
                 )
             self.assertFalse((destination / "protocol.json").exists())
 

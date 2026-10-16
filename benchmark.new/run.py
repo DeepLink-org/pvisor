@@ -95,7 +95,9 @@ def run_table(
     if metadata["status"] == "requires-single-condition-command":
         raise ValueError("table has no prepared single-condition command")
     if metadata["status"] == "explicit-python-paired-dax":
-        raise ValueError("paired DAX needs dax_ab.py --prepare followed by semspec bench; see filesystem/README.md")
+        raise ValueError(
+            "paired DAX needs dax_ab.py --prepare followed by semspec bench; see filesystem/README.md"
+        )
     if row is not None and topic not in ("startup", "filesystem"):
         raise ValueError("--row is supported only for startup/filesystem tables")
     prepare = load_prepare(topic)

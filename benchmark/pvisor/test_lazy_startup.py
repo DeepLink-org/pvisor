@@ -480,18 +480,28 @@ class LazyStartupTests(unittest.TestCase):
 
     def test_docker_bind_plan_preserves_base_and_recursive_mount_inputs(self):
         base = dict(binds=["/home", "/usr", "/etc", "/dev", "/proc"], symlinks=[])
-        result = lazy_startup.docker_bind_plan(base)
-        self.assertIn(str(Path("/run").resolve()), result["binds"])
-        self.assertIn(str(Path("/var").resolve()), result["binds"])
-        self.assertIn(str(Path("/sys").resolve()), result["binds"])
+        with (
+            patch.object(Path, "resolve", autospec=True, side_effect=lambda path, **kwargs: path),
+            patch.object(Path, "is_dir", autospec=True, return_value=True),
+            patch.object(Path, "is_symlink", autospec=True, return_value=False),
+        ):
+            result = lazy_startup.docker_bind_plan(base)
+        self.assertIn("/run", result["binds"])
+        self.assertIn("/var", result["binds"])
+        self.assertIn("/sys", result["binds"])
         self.assertNotIn("/tmp", result["binds"])
         self.assertEqual(base["binds"], ["/home", "/usr", "/etc", "/dev", "/proc"])
         self.assertEqual(base["symlinks"], [])
 
     def test_docker_bind_plan_does_not_duplicate_existing_sys_bind(self):
         base = dict(binds=["/home", "/sys"], symlinks=[])
-        result = lazy_startup.docker_bind_plan(base)
-        self.assertEqual(result["binds"].count(str(Path("/sys").resolve())), 1)
+        with (
+            patch.object(Path, "resolve", autospec=True, side_effect=lambda path, **kwargs: path),
+            patch.object(Path, "is_dir", autospec=True, return_value=True),
+            patch.object(Path, "is_symlink", autospec=True, return_value=False),
+        ):
+            result = lazy_startup.docker_bind_plan(base)
+        self.assertEqual(result["binds"].count("/sys"), 1)
         self.assertEqual(base, dict(binds=["/home", "/sys"], symlinks=[]))
 
     def test_isolation_rejects_wrong_primary_gid_before_freeze_or_services(self):
@@ -629,6 +639,14 @@ class LazyStartupTests(unittest.TestCase):
                         return_value=SimpleNamespace(gr_gid=os.getgid()),
                     ),
                     patch("lazy_startup.docker_bind_plan", return_value=dict(binds=[directory])),
+                    patch.object(
+                        helpers, "chroot_bind_plan", return_value=dict(binds=[], symlinks=[])
+                    ),
+                    patch.object(
+                        helpers,
+                        "namespaces",
+                        return_value=dict(user="host", mnt="host", pid="host"),
+                    ),
                     patch.object(Path, "is_relative_to", return_value=False) as relative,
                     patch.object(helpers, "freeze", return_value=provenance) as freeze,
                     patch.object(helpers, "supervise", side_effect=supervise) as supervised,
@@ -641,7 +659,7 @@ class LazyStartupTests(unittest.TestCase):
                     relative.side_effect = lambda other: str(other) == directory
                     code = lazy_startup.isolated_campaign(args)
                 self.assertEqual(code, 0 if verified else 1)
-                freeze.assert_called_once_with(output, Path(directory))
+                freeze.assert_called_once_with(output.resolve(), Path(directory).resolve())
                 self.assertEqual(supervised.call_args.kwargs["timeout"], 123)
                 self.assertEqual(verify.call_count, 1 if verified else 0)
                 report = json.loads((output / "report.json").read_text())
@@ -745,7 +763,7 @@ class LazyStartupTests(unittest.TestCase):
                 json.loads((layout / "oci-layout").read_text()), dict(imageLayoutVersion="1.0.0")
             )
             self.assertEqual(receipt["mode"], "cached-oci")
-            self.assertEqual(receipt["manifest_source_path"], str(manifest_path))
+            self.assertEqual(receipt["manifest_source_path"], str(manifest_path.resolve()))
             lazy_startup.verify_registry_archive(output, receipt)
             for descriptor in [manifest["config"], *manifest["layers"]]:
                 archived = layout / "blobs/sha256" / descriptor["digest"][7:]

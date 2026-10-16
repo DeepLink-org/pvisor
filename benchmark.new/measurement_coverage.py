@@ -18,8 +18,12 @@ def filesystem_publication():
     if not receipt.exists():
         return None
     evidence = json.loads(receipt.read_text())
-    if (evidence.get("state") != "passed" or evidence.get("benchmark_id") != "B-FS-TOOLS"
-            or evidence.get("formal_rows") != 240 or evidence.get("samples_per_backend") != 30):
+    if (
+        evidence.get("state") != "passed"
+        or evidence.get("benchmark_id") != "B-FS-TOOLS"
+        or evidence.get("formal_rows") != 240
+        or evidence.get("samples_per_backend") != 30
+    ):
         raise ValueError("invalid accepted filesystem publication receipt")
     for name in ("filesystem.csv", "filesystem-comparisons.csv", "filesystem-provenance.csv"):
         if hashlib.sha256((base / name).read_bytes()).hexdigest() != evidence["csv_sha256"][name]:
@@ -69,7 +73,9 @@ def coverage():
                 measured = any(row.get("N") is not None for row in data.values())
             if measured:
                 current.append(entry)
-        full_filesystem = page["page"] == "benchmarks/filesystem.md" and filesystem_evidence is not None
+        full_filesystem = (
+            page["page"] == "benchmarks/filesystem.md" and filesystem_evidence is not None
+        )
         if full_filesystem:
             current = ["B-FS-TOOLS accepted reference cohort " + filesystem_evidence["batch"]]
         rows.append(
@@ -104,11 +110,17 @@ def coverage():
                 )
             elif page == "filesystem.md":
                 description = (
-                    ("八后端七工具内部阶段与启动至退出；原生完整命令探针另列" if locale == "zh"
-                     else "Eight-backend seven-tool phases and launch through exit; native whole-command probes are separate")
-                    if row["coverage"] == "full" else
-                    ("原生 metadata/read 完整命令；七工具跨后端任务未复测" if locale == "zh"
-                     else "Native metadata/read whole commands; seven-tool cross-backend task not rerun")
+                    (
+                        "八后端七工具内部阶段与启动至退出；原生完整命令探针另列"
+                        if locale == "zh"
+                        else "Eight-backend seven-tool phases and launch through exit; native whole-command probes are separate"
+                    )
+                    if row["coverage"] == "full"
+                    else (
+                        "原生 metadata/read 完整命令；七工具跨后端任务未复测"
+                        if locale == "zh"
+                        else "Native metadata/read whole commands; seven-tool cross-backend task not rerun"
+                    )
                 )
             else:
                 description = (
@@ -125,9 +137,9 @@ def coverage():
             table[name] = {
                 "数据状态" if locale == "zh" else "Data status": (
                     "完整复测" if locale == "zh" else "Fully rerun"
-                ) if row["coverage"] == "full" else (
-                    "部分复测" if locale == "zh" else "Partially rerun"
                 )
+                if row["coverage"] == "full"
+                else ("部分复测" if locale == "zh" else "Partially rerun")
                 if row["coverage"] == "partial"
                 else ("历史数据" if locale == "zh" else "Historical data"),
                 "实测范围" if locale == "zh" else "Measured scope": description,

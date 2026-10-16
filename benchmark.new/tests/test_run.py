@@ -56,7 +56,8 @@ class TableRunnerContracts(unittest.TestCase):
                     json.loads(rendered.read_text()),
                     {
                         name: {"N": 60, "Ready median ms": "1.23"}
-                        if row is None or name == RUN.resolve_row(template, row) else previous[name]
+                        if row is None or name == RUN.resolve_row(template, row)
+                        else previous[name]
                         for name in ("Docker", "Firecracker")
                     },
                 )
@@ -92,8 +93,10 @@ class TableRunnerContracts(unittest.TestCase):
         templates, row = RUN.resolve_selection(["startup/timing", "filesystem/tools"])
         self.assertEqual(len(templates), 2)
         self.assertIsNone(row)
-        for values, selected in ((["startup/timing", "missing"], None),
-                                 (["startup/timing", "filesystem/tools"], "Docker")):
+        for values, selected in (
+            (["startup/timing", "missing"], None),
+            (["startup/timing", "filesystem/tools"], "Docker"),
+        ):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 RUN.resolve_selection(values, selected)
 
@@ -102,8 +105,10 @@ class TableRunnerContracts(unittest.TestCase):
             template = root / "startup/timing.json"
             RUN.save(template, {"VM": "$ vm", "vm": "$ other"})
             self.assertEqual(RUN.resolve_row(template, "VM"), "VM")
-            with patch.object(RUN, "registered", return_value={"status": "prepared"}), \
-                    patch.object(RUN, "load_prepare") as prepare:
+            with (
+                patch.object(RUN, "registered", return_value={"status": "prepared"}),
+                patch.object(RUN, "load_prepare") as prepare,
+            ):
                 for value in ("missing", "Vm"):
                     with self.assertRaisesRegex(ValueError, "available: VM, vm"):
                         RUN.run_table(template, "/semspec", row=value)

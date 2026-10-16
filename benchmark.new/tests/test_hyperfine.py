@@ -68,9 +68,10 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual(row["benchmark_id"], "B-FS-ENG")
                 self.assertEqual(row["role"], "engineering A/B")
                 self.assertEqual(row["entry"], "filesystem/dax_ab.json")
-                self.assertEqual(table, {
-                    "immutable-share-paired": "$ python3 @HARNESS@/dax_ab.py --measure @BATCH@"
-                })
+                self.assertEqual(
+                    table,
+                    {"immutable-share-paired": "$ python3 @HARNESS@/dax_ab.py --measure @BATCH@"},
+                )
                 self.assertTrue(path.with_suffix(".py").is_file())
                 continue
             if isinstance(next(iter(table.values())), str):
@@ -166,7 +167,7 @@ class RowEvidenceTests(unittest.TestCase):
         from update import FIELDS
 
         with tempfile.TemporaryDirectory() as directory:
-            batch = Path(directory)
+            batch = Path(directory).resolve()
             command = "hyperfine --runs 2 --warmup 1 --command-name checked /bin/true"
             summary = {field: 2 if field == "count" else 0.001 for field in FIELDS.values()}
             summary["unit"] = "second"
@@ -186,7 +187,7 @@ class RowEvidenceTests(unittest.TestCase):
                 input_sha256=COMMON.digest(batch / "in.json"),
                 artifacts={},
                 harness={},
-                cwd=directory,
+                cwd=str(batch),
                 runs=2,
                 warmup=1,
                 rows={"checked": "checked"},
@@ -195,7 +196,7 @@ class RowEvidenceTests(unittest.TestCase):
             )
             evidence = dict(
                 format=1,
-                cwd=directory,
+                cwd=str(batch),
                 template=str(batch / "in.json"),
                 cells=[],
                 commands=[

@@ -2090,6 +2090,7 @@ mod tests {
         }
     }
     fn identity_fixture(temp: &Path) -> (Identity, PathBuf) {
+        let temp = temp.canonicalize().unwrap();
         let state = temp.join("state");
         private_directory(&state).unwrap();
         let directory = state.join(ID);
@@ -2272,7 +2273,7 @@ mod tests {
     fn launch_resources_can_disappear_without_invalidating_cleanup_binding() {
         let temp = tempfile::tempdir().unwrap();
         let (mut identity, directory) = identity_fixture(temp.path());
-        let firmware = temp.path().join("firmware");
+        let firmware = temp.path().canonicalize().unwrap().join("firmware");
         private_directory(&firmware).unwrap();
         identity.image.library_dir = Some(firmware.clone());
         publish_new(&directory.join("identity.json"), &identity).unwrap();
@@ -2521,7 +2522,7 @@ mod tests {
         let metadata = identity.cgroup.metadata().unwrap();
         identity.cgroup_device = metadata.dev();
         identity.cgroup_inode = metadata.ino();
-        let firmware = temp.path().join("firmware");
+        let firmware = temp.path().canonicalize().unwrap().join("firmware");
         private_directory(&firmware).unwrap();
         identity.image.library_dir = Some(firmware.clone());
         publish_new(&directory.join("identity.json"), &identity).unwrap();
@@ -2836,7 +2837,7 @@ mod tests {
         .unwrap();
         assert!(reject_occupied_unclaimed_registry(temp.path(), owner).is_ok());
         assert!(reject_occupied_unclaimed_registry(temp.path(), "foreign-owner").is_err());
-        let records = temp.path().join("records");
+        let records = temp.path().canonicalize().unwrap().join("records");
         private_directory(&records).unwrap();
         let record = records.join(format!("{ID}.json"));
         publish_new(&record, &serde_json::json!({"native": true})).unwrap();
