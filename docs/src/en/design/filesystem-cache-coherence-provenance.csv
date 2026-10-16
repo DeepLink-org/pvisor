@@ -1,0 +1,26 @@
+field,value
+benchmark_id,B-FS-DIAG
+batch,ac17
+status,rejected-and-removed
+performance_samples,0
+experiment,One frozen host/guest/0045 firmware; candidate attr switch 0/1; WB=0; DAX=0; independent fresh VM per probe mode
+case_scope,8 whole-page cases + 2 retained read-only fd hardlink results + 2 ATIME summaries; other attrs assertions excluded
+source_identity_scope,"source.diff is the frozen worktree patch; rejected-source files preserve withdrawn candidate implementation, not a complete source-tree hash"
+artifacts,"{""benchmark/.data/ac17/bin/guest_metadata_case"": ""637fb546af4fe007c7ac30f0692b80d5a5bb547d9c90d41d853b1f7c5db0b1cd"", ""benchmark/.data/ac17/bin/pvisor"": ""fb00691d2c1b4e729fb6c15f666fa1a46e77e7833be928aaafba76e9af324739"", ""benchmark/.data/ac17/harness/filesystem_cache_capacity.py"": ""825a4f8d859f4b0dbe18cae339d2e800cb9c250c04d1b8015e7a6d8a6bd08dd7"", ""benchmark/.data/ac17/harness/filesystem_cache_matrix.py"": ""d8a58328a4aaa241dd57ed8fcd266a9b97d24983f0a7aa9d354aada7b7d2d08d"", ""benchmark/.data/ac17/harness/filesystem_diagnostic.py"": ""8b5fcb58fdc71e988851a41e273556783ff7d9cb440e5b25103aa04a2b16af57"", ""benchmark/.data/ac17/harness/filesystem_owned_inputs_adapter.py"": ""6610396fad7cd8e53bc991da44b1b1f8ef409fd3b848de7b0f8f7c17b021adef"", ""benchmark/.data/ac17/harness/phase_profiles.py"": ""85f708411adbe2183952d8cd112249ce3a373a9cb1f08458e2c6b69009f53fb6"", ""benchmark/.data/ac17/metadata-guest"": ""daca14af9a9286ceb24390a28f2406b5dbaaa3f65343472ba5123f44fc2656fe"", ""firmware_sha256"": ""097667a0cfe63a1c2d255f6f8f7d40f71ab9112b90c7fddd72b748a0d495dbc4""}"
+benchmark/.data/ac17/source.diff:sha256,499587b19b53d3018df7858443f838562b9aba1291778be47f9f5d885da19579
+benchmark/.data/ac17/source-status.txt:sha256,9cbf1830d241e50874c610a57cd163d95329a3621e9eda378c81e9c46410df28
+benchmark/.data/ac17/rejected-source/worker.rs:sha256,c40a29e32c770613fc45a04e8fb1f955ab3cf23034360065c297994e471b4eb4
+benchmark/.data/ac17/rejected-source/overlay.rs:sha256,71aca9dec6f4eebcfb05c6a210c5a52d517e72ba0737f6923e7b0234233d6757
+benchmark/.data/ac17/artifacts.json:sha256,5015d0166c0dd00655ab8e747b12322084f902f3abb52d8da80f0483ceac73d1
+benchmark/.data/ac17/decision.json:sha256,5eb65ae56c251eb4013b6edcfbe6401e8de87636066fb6d3f124c0d79de70689
+benchmark/.data/ac17/probes/results.json:sha256,e565afb9fb78ffe08ef6a6c79c35111040965d4e3da156d7186ae18d8f9d576e
+benchmark/.data/ac17/campaign-probes/config.json:sha256,613259bb7089fab49b65f0eeb6d17e21d44f6fab4e0dcd897d54a957cf59bde9
+benchmark/.data/ac17/campaign-probes/launch-command.json:sha256,539595ca84e052a66e3c2d748b21b7fe17a8d86ae279c2656198e9f34cadb13b
+benchmark/.data/ac17/filesystem-cache-coherence-cases.csv:sha256,c07efee42d37dccc62bc8921909fb91d7c76d84005b73dfebedf8d5cd5b2e683
+benchmark/.data/ac17/probes/review-pages-attr-0/stdout:sha256,d14dfdc71d8da00aab97871fd5aaebe85b4643c5ac6cf5eae61a7ddb84b80583
+benchmark/.data/ac17/probes/review-attrs-attr-0/stdout:sha256,ca34f923580050be752f550b61bc4d19eb3f55b0cf64649ad75e05ac054f9de5
+benchmark/.data/ac17/probes/atime-attr-0/stdout:sha256,cb37cee43578427ad618860b578b8fc7e222286f74e7e93789fb820ca7cde15e
+benchmark/.data/ac17/probes/review-pages-attr-1/stdout:sha256,d14dfdc71d8da00aab97871fd5aaebe85b4643c5ac6cf5eae61a7ddb84b80583
+benchmark/.data/ac17/probes/review-attrs-attr-1/stdout:sha256,b56fc915688c672257f833925eb1c09c8b68ac5e3c414822f30ea331fc5fcd2b
+benchmark/.data/ac17/probes/atime-attr-1/stdout:sha256,0e3ff22bd0c11cb47fd69b7bcc08f32675d06ddcaaab1456d1c922935e60f31f
+fd_construction_correction,"The legacy link-opath probe uses Rust/musl OpenOptions custom_flags; O_ACCMODE contains O_PATH and clears that bit. This is a retained ordinary read-only fd, not verified O_PATH. DC17 native GNU/musl controls and real guest raw-openat/F_GETFL/EBADF confirm the distinction; original AC17 artifacts and output remain unchanged."

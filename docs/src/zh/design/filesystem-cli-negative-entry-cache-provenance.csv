@@ -1,0 +1,123 @@
+benchmark_id,batch,phase,condition,pair,registered_instances,final_instances,subject,digest_kind,digest,scope
+B-FS-ENG,cne17-cli,timing,,,,,new_cohort_report,sha256,bf8f47f63969651ab85246e7714a2d3dd1754972700cce0fca9a6e803e942878,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,new_campaign_config,sha256,421aa3694f97b63d878d3d40ec62a794b0bebc1c1591b4ee868bf3d25b2151be,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,frozen_analysis_implementation,sha256,a746d3829f4ffe0d0a4eb2eb200d4dbf61eea8776ff4ec145a3dfddfea6a2664,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,frozen_cli_coordinator,sha256,fe390256f8d17b34dfe9bd44ee1d7f27d9c7e0bb455998c0a9d29d52e57222f1,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,new_frozen_collection_manifest,sha256,71f4070122a62fcf21433c356eb27ad4f5e4f929db102cca754e03ee287b2195,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,new_source_artifact_reuse_association,sha256,deacadf222123bc72329865a142de5a0103f3e7721878832ec7ac375ffcf6ebf,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,explicit_reused_artifacts_and_public_inputs,sha256,d5c8f96c7f4616b0dcb378d191cb95c7783b1312924425ea3f04a6033630f97c,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,original_real_cli_product_manifest,sha256,f7f89008f4516bee1f08c30b09bf7beaddf7e426b88d6c8a6e441b4b35300539,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,new_owned_budget_setup,sha256,17ff140edd9f2a69a4a53adf5e2613bb9e448b40099e9b6029b46a6087b300a3,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,independent_postprocessor_not_a_sampling_input,sha256,598afcd68da18a0a2c49822a61282781022f87d55bb4e9668a3ec0dfa4d40141,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,verified_new_analysis_result,sha256,a8129c192d89e2a67aa858690c5f6e815b834126c8369afaf273c973814c9bba,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,new_pre_collection_source_verification,sha256,11a542ca1fccd5fb48aa1fb2b48e5073af2402ec7aea291c1d8873b733c46e34,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,new_post_collection_source_verification,sha256,78a5fa6f9ecdb8129791c8c8e157af998088337887ac7db3baf6cc5c8c902fd7,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,original_public_workspace_input_preparation_reused_not_new_cost,sha256,57309666cb20ba73291a706b29647651246f12add1456670d81226ef37a6adaa,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,new_source_derived_negative_entry_owner_inventory,sha256,28e091f83574bbfabaa1dda69e117ef29d70cdb8c0c216b6cd5738ebaa65338f,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,reused_prior_semantic_evidence_scope_review,sha256,543d5e18af55f6c164e56a34045c691cdcbfcd21fa96482fdf63dac931f42006,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,private_preprocessing_summary_csv,sha256,fabc167baba3b11e8c267cb587d526540de6bce240a40e0078ce28f744207899,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,private_preprocessing_comparisons_csv,sha256,36764dd9db295d7e9076021105df181811662157bfaf390f80ce6f8b4041f39f,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,private_preprocessing_provenance_csv,sha256,73d068069ec4daebf6fa55d46a24eb2ba3969056eeb9086b700313b812b0e5f0,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,original_real_cli_artifact_pvisor,sha256,2ae68bee788d9e82a5479e0685227d9f72b2b3a6b8e51ecf164bd07f44244ddd,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,original_real_cli_artifact_pvisor-cache,sha256,00584d1ebc762b9eb21391ca58478335958ca0598e5af5193e0cd5533b465518,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,original_real_cli_artifact_embedded-guest,sha256,493098ca81ae216d4a8fff348ec4f8833172f235a9624c70addd31e7c89e63aa,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,original_real_cli_artifact_firmware,sha256,e032682ce7be163cc37db18e5e3b1d731795e24df6c20e75adac067fdf358b74,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,original_real_cli_artifact_cli_build_receipt,sha256,a4c4db6ef9a18cee8cc653eb96ea2f765834caeb06e405ad688ee9dba548584b,new cohort hash association; existing CLI/source/prepared generations reused; no old timing or newly incurred preparation cost
+B-FS-ENG,cne17-cli,timing,,,,,original_sealed_rootfs_input_seal.json,sha256,c3a135f822d86f577feb17693e511e5a79e0933fb3edef4f515cc01d85463518,logical small-file input identity; full original manifest stays private
+B-FS-ENG,cne17-cli,timing,,,,,original_sealed_rootfs_input_rootfs_bench_reference_workload.py,sha256,b4f98c615e1a78a4aa241234d77c04097e04e8378e50debb09b54c03a7c1dbc7,logical small-file input identity; full original manifest stays private
+B-FS-ENG,cne17-cli,timing,,,,,original_sealed_rootfs_input_rootfs_bench_filesystem_rounds_workload.py,sha256,4c2c08cbb1a2e8984a1e26ac3789d6c2dbf2ed8617208ae500413340490f6877,logical small-file input identity; full original manifest stays private
+B-FS-ENG,cne17-cli,timing,,,,,original_sealed_rootfs_input_rootfs_work__fs_fixture.json,sha256,f0404e536df64d9a2ef48b27ab5aa746bd9f293f5dd2f5a49ba2d90e748aab37,logical small-file input identity; full original manifest stays private
+B-FS-ENG,cne17-cli,timing,,,,,original_public_preparation_source_config,sha256,1d0b89e17f5e3696af3fa935889cc6cd3cb96b7f412dcc9ae466bc4427d0300b,previously prepared fixed input used in every arm; no import/seal performed by this cohort
+B-FS-ENG,cne17-cli,timing,,,,,original_sealed_workspace_generation,sha256,a32dbf16e2047b6d476afaf0de60d52ed014b4485813bdfe70dae6ec59f69883,previously prepared fixed input used in every arm; no import/seal performed by this cohort
+B-FS-ENG,cne17-cli,timing,,,,,original_public_preparation_stdout,sha256,286d1d079fa1f99ded0aab3a3dd7d242a3f038a10d22dc5c330d5667c7e19fbc,old preparation output identity only; not this cohort timing/preparation
+B-FS-ENG,cne17-cli,timing,,,,,original_public_preparation_stderr,sha256,e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855,old preparation output identity only; not this cohort timing/preparation
+B-FS-ENG,cne17-cli,timing,off,0,,,new_raw_stdout.log,sha256,83679e8a35f74b48dd26432bb2129e4aabf9ec09366d534e8d5270a06a462542,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,0,,,new_raw_stderr.log,sha256,284674383596e40d9bc9118a849040a23d116445ec1ba719390806bd557441f4,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,0,,,new_raw_command.json,sha256,822641b3e8496069b37c7d1691daa91ab059f157ad44ab01630778675a9cf954,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,0,,,new_raw_resource-budget.json,sha256,0c46517161ca2451cb8946b0a35ec65964003af692fb7fafc04dadce6bf7142e,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,0,,,new_raw_stage_run-bundle.json,sha256,777b886cc8c7edb19683d5e542c1813f6934428860d0ae12707e792c23a6e38e,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,0,,,new_raw_stage_execution-job.json,sha256,c51a07c61f9f27796af6150f941fd8384b91fe80528c488ddb16fa05349302af,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,0,,,new_raw_stage_run.json,sha256,f9f7dd4001daa5a6a6a0f5a0d26b5cf03b74c32f93939654e05e5f675d3bf53a,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,0,,,new_raw_stage_overlay.json,sha256,31bc9f7d7ce1b0df94440196a5ebc927b4f408f5b2506d7df477848bd6934560,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,0,,,new_raw_stage_workspace-baseline.json,sha256,31b809b65f3c678db529d9d3ab293ddb8bbb49795db4f394932f9edc2cd312f0,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,0,,,new_raw_stdout.log,sha256,f760020cb111721cb5d394baca82d5fb129b3ea794c0447bd657d5d48852c2e0,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,0,,,new_raw_stderr.log,sha256,13bbb50138fcbe809ebe418fc9ec8259a5d77c5c56f84e1458f74f8164b1de6c,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,0,,,new_raw_command.json,sha256,c4ecb141aa8515fbbe6c5f99c967f05de697640222033523c07d415b5ac9256a,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,0,,,new_raw_resource-budget.json,sha256,3c858784361d2f7e1440b3db0600c164d057eed257034eae0929d0c4f7b5c44a,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,0,,,new_raw_stage_run-bundle.json,sha256,ac822a56e35387a4887d1e73122e3a3d2b783d21e1b9fc44497ece353cf1ba0e,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,0,,,new_raw_stage_execution-job.json,sha256,70c0eb23a9049d0a260cc054838ae795b17bca97ee26a1cac8004bee8ae1b4f7,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,0,,,new_raw_stage_run.json,sha256,03ddfef996c95d44f26be97ea0c4fba2ca14d899a567fd4202a584f7b48fa067,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,0,,,new_raw_stage_overlay.json,sha256,ccde96a0618d0df0fcc07e8f89bbadf0817a12edea7b7005539533d165040213,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,0,,,new_raw_stage_workspace-baseline.json,sha256,5c756b40509bdde7c325da7c43cd13ce72a7719940e07b97c63f9b9c9880ea70,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,1,,,new_raw_stdout.log,sha256,cc0f617ed8e7ab8c9d4ffc6ac1cd8fb0760973be2e320f539283855bad8c2c73,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,1,,,new_raw_stderr.log,sha256,b2b58ac9347f19f9b9ae8947fabb3087a161752df4ff3f90cbb0622e25a721ca,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,1,,,new_raw_command.json,sha256,1842ec8ec1ee8f38e997267aeeb35f678db8c64b4c8ec20574d8f28bd7019672,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,1,,,new_raw_resource-budget.json,sha256,1627244acb7a3b236db73e84a84a9669383b5fd302c18f3a57b0f1b127e3d6e8,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,1,,,new_raw_stage_run-bundle.json,sha256,1a3e4e6784bfacac0e070bc4a10f2ac30a4bd61d7e641187abf3fa07455467ef,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,1,,,new_raw_stage_execution-job.json,sha256,07fa64d57eda3ed16396d699236f0153f56726a903307250f2f37d52e08cb79b,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,1,,,new_raw_stage_run.json,sha256,833c26dc96064fcc04dc67e26d8d8f05cb475a8b8ac3ea83d460032ea497cc9e,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,1,,,new_raw_stage_overlay.json,sha256,e2b43ea541f3d768a6a7edc29085def0eb3ce2ad4952393228f2e4bb1fec5d12,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,1,,,new_raw_stage_workspace-baseline.json,sha256,c44906bf059def5281f6f7e587468ba182131cc8bcf6049b2ea16d7fa546f885,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,1,,,new_raw_stdout.log,sha256,1b2e51ff322a0504e64044b0fabf7c8947bc3bc8c20b683c82cda53b5aa12b66,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,1,,,new_raw_stderr.log,sha256,e78b6e628e6690ce6898d72616931514f71f4864ebd93715b038fd44af4b2f59,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,1,,,new_raw_command.json,sha256,700ab139e32bf80651d7def998d9c243ff11dc8c9b3523440cc481fe85b0f02d,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,1,,,new_raw_resource-budget.json,sha256,64564a02c5da05ed3ddadd607f281af092985908a86402b893c0e0b97bdfbe12,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,1,,,new_raw_stage_run-bundle.json,sha256,efa3a7ba314019d8e536130b7960fc90222009d295188a2494ec843e16109648,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,1,,,new_raw_stage_execution-job.json,sha256,424368af0377e9662be2a5f128104da9bb2567766b4805232e896ad6c27a35bf,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,1,,,new_raw_stage_run.json,sha256,2a2dffa375b22967e164d46431c634bd04bbd5179a5dba4a0051c7392093dfc7,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,1,,,new_raw_stage_overlay.json,sha256,c8b1d30616e514ac9fc600c96c3d1df9b7d147008b1b595ef2b3bca8ba1ba260,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,1,,,new_raw_stage_workspace-baseline.json,sha256,d2491c8b5a4a1fdc51a41cfd52f17eb11c3768cdcb074163d6c6995cb3679ea1,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,2,,,new_raw_stdout.log,sha256,2d7cbedaa3792d4635aed517316abfa90786dde9f036545c18144901d686a3d3,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,2,,,new_raw_stderr.log,sha256,f2a5162d1e7876028af60afabe8368a0cc249a8b89f46b41c4d19cffa7fd49c6,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,2,,,new_raw_command.json,sha256,fc086e12f0720de66b0a051310b6487543b28de4b41bee228b52eeaa492d87b0,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,2,,,new_raw_resource-budget.json,sha256,2c994a965ae4cbf830fca67da5d438f095f0f1dac6aaada488a5e880fb39d359,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,2,,,new_raw_stage_run-bundle.json,sha256,ed13fa522ccadc880ace6ef61a06e56337689e520bc6932bb0e499ed7be6c1fe,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,2,,,new_raw_stage_execution-job.json,sha256,ef7bbc9ae200befc0eed53c5949f0d1ce46402798f011790e04fe59e87c01bb2,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,2,,,new_raw_stage_run.json,sha256,b65d1e44788ba5fcb4fe3b091713df73d49bda3012c5a269ad0a5ac811d22d1e,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,2,,,new_raw_stage_overlay.json,sha256,4e7facc87a5c2b49817ae28054b287ceb8c88ebfa60edccf94c2d840608ff412,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,2,,,new_raw_stage_workspace-baseline.json,sha256,e66c2ceeb0b804d008a3d4c57234a2ab38ea95cae6e2077792ffd2f0235f6a0f,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,2,,,new_raw_stdout.log,sha256,6a9719bb0833b8c95ea41259a5476cce928ebc6ac9aa1632de34ca3d6b86d6a2,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,2,,,new_raw_stderr.log,sha256,e05eaddd54857996df149fa914452330ba7dd12f429319c5fde496c39bbbbbfe,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,2,,,new_raw_command.json,sha256,c863fa47ea3ed82ff972a9eda9433e565773a6796926667ed436d32f155c9a3c,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,2,,,new_raw_resource-budget.json,sha256,3f6263af79c4fc6329cd2410bd670ae6c3c6ad78cba2be81d30ce3c9b2b612e8,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,2,,,new_raw_stage_run-bundle.json,sha256,3172333cee0ac9b02fc0ce8f6c6becdf2a604a802796bd8f48211bacbd4a6c3b,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,2,,,new_raw_stage_execution-job.json,sha256,bb0ce93f85d01fb8e739c345680a0104f00418d0d361c1d8236558a9b1e8b3aa,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,2,,,new_raw_stage_run.json,sha256,c58ce78107418c9b83b30bc6fa1cc18776b865630b525b04c35ff02abea21576,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,2,,,new_raw_stage_overlay.json,sha256,45565a4805d06ab73872fab5cdacc539f71d4c11eec40f2700a107c906dc3fb6,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,2,,,new_raw_stage_workspace-baseline.json,sha256,4c2db6488da03831a6a46876d692e627bbe05255583b0223a03b00ac916c6381,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,3,,,new_raw_stdout.log,sha256,a2e44cd917c7cf53c83d4dff5c9773a0f92ad2760e37ede4d250dcedd15cb063,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,3,,,new_raw_stderr.log,sha256,bfd7f5ca879e7f2a679064184a7a3e608c990021f7c519098f358e85b2334181,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,3,,,new_raw_command.json,sha256,3f7e90c55be20f696b3493e8fbb0cdb70db7f0d824005c559edb0edeb4d74f22,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,3,,,new_raw_resource-budget.json,sha256,48979884c37ed6955a59a32095f08f50b6c696bbe2af1ee2af38ace874ebeda1,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,3,,,new_raw_stage_run-bundle.json,sha256,05376733e3f5cc1327285c9e9e2e6cc2e032eb877205fa14c1bf9ca20b3128ed,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,3,,,new_raw_stage_execution-job.json,sha256,64c016155d2b686e150ab265988ca0089ca46d8a6dc0e90dd716559976c0f449,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,3,,,new_raw_stage_run.json,sha256,4035e7613876f3f7b600a0a44f4aa9d361cf50deb7c9f0b9e74dfc558834f7d7,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,3,,,new_raw_stage_overlay.json,sha256,a56f2258be835cfb2db2b37f497337fc6c32b5936762de35d5e86a217785ad45,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,3,,,new_raw_stage_workspace-baseline.json,sha256,fbeee5f38cef8648be9bbdfe45683853e9f46c0044061e7dbeef79d34f582129,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,3,,,new_raw_stdout.log,sha256,5f500b0105bed41bb7fc911aebab3e2e7114fc000dc08a9dedc047ea5f9af96c,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,3,,,new_raw_stderr.log,sha256,04e9f89b8d395975d9b9c3414492a27ebac73f3252cf540b00f53f44e6231d6b,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,3,,,new_raw_command.json,sha256,13e961d870232c8e5db1705f05b7d7311142f1b8abe5b7729a6a4afb9a7fa4b5,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,3,,,new_raw_resource-budget.json,sha256,f4523124c50d8f16c25f47e5092d82852552fb1180423e37976702a89cd51091,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,3,,,new_raw_stage_run-bundle.json,sha256,b587e070ca7e5c87b384328b3d913df7dcf232929e1bd09679bff0da85bfc768,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,3,,,new_raw_stage_execution-job.json,sha256,64c7642f7b05253a805d286162f76c367005b70a579d1c573951abadde9999ab,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,3,,,new_raw_stage_run.json,sha256,4759ca76266bc973c87e05054b61e67afee5d9a8eae3785cb0a95fc049f30e57,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,3,,,new_raw_stage_overlay.json,sha256,fb1beeac0a6aa1d9018de6d99c4c8e1029f11f1d0d8167f1fe6f14c5475b63e6,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,3,,,new_raw_stage_workspace-baseline.json,sha256,0456d05cd828578a55140cdd199ddb89658d720b6e2a45a1ef0a7660e01b3aca,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,4,,,new_raw_stdout.log,sha256,aaa848067fcdb2da3d5e6ea3d4949d28e8de2f2a1cce9a1c1604456a2225521f,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,4,,,new_raw_stderr.log,sha256,06c6076a60cbdaecdf2a140ee9416427a85bf0851e490eba9e9bc442a19a94f1,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,4,,,new_raw_command.json,sha256,dbcacc489e9b709e9eb12d74e0b8e3b225c29a21bd7a00b9e3232468f43eb8f8,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,4,,,new_raw_resource-budget.json,sha256,5228a4a9919ded691b1ecd6a9f3ac51e7353432ad790157bfe003d1972c4ab58,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,4,,,new_raw_stage_run-bundle.json,sha256,972cef2bd839eae44f5a684b11da8d91096485e490aa5979da6de1599e0151cf,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,4,,,new_raw_stage_execution-job.json,sha256,2a6bddffe155e50cfa992de6bf1c07a383dde6fa58781e6ec1d2d9bebece8dba,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,4,,,new_raw_stage_run.json,sha256,8c2aadd7e70da4633815824a31dd78dcb77e64c0dfc816fd31876b5ac27b0d56,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,4,,,new_raw_stage_overlay.json,sha256,018584239aec340a80ad9438966695c4a9535cc22c780d7caf67a0ddc5361bce,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,on,4,,,new_raw_stage_workspace-baseline.json,sha256,6705fe814248ea979e342910c8439e8f355ae13a1a80dbbfc8f74496fa80c8fa,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,4,,,new_raw_stdout.log,sha256,0d2af34b31057ffa4362e6eec13bb3fa11d00545110133163144c3c90d1f07bf,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,4,,,new_raw_stderr.log,sha256,90576d095b02e9e763f928c5b83ef5f590126e1f8e897e177c77dabedd532c56,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,4,,,new_raw_command.json,sha256,967f51d1541c7d9aea590755a8345529bbbf8a478a5d172bcc3080bf6b0bc2fd,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,4,,,new_raw_resource-budget.json,sha256,43f99a02b80399d6fba2556362f6dece43e43de9c40c9d5dacca044d3ce5f5f9,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,4,,,new_raw_stage_run-bundle.json,sha256,f15a7c7bd5b975e183dc8f0595dd887a2bc71cc131f04b41a739628790dc71f1,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,4,,,new_raw_stage_execution-job.json,sha256,2f8efb8bc9d692d4f5973a493b5e36074423f513f0abae87ea6eace08a7dbe4b,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,4,,,new_raw_stage_run.json,sha256,6a15aa479256da609a4a6ff208347223434aae18a683ef004f4b749166c1c441,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,4,,,new_raw_stage_overlay.json,sha256,5af9a35e578f89b14c7047e7af58a2287efff46c1caa1ec3e7e0feccd65c3aac,audited retained raw sample; host paths omitted
+B-FS-ENG,cne17-cli,timing,off,4,,,new_raw_stage_workspace-baseline.json,sha256,06e93cc5ecfba00282cc181dff7a309ffdf46b428441c89994bb36a53fe69ab5,audited retained raw sample; host paths omitted

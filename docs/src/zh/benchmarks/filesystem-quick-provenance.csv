@@ -1,0 +1,29 @@
+benchmark_id,batch,field,value
+B-FS-TOOLS,qf16-c6fc49,recorded_at,2026-10-16T20:57:13.094619+08:00
+B-FS-TOOLS,qf16-c6fc49,finished_at,2026-10-16T20:58:48.501311+08:00
+B-FS-TOOLS,qf16-c6fc49,benchmark_id,B-FS-TOOLS
+B-FS-TOOLS,qf16-c6fc49,role,user-facing quick observation
+B-FS-TOOLS,qf16-c6fc49,samples,40
+B-FS-TOOLS,qf16-c6fc49,samples_per_backend,5
+B-FS-TOOLS,qf16-c6fc49,warmups,0
+B-FS-TOOLS,qf16-c6fc49,failed,0
+B-FS-TOOLS,qf16-c6fc49,raw_location,benchmark/.data/qf16-c6fc49/report.json
+B-FS-TOOLS,qf16-c6fc49,report_sha256,f819bb79143d7c5ae5d492fabe6137a1fe920f7339a5817a29c36332a197ee87
+B-FS-TOOLS,qf16-c6fc49,source_commit,49d8f6029c8d255b75f852942caf7f3a07e942fa
+B-FS-TOOLS,qf16-c6fc49,source_manifest_sha256,b290ac9acc9deeb5fb95525500af69f3f76654bba332b3d72a33ca7993fe01a1
+B-FS-TOOLS,qf16-c6fc49,pvisor_sha256,adbcbe06f29cb4643faa0a2459f491dcb61410483b1737fe1ee547b261c21b94
+B-FS-TOOLS,qf16-c6fc49,firmware_sha256,f7e563c2883fa2dfd41ccb3a7a8dc06f20831a3d0478ef225037579b3d20825f
+B-FS-TOOLS,qf16-c6fc49,firmware_source_receipt_sha256,b2de563a27cd1691351e5838ad637d77aabf6c7b8a9d0db2619197f83156b666
+B-FS-TOOLS,qf16-c6fc49,firmware_build_id,110ced7727991fad79ca7042fbc799a9cad1e80df8aa799e007d8c659428f4e5
+B-FS-TOOLS,qf16-c6fc49,host_kernel,7.2.8-200.fc44.x86_64
+B-FS-TOOLS,qf16-c6fc49,host_cpu_model,AMD Ryzen 7 9700X 8-Core Processor
+B-FS-TOOLS,qf16-c6fc49,build,GNU release/gateway; pvisor-vm and pvisor-overlay-core opt-level=3
+B-FS-TOOLS,qf16-c6fc49,budget,"shared parent CPU quota 2 / 16 GiB / swap 0; affinity CPUs 0,1; VM 2 vCPU / 16 GiB"
+B-FS-TOOLS,qf16-c6fc49,temporary_storage,private /tmp 2 GiB tmpfs; Btrfs workspaces/stages; default executor TMPDIR
+B-FS-TOOLS,qf16-c6fc49,inputs,"reuse previously verified prepared tools, kernel, image and frozen executable/firmware; no new before/after full inventory check"
+B-FS-TOOLS,qf16-c6fc49,interference_gate,disabled by explicit user request; background activity not monitored or used for exclusions
+B-FS-TOOLS,qf16-c6fc49,correctness,"original output, exit, cache inheritance, Run Bundle, host isolation and complete written-byte checks"
+B-FS-TOOLS,qf16-c6fc49,timer,original reference perf_counter_ns launch/result/exit and seven tool phase clocks
+B-FS-TOOLS,qf16-c6fc49,statistics,"five samples per backend, median and min/max; no P95/P99, confidence interval or optimization percentage"
+B-FS-TOOLS,qf16-c6fc49,historical_scope,independent batch; no pooling with N30 or interrupted runs
+B-FS-TOOLS,qf16-c6fc49,defaults,guest-cache preference on; Immutable physical lower required for directory images/root-data retention; ordinary DAX and new-VM writeback off; serial stage sync
