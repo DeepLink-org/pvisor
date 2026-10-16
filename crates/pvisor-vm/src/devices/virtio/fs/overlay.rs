@@ -1700,10 +1700,34 @@ impl FileSystem for OverlayFs {
         ctx: Context,
         inode: u64,
         attr: bindings::stat64,
-        _handle: Option<u64>,
+        handle: Option<u64>,
         valid: SetattrValid,
     ) -> io::Result<(bindings::stat64, Duration)> {
         let _operation = self.write_operation()?;
+        // ftruncate operates on the opened object even after unlink/rename.
+        // Writable opens have already copied the object into the upper layer.
+        // Never resolve a replacement at the old name or mutate a lower FD.
+        if let Some(handle) = handle.filter(|_| {
+            valid.contains(SetattrValid::SIZE)
+                && !valid.intersects(SetattrValid::MODE | SetattrValid::UID | SetattrValid::GID)
+        }) {
+            return self.with_file_handle(handle, |fs, h| {
+                if h.overlay_inode != inode || h.layer.0 != 0 {
+                    return Err(io::Error::from_raw_os_error(libc::EBADF));
+                }
+                let (mut attr, timeout) = fs.setattr(ctx, h.inode, attr, Some(h.handle), valid)?;
+                let path = self.roots[0].join(OsStr::from_bytes(&h.relative_path));
+                #[allow(clippy::unnecessary_cast)] // native dev_t differs by platform
+                let same_object = std::fs::symlink_metadata(&path).is_ok_and(|metadata| {
+                    metadata.ino() == attr.st_ino as u64 && metadata.dev() == attr.st_dev as u64
+                });
+                if same_object {
+                    self.backing_attributes(&path, &mut attr)?;
+                }
+                attr.st_ino = inode as _;
+                Ok((attr, timeout))
+            });
+        }
         let path = self.path(inode)?;
         let _io = self.fence_paths(&[&path]);
         self.core
@@ -1825,10 +1849,38 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<Entry> {
         let _operation = self.write_operation()?;
         let path = self.child(parent, name)?;
+        #[cfg(target_os = "linux")]
+        let virtual_parent = if self.virtual_metadata {
+            Some(self.entry(ctx, &self.path(parent)?, parent)?.attr)
+        } else {
+            None
+        };
         let (upper_parent, upper_name) = self.upper_parent(ctx, &path)?;
-        self.layers[0]
+        let created = self.layers[0]
             .mkdir(ctx, upper_parent, &upper_name, mode, umask, extensions)
             .inspect_err(|error| log::error!("overlay native mkdir failed: {error}"))?;
+        #[cfg(target_os = "linux")]
+        if let Some(parent_attr) = virtual_parent {
+            // Rootless OCI ownership is virtual: native mkdir may use the host
+            // UID. Record the guest creator and virtual setgid inheritance.
+            let inherit_group = parent_attr.st_mode & libc::S_ISGID != 0;
+            let gid = if inherit_group {
+                parent_attr.st_gid
+            } else {
+                ctx.gid
+            };
+            let mode = created.attr.st_mode | if inherit_group { libc::S_ISGID } else { 0 };
+            let identity = format!("{}:{}:0{:o}", ctx.uid, gid, mode);
+            pvisor_overlay_core::sys::set_xattr(
+                &self.core.upper_path(&path),
+                OsStr::new("user.containers.override_stat"),
+                identity.as_bytes(),
+                0,
+            )
+            .map_err(linux_error)?;
+        }
+        #[cfg(target_os = "macos")]
+        let _ = created;
         if upper_parent != fuse::ROOT_ID {
             self.layers[0].forget(ctx, upper_parent, 1);
         }
@@ -2424,6 +2476,303 @@ impl FileSystem for OverlayFs {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    mod mutation_regressions {
+        use super::*;
+
+        fn fixture(virtual_parent: Option<&[u8]>) -> (tempfile::TempDir, OverlayFs, Context) {
+            let temp = tempfile::tempdir().unwrap();
+            let lower = temp.path().join("lower");
+            let upper = temp.path().join("upper");
+            std::fs::create_dir(&lower).unwrap();
+            std::fs::create_dir(&upper).unwrap();
+            if let Some(identity) = virtual_parent {
+                pvisor_overlay_core::sys::set_xattr(
+                    &upper,
+                    OsStr::new("user.containers.override_stat"),
+                    identity,
+                    0,
+                )
+                .unwrap();
+            }
+            let fs = parent_cache_fixture(temp.path());
+            (
+                temp,
+                fs,
+                Context {
+                    uid: 0,
+                    gid: 0,
+                    pid: 1,
+                },
+            )
+        }
+
+        fn truncate_detached(replace: bool) {
+            let (temp, fs, ctx) = fixture(None);
+            let upper = temp.path().join("upper");
+            let (entry, handle, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"file",
+                    libc::S_IFREG | 0o600,
+                    false,
+                    libc::O_RDWR as u32,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            std::fs::write(upper.join("file"), b"original").unwrap();
+            if replace {
+                std::fs::write(upper.join("replacement"), b"replacement").unwrap();
+                fs.rename(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"replacement",
+                    fuse::ROOT_ID,
+                    c"file",
+                    0,
+                )
+                .unwrap();
+            } else {
+                fs.unlink(ctx, fuse::ROOT_ID, c"file").unwrap();
+            }
+            let mut attr = fs.getattr(ctx, entry.inode, handle).unwrap().0;
+            assert_eq!(attr.st_nlink, 0);
+            attr.st_size = 2;
+            let result = fs.setattr(ctx, entry.inode, attr, handle, SetattrValid::SIZE);
+            assert!(
+                result.is_ok(),
+                "ftruncate on a valid detached writable handle: {result:?}"
+            );
+            assert_eq!(fs.getattr(ctx, entry.inode, handle).unwrap().0.st_size, 2);
+            if replace {
+                assert_eq!(std::fs::read(upper.join("file")).unwrap(), b"replacement");
+            } else {
+                assert!(!upper.join("file").exists());
+            }
+            fs.release(
+                ctx,
+                entry.inode,
+                libc::O_RDWR as u32,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        }
+        #[test]
+        fn truncate_unlink() {
+            truncate_detached(false);
+        }
+        #[test]
+        fn truncate_replacement() {
+            truncate_detached(true);
+        }
+
+        #[test]
+        fn truncate_live_and_path_default() {
+            let (temp, fs, ctx) = fixture(None);
+            let (entry, handle, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"file",
+                    libc::S_IFREG | 0o600,
+                    false,
+                    libc::O_RDWR as u32,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            std::fs::write(temp.path().join("upper/file"), b"original").unwrap();
+            for (fh, size) in [(None, 5), (handle, 2)] {
+                let mut attr = fs.getattr(ctx, entry.inode, handle).unwrap().0;
+                attr.st_size = size;
+                fs.setattr(ctx, entry.inode, attr, fh, SetattrValid::SIZE)
+                    .unwrap();
+                assert_eq!(
+                    std::fs::metadata(temp.path().join("upper/file"))
+                        .unwrap()
+                        .len(),
+                    size as u64
+                );
+            }
+            fs.release(
+                ctx,
+                entry.inode,
+                libc::O_RDWR as u32,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn truncate_rejects_bad_handles() {
+            let (temp, fs, ctx) = fixture(None);
+            let (entry, handle, _) = fs
+                .create(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"file",
+                    libc::S_IFREG | 0o600,
+                    false,
+                    libc::O_RDWR as u32,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap();
+            std::fs::write(temp.path().join("upper/file"), b"original").unwrap();
+            std::fs::write(temp.path().join("upper/other"), b"other").unwrap();
+            let other = fs.lookup(ctx, fuse::ROOT_ID, c"other").unwrap();
+            let mut attr = other.attr;
+            attr.st_size = 1;
+            for (inode, fh) in [(other.inode, handle), (entry.inode, Some(u64::MAX))] {
+                assert_eq!(
+                    fs.setattr(ctx, inode, attr, fh, SetattrValid::SIZE)
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(libc::EBADF)
+                );
+            }
+            assert_eq!(
+                std::fs::read(temp.path().join("upper/file")).unwrap(),
+                b"original"
+            );
+            assert_eq!(
+                std::fs::read(temp.path().join("upper/other")).unwrap(),
+                b"other"
+            );
+            fs.release(
+                ctx,
+                entry.inode,
+                libc::O_RDWR as u32,
+                handle.unwrap(),
+                false,
+                false,
+                None,
+            )
+            .unwrap();
+        }
+
+        #[test]
+        fn truncate_readonly_upper_and_lower() {
+            let (temp, fs, ctx) = fixture(None);
+            for (directory, name) in [("upper", c"upper-file"), ("lower", c"lower-file")] {
+                let path = temp
+                    .path()
+                    .join(directory)
+                    .join(OsStr::from_bytes(name.to_bytes()));
+                std::fs::write(&path, b"original").unwrap();
+                let entry = fs.lookup(ctx, fuse::ROOT_ID, name).unwrap();
+                let (handle, _) = fs
+                    .open(ctx, entry.inode, false, libc::O_RDONLY as u32)
+                    .unwrap();
+                let mut attr = entry.attr;
+                attr.st_size = 1;
+                assert!(
+                    fs.setattr(ctx, entry.inode, attr, handle, SetattrValid::SIZE)
+                        .is_err(),
+                    "readonly {directory} handle allowed truncate"
+                );
+                assert_eq!(std::fs::read(path).unwrap(), b"original");
+                fs.release(
+                    ctx,
+                    entry.inode,
+                    libc::O_RDONLY as u32,
+                    handle.unwrap(),
+                    false,
+                    false,
+                    None,
+                )
+                .unwrap();
+            }
+        }
+
+        fn mkdir_virtual(setgid: bool) {
+            let marker = if setgid {
+                b"1234:2345:42777".as_slice()
+            } else {
+                b"1234:2345:40777".as_slice()
+            };
+            let (temp, fs, ctx) = fixture(Some(marker));
+            let entry = fs
+                .mkdir(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"created",
+                    0o755,
+                    0o022,
+                    Extensions::default(),
+                )
+                .unwrap();
+            let expected_gid = if setgid { 2345 } else { 0 };
+            assert_eq!(
+                (entry.attr.st_uid, entry.attr.st_gid),
+                (0, expected_gid),
+                "guest creator and virtual parent group"
+            );
+            assert_eq!(
+                entry.attr.st_mode & 0o7777,
+                if setgid { 0o2755 } else { 0o755 }
+            );
+            let again = fs.lookup(ctx, fuse::ROOT_ID, c"created").unwrap();
+            assert_eq!((again.attr.st_uid, again.attr.st_gid), (0, expected_gid));
+            let identity = pvisor_overlay_core::sys::get_xattr(
+                &temp.path().join("upper/created"),
+                OsStr::new("user.containers.override_stat"),
+            )
+            .unwrap();
+            let identity = backend::UnixIdentity::parse(&identity).unwrap();
+            assert_eq!((identity.uid, identity.gid), (0, expected_gid));
+        }
+        #[test]
+        fn mkdir_virtual_owner() {
+            mkdir_virtual(false);
+        }
+        #[test]
+        fn mkdir_virtual_setgid() {
+            mkdir_virtual(true);
+        }
+
+        #[test]
+        fn mkdir_default_and_excluded_path() {
+            let (temp, fs, ctx) = fixture(None);
+            let entry = fs
+                .mkdir(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"created",
+                    0o755,
+                    0o022,
+                    Extensions::default(),
+                )
+                .unwrap();
+            let host = std::fs::metadata(temp.path().join("upper/created")).unwrap();
+            assert_eq!(
+                (entry.attr.st_uid, entry.attr.st_gid),
+                (host.uid(), host.gid())
+            );
+            assert_eq!(entry.attr.st_mode & 0o7777, 0o755);
+            assert!(
+                fs.mkdir(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"private",
+                    0o755,
+                    0,
+                    Extensions::default()
+                )
+                .is_err()
+            );
+            assert!(!temp.path().join("upper/private").exists());
+        }
+    }
+
     use super::*;
 
     struct ReadWriter {

@@ -945,20 +945,10 @@ impl RunExecutor for VmExecutor {
             .get("pvisor.network.driver")
             .and_then(serde_json::Value::as_str)
             == Some("vm-smoltcp");
-        if vm_network_enabled {
-            let network_lower = temporary.path().join("network-lower");
-            let resolver = network_lower.join("etc/resolv.conf");
-            if let Err(error) = std::fs::create_dir_all(resolver.parent().expect("resolver parent"))
-                .and_then(|()| {
-                    std::fs::write(
-                        &resolver,
-                        b"nameserver 192.0.2.1\noptions timeout:2 attempts:2\n",
-                    )
-                })
-            {
-                return failed_to_start(format!("prepare VM synthetic resolver: {error}"));
-            }
-            root_overlay.lowers.insert(0, network_lower);
+        if let Err(error) =
+            prepare_network_resolver(&mut root_overlay, temporary.path(), vm_network_enabled)
+        {
+            return failed_to_start(format!("prepare VM synthetic resolver: {error}"));
         }
         if let Some(workspace) = &workspace {
             if workspace.lowers.is_empty()
@@ -2451,6 +2441,32 @@ mod feature_tests {
     }
 }
 
+fn prepare_network_resolver(
+    overlay: &mut OverlayDeviceSpec,
+    temporary: &Path,
+    enabled: bool,
+) -> std::io::Result<()> {
+    if !enabled {
+        return Ok(());
+    }
+    let network_lower = temporary.join("network-lower");
+    let resolver = network_lower.join("etc/resolv.conf");
+    std::fs::create_dir_all(resolver.parent().expect("resolver parent"))?;
+    std::fs::write(
+        &resolver,
+        b"nameserver 192.0.2.1\noptions timeout:2 attempts:2\n",
+    )?;
+    overlay.lowers.insert(0, network_lower);
+    // An explicit promise belongs to its original physical lower. The private
+    // resolver directory is mutable; empty vectors retain their legacy default.
+    if !overlay.lower_mutability.is_empty() {
+        overlay
+            .lower_mutability
+            .insert(0, pvisor_overlay_core::LayerMutability::Mutable);
+    }
+    Ok(())
+}
+
 fn add_vm_overlay(
     vm: &mut pvisor_vm::api::VmBuilder,
     tag: &str,
@@ -2577,6 +2593,109 @@ fn guest_path_in_root(root: &Path, target: &Path) -> anyhow::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    mod network_resolver {
+        use super::super::{OverlayDeviceSpec, add_vm_overlay, prepare_network_resolver};
+        use pvisor_overlay_core::LayerMutability::{self, Immutable, Mutable};
+        use pvisor_vm::api::{VmBuilder, VmConfiguration};
+
+        fn check_preparation(
+            enabled: bool,
+            declarations: Vec<LayerMutability>,
+            count: usize,
+            valid: bool,
+        ) {
+            let temp = tempfile::tempdir().unwrap();
+            let lowers = (0..count)
+                .map(|i| {
+                    let lower = temp.path().join(format!("lower-{i}"));
+                    std::fs::create_dir(&lower).unwrap();
+                    lower
+                })
+                .collect::<Vec<_>>();
+            let upper = temp.path().join("upper");
+            std::fs::create_dir(&upper).unwrap();
+            let mut overlay = OverlayDeviceSpec {
+                lowers: lowers.clone(),
+                lower_mutability: declarations.clone(),
+                upper,
+                work: None,
+                preimages: None,
+                apply_target: None,
+                baseline_lower: None,
+                excluded: Vec::new(),
+                access_policy: Default::default(),
+            };
+            // Exercise the actual handoff contract before and after preparation.
+            // No VM boot, firmware, networking or model API is needed.
+            let mut before = VmBuilder::new(1, 128).unwrap();
+            assert_eq!(
+                add_vm_overlay(&mut before, "root", &overlay, None).is_ok(),
+                valid
+            );
+            prepare_network_resolver(&mut overlay, temp.path(), enabled).unwrap();
+            let mut after = VmBuilder::new(1, 128).unwrap();
+            let result = add_vm_overlay(&mut after, "root", &overlay, None);
+            assert_eq!(result.is_ok(), valid, "builder handoff: {result:?}");
+            assert_eq!(&overlay.lowers[usize::from(enabled)..], lowers.as_slice());
+            let mut expected = declarations;
+            if enabled && !expected.is_empty() {
+                expected.insert(0, Mutable);
+            }
+            assert_eq!(overlay.lower_mutability, expected);
+            let resolver_lower = temp.path().join("network-lower");
+            if enabled {
+                assert_eq!(overlay.lowers[0], resolver_lower);
+                assert_eq!(
+                    std::fs::read(resolver_lower.join("etc/resolv.conf")).unwrap(),
+                    b"nameserver 192.0.2.1\noptions timeout:2 attempts:2\n"
+                );
+            } else {
+                assert!(!resolver_lower.exists());
+            }
+        }
+
+        #[test]
+        fn explicit_mutable_lower_remains_valid() {
+            check_preparation(true, vec![Mutable], 1, true);
+        }
+        #[test]
+        fn mixed_declarations_keep_their_physical_lower_order() {
+            check_preparation(true, vec![Immutable, Mutable], 2, true);
+        }
+        #[test]
+        fn legacy_empty_declarations_remain_empty() {
+            check_preparation(true, vec![], 1, true);
+        }
+        #[test]
+        fn disabled_network_keeps_the_original_overlay() {
+            check_preparation(false, vec![Mutable], 1, true);
+        }
+        #[test]
+        fn invalid_declaration_length_is_not_repaired_by_insertion() {
+            check_preparation(true, vec![Mutable; 2], 1, false);
+        }
+
+        #[test]
+        fn resolver_write_failure_does_not_change_overlay() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut overlay: OverlayDeviceSpec = serde_json::from_value(serde_json::json!({
+                "lowers": [temp.path()], "lower_mutability": ["mutable"],
+                "upper": temp.path().join("upper"), "work": null,
+            }))
+            .unwrap();
+            let before = serde_json::to_value(&overlay).unwrap();
+            // A file at the resolver directory makes preparation fail locally.
+            std::fs::write(temp.path().join("network-lower"), b"occupied").unwrap();
+            prepare_network_resolver(&mut overlay, temp.path(), false).unwrap();
+            assert!(prepare_network_resolver(&mut overlay, temp.path(), true).is_err());
+            assert_eq!(serde_json::to_value(&overlay).unwrap(), before);
+            assert_eq!(
+                std::fs::read(temp.path().join("network-lower")).unwrap(),
+                b"occupied"
+            );
+        }
+    }
+
     #[test]
     fn runner_lower_mutability_is_ordered_and_legacy_metadata_defaults_mutable() {
         use super::OverlayDeviceSpec;
