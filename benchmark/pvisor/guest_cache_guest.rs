@@ -77,6 +77,17 @@ fn open_read(path: &Path) {
         assert!(buffer.iter().all(|b| *b == 0));
     }
 }
+fn wide(root: &Path, group: &str, count: usize, step: usize, start: usize) {
+    for i in 0..count {
+        let index = (i * step + start) % FILES;
+        assert_eq!(
+            fs::metadata(root.join(group).join(format!("f{index:04}")))
+                .unwrap()
+                .len(),
+            8
+        );
+    }
+}
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     assert_eq!(args.len(), 2);
@@ -123,6 +134,10 @@ fn main() {
             });
             std::thread::sleep(Duration::from_millis(1300));
             timed("stat_expired", || stats(&flat));
+            timed("wide_pair", || wide(root, "wide_pair", 2, 1023, 1024));
+            timed("wide_random", || wide(root, "wide_random", 32, 997, 1024));
+            timed("wide_stride", || wide(root, "wide_stride", 32, 61, 0));
+            timed("wide_dense", || wide(root, "wide_dense", FILES, 1, 0));
         }
         "empty" => {}
         "stat-prime" => stats(&flat),
@@ -151,6 +166,15 @@ fn main() {
         }
         "sparse" => {
             assert_eq!(fs::metadata(root.join("wide/f1024")).unwrap().len(), 8);
+        }
+        "pair" => wide(root, "wide_pair", 2, 1023, 1024),
+        "random" => wide(root, "wide_random", 32, 997, 1024),
+        "stride" => wide(root, "wide_stride", 32, 61, 0),
+        "dense" => wide(root, "wide_dense", FILES, 1, 0),
+        "unused" => {
+            wide(root, "wide_dense", 64, 1, 0);
+            wide(root, "wide_dense", OPENS, 0, 0);
+            wide(root, "wide_dense", 2, 1, 2000);
         }
         _ => panic!("unknown mode"),
     }

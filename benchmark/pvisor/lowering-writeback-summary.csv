@@ -1,0 +1,401 @@
+batch,cohort,metric,contrast,off_arm,on_arm,unit,n_per_arm,off_distribution,off,on_distribution,on,difference_ci95_ms,judgment
+lowering-writeback-final-formal-20261016,sdk,meta.stat_cold,lowering,0,1,ms,30,unsplit,216.702,unsplit,109.434,"[-118.245, -97.381]",缩短 49.5%
+lowering-writeback-final-formal-20261016,sdk,meta.stat_cold,writeback,1,3,ms,30,unsplit,109.434,unsplit,109.899,"[-10.759, 10.200]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.stat_cold,combined,0,3,ms,30,unsplit,216.702,unsplit,109.899,"[-116.923, -99.400]",缩短 49.3%
+lowering-writeback-final-formal-20261016,sdk,meta.stat_cold,writeback_cache_off,0,2,ms,30,unsplit,216.702,unsplit,220.386,"[-7.735, 12.577]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.stat_cold,lowering_writeback_on,2,3,ms,30,unsplit,220.386,unsplit,109.899,"[-120.392, -99.481]",缩短 50.1%
+lowering-writeback-final-formal-20261016,sdk,meta.stat_hot,lowering,0,1,ms,30,unsplit,1.288,unsplit,1.285,"[-0.119, 0.171]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.stat_hot,writeback,1,3,ms,30,unsplit,1.285,unsplit,1.270,"[-0.204, 0.106]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.stat_hot,combined,0,3,ms,30,unsplit,1.288,unsplit,1.270,"[-0.109, 0.069]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.stat_hot,writeback_cache_off,0,2,ms,30,unsplit,1.288,unsplit,1.346,"[-0.048, 0.197]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.stat_hot,lowering_writeback_on,2,3,ms,30,unsplit,1.346,unsplit,1.270,"[-0.201, 0.036]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.deep_cold,lowering,0,1,ms,30,unsplit,310.490,unsplit,176.448,"[-142.332, -106.668]",缩短 43.2%
+lowering-writeback-final-formal-20261016,sdk,meta.deep_cold,writeback,1,3,ms,30,unsplit,176.448,unsplit,176.578,"[-13.796, 6.948]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.deep_cold,combined,0,3,ms,30,unsplit,310.490,unsplit,176.578,"[-143.026, -108.715]",缩短 43.1%
+lowering-writeback-final-formal-20261016,sdk,meta.deep_cold,writeback_cache_off,0,2,ms,30,unsplit,310.490,unsplit,310.721,"[-22.781, 39.095]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.deep_cold,lowering_writeback_on,2,3,ms,30,unsplit,310.721,unsplit,176.578,"[-171.075, -111.483]",缩短 43.2%
+lowering-writeback-final-formal-20261016,sdk,meta.deep_hot,lowering,0,1,ms,30,unsplit,1.957,unsplit,1.868,"[-0.322, 0.101]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.deep_hot,writeback,1,3,ms,30,unsplit,1.868,unsplit,1.848,"[-0.186, 0.203]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.deep_hot,combined,0,3,ms,30,unsplit,1.957,unsplit,1.848,"[-0.289, 0.100]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.deep_hot,writeback_cache_off,0,2,ms,30,unsplit,1.957,unsplit,1.940,"[-0.212, 0.241]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.deep_hot,lowering_writeback_on,2,3,ms,30,unsplit,1.940,unsplit,1.848,"[-0.335, 0.123]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.scan_cold,lowering,0,1,ms,30,unsplit,118.457,unsplit,103.862,"[-20.295, -7.888]",缩短 12.3%
+lowering-writeback-final-formal-20261016,sdk,meta.scan_cold,writeback,1,3,ms,30,unsplit,103.862,unsplit,101.614,"[-7.915, 3.205]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.scan_cold,combined,0,3,ms,30,unsplit,118.457,unsplit,101.614,"[-23.884, -8.991]",缩短 14.2%
+lowering-writeback-final-formal-20261016,sdk,meta.scan_cold,writeback_cache_off,0,2,ms,30,unsplit,118.457,unsplit,115.597,"[-8.892, 8.736]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.scan_cold,lowering_writeback_on,2,3,ms,30,unsplit,115.597,unsplit,101.614,"[-22.657, -8.820]",缩短 12.1%
+lowering-writeback-final-formal-20261016,sdk,meta.scan_hot,lowering,0,1,ms,30,unsplit,85.505,unsplit,1.817,"[-86.041, -75.854]",缩短 97.9%
+lowering-writeback-final-formal-20261016,sdk,meta.scan_hot,writeback,1,3,ms,30,unsplit,1.817,unsplit,1.662,"[-0.353, 0.040]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.scan_hot,combined,0,3,ms,30,unsplit,85.505,unsplit,1.662,"[-86.190, -76.006]",缩短 98.1%
+lowering-writeback-final-formal-20261016,sdk,meta.scan_hot,writeback_cache_off,0,2,ms,30,unsplit,85.505,unsplit,84.615,"[-7.013, 6.118]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.scan_hot,lowering_writeback_on,2,3,ms,30,unsplit,84.615,unsplit,1.662,"[-85.757, -77.268]",缩短 98.0%
+lowering-writeback-final-formal-20261016,sdk,meta.read_cold,lowering,0,1,ms,30,unsplit,822.952,unsplit,784.593,"[-73.020, 24.009]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.read_cold,writeback,1,3,ms,30,unsplit,784.593,unsplit,658.800,"[-170.667, -79.615]",缩短 16.0%
+lowering-writeback-final-formal-20261016,sdk,meta.read_cold,combined,0,3,ms,30,unsplit,822.952,unsplit,658.800,"[-202.754, -96.615]",缩短 19.9%
+lowering-writeback-final-formal-20261016,sdk,meta.read_cold,writeback_cache_off,0,2,ms,30,unsplit,822.952,unsplit,741.356,"[-116.140, -22.203]",缩短 9.9%
+lowering-writeback-final-formal-20261016,sdk,meta.read_cold,lowering_writeback_on,2,3,ms,30,unsplit,741.356,unsplit,658.800,"[-152.168, -32.969]",缩短 11.1%
+lowering-writeback-final-formal-20261016,sdk,meta.read_hot,lowering,0,1,ms,30,unsplit,614.163,unsplit,672.066,"[26.881, 108.967]",增加 9.4%
+lowering-writeback-final-formal-20261016,sdk,meta.read_hot,writeback,1,3,ms,30,unsplit,672.066,unsplit,577.316,"[-135.465, -36.335]",缩短 14.1%
+lowering-writeback-final-formal-20261016,sdk,meta.read_hot,combined,0,3,ms,30,unsplit,614.163,unsplit,577.316,"[-61.771, 31.949]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.read_hot,writeback_cache_off,0,2,ms,30,unsplit,614.163,unsplit,540.850,"[-102.646, -13.299]",缩短 11.9%
+lowering-writeback-final-formal-20261016,sdk,meta.read_hot,lowering_writeback_on,2,3,ms,30,unsplit,540.850,unsplit,577.316,"[-8.647, 89.942]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.open_stat_hot,lowering,0,1,ms,30,unsplit,149.342,unsplit,1.015,"[-152.846, -146.262]",缩短 99.3%
+lowering-writeback-final-formal-20261016,sdk,meta.open_stat_hot,writeback,1,3,ms,30,unsplit,1.015,unsplit,1.014,"[-0.067, 0.070]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.open_stat_hot,combined,0,3,ms,30,unsplit,149.342,unsplit,1.014,"[-152.843, -146.270]",缩短 99.3%
+lowering-writeback-final-formal-20261016,sdk,meta.open_stat_hot,writeback_cache_off,0,2,ms,30,unsplit,149.342,unsplit,118.158,"[-37.114, -25.427]",缩短 20.9%
+lowering-writeback-final-formal-20261016,sdk,meta.open_stat_hot,lowering_writeback_on,2,3,ms,30,unsplit,118.158,unsplit,1.014,"[-122.690, -113.293]",缩短 99.1%
+lowering-writeback-final-formal-20261016,sdk,meta.open_read_hot,lowering,0,1,ms,30,unsplit,191.750,unsplit,200.931,"[-0.999, 21.094]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.open_read_hot,writeback,1,3,ms,30,unsplit,200.931,unsplit,166.759,"[-46.364, -19.538]",缩短 17.0%
+lowering-writeback-final-formal-20261016,sdk,meta.open_read_hot,combined,0,3,ms,30,unsplit,191.750,unsplit,166.759,"[-30.992, -14.522]",缩短 13.0%
+lowering-writeback-final-formal-20261016,sdk,meta.open_read_hot,writeback_cache_off,0,2,ms,30,unsplit,191.750,unsplit,159.059,"[-42.170, -24.831]",缩短 17.0%
+lowering-writeback-final-formal-20261016,sdk,meta.open_read_hot,lowering_writeback_on,2,3,ms,30,unsplit,159.059,unsplit,166.759,"[-0.099, 20.402]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.sparse_cold,lowering,0,1,ms,30,unsplit,0.212,unsplit,0.155,"[-0.080, -0.045]",缩短 26.6%
+lowering-writeback-final-formal-20261016,sdk,meta.sparse_cold,writeback,1,3,ms,30,unsplit,0.155,unsplit,0.164,"[-0.011, 0.024]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.sparse_cold,combined,0,3,ms,30,unsplit,0.212,unsplit,0.164,"[-0.071, -0.037]",缩短 22.6%
+lowering-writeback-final-formal-20261016,sdk,meta.sparse_cold,writeback_cache_off,0,2,ms,30,unsplit,0.212,unsplit,0.213,"[-0.022, 0.016]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.sparse_cold,lowering_writeback_on,2,3,ms,30,unsplit,0.213,unsplit,0.164,"[-0.068, -0.038]",缩短 23.2%
+lowering-writeback-final-formal-20261016,sdk,meta.sparse_hot,lowering,0,1,ms,30,unsplit,0.001188,unsplit,0.001208,"[-0.000041, 0.000125]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.sparse_hot,writeback,1,3,ms,30,unsplit,0.001208,unsplit,0.001208,"[-0.000084, 0.000126]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.sparse_hot,combined,0,3,ms,30,unsplit,0.001188,unsplit,0.001208,"[-0.000021, 0.000146]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.sparse_hot,writeback_cache_off,0,2,ms,30,unsplit,0.001188,unsplit,0.001125,"[-0.000124, 0.000063]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.sparse_hot,lowering_writeback_on,2,3,ms,30,unsplit,0.001125,unsplit,0.001208,"[-0.000041, 0.000208]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.stat_expired,lowering,0,1,ms,30,unsplit,144.186,unsplit,4.117,"[-144.856, -137.806]",缩短 97.1%
+lowering-writeback-final-formal-20261016,sdk,meta.stat_expired,writeback,1,3,ms,30,unsplit,4.117,separated-clusters,5/30：1.541；25/30：4.497,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,meta.stat_expired,combined,0,3,ms,30,unsplit,144.186,separated-clusters,5/30：1.541；25/30：4.497,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,meta.stat_expired,writeback_cache_off,0,2,ms,30,unsplit,144.186,unsplit,143.959,"[-4.649, 3.267]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.stat_expired,lowering_writeback_on,2,3,ms,30,unsplit,143.959,separated-clusters,5/30：1.541；25/30：4.497,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,meta.wide_pair,lowering,0,1,ms,30,unsplit,0.240,unsplit,0.537,"[0.277, 0.317]",增加 123.3%
+lowering-writeback-final-formal-20261016,sdk,meta.wide_pair,writeback,1,3,ms,30,unsplit,0.537,unsplit,0.543,"[-0.020, 0.034]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.wide_pair,combined,0,3,ms,30,unsplit,0.240,unsplit,0.543,"[0.277, 0.330]",增加 125.6%
+lowering-writeback-final-formal-20261016,sdk,meta.wide_pair,writeback_cache_off,0,2,ms,30,unsplit,0.240,unsplit,0.241,"[-0.013, 0.013]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.wide_pair,lowering_writeback_on,2,3,ms,30,unsplit,0.241,unsplit,0.543,"[0.278, 0.327]",增加 125.5%
+lowering-writeback-final-formal-20261016,sdk,meta.wide_random,lowering,0,1,ms,30,unsplit,2.297,unsplit,5.181,"[2.742, 3.002]",增加 125.5%
+lowering-writeback-final-formal-20261016,sdk,meta.wide_random,writeback,1,3,ms,30,unsplit,5.181,unsplit,5.095,"[-0.355, 0.205]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.wide_random,combined,0,3,ms,30,unsplit,2.297,unsplit,5.095,"[2.537, 3.096]",增加 121.8%
+lowering-writeback-final-formal-20261016,sdk,meta.wide_random,writeback_cache_off,0,2,ms,30,unsplit,2.297,unsplit,2.294,"[-0.035, 0.054]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.wide_random,lowering_writeback_on,2,3,ms,30,unsplit,2.294,unsplit,5.095,"[2.546, 3.107]",增加 122.1%
+lowering-writeback-final-formal-20261016,sdk,meta.wide_stride,lowering,0,1,ms,30,unsplit,2.278,unsplit,4.609,"[2.161, 2.473]",增加 102.4%
+lowering-writeback-final-formal-20261016,sdk,meta.wide_stride,writeback,1,3,ms,30,unsplit,4.609,unsplit,4.575,"[-0.410, 0.225]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.wide_stride,combined,0,3,ms,30,unsplit,2.278,unsplit,4.575,"[1.923, 2.515]",增加 100.9%
+lowering-writeback-final-formal-20261016,sdk,meta.wide_stride,writeback_cache_off,0,2,ms,30,unsplit,2.278,unsplit,2.283,"[-0.020, 0.053]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.wide_stride,lowering_writeback_on,2,3,ms,30,unsplit,2.283,unsplit,4.575,"[1.914, 2.495]",增加 100.5%
+lowering-writeback-final-formal-20261016,sdk,meta.wide_dense,lowering,0,1,ms,30,unsplit,136.826,unsplit,67.285,"[-72.278, -67.592]",缩短 50.8%
+lowering-writeback-final-formal-20261016,sdk,meta.wide_dense,writeback,1,3,ms,30,unsplit,67.285,unsplit,68.896,"[-1.638, 4.651]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.wide_dense,combined,0,3,ms,30,unsplit,136.826,unsplit,68.896,"[-71.409, -65.170]",缩短 49.6%
+lowering-writeback-final-formal-20261016,sdk,meta.wide_dense,writeback_cache_off,0,2,ms,30,unsplit,136.826,unsplit,138.402,"[-0.685, 3.917]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,meta.wide_dense,lowering_writeback_on,2,3,ms,30,unsplit,138.402,unsplit,68.896,"[-73.275, -66.479]",缩短 50.2%
+lowering-writeback-final-formal-20261016,sdk,defer.write_ms,lowering,0,1,ms,30,unsplit,7.258,unsplit,7.272,"[-0.493, 0.497]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,defer.write_ms,writeback,1,3,ms,30,unsplit,7.272,unsplit,6.953,"[-1.024, 0.083]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,defer.write_ms,combined,0,3,ms,30,unsplit,7.258,unsplit,6.953,"[-0.980, 0.088]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,defer.write_ms,writeback_cache_off,0,2,ms,30,unsplit,7.258,unsplit,6.608,"[-1.169, -0.223]",缩短 9.0%
+lowering-writeback-final-formal-20261016,sdk,defer.write_ms,lowering_writeback_on,2,3,ms,30,unsplit,6.608,unsplit,6.953,"[-0.306, 0.792]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,defer.sync_ms,lowering,0,1,ms,30,unsplit,0.001521,unsplit,0.001417,"[-0.000272, 0.000125]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,defer.sync_ms,writeback,1,3,ms,30,unsplit,0.001417,separated-clusters,24/30：0.588；6/30：1.148,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,defer.sync_ms,combined,0,3,ms,30,unsplit,0.001521,separated-clusters,24/30：0.588；6/30：1.148,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,defer.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001521,unsplit,0.595,"[0.564, 0.642]",增加 39041.5%
+lowering-writeback-final-formal-20261016,sdk,defer.sync_ms,lowering_writeback_on,2,3,ms,30,unsplit,0.595,separated-clusters,24/30：0.588；6/30：1.148,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,defer.total_ms,lowering,0,1,ms,30,unsplit,7.260,unsplit,7.274,"[-0.494, 0.496]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,defer.total_ms,writeback,1,3,ms,30,unsplit,7.274,unsplit,7.626,"[-0.369, 0.797]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,defer.total_ms,combined,0,3,ms,30,unsplit,7.260,unsplit,7.626,"[-0.305, 0.745]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,defer.total_ms,writeback_cache_off,0,2,ms,30,unsplit,7.260,unsplit,7.310,"[-0.565, 0.448]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,defer.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,7.310,unsplit,7.626,"[-0.277, 0.864]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,tiny.write_ms,lowering,0,1,ms,30,unsplit,69.510,unsplit,69.083,"[-5.444, 1.995]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,tiny.write_ms,writeback,1,3,ms,30,unsplit,69.083,unsplit,78.733,"[6.372, 12.888]",增加 14.0%
+lowering-writeback-final-formal-20261016,sdk,tiny.write_ms,combined,0,3,ms,30,unsplit,69.510,unsplit,78.733,"[4.751, 11.552]",增加 13.3%
+lowering-writeback-final-formal-20261016,sdk,tiny.write_ms,writeback_cache_off,0,2,ms,30,unsplit,69.510,unsplit,75.663,"[1.880, 7.886]",增加 8.9%
+lowering-writeback-final-formal-20261016,sdk,tiny.write_ms,lowering_writeback_on,2,3,ms,30,unsplit,75.663,unsplit,78.733,"[0.408, 5.472]",增加 4.1%
+lowering-writeback-final-formal-20261016,sdk,tiny.sync_ms,lowering,0,1,ms,30,unsplit,0.001708,unsplit,0.001667,"[-0.000168, 0.000104]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,tiny.sync_ms,writeback,1,3,ms,30,unsplit,0.001667,unsplit,7.047,"[6.260, 8.267]",增加 422656.7%
+lowering-writeback-final-formal-20261016,sdk,tiny.sync_ms,combined,0,3,ms,30,unsplit,0.001708,unsplit,7.047,"[6.260, 8.267]",增加 412387.8%
+lowering-writeback-final-formal-20261016,sdk,tiny.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001708,unsplit,7.545,"[6.767, 8.546]",增加 441516.7%
+lowering-writeback-final-formal-20261016,sdk,tiny.sync_ms,lowering_writeback_on,2,3,ms,30,unsplit,7.545,unsplit,7.047,"[-1.946, 0.929]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,tiny.total_ms,lowering,0,1,ms,30,unsplit,69.511,unsplit,69.085,"[-5.444, 1.995]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,tiny.total_ms,writeback,1,3,ms,30,unsplit,69.085,unsplit,85.691,"[13.138, 22.496]",增加 24.0%
+lowering-writeback-final-formal-20261016,sdk,tiny.total_ms,combined,0,3,ms,30,unsplit,69.511,unsplit,85.691,"[12.489, 20.338]",增加 23.3%
+lowering-writeback-final-formal-20261016,sdk,tiny.total_ms,writeback_cache_off,0,2,ms,30,unsplit,69.511,unsplit,84.213,"[10.277, 16.769]",增加 21.1%
+lowering-writeback-final-formal-20261016,sdk,tiny.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,84.213,unsplit,85.691,"[-1.657, 6.703]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,boundary.write_ms,lowering,0,1,ms,30,unsplit,108.068,unsplit,109.716,"[-5.402, 8.403]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,boundary.write_ms,writeback,1,3,ms,30,unsplit,109.716,unsplit,114.997,"[-2.311, 12.937]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,boundary.write_ms,combined,0,3,ms,30,unsplit,108.068,unsplit,114.997,"[-0.452, 13.367]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,boundary.write_ms,writeback_cache_off,0,2,ms,30,unsplit,108.068,unsplit,110.353,"[-3.458, 7.974]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,boundary.write_ms,lowering_writeback_on,2,3,ms,30,unsplit,110.353,unsplit,114.997,"[-2.342, 11.158]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,boundary.sync_ms,lowering,0,1,ms,30,unsplit,0.001791,separated-clusters,25/30：0.001750；5/30：0.007292,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,boundary.sync_ms,writeback,1,3,ms,30,separated-clusters,25/30：0.001750；5/30：0.007292,unsplit,2.154,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,boundary.sync_ms,combined,0,3,ms,30,unsplit,0.001791,unsplit,2.154,"[1.729, 2.577]",增加 120179.6%
+lowering-writeback-final-formal-20261016,sdk,boundary.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001791,unsplit,2.011,"[1.636, 2.345]",增加 112208.1%
+lowering-writeback-final-formal-20261016,sdk,boundary.sync_ms,lowering_writeback_on,2,3,ms,30,unsplit,2.011,unsplit,2.154,"[-0.492, 0.795]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,boundary.total_ms,lowering,0,1,ms,30,unsplit,108.070,unsplit,109.717,"[-5.402, 8.403]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,boundary.total_ms,writeback,1,3,ms,30,unsplit,109.717,unsplit,116.585,"[-0.193, 14.614]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,boundary.total_ms,combined,0,3,ms,30,unsplit,108.070,unsplit,116.585,"[1.494, 15.056]",增加 7.9%
+lowering-writeback-final-formal-20261016,sdk,boundary.total_ms,writeback_cache_off,0,2,ms,30,unsplit,108.070,unsplit,112.135,"[-1.293, 9.655]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,boundary.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,112.135,unsplit,116.585,"[-1.974, 10.665]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,pressure.write_ms,lowering,0,1,ms,30,unsplit,18.038,unsplit,17.573,"[-2.478, 1.297]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,pressure.write_ms,writeback,1,3,ms,30,unsplit,17.573,unsplit,15.505,"[-2.938, -0.251]",缩短 11.8%
+lowering-writeback-final-formal-20261016,sdk,pressure.write_ms,combined,0,3,ms,30,unsplit,18.038,unsplit,15.505,"[-4.204, -0.201]",缩短 14.0%
+lowering-writeback-final-formal-20261016,sdk,pressure.write_ms,writeback_cache_off,0,2,ms,30,unsplit,18.038,unsplit,15.889,"[-4.397, -0.490]",缩短 11.9%
+lowering-writeback-final-formal-20261016,sdk,pressure.write_ms,lowering_writeback_on,2,3,ms,30,unsplit,15.889,unsplit,15.505,"[-0.919, 1.566]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,pressure.sync_ms,lowering,0,1,ms,30,unsplit,0.001875,unsplit,0.001937,"[-0.000104, 0.000250]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,pressure.sync_ms,writeback,1,3,ms,30,unsplit,0.001937,separated-clusters,25/30：0.541；5/30：1.564,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,pressure.sync_ms,combined,0,3,ms,30,unsplit,0.001875,separated-clusters,25/30：0.541；5/30：1.564,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,pressure.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001875,separated-clusters,24/30：0.546；6/30：1.724,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,pressure.sync_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,24/30：0.546；6/30：1.724,separated-clusters,25/30：0.541；5/30：1.564,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,pressure.total_ms,lowering,0,1,ms,30,unsplit,18.039,unsplit,17.575,"[-2.479, 1.297]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,pressure.total_ms,writeback,1,3,ms,30,unsplit,17.575,unsplit,16.197,"[-2.282, 0.362]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,pressure.total_ms,combined,0,3,ms,30,unsplit,18.039,unsplit,16.197,"[-3.587, 0.468]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,pressure.total_ms,writeback_cache_off,0,2,ms,30,unsplit,18.039,unsplit,16.457,"[-3.563, 0.116]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,pressure.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,16.457,unsplit,16.197,"[-0.957, 1.372]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,overwrite.write_ms,lowering,0,1,ms,30,unsplit,200.509,unsplit,201.633,"[-16.977, 23.414]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,overwrite.write_ms,writeback,1,3,ms,30,unsplit,201.633,unsplit,195.000,"[-34.824, 20.473]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,overwrite.write_ms,combined,0,3,ms,30,unsplit,200.509,unsplit,195.000,"[-23.522, 17.973]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,overwrite.write_ms,writeback_cache_off,0,2,ms,30,unsplit,200.509,unsplit,184.088,"[-33.092, -2.710]",缩短 8.2%
+lowering-writeback-final-formal-20261016,sdk,overwrite.write_ms,lowering_writeback_on,2,3,ms,30,unsplit,184.088,unsplit,195.000,"[-8.290, 37.331]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,overwrite.sync_ms,lowering,0,1,ms,30,unsplit,0.001958,unsplit,0.001937,"[-0.000145, 0.000125]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,overwrite.sync_ms,writeback,1,3,ms,30,unsplit,0.001937,unsplit,6.943,"[5.694, 8.262]",增加 358255.9%
+lowering-writeback-final-formal-20261016,sdk,overwrite.sync_ms,combined,0,3,ms,30,unsplit,0.001958,unsplit,6.943,"[5.694, 8.261]",增加 354504.0%
+lowering-writeback-final-formal-20261016,sdk,overwrite.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001958,separated-clusters,23/30：5.810；7/30：9.870,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,overwrite.sync_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,23/30：5.810；7/30：9.870,unsplit,6.943,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,overwrite.total_ms,lowering,0,1,ms,30,unsplit,200.513,unsplit,201.635,"[-16.977, 23.414]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,overwrite.total_ms,writeback,1,3,ms,30,unsplit,201.635,unsplit,201.763,"[-27.286, 29.234]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,overwrite.total_ms,combined,0,3,ms,30,unsplit,200.513,unsplit,201.763,"[-16.891, 26.063]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,overwrite.total_ms,writeback_cache_off,0,2,ms,30,unsplit,200.513,unsplit,194.086,"[-24.585, 4.763]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,overwrite.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,194.086,unsplit,201.763,"[-9.622, 36.967]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,stream.write_ms,lowering,0,1,ms,30,unsplit,316.209,unsplit,322.365,"[-24.399, 39.367]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,stream.write_ms,writeback,1,3,ms,30,unsplit,322.365,unsplit,4.508,"[-344.223, -292.401]",缩短 98.6%
+lowering-writeback-final-formal-20261016,sdk,stream.write_ms,combined,0,3,ms,30,unsplit,316.209,unsplit,4.508,"[-326.357, -295.116]",缩短 98.6%
+lowering-writeback-final-formal-20261016,sdk,stream.write_ms,writeback_cache_off,0,2,ms,30,unsplit,316.209,unsplit,4.504,"[-326.219, -295.130]",缩短 98.6%
+lowering-writeback-final-formal-20261016,sdk,stream.write_ms,lowering_writeback_on,2,3,ms,30,unsplit,4.504,unsplit,4.508,"[-1.007, 0.668]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,stream.sync_ms,lowering,0,1,ms,30,unsplit,0.002021,unsplit,0.002042,"[-0.000271, 0.000229]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,stream.sync_ms,writeback,1,3,ms,30,unsplit,0.002042,separated-clusters,17/30：0.279；13/30：2.482,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,stream.sync_ms,combined,0,3,ms,30,unsplit,0.002021,separated-clusters,17/30：0.279；13/30：2.482,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,stream.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.002021,separated-clusters,19/30：0.485；11/30：2.741,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,stream.sync_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,19/30：0.485；11/30：2.741,separated-clusters,17/30：0.279；13/30：2.482,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,stream.total_ms,lowering,0,1,ms,30,unsplit,316.211,unsplit,322.367,"[-24.398, 39.367]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,stream.total_ms,writeback,1,3,ms,30,unsplit,322.367,unsplit,6.281,"[-342.426, -290.583]",缩短 98.1%
+lowering-writeback-final-formal-20261016,sdk,stream.total_ms,combined,0,3,ms,30,unsplit,316.211,unsplit,6.281,"[-324.543, -293.732]",缩短 98.0%
+lowering-writeback-final-formal-20261016,sdk,stream.total_ms,writeback_cache_off,0,2,ms,30,unsplit,316.211,unsplit,6.284,"[-324.555, -293.479]",缩短 98.0%
+lowering-writeback-final-formal-20261016,sdk,stream.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,6.284,unsplit,6.281,"[-1.045, 1.087]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,fsync.write_ms,lowering,0,1,ms,30,unsplit,7.408,unsplit,7.493,"[-0.235, 0.726]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,fsync.write_ms,writeback,1,3,ms,30,unsplit,7.493,unsplit,8.427,"[0.341, 1.444]",增加 12.5%
+lowering-writeback-final-formal-20261016,sdk,fsync.write_ms,combined,0,3,ms,30,unsplit,7.408,unsplit,8.427,"[0.568, 1.611]",增加 13.8%
+lowering-writeback-final-formal-20261016,sdk,fsync.write_ms,writeback_cache_off,0,2,ms,30,unsplit,7.408,separated-clusters,25/30：7.926；5/30：12.996,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,fsync.write_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,25/30：7.926；5/30：12.996,unsplit,8.427,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,fsync.sync_ms,lowering,0,1,ms,30,unsplit,0.001104,unsplit,0.001042,"[-0.000208, 0.000125]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,fsync.sync_ms,writeback,1,3,ms,30,unsplit,0.001042,unsplit,0.469,"[0.405, 0.521]",增加 44949.6%
+lowering-writeback-final-formal-20261016,sdk,fsync.sync_ms,combined,0,3,ms,30,unsplit,0.001104,unsplit,0.469,"[0.405, 0.521]",增加 42419.7%
+lowering-writeback-final-formal-20261016,sdk,fsync.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001104,unsplit,0.504,"[0.432, 0.530]",增加 45546.6%
+lowering-writeback-final-formal-20261016,sdk,fsync.sync_ms,lowering_writeback_on,2,3,ms,30,unsplit,0.504,unsplit,0.469,"[-0.115, 0.067]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,fsync.total_ms,lowering,0,1,ms,30,unsplit,7.409,unsplit,7.494,"[-0.235, 0.726]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,fsync.total_ms,writeback,1,3,ms,30,unsplit,7.494,unsplit,8.925,"[0.806, 1.851]",增加 19.1%
+lowering-writeback-final-formal-20261016,sdk,fsync.total_ms,combined,0,3,ms,30,unsplit,7.409,unsplit,8.925,"[0.971, 2.070]",增加 20.5%
+lowering-writeback-final-formal-20261016,sdk,fsync.total_ms,writeback_cache_off,0,2,ms,30,unsplit,7.409,separated-clusters,25/30：8.354；5/30：13.451,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,fsync.total_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,25/30：8.354；5/30：13.451,unsplit,8.925,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,sdk,completion_ms,lowering,0,1,ms,30,unsplit,5209.671,unsplit,4571.354,"[-790.710, -484.590]",缩短 12.3%
+lowering-writeback-final-formal-20261016,sdk,completion_ms,writeback,1,3,ms,30,unsplit,4571.354,unsplit,3909.050,"[-775.047, -453.708]",缩短 14.5%
+lowering-writeback-final-formal-20261016,sdk,completion_ms,combined,0,3,ms,30,unsplit,5209.671,unsplit,3909.050,"[-1402.223, -1105.955]",缩短 25.0%
+lowering-writeback-final-formal-20261016,sdk,completion_ms,writeback_cache_off,0,2,ms,30,unsplit,5209.671,unsplit,4617.358,"[-694.664, -419.319]",缩短 11.4%
+lowering-writeback-final-formal-20261016,sdk,completion_ms,lowering_writeback_on,2,3,ms,30,unsplit,4617.358,unsplit,3909.050,"[-896.136, -500.135]",缩短 15.3%
+lowering-writeback-final-formal-20261016,cli,meta.stat_cold,lowering,0,1,ms,30,unsplit,237.754,unsplit,234.911,"[-24.076, 33.353]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_cold,writeback,1,3,ms,30,unsplit,234.911,unsplit,232.637,"[-30.903, 15.102]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_cold,combined,0,3,ms,30,unsplit,237.754,unsplit,232.637,"[-22.165, 17.026]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_cold,writeback_cache_off,0,2,ms,30,unsplit,237.754,unsplit,231.815,"[-32.556, 21.506]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_cold,lowering_writeback_on,2,3,ms,30,unsplit,231.815,unsplit,232.637,"[-17.627, 25.042]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_hot,lowering,0,1,ms,30,unsplit,1.212,unsplit,1.291,"[-0.082, 0.128]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_hot,writeback,1,3,ms,30,unsplit,1.291,unsplit,1.223,"[-0.122, 0.033]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_hot,combined,0,3,ms,30,unsplit,1.212,unsplit,1.223,"[-0.121, 0.060]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_hot,writeback_cache_off,0,2,ms,30,unsplit,1.212,unsplit,1.214,"[-0.141, 0.038]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_hot,lowering_writeback_on,2,3,ms,30,unsplit,1.214,unsplit,1.223,"[-0.030, 0.077]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.deep_cold,lowering,0,1,ms,30,unsplit,371.177,unsplit,393.214,"[-10.672, 34.315]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.deep_cold,writeback,1,3,ms,30,unsplit,393.214,unsplit,389.337,"[-25.046, 17.676]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.deep_cold,combined,0,3,ms,30,unsplit,371.177,unsplit,389.337,"[-13.529, 34.616]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.deep_cold,writeback_cache_off,0,2,ms,30,unsplit,371.177,unsplit,373.741,"[-29.084, 23.940]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.deep_cold,lowering_writeback_on,2,3,ms,30,unsplit,373.741,unsplit,389.337,"[-11.164, 36.222]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.deep_hot,lowering,0,1,ms,30,unsplit,1.806,unsplit,1.852,"[-0.061, 0.201]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.deep_hot,writeback,1,3,ms,30,unsplit,1.852,unsplit,1.832,"[-0.105, 0.046]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.deep_hot,combined,0,3,ms,30,unsplit,1.806,unsplit,1.832,"[-0.057, 0.146]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.deep_hot,writeback_cache_off,0,2,ms,30,unsplit,1.806,unsplit,1.779,"[-0.129, 0.093]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.deep_hot,lowering_writeback_on,2,3,ms,30,unsplit,1.779,unsplit,1.832,"[-0.006375, 0.150]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.scan_cold,lowering,0,1,ms,30,unsplit,152.342,unsplit,155.267,"[-7.726, 9.094]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.scan_cold,writeback,1,3,ms,30,unsplit,155.267,unsplit,154.591,"[-5.667, 4.454]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.scan_cold,combined,0,3,ms,30,unsplit,152.342,unsplit,154.591,"[-7.601, 7.916]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.scan_cold,writeback_cache_off,0,2,ms,30,unsplit,152.342,unsplit,146.741,"[-17.641, 3.577]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.scan_cold,lowering_writeback_on,2,3,ms,30,unsplit,146.741,unsplit,154.591,"[-0.795, 15.516]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.scan_hot,lowering,0,1,ms,30,unsplit,125.606,unsplit,124.718,"[-8.730, 4.320]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.scan_hot,writeback,1,3,ms,30,unsplit,124.718,unsplit,124.546,"[-2.976, 7.315]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.scan_hot,combined,0,3,ms,30,unsplit,125.606,unsplit,124.546,"[-9.516, 7.048]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.scan_hot,writeback_cache_off,0,2,ms,30,unsplit,125.606,unsplit,124.234,"[-11.794, 7.030]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.scan_hot,lowering_writeback_on,2,3,ms,30,unsplit,124.234,unsplit,124.546,"[-6.047, 10.374]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.read_cold,lowering,0,1,ms,30,unsplit,1000.984,unsplit,998.620,"[-45.938, 85.375]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.read_cold,writeback,1,3,ms,30,unsplit,998.620,unsplit,878.817,"[-200.173, -85.024]",缩短 12.0%
+lowering-writeback-final-formal-20261016,cli,meta.read_cold,combined,0,3,ms,30,unsplit,1000.984,unsplit,878.817,"[-161.388, -65.970]",缩短 12.2%
+lowering-writeback-final-formal-20261016,cli,meta.read_cold,writeback_cache_off,0,2,ms,30,unsplit,1000.984,unsplit,943.908,"[-114.806, 8.295]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.read_cold,lowering_writeback_on,2,3,ms,30,unsplit,943.908,unsplit,878.817,"[-109.094, -5.903]",缩短 6.9%
+lowering-writeback-final-formal-20261016,cli,meta.read_hot,lowering,0,1,ms,30,unsplit,639.735,unsplit,652.427,"[-35.025, 56.273]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.read_hot,writeback,1,3,ms,30,unsplit,652.427,unsplit,543.473,"[-143.460, -71.372]",缩短 16.7%
+lowering-writeback-final-formal-20261016,cli,meta.read_hot,combined,0,3,ms,30,unsplit,639.735,unsplit,543.473,"[-146.468, -65.124]",缩短 15.0%
+lowering-writeback-final-formal-20261016,cli,meta.read_hot,writeback_cache_off,0,2,ms,30,unsplit,639.735,unsplit,566.992,"[-125.770, -26.417]",缩短 11.4%
+lowering-writeback-final-formal-20261016,cli,meta.read_hot,lowering_writeback_on,2,3,ms,30,unsplit,566.992,unsplit,543.473,"[-55.280, 5.148]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.open_stat_hot,lowering,0,1,ms,30,unsplit,167.077,unsplit,0.922,"[-181.950, -163.022]",缩短 99.4%
+lowering-writeback-final-formal-20261016,cli,meta.open_stat_hot,writeback,1,3,ms,30,unsplit,0.922,unsplit,0.912,"[-0.053, 0.028]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.open_stat_hot,combined,0,3,ms,30,unsplit,167.077,unsplit,0.912,"[-181.955, -163.033]",缩短 99.5%
+lowering-writeback-final-formal-20261016,cli,meta.open_stat_hot,writeback_cache_off,0,2,ms,30,unsplit,167.077,unsplit,130.888,"[-51.915, -29.374]",缩短 21.7%
+lowering-writeback-final-formal-20261016,cli,meta.open_stat_hot,lowering_writeback_on,2,3,ms,30,unsplit,130.888,unsplit,0.912,"[-134.490, -128.000]",缩短 99.3%
+lowering-writeback-final-formal-20261016,cli,meta.open_read_hot,lowering,0,1,ms,30,unsplit,203.756,unsplit,206.495,"[-15.659, 7.650]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.open_read_hot,writeback,1,3,ms,30,unsplit,206.495,unsplit,169.516,"[-42.928, -30.679]",缩短 17.9%
+lowering-writeback-final-formal-20261016,cli,meta.open_read_hot,combined,0,3,ms,30,unsplit,203.756,unsplit,169.516,"[-52.938, -33.100]",缩短 16.8%
+lowering-writeback-final-formal-20261016,cli,meta.open_read_hot,writeback_cache_off,0,2,ms,30,unsplit,203.756,unsplit,170.632,"[-51.752, -26.936]",缩短 16.3%
+lowering-writeback-final-formal-20261016,cli,meta.open_read_hot,lowering_writeback_on,2,3,ms,30,unsplit,170.632,unsplit,169.516,"[-8.551, 0.831]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.sparse_cold,lowering,0,1,ms,30,unsplit,0.223,unsplit,0.228,"[-0.013, 0.023]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.sparse_cold,writeback,1,3,ms,30,unsplit,0.228,unsplit,0.223,"[-0.027, 0.009979]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.sparse_cold,combined,0,3,ms,30,unsplit,0.223,unsplit,0.223,"[-0.016, 0.007833]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.sparse_cold,writeback_cache_off,0,2,ms,30,unsplit,0.223,unsplit,0.234,"[-0.007583, 0.020]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.sparse_cold,lowering_writeback_on,2,3,ms,30,unsplit,0.234,unsplit,0.223,"[-0.018, -0.003063]",缩短 4.6%
+lowering-writeback-final-formal-20261016,cli,meta.sparse_hot,lowering,0,1,ms,30,unsplit,0.001000,unsplit,0.001000,"[-0.000042, 0.000042]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.sparse_hot,writeback,1,3,ms,30,unsplit,0.001000,unsplit,0.000959,"[-0.000042, 0.000041]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.sparse_hot,combined,0,3,ms,30,unsplit,0.001000,unsplit,0.000959,"[-0.000083, 0.000022]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.sparse_hot,writeback_cache_off,0,2,ms,30,unsplit,0.001000,unsplit,0.000979,"[-0.000062, 0.000084]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.sparse_hot,lowering_writeback_on,2,3,ms,30,unsplit,0.000979,unsplit,0.000959,"[-0.000104, 0.000041]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_expired,lowering,0,1,ms,30,unsplit,154.133,unsplit,150.730,"[-7.801, 1.116]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_expired,writeback,1,3,ms,30,unsplit,150.730,unsplit,150.689,"[-3.917, 7.414]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_expired,combined,0,3,ms,30,unsplit,154.133,unsplit,150.689,"[-7.775, 4.112]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_expired,writeback_cache_off,0,2,ms,30,unsplit,154.133,unsplit,152.156,"[-6.504, 8.489]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.stat_expired,lowering_writeback_on,2,3,ms,30,unsplit,152.156,unsplit,150.689,"[-11.599, 6.089]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_pair,lowering,0,1,ms,30,unsplit,0.276,unsplit,0.279,"[-0.014, 0.026]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_pair,writeback,1,3,ms,30,unsplit,0.279,unsplit,0.263,"[-0.030, 0.004708]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_pair,combined,0,3,ms,30,unsplit,0.276,unsplit,0.263,"[-0.026, 0.012]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_pair,writeback_cache_off,0,2,ms,30,unsplit,0.276,unsplit,0.259,"[-0.032, 0.020]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_pair,lowering_writeback_on,2,3,ms,30,unsplit,0.259,unsplit,0.263,"[-0.022, 0.021]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_random,lowering,0,1,ms,30,unsplit,2.440,unsplit,2.431,"[-0.131, 0.025]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_random,writeback,1,3,ms,30,unsplit,2.431,unsplit,2.404,"[-0.069, 0.066]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_random,combined,0,3,ms,30,unsplit,2.440,unsplit,2.404,"[-0.154, 0.046]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_random,writeback_cache_off,0,2,ms,30,unsplit,2.440,unsplit,2.386,"[-0.167, 0.015]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_random,lowering_writeback_on,2,3,ms,30,unsplit,2.386,unsplit,2.404,"[-0.048, 0.137]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_stride,lowering,0,1,ms,30,unsplit,2.387,unsplit,2.409,"[-0.077, 0.061]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_stride,writeback,1,3,ms,30,unsplit,2.409,unsplit,2.383,"[-0.075, 0.056]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_stride,combined,0,3,ms,30,unsplit,2.387,unsplit,2.383,"[-0.081, 0.051]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_stride,writeback_cache_off,0,2,ms,30,unsplit,2.387,unsplit,2.365,"[-0.094, 0.023]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_stride,lowering_writeback_on,2,3,ms,30,unsplit,2.365,unsplit,2.383,"[-0.034, 0.081]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_dense,lowering,0,1,ms,30,unsplit,143.907,unsplit,143.564,"[-4.860, 2.371]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_dense,writeback,1,3,ms,30,unsplit,143.564,unsplit,143.304,"[-2.828, 2.801]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_dense,combined,0,3,ms,30,unsplit,143.907,unsplit,143.304,"[-3.808, 2.883]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_dense,writeback_cache_off,0,2,ms,30,unsplit,143.907,unsplit,144.591,"[-3.188, 6.367]",未检出差异
+lowering-writeback-final-formal-20261016,cli,meta.wide_dense,lowering_writeback_on,2,3,ms,30,unsplit,144.591,unsplit,143.304,"[-5.892, 1.635]",未检出差异
+lowering-writeback-final-formal-20261016,cli,defer.write_ms,lowering,0,1,ms,30,unsplit,7.724,unsplit,7.689,"[-0.337, 0.347]",未检出差异
+lowering-writeback-final-formal-20261016,cli,defer.write_ms,writeback,1,3,ms,30,unsplit,7.689,unsplit,7.108,"[-1.027, -0.222]",缩短 7.6%
+lowering-writeback-final-formal-20261016,cli,defer.write_ms,combined,0,3,ms,30,unsplit,7.724,unsplit,7.108,"[-1.112, -0.180]",缩短 8.0%
+lowering-writeback-final-formal-20261016,cli,defer.write_ms,writeback_cache_off,0,2,ms,30,unsplit,7.724,unsplit,7.923,"[-0.614, 1.000]",未检出差异
+lowering-writeback-final-formal-20261016,cli,defer.write_ms,lowering_writeback_on,2,3,ms,30,unsplit,7.923,unsplit,7.108,"[-1.556, -0.128]",缩短 10.3%
+lowering-writeback-final-formal-20261016,cli,defer.sync_ms,lowering,0,1,ms,30,unsplit,0.001521,unsplit,0.001500,"[-0.000208, 0.000083]",未检出差异
+lowering-writeback-final-formal-20261016,cli,defer.sync_ms,writeback,1,3,ms,30,unsplit,0.001500,unsplit,0.670,"[0.609, 0.819]",增加 44595.8%
+lowering-writeback-final-formal-20261016,cli,defer.sync_ms,combined,0,3,ms,30,unsplit,0.001521,unsplit,0.670,"[0.609, 0.819]",增加 43993.2%
+lowering-writeback-final-formal-20261016,cli,defer.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001521,unsplit,0.719,"[0.633, 0.810]",增加 47211.7%
+lowering-writeback-final-formal-20261016,cli,defer.sync_ms,lowering_writeback_on,2,3,ms,30,unsplit,0.719,unsplit,0.670,"[-0.181, 0.158]",未检出差异
+lowering-writeback-final-formal-20261016,cli,defer.total_ms,lowering,0,1,ms,30,unsplit,7.725,unsplit,7.691,"[-0.337, 0.347]",未检出差异
+lowering-writeback-final-formal-20261016,cli,defer.total_ms,writeback,1,3,ms,30,unsplit,7.691,unsplit,7.611,"[-0.395, 0.763]",未检出差异
+lowering-writeback-final-formal-20261016,cli,defer.total_ms,combined,0,3,ms,30,unsplit,7.725,unsplit,7.611,"[-0.423, 0.797]",未检出差异
+lowering-writeback-final-formal-20261016,cli,defer.total_ms,writeback_cache_off,0,2,ms,30,unsplit,7.725,unsplit,8.529,"[-0.085, 1.729]",未检出差异
+lowering-writeback-final-formal-20261016,cli,defer.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,8.529,unsplit,7.611,"[-1.693, 0.038]",未检出差异
+lowering-writeback-final-formal-20261016,cli,tiny.write_ms,lowering,0,1,ms,30,unsplit,72.688,unsplit,71.333,"[-4.229, 7.754]",未检出差异
+lowering-writeback-final-formal-20261016,cli,tiny.write_ms,writeback,1,3,ms,30,unsplit,71.333,unsplit,82.031,"[2.762, 14.816]",增加 15.0%
+lowering-writeback-final-formal-20261016,cli,tiny.write_ms,combined,0,3,ms,30,unsplit,72.688,unsplit,82.031,"[6.075, 14.391]",增加 12.9%
+lowering-writeback-final-formal-20261016,cli,tiny.write_ms,writeback_cache_off,0,2,ms,30,unsplit,72.688,unsplit,84.538,"[7.323, 18.570]",增加 16.3%
+lowering-writeback-final-formal-20261016,cli,tiny.write_ms,lowering_writeback_on,2,3,ms,30,unsplit,84.538,unsplit,82.031,"[-8.879, 2.799]",未检出差异
+lowering-writeback-final-formal-20261016,cli,tiny.sync_ms,lowering,0,1,ms,30,unsplit,0.001583,unsplit,0.001625,"[-0.000063, 0.000208]",未检出差异
+lowering-writeback-final-formal-20261016,cli,tiny.sync_ms,writeback,1,3,ms,30,unsplit,0.001625,unsplit,7.414,"[6.173, 7.889]",增加 456116.6%
+lowering-writeback-final-formal-20261016,cli,tiny.sync_ms,combined,0,3,ms,30,unsplit,0.001583,unsplit,7.414,"[6.173, 7.889]",增加 468220.9%
+lowering-writeback-final-formal-20261016,cli,tiny.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001583,unsplit,7.005,"[5.850, 8.160]",增加 442402.4%
+lowering-writeback-final-formal-20261016,cli,tiny.sync_ms,lowering_writeback_on,2,3,ms,30,unsplit,7.005,unsplit,7.414,"[-1.517, 1.680]",未检出差异
+lowering-writeback-final-formal-20261016,cli,tiny.total_ms,lowering,0,1,ms,30,unsplit,72.690,unsplit,71.334,"[-4.229, 7.756]",未检出差异
+lowering-writeback-final-formal-20261016,cli,tiny.total_ms,writeback,1,3,ms,30,unsplit,71.334,unsplit,90.472,"[10.827, 21.940]",增加 26.8%
+lowering-writeback-final-formal-20261016,cli,tiny.total_ms,combined,0,3,ms,30,unsplit,72.690,unsplit,90.472,"[13.827, 21.597]",增加 24.5%
+lowering-writeback-final-formal-20261016,cli,tiny.total_ms,writeback_cache_off,0,2,ms,30,unsplit,72.690,unsplit,93.130,"[14.075, 26.173]",增加 28.1%
+lowering-writeback-final-formal-20261016,cli,tiny.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,93.130,unsplit,90.472,"[-8.757, 3.379]",未检出差异
+lowering-writeback-final-formal-20261016,cli,boundary.write_ms,lowering,0,1,ms,30,unsplit,110.860,unsplit,109.569,"[-7.585, 4.568]",未检出差异
+lowering-writeback-final-formal-20261016,cli,boundary.write_ms,writeback,1,3,ms,30,unsplit,109.569,unsplit,120.412,"[4.292, 20.217]",增加 9.9%
+lowering-writeback-final-formal-20261016,cli,boundary.write_ms,combined,0,3,ms,30,unsplit,110.860,unsplit,120.412,"[1.736, 19.533]",增加 8.6%
+lowering-writeback-final-formal-20261016,cli,boundary.write_ms,writeback_cache_off,0,2,ms,30,unsplit,110.860,unsplit,127.318,"[8.030, 28.129]",增加 14.8%
+lowering-writeback-final-formal-20261016,cli,boundary.write_ms,lowering_writeback_on,2,3,ms,30,unsplit,127.318,unsplit,120.412,"[-18.663, 2.940]",未检出差异
+lowering-writeback-final-formal-20261016,cli,boundary.sync_ms,lowering,0,1,ms,30,unsplit,0.001750,unsplit,0.001709,"[-0.000208, 0.000146]",未检出差异
+lowering-writeback-final-formal-20261016,cli,boundary.sync_ms,writeback,1,3,ms,30,unsplit,0.001709,separated-clusters,16/30：1.186；14/30：2.820,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,boundary.sync_ms,combined,0,3,ms,30,unsplit,0.001750,separated-clusters,16/30：1.186；14/30：2.820,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,boundary.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001750,separated-clusters,16/30：1.075；14/30：2.858,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,boundary.sync_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,16/30：1.075；14/30：2.858,separated-clusters,16/30：1.186；14/30：2.820,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,boundary.total_ms,lowering,0,1,ms,30,unsplit,110.862,unsplit,109.571,"[-7.585, 4.567]",未检出差异
+lowering-writeback-final-formal-20261016,cli,boundary.total_ms,writeback,1,3,ms,30,unsplit,109.571,unsplit,122.309,"[6.222, 21.825]",增加 11.6%
+lowering-writeback-final-formal-20261016,cli,boundary.total_ms,combined,0,3,ms,30,unsplit,110.862,unsplit,122.309,"[3.895, 20.994]",增加 10.3%
+lowering-writeback-final-formal-20261016,cli,boundary.total_ms,writeback_cache_off,0,2,ms,30,unsplit,110.862,unsplit,128.845,"[9.719, 31.193]",增加 16.2%
+lowering-writeback-final-formal-20261016,cli,boundary.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,128.845,unsplit,122.309,"[-19.513, 2.566]",未检出差异
+lowering-writeback-final-formal-20261016,cli,pressure.write_ms,lowering,0,1,ms,30,separated-clusters,24/30：16.919；6/30：30.604,unsplit,18.705,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.write_ms,writeback,1,3,ms,30,unsplit,18.705,separated-clusters,18/30：16.285；12/30：34.204,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.write_ms,combined,0,3,ms,30,separated-clusters,24/30：16.919；6/30：30.604,separated-clusters,18/30：16.285；12/30：34.204,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.write_ms,writeback_cache_off,0,2,ms,30,separated-clusters,24/30：16.919；6/30：30.604,separated-clusters,24/30：18.267；6/30：44.452,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.write_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,24/30：18.267；6/30：44.452,separated-clusters,18/30：16.285；12/30：34.204,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.sync_ms,lowering,0,1,ms,30,unsplit,0.001854,unsplit,0.001917,"[-0.000208, 0.000250]",未检出差异
+lowering-writeback-final-formal-20261016,cli,pressure.sync_ms,writeback,1,3,ms,30,unsplit,0.001917,separated-clusters,24/30：0.569；6/30：5.377,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.sync_ms,combined,0,3,ms,30,unsplit,0.001854,separated-clusters,24/30：0.569；6/30：5.377,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001854,separated-clusters,22/30：0.630；8/30：1.409,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.sync_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,22/30：0.630；8/30：1.409,separated-clusters,24/30：0.569；6/30：5.377,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.total_ms,lowering,0,1,ms,30,separated-clusters,24/30：16.921；6/30：30.606,unsplit,18.707,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.total_ms,writeback,1,3,ms,30,unsplit,18.707,unsplit,22.543,"[-2.429, 10.621]",未检出差异
+lowering-writeback-final-formal-20261016,cli,pressure.total_ms,combined,0,3,ms,30,separated-clusters,24/30：16.921；6/30：30.606,unsplit,22.543,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.total_ms,writeback_cache_off,0,2,ms,30,separated-clusters,24/30：16.921；6/30：30.606,separated-clusters,24/30：19.215；6/30：45.379,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,pressure.total_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,24/30：19.215；6/30：45.379,unsplit,22.543,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,overwrite.write_ms,lowering,0,1,ms,30,unsplit,203.423,separated-clusters,25/30：197.933；5/30：330.444,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,overwrite.write_ms,writeback,1,3,ms,30,separated-clusters,25/30：197.933；5/30：330.444,unsplit,193.641,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,overwrite.write_ms,combined,0,3,ms,30,unsplit,203.423,unsplit,193.641,"[-35.258, 3.129]",未检出差异
+lowering-writeback-final-formal-20261016,cli,overwrite.write_ms,writeback_cache_off,0,2,ms,30,unsplit,203.423,unsplit,209.139,"[-19.294, 28.285]",未检出差异
+lowering-writeback-final-formal-20261016,cli,overwrite.write_ms,lowering_writeback_on,2,3,ms,30,unsplit,209.139,unsplit,193.641,"[-38.194, 0.910]",未检出差异
+lowering-writeback-final-formal-20261016,cli,overwrite.sync_ms,lowering,0,1,ms,30,unsplit,0.001896,unsplit,0.002000,"[-0.000103, 0.000208]",未检出差异
+lowering-writeback-final-formal-20261016,cli,overwrite.sync_ms,writeback,1,3,ms,30,unsplit,0.002000,unsplit,5.860,"[5.221, 6.540]",增加 292913.5%
+lowering-writeback-final-formal-20261016,cli,overwrite.sync_ms,combined,0,3,ms,30,unsplit,0.001896,unsplit,5.860,"[5.221, 6.541]",增加 308986.0%
+lowering-writeback-final-formal-20261016,cli,overwrite.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001896,unsplit,6.213,"[5.573, 6.873]",增加 327594.3%
+lowering-writeback-final-formal-20261016,cli,overwrite.sync_ms,lowering_writeback_on,2,3,ms,30,unsplit,6.213,unsplit,5.860,"[-1.336, 0.573]",未检出差异
+lowering-writeback-final-formal-20261016,cli,overwrite.total_ms,lowering,0,1,ms,30,unsplit,203.425,separated-clusters,25/30：197.934；5/30：330.447,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,overwrite.total_ms,writeback,1,3,ms,30,separated-clusters,25/30：197.934；5/30：330.447,unsplit,198.265,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,overwrite.total_ms,combined,0,3,ms,30,unsplit,203.425,unsplit,198.265,"[-29.651, 9.102]",未检出差异
+lowering-writeback-final-formal-20261016,cli,overwrite.total_ms,writeback_cache_off,0,2,ms,30,unsplit,203.425,unsplit,214.769,"[-13.306, 39.941]",未检出差异
+lowering-writeback-final-formal-20261016,cli,overwrite.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,214.769,unsplit,198.265,"[-42.336, 1.525]",未检出差异
+lowering-writeback-final-formal-20261016,cli,stream.write_ms,lowering,0,1,ms,30,unsplit,311.926,unsplit,310.776,"[-39.772, 39.411]",未检出差异
+lowering-writeback-final-formal-20261016,cli,stream.write_ms,writeback,1,3,ms,30,unsplit,310.776,unsplit,4.813,"[-345.735, -290.782]",缩短 98.5%
+lowering-writeback-final-formal-20261016,cli,stream.write_ms,combined,0,3,ms,30,unsplit,311.926,unsplit,4.813,"[-345.819, -298.625]",缩短 98.5%
+lowering-writeback-final-formal-20261016,cli,stream.write_ms,writeback_cache_off,0,2,ms,30,unsplit,311.926,separated-clusters,24/30：4.812；6/30：10.758,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,stream.write_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,24/30：4.812；6/30：10.758,unsplit,4.813,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,stream.sync_ms,lowering,0,1,ms,30,unsplit,0.002167,unsplit,0.002084,"[-0.000271, 0.000187]",未检出差异
+lowering-writeback-final-formal-20261016,cli,stream.sync_ms,writeback,1,3,ms,30,unsplit,0.002084,separated-clusters,10/30：0.441；20/30：2.269,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,stream.sync_ms,combined,0,3,ms,30,unsplit,0.002167,separated-clusters,10/30：0.441；20/30：2.269,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,stream.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.002167,separated-clusters,24/30：0.489；6/30：2.871,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,stream.sync_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,24/30：0.489；6/30：2.871,separated-clusters,10/30：0.441；20/30：2.269,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,stream.total_ms,lowering,0,1,ms,30,unsplit,311.928,unsplit,310.778,"[-39.772, 39.411]",未检出差异
+lowering-writeback-final-formal-20261016,cli,stream.total_ms,writeback,1,3,ms,30,unsplit,310.778,unsplit,6.579,"[-343.853, -288.712]",缩短 97.9%
+lowering-writeback-final-formal-20261016,cli,stream.total_ms,combined,0,3,ms,30,unsplit,311.928,unsplit,6.579,"[-344.450, -296.500]",缩短 97.9%
+lowering-writeback-final-formal-20261016,cli,stream.total_ms,writeback_cache_off,0,2,ms,30,unsplit,311.928,unsplit,6.339,"[-344.061, -297.405]",缩短 98.0%
+lowering-writeback-final-formal-20261016,cli,stream.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,6.339,unsplit,6.579,"[-1.039, 1.307]",未检出差异
+lowering-writeback-final-formal-20261016,cli,fsync.write_ms,lowering,0,1,ms,30,unsplit,40.170,unsplit,42.929,"[-0.966, 5.973]",未检出差异
+lowering-writeback-final-formal-20261016,cli,fsync.write_ms,writeback,1,3,ms,30,unsplit,42.929,unsplit,35.514,"[-9.472, -3.046]",缩短 17.3%
+lowering-writeback-final-formal-20261016,cli,fsync.write_ms,combined,0,3,ms,30,unsplit,40.170,unsplit,35.514,"[-7.312, -0.951]",缩短 11.6%
+lowering-writeback-final-formal-20261016,cli,fsync.write_ms,writeback_cache_off,0,2,ms,30,unsplit,40.170,unsplit,39.844,"[-5.576, 5.351]",未检出差异
+lowering-writeback-final-formal-20261016,cli,fsync.write_ms,lowering_writeback_on,2,3,ms,30,unsplit,39.844,unsplit,35.514,"[-8.353, 0.784]",未检出差异
+lowering-writeback-final-formal-20261016,cli,fsync.sync_ms,lowering,0,1,ms,30,unsplit,0.001646,unsplit,0.001646,"[-0.000187, 0.000188]",未检出差异
+lowering-writeback-final-formal-20261016,cli,fsync.sync_ms,writeback,1,3,ms,30,unsplit,0.001646,unsplit,0.173,"[0.140, 0.250]",增加 10419.2%
+lowering-writeback-final-formal-20261016,cli,fsync.sync_ms,combined,0,3,ms,30,unsplit,0.001646,unsplit,0.173,"[0.140, 0.250]",增加 10419.2%
+lowering-writeback-final-formal-20261016,cli,fsync.sync_ms,writeback_cache_off,0,2,ms,30,unsplit,0.001646,separated-clusters,24/30：0.113；6/30：0.349,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,fsync.sync_ms,lowering_writeback_on,2,3,ms,30,separated-clusters,24/30：0.113；6/30：0.349,unsplit,0.173,分离分布，不排名,分离分布，不排名
+lowering-writeback-final-formal-20261016,cli,fsync.total_ms,lowering,0,1,ms,30,unsplit,40.171,unsplit,42.931,"[-0.966, 5.973]",未检出差异
+lowering-writeback-final-formal-20261016,cli,fsync.total_ms,writeback,1,3,ms,30,unsplit,42.931,unsplit,35.699,"[-9.331, -2.898]",缩短 16.8%
+lowering-writeback-final-formal-20261016,cli,fsync.total_ms,combined,0,3,ms,30,unsplit,40.171,unsplit,35.699,"[-7.157, -0.693]",缩短 11.1%
+lowering-writeback-final-formal-20261016,cli,fsync.total_ms,writeback_cache_off,0,2,ms,30,unsplit,40.171,unsplit,40.113,"[-5.386, 5.552]",未检出差异
+lowering-writeback-final-formal-20261016,cli,fsync.total_ms,lowering_writeback_on,2,3,ms,30,unsplit,40.113,unsplit,35.699,"[-8.354, 0.843]",未检出差异
+lowering-writeback-final-formal-20261016,cli,completion_ms,lowering,0,1,ms,30,unsplit,6204.196,unsplit,6010.071,"[-353.113, 140.068]",未检出差异
+lowering-writeback-final-formal-20261016,cli,completion_ms,writeback,1,3,ms,30,unsplit,6010.071,unsplit,5260.332,"[-947.614, -514.710]",缩短 12.5%
+lowering-writeback-final-formal-20261016,cli,completion_ms,combined,0,3,ms,30,unsplit,6204.196,unsplit,5260.332,"[-1047.824, -616.902]",缩短 15.2%
+lowering-writeback-final-formal-20261016,cli,completion_ms,writeback_cache_off,0,2,ms,30,unsplit,6204.196,unsplit,5601.468,"[-824.823, -260.446]",缩短 9.7%
+lowering-writeback-final-formal-20261016,cli,completion_ms,lowering_writeback_on,2,3,ms,30,unsplit,5601.468,unsplit,5260.332,"[-559.070, -82.491]",缩短 6.1%
+lowering-writeback-final-formal-20261016,sdk,write_phases_total_ms,lowering,0,1,ms,30,unsplit,744.569,unsplit,746.964,"[-40.481, 68.934]",未检出差异
+lowering-writeback-final-formal-20261016,sdk,write_phases_total_ms,writeback,1,3,ms,30,unsplit,746.964,unsplit,443.992,"[-340.543, -257.527]",缩短 40.6%
+lowering-writeback-final-formal-20261016,sdk,write_phases_total_ms,combined,0,3,ms,30,unsplit,744.569,unsplit,443.992,"[-346.250, -230.463]",缩短 40.4%
+lowering-writeback-final-formal-20261016,sdk,write_phases_total_ms,writeback_cache_off,0,2,ms,30,unsplit,744.569,unsplit,432.062,"[-352.813, -253.371]",缩短 42.0%
+lowering-writeback-final-formal-20261016,sdk,write_phases_total_ms,lowering_writeback_on,2,3,ms,30,unsplit,432.062,unsplit,443.992,"[-20.165, 59.259]",未检出差异
+lowering-writeback-final-formal-20261016,cli,write_phases_total_ms,lowering,0,1,ms,30,unsplit,788.438,unsplit,776.688,"[-77.444, 76.375]",未检出差异
+lowering-writeback-final-formal-20261016,cli,write_phases_total_ms,writeback,1,3,ms,30,unsplit,776.688,unsplit,495.768,"[-376.735, -239.495]",缩短 36.2%
+lowering-writeback-final-formal-20261016,cli,write_phases_total_ms,combined,0,3,ms,30,unsplit,788.438,unsplit,495.768,"[-350.325, -244.476]",缩短 37.1%
+lowering-writeback-final-formal-20261016,cli,write_phases_total_ms,writeback_cache_off,0,2,ms,30,unsplit,788.438,unsplit,516.089,"[-328.907, -217.543]",缩短 34.5%
+lowering-writeback-final-formal-20261016,cli,write_phases_total_ms,lowering_writeback_on,2,3,ms,30,unsplit,516.089,unsplit,495.768,"[-70.204, 8.711]",未检出差异

@@ -1,0 +1,417 @@
+From: pVisor maintainers
+Subject: [PATCH] fuse: bound directory prefetch by useful demand
+
+Cache READINDEX rejection per connection, preserve concurrent lookup ownership,
+and admit bounded lookup prefetch only after demand for different names. Grow
+useful windows to the negotiated budget; invalidate partial images on mutation.
+
+diff --git a/fs/fuse/dir.c b/fs/fuse/dir.c
+--- a/fs/fuse/dir.c
++++ b/fs/fuse/dir.c
+@@ -269,6 +269,20 @@
+ 			fuse_advise_use_readdirplus(d_inode(parent));
+ 			dput(parent);
+ 		}
++	}
++	if (inode && test_bit(FUSE_I_PVISOR_PREFETCHED,
++			      &get_fuse_inode(inode)->state) &&
++	    test_and_clear_bit(FUSE_I_PVISOR_PREFETCHED,
++			       &get_fuse_inode(inode)->state)) {
++		struct inode *dir;
++
++		/* Only inode state is touched: directory images can be evicted. */
++		rcu_read_lock();
++		parent = READ_ONCE(entry->d_parent);
++		dir = d_inode_rcu(parent);
++		if (dir && dir->i_sb == inode->i_sb)
++			atomic_inc(&get_fuse_inode(dir)->pvisor_prefetch_hits);
++		rcu_read_unlock();
+ 	}
+ 	ret = 1;
+ out:
+diff --git a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
+@@ -197,6 +197,7 @@
+ #endif
+ 	/** Imported directory image. Directories only; NULL until first use. */
+ 	struct pvisor_dir *pvisor;
++	atomic_t pvisor_prefetch_hits;
+ 	bool pvisor_written;
+ 	/* Serializes deferred opens with release and namespace mutations. */
+ 	struct mutex pvisor_open_lock;
+@@ -217,6 +218,8 @@
+ 	FUSE_I_BTIME,
+ 	/* Wants or already has page cache IO */
+ 	FUSE_I_CACHE_IO_MODE,
++	/* Count the first access to imported metadata, including RCU walks. */
++	FUSE_I_PVISOR_PREFETCHED,
+ };
+ 
+ struct fuse_conn;
+@@ -884,6 +887,8 @@
+ 
+ 	/** Guest resolves imported directory metadata locally. */
+ 	unsigned int pvisor_meta:1;
++	/* ENOSYS disables directory images, independently of lazy open. */
++	bool pvisor_no_readindex;
+ 	struct workqueue_struct *pvisor_wb_wq;
+ 	struct delayed_work pvisor_wb_work;
+ 	spinlock_t pvisor_wb_lock;
+diff --git a/fs/fuse/inode.c b/fs/fuse/inode.c
+--- a/fs/fuse/inode.c
++++ b/fs/fuse/inode.c
+@@ -99,6 +99,7 @@
+ 	memset((void *) fi + sizeof(fi->inode), 0, sizeof(*fi) - sizeof(fi->inode));
+ 
+ 	fi->inval_mask = ~0;
++	atomic_set(&fi->pvisor_prefetch_hits, 0);
+ 	mutex_init(&fi->mutex);
+ 	mutex_init(&fi->pvisor_open_lock);
+ 	INIT_LIST_HEAD(&fi->pvisor_opens);
+diff --git a/fs/fuse/pvisor_meta.c b/fs/fuse/pvisor_meta.c
+--- a/fs/fuse/pvisor_meta.c
++++ b/fs/fuse/pvisor_meta.c
+@@ -3,8 +3,9 @@
+  * Directory image inside virtio-fs.
+  *
+  * The host publishes one merged directory page at a time. This cache answers
+- * lookup, readdir, and read-only open from that image. A name that is not in
+- * a finished image is absent. A missing page is one request of the negotiated
++ * lookup and readdir from that image. Lookup admits one bounded page only
++ * after demand for distinct names; readdir imports the complete directory.
++ * A missing name is absent only in a finished image. Pages use the negotiated
+  * FUSE budget, at most 1 MiB. File bytes and every stage change still go to
+  * the host. Rename drops the image and the next lookup uses the
+  * host, because exchanging two directories safely is the host overlay's job.
+@@ -21,6 +22,7 @@
+ #define PVISOR_VALID_SEC 86400ULL
+ /* Matches FUSE_MAX_MAX_PAGES and the host's 1 MiB request buffer. */
+ #define PVISOR_MAX_TRANSFER_PAGES 256U
++#define PVISOR_LOOKUP_PAGES 4U
+ 
+ struct pvisor_entry {
+ 	struct rb_node node;
+@@ -47,6 +49,11 @@
+ 	u64 next_offset;
+ 	u64 max_cookie;
+ 	u32 count;
++	u64 last_lookup;
++	unsigned int lookup_pages;	u32 lookup_misses;
++	u32 lookup_hits;
++	u32 lookup_entries;
++	bool lookup_seen;
+ 	bool complete;
+ 	bool passthrough;
+ 	bool loading;
+@@ -129,6 +136,7 @@
+ 	mutex_init(&created->lock);
+ 	init_waitqueue_head(&created->wait);
+ 	created->names = RB_ROOT;
++	created->lookup_pages = PVISOR_LOOKUP_PAGES;
+ 	INIT_LIST_HEAD(&created->order);
+ 
+ 	spin_lock(&fi->lock);
+@@ -247,6 +255,9 @@
+ 			fuse_change_attributes(inode, &out->attr, NULL,
+ 					       ATTR_TIMEOUT(out), attr_version);
+ 			fuse_change_entry_timeout(dentry, out);
++			clear_bit(FUSE_I_PVISOR_PREFETCHED, &fi->state);
++			/* This name was already demanded before importing its metadata. */
++			atomic_inc(&get_fuse_inode(d_inode(parent))->pvisor_prefetch_hits);
+ 			dput(dentry);
+ 			return 0;
+ 		}
+@@ -265,6 +276,7 @@
+ 	}
+ 	d_add(dentry, inode);
+ 	fuse_change_entry_timeout(dentry, out);
++	set_bit(FUSE_I_PVISOR_PREFETCHED, &get_fuse_inode(inode)->state);
+ 	dput(dentry);
+ 	return 0;
+ }
+@@ -320,7 +332,6 @@
+ {
+ 	struct fuse_mount *fm = get_fuse_mount(dir);
+ 	struct pvisor_dir *pd = get_fuse_inode(dir)->pvisor;
+-	bool have_skip = false;
+ 	u64 attr_version = fuse_get_attr_version(fm->fc);
+ 	int err = 0;
+ 
+@@ -330,7 +341,7 @@
+ 		size_t reclen = FUSE_DIRENTPLUS_SIZE(direntplus);
+ 		struct qstr name = QSTR_INIT(dirent->name, dirent->namelen);
+ 		struct pvisor_entry *entry, *existing;
+-		bool active, lookup_only;
++		bool lookup_only;
+ 
+ 		if (!dirent->namelen || dirent->namelen > FUSE_NAME_MAX ||
+ 		    reclen > len ||
+@@ -338,8 +349,6 @@
+ 			return -EIO;
+ 		body += reclen;
+ 		len -= reclen;
+-		active = skip && skip->len == name.len &&
+-			 !memcmp(skip->name, name.name, name.len);
+ 		entry = pvisor_make(dirent->name, dirent->namelen);
+ 		if (IS_ERR(entry)) {
+ 			pvisor_forget_one(fm, direntplus->entry_out.nodeid);
+@@ -363,20 +372,14 @@
+ 			mutex_unlock(&pd->lock);
+ 			pvisor_free_entry(entry);
+ 			pvisor_forget_one(fm, direntplus->entry_out.nodeid);
+-			have_skip = false;
+ 			err = -EAGAIN;
+ 			continue;
+ 		}
+ 		existing = pvisor_find(pd, &name);
+ 		if (existing) {
+-			bool pending = active && !existing->accounted;
+-
+ 			mutex_unlock(&pd->lock);
+ 			pvisor_free_entry(entry);
+-			if (pending)
+-				have_skip = true;
+-			else
+-				pvisor_forget_one(fm, direntplus->entry_out.nodeid);
++			pvisor_forget_one(fm, direntplus->entry_out.nodeid);
+ 			continue;
+ 		}
+ 		if (pvisor_insert(pd, entry)) {
+@@ -394,11 +397,10 @@
+ 			pvisor_mark(pd, &name);
+ 			continue;
+ 		}
+-
+-		if (active) {
+-			have_skip = true;
++		/* The triggering lookup alone consumes this imported reference. */
++		if (skip && skip->len == name.len &&
++		    !memcmp(skip->name, name.name, name.len))
+ 			continue;
+-		}
+ 		if (!direntplus->entry_out.nodeid) {
+ 			pvisor_mark(pd, &name);
+ 			continue;
+@@ -431,8 +433,6 @@
+ 	mutex_unlock(&pd->lock);
+ 	if (err)
+ 		return err;
+-	if (have_skip && skip)
+-		return 1;
+ 	return 0;
+ }
+ 
+@@ -463,7 +463,7 @@
+ }
+ 
+ static int pvisor_fetch(struct inode *dir, struct dentry *parent,
+-			const struct qstr *skip, struct fuse_entry_out *skipped)
++			const struct qstr *skip, unsigned int max_pages)
+ {
+ 	struct fuse_mount *fm = get_fuse_mount(dir);
+ 	struct pvisor_dir *pd = get_fuse_inode(dir)->pvisor;
+@@ -479,11 +479,16 @@
+ 	bool complete;
+ 	int err;
+ 
++	if (READ_ONCE(fm->fc->pvisor_no_readindex))
++		return -EAGAIN;
++
+ 	mutex_lock(&pd->lock);
+ 	offset = pd->next_offset;
+ 	mutex_unlock(&pd->lock);
+ 
+ 	budget = pvisor_transfer_bytes(fm->fc);
++	if (max_pages)
++		budget = min(budget, max_pages << PAGE_SHIFT);
+ 	npages = budget >> PAGE_SHIFT;
+ 	pages = kvmalloc_array(npages, sizeof(*pages), GFP_KERNEL | __GFP_ZERO);
+ 	descs = kvmalloc_array(npages, sizeof(*descs), GFP_KERNEL);
+@@ -525,6 +530,7 @@
+ 	if (res < 0) {
+ 		err = res;
+ 		if (err == -ENOSYS) {
++			WRITE_ONCE(fm->fc->pvisor_no_readindex, true);
+ 			mutex_lock(&pd->lock);
+ 			pd->passthrough = true;
+ 			pvisor_clear(fm, pd);
+@@ -552,28 +558,6 @@
+ 				  (char *)mapped + sizeof(*hdr),
+ 				  res - sizeof(*hdr), complete,
+ 				  hdr->next_offset);
+-	if (err == 1 && skipped) {
+-		struct pvisor_entry *entry;
+-		struct qstr name = *skip;
+-
+-		mutex_lock(&pd->lock);
+-		entry = pvisor_find(pd, &name);
+-		if (entry && !entry->whiteout) {
+-			skipped->nodeid = entry->nodeid;
+-			skipped->generation = entry->generation;
+-			skipped->entry_valid = PVISOR_VALID_SEC;
+-			skipped->attr_valid = PVISOR_VALID_SEC;
+-			skipped->entry_valid_nsec = 0;
+-			skipped->attr_valid_nsec = 0;
+-			skipped->attr = entry->attr;
+-			err = 0;
+-		} else if (pd->passthrough) {
+-			err = -EAGAIN;
+-		} else {
+-			err = -EIO;
+-		}
+-		mutex_unlock(&pd->lock);
+-	}
+ out:
+ 	if (mapped)
+ 		vunmap(mapped);
+@@ -585,21 +569,23 @@
+ {
+ 	struct pvisor_dir *pd;
+ 	struct pvisor_entry *found;
+-	int pages = 0;
++	unsigned int pages;
++	u32 hits, entries;
++	bool fetched = false;
+ 	int err = -EAGAIN;
+ 
+ 	*inode = NULL;
+-	if (!get_fuse_conn(dir)->pvisor_meta)
++	if (!get_fuse_conn(dir)->pvisor_meta ||
++	    READ_ONCE(get_fuse_conn(dir)->pvisor_no_readindex))
+ 		return -EAGAIN;
+ 	pd = pvisor_prepare(dir);
+-	if (IS_ERR(pd))
+-		return PTR_ERR(pd);
+-	if (!pd)
++	if (IS_ERR_OR_NULL(pd))
+ 		return -EAGAIN;
+ 
+ 	mutex_lock(&pd->lock);
+ 	for (;;) {
+-		if (pd->passthrough) {
++		/* An in-flight import still owns its unaccounted lookup refs. */
++		if (pd->passthrough || pd->loading) {
+ 			err = -EAGAIN;
+ 			break;
+ 		}
+@@ -623,6 +609,14 @@
+ 				err = -EAGAIN;
+ 				break;
+ 			}
++			if (invalid_nodeid(found->nodeid) ||
++			    fuse_invalid_attr(&found->attr)) {
++				pvisor_forget_one(get_fuse_mount(dir), found->nodeid);
++				found->accounted = true;
++				err = -EIO;
++				break;
++			}
++			memset(outarg, 0, sizeof(*outarg));
+ 			outarg->nodeid = found->nodeid;
+ 			outarg->generation = found->generation;
+ 			outarg->entry_valid = PVISOR_VALID_SEC;
+@@ -646,42 +640,44 @@
+ 			err = 0;
+ 			break;
+ 		}
+-		if (pages >= PVISOR_MAX_PAGES) {
+-			err = -EAGAIN;
++		if (fetched || !pd->lookup_pages)
+ 			break;
++		/* Hash collisions only defer prefetch; names still use real LOOKUP. */
++		if (pd->lookup_seen && pd->last_lookup == entry->d_name.hash_len)
++			break;
++		pd->lookup_seen = true;
++		pd->last_lookup = entry->d_name.hash_len;
++		/* Directory size is only an admission hint, never a name count. */
++		if (++pd->lookup_misses <
++		    clamp_t(loff_t, i_size_read(dir) >> 10, 4, 64))
++			break;
++		hits = atomic_read(&get_fuse_inode(dir)->pvisor_prefetch_hits);
++		/* Stop sparse/strided access before growing a mostly unused window. */
++		if (pd->lookup_entries &&
++		    hits - pd->lookup_hits < max(1U, pd->lookup_entries * 3 / 4)) {
++			pd->lookup_pages = 0;
++			break;
+ 		}
+-		pvisor_wait_load(pd);
+-		if (pd->loading)
+-			continue;
++		entries = pd->count;
++		pages = pd->lookup_pages;
++		pd->lookup_pages = 0;
+ 		pd->loading = true;
+ 		mutex_unlock(&pd->lock);
+-		memset(outarg, 0, sizeof(*outarg));
+-		err = pvisor_fetch(dir, entry->d_parent, &entry->d_name, outarg);
++		err = pvisor_fetch(dir, entry->d_parent, &entry->d_name, pages);
+ 		mutex_lock(&pd->lock);
+ 		pd->loading = false;
+ 		wake_up_all(&pd->wait);
+-		pages++;
+-		if (!err && outarg->nodeid) {
+-			*inode = fuse_iget(dir->i_sb, outarg->nodeid,
+-					   (int)outarg->generation, &outarg->attr,
+-					   ATTR_TIMEOUT(outarg),
+-					   fuse_get_attr_version(get_fuse_conn(dir)));
+-			if (!*inode) {
+-				pvisor_forget_one(get_fuse_mount(dir), outarg->nodeid);
+-				found = pvisor_find(pd, &entry->d_name);
+-				if (found)
+-					found->accounted = true;
+-				err = -ENOMEM;
+-			} else {
+-				found = pvisor_find(pd, &entry->d_name);
+-				if (found) {
+-					found->accounted = true;
+-				}
+-			}
+-			break;
+-		}
++		fetched = true;
+ 		if (err)
+ 			break;
++		found = pvisor_find(pd, &entry->d_name);
++		/* Grow only when the previous window contained demanded metadata. */
++		if (found && !found->lookup_only) {
++			pd->lookup_pages = PVISOR_MAX_TRANSFER_PAGES;
++			pd->lookup_entries = pd->count - entries;
++			pd->lookup_hits = hits;
++		}
++		err = -EAGAIN;
+ 	}
+ 	mutex_unlock(&pd->lock);
+ 	return err;
+@@ -706,6 +702,13 @@
+ 		mutex_unlock(&pd->lock);
+ 		return;
+ 	}
++	/* Namespace changes invalidate offsets in an unfinished host snapshot. */
++	if (!pd->complete) {
++		pd->passthrough = true;
++		pvisor_clear(get_fuse_mount(dir), pd);
++		mutex_unlock(&pd->lock);
++		return;
++	}
+ 	entry = pvisor_find(pd, name);
+ 	if (!entry) {
+ 		entry = pvisor_make(name->name, name->len);
+@@ -781,7 +784,8 @@
+ 	int pages = 0;
+ 	int err = 0;
+ 
+-	if (!get_fuse_conn(inode)->pvisor_meta)
++	if (!get_fuse_conn(inode)->pvisor_meta ||
++	    READ_ONCE(get_fuse_conn(inode)->pvisor_no_readindex))
+ 		return -EAGAIN;
+ 	pd = pvisor_prepare(inode);
+ 	if (IS_ERR(pd))
+@@ -798,7 +802,7 @@
+ 			continue;
+ 		pd->loading = true;
+ 		mutex_unlock(&pd->lock);
+-		err = pvisor_fetch(inode, file->f_path.dentry, NULL, NULL);
++		err = pvisor_fetch(inode, file->f_path.dentry, NULL, 0);
+ 		mutex_lock(&pd->lock);
+ 		pd->loading = false;
+ 		wake_up_all(&pd->wait);

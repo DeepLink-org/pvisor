@@ -703,6 +703,97 @@ campaign; retain slow valid samples. Profile timings stay separate. Reports
 remain engineering evidence under `.data/`, with paired bootstrap intervals
 and explicit separated clusters; no whole-Agent, cold-disk or KVM claim.
 
+For a kernel-only regression fix, freeze a new prepared directory (keep the
+old one intact), and pass `--baseline-firmware /absolute/old/libkrunfw.5.dylib`
+to `run`. Both arms then use guest cache 1, the same prepared SDK/CLI/payload
+and inputs; only the firmware path differs. The report labels the arms and
+checks the old firmware hash before/after. Run preflight, formal sampling and
+separate profiles in distinct `.data/guest-cache-*` output directories.
+
+The demand-driven fix and its explicit stat-only tradeoff are recorded in
+[GUEST_CACHE_DEMAND_REPORT.md](GUEST_CACHE_DEMAND_REPORT.md).
+
+The adaptive policy and its remaining costs are recorded in
+[GUEST_CACHE_ADAPTIVE_REPORT.md](GUEST_CACHE_ADAPTIVE_REPORT.md). It is compared
+in one three-arm cohort (eager, scan-only, adaptive), with all guest caches enabled. It adds two distant names, 32 random
+names, 32 strided names and all 2048 names in independent wide directories.
+Freeze the updated guest/harness/fixture and both reference libraries first;
+run the same command with `--samples 1 --warmups 0` for preflight, then defaults
+for 3 warmups/30 paired rounds; counters use a separate output and `--profiles`:
+
+```sh
+python3 benchmark/pvisor/guest_cache_adaptive.py \
+  --prepared benchmark/pvisor/.data/guest-cache-adaptive-build-new \
+  --eager /absolute/eager/libkrunfw.5.dylib \
+  --scan /absolute/scan-only/libkrunfw.5.dylib \
+  --output benchmark/pvisor/.data/guest-cache-adaptive-formal-new
+```
+
+### Lowering and cross-file writeback
+
+See [the measured technical report](LOWERING_WRITEBACK_REPORT.md),
+[paired comparisons](lowering-writeback-summary.csv) and
+[independent request counts](lowering-writeback-requests.csv).
+
+`guest_lowering_writeback.py` serves B-FS-ENG with four frozen switch arms:
+guest cache/writeback `0/0`, `1/0`, `0/1`, `1/1`. SDK Immutable shares and ordinary
+`--safe` Mutable workspaces remain separate cohorts. The guest runs the 17
+metadata/read phases followed by seven write shapes: defer, tiny, boundary,
+pressure, repeated overwrite, single-fd 1 KiB stream, and per-file fsync.
+Write/close, subsequent syncfs, their contiguous total, and complete VM-task
+time have different boundaries. Full guest/host byte checks and final CLI
+Bundle validation precede acceptance. This is an engineering report, not a
+whole-Agent or cross-runtime ranking.
+
+Preparation reuses an existing verified guest-cache SDK/CLI/source receipt;
+it rejects host production-source changes. The retained patch-consolidation
+equivalence manifest binds the current merged patch to the original firmware
+source chain. Original firmware receipts stay unchanged. The prepared input is
+an independent-inode APFS COW copy, and the current guest is compiled from its
+frozen source. On macOS, `zstd`, the Rust musl target and existing signed release
+binaries are required.
+
+```sh
+python3 benchmark/pvisor/guest_lowering_writeback.py prepare \
+  --reuse /absolute/verified/guest-cache-prepared \
+  --equivalence /absolute/patch-consolidation/equivalence.json \
+  --output benchmark/pvisor/.data/lowering-writeback-build-new
+python3 benchmark/pvisor/.data/lowering-writeback-build-new/harness/guest_lowering_writeback.py run \
+  --prepared benchmark/pvisor/.data/lowering-writeback-build-new \
+  --output benchmark/pvisor/.data/lowering-writeback-preflight-new --samples 1 --warmups 0
+# Finish builds/tests, then use a fresh output with defaults: 3 warmups/30 rounds.
+python3 benchmark/pvisor/lowering_writeback_guard.py \
+  --prepared benchmark/pvisor/.data/lowering-writeback-build-new \
+  --output benchmark/pvisor/.data/lowering-writeback-formal-new
+# Only after formal timing ends; profile times never enter performance statistics.
+python3 benchmark/pvisor/lowering_writeback_guard.py \
+  --prepared benchmark/pvisor/.data/lowering-writeback-build-new \
+  --output benchmark/pvisor/.data/lowering-writeback-profiles-new --profiles
+just test-py benchmark/pvisor/test_guest_lowering_writeback.py
+just test-py benchmark/pvisor/test_lowering_writeback_guard.py
+```
+
+The 264-task formal cohort shuffles all eight conditions each round with seed
+20261019. Every valid slow result remains; each paired difference uses 5,000
+bootstrap resamples and the existing separated-cluster rule. There is no host
+CPU affinity/cgroup or host-wide quiet guarantee. Preserve the existing Host
+listener. The 48-task diagnostic cohort fixes guest cache to 1 and measures
+writeback off/on, using empty/prime-only differences for request attribution.
+The disk wrapper loads the frozen harness, requires 5 GiB before each task,
+and samples free space every 0.2 seconds outside the VM process. Below 1 GiB it
+interrupts its own coordinator so the existing owned-child cleanup runs;
+admission/critical failures invalidate the entire cohort. Its source receipt
+and full disk observations are retained beside the campaign. Failed cohorts
+are never resumed or pooled with replacements.
+
+Successful stages, owned run storage and config trees are compressed after
+task timing, retaining bytes, links, modes, ownership, nanosecond timestamps and
+extended attributes in verified PAX/zstd archives; their member manifests and
+SHA-256 remain beside readable logs and CLI Bundles. Failed cases keep their
+original trees. No user or shared caches are pruned. Replaying metadata stored
+in custom PAX fields requires restoring those fields as well as file contents;
+the existing snapshot restore helper uses Linux xattr setters.
+
 ## Linux execution-snapshot memory
 
 `vm_memory.py` serves B-VM-MEMORY through the current Job `suspend`/`resume` API. Prepare a small rootfs and compile `memory_probe.rs` into `/bench/memory-probe` with the Rust musl target. Keep the source, compiler command and rootfs manifest under `.data/`. The probe touches and checks every byte of repeated or deterministic random private memory, and verifies the same execution token and checksum after restore.

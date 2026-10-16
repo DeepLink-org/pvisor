@@ -30,8 +30,9 @@ from publication import distribution
 ROOT=Path(__file__).resolve().parents[2]
 HERE=Path(__file__).resolve().parent
 PHASES=('stat_cold','stat_hot','deep_cold','deep_hot','scan_cold','scan_hot',
-        'read_cold','read_hot','open_stat_hot','open_read_hot','sparse_cold','sparse_hot','stat_expired')
-MODES=('empty','stat-prime','stat','expired','open-prime','open','read-prime','openread','sparse')
+        'read_cold','read_hot','open_stat_hot','open_read_hot','sparse_cold','sparse_hot','stat_expired',
+        'wide_pair','wide_random','wide_stride','wide_dense')
+MODES=('empty','stat-prime','stat','expired','open-prime','open','read-prime','openread','sparse','pair','random','stride','dense','unused')
 
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def save(path,value):path.write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
@@ -52,8 +53,9 @@ def create_fixture(root):
                 for level in range(7):path/=f'l{level}'
             path.mkdir(parents=True,exist_ok=True)
             (path/f'f{i:04}').write_bytes(bytes([i%251])*(32768 if group=='read' else 8))
-    (root/'wide').mkdir()
-    for i in range(2048):(root/'wide'/f'f{i:04}').write_bytes(bytes([i%251])*8)
+    for group in ('wide','wide_pair','wide_random','wide_stride','wide_dense'):
+        (root/group).mkdir()
+        for i in range(2048):(root/group/f'f{i:04}').write_bytes(bytes([i%251])*8)
 
 def prepare(args):
     out=args.output;out.mkdir(parents=True,exist_ok=False)
@@ -64,7 +66,7 @@ def prepare(args):
         shutil.copy2(source,target);files[name]=sha(source)
     save(out/'source-manifest.json',files)
     harness=out/'harness';harness.mkdir()
-    for name in ('guest_cache.py','guest_cache_driver.rs','guest_cache_guest.rs','test_guest_cache.py',
+    for name in ('guest_cache.py','guest_cache_adaptive.py','guest_cache_driver.rs','guest_cache_guest.rs','test_guest_cache.py','test_guest_cache_adaptive.py',
                  'kernel_cache_runner.py','filesystem_exec_probe.py','filesystem_diagnostic.py','publication.py'):
         shutil.copy2(HERE/name,harness/name)
     for module in list(sys.modules.values()):
@@ -139,17 +141,20 @@ def verify(prepared):
     if inventory(prepared/'fixture')!=json.loads((prepared/'input-manifest.json').read_text()):raise ValueError('changed fixture')
     if inventory(prepared/'rootfs')!=json.loads((prepared/'rootfs-manifest.json').read_text()):raise ValueError('changed rootfs')
 
-def run_one(prepared, out, cohort, arm, mode, profiles):
+def run_one(prepared, out, cohort, arm, mode, profiles, firmware=None):
+    firmware=firmware or prepared/'libkrunfw.5.dylib'
+    if cohort=='cli' and firmware.name!='libkrunfw.5.dylib':
+        raise ValueError('CLI firmware directory must contain the selected libkrunfw.5.dylib')
     out.mkdir(parents=True,exist_ok=False)
     env={k:os.environ[k] for k in ('PATH','HOME','TMPDIR') if k in os.environ}
     env.update(PVISOR_VM_GUEST_CACHE=str(arm),PVISOR_VM_FS_WRITEBACK='0',PVISOR_FS_PROFILE='1' if profiles else '0',
                PVISOR_STARTUP_TIMING='0',PVISOR_PERSISTENCE_TIMING='0',PVISOR_RUN_HOME=str(out/'runs'),XDG_CONFIG_HOME=str(out/'config'))
     if cohort=='sdk':
         stage=out/'stage';stage.mkdir()
-        command=[str(prepared/'sdk'),str(prepared/'rootfs'),str(prepared/'libkrunfw.5.dylib'),str(prepared/'guest'),str(prepared/'fixture'),str(stage),mode]
+        command=[str(prepared/'sdk'),str((prepared/'rootfs').resolve()),str(firmware),str(prepared/'guest'),str((prepared/'fixture').resolve()),str(stage),mode]
     else:
-        command=[str(prepared/'pvisor'),'run','--no-agent-defaults','--safe','--executor','vm','--rootfs',str(prepared/'rootfs'),
-                 '--vm-library-dir',str(prepared),'--cpu','2','--memory','4096MiB','--timeout','45s',
+        command=[str(prepared/'pvisor'),'run','--no-agent-defaults','--safe','--executor','vm','--rootfs',str((prepared/'rootfs').resolve()),
+                 '--vm-library-dir',str(firmware.parent),'--cpu','2','--memory','4096MiB','--timeout','45s',
                  '--stage',str(out/'stage'),'--','./cache-probe','.',mode]
     result=run_owned_probe(command,prepared/'fixture',env,out,timeout=60)
     if result.returncode:raise RuntimeError(f'guest failed {result.returncode}: {out}')
@@ -184,12 +189,18 @@ def analyze(report):
     return summary
 
 def campaign(args):
-    p=args.prepared;verify(p);args.output.mkdir(parents=True,exist_ok=False)
+    p=args.prepared;verify(p)
+    baseline=args.baseline_firmware
+    baseline_sha=sha(baseline) if baseline else None
+    args.output.mkdir(parents=True,exist_ok=False)
     report={'benchmark_id':'B-FS-DIAG' if args.profiles else 'B-FS-ENG','profiles':args.profiles,
             'prepared':str(p),'cohorts':args.cohorts.split(','),'samples':args.samples,'warmups':args.warmups,
             'seed':20261017,'resources':'HVF 2 vCPU/4096 MiB; no host CPU affinity/cgroup claim',
             'cache':'warm host; fresh VM and upper; native FUSE 1s TTL; no forced drop_caches',
             'rows':[],'failures':[],'no_exclusions':True}
+    report['arms']={0:'baseline firmware; guest_cache=1',1:'prepared firmware; guest_cache=1'} if baseline else {0:'guest_cache=0',1:'guest_cache=1'}
+    if baseline:report['baseline_firmware']={'path':str(baseline),'sha256':baseline_sha}
+    report['prepared_receipt']=json.loads((p/'receipt.json').read_text())
     plan=[];rng=random.Random(report['seed'])
     if args.profiles:
         plan=[(0,c,a,m) for c in report['cohorts'] for a in (0,1) for m in MODES]
@@ -201,10 +212,12 @@ def campaign(args):
     try:
         for i,c,a,m in plan:
             d=args.output/f'{i+args.warmups:02}-{c}-{a}-{m}'
-            value=run_one(p,d,c,a,m,args.profiles)
+            firmware=baseline if baseline and a==0 else p/'libkrunfw.5.dylib'
+            value=run_one(p,d,c,1 if baseline else a,m,args.profiles,firmware)
             report['rows'].append({'round':i,'cohort':c,'arm':a,'mode':m,**value})
             save(args.output/'report.json',report);print(i,c,a,m,flush=True)
         verify(p)
+        if baseline and sha(baseline)!=baseline_sha:raise ValueError('changed baseline firmware')
         report['state']='passed'
         if not args.profiles:save(args.output/'summary.json',analyze(report))
     except Exception as error:
@@ -218,10 +231,11 @@ def main():
     run=sub.add_parser('run')
     for name in ('prepared','output'):run.add_argument('--'+name,type=Path,required=True)
     run.add_argument('--samples',type=int,default=30);run.add_argument('--warmups',type=int,default=3)
+    run.add_argument('--baseline-firmware',type=Path,help='compare firmware versions with guest cache enabled in both arms')
     run.add_argument('--cohorts',default='sdk,cli');run.add_argument('--profiles',action='store_true')
     args=parser.parse_args()
-    for name in ('binary','firmware','rootfs','output','prepared'):
-        if hasattr(args,name):setattr(args,name,getattr(args,name).resolve())
+    for name in ('binary','firmware','rootfs','output','prepared','baseline_firmware'):
+        if getattr(args,name,None) is not None:setattr(args,name,getattr(args,name).resolve())
     if '.data' not in args.output.parts:parser.error('output must be under .data')
     if args.action=='prepare':prepare(args)
     else:

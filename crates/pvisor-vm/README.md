@@ -316,11 +316,22 @@ PVISOR_VM_GUEST_CACHE=1 pvisor run --executor vm --safe -- YOUR_COMMAND
 `Immutable`，且 upper 的命名空间修改只通过该 VM 的文件系统连接进行；
 独立 `immutable_filesystem` share 和虚拟-only 文件系统也支持目录镜像。
 任一 lower 可变或未声明、普通 passthrough 或仅只读的挂载都在枚举前对
-`READINDEX` 返回 `ENOSYS`，该目录回到普通 FUSE lookup/readdir 和原有
-元数据期限，避免永久隐藏宿主新增文件。惰性只读 open 独立于此资格。
+`READINDEX` 返回 `ENOSYS`，guest 在连接上记住拒绝，后续目录不再重试，
+并保留普通 FUSE lookup/readdir 和原有元数据期限，避免永久隐藏宿主新增文件。
+惰性只读 open 独立于此资格，目录镜像被拒绝时仍可使用。
 已导入且完整的目录上，lookup、getattr 所依赖的
 dentry、readdir，以及普通文件和目录的只读 open，都在 guest 内核内完成。
-缺页时 guest 发送 `FUSE_READINDEX`。一次请求使用协商得到的 FUSE 页预算，
+单文件首次 lookup/stat 使用原生 FUSE 缓存；同一目录积累一定数量的不同名字后才
+尝试导入一页；以已有目录大小作准入提示，门槛限制在 4–64 次不同名字的
+缺页，目录大小不被当作准确项数。初始窗口为四个客机页（当前固件 16 KiB）。只有该窗口包含
+请求的名字，且已访问计数达到窗口项数的四分之三，后续缺页才扩到协商预算；
+导入时已存在的正 dentry 立即计入，其他 inode 只计首次访问，避免大目录反复取小页。
+未命中或利用不足就停止该目录的推测性预取，回到按需查询。重复访问同一
+名字不推进首次准入。显式枚举仍可完整导入目录。
+装载期间的并发 lookup 直接回退宿主，避免等待预取或消费尚未完成引用归属
+处理的目录项。命中计数只接触 inode 状态，支持 RCU 路径，不延长镜像寿命。
+尚未完整导入时发生 create/unlink，丢弃镜像并回退宿主，避免分页 cookie 错位。
+一次请求使用协商得到的 FUSE 页预算，
 最大 1 MiB（256 个 4 KiB 客机页）。宿主用一次 `readdirplus` 填满这次预算，
 并在返回前关闭这次目录句柄。只有带 `COMPLETE` 的页能证明某个名字不存在。这一页包含
 `synthetic_entries` 里的注入文件（例如 `/init.krun` 和
@@ -349,7 +360,8 @@ lookup 回到宿主。
 正常 inode 回收释放其镜像。
 
 真实 guest 回归探针覆盖惰性打开、unlink/覆盖 rename、copy-up、并发读取与关闭、
-可变 lower 的外部创建，以及扫描后卸载稳定目录：
+冷扫描与反复 open/read 竞争、部分镜像的缺页/创建/枚举、预取触发项的读句柄、
+可变 lower 的外部原子创建，以及扫描后卸载稳定目录：
 
 ```bash
 rustc --edition=2021 --target aarch64-unknown-linux-musl -C linker=rust-lld \

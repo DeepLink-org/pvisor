@@ -1,5 +1,8 @@
 # Guest 目录镜像和惰性 open 的工程对照
 
+此页保留修复前的开关对照；按需加载修复的独立最终固件对照见
+[GUEST_CACHE_DEMAND_REPORT.md](GUEST_CACHE_DEMAND_REPORT.md)，两批数据没有合并。
+
 ## 主要结论
 
 **普通 `--safe` CLI 的明确收益来自只访问元数据的惰性 open；目录镜像在该工作区不满足启用资格，首次深目录 stat 还出现退化。显式不可变 share 的目录访问可以受益，但宽目录稀疏访问有整目录预取代价。**

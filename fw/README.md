@@ -95,6 +95,29 @@ Directory images hold no child dentry references; ordinary inode eviction frees
 the image. Hosts decline READINDEX for mutable or unspecified backings, retaining
 ordinary FUSE namespace visibility and metadata timeouts.
 
+`patches/0044-fuse-adaptive-directory-prefetch.patch` combines the directory
+image safeguards and adaptive prefetch policy. READINDEX ENOSYS is cached per
+connection without disabling deferred open. Lookups concurrent with import
+fall back to the host, leaving in-flight lookup references owned by the importer.
+It admits one page after
+demand for different name hashes. Admission uses directory size as a hint,
+requiring 4 to 64 distinct misses; size is not treated as a trusted entry count.
+The initial window is four guest pages;
+it expands to the negotiated limit only if it contained the demanded name
+and the use count reaches three quarters of the imported entries before the
+next miss. Existing demanded dentries count immediately; other inodes count
+their first later hit. This avoids reopening a wide host directory per tiny page.
+An inode flag counts its first metadata hit even during RCU pathname walks;
+only inode state is touched, so no cache-image lifetime is extended.
+A miss outside the fetched window disables speculative lookup prefetch until
+inode eviction; explicit readdir can still complete the image. Repeated access
+to one name does not advance the admission hint. The triggering lookup owns its
+imported reference, while concurrent lookups retain the host fallback. Guest
+namespace changes invalidate partial images and fall back to the host, because
+they change the offsets and cookies of the unfinished directory snapshot.
+The triggering lookup validates inode IDs and attributes before consuming its
+imported reference, matching the ordinary lookup path.
+
 With negotiated `FUSE_PVISOR_WRITEBACK` (bit 42) and WRITEBACK_CACHE, ordinary
 cached writes and closes retain inode/handle leases in a connection-local queue.
 The queue submits across files at 1 MiB or a 10 ms timer, using ordinary FUSE

@@ -57,6 +57,8 @@ fn main() {
         }
     }
     if mode == "full" {
+        // Exercise mutations against a scanned image, not just native dentries.
+        assert!(fs::read_dir("/").unwrap().count() > 0);
         let mut file = File::open("/metadata-only").unwrap();
         fs::remove_file("/metadata-only").unwrap();
         let mut bytes = Vec::new();
@@ -121,10 +123,63 @@ fn main() {
         }
         assert_eq!(unsafe { umount(c"/tmp/metadata-mutable".as_ptr()) }, 0);
         mount_share("metadata-stable", "/tmp/metadata-stable");
+        let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let scanner_start = start.clone();
+        let scanner = std::thread::spawn(move || {
+            scanner_start.wait();
+            assert_eq!(
+                fs::read_dir("/tmp/metadata-stable")
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .count(),
+                302
+            );
+        });
+        start.wait();
+        for _ in 0..3 {
+            for i in 0..300 {
+                assert_eq!(
+                    fs::read(format!("/tmp/metadata-stable/dir-{i:04}/file")).unwrap(),
+                    b"x"
+                );
+            }
+        }
+        scanner.join().unwrap();
         for i in 0..300 {
-            let file = File::open(format!("/tmp/metadata-stable/dir-{i:04}/file")).unwrap();
+            let directory = format!("/tmp/metadata-stable/dir-{i:04}");
+            assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+            let file = File::open(format!("{directory}/file")).unwrap();
             assert_eq!(file.metadata().unwrap().len(), 1);
         }
+        let wide = "/tmp/metadata-stable/wide-lookup";
+        for i in 128..192 {
+            assert_eq!(fs::metadata(format!("{wide}/f{i:04}")).unwrap().len(), 8);
+        }
+        assert_eq!(fs::read(format!("{wide}/f0255")).unwrap(), 255u64.to_le_bytes());
+        assert!(!std::path::Path::new(&format!("{wide}/f0256")).exists());
+        fs::write(format!("{wide}/created"), b"created!").unwrap();
+        let mut names: Vec<_> = fs::read_dir(wide)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        let mut expected: Vec<_> = (0..256)
+            .map(|i| std::ffi::OsString::from(format!("f{i:04}")))
+            .collect();
+        expected.push("created".into());
+        expected.sort();
+        assert_eq!(names, expected, "partial-image mutation lost directory entries");
+        let dense = "/tmp/metadata-stable/dense-lookup";
+        for i in 0u64..256 {
+            assert_eq!(fs::read(format!("{dense}/f{i:04}")).unwrap(), i.to_le_bytes());
+        }
+        let mut held = File::open(format!("{dense}/f0001")).unwrap();
+        fs::remove_file(format!("{dense}/f0001")).unwrap();
+        let mut bytes = Vec::new();
+        held.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, 1u64.to_le_bytes());
+        drop(held);
+        assert!(!std::path::Path::new(&format!("{dense}/f0001")).exists());
         // Cached directory images must not retain child dentries across unmount.
         assert_eq!(unsafe { umount(c"/tmp/metadata-stable".as_ptr()) }, 0);
     }

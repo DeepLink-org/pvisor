@@ -6,6 +6,7 @@ are checked independently before the original generated snapshot trees retire.
 """
 import argparse
 import base64
+import ctypes
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ from pathlib import Path
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 
 
@@ -32,6 +34,35 @@ def owned(root,path):
     if root.is_symlink():raise ValueError('batch root is a symlink')
 
 
+def read_xattrs(path):
+    if hasattr(os, 'listxattr'):
+        return {name:base64.b64encode(os.getxattr(path,name,follow_symlinks=False)).decode('ascii')
+                for name in os.listxattr(path,follow_symlinks=False)}
+    if sys.platform != 'darwin':
+        raise ValueError('extended attribute inventory requires Linux or macOS')
+    libc=ctypes.CDLL(None,use_errno=True)
+    libc.listxattr.argtypes=[ctypes.c_char_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_int]
+    libc.listxattr.restype=ctypes.c_ssize_t
+    libc.getxattr.argtypes=[ctypes.c_char_p,ctypes.c_char_p,ctypes.c_void_p,ctypes.c_size_t,ctypes.c_uint32,ctypes.c_int]
+    libc.getxattr.restype=ctypes.c_ssize_t
+    encoded=os.fsencode(path)
+    def checked(result):
+        if result<0:raise OSError(ctypes.get_errno(),os.strerror(ctypes.get_errno()),str(path))
+        return result
+    # XATTR_NOFOLLOW preserves link metadata without reading its target.
+    size=checked(libc.listxattr(encoded,None,0,1))
+    names=ctypes.create_string_buffer(size)
+    size=checked(libc.listxattr(encoded,names,size,1))
+    result={}
+    for name in names.raw[:size].split(b'\0'):
+        if not name:continue
+        length=checked(libc.getxattr(encoded,name,None,0,0,1))
+        value=ctypes.create_string_buffer(length)
+        length=checked(libc.getxattr(encoded,name,value,length,0,1))
+        result[os.fsdecode(name)]=base64.b64encode(value.raw[:length]).decode('ascii')
+    return result
+
+
 def inventory(root,trees):
     records={}
     for tree in trees:
@@ -41,8 +72,7 @@ def inventory(root,trees):
             paths.extend(Path(directory)/name for name in dirs+files)
         for path in sorted(set(paths)):
             info=path.lstat();name=str(path.relative_to(root))
-            attributes={name:base64.b64encode(os.getxattr(path,name,follow_symlinks=False)).decode('ascii')
-                for name in os.listxattr(path,follow_symlinks=False)}
+            attributes=read_xattrs(path)
             common=dict(mode=stat.S_IMODE(info.st_mode),mtime_ns=info.st_mtime_ns,uid=info.st_uid,gid=info.st_gid,xattrs=attributes)
             if stat.S_ISLNK(info.st_mode):record=dict(kind='symlink',target=os.readlink(path),**common)
             elif stat.S_ISDIR(info.st_mode):record=dict(kind='directory',**common)

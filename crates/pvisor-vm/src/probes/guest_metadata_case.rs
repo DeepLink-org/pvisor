@@ -32,6 +32,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::create_dir(&directory)?;
         std::fs::write(directory.join("file"), b"x")?;
     }
+    for name in ["wide-lookup", "dense-lookup"] {
+        let directory = stable.join(name);
+        std::fs::create_dir(&directory)?;
+        for i in 0u64..256 {
+            std::fs::write(directory.join(format!("f{i:04}")), i.to_le_bytes())?;
+        }
+    }
     let overlay = |name: &str, lowers: Vec<PathBuf>, stability| -> std::io::Result<OverlayConfig> {
         let upper = root.path().join(format!("{name}-upper"));
         let work = root.path().join(format!("{name}-work"));
@@ -102,7 +109,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 std::thread::sleep(Duration::from_millis(2));
             }
-            std::fs::write(mutable.join("created-after-import"), b"visible")
+            // Publish complete bytes atomically; creation alone exposes an empty file.
+            let temporary = mutable.join("pending-create");
+            std::fs::write(&temporary, b"visible")?;
+            std::fs::rename(temporary, mutable.join("created-after-import"))
         })
     });
     vm.run(|_| Ok(()))?;
