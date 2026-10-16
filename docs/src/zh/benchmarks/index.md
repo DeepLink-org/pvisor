@@ -2,7 +2,7 @@
 
 ## 主要结论 {#conclusions}
 
-**频繁创建大工作区、只合入少量改动时，pVisor stage 的完整机器流程更快：10,000 文件中修改 20 个、保留 10 个，stage 为 141 ms，Git worktree 为 248 ms，btrfs reflink 为 343 ms。小工作区原生流程更快；pVisor VM 的工具任务仍慢于所测 Firecracker/QEMU。**
+**频繁创建大工作区、只合入少量改动时，pVisor stage 的完整机器流程更快：10,000 文件中修改 20 个、保留 10 个，stage 为 141 ms，Git worktree 为 248 ms，btrfs reflink 为 343 ms。小工作区原生流程更快；VM 工具等待参照各配置的独立测量。**
 
 | 场景 | 选型含义 |
 |---|---|
@@ -12,7 +12,7 @@
 
 <!-- measurement-status:start -->
 
-总览的文件系统一行来自 2026-10-12 已验收批次 `fo5a4e7d2b-f`，其他主题继续使用各自批次。各专题的计时边界和制品分别列出，见[复测覆盖](#measurement-coverage)。
+文件系统采用 Ready 与三轮驻留任务口径：九配置各 5 个独立环境、每环境 3 轮，45 个环境全部通过，无干扰门禁。历史 N30 与一次性任务独立保留。其他主题继续使用各自批次。
 
 <!-- measurement-status:end -->
 
@@ -22,7 +22,7 @@
 
 ## 实验设计 {#interpretation}
 
-复用[启动](startup.md)、[文件系统](filesystem.md)、[修复任务](agent-tasks.md)和[完整审查流程](supervision-cost.md)的独立注册实验。启动与修复每后端 60 次、文件系统每后端 30 次，均为 3 次预热；审查流程每规模/条件/后端 30 次、3 次预热。同机 CPU 0,1、热缓存、随机交替执行，全部通过正确性校验，没有按速度剔除。各主题的负载、资源和计时边界不同，不合并其分布。Docker 使用 rootless overlay2；完整审查流程对照是原生 Git/reflink，不是容器或 VM 安全排名。
+复用[启动](startup.md)、[文件系统](filesystem.md)、[修复任务](agent-tasks.md)和[完整审查流程](supervision-cost.md)的独立注册实验。启动与修复每后端 60 次、3 次预热；文件系统当前为九配置各 5 个新环境、每环境三轮、无额外预热，历史 N30 单独保留；审查流程每规模/条件/后端 30 次、3 次预热。同机 CPU 0,1、热缓存、随机交替执行，全部通过正确性校验，没有按速度剔除。各主题的负载、资源和计时边界不同，不合并其分布。Docker 使用 rootless overlay2；完整审查流程对照是原生 Git/reflink，不是容器或 VM 安全排名。
 
 [网络](network.md)每条件 30 个独立批次、3 次预热；小请求以每批 256 请求的中位数作为一个样本，origin 在负载 CPU 预算之外，内存没有统一限额。[容量](density.md)在共同两核、2 GiB、零 swap 预算下，按并发度和空闲/有效工具负载分别运行五轮，保留所有失败、未知和 OOM。
 
@@ -36,7 +36,7 @@
 |---|---|
 | [Startup](startup.md) | stock 对照：VM 100.91 ms；Firecracker 285.04 ms；QEMU microvm 321.56 ms；q35 702.98 ms |
 | [Repair completion](agent-tasks.md) | staged 0.64 s; Docker 0.81 s; VM 3.25 s; QEMU microvm 1.40 s |
-| [Seven-tool completion](filesystem.md) | staged 1.80 s; Docker 1.27 s; VM 5.46 s; Firecracker 2.67 s |
+| [Ready 与三轮工具](filesystem.md#quick-results) | N=5，Ready：staged 209.56 ms; Docker 450.94 ms; VM 749.15 ms; Firecracker 854.79 ms |
 | [Review workflow](supervision-cost.md) | 10,000 files: stage 141 ms; Git 248 ms; reflink 343 ms |
 | [网络](network.md) | 八线程小请求：原生 0.69 ms；host proxy 10.09 ms；VM 2.10 ms |
 | [活跃容量](density.md) | 2 GiB：stage/Podman 32 路、VM 16 路通过全部五轮 |
@@ -56,8 +56,10 @@
 
 {{ table("measurement-coverage.render.json", {"markdown":true}) }}
 
-[覆盖清单 CSV](measurement-coverage.csv)。
+[覆盖清单 CSV](measurement-coverage.csv)。 文件系统的完整复测状态对应历史 N30 验收；当前 Ready/驻留数据为各配置五个独立环境、每环境三轮。
 
 ### 数据下载与复现 {#run}
 
-[当前文件系统统计](filesystem.csv) · [同批文件系统置信区间](filesystem-comparisons.csv) · [当前文件系统来源](filesystem-provenance.csv) · [历史 Runtime 统计](runtime-summary.csv) · [历史 Runtime 置信区间](runtime-comparisons.csv) · [历史 Runtime 来源](runtime-provenance.csv) · [Workflow statistics](workflow-summary.csv) · [Workflow intervals](workflow-comparisons.csv) · [Workflow provenance](workflow-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[分轮统计 CSV](filesystem-resident.csv) · [同批差异与区间](filesystem-resident-comparisons.csv) · [来源与条件](filesystem-resident-provenance.csv)
+
+[历史 N30 文件系统统计](filesystem.csv) · [同批文件系统置信区间](filesystem-comparisons.csv) · [历史 N30 文件系统来源](filesystem-provenance.csv) · [历史 Runtime 统计](runtime-summary.csv) · [历史 Runtime 置信区间](runtime-comparisons.csv) · [历史 Runtime 来源](runtime-provenance.csv) · [Workflow statistics](workflow-summary.csv) · [Workflow intervals](workflow-comparisons.csv) · [Workflow provenance](workflow-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

@@ -163,7 +163,7 @@ pub trait ZeroCopyReader {
                     return Err(io::Error::new(
                         io::ErrorKind::WriteZero,
                         "failed to fill whole buffer",
-                    ))
+                    ));
                 }
                 Ok(n) => {
                     count -= n;
@@ -253,7 +253,7 @@ pub trait ZeroCopyWriter {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
                         "failed to write whole buffer",
-                    ))
+                    ));
                 }
                 Ok(n) => {
                     // No need for checked math here because we verified that `off + count` will not
@@ -346,9 +346,65 @@ pub struct SecContext {
 
 pub type ExportTable = Arc<Mutex<BTreeMap<(u64, u64), File>>>;
 
+/// Runtime-only receipt for an immutable physical lower data mapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LowerDataObject {
+    /// Nonzero connection-local identifier, never reused within the session.
+    pub id: u32,
+    /// Fixed physical object size, independent of the merged namespace inode.
+    pub size: u64,
+}
+
+/// One private OPEN response. Optional evidence is returned with this request;
+/// it is never stored on a handle or serialized as filesystem state.
+pub struct OpenReply {
+    pub(super) handle: Option<u64>,
+    pub(super) options: OpenOptions,
+    pub(super) data_object: Option<LowerDataObject>,
+}
+
+impl OpenReply {
+    pub(super) fn new(handle: Option<u64>, options: OpenOptions) -> Self {
+        Self {
+            handle,
+            options,
+            data_object: None,
+        }
+    }
+
+    /// Server owns negotiated/request admission; this is the one check of
+    /// actual OPEN options shared by the default and optimized adapters.
+    pub(super) fn allows_data_object(&self, request_eligible: bool) -> bool {
+        request_eligible
+            && self.handle.is_some_and(|handle| handle != 0)
+            && self.options.contains(OpenOptions::PVISOR_DATA_OBJECT)
+            && !self.options.contains(OpenOptions::DIRECT_IO)
+            && self.options.bits() & (1 << 7) == 0
+    }
+
+    pub(super) fn complete_legacy<F: FileSystem + ?Sized>(
+        &mut self,
+        fs: &F,
+        inode: u64,
+        request_eligible: bool,
+    ) {
+        if self.allows_data_object(request_eligible) {
+            self.data_object = fs
+                .lower_data_object(inode.into(), self.handle.unwrap().into())
+                .filter(|object| object.id != 0);
+        }
+    }
+}
+
 /// The main trait that connects a file system with a transport.
 #[allow(unused_variables)]
 pub trait FileSystem {
+    /// Cumulative diagnostic counters owned by this adapter and its Core.
+    /// This does not flush, materialize, or mutate filesystem state.
+    fn diagnostic_profiles(&self) -> Vec<pvisor_overlay_core::profile::ProfileReport> {
+        Vec::new()
+    }
+
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -665,6 +721,37 @@ pub trait FileSystem {
     ) -> io::Result<(Option<Self::Handle>, OpenOptions)> {
         // Matches the behavior of libfuse.
         Ok((None, OpenOptions::empty()))
+    }
+
+    /// Assemble one server OPEN response with explicit request-local receipt
+    /// ownership. `request_eligible` is the server's negotiated/flag decision.
+    /// The default preserves separate OPEN and receipt qualification; adapters
+    /// may share evidence from this OPEN without retaining it in handle state.
+    fn open_for_reply(
+        &self,
+        ctx: Context,
+        inode: Self::Inode,
+        kill_priv: bool,
+        flags: u32,
+        request_eligible: bool,
+    ) -> io::Result<OpenReply> {
+        let inode = inode.into();
+        let (handle, options) = self.open(ctx, inode.into(), kill_priv, flags)?;
+        let mut reply = OpenReply::new(handle.map(Into::into), options);
+        reply.complete_legacy(self, inode, request_eligible);
+        Ok(reply)
+    }
+
+    /// Optional receipt for a just-opened, authorized immutable lower handle.
+    /// Called only for a flagged OPEN in a negotiated data-object session.
+    /// Identity zero is never valid; size belongs to this captured FD, not the
+    /// merged inode. Failure to qualify returns None and preserves normal I/O.
+    fn lower_data_object(
+        &self,
+        inode: Self::Inode,
+        handle: Self::Handle,
+    ) -> Option<LowerDataObject> {
+        None
     }
 
     /// Create and open a file.

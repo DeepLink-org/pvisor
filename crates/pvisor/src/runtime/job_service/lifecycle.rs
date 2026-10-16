@@ -41,6 +41,7 @@ impl RuntimeJobService {
     {
         use crate::runtime::job_execution;
         let source = RuntimeJobService::resolve(context, &request.job)?;
+        super::super::owned_workspace::reject_stage_reconstruction(&source.stage_dir())?;
         let request_id = request.request_id;
         let eager_ram = request.eager_ram;
         let template = job_execution::job(&source)?;

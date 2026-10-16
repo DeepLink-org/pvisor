@@ -252,6 +252,39 @@ impl std::str::FromStr for ContainerPlatform {
     }
 }
 
+/// Identity of a sealed SnapshotStore generation, not ownership by itself.
+/// A live lease or a store-managed durable marker must retain the generation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BaseReference {
+    /// Lowercase 64-digit SHA-256 seal identity; store operations validate it.
+    pub id: String,
+}
+
+/// A durable, store-owned generation selector, without ownership by itself.
+///
+/// The consuming rootfs or workspace API authenticates its purpose-specific
+/// catalog and acquires a lease. Rootfs and workspace records do not substitute
+/// for one another, even though their selectors have the same serialized shape.
+/// Keep the store private, outside guest-visible/writable roots, and unmodified
+/// by external writers. A path/id declaration alone grants no immutability.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedBase {
+    /// SnapshotStore directory, resolved against the execution caller's cwd.
+    /// CLI Jobs persist its canonical path for later independent workers.
+    pub store: PathBuf,
+    /// Existing durably pinned generation; not an arbitrary rootfs path.
+    pub base: BaseReference,
+}
+
+/// Existing rootfs selector name, retaining its Rust and serialized contracts.
+///
+/// `VmExecutor::new` authenticates the rootfs catalog and retains a GC lease.
+/// The CLI also opens it before layout resolution. Execution capture/restore is
+/// unsupported; this alias does not change `vm.prepared_rootfs` JSON/TOML keys.
+pub type PreparedRootfs = PreparedBase;
+
 /// libkrun process isolation over a pVisor-provided Linux rootfs OverlayFS.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -286,6 +319,12 @@ pub struct VmSettings {
     pub node_socket: Option<PathBuf>,
     /// Linux root filesystem exported to the libkrun guest; defaults to host `/`.
     pub rootfs: Option<PathBuf>,
+    /// Optional durable prepared source. `rootfs`, when also recorded, must
+    /// exactly match its authenticated generation; `image` conflicts. VM-only;
+    /// new executors acquire ownership and restores reject this override.
+    /// Omitted legacy configurations retain ordinary mutable rootfs semantics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepared_rootfs: Option<PreparedRootfs>,
     /// Explicit OCI image used instead of the host root filesystem.
     pub image: Option<String>,
     /// Content-addressed OCI cache. The platform cache directory is used when omitted.
@@ -357,6 +396,7 @@ impl Default for VmSettings {
             snapshot_filesystem_pool: None,
             node_socket: None,
             rootfs: None,
+            prepared_rootfs: None,
             image: None,
             image_store: None,
             rootfs_immutable: false,
@@ -420,6 +460,14 @@ pub enum FilesystemMode {
 pub struct OverlayFsSettings {
     /// First-mutation fsyncs (strict), or durable checkpoint/completion boundaries.
     pub durability: pvisor_core::overlay::StageDurability,
+    /// Optional fixed read generation for a fresh native VM workspace stage.
+    /// The live `run.workspace` remains the apply destination. CLI workers must
+    /// authenticate the workspace catalog and hold its lease through teardown;
+    /// the runtime requires an actual prepared-rootfs executor, independent
+    /// stores, a single lower, and fresh stage backing. Compose and native
+    /// execution restore are unsupported. Omitted legacy configs stay live.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepared_workspace: Option<PreparedBase>,
     #[serde(skip)]
     pub access_policy: pvisor_core::overlay::FileAccessPolicy,
     /// Filesystem mounts. Runtime normalization converts these into executor capabilities.
@@ -452,6 +500,7 @@ impl Default for OverlayFsSettings {
     fn default() -> Self {
         Self {
             durability: Default::default(),
+            prepared_workspace: None,
             access_policy: Default::default(),
             mount: Vec::new(),
             access: Vec::new(),
@@ -718,6 +767,52 @@ impl PVisorConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_base_alias_and_workspace_selector_preserve_serialized_contracts() {
+        let selector = PreparedBase {
+            store: "/private/workspace-store".into(),
+            base: BaseReference { id: "a".repeat(64) },
+        };
+        let rootfs: PreparedRootfs = selector.clone();
+        let encoded = serde_json::to_value(&selector).unwrap();
+        assert_eq!(serde_json::to_value(&rootfs).unwrap(), encoded);
+        assert_eq!(
+            encoded,
+            serde_json::json!({"store":"/private/workspace-store", "base":{"id":"a".repeat(64)}})
+        );
+        let defaults = OverlayFsSettings::default();
+        assert!(defaults.prepared_workspace.is_none());
+        assert!(
+            serde_json::to_value(defaults)
+                .unwrap()
+                .get("prepared_workspace")
+                .is_none()
+        );
+        let config: RunConfig = toml::from_str(&format!(
+            "[vm.prepared_rootfs]\nstore='/private/rootfs-store'\nbase={{id='{}'}}\n[overlayfs.prepared_workspace]\nstore='/private/workspace-store'\nbase={{id='{}'}}\n", "b".repeat(64), "a".repeat(64)
+        )).unwrap();
+        assert_eq!(
+            config
+                .overlayfs
+                .as_ref()
+                .unwrap()
+                .prepared_workspace
+                .as_ref(),
+            Some(&selector)
+        );
+        let decoded: RunConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap(),
+            serde_json::to_value(config).unwrap()
+        );
+        assert!(
+            serde_json::from_str::<PreparedBase>(
+                r#"{"store":"/tmp","base":{"id":"a"},"immutable":true}"#
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn run_config_toml_roundtrip() {

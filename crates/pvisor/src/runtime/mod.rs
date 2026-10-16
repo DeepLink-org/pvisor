@@ -20,6 +20,7 @@ pub mod job_execution;
 pub mod job_service;
 pub(crate) mod operation;
 mod overlay;
+pub(crate) mod owned_workspace;
 mod proxy;
 mod registry;
 pub(crate) mod run;

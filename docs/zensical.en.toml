@@ -24,6 +24,7 @@ nav = [
     ] },
     { "About pVisor" = [
       { "Why pVisor" = "why/index.md" },
+      { "Agent task lifecycle cost" = "why/agent-lifecycle-cost.md" },
       { "Trust ladder and scale" = "why/trust-ladder.md" },
       { "Use cases" = "why/use-cases.md" },
       { "Comparing existing approaches" = "why/comparisons.md" },

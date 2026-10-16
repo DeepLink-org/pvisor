@@ -26,10 +26,29 @@ STARTUP = re.compile(r"\bstage=(\S+) monotonic_us=(\d+)\b")
 PERSISTENCE = re.compile(r"\bobject=(\S+) phase=(\S+) duration_us=(\d+) outcome=(\S+)")
 
 
-def collect_profiles(lines):
-    """Keep one cumulative record per process and instance, with coverage."""
+VM_PROFILE_COMPONENTS = frozenset((
+    "virtio-fs-protocol", "virtio-fs-dispatch", "virtio-fs-overlay", "overlay-core",
+))
+
+
+def collect_profiles(lines, *, require_complete=False, expected_components=()):
+    """Keep cumulative records; complete coverage requires instance registration.
+
+    Legacy logs remain readable as partial evidence. Strict callers require a
+    final report for every registered process/component/instance and registration
+    of every expected component family. Empty or absent instances are errors,
+    never evidence that the workload issued no requests.
+    """
     profiles = {}
+    registered = set()
     for line in lines:
+        if line.startswith("pvisor-fs-profile-start "):
+            registration = json.loads(line.removeprefix("pvisor-fs-profile-start "))
+            key = (registration["pid"], registration["component"], registration["instance"])
+            if key in registered:
+                raise ValueError(f"duplicate profile registration {key}")
+            registered.add(key)
+            continue
         if not line.startswith("pvisor-fs-profile "):
             continue
         profile = json.loads(line.removeprefix("pvisor-fs-profile "))
@@ -44,6 +63,16 @@ def collect_profiles(lines):
                        for field in ("calls", "total_ns", "units")):
                     raise ValueError(f"nonmonotonic cumulative profile {key}/{label}")
         profiles[key] = profile
+    if require_complete:
+        if not registered:
+            raise ValueError("missing profile instance registrations")
+        if set(profiles) != registered:
+            raise ValueError(f"incomplete profile instance coverage: missing={registered - set(profiles)}, unregistered={set(profiles) - registered}")
+        if any(not profile.get("final_record") for profile in profiles.values()):
+            raise ValueError("missing final profile record")
+        missing = set(expected_components) - {key[1] for key in registered}
+        if missing:
+            raise ValueError(f"missing expected profile components: {sorted(missing)}")
     return list(profiles.values())
 
 

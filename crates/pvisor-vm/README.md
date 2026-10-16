@@ -233,6 +233,57 @@ combined and no-open values are rejected rather than silently enabled. This
 variable controls admission to the optimization, not physical immutability.
 No per-request environment lookup is added.
 
+## Read-only local FLUSH experiment
+
+`PVISOR_VM_FS_READONLY_FLUSH_ELISION=1` opts into a Linux host/guest experiment;
+unset or `0` keeps the existing path. Other values fail before filesystem owner
+construction. Host and patched guest negotiate `FsOptions::PVISOR_LOCAL_FLUSH`
+(INIT bit 43); qualified OPENs return `OpenOptions::PVISOR_LOCAL_FLUSH` (bit 29).
+Old guests do not negotiate it and keep ordinary FLUSH, including snapshots.
+It requires guest cache, LinuxComplete permissions, no DAX window, an explicitly
+Immutable physical lower and no negotiated writeback or remote POSIX/flock locks.
+Mixed views qualify each selected lower separately; upper and Mutable-lower
+opens never receive this per-open flag.
+
+Normal Core resolution, authorization, baseline observations and native OPEN
+still run. Only a read-only, non-privilege-changing regular-file lower open can
+qualify. The actual pinned native descriptor must be O_RDONLY and regular; its
+fstatfs must report EXT (EXT2/3/4 share `0xef53`), XFS, Btrfs or tmpfs. Unknown
+and remote native filesystems retain FLUSH. This tests the actual native
+filesystem, not the origin of its content: an attached remote-content backend's
+local projection can qualify when its native descriptor meets these conditions;
+that backend currently has no FLUSH method and the original callback only
+dup/closes the native projection descriptor. The quick experiment uses actual
+local sealed inputs.
+
+The new flag does **not** use standard FOPEN_NOFLUSH, whose early return skips
+guest checks. The guest still runs write_inode_now, fuse_sync_writes and
+filemap_check_errors, then skips only the backend FLUSH RPC. Ordinary RELEASE,
+descriptor leases, local guest lock lifetime, writable handles, data caching and
+metadata validity are unchanged. Eliminating the backend dup/close naturally
+eliminates its internal resource errors such as dup's EMFILE; this is not a claim
+that every historical close errno remains identical. It preserves the guest's
+data/locking error boundary and does not fix lower/upper shared-page-cache issues.
+
+Sessions actually negotiating the new capability reject capture with Unsupported;
+restore rejects records containing bit 43. No new snapshot fields are introduced,
+and requesting the feature with an old, non-negotiating guest preserves snapshots.
+DESTROY clears active session state so a subsequent INIT may fall back normally.
+Profiles emit `readonly_flush_elision_requested` units 0/1 and
+`readonly_flush_elision_enabled` units 0/1 (whether this owner has ever negotiated
+the contract, counted once across DESTROY/INIT). Fresh single-session diagnostics
+therefore report actual negotiation. `readonly_flush_elision_open_flags` counts
+qualified OPEN replies; it is not a count of skipped guest RPCs.
+
+Focused private tests cover parsing, negotiation/fallback, native descriptor and
+filesystem qualification, normal OPEN/RELEASE, policy denial, snapshots and
+DESTROY/INIT. The independent guest `review-flush` probe has eleven cases:
+root/stable/Mutable/upper bound and unbound descriptors, each with dup and explicit
+close checks (eight); lower close with an upper writer, local flock duplication
+and lifetime, and mmap readability after close (three). Both probe mounts are
+unmounted at the end. Existing `review-pages` cases remain separate evidence;
+FLUSH elision makes no claim to repair their data-mapping behavior.
+
 The preference adds no serialized cache object or handle field. Restore keeps
 the existing backing identity/content checks and guest RAM pages. Future OPENs
 use the newly constructed device's preference and saved lower declarations;
@@ -241,6 +292,221 @@ qualify. Unit tests cover cache flags, unchanged TTLs, denied OPENs, writable
 copy-up/old-FD ownership, live mutable reads, mixed lower order and snapshot
 round trips. Frozen engineering A/B results apply to their owned inputs; the
 new stricter default has no independent end-to-end performance measurement.
+
+## Standard negative-entry experiment
+
+`PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE=1` enables a separate default-off host
+experiment; unset/`0` preserves ordinary lookup, and other values fail before
+filesystem construction. Setting `1` explicitly promises that upper namespace,
+roots, physical ancestors, mounts and relevant directory permissions remain
+owned for this filesystem owner's entire lifetime. All changes must use this
+VM's filesystem connection and its normal mutation/VFS paths; external writers
+and new overlapping metadata-backend attachments are unsupported.
+
+Eligibility additionally requires LinuxComplete permissions, guest cache,
+WB=0, DAX=0, every lower explicitly Immutable and default authorization rules.
+Session/view audit bindings do not change default rules. Actual
+upper/lower directory FDs must be on EXT/XFS/Btrfs/tmpfs; failed/unknown native
+filesystem evidence retains the old path. Any active ancestor/descendant backend
+attachment disables eligibility, using a read-only registry query rather than
+querying attributes of a possibly missing name. The registry is checked again
+before a promise; a late attachment prevents further promises but cannot cancel
+already valid guest dentries and violates the ownership contract.
+
+Each selected ordinary miss uses Core's checked optional backing lookup. Only
+successful merged absence after required observation publication returns a
+standard successful FUSE Entry with nodeid=0, entry TTL=1 second and attribute
+TTL=0. It allocates no inode or lookup/forget reference. Errors, including
+ENOENT from exclusions, backend or journal failures, are not converted to
+cached absence. Positive replies keep their old timeouts, metadata checks and
+inode ownership. Core-validated exclusion prefixes and worker-provided synthetic
+names protect their entire subtrees **and their ancestors**: those paths always
+retain ordinary lookup, including missing ancestors and names consumed by
+one-shot injection. Unrelated paths in the same owner can qualify. In particular,
+ordinary VM rootfs host-authority exclusions remain hidden by Core's original
+ENOENT; they do not disable caching for unrelated rootfs misses. Prefix comparison
+uses path components, so an excluded `tmp/private` does not protect `tmp/private2`.
+Existing COMPLETE directory-image negatives remain separate guest-side behavior.
+
+No new kernel protocol or capability bit is added. Profiles emit explicit
+`negative_entry_cache_requested`/`negative_entry_cache_enabled` units 0/1 for
+each Overlay owner. Enabled describes configured ownership/qualification;
+`negative_entry_cache_replies` counts returned cacheable negative Entries,
+including zero, and `negative_entry_cache_fallbacks` counts enabled-owner
+lookups declined for protected names or new/unknown backend evidence. These
+are response decisions, not measured guest hits or successful transport writes.
+
+Once a valid negative Entry has been returned, capture and restore on that
+owner return Unsupported. The monotonic fence is checked under the exclusive
+operation lock and survives DESTROY/INIT. Configuration, protected names and
+the fence are not snapshot fields; a new restored owner starts without them
+and is configured again by the worker. A snapshot from this experiment cannot
+contain its negative replies because capture after the first reply is rejected.
+Before any such reply, the prior capture/restore path remains available.
+An enabled negative-cache owner also rejects a saved WB=1 native session under
+that lock before restoring any layer or namespace state, including when an unset
+writeback environment otherwise permits historical WB=1 restoration. Disabling
+this preference retains that existing compatibility; WB=0 restores remain valid.
+Private tests cover qualification, unchanged positive TTLs and errors, real
+exclusions and their existing/missing ancestors, protected subtrees and unrelated
+sibling misses, no negative inode allocation, create/link/rename/unlink behavior,
+backend overlap/late fallback, journal overlap and snapshot lifetime; positive
+eligibility fixtures use Linux `/dev/shm` tmpfs. Real guest cache invalidation
+and independent performance runs remain required before any benefit/default claim.
+
+## Independent immutable-lower data objects
+
+`PVISOR_VM_FS_LOWER_DATA_CACHE=1` enables a default-off Linux experiment for
+explicitly Immutable selected physical lowers, on root and workspace devices.
+Unset/`0` uses the previous path; other values fail before filesystem owner
+construction. LinuxComplete permissions, guest cache, WB=0, no DAX window and
+no negotiated POSIX/flock remote locking are required. Qualification is per
+opened lower; upper, Mutable, direct-I/O, privilege-changing, nonregular and
+multiply-linked native files fall back. Attached remote-content projections
+also fall back per selected physical path: their placeholder inode is not a
+content identity. Synthetic guest configuration/init files do not disable
+unrelated ordinary lower files.
+
+Host and guest negotiate `PVISOR_DATA_OBJECT` (INIT bit 44). Only `FUSE_OPEN`
+then returns a fixed 24-byte payload: the standard 16-byte `OpenOut` prefix
+(`fh:u64`, `open_flags:u32`, `backing_id:u32`) followed by little-endian fixed
+physical size `u64`. Qualified OPENs set bit 28 and a nonzero object ID; fallback
+OPENs return ID/size zero and clear bit 28. Unnegotiated OPEN, CREATE and OPENDIR
+retain their standard reply lengths; CREATE/OPENDIR always clear the new flag.
+This does not negotiate standard FUSE passthrough or export host descriptors.
+
+Every OPEN still performs ordinary Core resolution, authorization, baseline
+observations and native OPEN. The optional receipt uses the captured handle,
+not a new namespace lookup: its pinned native FD must be O_RDONLY, regular,
+nlink=1, without O_DIRECT, on the supported EXT/XFS/Btrfs/tmpfs native filesystem
+set. The default classifier checks fstat metadata against complete statx
+identity/mount/size evidence; the optional same-OPEN classifier below reuses
+complete FD statx instead of issuing duplicate metadata queries. A table assigns
+stable IDs by the fixed layer generation and actual
+FD device/inode/mount/size. The caller must preserve the Immutable physical
+owner, including roots, ancestors and mount identity, for the device lifetime.
+No FD is retained by this table and IDs grant no access by themselves.
+
+At most 4096 identities are retained per OverlayFs owner. IDs are never evicted
+or recycled, including across DESTROY/INIT; new identities at capacity fall back,
+while registered identities can still be reused. Final owner teardown frees
+the table. Each new guest open still owns its normal namespace nodeid/FH and
+RELEASE, while the patched guest uses the ID for a distinct immutable-data
+mapping with the supplied fixed EOF. Copy-up and upper truncation therefore do
+not change the old lower mapping's size or place upper bytes in its pages.
+The namespace inode's current size is never used as an old lower size receipt.
+The existing root-only KEEP_CACHE preference is separate; this experiment does
+not turn on ordinary workspace KEEP_CACHE for shared merged-inode data pages.
+
+Negotiating this experimental contract makes capture/restore unsupported for
+the remaining host owner lifetime, including after DESTROY; server restore
+rejects saved bit 44. The ID table is not serialized. Requesting it with an old,
+non-negotiating guest leaves snapshots unchanged. Profiles emit
+`lower_data_cache_requested` and `lower_data_cache_enabled` as explicit units
+0/1; enabled means ever negotiated once per owner (actual negotiation for fresh
+single-session diagnostics). `lower_data_cache_open_flags` counts qualified
+OPEN replies, `lower_data_cache_object_registrations` counts assigned IDs,
+`lower_data_cache_object_reuses` counts repeated receipts for registered IDs,
+and `lower_data_cache_object_rejections`/`lower_data_cache_capacity_rejections`
+count fallback receipt attempts/its capacity subset. All are diagnostic work
+counts, not bytes saved, elapsed time or a performance result.
+
+Focused private tests cover strict parsing, old-peer and incompatible-session
+fallback, exact OPEN/CREATE/OPENDIR framing, zero/invalid receipts, fixed lower
+EOF across copy-up, normal OPEN denial, nlink and native FD qualification,
+release without permanent FD pins, bounded IDs, and snapshot/lifecycle rules.
+Real guest byte/page/mmap/exec probes and independent profile-off timing remain
+required before interpreting this candidate as a speedup.
+
+## Same-OPEN qualification experiment
+
+`PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION=1` selects a default-off private Linux
+host experiment. Unset/`0` retains separate DATA and readonly-FLUSH classification;
+other values, including non-UTF-8, fail before Overlay filesystem creation.
+macOS validates the setting but retains its existing path. There is no new
+guest capability, public API, wire field, handle field or snapshot field.
+
+Server still owns negotiated/request eligibility, including readonly flags,
+O_DIRECT/O_PATH, killpriv and write-open filtering. The private `OpenReply`
+checks actual returned options/handle for both adapter paths, excluding DIRECT_IO
+and passthrough. `AugmentFs` forwards ordinary OPEN responses explicitly and
+retains synthetic-file handling. Only the server OPEN response path can share
+native evidence; direct private `open`/`lower_data_object` calls retain their
+fresh separate checks.
+
+After ordinary Core authorization/alias checks, baseline observation, native
+lookup and successful native OPEN, the shared qualifier pins that new native
+descriptor and samples F_GETFL, complete FD statx and fstatfs once. DATA still
+requires actual readonly regular nlink=1, TYPE/NLINK/INO/SIZE/MNT_ID result bits,
+nonzero mount ID, representable fixed EOF, no O_DIRECT/O_PATH, selected Immutable
+lower ownership and the native local-filesystem whitelist. Unsupported or
+incomplete evidence declines optional DATA without failing OPEN. FLUSH retains
+its broader rules: multiple hardlinks and failed/incomplete statx do not remove
+its qualification; missing TYPE evidence falls back to its original fstat check.
+FLUSH-only sessions retain their original three-query classifier.
+
+The native decision moves once through a stack-owned OPEN result. Receipt
+assembly still acquires its FileIoLease, validates the handle/inode/lower and
+rechecks the selected-path backend before assigning/reusing an object ID.
+No evidence is cached on handles or reused by a later OPEN; status flags and
+native identity are sampled again for each new FD. Snapshot capture/restore,
+old-peer fallback, RELEASE and the DATA/FLUSH lifetime contracts remain unchanged.
+
+Linux Overlay profiles explicitly initialize every measurement, including zero:
+`shared_open_qualification_enabled` is the effective host preference (not guest
+negotiation), and `open_qualification_fgetfl_attempts`,
+`open_qualification_fstat_attempts`, `open_qualification_statx_attempts`, and
+`open_qualification_fstatfs_attempts` count only actual qualification query
+attempts, including failures. They exclude native lookup/getattr and other
+operations' metadata syscalls. `_shared_attempts`, `_legacy_flush_attempts` and
+`_legacy_data_attempts` with the same `open_qualification` prefix count classifier
+entries. `_receipt_hits` counts request-local decisions consumed after the second
+backend check, including negative decisions; `_receipt_misses` counts fresh
+legacy DATA classification there. Existing flag, registration, reuse and
+rejection counters retain their meanings. Missing measurements/owner records
+are incomplete evidence, never inferred zeros; these native counters are not a
+macOS diagnostic contract.
+
+On the successful combined source path, seven qualification query sites become
+F_GETFL+statx+fstatfs, while DATA-only goes from four to three. These are static
+call counts, not measured syscall totals or elapsed speedup. Focused private
+tests compare real pinned descriptors and profile attempts, independent DATA/
+FLUSH fallback, incomplete statx masks/unsupported statx, nlink/status flags,
+copy-up/old lower EOF, second backend checking, fresh later receipt calls,
+release, default parsing and snapshot schema. Independent real guest and
+profile-off timing remain required before a performance claim.
+
+## 独占 upper 物理不存在缓存实验
+
+宿主 runner 可显式设置 `PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE=1`；
+`0` 或未设置默认关闭。worker 在创建任何文件系统前严格校验 `0|1`，
+非法值（含非 UTF-8）拒绝启动。仅全部 lower 显式 `Immutable`、
+`LinuxComplete` 且 guest cache 开启的 Overlay 才有资格；普通 passthrough、
+Mutable/未声明 lower 和关闭 guest cache 的设备不启用。
+
+启用者除目录镜像的 upper 命名空间独占契约外，还承诺 upper 根目录、物理祖先
+及 mount 身份在整个设备生命周期内保持稳定；宿主不得绕过 VM 改动 upper
+命名空间或目录权限等会改变路径检查结果的元数据。该显式承诺不能从只读挂载、
+frozen baseline 或某个 lower 的稳定性推导。Core 校验 preimage journal 与
+upper 的 canonical 物理路径，重叠（相同、祖先或后代）时拒绝启用，避免读观察
+在读操作期间修改同一个 upper 树。默认配置不作这个额外承诺。
+
+缓存只保留当前稳定 upper 命名空间 epoch 内的物理 `MissingLeaf` 和
+`UnavailableParent`，不缓存错误、upper 属性、合并赢家、whiteout/opaque
+判断、权限或日志决定。每个修改操作先持有原 VM 独占 operation lock，再建立
+Core mutation guard；整个修改期间禁用命中与填充。guard 在锁释放前清空并
+恢复缓存，成功、失败和展开退出均走同一 Drop 顺序。capture、restore、INIT
+和 DESTROY 使用同样的边界；原生 descriptor I/O admission、copy-up、对象绑定
+及其他串行化规则保持不变。
+
+配置和缓存不进入 filesystem snapshot schema；恢复 worker 按当前宿主配置
+重新设置。`PVISOR_FS_PROFILE=1` 的 overlay 记录
+`exclusive_upper_absence_cache_requested`（请求值 `0|1`），Core 的
+`exclusive_upper_absence_cache_enabled` 才是实际生效值；暂时 mutation 禁用
+不会改变配置值。hit/miss、MissingLeaf/UnavailableParent 分类和失效计数用于
+诊断宿主物理查询变化，不代表少了 FUSE 请求或已经测得时间收益。
+guest 属性与 entry TTL 保持原值；本实验不修改内核、KEEP_CACHE、WB 或 DAX，
+也不把未测候选作为默认优化。
 
 ## 不可变只读文件的 DAX
 
@@ -379,6 +645,18 @@ Linux x86_64 使用 `x86_64-unknown-linux-musl`；macOS 必须给宿主探针签
 `warm` 探针，核对关闭后 `READINDEX` 为零且普通 OPEN 等请求恢复。
 计时对比应关闭 profiling；上述请求统计用于确认两组实际走了不同路径。
 
+`atime` 模式使用现有固件诊断 read 后的属性失效，须设置
+`PVISOR_FS_PROFILE=1`。它对 root lower、root upper、Immutable share lower
+和 Mutable share lower，分别执行 `SIZE|MTIME`、`ATIME`、`BASIC_STATS`
+三种精确 `statx` 请求；每种请求比较不读、首次读和同 fd 的缓存读。
+每次先以 `AT_STATX_FORCE_SYNC` 刷新完整基本属性，再用同步诊断 ioctl
+分别包围 prime、read、首次 stat 和重复 stat，总计 36 个 `ATIME_CASE`、
+144 段和 288 个 token。输出包含各段 token、实际返回的属性和
+`prime_to_first_ns`，可核对 GETATTR、READ、OPEN 的差分并辨别属性期限到期；
+不睡眠、不修改内核或挂载的 atime 策略，也不把插桩耗时作为性能结果。
+token 在整个探针中唯一，`scope` 指定该段所属设备；只有该设备输出该 token。
+其他模式的 fixture 与固定计数保持不变。
+
 未打补丁的 guest 不置该 flag，行为与逐请求 FUSE 相同。旧宿主不回该
 flag，或对 `FUSE_READINDEX` 返回 `ENOSYS` 时，新 guest 关闭目录镜像。
 该镜像不解析 Lazy Image 的页格式，也不把元数据放进 DAX 窗口。固件需
@@ -501,6 +779,19 @@ guest 再发 kick。正在执行的请求不序列化进入快照；超时由现
 的 direct、hiprio 和 stolen 请求数；
 带 profiling 的运行只用于诊断，不作为性能验收。
 
+`PVISOR_FS_PROFILE=1` 还启用私有同步诊断 ioctl `0x400876f1`
+（Linux `_IOW('v', 0xf1, u64)`）。guest 在工具调用前预打开根与工作区的目录
+fd，传入恰好 8 字节 little-endian token；宿主在回复前复制该设备的 protocol、
+dispatch、overlay 与 Core 累计计数，并输出单行 `pvisor-fs-profile-phase`。
+根设备 scope 为 `rootfs`，其他设备保留 virtio-fs tag。请求使用独占 session
+guard，等已进入宿主的操作结束；它不触发 flush、capture 或额外物理查询。
+关闭 profiling 时保留普通未知 ioctl 的 ENOTTY 行为，没有新公开 API。
+`benchmark/pvisor/phase_profiles.py` 严格核对各设备的每个 token/实例及全部
+注册实例的最终记录，原始差分保留，并另行扣除标记自身的一个 IOCTL、
+80 个请求字节和一个 direct dispatch。区间包含整个 `checked()` 的子进程
+启动及原有校验，不能解释为精确的 `worker_ms` 边界；内核异步 FORGET 等
+生命周期工作仍可能跨界。该诊断使用独立封存 rootfs，计时批次不插入标记。
+
 staged OverlayFS 的新会话默认不协商 FUSE_WRITEBACK_CACHE；构造前设置
 `PVISOR_VM_FS_WRITEBACK=1` 可显式开启，`0` 可显式关闭。未显式覆盖的
 恢复会话保留快照中已协商的模式、guest 脏页与原生 handle 模式；首次
@@ -549,6 +840,22 @@ virtio-fs 挂载，任一同步失败以 125 退出。宿主直接读取 stage �
 旧 guest/host 未协商 bit 42 时仍使用原 writeback 关闭行为。
 
 真实 guest 回归（固件和输入路径使用绝对路径）：
+
+`guest_metadata_case` / `guest_metadata_guest.rs` 的 `review` 模式另外验证
+只读 fd 在时间戳、setxattr、removexattr 和 hard-link 引发 copy-up 后仍读原 lower；
+`review-time`、`review-setxattr`、`review-removexattr`、`review-link` 可分别复现。
+`review-poll` 注入 deferred OPEN 的 ENOENT，验证 poll 只返回 POLLERR。
+`bench` 在同一显式 Immutable share 内执行三轮 stat256、scan300 和 open10000；
+它属于 B-FS-ENG 独立 SDK 计时，不与普通 CLI 工作区的结果合并。
+`review*` 与 `full` 是正确性探针，不使用其运行耗时作为性能结果。固件 0045 修复保留原生 parallel
+lookup/目录 alias 协议、regular-file mutation 与 deferred-open 发布的串行化区间，
+以及 auto-submount 的同步最终 RELEASE；性能需独立比较修复前后固件。
+
+writeback 预算探针按目标挂载的 `st_dev` 定位 BDI，分别检查根与附加 share 的
+strict limit、最大份额和最低字节预留，避免把无关 loop 设备当成 virtio-fs。
+2026-10-16 的当前 supervisor 复测中，正常写回/卸载与 EIO→125 通过；普通 CLI
+在 writeback 开启后关闭文件、再 unlink、再 syncfs 可返回 ENOENT，0044 与 0045
+均可见。该时间戳回写路径尚未修复，不能据 SDK 正常用例通过宣称 CLI 写回完整通过。
 
 ```bash
 rustc --edition=2021 --target aarch64-unknown-linux-musl -C linker=rust-lld \

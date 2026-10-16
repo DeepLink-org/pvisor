@@ -235,6 +235,9 @@ pub struct OverlayCore {
     content_index: Option<crate::content_index::ContentIndex>,
     immutable_lower_cache: Mutex<HashMap<(usize, PathBuf), CachedLower>>,
     immutable_lower_cache_enabled: bool,
+    immutable_lower_negative_cache_enabled: bool,
+    exclusive_upper_absence_cache_enabled: bool,
+    exclusive_upper_absence_cache: Mutex<UpperAbsenceCache>,
     upper: PathBuf,
     work: Option<PathBuf>,
     excluded: BTreeSet<PathBuf>,
@@ -427,14 +430,51 @@ fn layer_metadata(root: &Path, rel: &Path) -> io::Result<Option<(PathBuf, Metada
 }
 
 const IMMUTABLE_LOWER_CACHE_LIMIT: usize = 4096;
+const UPPER_ABSENCE_CACHE_LIMIT: usize = 4096;
+
+#[derive(Debug, Default)]
+struct UpperAbsenceCache {
+    configured: bool,
+    mutating: bool,
+    epoch: u64,
+    entries: HashMap<PathBuf, CachedUpperAbsence>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum UpperAbsence {
+    MissingLeaf,
+    UnavailableParent,
+}
 
 #[derive(Clone, Debug)]
-struct CachedLower {
-    path: PathBuf,
-    metadata: Metadata,
+struct CachedUpperAbsence {
+    observation: UpperAbsence,
+    // Every successfully checked physical parent up to the absent leaf or
+    // unavailable ancestor. Never a request-local shortened prefix.
     parents: Vec<BackingIdentity>,
 }
 
+#[derive(Clone, Debug)]
+struct CachedLower {
+    // None is only a successfully checked physical MissingLeaf, never an
+    // unavailable parent, error, or merged-namespace absence.
+    entry: Option<(PathBuf, Metadata)>,
+    parents: Vec<BackingIdentity>,
+}
+
+fn lower_negative_cache_setting(setting: Option<&OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE must be 0 or 1",
+        )),
+    }
+}
+
+#[derive(Debug)]
 enum LayerMetadata {
     Entry(PathBuf, Metadata),
     MissingLeaf,
@@ -934,6 +974,13 @@ impl OverlayCore {
         preimage_dir: Option<PathBuf>,
         mode: BuildMode,
     ) -> io::Result<Self> {
+        // Reject invalid diagnostic settings before creating upper/work/journal
+        // directories or publishing any filesystem metadata.
+        let immutable_lower_cache_enabled =
+            std::env::var("PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE").as_deref() != Ok("1");
+        let immutable_lower_negative_cache_enabled = lower_negative_cache_setting(
+            std::env::var_os("PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE").as_deref(),
+        )? && immutable_lower_cache_enabled;
         let initialize = !matches!(mode, BuildMode::Existing);
         if initialize {
             fs::create_dir_all(&upper)?;
@@ -1071,9 +1118,10 @@ impl OverlayCore {
             immutable_lower_cache: Mutex::new(HashMap::new()),
             copy_up_owner: Arc::new(()),
             prepared_copy_ups: Mutex::new(None),
-            immutable_lower_cache_enabled: std::env::var("PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE")
-                .as_deref()
-                != Ok("1"),
+            immutable_lower_cache_enabled,
+            immutable_lower_negative_cache_enabled,
+            exclusive_upper_absence_cache_enabled: false,
+            exclusive_upper_absence_cache: Mutex::new(UpperAbsenceCache::default()),
             upper,
             work,
             excluded,
@@ -1085,6 +1133,11 @@ impl OverlayCore {
             fingerprint_flights: FingerprintFlights::default(),
             preimage_lock: Mutex::new(BTreeSet::new()),
         };
+        core.profile.add(
+            "immutable_lower_negative_cache_enabled",
+            u64::from(immutable_lower_negative_cache_enabled),
+        );
+        core.profile.add("exclusive_upper_absence_cache_enabled", 0);
         if initialize
             && crate::backend::read_dir(&core.upper)?.next().is_none()
             && let Some(root) = core.layout.lowers.first()
@@ -1605,6 +1658,90 @@ impl OverlayCore {
         self.profile.report()
     }
 
+    pub(crate) fn configure_exclusive_upper_absence_cache(
+        &mut self,
+        enabled: bool,
+    ) -> io::Result<()> {
+        if self
+            .exclusive_upper_absence_cache
+            .get_mut()
+            .map_err(|_| error(libc::EIO))?
+            .configured
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "exclusive upper absence cache must be configured once before requests",
+            ));
+        }
+        if enabled {
+            self.validate_exclusive_upper_namespace()?;
+        }
+        let cache = self
+            .exclusive_upper_absence_cache
+            .get_mut()
+            .map_err(|_| error(libc::EIO))?;
+        cache.configured = true;
+        self.exclusive_upper_absence_cache_enabled = enabled;
+        self.profile
+            .add("exclusive_upper_absence_cache_enabled", u64::from(enabled));
+        Ok(())
+    }
+
+    pub(crate) fn validate_exclusive_upper_namespace(&self) -> io::Result<()> {
+        if let Some(journal) = &self.preimage_dir {
+            // Read observations may publish journal names under a shared lock.
+            let upper = fs::canonicalize(&self.upper)?;
+            let journal = fs::canonicalize(journal)?;
+            if upper.starts_with(&journal) || journal.starts_with(&upper) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "exclusive upper namespace requires disjoint upper and preimage directories",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn exclusive_upper_absence_cache_enabled(&self) -> bool {
+        self.exclusive_upper_absence_cache_enabled
+    }
+
+    pub(crate) fn begin_upper_namespace_mutation(&self) -> bool {
+        if !self.exclusive_upper_absence_cache_enabled {
+            return false;
+        }
+        let mut cache = self
+            .exclusive_upper_absence_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            !cache.mutating,
+            "upper namespace mutation guards cannot nest"
+        );
+        cache.mutating = true;
+        cache.epoch = cache.epoch.wrapping_add(1);
+        cache.entries.clear();
+        self.profile
+            .add("exclusive_upper_absence_cache_invalidations", 1);
+        true
+    }
+
+    pub(crate) fn end_upper_namespace_mutation(&self) {
+        let mut cache = self
+            .exclusive_upper_absence_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(
+            cache.mutating,
+            "upper namespace mutation guard is not active"
+        );
+        cache.entries.clear();
+        cache.epoch = cache.epoch.wrapping_add(1);
+        cache.mutating = false;
+        self.profile
+            .add("exclusive_upper_absence_cache_invalidations", 1);
+    }
+
     // Reject multiply-linked files when denials exist; an inode index would
     // require scanning every lower and tracking external changes to avoid alias bypasses.
     fn require_unaliased(&self, path: &Path) -> io::Result<()> {
@@ -1726,8 +1863,9 @@ impl OverlayCore {
         is_opaque_directory(&self.upper_path(rel))
     }
 
-    // Only successful physical-lower observations are retained. Never retain a
-    // merged winner, absence, authorization, journal decision or upper state.
+    // Cache successful physical immutable-lower observations only. An explicit
+    // experiment may retain MissingLeaf; never retain an unavailable parent,
+    // error, merged winner/absence, authorization, journal decision or upper.
     fn lower_metadata_cached(
         &self,
         index: usize,
@@ -1762,14 +1900,37 @@ impl OverlayCore {
             if let Some(parents) = parents {
                 *parents = cached.parents;
             }
-            return Ok(LayerMetadata::Entry(cached.path, cached.metadata));
+            return Ok(match cached.entry {
+                Some((path, metadata)) => LayerMetadata::Entry(path, metadata),
+                None => {
+                    self.profile.add("immutable_lower_negative_cache_hits", 1);
+                    LayerMetadata::MissingLeaf
+                }
+            });
         }
         self.profile.add("immutable_lower_cache_misses", 1);
         let mut identities = Vec::new();
         // Always collect complete identities, never a request-local shortened prefix.
         let result =
-            layer_metadata_with_parents(root, rel, Some(&mut identities), &self.profile, None)?;
-        if let LayerMetadata::Entry(path, metadata) = &result {
+            layer_metadata_with_parents(root, rel, Some(&mut identities), &self.profile, None);
+        self.profile.add(
+            match &result {
+                Ok(LayerMetadata::Entry(..)) => "immutable_lower_cache_misses_present",
+                Ok(LayerMetadata::MissingLeaf) => "immutable_lower_cache_misses_missing_leaf",
+                Ok(LayerMetadata::UnavailableParent) => {
+                    "immutable_lower_cache_misses_unavailable_parent"
+                }
+                Err(_) => "immutable_lower_cache_misses_error",
+            },
+            1,
+        );
+        let result = result?;
+        let entry = match &result {
+            LayerMetadata::Entry(path, metadata) => Some(Some((path.clone(), metadata.clone()))),
+            LayerMetadata::MissingLeaf if self.immutable_lower_negative_cache_enabled => Some(None),
+            _ => None,
+        };
+        if let Some(entry) = entry {
             let mut cache = self
                 .immutable_lower_cache
                 .lock()
@@ -1782,11 +1943,127 @@ impl OverlayCore {
             cache.insert(
                 key,
                 CachedLower {
-                    path: path.clone(),
-                    metadata: metadata.clone(),
+                    entry,
                     parents: identities.clone(),
                 },
             );
+        }
+        if let Some(parents) = parents {
+            *parents = identities;
+        }
+        Ok(result)
+    }
+
+    fn upper_metadata_cached(
+        &self,
+        rel: &Path,
+        parents: Option<&mut Vec<BackingIdentity>>,
+        checked_directories: Option<&mut CheckedDirectories>,
+    ) -> io::Result<LayerMetadata> {
+        self.upper_metadata_cached_with(rel, parents, checked_directories, || {})
+    }
+
+    // Deterministic observation/publication interleaving for the epoch test.
+    fn upper_metadata_cached_with(
+        &self,
+        rel: &Path,
+        parents: Option<&mut Vec<BackingIdentity>>,
+        checked_directories: Option<&mut CheckedDirectories>,
+        after_observation: impl FnOnce(),
+    ) -> io::Result<LayerMetadata> {
+        let eligible = self.exclusive_upper_absence_cache_enabled
+            && self.upper.as_os_str().len() + rel.as_os_str().len() <= 4096
+            && rel.components().count() <= 256;
+        let state = eligible
+            .then(|| {
+                let cache = self
+                    .exclusive_upper_absence_cache
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                (!cache.mutating).then(|| (cache.epoch, cache.entries.get(rel).cloned()))
+            })
+            .flatten();
+        let Some((epoch, cached)) = state else {
+            return layer_metadata_with_parents(
+                &self.upper,
+                rel,
+                parents,
+                &self.profile,
+                checked_directories,
+            );
+        };
+        if let Some(cached) = cached {
+            self.profile.add("exclusive_upper_absence_cache_hits", 1);
+            if let Some(parents) = parents {
+                *parents = cached.parents;
+            }
+            return Ok(match cached.observation {
+                UpperAbsence::MissingLeaf => {
+                    self.profile
+                        .add("exclusive_upper_absence_cache_hits_missing_leaf", 1);
+                    LayerMetadata::MissingLeaf
+                }
+                UpperAbsence::UnavailableParent => {
+                    self.profile
+                        .add("exclusive_upper_absence_cache_hits_unavailable_parent", 1);
+                    LayerMetadata::UnavailableParent
+                }
+            });
+        }
+        self.profile.add("exclusive_upper_absence_cache_misses", 1);
+        let mut identities = Vec::new();
+        // The cache must retain every successful parent proof, even when a
+        // caller can reuse a shortened prefix within its current logical walk.
+        let result = layer_metadata_with_parents(
+            &self.upper,
+            rel,
+            Some(&mut identities),
+            &self.profile,
+            None,
+        );
+        self.profile.add(
+            match &result {
+                Ok(LayerMetadata::Entry(..)) => "exclusive_upper_absence_cache_misses_present",
+                Ok(LayerMetadata::MissingLeaf) => {
+                    "exclusive_upper_absence_cache_misses_missing_leaf"
+                }
+                Ok(LayerMetadata::UnavailableParent) => {
+                    "exclusive_upper_absence_cache_misses_unavailable_parent"
+                }
+                Err(_) => "exclusive_upper_absence_cache_misses_error",
+            },
+            1,
+        );
+        let result = result?;
+        after_observation();
+        let observation = match &result {
+            LayerMetadata::MissingLeaf => Some(UpperAbsence::MissingLeaf),
+            LayerMetadata::UnavailableParent => Some(UpperAbsence::UnavailableParent),
+            LayerMetadata::Entry(..) => None,
+        };
+        if let Some(observation) = observation {
+            let mut cache = self
+                .exclusive_upper_absence_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // A mutation may have begun and completed while a physical query
+            // was in flight. Never publish its old absence into the new epoch.
+            if !cache.mutating && cache.epoch == epoch {
+                if cache.entries.len() >= UPPER_ABSENCE_CACHE_LIMIT
+                    && !cache.entries.contains_key(rel)
+                {
+                    cache.entries.clear();
+                    self.profile
+                        .add("exclusive_upper_absence_cache_evictions", 1);
+                }
+                cache.entries.insert(
+                    rel.to_path_buf(),
+                    CachedUpperAbsence {
+                        observation,
+                        parents: identities.clone(),
+                    },
+                );
+            }
         }
         if let Some(parents) = parents {
             *parents = identities;
@@ -1804,11 +2081,9 @@ impl OverlayCore {
         mut parents: Option<&mut Vec<BackingIdentity>>,
         mut checked_directories: Option<&mut CheckedDirectories>,
     ) -> io::Result<Option<ResolvedMetadata>> {
-        match layer_metadata_with_parents(
-            &self.upper,
+        match self.upper_metadata_cached(
             rel,
             parents.as_deref_mut(),
-            &self.profile,
             checked_directories.as_deref_mut(),
         )? {
             LayerMetadata::Entry(path, metadata) => {
@@ -1829,11 +2104,11 @@ impl OverlayCore {
                 }
             }
             LayerMetadata::UnavailableParent => {
-                // This candidate's ancestors were just checked. A missing or
-                // non-directory parent cannot contain an overlay marker; in
-                // particular, never probe markers through an ancestor symlink.
-                // Do not retain absence: the next component/request and the
-                // final physical-parent check still inspect the upper afresh.
+                // This physical absence was checked afresh or retained within
+                // the explicitly exclusive upper namespace epoch. A missing
+                // or non-directory parent cannot contain an overlay marker;
+                // never probe markers through an ancestor symlink. No merged
+                // absence is retained, and unconfigured owners still requery.
                 self.profile.add("unavailable_upper_marker_skips", 1);
             }
         }
@@ -1906,10 +2181,11 @@ impl OverlayCore {
         let mut resolved = None;
         let count = rel.components().count();
         // Every logical prefix still checks merged precedence and aliases.
-        // Mutable layers reuse directory checks only within this walk, and the
-        // final component rechecks all their physical ancestors. Immutable
-        // physical observations alone may survive between requests; absence
-        // never does. The mutable host namespace remains non-atomic.
+        // Ordinary mutable layers reuse directory checks only within this
+        // walk, and the final component rechecks their physical ancestors.
+        // Declared immutable lowers and an explicitly exclusive upper absence
+        // epoch alone may retain physical observations. Merged absence never
+        // survives a request. The mutable host namespace remains non-atomic.
         let mut checked = (REUSE_DIRECTORIES && count > 2).then(CheckedDirectories::default);
         for (index, component) in rel.components().enumerate() {
             self.profile.add("resolve_components", 1);
@@ -1955,6 +2231,26 @@ impl OverlayCore {
         let mut parents = Vec::with_capacity(rel.components().count().saturating_sub(1));
         let entry = self.metadata_resolved_with_parents(rel, Some(&mut parents))?;
         Ok(BackingResolution { entry, parents })
+    }
+
+    /// Resolve once, preserving checked merged absence as a successful result.
+    ///
+    /// `None` is returned only after namespace, policy and alias checks succeed
+    /// and the required absence observation is published successfully. Errors
+    /// surfaced by resolution or publication remain errors, including exclusion
+    /// and journal ENOENT. The existing resolver interprets backend NotFound as
+    /// absence; `None` is therefore not proof of permanent physical/remote absence.
+    /// A caching caller must separately establish backend and namespace ownership.
+    /// Parent identities accompany positive results as in
+    /// `metadata_for_backing_lookup`; neither result authorizes a future request
+    /// or promises namespace stability beyond this checked observation.
+    pub fn metadata_for_backing_lookup_optional(
+        &self,
+        rel: &Path,
+    ) -> io::Result<Option<BackingResolution>> {
+        let mut parents = Vec::with_capacity(rel.components().count().saturating_sub(1));
+        let entry = self.metadata_optional_with_parents(rel, Some(&mut parents))?;
+        Ok(entry.map(|entry| BackingResolution { entry, parents }))
     }
 
     /// Prepare a no-follow file read and record the baseline observation before
@@ -2053,11 +2349,20 @@ impl OverlayCore {
         rel: &Path,
         parents: Option<&mut Vec<BackingIdentity>>,
     ) -> io::Result<ResolvedMetadata> {
+        self.metadata_optional_with_parents(rel, parents)?
+            .ok_or_else(|| error(libc::ENOENT))
+    }
+
+    fn metadata_optional_with_parents(
+        &self,
+        rel: &Path,
+        parents: Option<&mut Vec<BackingIdentity>>,
+    ) -> io::Result<Option<ResolvedMetadata>> {
         let _span = self.profile.span("metadata");
-        let Some(resolved) = self.resolve_metadata_checked_with_parents(rel, parents)? else {
+        let resolved = self.resolve_metadata_checked_with_parents(rel, parents)?;
+        if resolved.is_none() {
             self.observe_absence(rel)?;
-            return Err(error(libc::ENOENT));
-        };
+        }
         Ok(resolved)
     }
 
@@ -3146,6 +3451,543 @@ impl OverlayCore {
 
 #[cfg(test)]
 mod tests {
+    fn upper_absence_fixture(root: &Path) -> OverlayCore {
+        let lower = root.join("lower");
+        fs::create_dir_all(&lower).unwrap();
+        OverlayCore::new(vec![lower], root.join("upper"), None)
+            .unwrap()
+            .with_profile(crate::profile::Profile::enabled("upper-absence-test"))
+    }
+
+    fn upper_units(core: &OverlayCore, label: &str) -> u64 {
+        core.profile_report()
+            .unwrap()
+            .measurements
+            .get(label)
+            .map_or(0, |measurement| measurement.units)
+    }
+
+    #[test]
+    fn upper_absence_hits_restore_complete_parent_proofs_without_requerying() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut core = upper_absence_fixture(temp.path());
+        fs::create_dir_all(core.upper.join("a/b")).unwrap();
+        core.configure_exclusive_upper_absence_cache(true).unwrap();
+        for (path, expected_parents) in [("a/b/missing", 2), ("a/b/missing/child", 2)] {
+            let path = Path::new(path);
+            let mut checked = CheckedDirectories::default();
+            checked.observe(&core.upper, 2);
+            let mut first = Vec::new();
+            let observed = core
+                .upper_metadata_cached(path, Some(&mut first), Some(&mut checked))
+                .unwrap();
+            assert!(matches!(
+                observed,
+                LayerMetadata::MissingLeaf | LayerMetadata::UnavailableParent
+            ));
+            assert_eq!(first.len(), expected_parents);
+            let before = (
+                upper_units(&core, "layer_parent_stats"),
+                upper_units(&core, "layer_leaf_stats"),
+            );
+            let mut repeated = Vec::new();
+            core.upper_metadata_cached(path, Some(&mut repeated), None)
+                .unwrap();
+            assert_eq!(first, repeated);
+            assert_eq!(
+                before,
+                (
+                    upper_units(&core, "layer_parent_stats"),
+                    upper_units(&core, "layer_leaf_stats"),
+                )
+            );
+        }
+        assert_eq!(
+            upper_units(&core, "exclusive_upper_absence_cache_hits_missing_leaf"),
+            1
+        );
+        assert_eq!(
+            upper_units(
+                &core,
+                "exclusive_upper_absence_cache_hits_unavailable_parent"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn upper_absence_never_retains_entries_errors_or_merged_decisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut core = upper_absence_fixture(temp.path());
+        fs::write(core.upper.join("present"), b"first").unwrap();
+        fs::write(temp.path().join("lower/file"), b"lower").unwrap();
+        core.configure_exclusive_upper_absence_cache(true).unwrap();
+        for contents in [b"first".as_slice(), b"updated contents".as_slice()] {
+            // Existing-file data I/O need not change the namespace epoch.
+            fs::write(core.upper.join("present"), contents).unwrap();
+            let LayerMetadata::Entry(_, metadata) = core
+                .upper_metadata_cached(Path::new("present"), None, None)
+                .unwrap()
+            else {
+                panic!("expected fresh upper attributes")
+            };
+            assert_eq!(metadata.len(), contents.len() as u64);
+        }
+        assert!(
+            core.upper_metadata_cached(Path::new("bad\0name"), None, None)
+                .is_err()
+        );
+        assert!(
+            core.exclusive_upper_absence_cache
+                .lock()
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+        assert_eq!(
+            upper_units(&core, "exclusive_upper_absence_cache_misses_present"),
+            2
+        );
+        assert_eq!(
+            upper_units(&core, "exclusive_upper_absence_cache_misses_error"),
+            1
+        );
+        for _ in 0..2 {
+            assert!(
+                !core
+                    .metadata_resolved(Path::new("file"))
+                    .unwrap()
+                    .resolved
+                    .is_upper
+            );
+        }
+        assert!(core.begin_upper_namespace_mutation());
+        fs::write(core.upper.join(".wh.file"), b"").unwrap();
+        core.end_upper_namespace_mutation();
+        assert!(core.resolve_checked(Path::new("file")).unwrap().is_none());
+        assert!(core.begin_upper_namespace_mutation());
+        fs::remove_file(core.upper.join(".wh.file")).unwrap();
+        fs::write(core.upper.join(OPAQUE_NAME), b"").unwrap();
+        core.end_upper_namespace_mutation();
+        assert!(core.resolve_checked(Path::new("file")).unwrap().is_none());
+    }
+
+    #[test]
+    fn upper_absence_old_observation_cannot_publish_across_mutation_epoch() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut core = upper_absence_fixture(temp.path());
+        core.configure_exclusive_upper_absence_cache(true).unwrap();
+        // Fault-inject an observation that crossed a mutation despite the
+        // adapter's normal operation-lock protocol. It must not poison the
+        // following epoch, even when the mutation has already completed.
+        assert!(matches!(
+            core.upper_metadata_cached_with(Path::new("file"), None, None, || {
+                assert!(core.begin_upper_namespace_mutation());
+                fs::write(core.upper.join("file"), b"published").unwrap();
+                core.end_upper_namespace_mutation();
+            },)
+                .unwrap(),
+            LayerMetadata::MissingLeaf
+        ));
+        assert!(
+            core.exclusive_upper_absence_cache
+                .lock()
+                .unwrap()
+                .entries
+                .is_empty()
+        );
+        assert!(
+            core.metadata_resolved(Path::new("file"))
+                .unwrap()
+                .resolved
+                .is_upper
+        );
+    }
+
+    #[test]
+    fn upper_absence_is_bounded_and_bypasses_large_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut core = upper_absence_fixture(temp.path());
+        core.configure_exclusive_upper_absence_cache(true).unwrap();
+        for index in 0..UPPER_ABSENCE_CACHE_LIMIT + 2 {
+            assert!(matches!(
+                core.upper_metadata_cached(Path::new(&format!("missing-{index}")), None, None,)
+                    .unwrap(),
+                LayerMetadata::MissingLeaf
+            ));
+            assert!(
+                core.exclusive_upper_absence_cache
+                    .lock()
+                    .unwrap()
+                    .entries
+                    .len()
+                    <= UPPER_ABSENCE_CACHE_LIMIT
+            );
+        }
+        assert!(upper_units(&core, "exclusive_upper_absence_cache_evictions") > 0);
+        let before = upper_units(&core, "exclusive_upper_absence_cache_misses");
+        let deep = "a/".repeat(257) + "file";
+        core.upper_metadata_cached(Path::new(&deep), None, None)
+            .unwrap();
+        assert!(
+            core.upper_metadata_cached(Path::new(&"z".repeat(5000)), None, None)
+                .is_err()
+        );
+        assert_eq!(
+            upper_units(&core, "exclusive_upper_absence_cache_misses"),
+            before
+        );
+    }
+
+    #[test]
+    fn upper_absence_configuration_rejects_physical_journal_overlap() {
+        for relationship in ["same", "child", "parent", "symlink"] {
+            let temp = tempfile::tempdir().unwrap();
+            let lower = temp.path().join("lower");
+            let upper = temp.path().join("upper");
+            fs::create_dir(&lower).unwrap();
+            fs::create_dir(&upper).unwrap();
+            let journal = match relationship {
+                "same" => upper.clone(),
+                "child" => upper.join("journal"),
+                "parent" => temp.path().to_path_buf(),
+                "symlink" => {
+                    let alias = temp.path().join("journal-alias");
+                    std::os::unix::fs::symlink(&upper, &alias).unwrap();
+                    alias
+                }
+                _ => unreachable!(),
+            };
+            let mut core = OverlayCore::new_with_exclusions_and_preimages(
+                vec![lower],
+                upper,
+                None,
+                vec![],
+                Some(journal),
+            )
+            .unwrap();
+            assert_eq!(
+                core.configure_exclusive_upper_absence_cache(true)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+            assert!(!core.exclusive_upper_absence_cache_enabled());
+            core.configure_exclusive_upper_absence_cache(false).unwrap();
+            assert_eq!(
+                core.configure_exclusive_upper_absence_cache(true)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        let mut core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![lower],
+            temp.path().join("upper"),
+            None,
+            vec![],
+            Some(temp.path().join("journal")),
+        )
+        .unwrap();
+        core.configure_exclusive_upper_absence_cache(true).unwrap();
+        assert!(core.exclusive_upper_absence_cache_enabled());
+    }
+
+    #[test]
+    fn negative_cache_setting_is_explicit_and_rejects_non_boolean_values() {
+        assert!(!lower_negative_cache_setting(None).unwrap());
+        assert!(!lower_negative_cache_setting(Some(OsStr::new("0"))).unwrap());
+        assert!(lower_negative_cache_setting(Some(OsStr::new("1"))).unwrap());
+        for value in [
+            OsStr::new(""),
+            OsStr::new("true"),
+            OsStr::from_bytes(b"\xff"),
+        ] {
+            assert_eq!(
+                lower_negative_cache_setting(Some(value))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[test]
+    fn negative_cache_environment_is_checked_before_upper_creation() {
+        const CHILD: &str = "PVISOR_NEGATIVE_CACHE_CONTRACT_CHILD";
+        if let Ok(setting) = std::env::var(CHILD) {
+            let temp = tempfile::tempdir().unwrap();
+            let lower = temp.path().join("lower");
+            let upper = temp.path().join("upper");
+            let work = temp.path().join("work");
+            let journal = temp.path().join("journal");
+            fs::create_dir(&lower).unwrap();
+            let result = OverlayCore::new_with_exclusions_and_preimages(
+                vec![lower],
+                upper.clone(),
+                Some(work.clone()),
+                vec![],
+                Some(journal.clone()),
+            );
+            if setting == "invalid" {
+                assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
+                assert!(!upper.exists() && !work.exists() && !journal.exists());
+            } else {
+                let core = result.unwrap();
+                let expected = u64::from(setting == "1");
+                assert_eq!(core.profile_report().unwrap().measurements[
+                    "immutable_lower_negative_cache_enabled"].units, expected);
+            }
+            return;
+        }
+        for setting in ["0", "1", "invalid", "disabled"] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "core::tests::negative_cache_environment_is_checked_before_upper_creation",
+                ])
+                .env(CHILD, setting)
+                .env("PVISOR_FS_PROFILE", "1")
+                .env(
+                    "PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE",
+                    if setting == "disabled" { "1" } else { setting },
+                );
+            if setting == "disabled" {
+                command.env("PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE", "1");
+            } else {
+                command.env_remove("PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE");
+            }
+            assert!(command.status().unwrap().success());
+        }
+    }
+
+    #[test]
+    fn cached_missing_leaf_requires_the_declared_immutable_namespace_to_remain_sealed() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        let core = negative_cache_fixture(
+            vec![lower.clone()],
+            temp.path().join("upper"),
+            vec![LayerMutability::Immutable],
+            None,
+        );
+        assert!(core.resolve_checked(Path::new("absent")).unwrap().is_none());
+        // Intentionally violate the declaration: the old owner makes no
+        // external-change visibility promise. A new owner represents a new
+        // sealed generation, which must observe the newly present object.
+        fs::write(lower.join("absent"), b"new generation").unwrap();
+        assert!(core.resolve_checked(Path::new("absent")).unwrap().is_none());
+        let fresh = negative_cache_fixture(
+            vec![lower],
+            temp.path().join("fresh-upper"),
+            vec![LayerMutability::Immutable],
+            None,
+        );
+        assert_eq!(fresh.metadata(Path::new("absent")).unwrap().len(), 14);
+    }
+
+    fn negative_cache_fixture(
+        lowers: Vec<PathBuf>,
+        upper: PathBuf,
+        mutability: Vec<LayerMutability>,
+        journal: Option<PathBuf>,
+    ) -> OverlayCore {
+        let layout = OverlayLayout::new(lowers.clone(), lowers.last().unwrap().clone())
+            .unwrap()
+            .with_lower_mutability(mutability)
+            .unwrap();
+        let mut core = OverlayCore::new_for_layout(layout, upper, None, vec![], journal)
+            .unwrap()
+            .with_profile(crate::profile::Profile::enabled("negative-lower-test"));
+        core.immutable_lower_negative_cache_enabled = true;
+        core
+    }
+
+    #[test]
+    fn physical_negative_hit_keeps_parent_evidence_and_does_not_cache_parent_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir_all(lower.join("a")).unwrap();
+        let mut core = negative_cache_fixture(
+            vec![lower],
+            temp.path().join("upper"),
+            vec![LayerMutability::Immutable],
+            None,
+        );
+        let mut first = Vec::new();
+        assert!(matches!(
+            core.lower_metadata_cached(0, Path::new("a/missing"), Some(&mut first), None)
+                .unwrap(),
+            LayerMetadata::MissingLeaf
+        ));
+        assert_eq!(first.len(), 1);
+        let before = core.profile_report().unwrap();
+        let mut repeated = Vec::new();
+        assert!(matches!(
+            core.lower_metadata_cached(0, Path::new("a/missing"), Some(&mut repeated), None)
+                .unwrap(),
+            LayerMetadata::MissingLeaf
+        ));
+        assert_eq!(first, repeated);
+        let after = core.profile_report().unwrap();
+        for label in ["layer_parent_stats", "layer_leaf_stats"] {
+            assert_eq!(
+                before.measurements[label].units,
+                after.measurements[label].units
+            );
+        }
+        assert_eq!(
+            after.measurements["immutable_lower_negative_cache_hits"].units,
+            1
+        );
+        for _ in 0..2 {
+            assert!(matches!(
+                core.lower_metadata_cached(0, Path::new("unknown/file"), None, None)
+                    .unwrap(),
+                LayerMetadata::UnavailableParent
+            ));
+            assert_eq!(
+                core.lower_metadata_cached(0, Path::new("../escape"), None, None)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        assert_eq!(core.immutable_lower_cache.lock().unwrap().len(), 1);
+        core.immutable_lower_cache_enabled = false;
+        let before = core.profile_report().unwrap().measurements["layer_leaf_stats"].units;
+        core.lower_metadata_cached(0, Path::new("a/missing"), None, None)
+            .unwrap();
+        assert!(core.profile_report().unwrap().measurements["layer_leaf_stats"].units > before);
+    }
+
+    #[test]
+    fn negative_lower_does_not_override_other_layers_mutations_policy_or_journal() {
+        let temp = tempfile::tempdir().unwrap();
+        let live = temp.path().join("live");
+        let absent = temp.path().join("absent");
+        let stable = temp.path().join("stable");
+        let upper = temp.path().join("upper");
+        let journal = temp.path().join("journal");
+        for root in [&live, &absent, &stable] {
+            fs::create_dir_all(root.join("a")).unwrap();
+        }
+        fs::write(stable.join("a/file"), b"stable").unwrap();
+        let core = negative_cache_fixture(
+            vec![live.clone(), absent, stable.clone()],
+            upper.clone(),
+            vec![
+                LayerMutability::Mutable,
+                LayerMutability::Immutable,
+                LayerMutability::Immutable,
+            ],
+            Some(journal.clone()),
+        );
+        let path = Path::new("a/file");
+        for _ in 0..2 {
+            assert_eq!(core.metadata_resolved(path).unwrap().layer, 3);
+        }
+        assert!(
+            core.profile_report().unwrap().measurements["immutable_lower_negative_cache_hits"]
+                .units
+                > 0
+        );
+        core.prepare_file_read(path).unwrap();
+        core.metadata(Path::new("a/missing")).unwrap_err();
+        core.metadata(Path::new("a/missing")).unwrap_err();
+        let observations = crate::load_preimages(&journal).unwrap();
+        assert_eq!(observations.len(), 2);
+        assert!(
+            observations
+                .iter()
+                .any(|entry| entry.state == PathFingerprint::Absent)
+        );
+        fs::write(live.join(path), b"live").unwrap();
+        assert_eq!(core.metadata_resolved(path).unwrap().layer, 1);
+        fs::remove_file(live.join(path)).unwrap();
+        core.copy_up(path).unwrap();
+        assert_eq!(fs::read(upper.join(path)).unwrap(), b"stable");
+        fs::remove_file(upper.join(path)).unwrap();
+        fs::write(upper.join("a/.wh.file"), b"").unwrap();
+        assert!(core.resolve_checked(path).unwrap().is_none());
+        fs::remove_file(upper.join("a/.wh.file")).unwrap();
+        fs::write(upper.join("a/.wh..wh..opq"), b"").unwrap();
+        assert!(core.resolve_checked(path).unwrap().is_none());
+        fs::remove_file(upper.join("a/.wh..wh..opq")).unwrap();
+        assert_eq!(core.metadata_resolved(path).unwrap().layer, 3);
+        let core = core.with_access_policy(
+            &crate::FileAccessPolicy::new(vec!["a/file".into()], vec![]).unwrap(),
+        );
+        assert_eq!(
+            core.metadata(path).unwrap_err().raw_os_error(),
+            Some(libc::EACCES)
+        );
+    }
+
+    #[test]
+    fn negative_cache_shares_positive_bounds_and_never_infers_mutable_stability() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        let core = negative_cache_fixture(
+            vec![lower.clone()],
+            temp.path().join("upper"),
+            vec![LayerMutability::Immutable],
+            None,
+        );
+        for index in 0..IMMUTABLE_LOWER_CACHE_LIMIT + 2 {
+            assert!(matches!(
+                core.lower_metadata_cached(0, Path::new(&format!("absent-{index}")), None, None)
+                    .unwrap(),
+                LayerMetadata::MissingLeaf
+            ));
+            assert!(
+                core.immutable_lower_cache.lock().unwrap().len() <= IMMUTABLE_LOWER_CACHE_LIMIT
+            );
+        }
+        assert!(
+            core.profile_report().unwrap().measurements["immutable_lower_cache_evictions"].units
+                > 0
+        );
+        let before =
+            core.profile_report().unwrap().measurements["immutable_lower_cache_misses"].units;
+        let oversized = "a/".repeat(257) + "file";
+        core.lower_metadata_cached(0, Path::new(&oversized), None, None)
+            .unwrap();
+        let oversized = "z".repeat(5000);
+        assert!(
+            core.lower_metadata_cached(0, Path::new(&oversized), None, None)
+                .is_err()
+        );
+        assert_eq!(
+            core.profile_report().unwrap().measurements["immutable_lower_cache_misses"].units,
+            before
+        );
+        let mutable = negative_cache_fixture(
+            vec![lower.clone()],
+            temp.path().join("other-upper"),
+            vec![LayerMutability::Mutable],
+            None,
+        );
+        assert!(
+            mutable
+                .resolve_checked(Path::new("created-later"))
+                .unwrap()
+                .is_none()
+        );
+        fs::write(lower.join("created-later"), b"visible").unwrap();
+        assert_eq!(
+            mutable.metadata(Path::new("created-later")).unwrap().len(),
+            7
+        );
+        assert!(mutable.immutable_lower_cache.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn opaque_probes_observe_live_attributes_and_do_not_follow_xattr_links() {
         use super::*;

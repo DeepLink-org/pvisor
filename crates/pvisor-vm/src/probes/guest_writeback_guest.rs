@@ -3,8 +3,38 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     os::fd::AsRawFd,
+    os::unix::fs::MetadataExt,
     time::{Duration, Instant},
 };
+
+fn check_writeback_budget(mount: &str) {
+    let device = fs::metadata(mount).unwrap().dev();
+    let major = ((device >> 8) & 0xfff) | ((device >> 32) & 0xffff_f000);
+    let minor = (device & 0xff) | ((device >> 12) & 0xffff_ff00);
+    let path = format!("/sys/class/bdi/{major}:{minor}");
+    assert_eq!(
+        fs::read_to_string(format!("{path}/strict_limit"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    assert_eq!(
+        fs::read_to_string(format!("{path}/max_ratio"))
+            .unwrap()
+            .trim(),
+        "100"
+    );
+    let minimum: u64 = fs::read_to_string(format!("{path}/min_bytes"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(
+        minimum > 8 << 20,
+        "missing writeback working-set reservation for {mount}"
+    );
+    println!("WB_BDI_VERIFIED {mount} {major}:{minor} strict=1 max=100 min_bytes={minimum}");
+}
 
 unsafe extern "C" {
     fn mount(
@@ -40,34 +70,9 @@ fn main() {
         }
     }));
     if std::env::var("PVISOR_TEST_WRITEBACK_BUDGET").as_deref() == Ok("1") {
-        let mut checked = 0;
-        for entry in fs::read_dir("/sys/class/bdi").unwrap() {
-            let path = entry.unwrap().path();
-            if !path.join("strict_limit").exists() {
-                continue;
-            }
-            assert_eq!(
-                fs::read_to_string(path.join("strict_limit"))
-                    .unwrap()
-                    .trim(),
-                "1"
-            );
-            assert_eq!(
-                fs::read_to_string(path.join("max_ratio")).unwrap().trim(),
-                "100"
-            );
-            let minimum: u64 = fs::read_to_string(path.join("min_bytes"))
-                .unwrap()
-                .trim()
-                .parse()
-                .unwrap();
-            assert!(
-                minimum > 8 << 20,
-                "missing writeback working-set reservation"
-            );
-            checked += 1;
-        }
-        assert!(checked > 0, "no backing-device budget checked");
+        // Other registered devices (for example loop devices) do not negotiate
+        // this extension. Check the exact filesystem, not every system BDI.
+        check_writeback_budget("/");
     }
     fs::create_dir("/probe").unwrap();
     fs::create_dir("/batch-share").unwrap();
@@ -83,6 +88,9 @@ fn main() {
         },
         0
     );
+    if std::env::var("PVISOR_TEST_WRITEBACK_BUDGET").as_deref() == Ok("1") {
+        check_writeback_budget("/batch-share");
+    }
     if std::env::args().nth(1).as_deref() == Some("error") {
         fs::write("/batch-share/failure", vec![0x5a; 128 << 10]).unwrap();
         fs::create_dir("/probe/error-armed").unwrap();

@@ -389,6 +389,12 @@ struct VmOverrides {
     /// VM rootfs source: host (Linux default), <PATH>, or image=<PATH>.
     #[arg(long)]
     rootfs: Option<String>,
+    /// Private SnapshotStore containing a durably prepared rootfs.
+    #[arg(long, requires = "rootfs_base", conflicts_with = "rootfs")]
+    rootfs_base_store: Option<PathBuf>,
+    /// Prepared base id; requires --rootfs-base-store, not an immutability promise.
+    #[arg(long, requires = "rootfs_base_store", conflicts_with = "rootfs")]
+    rootfs_base: Option<String>,
     /// Content-addressed OCI image cache directory.
     #[arg(long = "image-store", value_name = "DIR")]
     vm_image_store: Option<PathBuf>,
@@ -507,6 +513,12 @@ impl FromStr for FilesystemAccessArg {
 #[derive(Debug, Clone, Default, Args, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OverlayFsOverrides {
+    /// Private SnapshotStore containing a durably prepared workspace generation.
+    #[arg(long, requires = "workspace_base", value_name = "STORE")]
+    workspace_base_store: Option<PathBuf>,
+    /// Fixed read generation; the live workspace remains the apply target.
+    #[arg(long, requires = "workspace_base_store", value_name = "ID")]
+    workspace_base: Option<String>,
     /// Stage persistence: checkpoint (default), or sync each first mutation.
     #[arg(long = "stage-durability", value_name = "checkpoint|strict")]
     durability: Option<pvisor_core::overlay::StageDurability>,
@@ -900,6 +912,14 @@ fn directory_size_bytes(root: &Path) -> anyhow::Result<u64> {
 
 async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     anyhow::ensure!(
+        args.overlayfs.workspace_base.is_none() && args.overlayfs.workspace_base_store.is_none(),
+        "prepared workspace requires a native VM; JSON --spec supports only host"
+    );
+    anyhow::ensure!(
+        args.vm.rootfs_base.is_none() && args.vm.rootfs_base_store.is_none(),
+        "prepared rootfs requires a VM executor; JSON --spec supports only host"
+    );
+    anyhow::ensure!(
         args.features.is_empty(),
         "feature workload-aware-memory-offloading requires a VM executor; JSON --spec supports only host"
     );
@@ -1138,6 +1158,22 @@ impl RunArgs {
 // typed executor outcome at the CLI boundary first, so a terminal signal arms
 // service-owned escalation even if subsequent driver cleanup never returns.
 struct TerminalReportingExecutor(Arc<dyn RunExecutor>);
+
+fn notify_executor_output(output: &pvisor::ExecutorOutput) {
+    if output
+        .failure
+        .as_ref()
+        .is_some_and(|f| f.kind == pvisor_core::RunFailureKind::ProcessExit)
+        && let Some(signal) = output.executor_observations.termination_signal
+        && [libc::SIGINT, libc::SIGTERM, libc::SIGHUP].contains(&signal)
+    {
+        super::host_service::notify_cancel(signal);
+    }
+    if output.state == RunState::Cancelled {
+        super::host_service::notify_cleanup();
+    }
+}
+
 #[async_trait::async_trait]
 impl RunExecutor for TerminalReportingExecutor {
     fn descriptor(&self) -> pvisor_core::ExecutorPlan {
@@ -1157,18 +1193,7 @@ impl RunExecutor for TerminalReportingExecutor {
     }
     async fn execute(&self, session: &pvisor::Session) -> pvisor::ExecutorOutput {
         let output = self.0.execute(session).await;
-        if output
-            .failure
-            .as_ref()
-            .is_some_and(|f| f.kind == pvisor_core::RunFailureKind::ProcessExit)
-            && let Some(signal) = output.executor_observations.termination_signal
-            && [libc::SIGINT, libc::SIGTERM, libc::SIGHUP].contains(&signal)
-        {
-            super::host_service::notify_cancel(signal);
-        }
-        if output.state == RunState::Cancelled {
-            super::host_service::notify_cleanup();
-        }
+        notify_executor_output(&output);
         output
     }
 }
@@ -1241,11 +1266,14 @@ async fn execute_config(
 ) -> anyhow::Result<i32> {
     config.features.validate(config.run.executor)?;
     normalize_filesystem_config(&mut config)?;
+    validate_prepared_workspace_request(&config)?;
     if config.run.executor == RunExecutorKind::Vm {
         config.vm.control_socket =
             super::host_service::vm_control_socket(config.vm.control_socket.as_deref())?;
     }
     pvisor::startup_mark_run("cli.rootfs_begin", &run_id);
+    let prepared_rootfs_owner = open_prepared_rootfs(&mut config)?;
+    let prepared_workspace_owner = open_prepared_workspace(&mut config)?;
     resolve_default_vm_rootfs(&mut config)?;
     let mut _image_attachment: Option<pvisor::cache::DirectImage> = None;
     let prepared_image = if config.run.executor == RunExecutorKind::Vm && config.vm.rootfs.is_none()
@@ -1470,6 +1498,7 @@ async fn execute_config(
         None => false,
     };
 
+    let mut native_workspace_executor = None;
     let executor: Arc<dyn RunExecutor> = match config.run.executor {
         #[cfg(target_os = "linux")]
         RunExecutorKind::Host => {
@@ -1526,14 +1555,21 @@ async fn execute_config(
         RunExecutorKind::Container => Arc::new(ContainerExecutor::new(config.container.clone())?),
         RunExecutorKind::Vm => {
             pvisor::startup_mark_run("cli.vm_inputs_ready", &run_id);
-            Arc::new(VmExecutor::new(config.vm.clone())?.with_features(config.features.clone())?)
+            let mut executor = VmExecutor::new(config.vm.clone())?;
+            if let Some(base) = prepared_rootfs_owner {
+                executor = executor.with_rootfs_base(base)?;
+            }
+            let executor = Arc::new(executor.with_features(config.features.clone())?);
+            if prepared_workspace_owner.is_some() {
+                native_workspace_executor = Some(executor.clone());
+            }
+            executor
         }
     };
     policy_source.validate_executor(&executor.descriptor())?;
     let mut builder = PVisor::builder()
         .storage(&storage)
         .event_sink(event_sink)
-        .executors(vec![report_terminal(executor)])
         .network(
             NetworkDriverConfig::new(
                 config.overlaynet.mode,
@@ -1566,6 +1602,18 @@ async fn execute_config(
     if let Some(overlay) = overlay {
         builder = builder.overlay(overlay);
     }
+    builder = if let Some(base) = prepared_workspace_owner {
+        builder
+            .with_workspace_base(
+                base,
+                workspace.clone(),
+                native_workspace_executor
+                    .context("prepared workspace requires a native VM executor")?,
+            )?
+            .on_executor_output(notify_executor_output)
+    } else {
+        builder.executors(vec![report_terminal(executor)])
+    };
     let pvisor = builder.build();
 
     let (program, program_args) = config
@@ -2108,7 +2156,8 @@ fn warn_safe_preset(config: &RunConfig, args: &RunArgs) {
 
 fn apply_cli(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()> {
     apply_cli_unvalidated(config, args)?;
-    config.features.validate(config.run.executor)
+    config.features.validate(config.run.executor)?;
+    validate_prepared_workspace_request(config)
 }
 
 // Safe patches are intermediate layers: validate VM-only features only after
@@ -2131,6 +2180,48 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
     let explicit_overlaynet_mode = args.overlaynet.overlaynet;
     let rootfs_source = args.vm.rootfs.clone();
     anyhow::ensure!(
+        args.vm.rootfs_base.is_some() == args.vm.rootfs_base_store.is_some(),
+        "--rootfs-base and --rootfs-base-store are required together"
+    );
+    if let (Some(id), Some(store)) = (&args.vm.rootfs_base, &args.vm.rootfs_base_store) {
+        anyhow::ensure!(
+            rootfs_source.is_none() && config.vm.rootfs.is_none() && config.vm.image.is_none(),
+            "prepared rootfs conflicts with configured host/path/image rootfs sources"
+        );
+        config.vm.prepared_rootfs = Some(pvisor::PreparedRootfs {
+            store: store.clone(),
+            base: pvisor::environment_snapshot::BaseReference { id: id.clone() },
+        });
+    }
+    anyhow::ensure!(
+        args.overlayfs.workspace_base.is_some() == args.overlayfs.workspace_base_store.is_some(),
+        "--workspace-base and --workspace-base-store are required together"
+    );
+    if let (Some(id), Some(store)) = (
+        &args.overlayfs.workspace_base,
+        &args.overlayfs.workspace_base_store,
+    ) {
+        let selected = pvisor::PreparedBase {
+            store: store.clone(),
+            base: pvisor::environment_snapshot::BaseReference { id: id.clone() },
+        };
+        let overlay = config
+            .overlayfs
+            .get_or_insert_with(OverlayFsSettings::default);
+        anyhow::ensure!(
+            overlay
+                .prepared_workspace
+                .as_ref()
+                .is_none_or(|existing| existing == &selected),
+            "--workspace-base conflicts with configured overlayfs.prepared_workspace"
+        );
+        overlay.prepared_workspace = Some(selected);
+    }
+    anyhow::ensure!(
+        rootfs_source.is_none() || config.vm.prepared_rootfs.is_none(),
+        "--rootfs conflicts with vm.prepared_rootfs"
+    );
+    anyhow::ensure!(
         !(args.vm.vm && explicit_executor.is_some_and(|executor| executor != RunExecutorKind::Vm)),
         "--vm cannot be combined with a non-vm --executor"
     );
@@ -2139,6 +2230,10 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
         || args.container.container_runtime.is_some()
         || args.container.container_image.is_some()
         || args.container.container_rootfs.is_some();
+    anyhow::ensure!(
+        config.vm.prepared_rootfs.is_none() || !container_rootfs,
+        "prepared rootfs cannot be combined with container execution"
+    );
     if host_rootfs {
         anyhow::ensure!(
             cfg!(target_os = "linux"),
@@ -2270,7 +2365,8 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
         config.run.executor = RunExecutorKind::Container;
     }
 
-    let enables_vm = config.vm.control_socket.is_some()
+    let enables_vm = args.vm.rootfs_base.is_some()
+        || config.vm.control_socket.is_some()
         || args.vm.vm_control_socket.is_some()
         || rootfs_source.is_some()
         || args.vm.vm_ram_compression == Some(true)
@@ -2328,8 +2424,13 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
     if enables_vm && explicit_executor.is_none() {
         config.run.executor = RunExecutorKind::Vm;
     }
+    anyhow::ensure!(
+        config.vm.prepared_rootfs.is_none() || config.run.executor == RunExecutorKind::Vm,
+        "prepared rootfs requires the VM executor"
+    );
 
-    let enables_overlayfs = !args.overlayfs.mounts.is_empty()
+    let enables_overlayfs = args.overlayfs.workspace_base.is_some()
+        || !args.overlayfs.mounts.is_empty()
         || args.overlayfs.durability.is_some()
         || !args.overlayfs.access.is_empty()
         || args.overlayfs.clear_access
@@ -2517,6 +2618,229 @@ fn apply_cli_unvalidated(config: &mut RunConfig, args: RunArgs) -> anyhow::Resul
     Ok(())
 }
 
+fn open_prepared_rootfs(
+    config: &mut RunConfig,
+) -> anyhow::Result<Option<pvisor::environment_snapshot::SnapshotBase>> {
+    let Some(mut selected) = config.vm.prepared_rootfs.clone() else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        config.run.executor == RunExecutorKind::Vm,
+        "prepared rootfs requires the VM executor"
+    );
+    anyhow::ensure!(
+        config.vm.image.is_none(),
+        "prepared rootfs conflicts with vm.image"
+    );
+    selected.store = selected
+        .store
+        .canonicalize()
+        .context("resolve prepared rootfs store")?;
+    super::host_service::reject_guest_exposure([selected.store.clone()])?;
+    let store = pvisor::environment_snapshot::SnapshotStore::new(&selected.store)?;
+    let base = store.open_prepared_rootfs(&selected.base)?;
+    if let Some(root) = &config.vm.rootfs {
+        anyhow::ensure!(
+            root.canonicalize()? == base.root(),
+            "prepared rootfs generation does not match vm.rootfs"
+        );
+    }
+    super::host_service::reject_guest_exposure([selected.store.clone(), base.root()])?;
+    let mut independent = prepared_guest_sources(config)?;
+    independent.extend(
+        config
+            .overlayfs
+            .as_ref()
+            .and_then(|overlay| overlay.prepared_workspace.as_ref())
+            .map(|selected| selected.store.clone()),
+    );
+    for path in independent {
+        let path = canonical_candidate(&path)?;
+        anyhow::ensure!(
+            !paths_overlap(&selected.store, &path),
+            "prepared rootfs store must be independent of workspace/stage/guest sources: {}",
+            path.display()
+        );
+    }
+    config.vm.rootfs = Some(base.root());
+    config.vm.rootfs_immutable = true;
+    config.vm.prepared_rootfs = Some(selected);
+    Ok(Some(base))
+}
+
+fn prepared_guest_sources(config: &RunConfig) -> anyhow::Result<Vec<PathBuf>> {
+    let mut independent = vec![
+        config
+            .run
+            .workspace
+            .clone()
+            .unwrap_or(std::env::current_dir()?),
+        default_run_home(),
+    ];
+    if let Some(overlay) = &config.overlayfs {
+        independent.extend(overlay.base.iter().cloned());
+        independent.extend(overlay.stage.iter().cloned());
+        independent.extend(overlay.merged_dir.iter().cloned());
+        independent.extend(overlay.compose.iter().cloned());
+        independent.extend(overlay.mount.iter().map(|mount| mount.source.clone()));
+    }
+    independent.extend(
+        config
+            .run
+            .filesystem
+            .iter()
+            .map(|access| PathBuf::from(&access.path)),
+    );
+    independent.extend(config.vm.ram_backing.iter().cloned());
+    independent.extend(config.vm.control_socket.iter().cloned());
+    independent.extend(config.vm.snapshot_filesystem_pool.iter().cloned());
+    independent.extend(config.record.destination.iter().cloned());
+    Ok(independent)
+}
+
+fn validate_prepared_workspace_request(config: &RunConfig) -> anyhow::Result<()> {
+    let Some(overlay) = config
+        .overlayfs
+        .as_ref()
+        .filter(|overlay| overlay.prepared_workspace.is_some())
+    else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        config.run.executor == RunExecutorKind::Vm,
+        "prepared workspace requires the native VM executor"
+    );
+    anyhow::ensure!(
+        config.vm.prepared_rootfs.is_some(),
+        "prepared workspace requires an explicit prepared rootfs selector"
+    );
+    anyhow::ensure!(
+        config.vm.image.is_none(),
+        "prepared workspace conflicts with vm.image"
+    );
+    anyhow::ensure!(
+        overlay.compose.is_empty()
+            && !overlay
+                .mount
+                .iter()
+                .any(|mount| mount.access == FilesystemAccessLevel::Stage),
+        "prepared workspace supports a single lower and cannot compose staged layers"
+    );
+    anyhow::ensure!(
+        config.run.filesystem.is_empty() && overlay.mount.is_empty(),
+        "prepared workspace does not support additional filesystem shares"
+    );
+    if let Some(target) = &overlay.target {
+        let live = config
+            .run
+            .workspace
+            .clone()
+            .unwrap_or(std::env::current_dir()?);
+        anyhow::ensure!(
+            target == &canonical_candidate(&live)?,
+            "prepared workspace does not support a custom guest workspace target"
+        );
+    }
+    Ok(())
+}
+
+fn open_prepared_workspace(
+    config: &mut RunConfig,
+) -> anyhow::Result<Option<pvisor::environment_snapshot::SnapshotBase>> {
+    let Some(mut selected) = config
+        .overlayfs
+        .as_ref()
+        .and_then(|overlay| overlay.prepared_workspace.clone())
+    else {
+        return Ok(None);
+    };
+    validate_prepared_workspace_request(config)?;
+    selected.store = selected
+        .store
+        .canonicalize()
+        .context("resolve prepared workspace store")?;
+    super::host_service::reject_guest_exposure([selected.store.clone()])?;
+    let rootfs = config
+        .vm
+        .prepared_rootfs
+        .as_ref()
+        .context("prepared rootfs selector missing")?;
+    let rootfs_store = rootfs.store.canonicalize()?;
+    anyhow::ensure!(
+        !paths_overlap(&selected.store, &rootfs_store),
+        "prepared workspace and rootfs stores must be independent trees"
+    );
+    let store = pvisor::environment_snapshot::SnapshotStore::new(&selected.store)?;
+    let base = store
+        .open_prepared_workspace(&selected.base)
+        .context("authenticate prepared workspace catalog")?;
+    super::host_service::reject_guest_exposure([selected.store.clone(), base.root()])?;
+    let mut independent = prepared_guest_sources(config)?;
+    independent.extend(config.vm.rootfs.iter().cloned());
+    independent.push(rootfs_store);
+    for path in independent {
+        let path = canonical_candidate(&path)?;
+        anyhow::ensure!(
+            !paths_overlap(&selected.store, &path),
+            "prepared workspace store must be independent of workspace/stage/guest sources: {}",
+            path.display()
+        );
+    }
+    if let Some(base_path) = config
+        .overlayfs
+        .as_ref()
+        .and_then(|overlay| overlay.base.as_ref())
+    {
+        let target = config
+            .run
+            .workspace
+            .clone()
+            .unwrap_or(std::env::current_dir()?);
+        anyhow::ensure!(
+            base_path.canonicalize()? == target.canonicalize()?,
+            "prepared workspace cannot replace the live workspace/base apply target"
+        );
+    }
+    // Preserve the live workspace/base for VM layout and apply. The runtime's
+    // typed, leased fresh-stage entry selects this generation as read baseline.
+    config.overlayfs.as_mut().unwrap().prepared_workspace = Some(selected);
+    Ok(Some(base))
+}
+
+/// Canonicalize an existing prefix without creating a requested destination.
+/// Missing suffixes must be ordinary names; symlinked ancestors are resolved.
+pub(super) fn canonical_candidate(path: &Path) -> anyhow::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut prefix = absolute.as_path();
+    let mut suffix = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(prefix) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                suffix.push(
+                    prefix
+                        .file_name()
+                        .context("destination has no existing ancestor")?
+                        .to_owned(),
+                );
+                prefix = prefix
+                    .parent()
+                    .context("destination has no existing ancestor")?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let mut resolved = prefix.canonicalize()?;
+    for name in suffix.into_iter().rev() {
+        resolved.push(name);
+    }
+    Ok(resolved)
+}
+
 fn resolve_default_vm_rootfs(config: &mut RunConfig) -> anyhow::Result<()> {
     if config.run.executor == RunExecutorKind::Vm
         && config.vm.rootfs.is_none()
@@ -2541,6 +2865,7 @@ fn validate_vm_rootfs_platform(config: &RunConfig) -> anyhow::Result<()> {
 }
 
 fn validate(config: &RunConfig, safe: bool) -> anyhow::Result<()> {
+    validate_prepared_workspace_request(config)?;
     anyhow::ensure!(
         config.vm.control_socket.is_none() || config.run.executor == RunExecutorKind::Vm,
         "vm.control_socket requires a VM executor"
@@ -3074,6 +3399,197 @@ mod tests {
         assert!("unsupported".parse::<StageDurability>().is_err());
     }
     use super::*;
+
+    fn prepared_workspace_config(root: &Path, workspace: &Path) -> RunConfig {
+        let mut config = RunConfig::default();
+        config.run.executor = RunExecutorKind::Vm;
+        config.run.workspace = Some(workspace.to_owned());
+        config.vm.prepared_rootfs = Some(pvisor::PreparedBase {
+            store: root.join("root-store"),
+            base: pvisor::BaseReference { id: "a".repeat(64) },
+        });
+        config.overlayfs = Some(OverlayFsSettings {
+            prepared_workspace: Some(pvisor::PreparedBase {
+                store: root.join("workspace-store"),
+                base: pvisor::BaseReference { id: "b".repeat(64) },
+            }),
+            ..Default::default()
+        });
+        config
+    }
+
+    #[test]
+    fn workspace_selector_flags_preserve_live_workspace_layout() {
+        let root = tempfile::tempdir().unwrap();
+        let live = root.path().join("live");
+        let rootfs = root.path().join("rootfs");
+        std::fs::create_dir(&live).unwrap();
+        std::fs::create_dir(&rootfs).unwrap();
+        let mut config = RunConfig::default();
+        config.run.workspace = Some(live.clone());
+        let args = preset_args(&[
+            "--vm",
+            "--rootfs-base-store",
+            "/private/root-store",
+            "--rootfs-base",
+            &"a".repeat(64),
+            "--workspace-base-store",
+            "/private/workspace-store",
+            "--workspace-base",
+            &"b".repeat(64),
+            "--",
+            "true",
+        ]);
+        apply_cli(&mut config, args).unwrap();
+        assert_eq!(config.run.workspace.as_ref(), Some(&live));
+        let selected = config
+            .overlayfs
+            .as_ref()
+            .unwrap()
+            .prepared_workspace
+            .as_ref()
+            .unwrap();
+        assert_eq!(selected.store, Path::new("/private/workspace-store"));
+        let wire = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            wire["overlayfs"]["prepared_workspace"]["base"]["id"],
+            "b".repeat(64)
+        );
+        config.vm.rootfs = Some(rootfs.clone());
+        config.overlayfs.as_mut().unwrap().base = Some(live.clone());
+        config.overlayfs.as_mut().unwrap().target = Some(live.clone());
+        assert_eq!(
+            resolve_vm_layout(&config).unwrap(),
+            (rootfs.canonicalize().unwrap(), live.canonicalize().unwrap())
+        );
+    }
+
+    #[test]
+    fn workspace_selector_rejects_unsupported_and_conflicting_requests() {
+        let root = tempfile::tempdir().unwrap();
+        let config = prepared_workspace_config(root.path(), root.path());
+        for executor in [RunExecutorKind::Host, RunExecutorKind::Container] {
+            let mut invalid = config.clone();
+            invalid.run.executor = executor;
+            assert!(
+                validate_prepared_workspace_request(&invalid)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("native VM")
+            );
+        }
+        let mut invalid = config.clone();
+        invalid.vm.prepared_rootfs = None;
+        assert!(
+            validate_prepared_workspace_request(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("explicit prepared rootfs")
+        );
+        let mut invalid = config.clone();
+        invalid
+            .overlayfs
+            .as_mut()
+            .unwrap()
+            .compose
+            .push(root.path().into());
+        assert!(
+            validate_prepared_workspace_request(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("single lower")
+        );
+        let mut invalid = config.clone();
+        invalid
+            .overlayfs
+            .as_mut()
+            .unwrap()
+            .mount
+            .push(pvisor::FilesystemMount {
+                source: root.path().into(),
+                target: None,
+                access: FilesystemAccessLevel::Stage,
+            });
+        assert!(
+            validate_prepared_workspace_request(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("single lower")
+        );
+        let mut invalid = config.clone();
+        invalid.overlayfs.as_mut().unwrap().target =
+            Some(root.path().join("different-guest-target"));
+        assert!(
+            validate_prepared_workspace_request(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("custom guest workspace target")
+        );
+        let mut invalid = config.clone();
+        invalid.run.filesystem.push(FilesystemCapability {
+            path: root.path().display().to_string(),
+            access: FilesystemAccess::Read,
+        });
+        assert!(
+            validate_prepared_workspace_request(&invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("additional filesystem shares")
+        );
+        let error = apply_cli(
+            &mut config.clone(),
+            preset_args(&[
+                "--vm",
+                "--workspace-base-store",
+                "/other/store",
+                "--workspace-base",
+                &"c".repeat(64),
+                "--",
+                "true",
+            ]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("conflicts with configured"));
+    }
+
+    #[test]
+    fn workspace_catalog_open_preserves_target_and_rejects_store_alias_exposure() {
+        use pvisor::environment_snapshot::SnapshotStore;
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let live = root.path().join("live");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::create_dir(&live).unwrap();
+        std::fs::write(source.join("file"), b"fixed generation").unwrap();
+        let root_store = SnapshotStore::new(&root.path().join("root-store")).unwrap();
+        let root_base = root_store.prepare_rootfs(&source).unwrap();
+        let workspace_store = SnapshotStore::new(&root.path().join("workspace-store")).unwrap();
+        let workspace_base = workspace_store.prepare_workspace(&source).unwrap();
+        let mut config = prepared_workspace_config(root.path(), &live);
+        config.vm.prepared_rootfs.as_mut().unwrap().base = root_base.reference().clone();
+        config.vm.rootfs = Some(root_base.root());
+        let overlay = config.overlayfs.as_mut().unwrap();
+        overlay.base = Some(live.clone());
+        overlay.target = Some(live.clone());
+        overlay.prepared_workspace.as_mut().unwrap().base = workspace_base.reference().clone();
+        let held = open_prepared_workspace(&mut config).unwrap().unwrap();
+        assert_eq!(held.root(), workspace_base.root());
+        assert_eq!(config.run.workspace.as_ref(), Some(&live));
+        assert_eq!(
+            config.overlayfs.as_ref().unwrap().base.as_ref(),
+            Some(&live)
+        );
+        let alias = root.path().join("workspace-alias");
+        std::os::unix::fs::symlink(root.path().join("workspace-store"), &alias).unwrap();
+        config.overlayfs.as_mut().unwrap().stage = Some(alias.join("forbidden-stage"));
+        assert!(
+            open_prepared_workspace(&mut config)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("independent of workspace/stage/guest sources")
+        );
+    }
 
     #[test]
     fn control_socket_selects_vm_and_preserves_or_overrides_config() {

@@ -2,20 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-use std::collections::BTreeMap;
 use std::collections::btree_map;
+use std::collections::BTreeMap;
 use std::convert::TryInto;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io;
-use std::mem::{self, MaybeUninit, size_of};
+use std::mem::{self, size_of, MaybeUninit};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use caps::{CapSet, Capability, has_cap};
+use caps::{has_cap, CapSet, Capability};
 use nix::request_code_read;
 
 use vm_memory::ByteValued;
@@ -33,6 +34,12 @@ const PARENT_DIR_CSTR: &[u8] = b"..\0";
 const EMPTY_CSTR: &[u8] = b"\0";
 const PROC_CSTR: &[u8] = b"/proc/self/fd\0";
 
+fn local_readonly_flush_filesystem(magic: u64) -> bool {
+    // EXT2/3/4 share EXT_SUPER_MAGIC. Never infer local semantics for FUSE,
+    // overlayfs, NFS, CIFS or another unknown backing from its pathname.
+    matches!(magic, 0xef53 | 0x5846_5342 | 0x9123_683e | 0x0102_1994)
+}
+
 type Inode = u64;
 type Handle = u64;
 
@@ -42,6 +49,34 @@ struct InodeAltKey {
     dev: libc::dev_t,
     mnt_id: u64,
 }
+
+/// Actual pinned immutable-lower descriptor identity, not a pathname cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(in crate::devices::virtio::fs) struct LowerDataIdentity {
+    pub dev: u64,
+    pub ino: u64,
+    pub mount_id: u64,
+    pub size: u64,
+}
+
+/// Evidence for one actual native OPEN, never authority for another OPEN.
+#[derive(Debug, Default)]
+pub(in crate::devices::virtio::fs) struct ReadonlyOpenQualification {
+    pub data_identity: Option<LowerDataIdentity>,
+    pub local_flush: bool,
+}
+
+pub(in crate::devices::virtio::fs) const OPEN_QUALIFICATION_COUNTERS: &[&str] = &[
+    "open_qualification_fgetfl_attempts",
+    "open_qualification_fstat_attempts",
+    "open_qualification_statx_attempts",
+    "open_qualification_fstatfs_attempts",
+    "open_qualification_shared_attempts",
+    "open_qualification_legacy_flush_attempts",
+    "open_qualification_legacy_data_attempts",
+    "open_qualification_receipt_hits",
+    "open_qualification_receipt_misses",
+];
 
 struct InodeData {
     inode: Inode,
@@ -239,7 +274,7 @@ struct LinuxStatx {
 const STATX_BASIC_STATS: u32 = 0x0000_07ff;
 const STATX_MNT_ID: u32 = 0x0000_1000;
 
-fn statx(f: &File) -> io::Result<(libc::stat64, u64)> {
+fn statx_evidence(f: &File) -> io::Result<(libc::stat64, u64, u32)> {
     let mut stx = MaybeUninit::<LinuxStatx>::zeroed();
 
     // Safe because this is a constant value and a valid C string.
@@ -284,9 +319,78 @@ fn statx(f: &File) -> io::Result<(libc::stat64, u64)> {
         st.st_mtime_nsec = stx.stx_mtime.tv_nsec as _;
         st.st_ctime = stx.stx_ctime.tv_sec;
         st.st_ctime_nsec = stx.stx_ctime.tv_nsec as _;
-        Ok((st, stx.stx_mnt_id))
+        Ok((st, stx.stx_mnt_id, stx.stx_mask))
     } else {
         Err(io::Error::last_os_error())
+    }
+}
+
+fn statx(f: &File) -> io::Result<(libc::stat64, u64)> {
+    statx_evidence(f).map(|(stat, mount, _)| (stat, mount))
+}
+
+fn lower_data_identity_from_evidence(
+    flags: i32,
+    stat: &libc::stat64,
+    mount_id: u64,
+    mask: u32,
+) -> Option<LowerDataIdentity> {
+    const REQUIRED: u32 = 0x0001 | 0x0004 | 0x0100 | 0x0200 | STATX_MNT_ID;
+    (flags & libc::O_ACCMODE == libc::O_RDONLY
+        && flags & (libc::O_DIRECT | libc::O_PATH) == 0
+        && mask & REQUIRED == REQUIRED
+        && mount_id != 0
+        && stat.st_mode & libc::S_IFMT == libc::S_IFREG
+        && stat.st_nlink == 1
+        && stat.st_size >= 0)
+        .then_some(LowerDataIdentity {
+            dev: stat.st_dev,
+            ino: stat.st_ino,
+            mount_id,
+            size: stat.st_size as u64,
+        })
+}
+
+// Complete statx replaces fstat only for this already pinned descriptor.
+// Incomplete/unsupported statx must not narrow FLUSH's independent contract.
+fn qualify_readonly_file_evidence(
+    file: &File,
+    flags: i32,
+    evidence: io::Result<(libc::stat64, u64, u32)>,
+    want_flush: bool,
+    profile: &pvisor_overlay_core::profile::Profile,
+) -> ReadonlyOpenQualification {
+    let data_identity = evidence.as_ref().ok().and_then(|(stat, mount, mask)| {
+        lower_data_identity_from_evidence(flags, stat, *mount, *mask)
+    });
+    let regular = evidence
+        .as_ref()
+        .ok()
+        .filter(|(_, _, mask)| mask & 0x0001 != 0)
+        .map(|(stat, _, _)| stat.st_mode & libc::S_IFMT == libc::S_IFREG);
+    let flush_regular = want_flush
+        && flags & libc::O_ACCMODE == libc::O_RDONLY
+        && regular.unwrap_or_else(|| {
+            profile.add("open_qualification_fstat_attempts", 1);
+            file.metadata().is_ok_and(|metadata| metadata.is_file())
+        });
+    if data_identity.is_none() && !flush_regular {
+        return ReadonlyOpenQualification::default();
+    }
+    let mut filesystem = MaybeUninit::<libc::statfs>::zeroed();
+    profile.add("open_qualification_fstatfs_attempts", 1);
+    // SAFETY: caller pins the file; initialized output remains writable.
+    if unsafe { libc::fstatfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } < 0 {
+        return ReadonlyOpenQualification::default();
+    }
+    // SAFETY: successful fstatfs initialized the complete output.
+    let filesystem = unsafe { filesystem.assume_init() };
+    if !local_readonly_flush_filesystem(filesystem.f_type as u64 & 0xffff_ffff) {
+        return ReadonlyOpenQualification::default();
+    }
+    ReadonlyOpenQualification {
+        data_identity,
+        local_flush: flush_regular,
     }
 }
 
@@ -569,6 +673,142 @@ impl PassthroughFs {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    /// Classify this actual pinned open description, not a cached pathname.
+    /// Unknown/remote filesystems and failed evidence retain ordinary FLUSH.
+    pub(in crate::devices::virtio::fs) fn readonly_local_flush_eligible_profiled(
+        &self,
+        inode: Inode,
+        handle: Handle,
+        profile: &pvisor_overlay_core::profile::Profile,
+    ) -> bool {
+        profile.add("open_qualification_legacy_flush_attempts", 1);
+        let Ok(lease) = self.lease_handle(inode, handle) else {
+            return false;
+        };
+        let file = lease.0.file.read().unwrap();
+        profile.add("open_qualification_fstat_attempts", 1);
+        if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+            return false;
+        }
+        // SAFETY: the lease and read guard pin this descriptor throughout all
+        // evidence queries. No descriptor flags or file contents are changed.
+        profile.add("open_qualification_fgetfl_attempts", 1);
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0 || flags & libc::O_ACCMODE != libc::O_RDONLY {
+            return false;
+        }
+        let mut filesystem = MaybeUninit::<libc::statfs>::zeroed();
+        // SAFETY: the output is writable and the descriptor remains pinned.
+        profile.add("open_qualification_fstatfs_attempts", 1);
+        if unsafe { libc::fstatfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } < 0 {
+            return false;
+        }
+        // SAFETY: successful fstatfs initialized the complete output.
+        let filesystem = unsafe { filesystem.assume_init() };
+        local_readonly_flush_filesystem(filesystem.f_type as u64 & 0xffff_ffff)
+    }
+
+    /// Gather identity and EOF from the actual successful native OPEN. This
+    /// optional optimization rejects incomplete evidence without failing OPEN.
+    pub(in crate::devices::virtio::fs) fn lower_data_identity_profiled(
+        &self,
+        inode: Inode,
+        handle: Handle,
+        profile: &pvisor_overlay_core::profile::Profile,
+    ) -> Option<LowerDataIdentity> {
+        profile.add("open_qualification_legacy_data_attempts", 1);
+        let lease = self.lease_handle(inode, handle).ok()?;
+        let file = lease.0.file.read().unwrap();
+        // SAFETY: the Arc lease and read guard pin the open description.
+        profile.add("open_qualification_fgetfl_attempts", 1);
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0
+            || flags & libc::O_ACCMODE != libc::O_RDONLY
+            || flags & (libc::O_DIRECT | libc::O_PATH) != 0
+        {
+            return None;
+        }
+        profile.add("open_qualification_fstat_attempts", 1);
+        let metadata = file.metadata().ok()?;
+        if !metadata.is_file() || metadata.nlink() != 1 {
+            return None;
+        }
+        profile.add("open_qualification_statx_attempts", 1);
+        let (stat, mount_id, mask) = statx_evidence(&file).ok()?;
+        const REQUIRED: u32 = 0x0001 | 0x0004 | 0x0100 | 0x0200 | STATX_MNT_ID;
+        if mask & REQUIRED != REQUIRED
+            || mount_id == 0
+            || stat.st_size < 0
+            || stat.st_dev != metadata.dev()
+            || stat.st_ino != metadata.ino()
+            || stat.st_size as u64 != metadata.len()
+            || stat.st_nlink != 1
+        {
+            return None;
+        }
+        let mut filesystem = MaybeUninit::<libc::statfs>::zeroed();
+        // SAFETY: initialized output storage; the descriptor remains pinned.
+        profile.add("open_qualification_fstatfs_attempts", 1);
+        if unsafe { libc::fstatfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } < 0 {
+            return None;
+        }
+        // SAFETY: successful fstatfs initialized this structure.
+        let filesystem = unsafe { filesystem.assume_init() };
+        if !local_readonly_flush_filesystem(filesystem.f_type as u64 & 0xffff_ffff) {
+            return None;
+        }
+        Some(LowerDataIdentity {
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+            mount_id,
+            size: metadata.len(),
+        })
+    }
+
+    /// Share actual-FD evidence within this OPEN only. DATA requires complete
+    /// statx identity; FLUSH can retain its broader regular-file qualification
+    /// even when DATA declines. The caller still owns all outer admission.
+    pub(in crate::devices::virtio::fs) fn qualify_readonly_open(
+        &self,
+        inode: Inode,
+        handle: Handle,
+        want_flush: bool,
+        profile: &pvisor_overlay_core::profile::Profile,
+    ) -> ReadonlyOpenQualification {
+        profile.add("open_qualification_shared_attempts", 1);
+        let Ok(lease) = self.lease_handle(inode, handle) else {
+            return ReadonlyOpenQualification::default();
+        };
+        let file = lease.0.file.read().unwrap();
+        profile.add("open_qualification_fgetfl_attempts", 1);
+        // SAFETY: the lease/read guard pins this actual open description.
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        if flags < 0 || flags & libc::O_ACCMODE != libc::O_RDONLY {
+            return ReadonlyOpenQualification::default();
+        }
+        profile.add("open_qualification_statx_attempts", 1);
+        let evidence = statx_evidence(&file);
+        qualify_readonly_file_evidence(&file, flags, evidence, want_flush, profile)
+    }
+
+    #[cfg(test)]
+    pub(in crate::devices::virtio::fs) fn readonly_local_flush_eligible(
+        &self,
+        inode: Inode,
+        handle: Handle,
+    ) -> bool {
+        self.readonly_local_flush_eligible_profiled(inode, handle, &Default::default())
+    }
+
+    #[cfg(test)]
+    pub(in crate::devices::virtio::fs) fn lower_data_identity(
+        &self,
+        inode: Inode,
+        handle: Handle,
+    ) -> Option<LowerDataIdentity> {
+        self.lower_data_identity_profiled(inode, handle, &Default::default())
     }
 
     pub(in crate::devices::virtio::fs) fn sync_leased(
@@ -2255,6 +2495,322 @@ impl PassthroughFs {
 mod tests {
     use super::*;
 
+    fn qualification_profile(name: &str) -> pvisor_overlay_core::profile::Profile {
+        let profile = pvisor_overlay_core::profile::Profile::enabled(name);
+        for label in OPEN_QUALIFICATION_COUNTERS {
+            profile.add(label, 0);
+        }
+        profile
+    }
+
+    #[test]
+    fn local_flush_filesystems_exclude_remote_and_unknown_magic() {
+        for magic in [0xef53, 0x5846_5342, 0x9123_683e, 0x0102_1994] {
+            assert!(local_readonly_flush_filesystem(magic));
+        }
+        for magic in [0, 0x6969, 0x6573_5546, 0xff53_4d42, 0x794c_7630, u64::MAX] {
+            assert!(!local_readonly_flush_filesystem(magic));
+        }
+    }
+
+    #[test]
+    fn shared_open_qualification_matches_separate_checks_on_each_pinned_descriptor() {
+        let root = tempfile::tempdir_in("/dev/shm").unwrap();
+        let path = root.path().join("file");
+        std::fs::write(&path, b"original").unwrap();
+        let fs = PassthroughFs::new(
+            Config {
+                root_dir: root.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
+        let ro = fs
+            .open(ctx, inode, false, libc::O_RDONLY as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let legacy = qualification_profile("qualification-legacy");
+        let identity = fs.lower_data_identity_profiled(inode, ro, &legacy).unwrap();
+        assert!(fs.readonly_local_flush_eligible_profiled(inode, ro, &legacy));
+        let shared = qualification_profile("qualification-shared");
+        let qualified = fs.qualify_readonly_open(inode, ro, true, &shared);
+        assert_eq!(qualified.data_identity, Some(identity));
+        assert!(qualified.local_flush);
+        let legacy = legacy.report().unwrap();
+        let shared = shared.report().unwrap();
+        for (label, separate, combined) in [
+            ("open_qualification_fgetfl_attempts", 2, 1),
+            ("open_qualification_fstat_attempts", 2, 0),
+            ("open_qualification_statx_attempts", 1, 1),
+            ("open_qualification_fstatfs_attempts", 2, 1),
+        ] {
+            assert_eq!(legacy.measurements[label].units, separate);
+            assert_eq!(shared.measurements[label].units, combined);
+        }
+        // The descriptor remains the old object after name replacement; a new
+        // lookup/open gets a separate receipt rather than a pathname cache hit.
+        std::fs::rename(&path, root.path().join("saved")).unwrap();
+        std::fs::write(&path, b"new object").unwrap();
+        let later = qualification_profile("qualification-later");
+        assert_eq!(
+            fs.qualify_readonly_open(inode, ro, true, &later)
+                .data_identity,
+            Some(identity)
+        );
+        let replacement = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
+        let replacement_handle = fs
+            .open(ctx, replacement, false, libc::O_RDONLY as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let new_identity = fs
+            .qualify_readonly_open(replacement, replacement_handle, true, &later)
+            .data_identity
+            .unwrap();
+        assert_ne!(new_identity.ino, identity.ino);
+        assert_eq!(new_identity.size, 10);
+        // Mutable status flags are rechecked, never cached across classifiers.
+        let lease = fs.lease_handle(replacement, replacement_handle).unwrap();
+        let descriptor = lease.0.file.read().unwrap();
+        let original_flags = unsafe { libc::fcntl(descriptor.as_raw_fd(), libc::F_GETFL) };
+        assert!(original_flags >= 0);
+        assert_eq!(
+            unsafe {
+                libc::fcntl(
+                    descriptor.as_raw_fd(),
+                    libc::F_SETFL,
+                    original_flags | libc::O_APPEND,
+                )
+            },
+            0
+        );
+        drop(descriptor);
+        assert_eq!(
+            fs.qualify_readonly_open(replacement, replacement_handle, true, &later)
+                .data_identity,
+            Some(new_identity)
+        );
+        drop(lease);
+        std::fs::hard_link(root.path().join("saved"), root.path().join("alias")).unwrap();
+        let linked = fs.qualify_readonly_open(inode, ro, true, &later);
+        assert!(linked.data_identity.is_none());
+        assert!(linked.local_flush); // FLUSH never required a single hardlink.
+        let rw = fs
+            .open(ctx, replacement, false, libc::O_RDWR as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let writable = fs.qualify_readonly_open(replacement, rw, true, &later);
+        assert!(writable.data_identity.is_none() && !writable.local_flush);
+        let directory = fs
+            .opendir(ctx, fuse::ROOT_ID, libc::O_RDONLY as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let qualified_directory = fs.qualify_readonly_open(fuse::ROOT_ID, directory, true, &later);
+        assert!(qualified_directory.data_identity.is_none() && !qualified_directory.local_flush);
+        fs.releasedir(ctx, fuse::ROOT_ID, 0, directory).unwrap();
+        assert!(fs
+            .qualify_readonly_open(inode + 100, ro, true, &later)
+            .data_identity
+            .is_none());
+        for (node, handle) in [
+            (inode, ro),
+            (replacement, replacement_handle),
+            (replacement, rw),
+        ] {
+            fs.release(ctx, node, 0, handle, false, false, None)
+                .unwrap();
+            let closed = fs.qualify_readonly_open(node, handle, true, &later);
+            assert!(closed.data_identity.is_none() && !closed.local_flush);
+        }
+        fs.forget(ctx, inode, 1);
+        fs.forget(ctx, replacement, 1);
+    }
+
+    #[test]
+    fn shared_open_evidence_rejects_incomplete_data_but_preserves_flush_fallback() {
+        let root = tempfile::tempdir_in("/dev/shm").unwrap();
+        let path = root.path().join("file");
+        std::fs::write(&path, b"original").unwrap();
+        let file = File::open(&path).unwrap();
+        // Use actual descriptor evidence and the production fallback helper;
+        // control only unsupported/missing statx result bits and errno.
+        for missing in [0x0001, 0x0004, 0x0100, 0x0200, STATX_MNT_ID] {
+            let (stat, mount, mask) = statx_evidence(&file).unwrap();
+            let profile = qualification_profile("qualification-mask");
+            let qualified = qualify_readonly_file_evidence(
+                &file,
+                libc::O_RDONLY,
+                Ok((stat, mount, mask & !missing)),
+                true,
+                &profile,
+            );
+            assert!(qualified.data_identity.is_none());
+            assert!(qualified.local_flush);
+            let report = profile.report().unwrap();
+            assert_eq!(
+                report.measurements["open_qualification_fstat_attempts"].units,
+                u64::from(missing == 0x0001)
+            );
+            assert_eq!(
+                report.measurements["open_qualification_fstatfs_attempts"].units,
+                1
+            );
+        }
+        for want_flush in [false, true] {
+            let profile = qualification_profile("qualification-unsupported");
+            let qualified = qualify_readonly_file_evidence(
+                &file,
+                libc::O_RDONLY,
+                Err(io::Error::from_raw_os_error(libc::ENOSYS)),
+                want_flush,
+                &profile,
+            );
+            assert!(qualified.data_identity.is_none());
+            assert_eq!(qualified.local_flush, want_flush);
+            let report = profile.report().unwrap();
+            for label in [
+                "open_qualification_fstat_attempts",
+                "open_qualification_fstatfs_attempts",
+            ] {
+                assert_eq!(report.measurements[label].units, u64::from(want_flush));
+            }
+        }
+        let (mut stat, mount, mask) = statx_evidence(&file).unwrap();
+        assert!(lower_data_identity_from_evidence(libc::O_RDONLY, &stat, mount, mask).is_some());
+        for flags in [libc::O_WRONLY, libc::O_RDWR, libc::O_DIRECT, libc::O_PATH] {
+            assert!(lower_data_identity_from_evidence(flags, &stat, mount, mask).is_none());
+        }
+        assert!(lower_data_identity_from_evidence(libc::O_RDONLY, &stat, 0, mask).is_none());
+        stat.st_size = -1;
+        assert!(lower_data_identity_from_evidence(libc::O_RDONLY, &stat, mount, mask).is_none());
+    }
+
+    #[test]
+    fn local_flush_qualification_uses_live_pinned_readonly_regular_descriptors() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"original").unwrap();
+        let fs = PassthroughFs::new(
+            Config {
+                root_dir: root.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
+        let readonly = fs
+            .open(ctx, inode, false, libc::O_RDONLY as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let writable = fs
+            .open(ctx, inode, false, libc::O_RDWR as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        assert!(!fs.readonly_local_flush_eligible(inode, writable));
+        assert!(!fs.readonly_local_flush_eligible(inode, u64::MAX));
+        let lease = fs.lease_handle(inode, readonly).unwrap();
+        let mut filesystem = MaybeUninit::<libc::statfs>::zeroed();
+        let file = lease.0.file.read().unwrap();
+        // SAFETY: the leased file and initialized output live across fstatfs.
+        assert_eq!(
+            unsafe { libc::fstatfs(file.as_raw_fd(), filesystem.as_mut_ptr()) },
+            0
+        );
+        let magic = unsafe { filesystem.assume_init() }.f_type as u64 & 0xffff_ffff;
+        drop(file);
+        // Removing/replacing the pathname cannot requalify a different object.
+        std::fs::remove_file(root.path().join("file")).unwrap();
+        std::fs::create_dir(root.path().join("file")).unwrap();
+        assert_eq!(
+            fs.readonly_local_flush_eligible(inode, readonly),
+            local_readonly_flush_filesystem(magic)
+        );
+        let directory = fs
+            .opendir(ctx, fuse::ROOT_ID, libc::O_RDONLY as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        assert!(!fs.readonly_local_flush_eligible(fuse::ROOT_ID, directory));
+        fs.release(ctx, inode, 0, readonly, false, false, None)
+            .unwrap();
+        assert!(!fs.readonly_local_flush_eligible(inode, readonly));
+        fs.release(ctx, inode, 0, writable, false, false, None)
+            .unwrap();
+        fs.releasedir(ctx, fuse::ROOT_ID, 0, directory).unwrap();
+        fs.forget(ctx, inode, 1);
+    }
+
+    #[test]
+    fn lower_data_identity_is_bound_to_the_readonly_single_link_open_description() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("file");
+        std::fs::write(&path, b"original").unwrap();
+        let fs = PassthroughFs::new(
+            Config {
+                root_dir: root.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
+        let ro = fs
+            .open(ctx, inode, false, libc::O_RDONLY as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let rw = fs
+            .open(ctx, inode, false, libc::O_RDWR as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        assert!(fs.lower_data_identity(inode, rw).is_none());
+        assert!(fs.lower_data_identity(inode + 100, ro).is_none());
+        let first = fs.lower_data_identity(inode, ro);
+        if let Some(identity) = first {
+            assert_eq!(identity.size, 8);
+            assert_eq!(identity.ino, std::fs::metadata(&path).unwrap().ino());
+            assert_ne!(identity.mount_id, 0);
+        }
+        std::fs::rename(&path, root.path().join("saved")).unwrap();
+        std::fs::write(&path, b"replacement is longer").unwrap();
+        assert_eq!(fs.lower_data_identity(inode, ro), first);
+        std::fs::hard_link(root.path().join("saved"), root.path().join("alias")).unwrap();
+        assert!(fs.lower_data_identity(inode, ro).is_none());
+        std::fs::remove_file(root.path().join("alias")).unwrap();
+        assert_eq!(fs.lower_data_identity(inode, ro), first);
+        for h in [ro, rw] {
+            fs.release(ctx, inode, 0, h, false, false, None).unwrap();
+        }
+        assert!(fs.lower_data_identity(inode, ro).is_none());
+        fs.forget(ctx, inode, 1);
+    }
+
     #[test]
     fn regular_attributes_match_native_lookup_without_reading_file_contents() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -2363,11 +2919,10 @@ mod tests {
             pid: 1,
         };
         for name in [c"directory", c"symlink"] {
-            assert!(
-                fs.regular_lookup_attributes(fuse::ROOT_ID, name)
-                    .unwrap()
-                    .is_none()
-            );
+            assert!(fs
+                .regular_lookup_attributes(fuse::ROOT_ID, name)
+                .unwrap()
+                .is_none());
             let entry = fs.lookup(ctx, fuse::ROOT_ID, name).unwrap();
             assert_ne!(entry.attr.st_mode & libc::S_IFMT, libc::S_IFREG);
             fs.forget(ctx, entry.inode, 1);
@@ -2392,11 +2947,10 @@ mod tests {
         )
         .unwrap();
         host.init(FsOptions::SUBMOUNTS).unwrap();
-        assert!(
-            host.regular_lookup_attributes(fuse::ROOT_ID, c"proc")
-                .unwrap()
-                .is_none()
-        );
+        assert!(host
+            .regular_lookup_attributes(fuse::ROOT_ID, c"proc")
+            .unwrap()
+            .is_none());
         let proc = host.lookup(ctx, fuse::ROOT_ID, c"proc").unwrap();
         assert_ne!(proc.attr_flags & fuse::ATTR_SUBMOUNT, 0);
         host.forget(ctx, proc.inode, 1);

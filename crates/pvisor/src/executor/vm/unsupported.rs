@@ -21,6 +21,16 @@ pub struct VmExecutor {
 }
 
 impl VmExecutor {
+    pub(crate) fn workspace_rootfs_owner(
+        &self,
+        _workspace_store: &std::path::Path,
+    ) -> anyhow::Result<(
+        crate::environment_snapshot::SnapshotBase,
+        std::path::PathBuf,
+    )> {
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
+
     pub(crate) fn materialize_restore_ram(
         &mut self,
         _storage: &std::path::Path,
@@ -48,6 +58,14 @@ impl VmExecutor {
     }
 
     pub fn new(_settings: VmSettings) -> anyhow::Result<Self> {
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
+
+    /// Owned immutable rootfs execution is unavailable on Intel macOS.
+    pub fn with_rootfs_base(
+        self,
+        _base: crate::environment_snapshot::SnapshotBase,
+    ) -> anyhow::Result<Self> {
         anyhow::bail!(UNSUPPORTED_MESSAGE)
     }
 

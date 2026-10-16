@@ -12,8 +12,8 @@ use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::mem::size_of;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use vm_memory::ByteValued;
 
@@ -29,6 +29,7 @@ use super::fuse::*;
 use super::{FsError as Error, Result};
 use crate::devices::virtio::VirtioShmRegion;
 
+const _: () = assert!(size_of::<OpenOut>() == 16);
 const MAX_BUFFER_SIZE: u32 = 1 << 20;
 const BUFFER_HEADER_SIZE: u32 = 0x1000;
 /// FUSE counts `InitOut.max_pages` in guest pages. The firmware guest uses
@@ -41,6 +42,7 @@ const NEGOTIATED_MAX_PAGES: u16 = (MAX_BUFFER_SIZE / GUEST_PAGE_SIZE) as u16;
 const _: () = assert!(NEGOTIATED_MAX_PAGES as u32 == FUSE_MAX_MAX_PAGES);
 const _: () = assert!(NEGOTIATED_MAX_PAGES as u32 * GUEST_PAGE_SIZE == MAX_BUFFER_SIZE);
 const DIRENT_PADDING: [u8; 8] = [0; 8];
+pub(super) const PROFILE_PHASE_IOCTL: u32 = 0x4008_76f1;
 
 struct ZCReader<'a>(Reader<'a>);
 
@@ -76,6 +78,8 @@ impl io::Write for ZCWriter<'_> {
 
 pub struct Server<F: FileSystem + Sync> {
     profile: pvisor_overlay_core::profile::Profile,
+    dispatch_profile: pvisor_overlay_core::profile::Profile,
+    profile_scope: Option<String>,
     fs: F,
     guest_cache: bool,
     options: AtomicU64,
@@ -85,15 +89,55 @@ impl<F: FileSystem + Sync> Server<F> {
     pub fn new(fs: F, guest_cache: bool) -> Server<F> {
         Server {
             profile: pvisor_overlay_core::profile::Profile::from_env("virtio-fs-protocol"),
+            dispatch_profile: pvisor_overlay_core::profile::Profile::from_env("virtio-fs-dispatch"),
+            profile_scope: None,
             fs,
             guest_cache,
             options: AtomicU64::new(FsOptions::empty().bits()),
         }
     }
 
+    pub(super) fn configure_profile_scope(&mut self, scope: &str) {
+        if self.profile.report().is_some() {
+            self.profile_scope = Some(
+                if scope == "/dev/root" {
+                    "rootfs"
+                } else {
+                    scope
+                }
+                .into(),
+            );
+        }
+    }
+
+    pub(super) fn dispatch_profile(&self) -> pvisor_overlay_core::profile::Profile {
+        self.dispatch_profile.clone()
+    }
+
+    fn phase_profiles(&self, token: u64) -> Option<serde_json::Value> {
+        self.profile.report().map(|protocol| {
+            let profiles = std::iter::once(protocol)
+                .chain(self.dispatch_profile.report())
+                .chain(self.fs.diagnostic_profiles())
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "schema": 1,
+                "scope": self.profile_scope,
+                "token": token,
+                "profiles": profiles,
+            })
+        })
+    }
+
     pub fn capture_state(&self, next_inode: u64) -> io::Result<super::snapshot::ServerSnapshot> {
         self.profile.emit_checkpoint();
         let options = self.options.load(Ordering::Relaxed);
+        if options & (FsOptions::PVISOR_LOCAL_FLUSH | FsOptions::PVISOR_DATA_OBJECT).bits() != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "snapshots of negotiated experimental flush/data-object sessions are unsupported",
+            ));
+        }
         let fs = self.fs.capture_state()?;
         fs.validate_writeback(
             FsOptions::from_bits_truncate(options).contains(FsOptions::WRITEBACK_CACHE),
@@ -107,6 +151,14 @@ impl<F: FileSystem + Sync> Server<F> {
     pub fn restore_state(&self, state: &super::snapshot::ServerSnapshot) -> io::Result<()> {
         if FsOptions::from_bits(state.options).is_none() {
             return Err(super::snapshot::invalid("invalid FUSE options"));
+        }
+        if state.options & (FsOptions::PVISOR_LOCAL_FLUSH | FsOptions::PVISOR_DATA_OBJECT).bits()
+            != 0
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "restoring a negotiated experimental flush/data-object session is unsupported",
+            ));
         }
         state.fs.validate_writeback(
             FsOptions::from_bits_truncate(state.options).contains(FsOptions::WRITEBACK_CACHE),
@@ -161,6 +213,7 @@ impl<F: FileSystem + Sync> Server<F> {
             x if x == Opcode::BatchForget as u32 => "BATCHFORGET",
             x if x == Opcode::Releasedir as u32 => "RELEASEDIR",
             x if x == Opcode::ReadIndex as u32 => "READINDEX",
+            x if x == Opcode::Ioctl as u32 => "IOCTL",
             _ => "OTHER",
         };
         let _span = self.profile.span(label);
@@ -604,26 +657,62 @@ impl<F: FileSystem + Sync> Server<F> {
         } = r.read_obj().map_err(Error::DecodeMessage)?;
 
         let kill_priv = open_flags & OPEN_KILL_SUIDGID != 0;
-
-        match self.fs.open(
+        let data_cap = FsOptions::from_bits_truncate(self.options.load(Ordering::Relaxed))
+            .contains(FsOptions::PVISOR_DATA_OBJECT);
+        // The single request/capability admission point. Actual returned OPEN
+        // options are checked by OpenReply for both legacy and shared evidence.
+        #[cfg(target_os = "linux")]
+        let direct = flags as i32 & (libc::O_DIRECT | libc::O_PATH) != 0;
+        #[cfg(not(target_os = "linux"))]
+        let direct = false;
+        let request_eligible = data_cap
+            && !direct
+            && !kill_priv
+            && (flags as i32 & libc::O_ACCMODE) == libc::O_RDONLY
+            && !pvisor_overlay_core::service::FilesystemService::is_write_open(flags as i32);
+        match self.fs.open_for_reply(
             Context::from(in_header),
             in_header.nodeid.into(),
             kill_priv,
             flags,
+            request_eligible,
         ) {
-            Ok((handle, mut opts)) => {
+            Ok(reply) => {
+                let data_object = reply
+                    .allows_data_object(request_eligible)
+                    .then_some(reply.data_object)
+                    .flatten()
+                    .filter(|object| object.id != 0);
+                let mut opts = reply.options;
                 if !FsOptions::from_bits_truncate(self.options.load(Ordering::Relaxed))
                     .contains(FsOptions::PVISOR_WRITEBACK)
                 {
                     opts.remove(OpenOptions::PVISOR_LOWER);
                 }
+                if !FsOptions::from_bits_truncate(self.options.load(Ordering::Relaxed))
+                    .contains(FsOptions::PVISOR_LOCAL_FLUSH)
+                {
+                    opts.remove(OpenOptions::PVISOR_LOCAL_FLUSH);
+                }
+                let fh = reply.handle.unwrap_or(0);
+                opts.remove(OpenOptions::PVISOR_DATA_OBJECT);
+                if data_object.is_some() {
+                    opts.insert(OpenOptions::PVISOR_DATA_OBJECT);
+                }
                 let out = OpenOut {
-                    fh: handle.map(Into::into).unwrap_or(0),
+                    fh,
                     open_flags: opts.bits(),
-                    ..Default::default()
+                    backing_id: data_object.map_or(0, |object| object.id),
                 };
-
-                reply_ok(Some(out), None, in_header.unique, w)
+                // All OPENs in this negotiated connection have the same reply
+                // shape. CREATE and OPENDIR deliberately retain the base form.
+                let fixed_size = data_object.map_or(0, |object| object.size).to_le_bytes();
+                reply_ok(
+                    Some(out),
+                    data_cap.then_some(fixed_size.as_slice()),
+                    in_header.unique,
+                    w,
+                )
             }
             Err(e) => reply_error(e, in_header.unique, w),
         }
@@ -1015,7 +1104,11 @@ impl<F: FileSystem + Sync> Server<F> {
         let flags_64 = ((flags2 as u64) << 32) | (flags as u64);
         let mut capable = FsOptions::from_bits_truncate(flags_64);
         if !self.guest_cache {
-            capable.remove(FsOptions::PVISOR_META);
+            capable.remove(
+                FsOptions::PVISOR_META
+                    | FsOptions::PVISOR_LOCAL_FLUSH
+                    | FsOptions::PVISOR_DATA_OBJECT,
+            );
         }
 
         let page_size: u32 = unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() };
@@ -1025,6 +1118,17 @@ impl<F: FileSystem + Sync> Server<F> {
                 let mut enabled = capable & (want | supported);
                 if !enabled.contains(FsOptions::WRITEBACK_CACHE) {
                     enabled.remove(FsOptions::PVISOR_WRITEBACK);
+                }
+                if !cfg!(target_os = "linux")
+                    || enabled.intersects(
+                        FsOptions::WRITEBACK_CACHE
+                            | FsOptions::POSIX_LOCKS
+                            | FsOptions::FLOCK_LOCKS
+                            | FsOptions::HAS_INODE_DAX
+                            | FsOptions::MAP_ALIGNMENT,
+                    )
+                {
+                    enabled.remove(FsOptions::PVISOR_LOCAL_FLUSH | FsOptions::PVISOR_DATA_OBJECT);
                 }
                 let batched = enabled.contains(FsOptions::PVISOR_WRITEBACK);
                 let enabled = enabled.bits();
@@ -1062,7 +1166,8 @@ impl<F: FileSystem + Sync> Server<F> {
             .fs
             .opendir(Context::from(in_header), in_header.nodeid.into(), flags)
         {
-            Ok((handle, opts)) => {
+            Ok((handle, mut opts)) => {
+                opts.remove(OpenOptions::PVISOR_LOCAL_FLUSH | OpenOptions::PVISOR_DATA_OBJECT);
                 let out = OpenOut {
                     fh: handle.map(Into::into).unwrap_or(0),
                     open_flags: opts.bits(),
@@ -1299,7 +1404,10 @@ impl<F: FileSystem + Sync> Server<F> {
             umask,
             extensions,
         ) {
-            Ok((entry, handle, opts)) => {
+            Ok((entry, handle, mut opts)) => {
+                // CREATE returns a writable namespace object, never a
+                // qualified descriptor from an immutable physical lower.
+                opts.remove(OpenOptions::PVISOR_LOCAL_FLUSH | OpenOptions::PVISOR_DATA_OBJECT);
                 let entry_out = EntryOut {
                     nodeid: entry.inode,
                     generation: entry.generation,
@@ -1361,6 +1469,25 @@ impl<F: FileSystem + Sync> Server<F> {
             in_size,
             out_size,
         } = r.read_obj().map_err(Error::DecodeMessage)?;
+
+        // Linux _IOW('v', 0xf1, u64). This private diagnostic command is
+        // synchronous: all counters are copied and emitted before its reply.
+        // Disabled profiling retains the filesystem's ordinary ENOTTY path.
+        if cmd == PROFILE_PHASE_IOCTL && self.profile.report().is_some() {
+            if in_size != 8 || out_size != 0 || self.profile_scope.is_none() {
+                return reply_error(
+                    io::Error::from_raw_os_error(libc::EINVAL),
+                    in_header.unique,
+                    w,
+                );
+            }
+            let mut bytes = [0u8; 8];
+            r.read_exact(&mut bytes).map_err(Error::DecodeMessage)?;
+            if let Some(record) = self.phase_profiles(u64::from_le_bytes(bytes)) {
+                eprintln!("pvisor-fs-profile-phase {record}");
+            }
+            return reply_ok(Some(IoctlOut::default()), None, in_header.unique, w);
+        }
 
         match self.fs.ioctl(
             Context::from(in_header),
@@ -1829,9 +1956,450 @@ mod guest_cache_tests {
     use super::super::null_fs::NullFs;
     use super::*;
     use crate::devices::virtio::descriptor_utils::{
-        DescriptorType, OwnedDescriptorChain, create_descriptor_chain,
+        create_descriptor_chain, DescriptorType, OwnedDescriptorChain,
     };
     use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
+
+    struct LocalFlushFs(FsOptions);
+    impl FileSystem for LocalFlushFs {
+        type Inode = u64;
+        type Handle = u64;
+        fn init(&self, _capable: FsOptions) -> io::Result<FsOptions> {
+            Ok(self.0)
+        }
+        fn open(
+            &self,
+            _ctx: Context,
+            _inode: u64,
+            _kill_priv: bool,
+            _flags: u32,
+        ) -> io::Result<(Option<u64>, OpenOptions)> {
+            Ok((
+                Some(7),
+                OpenOptions::PVISOR_LOCAL_FLUSH | OpenOptions::KEEP_CACHE,
+            ))
+        }
+        fn opendir(
+            &self,
+            ctx: Context,
+            inode: u64,
+            flags: u32,
+        ) -> io::Result<(Option<u64>, OpenOptions)> {
+            self.open(ctx, inode, false, flags)
+        }
+        fn capture_state(&self) -> io::Result<super::super::snapshot::FsSnapshot> {
+            NullFs.capture_state()
+        }
+        fn restore_state(&self, state: &super::super::snapshot::FsSnapshot) -> io::Result<()> {
+            NullFs.restore_state(state)
+        }
+    }
+
+    #[test]
+    fn local_flush_capability_and_open_flag_require_both_sides_and_safe_session() {
+        for requested in [false, true] {
+            for guest_cache in [false, true] {
+                for guest in [false, true] {
+                    for conflict in [
+                        FsOptions::empty(),
+                        FsOptions::WRITEBACK_CACHE,
+                        FsOptions::POSIX_LOCKS,
+                        FsOptions::FLOCK_LOCKS,
+                        FsOptions::HAS_INODE_DAX,
+                        FsOptions::MAP_ALIGNMENT,
+                    ] {
+                        let want = conflict
+                            | if requested {
+                                FsOptions::PVISOR_LOCAL_FLUSH
+                            } else {
+                                FsOptions::empty()
+                            };
+                        let capable = conflict
+                            | if guest {
+                                FsOptions::PVISOR_LOCAL_FLUSH
+                            } else {
+                                FsOptions::empty()
+                            };
+                        let server = Server::new(LocalFlushFs(want), guest_cache);
+                        let enabled = negotiate(&server, capable);
+                        let expected = cfg!(target_os = "linux")
+                            && requested
+                            && guest_cache
+                            && guest
+                            && conflict.is_empty();
+                        assert_eq!(enabled.contains(FsOptions::PVISOR_LOCAL_FLUSH), expected);
+                        for opcode in [Opcode::Open, Opcode::Opendir] {
+                            let (header, bytes) = request(
+                                &server,
+                                opcode,
+                                OpenIn {
+                                    flags: libc::O_RDONLY as u32,
+                                    ..Default::default()
+                                }
+                                .as_slice(),
+                            );
+                            assert_eq!(header.error, 0);
+                            let mut out = OpenOut::default();
+                            out.as_mut_slice().copy_from_slice(&bytes);
+                            assert_eq!(
+                                out.open_flags & OpenOptions::PVISOR_LOCAL_FLUSH.bits() != 0,
+                                expected && matches!(opcode, Opcode::Open)
+                            );
+                            assert_ne!(out.open_flags & OpenOptions::KEEP_CACHE.bits(), 0);
+                            assert_eq!(out.open_flags & (1 << 5), 0); // never standard NOFLUSH
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn local_flush_snapshot_rejection_only_applies_to_negotiated_sessions() {
+        let old = Server::new(LocalFlushFs(FsOptions::PVISOR_LOCAL_FLUSH), true);
+        assert!(!negotiate(&old, FsOptions::empty()).contains(FsOptions::PVISOR_LOCAL_FLUSH));
+        let mut state = old.capture_state(2).unwrap();
+        Server::new(NullFs, false).restore_state(&state).unwrap();
+        let enabled = Server::new(LocalFlushFs(FsOptions::PVISOR_LOCAL_FLUSH), true);
+        let negotiated = negotiate(&enabled, FsOptions::PVISOR_LOCAL_FLUSH);
+        if cfg!(target_os = "linux") {
+            assert!(negotiated.contains(FsOptions::PVISOR_LOCAL_FLUSH));
+            assert_eq!(
+                enabled.capture_state(2).unwrap_err().kind(),
+                io::ErrorKind::Unsupported
+            );
+        }
+        state.options |= FsOptions::PVISOR_LOCAL_FLUSH.bits();
+        assert_eq!(
+            Server::new(NullFs, false)
+                .restore_state(&state)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
+
+    struct DataObjectFs(FsOptions, Option<super::super::filesystem::LowerDataObject>);
+    impl FileSystem for DataObjectFs {
+        type Inode = u64;
+        type Handle = u64;
+        fn init(&self, _: FsOptions) -> io::Result<FsOptions> {
+            Ok(self.0)
+        }
+        fn open(
+            &self,
+            _: Context,
+            _: u64,
+            _: bool,
+            _: u32,
+        ) -> io::Result<(Option<u64>, OpenOptions)> {
+            Ok((
+                Some(7),
+                OpenOptions::PVISOR_DATA_OBJECT | OpenOptions::KEEP_CACHE,
+            ))
+        }
+        fn lower_data_object(
+            &self,
+            inode: u64,
+            handle: u64,
+        ) -> Option<super::super::filesystem::LowerDataObject> {
+            assert_eq!((inode, handle), (ROOT_ID, 7));
+            self.1
+        }
+        fn opendir(
+            &self,
+            ctx: Context,
+            inode: u64,
+            flags: u32,
+        ) -> io::Result<(Option<u64>, OpenOptions)> {
+            self.open(ctx, inode, false, flags)
+        }
+        fn create(
+            &self,
+            _: Context,
+            _: u64,
+            _: &CStr,
+            _: u32,
+            _: bool,
+            _: u32,
+            _: u32,
+            _: Extensions,
+        ) -> io::Result<(Entry, Option<u64>, OpenOptions)> {
+            Ok((
+                Entry {
+                    inode: 2,
+                    generation: 0,
+                    attr: unsafe { std::mem::zeroed() },
+                    attr_flags: 0,
+                    attr_timeout: Default::default(),
+                    entry_timeout: Default::default(),
+                },
+                Some(7),
+                OpenOptions::PVISOR_DATA_OBJECT,
+            ))
+        }
+        fn capture_state(&self) -> io::Result<super::super::snapshot::FsSnapshot> {
+            NullFs.capture_state()
+        }
+        fn restore_state(&self, state: &super::super::snapshot::FsSnapshot) -> io::Result<()> {
+            NullFs.restore_state(state)
+        }
+    }
+
+    #[test]
+    fn data_object_open_wire_requires_negotiation_and_qualified_receipt() {
+        use super::super::filesystem::LowerDataObject;
+        for requested in [false, true] {
+            for guest_cache in [false, true] {
+                for guest in [false, true] {
+                    for conflict in [
+                        FsOptions::empty(),
+                        FsOptions::WRITEBACK_CACHE,
+                        FsOptions::POSIX_LOCKS,
+                        FsOptions::FLOCK_LOCKS,
+                        FsOptions::HAS_INODE_DAX,
+                        FsOptions::MAP_ALIGNMENT,
+                    ] {
+                        let want = conflict
+                            | if requested {
+                                FsOptions::PVISOR_DATA_OBJECT
+                            } else {
+                                FsOptions::empty()
+                            };
+                        let caps = conflict
+                            | if guest {
+                                FsOptions::PVISOR_DATA_OBJECT
+                            } else {
+                                FsOptions::empty()
+                            };
+                        for receipt in [
+                            None,
+                            Some(LowerDataObject { id: 0, size: 99 }),
+                            Some(LowerDataObject {
+                                id: 23,
+                                size: 0x1_0000_0005,
+                            }),
+                        ] {
+                            let server = Server::new(DataObjectFs(want, receipt), guest_cache);
+                            let enabled = negotiate(&server, caps);
+                            let negotiated = cfg!(target_os = "linux")
+                                && requested
+                                && guest_cache
+                                && guest
+                                && conflict.is_empty();
+                            assert_eq!(enabled.contains(FsOptions::PVISOR_DATA_OBJECT), negotiated);
+                            let (header, bytes) = request(
+                                &server,
+                                Opcode::Open,
+                                OpenIn {
+                                    flags: libc::O_RDONLY as u32,
+                                    ..Default::default()
+                                }
+                                .as_slice(),
+                            );
+                            assert_eq!(header.error, 0);
+                            assert_eq!(bytes.len(), if negotiated { 24 } else { 16 });
+                            let mut out = OpenOut::default();
+                            out.as_mut_slice().copy_from_slice(&bytes[..16]);
+                            let qualified = negotiated && receipt.is_some_and(|r| r.id != 0);
+                            assert_eq!(
+                                out.open_flags & OpenOptions::PVISOR_DATA_OBJECT.bits() != 0,
+                                qualified
+                            );
+                            assert_eq!(out.backing_id, if qualified { 23 } else { 0 });
+                            assert_eq!(out.fh, 7);
+                            assert_ne!(out.open_flags & OpenOptions::KEEP_CACHE.bits(), 0);
+                            if negotiated {
+                                assert_eq!(
+                                    u64::from_le_bytes(bytes[16..24].try_into().unwrap()),
+                                    if qualified { 0x1_0000_0005 } else { 0 }
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn data_object_flag_is_stripped_from_writers_directories_and_create() {
+        use super::super::filesystem::LowerDataObject;
+        let server = Server::new(
+            DataObjectFs(
+                FsOptions::PVISOR_DATA_OBJECT,
+                Some(LowerDataObject { id: 1, size: 5 }),
+            ),
+            true,
+        );
+        let enabled = negotiate(&server, FsOptions::PVISOR_DATA_OBJECT);
+        for (flags, open_flags) in [
+            (libc::O_RDWR as u32, 0),
+            ((libc::O_RDONLY | libc::O_TRUNC) as u32, 0),
+            (libc::O_RDONLY as u32, OPEN_KILL_SUIDGID),
+        ] {
+            let (_, bytes) = request(
+                &server,
+                Opcode::Open,
+                OpenIn { flags, open_flags }.as_slice(),
+            );
+            let mut out = OpenOut::default();
+            out.as_mut_slice().copy_from_slice(&bytes[..16]);
+            assert_eq!(out.backing_id, 0);
+            assert_eq!(out.open_flags & OpenOptions::PVISOR_DATA_OBJECT.bits(), 0);
+            assert_eq!(
+                bytes.len(),
+                if enabled.contains(FsOptions::PVISOR_DATA_OBJECT) {
+                    24
+                } else {
+                    16
+                }
+            );
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let (_, bytes) = request(
+                &server,
+                Opcode::Open,
+                OpenIn {
+                    flags: (libc::O_RDONLY | libc::O_DIRECT) as u32,
+                    ..Default::default()
+                }
+                .as_slice(),
+            );
+            let mut out = OpenOut::default();
+            out.as_mut_slice().copy_from_slice(&bytes[..16]);
+            assert_eq!(out.backing_id, 0);
+            assert_eq!(out.open_flags & OpenOptions::PVISOR_DATA_OBJECT.bits(), 0);
+        }
+        let (_, bytes) = request(&server, Opcode::Opendir, OpenIn::default().as_slice());
+        assert_eq!(bytes.len(), 16);
+        let mut out = OpenOut::default();
+        out.as_mut_slice().copy_from_slice(&bytes);
+        assert_eq!(out.backing_id, 0);
+        assert_eq!(out.open_flags & OpenOptions::PVISOR_DATA_OBJECT.bits(), 0);
+        let mut body = CreateIn::default().as_slice().to_vec();
+        body.extend_from_slice(b"new-file\0");
+        let (header, bytes) = request(&server, Opcode::Create, &body);
+        assert_eq!(header.error, 0);
+        assert_eq!(bytes.len(), size_of::<EntryOut>() + 16);
+        out.as_mut_slice()
+            .copy_from_slice(&bytes[size_of::<EntryOut>()..]);
+        assert_eq!(out.backing_id, 0);
+        assert_eq!(out.open_flags & OpenOptions::PVISOR_DATA_OBJECT.bits(), 0);
+    }
+
+    #[test]
+    fn data_object_open_reply_keeps_request_and_returned_option_filters() {
+        struct ReturnedOptionsFs(Option<u64>, OpenOptions, std::sync::atomic::AtomicU64);
+        impl FileSystem for ReturnedOptionsFs {
+            type Inode = u64;
+            type Handle = u64;
+            fn init(&self, _: FsOptions) -> io::Result<FsOptions> {
+                Ok(FsOptions::PVISOR_DATA_OBJECT)
+            }
+            fn open(
+                &self,
+                _: Context,
+                _: u64,
+                _: bool,
+                _: u32,
+            ) -> io::Result<(Option<u64>, OpenOptions)> {
+                Ok((self.0, self.1))
+            }
+            fn lower_data_object(
+                &self,
+                _: u64,
+                _: u64,
+            ) -> Option<super::super::filesystem::LowerDataObject> {
+                self.2.fetch_add(1, Ordering::Relaxed);
+                Some(super::super::filesystem::LowerDataObject { id: 31, size: 17 })
+            }
+        }
+        let data = OpenOptions::PVISOR_DATA_OBJECT;
+        // Bit 7 is intentionally not negotiated/declared as supported native
+        // passthrough. An adapter returning it must never receive a DATA ID.
+        let passthrough = unsafe { OpenOptions::from_bits_unchecked(data.bits() | (1 << 7)) };
+        for (handle, options, flags, expect) in [
+            (Some(7), data, libc::O_RDONLY, true),
+            (None, data, libc::O_RDONLY, false),
+            (Some(0), data, libc::O_RDONLY, false),
+            (Some(7), OpenOptions::empty(), libc::O_RDONLY, false),
+            (
+                Some(7),
+                data | OpenOptions::DIRECT_IO,
+                libc::O_RDONLY,
+                false,
+            ),
+            (Some(7), passthrough, libc::O_RDONLY, false),
+            (Some(7), data, libc::O_RDONLY | libc::O_APPEND, false),
+        ] {
+            let server = Server::new(ReturnedOptionsFs(handle, options, Default::default()), true);
+            let negotiated = negotiate(&server, FsOptions::PVISOR_DATA_OBJECT)
+                .contains(FsOptions::PVISOR_DATA_OBJECT);
+            let (header, bytes) = request(
+                &server,
+                Opcode::Open,
+                OpenIn {
+                    flags: flags as u32,
+                    ..Default::default()
+                }
+                .as_slice(),
+            );
+            assert_eq!(header.error, 0);
+            let mut out = OpenOut::default();
+            out.as_mut_slice().copy_from_slice(&bytes[..16]);
+            assert_eq!(out.backing_id != 0, expect && negotiated);
+            assert_eq!(
+                server.fs.2.load(Ordering::Relaxed),
+                u64::from(expect && negotiated)
+            );
+        }
+        #[cfg(target_os = "linux")]
+        for flags in [libc::O_DIRECT, libc::O_PATH] {
+            let server = Server::new(ReturnedOptionsFs(Some(7), data, Default::default()), true);
+            negotiate(&server, FsOptions::PVISOR_DATA_OBJECT);
+            let (header, bytes) = request(
+                &server,
+                Opcode::Open,
+                OpenIn {
+                    flags: flags as u32,
+                    ..Default::default()
+                }
+                .as_slice(),
+            );
+            assert_eq!(header.error, 0);
+            let mut out = OpenOut::default();
+            out.as_mut_slice().copy_from_slice(&bytes[..16]);
+            assert_eq!(out.backing_id, 0);
+            assert_eq!(server.fs.2.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn data_object_snapshots_only_reject_the_negotiated_contract() {
+        let old = Server::new(DataObjectFs(FsOptions::PVISOR_DATA_OBJECT, None), true);
+        assert!(!negotiate(&old, FsOptions::empty()).contains(FsOptions::PVISOR_DATA_OBJECT));
+        let mut state = old.capture_state(2).unwrap();
+        Server::new(NullFs, false).restore_state(&state).unwrap();
+        let enabled = Server::new(DataObjectFs(FsOptions::PVISOR_DATA_OBJECT, None), true);
+        if negotiate(&enabled, FsOptions::PVISOR_DATA_OBJECT)
+            .contains(FsOptions::PVISOR_DATA_OBJECT)
+        {
+            assert_eq!(
+                enabled.capture_state(2).unwrap_err().kind(),
+                io::ErrorKind::Unsupported
+            );
+        }
+        state.options |= FsOptions::PVISOR_DATA_OBJECT.bits();
+        assert_eq!(
+            Server::new(NullFs, false)
+                .restore_state(&state)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
 
     fn request<F: FileSystem + Sync>(
         server: &Server<F>,
@@ -1919,6 +2487,58 @@ mod guest_cache_tests {
             }
         );
         enabled
+    }
+
+    #[test]
+    fn phase_ioctl_requires_profiling_and_exact_eight_byte_input() {
+        use pvisor_overlay_core::profile::Profile;
+
+        let token = 17_u64;
+        let input = IoctlIn {
+            cmd: PROFILE_PHASE_IOCTL,
+            in_size: 8,
+            ..Default::default()
+        };
+        let mut body = input.as_slice().to_vec();
+        body.extend_from_slice(&token.to_le_bytes());
+        let mut server = Server::new(NullFs, false);
+        server.profile = Profile::default();
+        server.configure_profile_scope("/dev/root");
+        assert_eq!(
+            request(&server, Opcode::Ioctl, &body).0.error,
+            -libc::ENOTTY
+        );
+
+        server.profile = Profile::enabled("virtio-fs-protocol");
+        server.dispatch_profile = Profile::enabled("virtio-fs-dispatch");
+        server.configure_profile_scope("/dev/root");
+        let record = server.phase_profiles(token).unwrap();
+        assert_eq!(record["scope"], "rootfs");
+        assert_eq!(record["token"], token);
+        assert_eq!(record["profiles"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            server.dispatch_profile().report().unwrap().instance,
+            server.dispatch_profile.report().unwrap().instance
+        );
+        assert_eq!(request(&server, Opcode::Ioctl, &body).0.error, 0);
+
+        for invalid in [
+            IoctlIn {
+                in_size: 7,
+                ..input
+            },
+            IoctlIn {
+                out_size: 8,
+                ..input
+            },
+        ] {
+            let mut malformed = invalid.as_slice().to_vec();
+            malformed.extend_from_slice(&token.to_le_bytes());
+            assert_eq!(
+                request(&server, Opcode::Ioctl, &malformed).0.error,
+                -libc::EINVAL
+            );
+        }
     }
 
     #[test]

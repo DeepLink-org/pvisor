@@ -153,10 +153,18 @@ pub fn lock_selected_job(
 }
 
 pub fn execution_blocker(record: &RunRecord) -> Option<String> {
+    if let Err(error) = super::owned_workspace::reject_stage_reconstruction(&record.stage_dir()) {
+        return Some(format!("{error:#}"));
+    }
     let job = match super::job_execution::job(record) {
         Ok(job) => job,
         Err(error) => return Some(format!("{error:#}")),
     };
+    if job.config.vm.prepared_rootfs.is_some() {
+        return Some(
+            "native execution capture/restore is unsupported for prepared rootfs sources".into(),
+        );
+    }
     if !cfg!(any(
         all(target_os = "linux", target_arch = "x86_64"),
         all(target_os = "macos", target_arch = "aarch64")

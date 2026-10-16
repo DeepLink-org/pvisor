@@ -178,6 +178,7 @@ impl Session {
             attachments: Default::default(),
             drivers: None,
             server: Some(agentctl_server),
+            output_observer: preparation.output_observer.clone(),
             network_policy,
         };
         crate::util::startup_mark_run("session.storage_begin", context.spec.run_id.as_str());
@@ -303,7 +304,11 @@ impl Session {
         // Keep the Run-scoped endpoint alive until executor finalization finishes.
         let invoked = !self.cancel.is_cancelled();
         let report = if invoked {
-            executor.execute(&self).await
+            let report = executor.execute(&self).await;
+            if let Some(observer) = &self.output_observer {
+                observer(&report);
+            }
+            report
         } else {
             ExecutorOutput {
                 state: RunState::Cancelled,

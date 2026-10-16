@@ -379,11 +379,13 @@ def run_trial(args, metadata, backend, mode, trial):
         if mode == "ready"
         else ["/usr/bin/python3", "/bench/reference_workload.py", "--mode", mode]
     )
+    host_python = (str(rootfs / "usr/bin/python3")
+                   if getattr(args, "prepared_host_python", False) else "/usr/bin/python3")
     if backend == "native":
         argv = (
             payload
             if mode == "ready"
-            else ["/usr/bin/python3", str(rootfs / "bench/reference_workload.py"), "--mode", mode]
+            else [host_python, str(rootfs / "bench/reference_workload.py"), "--mode", mode]
         )
     elif backend == "docker":
         if args.cpu_affinity:
@@ -467,11 +469,13 @@ def run_trial(args, metadata, backend, mode, trial):
             argv += ["--stage-durability", args.stage_durability]
         if backend in ("pvisor-host", "pvisor-staged", "pvisor-fuse") and mode != "ready":
             payload = [
-                "/usr/bin/python3",
+                host_python,
                 str(rootfs / "bench/reference_workload.py"),
                 "--mode",
                 mode,
             ]
+            if getattr(args, "prepared_host_python", False):
+                argv += ["--pass-env", "LD_LIBRARY_PATH"]
         argv += ["--", *payload]
         if backend == "pvisor-fuse":
             argv = [str(args.fuse_driver), str(work), str(root / "fuse-view"),

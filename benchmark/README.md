@@ -174,6 +174,21 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 不能回答的问题：大型仓库、冷磁盘、真实 registry 和并发吞吐。
 - **入口脚本：** `reference_baselines.py`（跨运行时对照）。 新框架的 `benchmark.new/filesystem/tools.json` 使用两个 Python 行命令，测量原生 metadata/read 的完整 Python 命令（32 目录 / 2,048 文件 / 64 MiB、3 预热 / 30 样本）。`filesystem/prepare.py` 创建一份共享输入并预检，`fs_timing.py` 用 perf_counter_ns 采样，`audit.py` 复算逐次证据；`just benchmark filesystem/tools` 输出表格并生成 `tools.render.json`，支持 `--row`。解释器、管道和负载校验包含在完整命令时间内；输入准备与观察者启动不计时。它不能替代七工具内部阶段、跨后端任务或配对区间；新 Python 时钟数据独立于历史 `filesystem-semspec.csv`，旧结果归档于 `.data/history/`，复现见 [`filesystem/README.md`](../benchmark.new/filesystem/README.md)。
 
+**Ready 与驻留环境快速对照：** `filesystem_rounds.py` / `filesystem_rounds_workload.py`
+回答“启动到首条负载 Ready 要多久，同一环境连续执行三轮工具后要等多久”。
+每条件五个新环境，同轮随机交替；只将启动至唯一 `REFERENCE_READY` 计作启动时间，
+任务内部计时与启动、退出分开，不以 completion 排名。七工具在同一进程树、VM、工作区
+和任务缓存内执行三轮；第一轮 Cargo/npm 从空输出开始，后两轮保留构建与安装结果。
+256 文件写入后两轮覆盖相同文件，读/遍历/git/rg 保留相同输入。
+另预先固定两个适合缓存/写回的场景：同一文件 10,000 次 open/fstat/close，
+以及同一 fd 连续 8,192 次 1 KiB 写入。后者分列 write 接受耗时与包含显式 fsync/close 的总耗时，
+完整读回校验在任务计时外；所有条件执行相同调用与字节量。
+对照沿用八个后端，另单列 `PVISOR_VM_FS_WRITEBACK=1` 的普通 CLI VM；
+默认 VM 的写回关闭，两者都不声称普通 Mutable 工作区启用了 Immutable 目录镜像。
+按用户快速测试要求不设安静期、外部干扰或全量清单扫描门禁，保留失败、所有有效慢样本、
+正常退出、缓存继承、暂存隔离和完整字节校验。每一轮按五个环境独立统计，不能将三轮
+当作十五个独立样本；中位数与范围独立于历史批次，不据跨批次差异推算优化收益。
+
 ### B-FS-ENG：文件系统改动的工程 A/B {#b-fs-eng}
 
 - **文档：** `docs/src/*/design/filesystem-performance-analysis.md`
@@ -185,6 +200,247 @@ Design: 负载、对照、控制变量与有效样本判据。
   - 分解实验在同一批次内对照原生、FUSE 直通和 staged，同时打开 profile 计数器另跑一批；带计数器的批次不计入计时结论。
   - lazy 镜像、stage 持久化策略、内核缓存探针各自独立成批。
   - 只有当结果改变了 B-FS-TOOLS 的用户结论时，才更新 `filesystem.md`。
+
+- **guest 生命周期修复快速对照：** 固定同一个 GNU release/gateway host 制品，
+  对比最终 0044 固件和叠加 0045 修复的固件；写合并关闭/开启分别成条件，
+  五个随机配对环境，每环境沿用九操作三轮负载，启动只报告 Ready、内部操作排除退出。
+  另以公开 VM API 的 `guest_metadata_case` / guest `bench` 模式，在显式 Immutable
+  share 上比较三轮 256 文件 stat、目录扫描和 10,000 次热 open/fstat；SDK guest
+  为 512 MiB、普通 CLI 为 16 GiB，分开统计。两组均 2 vCPU、相同两核宿主预算。
+  按用户快速验证要求关闭外部干扰与清单门禁，保留全部有效慢样本、失败及字节校验。
+  时间戳/xattr/hard-link 的原 fd 内容、并发扫描、writeback 正常及失败退出用独立
+  正确性探针验证；profile 计数另跑，必须覆盖全部启动时注册的实例及预期 component。
+  原始来源与失败保存在 `.data/fs-review-*`，只更新工程分析，不混入跨运行时用户表。
+  2026-10-16 首批写合并开启时两版均在 unlink 后的最终同步返回 ENOENT，整批保留
+  为无效尝试；后续独立 `flife16b` 仅比较写合并关闭，每版 5 个 CLI 与 5 个 SDK
+  环境，三轮计时均通过。49 个指标逐项保留，单项区间未作多重比较校正。
+- **封存输入与缓存资格的四组快速对照：** 同一当前 host/0045 固件，WB=0、DAX=0，
+  比较当前 Mutable 声明、只为封存 rootfs 接通 Immutable、只为工作区快照接通
+  Immutable、两者同时接通。rootfs 四组使用同一个真实封存的物理目录，只切换
+  Mutable / Immutable 声明。工作区基线与 rootfs-only 条件使用独立新拷贝作为
+  live Mutable lower；workspace-only 与 both 使用初始字节相同的封存快照 lower、
+  frozen baseline 和 Immutable 声明，apply target 仍是独立的 trial 工作区。
+  工作区对照同时改变缓存资格和 frozen-baseline 的读观察/journal 工作，结果属于
+  联合处理收益，不能单独归因于 metadata cache；不把活跃目录声明为 Immutable。
+  工程入口使用正常 PVisor Job、stage/journal、
+  VmExecutor 和 native runner；省略 CLI Host 服务，绝对 Ready 不与 CLI 用户表混用。
+  封存 generation 的导入/准备单独记录，所有权 lease 持续到 native teardown。
+  每条件五个新环境，同轮 seeded 随机交替，每环境沿用九操作三轮，先逐环境合计
+  七工具再统计；Ready 排除工具和退出，保留字节/Bundle/lower 隔离及正常退出校验，
+  无干扰、安静期或每轮全量清单门禁。另跑四组各少量独立计数 VM，通过同步阶段
+  checkpoint 核对每轮每工具的 rootfs/workspace OPEN、READ、LOOKUP、READINDEX
+  和物理查询；计数含该工具进程树启动/校验，与 worker 时钟范围分别说明。
+  入口 `filesystem_cache_matrix.py`；原始入口/制品/准备/失败留在 `.data/`，
+  工程结论进入 `design/filesystem-performance-analysis.md`，不更新跨运行时用户表。
+- **普通 CLI 封存 rootfs 入口快速对照：** 同一冻结真实 CLI 与 0047 固件，
+  比较同一封存物理 rootfs 的普通 `--rootfs PATH` 与公开认证的
+  `--rootfs-base-store STORE --rootfs-base ID`；通过公开 SnapshotStore API
+  保留持久 catalog pin，准备在时钟外。两组工作区均为新复制的 live Mutable
+  lower，不接入工作区快照或 frozen baseline。处理同时改变 rootfs 所有权/缓存
+  资格和 execution checkpoint 能力/准入；记录 Bundle 中的声明能力及实际 control 配置，
+  私有临时 native binding 仅能从冻结源码推断时明确标为未知，不将 Ready 差异
+  单独归因于 cache，不为对照绕过能力或修改产品。
+  每组五个 fresh private Host/VM 环境，seeded 随机配对，每环境九操作三轮。
+  每个样本独立 user/mount/PID namespace、owned pivot_root、真实复制 CLI 与
+  私有 Host authority，不接触既有用户 listener。Ready 包含对称 fresh Host+VM
+  启动并排除退出，worker 保持原任务时钟。2 vCPU/16 GiB、父预算 CPU0/1
+  两核及 swap0，WB=0、DAX=0、容量256、DATA/FLUSH/标准负项/两项 Core
+  缺失缓存全0。保留原退出、唯一 Ready/Result、工具缓存、真实 Bundle、live
+  lower 隔离及全部写文件/stream 字节检查，无安静/干扰/全量清单门禁。
+  主要指标为逐环境三轮七工具累计，另保留其余31指标和全部五对原值，5000次
+  环境块配对 bootstrap，区间未校正多重比较，不将三轮当独立样本或报告尾延迟。
+  两组各另跑一个独立完整计数环境，复用带同步 marker 的封存 rootfs，但工作区
+  仍 live；核对全部注册/final/phase、各挂载容量和实验开关实际值，计数与计时
+  分开，inclusive spans 不相加。入口与冻结证据保留 `.data/pc17/`，结果只进
+  工程分析，不更新跨运行时用户表或合并旧批次。
+- **普通 CLI 工作区快照入口快速对照：** 两组固定同一个已认证 prepared-rootfs
+  selector 与物理 generation，仅比较 live Mutable 工作区和公开 CLI 认证的
+  `--workspace-base-store STORE --workspace-base ID`。工作区快照由
+  `pvisor-cache prepare-workspace --workspace SOURCE --base-store STORE` 在计时外
+  准备并保留独立费用，rootfs/workspace 使用独立 store。快照组以所选固定
+  generation 为唯一 Immutable lower 与 frozen baseline，apply target 保持
+  独立 trial 工作区，fresh stage 在正常 RunLease 内创建，不冒充 execution restore。
+  这是所有权/缓存资格与读观察、journal 语义的联合处理，不能单独归因 metadata cache。
+  每组五个 fresh private Host/VM 环境，seeded 随机配对，每环境九操作三轮，
+  主要指标为逐环境三轮七工具累计；Ready 包含 fresh Host+VM 启动并排除退出，
+  worker 保持原任务时钟，stream_write 保留自身 fsync/close。2 vCPU/16 GiB、
+  父预算 CPU0/1 两核及 swap0，WB=0、DAX=0、容量256、guest cache=1；
+  新 DATA、只读 FLUSH 消除、标准负项 entry、两项 Core 缺失缓存及同次 OPEN
+  资格复用全部关闭。保留唯一 Ready/Result、正常退出、terminal Job/Bundle、
+  实际 selector/lower/baseline/live target、工具缓存、lower 隔离以及全部写文件和
+  stream 字节检查，无安静期、干扰或全量清单门禁，保留全部有效慢样本。
+  三轮不作为独立样本；5000 次环境块配对 bootstrap，32 个区间不校正多重比较，
+  不报告尾延迟。两组各另跑一个独立逐工具计数环境，按冻结构造核对全部
+  注册/final/phase、挂载实际开关、OPEN/READ/LOOKUP/GETATTR 与 Core/journal
+  请求，inclusive spans 不相加。新制品、准备、harness 和失败留在 `.data/pw17-cli/`，
+  不复用历史计时；结果仅进入工程分析，不更新跨运行时用户表。
+- **目录 FD 缓存容量快速 A/B：** 复用封存输入对照的正常 Job/Overlay/VM 工程入口，
+  固定 rootfs 与 workspace 均为真实 owned Immutable、workspace 使用 frozen baseline，
+  同一 host/0045 固件，仅将有界 native directory-FD cache 容量设为 256 / 1024。
+  每组五个 fresh 环境、每环境原九操作三轮，同轮随机配对；WB=0、DAX=0，
+  Ready 排除工具与退出，逐环境三轮七工具累计另列，不将三轮作为独立样本。
+  无干扰/安静期/全量清单门禁，保留慢有效样本及原有完整字节、Bundle、lower 隔离校验。
+  profiling 关闭的计时与每组一个环境的完整逐工具计数分批，核对实际容量、cache miss、
+  eviction、OPEN/READ/LOOKUP/GETATTR 与 Core 查询，不从减少计数直接推算耗时。
+  入口 `filesystem_cache_capacity.py`；ATIME 的 read→statx 请求掩码因果探针属于独立
+  B-FS-DIAG，只说明属性失效机制；工程结果进入设计分析，不改变跨运行时用户表。
+- **Immutable 物理 lower 负项快速 A/B：** 同一新 host/0045 固件、相同封存输入与
+  256 容量 directory-FD cache，显式关闭/开启 `PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE`。
+  仅保存 eligible Immutable 物理层的 MissingLeaf 及其父身份；仍逐次检查 upper、
+  whiteout、opaque、策略、读观察与后续 lower，不缓存合并视图不存在、错误或
+  UnavailableParent。每组五个 fresh VM、九操作三轮，WB=0/DAX=0、Ready 排除退出，
+  沿用上一快速 A/B 的隔离/字节校验、随机配对、无干扰/清单门禁与全部有效慢样本。
+  同一入口的显式 variants 定义只改变该缓存开关，独立 N1 计数核对实际开关、负命中、
+  物理查询、普通 OPEN/READ/LOOKUP，五环境配对区间和新增回归只进入设计分析。
+- **Immutable regular lower 属性期限快速 A/B：** 固定上述 owned inputs、容量 256、
+  负缓存关闭、WB=0/DAX=0，显式关闭/开启 `PVISOR_VM_FS_IMMUTABLE_ATTR_CACHE`。
+  只对全部 lower Immutable、LinuxComplete、实际命中单硬链接 regular lower 的普通
+  LOOKUP/无 FH GETATTR 响应延长 attr TTL；entry TTL、upper、Mutable、目录、符号链接、
+  多硬链接和 FH 属性保持原超时。沿用已有 upper 独占变更契约及 READ 后 ATIME、guest
+  mutation 失效。先完成真实 guest copy-up/硬链接/替换/属性变更一致性探针，再运行每组
+  五环境、九操作三轮的随机配对；Ready 和 worker 排除退出，无干扰或清单门禁。
+  正式计时与独立 N1 全阶段计数分开，检查实际开关、GETATTR/LOOKUP/OPEN/READ 与
+  Core 查询。只进入工程设计分析，不改变默认开关或用户跨运行时表。
+  该候选已因 O_PATH hardlink source 的 nlink 陈旧被拒绝并撤除；只保留独立诊断及
+  `.data/` 冻结制品，没有正式工具时间，不应以当前产品制品调用此旧开关。
+- **独占 upper 物理不存在缓存快速 A/B：** 固定 owned Immutable rootfs/workspace、
+  容量 256、lower 负缓存关闭、WB=0/DAX=0，仅切换
+  `PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE=0|1`。借助 VM 已有独占 upper
+  namespace 及稳定物理祖先契约，在连续只读 epoch 内缓存物理 upper 的 MissingLeaf /
+  UnavailableParent 与完整父证明；不缓存 Entry、错误、merged winner、whiteout、
+  opaque、权限或 journal 决策。每个 write_operation 获得独占锁后禁用并清空，Drop
+  再清空后恢复，覆盖失败及部分 mutation；journal 与 upper 重叠不能启用。
+  默认关闭，Core/host 通用路径不推断此所有权。先运行定向语义测试与新环境预检，再
+  五环境每臂随机配对、九操作三轮，Ready/worker 排除退出，无干扰/安静期/全量清单
+  门禁，保留全部有效慢样本和输出、Bundle、lower、完整字节校验。独立 N1 计数核对
+  实际开关、命中/清空/失效、OPEN/READ/LOOKUP/GETATTR 与 Core 查询；不改变 guest
+  TTL、数据页、WB 或 DAX，工程结果不更新用户跨运行时表。
+- **Immutable local 只读 FLUSH 消除快速 A/B：** 固定 owned Immutable rootfs/workspace、
+  容量 256、lower/upper 不存在缓存关闭、WB=0/DAX=0，同一新 host 与新固件仅切换
+  `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0|1`。连接 bit 43 协商后仅对合格的本地
+  Immutable 只读句柄设置 FOPEN bit 29；guest 保留写同步与错误检查，再省略 backend
+  FLUSH。可写、upper、Mutable、原生 FD 位于远程/未知文件系统、未标记句柄仍走原路径；不改变页缓存、TTL、
+  OPEN 或 RELEASE 语义。先做 guest 只读/写入/错误与兼容性预检，再每臂五个 fresh VM、
+  九操作三轮随机配对，Ready/worker 排除退出，无安静/干扰/全量清单门禁，保留全部
+  有效慢样本及完整原有校验。独立 N1 诊断逐挂载核对实际开关，检查消除的 FLUSH 与
+  OPEN/READ/RELEASE、Core 查询，完整注册/final/phase 覆盖；结果仅进入工程分析。
+- **Immutable lower 独立数据映射快速 A/B：** 回答独立 lower 数据 inode、固定 EOF 与
+  跨 OPEN 页复用能否减少驻留工具 READ 并改善耗时。同一新 host/0047 固件仅切换
+  `PVISOR_VM_FS_LOWER_DATA_CACHE=0|1`；两组均为 owned Immutable rootfs/workspace、
+  frozen baseline、容量 256、WB=0/DAX=0，并关闭两项缺失缓存及只读 FLUSH 消除。
+  普通 OPEN 的 Core/策略/journal/native 绑定保留；新 bit 44/OPEN bit 28 给出稳定
+  connection-local lower 对象 ID 和固定 size，guest 为合格只读对象分离 data mapping，
+  upper/Mutable/多硬链接/不合格句柄保留原路径。对象 ID 表有界且会话内不复用含义；
+  实际协商会话暂拒绝快照，不从 Immutable 元数据资格推导数据页安全。
+  原 review-pages 四个 oracle 不变，候选须消除其失败；新增真实 guest cross-fd、
+  mmap/COW、非页齐 EOF、truncate、rename/unlink、关闭与回退用例，记录既有
+  fd 属性/copy_file_range 边界。通过候选正确性后每臂五个 fresh VM、九操作三轮，
+  seeded 随机配对，Ready/worker 排除退出，无安静/干扰/全量清单门禁，保留全部
+  有效慢样本与原有完整校验。另以 N1 独立逐工具计数核对实际协商、对象 ID 注册/
+  复用、OPEN/READ/GETATTR/FLUSH/RELEASE 与全部注册/final/phase 完整性。
+- **数据页缓存与只读 FLUSH 的四臂组合：** 同一冻结 host/0047 固件比较
+  两项全关、仅 data、仅 FLUSH、两者开启的完整 2×2 组合；显式
+  `treatment_design=lower-data-local-flush-factorial`，只有这两项开关变化，
+  容量 256、两项缺失缓存关闭、WB=0、DAX=0、owned Immutable 输入与
+  frozen baseline 相同。预先指定全关→两者、FLUSH→两者、data→两者三个
+  主要对照，补充全关→各单项，共五个对照各 32 个指标，不从旧批次相加收益。
+  先用组合配置运行现有数据/整页/关闭/ATIME oracle，再每臂五个新环境，
+  每环境九操作三轮，固定种子块内随机交替；Ready 和 worker 排除退出，
+  无干扰、安静期和全量清单门禁，保留全部有效慢样本与原有完整校验。
+  以五个环境块配对 bootstrap，三轮不当独立样本，主要三轮七工具累计
+  和逐轮单项分别报告区间，未校正多重比较。另每臂一个独立计数环境，
+  逐设备严格核对两项实际协商 0/1、两项 Core 缓存为 0、全部 final/phase，
+  检查 READ、FLUSH 与剩余 OPEN/RELEASE；结果仅进入工程分析。
+- **普通 CLI 数据页与只读 FLUSH 四臂对照：** 在真实 `pvisor run`、fresh Host、
+  native runner 路径中复用同一已验证 CLI/0047 制品与已认证的 rootfs/workspace
+  固定 generation，比较 DATA/只读 FLUSH 的 00、10、01、11。所有条件都使用
+  workspace frozen baseline 和独立 live apply target，不改变来源或重新封存；
+  已有准备成本仅引用原始收据，旧批次耗时不导入。SQ、标准负项 entry、两项
+  Core 缺失缓存、WB、DAX 全0，guest cache=1、目录 FD 容量256。guest 2 vCPU/
+  16 GiB、父预算 CPU0/1 两核 quota、16 GiB/swap0，独立私有 namespace/Host。
+  每组五个 fresh 环境，每环境九操作三轮，固定种子按环境块随机交替。预定三个
+  主要三轮七工具累计对照为 00→11、01→11、10→11，补充 00→10、00→01；
+  每个对照保留32指标、五对原值与5000次环境块配对 bootstrap，区间不作多重
+  比较校正，三轮不作独立样本。Ready 包含 fresh Host+VM 并排除退出，worker
+  保持原时钟，stream_write 保留自身 fsync/close。先每组一个真实 CLI 正确性
+  预检，保留正常退出、唯一 Ready/Result、terminal Job/Bundle、来源 receipt、
+  lower/cache 隔离及全部写/stream 字节检查；不放宽已有 fd/mmap/copy-up oracle。
+  无安静期、干扰或每轮全量清单门禁，保留全部有效慢样本。另每组一个独立计数
+  环境，按源码构造库存核对全部注册/final/phase 与每挂载 DATA/FLUSH 实际协商，
+  核对减少的 READ/FLUSH 与剩余 OPEN/RELEASE、GETATTR、Core 查询；计数不作
+  耗时或磁盘 I/O 归因。原始制品关联与新测量保留 `.data/cdf17-cli/`，仅发布工程
+  分析，不改用户跨运行时表，不据此默认开启候选或宣称未覆盖的对象语义已修复。
+- **同次 OPEN 资格查询复用快速对照：** 回答 DATA 与只读 FLUSH 同时启用后，
+  复用同一实际 native FD 的资格证据能否改善普通工具耗时。新冻结 host 与既有
+  0047 固件仅切换 `PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION=0|1`；DATA=1、
+  只读 FLUSH=1、标准负项及两项 Core 缺失缓存=0、容量256、WB=0、DAX=0，
+  两组均为 owned Immutable rootfs/workspace 与 frozen workspace baseline。
+  原 Core/策略/journal/native OPEN、FD lease、第二次 backend 检查及对象 ID/EOF
+  约束保留；证据只在本次调用栈传递，不跨 OPEN 缓存授权。先保留原整页、数据、
+  close、ATIME、负项及 exclusion 真实 guest oracle，并检查单项能力和旧 peer 回退。
+  正式每臂五个 fresh 环境、九操作三轮，seeded 随机配对；Ready/worker 排除退出，
+  无安静/干扰/全量清单门禁，保留全部有效慢样本及原字节/Bundle/lower 校验。
+  主要指标是逐环境三轮七工具累计，5000次环境块配对 bootstrap；三轮不当独立样本，
+  单项区间未校正多重比较。另每臂 N1 独立计数，按真实构造核对完整实例库存、
+  注册/final/phase、挂载实际开关及四类 native 资格查询尝试（含显式零）。
+  查询调用点减少不是整条 OPEN 的 syscall 数；两臂内部 `open` span 边界不同，
+  不直接比较或相加，使用完整 RPC/worker 时钟。入口 `filesystem_cache_capacity.py`，
+  冻结制品和原始证据保留 `.data/sq17*/`，结果只进入工程分析，不改用户性能表。
+- **标准负项 entry 缓存快速对照：** 同一冻结 host 与既有 0047 固件，仅切换
+  `PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE=0|1`；DATA=1、只读 FLUSH=1、容量 256、
+  两项 Core 缺失缓存关闭、WB=0、DAX=0、owned Immutable rootfs/workspace 与
+  frozen baseline 相同。候选只把成功受检且完成缺失观察的 merged absence
+  返回为标准 `nodeid=0`、entry TTL 1 秒，不延长正项或属性 TTL；未知错误、
+  Mutable、远端投影、非默认策略及未满足独占命名空间契约的路径不启用。
+  固定 exclusion 与 synthetic 路径按祖先、路径自身及子树保留原查询；只有无关
+  路径可缓存受检缺失，不能因普通 rootfs 的 Host 控制目录隐藏规则关闭整个 owner。
+  先以真实 guest 重复同名缺失、TTL 到期、create/mkdir/symlink/link/rename、
+  父目录移动、失败修改、权限、并发及 Mutable 外部创建验证可见性与请求减少，
+  另验证 exclusion 已有文件不可见、创建仍拒绝、缺失祖先保留原查询及允许的兄弟路径。
+  不改原有数据/关闭/ATIME oracle。正确性通过后每臂五个 fresh 环境、九操作
+  三轮，seeded 随机配对；Ready/worker 排除退出，无安静/干扰/清单门禁，
+  保留全部有效慢样本与原有字节/Bundle/lower 校验。以五个环境块做配对
+  bootstrap，主要指标为三轮七工具累计，单项区间未作多重比较校正。
+  另每臂 N1 独立计数，核对 mounted owner 的 actual 资格/负项回复、两项已协商
+  能力与全部注册/final/phase；不把 debug/profile 时间混入性能，不合并旧批次。
+- **普通 CLI 标准负项 entry 快速对照：** 固定只读 FLUSH=1、DATA=0，
+  仅切换 `PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE=0|1`，验证真实 CLI 的 npm 缺项
+  查询减少是否改善三轮七工具累计。两组使用相同已验证 release/0047 固件、
+  已认证 prepared rootfs/workspace generation、frozen baseline 与独立 live apply
+  target；引用原构建、准备及源摘要，不重新导入或混入旧批次计时。
+  Core 两项缺失缓存、SQ、WB、DAX 全0，guest cache=1、目录 FD 容量256。
+  负项资格、权限/别名、exclusion/synthetic 路径与修改失效契约保持，不延长属性
+  或正项 TTL，不把任意缺失或其他 errno 当作可缓存 ENOENT。
+  每组五个 fresh private Host/VM 环境、九操作三轮，按环境块 seeded 随机配对；
+  唯一主要指标为逐环境三轮七工具累计，保留全部32指标与五对原值，5000次
+  环境块配对 bootstrap、区间不校正多重比较，三轮不作独立样本。
+  Ready 包含 fresh Host+VM 并排除退出，worker 保持原时钟，stream_write
+  保留自身 fsync/close。每组另跑一个正确性预检和一个独立计数环境，保留正常
+  退出、唯一 Ready/Result、terminal Job/Bundle、两来源 selector/receipt、
+  lower/cache 隔离及全部写/stream 字节检查；核对每挂载 NE requested/enabled、
+  DATA0/FLUSH1、完整注册/final/phase、LOOKUP/GETATTR/OPEN/READ/FLUSH/
+  RELEASE 与 Core 缺项/父叶查询。LOOKUP 不等于 ENOENT，miss 不等于唯一名字，
+  计数不解释为磁盘 I/O 或耗时份额。无安静期、干扰或每轮全量清单门禁，保留
+  全部有效慢样本；原始证据在 `.data/cne17-cli/`，仅更新工程分析，不改用户表。
+- **普通 CLI 封存输入的自动只读 FLUSH 快速对照：** 同一新 CLI release、0047
+  固件及已认证 prepared rootfs/workspace generation，比较显式
+  `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0` 与该变量真正缺省。候选仅在已持有
+  匹配 opaque prepared-rootfs owner、fresh 且不支持执行捕获/恢复的 runtime
+  native child 中补默认；普通路径、仅 SDK `with_rootfs_base`、一般 Immutable
+  share 的默认及 checkpoint 合同保持。明确0、非法值及旧 peer 回退分别核对，
+  不通过全局环境修改或扩大 Immutable 声明取得资格。
+  固定 DATA、NE、SQ、两项 Core 缺项缓存、WB、DAX 全0，guest cache=1、
+  目录 FD 容量256；同一 frozen baseline、独立 live apply target。引用既有公开
+  输入准备收据，新构建与新时序独立记录，不导入旧批次样本或相加收益。
+  每臂五个 fresh private Host/VM、九操作三轮，seeded 环境块随机配对；唯一
+  主要指标为三轮七工具累计，32个未校正95%区间、5000次环境块配对 bootstrap。
+  Ready 包含 fresh Host+VM 并排除退出，worker 保留原时钟及 stream 自身
+  fsync/close。各臂另一个正确性预检和独立计数环境，核对 caller 的变量真缺省、
+  owner 的 requested/enabled/marked OPEN、全部注册/final/phase 和协议请求；
+  profile 不计入性能。保留正常退出、唯一 Ready/Result、terminal Job/Bundle、
+  selector/baseline receipt、lower/cache 隔离及全部写/stream 字节校验，无安静期、
+  干扰或每轮全量清单门禁，保留全部有效慢样本。证据在 `.data/af17-cli/`，
+  结果仅进入工程分析，不改用户跨运行时表。
 - **新增独立 kernel-cache 实验：** `kernel_cache_runner.py` / `kernel_cache_driver.rs`，同一冻结 release 制品 native、legacy-writable（immutable 物理缓存开启，默认 1s）、metadata-writable60s、metadata-readonly60s、metadata-and-data-readonly60s；2048/32 half-deep、全字节验证、3 warmups/30 seed-shuffled samples、CPU 0,1；hot、legacy-TTL-expired/extended-TTL-warm、single-pass readsearch、verified git/rg 与 startup/mount/task/unmount。 全部 native/lower/upper/work 使用相同 private user/mount/PID namespace 的真正 noatime tmpfs backing；保留 mountinfo、past-atime 读验证、监督/终止回执；旧 Btrfs/future-atime kernel-cache 批次未验收，只作历史诊断，raw 保留且不可拼接。writable 必须保留 fusectl abort guard；独占 fresh upper/work、稳定 immutable lower，无 journal/preimage/metrics/custom policy/exclusions；KEEP_CACHE 只在两种 readonly 条件间归因。报告 `benchmark/pvisor/KERNEL_CACHE_REPORT.md` 仅属 Linux HOST API 工程实验，不代表 pvisor run/VM/review guarantees。
 - **入口脚本：** `filesystem_ab.py`、`filesystem_stage_durability.py`、`filesystem_lazy_ab.py`、`immutable_lower_cache.py`（同一 release 二进制 native/mutable/immutable-cache-off/on，独占 immutable lower，真实 host FUSE 的 hot/TTL-expiry 重复 metadata/open/read、readsearch 与 upper 正确性；无 journal，排除 review；工程报告 `benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md`）。
 
@@ -209,6 +465,32 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **角色：** diagnostic
 - **Motivation：** 定位 FUSE 传输、OverlayCore、持久化、内容指纹和缓存路径的成本。
 - **想要的结论：** 请求与 inclusive span 的成本分解，不能相加为精确归因，不作为用户性能数据。
+- **同次 OPEN 资格复用计数：** 在上述 SQ0/1 的独立 N1 owned-input 环境中，
+  固定 DATA/FLUSH=1、负项/Core 缺失缓存=0、WB0/DAX0、容量256。按真实 SDK
+  构造预先确定实例库存，逐一校验注册与唯一 final、每挂载54 token及全部工具区间。
+  分挂载/工具统计 F_GETFL、metadata、statx、fstatfs 的实际查询尝试，包含显式零和
+  不合格回退，同时保留普通 OPEN/READ/FLUSH/RELEASE 与 Core 查询。分类入口和
+  receipt hit/miss 标签不是额外 syscall；不从合格路径7→3推算整组耗时。共享分支
+  将 DATA 资格移入既有 `open` span，该 span 两臂边界不同，只能用完整 RPC/worker
+  边界核对性能。原始日志和分析在独立 `.data/sq17*/`，不混入 profile-off 时钟。
+- **标准 FUSE 负项入口诊断：** 在独立 fresh 环境复用冻结的 owned-input
+  组合配置（data=1、readonly FLUSH=1、WB=0、DAX=0、容量 256，两项 Core
+  缺失缓存关闭），保留九操作三轮及原有校验，显式开启现有 server debug 日志。
+  按同步阶段统计 LOOKUP 的成功、ENOENT、其他错误及 parent/name 重复；多连接
+  unique 碰撞或缺少归属时单列歧义，不把总 LOOKUP 或物理 missing 当作重复负项。
+  该 N1 只决定标准 nodeid=0/entry_timeout 候选是否值得实验，日志耗时不进入性能表，
+  不改变 TTL 或所有权声明，原始日志与分析保存在独立 `.data/`。
+- **真实 guest 一致性补充：** `guest_metadata_case` / `guest_metadata_guest` 的
+  `review-pages` 比较旧 lower fd 与 copy-up 后 upper fd 在整页写后的内容；
+  `review-attrs` 比较自然 stat、强制同步属性和旧 fd，覆盖属性变更、硬链接、替换及重建。
+  `atime` 按请求 mask 区分首次 host READ 和同 fd 缓存读后的 GETATTR。各模式独立 fresh
+  VM，保留每个 case 与失败；仅诊断语义和请求机制，不能作为工具耗时或全面正确性证明。
+- **只读 FLUSH 诊断：** `filesystem_cache_capacity.py` 的独立 profiles 模式，
+  同新 host/固件切换 `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0|1`，固定 WB=0、DAX=0、
+  容量 256 与 lower/upper 负项缓存关闭。每臂 N1、九操作三轮，同步 token 包围原有
+  `checked()` 及校验；逐设备 overlay 的 `readonly_flush_elision_enabled` 必须显式为
+  0/1，两项 Core 开关必须显式为 0，并检查全部实例final及54个token。保留原始
+  FLUSH/OPEN/READ/RELEASE，不能把诊断时间当工具性能或跨组件相加精确归因。
 - **Kernel-cache 诊断入口：** `kernel_cache_runner.py --profiles`；每个 count case 使用独立 fresh mount，记录 warm priming 与操作的完整请求总数，另测 prime-only 以分离 warm 增量。源码推导 expected instances（包括 notifier 是否创建 profile），核查全部 PID/component/instance 的唯一 final record，不能固定忽略额外线程实例；任何缺失/额外实例或失败都拒绝。诊断耗时绝不进入正式 distribution。
 - **实验设计：** 独立诊断批次，直通 FUSE 仅为不含暂存语义的下限；插桩计时与正式性能采样分开。`immutable_lower_cache.py --profiles` 保留每个 PID/component/instance 的所有累计 records，以各实例 final record 比较 physical parent/leaf stats 和 cache hits/misses/evictions；inclusive spans 不相加。真实 mount 若被拒绝，保留失败并仅以明确标记的 core 机制实验补充，不替代 FUSE 结果。
 - **入口脚本：** `filesystem_fuse_ab.py`、`filesystem_stage_ab.py`、`filesystem_kernel_probe.py`、`filesystem_exec_probe.py`、`filesystem_counters.py`、`filesystem_diagnostic.py`、`immutable_lower_cache.py --profiles`。`filesystem_stage_durability.py --profiles` 也服务此诊断条目；不开启 profile 时服务 B-FS-ENG。`filesystem_exec_probe.py` 在新 VM 中比较相同可执行文件、loader 和全部动态库从 virtio-fs 与匿名 RAM 执行；两组都先复制并校验所有输入、传递相同 fd，避免将准备成本混入 exec。准备来源分为原始文件和独立副本：前者预热原 inode，后者从工作区独立 inode 读入相同字节，保留原工具文件首次映射的机会；共同的 Python 准备仍会预热解释器及部分共享库，不能称为完全冷启动。首个 exec 与后续重复 exec 分开，且不由热路径的零差异否定首次映射成本。guest `/dev/shm` 保持 noexec，使用显式 executable memfd；不重挂载或放宽策略。独立 VM 的完整计数器包含相同准备与指定次数 exec，差异用于请求归因，不能当作完整 Agent 启动水位。

@@ -95,6 +95,86 @@ Directory images hold no child dentry references; ordinary inode eviction frees
 the image. Hosts decline READINDEX for mutable or unspecified backings, retaining
 ordinary FUSE namespace visibility and metadata timeouts.
 
+`patches/0046-fuse-negotiate-local-readonly-flush.patch` adds the opt-in
+`FUSE_PVISOR_LOCAL_FLUSH` capability (bit 43) and per-open
+`FOPEN_PVISOR_LOCAL_FLUSH` promise (bit 29). The host only grants the latter
+after its normal OPEN checks for a read-only immutable local lower whose
+backend FLUSH has no work or errors to report. Host policy remains default-off;
+neither the guest capability nor a read-only mount establishes that ownership
+or backing-filesystem promise. Old peers keep the existing FLUSH path.
+
+The guest rejects this capability with WRITEBACK_CACHE or remote POSIX/flock
+locks, and additionally checks regular-file, read-only and non-DAX status at
+flush time. It retains `write_inode_now`, `fuse_sync_writes` and
+`filemap_check_errors` and their error returns; only then may it skip the
+backend FLUSH request through the ordinary attribute-exit path. It does not use
+`FOPEN_NOFLUSH`'s early return, suppress explicit fsync, change KEEP_CACHE/TTL,
+or alter RELEASE and submount lifetime rules. `fw/tests/test_local_flush_contract.py`
+compiles the actual patched flush function against observable call stubs to
+check local error ordering and ordinary-RPC fallback; real guest protocol,
+backing-close errors and teardown still require independent integration runs.
+
+`patches/0047-fuse-isolate-immutable-lower-data.patch` adds the separate,
+default-off `FUSE_PVISOR_DATA_OBJECT` capability (bit 44). With this capability,
+every `FUSE_OPEN` reply is exactly 24 bytes: the unchanged 16-byte
+`fuse_open_out`, followed by a 64-bit fixed lower size. `FOPEN_PVISOR_DATA_OBJECT`
+(bit 28) makes `backing_id` a nonzero, connection-local immutable data-object
+identifier; it is not a guest passthrough FD. Unmarked replies have no data
+promise. OPENDIR, CREATE and peers without this capability retain their ordinary
+reply layouts. The host must keep object identifiers stable and never reuse
+them for different lower bytes while the guest connection remains alive.
+
+Marked read-only regular opens keep the existing namespace file, host fh and
+nodeid. They read through a separate, tagged FUSE data inode and a real
+`FMODE_BACKING` file. Equal object IDs on the same superblock share data pages;
+copy-up, upper writes and namespace size changes use the original mapping.
+Hidden inodes own no LOOKUP references and send no FORGET. They use ordinary
+inode reclamation so cached pages may survive close without retaining closed
+host handles. The fixed EOF comes from OPEN, never merged attributes. Local
+allocation failure retries only the local mapping setup, not the successful
+native OPEN, and never silently falls back to the merged mapping.
+
+Read/pread, splice and mmap use the kernel backing-file helpers. fadvise and
+readahead(2) target the inner mapping too, including explicit WILLNEED. The hidden
+file exposes only read operations and a read-only shared mmap; MAP_PRIVATE COW
+remains available. A VMA and asynchronous readahead retain the inner file,
+mapping, namespace path, mount and native handle until completion; only the
+last reference sends the original RELEASE, preserving auto-submount synchronous
+release. Real host READ completion invalidates namespace ATIME; a page-cache
+hit does not add artificial ATIME invalidation. A successful short READ before
+fixed EOF fails the affected page or readahead batch with EIO; it cannot shrink
+the receipt EOF or publish zero-filled data as Uptodate. A real partial EOF tail
+remains valid. Changing O_DIRECT after open still directs reads through the original host handle, using the hidden inode's
+fixed EOF; it does not silently use cached pages or reject F_SETFL. Hidden file
+opens require FMODE_BACKING, so a procfs magic link cannot authorize a new data
+handle. SEEK_END uses the fixed lower
+size while updating the outer file position, and DATA/HOLE retain the original
+host fh. Normal OPEN authorization and observation remain host operations.
+
+This experimental capability requires WB=0, DAX=0 and no remote file locks;
+DIRECT_IO, passthrough, invalid IDs and sizes beyond the filesystem limit are
+rejected for marked replies. The host must reject capture/restore while it is
+negotiated: the hidden guest pages and object IDs are not a snapshot schema.
+This change does not redefine fstat/O_PATH or other namespace metadata identity.
+In particular, VFS copy_file_range checks still inspect the outer namespace
+inode's size before the FUSE method runs; the capability does not claim to fix
+that pre-existing old-fd metadata/EOF boundary. Real guest page ownership,
+partial/truncate, mmap/exec, cross-open reuse and release behavior need separate
+validation before any performance or default-enablement claim.
+
+`patches/0045-fuse-preserve-open-and-lookup-lifetimes.patch` shares native
+READDIRPLUS parallel dentry allocation and directory alias splicing with directory
+imports. Imports run outside the ordinary lookup mutex so competing host lookups
+can finish. Deferred-open registration waits only while a mutation is active;
+the existing inode-local mutex still serves the uncontended path. Writable OPEN,
+unlink, rename, hard-link creation, every SETATTR shape and xattr mutations bind
+earlier deferred regular-file descriptors and exclude new registrations until
+the host request replies. This gate covers regular-file endpoints; descendant
+descriptors during a directory rename that materializes a subtree still need
+separate coverage. Binding precedes FUSE_NOWRITE to avoid laundering pages
+while writeback is blocked. Queue-held final file references preserve virtio-fs
+synchronous RELEASE for auto-submounts; deferred-open poll failures return EPOLLERR.
+
 `patches/0044-fuse-adaptive-directory-prefetch.patch` combines the directory
 image safeguards and adaptive prefetch policy. READINDEX ENOSYS is cached per
 connection without disabling deferred open. Lookups concurrent with import

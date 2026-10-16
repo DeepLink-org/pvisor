@@ -22,11 +22,20 @@ stay stable for the entire overlay lifetime. A read-only mount or content-addres
 pathname does not prove this. `frozen_baseline` only changes baseline observation
 semantics and never infers this promise.
 
-Only successful physical immutable-lower metadata/path/parent identity results
-are cached, scoped to one Core owner and keyed by lower index and relative path.
-Merged winners, negatives, errors, directory inventories, upper, whiteouts,
-opaque probes, policy, hardlink authorization and read/preimage observations are
-not cached. Every request still walks merged prefixes and higher mutable layers.
+By default, only successful physical immutable-lower metadata/path/parent identity
+results are cached, scoped to one Core owner and keyed by lower index and relative
+path. `PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE=1` additionally caches a checked
+physical `MissingLeaf` for an eligible immutable lower, retaining its parent
+identity vector. Unset or `0` keeps this experiment disabled; other values fail
+with `InvalidInput` before upper/work/journal creation. Disabling the positive
+immutable-lower cache also disables this extension. A negative hit continues to
+later lowers; every request still checks upper, whiteouts, opaque markers, higher
+mutable layers, policy and journal observations. It cannot hide a later mutable
+or upper creation, and never grants authority to a future operation.
+This lower cache never retains merged winners/absence, unavailable parents,
+errors, directory inventories, upper, whiteouts, opaque probes, policy,
+hardlink authorization or read/preimage observations. Every request still walks
+merged prefixes and higher mutable layers.
 The mutex-protected cache retains at most 4096 entries, clears on capacity, and
 bypasses keys whose root plus relative path exceed 4096 bytes or whose relative
 path exceeds 256 components (bounding parent identity storage too). First misses
@@ -42,12 +51,106 @@ disables optimization, not the caller's contract. `PVISOR_FS_PROFILE=1` emits
 plus existing `layer_parent_stats`, `layer_leaf_stats` and mount identity counters.
 Misses include uncached absence/errors; mutable/disabled/bound-bypassed probes
 are not cache misses. Profiles are diagnostic, not performance acceptance.
+Each eligible miss is also classified in `units` as
+`immutable_lower_cache_misses_present`, `_missing_leaf`, `_unavailable_parent`
+or `_error`. These partition misses without treating a missing physical parent
+as a proven permanent absence. `immutable_lower_negative_cache_hits` counts
+physical MissingLeaf hits separately; they are also included in the general
+`immutable_lower_cache_hits`. Each Core emits an
+`immutable_lower_negative_cache_enabled` measurement with units `0` or `1`,
+including the zero value, describing its effective construction-time setting.
+Positive and negative entries share all existing capacity/path bounds. The
+experiment changes neither guest negative-dentry TTL nor the number of guest
+LOOKUP requests. Creating a formerly missing name inside a declared immutable
+physical lower violates the caller contract; discard that owner and construct a
+new one for a new baseline rather than expecting this cache to observe it.
+Each environment-enabled profile emits `pvisor-fs-profile-start` once at owner
+construction with its PID, component and instance. Complete diagnostic coverage
+requires final cumulative records for the entire registered set and all expected
+component families. A missing instance is unknown work, never a zero request count.
+Legacy logs without registration remain partial evidence. Disabled profiles and
+explicit in-memory test profiles emit no registration.
 The [owned-lower host FUSE experiment](../../benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md)
 records same-contract cache-off/on engineering measurements; it does not establish
 OCI/VM performance or review-journal costs.
 
 `tests/lower_immutability.rs` covers contract validation, external live changes,
 mixed precedence, upper mutations, hardlink denials, capacity and disabled control.
+
+## Explicit exclusive-upper absence experiment
+
+`metadata_for_backing_lookup_optional(rel)` on Core and `FilesystemService`
+returns `Ok(Some(BackingResolution))` for the same checked positive resolution
+as `metadata_for_backing_lookup`, or `Ok(None)` only after a successful merged
+absence check and successful required absence-observation publication. Policy,
+alias, traversal and journal errors surfaced by the existing resolver retain
+their original order and errno, including exclusion/journal ENOENT. That resolver
+already interprets a backend NotFound as physical-candidate absence: the original
+method returns ENOENT while the new method may return None after observation.
+EIO/permission backend errors remain errors. Thus None does not prove permanent
+physical or remote absence; a caching adapter must separately exclude or own
+backend projections. Neither result reserves a namespace or
+authorizes a future operation; adapters own any additional caching contract.
+
+`FilesystemService::validate_exclusive_upper_namespace()` reuses the canonical
+upper/preimage separation check without enabling a cache or changing its
+configuration. Equal, ancestor/descendant and symlink-alias overlap is rejected.
+`backend::attachment_overlaps(canonical_root)` reads the attachment registry
+without invoking backend metadata/materialization, including for missing paths.
+Both ancestor and descendant attachments count; relative/parent-component input
+is invalid. Its result is instantaneous, not an attachment lease: a caching
+adapter must independently forbid new overlapping attachments for its entire
+owner lifetime. `tests/checked_backing_lookup.rs` exercises the optional result,
+successful observation, native/backend/journal errors, policy/exclusions,
+read-only overlap query and validation without implicitly enabling Core caching.
+
+`FilesystemService::configure_exclusive_upper_absence_cache(bool)` is a
+once-before-requests preference, disabled by default. It does not expand the
+ordinary Core/HOST upper-ownership contract. The admitting adapter must guarantee
+that upper namespace and directory-permission mutations use one exclusive
+operation lock, with all cached queries holding its matching shared lock. Upper
+root/physical ancestor/mount identity must stay stable for that owner. External
+writers, lazy upper projections and hidden shared-operation namespace mutations
+are unsupported. Existing descriptor-bound regular-file I/O may overlap if it
+cannot change namespace or directory traversal permissions. The VM adapter owns
+its whole-Immutable, guest-cache and exclusive-upper eligibility checks.
+
+After acquiring the exclusive lock, hold
+`FilesystemService::upper_namespace_mutation()` until publication, failure
+cleanup and cancellation finish, then drop this opaque guard **before unlocking**.
+It takes no adapter lock and drains no I/O. Construction suspends and clears the
+cache; drop clears again and resumes the configured preference, even after a
+partial failure. Enabled-owner mutation guards must not nest. Disabled owners
+accept a no-op guard. Snapshot capture/restore and teardown follow the same
+exclusive protocol. Cache state is private to one owner and is never serialized.
+`exclusive_upper_absence_cache_enabled()` reports the configured preference,
+including during temporary mutation suspension.
+
+Enabling canonicalizes both upper and preimage directory paths and rejects equal,
+parent/child or symlink-alias overlap with `InvalidInput`: read observations may
+create journal names under a shared operation lock. A failed initial validation
+leaves caching disabled and unconfigured. Disabled configuration preserves old
+layouts. Reconfiguration is `InvalidInput` and preserves the prior preference.
+
+Only the physical upper probe in merged component resolution retains
+`MissingLeaf` or `UnavailableParent`. Complete successful parent identities up
+to the missing leaf/unavailable ancestor are collected without request-local
+prefix shortening and restored on hits. Entry attributes, errors, merged winners
+or absence, policy, alias authorization, whiteout/opaque probes and journal
+decisions are never retained. A MissingLeaf hit still checks whiteout/opaque
+markers and later lowers. Mutex-protected entries are bounded to 4096, clear on
+capacity, and bypass root-plus-relative paths above 4096 bytes or relative depth
+above 256 components. Epoch checks reject insertion across any mutation boundary.
+Guest metadata TTLs and data caching are unchanged.
+
+Profiles retain explicit `exclusive_upper_absence_cache_enabled` units `0`/`1`.
+`exclusive_upper_absence_cache_hits` partitions into `_hits_missing_leaf` and
+`_hits_unavailable_parent`; `exclusive_upper_absence_cache_misses` partitions into
+`_misses_present`, `_misses_missing_leaf`, `_misses_unavailable_parent` and
+`_misses_error`. Disabled, suspended and bounds-bypassed probes are not hits or
+misses. `_evictions` counts capacity clears; `_invalidations` counts enabled-owner
+mutation begin/end clears, one each even if the map is already empty. Counts are
+software-query diagnostics, not elapsed time or disk I/O.
 
 ## Copy-up and truncation
 

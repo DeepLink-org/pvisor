@@ -100,6 +100,14 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
         return fork_execution(args, source).await;
     }
     let source_job = crate::cli::host::lock_selected_job(&source)?;
+    anyhow::ensure!(
+        source_job.as_ref().is_none_or(|(job, _)| job
+            .config
+            .overlayfs
+            .as_ref()
+            .is_none_or(|overlay| overlay.prepared_workspace.is_none())),
+        "CAPABILITY_UNSUPPORTED: prepared workspace checkpoint fork is not supported; start a fresh Job with the selector"
+    );
     // Hold ownership from selection through copy and durable source retention.
     // The runner starts only after releasing the source's lease.
     let (source, source_lease) = source.lock_current()?;
@@ -143,6 +151,7 @@ pub(in crate::cli) async fn fork(args: ForkArgs) -> anyhow::Result<i32> {
     config.run.command = command;
     config.overlayfs = Some(OverlayFsSettings {
         durability: pvisor_overlay_core::stage::policy(&checkpoint.preimages_snapshot)?,
+        prepared_workspace: None,
         access_policy: checkpoint.access_policy.clone(),
         base: Some(checkpoint.target.clone()),
         target: None,
@@ -463,6 +472,66 @@ mod tests {
             pvisor_core::host_protocol::AgentCtlHostErrorCode::Conflict
         );
     }
+
+    #[tokio::test]
+    async fn workspace_selector_fork_rejects_before_checkpoint_or_child_stage() {
+        let root = tempfile::tempdir().unwrap();
+        let (source, mut job) = fixture(root.path());
+        job.active_attempt = source.attempt_id.clone().unwrap();
+        job.config.overlayfs = Some(OverlayFsSettings {
+            prepared_workspace: Some(pvisor::PreparedBase {
+                store: root.path().join("private-workspace-store"),
+                base: pvisor::BaseReference { id: "a".repeat(64) },
+            }),
+            ..Default::default()
+        });
+        job.write().unwrap();
+        let checkpoints = root.path().join("checkpoints");
+        std::fs::create_dir(&checkpoints).unwrap();
+        std::fs::write(
+            checkpoints.join("sentinel"),
+            b"unchanged checkpoint backing",
+        )
+        .unwrap();
+        let child = root.path().join("uncreated-child");
+        let before_record = serde_json::to_value(&source).unwrap();
+        let before_job = serde_json::to_value(&job).unwrap();
+        let error = fork(ForkArgs {
+            source: root.path().into(),
+            state: crate::cli::checkpoint::Kind::Workspace,
+            checkpoint: None,
+            stage: Some(child.clone()),
+            name: None,
+            ram_storage: None,
+            eager_ram: false,
+            request_id: None,
+            output_dir: root.path().into(),
+            command: vec![],
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("CAPABILITY_UNSUPPORTED: prepared workspace checkpoint fork"),
+            "{error:#}"
+        );
+        assert!(!child.exists());
+        assert_eq!(std::fs::read_dir(&checkpoints).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read(checkpoints.join("sentinel")).unwrap(),
+            b"unchanged checkpoint backing"
+        );
+        assert_eq!(
+            serde_json::to_value(RunRecord::read(root.path()).unwrap()).unwrap(),
+            before_record
+        );
+        assert_eq!(
+            serde_json::to_value(job.current().unwrap()).unwrap(),
+            before_job
+        );
+    }
+
     #[tokio::test]
     async fn cached_resume_and_fork_replays_are_fenced_under_job_lock() {
         let root = tempfile::tempdir().unwrap();

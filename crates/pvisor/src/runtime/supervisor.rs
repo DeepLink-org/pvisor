@@ -193,6 +193,12 @@ impl pvisor_gateway::sink::CaptureEventObserver for SharedJournalObserver {
 }
 
 impl RuntimeSupervisorBuilder {
+    pub(crate) fn workspace_target(mut self, target: &std::path::Path) -> Self {
+        if self.overlay.lower_dirs.is_empty() {
+            self.overlay.lower_dirs.push(target.to_owned());
+        }
+        self
+    }
     #[cfg(feature = "gateway")]
     pub(crate) fn live_events(mut self, sink: Arc<super::event::NoopEventSink>) -> Self {
         self.sink = Some(Arc::new(LiveEventObserver {
@@ -299,6 +305,15 @@ impl Default for RuntimeSupervisor {
 }
 
 impl RuntimeSupervisor {
+    pub(crate) fn storage_path(&self) -> Option<&std::path::Path> {
+        self.storage.as_deref()
+    }
+    pub(crate) fn write_paths(&self) -> Vec<&std::path::Path> {
+        let paths = self.storage.iter().map(PathBuf::as_path);
+        #[cfg(feature = "gateway")]
+        let paths = paths.chain(self.gateway_output_dir.iter().map(PathBuf::as_path));
+        paths.collect()
+    }
     pub(crate) fn overlay_hint(&self) -> &OverlayHint {
         &self.overlay
     }

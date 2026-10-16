@@ -339,7 +339,7 @@ or evidence of completed research:
 
 ### Verified reference and example coverage
 
-- `reference/config`: all 100 fields in the configured serde structures, including
+- `reference/config`: all 113 fields in the configured serde structures, including
   nested mount, route, resource, and policy entries, now have names, types,
   defaults, and usage. `scripts/check-reference.py` compares names and types
   against source during `just docs-build`; Rust documentation tests compare raw

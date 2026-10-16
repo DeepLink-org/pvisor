@@ -144,7 +144,7 @@ Enforcement depends on the executor. Check requested, effective, mechanisms, and
 | Optional `container` fields | `rootfs`, `pvisor_binary`, `platform`, `workdir`, `user` |
 | Each `container.mounts` entry | `source`, `target`, `read_only = false` |
 | `vm` | `memory_mib = 2048`, `cpus = 2`, `rootfs_immutable = false`, `ram_compression = false`, `cold_ram_compression = false`, `ram_dedup = false` |
-| Optional `vm` fields | `rootfs`, `image`, `image_store`, `library_dir`, `control_socket`, `ram_backing`, `memory_pool`, `node_socket`, `snapshot_filesystem_pool` |
+| Optional `vm` fields | `rootfs`, `prepared_rootfs`, `image`, `image_store`, `library_dir`, `control_socket`, `ram_backing`, `memory_pool`, `node_socket`, `snapshot_filesystem_pool` |
 
 `container.platform` accepts `linux-amd64` or `linux-arm64` as an optional native host architecture assertion. Matching values are accepted; cross-architecture values are rejected even with a prepared `container.rootfs`. Host and VM configurations reject a configured platform. It does not enable emulation or executable auto-discovery/download. `container.pvisor_binary` defaults to the running executable; an explicit Linux binary and rootfs must be compatible with the native architecture and guest ABI. See [container setup](../guides/executors/container.md). `container.network` accepts `host`, `bridge`, or `none`, but `bridge` is currently rejected without implemented CNI support.
 
@@ -234,6 +234,69 @@ or a read-access heat detector, and does not promise production density.
 
 `[vm].snapshot_filesystem_pool` opts into immutable lower references during native capture of initial and restored VMs, including the first capture of different VMs. After the first seal, the live control connection retains verified owners; subsequent captures authenticate complete original lowers and reuse their sealed pool trees without broader runner access. Native callers should use an absolute host-owned path on the same volume as Job stores, outside all VM-writable roots and snapshot stores. The first miss creates one pool copy per immutable id; concurrent misses serialize per id and hits create no temporary lower copies. Opt-in native v5 snapshots retain private file contents as independently owned 64 KiB compressed frames, reusing unchanged content; restores rebuild private writable inodes with complete metadata and hard-link topology. Live frame owners survive parent retirement/GC. Sealing checks decoded-content identities before compression, fully verifies pool hits and encodes only misses; this also applies to full compressed RAM sealing. Native capture encodes authenticated frozen private roots directly, without an intermediate private-tree copy; import, restore and suspended artifact export never open their recorded original paths. Complete data validation remains; latency/density benefits require measurement. This profile excludes networking, shared memory pools, ordinary and live cold RAM compression, and explicit RAM backing. Retain the pool with its Job stores or export complete snapshots.
 
+### Sealed rootfs {#prepared-rootfs}
+
+`vm.prepared_rootfs` selects a physical base durably retained by
+`pvisor-cache prepare-rootfs`. Set `[run] executor = "vm"`, provide `store` in
+`[vm.prepared_rootfs]`, and put the prepared result's `id` in
+`[vm.prepared_rootfs.base]`. The paired CLI overrides are
+`--rootfs-base-store STORE --rootfs-base ID`; see the
+[sealed-rootfs commands](cli.md#prepared-rootfs).
+
+Initial preparation copies and fully verifies a quiescent, independent Linux
+rootfs. On reuse, the Host worker and `VmExecutor::new` authenticate small
+records, the seal and persistent pin, retaining a GC lease throughout execution
+without copying or auditing the whole tree. If `rootfs` is also present, it must
+exactly match the authenticated base. `image` and non-VM executors are rejected.
+This source currently rejects execution checkpoint capture and restore;
+workspace logical checkpoints remain independent. Keep the store independent of the workspace, stage,
+writable mounts and VM backing/control paths. There is currently no prepared-entry
+removal API: the pin survives process exit and GC. External store edits are
+unsupported.
+
+This selector authenticates physical ownership of the rootfs lower; the workspace
+remains live by default. Ordinary paths and OCI/lazy projections retain their existing
+declarations; `rootfs_immutable` still controls only apply restrictions.
+On Linux x86_64, a fresh native launch with an
+authenticated prepared rootfs automatically requests read-only FLUSH elimination
+for that native child when the host environment omits
+`PVISOR_VM_FS_READONLY_FLUSH_ELISION`; explicit `0` preserves the original
+behavior. Older guests and fds that do not meet local Immutable read-only eligibility retain the
+original FLUSH. SDK calls without a selected and authenticated prepared rootfs
+(including calls supplying only a `with_rootfs_base` owner), and macOS retain their
+previous behavior when the variable is absent. Data-page caching, negative caching, WB
+and DAX are not automatically enabled. Measure preparation separately from
+execution performance.
+
+### Sealed workspace {#prepared-workspace}
+
+`overlayfs.prepared_workspace` selects a fixed generation durably retained by
+the workspace catalog, using `store` and `base.id`. The paired CLI overrides are
+`--workspace-base-store STORE --workspace-base ID`; see the
+[sealed-workspace commands](cli.md#prepared-workspace). Rootfs and workspace
+reuse the same selector shape but authenticate their own purpose-specific
+catalogs; their records cannot substitute for each other.
+
+This source requires prepared rootfs, a native VM, a fresh stage and one
+workspace lower. Reads use the selected snapshot, while the stage/apply target
+remains an independent live project. Apply checks the snapshot baseline for
+selected written paths and retains host conflicts. Later host edits do not
+enter the current Run's snapshot read view; this does not provide serializable checks
+over the entire read set. `apply --target`, compose, JSON `--spec`, non-VM
+executors, logical workspace checkpoint fork/restore and execution checkpoint
+capture/restore are unsupported. Creating and reading workspace checkpoints
+remain independently available.
+
+Keep the two stores independent of each other and outside the project, stage,
+guest-visible paths and writable VM backing/control paths. Initial preparation
+copies and fully verifies the source. Subsequent authentication reads small
+records and holds leases without sealing it again. Persistent pins survive
+command exit and GC; external store edits are unsupported. This field inherits
+the [scoped prepared-rootfs read-only FLUSH default](#prepared-rootfs), without
+automatically enabling data-page caching, negative caching, WB or DAX. Explicit
+`PVISOR_VM_FS_READONLY_FLUSH_ELISION=0` preserves the original FLUSH. Measure
+preparation costs separately from execution time.
+
 ### Capture and recording
 
 `[gateway]` defaults to `mode = "off"`; capture uses `capture`. Other defaults are `admin_listen = "127.0.0.1:9876"`, `level = "dialogue"`, `session_header = "x-pvisor-session-id"`, `debug = false`, `routes = []`. The optional `profile` currently accepts `zcode-bigmodel`; `zcode_builtin_config` points to that integration's configuration. Configure routes and capture levels using the [Gateway guide](../guides/capture.md).
@@ -294,6 +357,10 @@ Field names and types are checked against the Rust serde structures during the d
 | `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `unset` | Host-owned immutable snapshot lower pool; Linux x86-64 no-network private-RAM profile; `--vm-snapshot-filesystem-pool` |
 | `vm.node_socket` | `Option<PathBuf>` | `unset` | Same-host node resource socket; restored shared read-only RAM stays pinned until native VM exit; `--vm-node-socket` |
 | `vm.rootfs` | `Option<PathBuf>` | `unset` | Linux directory; CLI defaults to host `/` on Linux; `--rootfs` |
+| `vm.prepared_rootfs` | `Option<PreparedRootfs>` | `unset` | Durable sealed-rootfs selector; VM only; omitted keeps previous behavior |
+| `vm.prepared_rootfs.store` | `PathBuf` | `unset` | Required when selected; private SnapshotStore, resolved from execution caller cwd and persisted canonically; `--rootfs-base-store` |
+| `vm.prepared_rootfs.base` | `BaseReference` | `unset` | Required when selected; base identity durably pinned by the store |
+| `vm.prepared_rootfs.base.id` | `String` | `unset` | Required when selected; 64 lowercase hexadecimal SHA-256 seal identity; `--rootfs-base` |
 | `vm.image` | `Option<String>` | `unset` | OCI image instead of a rootfs directory; `--rootfs IMAGE` |
 | `vm.image_store` | `Option<PathBuf>` | `unset` | OCI cache path; `--vm-image-store` |
 | `vm.rootfs_immutable` | `bool` | `false` | Reject applying changes into the rootfs lower |
@@ -303,6 +370,10 @@ Field names and types are checked against the Rust serde structures during the d
 | `overlayfs.mount` | `Vec<FilesystemMount>` | `[]` | Unified mounts; repeated `--mount` replaces list |
 | `overlayfs.access` | `Vec<FilesystemAccessRule>` | `[]` | Access rules; repeated `--access` appends; `--clear-access` clears |
 | `overlayfs.stage` | `Option<PathBuf>` | `unset` | New durable Stage outside project; `--stage` |
+| `overlayfs.prepared_workspace` | `Option<PreparedBase>` | `unset` | Sealed-workspace selector; requires prepared rootfs, a fresh native VM stage and an independent live apply target |
+| `overlayfs.prepared_workspace.store` | `PathBuf` | `unset` | Required when selected; independent private SnapshotStore, workspace catalog authenticated at execution; `--workspace-base-store` |
+| `overlayfs.prepared_workspace.base` | `BaseReference` | `unset` | Required when selected; base identity durably pinned by the workspace catalog |
+| `overlayfs.prepared_workspace.base.id` | `String` | `unset` | Required when selected; 64 lowercase hexadecimal SHA-256 seal identity; `--workspace-base` |
 | `overlayfs.durability` | `pvisor_core::overlay::StageDurability` | `"checkpoint"` | `checkpoint` or `strict`; `--stage-durability`; isolation and content conflicts are unchanged |
 | `overlayfs.max_size` | `Option<u64>` | `unset` | Aggregate staged bytes; `--overlayfs-max-size` |
 | `overlayfs.mount[].source` | `PathBuf` | `required` | Host source path |

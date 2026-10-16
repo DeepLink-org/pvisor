@@ -159,6 +159,7 @@ pub(super) fn persist(record: &RunRecord, resolved: &ResolvedRun) -> anyhow::Res
 }
 
 pub fn workspace_config(record: &RunRecord) -> anyhow::Result<(RunConfig, bool)> {
+    super::super::owned_workspace::reject_stage_reconstruction(&record.stage_dir())?;
     use std::io::Read;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     const MAX_BYTES: u64 = 1024 * 1024;

@@ -546,10 +546,171 @@ baseline selects observation semantics, not an immutability guarantee. All
 these paths therefore conservatively retain mutable declarations; an owned,
 externally stabilized experimental lower can use the explicit contract.
 
+For a sealed root lower, embedded callers can explicitly transfer a
+`SnapshotBase` from `SnapshotStore::import_base` into
+`VmExecutor::with_rootfs_base`. The configured `VmSettings.rootfs` must name that
+exact canonical generation; a different directory or restored executor is
+rejected. The executor and its clones retain the base GC lease through native
+teardown. Ordinary rootfs paths and `rootfs_immutable` do not opt in. The owned
+store must remain private and unmodified by external writers. An attempt-owned
+synthetic resolver lower, when needed, is fully written before VM entry and
+retains its owner through exit; its declaration preserves the lower stack's
+identity and order. Writable uppers retain their normal behavior.
+
+Ordinary VM CLI runs can select a durably prepared physical rootfs independently
+of the live workspace:
+
+```bash
+pvisor-cache prepare-rootfs --rootfs /opt/rootfs-source --base-store /opt/pvisor-bases
+# Use the prepared_rootfs.base.id from the JSON result:
+pvisor run --vm --rootfs-base-store /opt/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
+```
+
+The source must be quiescent and independent of the store. Initial preparation
+copies and fully verifies its content/native metadata; external hardlinks and
+special objects fail. `SnapshotStore::prepare_rootfs` imports and durably pins
+the generation; `retain_prepared_rootfs` idempotently pins an existing owner from
+the same store. The private catalog atomically publishes a versioned record and
+a hardlink to the base reference marker. No removal API is provided: these pins
+survive preparer/process exit, GC and stopped Jobs until a future controlled
+deletion mechanism. A saved JSON path/id alone does not retain an ordinary base.
+
+`open_prepared_rootfs` checks the bounded record, pin identity and small seal,
+then acquires a lease without a full tree audit. External store mutation is
+unsupported; use `SnapshotBase::verify` for an explicit audit. CLI Host workers
+open before resolving their layout; `VmExecutor::new` also consumes the typed
+`VmSettings::prepared_rootfs` selector for SDK callers and retains the owner.
+Its optional resolved `rootfs` must match exactly; `image` conflicts. A restored
+executor rejects the selector override. This source does not support native
+execution checkpoint capture/restore: capabilities report capture unavailable,
+Job capture admission rejects it, and no native capture binding is installed.
+Ordinary workspace logical checkpoints retain their separate behavior.
+Native runners independently re-lease
+the base before their sandbox and retain it until teardown.
+
+Configuration uses `[vm.prepared_rootfs]` with `store` and `base = { id = "..." }`.
+The two CLI options are required together and conflict with `--rootfs`; host,
+container and JSON `--spec` reject them. Store/workspace/stage/extra guest sources
+must be independent canonical trees. The store must not be guest-visible or
+writable. Only its selected rootfs subtree becomes an Immutable lower; workspace
+snapshot/version semantics remain separate. Legacy configurations default to no
+selector; host `/`, arbitrary paths, OCI caches and lazy projections retain their
+original declarations. Lower-data caching and writeback/DAX are not enabled by
+rootfs selection.
+
+On Linux x86_64, a fresh native launch with an authenticated prepared-rootfs
+selector, its matching retained `SnapshotBase`, and no capture/restore binding
+requests read-only local-FLUSH elision when
+`PVISOR_VM_FS_READONLY_FLUSH_ELISION` is unset. This preference is applied only to
+that native child, without changing the Host environment or generic VM worker
+default. Explicit `0` disables it; explicit `1`, invalid values and non-UTF8
+values pass unchanged to the existing strict worker parser. Other platforms,
+ordinary rootfs/Immutable declarations, and SDK callers using only
+`with_rootfs_base` retain the unset-off behavior and their existing checkpoint
+capabilities. SDK callers consuming the authenticated `prepared_rootfs` selector
+share its existing capture-unsupported contract and this scoped Linux default.
+Actual negotiation still requires the guest capability, guest cache, WB0/DAX0
+and compatible lock support; each successful OPEN still checks Core policy and
+the actual read-only Immutable regular lower descriptor's native filesystem.
+Upper, Mutable, writable and otherwise ineligible handles retain ordinary FLUSH.
+Older guests fall back without the capability. Guest write/error barriers and
+RELEASE remain unchanged; this default does not enable data caching or repair
+unrelated page-mapping or writeback behavior. Launch-environment contract tests
+do not establish additional platform or workload performance coverage.
+Local CLI preparation rejects both source and destination paths that overlap
+the canonical Host authority before any store initialization or copying, even
+without an active Host worker. It never copies Host credentials into a base.
+
+The runtime also exposes `SnapshotStore::prepare_workspace`,
+`retain_prepared_workspace` and `open_prepared_workspace`, returning the existing
+`SnapshotBase` owner. They import a quiescent workspace or retain an already
+imported base in a separate `prepared-workspace` catalog. Its versioned,
+purpose-bound record and hardlink pin survive preparer exit, GC and stopped
+consumers. Rootfs-only catalog entries cannot authenticate as workspace entries,
+or vice versa; a base may be explicitly retained in both catalogs. Existing
+`prepared-rootfs` directory names and version-1 record bytes remain compatible.
+Warm workspace opens authenticate the small record, pin and seal, without a full
+tree audit; `SnapshotBase::verify` remains the explicit audit. Keep each acquired
+lease until its consumers stop, and keep the private store externally unmodified.
+Source and store must be independent canonical trees, and import retains all
+existing content/native-metadata, special-object and external-hardlink checks.
+These APIs provide storage ownership only: they do not add a CLI selector,
+change workspace/stage/apply semantics, or enable VM cache experiments.
+
+Embedded callers can transfer a prepared workspace owner into
+`PVisorBuilder::with_workspace_base(base, live_target, Arc<VmExecutor>)`.
+The actual native executor must own an authenticated prepared rootfs, and its
+store must be independent of the workspace store. The builder selects and binds
+that exact executor; replacing it with another executor or a transparent wrapper
+is rejected at admission. Host `/`, arbitrary rootfs paths, restored executors,
+compose layers, host-mounted merged views and existing workspace stages are
+unsupported. Explicit durable storage and a fresh stage are required. Existing
+canonical writable/control/Gateway paths must not overlap either private store.
+
+The runtime retains the workspace and rootfs owners through the builder, admitted
+Attempt and native teardown. Under the original RunLease, it creates a new compact
+Core/stage with the sealed generation as its single Immutable lower and frozen
+baseline; `live_target` remains the separate writable apply destination. This is
+fresh initialization, not `ExecutionOverlayHint` restoration. Ordinary SDK RunSpec
+inputs receive the trusted workspace/rootfs split without private VM metadata.
+The actual native handoff checks the lower, baseline, target and declaration
+against that owner. The child retains its existing independent seal/lease/content
+index authentication; it does not add a second catalog-purpose wire protocol.
+
+Reads stay on the selected generation while external edits to the live target
+remain external. Mutations retain normal copy-up/preimage behavior, and applying
+selected changes rejects conflicting target edits. This is not whole-read-set
+transaction isolation. A private `workspace-baseline.json` records the exact
+workspace/rootfs selectors and live target. Stopped-Job apply reauthenticates both
+catalogs and their relationship to the record under the existing lease, retaining
+both owners through commit; a receipt path alone is no proof. The initial version
+rejects apply-target overrides before creating directories. General compose
+restrictions remain. Workspace logical checkpoints remain distinct from native
+execution capture/restore, which the required prepared-rootfs executor rejects;
+workspace checkpoint creation/read-only review remain available, while logical
+checkpoint restore/fork is refused before creating child backing. A retained
+workspace-catalog owner also identifies this limit if the original stage is no
+longer present. Native capture/fork/resume independently reject the actual owned
+stage receipt, even if a supplied restoration config omits the selector.
+Relaunch must explicitly reconstruct supported ownership, not promote saved
+paths; a managed prepared-workspace selector without a matching runtime owner is
+refused before starting an Attempt. This entry alone adds no CLI selection, automatic reimport, cache switch
+or measured performance benefit.
+
+`PVisorBuilder::on_executor_output(Fn(&ExecutorOutput) + Send + Sync + 'static)`
+provides read-only executor observation without a wrapper. It runs synchronously
+after an invoked executor returns and before any driver teardown or stage seal;
+it does not run for admission failure or cancellation before invocation. The
+callback must not block, panic or reenter runtime operations. CLI adapters can
+retain their pre-teardown cancellation notifications while keeping the exact
+native executor binding.
+
+The `filesystem_owned_inputs` engineering example prepares independently copied,
+verified rootfs/workspace generations once with `prepare --rootfs DIR
+--workspace DIR --store NEW_DIR --manifest NEW_JSON`. Its `run` subcommand accepts
+the offline VM argument subset used by `reference_baselines.py`. Set
+`PVISOR_FS_OWNED_INPUTS_MANIFEST` to that manifest and
+`PVISOR_FS_OWNED_INPUTS_CONDITION` to `baseline`, `rootfs`, `workspace` or `both`.
+All conditions read the same sealed physical rootfs; its baseline declaration
+remains mutable. Baseline/rootfs workspace controls retain the ordinary mutable
+trial lower and live-baseline read observations. Workspace/both attach a sealed
+copy of the same fixture with an independent trial workspace apply destination;
+this treatment combines immutable caching and frozen-baseline observation
+semantics. Each run owns a fresh upper, authenticates seals without a full
+content rescan, and retains both leases until managed Job completion. Explicit
+`PVISOR_VM_FS_WRITEBACK=0` is required; the normal VM overlay runner keeps DAX
+disabled. The optional
+`PVISOR_FS_OWNED_INPUTS_RECEIPT` selects a fresh JSON receipt path; otherwise it
+uses `stage/owned-inputs-receipt.json`. The receipt records actual generation
+identities, condition and manifest digest after teardown. This entry preserves
+PVisor, managed Job completion, compact journals, Bundle generation and self-exec
+VM isolation, but omits the CLI Host service. Its Ready timings are comparable
+within this four-condition cohort, not to previous CLI Ready measurements.
+
 For same-artifact/same-input A/B keep declarations unchanged and set
 `PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE=1` before constructing the serving host
-process/VM runner for the no-cache control; unset for caching. No formal CLI was
-added. `PVISOR_FS_PROFILE=1` reports `overlay-core` hit/miss/eviction `units`; see
+process/VM runner for the no-cache control; unset for caching.
+`PVISOR_FS_PROFILE=1` reports `overlay-core` hit/miss/eviction `units`; see
 that crate's README for exact names and capacity. This is a metadata/path/parent
 cache only: no directory inventory/content cache or kernel TTL change. Native
 VM root devices now additionally retain guest data pages on read-only regular

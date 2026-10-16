@@ -916,7 +916,7 @@ explicit rootfs or image is supplied, Linux uses the host `/` through virtiofs
 and OverlayFS by default, preserving the host runtime, PATH and HOME without
 pulling an image. On macOS, supply a Linux rootfs or image explicitly.
 Manifests and layer digests are verified, the host architecture selects
-`linux/arm64` or `linux/amd64`, and the unpacked rootfs becomes the immutable
+`linux/arm64` or `linux/amd64`, and the unpacked rootfs becomes the shared
 lower layer of a pVisor OverlayFS. `--image-store` overrides the platform cache
 directory. OCI cache targets are marked immutable, and this protection survives
 logical checkpoint/fork, so `pvisor apply` cannot mutate a rootfs shared by
@@ -966,6 +966,87 @@ for offline execution. On a pVisor VM, `auto` uses smoltcp IPv4 TCP/DNS and
 `off` leaves the guest offline; deny-all still permits configured internal
 Gateway routes. See [network boundaries](../guides/policies/network.md) for the
 scope of each path.
+
+#### Use a sealed rootfs {#prepared-rootfs}
+
+Prepare a quiescent, independent Linux rootfs into a private store, then replace
+`BASE_ID` with the returned `base.id`. Keep the store outside the workspace,
+stage, every guest-visible path and writable VM backing/control paths.
+
+```bash
+pvisor-cache prepare-rootfs --rootfs /srv/linux-rootfs --base-store /srv/pvisor-bases
+pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
+```
+
+Local preparation does not use a cache service. Successful output contains
+`schema_version`, `prepared_rootfs` (canonical `store` and `base.id`) and the
+independent `rootfs` path. Initial preparation includes copying, full content
+and metadata verification, and a persistent pin. Later ordinary CLI runs have
+the Host worker authenticate the object, acquire a lifetime lease and attach
+the Immutable physical lower without sealing it again. The workspace remains
+live by default; an explicit [sealed workspace](#prepared-workspace) can select
+a fixed generation.
+
+`--rootfs-base-store` and `--rootfs-base` must be supplied together. They conflict
+with `--rootfs` and OCI image sources; explicit host/container executors and JSON
+`--spec` reject them. TOML uses `vm.prepared_rootfs.store` and
+`vm.prepared_rootfs.base.id` with explicit `[run] executor = "vm"`. A recorded
+`vm.rootfs` must match the authenticated result. The store pin survives process
+exit and GC; there is currently no prepared-entry removal API. External store
+edits are unsupported. This source currently rejects execution checkpoint
+capture/restore; workspace logical checkpoints remain independent.
+Apply protection on ordinary directories, OCI or lazy projections does not
+grant this physical ownership.
+
+On Linux x86_64, a fresh native launch with an authenticated prepared rootfs
+automatically requests read-only FLUSH elimination for that native child when
+the host environment omits `PVISOR_VM_FS_READONLY_FLUSH_ELISION`; an explicit
+`0` preserves the original behavior. The guest must negotiate support, and only
+eligible local Immutable read-only fds skip backend FLUSH. Older guests and
+ineligible fds retain the original FLUSH. SDK calls without a selected and
+authenticated prepared rootfs (including calls supplying only a `with_rootfs_base`
+owner), and macOS retain their previous behavior when the variable is absent. This
+default does not enable data-page caching, negative caching, WB or DAX.
+
+#### Use a sealed workspace {#prepared-workspace}
+
+Prepare a quiescent project into a separate private store, then run from the
+project directory. Use the rootfs preparation result for `ROOTFS_ID` and the
+workspace preparation result for `WORKSPACE_ID`.
+
+```bash
+pvisor-cache prepare-workspace --workspace /srv/project --base-store /srv/pvisor-workspace-bases
+cd /srv/project
+pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
+  --workspace-base-store /srv/pvisor-workspace-bases --workspace-base WORKSPACE_ID \
+  --stage /srv/pvisor-stages/review-1 -- /bin/sh
+```
+
+Preparation returns `schema_version`, `prepared_workspace` (canonical `store`
+and `base.id`) and an independent `workspace` path. Initial preparation copies
+and verifies contents and metadata. A persistent pin survives command exit and
+GC; later Host workers authenticate the workspace catalog again and acquire a
+lifetime lease without sealing the source again.
+
+Reads use the selected fixed generation; subsequent host project edits do not
+enter the current Run's snapshot read view. Writes enter a fresh stage. Ordinary
+`pvisor apply` still targets the original live project, checking the snapshot
+baseline for selected written paths and retaining conflicts. This does not
+provide serializable transaction checks over every read path. Redirecting with
+`apply --target` is unsupported.
+
+Supply both workspace arguments together. They require prepared rootfs, a
+native VM, a fresh stage and one workspace lower. TOML uses
+`overlayfs.prepared_workspace.store` and `overlayfs.prepared_workspace.base.id`.
+Explicit host/container executors, JSON `--spec`, compose, logical workspace
+checkpoint fork/restore and execution checkpoint capture/restore are rejected.
+Creating and reading workspace checkpoints remain independently available.
+Keep the two stores independent of each other
+and outside the project, stage, guest-visible paths and writable VM
+backing/control paths. External store edits are unsupported. This entry inherits
+the [scoped prepared-rootfs read-only FLUSH default](#prepared-rootfs), without
+automatically enabling data-page caching, negative caching, WB or DAX. Set
+`PVISOR_VM_FS_READONLY_FLUSH_ELISION=0` to preserve the original FLUSH.
 
 ## Run project discovery {#run-项目发现}
 

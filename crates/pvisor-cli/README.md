@@ -68,6 +68,37 @@ or persistent cross-process cache substitutes for that attestation.
 The frontend's signal-only Tokio runtime uses one worker thread; execution
 retains its separate worker runtime.
 
+## Prepared VM rootfs
+
+`pvisor-cache prepare-rootfs --rootfs DIR --base-store STORE` is a local operation,
+independent of cache daemons, backends and registry access. The source must be
+quiescent; preparation copies/verifies it and commits a persistent store pin
+before printing `{schema_version, prepared_rootfs: {store, base: {id}}, rootfs}`.
+Cache backend/location/read-only/image-store options conflict with this command.
+The source and store must not contain one another. The private store must remain
+outside guest-visible or writable workspace/stage/mount trees and must not be
+modified manually. No prepared-entry removal command is provided.
+Both local source and destination are checked against canonical Host authority
+before initializing/copying, without contacting or changing a listener.
+
+`pvisor run --vm --rootfs-base-store STORE --rootfs-base ID -- COMMAND` opens that
+catalog entry in the ordinary Host request worker, before default host rootfs or
+OCI preparation. Both options are required together and conflict with `--rootfs`,
+configured image sources, host/container execution and JSON `--spec`. TOML can
+use `[vm.prepared_rootfs]` with `store` and `base = { id = "..." }`; old configs
+retain their defaults. Jobs persist the canonical selector and exact root path;
+future workers must authenticate both rather than trust the path alone.
+
+Warm opens verify the small record/seal and marker, then retain a GC lease in the
+executor and native child; they do not reimport or fully hash the tree. Durable
+catalog pins also preserve stopped Jobs after the preparer exits. Rootfs ownership
+does not snapshot the workspace, promote OCI/lazy paths, or enable the default-off
+lower-data/local-FLUSH experiments. Native execution checkpoint capture and
+restore are unsupported for this source: the capability and Job admission report
+that limit before capture, and no capture binding is installed. Workspace logical
+checkpoints retain their independent behavior. See the runtime README for the
+ownership and platform limits.
+
 Successful final process-tree cleanup is idempotent; failed cleanup remains
 retryable and descendant-only cleanup does not finalize ownership. Linux
 observes the stop state of every discovered live process and thread before
@@ -78,6 +109,56 @@ cleanup; the service's Finish handshake and bounded escalation remain in place.
 macOS retains birth-identity checks and polling during tree quiescence. These
 changes remove redundant work in the source path; runtime latency improvements
 require a new paired measurement.
+
+## Prepared VM workspace
+
+An explicit prepared workspace reads one fixed, owned generation while retaining
+the live caller workspace as the apply destination. Prepare it outside the Run:
+
+```bash
+pvisor-cache prepare-workspace --workspace /opt/workspace-source --base-store /opt/workspace-bases
+pvisor run --vm --rootfs-base-store /opt/rootfs-bases --rootfs-base ROOTFS_ID \
+  --workspace-base-store /opt/workspace-bases --workspace-base WORKSPACE_ID -- /bin/sh
+```
+
+The preparation command is local, with the same backend-option conflicts and
+canonical source/store/Host-authority checks as `prepare-rootfs`. It prints
+`{schema_version, prepared_workspace: {store, base: {id}}, workspace}` after the
+workspace-purpose catalog pin commits. A rootfs catalog record cannot substitute
+for a workspace record. Preparation copies a quiescent source once; warm Runs
+authenticate the catalog and seal without reimporting the source or auditing the
+whole tree. The private store and generation must remain externally unmodified.
+
+Run options require the workspace pair together. TOML uses
+`[overlayfs.prepared_workspace]` with `store` and `base = { id = "..." }`.
+`PreparedBase` is the common selector DTO; the existing `PreparedRootfs` Rust name
+and `vm.prepared_rootfs` JSON/TOML representation remain compatible. A conflicting
+CLI/config workspace selector fails. Jobs persist its canonical store/id for
+independent later workers; serialized fields do not carry leases or ownership.
+
+The first supported path requires a native VM, an authenticated prepared rootfs,
+independent rootfs/workspace stores, one lower and fresh stage backing. It rejects
+JSON `--spec`, host/container execution, staged compose layers, additional shares,
+custom guest workspace positions, workspace checkpoint fork, and native execution
+restore. The default live
+workspace path is preserved inside the guest. Stores must be disjoint from that
+live target, stage, root share, mutable VM backing, recording output and any
+guest-visible sources, including canonical symlink aliases. Existing stage or
+Run metadata is not permission to reopen or overwrite a previous Job.
+
+The Host request worker reopens the workspace-purpose catalog and passes its
+typed lease with the exact prepared-rootfs `Arc<VmExecutor>` to the runtime. Fresh
+upper/compact-journal creation occurs under the Run lease. The native child
+independently authenticates the physical seal and holds its own lease; it does
+not recheck catalog purpose. Completion/cancellation notifications retain their
+pre-teardown timing through a read-only runtime executor-output observer.
+
+Reads use the selected generation even when live files change. Staged mutations
+retain that generation as their baseline; manual apply targets the live workspace
+and keeps normal content-conflict detection. Immutable lower does not mean the
+live apply target is protected. No new VM cache, writeback or DAX setting is
+enabled by this selector. Default Runs retain their existing live-workspace
+semantics. These interface changes do not establish a performance result.
 
 ## Source layout
 

@@ -1,6 +1,7 @@
 //! Single-node ownership: durable sandbox intentions, bounded admission and
 //! runtime reconciliation. No Worker placement, DAG or distributed lease.
 pub mod api;
+mod e2b;
 mod models;
 mod store;
 #[cfg(test)]
@@ -265,6 +266,10 @@ impl Daemon {
 
     async fn create_owned(&self, request: CreateRequest) -> Result<Sandbox, ApiError> {
         let validated = request.validate(self.config.max_timeout_seconds)?;
+        self.create_validated(validated).await
+    }
+
+    async fn create_validated(&self, validated: models::Validated) -> Result<Sandbox, ApiError> {
         let id = format!("sb-{}", uuid::Uuid::new_v4());
         let now = Utc::now();
         let sandbox = Sandbox {
@@ -282,7 +287,7 @@ impl Daemon {
             entrypoint: validated.entrypoint.clone(),
             metadata: validated.metadata.clone(),
         };
-        let record = Record {
+        let mut record = Record {
             sandbox,
             env: validated.env,
             cpu_millis: validated.cpu_millis,
@@ -292,7 +297,15 @@ impl Daemon {
                 uuid::Uuid::new_v4().simple(),
                 uuid::Uuid::new_v4().simple()
             ),
+            e2b: validated.e2b,
         };
+        if record.e2b.is_some() {
+            // Reserved bootstrap input overrides any client-supplied value.
+            record.env.insert(
+                crate::runtime::ENVD_TOKEN_ENV.into(),
+                record.endpoint_token.clone(),
+            );
+        }
         let spec = RuntimeSpec {
             id: id.clone(),
             image: record.sandbox.image.uri.clone(),
@@ -300,6 +313,7 @@ impl Daemon {
             env: record.env.clone(),
             cpu_millis: record.cpu_millis,
             memory_bytes: record.memory_bytes,
+            e2b: record.e2b.clone(),
         };
         crate::runtime::validate_spec(&spec).map_err(|_| {
             ApiError::bad_request("invalid runtime image, argv, environment or resource limits")
@@ -437,7 +451,15 @@ impl Daemon {
         tokio::spawn(async move {
             let gate = this.operation(&id).await?;
             let _operation = gate.write().await;
-            let record = this.record(&id).await?;
+            this.control_locked(&id, pause).await
+        })
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?
+    }
+
+    // Caller holds the exclusive lifecycle gate, including E2B connect's TTL update.
+    async fn control_locked(&self, id: &str, pause: bool) -> Result<(), ApiError> {
+            let record = self.record(id).await?;
             if !matches!(
                 record.sandbox.status.state.as_str(),
                 "Running" | "Paused" | "Pausing" | "Resuming"
@@ -449,9 +471,9 @@ impl Daemon {
                 ));
             }
             check_expiration(record.sandbox.expires_at)?;
-            let current = this
+            let current = self
                 .runtime
-                .inspect(&id)
+                .inspect(id)
                 .await
                 .map_err(|e| ApiError::internal(e.to_string()))?;
             let desired = if pause {
@@ -464,7 +486,7 @@ impl Daemon {
                 // A lost ACK may leave the durable intention behind the live state.
                 // The exclusive gate and checks above retain delete/expiry fences.
                 if record.sandbox.status.state != state {
-                    this.transition(&id, state, None).await?;
+                    self.transition(id, state, None).await?;
                 }
                 return Ok(());
             }
@@ -480,12 +502,12 @@ impl Daemon {
                     "native state does not permit this operation",
                 ));
             }
-            this.transition(&id, if pause { "Pausing" } else { "Resuming" }, None)
+            self.transition(id, if pause { "Pausing" } else { "Resuming" }, None)
                 .await?;
             let outcome = if pause {
-                this.runtime.pause(&id).await
+                self.runtime.pause(id).await
             } else {
-                this.runtime.resume(&id).await
+                self.runtime.resume(id).await
             };
             let observed =
                 outcome.map_err(|e| ApiError::new(503, "RUNTIME_UNAVAILABLE", e.to_string()))?;
@@ -496,12 +518,9 @@ impl Daemon {
                     "native control not confirmed",
                 ));
             }
-            this.transition(&id, if pause { "Paused" } else { "Running" }, None)
+            self.transition(id, if pause { "Paused" } else { "Running" }, None)
                 .await?;
             Ok(())
-        })
-        .await
-        .map_err(|e| ApiError::internal(e.to_string()))?
     }
 
     pub async fn delete(self: &Arc<Self>, id: &str) -> Result<(), ApiError> {
@@ -636,14 +655,19 @@ impl Daemon {
     }
 
     pub async fn upstream(&self, id: &str, port: u16) -> Result<String, ApiError> {
-        if !matches!(port, 44772 | 18080) {
+        let record = self.record(id).await?;
+        let supported = if record.e2b.is_some() {
+            port == crate::runtime::ENVD_PORT
+        } else {
+            matches!(port, 44772 | 18080)
+        };
+        if !supported {
             return Err(ApiError::new(
                 501,
                 "NOT_SUPPORTED",
-                "only execd and egress endpoints are supported",
+                "port is not supported by this sandbox's prepared service profile",
             ));
         }
-        let record = self.record(id).await?;
         check_expiration(record.sandbox.expires_at)?;
         if record.sandbox.status.state != "Running" {
             return Err(ApiError::new(

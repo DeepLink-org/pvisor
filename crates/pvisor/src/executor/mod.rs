@@ -20,6 +20,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 pub(crate) struct AttemptAttachments {
     pub filesystem: Option<pvisor_core::FileAccessPolicy>,
     pub vm_network: Option<Arc<std::sync::Mutex<Option<crate::runtime::VmNetworkAttachment>>>>,
+    pub workspace_base: Option<Arc<crate::runtime::owned_workspace::OwnedWorkspace>>,
 }
 
 pub(crate) use crate::session::Session;

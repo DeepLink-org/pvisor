@@ -387,15 +387,45 @@ impl SnapshotStore {
         // Create private directories from the outset, then validate even when
         // mkdir reports AlreadyExists (including files and dangling symlinks).
         fn directory(path: &Path) -> anyhow::Result<()> {
-            match fs::DirBuilder::new().mode(0o700).create(path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            let created = match fs::DirBuilder::new().mode(0o700).create(path) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let parent = path
+                        .parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .context("snapshot store has no existing parent")?;
+                    directory(parent)?;
+                    // A previous initializer may have created this ancestor
+                    // but failed before completing its durability barrier.
+                    File::open(parent)?.sync_all()?;
+                    File::open(
+                        parent
+                            .parent()
+                            .filter(|parent| !parent.as_os_str().is_empty())
+                            .unwrap_or(Path::new(".")),
+                    )?
+                    .sync_all()?;
+                    // Another initializer can win mkdir after parent creation.
+                    return directory(path);
+                }
                 Err(error) => return Err(error.into()),
-            }
+            };
             ensure!(
                 fs::symlink_metadata(path)?.is_dir(),
                 "invalid snapshot store directory"
             );
+            if created {
+                // Persist each newly created link from an existing ancestor
+                // downwards, including the store and its base/catalog parents.
+                File::open(path)?.sync_all()?;
+                File::open(
+                    path.parent()
+                        .filter(|parent| !parent.as_os_str().is_empty())
+                        .unwrap_or(Path::new(".")),
+                )?
+                .sync_all()?;
+            }
             Ok(())
         }
         directory(root)?;
@@ -411,6 +441,8 @@ impl SnapshotStore {
             "deleted",
             "content",
             "bases",
+            "prepared-rootfs",
+            "prepared-workspace",
             "filesystems",
             "filesystem-build-locks",
         ] {

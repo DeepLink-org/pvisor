@@ -457,6 +457,383 @@ Run `--samples 1 --warmups 0` into a separate new directory first. Run `--modes 
 
 Tool preparation needs Linux x86_64, KVM, FUSE, user namespaces, a GNU pVisor CLI, firmware, Docker/Firecracker/QEMU, the Rust musl target, Git/rg/Python/Node/GCC and e2fsprogs. CLI modes also need their installed clients. Input copying, kernel builds, image import and downloads are outside timers. First output, result return and process exit are separate metrics. Record binary/source/harness digests, host kernel and tool identities with every run.
 
+### Ready and resident filesystem rounds
+
+`filesystem_rounds.py` / `filesystem_rounds_workload.py` serve B-FS-TOOLS's quick
+cross-runtime comparison. Startup is launch to the unique `REFERENCE_READY`
+from the common Python payload; tool work and VM exit do not enter that clock.
+Successful exit remains a correctness check. The seven tools run three times
+inside the same VM/container/process tree and workspace. The second and third
+rounds retain file caches, Cargo output and npm installations; writes overwrite
+the same 256 files. Each fresh environment starts with empty task tool caches.
+
+Two additional fixed workloads run in every round: 10,000 open/fstat/close calls
+on one primed file without reading content, and 8,192 unbuffered 1 KiB writes to
+one new file followed by fsync/close. The stream result includes its explicit
+fsync; write, fsync and close are also retained separately. All written bytes
+are read back after the operation clock, with host checks on the three stream
+files and staged-lower isolation. These workloads target deferred OPEN and
+writeback; ordinary mutable CLI inputs do not qualify for directory images.
+
+The eight existing backends plus an explicitly enabled VM writeback condition
+use the same inputs and resource parent. Five seeded randomized rounds produce
+five independent environments per condition and three dependent task rounds
+within each. Do not count the latter as fifteen independent samples. No quiet
+wait, external interference monitor or new full input inventory scan is used.
+Every valid slow sample and all failures are retained. Preparation and compiler
+work precede sampling. Native/host/staged use the frozen Python executable and
+its matching libpython; Python patch-level upgrades on the host must not mix
+with the frozen standard-library extensions.
+
+Prepare derived inputs under a new short `.data/` path, using an owned private
+Docker setup and the existing prepared tools:
+
+```bash
+python3 benchmark/pvisor/filesystem_rounds.py \
+  --source-assets /absolute/path/to/prepared-reference-assets \
+  --setup /absolute/path/to/private-budget/setup.json \
+  --output benchmark/.data/rounds-input-UNIQUE
+```
+
+The 2026-10-16 launch configuration, frozen helper sources, namespace entry and
+exact systemd command are retained under
+`benchmark.new/filesystem/.data/retest-20261016/resident-fixed/`.
+`filesystem_rounds.run(config)` uses the reference trial runner in that private
+namespace; repeat with a fresh configuration/output/containment directory and
+the live private daemon identity. The successful raw cohort is
+`benchmark/.data/fr3-20261016b/`; the interrupted Python-version mismatch attempt
+is independent and is not pooled. Published statistics are
+`filesystem-resident.csv` and `filesystem-resident-provenance.csv` in both
+documentation locales. Historical complete-task measurements retain their own
+clocks and sample sets.
+
+### Guest lifetime fixes
+
+The B-FS-ENG lifetime-fix comparison is independent of the cross-runtime data.
+`benchmark/.data/fs-review-20261016/` retains the 0044/0045 firmware binaries,
+build logs/receipts, the same current GNU host binary for both arms, correctness
+commands and `campaign-off/` namespace entry/launch configuration. The successful
+`benchmark/.data/flife16b/report.json` contains five paired CLI and five paired
+Immutable SDK environments with three resident rounds each, writeback off,
+profiling off and no interference gate. The SDK has 512 MiB guest RAM; CLI has
+16 GiB. Both use two vCPUs and the same two-core/16 GiB enclosing budget; do not
+compare their absolute times. `derive.py` beside the retained build produces all
+49 comparisons and paired bootstrap intervals over five independent pairs.
+The bilingual engineering page links the derived lifetime summary/provenance CSVs.
+
+The earlier `flife16` attempt is invalid: both writeback-on firmware arms fail
+the final barrier with ENOENT after a closed file is unlinked. No samples from
+it are pooled. The minimal diagnostic in `flifediag16b` separates successful
+directory open from the failing syncfs; existing metadata timestamp writeback
+after removal has no surviving host inode path/handle. Normal writeback and
+injected EIO-to-125 cases pass independently, without resolving that case.
+Initial reused-target binaries embedded an older guest supervisor; their logs
+remain diagnostic only. The final build reruns `pvisor-vm/build.rs`, verifies
+the current supervisor and repeats all 27 functional expectations. Nine baseline
+failures become passes, and all 12 registered profile instances have final records.
+
+### Owned-input cache matrix
+
+`filesystem_cache_matrix.py` serves B-FS-ENG and exposes `run(config_path)` for
+the same retained private-namespace launcher used by the lifetime comparison.
+Its four conditions are `baseline`, `sealed-rootfs`, `snapshot-workspace` and
+`both`. Every condition uses the same owned sealed physical rootfs; the
+baseline retains its current conservative Mutable declaration. Baseline and
+rootfs-only arms use the fresh trial workspace as their live Mutable lower and
+apply target. The workspace-only and combined arms read equal initial bytes
+from an owned sealed workspace snapshot, use a frozen baseline, and declare
+that lower Immutable; their apply target remains the independent trial
+workspace. Snapshot references retain real leases through completion. This
+workspace treatment combines cache eligibility with frozen-baseline semantics
+and the associated read-observation/journal work; its difference cannot be
+attributed solely to metadata caching. Each environment has a fresh upper, Job
+and tool caches. The engineering driver uses the ordinary pVisor Job/runtime
+path; the production CLI does not accept new immutable flags.
+
+Five seeded randomized blocks provide five fresh environments per condition;
+each runs the existing seven tools and two fixed additional workloads three
+times. Startup remains launch to `REFERENCE_READY`, excluding tools and exit.
+Every condition fixes guest cache on, writeback off and DAX off. The original
+output, cache, normal-exit, Run Bundle, lower isolation, 256-file full-byte and
+three stream-file checks remain mandatory. There is no quiet wait, external
+interference monitor or new full input/source inventory gate; retain slow valid
+samples and all failures. Snapshot import/sealing occurs before measurement and
+has separate retained preparation costs. Resident rounds are dependent and do
+not turn five environments into fifteen samples.
+
+The minimal configuration extends the lifetime namespace configuration with:
+
+- `binary`: the one frozen CLI-compatible engineering driver used in all arms;
+- `firmware` and `firmware_object`: its common directory and exact shared object;
+- `trial_adapter`: a frozen Python module with `prepare_trial(args, condition,
+  trial)` and `validate_trial(args, row, condition, trial, prepared)`;
+- `conditions`: all four names, each with an explicit string-to-string `env`
+  mapping to the supported driver interface;
+- `assets`, `setup`, `quick_source_report`, `raw_root`, `outputs.formal`, and the
+  existing namespace-launch fields. Optional `samples` defaults to 5 and `seed`
+  to 20261016; use separate outputs for capability runs and formal samples.
+
+The adapter prepares only outside the reference timer and returns a dictionary
+whose optional `environment` augments the condition mapping. After the trial it
+returns observed boolean `rootfs_immutable`, `workspace_immutable`, `dax` and a
+nonempty `evidence` field pointing to retained ownership/runtime receipts. A
+missing qualification, fallback to Mutable or enabled DAX fails that sample;
+condition names and an environment switch alone are insufficient evidence.
+The runner preserves any completed row when subsequent qualification fails.
+Its shared executable, firmware, adapter and harness hashes are retained before
+and after sampling, without a workspace-wide inventory scan.
+
+`filesystem_owned_inputs_adapter.py` is the adapter for the `filesystem_owned_inputs`
+engineering example. Set `PVISOR_FS_OWNED_INPUTS_MANIFEST` to its already prepared
+manifest in all four `env` mappings, and map
+`PVISOR_FS_OWNED_INPUTS_CONDITION` to `baseline`, `rootfs`, `workspace`, and `both`
+respectively. It checks actual lower/apply-target paths, frozen-baseline
+selection, both snapshot leases, artifact identity and the successful Run ID.
+The manifest is prepared outside sampling with the same driver:
+
+```bash
+/absolute/frozen/bin/pvisor prepare \
+  --rootfs /absolute/prepared-assets/rootfs \
+  --workspace /absolute/prepared-assets/rootfs/work \
+  --store /absolute/new-owned-store \
+  --manifest /absolute/new-owned-inputs.json
+```
+
+Keep diagnostic checkpoints and complete OPEN/READ/LOOKUP/physical-query counts
+in an independent B-FS-DIAG campaign after timing ends. Profiling is forced off
+in this matrix, and its results belong only in the filesystem engineering
+analysis, with per-round differences and paired confidence intervals over the
+five independent blocks. Do not replace cross-runtime user tables with these
+four configuration arms.
+
+### Host directory-reference cache capacity
+
+`filesystem_cache_capacity.py` serves B-FS-ENG with `run(config_path, "timing")`,
+and B-FS-DIAG with the separate `"profiles"` mode. Compare explicit capacities
+`[256, 1024]` using one new frozen engineering executable and the same 0045
+firmware. Only `PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY` changes between arms;
+valid decimal values are 1..4096, with runtime default 256. Both conditions use
+the same sealed rootfs and snapshot workspace, frozen baseline, lifetime
+SnapshotBase leases, guest cache on, WB=0 and DAX=0. Capacity changes do not add
+new authority or change the immutable-input contract.
+
+Use the owned-input namespace configuration with `capacities: [256, 1024]` and
+`owned_inputs_manifest` pointing to the shared prepared manifest. Retain the
+common `assets`, `binary`, `firmware`, `firmware_object`, `trial_adapter`,
+`setup`, `raw_root`, `quick_source_report`, `python_version` and namespace
+fields. `outputs.formal` selects a new timing output; `outputs.profiles`
+selects a different diagnostic output. Keep separate configurations and assets
+for the normal timing rootfs and previously instrumented diagnostic rootfs.
+The owned-input adapter receives `both` while each row records its actual
+`capacity-256` or `capacity-1024` arm.
+
+Timing defaults to five seeded randomized paired blocks and three resident
+rounds per fresh environment; diagnostics default to one fresh environment per
+arm. Ready and worker clocks exclude VM exit; normal exit, original tools,
+cache inheritance, Run Bundle, lower isolation, every written file and all
+stream bytes remain checked. All valid slow rows and failures are retained,
+with no quiet wait, interference monitor or full inventory gate. Preparation
+and artifact construction precede sampling. The three rounds do not become
+fifteen independent samples.
+
+Freeze this module with `filesystem_cache_matrix.py`, the owned-input adapter,
+resident/reference validators and `phase_profiles.py`. Invoke the selected
+mode through a new retained namespace entry; finish timing before running the
+independent profile campaign. Both modes preserve executable/firmware/harness
+identities and ownership receipts. Profiles require complete registered final
+records and all 54 mounted phase tokens. For each rootfs/workspace overlay,
+the final `directory_cache_capacity` units must equal that arm's capacity;
+never sum capacities across owners. Diagnostic intervals cover `checked()`
+process-tree startup and validation and do not supply performance samples.
+Engineering analysis retains per-round operation results and paired intervals
+over fresh environments; these arms do not replace cross-runtime user tables.
+
+The same runner also accepts optional explicit `variants` for a separate
+negative-lower-cache experiment. For example, use `negative-off` and
+`negative-on`, both with `capacity: 256`, and `env` containing only
+`PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE: "0"` or `"1"` respectively. Every variant
+requires a unique path-safe `name`, capacity in 1..4096 and the explicit binary
+switch; capacities may repeat. These declarations take precedence over the
+capacity-only list. Other environment controls and ownership cannot change
+through a variant. Reports retain the selected variant and treatment, so this
+comparison does not claim to isolate directory-reference capacity. Profile
+mode additionally verifies the actual
+`immutable_lower_negative_cache_enabled` units separately for each mounted
+Core. An explicit zero record is required for the disabled arm; a missing
+record does not mean disabled. Timing/profile separation, five paired fresh
+environments, three resident rounds and every correctness check remain intact.
+
+For a separate exclusive-upper experiment, variants may instead contain only
+`PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE: "0"` or `"1"`. All arms select the
+same single switch. The runner disables lower negative caching for this pair;
+writeback, DAX, ownership and directory capacity remain fixed. Profile mode
+requires an explicit `exclusive_upper_absence_cache_enabled` setting from each
+mounted Core, as well as its lower negative-cache setting. This treatment only
+caches proven physical upper absence between serialized namespace mutations;
+it changes no guest attributes, page-cache or entry timeouts. Guest coherence
+and bounded-state checks precede timing. Counts and engineering results remain
+separate from cross-runtime user tables. The earlier attribute-timeout candidate
+was rejected after a hardlink coherence probe; its frozen experiment remains
+under `.data/` and its switch is not supported by the current product.
+
+For a separate read-only FLUSH experiment, variants select only
+`PVISOR_VM_FS_READONLY_FLUSH_ELISION: "0"` or `"1"`, both at capacity 256.
+Use the same newly frozen host and newly built firmware in both arms. Lower
+negative caching and exclusive-upper absence caching stay disabled, with WB=0,
+DAX=0 and the existing sealed rootfs/workspace inputs. The proposed protocol
+negotiates connection bit 43 (`PVISOR_LOCAL_FLUSH`) and marks only eligible
+Immutable local read-only handles with FOPEN bit 29. The guest retains its write
+synchronization and error checks before omitting that handle's backend FLUSH;
+writable, upper, mutable, unmarked handles and native FDs on remote or unknown
+filesystems retain normal FLUSH. Qualification describes the actual native FD,
+not the origin of content projected into a local backing file.
+This changes neither page retention nor attribute TTL. New close/lifecycle and
+read/write/error controls must pass before timing; unchanged, pre-existing
+lower/upper whole-page isolation failures remain separately documented.
+
+Profile mode requires explicit `readonly_flush_elision_enabled` units of 0/1
+from each mounted `virtio-fs-overlay` owner, alongside capacity 256 and explicit
+zero values for both Core absence-cache switches. It retains raw protocol
+FLUSH/OPEN/READ/RELEASE counts and all registered/final/phase coverage. Formal
+timing uses five paired fresh environments, nine operations in three resident
+rounds, Ready and worker clocks excluding exit, no quiet/interference/inventory
+gate, and complete original correctness checks. A separate N1 profile cohort
+provides request evidence only. Retain new budget/setup, namespace configs,
+artifact hashes and all failed evidence; never overwrite earlier cohorts.
+
+For the independent lower-data experiment, select only
+`PVISOR_VM_FS_LOWER_DATA_CACHE: "0"` or `"1"`. Both arms fix directory capacity
+256, WB=0, DAX=0, both absence caches off and readonly FLUSH elision off. The
+new host/firmware negotiates bit 44 and per-OPEN bit 28. Only OPEN uses a 24-byte
+negotiated reply: the standard 16 bytes carry a stable connection-local object
+ID in backing_id, followed by the immutable lower's u64 size. Old peers and
+CREATE/OPENDIR retain their original reply layout. A bounded ID table never
+reassigns an ID to another object within the session. Guest data inodes retain
+their own page mapping and EOF; policy, journal and native OPEN remain.
+
+Run the original `review-pages` oracle unchanged, and the separate `review-data`
+cross-fd, mmap/COW, EOF/truncate, rename/unlink, close and fallback probes. A
+candidate must resolve the four existing full-page cases and introduce no new
+failure before timing. Existing fd-attribute and VFS copy_file_range boundaries
+are reported separately. Negotiated sessions currently reject snapshot capture
+and restore. Profile mode verifies each mounted owner's explicit actual
+`lower_data_cache_enabled` value, registrations/reuses/marked OPENs and protocol
+READs; missing counters are never zeros. The two original timing/profile input
+stores stay separate. Use five paired fresh environments, three resident rounds,
+independent N1 diagnostics and the same clocks and correctness rules above;
+do not add quiet/interference/inventory admission or merge historical cohorts.
+
+For the separate 2×2 interaction experiment, set
+`treatment_design: "lower-data-local-flush-factorial"` and provide exactly four
+named `variants`, each with `capacity: 256`. Each variant's `env` must contain
+exactly `PVISOR_VM_FS_LOWER_DATA_CACHE` and
+`PVISOR_VM_FS_READONLY_FLUSH_ELISION`; their string values must cover `(0,0)`,
+`(1,0)`, `(0,1)` and `(1,1)` once each. Names such as `neither`, `data`, `flush`
+and `both` are labels; the explicit flag values define the factors. Missing or
+duplicate combinations, extra environment keys and other capacities fail before
+sampling. Without this discriminator, the existing single-switch mode continues
+to reject mixed treatments.
+
+All four arms share the same executable, firmware and owned/frozen inputs, with
+both absence caches off, WB=0 and DAX=0. Keep five paired blocks of four fresh
+environments, randomize arm order within each block, and run three dependent
+resident rounds per environment. Ready and tool clocks exclude exit; retain the
+existing byte, Bundle, cache and lower-isolation checks without admission gates. Independent N1 profile
+runs require explicit actual `lower_data_cache_enabled` and
+`readonly_flush_elision_enabled` values for each mounted overlay, capacity 256,
+and both mounted Cores' absence-cache counters equal to zero. Missing fields or
+inconsistent actual settings fail diagnostics. Keep these timings separate from
+earlier single-switch cohorts and estimate the combined effect and interaction
+from this experiment's own paired observations.
+
+For the separate standard negative-entry experiment, use
+`treatment_design: "negative-entry-with-data-flush"` with exactly two variants
+at capacity 256. Each variant's `env` must contain only
+`PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE: "0"` or `"1"`, covering each setting once;
+for example, name the arms `entry-off` and `entry-on`. This design fixes lower
+data caching and readonly FLUSH elision to `1`, both Core absence caches to `0`,
+WB=0, DAX=0 and guest cache=1 over the same owned/frozen inputs. Other designs
+keep this new switch off and continue rejecting mixed variant environments.
+The candidate defaults off and uses standard FUSE negative Entries with a
+one-second entry timeout. It is separate from physical Core absence caching,
+and preserves normal host lookup, authorization and journal checks. Guest
+create/rename/link/unlink and eligibility/fallback probes must pass before
+formal timing; a repeated unscoped debug parent/name token is insufficient
+evidence of a safe negative-cache entry.
+
+Keep the same five paired fresh environments per arm, three dependent resident
+rounds, seeded arm order, Ready/worker clocks excluding exit and complete
+original byte/Bundle/cache/isolation checks. Run independent N1 diagnostics
+with profiling enabled and debug logging off. Each mounted overlay must publish
+explicit `negative_entry_cache_enabled` units matching its arm and an explicit
+nonnegative `negative_entry_cache_replies` count; zero replies are valid, and
+the disabled arm must have zero. The enabled counter is actual configuration
+and qualification, not a new wire negotiation. Missing fields or an ineligible
+enabled mount fail diagnostics rather than silently claiming coverage. Also
+verify actual data/FLUSH settings both equal `1`, capacity 256, both Core
+absence settings `0`, all registered finals and every mounted phase token.
+Retain per-tool LOOKUP/negative-reply evidence separately from timing; no quiet,
+interference or full-inventory gates or historical sample pooling are added.
+
+For the independent same-OPEN qualification experiment, select
+`treatment_design: "shared-open-qualification"` and exactly two capacity-256
+variants whose environments contain only
+`PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION: "0"` / `"1"`. DATA and read-only FLUSH
+are fixed to 1, standard negative entries and both Core absence caches to 0,
+WB/DAX to 0, guest cache to 1 and Rust logging off. Both inputs remain owned
+Immutable and workspace uses the frozen baseline. This is the SDK managed Job
+entry, omitting CLI Host service; it is separate from ordinary CLI timings.
+
+Retain five fresh paired environments, nine operations and three dependent
+rounds, Ready excluding exit and the original byte/Bundle/lower checks. Run
+separate N1 profiles. Each mounted Overlay must explicitly report its SQ
+preference, actual DATA/FLUSH=1, capacity256 and NE=0; both Cores must report
+absence caches0. All nine `open_qualification_*` counters must exist, including
+zero, in final and interval evidence: F_GETFL/fstat/statx/fstatfs attempts,
+shared/legacy-FLUSH/legacy-DATA entries, receipt hits/misses. Do not require a
+7-to-3 ratio per OPEN: writable, upper, synthetic or otherwise ineligible opens
+can issue no qualifier, and unsupported evidence has independent FLUSH fallback.
+Receipt hits include reused negative decisions. Qualification query attempts
+exclude other OPEN/lookup metadata syscalls. Compare original RPC/tool clocks;
+the `open` inclusive span changes its boundary when DATA qualification moves
+inside it and cannot supply a direct same-boundary speedup or additive time.
+
+The expected complete profile inventory for this precise owned SDK path is
+17, derived before measurement: four Cores, three preimage logs, four readers,
+and two each Overlay/protocol/dispatch. The driver initializes a compact stage
+(Core/log and its empty-log reader) then seals it (reader); runtime stage begin
+authenticates that seal (reader), reopens Core/log, and final stage sealing
+reads again (reader). Native rootfs/workspace contribute two Cores and two each
+Overlay/protocol/dispatch, plus the workspace log. Sources are
+`filesystem_owned_inputs.rs`, runtime `overlay.rs`, Core `core.rs`, `stage.rs`
+and `preimage_log.rs`. Freeze these constructor sources with the campaign.
+Strict start/final identity equality and exactly one final are required in
+addition to this component histogram, 54 tokens per mount and 216 intervals.
+The standalone three-mount semantic probe has a different inventory; neither
+its count nor the ordinary CLI's 13 instances can replace this SDK contract.
+
+### Quick filesystem observations
+
+The 2026-10-16 B-FS-TOOLS quick cohort uses five randomized rounds across all
+eight backends, with no separate warmups, quiet-admission wait, external
+build/test interference monitor or new full input-inventory scan. It reuses the
+prepared tools and frozen GNU release/gateway CLI plus newly built in-tree
+firmware. The original `reference_baselines.run_trial` phase clocks, successful
+exit, output, cache-inheritance, Run Bundle, untouched-host and complete written-byte
+checks remain active. All valid slow samples are retained; failures are recorded
+individually. Median and min/max describe this small sample; no P95/P99, confidence
+interval or optimization percentage is supplied.
+
+The local coordinator and private-namespace entry are retained at
+`benchmark.new/filesystem/.data/retest-20261016/quick_run.py` and
+`quick_namespace.py`; `quick-campaign/config.json` and `launch-command.json`
+record the exact inputs and command. Raw tasks are under
+`benchmark/.data/qf16-c6fc49/`. The bilingual filesystem articles publish
+`filesystem-quick.csv` and `filesystem-quick-provenance.csv` separately from the
+historical N30 data and interrupted attempts. A fresh run needs a new output
+directory and live private Docker setup; the retained launch command references
+the setup's original daemon identity.
+
 ### Explicit Firecracker kernel controls
 
 The question is **how does kernel source affect first correct output waiting under the same prepared userspace and budget?** `fc-system` is the primary official distribution stock-kernel control (the default FC backend in `ready` mode); `fc-reference` is an independent custom-kernel supplemental control. Explicit `--backends firecracker` remains compatible with old assets, but its kernel is labeled **legacy-reference/unknown**, never system/stock. Existing custom-kernel preparation above is not stock-kernel evidence. Other workloads retain their historical default backend list, payloads and normal success-exit requirements. Use explicit `--backends fc-system,fc-reference` for stock/custom controls in any workload; use an explicit legacy backend list when repeating a historical ready matrix.

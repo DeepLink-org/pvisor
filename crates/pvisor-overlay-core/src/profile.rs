@@ -82,6 +82,16 @@ impl State {
             eprintln!("pvisor-fs-profile {json}");
         }
     }
+
+    fn register(&self) {
+        let registration = serde_json::json!({
+            "schema": 1,
+            "pid": std::process::id(),
+            "component": self.component,
+            "instance": self.instance,
+        });
+        eprintln!("pvisor-fs-profile-start {registration}");
+    }
 }
 impl Drop for State {
     fn drop(&mut self) {
@@ -106,13 +116,17 @@ impl Profile {
         Self::configured(component, false)
     }
     fn configured(component: &str, emit_on_drop: bool) -> Self {
-        Self(Some(Arc::new(State {
+        let state = Arc::new(State {
             component: component.into(),
             instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
             emit_on_drop,
             measurements: Mutex::new(BTreeMap::new()),
             last_emission: Mutex::new(Instant::now()),
-        })))
+        });
+        if emit_on_drop {
+            state.register();
+        }
+        Self(Some(state))
     }
     pub fn report(&self) -> Option<ProfileReport> {
         self.0.as_ref().map(|s| s.report())

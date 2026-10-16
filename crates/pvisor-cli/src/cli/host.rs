@@ -375,6 +375,37 @@ mod tests {
     }
 
     #[test]
+    fn workspace_selectors_roundtrip_in_the_existing_typed_run_request() {
+        let parsed = super::super::Cli::try_parse_from([
+            "pvisor",
+            "run",
+            "--vm",
+            "--rootfs-base-store",
+            "/private/root-store",
+            "--rootfs-base",
+            "root-id",
+            "--workspace-base-store",
+            "/private/workspace-store",
+            "--workspace-base",
+            "workspace-id",
+            "--",
+            "true",
+        ])
+        .unwrap();
+        let super::super::Command::Run(args) = parsed.command else {
+            panic!("expected Run");
+        };
+        let value = serde_json::to_value(JobCommand::Run(args)).unwrap();
+        assert_eq!(
+            value["args"]["overlayfs"]["workspace_base_store"],
+            "/private/workspace-store"
+        );
+        assert_eq!(value["args"]["overlayfs"]["workspace_base"], "workspace-id");
+        let decoded: JobCommand = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+    }
+
+    #[test]
     fn terminal_handoff_is_limited_to_execution_with_inherited_input() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("spec.json");

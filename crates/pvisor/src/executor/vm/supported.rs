@@ -27,6 +27,7 @@ const CONTROL_FD_ENV: &str = "PVISOR_KRUN_CONTROL_FD";
 const CONTROL_CHILD_FD: RawFd = 199;
 const RAM_FD_ENV: &str = "PVISOR_KRUN_RAM_FD";
 const RAM_CHILD_FD: RawFd = 200;
+const READONLY_FLUSH_ENV: &str = "PVISOR_VM_FS_READONLY_FLUSH_ELISION";
 
 fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
     // Keep both source descriptors above the fixed destinations, avoiding dup2
@@ -71,6 +72,7 @@ compile_error!("static musl VM support currently targets x86_64 only");
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
     settings: VmSettings,
+    rootfs_base: Option<std::sync::Arc<OwnedRootfsBase>>,
     firmware_path: Option<PathBuf>,
     features: crate::features::FeatureSettings,
     private_ram: bool,
@@ -84,6 +86,17 @@ pub struct VmExecutor {
         all(target_os = "macos", target_arch = "aarch64")
     ))]
     restore: Option<std::sync::Arc<super::checkpoint::PreparedRestore>>,
+}
+
+struct OwnedRootfsBase(crate::environment_snapshot::SnapshotBase);
+
+impl std::fmt::Debug for OwnedRootfsBase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("OwnedRootfsBase")
+            .field(&self.0.root())
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -325,6 +338,52 @@ fn collect_host_authority_paths(
 }
 
 impl VmExecutor {
+    /// Prove the actual executor owns an authenticated prepared rootfs; a
+    /// descriptor, immutable bool or arbitrary root path is not this receipt.
+    pub(crate) fn workspace_rootfs_owner(
+        &self,
+        workspace_store: &Path,
+    ) -> anyhow::Result<(crate::environment_snapshot::SnapshotBase, PathBuf)> {
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        anyhow::ensure!(
+            self.restore.is_none(),
+            "owned workspace cannot override a restored VM"
+        );
+        let selected = self.settings.prepared_rootfs.as_ref().context(
+            "owned workspace requires an authenticated prepared rootfs; host root and ordinary rootfs paths are unsupported",
+        )?;
+        let held = self
+            .rootfs_base
+            .as_ref()
+            .context("prepared rootfs owner is missing")?;
+        let store = crate::environment_snapshot::SnapshotStore::new(&selected.store)?;
+        let owner = store.open_prepared_rootfs(&selected.base)?;
+        anyhow::ensure!(
+            held.0.root() == owner.root() && self.settings.rootfs.as_ref() == Some(&owner.root()),
+            "actual VM rootfs owner differs from the prepared generation"
+        );
+        for path in self
+            .settings
+            .ram_backing
+            .iter()
+            .chain(self.settings.control_socket.iter())
+            .chain(self.settings.snapshot_filesystem_pool.iter())
+            .chain(self.vsock_ports.values())
+        {
+            let path = crate::job_service::paths::fork_stage_candidate(path)?;
+            for store in [workspace_store, selected.store.as_path()] {
+                anyhow::ensure!(
+                    !path.starts_with(store) && !store.starts_with(&path),
+                    "VM writable/control backing overlaps a private base store"
+                );
+            }
+        }
+        Ok((owner, selected.store.canonicalize()?))
+    }
+
     /// Fully read the authenticated RAM view into an Attempt-owned file.
     /// Default restore keeps its lazy shared baseline. CPU mappings remain
     /// private; original owners stay pinned for later incremental captures.
@@ -395,6 +454,10 @@ impl VmExecutor {
     pub fn checkpoint_compatibility(
         settings: &VmSettings,
     ) -> anyhow::Result<crate::environment_snapshot::Compatibility> {
+        anyhow::ensure!(
+            settings.prepared_rootfs.is_none(),
+            "CAPABILITY_UNSUPPORTED: prepared rootfs execution capture/restore is not supported"
+        );
         #[cfg(all(target_os = "linux", target_env = "musl", target_arch = "x86_64"))]
         anyhow::ensure!(
             settings.library_dir.is_none(),
@@ -404,6 +467,48 @@ impl VmExecutor {
         super::checkpoint::compatibility(firmware.as_deref())
     }
     pub fn new(mut settings: VmSettings) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            settings.prepared_rootfs.is_none() || settings.snapshot_filesystem_pool.is_none(),
+            "CAPABILITY_UNSUPPORTED: prepared rootfs cannot use an execution checkpoint filesystem pool"
+        );
+        // The shared settings contract must acquire actual ownership for SDK
+        // callers too; a selector must never silently become a mutable path.
+        let prepared_rootfs = if let Some(selected) = &mut settings.prepared_rootfs {
+            anyhow::ensure!(
+                settings.image.is_none(),
+                "prepared rootfs conflicts with vm.image"
+            );
+            selected.store = selected
+                .store
+                .canonicalize()
+                .context("resolve prepared rootfs store")?;
+            for path in settings
+                .ram_backing
+                .iter()
+                .chain(settings.snapshot_filesystem_pool.iter())
+                .chain(settings.control_socket.iter())
+            {
+                let path = crate::job_service::paths::fork_stage_candidate(path)?;
+                anyhow::ensure!(
+                    !path.starts_with(&selected.store) && !selected.store.starts_with(&path),
+                    "prepared rootfs store overlaps mutable VM backing: {}",
+                    path.display()
+                );
+            }
+            let store = crate::environment_snapshot::SnapshotStore::new(&selected.store)?;
+            let base = store.open_prepared_rootfs(&selected.base)?;
+            if let Some(root) = &settings.rootfs {
+                anyhow::ensure!(
+                    root.canonicalize()? == base.root(),
+                    "prepared rootfs generation does not match vm.rootfs"
+                );
+            }
+            settings.rootfs = Some(base.root());
+            settings.rootfs_immutable = true;
+            Some(base)
+        } else {
+            None
+        };
         settings.validate_ram_dedup()?;
         anyhow::ensure!(
             settings.snapshot_filesystem_pool.is_none()
@@ -449,8 +554,9 @@ impl VmExecutor {
             rootfs.display()
         );
         let firmware_path = resolve_firmware(&settings)?;
-        Ok(Self {
+        let executor = Self {
             settings,
+            rootfs_base: None,
             firmware_path,
             features: Default::default(),
             private_ram: false,
@@ -464,7 +570,48 @@ impl VmExecutor {
                 all(target_os = "macos", target_arch = "aarch64")
             ))]
             restore: None,
-        })
+        };
+        match prepared_rootfs {
+            Some(base) => executor.with_rootfs_base(base),
+            None => Ok(executor),
+        }
+    }
+
+    /// Retain an owned immutable generation for this executor's root lower.
+    ///
+    /// Import the source with `SnapshotStore::import_base` before constructing
+    /// the executor. The generation must exactly match `VmSettings::rootfs`
+    /// after canonicalization. This method transfers its GC lease into the
+    /// executor; clones retain it until the last executor/Attempt is dropped.
+    /// Only that physical lower is declared immutable. Writable upper storage
+    /// remains mutable and the normal journal, copy-up and apply rules remain
+    /// active. External modification of the private store is unsupported.
+    /// Restored executors reject this override; errors leave the store intact.
+    pub fn with_rootfs_base(
+        mut self,
+        base: crate::environment_snapshot::SnapshotBase,
+    ) -> anyhow::Result<Self> {
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        anyhow::ensure!(
+            self.restore.is_none(),
+            "owned rootfs cannot override a restored VM"
+        );
+        let root = self.settings.rootfs.as_ref().context("missing VM rootfs")?;
+        anyhow::ensure!(
+            root.canonicalize()? == base.root().canonicalize()?,
+            "owned rootfs generation does not match vm.rootfs"
+        );
+        if let Some(selected) = &self.settings.prepared_rootfs {
+            anyhow::ensure!(
+                selected.base == *base.reference(),
+                "owned rootfs does not match the prepared selector"
+            );
+        }
+        self.rootfs_base = Some(std::sync::Arc::new(OwnedRootfsBase(base)));
+        Ok(self)
     }
 
     /// Enable explicitly selected runtime experiments for this VM only.
@@ -519,6 +666,10 @@ impl VmExecutor {
         checkpoint: pvisor_core::operation::ExecutionCheckpoint,
         storage: &Path,
     ) -> anyhow::Result<(Self, crate::OverlayHint)> {
+        anyhow::ensure!(
+            settings.prepared_rootfs.is_none(),
+            "prepared rootfs cannot override a restored VM"
+        );
         #[cfg(any(
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "macos", target_arch = "aarch64")
@@ -679,6 +830,53 @@ fn scrub_runner_loader_environment(command: &mut Command) {
     }
 }
 
+// Keep the generic VM worker's unset default unchanged. Only an authenticated
+// prepared selector already rejects execution capture/restore; an SDK owner or
+// Immutable declaration alone does not establish that lifecycle contract.
+fn configure_prepared_rootfs_flush_environment(
+    command: &mut Command,
+    executor: &VmExecutor,
+    runner: &RunnerSpec,
+    setting: Option<&std::ffi::OsStr>,
+) {
+    if let Some(setting) = setting {
+        // Preserve explicit 0/1 and invalid/non-UTF8 values byte-for-byte. The
+        // filesystem worker still owns strict parsing and error reporting.
+        command.env(READONLY_FLUSH_ENV, setting);
+        return;
+    }
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        || runner.checkpoint.is_some()
+        || runner.restore.is_some()
+    {
+        return;
+    }
+    let (Some(selected), Some(owner)) = (
+        executor.settings.prepared_rootfs.as_ref(),
+        executor.rootfs_base.as_ref(),
+    ) else {
+        return;
+    };
+    let root = owner.0.root();
+    if selected.base != *owner.0.reference()
+        || executor.settings.rootfs.as_deref() != Some(root.as_path())
+        || runner.root.lowers.len() != runner.root.lower_mutability.len()
+        || !runner
+            .root
+            .lowers
+            .iter()
+            .zip(&runner.root.lower_mutability)
+            .any(|(lower, mutability)| {
+                lower == &root && *mutability == pvisor_overlay_core::LayerMutability::Immutable
+            })
+    {
+        return;
+    }
+    // This preference affects only this native child. INIT and each successful
+    // OPEN retain the existing platform, peer, filesystem and handle checks.
+    command.env(READONLY_FLUSH_ENV, "1");
+}
+
 // Reserved runner status, accepted only alongside a verified suspend receipt.
 const SUSPEND_EXIT_CODE: i32 = 123;
 
@@ -698,7 +896,7 @@ impl RunExecutor for VmExecutor {
                     CapabilityDimension::FilesystemWrite,
                     "libkrun-guest-kernel-virtiofs-overlay",
                 ),
-            supports_checkpoint: true,
+            supports_checkpoint: self.settings.prepared_rootfs.is_none(),
             supports_migration: false,
         }
     }
@@ -800,10 +998,15 @@ impl RunExecutor for VmExecutor {
             .as_ref()
             .map(|overlay| overlay.access_policy.clone())
             .unwrap_or_default();
+        let root_mutability = if self.rootfs_base.is_some() {
+            vec![pvisor_overlay_core::LayerMutability::Immutable]
+        } else {
+            Vec::new()
+        };
         let (root_overlay, mut workspace) = if overlay_target.is_none() {
             (
                 configured_overlay.unwrap_or_else(|| OverlayDeviceSpec {
-                    lower_mutability: Vec::new(),
+                    lower_mutability: root_mutability.clone(),
                     lowers: vec![root.clone()],
                     apply_target: None,
                     baseline_lower: None,
@@ -818,7 +1021,7 @@ impl RunExecutor for VmExecutor {
         } else {
             (
                 OverlayDeviceSpec {
-                    lower_mutability: Vec::new(),
+                    lower_mutability: root_mutability,
                     lowers: vec![root.clone()],
                     apply_target: None,
                     baseline_lower: None,
@@ -920,6 +1123,18 @@ impl RunExecutor for VmExecutor {
         } else {
             root_overlay
         };
+        if let Some(selected) = &self.settings.prepared_rootfs {
+            let checked =
+                validate_prepared_rootfs_device(&selected.store, &root, &root_overlay, true)
+                    .and_then(|()| {
+                        workspace.as_ref().map_or(Ok(()), |view| {
+                            validate_prepared_rootfs_device(&selected.store, &root, view, false)
+                        })
+                    });
+            if let Err(error) = checked {
+                return failed_to_start(format!("validate prepared rootfs ownership: {error:#}"));
+            }
+        }
         if let Err(error) = protect_overlay_backing(&mut root_overlay, workspace.as_ref()) {
             return failed_to_start(error.to_string());
         }
@@ -959,6 +1174,13 @@ impl RunExecutor for VmExecutor {
                 return failed_to_start(format!("prepare VM synthetic resolver: {error}"));
             }
             root_overlay.lowers.insert(0, network_lower);
+            if !root_overlay.lower_mutability.is_empty() {
+                // This attempt-owned generation is fully written before VM
+                // entry and remains unchanged until the guest has exited.
+                root_overlay
+                    .lower_mutability
+                    .insert(0, pvisor_overlay_core::LayerMutability::Immutable);
+            }
         }
         if let Some(workspace) = &workspace {
             if workspace.lowers.is_empty()
@@ -1104,6 +1326,7 @@ impl RunExecutor for VmExecutor {
         )) && !vm_network_enabled
             && self.vsock_ports.is_empty()
             && !self.settings.cold_pager_requested()
+            && self.settings.prepared_rootfs.is_none()
         {
             let prepared = if let Some(drivers) = &context.drivers {
                 let store = match drivers.execution_snapshot_store() {
@@ -1186,6 +1409,20 @@ impl RunExecutor for VmExecutor {
         } else {
             None
         };
+        if let Some(owner) = &context.attachments.workspace_base {
+            let Some(device) = &workspace else {
+                return failed_to_start("owned workspace has no native workspace device".into());
+            };
+            if let Err(error) = owner.check_handoff(
+                &root_overlay.lowers,
+                &device.lowers,
+                device.baseline_lower.as_deref(),
+                device.apply_target.as_deref(),
+                &device.lower_mutability,
+            ) {
+                return failed_to_start(format!("validate owned workspace handoff: {error:#}"));
+            }
+        }
         let mut runner = RunnerSpec {
             features: self.features.clone(),
             vsock_ports: self.vsock_ports.clone(),
@@ -1320,6 +1557,12 @@ impl RunExecutor for VmExecutor {
             .stderr(stdio(invocation.stderr))
             .kill_on_drop(true)
             .process_group(0);
+        configure_prepared_rootfs_flush_environment(
+            &mut command,
+            self,
+            &runner,
+            std::env::var_os(READONLY_FLUSH_ENV).as_deref(),
+        );
         if let Some(path) = &self.settings.memory_pool {
             command.env("PVISOR_EXPERIMENTAL_MEMORY_POOL", path);
         }
@@ -2085,6 +2328,39 @@ fn run_runner(spec: RunnerSpec) -> anyhow::Result<()> {
     )
 }
 
+fn validate_prepared_rootfs_device(
+    store: &Path,
+    rootfs: &Path,
+    view: &OverlayDeviceSpec,
+    root_device: bool,
+) -> anyhow::Result<()> {
+    for lower in &view.lowers {
+        let lower = lower.canonicalize()?;
+        if root_device && lower == rootfs {
+            continue;
+        }
+        anyhow::ensure!(
+            !lower.starts_with(store) && !store.starts_with(&lower),
+            "prepared rootfs store overlaps a guest lower: {}",
+            lower.display()
+        );
+    }
+    for path in std::iter::once(&view.upper)
+        .chain(view.work.iter())
+        .chain(view.preimages.iter())
+        .chain(view.apply_target.iter())
+        .filter(|path| !path.as_os_str().is_empty())
+    {
+        let path = crate::job_service::paths::fork_stage_candidate(path)?;
+        anyhow::ensure!(
+            !path.starts_with(store) && !store.starts_with(&path),
+            "prepared rootfs store overlaps a writable guest path: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn lease_overlay_baseline(
     overlay: &OverlayDeviceSpec,
 ) -> anyhow::Result<Option<crate::environment_snapshot::SnapshotBase>> {
@@ -2606,6 +2882,199 @@ mod tests {
             settings.library_dir = Some(root.to_owned());
         }
         settings
+    }
+
+    fn prepared_rootfs_flush_fixture() -> (tempfile::TempDir, VmExecutor, RunnerSpec) {
+        use crate::environment_snapshot::SnapshotStore;
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let mut settings = local_firmware_settings(&source);
+        let store_path = directory.path().join("store");
+        let store = SnapshotStore::new(&store_path).unwrap();
+        let base = store.prepare_rootfs(&source).unwrap();
+        settings.rootfs = Some(base.root());
+        settings.prepared_rootfs = Some(crate::PreparedRootfs {
+            store: store_path,
+            base: base.reference().clone(),
+        });
+        let executor = VmExecutor::new(settings).unwrap();
+        let mut runner: RunnerSpec = serde_json::from_value(serde_json::json!({
+            "setup_attestation": directory.path().join("setup"),
+            "root": {"lowers": [base.root()], "upper": directory.path().join("upper")},
+            "guest": pvisor_guest::GuestConfig::default(), "cpus": 1, "memory_mib": 128
+        }))
+        .unwrap();
+        runner.root.lower_mutability = vec![pvisor_overlay_core::LayerMutability::Immutable];
+        (directory, executor, runner)
+    }
+
+    fn prepared_rootfs_flush_command_setting(
+        executor: &VmExecutor,
+        runner: &RunnerSpec,
+        setting: Option<&std::ffi::OsStr>,
+    ) -> Option<std::ffi::OsString> {
+        let mut command = Command::new("unused-runner");
+        configure_prepared_rootfs_flush_environment(&mut command, executor, runner, setting);
+        command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == std::ffi::OsStr::new(READONLY_FLUSH_ENV))
+            .and_then(|(_, value)| value.map(std::ffi::OsStr::to_owned))
+    }
+
+    #[test]
+    fn prepared_rootfs_flush_default_requires_matching_owner_and_final_lower() {
+        let (_directory, executor, mut runner) = prepared_rootfs_flush_fixture();
+        let expected = cfg!(all(target_os = "linux", target_arch = "x86_64"))
+            .then(|| std::ffi::OsString::from("1"));
+        assert_eq!(
+            prepared_rootfs_flush_command_setting(&executor, &runner, None),
+            expected
+        );
+        assert!(!executor.descriptor().supports_checkpoint);
+
+        let mut missing_owner = executor.clone();
+        missing_owner.rootfs_base = None;
+        assert!(prepared_rootfs_flush_command_setting(&missing_owner, &runner, None).is_none());
+        let mut wrong_generation = executor.clone();
+        wrong_generation
+            .settings
+            .prepared_rootfs
+            .as_mut()
+            .unwrap()
+            .base
+            .id
+            .push('x');
+        assert!(prepared_rootfs_flush_command_setting(&wrong_generation, &runner, None).is_none());
+        let mut wrong_root = executor.clone();
+        wrong_root.settings.rootfs = Some(PathBuf::from("/different-root"));
+        assert!(prepared_rootfs_flush_command_setting(&wrong_root, &runner, None).is_none());
+
+        let root = runner.root.lowers[0].clone();
+        runner.root.lowers[0] = PathBuf::from("/different-lower");
+        assert!(prepared_rootfs_flush_command_setting(&executor, &runner, None).is_none());
+        runner.root.lowers[0] = root;
+        runner.root.lower_mutability[0] = pvisor_overlay_core::LayerMutability::Mutable;
+        assert!(prepared_rootfs_flush_command_setting(&executor, &runner, None).is_none());
+        runner.root.lower_mutability.clear();
+        assert!(prepared_rootfs_flush_command_setting(&executor, &runner, None).is_none());
+    }
+
+    #[test]
+    fn prepared_rootfs_flush_explicit_values_preserve_strict_worker_input() {
+        use std::os::unix::ffi::OsStringExt;
+        let (_directory, executor, runner) = prepared_rootfs_flush_fixture();
+        for value in [
+            std::ffi::OsString::from("0"),
+            std::ffi::OsString::from("1"),
+            std::ffi::OsString::from("invalid"),
+            std::ffi::OsString::from(""),
+            std::ffi::OsString::from_vec(vec![0xff]),
+        ] {
+            assert_eq!(
+                prepared_rootfs_flush_command_setting(&executor, &runner, Some(&value)),
+                Some(value)
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_rootfs_flush_default_does_not_promote_snapshotable_sdk_owners() {
+        let (_directory, executor, runner) = prepared_rootfs_flush_fixture();
+        let mut settings = executor.settings.clone();
+        settings.prepared_rootfs = None;
+        // Even rootfs_immutable plus the real sealed physical path is not an
+        // authenticated prepared selector or a capture-unsupported contract.
+        assert!(settings.rootfs_immutable);
+        let ordinary = VmExecutor::new(settings).unwrap();
+        assert!(ordinary.descriptor().supports_checkpoint);
+        assert!(prepared_rootfs_flush_command_setting(&ordinary, &runner, None).is_none());
+        let owned_only = ordinary
+            .with_rootfs_base(
+                executor
+                    .rootfs_base
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .try_clone()
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(owned_only.descriptor().supports_checkpoint);
+        assert!(prepared_rootfs_flush_command_setting(&owned_only, &runner, None).is_none());
+        assert_eq!(
+            prepared_rootfs_flush_command_setting(
+                &owned_only,
+                &runner,
+                Some(std::ffi::OsStr::new("0"))
+            ),
+            Some(std::ffi::OsString::from("0"))
+        );
+    }
+
+    #[test]
+    fn prepared_rootfs_flush_default_rejects_final_capture_and_restore_launches() {
+        let (_directory, executor, mut runner) = prepared_rootfs_flush_fixture();
+        runner.checkpoint = Some(super::super::checkpoint::LaunchBinding {
+            store: "/unused/snapshots".into(),
+            filesystem_pool: None,
+            readonly_lowers: vec![],
+            private_roots: vec![],
+            compatibility: crate::environment_snapshot::Compatibility {
+                host_boot: "boot".into(),
+                build: "build".into(),
+                firmware: "firmware".into(),
+                profile: "pvisor-job-owned-overlay-v1".into(),
+            },
+            run_id: "run".into(),
+            attempt_id: "attempt".into(),
+        });
+        assert!(prepared_rootfs_flush_command_setting(&executor, &runner, None).is_none());
+        runner.checkpoint = None;
+        runner.restore = Some(super::super::checkpoint::RestoreLaunch {
+            machine: "/unused/machine".into(),
+            copies: vec![],
+            shared_readonly_lowers: vec![],
+        });
+        assert!(prepared_rootfs_flush_command_setting(&executor, &runner, None).is_none());
+    }
+
+    #[test]
+    fn owned_rootfs_rejects_other_generations_and_pins_backing_until_last_executor() {
+        use crate::environment_snapshot::SnapshotStore;
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("file"), b"owned content").unwrap();
+        // Create any fixture firmware before importing: never write the base.
+        let mut settings = local_firmware_settings(&source);
+        let store = SnapshotStore::new(&directory.path().join("store")).unwrap();
+        let base = store.import_base(&source).unwrap();
+        assert!(
+            VmExecutor::new(settings.clone())
+                .unwrap()
+                .with_rootfs_base(base.try_clone().unwrap())
+                .is_err()
+        );
+        settings.rootfs = Some(base.root());
+        let executor = VmExecutor::new(settings)
+            .unwrap()
+            .with_rootfs_base(base.try_clone().unwrap())
+            .unwrap();
+        std::fs::write(source.join("file"), b"later source edit").unwrap();
+        assert_eq!(
+            std::fs::read(base.root().join("file")).unwrap(),
+            b"owned content"
+        );
+        let root = base.root();
+        let cloned = executor.clone();
+        drop((base, executor));
+        assert_eq!(store.collect_abandoned().unwrap(), 0);
+        assert!(root.is_dir());
+        drop(cloned);
+        assert_eq!(store.collect_abandoned().unwrap(), 1);
+        assert!(!root.exists());
     }
 
     #[cfg(not(target_env = "musl"))]

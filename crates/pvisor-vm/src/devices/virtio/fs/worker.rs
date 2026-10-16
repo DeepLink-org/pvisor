@@ -5,6 +5,7 @@ use crossbeam_channel::Sender;
 
 use std::io;
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -41,6 +42,24 @@ enum FsServer {
 }
 
 impl FsServer {
+    fn configure_profile_scope(&mut self, scope: &str) {
+        match self {
+            Self::ReadWrite(server) => server.configure_profile_scope(scope),
+            Self::ReadOnly(server) => server.configure_profile_scope(scope),
+            Self::Null(server) => server.configure_profile_scope(scope),
+            Self::Overlay(server) => server.configure_profile_scope(scope),
+        }
+    }
+
+    fn dispatch_profile(&self) -> pvisor_overlay_core::profile::Profile {
+        match self {
+            Self::ReadWrite(server) => server.dispatch_profile(),
+            Self::ReadOnly(server) => server.dispatch_profile(),
+            Self::Null(server) => server.dispatch_profile(),
+            Self::Overlay(server) => server.dispatch_profile(),
+        }
+    }
+
     fn handle_message(
         &self,
         r: (InHeader, Reader),
@@ -131,6 +150,11 @@ impl Execution {
     }
 
     fn handle_decoded(&self, header: InHeader, reader: Reader, writer: Writer) -> usize {
+        let phase_checkpoint = header.opcode == Opcode::Ioctl as u32
+            && reader
+                .clone()
+                .read_obj::<super::fuse::IoctlIn>()
+                .is_ok_and(|ioctl| ioctl.cmd == super::server::PROFILE_PHASE_IOCTL);
         let run = || {
             self.server.handle_message(
                 (header, reader),
@@ -142,14 +166,16 @@ impl Execution {
                 &self.map_sender,
             )
         };
-        let result =
-            if header.opcode == Opcode::Init as u32 || header.opcode == Opcode::Destroy as u32 {
-                let _session = self.session.write().expect("FUSE session poisoned");
-                run()
-            } else {
-                let _session = self.session.read().expect("FUSE session poisoned");
-                run()
-            };
+        let result = if header.opcode == Opcode::Init as u32
+            || header.opcode == Opcode::Destroy as u32
+            || phase_checkpoint
+        {
+            let _session = self.session.write().expect("FUSE session poisoned");
+            run()
+        } else {
+            let _session = self.session.read().expect("FUSE session poisoned");
+            run()
+        };
         match result {
             Ok(len) => len,
             Err(error) => {
@@ -374,6 +400,71 @@ fn guest_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
     }
 }
 
+fn exclusive_upper_absence_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE must be 0 or 1",
+        )),
+    }
+}
+
+fn readonly_flush_elision_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_READONLY_FLUSH_ELISION must be 0 or 1",
+        )),
+    }
+}
+
+fn lower_data_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_LOWER_DATA_CACHE must be 0 or 1",
+        )),
+    }
+}
+
+fn negative_entry_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE must be 0 or 1",
+        )),
+    }
+}
+
+fn directory_cache_capacity(setting: Option<&std::ffi::OsStr>) -> io::Result<usize> {
+    let Some(setting) = setting else {
+        return Ok(super::overlay::DEFAULT_DIRECTORY_CACHE_CAPACITY);
+    };
+    setting
+        .to_str()
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|capacity| (1..=super::overlay::MAX_DIRECTORY_CACHE_CAPACITY).contains(capacity))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY must be an ASCII decimal integer from 1 to 4096",
+            )
+        })
+}
+
 pub(super) struct FsWorkerConfig {
     pub fs_tag: String,
     pub queues: Vec<Queue>,
@@ -426,8 +517,22 @@ impl FsWorker {
         let root_data_cache = root_data_cache_enabled(&fs_tag, cache_setting.as_deref())?;
         let guest_cache =
             guest_cache_enabled(std::env::var_os("PVISOR_VM_GUEST_CACHE").as_deref())?;
+        let directory_cache_capacity = directory_cache_capacity(
+            std::env::var_os("PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY").as_deref(),
+        )?;
+        let exclusive_upper_absence_cache = exclusive_upper_absence_cache_enabled(
+            std::env::var_os("PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE").as_deref(),
+        )?;
+        let readonly_flush_elision = readonly_flush_elision_enabled(
+            std::env::var_os("PVISOR_VM_FS_READONLY_FLUSH_ELISION").as_deref(),
+        )?;
+        let lower_data_cache =
+            lower_data_cache_enabled(std::env::var_os("PVISOR_VM_FS_LOWER_DATA_CACHE").as_deref())?;
+        let negative_entry_cache = negative_entry_cache_enabled(
+            std::env::var_os("PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE").as_deref(),
+        )?;
         let inode_alloc = Arc::new(InodeAllocator::new());
-        let server = match (overlay_cfg, passthrough_cfg) {
+        let mut server = match (overlay_cfg, passthrough_cfg) {
             (Some(cfg), _) => {
                 let mut inner = if restoring {
                     OverlayFs::open_existing(cfg, inode_alloc.clone())?
@@ -435,6 +540,34 @@ impl FsWorker {
                     OverlayFs::new(cfg, inode_alloc.clone())?
                 };
                 inner.configure_immutable_data_cache(root_data_cache);
+                inner.configure_directory_cache_capacity(directory_cache_capacity)?;
+                inner.configure_exclusive_upper_absence_cache(
+                    exclusive_upper_absence_cache,
+                    guest_cache,
+                )?;
+                inner.configure_readonly_flush_elision(
+                    readonly_flush_elision,
+                    guest_cache,
+                    shm_region.is_some(),
+                )?;
+                inner.configure_lower_data_cache(
+                    lower_data_cache,
+                    guest_cache,
+                    shm_region.is_some(),
+                )?;
+                inner.configure_negative_entry_cache(
+                    negative_entry_cache,
+                    guest_cache,
+                    shm_region.is_some(),
+                    virtual_entries
+                        .iter()
+                        .map(|entry| {
+                            std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+                                entry.name.to_bytes(),
+                            ))
+                        })
+                        .collect(),
+                )?;
                 FsServer::Overlay(Box::new(Server::new(
                     AugmentFs::new(inner, &inode_alloc, virtual_entries),
                     guest_cache,
@@ -479,6 +612,8 @@ impl FsWorker {
                 guest_cache,
             )),
         };
+        server.configure_profile_scope(&fs_tag);
+        let dispatch_profile = server.dispatch_profile();
         Ok(Self {
             queues,
             queue_evts,
@@ -493,7 +628,7 @@ impl FsWorker {
                 #[cfg(target_os = "macos")]
                 map_sender,
             }),
-            dispatch_profile: pvisor_overlay_core::profile::Profile::from_env("virtio-fs-dispatch"),
+            dispatch_profile,
             inode_alloc,
             stop_fd,
         })
@@ -763,6 +898,62 @@ mod tests {
     }
 
     #[test]
+    fn negative_entry_cache_defaults_off_and_rejects_invalid_settings() {
+        use std::ffi::OsStr;
+        assert!(!negative_entry_cache_enabled(None).unwrap());
+        assert!(!negative_entry_cache_enabled(Some(OsStr::new("0"))).unwrap());
+        assert!(negative_entry_cache_enabled(Some(OsStr::new("1"))).unwrap());
+        for value in [b"".as_slice(), b"true", b"2", b" 1", b"1 ", b"\xff"] {
+            assert_eq!(
+                negative_entry_cache_enabled(Some(OsStr::from_bytes(value)))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[test]
+    fn lower_data_cache_defaults_off_and_rejects_invalid_settings() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        assert!(!lower_data_cache_enabled(None).unwrap());
+        assert!(!lower_data_cache_enabled(Some(OsStr::new("0"))).unwrap());
+        assert!(lower_data_cache_enabled(Some(OsStr::new("1"))).unwrap());
+        for value in [b"".as_slice(), b"true", b"2", b" 1", b"1 ", b"\xff"] {
+            assert_eq!(
+                lower_data_cache_enabled(Some(OsStr::from_bytes(value)))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[test]
+    fn readonly_flush_elision_defaults_off_and_rejects_invalid_settings() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        assert!(!readonly_flush_elision_enabled(None).unwrap());
+        assert!(!readonly_flush_elision_enabled(Some(OsStr::new("0"))).unwrap());
+        assert!(readonly_flush_elision_enabled(Some(OsStr::new("1"))).unwrap());
+        for invalid in ["", "false", "true", "2", " 1", "1 "] {
+            assert_eq!(
+                readonly_flush_elision_enabled(Some(OsStr::new(invalid)))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+        assert_eq!(
+            readonly_flush_elision_enabled(Some(OsStr::from_bytes(b"\xff")))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
     fn guest_cache_defaults_on_and_rejects_invalid_settings() {
         use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
@@ -776,6 +967,63 @@ mod tests {
         ] {
             assert_eq!(
                 guest_cache_enabled(Some(invalid)).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput,
+            );
+        }
+    }
+
+    #[test]
+    fn exclusive_upper_absence_experiment_defaults_off_and_rejects_invalid_settings() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        assert!(!exclusive_upper_absence_cache_enabled(None).unwrap());
+        assert!(!exclusive_upper_absence_cache_enabled(Some(OsStr::new("0"))).unwrap());
+        assert!(exclusive_upper_absence_cache_enabled(Some(OsStr::new("1"))).unwrap());
+        for invalid in [
+            OsStr::new(""),
+            OsStr::new("off"),
+            OsStr::new("true"),
+            OsStr::new("2"),
+            OsStr::new(" 1"),
+            OsStr::new("1 "),
+            OsStr::from_bytes(b"\xff"),
+        ] {
+            assert_eq!(
+                exclusive_upper_absence_cache_enabled(Some(invalid))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput,
+            );
+        }
+    }
+
+    #[test]
+    fn directory_reference_capacity_defaults_and_bounds_are_explicit() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        assert_eq!(directory_cache_capacity(None).unwrap(), 256);
+        for capacity in [1, 256, 1024, 4096] {
+            assert_eq!(
+                directory_cache_capacity(Some(OsStr::new(&capacity.to_string()))).unwrap(),
+                capacity
+            );
+        }
+        for invalid in [
+            OsStr::new(""),
+            OsStr::new("0"),
+            OsStr::new("4097"),
+            OsStr::new("-1"),
+            OsStr::new("+1024"),
+            OsStr::new(" 1024"),
+            OsStr::new("1024 "),
+            OsStr::new("1.5"),
+            OsStr::new("184467440737095516160"),
+            OsStr::from_bytes(b"\xff"),
+        ] {
+            assert_eq!(
+                directory_cache_capacity(Some(invalid)).unwrap_err().kind(),
                 io::ErrorKind::InvalidInput,
             );
         }

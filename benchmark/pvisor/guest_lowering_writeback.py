@@ -176,8 +176,8 @@ def run_one(p,out,cohort,arm,mode,profiles):
         from reference_baselines import validate_bundle_execution
         bundle=out/'stage/run-bundle.json';validate_bundle_execution(json.loads(bundle.read_text()),'pvisor-vm');shutil.copy2(bundle,out/'run-bundle.json')
     host=check_upper(upper,mode);base.save(out/'host-byte-checks.json',host)
-    counters=base.collect_profiles(result.stderr.decode().splitlines()) if profiles else []
-    if profiles and (not counters or any(not p.get('final_record') for p in counters)):raise ValueError('missing final profile record')
+    counters=base.collect_profiles(result.stderr.decode().splitlines(), require_complete=True,
+                                  expected_components=base.VM_PROFILE_COMPONENTS) if profiles else []
     archive=archive_stage(out)
     return {'metrics':metrics,'profiles':counters,'bdi':bdi,'host_files_checked':len(host),'archive':archive,'correctness':'passed'}
 

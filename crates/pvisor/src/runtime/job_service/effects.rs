@@ -82,11 +82,20 @@ fn mutate(
         .overlay
         .take()
         .context("this Job has no OverlayFS workspace")?;
+    let _workspace_owner = if apply {
+        super::super::owned_workspace::apply_owner(&record, &overlay)?
+    } else {
+        None
+    };
+    if _workspace_owner.is_some() && target.is_some() {
+        bail!("owned workspace apply does not support overriding its live target");
+    }
     // The final lower may be the Run-owned snapshot of the target. It is
     // still the base workspace, whereas any preceding lower is a composed
     // read-only layer whose changes cannot be applied to that workspace.
     let base_snapshot = record.storage.join(".overlay-lowers");
     if apply
+        && _workspace_owner.is_none()
         && (record.overlay_lowers.len() > 1
             || record.overlay_lowers.first().is_some_and(|lower| {
                 lower != &overlay.target && !lower.starts_with(&base_snapshot)

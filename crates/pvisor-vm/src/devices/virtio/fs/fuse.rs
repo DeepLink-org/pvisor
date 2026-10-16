@@ -63,6 +63,12 @@ const FOPEN_CACHE_DIR: u32 = 8;
 /// A lower object whose opened identity survives a later upper copy-up.
 const FOPEN_PVISOR_LOWER: u32 = 1 << 30;
 
+/// Skip only the backend FLUSH RPC after the negotiated guest-side barriers.
+const FOPEN_PVISOR_LOCAL_FLUSH: u32 = 1 << 29;
+
+/// Isolate immutable lower data pages from the merged namespace inode.
+const FOPEN_PVISOR_DATA_OBJECT: u32 = 1 << 28;
+
 bitflags! {
     /// Options controlling the behavior of files opened by the server in response
     /// to an open or create request.
@@ -74,6 +80,13 @@ bitflags! {
         /// With PVISOR_WRITEBACK, reads of this original lower object bypass
         /// the shared inode cache after a writable open or truncate.
         const PVISOR_LOWER = FOPEN_PVISOR_LOWER;
+        /// With PVISOR_LOCAL_FLUSH and writeback disabled, the guest retains
+        /// write_inode_now, sync_writes and mapping-error checks before skipping
+        /// this read-only local descriptor's backend FLUSH. Not FOPEN_NOFLUSH.
+        const PVISOR_LOCAL_FLUSH = FOPEN_PVISOR_LOCAL_FLUSH;
+        /// The negotiated OPEN reply carries a stable nonzero data-object ID
+        /// and fixed physical-lower size. Namespace/FH authorization is unchanged.
+        const PVISOR_DATA_OBJECT = FOPEN_PVISOR_DATA_OBJECT;
     }
 }
 
@@ -199,6 +212,12 @@ const PVISOR_META: u64 = 1 << 41;
 
 /// Guest-owned cross-file writeback; negotiated only with WRITEBACK_CACHE.
 const PVISOR_WRITEBACK: u64 = 1 << 42;
+
+/// Per-open local read-only FLUSH elision after all ordinary guest barriers.
+const PVISOR_LOCAL_FLUSH: u64 = 1 << 43;
+
+/// Connection-local immutable lower data objects; OPEN replies have 24 bytes.
+const PVISOR_DATA_OBJECT: u64 = 1 << 44;
 
 /// `ReadIndexOut.flags`: no further directory pages exist.
 pub const READINDEX_COMPLETE: u32 = 1;
@@ -468,6 +487,15 @@ bitflags! {
         /// by byte threshold or timer. Only guest-owned writeback sessions
         /// enable this; ordinary FUSE guests keep their existing close behavior.
         const PVISOR_WRITEBACK = PVISOR_WRITEBACK;
+        /// The guest can skip a flagged read-only local handle's backend FLUSH
+        /// after its ordinary inode/write/mapping-error checks. Incompatible
+        /// with writeback, DAX and remote POSIX/flock locking. Experimental
+        /// sessions negotiating this capability do not support snapshots.
+        const PVISOR_LOCAL_FLUSH = PVISOR_LOCAL_FLUSH;
+        /// OPEN has a 16-byte standard prefix plus a fixed lower size u64.
+        /// Qualified descriptors use independent guest data mappings. Default
+        /// off; negotiated sessions cannot be captured or restored.
+        const PVISOR_DATA_OBJECT = PVISOR_DATA_OBJECT;
     }
 }
 
@@ -922,7 +950,7 @@ unsafe impl ByteValued for CreateIn {}
 pub struct OpenOut {
     pub fh: u64,
     pub open_flags: u32,
-    pub padding: u32,
+    pub backing_id: u32,
 }
 unsafe impl ByteValued for OpenOut {}
 

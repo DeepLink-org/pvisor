@@ -332,6 +332,7 @@ pub fn restore_logical_checkpoint(
     destination_upper: &Path,
     destination_preimages: &Path,
 ) -> anyhow::Result<()> {
+    super::owned_workspace::reject_checkpoint_reconstruction(checkpoint)?;
     let sources = [&checkpoint.upper_snapshot, &checkpoint.preimages_snapshot];
     pvisor_overlay_core::stage::require_sealed(&checkpoint.preimages_snapshot)?;
     let sources = sources

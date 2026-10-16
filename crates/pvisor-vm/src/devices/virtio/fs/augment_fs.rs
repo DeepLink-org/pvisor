@@ -27,7 +27,7 @@ use crate::utils::worker_message::WorkerMessage;
 
 use super::filesystem::{
     Context, DirEntry, Entry, Extensions, FileSystem, FsOptions, GetxattrReply, ListxattrReply,
-    OpenOptions, SetattrValid, ZeroCopyReader, ZeroCopyWriter,
+    LowerDataObject, OpenOptions, OpenReply, SetattrValid, ZeroCopyReader, ZeroCopyWriter,
 };
 use super::fuse;
 use super::inode_alloc::InodeAllocator;
@@ -144,6 +144,10 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> AugmentFs<T> {
 impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> {
     type Inode = Inode;
     type Handle = Handle;
+    fn diagnostic_profiles(&self) -> Vec<pvisor_overlay_core::profile::ProfileReport> {
+        self.inner.diagnostic_profiles()
+    }
+
     fn capture_state(&self) -> io::Result<super::snapshot::FsSnapshot> {
         use sha2::{Digest, Sha256};
         let names = self
@@ -409,6 +413,13 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> 
         self.inner.link(ctx, inode, newparent, newname)
     }
 
+    fn lower_data_object(&self, inode: Inode, handle: Handle) -> Option<LowerDataObject> {
+        if self.is_virtual(inode) || handle == VIRTUAL_HANDLE {
+            return None;
+        }
+        self.inner.lower_data_object(inode, handle)
+    }
+
     fn open(
         &self,
         ctx: Context,
@@ -429,6 +440,22 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> 
             }
         }
         self.inner.open(ctx, inode, kill_priv, flags)
+    }
+
+    fn open_for_reply(
+        &self,
+        ctx: Context,
+        inode: Inode,
+        kill_priv: bool,
+        flags: u32,
+        request_eligible: bool,
+    ) -> io::Result<OpenReply> {
+        if self.is_virtual(inode) {
+            let (handle, options) = self.open(ctx, inode, kill_priv, flags)?;
+            return Ok(OpenReply::new(handle, options));
+        }
+        self.inner
+            .open_for_reply(ctx, inode, kill_priv, flags, request_eligible)
     }
 
     fn create(

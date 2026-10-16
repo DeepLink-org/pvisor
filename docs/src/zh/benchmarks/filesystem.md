@@ -1,97 +1,142 @@
-# 开发工具在 pVisor、Docker 和轻量 VM 中要等多久？
+# 环境多久 Ready，连续三轮工具要等多久？
 
 ## 主要结论 {#conclusions}
 
-**在两核、热宿主缓存、每任务独立工具缓存下，七项工具到退出：pVisor host 1.07 s，staged 1.80 s，VM 5.46 s；Docker 1.27 s，Firecracker 2.67 s，QEMU microvm 2.35 s。按完整任务与单项工具分别预算等待；分离簇按各簇中位数和数量展示。**
+**两核、宿主热缓存下，Python 负载 Ready 中位数为：pVisor host 201.19 ms、staged 209.56 ms、VM 749.15 ms，Docker 450.94 ms、Firecracker 854.79 ms。VM 七项操作计时合计从首轮 3323.01 ms 降至第三轮 1758.28 ms；启动和工具执行分别预算。**
 
-| 需求 | 选型含义 |
+| 场景 | 选型含义 |
 | --- | --- |
-| 本机执行并保留改动 | 评估 host/staged 与完整审查流程 |
-| 独立 guest 内核 | 同时预算启动和 VM 工具等待 |
-| 并发或闲置环境 | 需要固定资源下的吞吐与物理内存实测 |
-
-这是 2026-10-12 使用所选冻结源码和制品、通过完整验收的跨运行时七工具对照。本批普通 rootfs/workspace 不启用 DAX，新 VM 写合并默认关闭，stage 同步默认串行。历史批次分别保留；隔离、缓存、listener 和制品条件不同，不计算跨批次优化加速比例。
+| 新建已准备环境 | 比较首条负载 Ready，不将退出耗时计入启动 |
+| 同一环境连续调用工具 | 参考第三轮，同时保留首轮成本 |
+| 高频只读 open 或连续小写 | 参考专门场景；写合并是显式可选配置 |
 
 <!-- measurement-status:start -->
 
-已验收批次 `fo5a4e7d2b-f`：八个后端各 30 次，七工具内部阶段与完整任务分别报告。历史数据和工程 A/B 分别保留，不合并样本。
+九个配置各 5 个独立环境，共 45 个；每个环境内执行 3 轮、共 1,215 项操作，全部校验通过。快速测量不启用外部干扰门禁，历史数据独立保留。
 
 <!-- measurement-status:end -->
 
 ## Motivation {#motivation}
 
-Agent 的工具循环需要遍历、读写、搜索、编译和安装依赖。选型要同时看单项操作与完整等待，避免用快速启动估计文件密集任务。
+频繁创建环境时，首先关心命令何时可以开始。长驻 Agent 则会反复遍历、搜索、编译和安装依赖，需要分别预算首次访问与后续调用。重复 open 和小块流写用于判断特定调用形状是否适合现有优化。
 
 ## 实验设计 {#interpretation}
 
-Linux x86_64，AMD Ryzen 7 9700X，Fedora 7.2.8-200.fc44.x86_64，Btrfs 工作区。协调器、负载与专用 rootless Docker daemon 固定到 CPU 0,1，并在同一独立 cgroup 父组内随机交替执行：总 CPU quota 为两核、内存上限 16 GiB、禁用 swap。各 VM 为 2 vCPU、16 GiB guest RAM；guest 配置容量与整组宿主上限不同。启动该父组前已计费的共享工具/镜像缓存在父组之外；进程与线程检查是可见时刻的观测，未证明所有短生命周期进程的完整 CPU 归属。host/staged 使用 rootless_process。协调器通过私有 user/mount namespace 与 owned pivot_root 隔离宿主已有 listener；namespace 准备不计时，专属 listener 在预检和预热后复用。私有 /tmp 为 2 GiB tmpfs，工作区与 stage 仍为 Btrfs；Docker bind 指向相同物理目录。用户 cgroup 未委托 cpuset，使用继承 affinity 与两核 quota，保留可见进程与线程的观测边界。
+八个后端共用已准备的离线工具和固定输入；另列显式 `PVISOR_VM_FS_WRITEBACK=1` 的 VM。默认 VM 使用写合并关闭配置，guest cache 均开启，DAX 关闭。普通 CLI rootfs/workspace 为 Mutable；目录镜像、自适应元数据预取和不可变 rootfs 数据页保留不因重复执行而获得启用条件。
 
-同一套离线工具与固定输入，每次新建工作区；热宿主缓存、3 次预热、每格 30 次正式采样，seed 20261012 随机交替后端。环境准备、构建、镜像导入和输入重置不计时；启动和退出计入完整任务。保留执行器提供的 TMPDIR，在其中为每任务新建私有 HOME 与 Cargo 缓存，并配置 `NODE_COMPILE_CACHE` 环境变量；Python 不读写 bytecode。七项操作的 Cargo 使用工作区内独立的 `_cargo-home`、`_tmp` 和 `_cargo-target`。临时存储随执行器配置不同，属于任务成本的一部分；目录、策略与子进程继承均校验。 逐次门禁验证缓存环境变量、父/子继承及 Python 的实际缓存行为；本批实际 Node API 启用状态和 Node 缓存目录文件系统类型均未知。10 月 10 日的独立环境检查观测到 native/host/staged/pVisor VM 的 Node 缓存使用 tmpfs，Docker 使用 overlayfs；参考 VM 输出为 ext4，但环境探测的 Ready 门禁未通过。类型与失败状态在[缓存观察 CSV](filesystem-cache-policy.csv)中分开记录，这份历史环境探测不提供本次计时或新的缓存类型证据；本批逐次校验缓存目录与父/子继承。
+Linux x86_64 / Ryzen 7 9700X / Fedora 7.2.8-200.fc44.x86_64；Docker 29.8.2 rootless overlay2，Firecracker PCI 1.13.1，QEMU 10.2.2。Firecracker/QEMU 使用独立定制的参考内核，并非 stock 内核。整父组 CPU 0,1、quota 两核、16 GiB、swap 0，各 VM 2 vCPU/16 GiB；cpuset 未委托，使用继承 affinity。宿主工作区/stage 为 Btrfs，参考 VM 为 ext4；私有 /tmp 是 2 GiB tmpfs，工具保留执行器的默认临时存储。
 
-Docker Engine 29.7.2 使用专用 rootless overlay2 daemon、经典镜像存储和可写 bind mount；Firecracker PCI 使用冻结的独立定制参考内核、不使用 jailer，QEMU 分别使用 q35/microvm、相同参考内核与私有 ext4。pVisor VM 使用 virtio-fs 与冻结的 pVisor 固件。这里的 Firecracker/QEMU 工具数据没有测量 stock 发行版内核，不能用[独立 stock 启动结果](startup.md)替代。内核、存储和暂存语义不同，结果是这些配置下的任务成本，不是纯 VMM 或安全排名。
+每配置 5 个新环境，无额外预热，seed 20261016 同轮随机交替。每个环境的七工具与两个专门场景依次执行三轮，VM/容器、工作区、任务缓存保持存活。首轮 Cargo/npm 从空输出开始，后两轮复用编译产物和安装结果；写入任务后两轮覆盖相同的 256 文件。Python 统一固定为 3.14.7 且不读写 bytecode。三轮不是十五个独立样本；宿主缓存较热，不等于每轮 guest 元数据期限都未到期。
 
-负载为 32 个目录中的 2,048 文件遍历、64 MiB 读取和 SHA256 校验、256 × 64 KiB 写入、git status、rg、64 个无外部依赖 Cargo 模块和 32 个离线 npm 包。单项不含启动与退出，遍历、读取等包含负载内校验；写入后的完整字节验证在写入计时之外，仍计入完整任务。完整任务包括七项、校验和退出。大型仓库、冷磁盘、在线 registry 和并发吞吐未测。
+启动计时从宿主创建执行器到共同 Python 负载输出唯一 `REFERENCE_READY`，包含解释器和共同模块导入，不包含工具任务、退出或收尾。每项任务使用内部单调时钟，不包含 Python 子进程启动和 VM 退出；写入字节读回校验在操作计时外。正常退出、输出、缓存继承、Run Bundle、暂存隔离和完整字节仍须通过；失败单列，所有有效慢样本保留。无安静期、外部干扰筛选和新的全量输入清单扫描；N=5 不提供稳定尾延迟结论，也不证明整个 Agent 的加速。
 
 ## 实验数据和分析 {#results}
 
-测于 2026-10-12，每个后端/负载 30/30 有效，共 240 个正式任务，正式失败 0。另有能力检查与预热，均不计入统计。每个样本必须通过唯一输出、退出和执行器记录校验；staged/VM 还要求宿主工作区没有出现写入结果，upper 中全部 256 个文件的完整内容匹配。共同输入清单在采样前后校验，缓存策略在父/子负载中校验。任何错误或监测到的同用户 Rust 构建/Python 测试干扰拒绝整批；未检出这类干扰，不按耗时剔除有效慢样本。0.5 s 的进程轮询可能漏掉短暂、不可见或未识别的宿主活动。
+### Python 负载启动 {#quick-results}
 
-### 启动到退出 {#complete-task}
+单位 ms，中位数与最小—最大值，每配置 N=5。这里是命令 Ready，不是完整发行版启动。
 
-单位 s；每个后端 N=30。通常为 P50，分离分布展示各簇中位数与数量；P95 仅作观察参考，不报告 P99。
-
-| Runtime | 有效 / 失败 | 完整任务 P50 s | 完整任务 P95 s（参考） |
+| Runtime | N | Ready ms | Min–max ms |
 | --- | --- | --- | --- |
-| Native | 30 / 0 | 1.00 | 1.01 |
-| pVisor host | 30 / 0 | 1.07 | 1.13 |
-| pVisor staged | 30 / 0 | 1.80 | 1.87 |
-| pVisor VM | 30 / 0 | 5.46 | 6.40 |
-| Docker rootless / overlay2 | 30 / 0 | 1.27 | 1.52 |
-| Firecracker PCI | 30 / 0 | 2.67 | 2.74 |
-| QEMU q35 | 30 / 0 | 2.19 | 2.53 |
-| QEMU microvm | 30 / 0 | 2.35 | 2.79 |
+| Native | 5 | 180.43 | 178.95–181.15 |
+| pVisor host | 5 | 201.19 | 195.70–203.26 |
+| pVisor staged | 5 | 209.56 | 206.75–215.36 |
+| pVisor VM | 5 | 749.15 | 707.91–806.28 |
+| pVisor VM + writeback | 5 | 746.21 | 704.93–832.73 |
+| Docker rootless | 5 | 450.94 | 323.55–557.16 |
+| Firecracker PCI | 5 | 854.79 | 832.52–865.48 |
+| QEMU q35 | 5 | 486.80 | 478.82–509.91 |
+| QEMU microvm | 5 | 364.31 | 359.88–433.75 |
 
-| 同批完整任务对照 | 中位数差 ms | 95% CI ms | 结论 |
+在这组快速样本中，默认 VM 的 Ready 比 Firecracker 更早，中位数差 -105.64 ms，配对 bootstrap 95% 区间 [-126.17, -48.51] ms；Docker 和两种 QEMU 的 Ready 仍更短。
+
+### 同一环境的三轮工具 {#reference-fs}
+
+单位 ms，每轮 N=5。先在每个环境内相加七项操作的实际计时，再取中位数；不是相加中位数，也不是含包装器、字节读回及额外场景的整段墙钟时间。
+
+| Runtime | R1 ms | R2 ms | R3 ms |
 | --- | --- | --- | --- |
-| pVisor staged − Docker rootless / overlay2 | +538.35 | [+497.98, +570.62] | 更慢 |
-| pVisor VM − QEMU microvm | +3104.84 | [+2836.53, +3317.20] | 更慢 |
+| Native | 331.41 | 226.80 | 225.48 |
+| pVisor host | 351.67 | 239.40 | 237.94 |
+| pVisor staged | 798.59 | 526.49 | 518.99 |
+| pVisor VM | 3323.01 | 1765.81 | 1758.28 |
+| pVisor VM + writeback | 2839.84 | 1826.43 | 1693.68 |
+| Docker rootless | 332.76 | 212.50 | 213.37 |
+| Firecracker PCI | 1237.13 | 301.14 | 332.43 |
+| QEMU q35 | 977.96 | 267.86 | 266.27 |
+| QEMU microvm | 1095.77 | 260.47 | 247.01 |
 
-pVisor staged 相对 Docker rootless / overlay2的完整任务中位数差为 +538.35 ms，95% CI [+497.98, +570.62] ms；pVisor VM 相对 QEMU microvm的完整任务中位数差为 +3104.84 ms，95% CI [+2836.53, +3317.20] ms。区间来自同一批 5,000 次按轮次配对的 bootstrap（seed 20261006）；有效慢样本保留，分离分布不作单一中位数排名。存储配置与暂存能力不同，总差距不能归因于某一个组件。
+后两轮同时包含文件缓存与工具增量行为：Cargo 不重编未修改源码，npm 保留 node_modules。该表用于预算重复任务，不把下降全部归因于某一项文件系统优化。
 
-### 七项工具操作 {#reference-fs}
+<details markdown="1">
+<summary>七项工具的三轮明细（ms，每轮 N=5）</summary>
 
-单位 ms，每个后端/操作 N=30；P50 或分离簇的中位数与数量。操作时间排除启动与收尾；不能把七项中位数相加替代完整任务时间。
+#### R1
 
-| 操作 | Native | pVisor host | pVisor staged | pVisor VM | Docker rootless / overlay2 | Firecracker PCI | QEMU q35 | QEMU microvm |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 遍历 2,048 文件 | 4.74 | 4.73 | 82.91 | 177.28 | 4.82 | 21.97 | 16.74 | 19.98 |
-| 读取并校验 64 MiB | 32.18 | 32.83 | 77.54 | 135.60 | 32.51 | 80.22 | 41.18 (n=19); 92.98 (n=11) | 74.23 |
-| 写入 256 文件 | 3.71 | 3.79 | 32.00 | 155.56 | 3.87 | 43.01 | 8.04 (n=22); 43.34 (n=8) | 9.77 (n=17); 43.54 (n=13) |
-| git status | 15.51 | 16.67 | 163.46 | 503.53 (n=24); 869.80 (n=6) | 15.71 | 82.33 (n=10); 131.00 (n=20) | 89.16 | 168.14 |
-| Ripgrep 搜索 | 7.83 | 7.85 | 107.10 | 427.32 | 8.33 | 16.05 | 14.67 | 16.13 |
-| 离线 Cargo 编译 | 52.96 | 58.93 | 90.02 | 579.04 (n=23); 897.47 (n=7) | 48.80 | 386.11 | 373.75 | 430.34 |
-| 离线 npm 安装 | 212.55 | 225.99 | 244.92 | 1115.77 | 216.83 | 556.76 | 534.19 | 581.33 |
+| Operation | Native | pVisor host | pVisor staged | pVisor VM | pVisor VM + writeback | Docker rootless | Firecracker PCI | QEMU q35 | QEMU microvm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 遍历 2,048 文件 | 4.63 | 4.60 | 79.87 | 216.15 | 198.66 | 4.70 | 24.28 | 16.57 | 17.79 |
+| 读取并校验 64 MiB | 32.87 | 32.81 | 78.53 | 121.60 | 118.59 | 33.06 | 81.17 | 37.81 | 42.45 |
+| 写入/覆盖 256 文件 | 3.80 | 3.90 | 33.27 | 187.78 | 148.01 | 4.12 | 40.46 | 5.22 | 5.31 |
+| git status | 15.69 | 15.67 | 159.19 | 520.03 | 368.02 | 15.61 | 126.32 | 83.96 | 168.22 |
+| Ripgrep 搜索 | 8.73 | 8.83 | 112.86 | 425.47 | 401.23 | 8.93 | 14.05 | 13.24 | 14.15 |
+| 离线 Cargo 编译 | 53.83 | 60.36 | 92.84 | 622.86 | 548.90 | 49.29 | 397.35 | 331.11 | 351.91 |
+| 离线 npm 安装 | 212.17 | 225.46 | 244.94 | 1083.78 | 1053.20 | 217.76 | 550.02 | 453.31 | 506.73 |
 
+#### R2
 
-文件遍历、Git 与搜索需要经过暂存文件视图；读取、编译和离线安装的成本还包含校验、工具运行与各执行器的临时存储行为。按实际工具组合和完整任务等待设置超时，不能仅凭启动速度估计总成本。
+| Operation | Native | pVisor host | pVisor staged | pVisor VM | pVisor VM + writeback | Docker rootless | Firecracker PCI | QEMU q35 | QEMU microvm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 遍历 2,048 文件 | 4.91 | 4.95 | 87.55 | 138.17 | 138.74 | 4.92 | 4.21 | 4.19 | 4.11 |
+| 读取并校验 64 MiB | 27.12 | 27.14 | 46.55 | 41.60 | 38.01 | 27.22 | 27.76 | 27.86 | 27.88 |
+| 写入/覆盖 256 文件 | 3.84 | 4.10 | 51.03 | 110.07 | 143.37 | 3.87 | 22.49 | 21.82 | 23.55 |
+| git status | 2.58 | 2.60 | 13.13 | 39.12 | 38.34 | 2.56 | 2.28 | 2.94 | 2.50 |
+| Ripgrep 搜索 | 8.58 | 9.66 | 112.58 | 455.77 | 384.39 | 8.27 | 6.38 | 7.23 | 5.91 |
+| 离线 Cargo 编译 | 7.88 | 8.26 | 14.98 | 49.16 | 47.07 | 5.42 | 4.93 | 5.31 | 5.15 |
+| 离线 npm 安装 | 173.00 | 185.30 | 200.13 | 938.55 | 935.41 | 161.12 | 232.13 | 197.63 | 191.20 |
 
-<a id="full-ubuntu"></a>
-完整 Ubuntu 文件负载尚未在这组当前构建与资源条件下测量。
+#### R3
 
-### 文件系统优化的适用范围 {#cache-status}
+| Operation | Native | pVisor host | pVisor staged | pVisor VM | pVisor VM + writeback | Docker rootless | Firecracker PCI | QEMU q35 | QEMU microvm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 遍历 2,048 文件 | 4.56 | 4.77 | 75.38 | 194.63 | 152.33 | 4.70 | 4.29 | 4.18 | 4.16 |
+| 读取并校验 64 MiB | 27.13 | 27.11 | 48.97 | 38.02 | 37.38 | 27.16 | 27.67 | 28.00 | 27.80 |
+| 写入/覆盖 256 文件 | 4.52 | 4.45 | 50.46 | 103.77 | 138.08 | 4.49 | 16.86 | 21.96 | 21.36 |
+| git status | 2.48 | 3.02 | 13.30 | 36.29 | 38.08 | 2.79 | 2.55 | 2.52 | 2.26 |
+| Ripgrep 搜索 | 7.46 | 8.88 | 112.74 | 437.97 | 359.88 | 8.60 | 7.98 | 6.75 | 6.03 |
+| 离线 Cargo 编译 | 7.37 | 7.62 | 12.68 | 44.66 | 43.76 | 5.03 | 5.20 | 4.77 | 4.65 |
+| 离线 npm 安装 | 171.77 | 182.80 | 208.14 | 908.41 | 861.16 | 161.06 | 268.70 | 197.83 | 178.75 |
 
-表中冻结构建包含宿主 copy-up 调度、读队列、journal 锁、空闲调度与后续 VM 队列/I/O 屏障修复；独立工程 A/B 见[完整证据范围](../design/filesystem-performance-analysis.md#filesystem-status)。跨运行时结果衡量当前默认配置的任务成本，局部工程 A/B 的百分比不用于折算上述数据。
+</details>
 
-本批已用当前冻结制品重新测量全部八个后端，并完成正确性、输入、预算和干扰门禁。此前未完成验收的尝试继续单独保留，不进入本页统计；这份新跨运行时结果本身不证明每项修改的因果收益。
+### 热 open 与小块流写 {#cache-status}
 
-普通 rootfs/workspace 默认关闭 DAX，不创建 DAX 窗口；不可变 share 保留显式启用入口，见[DAX 对照](../design/filesystem-performance-analysis.md#readonly-dax-ab)。新建 VM 的写合并默认关闭，可用 `PVISOR_VM_FS_WRITEBACK=1` / `0` 显式配置；默认恢复已协商快照时保留原模式，显式 `PVISOR_VM_FS_WRITEBACK=0` 会拒绝已开启写合并的快照。独立[写合并对照](../design/filesystem-performance-analysis.md#writeback-ab)使用其自身冻结制品，不能用于折算本批任务时间。
+单位 ms，每轮 N=5，中位数；每格依次为 R1 / R2 / R3。
 
-不可变 lower 的物理元数据缓存要求调用者显式声明并保持 lower 稳定；宿主 rootfs、OCI 解包目录与 lazy 镜像本地投影不自动获得该承诺。扩展 Linux HOST 内核缓存尚未接入默认 `pvisor run` 或 VM，其正式计时没有通过验收。能力边界见[不可变 lower 缓存分析](../design/filesystem-performance-analysis.md#immutable-lower-cache)与[内核缓存分析](../design/filesystem-performance-analysis.md#host-kernel-cache)。
+热 open 在计时外先打开一次相同文件，计时内执行 10,000 次 open/fstat/close，不读取内容。流写每轮新建一个文件，执行 8,192 次无用户态缓冲的 1 KiB write，再 fsync/close；“write”列在 fsync 前停表，“write + fsync + close”保留显式同步成本。所有配置执行相同调用，并在计时后逐字节核对全部 8 MiB。
 
-`PVISOR_STAGE_SYNC_WORKERS` 的并行 stage 同步选项未开启，仍没有独立的串行/并行性能对照；不能把该实现的存在解释为上表的加速来源。
+| Runtime | open/fstat R1 / R2 / R3 ms | 8 MiB write R1 / R2 / R3 ms | write + fsync + close R1 / R2 / R3 ms |
+| --- | --- | --- | --- |
+| Native | 10.11 / 10.11 / 10.12 | 5.89 / 5.92 / 5.88 | 9.67 / 9.61 / 9.55 |
+| pVisor host | 10.18 / 10.19 / 10.13 | 5.84 / 5.99 / 5.91 | 9.37 / 9.62 / 9.55 |
+| pVisor staged | 409.28 / 409.54 / 398.16 | 219.54 / 203.09 / 227.36 | 224.42 / 207.18 / 233.35 |
+| pVisor VM | 10.26 / 11.88 / 10.27 | 468.78 / 468.24 / 465.69 | 471.84 / 478.35 / 475.88 |
+| pVisor VM + writeback | 10.35 / 10.41 / 10.24 | 3.78 / 5.90 / 8.16 | 15.23 / 12.81 / 21.59 |
+| Docker rootless | 10.37 / 10.51 / 10.49 | 5.92 / 6.01 / 5.97 | 9.52 / 9.04 / 9.53 |
+| Firecracker PCI | 8.37 / 8.33 / 8.34 | 3.37 / 4.36 / 3.64 | 9.42 / 9.31 / 10.06 |
+| QEMU q35 | 8.22 / 8.35 / 8.23 | 2.94 / 3.24 / 2.88 | 9.43 / 9.95 / 9.22 |
+| QEMU microvm | 8.36 / 8.24 / 8.22 | 2.93 / 3.65 / 2.97 | 10.79 / 11.20 / 9.68 |
+
+一个出现较低耗时的具体场景是第三轮 10,000 次热 open/fstat：VM + writeback 为 10.24 ms，Docker 为 10.49 ms，中位数差 -0.25 ms，95% 区间 [-0.48, -0.10] ms。优势幅度很小，只适用于这组不读内容的热调用；默认 VM 与 Docker 在该项未检出差异，不能把可选配置的结果解释为写合并加速了元数据。
+
+VM 的惰性只读 open 可在这种不读内容的热路径中留在 guest；它与读取文件的 rg/Cargo 场景不同。写合并配置缩短连续小写的接受时间，但同步仍有成本，不能只用 write 列推导落盘等待。特定场景的较低样本值不代表所有工作负载领先；同批配对 bootstrap 区间见下载，只有五个独立环境，且没有多重比较校正。
+
+### 历史来源 {#complete-task}
+
+此前的一次性任务与 N30 完整任务数据分别保存在[旧快速统计](filesystem-quick.csv)、[历史 N30 统计](filesystem.csv)和[历史来源](filesystem-provenance.csv)。其启动/结果/退出口径不与当前 Ready 和分轮任务数据混合。完整 Ubuntu、macOS、冷磁盘、大型仓库及并发吞吐未由这里的样本覆盖。
 
 ### 数据下载与复现 {#run}
 
-[已验收文件系统统计 CSV](filesystem.csv) · [同批差异与 95% 置信区间](filesystem-comparisons.csv) · [测量制品、源码与输入来源](filesystem-provenance.csv) · [验收记录](../assets/benchmarks/filesystem-publication-audit.json) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#same-host-runtime-comparison)与[整组资源预算](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-whole-parent-resource-budget)
+[分轮统计 CSV](filesystem-resident.csv) · [同批差异与区间](filesystem-resident-comparisons.csv) · [来源与条件](filesystem-resident-provenance.csv)
 
-本批原始证据为本地 `benchmark/.data/fo5a4e7d2b-f/report.json`，冻结源码与构建收据在 `benchmark.new/filesystem/.data/fs-next-20261011/trim/`，执行/验收记录在 `benchmark.new/filesystem/.data/fs-docs-20261012/`；原始样本与制品不作为站点下载。此前有效批次和失败尝试分别保留，见[来源清单](evidence-sources.csv)；历史[运行时统计](runtime-summary.csv)和[来源](runtime-provenance.csv)不与本批合并。
+2026-10-16，B-FS-TOOLS，GNU release/gateway CLI 与同源新固件；原始样本及冻结入口保存在本地 `benchmark/.data/fr3-20261016b/` 和 `benchmark.new/filesystem/.data/retest-20261016/resident-fixed/`。[复测手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#ready-and-resident-filesystem-rounds) · [工程证据范围](../design/filesystem-performance-analysis.md#filesystem-status) · [比较方法](methodology.md)。

@@ -538,7 +538,11 @@ pub struct PVisorBuilder {
     executors: Option<Vec<Arc<dyn RunExecutor>>>,
     control_socket: Option<std::path::PathBuf>,
     instance_control: bool,
+    workspace_base: Option<Arc<super::owned_workspace::OwnedWorkspace>>,
+    output_observer: Option<ExecutorOutputObserver>,
 }
+
+pub(crate) type ExecutorOutputObserver = Arc<dyn Fn(&crate::ExecutorOutput) + Send + Sync>;
 
 impl Default for PVisorBuilder {
     fn default() -> Self {
@@ -548,6 +552,8 @@ impl Default for PVisorBuilder {
             executors: None,
             control_socket: None,
             instance_control: true,
+            workspace_base: None,
+            output_observer: None,
         }
     }
 }
@@ -562,6 +568,8 @@ impl std::fmt::Debug for PVisorBuilder {
             )
             .field("executors", &self.executors.as_ref().map(|e| e.len()))
             .field("instance_control", &self.instance_control)
+            .field("owned_workspace", &self.workspace_base.is_some())
+            .field("output_observer", &self.output_observer.is_some())
             .finish()
     }
 }
@@ -602,8 +610,60 @@ impl PVisorBuilder {
         self
     }
 
-    pub fn overlay(mut self, overlay: OverlayHint) -> Self {
+    pub fn overlay(mut self, mut overlay: OverlayHint) -> Self {
+        if let Some(owner) = &self.workspace_base
+            && overlay.lower_dirs.is_empty()
+        {
+            overlay.lower_dirs.push(owner.target.clone());
+        }
         self.runtime = self.runtime.overlay(overlay);
+        self
+    }
+
+    /// Bind a new workspace to a durably prepared immutable baseline.
+    ///
+    /// Consumes the workspace owner's lease, authenticates its workspace catalog
+    /// and the supplied native executor's actual prepared-rootfs owner, and
+    /// selects that exact executor. Both private stores must be independent of
+    /// each other and the existing live directory `target`, which remains the
+    /// apply destination. Ordinary/host-root/restored executors are unsupported.
+    ///
+    /// Configure durable storage and a fresh mountless stage with `storage` and
+    /// `overlay`; an empty lower list defaults to `target`, while compose or a
+    /// different lower is rejected at Run admission. Replacing/wrapping the bound
+    /// executor later is rejected before stage writes. Clones and admitted
+    /// Attempts retain the owner through native teardown. No existing stage is
+    /// restored, no CLI selector or VM cache switch is implied, and failed
+    /// admission leaves the prepared generations intact. External store writes
+    /// are unsupported. Use `on_executor_output` for observation without wrapping
+    /// the native executor.
+    pub fn with_workspace_base(
+        mut self,
+        base: crate::environment_snapshot::SnapshotBase,
+        target: std::path::PathBuf,
+        executor: Arc<crate::VmExecutor>,
+    ) -> anyhow::Result<Self> {
+        let owner = Arc::new(super::owned_workspace::OwnedWorkspace::new(
+            base, target, executor,
+        )?);
+        self.runtime = self.runtime.workspace_target(&owner.target);
+        self.executors = Some(vec![owner.executor()]);
+        self.workspace_base = Some(owner);
+        Ok(self)
+    }
+
+    /// Observe the executor's immutable output before any driver teardown.
+    ///
+    /// The most recently registered observer runs synchronously once after an
+    /// invoked executor returns, before stage sealing/teardown. It receives no
+    /// mutable output or Session authority. It must not block, panic or reenter
+    /// runtime operations. Cloned runtimes/Attempts retain the callback; a Run
+    /// rejected before execution or cancelled before invocation does not call it.
+    pub fn on_executor_output<F>(mut self, observer: F) -> Self
+    where
+        F: Fn(&crate::ExecutorOutput) + Send + Sync + 'static,
+    {
+        self.output_observer = Some(Arc::new(observer));
         self
     }
 
@@ -668,6 +728,8 @@ impl PVisorBuilder {
             runtime: runtime.build(),
             control_socket: self.control_socket,
             instance_control: self.instance_control,
+            workspace_base: self.workspace_base,
+            output_observer: self.output_observer,
         }
     }
 }
@@ -683,6 +745,8 @@ pub struct PVisor {
     runtime: RuntimeSupervisor,
     control_socket: Option<std::path::PathBuf>,
     instance_control: bool,
+    workspace_base: Option<Arc<super::owned_workspace::OwnedWorkspace>>,
+    output_observer: Option<ExecutorOutputObserver>,
 }
 
 /// Typed preparation inputs resolved before any runtime side effects.
@@ -696,6 +760,8 @@ pub(crate) struct PreparedRun {
     pub workspace: Option<std::path::PathBuf>,
     pub guest_workspace_overlay: bool,
     pub network: pvisor_core::NetworkConfig,
+    pub workspace_base: Option<Arc<super::owned_workspace::OwnedWorkspace>>,
+    pub output_observer: Option<ExecutorOutputObserver>,
 }
 
 impl PreparedRun {
@@ -733,6 +799,8 @@ impl PreparedRun {
             workspace,
             guest_workspace_overlay,
             network,
+            workspace_base: None,
+            output_observer: None,
         })
     }
 }
@@ -797,6 +865,52 @@ impl PVisor {
             .cloned()
             .ok_or(PVisorError::UnsupportedInvocation)?;
         let mut descriptor = executor.descriptor();
+        if let Some(owner) = &self.workspace_base {
+            owner
+                .check_executor(&executor)
+                .map_err(PVisorError::Prepare)?;
+            let storage = self.runtime.storage_path().ok_or_else(|| {
+                PVisorError::InvalidSpec(
+                    "owned workspace requires explicit durable Run storage".into(),
+                )
+            })?;
+            owner
+                .validate_overlay(self.runtime.overlay_hint(), storage)
+                .map_err(PVisorError::Prepare)?;
+            owner
+                .check_paths(self.runtime.write_paths())
+                .map_err(PVisorError::Prepare)?;
+            if let Some(path) = &self.control_socket {
+                owner
+                    .check_paths([path.as_path()])
+                    .map_err(PVisorError::Prepare)?;
+            }
+            spec.metadata.insert(
+                "pvisor.workspace".into(),
+                serde_json::to_value(&owner.target).map_err(|e| PVisorError::Prepare(e.into()))?,
+            );
+            spec.metadata.insert(
+                "pvisor.vm.overlay_target".into(),
+                serde_json::to_value(&owner.target).map_err(|e| PVisorError::Prepare(e.into()))?,
+            );
+            spec.metadata.insert(
+                "pvisor.vm.guest_cwd".into(),
+                serde_json::to_value(&owner.target).map_err(|e| PVisorError::Prepare(e.into()))?,
+            );
+            // Execution-restore metadata cannot override a fresh owned source.
+            if spec
+                .metadata
+                .contains_key("pvisor.orchestration.execution_restore")
+                || spec
+                    .metadata
+                    .keys()
+                    .any(|key| key.starts_with("pvisor.vm.restore"))
+            {
+                return Err(PVisorError::InvalidSpec(
+                    "owned workspace cannot use execution restore metadata".into(),
+                ));
+            }
+        }
         crate::runtime::apply_process_policies(&mut spec, &descriptor)
             .map_err(PVisorError::Prepare)?;
         let vm_executor = descriptor.kind == pvisor_core::ExecutorKind::VirtualMachine;
@@ -920,7 +1034,7 @@ impl PVisor {
         requested_operation.placements.clear();
         // Plans stay typed; caller metadata cannot supply trusted runtime decisions.
         descriptor.capability_plan = capability_plan;
-        let preparation = PreparedRun::new(
+        let mut preparation = PreparedRun::new(
             &spec,
             descriptor.clone(),
             operation.clone(),
@@ -928,6 +1042,8 @@ impl PVisor {
             network,
         )
         .map_err(PVisorError::Prepare)?;
+        preparation.workspace_base = self.workspace_base.clone();
+        preparation.output_observer = self.output_observer.clone();
         Ok(ResolvedRun {
             preparation,
             spec,
@@ -1124,6 +1240,160 @@ mod tests {
         ExecutorKind, NetworkCapability, RunFailureKind, RunInvocation, RunState, StdioMode,
     };
     use std::sync::Mutex;
+
+    #[test]
+    #[cfg(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "macos", target_arch = "aarch64")
+    ))]
+    fn owned_workspace_fresh_preparation_uses_run_lease_and_retains_owner_through_teardown() {
+        use crate::environment_snapshot::SnapshotStore;
+        use pvisor_vm::api::RuntimeSupport;
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        let root_source = temp.path().join("root-source");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::create_dir(&root_source).unwrap();
+        std::fs::write(target.join("file"), b"fixed baseline").unwrap();
+        let store_path = temp.path().join("workspace-store");
+        let store = SnapshotStore::new(&store_path).unwrap();
+        let base = store.prepare_workspace(&target).unwrap();
+        let reference = base.reference().clone();
+        let baseline = base.root();
+        let root_store = temp.path().join("rootfs-store");
+        let root_base = SnapshotStore::new(&root_store)
+            .unwrap()
+            .prepare_rootfs(&root_source)
+            .unwrap();
+        let mut settings = crate::VmSettings {
+            prepared_rootfs: Some(crate::PreparedRootfs {
+                store: root_store,
+                base: root_base.reference().clone(),
+            }),
+            ..Default::default()
+        };
+        if pvisor_vm::api::VmPlatform::embedded_kernel().is_none() {
+            std::fs::write(
+                temp.path()
+                    .join(pvisor_vm::api::VmPlatform::firmware_name()),
+                b"fixture firmware, never executed",
+            )
+            .unwrap();
+            settings.library_dir = Some(temp.path().to_owned());
+        }
+        let vm = Arc::new(crate::VmExecutor::new(settings).unwrap());
+        let stage = temp.path().join("stage");
+        let runtime = PVisor::builder()
+            .storage(&stage)
+            .overlay(OverlayHint {
+                stage_dir: Some(stage.clone()),
+                ..Default::default()
+            })
+            .network(crate::NetworkDriverConfig {
+                mode: crate::OverlayNetMode::Off,
+                ..Default::default()
+            })
+            .with_workspace_base(base, target.clone(), vm.clone())
+            .unwrap()
+            .build();
+        let mut spec = RunSpec::process("owned-workspace-stage", "sh", "/bin/true");
+        spec.metadata
+            .insert("pvisor.vm.overlay_target".into(), "/".into());
+        spec.metadata
+            .insert("pvisor.vm.guest_cwd".into(), "/wrong".into());
+        let mut resolved = runtime.resolve_run(spec).unwrap();
+        assert_eq!(
+            resolved.spec.metadata["pvisor.vm.overlay_target"],
+            serde_json::to_value(&target).unwrap()
+        );
+        assert_eq!(
+            resolved.spec.metadata["pvisor.vm.guest_cwd"],
+            serde_json::to_value(&target).unwrap()
+        );
+        let attempt_id = AttemptId::new("owned-stage-attempt");
+        let held = super::super::registry::RunLease::acquire_new(&stage).unwrap();
+        let blocked = runtime.runtime.prepare(
+            &mut resolved.spec,
+            &resolved.preparation,
+            &[],
+            false,
+            &attempt_id,
+        );
+        assert!(blocked.is_err());
+        assert!(!stage.join("upper").exists() && !stage.join("preimages").exists());
+        drop(held);
+        let session = runtime
+            .runtime
+            .prepare(
+                &mut resolved.spec,
+                &resolved.preparation,
+                &[],
+                false,
+                &attempt_id,
+            )
+            .unwrap()
+            .unwrap();
+        let record = session.record();
+        assert_eq!(record.overlay.as_ref().unwrap().target, target);
+        assert_eq!(
+            record.overlay.as_ref().unwrap().baseline_lower.as_ref(),
+            Some(&baseline)
+        );
+        assert_eq!(record.overlay_lowers, [baseline.clone()]);
+        let metadata = &resolved.spec.metadata["pvisor.vm.workspace_overlay"];
+        assert_eq!(
+            metadata["lower_mutability"],
+            serde_json::json!(["immutable"])
+        );
+        assert_eq!(
+            metadata["apply_target"],
+            serde_json::to_value(&target).unwrap()
+        );
+        assert!(stage.join("workspace-baseline.json").is_file());
+        let owner = resolved.preparation.workspace_base.as_ref().unwrap();
+        owner
+            .check_handoff(
+                &[vm.settings().rootfs.clone().unwrap()],
+                &[baseline.clone()],
+                Some(&baseline),
+                Some(&target),
+                &[pvisor_overlay_core::LayerMutability::Immutable],
+            )
+            .unwrap();
+        assert!(
+            owner
+                .check_handoff(
+                    &[baseline.clone()],
+                    &[baseline.clone()],
+                    Some(&baseline),
+                    Some(&target),
+                    &[pvisor_overlay_core::LayerMutability::Immutable]
+                )
+                .is_err()
+        );
+        drop(resolved);
+        drop(runtime);
+        // Fault injection proves Attempt ownership independently of the builder
+        // and durable pin. Production does not expose catalog removal.
+        std::fs::remove_file(
+            store_path
+                .join("prepared-workspace")
+                .join(&reference.id)
+                .join("reference"),
+        )
+        .unwrap();
+        store.collect_abandoned().unwrap();
+        assert!(store.open_base(&reference).is_ok());
+        let teardown = session.teardown(Some(0), true, false);
+        assert!(
+            teardown.error_message().is_none(),
+            "{:?}",
+            teardown.error_message()
+        );
+        pvisor_overlay_core::stage::require_sealed(&stage.join("preimages")).unwrap();
+        store.collect_abandoned().unwrap();
+        assert!(store.open_base(&reference).is_err());
+    }
 
     struct PreparationExecutor(&'static str, ExecutorKind, bool);
     #[async_trait]

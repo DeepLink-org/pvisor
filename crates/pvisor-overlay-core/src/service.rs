@@ -23,9 +23,83 @@ pub enum OpenBacking {
 pub struct FilesystemService {
     core: OverlayCore,
 }
+
+/// Suspends an explicitly configured physical-upper absence cache for one mutation.
+///
+/// The caller must already hold its exclusive namespace-operation lock before
+/// construction, and keep that lock until after this guard is dropped. This
+/// guard does not acquire that lock or drain asynchronous I/O. Construction
+/// disables cache lookup/publication and clears prior observations; drop clears
+/// again, including after errors or partial mutations, then restores the configured
+/// preference. Enabled-owner mutation guards must not nest. Disabled owners
+/// accept this guard as a no-op. Neither cache contents nor guards are snapshot state.
+/// Mutations include directory traversal permissions and relevant metadata/xattrs,
+/// not only creating, deleting or renaming directory entries.
+#[must_use = "hold the mutation guard until all namespace work and cleanup have finished"]
+pub struct UpperNamespaceMutation<'a> {
+    core: &'a OverlayCore,
+    armed: bool,
+}
+
+impl Drop for UpperNamespaceMutation<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.core.end_upper_namespace_mutation();
+        }
+    }
+}
+
 impl FilesystemService {
     pub fn new(core: OverlayCore) -> Self {
         Self { core }
+    }
+    /// Configure once before serving requests; the default is disabled.
+    ///
+    /// Enabling is a caller-owned admission contract: all physical upper
+    /// namespace and directory-permission changes must be serialized by an
+    /// exclusive operation lock and `upper_namespace_mutation`, while every
+    /// cached resolution holds the matching shared lock. The upper root,
+    /// physical ancestors and mount identity must remain stable for this owner.
+    /// External writers, lazy upper projections and hidden namespace mutations
+    /// during shared operations are unsupported. Descriptor-bound writes to
+    /// existing regular files may continue if they cannot change namespace or
+    /// directory traversal permissions. This does not declare the upper or
+    /// merged view immutable, cache authorization, or extend guest validity.
+    ///
+    /// Canonical upper/preimage paths must be disjoint (equal, parent/child and
+    /// symlink-alias overlap return `InvalidInput`); read observations can publish
+    /// journal entries without an exclusive operation. Validation failure before
+    /// the first configuration leaves it unconfigured and disabled. Reconfiguring
+    /// an already configured owner is `InvalidInput` and preserves its preference.
+    /// Disabled configuration preserves existing layouts, including overlapping
+    /// journals, without enabling caching.
+    pub fn configure_exclusive_upper_absence_cache(&mut self, enabled: bool) -> io::Result<()> {
+        self.core.configure_exclusive_upper_absence_cache(enabled)
+    }
+    /// Return the configured feature preference, including during mutation suspension.
+    /// This is false before configuration and on disabled owners. It is not
+    /// evidence that the caller's namespace-ownership promise has been enforced.
+    pub fn exclusive_upper_absence_cache_enabled(&self) -> bool {
+        self.core.exclusive_upper_absence_cache_enabled()
+    }
+    /// Validate upper/journal separation for a caller-owned exclusive namespace.
+    ///
+    /// Canonical upper and preimage directories must not overlap in either
+    /// direction, including symlink aliases. Overlap is `InvalidInput`; native
+    /// canonicalization errors propagate. No cache, lock or ownership promise
+    /// is installed or changed. The caller must separately serialize namespace
+    /// and directory-permission mutations and preserve roots/ancestors/mounts.
+    pub fn validate_exclusive_upper_namespace(&self) -> io::Result<()> {
+        self.core.validate_exclusive_upper_namespace()
+    }
+    /// Disable and invalidate the physical-upper absence cache for a mutation.
+    /// Caller holds its exclusive operation lock through this guard's drop;
+    /// enabled-owner guards must not nest. No caller lock or I/O drain is acquired.
+    pub fn upper_namespace_mutation(&self) -> UpperNamespaceMutation<'_> {
+        UpperNamespaceMutation {
+            core: &self.core,
+            armed: self.core.begin_upper_namespace_mutation(),
+        }
     }
     /// Prepare byte copying without publishing namespace entries. The adapter
     /// serializes mutations while metadata may continue; see Core for policy,
@@ -192,6 +266,22 @@ impl FilesystemService {
     pub fn metadata_for_backing_lookup(&self, rel: &Path) -> io::Result<BackingResolution> {
         self.core.metadata_for_backing_lookup(rel)
     }
+    /// Return positive backing evidence or successfully observed merged absence.
+    ///
+    /// The same checked resolution, policy/alias checks and absence publication
+    /// as `metadata_for_backing_lookup` run in their original order. Only a
+    /// successful missing result becomes `None`; surfaced errors, including
+    /// exclusion/journal ENOENT, propagate. The existing resolver's interpretation
+    /// of backend NotFound as absence is retained. `None` alone is not proof of
+    /// permanent physical/remote absence: caching callers must separately own
+    /// their backend and namespace stability. This is request-local evidence,
+    /// not authorization or a lifetime namespace-stability guarantee.
+    pub fn metadata_for_backing_lookup_optional(
+        &self,
+        rel: &Path,
+    ) -> io::Result<Option<BackingResolution>> {
+        self.core.metadata_for_backing_lookup_optional(rel)
+    }
     pub fn metadata_resolved(&self, rel: &Path) -> io::Result<ResolvedMetadata> {
         self.core.metadata_resolved(rel)
     }
@@ -255,6 +345,106 @@ impl FilesystemService {
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
+
+    #[test]
+    fn exclusive_upper_guard_resumes_after_partial_failure_without_retaining_absence() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        std::fs::create_dir_all(lower.join("a")).unwrap();
+        std::fs::write(lower.join("a/file"), b"lower").unwrap();
+        let mut service =
+            FilesystemService::new(OverlayCore::new(vec![lower], upper.clone(), None).unwrap())
+                .with_profile(crate::profile::Profile::enabled("upper-guard"));
+        assert!(!service.exclusive_upper_absence_cache_enabled());
+        service
+            .configure_exclusive_upper_absence_cache(true)
+            .unwrap();
+        let units = |label: &str| {
+            service
+                .profile_report()
+                .unwrap()
+                .measurements
+                .get(label)
+                .map_or(0, |measurement| measurement.units)
+        };
+        for _ in 0..2 {
+            assert!(
+                !service
+                    .metadata_resolved(Path::new("a/file"))
+                    .unwrap()
+                    .resolved
+                    .is_upper
+            );
+        }
+        assert!(units("exclusive_upper_absence_cache_hits") > 0);
+        let before = (
+            units("exclusive_upper_absence_cache_hits"),
+            units("exclusive_upper_absence_cache_misses"),
+        );
+        let fail_partially = || -> io::Result<()> {
+            let _mutation = service.upper_namespace_mutation();
+            assert!(service.exclusive_upper_absence_cache_enabled());
+            assert!(
+                !service
+                    .metadata_resolved(Path::new("a/file"))?
+                    .resolved
+                    .is_upper
+            );
+            std::fs::create_dir(upper.join("a"))?;
+            assert!(
+                !service
+                    .metadata_resolved(Path::new("a/file"))?
+                    .resolved
+                    .is_upper
+            );
+            assert_eq!(
+                before,
+                (
+                    units("exclusive_upper_absence_cache_hits"),
+                    units("exclusive_upper_absence_cache_misses")
+                )
+            );
+            std::fs::write(upper.join("a/file"), b"partially published")?;
+            Err(io::Error::from_raw_os_error(libc::EIO))
+        };
+        assert!(fail_partially().is_err());
+        let entry = service.metadata_resolved(Path::new("a/file")).unwrap();
+        assert!(entry.resolved.is_upper);
+        assert_eq!(entry.metadata.len(), 19);
+        assert_eq!(units("exclusive_upper_absence_cache_invalidations"), 2);
+        assert_eq!(units("exclusive_upper_absence_cache_enabled"), 1);
+        // A later read epoch can cache again, rather than remaining suspended.
+        for _ in 0..2 {
+            assert!(service.metadata_resolved(Path::new("missing")).is_err());
+        }
+        assert!(units("exclusive_upper_absence_cache_hits") > before.0);
+    }
+
+    #[test]
+    fn unconfigured_upper_guard_keeps_the_live_default_and_is_a_noop() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        std::fs::create_dir(&lower).unwrap();
+        let service =
+            FilesystemService::new(OverlayCore::new(vec![lower], upper.clone(), None).unwrap())
+                .with_profile(crate::profile::Profile::enabled("default-upper"));
+        assert!(service.metadata_resolved(Path::new("file")).is_err());
+        {
+            let _mutation = service.upper_namespace_mutation();
+            std::fs::write(upper.join("file"), b"live").unwrap();
+        }
+        assert_eq!(service.metadata(Path::new("file")).unwrap().len(), 4);
+        assert!(!service.exclusive_upper_absence_cache_enabled());
+        assert!(
+            !service
+                .profile_report()
+                .unwrap()
+                .measurements
+                .contains_key("exclusive_upper_absence_cache_invalidations")
+        );
+    }
 
     #[test]
     fn fresh_truncate_skips_copy_but_preserves_preimage_and_hardlinks() {

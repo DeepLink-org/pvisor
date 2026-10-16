@@ -157,6 +157,41 @@ fn find(path: &Path) -> io::Result<Option<(Arc<Attachment>, PathBuf)>> {
         .transpose()
 }
 
+/// Query whether an active metadata projection overlaps a canonical root.
+///
+/// `root` must be an absolute, lexically normalized, already canonicalized path;
+/// relative/parent components are `InvalidInput`. This reads only the attachment
+/// registry and never calls a backend or queries file metadata, including for
+/// missing paths. Either ancestor or descendant overlap counts. A poisoned
+/// registry returns an error. The result is instantaneous: callers requiring
+/// stable absence must independently forbid new overlapping attachments for
+/// their entire cache/owner lifetime. This function reserves no namespace.
+pub fn attachment_overlaps(root: &Path) -> io::Result<bool> {
+    if !root.is_absolute()
+        || root.components().any(|part| {
+            matches!(
+                part,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "backend overlap query requires a canonical absolute root",
+        ));
+    }
+    if ACTIVE.load(Ordering::Acquire) == 0 {
+        return Ok(false);
+    }
+    let entries = attachments()
+        .read()
+        .map_err(|_| io::Error::other("backend registry poisoned"))?;
+    Ok(entries
+        .iter()
+        .filter_map(Weak::upgrade)
+        .any(|entry| root.starts_with(&entry.root) || entry.root.starts_with(root)))
+}
+
 pub fn prepare_metadata(path: &Path) -> io::Result<()> {
     if let Some((entry, relative)) = find(path)? {
         entry.backend.prepare_metadata(&relative)?;

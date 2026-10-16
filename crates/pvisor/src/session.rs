@@ -23,6 +23,7 @@ pub struct Session {
     pub(crate) attachments: AttemptAttachments,
     pub(crate) drivers: Option<crate::runtime::AttemptSession>,
     pub(crate) server: Option<crate::AgentCtlServer>,
+    pub(crate) output_observer: Option<crate::runtime::run::ExecutorOutputObserver>,
 }
 
 impl Session {

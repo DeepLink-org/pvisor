@@ -63,6 +63,7 @@ pub(crate) struct AttemptSession {
     run_record: RunRecord,
     _control: Option<RunControlServer>,
     _lease: RunLease,
+    _workspace_base: Option<Arc<super::owned_workspace::OwnedWorkspace>>,
 }
 
 impl AttemptSession {
@@ -193,6 +194,7 @@ impl AttemptSession {
                 .as_ref()
                 .map(|record| record.access_policy.clone()),
             vm_network: self.vm_network.clone(),
+            workspace_base: self._workspace_base.clone(),
         }
     }
     pub(crate) fn record(&self) -> RunRecord {
@@ -620,6 +622,7 @@ pub(crate) fn prepare_attempt(
         preparation.guest_workspace_overlay,
         opts.overlay_override.execution_snapshot.as_ref(),
         &opts.overlay_override,
+        preparation.workspace_base.as_deref(),
     )?;
     crate::util::startup_mark_run("storage.overlay_ready", spec.run_id.as_str());
     let PreparedOverlay {
@@ -676,6 +679,7 @@ pub(crate) fn prepare_attempt(
         run_record,
         _control: None,
         _lease: lease,
+        _workspace_base: preparation.workspace_base.clone(),
     };
     let safe = spec
         .metadata
@@ -772,6 +776,7 @@ pub(crate) fn prepare_overlay_attempt(
         preparation.guest_workspace_overlay,
         opts.overlay.execution_snapshot.as_ref(),
         &opts.overlay,
+        preparation.workspace_base.as_deref(),
     )?;
     crate::util::startup_mark_run("storage.overlay_ready", spec.run_id.as_str());
     let PreparedOverlay {
@@ -824,6 +829,7 @@ pub(crate) fn prepare_overlay_attempt(
         run_record,
         _control: None,
         _lease: lease,
+        _workspace_base: preparation.workspace_base.clone(),
     };
     let safe = spec
         .metadata
@@ -932,6 +938,7 @@ pub(crate) fn prepare_storage_attempt(
         run_record,
         _control: None,
         _lease: lease,
+        _workspace_base: preparation.workspace_base.clone(),
     };
     let safe = spec
         .metadata
@@ -1191,6 +1198,7 @@ fn prepare_overlay(
     mountless: bool,
     execution_snapshot: Option<&super::implant::ExecutionOverlayHint>,
     declaration: &OverlayHint,
+    workspace_base: Option<&super::owned_workspace::OwnedWorkspace>,
 ) -> anyhow::Result<PreparedOverlay> {
     if !overlay_cfg.enabled && overlay_cfg.target.is_none() {
         return Ok(PreparedOverlay {
@@ -1204,11 +1212,23 @@ fn prepare_overlay(
     }
     match resolve_overlay_workspace(overlay_cfg, storage, root_session)? {
         Some(mut record) => {
+            if let Some(owner) = workspace_base {
+                anyhow::ensure!(
+                    mountless && execution_snapshot.is_none(),
+                    "owned workspace requires a fresh native VM stage"
+                );
+                owner.validate_record(&record, storage)?;
+            }
             let lease =
                 crate::util::persistence_step(root_session, "overlay", "lease_prepare", || {
                     RunLease::acquire_new(&record.stage_dir)
                 })?;
-            let lowers = if let Some(saved) = execution_snapshot {
+            let lowers = if let Some(owner) = workspace_base {
+                owner.validate_record(&record, storage)?;
+                record.target = owner.target.clone();
+                record.baseline_lower = Some(owner.base.root());
+                vec![owner.base.root()]
+            } else if let Some(saved) = execution_snapshot {
                 anyhow::ensure!(mountless, "execution snapshot backing requires a native VM");
                 record.target = saved.target.clone();
                 record.baseline_lower = saved.baseline_lower.clone();
@@ -1221,7 +1241,11 @@ fn prepare_overlay(
             } else {
                 lower_stack_from_config(overlay_cfg, storage, &mut record, !mountless)?
             };
-            let lower_mutability = validated_lower_mutability(declaration, &lowers)?;
+            let lower_mutability = if workspace_base.is_some() {
+                vec![pvisor_overlay_core::LayerMutability::Immutable]
+            } else {
+                validated_lower_mutability(declaration, &lowers)?
+            };
             let (mount, record, fs_metrics) = if mountless {
                 (
                     None,
@@ -1254,6 +1278,9 @@ fn prepare_overlay(
                 let record = mount.record().clone();
                 (Some(mount), record, Some(metrics))
             };
+            if let Some(owner) = workspace_base {
+                owner.write_receipt(&record.stage_dir)?;
+            }
             let mut hint = hint_from_record(&record, lowers.clone());
             hint.lower_mutability = lower_mutability;
             if mountless {

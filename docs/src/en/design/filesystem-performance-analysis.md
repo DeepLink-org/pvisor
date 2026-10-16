@@ -2,6 +2,38 @@
 
 ## Current conclusions and measurement coverage {#filesystem-status}
 
+[Scoped automatic read-only FLUSH requests in ordinary CLI execution](#cli-auto-flush) reduce the three-round seven-tool total by 7.26%, 95% CI [2.25%, 15.51%], with authenticated prepared rootfs/workspace and improvement in all five pairs. All rg rounds improve by approximately 16%–17%; Ready and npm show no detected difference. Eligible Linux x86_64 fresh native execution requests the feature when the host variable is absent; explicit 0, older peers and ineligible fds preserve the original FLUSH. DATA, NE, WB and DAX are not automatically enabled.
+
+[The ordinary-CLI standard negative-entry comparison](#cli-negative-entry-cache), with DATA 0/FLUSH 1 fixed, did not establish an aggregate benefit: a 1.73% three-round seven-tool reduction, 95% CI [-3.45%, 5.26%]. Third-round npm improved 12.27%, while hot_open slowed 2.50%. Query reductions are verified; NE remains disabled by default.
+
+[The ordinary CLI DATA/readonly-FLUSH four-arm comparison](#cli-data-flush-factorial), with prepared rootfs/workspace and the frozen baseline fixed, reduces cumulative three-round seven-tool time by 9.54%, 95% CI [3.83%, 13.31%]. FLUSH alone reduces it by 8.86%; adding DATA has no detected extra overall benefit. All rg rounds improve, with local metadata/Ready regressions. DATA remains off by default; readonly FLUSH is now connected for the [scoped prepared-rootfs entry](#cli-auto-flush), while the generic VM worker remains default-off.
+
+[The ordinary CLI sealed-workspace entry](#cli-prepared-workspace) reduces cumulative three-round seven-tool time by 5.21%, 95% CI [0.44%, 10.91%], with prepared rootfs in both arms and improvement in all five pairs; Ready detects no difference. Workspace ownership/cache eligibility and frozen-baseline read-observation/journal semantics change jointly. Round 3 git falls by 73.74%, while Round 2 stream_write is 5.05% slower; gains cannot be combined with independent cohorts.
+
+[The ordinary CLI prepared-rootfs entry](#cli-prepared-rootfs) reduces cumulative three-round seven-tool time by 18.11%, 95% CI [2.00%, 31.90%], and Ready by 3.26%, using the same sealed physical rootfs and live Mutable workspace. All five pairs improve. Ownership/cache eligibility and checkpoint capability/admission change jointly; preparation is outside the clocks, so the gain cannot be attributed solely to cache or extended to arbitrary live rootfs directories.
+
+[Same-OPEN qualification reuse](#shared-open-qualification) reduces the four measured qualification-query attempts by 57.14%, without a detected improvement in cumulative three-round seven-tool time, Ready, npm, or rg; the candidate remains off by default.
+
+[Standard negative-entry caching](#standard-negative-entry-cache) shows a 13.08% third-round npm improvement signal. Cumulative three-round seven-tool time falls by 3.32%, with an interval crossing zero and no detected overall gain. Independent counters reduce cumulative rootfs LOOKUP by 40.26%; the preference remains disabled by default. This enabled combination has no formal ordinary CLI performance samples; the separate [prepared-rootfs CLI comparison](#cli-prepared-rootfs) keeps the new experimental mechanisms disabled.
+
+[The same-batch data-cache/local-FLUSH four-arm comparison](#data-flush-factorial) supports about 36% lower rg time in each round, with gains over either mechanism alone. All three primary cumulative intervals cross zero; separated observations and slow samples remain. Both defaults were off in that SDK entry; the current scoped prepared-rootfs default is covered by [automatic FLUSH requests](#cli-auto-flush).
+
+[Isolated Immutable-lower data caching](#immutable-lower-data-cache) resolves the exercised lower/upper page-mixing cases and reduces third-round workspace READ by 88.83%. rg improves by about 17% in each round, with no detected cumulative seven-tool gain; that cohort does not cover the ordinary CLI, and the feature remains disabled by default.
+
+[Read-only local FLUSH elision](#readonly-local-flush) shows about 17% improvement in each rg round; the cumulative three-round seven-tool interval still crosses zero. The generic VM worker remains default-off; the scoped prepared-rootfs entry now [requests FLUSH automatically](#cli-auto-flush).
+
+The [exclusive-upper physical-absence cache](#exclusive-upper-absence-cache) reduces third-round rootfs queries by 71.47%, with no detected cumulative seven-tool gain and a regression signal in rg; it remains disabled by default.
+
+[The rejected attribute-TTL candidate and page-cache isolation diagnostics](#attribute-ttl-coherence) establish new stale hardlink nlink from the removed candidate, with no formal performance samples, and an existing lower/upper page-cache isolation gap.
+
+The 2026-10-16 [Ready and three-resident-round comparison](../benchmarks/filesystem.md#quick-results) has five independent environments for each of nine configurations, three rounds per environment, 45 successful environments and no interference gate. Startup uses Ready only; resident operation clocks exclude exit. It remains independent of the historical N30 and engineering A/B below.
+
+The [four-arm owned-input engineering comparison](#owned-input-cache) supports resident-tool gains from rootfs cache eligibility: the third-round seven-tool sum falls by 25.80%, or 19.83% with the workspace snapshot also enabled. Workspace treatment alone has no detected difference in the third-round sum. Its engineering entry omits the CLI Host service; these results leave ordinary CLI user tables unchanged.
+
+The [Immutable-lower negative-cache comparison](#immutable-lower-negative-cache) reduces third-round rootfs physical queries by 20.47%, with no detected difference in cumulative three-round seven-tool time. Negative caching remains disabled by default.
+
+[Directory-FD cache capacity and ATIME diagnostics](#directory-cache-atime) find no detected improvement in the cumulative three-round seven-tool time; default capacity remains 256. An independent request-mask probe confirms that stat requesting ATIME adds GETATTR after the first host READ, while a page-cache hit on the same fd adds none.
+
 **Latest independent N30 paired comparison: Selected C3 (new-VM writeback off by default): Launch through normal exit changes by -1.73%, 95% CI [-5.70, -0.22]%; Write 256 files changes by -14.19%, 95% CI [-17.58, -9.82]%. Results apply to the measured combined code/default configuration; complete recovery of historical performance is not established.**
 
 Independent cohorts: [Linux: paired N30 comparison of filesystem optimizations with default-off writeback](#filesystem-optimization-n30). The existing overview retains each historical cohort's conclusions.
@@ -26,9 +58,933 @@ Each row below uses its own same-condition cohort. Percentages cannot be added, 
 
 Ordinary rootfs/workspace attachments allocate no DAX window by default; immutable shares retain explicit DAX configuration. New VM writeback defaults to disabled, with explicit `PVISOR_VM_FS_WRITEBACK=1` / `0` configuration. By default, restoring a negotiated snapshot retains its mode; explicit `PVISOR_VM_FS_WRITEBACK=0` rejects a snapshot with writeback enabled. Stage synchronization defaults to serial. Historical engineering artifacts and conditions remain intact; their percentages are not summed or used to rescale current user results.
 
-The selected frozen source/defaults completed the cross-runtime seven-tool cohort on 2026-10-12: thirty trials for each of eight backends, totaling 240 valid tasks, with DAX disabled and new VM writeback disabled by default; see [tool waiting](../benchmarks/filesystem.md#reference-fs). These user data come from independent cohort `fo5a4e7d2b-f`, without pooling history or deriving cross-cohort causal speedups. Earlier accepted and rejected attempts remain in the [acceptance CSV](filesystem-measurement-status.csv).
+The selected frozen source/defaults completed the cross-runtime seven-tool cohort on 2026-10-12: thirty trials for each of eight backends, totaling 240 valid tasks, with DAX disabled and new VM writeback disabled by default; see [historical N30 statistics](../benchmarks/filesystem.csv). These user data come from independent cohort `fo5a4e7d2b-f`, without pooling history or deriving cross-cohort causal speedups. Earlier accepted and rejected attempts remain in the [acceptance CSV](filesystem-measurement-status.csv).
 
 macOS [responsiveness during copying and journal locks](#host-concurrency) and Linux HOST [immutable-lower caching](#immutable-lower-cache) have separate valid experiments. [Extended kernel caching](#host-cache-evidence) has passing correctness and request-count evidence, with no accepted formal timing. Cold disks, large repositories and concurrent throughput lack matching new measurements. The [engineering evidence CSV](filesystem-evidence-overview.csv) retains each table row's cohort, metric, source and full precision.
+
+## Linux: scoped automatic read-only FLUSH requests in ordinary CLI execution {#cli-auto-flush}
+
+**With the same prepared rootfs/workspace and frozen baseline, leaving the host preference absent so the native child automatically requests read-only FLUSH elimination reduces the three-round seven-tool total from 4489.439 to 4163.340 ms: 7.26%, 95% CI [2.25%, 15.51%].** All five environment pairs improve, with approximately 16%–17% reduction signals for rg in every round. Ready, all three npm rounds and the second/third-round seven-tool totals show no detected difference.
+
+### Same artifacts and an actually absent caller preference
+
+On 2026-10-17, B-FS-ENG uses the same newly built actual CLI release, retained 0047 firmware and existing catalog-authenticated, leased prepared rootfs/workspace. The workspace keeps its frozen baseline and independent live apply target. Existing prepared generations are not reimported or sealed again; each environment’s independent live apply target and caches are prepared according to the original workload. No earlier samples or percentage gains are pooled; the new build, original preparation and current execution clocks have separate receipts.
+
+Both arms run real `pvisor run`, a fresh private Host and native VM on Linux x86_64/KVM. The off arm explicitly sets `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0`. The auto arm omits that key from both the actual worker environment and the exact environment passed to CLI `Popen`. The product sets 1 only for the native child after authenticating the prepared-rootfs selector, matching owner/root and final Immutable lower, and confirming fresh execution without capture/restore. Per-mount requested/enabled counters independently verify negotiation; expected configuration cannot replace actual environment evidence.
+
+The guest has 2 vCPU/16 GiB; the parent group has CPU 0/1, a two-core quota, 16 GiB and swap 0. DATA, NE, SQ, both Core absence caches, WB and DAX are 0; guest cache=1 and directory-FD capacity 256. Five paired environment blocks run in seeded randomized order, with nine operations and three resident rounds per environment. All 10 timing, 2 preflight and 2 independent profile environments pass. The new release has 29 passing runtime contracts and 7 harness contracts, with 46 collection inputs and 740 product sources bound by receipts.
+
+Ready includes fresh Host+VM startup and excludes exit. Tools keep their original worker clocks; stream_write retains its own fsync/close. Checks retain unique Ready/Result, normal exit, terminal Job/Bundle, selectors/baseline receipt, lower/cache isolation and complete bytes for 256 written files and three stream files. There is no extra prewarming, quiet period, interference gate or per-round full inventory gate. Every valid slow sample remains.
+
+### Timing and distributions
+
+The sole primary metric is the three-round seven-tool total within each environment. The 5000 paired bootstrap draws resample five independent environment blocks; the rounds are not 15 independent samples. All 32 intervals are uncorrected for multiple comparisons. Values below are per-arm N=5 medians; positive reductions mean less elapsed time.
+
+| Metric | off ms | auto ms | Reduction | 95% CI % | Finding |
+| --- | ---: | ---: | ---: | --- | --- |
+| Three-round seven-tool total | 4489.439 | 4163.340 | 7.26% | [2.25, 15.51] | Sole primary; reduction |
+| Ready | 826.914 | 821.821 | 0.62% | [-0.32, 14.10] | Not detected |
+| Round 1 seven tools | 2164.014 | 2007.672 | 7.22% | [3.90, 12.96] | Uncorrected reduction signal |
+| Round 2 seven tools | 1113.353 | 1035.975 | 6.95% | [-2.04, 19.07] | Not detected |
+| Round 3 seven tools | 1063.282 | 1026.175 | 3.49% | [-4.56, 25.84] | Not detected |
+| Round 1 rg | 311.544 | 258.499 | 17.03% | [15.79, 17.77] | Uncorrected reduction signal |
+| Round 2 rg | 303.683 | 251.471 | 17.19% | [9.75, 18.85] | Uncorrected reduction signal |
+| Round 3 rg | 301.652 | 252.247 | 16.38% | [11.09, 18.22] | Uncorrected reduction signal |
+
+Other reduction signals are git rounds 1/3: 23.56% [12.00%, 28.00%] and 14.15% [8.41%, 29.65%], round 1 hot_open: 1.50% [0.10%, 2.51%], and round 1 stream_write: 4.16% [3.32%, 10.88%]. No interval lies entirely on the regression side. The remaining 23 comparisons show no detected difference, including every npm, metadata and write round. The single-round stream_write signal does not establish faster write barriers or changed durability semantics.
+
+The five paired aggregate values, in milliseconds and matching pair order, are off `[4574.077387,4489.657213,4271.683726,4266.578114,4489.439478]` and auto `[3864.449358,3996.902372,4170.722363,4170.459189,4163.340428]`. All 64 complete five-value vectors remain available. N=5 and this interval do not establish stable workload guarantees or tail latency.
+
+Write observations have clear gaps. For description only, splitting at 120 ms gives round 2 off a lower 2/5 group (median 88.163 ms) and upper 3/5 (156.564), versus auto lower 4/5 (78.897) and upper 1/5 (142.706). Round 3 off has lower 3/5 (78.849) and upper 2/5 (155.293), versus auto lower 3/5 (90.097) and upper 2/5 (152.492). These are exploratory descriptions, not a preregistered model, exclusion rule or cause. The round 2 write median point estimate of 45.21% is not a detected benefit.
+
+The off Ready arm retains its 956.412 ms observation; its other four values are 821.542–829.375 ms, versus auto 819.801–826.299 ms. Metadata is also dispersed: round 3 off 96.469–147.020 ms and auto 76.363–138.723 ms, without a detected difference. All slow observations remain; small samples do not establish stable clusters.
+
+### Independent counts: FLUSH coverage and added qualification work
+
+Each arm's N1 profile has 13 registered instances and exactly one final per instance, 54 synchronous tokens per mount and 216 component intervals per environment. Together they cover 26 instances, 216 frames and 432 intervals. Actual worker/CLI environments establish explicit off 0 versus absent auto. Both rootfs/workspace report FLUSH requested/enabled 0/0 versus 1/1; DATA/NE and their object/reply counts are explicitly 0.
+
+| Round 3 seven tools / mount | OPEN off→auto | READ | FLUSH | RELEASE |
+| --- | ---: | ---: | ---: | ---: |
+| rootfs | 1052→1052 | 0→0 | 1028→0 | 1052→1052 |
+| workspace | 2681→2681 | 2480→2480 | 2681→542 | 2682→2682 |
+
+Rootfs FLUSH in rounds 1/2 is 1160/1028→0/0; workspace is 4785/2681→563/542. OPEN, READ and RELEASE remain unchanged for the seven-tool total in every round. Workspace rg has FLUSH 2051→1 each round while OPEN/READ/RELEASE remain 2051 each. Rootfs npm has FLUSH 731→0, OPEN/RELEASE 736 unchanged and READ 774/0/0 unchanged. Read-only FLUSH elimination does not remove these OPENs or repeated data reads.
+
+Over entire mounted-owner lifetimes, actual marked OPENs are 3680 for rootfs and 8501 for workspace; off has 0. Auto adds 36543 attempts across the four native qualification queries: F_GETFL, fstat and fstatfs each 12181, statx 0; rootfs accounts for 11040 and workspace 25503. The three-round seven-tool intervals contain 35412 attempts, a different scope. Core parent/leaf queries remain separate from these four calls; classification counters and inclusive spans are not added to their total. Counts establish neither time shares nor disk I/O.
+
+Other N1 request shapes are not identical: round 3 workspace rg GETATTR 237→3 and Core 13721→12323, while rootfs npm GETATTR 383→396 and Core 20013→20063. These differences cannot be claimed as direct FLUSH elimination. Workspace metadata keeps 2050 GETATTR in rounds 2/3; stream_write keeps 8192 WRITE, 1 FSYNC and 3 FLUSH each round. The native main compact journal retains 345 append, 1276 transaction, 1277 refresh and 8 sync calls in each arm; the initialization owner has the same separate refresh/sync. Task intervals and full owner lifetimes remain separate, and profile clocks do not enter timing samples.
+
+### Scope of the automatic request
+
+The product default applies only to Linux x86_64 fresh native execution with an authenticated prepared rootfs and exact owner/root/final-lower match, when the caller leaves the preference absent. Explicit 0 preserves the original behavior. Older guests and ineligible fds retain backend FLUSH, and guest write synchronization/error checks remain. SDK calls without a selected and authenticated prepared rootfs (including calls supplying only a `with_rootfs_base` owner), and macOS keep their previous unset behavior. Capture/restore retain the source's existing rejection contract. DATA, NE, SQ, Core caches, WB and DAX are not automatically enabled.
+
+The unchanged VM/0047 mechanism can reuse existing SDK evidence for old lower fds/full-page copy-up, mmap/close, ATIME and older peers; this is not a rerun of a new CLI semantic matrix. Existing fstat object semantics and copy_file_range limitations remain unresolved. The 19 short-read C-program checks do not constitute complete kernel fault injection. These results support the scoped CLI read-only FLUSH default, without extending it to arbitrary SDK callers, live lowers, long TTLs or writeback policies.
+
+[Timing summary](filesystem-cli-auto-flush-summary.csv), [all 32 comparisons](filesystem-cli-auto-flush-comparisons.csv) and [timing provenance](filesystem-cli-auto-flush-provenance.csv) retain every sample. [Per-tool counts](filesystem-cli-auto-flush-counters.csv), [owner lifetimes](filesystem-cli-auto-flush-owner-totals.csv) and [count provenance](filesystem-cli-auto-flush-counters-provenance.csv) retain independent N1 and actual caller evidence. Raw reports, new artifacts and original preparation-cost associations remain local in `benchmark/.data/af17-cli/`; earlier cohorts are not pooled.
+
+## Linux: standard negative entries through the ordinary CLI {#cli-negative-entry-cache}
+
+**With DATA=0 and readonly FLUSH=1 fixed, standard negative-entry caching did not establish a three-round seven-tool aggregate benefit: 4132.526→4060.983 ms, a 1.73% reduction, 95% CI [-3.45%, 5.26%].** Third-round npm showed a 12.27% improvement signal, unsupported by the first two rounds; third-round hot_open was 2.50% slower. NE remains disabled by default.
+
+### Identical sources and timing scope
+
+On 2026-10-17, B-FS-ENG compared NE=0/1 through real `pvisor run`, a fresh private Host, VmExecutor and the native runner. Both arms reused one verified GNU CLI release, 0047 firmware and catalog-authenticated, leased prepared rootfs/workspace generations; the workspace retained its frozen baseline and independent live apply target. No new build, import or sealing occurred. Original preparation receipts describe existing costs; no old timing or other cohort's gains enter this result.
+
+Linux x 86_64/KVM, guest 2 vCPU/16 GiB, whole-parent CPU 0/1 with a two-core quota, 16 GiB and zero swap; guest cache=1 and directory-FD capacity 256. DATA, SQ, both Core absence caches, WB and DAX were 0; readonly FLUSH was fixed at 1. Standard negatives use inode 0, a one-second entry TTL and attribute TTL 0, without adding a private peer capability or extending positive/attribute TTLs.
+
+Each arm used five fresh private Host/VM environments with nine operations over three rounds, in seeded randomized order within five environment blocks. All 10 formal environments, 2 correctness checks and 2 independent counter environments passed. Validation retained unique Ready/Result, normal exit, terminal Job/Bundle, actual selectors/baseline receipt, lower/cache isolation and complete bytes for all 256 written files and three stream files. Independent namespaces, pivot roots and Host authorities left existing user listeners untouched.
+
+Ready includes fresh Host+VM startup and excludes exit. Tasks retain their original worker clocks, including stream_write's own fsync/close. Formal timing disabled profiling, with no extra warmup, quiet period, interference or per-trial full-inventory gate; every valid slow observation remains. Only the per-environment three-round seven-tool sum is primary. All 32 95% intervals are uncorrected; 5000 paired bootstrap draws resample five environment blocks. Three rounds do not constitute 15 independent samples.
+
+### No aggregate effect detected; individual signals retained
+
+| Metric | NE off ms | NE on ms | Reduction | 95% CI % | Finding |
+| --- | ---: | ---: | ---: | --- | --- |
+| Three-round seven-tool sum | 4132.526 | 4060.983 | 1.73% | [-3.45, 5.26] | Primary; not detected |
+| Ready | 830.839 | 825.440 | 0.65% | [-0.35, 11.50] | Not detected |
+| First-round npm | 739.523 | 701.769 | 5.11% | [-6.54, 5.81] | Not detected |
+| Second-round npm | 484.441 | 500.858 | -3.39% | [-22.46, 16.88] | Not detected |
+| Third-round npm | 511.013 | 448.324 | 12.27% | [0.37, 20.88] | Uncorrected improvement signal |
+| Third-round hot_open | 10.210 | 10.466 | -2.50% | [-2.50, -0.66] | Uncorrected regression signal |
+
+The other 30 intervals cross zero, including every rg, stream_write and per-round seven-tool sum. The five paired aggregate values (ms, matching pair order) are off `[4132.525580,3925.428389,4211.135883,4211.219659,4130.488754]`, on `[4132.123292,4060.983456,4127.717011,3992.961109,3913.385616]`. Four pairs decreased and one increased; one saved only 0.402 ms and another cost 135.555 ms. Third-round npm improved in all five pairs, but one saved only 1.737 ms; hot_open slowed in all five. Favorable results cannot be retained selectively.
+
+Write samples have visible observation gaps. In round 2, the off arm has 2/5 lower values, median 78.788 ms, and 3/5 higher values, 150.504 ms; on has 1/5 lower, 78.646 ms, and 4/5 higher, 152.404 ms. In round 3, off has 2/5 lower, 78.530 ms, and 3/5 higher, 143.744 ms; on has 2/5 lower, 82.954 ms, and 3/5 higher, 146.267 ms. On-arm round 2 metadata includes 76.749 ms with the other four at 137.968–151.234 ms; off-arm Ready retains 923.247 ms with the other four at 824.922–833.673 ms. N=5 cannot establish stable clusters, tails or causes. All original values remain.
+
+### Queries removed and work that remains
+
+Each arm's independent N=1 counter environment has 13 registered instances with unique finals, 54 synchronization tokens per mount and 216 component intervals per environment; together 26 instances, 216 frames and 432 intervals. Both requested and enabled NE values are 0 in the off arm and 1 in the on arm; DATA is 0 with no object/mark activity, and FLUSH is 1. Full-lifetime readonly-FLUSH marks are rootfs 3680 and workspace 8501, identical across arms.
+
+| Three-round seven-tool scope / mount | NE off | NE on |
+| --- | ---: | ---: |
+| rootfs LOOKUP | 3384 | 2023 |
+| rootfs Core parent+leaf queries | 82206 | 64295 |
+| workspace LOOKUP | 1176 | 1129 |
+| workspace Core parent+leaf queries | 127565 | 127098 |
+
+Rootfs npm LOOKUP counts by round are 1335→882, 953→532 and 934→513. Third-round npm changes MissingLeaf 667→246, parent-identity attempts 5811→3012 and Core parent+leaf queries 20063→14465; GETATTR 396, OPEN/RELEASE 736 each, READ/FLUSH 0 and 2208 attempts across four native qualification query kinds remain. Third-round seven-tool rootfs LOOKUP is 947→521 and Core 21652→16014; workspace LOOKUP 306 and Core 36962 are unchanged.
+
+Three-round seven-tool rootfs OPEN/READ/FLUSH/RELEASE remain 3304/1231/0/3304; workspace remains 9859/9520/1647/10144. Both arms' full native-journal lifetimes remain append 345, transaction 1276, refresh 1277 and sync 8. Counts establish fewer missing-path queries while substantial OPEN, attribute and other work remains; they do not give time shares or disk I/O.
+
+Across full owner lifetimes, NE-on replies are rootfs 1056 and workspace 421, with path fallbacks 14 and 0. Replies are neither guest hits, unique missing names nor saved LOOKUPs; dividing 1361 fewer rootfs seven-tool LOOKUPs by 1056 replies would not yield a hit rate. Workspace first-round npm has 70 replies while LOOKUP changes 140→142. Kernel negative hits, per-errno and per-rejection-reason counters are unavailable; fallback counts cover only protected prefixes or backend fallbacks on enabled paths. Counter scopes include checked child startup, work and validation, wider than worker clocks; inclusive spans are not added.
+
+### Boundaries and the next candidate
+
+Existing SDK diagnostics with the same mechanism source cover TTL expiry, namespace mutations, failed rename, permissions, Mutable external creation and exclusion ancestors/subtrees. Their DATA 1/FLUSH 1 differs from this CLI's DATA 0/FLUSH 1; they are not new complete ordinary-CLI semantic acceptance. New CLI environments passed their original output, source, Bundle and full-byte contracts. Existing namespace-fd attributes, copy_file_range, short-read primitive stubs and legacy page-isolation limits remain; WB's unlink→syncfs ENOENT is not fixed here, and WB stayed 0.
+
+The evidence does not support default-enabling NE or blindly expanding caches. Static inspection identifies a narrower candidate: reuse complete Immutable parent-identity vectors within one resolution to avoid repeating ancestor queries when a miss assembles its proof. Mutable/upper final rechecks, merged visibility, permission/alias and failure behavior must remain. This candidate has not been implemented or measured.
+
+[Timing summary](filesystem-cli-negative-entry-cache-summary.csv), [all 32 comparisons](filesystem-cli-negative-entry-cache-comparisons.csv) and [timing provenance](filesystem-cli-negative-entry-cache-provenance.csv) retain 64 five-value vectors; [per-tool counts](filesystem-cli-negative-entry-cache-counters.csv), [owner lifetimes](filesystem-cli-negative-entry-cache-owner-totals.csv) and [counter provenance](filesystem-cli-negative-entry-cache-counters-provenance.csv) retain independent N=1 evidence. Raw samples, prior artifact associations and new audits remain locally under `benchmark/.data/cne17-cli/`.
+
+## Linux: ordinary CLI data-cache/local-FLUSH four-arm comparison {#cli-data-flush-factorial}
+
+**With authenticated prepared rootfs/workspace and the frozen baseline held fixed, enabling DATA and readonly-FLUSH elision reduces cumulative three-round seven-tool time from 4403.334 ms to 3983.409 ms: 9.54%, 95% CI [3.83%, 13.31%]. FLUSH alone reduces it by 8.86%; adding DATA to FLUSH has no detected extra overall benefit.** Combined rg gains are 33.93%–36.55% across the three rounds, with improvement signals over either mechanism alone. DATA remains default-off; readonly FLUSH now has [automatic requests in the scoped prepared-rootfs entry](#cli-auto-flush), while the generic VM worker remains default-off.
+
+### Fixed sources, two mechanism preferences
+
+On 2026-10-17, B-FS-ENG compares four arms through actual `pvisor run`, fresh Host, VmExecutor and native runner execution. All arms reuse one validated GNU release CLI, 0047 firmware and physical rootfs/workspace generations; both public selectors are catalog-authenticated and leased. The workspace remains a single Immutable lower and frozen baseline with an independent live apply target. Ownership and read-observation/journal semantics stay fixed across treatments.
+
+Linux x86_64/KVM, guest 2 vCPU/16 GiB, parent budget CPU 0/1 with two-core quota, 16 GiB and swap 0; guest cache=1 and directory-FD capacity 256. SQ, standard negative entries, both Core absence caches, WB and DAX are 0. Only independent lower DATA and readonly backend-FLUSH elision preferences vary:
+
+| Condition | DATA | Readonly-FLUSH elision |
+| --- | --- | --- |
+| base | 0 | 0 |
+| data | 1 | 0 |
+| flush | 0 | 1 |
+| both | 1 | 1 |
+
+Each arm has five fresh private Host/VM environments, randomized within five environment blocks, with nine operations across three resident rounds. All 20 formal environments, 4 correctness preflights and 4 independent counter environments pass unique Ready/Result, normal exit, terminal Job/Bundle, actual selector/baseline receipt, lower isolation and complete written/stream-byte checks. Each sample has its own namespaces, pivot_root and Host authority, without reusing the user's listener.
+
+Ready includes fresh Host+VM startup; workers retain their original internal clocks, and both exclude exit. stream_write retains its own fsync/close. Formal timing disables diagnostics, with no extra warmup, quiet-period, interference or per-round full-inventory gates; every valid slow sample remains. No new build, import or sealing occurs. The earlier approximately 1.415 s workspace preparation and older rootfs preparation scope refer only to their original receipts, without charging them as newly incurred costs or importing old timings.
+
+### Cumulative gains and local differences
+
+The aggregate sums all three seven-tool rounds within each environment before taking the median across five environments. Only the first three aggregate contrasts below are preregistered primary metrics; the other two aggregates and all individual metrics are supplemental. Five contrasts×32 metrics produce 160 uncorrected 95% intervals. The 5000-draw paired bootstrap samples environment blocks; three rounds are not 15 independent samples. All 128 five-value vectors remain. These pairwise differences do not estimate an interaction or permit adding/multiplying gains from other CLI entries or SDK cohorts.
+
+| Three-round seven-tool aggregate: baseline → candidate | Baseline ms | Candidate ms | Reduction | 95% CI % | Scope and conclusion |
+| --- | ---: | ---: | ---: | --- | --- |
+| base → both | 4403.334 | 3983.409 | 9.54% | [3.83, 13.31] | Primary; all five pairs improve |
+| flush → both | 4013.044 | 3983.409 | 0.74% | [-3.02, 2.77] | Primary; no detected difference |
+| data → both | 4208.870 | 3983.409 | 5.36% | [2.62, 8.30] | Primary; all five pairs improve |
+| base → data | 4403.334 | 4208.870 | 4.42% | [-2.28, 6.49] | Supplemental; no detected difference |
+| base → flush | 4403.334 | 4013.044 | 8.86% | [4.36, 11.53] | Supplemental; all five pairs improve |
+
+The two mechanisms complement each other for rg: all three combined intervals exceed zero against the disabled arm and either single mechanism. Cells below give time reduction and 95% CI. Combined medians versus disabled are 312.027→199.419, 299.491→197.878 and 305.158→193.608 ms.
+
+| rg round | base → both | flush → both | data → both |
+| --- | --- | --- | --- |
+| 1 | 36.09% [35.42, 36.76] | 23.35% [20.25, 24.80] | 22.49% [21.28, 23.19] |
+| 2 | 33.93% [28.74, 36.31] | 20.97% [19.47, 26.01] | 22.26% [20.23, 24.90] |
+| 3 | 36.55% [34.52, 38.17] | 22.08% [19.39, 23.76] | 20.86% [17.60, 24.75] |
+
+Base→both detects no npm difference in any round. Base→flush Round 3 npm does fall from 512.552 to 473.029 ms:7.71%, CI [2.77%, 21.26%], an uncorrected individual signal, so npm cannot be described as having no gain in every contrast. All 15 stream_write intervals—three rounds×five contrasts—cross zero; no sequential-write improvement or regression is established.
+
+Base→both Ready is 827.932→826.950 ms, reduction 0.12%, CI [-12.72%, 2.35%], with no detected difference. Three other uncorrected intervals signal regression; a negative reduction means slower:
+
+| Contrast / metric | Baseline ms | Candidate ms | Reduction | 95% CI % |
+| --- | ---: | ---: | ---: | --- |
+| flush → both / Ready | 824.493 | 826.950 | -0.30% | [-9.98, -0.17] |
+| base → flush / Round 2 metadata | 138.278 | 139.915 | -1.18% | [-26.85, -0.20] |
+| flush → both / Round 3 metadata | 137.446 | 149.483 | -8.76% | [-92.88, -5.21] |
+
+Write and attribute observations are visibly separated, limiting a single median's interpretation. The observed gaps describe the lower/higher Round 2 write groups below; they are not a preregistered stable-cluster model and do not attribute costs to host interference or a mechanism.
+
+| Round 2 write condition | Lower observations / group median ms | Higher observations / group median ms |
+| --- | --- | --- |
+| base | 4/5 / 80.090 | 1/5 / 157.763 |
+| data | 3/5 / 79.654 | 2/5 / 140.320 |
+| flush | 3/5 / 79.220 | 2/5 / 128.578 |
+| both | 1/5 / 79.122 | 4/5 / 145.552 |
+
+Flush Round 3 metadata also has 2/5 lower observations, group median 76.880 ms, and 3/5 higher observations, 138.501 ms. Both Ready retains a single 943.019 ms value; the other four are 817.904–829.986 ms. N=5 does not establish stable mixtures, tail latency or causes. All observations remain, with no retrospective exclusions or write claims based only on one P50.
+
+### Independent request counts confirm actual coverage
+
+Each arm has one separate diagnostic environment with 13 registered instances and one final each, 54 synchronous tokens per mount and 216 component intervals per environment:52 instances, 432 frames and 864 intervals across four arms. Every rootfs/workspace owner explicitly reports the requested/enabled settings matching its arm, SQ/negative/Core controls 0 and capacity 256. Intervals include checked child startup, work and original validation; they are not worker_ms. Diagnostic clocks do not enter formal samples, and inclusive spans are not summed.
+
+| Round 3 seven tools / mount / protocol calls | base | data | flush | both |
+| --- | ---: | ---: | ---: | ---: |
+| workspace READ | 2480 | 277 | 2480 | 277 |
+| workspace FLUSH | 2681 | 2681 | 542 | 542 |
+| workspace OPEN / RELEASE | 2681 / 2682 | 2681 / 2682 | 2681 / 2682 | 2681 / 2682 |
+| rootfs READ | 0 | 0 | 0 | 0 |
+| rootfs FLUSH | 1028 | 1028 | 0 | 0 |
+| rootfs OPEN / RELEASE | 1052 / 1052 | 1052 / 1052 | 1052 / 1052 | 1052 / 1052 |
+
+Round 3 rg workspace READ and FLUSH each fall from 2051 to 1, with 2050 DATA markings and reuses; OPEN and RELEASE each remain 2051. Each mechanism alone removes its corresponding requests. Every owner's object/capacity rejections are 0. Over full instance lifetimes, the DATA arm has 873 rootfs registrations, 2807 reuses and 3680 marked opens; workspace has 2157, 6344 and 8501. Enabled FLUSH arms mark the same respective totals. Lifecycle counts include startup/teardown outside task intervals and cannot be mixed with seven-tool phase counts.
+
+RPC savings add qualification work: Round 3 seven-tool attempts across both mounts for the four native qualification-query classes are base 0, data 12764, flush 9573 and both 22337. These are separate from Core parent/leaf software queries; Core counts are neither the entire OPEN cost nor disk I/O. All four native workspace-journal lifetimes retain append 345, transaction 1276, refresh 1277 and sync 8. No further journal elimination occurs; preimage/journal spans also do not count durable writes.
+
+Metadata Rounds 2/3 retain 2050 workspace GETATTR each in all four arms. Every stream_write retains 8192 WRITE, 1 FSYNC and 3 FLUSH. The mechanisms do not remove those attribute queries or writable close barriers, and counts cannot be converted to time shares.
+
+A descriptive partition of the seven nonoverlapping worker clocks across all five environments and three rounds gives base npm/rg shares of 40.82%/20.74%, and both shares of 43.67%/14.71%. This is neither a new paired metric nor inclusive-profile attribution; a higher npm share does not imply it became slower. The combined arm’s separate Round 3 rootfs npm still has 934 LOOKUP, 667 MissingLeaf and 20063 Core parent/leaf queries; READ/FLUSH are 0, OPEN/RELEASE are 736 each, with 5152 additional attempts across the four qualification-query classes. Actual CLI missing-name queries are a useful next candidate, with attribute GETATTR and write barriers diagnosed separately; counts alone do not establish speedups.
+
+### Correctness, preparation cost and operating boundaries
+
+Earlier independent SDK probes with the same mechanism sources and 0047 firmware retain 18 VMs, 310 cases, 216 finals and 648 synchronous frames covering full-page writes, old lower fds, EOF, mmap, close and ATIME. Hash checks match 263 shared VM files, 18 Core files and 6 guest files. The combined 76 page/data/close/ATIME cases use NE1; the DATA-only 25 and FLUSH-only 11 use NE0, with those configuration scopes retained in the reuse review. SDK and ordinary CLI binaries differ; these cases do not constitute a new complete CLI semantic acceptance. The new CLI's 20 formal, 4 preflight and 4 counter environments pass their original output, Bundle, byte and source-contract checks.
+
+[Existing fstat and copy_file_range boundaries](#immutable-lower-data-coherence) remain unresolved. True O_PATH uses raw openat/F_GETFL/EBADF hard assertions; the musl construction difference is diagnostic only. The 19 actual short-read function/caller C cases use primitive stubs, not full guest/kernel fault injection. Mutable, upper, multiple-hardlink, remote and other unqualified sources retain fallback. Negotiated snapshot capture/restore remains rejected, and prepared workspace remains a fresh-entry capability; see [CLI prerequisites](../reference/cli.md#prepared-workspace).
+
+That cohort supported prioritizing ordinary CLI readonly-FLUSH coverage, now connected through [scoped prepared-rootfs automatic requests](#cli-auto-flush). DATA benefits repeated small-file reads without a detected extra overall gain over FLUSH alone, and remains default-off. The generic VM worker still defaults FLUSH off; these results do not relax attribute TTL, enable WB or change the user-facing cross-runtime table. [Timing summary](filesystem-cli-data-flush-factorial-summary.csv), [all comparisons](filesystem-cli-data-flush-factorial-comparisons.csv) and [timing provenance](filesystem-cli-data-flush-factorial-provenance.csv) retain 128 vectors and 160 intervals; [per-tool counts](filesystem-cli-data-flush-factorial-counters.csv), [owner lifetimes](filesystem-cli-data-flush-factorial-owner-totals.csv) and [counter provenance](filesystem-cli-data-flush-factorial-counters-provenance.csv) retain independent N1 evidence. Raw reports, frozen-artifact associations and the reuse review remain local in `benchmark/.data/cdf17-cli/`.
+
+## Linux: the ordinary CLI sealed-workspace entry {#cli-prepared-workspace}
+
+**With prepared rootfs in both arms, replacing the ordinary CLI live workspace with an authenticated fixed generation and frozen baseline reduced cumulative three-round seven-tool time from 4688.372 ms to 4443.913 ms: 5.21%, 95% CI [0.44%, 10.91%].** All five paired totals decreased; Ready detected no difference. Round 3 git fell by 73.74%, while Round 2 stream_write was 5.05% slower. Workspace ownership/cache eligibility and read-observation/journal baseline semantics change jointly. This gain cannot be added to or multiplied by the separate [prepared-rootfs comparison](#cli-prepared-rootfs)'s 18.11%.
+
+### Question and experiment design
+
+After ordinary CLI rootfs ownership is connected, a live Mutable workspace still retains read observations and repeated lookups. This comparison tests whether an explicit sealed workspace further reduces tool time through actual `pvisor run`, Host service, stage/journal, VmExecutor, and native runner execution. Both arms use the same authenticated sealed physical rootfs and declare no execution-checkpoint support. This value is the Bundle `executor_plan` declaration; the actual native binding was not retained and is unknown. The control reads a freshly copied live lower; treatment reads a leased, fixed workspace-catalog generation while retaining an independent live apply target.
+
+The public `pvisor-cache prepare-workspace` command prepares inputs once, outside formal clocks, in about 1.415 s. Later launches authenticate the retained generation without sealing it again. Fixed-generation reads exclude later host-project edits; ordinary apply still targets the live project and checks baseline conflicts for selected writes. Entry requirements and logical checkpoint fork/restore and execution checkpoint capture/restore restrictions are in the [CLI](../reference/cli.md#prepared-workspace) and [configuration reference](../reference/config.md#prepared-workspace). Preparation is reported separately from runtime gains.
+
+On 2026-10-17, B-FS-ENG uses the same frozen GNU release CLI and 0047 firmware. The platform is Linux x86_64/KVM, with 2-vCPU/16-GiB guests and a CPU 0/1, two-core-quota, 16-GiB, swap 0 parent budget. Guest cache is 1 and directory-FD capacity is 256. WB, DAX, isolated lower DATA, readonly FLUSH elision, standard negative entries, both Core absence caches, and same-OPEN qualification reuse are all 0. Actual Immutable workspace eligibility can enable the existing directory image; isolated lower data caching is not enabled here.
+
+Each arm has five fresh Host/VM environments and three resident rounds of nine operations, with seeded random order within five environment blocks. Every sample uses independent user/mount/PID namespaces, owned pivot_root, private Host authority, and actual CLI artifacts without reusing the user's existing Host. Ready runs from before CLI launch to the unique guest Ready, including fresh Host+VM startup; worker clocks retain the original task boundary. Both exclude exit. The stream_write task retains its own fsync/close. Formal timing disables profiling, startup diagnostics, and Rust logging. There are no warmups, quiet-period, interference, or full-inventory gates; every valid slow sample remains.
+
+### Formal duration
+
+All 10/10 formal environments, 2/2 preflight environments, and 2/2 separate diagnostic environments passed. Formal evidence rechecks unique Ready/Result, normal CLI exit, terminal Job, matching VM Bundle run IDs, actual source arguments, and workspace receipts. All bytes of 256 written files and three stream files, lower isolation, and tool/Python cache checks pass. The primary metric sums three rounds of seven tools within each environment before taking the median across five environments. The 5000-resample paired bootstrap samples environment blocks; the rounds are not fifteen independent observations, and the 32 intervals are unadjusted for multiple comparisons.
+
+Units are ms. Reduction is `100 × (1 − sealed/live)`; negative values mean slower. Displayed medians need not add up to the aggregate median.
+
+| Metric | Live workspace | Sealed workspace | Reduction % | 95% CI % |
+|---|---:|---:|---:|---:|
+| Three-round seven-tool total, primary | 4688.372 | 4443.913 | 5.21 | [0.44, 10.91] |
+| Ready, fresh Host+VM | 823.420 | 823.755 | -0.04 | [-0.41, 14.16] |
+| Round 1 seven-tool sum | 2288.425 | 2171.404 | 5.11 | [2.66, 18.78] |
+| Round 2 seven-tool sum | 1226.979 | 1158.533 | 5.58 | [-0.87, 16.26] |
+| Round 3 seven-tool sum | 1131.460 | 1144.181 | -1.12 | [-5.06, 4.91] |
+
+Round 1's sum shows an improvement signal; Rounds 2 and 3 detect no difference. The aggregate gain does not establish improvement in every round or tool.
+
+| Selected operation | Live workspace | Sealed workspace | Reduction % | 95% CI % |
+|---|---:|---:|---:|---:|
+| metadata, Round 1 | 165.958 | 49.680 | 70.06 | [58.14, 72.35] |
+| read, Round 1 | 109.257 | 77.354 | 29.20 | [28.35, 30.29] |
+| git, Round 1 | 348.148 | 488.195 | -40.23 | [-45.83, 29.29] |
+| git, Round 2 | 22.534 | 6.287 | 72.10 | [57.50, 76.64] |
+| git, Round 3 | 25.534 | 6.706 | 73.74 | [68.06, 78.15] |
+| rg, Round 1 | 381.784 | 310.505 | 18.67 | [15.95, 20.01] |
+| rg, Round 2 | 332.679 | 306.725 | 7.80 | [6.68, 9.11] |
+| rg, Round 3 | 330.227 | 305.918 | 7.36 | [7.13, 8.88] |
+| stream_write, Round 2 | 398.455 | 418.566 | -5.05 | [-5.05, -1.67] |
+
+Round 1 git has a slower point estimate with an interval crossing zero; npm detects no difference in any round, and Round 2 stream_write shows a regression signal. The [duration summary](filesystem-cli-prepared-workspace-summary.csv) and [paired comparisons](filesystem-cli-prepared-workspace-comparisons.csv) retain all 32 metrics at full precision.
+
+The five paired aggregate observations, in pair order, are live `[4640.929, 4976.164, 4688.372, 4461.678, 4722.226]` and sealed `[4545.601, 4433.041, 4443.913, 4442.037, 4511.719]` ms. Every pair improves, but one decreases by only 19.641 ms; the aggregate median alone hides variation in magnitude.
+
+The following separated observations are reported by proportion and within-group median, in ms. These groups describe five raw values without establishing stable modes or causes.
+
+| Operation / condition | Lower group | Higher group |
+|---|---:|---:|
+| write, Round 2, live | 2/5, 89.075 | 3/5, 150.359 |
+| write, Round 2, sealed | 3/5, 79.076 | 2/5, 152.137 |
+| metadata, Round 3, live | 2/5, 96.377 | 3/5, 166.624 |
+
+Live Ready includes 957.248 ms, with the other four at 820.363–831.455 ms. Live Round 1 git includes 690.396 ms, with the others at 340.424–359.138 ms. All slow values remain, without host-interference attribution, N5 tail-latency claims, or sample removal to narrow intervals.
+
+### Independent counters: less directory and read-observation work, retained OPEN/READ/FLUSH
+
+Each arm has one separate N1 diagnostic VM, excluded from formal timing. Every VM has a unique final for each of 13 registered instances: Core 3, preimage-log 2, log-read 2, and two each of Overlay/protocol/dispatch. Every mount has 54 tokens and 27 complete operation phases, totaling 216 mounted component intervals. Both mounted owners verify actual directory capacity and disabled experimental preferences. Intervals include `checked()` child-process-tree startup, work, and original validation, a wider boundary than worker clocks.
+
+The table counts workspace seven-tool phases, live→sealed. Core counts are the sum of parent and leaf software queries.
+
+| Workspace count | Round 1 | Round 2 | Round 3 |
+|---|---:|---:|---:|
+| LOOKUP | 3673 → 464 | 1918 → 405 | 2044 → 306 |
+| GETATTR | 752 → 628 | 677 → 2658 | 646 → 2680 |
+| Core queries | 156149 → 48314 | 89390 → 42224 | 90544 → 36969 |
+| OPEN | 4497 → 4497 | 2681 → 2681 | 2681 → 2681 |
+| READ | 4560 → 4560 | 2480 → 2480 | 2480 → 2480 |
+| FLUSH | 4785 → 4785 | 2681 → 2681 | 2681 → 2681 |
+| RELEASE | 4780 → 4780 | 2682 → 2682 | 2682 → 2682 |
+
+LOOKUP and Core queries decrease substantially, while content reads and handle round trips remain. Metadata alone records GETATTR 80→2050 in Round 2 and 81→2050 in Round 3. Fewer positive lookups do not eliminate attribute revalidation. ATIME and other invalidation sources still need separate checks; the GETATTR increase cannot be attributed solely to TTL expiry.
+
+Round 1 git records actual `fingerprint_content` spans 2055→1 and content-fingerprint bytes 2,261,307→0; the remaining sealed-arm span reuses the content index. The Round 1 seven-tool totals are 2156→1 and 69,375,691→0 bytes. A frozen baseline skips live-read preimage publication; mutations still retain baseline/conflict evidence, and index reuse retains metadata/xattr/identity checks. `journal_log` includes existing-record checks and promotion, so its call count is not a count of new durable writes. The public CSV `core_fingerprint_calls` column measures the non-compact generic fallback label; its zero value does not mean that compact paths perform no fingerprint work.
+
+Both mounts have nonzero lifetime READINDEX, which may occur before the first tool phase; phase deltas do not cover the entire owner. [Per-operation counters](filesystem-cli-prepared-workspace-counters.csv), [owner totals](filesystem-cli-prepared-workspace-owner-totals.csv), and [counter provenance](filesystem-cli-prepared-workspace-counters-provenance.csv) retain complete scope. These are software request/query counts, not disk I/O, and inclusive spans cannot be added to calculate their share of tool time.
+
+Ordinary-CLI incremental coverage from isolated lower data pages and readonly FLUSH elision has been measured in the [independent four-arm comparison](#cli-data-flush-factorial). The causes of GETATTR and separated write observations still require same-batch controls and the existing copy-up, old-fd/mmap, alias and conflict oracles. This entry does not fix the existing [shared-page boundary](#attribute-ttl-coherence) or WB unlink→syncfs problem, or justify enabling unmeasured combinations. Reusable preparation pays off according to actual launch frequency; its 1.415 s cost needs separate amortization. [Provenance](filesystem-cli-prepared-workspace-provenance.csv) retains compact artifact/source/formal/diagnostic hash associations; complete raw records remain in local engineering evidence.
+
+## Linux: reusing qualification evidence within one OPEN {#shared-open-qualification}
+
+**Reusing evidence from the same native FD reduced the four measured qualification-query attempts by 57.14%, but detected no improvement in the seven-tool aggregate or Ready; the candidate remains off by default.** The median three-round seven-tool total was 3809.365→3644.779 ms, a duration-reduction estimate of 4.32% with 95% CI [-4.71%, 9.06%]. Fewer queries do not establish an overall speedup. This is separate from the [ordinary CLI prepared-rootfs joint treatment](#cli-prepared-rootfs); their gains are not combined.
+
+### Mechanism and experiment design
+
+With isolated lower data objects and readonly FLUSH elision both enabled, an eligible OPEN previously ran two qualification paths: two `F_GETFL`, two `fstat` measurements for `File::metadata` call sites, one `statx`, and two `fstatfs` calls. The candidate passes complete `statx`, status-flag, and local-filesystem evidence for the same actual FD through the current call stack, leaving one `F_GETFL`, one `statx`, and one `fstatfs`. The 7→3 count covers only these four qualification-query categories, a 57.14% reduction; all four labels count instrumented call-site attempts without a syscall tracer. They establish neither the underlying ABI nor the full syscall count of OPEN.
+
+Core resolution, authorization, aliases, journal observations, native OPEN, FD leases, the second backend check, and object-ID/fixed-EOF constraints remain. Evidence does not survive the OPEN, cache authorization or namespace conclusions, or add a wire capability, persistent handle field, or snapshot schema. SQ is a host preference; DATA and FLUSH still negotiate independently and retain fallback. The internal inclusive `open` span has different boundaries between arms, so it cannot be compared directly or added to other spans to infer elapsed time.
+
+On 2026-10-17, B-FS-ENG uses the same frozen GNU host and existing 0047 firmware, differing only in the default-off `PVISOR_VM_FS_SHARED_OPEN_QUALIFICATION=0|1`. Both arms fix DATA=1, readonly FLUSH=1, negative entries=0, both Core absence caches=0, directory-FD capacity 256, WB=0, DAX=0, and guest cache=1. They reuse the same owned Immutable rootfs/workspace generations and frozen workspace baseline. Prior sealing is outside the clocks; inputs are not imported on every launch. The platform is Linux x86_64/KVM, with 2-vCPU/16-GiB guests under a CPU 0/1, two-core-quota, 16-GiB, swap 0 parent budget. The path retains PVisor, ManagedJob, stage/journal, VmExecutor, and the native runner, omitting the ordinary CLI Host service.
+
+Each arm uses five fresh environments and three resident rounds of nine operations, with seeded random order within environment blocks. Formal profiling and Rust logging are off. Ready runs from launch to guest Ready; worker clocks retain their original task boundary. Both exclude exit. Checks retain normal exit, a unique completed receipt, the same Job Bundle, cache/lower isolation, all 256 written files, and all bytes of three stream files. There are no quiet-period, interference, or full-inventory gates, and no valid slow sample is deleted. The primary metric first sums all three rounds of seven tools within each environment, then compares the medians of five environments. The 5000-resample paired bootstrap samples environment blocks; rounds are dependent, and the 32 intervals are unadjusted for multiple comparisons.
+
+### Formal duration: no overall improvement established
+
+All 10/10 environments were valid, with zero failures. The table shows medians over five environments per arm, in ms. Reduction is `100 × (1 − on/off)`; negative values mean slower. Round totals are computed within environments before medians, so displayed medians need not sum to the aggregate median.
+
+| Metric | Off | On | Reduction % | 95% CI % |
+|---|---:|---:|---:|---:|
+| Three-round seven-tool total, primary | 3809.365 | 3644.779 | 4.32 | [-4.71, 9.06] |
+| Ready | 636.570 | 630.220 | 1.00 | [-10.52, 17.08] |
+| Round 1 seven-tool sum | 1843.590 | 1836.860 | 0.37 | [-9.82, 8.46] |
+| Round 2 seven-tool sum | 1016.808 | 917.108 | 9.81 | [-1.87, 9.82] |
+| Round 3 seven-tool sum | 948.748 | 922.674 | 2.75 | [-8.51, 9.42] |
+
+Neither npm nor rg detected a difference in any round. The five paired aggregate values, in pair order, were off `[3839.372, 3809.365, 3654.956, 3504.987, 3912.779]` and on `[3644.779, 3464.083, 3599.055, 3670.007, 3906.615]` ms. Four pairs decreased and one increased by 165.020 ms; magnitudes varied. Round 1 git in the off arm included 227.544 ms, with the other values at 382.786–405.386 ms. Round 2 write ranged 77.930–154.502 ms and 77.935–156.292 ms; metadata ranged 76.061–145.899 ms and 75.564–137.783 ms. Every observation remains. N5 cannot establish stable clusters, tail latency, or causes; no host-interference attribution is made.
+
+Only Round 2 stream_write showed an improvement signal among the 32 unadjusted intervals: 435.356→375.640 ms, a 13.72% reduction, 95% CI [0.65%, 15.22%]. Rounds 1 and 3 did not repeat it. The separate diagnostic found zero workspace qualification-query attempts in that phase, although rootfs still had child-startup queries. This single secondary signal therefore does not show that shared qualification directly accelerated writing. The [duration summary](filesystem-shared-open-qualification-summary.csv) and [paired comparisons](filesystem-shared-open-qualification-comparisons.csv) retain all 32 distributions and intervals.
+
+### Independent counters: duplicate classification removed, OPEN retained
+
+Each arm has one separate N1 diagnostic environment. Every VM has a unique final for each of 17 registered instances: Core 4, preimage-log 3, log-read 4, and two each of Overlay/protocol/dispatch. Every mount has 54 tokens and 27 complete operation phases, totaling 216 mounted component intervals. Both mounted owners explicitly verify actual SQ 0 or 1, DATA/FLUSH 1, negative entries and both Core absence caches 0, and capacity 256. Counter intervals include `checked()` child-process-tree startup, tool work, and original validation, a wider boundary than worker time.
+
+The table sums only the four qualification-query-attempt counters for each round's seven tools, off→on. `F_GETFL`, `fstat`, `statx`, and `fstatfs` attempts are added; the other five control-flow labels are not counted again.
+
+| Scope | Round 1 | Round 2 | Round 3 |
+|---|---:|---:|---:|
+| rootfs | 8400 → 3600 | 7364 → 3156 | 7364 → 3156 |
+| workspace | 29554 → 12666 | 14973 → 6417 | 14973 → 6417 |
+
+Both mounts reduce this count by 57.14% in every round. Over the complete owner lifetime, rootfs queries were 25760→11040 and workspace queries 59507→25503. The on arm recorded 3680 and 8501 shared attempts/receipt hits respectively, with zero legacy FLUSH/DATA classification attempts. The off arm had zero shared attempts/receipt hits; each legacy classification ran 3680 and 8501 times. Receipt hits include reused ineligible decisions, rather than necessarily issuing successful data-object IDs. These are neither guest cache hits nor disk I/O.
+
+| Round 3 seven-tool scope | OPEN | READ | FLUSH | RELEASE | Core parent+leaf queries |
+|---|---:|---:|---:|---:|---:|
+| rootfs | 1052 → 1052 | 0 → 0 | 0 → 0 | 1052 → 1052 | 21652 → 21652 |
+| workspace | 2681 → 2681 | 277 → 277 | 542 → 542 | 2682 → 2682 | 36601 → 36597 |
+
+Round 3 LOOKUP/GETATTR also remained 947/450 for rootfs and 306/2626 for workspace. OPEN, FLUSH, and RELEASE were unchanged in every round on both mounts. READ was not identical everywhere: rootfs Round 1 changed 1231→1236, with zero in the later rounds; workspace READ was unchanged in all rounds. The evidence establishes removal of duplicate qualification work, without measuring its share of tool time. [Per-operation counters](filesystem-shared-open-qualification-counters.csv), the [request summary](filesystem-shared-open-qualification-rpc-summary.csv), [owner totals](filesystem-shared-open-qualification-owner-totals.csv), and [counter provenance](filesystem-shared-open-qualification-counters-provenance.csv) retain all nine qualification labels and boundaries.
+
+### Correctness and coverage limits
+
+Eighteen separate real guests passed 310 hard cases, 216 registered finals, and 648 synchronous checkpoints. Each SQ setting retained the 92-case, five-mode suite with NE enabled, plus 16 cases with NE off, 25 DATA-only cases, 11 FLUSH-only cases, and 11 applicable close/fallback cases on the old 0046 peer. Original whole-page, fixed-EOF, alias/copy-up, mmap, direct-I/O, raw O_PATH/EBADF, ATIME, negative-entry, exclusion, permission, concurrent-mutation, and close oracles remain.
+
+Eligible cross-FD rounds retained OPEN/RELEASE `[1,1,1]` and READ `[1,0,0]`; combined qualification changed 7→3 and DATA-only 4→3. FLUSH-only and old-peer runs had actual DATA 0/FLUSH 1 and zero shared classification attempts. Mutable DATA/FLUSH/negative eligibility remained 0. Repeated ordinary absence used one LOOKUP with NE on and 32 with it off; Mutable and both exclusion intervals remained at 32, with zero negative replies, and expiry caused a new query. The [hard-case list](filesystem-shared-open-qualification-probes.csv) and [probe provenance](filesystem-shared-open-qualification-probes-provenance.csv) retain this scope. These are not VM checks of the ordinary CLI, remote backends, real snapshot restore, or unsupported-statx faults.
+
+The candidate does not fix existing namespace-fd `fstat` and `copy_file_range` boundaries or the known unlink→syncfs ENOENT under writeback. WB was 0 here. This section does not support default enablement or extending the SDK result to the ordinary CLI or a complete Agent. The [provenance summary](filesystem-shared-open-qualification-provenance.csv) publishes compact hash associations and a provenance summary of 499 frozen source files. Frozen artifacts, source files, complete reports, and every raw observation remain locally in `benchmark/.data/sq17b/`, `benchmark/.data/sq17bm/`, and `benchmark/.data/sq17bp/`.
+
+## Linux: the ordinary CLI prepared-rootfs entry {#cli-prepared-rootfs}
+
+**The real ordinary CLI prepared-rootfs entry reduces cumulative three-round seven-tool time from 5659.783 ms to 4634.557 ms in this configuration: 18.11%, 95% CI [2.00%, 31.90%]. Ready falls by 3.26%, 95% CI [2.55%, 13.46%].** Both cumulative time and Ready decrease in all five pairs. This jointly changes rootfs ownership/cache eligibility and checkpoint capability/admission, so the entire 18.11% cannot be attributed to cache. The result applies to explicit selection of previously trusted, sealed inputs, not arbitrary live rootfs directories or equivalent gains from the default CLI.
+
+### Question and experiment design
+
+Once an engineering path qualifies for caching, users still need evidence from ordinary CLI execution with real Host startup, stage/journal and a live workspace. Both arms therefore run real `pvisor run`, differing only in rootfs source arguments: ordinary `--rootfs PATH` and `--rootfs-base-store STORE --rootfs-base ID` select the same sealed physical directory. The prepared entry authenticates and acquires its lease through public SnapshotStore APIs. A public API retains the persistent catalog pin; original sealing and one-time catalog preparation are outside the clocks. Inputs are not reimported at every launch, and this experiment does not measure first sealing or first registration latency.
+
+On 2026-10-17, B-FS-ENG uses the same frozen GNU release CLI and 0047 firmware in both arms. Each workspace is a fresh live Mutable lower/apply target, without a workspace snapshot or frozen baseline. Guest cache=1, directory-FD capacity=256, WB=0 and DAX=0. The isolated-lower data-object protocol, read-only FLUSH elision, standard negative entries and both Core absence caches are all 0. Execution uses Linux x86_64/KVM, guest 2 vCPU/16 GiB and a parent budget of CPUs 0/1, two-core quota, 16 GiB and zero swap. Existing guest directory images and root-device page retention can qualify with genuine Immutable rootfs ownership; these differ from the new DATA protocol disabled here.
+
+Complete byte checks for the fixed tool workload do not fix the existing root `KEEP_CACHE` [lower/upper shared-page boundary](#attribute-ttl-coherence). Old lower fd/mmap isolation after copy-up remains limited by that boundary. The new DATA protocol is disabled here, so entry-path timing does not establish complete file-object semantics.
+
+Each arm has five fresh Host/VM environments, seeded random order within five paired blocks, and nine operations in three resident rounds per environment. Every sample has an independent user/mount/PID namespace, owned pivot_root, copied CLI, private `/tmp` Host authority and HOME/XDG. It neither reuses nor stops the user's existing Host. Ready runs from immediately before CLI launch to the unique guest Ready and includes symmetric fresh Host+VM startup; workers retain their task-internal clocks. Both exclude exit. Formal timing disables profiling, startup diagnostics and Rust logging. No warmup, quiet, interference or full-inventory gate is used; every valid slow observation remains.
+
+### Formal timing
+
+All 10/10 formal environments are valid with zero failures. Real CLI processes exit normally, with unique Ready/Result, terminal Jobs, matching Job/Bundle run IDs, valid tool/Python caches, live-lower isolation and complete bytes in 256 written files and three stream files. Analysis rechecks frozen configuration/artifacts, randomized order and raw logs, rejecting filesystem profile/debug records in timing samples. The primary metric sums all three seven-tool rounds within each environment before medians. Bootstrap resamples paired environment blocks 5,000 times; rounds are dependent and 32 intervals are unadjusted for multiple comparisons. Units are ms; reduction is `100 × (1 − prepared/path)`. Row medians need not add to the cumulative median.
+
+| Metric | Ordinary path | Prepared | Reduction % | 95% CI % |
+|---|---:|---:|---:|---:|
+| Cumulative three-round seven tools, primary | 5659.783 | 4634.557 | 18.11 | [2.00, 31.90] |
+| Ready, fresh Host+VM | 863.692 | 835.578 | 3.26 | [2.55, 13.46] |
+| Seven tools, round 1 | 2864.324 | 2247.333 | 21.54 | [-4.30, 41.32] |
+| Seven tools, round 2 | 1431.477 | 1181.038 | 17.50 | [11.00, 30.70] |
+| Seven tools, round 3 | 1351.539 | 1206.185 | 10.75 | [4.26, 18.49] |
+
+Second- and third-round sums have improvement signals; no first-round aggregate difference is detected. The clearer individual signals follow. [Complete comparisons](filesystem-cli-prepared-rootfs-comparisons.csv) retain the remaining metrics; an improved seven-tool aggregate does not mean every tool improves.
+
+| Individual metric | Ordinary path | Prepared | Reduction % | 95% CI % |
+|---|---:|---:|---:|---:|
+| cargo, round 1 | 477.596 | 363.002 | 23.99 | [19.05, 43.30] |
+| cargo, round 2 | 35.362 | 19.490 | 44.88 | [43.47, 58.12] |
+| cargo, round 3 | 33.537 | 19.927 | 40.58 | [35.82, 46.17] |
+| npm, round 1 | 905.754 | 781.599 | 13.71 | [12.14, 37.27] |
+| npm, round 2 | 777.578 | 523.573 | 32.67 | [18.04, 35.21] |
+| npm, round 3 | 699.517 | 517.478 | 26.02 | [18.27, 26.24] |
+| rg, round 2 | 346.466 | 332.988 | 3.89 | [1.65, 15.52] |
+| rg, round 3 | 340.846 | 331.029 | 2.88 | [2.44, 4.70] |
+
+The five cumulative observations in pair order are path `[5262.059, 5661.812, 5659.783, 5254.040, 6909.506]` and prepared `[4400.809, 4634.557, 4571.396, 5148.752, 4705.643]` ms. All remain; one pair saves only 105.287 ms, so the median must not hide variation in effect size. Path Ready has one 962.967 ms observation versus 857.432–870.931 ms for the others. First-round git has separated observations in both arms, ranging from 345.917–1007.694 ms path and 332.105–679.683 ms prepared. Third-round write and metadata instead have higher prepared medians, with intervals crossing zero. N5 cannot establish stable clusters, tail latency or causes; no host-interference attribution or removal of slow values is used to narrow intervals.
+
+### Independent counters and attribution limits
+
+Each arm has another N1 diagnostic environment, excluded from formal timing. Inventory derived from the frozen real CLI construction is complete, with 13 registered instances and one final each: three Cores, two preimage logs, two log readers and two each of Overlay/protocol/dispatch. These cover Host stage/journal, both VM mounts, workspace journal and preparation/Bundle reads. Each mount has 54 tokens and 27 operations, totaling 216 mounted-component intervals. Every mounted capacity reports 256 and the new experimental settings report 0. Intervals include checked-subprocess startup, work and original validation, broader than worker clocks.
+
+The following seven-tool request counts use path→prepared arrows. Core sums parent and leaf queries. Once rootfs qualifies, second- and third-round READ reach zero while ordinary OPEN and FLUSH remain.
+
+| Rootfs count | Round 1 | Round 2 | Round 3 |
+|---|---:|---:|---:|
+| READINDEX | 0 → 125 | 0 → 21 | 0 → 0 |
+| OPEN | 1200 → 1200 | 1052 → 1052 | 1052 → 1052 |
+| READ | 2339 → 1234 | 1475 → 0 | 1475 → 0 |
+| LOOKUP | 4307 → 1474 | 3791 → 966 | 3794 → 947 |
+| GETATTR | 518 → 253 | 455 → 456 | 453 → 454 |
+| FLUSH | 1160 → 1160 | 1028 → 1028 | 1028 → 1028 |
+| Core queries | 110969 → 38607 | 101564 → 22015 | 101568 → 21660 |
+
+Third-round rootfs npm changes READ 891→0, LOOKUP 2943→934 and Core 85315→20012, while GETATTR changes 211→383. Cargo changes READ 147→0, LOOKUP 189→4 and Core 3198→330. Metadata calls do not uniformly fall. Global Core query differences are not native OPEN qualification costs or exact fractions of tool time.
+
+| Live workspace count | Round 1 | Round 2 | Round 3 |
+|---|---:|---:|---:|
+| READINDEX | 1 → 1 | 0 → 0 | 0 → 0 |
+| OPEN | 4497 → 4497 | 2681 → 2681 | 2681 → 2681 |
+| READ | 4560 → 4560 | 2480 → 2480 | 2480 → 2480 |
+| LOOKUP | 3673 → 3621 | 1917 → 2167 | 2122 → 1927 |
+| GETATTR | 748 → 755 | 679 → 679 | 650 → 650 |
+| FLUSH | 4785 → 4785 | 2681 → 2681 | 2681 → 2681 |
+| Core queries | 156125 → 155551 | 89391 → 92646 | 91577 → 89088 |
+
+Workspace OPEN, READ and FLUSH remain identical. LOOKUP and Core counts change in both directions, including increases in round 2. Both arms fingerprint 69,375,691 workspace bytes in round 1 and zero in the next two. There is no frozen-baseline or workspace-data-cache treatment. Software queries are not disk I/O, and inclusive spans are not added to infer worker time. [Per-tool counters](filesystem-cli-prepared-rootfs-counters.csv) and [counter provenance](filesystem-cli-prepared-rootfs-counters-provenance.csv) retain all phases and actual settings.
+
+The joint treatment also changes checkpoint admission. Bundle `executor_plan.supports_checkpoint` declares path=true and prepared=false; this is a plan declaration, not an observation of a successful checkpoint. Persisted control-socket/pool configuration is retained. The private temporary RunnerSpec native binding is unobserved; frozen source only establishes that prepared selection skips binding and a normal no-network path may bind when drivers provide a store. The ordinary arm's capabilities were not disabled for comparison. Ready cannot be attributed to cache alone, nor does this establish a full-tree snapshot audit on every ordinary launch.
+
+This result supports further work on ordinary CLI prepared-rootfs selection with explicit ownership. It does not support marking live directories Immutable, automatically enabling unmeasured new protocols, or adding/multiplying gains across cohorts. Sealing preparation and the unmeasured first-import clock require separate product consideration. [Timing summary](filesystem-cli-prepared-rootfs-summary.csv), [complete comparisons](filesystem-cli-prepared-rootfs-comparisons.csv) and [provenance](filesystem-cli-prepared-rootfs-provenance.csv) retain five pairs, 32 intervals and frozen-evidence associations. Raw timing, independent counters, preparation and artifacts remain locally in `benchmark/.data/pc17b/`.
+
+## Linux: standard negative-entry caching {#standard-negative-entry-cache}
+
+**Standard negative-entry caching changes cumulative three-round seven-tool time from 3725.942 ms to 3602.273 ms, a 3.32% reduction, 95% CI [-2.83%, 4.09%]. No overall gain is detected. Third-round npm has a 13.08% improvement signal, and the candidate remains disabled by default.** Independent diagnostics reduce cumulative rootfs LOOKUP by 40.26%, with smaller workspace changes. The mechanism covers repeated absent-name requests without establishing a Ready or aggregate-task speedup.
+
+The question is whether standard FUSE negative entries can further shorten ordinary tools on the owned-input path with isolated lower data pages and read-only FLUSH elision already enabled. Fewer software queries establish request coverage, not a timing benefit.
+
+### Mechanism and experiment scope
+
+One frozen GNU host and the existing 0047 firmware vary only the default-off `PVISOR_VM_FS_NEGATIVE_ENTRY_CACHE=0|1` preference. Both arms fix DATA=1, read-only FLUSH=1, directory-FD capacity 256, both Core absence caches=0, WB=0, DAX=0 and guest cache=1. They reuse the same owned Immutable rootfs/workspace generations and frozen workspace baseline. Linux x86_64/KVM, guest 2 vCPU/16 GiB, and normal PVisor, ManagedJob, stage/journal, VmExecutor and native-runner execution are retained; the CLI Host service is omitted. Previously sealed input preparation is outside Ready and tool clocks, without importing again at every launch.
+
+Only successful merged absence after Core namespace, policy, alias and required absence-observation checks returns a standard successful Entry with `nodeid=0`, entry TTL one second and attribute TTL zero. No inode is allocated. Core exclusion ENOENT remains an error. Ancestors, the exact path and descendants of exclusions and synthetic names retain ordinary lookup; component siblings can qualify independently. Rootfs host-authority exclusions therefore preserve visibility protection without disabling unrelated names. Positive-entry and attribute TTLs remain unchanged. Mutable lowers, nondefault authorization rules, remote/unknown backends and WB/DAX retain fallback. Explicit eligibility also requires exclusive, stable ownership of upper namespace, directory permissions, physical roots, ancestors and mount identities throughout the owner lifetime. Negative-entry eligibility and lower-data-page eligibility are checked separately. This preference adds no wire capability; existing DATA/FLUSH negotiation and snapshot restrictions remain.
+
+The formal design has five fresh environments per arm, nine operations in three resident rounds, with seeded random order within paired environment blocks. Ready measures launch to guest Ready; worker clocks measure tasks; both exclude exit. Formal timing disables profiling. Original output, cache, Bundle, lower-isolation, all 256 written-file bytes and all three stream files are checked, retaining every valid slow observation without quiet, interference or full-inventory gates. The primary metric sums all three seven-tool rounds within each environment before taking medians across five environments. Bootstrap resamples paired environment indexes 5,000 times; rounds are dependent, 32 metric intervals are unadjusted for multiple comparisons, and historical cohorts are not pooled.
+
+### Formal timing
+
+All 10/10 formal environments are valid with zero failures. Normal exit, a unique completed receipt, the same-Job Bundle, and all written/stream-file bytes pass the retained-evidence audit. The table reports five-environment medians per arm in ms. Reduction is `100 × (1 − on/off)`; negative means slower. Round and cumulative sums are formed within environments before medians, so row medians need not add to the cumulative median.
+
+| Metric | Off | On | Reduction % | 95% CI % |
+|---|---:|---:|---:|---:|
+| Cumulative three-round seven tools, primary | 3725.942 | 3602.273 | 3.32 | [-2.83, 4.09] |
+| Ready | 626.342 | 628.624 | -0.36 | [-1.36, 8.32] |
+| Seven tools, round 1 | 1855.661 | 1830.526 | 1.35 | [-1.38, 6.52] |
+| Seven tools, round 2 | 930.908 | 940.753 | -1.06 | [-11.31, 6.91] |
+| Seven tools, round 3 | 895.260 | 857.833 | 4.18 | [-4.95, 14.56] |
+| npm, round 3 | 470.086 | 408.606 | 13.08 | [5.95, 20.50] |
+
+The primary metric, Ready and each round's seven-tool sum all have intervals crossing zero. Third-round npm decreases in all five paired observations, but remains a secondary signal without multiple-comparison correction. First- and second-round npm and all three rg rounds have no detected difference. Among 32 metrics, second-round stream_write also has an 8.58% signal, 95% CI [0.10%, 15.02%]; this does not establish a write-path improvement. [Paired comparisons](filesystem-negative-entry-cache-comparisons.csv) retain every distribution and interval.
+
+The five cumulative observations range from 3595.534–3755.754 ms off and 3576.400–3697.274 ms on, with overlap. Write observations are dispersed: round 2 ranges from 78.188–154.617 ms off and 78.542–154.637 ms on; round 3 ranges from 78.335–141.832 ms off and 77.793–154.746 ms on. Second-round metadata also spans 75.493–148.861 ms and 90.182–138.570 ms. All these valid observations remain. N5 cannot establish stable clusters or their causes; no host-interference attribution or removal of slow values is used to narrow intervals.
+
+### Independent counters: reductions concentrate in rootfs npm lookups
+
+B-FS-DIAG uses one separate fresh environment per arm. Each VM has one final for every one of 17 registered instances, complete 54 tokens and 27 operation intervals per mount, and 216 mounted-component intervals. Both mounted Overlays report actual enabled=0 in the off arm and enabled=1 in the on arm. DATA/FLUSH each report 1, both Core absence caches report 0, and each mounted capacity reports 256. These actual settings are measured in the two independent diagnostic VMs, not per-owner counters from the ten profile-off timing VMs.
+
+The following N1 counts use off→on arrows. Core queries sum parent and leaf stats. Intervals include checked-subprocess-tree startup, tool work and original validation, a broader boundary than worker clocks.
+
+| Rootfs scope | LOOKUP | GETATTR | Core queries |
+|---|---:|---:|---:|
+| npm round 1 | 1335 → 883 | 115 → 116 | 33347 → 27199 |
+| npm round 2 | 952 → 533 | 395 → 396 | 20417 → 14843 |
+| npm round 3 | 935 → 514 | 384 → 396 | 20013 → 14466 |
+| Seven tools, round 1 | 1436 → 939 | 248 → 249 | 38051 → 31515 |
+| Seven tools, round 2 | 965 → 540 | 450 → 451 | 22006 → 16391 |
+| Seven tools, round 3 | 947 → 521 | 438 → 451 | 21601 → 16014 |
+| Seven tools, all three rounds | 3348 → 2000 | 1136 → 1151 | 81658 → 63920 |
+
+Third-round rootfs npm LOOKUP falls by 45.03% and Core queries by 27.72%; the corresponding seven-tool reductions are 44.98% and 25.86%. GETATTR does not fall alongside LOOKUP: its cumulative seven-tool count increases by 15. Metadata work remains.
+
+| Workspace scope | LOOKUP | GETATTR | Core queries |
+|---|---:|---:|---:|
+| Seven tools, round 1 | 463 → 448 | 622 → 617 | 48267 → 48095 |
+| Seven tools, round 2 | 419 → 380 | 2628 → 2629 | 42104 → 41663 |
+| Seven tools, round 3 | 307 → 306 | 2629 → 2628 | 36617 → 36609 |
+| Seven tools, all three rounds | 1189 → 1134 | 5879 → 5874 | 126988 → 126367 |
+
+Cumulative workspace LOOKUP falls by 4.63% and Core queries by 0.49%. npm LOOKUP across its rounds is 138→137, 127→87 and 15→13; Core queries are 2794→2764, 7336→6895 and 1849→1840. This counter comparison saves far fewer workspace queries than rootfs queries.
+
+The following per-round requests are identical in both arms. Arrays list rounds 1/2/3 and cover only seven-tool phases:
+
+| Scope | OPEN | READ | FLUSH | RELEASE |
+|---|---:|---:|---:|---:|
+| Rootfs | 1200 / 1052 / 1052 | 1231 / 0 / 0 | 0 / 0 / 0 | 1200 / 1052 / 1052 |
+| Workspace | 4497 / 2681 / 2681 | 2494 / 277 / 277 | 563 / 542 / 542 | 4780 / 2682 / 2682 |
+
+The enabled owners issue 1041 rootfs and 420 workspace negative replies over their complete lifetimes; seven-tool phases contain 974 and 418 respectively. Remaining replies belong to other operations or startup/exit boundaries. These count host decisions to return standard negative entries, not guest cache hits or all ENOENTs. Global physical Core queries are not native OPEN qualification counts, disk I/O or fractions of execution time. Inclusive spans are not added to infer worker time. [Per-tool counters](filesystem-negative-entry-cache-counters.csv) and [counter provenance](filesystem-negative-entry-cache-counters-provenance.csv) retain boundaries and actual qualification.
+
+### Correctness and product coverage
+
+All 184 hard cases pass across ten independent real-guest VMs in both arms, with one final each for 120 registered instances and 612 complete synchronous tokens. Each arm retains 14 existing negative-entry cases and adds two cases for an existing excluded descendant and a missing exclusion ancestor. The original 4 whole-page, 25 data, 11 close and 36 ATIME oracles remain. Repeated ordinary stable absence changes from 32 LOOKUP to one; Mutable and both protected intervals retain 32→32, with protected negative replies 0→0. TTL expiry triggers a new query. Create/link/rename/unlink, failed mutations, permissions and concurrent visibility remain checked. Existing fstat and copy_file_range boundaries are unresolved.
+
+Ordinary CLI prepared-rootfs integration separately passes one positive real-VM smoke test of configuration, persisted selector, exit and live-workspace/stage isolation. That test uses a Mutable workspace with DATA, FLUSH and negative entries disabled, and has zero performance samples. That smoke test measures neither Ready nor tool speedups. [Independent ordinary CLI timing](#cli-prepared-rootfs) measures the joint entry treatment with these new mechanisms disabled; the enabled DATA/FLUSH/negative-entry combination still has no formal ordinary CLI performance samples. The [CLI verification summary](filesystem-prepared-rootfs-cli-verification.csv) retains that scope. This engineering entry does not update ordinary CLI user tables, add or multiply gains from historical cohorts, or justify enabling the preference by default. [Timing summary](filesystem-negative-entry-cache-summary.csv), [paired comparisons](filesystem-negative-entry-cache-comparisons.csv) and [provenance](filesystem-negative-entry-cache-provenance.csv) retain the formal result and scope. Raw timing, independent counters and frozen/probe evidence remain locally in `benchmark/.data/nf17m/`, `benchmark/.data/nf17p/` and `benchmark/.data/nf17/` respectively.
+
+## Linux: same-batch data-cache and local-FLUSH four-arm comparison {#data-flush-factorial}
+
+**The three primary cumulative seven-tool contrasts—both versus neither, FLUSH alone and data alone—all have intervals crossing zero, with no detected overall difference.** rg has improvement signals of 36.46%, 35.87% and 35.85% against neither across the three rounds, with gains over either single mechanism too. Ready has no detected difference. git and write have clearly separated observations, and cumulative time includes valid slow samples. These results establish no stable overall speed level; both defaults were off in that SDK entry. DATA remains default-off; the scoped prepared-rootfs entry now has [automatic readonly-FLUSH requests](#cli-auto-flush).
+
+### Same-batch conditions and per-environment distributions {#data-flush-factorial-design}
+
+On 2026-10-17, B-FS-ENG forms four complete combinations of `PVISOR_VM_FS_LOWER_DATA_CACHE` and `PVISOR_VM_FS_READONLY_FLUSH_ELISION`: neither `(0, 0)`, data only `(1, 0)`, FLUSH only `(0, 1)` and both `(1, 1)`. Product host, 0047 firmware and guest hashes match the independent data-page experiment below exactly, with no product-code changes. The experiment harness adds strict four-combination declarations and verification. Both absence caches are off, directory-FD capacity is 256, WB=0, DAX=0 and guest cache=1. All arms share the same owned Immutable rootfs/workspace and frozen baseline. Linux x86_64/KVM, guest 2 vCPU / 16 GiB, normal PVisor, ManagedJob, stage/journal, VmExecutor and native-runner paths remain, with the CLI Host service omitted. Sealing preparation is outside the clocks; formal timing disables profiling.
+
+Each arm has five fresh VMs, randomized within five paired environment blocks using a fixed seed, with nine operations in three resident rounds and no warmups. All 20 formal environments pass output, tool-cache inheritance, normal exit, a unique completion receipt, matching Run Bundle, lower isolation and every written/stream byte, with zero failures. There is no quiet, interference or full-inventory gate; all valid slow samples remain. Ready measures usable output only, excluding tools and exit. Worker clocks exclude launch and exit; stream_write retains its own fsync/close. Rounds are dependent, leaving five independent environments per arm. The cumulative metric first sums 21 seven-tool worker clocks within each environment; it is not complete-task wall time.
+
+The following raw values are easily hidden by a single median. Units are milliseconds; each cell follows the same five paired-block positions, without sorting or removing samples.
+
+| Arm | Five three-round seven-tool totals | Five round 1 git values | Five round 2 write values |
+| --- | --- | --- | --- |
+| Neither | 4194.020, 4053.891, 4381.354, 4166.841, 4194.600 | 483.359, 478.957, 481.103, 473.820, 409.048 | 78.694, 78.204, 144.111, 78.653, 78.265 |
+| Data only | 3900.397, 4282.989, 4140.359, 3906.282, 4180.700 | 500.143, 497.963, 488.727, 490.670, 494.632 | 78.744, 154.757, 78.521, 79.988, 142.362 |
+| FLUSH only | 3893.136, 3949.882, 3806.316, 4011.330, 3989.992 | 393.816, 388.706, 237.472, 394.793, 395.724 | 135.390, 78.518, 156.306, 155.250, 79.216 |
+| Both | 4240.425, 3709.847, 3743.222, 3623.802, 3826.109 | 407.036, 402.128, 387.853, 219.856, 404.665 | 144.888, 141.439, 78.563, 154.812, 148.075 |
+
+Round 2 write has lower/higher observations separated by gaps. The four arms have 4, 3, 2 and 1 lower values around 78–80 ms; remaining higher values are around 135–156 ms. This description is post hoc, not preregistered clustering; N=5 cannot establish stable clusters or tail latency. A single median supplies no write-speedup or regression conclusion. Round 1 git in FLUSH-only and both has four values around 388–407 ms and one lower value of 237.472 / 219.856 ms, producing wide intervals. Round 2 metadata in neither/data-only also has separated observations around 75–83 and 123–144 ms. These patterns are not attributed to host interference or a specific mechanism.
+
+The data-only cumulative totals include two values at 3900–3906 ms and three at 4140–4283 ms; both-enabled has four at 3624–3826 ms and one at 4240.425 ms. These describe observed gaps, without establishing persistent modes. One valid both-enabled environment also contains round 2 npm at 742.262 ms and round 3 read at 85.993 ms; its other four read values are 27.170–27.281 ms. All slow values enter the bootstrap. [Full statistics](filesystem-data-flush-factorial-summary.csv) retain every environment for all 32 metrics; the cumulative single-median projection supplies no stable overall ranking.
+
+### Preregistered contrasts and local tool signals {#data-flush-factorial-timing}
+
+The three primary contrasts are neither→both, FLUSH-only→both and data-only→both. Neither→each single mechanism supplies two supplementary contrasts, giving five pairs with 32 metrics each. The table projects the preregistered cumulative median reduction; positive means faster. The 95% CIs use 5,000 paired-bootstrap resamples over five environment blocks and must be read with the full distributions above.
+
+| Contrast | Role | Three-round reduction % | 95% CI % | Conclusion |
+| --- | --- | ---: | --- | --- |
+| Neither→both | Primary | 10.75 | [-1.11, 14.56] | No detected difference |
+| FLUSH only→both | Primary | 5.23 | [-8.92, 9.66] | No detected difference |
+| Data only→both | Primary | 9.59 | [-8.72, 13.38] | No detected difference |
+| Neither→data only | Supplementary | 1.28 | [-5.65, 7.00] | No detected difference |
+| Neither→FLUSH only | Supplementary | 5.82 | [2.57, 13.12] | Improvement signal |
+
+The supplementary signal does not replace the three primary cumulative intervals crossing zero. rg reductions and 95% CIs by round follow, in percent.
+
+| rg round | Neither→both | FLUSH only→both | Data only→both |
+| --- | --- | --- | --- |
+| 1 | 36.46 [35.10, 37.78] | 23.64 [20.97, 25.84] | 22.15 [18.74, 25.42] |
+| 2 | 35.87 [34.61, 36.85] | 23.11 [22.19, 26.92] | 21.01 [18.86, 23.25] |
+| 3 | 35.85 [31.00, 36.76] | 22.62 [17.07, 24.30] | 22.04 [15.72, 29.38] |
+
+Round 1 git has a 16.04% signal for both versus neither, CI [1.07%, 53.60%], and 18.70% versus data-only, CI [18.19%, 55.19%]. Versus FLUSH-only it has no detected difference: reduction -2.11%, CI [-63.33%, 44.31%]. Data-only versus neither has a 3.27% round 1 git regression signal, reduction CI [-20.92%, -1.58%]. These intervals require the separated git observations; a point estimate supplies no stable git speed level. Both-enabled round 2 read versus neither has a 14.98% signal, CI [11.82%, 15.21%]. Round 3 retains the slow value and has CI [-167.40%, 15.42%], with no detected difference; the round 2 result cannot be extended to it.
+
+Ready has no detected difference in any of the five contrasts. [All 160 paired comparisons](filesystem-data-flush-factorial-comparisons.csv) and [provenance](filesystem-data-flush-factorial-provenance.csv) retain every metric and the method. The 160 individual intervals have no multiple-comparison adjustment; metrics, rounds and contrasts are dependent. There is no comparison between the two single mechanisms or test of an interaction term. These signals establish neither comprehensive seven-tool improvement nor a sum of data/FLUSH percentages from earlier cohorts.
+
+### Independent request counts and combined correctness {#data-flush-factorial-evidence}
+
+B-FS-DIAG uses one separate fresh environment per arm, excluded from formal timing. Each arm has exactly one final for all 17 registered instances. All 54 tokens are complete on both rootfs/workspace devices, giving 216 phase-component intervals. Each mounted owner verifies both actual data/FLUSH settings against its combination, capacity 256 and both Core caches 0. Intervals include the `checked()` subprocess tree's startup, tool work and original validation, exceeding the worker-clock boundary. The table contains round 3 counts, N=1 per arm.
+
+| Scope / request | Neither | Data only | FLUSH only | Both |
+| --- | ---: | ---: | ---: | ---: |
+| Rootfs seven-tool READ | 0 | 0 | 0 | 0 |
+| Rootfs seven-tool FLUSH | 1028 | 1028 | 0 | 0 |
+| Rootfs seven-tool OPEN / RELEASE | 1052 / 1052 | 1052 / 1052 | 1052 / 1052 | 1052 / 1052 |
+| Workspace seven-tool READ | 2480 | 277 | 2480 | 277 |
+| Workspace seven-tool FLUSH | 2681 | 2681 | 542 | 542 |
+| Workspace seven-tool OPEN / RELEASE | 2681 / 2682 | 2681 / 2682 | 2681 / 2682 | 2681 / 2682 |
+| Workspace rg READ / FLUSH | 2051 / 2051 | 1 / 2051 | 2051 / 1 | 1 / 1 |
+| Workspace rg OPEN / RELEASE | 2051 / 2051 | 2051 / 2051 | 2051 / 2051 | 2051 / 2051 |
+| Workspace rg data flags / FLUSH flags | 0 / 0 | 2050 / 0 | 0 / 2050 | 2050 / 2050 |
+
+The mechanisms remove READ and FLUSH respectively, and both savings remain when combined. OPEN/RELEASE do not decrease. Combined rg reuses 2050 object IDs, and all owners have zero object-capacity rejections. [Per-tool counters](filesystem-data-flush-factorial-counters.csv) and [counter provenance](filesystem-data-flush-factorial-counters-provenance.csv) retain every round and complete coverage. Native fstat, F_GETFL, statx and fstatfs qualification calls have no separate counters. OPEN flags and object-ID reuses do not count those syscalls; Core queries also omit part of qualification work. Inclusive spans are not added to exactly attribute git changes or infer proportional worker gains.
+
+Independent real-guest tests with both capabilities enabled pass all 76 cases: 4 original whole-page, 25 data, 11 close and 36 ATIME. All 48 registered instances across four VMs have a unique final, with 296 complete synchronous tokens. [Combined probes](filesystem-data-flush-factorial-probes.csv), [probe provenance](filesystem-data-flush-factorial-probes-provenance.csv) and [synchronous phases](filesystem-data-flush-factorial-probe-phases.csv) retain the original byte, EOF, close and ATIME oracles, with no formal performance samples. True O_PATH still uses raw openat/F_GETFL/EBADF hard assertions; the musl Rust constructor difference is diagnostic only. The [existing fstat/copy_file_range boundaries](#immutable-lower-data-coherence) remain unresolved. Negotiated snapshot capture/restore is still rejected, that cohort did not cover ordinary CLI owned-input integration, and its generic SDK defaults remained `0`. Subsequent [ordinary CLI four-arm timing](#cli-data-flush-factorial) covers the enabled DATA/FLUSH combination, without extending complete semantic acceptance. The separate [ordinary CLI comparison](#cli-prepared-rootfs) covers the sealed-rootfs entry with both new mechanisms disabled. Raw timing, counters and frozen evidence are separately retained in `benchmark/.data/df17m/`, `benchmark/.data/df17p/` and `benchmark/.data/df17/`, independently of earlier experiments.
+
+## Linux: isolated data-page caching for Immutable lowers {#immutable-lower-data-cache}
+
+**Cumulative three-round seven-tool time changes from 4251.227 ms to 4052.522 ms, a 4.67% reduction, 95% CI [-0.20%, 7.40%]. No overall gain is detected. rg has improvement signals of 17.54%, 17.40% and 17.73% across the three rounds, and the candidate remains disabled by default.** Second- and third-round read improve by 12.47% and 13.30%; first-round git instead has a 2.79% regression signal. Ready has no detected difference. Independent guest probes support lower/upper data-page and fixed-EOF isolation within their exercised scope; complete file-object semantics remain unresolved, and ordinary CLI user tables are unchanged.
+
+### Conditions and formal timing {#immutable-lower-data-timing}
+
+On 2026-10-17, B-FS-ENG uses the same frozen GNU host and 0047 firmware, varying only `PVISOR_VM_FS_LOWER_DATA_CACHE=0|1`. Both arms reuse owned Immutable rootfs/workspace inputs and a frozen baseline. Directory-FD capacity is 256, WB=0, DAX=0 and guest cache=1; lower negative caching, upper absence caching and read-only FLUSH elision are all disabled. Linux x86_64/KVM, guest 2 vCPU/16 GiB, normal PVisor, ManagedJob, stage/journal, VmExecutor and native-runner paths are retained, with the CLI Host service omitted. Previously sealed input preparation is outside the clocks, and formal timing disables profiling.
+
+Each arm has five fresh VMs, randomized within seeded paired blocks, with nine operations in three resident rounds and no warmups. All ten formal environments pass normal exit, output, tool-cache inheritance, Run Bundle, lower isolation, every written file and all stream-byte checks, with zero failures. There is no quiet, interference or full-inventory gate; all valid slow samples remain. Ready excludes tools and exit; worker clocks exclude launch and exit, while stream_write retains its own fsync/close. Resident rounds are dependent, leaving five independent environments per arm. The cumulative metric sums 21 seven-tool worker clocks within each environment before taking the median; it is not complete-task wall time.
+
+Values below are median milliseconds; positive reduction means faster and negative means regression. The 95% CIs use 5,000 paired-bootstrap resamples over five environment blocks.
+
+| Metric | Disabled | Enabled | Reduction % | 95% CI % |
+| --- | ---: | ---: | ---: | --- |
+| Ready | 630.046 | 631.095 | -0.17 | [-2.30, 2.08] |
+| Three-round seven-tool total | 4251.227 | 4052.522 | 4.67 | [-0.20, 7.40] |
+| Round 1 seven-tool sum | 2087.586 | 2057.554 | 1.44 | [-2.87, 3.90] |
+| Round 2 seven-tool sum | 1107.654 | 1055.036 | 4.75 | [-0.28, 12.00] |
+| Round 3 seven-tool sum | 1114.969 | 973.086 | 12.73 | [-12.29, 16.34] |
+| Round 1 rg | 304.234 | 250.860 | 17.54 | [16.27, 18.40] |
+| Round 2 rg | 298.140 | 246.262 | 17.40 | [15.65, 30.67] |
+| Round 3 rg | 299.072 | 246.034 | 17.73 | [14.40, 20.92] |
+| Round 2 read | 31.112 | 27.234 | 12.47 | [12.05, 15.26] |
+| Round 3 read | 31.378 | 27.203 | 13.30 | [12.05, 17.16] |
+| Round 1 git | 481.001 | 494.406 | -2.79 | [-4.38, -2.16] |
+| Round 1 hot_open | 10.186 | 10.321 | -1.32 | [-2.58, -1.16] |
+
+[Full statistics](filesystem-lower-data-summary.csv), [32 paired comparisons](filesystem-lower-data-comparisons.csv) and [provenance](filesystem-lower-data-provenance.csv) retain per-environment values and full precision. The three per-round sums and cumulative total all have no detected difference, as do write, metadata and npm in every round. First-round hot_open has another regression signal. Individual intervals have no multiple-comparison adjustment; rounds and aggregate metrics are dependent, and N=5 supports neither tail-latency claims nor a comprehensive no-regression guarantee. The local rg gain, other candidates' percentages and absolute times across cohorts cannot be added into an overall gain.
+
+### Actual negotiation, request changes and remaining costs {#immutable-lower-data-counters}
+
+Independent B-FS-DIAG has one fresh environment per arm, both valid. Each has a unique final record for all 17 registered instances, with complete rootfs/workspace coverage of 216 phase-component intervals and 54 synchronous tokens. Each mount verifies capacity 256 and its arm's actual data setting of 0/1; the other three experimental switches are disabled. The enabled counter records successful negotiation during an owner's lifetime; these are single-session fresh VMs. Intervals include the `checked()` subprocess tree's startup, tool work and original validation, exceeding the worker-clock scope. Diagnostic times supply no formal performance samples.
+
+The table contains third-round request counts, N=1 per arm. Seven-tool totals sum only their seven phases; Core queries add parent-stat and leaf-stat units.
+
+| Scope / request or flag | Disabled | Enabled |
+| --- | ---: | ---: |
+| Rootfs seven-tool READ | 0 | 0 |
+| Rootfs seven-tool OPEN / FLUSH / RELEASE | 1052 / 1028 / 1052 | 1052 / 1028 / 1052 |
+| Rootfs seven-tool Core physical queries | 21653 | 21652 |
+| Workspace seven-tool READ | 2480 | 277 |
+| Workspace seven-tool OPEN / FLUSH / RELEASE | 2681 / 2681 / 2682 | 2681 / 2681 / 2682 |
+| Workspace seven-tool Core physical queries | 37346 | 36590 |
+| Workspace rg READ | 2051 | 1 |
+| Workspace rg OPEN / FLUSH / RELEASE | 2051 / 2051 / 2051 | 2051 / 2051 / 2051 |
+| Workspace rg qualified OPEN flags / object-ID reuses | 0 / 0 | 2050 / 2050 |
+
+Third-round workspace seven-tool READ falls by 88.83%. rg READ changes from 2051 to 2, 1 and 1 across the three rounds. Its first-round flags include 2049 ID reuses, showing reuse of registered objects within a round as well; cross-round warming alone does not explain all of the change. Mounted owners have zero object-capacity rejections. The mechanism removes data-read round trips while normal OPEN, FLUSH, RELEASE and Core paths retain costs; read-only FLUSH elision is disabled in this comparison. [Per-tool counters](filesystem-lower-data-counters.csv) and [counter provenance](filesystem-lower-data-counters-provenance.csv) preserve each round and complete-lifetime scopes.
+
+Lower Core query counts do not establish lower total host-query costs: qualified OPENs additionally check native fstat, F_GETFL, complete statx identity and fstatfs, outside Core parent/leaf units. Per-OPEN qualification is a cost hypothesis worth isolating next; these counters cannot exactly attribute the first-round git regression to it. Inclusive spans are not added or converted into worker-time shares, and N1 request counts do not establish proportional tool speedups.
+
+### Object ownership, real-guest evidence and remaining boundaries {#immutable-lower-data-coherence}
+
+After explicit INIT bit 44 and OPEN bit 28 negotiation, qualified OPEN uses a fixed 24-byte reply carrying a stable object ID and the physical lower's fixed size. The guest uses a distinct data inode/mapping for that object, reusing pages across independently closed/reopened lower fds while keeping upper copy-up writes and truncation out of the old lower pages and EOF. Normal Core resolution, permission checks, policy, baseline observations, native OPEN and each fd's FH/RELEASE remain. Eligibility requires an explicitly Immutable lower, a pinned read-only local native FD, a regular file with nlink=1 and the other qualification checks. Upper, Mutable, multiply linked and unsupported sources fall back. Each owner has at most 4096 IDs, whose assigned meanings are not recycled. Owners that negotiated the capability currently reject snapshot capture/restore; the default switch remains `0`. The separate [ordinary CLI sealed-rootfs comparison](#cli-prepared-rootfs) keeps this capability disabled; ordinary CLI performance with it enabled was unmeasured in that cohort and has since been measured in the [independent four-arm comparison](#cli-data-flush-factorial).
+
+The enabled real-guest arm passes `review-data`, original `review-pages`, `review-flush` and `atime` at 25/25, 4/4, 11/11 and 36/36 respectively. The disabled arm retains 17 data failures and 4 original whole-page failures; the other two modes pass. These are case outcomes, not 21 independent product defects. Exercised paths include bound/unbound lowers, full/partial-page writes, truncation/extension, fixed EOF/SEEK_END, mmap/COW, mappings after close, rename/unlink, sendfile/splice, toggled O_DIRECT and fallback paths. Three independent cross-fd open/read/close rounds change READ from `[1,1,1]` to `[1,0,0]`, while both arms retain OPEN/RELEASE `[1,1,1]`, establishing reuse after actual closes. Old read-only MAP_SHARED `msync(MS_SYNC)` succeeds in both arms after fd close and upper copy-up. This covers the read-only mapping's call without extending writable shared-mapping synchronization guarantees.
+
+The O_PATH hard oracle uses verified raw `openat`: both arms retain O_PATH in F_GETFL, and raw pread returns -1/EBADF. The original Rust `OpenOptions::custom_flags(O_PATH)` removes the bit because this musl target's `O_ACCMODE` includes O_PATH, yielding an ordinary read-only fd. Its readable result remains a construction diagnostic. Correcting fd construction retains both true O_PATH and EBADF requirements without weakening the semantic assertion; the first three attempts retain their emitted failures and provenance. All 96 registered instances across the final eight VMs have exactly one final record, with complete 592-token/296-interval coverage. [Real-guest probes](filesystem-lower-data-probes.csv), [probe provenance](filesystem-lower-data-probes-provenance.csv) and [synchronous phases](filesystem-lower-data-probe-phases.csv) retain the evidence; probe elapsed values are not performance samples.
+
+Independent compatibility diagnostics use three fresh VMs. The new host with old 0046 firmware passes all 11 `review-flush` cases, retaining the four original `review-pages` baseline failures. Its data counters explicitly report requested=1, enabled=0 and no object flags. The old host with new 0047 firmware passes all 11 `review-flush` cases. Both directions have identical FLUSH-probe results and protocol call counts. All 36 registered instances across the three runs have exactly one final record. The old host lacks the new data counters: JSON retains NULL and CSV leaves them blank, without treating their absence as an actual setting of zero. Its fallback conclusion uses the frozen old host source/artifact and successful legacy RPCs; no decoded INIT is claimed. [Compatibility results](filesystem-lower-data-compat.csv) and [compatibility provenance](filesystem-lower-data-compat-provenance.csv) remain separate, and probe time supplies no performance evidence.
+
+Fixed data EOF does not cover every file API: fstat on an old fd can still use namespace-inode attributes. The VFS namespace-size boundary in `copy_file_range` is also unresolved: a 16384-byte source copies only 4105 bytes when its current namespace size is 4105. This stays a separate observation and is never counted as successful full copying. Another 19 short-read C cases pass, executing helpers and single-folio/readahead callbacks extracted from the actual kernel patch with minimal kernel-primitive stubs. They support local early-short-read error/fixed-EOF logic, without supplying live-guest kernel transport fault injection. Concurrency stress, warm-page retention after reclaim and snapshots still need separate validation. Ordinary CLI performance was subsequently measured in the [independent four-arm comparison](#cli-data-flush-factorial), without establishing complete semantic acceptance. Raw timing, counts and frozen evidence remain separately in `benchmark/.data/dc17m/`, `benchmark/.data/dc17p/` and `benchmark/.data/dc17/`.
+
+## Linux: read-only local FLUSH elision {#readonly-local-flush}
+
+**rg shows improvement signals of 17.55%, 16.91% and 17.22% across the three rounds. Cumulative three-round seven-tool time falls from 4315.230 ms to 3880.882 ms, a 10.07% reduction, 95% CI [-0.97%, 12.84%]. Overall improvement is not detected; that SDK/generic-VM entry defaults the preference off. The current scoped entry is covered by [automatic FLUSH requests](#cli-auto-flush).** The first-round seven-tool sum falls by 9.21% with an interval excluding zero; Ready and third-round npm have no detected difference. These results cover five independent environments under matching conditions and leave cross-runtime user tables unchanged.
+
+### Conditions and formal timing {#readonly-local-flush-timing}
+
+On 2026-10-17, B-FS-ENG uses the same frozen GNU host and firmware with the new 0046 protocol, varying only `PVISOR_VM_FS_READONLY_FLUSH_ELISION=0|1`. Both arms reuse owned Immutable rootfs/workspace inputs and a frozen baseline. Directory-FD capacity is 256; lower negative caching and upper absence caching are disabled, with WB=0, DAX=0 and guest cache=1. Linux x86_64/KVM, guest 2 vCPU/16 GiB, normal PVisor, ManagedJob, stage/journal, VmExecutor and native-runner paths are retained, with the CLI Host service omitted. Sealing preparation is outside the clocks.
+
+Each arm has five fresh VMs, randomized within seeded paired blocks, with nine operations in three resident rounds and no warmups. All ten formal environments pass normal exit, output, tool-cache inheritance, Run Bundle, lower isolation, every written file and all stream-byte checks, with zero failures. There is no quiet, interference or full-inventory gate; all valid slow samples remain. Ready excludes tools and exit, while worker clocks exclude launch and exit; stream_write retains its own fsync/close. Resident rounds are dependent, leaving five independent environments per arm. The cumulative metric sums 21 seven-tool worker clocks within each environment before taking the median; it is not complete-task wall time.
+
+Values below are median milliseconds; positive reduction means faster. The 95% CIs use 5,000 paired-bootstrap resamples over five environment blocks.
+
+| Metric | Disabled | Enabled | Reduction % | 95% CI % |
+| --- | ---: | ---: | ---: | --- |
+| Ready | 651.685 | 652.971 | -0.20 | [-8.47, 1.29] |
+| Three-round seven-tool total | 4315.230 | 3880.882 | 10.07 | [-0.97, 12.84] |
+| Round 1 seven-tool sum | 2078.682 | 1887.289 | 9.21 | [7.45, 11.37] |
+| Round 2 seven-tool sum | 1141.847 | 1003.565 | 12.11 | [-12.96, 19.68] |
+| Round 3 seven-tool sum | 1099.857 | 1010.897 | 8.09 | [-8.35, 11.86] |
+| Round 1 rg | 304.416 | 250.993 | 17.55 | [16.27, 18.91] |
+| Round 2 rg | 298.962 | 248.401 | 16.91 | [14.91, 19.14] |
+| Round 3 rg | 299.662 | 248.057 | 17.22 | [15.94, 28.40] |
+| Round 3 npm | 475.724 | 477.645 | -0.40 | [-31.96, 12.00] |
+
+[Full statistics](filesystem-readonly-flush-summary.csv), [32 paired comparisons](filesystem-readonly-flush-comparisons.csv) and [provenance](filesystem-readonly-flush-provenance.csv) retain full precision, ranges and per-environment values. Individual intervals have no multiple-comparison adjustment; the three rg results and aggregate metrics are also dependent. N=5 supports neither tail-latency claims nor a comprehensive no-regression guarantee. The first-round aggregate signal does not replace the three-round interval crossing zero. Write and npm have no detected difference in any round. Write has lower and higher observed values, while metadata/npm also vary substantially. N=5 is insufficient to establish formal clusters or exact attribution; write point estimates supply no speedup claim, and no samples are removed after collection.
+
+### Request changes and correctness boundaries {#readonly-local-flush-evidence}
+
+Independent B-FS-DIAG has one fresh environment per arm, both valid. Each has a unique final record for all 17 registered instances, with complete rootfs/workspace coverage of 216 phase-component intervals and 54 tokens. Actual negotiated settings are checked as 0/1 per mounted owner, capacity as 256, and both Core caches as disabled. The enabled counter records successful negotiation once during an owner's lifetime; this cohort uses single-session fresh VMs. Intervals include the `checked()` subprocess tree's startup, tool work and original validation, exceeding the worker-clock scope.
+
+The table contains third-round counts, N=1 per arm. Seven-tool totals sum only those seven phases.
+
+| Scope / request or flag | Disabled | Enabled |
+| --- | ---: | ---: |
+| Rootfs seven-tool FLUSH | 1028 | 0 |
+| Rootfs seven-tool OPEN / READ / RELEASE | 1052 / 0 / 1052 | 1052 / 0 / 1052 |
+| Workspace seven-tool FLUSH | 2681 | 542 |
+| Workspace seven-tool OPEN / READ / RELEASE | 2681 / 2480 / 2682 | 2681 / 2480 / 2682 |
+| Rootfs npm FLUSH | 731 | 0 |
+| Workspace rg FLUSH | 2051 | 1 |
+| Workspace rg eligible OPEN flags | 0 | 2050 |
+| Workspace write FLUSH | 513 | 513 |
+
+rg retains 2051 each of OPEN, READ and RELEASE: the candidate removes FLUSH round trips for qualified read-only handles. The write phase has no eligible flags and retains its 513 FLUSH requests. Rootfs/workspace Core parent+leaf queries are 21652→21601 and 36962→36962. This does not establish unchanged total host queries: each candidate OPEN also checks native fstat, F_GETFL and fstatfs, which are outside Core query counts. Formal paired timing determines actual tool gains. Inclusive diagnostic spans are not added or converted into exact shares of worker elapsed time. [Per-tool counters](filesystem-readonly-flush-counters.csv) and [counter provenance](filesystem-readonly-flush-counters-provenance.csv) preserve the full scope.
+
+After explicit connection bit 43 and per-OPEN bit 29 negotiation, the guest still runs `write_inode_now`, `fuse_sync_writes`, `filemap_check_errors` and their error returns before omitting backend FLUSH. Explicit fsync and RELEASE remain. Qualification uses the pinned read-only native FD after normal OPEN, Immutable-lower ownership and a local-filesystem allowlist; TTL and KEEP_CACHE do not expand. Sessions negotiating this capability currently reject snapshot capture/restore. Removing internal dup/close also supplies no guarantee of identical resource errnos.
+
+Real-guest close probes pass all 11 cases with new firmware disabled/enabled and with old-firmware fallback. Their FLUSH total changes from 15 to 6 while every other protocol call count remains identical. Both ATIME arms pass 36 cases, preserving request-mask and cached-read behavior. Known old-lower-fd whole-page checks still fail all four cases in both arms, with output byte-identical to the [established page-cache object-isolation issue](#attribute-ttl-coherence). These failures establish neither feature correctness nor a basis for expanding workspace data caching. [Independent probes](filesystem-readonly-flush-probes.csv) and [probe provenance](filesystem-readonly-flush-probes-provenance.csv) retain all seven runs and unique final records for 84 registered instances. Probe elapsed times supply no formal performance samples. A separate old-host/new-firmware compatibility run passes 36 ATIME cases and matches the corresponding new-host-disabled observation's protocol call counts, retaining FLUSH. [Reverse compatibility](filesystem-readonly-flush-compat.csv) and its [provenance](filesystem-readonly-flush-compat-provenance.csv) remain separate. The old host has no new counters; fields are blank and do not establish an actual setting of zero. Raw timing, counts and frozen evidence remain separately in `benchmark/.data/lf17m/`, `benchmark/.data/lf17p/` and `benchmark/.data/lf17/`.
+
+## Linux: physical-absence caching for an exclusive upper {#exclusive-upper-absence-cache}
+
+**Enabling physical-upper absence caching changes cumulative three-round seven-tool time from 4325.818 ms to 4321.941 ms, a 0.09% reduction, 95% CI [-3.04%, 4.93%]. There is no detected overall gain, and the cache remains disabled by default.** Third-round rootfs physical queries fall by 71.47%, while workspace queries increase and third-round rg has a 2.18% regression signal. These results do not establish an overall tool speedup.
+
+### Question, conditions and timing results {#exclusive-upper-absence-timing}
+
+Repeated resolution still verifies physical upper parents after hitting the Immutable-lower cache. An explicit exclusive-upper contract allows MissingLeaf / UnavailableParent results to survive a continuous read-only epoch. The engineering comparison tests whether those repeated queries account for a substantial part of current tool waits.
+
+On 2026-10-17, B-FS-ENG varies only `PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE=0/1` using one new GNU engineering artifact and 0045 firmware. Both arms use the same owned Immutable rootfs/workspace generations, with a frozen workspace baseline. Directory-FD cache capacity is 256, lower negative caching is off, WB=0, DAX=0, guest cache=1, and profiling is disabled for formal timing. Execution uses Linux x86_64/KVM, guest 2 vCPU/16 GiB, and normal PVisor, ManagedJob, stage/journal, VmExecutor and native-runner paths. The CLI Host service is omitted and previously sealed input preparation is outside the clocks; ordinary CLI user tables remain unchanged.
+
+Each arm has five fresh environments, shuffled within seeded paired blocks, with nine operations repeated three times per environment and no warmups. All ten environments pass normal-exit, output, cache-inheritance, Run Bundle, lower-isolation, complete written-byte and stream-byte checks, with zero failures. There is no interference, quiet-wait or full-inventory gate; all valid slow samples remain. Ready excludes tools and exit. Operations use worker clocks, excluding launch and exit; stream_write retains its own fsync/close. Resident rounds are dependent, leaving five independent environments per arm. The three-round seven-tool total sums 21 operation clocks within each environment before taking the median; it is not complete-task wall time.
+
+Values below are median milliseconds. Positive reduction means faster; intervals use 5,000 paired-bootstrap resamples over five environment blocks for 95% CI.
+
+| Metric | Upper cache off | Upper cache on | Reduction % | 95% CI % |
+| --- | ---: | ---: | ---: | --- |
+| Ready | 659.383 | 654.450 | 0.75 | [-0.41, 5.96] |
+| Three-round seven-tool total | 4325.818 | 4321.941 | 0.09 | [-3.04, 4.93] |
+| Round 1 seven-tool sum | 2086.825 | 2061.889 | 1.19 | [0.45, 7.23] |
+| Round 2 seven-tool sum | 1129.029 | 1141.184 | -1.08 | [-10.31, 5.60] |
+| Round 3 seven-tool sum | 1081.312 | 1063.091 | 1.69 | [-4.10, 7.67] |
+| Round 1 npm | 764.821 | 702.667 | 8.13 | [0.54, 16.58] |
+| Round 3 rg | 297.383 | 303.871 | -2.18 | [-2.65, -1.23] |
+
+The first-round sum and npm have improvement signals; third-round rg has a regression signal. Ready, round-two/three sums and the three-round total have no detected difference. The 32 individual comparisons have no multiple-comparison adjustment, and N=5 supports neither tail-latency claims nor a comprehensive no-regression guarantee. First-round improvements do not replace the aggregate conclusion. [Full statistics](filesystem-upper-absence-cache-summary.csv), [paired intervals](filesystem-upper-absence-cache-comparisons.csv) and [provenance](filesystem-upper-absence-cache-provenance.csv) retain every operation, round and distribution.
+
+### Query reductions, additional implementation work and boundaries {#exclusive-upper-absence-counters}
+
+Independent B-FS-DIAG has one fresh environment per arm, both valid. Each covers 27 phases across nine operations and three rounds, with 54 synchronous tokens. Four-component phase records are complete on rootfs/workspace, and all 17 registered instances per arm have a unique final record. Actual capacity is verified as 256 per mount; both Core owners match their arm's expected setting of 0 or 1. Counter intervals include the `checked()` subprocess tree's startup, work and original validation, exceeding the worker-clock scope. Diagnostic elapsed times supply no performance result.
+
+The table sums seven-tool counts in round three, N=1 per arm. Core physical queries add parent-stat and leaf-stat units; cache hits refer only to the physical upper.
+
+| Scope / counter | Upper cache off | Upper cache on |
+| --- | ---: | ---: |
+| Rootfs Core physical queries | 21652 | 6178 |
+| Rootfs upper-absence hits | 0 | 15475 |
+| Rootfs MissingLeaf / UnavailableParent hits | 0 / 0 | 2410 / 13065 |
+| Rootfs OPEN / READ | 1052 / 0 | 1052 / 0 |
+| Workspace Core physical queries | 36903 | 38661 |
+| Workspace upper-absence hits | 0 | 4748 |
+| Workspace MissingLeaf / UnavailableParent hits | 0 / 0 | 4414 / 334 |
+| Workspace upper-present misses | — (disabled) | 12444 |
+| Workspace OPEN / READ | 2681 / 2480 | 2681 / 2480 |
+
+Rootfs eliminates 15474 physical queries while workspace adds 1758. To collect complete parent evidence, the enabled miss path bypasses successful-prefix reuse within the same logical walk. Noncached upper Entry results also take that complete-validation path, so the 12444 upper-present misses add path work in this candidate implementation. These present queries include existing ancestor directories; their count does not place the rg corpus in upper. That corpus and the payload remain in the sealed lower. Counts identify work the cache has not eliminated, without independently measuring its elapsed contribution or exactly attributing the rg regression. Error-class cache misses and capacity evictions are zero in the enabled arm; the disabled arm performs no cache-query classification. [Per-tool counters](filesystem-upper-absence-cache-counters.csv) and [counter provenance](filesystem-upper-absence-cache-counters-provenance.csv) retain all phases, invalidations and classifications. Software-query counts are not disk I/O or an exact time decomposition.
+
+Eligibility requires explicit exclusive-upper ownership, directory-permission synchronization and stable root, physical ancestors and mount identity. Each exclusive namespace operation suspends and clears the cache; guard drop clears again and resumes it, covering errors, partial publication, snapshots and teardown. Enabling rejects a journal that overlaps upper through an equal path, parent/child relationship or symlink alias. Only physical-upper MissingLeaf, UnavailableParent and complete successful parent evidence are retained. Entry attributes, errors, merged winners, policy, whiteout/opaque and journal decisions are not retained; guest TTL and data-page policy are unchanged. Ordinary Core/HOST paths infer none of this contract, and the default remains `0`.
+
+Physical-lower metadata caching, guest directory-image eligibility, frozen-baseline read-observation savings and data-page retention across OPENs are different mechanisms. Upper-absence hits do not remove the workspace's 2480 READ requests; Immutable workspace metadata eligibility does not automatically provide safe KEEP_CACHE. Reducing read cost further requires isolating page-cache semantics for old lower FDs and new upper FDs sharing one guest inode, followed by workspace data-page-retention validation. Current evidence is insufficient to enable physical-upper caching by default; WB also remains off. Raw timing and diagnostics remain separately in `benchmark/.data/uc17m/` and `benchmark/.data/uc17p/`, with frozen sources, harness and analysis under `benchmark/.data/uc17/`.
+
+## Linux: rejected attribute-TTL candidate and page-cache object isolation {#attribute-ttl-coherence}
+
+**The candidate extending only Immutable regular-lower attribute TTL was rejected and removed because it leaves a hardlink source's nlink stale. Formal performance samples: 0.** Independent B-FS-DIAG on 2026-10-17 uses the same frozen host, guest probe and 0045 firmware, varying only the candidate switch; WB=0 and DAX=0. A retained read-only fd first primes attributes with `AT_EMPTY_PATH|AT_STATX_FORCE_SYNC`, then `link(a,b)` runs. After 1.1 seconds, beyond the ordinary TTL, the same fd is queried directly without an intervening path stat. With the candidate disabled, ordinary and force-sync queries both return nlink=2; enabled, ordinary returns 1 and force-sync returns 2. This establishes incomplete invalidation of hardlink-source attributes and supports no GETATTR-reduction or tool-speedup claim. The frozen switch is no longer a current product setting. The original probe names this case `link-opath`, but this musl target includes `O_PATH` in `O_ACCMODE`, so Rust `OpenOptions::custom_flags` clears the bit and retains an ordinary read-only fd. These results do not establish O_PATH behavior. Raw openat, F_GETFL and EBADF controls in the data-mapping probe confirm the construction difference; historical raw output remains unchanged.
+
+| Independent diagnostic | Candidate disabled | Candidate enabled | Established scope |
+| --- | --- | --- | --- |
+| Retained read-only fd hardlink source: ordinary / force-sync nlink | 2 / 2 | 1 / 2 | New stale attributes from the candidate |
+| Old lower fd: full-content check after whole-page writes | 4/4 fail | 4/4 fail | Existing page-cache object-isolation gap |
+| ATIME request-mask and attribute checks | 36/36 pass | 36/36 pass | Separate attribute diagnostics pass |
+
+The whole-page probe opens an old read-only fd on an Immutable root lower, triggers copy-up through a writable fd, and uses `pwrite` to write 4 KiB or 8 KiB at offset 0. Before the writable OPEN, the old fd is either explicitly bound or still deferred, forming four independent cases; the latter still passes through mutation drain. Reads alternate with the same writable upper fd, checking the old fd first and verifying all 16 KiB each time. At both settings, every case reports an old-fd content difference at byte zero; upper-content checks report no difference. This confirms that the existing guest shared-inode/page-cache path does not fully isolate the original lower object from the new upper object, including with the candidate disabled. Expanding workspace `KEEP_CACHE` requires resolving this object-isolation boundary. These results do not cover mmap, concurrency, other offsets or every mount type.
+
+Each ATIME arm passes 36 cases. This supplies no performance result and does not resolve the failures above. Other `review-attrs` assertions remain raw diagnostics requiring separate review; their aggregate failure count is not a count of independent product defects. Raw output and the rejection decision remain in `benchmark/.data/ac17/probes/` and `decision.json`, alongside frozen candidate sources, binaries and firmware identity. The [12 decisive evidence rows](filesystem-cache-coherence-cases.csv) and [provenance summary](filesystem-cache-coherence-provenance.csv) contain only the eight whole-page cases, two retained-fd attribute results and two ATIME summaries above.
+
+## Linux: negative caching for Immutable physical lowers {#immutable-lower-negative-cache}
+
+**Enabling negative caching changes cumulative three-round seven-tool time from 4380.075 ms to 4304.291 ms, a 1.73% reduction, 95% CI [-4.91%, 4.18%]. There is no detected overall gain, and negative caching remains disabled by default.** Independent diagnostics reduce third-round rootfs Core physical queries by 20.47%, establishing that the mechanism removes repeated missing-leaf queries without establishing a tool speedup.
+
+### Question, conditions and timing results {#immutable-lower-negative-timing}
+
+Repeated resolution still physically queries leaves already confirmed absent from an Immutable lower. The engineering comparison tests whether retaining that result reduces Ready and resident-tool waits while preserving upper, other-lower, access-policy and journal semantics.
+
+On 2026-10-17, B-FS-ENG varies only `PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE=0/1` using one new GNU engineering artifact and 0045 firmware. Both arms use the same genuinely owned Immutable rootfs and workspace generations, with a frozen workspace baseline. Directory-FD cache capacity is 256 in both; WB=0, DAX=0, guest cache=1, and profiling is disabled for formal timing. Linux x86_64/KVM, guest 2 vCPU/16 GiB, and normal PVisor, ManagedJob, stage/journal, VmExecutor and native-runner paths are retained, with the CLI Host service omitted. Previously sealed inputs are prepared outside the clocks; ordinary CLI user tables remain unchanged.
+
+Each arm has five fresh environments, shuffled within seeded paired blocks, with nine operations repeated three times per environment and no warmups. All ten environments pass output, cache-inheritance, Run Bundle, lower-isolation, complete written and stream-byte, and normal-exit checks, with zero failures. There is no interference, quiet-wait or full-inventory gate; all valid slow samples remain. Ready ends at the unique ready output, excluding tools and exit. Operations use worker clocks, excluding launch and exit; stream_write retains its own fsync/close. Resident rounds are dependent, leaving five independent environments per arm. The cumulative seven-tool metric sums 21 operation clocks within each environment before taking the median; it is not complete-task wall time.
+
+Values below are median milliseconds. Positive reduction means faster; intervals use 5,000 paired-bootstrap resamples over five environment blocks for 95% CI.
+
+| Metric | Negative cache off | Negative cache on | Reduction % | 95% CI % |
+| --- | ---: | ---: | ---: | --- |
+| Ready | 656.562 | 652.746 | 0.58 | [-0.62, 0.95] |
+| Three-round seven-tool total | 4380.075 | 4304.291 | 1.73 | [-4.91, 4.18] |
+| Round 1 seven-tool sum | 2106.067 | 2107.373 | -0.06 | [-7.14, 5.96] |
+| Round 2 seven-tool sum | 1136.160 | 1115.354 | 1.83 | [-7.60, 4.49] |
+| Round 3 seven-tool sum | 1127.554 | 1108.215 | 1.72 | [-13.52, 10.31] |
+
+All 32 intervals cross zero: Ready, nine operations in each of three rounds, three per-round sums and the three-round total. No individual or aggregate difference is detected. Individual intervals have no multiple-comparison adjustment; N=5 supports neither tail-latency claims nor a comprehensive no-regression guarantee. [Full statistics](filesystem-negative-cache-summary.csv), [paired intervals](filesystem-negative-cache-comparisons.csv) and [provenance](filesystem-negative-cache-provenance.csv) retain per-tool distributions and full precision.
+
+### Query changes and optimization boundaries {#immutable-lower-negative-counters}
+
+Independent B-FS-DIAG has one fresh environment per arm, both valid. Each covers 27 phases across nine operations and three rounds, with 54 synchronous tokens. Four-component phase records are complete on rootfs/workspace, and each arm has a unique final record for all 17 registered instances. Actual capacity is checked as 256 per mount; both Core owners in each arm match its expected negative-cache setting of 0 or 1. Counter intervals include the `checked()` subprocess tree's startup, work and original validation, exceeding the worker-clock scope. Instrumented elapsed times supply no performance result.
+
+The table sums seven-tool counts in round three, N=1 per arm. Core physical queries add parent-stat and leaf-stat units.
+
+| Scope / counter | Negative cache off | Negative cache on |
+| --- | ---: | ---: |
+| Rootfs Core physical queries | 21652 | 17220 |
+| Rootfs MissingLeaf misses | 674 | 0 |
+| Rootfs negative hits | 0 | 674 |
+| Rootfs OPEN / READ | 1052 / 0 | 1052 / 0 |
+| Workspace Core physical queries | 37861 | 38323 |
+| Workspace MissingLeaf misses | 2 | 0 |
+| Workspace negative hits | 0 | 2 |
+| Workspace UnavailableParent misses | 8 | 8 |
+| Workspace OPEN / READ | 2681 / 2480 | 2681 / 2480 |
+
+The 674 repeated rootfs MissingLeaf queries become negative hits, eliminating 4432 physical queries. Workspace replaces only two MissingLeaf queries; all eight unavailable-parent results are still queried afresh. Error-class misses are zero in both arms. Workspace physical queries do not fall, and actual OPEN/READ counts remain unchanged. Software-query counts are not disk I/O and cannot be converted into exact time attribution or explain every tool difference. [Per-tool counters](filesystem-negative-cache-counters.csv) and [counter provenance](filesystem-negative-cache-counters-provenance.csv) retain complete phases and instance coverage.
+
+The mechanism retains only eligible Immutable physical-lower MissingLeaf results and their complete parent identities. Each request still checks upper, whiteouts, opaque markers, other lowers, access policy and read observations. Errors, UnavailableParent and merged-view absence are not retained, and guest negative-dentry TTL is unchanged. Positive and negative entries share the existing 4096-entry bound and clear-on-capacity eviction. Eligibility requires the namespace, ancestors, mount identity and hardlink aliases to remain truly stable for the owner's lifetime; an ordinary directory, read-only mount or frozen baseline alone does not establish it. Unset or `0` keeps the feature disabled.
+
+Further optimization must first address the [confirmed page-cache object-isolation boundary](#attribute-ttl-coherence), alongside reducing duplicate OPEN-path work while retaining real object binding. The attribute-TTL candidate was rejected and removed because it leaves hardlink nlink stale, with zero formal performance samples. The negative-cache query reduction is insufficient to support enabling it by default. WB remains off, and final-syncfs ENOENT after unlink is unresolved by this change. Raw timing and diagnostics remain separately in `benchmark/.data/nc17m/` and `benchmark/.data/nc17p/`, with frozen sources, harness and analysis under `benchmark/.data/nc17/`.
+
+## Linux: directory-FD cache capacity and ATIME invalidation {#directory-cache-atime}
+
+**Increasing directory-FD cache capacity from 256 to 1024 changes cumulative three-round seven-tool time from 4279.878 ms to 4267.253 ms, a 0.29% reduction, 95% CI [-0.91%, 1.89%]. There is no detected overall gain, and default capacity remains 256.** Hot rootfs directory-cache misses and evictions disappear while Core physical queries barely change. A separate ATIME probe distinguishes the effects of reading data and requesting attributes.
+
+### Conditions and timing results {#directory-cache-atime-timing}
+
+On 2026-10-17, B-FS-ENG varies only directory-FD cache capacity, 256 / 1024, using the same frozen GNU engineering artifact and 0045 firmware. Both arms use genuinely owned Immutable rootfs and workspace inputs, with a frozen workspace baseline; WB=0, DAX=0, guest cache=1. Execution retains normal PVisor, ManagedJob, stage/journal, VmExecutor and native-runner paths and omits the CLI Host service, so Ready is not comparable across cohorts with ordinary CLI user tables. Previously sealed input generations are reused; preparation is outside Ready and tool clocks.
+
+Each arm has five fresh environments, shuffled within seeded paired blocks, with the original nine operations repeated three times per environment. All ten formal environments pass normal exit, output, cache-inheritance, Run Bundle, lower-isolation and complete written-byte checks. There is no interference, quiet-wait or full-inventory gate, and all valid slow samples remain. Ready excludes tools and exit; operations use worker clocks. The cumulative three-round seven-tool metric sums 21 operations within each environment before taking the median, leaving five independent samples.
+
+Values below are median milliseconds. Positive reduction means faster; intervals use 5,000 paired-bootstrap resamples for 95% CI.
+
+| Metric | Capacity 256 | Capacity 1024 | Reduction % | 95% CI % |
+| --- | ---: | ---: | ---: | --- |
+| Ready | 653.418 | 652.628 | 0.12 | [-0.62, 5.38] |
+| Three-round seven-tool total | 4279.878 | 4267.253 | 0.29 | [-0.91, 1.89] |
+| First-round npm | 751.310 | 674.267 | 10.25 | [1.63, 11.91] |
+
+First-round npm has an improvement signal; Ready and the cumulative total have no detected difference. The 32 individual comparisons have no multiple-comparison adjustment, and N=5 supports no tail-latency claim. This isolated signal is insufficient to justify increasing the default. [Full statistics](filesystem-cache-capacity-summary.csv), [paired intervals](filesystem-cache-capacity-comparisons.csv) and [provenance](filesystem-cache-capacity-provenance.csv) retain every operation and round.
+
+### Counters and remaining optimization scope {#directory-cache-atime-counters}
+
+Independent B-FS-DIAG has one fresh environment per capacity, both valid, with complete four-component phases on rootfs/workspace and final records for every registered instance. In the third-round seven-tool sum, rootfs directory-FD cache misses and evictions each fall from 252 to zero, while Core parent-stat plus leaf-stat changes only from 21,653 to 21,652. Avoiding native directory-handle reconstruction does not remove Core path validation; a cache-miss reduction does not establish a tool speedup.
+
+At either capacity, all 674 rootfs Immutable-cache misses concern missing physical-lower leaves, with zero error-class misses. Workspace has two missing-leaf and eight unavailable-parent misses, also with zero error-class misses. These classifications narrow the next investigation. The [independent negative-cache comparison](#immutable-lower-negative-cache) removes repeated MissingLeaf queries, with no detected gain in cumulative tool time; upper, whiteout and merged-namespace checks must remain. [Per-tool counters](filesystem-cache-capacity-counters.csv) and [counter provenance](filesystem-cache-capacity-counters-provenance.csv) preserve phase boundaries and complete-instance coverage. Software-query counts do not measure disk I/O or provide exact time attribution.
+
+### ATIME causality in read→statx {#directory-cache-atime-cause}
+
+An independent SDK probe with the existing firmware requests `SIZE|MTIME`, `ATIME` and `BASIC_STATS` on root lower, root upper, Immutable-share lower and Mutable-share lower files. Each case first refreshes basic attributes with `AT_STATX_FORCE_SYNC`, then compares no read, a first read, and a cached read on the same fd. Synchronous ioctls bracket prime, read, first stat and repeated stat separately. All 36 cases, 144 phases and 288 tokens are complete; the three devices have four components each, with a unique final record for all 12 registered instances. No sleeps are inserted.
+
+| Data access and subsequent request | Cases | Host OPEN / READ in read phase | GETATTR in first stat |
+| --- | ---: | ---: | ---: |
+| No read, any of the three masks | 12 | 0 / 0 | 0 |
+| First read, then SIZE/MTIME | 4 | 4 / 4 | 0 |
+| First read, then ATIME/BASIC | 8 | 8 / 8 | 8 |
+| Cached read on the same fd, any mask | 12 | 0 / 0 | 0 |
+
+Each of 36 forced primes issues one GETATTR; all 36 immediately repeated stats issue none. Prime-to-first-query age is only 2.535–4.834 ms, well below the ordinary one-second attribute deadline. All eight ATIME/BASIC queries observe changed access times. The result supports selective ATIME invalidation after an actual host READ, with no repeated invalidation on a same-fd page-cache hit. It does not attribute all GETATTR requests to ATIME. Instrumented syscall durations and inclusive spans supply no performance result. [Case counts](filesystem-atime-cases.csv) and [diagnostic provenance](filesystem-atime-provenance.csv) retain complete boundaries. Raw timing, counters and probe evidence remain separately in `benchmark/.data/fc17m/`, `benchmark/.data/fc17p/` and `benchmark/.data/fc17/`.
+
+## Linux: four-arm comparison with owned-input caching {#owned-input-cache}
+
+**Enabling Immutable cache eligibility for the sealed rootfs reduces the third-round seven-tool sum from 1581.62 ms to 1173.57 ms, a 25.80% reduction. Enabling the workspace snapshot as well gives 1267.91 ms, a 19.83% reduction. Workspace treatment alone has no detected difference in the third-round sum, and the seven-tool sum has not reached a twofold speedup.** Rootfs data caching removes actual READ requests; workspace metadata optimization retains the cost of opening and reading files.
+
+### Conditions and timing boundaries {#owned-input-protocol}
+
+B-FS-ENG uses one frozen GNU engineering artifact and 0045 firmware through ordinary PVisor, ManagedJob, stage/journal, VmExecutor and native-runner execution. The entry omits the CLI Host service; ordinary CLI inputs do not automatically acquire this ownership or cache eligibility. Linux x86_64/KVM, guest 2 vCPU/16 GiB, whole parent CPUs 0,1, two-core quota, 16 GiB and zero swap, warm host inputs, and independent upper, Job, workspace and task tool caches. WB=0, DAX=0, guest cache=1, with profiling disabled for timing.
+
+All rootfs arms use the same genuinely imported, sealed physical directory, varying only its Mutable/Immutable declaration. Baseline and rootfs-only workspaces use independent live Mutable copies. Workspace-only and combined arms use a sealed snapshot with identical initial bytes, a frozen baseline and an Immutable lower; the apply target remains the independent trial workspace. Workspace treatment therefore jointly changes cache eligibility and read-observation/journal work. SnapshotBase authenticates its generation from a trusted store and holds a lease through Job completion and native teardown. The store remains after execution; no additional persistent pin is created. One-time import and sealing take **51.048 seconds**, separately from Ready and tool clocks.
+
+Each condition has five fresh environments, shuffled within seeded blocks, with nine operations repeated three times per environment: 20 valid environments and zero failures. Ready ends at the unique ready output, excluding tools and exit. Tool clocks use worker timings; stream_write retains explicit fsync/close. Normal exit, outputs, cache inheritance, Run Bundle, lower isolation, all 256 written files and three complete stream files are checked. There is no quiet wait, interference monitor or full-inventory gate; all valid slow samples remain. Resident rounds are dependent, leaving five independent environments per condition.
+
+### Timing results {#owned-input-results}
+
+Milliseconds, medians, N=5 per condition. The seven-tool sum is computed within each environment and round before taking the median.
+
+| Metric | Baseline | Sealed rootfs | Snapshot workspace | Both |
+| --- | ---: | ---: | ---: | ---: |
+| Ready | 679.46 | 659.22 | 665.09 | 652.77 |
+| Seven-tool sum, round 1 | 2448.27 | 2479.10 | 2325.91 | 2009.04 |
+| Seven-tool sum, round 2 | 1955.95 | 1348.25 | 1470.78 | 1432.07 |
+| Seven-tool sum, round 3 | 1581.62 | 1173.57 | 1545.61 | 1267.91 |
+
+Positive reduction means faster. With 5,000 paired bootstrap resamples over the five environments, third-round rootfs reduces time by 25.80%, 95% CI [10.27%, 45.13%]; both reduce it by 19.83% [1.07%, 56.33%]. Workspace-only is 2.28% [-5.29%, 44.11%], with no detected difference. Both reduce the first-round sum by 17.94% [13.87%, 33.87%]. Rootfs and both reduce Ready by 2.98% [2.02%, 29.88%] and 3.93% [1.99%, 40.32%]; workspace-only crosses zero. Baseline retains a slow Ready sample of 1093.86 ms and a third-round sum of 2903.71 ms, producing wide intervals. N=5 does not support tail-latency claims; the 93 individual comparisons have no multiple-comparison adjustment.
+
+Third-round tool medians follow. Adding the row medians does not produce the median of the per-environment sum.
+
+| Third-round tool | Baseline | Sealed rootfs | Snapshot workspace | Both |
+| --- | ---: | ---: | ---: | ---: |
+| Traverse 2048 files | 138.23 | 164.51 | 121.75 | 137.17 |
+| Read and verify 64 MiB | 82.90 | 32.93 | 83.34 | 79.71 |
+| Overwrite 256 files | 118.57 | 84.65 | 130.81 | 153.37 |
+| git status | 35.31 | 24.99 | 14.66 | 8.23 |
+| rg search | 348.42 | 327.20 | 323.56 | 299.50 |
+| Incremental Cargo build | 34.14 | 20.64 | 33.04 | 19.72 |
+| npm install check | 767.75 | 548.32 | 788.16 | 536.36 |
+
+With both enabled, npm, Cargo, git and rg fall by 30.14%, 42.23%, 76.68% and 14.04%, respectively, with individual intervals excluding zero. Traversal, read and write have no detected difference. Hot-open and stream_write intervals also cross zero in every arm. Combined treatment has no established advantage over rootfs-only; their sum medians do not establish which is faster. [Four-arm statistics](filesystem-owned-inputs-summary.csv), [paired intervals](filesystem-owned-inputs-comparisons.csv) and [provenance](filesystem-owned-inputs-provenance.csv) retain full values and ranges.
+
+### Request evidence and remaining opportunities {#owned-input-counters}
+
+Independent B-FS-DIAG has one fresh environment per condition, covering 27 phases across nine operations and three rounds, with 54 tokens synchronously checkpointed on rootfs and workspace. The four conditions have 13/13/17/17 registered instances, all with final records, and complete per-component phase coverage on both mounts. Counter intervals include the `checked()` subprocess tree's startup, operation and original validation, exceeding the worker-clock scope. Instrumented elapsed times supply no performance result.
+
+The table sums the seven tools in round three. Core physical queries add parent-stat and leaf-stat units: software-query counts that do not measure disk I/O or provide exact time attribution.
+
+| Scope / counter | Baseline | Sealed rootfs | Snapshot workspace | Both |
+| --- | ---: | ---: | ---: | ---: |
+| Rootfs OPEN | 1052 | 1052 | 1052 | 1052 |
+| Rootfs READ | 1475 | 0 | 1475 | 0 |
+| Rootfs LOOKUP | 3656 | 948 | 3618 | 948 |
+| Rootfs Core physical queries | 99828 | 21653 | 99679 | 21807 |
+| Workspace OPEN | 2681 | 2681 | 2681 | 2681 |
+| Workspace READ | 2480 | 2480 | 2480 | 2480 |
+| Workspace LOOKUP | 2102 | 2084 | 306 | 306 |
+| Workspace Core physical queries | 91327 | 91160 | 38745 | 36962 |
+
+Rootfs READ disappears while OPEN remains, supporting data-page reuse with continued object binding for actual reads. Workspace LOOKUP and physical queries fall, while OPEN/READ stay identical, explaining its limited broad tool benefit. Zero third-round READINDEX does not establish an unused directory image: import occurs in earlier phases. Across all three rounds of seven tools, workspace content fingerprinting falls from 2156 calls and 69,375,691 bytes in baseline to one call and zero bytes in snapshot conditions. This also exposes the frozen baseline's removal of read-observation work. [Per-phase counters](filesystem-owned-inputs-counters.csv) and [counter provenance](filesystem-owned-inputs-counters-provenance.csv) retain boundaries and coverage evidence.
+
+That cohort did not cover the ordinary CLI. Subsequent [prepared-rootfs](#cli-prepared-rootfs), [prepared-workspace](#cli-prepared-workspace) and [four-arm DATA/FLUSH comparisons](#cli-data-flush-factorial) independently measured those CLI paths while retaining leases, stage/apply and external-modification boundaries; they do not constitute complete semantic acceptance. In this cohort, `KEEP_CACHE` mainly applies to the root device, so an Immutable workspace's metadata eligibility does not automatically supply equivalent data caching. The separate [isolated-data-page protocol](#immutable-lower-data-cache) measures object isolation and page reuse and remains disabled by default. Ordinary OPEN checks and binding costs remain. WB stays off, and the final-syncfs ENOENT after unlink remains unresolved; these results do not justify enabling writeback. Raw timing and diagnostics remain separately in `benchmark/.data/oc16m/` and `benchmark/.data/oc16p/`, with preparation, artifacts, harness and analysis under `benchmark/.data/oc16/`.
+
+## Linux: quick retest of guest lifetime fixes {#guest-lifetime-fixes}
+
+**Patch 0045 fixes reproduced deferred-open object-binding and poll-mask failures, without an established overall speedup.** Ready and all three seven-tool sums have intervals crossing zero; third-round npm has a regression signal. With writeback enabled, both firmware versions fail the ordinary CLI's final barrier with ENOENT after unlink, leaving no valid performance conclusion for that condition.
+
+### Motivation and experiment design {#guest-lifetime-protocol}
+
+Measure the cost of preserving lookup, object-binding and final RELEASE lifetimes in directory images, deferred OPEN and batched writeback. Patch 0045 reuses native READDIRPLUS parallel lookup/alias splicing; regular-file mutations block new deferred-open publication from pending-open drain through the host reply; timestamp, xattr and hard-link changes gain binding points; the queue's final reference preserves synchronous auto-submount RELEASE; failed poll binding returns EPOLLERR. An independent host profile-registration change completes diagnostic instance accounting.
+
+B-FS-ENG cohort `flife16b` uses the same current GNU release/gateway host binary, SHA256 `0bc3de591c8444d74b8b67a409bab17dc8712311e81477d42d0281469f8678f0`, switching only final-0044 versus additional-0045 firmware. Both enable guest cache and disable writeback, DAX and profiling. Linux x86_64/KVM, CPUs 0,1, whole-parent quota of two cores / 16 GiB / zero swap; CLI guests have two vCPUs/16 GiB and a Btrfs workspace. Independent SDK guests have two vCPUs/512 MiB, private tmpfs fixtures/uppers, an explicit Immutable share and no journal. Cohorts remain separate.
+
+Each firmware has five fresh CLI and five fresh SDK environments, randomly interleaved within paired trials, seed 20261016, no extra warmups and three resident rounds per environment. CLI runs the same nine operations, tool caches and full byte/Bundle/lower-isolation checks. SDK performs 256-path stat, a scan of 300 subdirectories and 10,000 open/fstat/close calls, checking fixed counts/sizes and exit. Startup ends at the unique Ready; operation clocks exclude startup and exit. The seven-tool sum is calculated within each environment/round before taking its median. All 20 environments pass, with zero failures. There is no interference or full-inventory gate, and valid slow samples remain. Ordinary Mutable CLI inputs do not establish directory-image hits.
+
+### Data and analysis {#guest-lifetime-results}
+
+Values are medians; negative changes mean faster. Intervals use 5,000 paired bootstrap resamples over five independent environment indices. Three rounds do not create fifteen independent samples. The [derived CSV](filesystem-lifetime-summary.csv) contains all 49 comparisons, ranges and individual values; the [provenance CSV](filesystem-lifetime-provenance.csv) identifies artifacts and failed evidence. Individual intervals have no multiple-comparison adjustment. N=5 supports quick observations, with no tail-latency or overall no-regression guarantee.
+
+| Metric | Round | 0044 ms | 0045 ms | Change | 95% CI % |
+| --- | --- | ---: | ---: | ---: | --- |
+| CLI Ready | — | 761.446 | 724.310 | -4.88% | [-32.23, +2.42] |
+| CLI seven-tool sum | 1 | 3085.999 | 3055.917 | -0.97% | [-24.78, +8.06] |
+| CLI seven-tool sum | 2 | 1821.624 | 1793.154 | -1.56% | [-5.46, +7.92] |
+| CLI seven-tool sum | 3 | 1696.279 | 1673.227 | -1.36% | [-3.61, +6.48] |
+| CLI hot open ×10,000 | 3 | 10.298 | 10.346 | +0.46% | [-13.86, +16.49] |
+| CLI 8 MiB stream + fsync/close | 3 | 467.809 | 489.954 | +4.73% | [-15.89, +8.95] |
+| CLI npm | 3 | 866.880 | 890.301 | +2.70% | [+1.86, +10.90] |
+| SDK stat ×256 | 1 | 4.452 | 4.402 | -1.11% | [-3.49, +4.41] |
+| SDK scan 300 directories | 1 | 31.887 | 29.767 | -6.65% | [-27.91, +5.89] |
+| SDK scan 300 directories | 3 | 0.174 | 0.171 | -1.66% | [-6.94, +8.23] |
+| SDK stat ×256 | 2 | 0.153 | 0.187 | +22.32% | [+0.78, +26.96] |
+| SDK hot open ×10,000 | 3 | 5.089 | 5.047 | -0.84% | [-3.35, -0.01] |
+
+Forty-four of 49 intervals cross zero. Third-round npm increases by 23.42 ms (+2.70%); second-round SDK stat increases by 0.034 ms. SDK hot open falls by 0.067/0.043 ms in rounds two/three, and second-round stream close falls by 0.024 ms. Both directions remain visible; isolated signals do not establish stable speedups. The baseline Ready values retain a valid slow sample of 1148.71 ms.
+
+### Correctness evidence and unresolved paths {#guest-lifetime-correctness}
+
+Independent real-guest `verified-current.json` records 27 checks matching their expectations. Four timestamp/setxattr/removexattr/hard-link failures with writeback off and four with it on, plus one poll failure, produce nine baseline failures that all pass under 0045. The held reader returns `original` instead of the incorrect `modified`; poll returns only POLLERR. The full probe passes concurrent directory access, aliases, unlink, copy-up, partial-image and unmount checks. Normal writeback, backpressure, close/unmount and injected EIO-to-125 cases pass. The BDI probe checks the root and additional share by their actual mount device, retaining the original strict/max/min assertions.
+
+Independent counter diagnostics cover 12 registered PID/component/instance identities, all with final records, across protocol, dispatch, overlay and Core. Python checks reject missing whole instances/components and non-final reports. Legacy unregistered logs remain partial evidence. Rust Core passes 146 tests and VM passes 417; diagnostic Python passes 14 and firmware bundle/ABI checks pass two. KASAN, long race testing and same-connection auto-submount stress were not run; passing ordinary concurrency/multi-mount probes does not prove complete P1 coverage. Deferred descriptors in descendants of a recursively materialized directory rename still need dedicated coverage; the current gate covers regular-file endpoints.
+
+Both writeback-on arms of initial cohort `flife16` exit 125 because final workspace syncfs returns ENOENT; that entire attempt supplies no performance conclusion. Minimal diagnostic `flifediag16b` shows successful directory open, ENOENT on the first syncfs after unlinking a closed file, and zero on the second. The host has removed the inode path with no surviving handle; subsequent ctime SETATTR fails. This path remains unresolved. Skipping the error or reverting to an older supervisor cannot produce valid timing evidence.
+
+Raw evidence remains in `benchmark/.data/flife16b/report.json` and per-task logs. `benchmark/.data/fs-review-20261016/` retains the patch, both firmware binaries/sources, build logs, frozen launch entries, `derive.py` and correctness logs. Initial reused-target artifacts with an older embedded guest supervisor remain diagnostic only; the final build reruns the VM build script, checks the current supervisor and repeats every functional check. These results leave the existing cross-runtime user tables intact and do not estimate gains relative to main.
 
 ## Linux: paired N30 comparison of filesystem optimizations with default-off writeback {#filesystem-optimization-n30}
 

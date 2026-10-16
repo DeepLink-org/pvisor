@@ -69,6 +69,7 @@ pub(super) struct Validated {
     pub metadata: BTreeMap<String, String>,
     pub cpu_millis: u64,
     pub memory_bytes: u64,
+    pub e2b: Option<crate::runtime::E2bTemplate>,
 }
 
 impl CreateRequest {
@@ -172,11 +173,12 @@ impl CreateRequest {
             metadata: self.metadata,
             cpu_millis,
             memory_bytes,
+            e2b: None,
         })
     }
 }
 
-fn validate_map(values: &BTreeMap<String, String>, environment: bool) -> Result<(), ApiError> {
+pub(super) fn validate_map(values: &BTreeMap<String, String>, environment: bool) -> Result<(), ApiError> {
     if values.len() > 256
         || values.iter().any(|(key, value)| {
             key.is_empty()
@@ -295,6 +297,8 @@ pub(super) struct Record {
     pub cpu_millis: u64,
     pub memory_bytes: u64,
     pub endpoint_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2b: Option<crate::runtime::E2bTemplate>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

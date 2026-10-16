@@ -115,14 +115,17 @@ pub(super) fn vm_control_socket(requested: Option<&Path>) -> anyhow::Result<Opti
 pub(super) fn reject_guest_exposure(
     paths: impl IntoIterator<Item = PathBuf>,
 ) -> anyhow::Result<()> {
-    let Some(dir) = WORKER_DIRECTORY.get() else {
-        return Ok(());
+    let dir = match WORKER_DIRECTORY.get() {
+        Some(dir) => dir.clone(),
+        // Local preparation must exclude Host authority even outside a Run
+        // worker. Resolve its fixed location without creating/contacting it.
+        None => fs::canonicalize("/tmp")?.join(format!("pvisor-host-{}", uid())),
     };
     for path in paths {
-        let path = fs::canonicalize(&path)
+        let path = super::run::canonical_candidate(&path)
             .with_context(|| format!("resolve guest source {}", path.display()))?;
         ensure!(
-            !dir.starts_with(&path) && !path.starts_with(dir),
+            !dir.starts_with(&path) && !path.starts_with(&dir),
             "guest filesystem source {} exposes private host service state",
             path.display()
         );

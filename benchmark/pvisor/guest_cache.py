@@ -24,7 +24,7 @@ import time
 
 from kernel_cache_runner import source_files
 from filesystem_exec_probe import run_owned_probe
-from filesystem_diagnostic import collect_profiles
+from filesystem_diagnostic import collect_profiles, VM_PROFILE_COMPONENTS
 from publication import distribution
 
 ROOT=Path(__file__).resolve().parents[2]
@@ -166,8 +166,8 @@ def run_one(prepared, out, cohort, arm, mode, profiles, firmware=None):
         validate_bundle_execution(bundle,'pvisor-vm')
     counters=[]
     if profiles:
-        counters=collect_profiles(result.stderr.decode().splitlines())
-        if not counters or any(not p.get('final_record') for p in counters):raise ValueError('incomplete final counter coverage')
+        counters=collect_profiles(result.stderr.decode().splitlines(), require_complete=True,
+                                  expected_components=VM_PROFILE_COMPONENTS)
     return {'times':times,'profiles':counters,'correctness':'passed'}
 
 def analyze(report):

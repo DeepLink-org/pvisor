@@ -276,6 +276,10 @@ def filesystem():
     value = json.loads(configuration.read_text())
     value["toolchain"] = str(TOOLCHAIN)
     configuration.write_text(json.dumps(value))
+    if value.get("rounds", 1) != 1:
+        from filesystem_rounds_workload import run_rounds
+
+        return run_rounds(value["rounds"], ROOT, HARNESS, checked, tools_env)
     results = {}
     for mode in ("metadata", "read", "write", "git", "rg", "cargo", "npm"):
         output = checked(

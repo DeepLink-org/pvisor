@@ -67,6 +67,8 @@ use tokio::{
 
 const EXECD_PORT: u16 = 44772;
 const EGRESS_PORT: u16 = 18080;
+pub(crate) const ENVD_PORT: u16 = 49983;
+pub(crate) const ENVD_TOKEN_ENV: &str = "PVISOR_ENVD_ACCESS_TOKEN";
 const IPC_LIMIT: usize = AGENTCTL_HOST_MAX_FRAME_BYTES;
 const HEALTH_LIMIT: usize = 16 * 1024;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -91,6 +93,53 @@ pub trait Runtime: Send + Sync {
     async fn resume(&self, id: &str) -> Result<RuntimeState>;
     async fn delete(&self, id: &str) -> Result<()>;
     async fn endpoint(&self, id: &str, port: u16) -> Result<String>;
+    /// Resolve a trusted local E2B template before admission. This read-only
+    /// operation must not launch a workload or accept registry/path references.
+    /// Backends without prepared envd images return an explicit error.
+    async fn e2b_template(&self, _image: &str) -> Result<E2bTemplate> {
+        bail!("E2B prepared templates are not supported by this runtime")
+    }
+}
+
+/// Operator-provisioned E2B template settings, retained with each native identity.
+/// These are not client-selected resources or a template build service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct E2bTemplate {
+    /// Aggregate supervisor/VM CPU quota in millicores, from 10 through 8000.
+    pub cpu_millis: u64,
+    /// Hard supervisor/VM memory limit in bytes, including host overhead.
+    pub memory_bytes: u64,
+    /// Exact version of the real envd binary initialized by the trusted bootstrap.
+    /// A three-component numeric version of at least 0.1.0 is required.
+    pub envd_version: String,
+}
+
+impl E2bTemplate {
+    pub(crate) fn validate(&self) -> Result<()> {
+        let version: Vec<_> = self.envd_version.split('.').collect();
+        ensure!(
+            version.len() == 3
+                && version.iter().all(|part| !part.is_empty()
+                    && part.bytes().all(|byte| byte.is_ascii_digit())
+                    && part.parse::<u32>().is_ok())
+                && version.iter().any(|part| part.parse::<u32>().unwrap_or(0) > 0),
+            "invalid envd version"
+        );
+        ensure!(
+            version[0].parse::<u32>()? > 0 || version[1].parse::<u32>()? > 0,
+            "envd version must be at least 0.1.0"
+        );
+        validate_spec(&RuntimeSpec {
+            id: "sb-12345678-1234-4234-8234-123456789abc".into(),
+            image: "template".into(),
+            entrypoint: Vec::new(),
+            env: BTreeMap::new(),
+            cpu_millis: self.cpu_millis,
+            memory_bytes: self.memory_bytes,
+            e2b: None,
+        })
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -104,6 +153,10 @@ pub struct RuntimeSpec {
     pub cpu_millis: u64,
     /// Hard cgroup memory limit, including supervisor/VMM overhead; no swap.
     pub memory_bytes: u64,
+    /// Selects real envd on port 49983 instead of OpenSandbox execd/egress.
+    /// Omission preserves existing OpenSandbox identities across restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2b: Option<E2bTemplate>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +219,11 @@ pub struct PreparedImage {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub library_dir: Option<PathBuf>,
+    /// E2B-only image profile. Its bootstrap must initialize real envd with
+    /// `PVISOR_ENVD_ACCESS_TOKEN` and publish it over guest vsock port 49983.
+    /// Omission retains the OpenSandbox execd/egress bootstrap contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub e2b: Option<E2bTemplate>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -577,6 +635,29 @@ impl NativeRuntime {
 
 #[async_trait::async_trait]
 impl Runtime for NativeRuntime {
+    async fn e2b_template(&self, image: &str) -> Result<E2bTemplate> {
+        // Reuse the native key validation before constructing a filesystem path.
+        let mut spec = RuntimeSpec {
+            id: "sb-12345678-1234-4234-8234-123456789abc".into(),
+            image: image.into(),
+            entrypoint: Vec::new(),
+            env: BTreeMap::new(),
+            cpu_millis: 1000,
+            memory_bytes: 64 * MIB,
+            e2b: None,
+        };
+        validate_spec(&spec)?;
+        let image: PreparedImage =
+            read_json(&self.config.images_dir.join(format!("{image}.json")))?;
+        validate_image(&image, &self.config.state_dir)?;
+        let template = image.e2b.context("image has no E2B envd profile")?;
+        template.validate()?;
+        spec.cpu_millis = template.cpu_millis;
+        spec.memory_bytes = template.memory_bytes;
+        validate_spec(&spec)?;
+        Ok(template)
+    }
+
     async fn preflight(&self) -> Result<()> {
         ensure!(
             cfg!(all(target_os = "linux", target_arch = "x86_64")),
@@ -633,6 +714,7 @@ impl Runtime for NativeRuntime {
         let image: PreparedImage =
             read_json(&self.config.images_dir.join(format!("{}.json", spec.image)))?;
         validate_image(&image, &self.config.state_dir)?;
+        ensure!(image.e2b == spec.e2b, "prepared image service profile changed");
         let generation = uuid::Uuid::new_v4().to_string();
         let group_path = self
             .config
@@ -866,7 +948,12 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
     let mut vsock_ports = BTreeMap::new();
     let ports_dir = sandbox_dir.join("ports");
     private_directory(&ports_dir)?;
-    for port in [EXECD_PORT, EGRESS_PORT] {
+    let ports = if identity.spec.e2b.is_some() {
+        vec![ENVD_PORT]
+    } else {
+        vec![EXECD_PORT, EGRESS_PORT]
+    };
+    for port in ports {
         let path = ports_dir.join(format!("{port}.sock"));
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         endpoints.insert(port, format!("http://{}", listener.local_addr()?));
@@ -938,7 +1025,11 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
         let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
         bail!("native live VM control verification failed");
     }
-    let client = health_client()?;
+    let client = health_client(if identity.spec.e2b.is_some() {
+        identity.spec.env.get(ENVD_TOKEN_ENV).map(String::as_str)
+    } else {
+        None
+    })?;
     // Handle remains in this durable owner. Native transitions are serialized
     // independently of daemon lifetimes, even across IPC client disconnects.
     loop {
@@ -1134,7 +1225,7 @@ fn make_run_spec(identity: &Identity) -> Result<pvisor_core::RunSpec> {
     ensure!(!argv.is_empty(), "prepared bootstrap is missing");
     let mut run = pvisor_core::RunSpec::process(
         format!("run-{}", identity.generation),
-        "opensandbox",
+        if identity.spec.e2b.is_some() { "e2b" } else { "opensandbox" },
         argv.remove(0),
     );
     let pvisor_core::RunInvocation::Process(process) = &mut run.invocation;
@@ -1171,14 +1262,31 @@ async fn bridge(listener: TcpListener, path: PathBuf) -> Result<()> {
     }
 }
 
-fn health_client() -> Result<reqwest::Client> {
+fn health_client(token: Option<&str>) -> Result<reqwest::Client> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = token {
+        let mut value = reqwest::header::HeaderValue::from_str(token)?;
+        value.set_sensitive(true);
+        headers.insert("x-access-token", value);
+    }
     Ok(reqwest::Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
+        .default_headers(headers)
         .timeout(Duration::from_secs(3))
         .build()?)
 }
 async fn probe_services(client: &reqwest::Client, endpoints: &BTreeMap<u16, String>) -> Result<()> {
+    if let Some(envd) = endpoints.get(&ENVD_PORT) {
+        probe_status(client, &format!("{envd}/health"), reqwest::StatusCode::NO_CONTENT).await?;
+        // Health alone also succeeds before envd initialization. Prove both
+        // authenticated API access and rejection without the bootstrap token.
+        let envs = probe(client, &format!("{envd}/envs")).await?;
+        ensure!(serde_json::from_slice::<BTreeMap<String, String>>(&envs).is_ok(),
+            "invalid real envd environment response");
+        probe_status(&health_client(None)?, &format!("{envd}/envs"), reqwest::StatusCode::UNAUTHORIZED).await?;
+        return Ok(());
+    }
     let execd = endpoints
         .get(&EXECD_PORT)
         .context("execd is not published")?;
@@ -1201,9 +1309,12 @@ fn validate_ready(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 async fn probe(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+    probe_status(client, url, reqwest::StatusCode::OK).await
+}
+async fn probe_status(client: &reqwest::Client, url: &str, status: reqwest::StatusCode) -> Result<Vec<u8>> {
     let mut response = client.get(url).send().await?;
     ensure!(
-        response.status() == reqwest::StatusCode::OK,
+        response.status() == status,
         "real service health failed"
     );
     let mut body = Vec::new();
@@ -1502,6 +1613,14 @@ pub fn validate_spec(spec: &RuntimeSpec) -> Result<()> {
         "native memory limit is not representable"
     );
     validate_argv_env(&spec.entrypoint, &spec.env)?;
+    if let Some(template) = &spec.e2b {
+        template.validate()?;
+        ensure!(template.cpu_millis == spec.cpu_millis && template.memory_bytes == spec.memory_bytes,
+            "E2B template resources do not match admission");
+        ensure!(spec.env.get(ENVD_TOKEN_ENV).is_some_and(|token| token.len() >= 32
+            && token.bytes().all(|byte| byte.is_ascii_alphanumeric())),
+            "E2B envd requires a private bootstrap token");
+    }
     Ok(())
 }
 fn validate_argv_env(argv: &[String], env: &BTreeMap<String, String>) -> Result<()> {
@@ -1676,7 +1795,7 @@ fn validate_launch_resources(identity: &Identity, directory: &Path) -> Result<()
 }
 fn validate_port(port: u16) -> Result<()> {
     ensure!(
-        matches!(port, EXECD_PORT | EGRESS_PORT),
+        matches!(port, EXECD_PORT | EGRESS_PORT | ENVD_PORT),
         "only execd/egress service ports are supported"
     );
     Ok(())

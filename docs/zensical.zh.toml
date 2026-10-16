@@ -24,6 +24,7 @@ nav = [
     ] },
     { "了解 pVisor" = [
       { "为什么是 pVisor" = "why/index.md" },
+      { "Agent 任务的生命周期成本" = "why/agent-lifecycle-cost.md" },
       { "信任阶梯与规模轴" = "why/trust-ladder.md" },
       { "用例" = "why/use-cases.md" },
       { "与现成方案对比" = "why/comparisons.md" },

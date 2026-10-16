@@ -1,97 +1,142 @@
-# How long do development tools take across pVisor, Docker and lightweight VMs?
+# How soon is an environment Ready, and what do three tool rounds cost?
 
-## Conclusions {#conclusions}
+## Main conclusions {#conclusions}
 
-**With two CPUs, warm host caches and task-local tool caches, seven tools through exit take 1.07 s in pVisor host, 1.80 s staged and 5.46 s in VM; Docker takes 1.27 s, Firecracker 2.67 s and QEMU microvm 2.35 s. Budget complete waiting and individual operations separately; separated clusters retain their medians and counts.**
+**With two CPUs and warm host caches, median Python-payload Ready is 201.19 ms for pVisor host, 209.56 ms staged and 749.15 ms in VM; Docker takes 450.94 ms and Firecracker 854.79 ms. The VM's seven operation clocks sum to 3323.01 ms in round one and 1758.28 ms in round three. Budget launch and tool execution separately.**
 
-| Need | Selection implication |
+| Scenario | Decision |
 | --- | --- |
-| Local execution with retained changes | Evaluate host/staged and the complete review workflow |
-| Independent guest kernel | Budget both startup and VM tool waiting |
-| Concurrent or idle environments | Require fixed-budget throughput and physical-memory measurements |
-
-This cross-runtime seven-tool cohort uses the selected frozen source/artifact and passed full acceptance on 2026-10-12. Ordinary rootfs/workspace DAX is disabled; new VM writeback is disabled by default and stage synchronization is serial. Historical cohorts stay separate. Isolation, caches, listeners and artifacts differ, so no cross-batch optimization speedup is calculated.
+| Create a prepared environment | Compare first payload Ready; exit is outside startup |
+| Repeated tool calls in one environment | Use round three while retaining the first-round cost |
+| Frequent readonly opens or small stream writes | Check the targeted cases; writeback is an explicit option |
 
 <!-- measurement-status:start -->
 
-Accepted cohort `fo5a4e7d2b-f`: thirty trials per backend across eight backends, with tool-internal phases and complete tasks reported separately. Historical data and engineering A/B remain separate; samples are not pooled.
+Five independent environments for each of nine configurations: 45 total, three resident rounds and 1,215 operations, all correctness checks passed. Quick measurements have no external interference gate; historical data remain separate.
 
 <!-- measurement-status:end -->
 
 ## Motivation {#motivation}
 
-Agent tool loops traverse, read, write, search, compile and install dependencies. Compare individual operations and complete waiting so that fast startup does not hide file-heavy task costs.
+Frequent environment creation makes command availability the first wait. A resident Agent repeatedly traverses, searches, builds and installs, so initial access and later calls need separate budgets. Repeated opens and small stream writes test whether a particular call pattern suits the available optimizations.
 
 ## Experiment design {#interpretation}
 
-Linux x86_64, AMD Ryzen 7 9700X, Fedora 7.2.8-200.fc44.x86_64, Btrfs workspaces. Coordinator, payloads and the private rootless Docker daemon are pinned to CPUs 0,1 and alternate within one private cgroup parent: total CPU quota two, memory limit 16 GiB, zero swap. Each VM has 2 vCPU and 16 GiB guest RAM; guest configured capacity differs from the host-group limit. Shared prepared tool/image caches charged before this parent started remain outside its accounting. Process/thread checks observe visible moments and do not prove complete CPU placement of every short-lived process. Host/staged use rootless_process. Private user/mount namespaces and an owned pivot_root isolate existing host listeners. Namespace preparation is untimed; the private listener is reused after capability checks and warmups. Private /tmp is a 2 GiB tmpfs; workspace and stage remain on Btrfs, with Docker binds pointing to the same physical directories. The user cgroup lacks delegated cpuset, so inherited affinity and the two-core quota are used, retaining the limits of visible process/thread observations.
+Eight backends share prepared offline tools and fixed inputs, with an additional VM explicitly setting `PVISOR_VM_FS_WRITEBACK=1`. The default VM has writeback disabled; guest cache is enabled and DAX disabled in both. Ordinary CLI rootfs/workspace lowers are Mutable: repetition does not make them eligible for directory images, adaptive metadata prefetch or immutable-rootfs data-page retention.
 
-All backends share offline tools and fixed inputs, with a new workspace per trial. Warm host caches, three warmups and 30 measured samples per cell; seed 20261012 randomizes backends each round. Preparation, builds, image import and input resets are outside timing; complete tasks include launch and exit. Executor-provided TMPDIR is preserved, with fresh private HOME and Cargo caches per task and the `NODE_COMPILE_CACHE` environment variable configured; Python does not read/write bytecode. Seven-operation Cargo uses independent `_cargo-home`, `_tmp` and `_cargo-target` in the workspace. Temporary storage varies with executor configuration and contributes to task cost; directory policy and child inheritance are validated. Per-trial gates check cache variables, parent/child inheritance and actual Python cache behavior; actual Node API enablement and the Node cache-directory filesystem type are unknown for this cohort. Independent October 10 environment checks observe Node caches on tmpfs for native/host/staged/pVisor VM and overlayfs for Docker. Reference VM output reports ext4, but its environment Ready gate fails. The [cache observation CSV](filesystem-cache-policy.csv) retains types and failure states separately; these historical checks supply no timing or new cache-type evidence for this cohort; cache directories and parent/child inheritance are checked in every new trial.
+Linux x86_64 / Ryzen 7 9700X / Fedora 7.2.8-200.fc44.x86_64; Docker 29.8.2 rootless overlay2, Firecracker PCI 1.13.1 and QEMU 10.2.2. Firecracker/QEMU use an independently customized reference kernel, not stock kernels. The whole parent has CPU affinity 0,1, a two-CPU quota, 16 GiB and zero swap; each VM has 2 vCPU/16 GiB. cpuset was not delegated, so placement uses inherited affinity. Host workspace/stage storage is Btrfs and reference VM storage ext4; private /tmp is a 2 GiB tmpfs and tools retain executor-default temporary storage.
 
-Docker Engine 29.7.2 uses a private rootless overlay2 daemon, classic image storage and a writable bind mount. Firecracker PCI uses a frozen independent custom reference kernel without jailer; QEMU q35/microvm use the same reference kernel and private ext4. pVisor VM uses virtio-fs and frozen pVisor firmware. These Firecracker/QEMU tool samples do not measure stock distribution kernels, and the [independent stock startup results](startup.md) cannot substitute for them. Kernels, storage and staging semantics differ: these are task costs for the stated configurations, not pure VMM or security rankings.
+Five fresh environments per configuration, no separate warmups, seed 20261016 randomizes each sampling round. Every environment executes the seven tools and two targeted cases three times while retaining its VM/container, workspace and task caches. Cargo/npm outputs start empty and remain for later rounds; the write task overwrites the same 256 files in rounds two and three. Every measured Python is frozen 3.14.7 with bytecode disabled. Three resident rounds are not fifteen independent samples; warm host caches do not mean every guest metadata TTL remains valid.
 
-The workload traverses 2,048 files in 32 directories, reads and SHA256-checks 64 MiB, writes 256 × 64 KiB, runs git status and rg, compiles 64 dependency-free Cargo modules and installs 32 offline npm packages. Operations exclude launch/exit; traversal and reading include their workload checks. Full-byte validation after writing is outside the write timer but remains in complete-task timing. The complete task includes all seven, validation and exit. Large repositories, cold disks, online registries and concurrent throughput are unmeasured.
+Startup runs from host executor creation to the common Python payload's unique `REFERENCE_READY`, including interpreter and shared module imports, excluding tool operations, exit and teardown. Each operation uses its internal monotonic clock, excluding child Python startup and VM exit; written-byte readback follows that clock. Normal exit, output, cache inheritance, Run Bundle, staging isolation and full written bytes must still pass. Failures are recorded separately and every valid slow sample is retained. There is no quiet wait, external interference filtering or new full input-inventory scan; N=5 establishes neither stable tails nor whole-Agent speedup.
 
 ## Data and analysis {#results}
 
-Measured on 2026-10-12: each backend/workload has 30/30 valid samples, totaling 240 formal tasks with zero formal failures. Capability checks and warmups are excluded. Each sample must pass unique output, exit and execution-record checks; staged/VM also require no written results in the host workspace and complete matching bytes in all 256 upper files. Common input inventories are checked before/after sampling, and parent/child cache policies are verified. Any error or detected same-user Rust build/Python test interference rejects the whole cohort. None was detected, and every valid slow sample remains. Process polling every 0.5 s can miss short, inaccessible or unrecognized host activity.
+### Python-payload startup {#quick-results}
 
-### Launch through exit {#complete-task}
+Milliseconds, median and minimum–maximum, N=5 per configuration. This is command Ready, not full-distribution boot.
 
-Seconds, N=30 per backend. Normally P50; separated distributions show cluster medians and counts. P95 is descriptive only, with no P99.
-
-| Runtime | Valid / failed | Completion P50 s | Completion P95 s (reference) |
+| Runtime | N | Ready ms | Min–max ms |
 | --- | --- | --- | --- |
-| Native | 30 / 0 | 1.00 | 1.01 |
-| pVisor host | 30 / 0 | 1.07 | 1.13 |
-| pVisor staged | 30 / 0 | 1.80 | 1.87 |
-| pVisor VM | 30 / 0 | 5.46 | 6.40 |
-| Docker rootless / overlay2 | 30 / 0 | 1.27 | 1.52 |
-| Firecracker PCI | 30 / 0 | 2.67 | 2.74 |
-| QEMU q35 | 30 / 0 | 2.19 | 2.53 |
-| QEMU microvm | 30 / 0 | 2.35 | 2.79 |
+| Native | 5 | 180.43 | 178.95–181.15 |
+| pVisor host | 5 | 201.19 | 195.70–203.26 |
+| pVisor staged | 5 | 209.56 | 206.75–215.36 |
+| pVisor VM | 5 | 749.15 | 707.91–806.28 |
+| pVisor VM + writeback | 5 | 746.21 | 704.93–832.73 |
+| Docker rootless | 5 | 450.94 | 323.55–557.16 |
+| Firecracker PCI | 5 | 854.79 | 832.52–865.48 |
+| QEMU q35 | 5 | 486.80 | 478.82–509.91 |
+| QEMU microvm | 5 | 364.31 | 359.88–433.75 |
 
-| Same-cohort completion comparison | Median difference ms | 95% CI ms | Conclusion |
+In this quick sample, the default VM reaches Ready before Firecracker: a -105.64 ms median difference, paired-bootstrap 95% interval [-126.17, -48.51] ms. Docker and both QEMU configurations still reach Ready sooner.
+
+### Three resident tool rounds {#reference-fs}
+
+Milliseconds, N=5 per round. Sum the seven actual operation clocks within each environment before taking the median. This is neither a sum of medians nor a wall clock including wrappers, byte readback and extra cases.
+
+| Runtime | R1 ms | R2 ms | R3 ms |
 | --- | --- | --- | --- |
-| pVisor staged − Docker rootless / overlay2 | +538.35 | [+497.98, +570.62] | Slower |
-| pVisor VM − QEMU microvm | +3104.84 | [+2836.53, +3317.20] | Slower |
+| Native | 331.41 | 226.80 | 225.48 |
+| pVisor host | 351.67 | 239.40 | 237.94 |
+| pVisor staged | 798.59 | 526.49 | 518.99 |
+| pVisor VM | 3323.01 | 1765.81 | 1758.28 |
+| pVisor VM + writeback | 2839.84 | 1826.43 | 1693.68 |
+| Docker rootless | 332.76 | 212.50 | 213.37 |
+| Firecracker PCI | 1237.13 | 301.14 | 332.43 |
+| QEMU q35 | 977.96 | 267.86 | 266.27 |
+| QEMU microvm | 1095.77 | 260.47 | 247.01 |
 
-pVisor staged minus Docker rootless / overlay2 completion median difference is +538.35 ms, 95% CI [+497.98, +570.62] ms; pVisor VM minus QEMU microvm completion median difference is +3104.84 ms, 95% CI [+2836.53, +3317.20] ms. Intervals use 5,000 same-cohort paired-round bootstrap resamples (seed 20261006). Valid slow samples remain; separated distributions have no single median ranking. Storage and staging capabilities differ, so total gaps cannot identify one component's cost.
+Later rounds combine file caching and incremental tool behavior: Cargo does not rebuild unchanged sources and npm retains node_modules. Use this table to budget repeated calls; do not attribute the entire reduction to one filesystem optimization.
 
-### Seven tool operations {#reference-fs}
+<details markdown="1">
+<summary>All seven tools by resident round (ms, N=5 per round)</summary>
 
-Milliseconds, N=30 per backend/operation; P50 or separated-cluster medians and counts. Operation times exclude startup and teardown; summing their medians cannot replace complete-task timing.
+#### R1
 
-| Operation | Native | pVisor host | pVisor staged | pVisor VM | Docker rootless / overlay2 | Firecracker PCI | QEMU q35 | QEMU microvm |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Traverse 2,048 files | 4.74 | 4.73 | 82.91 | 177.28 | 4.82 | 21.97 | 16.74 | 19.98 |
-| Read and verify 64 MiB | 32.18 | 32.83 | 77.54 | 135.60 | 32.51 | 80.22 | 41.18 (n=19); 92.98 (n=11) | 74.23 |
-| Write 256 files | 3.71 | 3.79 | 32.00 | 155.56 | 3.87 | 43.01 | 8.04 (n=22); 43.34 (n=8) | 9.77 (n=17); 43.54 (n=13) |
-| git status | 15.51 | 16.67 | 163.46 | 503.53 (n=24); 869.80 (n=6) | 15.71 | 82.33 (n=10); 131.00 (n=20) | 89.16 | 168.14 |
-| Ripgrep search | 7.83 | 7.85 | 107.10 | 427.32 | 8.33 | 16.05 | 14.67 | 16.13 |
-| Offline Cargo build | 52.96 | 58.93 | 90.02 | 579.04 (n=23); 897.47 (n=7) | 48.80 | 386.11 | 373.75 | 430.34 |
-| Offline npm install | 212.55 | 225.99 | 244.92 | 1115.77 | 216.83 | 556.76 | 534.19 | 581.33 |
+| Operation | Native | pVisor host | pVisor staged | pVisor VM | pVisor VM + writeback | Docker rootless | Firecracker PCI | QEMU q35 | QEMU microvm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Traverse 2,048 files | 4.63 | 4.60 | 79.87 | 216.15 | 198.66 | 4.70 | 24.28 | 16.57 | 17.79 |
+| Read and verify 64 MiB | 32.87 | 32.81 | 78.53 | 121.60 | 118.59 | 33.06 | 81.17 | 37.81 | 42.45 |
+| Write/overwrite 256 files | 3.80 | 3.90 | 33.27 | 187.78 | 148.01 | 4.12 | 40.46 | 5.22 | 5.31 |
+| git status | 15.69 | 15.67 | 159.19 | 520.03 | 368.02 | 15.61 | 126.32 | 83.96 | 168.22 |
+| Ripgrep search | 8.73 | 8.83 | 112.86 | 425.47 | 401.23 | 8.93 | 14.05 | 13.24 | 14.15 |
+| Offline Cargo build | 53.83 | 60.36 | 92.84 | 622.86 | 548.90 | 49.29 | 397.35 | 331.11 | 351.91 |
+| Offline npm install | 212.17 | 225.46 | 244.94 | 1083.78 | 1053.20 | 217.76 | 550.02 | 453.31 | 506.73 |
 
+#### R2
 
-Traversal, Git and search access the staged file view. Reading, compilation and offline installation also include validation, tool execution and each executor's temporary storage. Set timeouts using the actual tool mix and complete waiting, beyond startup speed alone.
+| Operation | Native | pVisor host | pVisor staged | pVisor VM | pVisor VM + writeback | Docker rootless | Firecracker PCI | QEMU q35 | QEMU microvm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Traverse 2,048 files | 4.91 | 4.95 | 87.55 | 138.17 | 138.74 | 4.92 | 4.21 | 4.19 | 4.11 |
+| Read and verify 64 MiB | 27.12 | 27.14 | 46.55 | 41.60 | 38.01 | 27.22 | 27.76 | 27.86 | 27.88 |
+| Write/overwrite 256 files | 3.84 | 4.10 | 51.03 | 110.07 | 143.37 | 3.87 | 22.49 | 21.82 | 23.55 |
+| git status | 2.58 | 2.60 | 13.13 | 39.12 | 38.34 | 2.56 | 2.28 | 2.94 | 2.50 |
+| Ripgrep search | 8.58 | 9.66 | 112.58 | 455.77 | 384.39 | 8.27 | 6.38 | 7.23 | 5.91 |
+| Offline Cargo build | 7.88 | 8.26 | 14.98 | 49.16 | 47.07 | 5.42 | 4.93 | 5.31 | 5.15 |
+| Offline npm install | 173.00 | 185.30 | 200.13 | 938.55 | 935.41 | 161.12 | 232.13 | 197.63 | 191.20 |
 
-<a id="full-ubuntu"></a>
-Full Ubuntu filesystem workloads have not been measured with these current build and resource conditions.
+#### R3
 
-### Where filesystem optimizations apply {#cache-status}
+| Operation | Native | pVisor host | pVisor staged | pVisor VM | pVisor VM + writeback | Docker rootless | Firecracker PCI | QEMU q35 | QEMU microvm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Traverse 2,048 files | 4.56 | 4.77 | 75.38 | 194.63 | 152.33 | 4.70 | 4.29 | 4.18 | 4.16 |
+| Read and verify 64 MiB | 27.13 | 27.11 | 48.97 | 38.02 | 37.38 | 27.16 | 27.67 | 28.00 | 27.80 |
+| Write/overwrite 256 files | 4.52 | 4.45 | 50.46 | 103.77 | 138.08 | 4.49 | 16.86 | 21.96 | 21.36 |
+| git status | 2.48 | 3.02 | 13.30 | 36.29 | 38.08 | 2.79 | 2.55 | 2.52 | 2.26 |
+| Ripgrep search | 7.46 | 8.88 | 112.74 | 437.97 | 359.88 | 8.60 | 7.98 | 6.75 | 6.03 |
+| Offline Cargo build | 7.37 | 7.62 | 12.68 | 44.66 | 43.76 | 5.03 | 5.20 | 4.77 | 4.65 |
+| Offline npm install | 171.77 | 182.80 | 208.14 | 908.41 | 861.16 | 161.06 | 268.70 | 197.83 | 178.75 |
 
-The frozen build includes host copy-up scheduling, read queues, journal locks, idle dispatch and subsequent VM queue/I/O-fence fixes. Independent engineering A/B is in the [complete evidence scope](../design/filesystem-performance-analysis.md#filesystem-status). Cross-runtime results measure current default configurations; local engineering percentages do not rescale these data.
+</details>
 
-All eight backends have now been remeasured with the current frozen artifact and passed correctness, input, budget and interference gates. Earlier unaccepted attempts remain separate and contribute no samples. This new cross-runtime cohort alone does not establish the causal benefit of individual changes.
+### Hot opens and small stream writes {#cache-status}
 
-Ordinary rootfs/workspace DAX is disabled by default and allocates no window. Immutable shares retain explicit opt-in; see the [DAX comparison](../design/filesystem-performance-analysis.md#readonly-dax-ab). New VM writeback is disabled by default, with explicit `PVISOR_VM_FS_WRITEBACK=1` / `0` configuration. By default, restoring a negotiated snapshot retains its mode; explicit `PVISOR_VM_FS_WRITEBACK=0` rejects a snapshot with writeback enabled. The independent [writeback comparison](../design/filesystem-performance-analysis.md#writeback-ab) retains its own frozen artifact and does not rescale this cohort's task times.
+Milliseconds, N=5 per round, medians; each cell is R1 / R2 / R3.
 
-Immutable-lower physical metadata caching requires an explicit caller declaration and lifetime stability. Host rootfs, OCI extraction directories and lazy-image local projections receive no automatic promise. Extended Linux HOST kernel caching is not integrated into default `pvisor run` or VM, and its formal timing has not passed acceptance. See the [immutable-lower cache analysis](../design/filesystem-performance-analysis.md#immutable-lower-cache) and [kernel-cache analysis](../design/filesystem-performance-analysis.md#host-kernel-cache) for capability boundaries.
+Hot open primes the same file once outside the timer, then performs 10,000 open/fstat/close sequences without reading content. Each stream round creates one new file, performs 8,192 unbuffered 1 KiB writes, then fsync/close. The write column stops before fsync; write + fsync + close retains the explicit synchronization cost. Every configuration executes the same calls and verifies all 8 MiB byte-for-byte after timing.
 
-Parallel stage synchronization through `PVISOR_STAGE_SYNC_WORKERS` is disabled and still lacks an independent serial/parallel performance comparison. Implementation availability does not establish it as a source of speedup in these tables.
+| Runtime | open/fstat R1 / R2 / R3 ms | 8 MiB write R1 / R2 / R3 ms | write + fsync + close R1 / R2 / R3 ms |
+| --- | --- | --- | --- |
+| Native | 10.11 / 10.11 / 10.12 | 5.89 / 5.92 / 5.88 | 9.67 / 9.61 / 9.55 |
+| pVisor host | 10.18 / 10.19 / 10.13 | 5.84 / 5.99 / 5.91 | 9.37 / 9.62 / 9.55 |
+| pVisor staged | 409.28 / 409.54 / 398.16 | 219.54 / 203.09 / 227.36 | 224.42 / 207.18 / 233.35 |
+| pVisor VM | 10.26 / 11.88 / 10.27 | 468.78 / 468.24 / 465.69 | 471.84 / 478.35 / 475.88 |
+| pVisor VM + writeback | 10.35 / 10.41 / 10.24 | 3.78 / 5.90 / 8.16 | 15.23 / 12.81 / 21.59 |
+| Docker rootless | 10.37 / 10.51 / 10.49 | 5.92 / 6.01 / 5.97 | 9.52 / 9.04 / 9.53 |
+| Firecracker PCI | 8.37 / 8.33 / 8.34 | 3.37 / 4.36 / 3.64 | 9.42 / 9.31 / 10.06 |
+| QEMU q35 | 8.22 / 8.35 / 8.23 | 2.94 / 3.24 / 2.88 | 9.43 / 9.95 / 9.22 |
+| QEMU microvm | 8.36 / 8.24 / 8.22 | 2.93 / 3.65 / 2.97 | 10.79 / 11.20 / 9.68 |
+
+One specific case with a lower observed cost is round-three hot open/fstat: 10.24 ms for VM + writeback versus 10.49 ms for Docker across 10,000 calls, a -0.25 ms median difference with 95% interval [-0.48, -0.10] ms. The margin is small and limited to this content-free hot loop. Default VM versus Docker has no detected difference here; the opt-in configuration does not establish that writeback accelerates metadata.
+
+Deferred readonly open lets the VM keep this content-free hot path in the guest; rg/Cargo file reads exercise a different path. Writeback shortens small-write acceptance, while synchronization still costs time: the write column alone cannot establish a durability wait. Lower sample values in one case do not imply a lead on all workloads. Downloads include same-cohort paired-bootstrap intervals from only five independent environments, without multiple-comparison adjustment.
+
+### Historical sources {#complete-task}
+
+Earlier single-pass and N30 complete-task data remain in the [old quick statistics](filesystem-quick.csv), [historical N30 statistics](filesystem.csv) and [historical provenance](filesystem-provenance.csv). Their launch/result/exit clocks are not pooled with current Ready or resident-round observations. These samples do not cover full Ubuntu, macOS, cold disks, large repositories or concurrent throughput.
 
 ### Downloads and reproduction {#run}
 
-[Accepted filesystem statistics CSV](filesystem.csv) · [Same-cohort differences and 95% confidence intervals](filesystem-comparisons.csv) · [Measured artifact, source and input provenance](filesystem-provenance.csv) · [Acceptance record](../assets/benchmarks/filesystem-publication-audit.json) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#same-host-runtime-comparison) and [whole-parent resource budget](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-whole-parent-resource-budget)
+[Per-round statistics CSV](filesystem-resident.csv) · [Same-cohort differences and intervals](filesystem-resident-comparisons.csv) · [Provenance and conditions](filesystem-resident-provenance.csv)
 
-Raw evidence is local at `benchmark/.data/fo5a4e7d2b-f/report.json`; frozen source and build receipts are under `benchmark.new/filesystem/.data/fs-next-20261011/trim/`, with execution/acceptance records under `benchmark.new/filesystem/.data/fs-docs-20261012/`. Raw samples and artifacts are not site downloads. Prior accepted cohorts and rejected attempts remain separate in the [source inventory](evidence-sources.csv). Historical [runtime statistics](runtime-summary.csv) and [provenance](runtime-provenance.csv) are not pooled with this cohort.
+Measured 2026-10-16, B-FS-TOOLS, GNU release/gateway CLI and newly built matching firmware. Raw samples and frozen entry points are local at `benchmark/.data/fr3-20261016b/` and `benchmark.new/filesystem/.data/retest-20261016/resident-fixed/`. [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#ready-and-resident-filesystem-rounds) · [Engineering evidence scope](../design/filesystem-performance-analysis.md#filesystem-status) · [Method](methodology.md).

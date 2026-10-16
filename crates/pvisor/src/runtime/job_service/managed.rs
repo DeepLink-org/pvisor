@@ -27,6 +27,16 @@ impl RuntimeJobService {
     ) -> anyhow::Result<ManagedJobRun> {
         // Resolve against the actual embedded runtime, never the supplied restoration config.
         let resolved_policy = visor.resolve_run(spec.clone())?;
+        if let Some(selected) = config
+            .overlayfs
+            .as_ref()
+            .and_then(|overlay| overlay.prepared_workspace.as_ref())
+        {
+            let owner = resolved_policy.preparation.workspace_base.as_ref().context(
+                "prepared workspace selector requires an explicit owned runtime baseline; configuration alone does not grant ownership",
+            )?;
+            owner.check_selector(selected, config.vm.prepared_rootfs.as_ref())?;
+        }
         let mut handle = visor.run(spec.clone()).await?;
         let cancellation = handle.cancellation();
         // No await between acceptance and completion ownership installation.
