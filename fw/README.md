@@ -95,6 +95,24 @@ Directory images hold no child dentry references; ordinary inode eviction frees
 the image. Hosts decline READINDEX for mutable or unspecified backings, retaining
 ordinary FUSE namespace visibility and metadata timeouts.
 
+With negotiated `FUSE_PVISOR_WRITEBACK` (bit 42) and WRITEBACK_CACHE, ordinary
+cached writes and closes retain inode/handle leases in a connection-local queue.
+The queue submits across files at 1 MiB or a 10 ms timer, using ordinary FUSE
+WRITE requests. It keeps at most 256 pending handles and applies producer
+backpressure at a 16 MiB outstanding-byte high-water mark; host background
+requests are independently bounded. Pages remain in the native guest cache.
+Negotiated sessions lift FUSE's default 1% dirty-share ceiling and request a
+16 MiB minimum dirty share, avoiding cold-device bandwidth throttling before
+the queue reaches its high-water mark. Strict FUSE accounting stays enabled,
+including for temporary writeback pages. The reservation is best effort when
+other mounts or a small guest exhaust the global dirty-share budget; ordinary
+Linux memory-pressure limits still apply.
+fsync remains synchronous; syncfs/unmount drain the queue, and asynchronous
+errors stay visible to later synchronization. Remote-lock and DAX sessions do
+not use this extension. Original lower reads after copy-up bypass the upper
+inode's data cache through their retained handles. The guest supervisor must
+check final virtio-fs synchronization before reporting successful task exit.
+
 ## Building
 
 ### Linux (generic variant)

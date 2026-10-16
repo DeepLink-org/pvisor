@@ -12,8 +12,8 @@ use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::mem::size_of;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use vm_memory::ByteValued;
 
@@ -77,14 +77,16 @@ impl io::Write for ZCWriter<'_> {
 pub struct Server<F: FileSystem + Sync> {
     profile: pvisor_overlay_core::profile::Profile,
     fs: F,
+    guest_cache: bool,
     options: AtomicU64,
 }
 
 impl<F: FileSystem + Sync> Server<F> {
-    pub fn new(fs: F) -> Server<F> {
+    pub fn new(fs: F, guest_cache: bool) -> Server<F> {
         Server {
             profile: pvisor_overlay_core::profile::Profile::from_env("virtio-fs-protocol"),
             fs,
+            guest_cache,
             options: AtomicU64::new(FsOptions::empty().bits()),
         }
     }
@@ -609,7 +611,12 @@ impl<F: FileSystem + Sync> Server<F> {
             kill_priv,
             flags,
         ) {
-            Ok((handle, opts)) => {
+            Ok((handle, mut opts)) => {
+                if !FsOptions::from_bits_truncate(self.options.load(Ordering::Relaxed))
+                    .contains(FsOptions::PVISOR_WRITEBACK)
+                {
+                    opts.remove(OpenOptions::PVISOR_LOWER);
+                }
                 let out = OpenOut {
                     fh: handle.map(Into::into).unwrap_or(0),
                     open_flags: opts.bits(),
@@ -718,6 +725,14 @@ impl<F: FileSystem + Sync> Server<F> {
             kill_priv,
             flags,
         ) {
+            Ok(count) if count > size as usize || (delayed_write && count != size as usize) => {
+                // Background writeback cannot retry a successful short reply.
+                reply_error(
+                    linux_error(io::Error::from_raw_os_error(libc::EIO)),
+                    in_header.unique,
+                    w,
+                )
+            }
             Ok(count) => {
                 let out = WriteOut {
                     size: count as u32,
@@ -998,13 +1013,21 @@ impl<F: FileSystem + Sync> Server<F> {
         }
 
         let flags_64 = ((flags2 as u64) << 32) | (flags as u64);
-        let capable = FsOptions::from_bits_truncate(flags_64);
+        let mut capable = FsOptions::from_bits_truncate(flags_64);
+        if !self.guest_cache {
+            capable.remove(FsOptions::PVISOR_META);
+        }
 
         let page_size: u32 = unsafe { libc::sysconf(libc::_SC_PAGESIZE).try_into().unwrap() };
 
         match self.fs.init(capable) {
             Ok(want) => {
-                let enabled = (capable & (want | supported)).bits();
+                let mut enabled = capable & (want | supported);
+                if !enabled.contains(FsOptions::WRITEBACK_CACHE) {
+                    enabled.remove(FsOptions::PVISOR_WRITEBACK);
+                }
+                let batched = enabled.contains(FsOptions::PVISOR_WRITEBACK);
+                let enabled = enabled.bits();
                 self.options.store(enabled, Ordering::Relaxed);
 
                 let out = InitOut {
@@ -1012,8 +1035,8 @@ impl<F: FileSystem + Sync> Server<F> {
                     minor: KERNEL_MINOR_VERSION,
                     max_readahead,
                     flags: enabled as u32,
-                    max_background: u16::MAX,
-                    congestion_threshold: (u16::MAX / 4) * 3,
+                    max_background: if batched { 64 } else { u16::MAX },
+                    congestion_threshold: if batched { 48 } else { (u16::MAX / 4) * 3 },
                     max_write: MAX_BUFFER_SIZE,
                     time_gran: 1, // nanoseconds
                     max_pages: NEGOTIATED_MAX_PAGES,
@@ -1799,4 +1822,227 @@ fn get_extensions(options: FsOptions, skip: usize, request_bytes: &[u8]) -> Resu
     }
 
     Ok(extensions)
+}
+
+#[cfg(test)]
+mod guest_cache_tests {
+    use super::super::null_fs::NullFs;
+    use super::*;
+    use crate::devices::virtio::descriptor_utils::{
+        DescriptorType, OwnedDescriptorChain, create_descriptor_chain,
+    };
+    use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
+
+    fn request<F: FileSystem + Sync>(
+        server: &Server<F>,
+        opcode: Opcode,
+        body: &[u8],
+    ) -> (OutHeader, Vec<u8>) {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let chain = create_descriptor_chain(
+            &mem,
+            GuestAddress(0),
+            GuestAddress(0x100),
+            vec![
+                (DescriptorType::Readable, body.len() as u32),
+                (DescriptorType::Writable, 256),
+            ],
+            0,
+        )
+        .unwrap();
+        mem.write_slice(body, GuestAddress(0x100)).unwrap();
+        let plan = OwnedDescriptorChain::new(chain).unwrap();
+        let (reader, writer) = plan.reader_writer(&mem).unwrap();
+        let count = server
+            .handle_message(
+                (
+                    InHeader {
+                        len: (size_of::<InHeader>() + body.len()) as u32,
+                        opcode: opcode as u32,
+                        nodeid: ROOT_ID,
+                        unique: 1,
+                        ..Default::default()
+                    },
+                    reader,
+                ),
+                writer,
+                false,
+                &None,
+                &Arc::new(AtomicI32::new(0)),
+                #[cfg(target_os = "macos")]
+                &None,
+            )
+            .unwrap();
+        let address = 0x100 + body.len() as u64;
+        let header: OutHeader = mem.read_obj(GuestAddress(address)).unwrap();
+        assert_eq!(header.len as usize, count);
+        let mut bytes = vec![0; count - size_of::<OutHeader>()];
+        mem.read_slice(
+            &mut bytes,
+            GuestAddress(address + size_of::<OutHeader>() as u64),
+        )
+        .unwrap();
+        (header, bytes)
+    }
+
+    fn negotiate<F: FileSystem + Sync>(server: &Server<F>, capable: FsOptions) -> FsOptions {
+        let capable = capable | FsOptions::INIT_EXT | FsOptions::MAX_PAGES;
+        let mut body = InitInCompat {
+            major: KERNEL_VERSION,
+            minor: KERNEL_MINOR_VERSION,
+            flags: capable.bits() as u32,
+            ..Default::default()
+        }
+        .as_slice()
+        .to_vec();
+        body.extend_from_slice(
+            InitInExt {
+                flags2: (capable.bits() >> 32) as u32,
+                ..Default::default()
+            }
+            .as_slice(),
+        );
+        let (header, bytes) = request(server, Opcode::Init, &body);
+        assert_eq!(header.error, 0);
+        let mut out = InitOut::default();
+        out.as_mut_slice().copy_from_slice(&bytes);
+        assert_eq!(out.max_pages, NEGOTIATED_MAX_PAGES);
+        assert_eq!(out.max_write, MAX_BUFFER_SIZE);
+        let enabled =
+            FsOptions::from_bits((u64::from(out.flags2) << 32) | u64::from(out.flags)).unwrap();
+        assert_eq!(
+            out.max_background,
+            if enabled.contains(FsOptions::PVISOR_WRITEBACK) {
+                64
+            } else {
+                u16::MAX
+            }
+        );
+        enabled
+    }
+
+    #[test]
+    fn switch_controls_negotiation_and_disabled_readindex() {
+        for enabled in [false, true] {
+            for capable in [FsOptions::empty(), FsOptions::PVISOR_META] {
+                let server = Server::new(NullFs, enabled);
+                let options = negotiate(&server, capable);
+                assert_eq!(
+                    options.contains(FsOptions::PVISOR_META),
+                    enabled && capable.contains(FsOptions::PVISOR_META)
+                );
+                if !options.contains(FsOptions::PVISOR_META) {
+                    let (header, _) = request(
+                        &server,
+                        Opcode::ReadIndex,
+                        ReadIn {
+                            size: MAX_BUFFER_SIZE,
+                            ..Default::default()
+                        }
+                        .as_slice(),
+                    );
+                    assert_eq!(header.error, -bindings::LINUX_ENOSYS);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn background_short_writes_fail_instead_of_acknowledging_lost_bytes() {
+        struct ShortFs(usize);
+        impl FileSystem for ShortFs {
+            type Inode = u64;
+            type Handle = u64;
+            fn write<R: io::Read + ZeroCopyReader>(
+                &self,
+                _ctx: Context,
+                _inode: u64,
+                _handle: u64,
+                _reader: R,
+                _size: u32,
+                _offset: u64,
+                _owner: Option<u64>,
+                _delayed: bool,
+                _kill_priv: bool,
+                _flags: u32,
+            ) -> io::Result<usize> {
+                Ok(self.0)
+            }
+        }
+        for delayed in [false, true] {
+            for count in [0, 2, 4, 5] {
+                let mut body = WriteIn {
+                    size: 4,
+                    write_flags: if delayed { WRITE_CACHE } else { 0 },
+                    ..Default::default()
+                }
+                .as_slice()
+                .to_vec();
+                body.extend_from_slice(b"data");
+                let (header, bytes) =
+                    request(&Server::new(ShortFs(count), false), Opcode::Write, &body);
+                if count > 4 || (delayed && count != 4) {
+                    assert_eq!(header.error, -libc::EIO);
+                } else {
+                    assert_eq!(header.error, 0);
+                    let mut out = WriteOut::default();
+                    out.as_mut_slice().copy_from_slice(&bytes);
+                    assert_eq!(out.size as usize, count);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batched_writeback_requires_both_guest_and_filesystem_and_bounds_background() {
+        struct WritebackFs(bool);
+        impl FileSystem for WritebackFs {
+            type Inode = u64;
+            type Handle = u64;
+            fn init(&self, _capable: FsOptions) -> io::Result<FsOptions> {
+                Ok(FsOptions::PVISOR_WRITEBACK
+                    | if self.0 {
+                        FsOptions::WRITEBACK_CACHE
+                    } else {
+                        FsOptions::empty()
+                    })
+            }
+        }
+        for filesystem in [false, true] {
+            for guest_cache in [false, true] {
+                for capable in [
+                    FsOptions::empty(),
+                    FsOptions::WRITEBACK_CACHE,
+                    FsOptions::PVISOR_WRITEBACK,
+                    FsOptions::PVISOR_WRITEBACK | FsOptions::WRITEBACK_CACHE,
+                ] {
+                    let options =
+                        negotiate(&Server::new(WritebackFs(filesystem), guest_cache), capable);
+                    assert_eq!(
+                        options.contains(FsOptions::PVISOR_WRITEBACK),
+                        filesystem
+                            && capable
+                                .contains(FsOptions::PVISOR_WRITEBACK | FsOptions::WRITEBACK_CACHE)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn restore_keeps_negotiated_mode_until_new_init() {
+        for enabled in [false, true] {
+            let server = Server::new(NullFs, enabled);
+            let options = negotiate(&server, FsOptions::PVISOR_META);
+            let state = server.capture_state(2).unwrap();
+            let restored = Server::new(NullFs, !enabled);
+            restored.restore_state(&state).unwrap();
+            assert_eq!(restored.capture_state(2).unwrap().options, options.bits());
+            restored.destroy().unwrap();
+            assert_eq!(
+                negotiate(&restored, FsOptions::PVISOR_META).contains(FsOptions::PVISOR_META),
+                !enabled
+            );
+        }
+    }
 }

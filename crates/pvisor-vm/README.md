@@ -217,8 +217,8 @@ OCI extraction, lazy physical projections or frozen baselines to immutable.
 
 Host OPEN still resolves merged precedence, checks policy/aliases and permissions,
 records the baseline observation and acquires its normal native descriptor.
-Writable or privilege-changing OPENs, copy-up and reads from upper/mutable
-layers retain the original cache-invalidating OPEN behavior. Workspace devices
+Without writeback, writable or privilege-changing OPENs, copy-up and reads from
+upper/mutable layers retain the original cache-invalidating OPEN behavior. Workspace devices
 retain their original data policy even if a lower is explicitly immutable.
 The root-data setting itself leaves metadata TTLs and FUSE no-open negotiation
 unchanged; directory images and deferred opens follow the separate contract below.
@@ -298,6 +298,19 @@ guest 物理写入产生 MMIO exit。宿主映射保留 MAP_PRIVATE 的 COW 保�
 
 ## Guest 目录镜像
 
+在宿主 runner 启动前设置 `PVISOR_VM_GUEST_CACHE=0`，可整体关闭 guest
+目录元数据镜像和惰性只读 open；`1` 或未设置默认开启。该开关对所有
+virtio-fs attachment 生效，在 worker 构造时读取，非法值会导致启动失败。
+关闭时宿主不协商 `FUSE_PVISOR_META`，同一份已打补丁的固件回到普通
+FUSE 查询和打开路径。1 MiB 请求窗口与预读、宿主 root-data 策略、TTL
+及 writeback/DAX 配置保持一致，用于隔离目录镜像和惰性 open 的整体收益。
+已有快照恢复保留保存的协商状态；A/B 应分别启动新 VM。
+
+```bash
+PVISOR_VM_GUEST_CACHE=0 pvisor run --executor vm --safe -- YOUR_COMMAND
+PVISOR_VM_GUEST_CACHE=1 pvisor run --executor vm --safe -- YOUR_COMMAND
+```
+
 协商 `FUSE_PVISOR_META`（init flag bit 41）后，guest 可以把宿主合并后的目录
 页缓存在 virtio-fs 内部。Overlay 的全部物理 lower 必须显式声明为
 `Immutable`，且 upper 的命名空间修改只通过该 VM 的文件系统连接进行；
@@ -350,6 +363,9 @@ Linux x86_64 使用 `x86_64-unknown-linux-musl`；macOS 必须给宿主探针签
 不变的 Linux 根目录；探针写入独立临时 upper。设置 `PVISOR_FS_PROFILE=1`，
 分别运行 `baseline` 和 `warm`，可核对重复 1,000 次 open/stat/普通 seek
 没有增加宿主 OPEN/GETATTR/FLUSH/RELEASE 请求；这不是性能基准。
+固定其他设置后，也可分别设置 `PVISOR_VM_GUEST_CACHE=0/1` 运行同一个
+`warm` 探针，核对关闭后 `READINDEX` 为零且普通 OPEN 等请求恢复。
+计时对比应关闭 profiling；上述请求统计用于确认两组实际走了不同路径。
 
 未打补丁的 guest 不置该 flag，行为与逐请求 FUSE 相同。旧宿主不回该
 flag，或对 `FUSE_READINDEX` 返回 `ENOSYS` 时，新 guest 关闭目录镜像。
@@ -481,10 +497,61 @@ staged OverlayFS 的新会话默认不协商 FUSE_WRITEBACK_CACHE；构造前设
 直接共享宿主目录的 passthrough 保持默认关闭。开启后工作区内容和元数据须由 guest
 独占修改，不能依赖宿主并发修改的即时可见性。O_WRONLY 的原生 FD
 转换为 O_RDWR 以支持部分页回读，O_APPEND 由 guest 计算 offset，原生 FD
-清除 O_APPEND。close/fsync 和 guest 后台回写使脏数据到达宿主；文件写入
-错误可能延后报告。协商状态随 backing 和 FUSE session 保存并校验，完整
+清除 O_APPEND。未协商批量扩展时，close/fsync 和 guest 后台回写使脏数据
+到达宿主；文件写入错误可能延后报告。协商状态随 backing 和 FUSE session 保存并校验，完整
 机器快照保留 guest 脏页，不声称排空 virtqueue 已把 guest 脏页刷到 stage。
 恢复仍拒绝 exported descriptors/DAX 等既有不支持状态。
+
+### 跨文件异步回写
+
+新固件在上述 writeback 会话中额外协商 `FUSE_PVISOR_WRITEBACK`（bit 42）。
+它独立于 `PVISOR_VM_GUEST_CACHE`，复用 guest 页缓存；缓存式 `write(2)`
+返回后，连接级调度器累计不同文件的写入，达到 **1 MiB** 或首笔待处理
+写入经过 **10 ms** 后，先提交整个批次的标准 FUSE WRITE，再等待完成。
+定时器是调度目标，宿主拥塞或调度延迟可使实际回写更晚。各文件仍独立写入，
+不引入多文件原子事务或第二份内容缓存。
+
+普通文件关闭不再逐个等待数据回写；调度器持有 inode 和宿主句柄的引用，
+完成后才释放，避免 fd 关闭后丢失回写目标。重开 upper 文件保留 guest
+缓存；已打开的 lower 句柄在 copy-up 后读取原对象，不读取 upper 的缓存
+字节。删除/覆盖后的后台时间戳更新使用保留的 upper 句柄，不按旧名字重定位。
+
+每个连接最多保留 **256 个待处理句柄**；累计未完成写入达到 **16 MiB**
+高水位后，生产者等待队列推进。宿主协商的后台请求上限是 **64**，拥塞
+阈值为 **48**。16 MiB 是背压高水位，并非整个 guest 页缓存的硬上限；
+单次大写和 Linux 原有脏页管理仍会影响实际内存与等待。
+协商批量回写后，固件解除 FUSE 默认的 1% 脏页份额上限，并尝试预留
+16 MiB 的最低份额，避免冷挂载的动态带宽估算在达到队列高水位前限流。
+FUSE 严格记账保持开启，包括临时回写页；低内存或其他挂载耗尽全局
+最低份额预算时，预留可失败，仍由 Linux 的现有限制施加背压。
+
+显式 fsync/fdatasync 保持同步；syncfs 和卸载会排空批量队列。异步错误
+保留在连接中，后续同步操作及关闭可见；PID 1 在报告任务成功前同步所有
+virtio-fs 挂载，任一同步失败以 125 退出。宿主直接读取 stage 前必须经过
+这个边界。仅排空 host virtqueue 仍不能证明 guest 脏页已经回写；完整 VM
+快照继续同时保存 guest RAM、调度器状态和保留的 host 句柄。
+后台 WRITE 的短写按错误处理，不能用成功回复丢弃未写出的剩余字节。
+
+该扩展只用于 guest 独占修改的普通缓存文件；DAX、direct I/O 和远程锁
+保留原路径。共享 mmap 的脏页继续由 Linux 的原有回写与同步机制处理。
+旧 guest/host 未协商 bit 42 时仍使用原 writeback 关闭行为。
+
+真实 guest 回归（固件和输入路径使用绝对路径）：
+
+```bash
+rustc --edition=2021 --target aarch64-unknown-linux-musl -C linker=rust-lld \
+  crates/pvisor-vm/src/probes/guest_writeback_guest.rs -o /tmp/writeback-guest
+cargo build --locked -p pvisor-vm --example guest_writeback_case
+PVISOR_VM_FS_WRITEBACK=1 target/debug/examples/guest_writeback_case \
+  ROOTFS FIRMWARE /tmp/writeback-guest full
+PVISOR_VM_FS_WRITEBACK=1 target/debug/examples/guest_writeback_case \
+  ROOTFS FIRMWARE /tmp/writeback-guest error
+```
+
+macOS 需要为探针签署既有 Hypervisor entitlement。父进程拥有临时 upper，
+验证空闲定时回写、256 文件关闭重开可见性、rename/unlink、截断、32 MiB
+高水位写入、关闭后立即卸载及任务退出前最后一次提交；故障用例以独立 runner 的文件大小
+限制模拟后台写失败，并要求最终状态为 125。PASS 表示正确性，不是性能结果。
 
 本次只修改 VM virtio-fs 执行路径，不改宿主 FUSE 的 dispatch。
 回归覆盖直接 kick/stop、短操作不偷取、长操作 backlog 原 ring 完成、

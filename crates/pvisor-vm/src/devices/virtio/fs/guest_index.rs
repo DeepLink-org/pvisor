@@ -483,7 +483,7 @@ mod tests {
             closed: AtomicUsize::new(0),
             fail_release: Mutex::new(false),
         };
-        let server = Server::new(fs);
+        let server = Server::new(fs, true);
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 2 << 20)]).unwrap();
         let request = |opcode: Opcode, payload: &[u8]| {
             mem.write_slice(payload, GuestAddress(0x10000)).unwrap();

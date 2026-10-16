@@ -362,6 +362,18 @@ fn root_data_cache_enabled(tag: &str, setting: Option<&str>) -> io::Result<bool>
     }
 }
 
+fn guest_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(true),
+        Some(value) if value == "1" => Ok(true),
+        Some(value) if value == "0" => Ok(false),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PVISOR_VM_GUEST_CACHE must be 0 or 1",
+        )),
+    }
+}
+
 pub(super) struct FsWorkerConfig {
     pub fs_tag: String,
     pub queues: Vec<Queue>,
@@ -412,6 +424,8 @@ impl FsWorker {
             }
         };
         let root_data_cache = root_data_cache_enabled(&fs_tag, cache_setting.as_deref())?;
+        let guest_cache =
+            guest_cache_enabled(std::env::var_os("PVISOR_VM_GUEST_CACHE").as_deref())?;
         let inode_alloc = Arc::new(InodeAllocator::new());
         let server = match (overlay_cfg, passthrough_cfg) {
             (Some(cfg), _) => {
@@ -421,11 +435,10 @@ impl FsWorker {
                     OverlayFs::new(cfg, inode_alloc.clone())?
                 };
                 inner.configure_immutable_data_cache(root_data_cache);
-                FsServer::Overlay(Box::new(Server::new(AugmentFs::new(
-                    inner,
-                    &inode_alloc,
-                    virtual_entries,
-                ))))
+                FsServer::Overlay(Box::new(Server::new(
+                    AugmentFs::new(inner, &inode_alloc, virtual_entries),
+                    guest_cache,
+                )))
             }
             (None, Some(mut cfg)) if read_only => {
                 // A shared-memory window on a read-only attachment is created
@@ -449,25 +462,22 @@ impl FsWorker {
                     }
                     inner
                 };
-                FsServer::ReadOnly(Server::new(AugmentFs::new(
-                    inner,
-                    &inode_alloc,
-                    virtual_entries,
-                )))
+                FsServer::ReadOnly(Server::new(
+                    AugmentFs::new(inner, &inode_alloc, virtual_entries),
+                    guest_cache,
+                ))
             }
             (None, Some(cfg)) => {
                 let inner = PassthroughFs::new(cfg, inode_alloc.clone())?;
-                FsServer::ReadWrite(Server::new(AugmentFs::new(
-                    inner,
-                    &inode_alloc,
-                    virtual_entries,
-                )))
+                FsServer::ReadWrite(Server::new(
+                    AugmentFs::new(inner, &inode_alloc, virtual_entries),
+                    guest_cache,
+                ))
             }
-            (None, None) => FsServer::Null(Server::new(AugmentFs::new(
-                NullFs,
-                &inode_alloc,
-                virtual_entries,
-            ))),
+            (None, None) => FsServer::Null(Server::new(
+                AugmentFs::new(NullFs, &inode_alloc, virtual_entries),
+                guest_cache,
+            )),
         };
         Ok(Self {
             queues,
@@ -750,6 +760,25 @@ mod tests {
         worker.dispatch_profile =
             pvisor_overlay_core::profile::Profile::enabled("virtio-fs-dispatch");
         worker
+    }
+
+    #[test]
+    fn guest_cache_defaults_on_and_rejects_invalid_settings() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        assert!(guest_cache_enabled(None).unwrap());
+        assert!(guest_cache_enabled(Some(OsStr::new("1"))).unwrap());
+        assert!(!guest_cache_enabled(Some(OsStr::new("0"))).unwrap());
+        for invalid in [
+            OsStr::new(""),
+            OsStr::new("off"),
+            OsStr::from_bytes(b"\xff"),
+        ] {
+            assert_eq!(
+                guest_cache_enabled(Some(invalid)).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput,
+            );
+        }
     }
 
     #[test]
@@ -1093,7 +1122,10 @@ mod tests {
         let allocator = InodeAllocator::new();
         let execution = Execution {
             mem: mem.clone(),
-            server: FsServer::Null(Server::new(AugmentFs::new(NullFs, &allocator, vec![]))),
+            server: FsServer::Null(Server::new(
+                AugmentFs::new(NullFs, &allocator, vec![]),
+                true,
+            )),
             session: RwLock::new(()),
             allow_idmap: false,
             shm_region: None,

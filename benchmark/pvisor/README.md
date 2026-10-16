@@ -661,6 +661,48 @@ B-DENSITY and B-VM-MEMORY remain independent local benchmarks: `density.py`/`den
 
 B-STARTUP uses `vm_ready.py`; B-MACOS uses `macos_docker_tools.py` for Docker Desktop and pVisor tool comparisons. B-VM-MEMORY uses `macos_cold_ram.py` with data-integrity checks. `macos_migration.py` is a separate engineering A/B runner. Keep Apple Silicon/HVF data separate from Linux/KVM. Cold guest residency and footprint do not establish net physical savings. Do not reuse the deleted standalone snapshot harnesses with current binaries.
 
+### Guest directory images and deferred opens
+
+`guest_cache.py` serves B-FS-ENG, or B-FS-DIAG with `--profiles`. It freezes
+sources, a release SDK driver, the current CLI, firmware, static guest workload
+and complete prepared inputs. Ordinary `--safe` workspaces and SDK shares with
+an explicit Immutable lower are separate cohorts: the former may decline
+READINDEX, and cannot inherit the latter's directory-image results. Both arms
+retain native Linux caching; only `PVISOR_VM_GUEST_CACHE` changes, with writeback
+disabled. First/hot/TTL-expired metadata, scans, deep paths, actual reads and
+wide-directory sparse access expose both savings and prefetch costs. The hot
+open/fstat workload primes metadata outside its timer; independent prime-only
+counter runs establish whether OPEN/GETATTR traffic actually disappears.
+The retained Apple Silicon result is [GUEST_CACHE_REPORT.md](GUEST_CACHE_REPORT.md)
+with [derived timings and intervals](guest-cache-summary.csv).
+
+```sh
+python3 benchmark/pvisor/guest_cache.py prepare \
+  --binary target/release/pvisor --firmware target/release/libkrunfw.5.dylib \
+  --rootfs /absolute/path/to/prepared-alpine-rootfs \
+  --output benchmark/pvisor/.data/guest-cache-build-new
+just test-py benchmark/pvisor/test_guest_cache.py
+python3 benchmark/pvisor/guest_cache.py run \
+  --prepared benchmark/pvisor/.data/guest-cache-build-new \
+  --output benchmark/pvisor/.data/guest-cache-preflight-new --samples 1 --warmups 0
+# After preflight and all builds/tests finish, use a new output for 30 paired rounds.
+python3 benchmark/pvisor/guest_cache.py run \
+  --prepared benchmark/pvisor/.data/guest-cache-build-new \
+  --output benchmark/pvisor/.data/guest-cache-formal-new
+python3 benchmark/pvisor/guest_cache.py run \
+  --prepared benchmark/pvisor/.data/guest-cache-build-new \
+  --output benchmark/pvisor/.data/guest-cache-profiles-new --profiles
+```
+
+Apple Silicon requires the Rust musl target and Hypervisor entitlement signing;
+preparation performs signing. The fixed guest budget is 2 vCPU/4096 MiB, with
+warm host inputs, fresh guest caches/uppers and a 1.3-second idle expiry check.
+The CLI cohort uses the existing compatible Host service without terminating
+or replacing it. Failures, incomplete counters or changed inputs invalidate the
+campaign; retain slow valid samples. Profile timings stay separate. Reports
+remain engineering evidence under `.data/`, with paired bootstrap intervals
+and explicit separated clusters; no whole-Agent, cold-disk or KVM claim.
+
 ## Linux execution-snapshot memory
 
 `vm_memory.py` serves B-VM-MEMORY through the current Job `suspend`/`resume` API. Prepare a small rootfs and compile `memory_probe.rs` into `/bench/memory-probe` with the Rust musl target. Keep the source, compiler command and rootfs manifest under `.data/`. The probe touches and checks every byte of repeated or deterministic random private memory, and verifies the same execution token and checksum after restore.

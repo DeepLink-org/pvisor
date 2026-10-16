@@ -2,6 +2,14 @@
 
 Rust PID 1 supervisor and the platform-independent launch message in `/.pvisor-guest.json`. It initializes Linux virtual filesystems, applies process limits, supervises the workload and reports its exit to the VMM.
 
+Before reporting workload exit, PID 1 synchronizes every visible virtio-fs
+mount and checks its result. This drains guest writes that outlive ordinary
+file closes. A writeback failure is reported and changes the final status to
+125, including when the workload itself exited successfully. Mount paths are
+decoded from the bounded kernel mount table; a failure on one mount does not
+skip attempts to drain the others. The host stage must be consumed after this
+completion boundary, rather than after a guest close or a host-queue drain.
+
 ## Private temporary filesystem
 
 `GuestConfig.temporary_filesystem` optionally requests a tmpfs before the workload starts. The contract is independent of CPU architecture:

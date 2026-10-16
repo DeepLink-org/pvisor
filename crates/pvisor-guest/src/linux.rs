@@ -354,7 +354,7 @@ pub fn main() {
         std::process::exit(125);
     }
     let root = File::open("/").expect("open root to report guest exit");
-    let code = match run() {
+    let mut code = match run() {
         Ok(code) => code,
         Err(error) => {
             eprintln!("pvisor guest: {error}");
@@ -364,11 +364,15 @@ pub fn main() {
             125
         }
     };
+    if let Err(error) = sync_virtiofs_mounts() {
+        eprintln!("guest writeback failed: {error}");
+        code = 125;
+    }
+    unsafe { libc::sync() };
     if unsafe { libc::ioctl(root.as_raw_fd(), 0x7602, code) } < 0 {
         eprintln!("report guest exit: {}", io::Error::last_os_error());
     }
     unsafe {
-        libc::sync();
         libc::reboot(libc::RB_AUTOBOOT);
     }
     // A failed reboot must not let PID 1 exit and leave an unexplained kernel panic.
@@ -378,6 +382,22 @@ pub fn main() {
             libc::pause();
         }
     }
+}
+
+fn sync_virtiofs_mounts() -> io::Result<()> {
+    let mut mounts = Vec::new();
+    File::open("/proc/self/mounts")?
+        .take((1 << 20) + 1)
+        .read_to_end(&mut mounts)?;
+    let mut failed = None;
+    for path in crate::mounts::virtiofs_mounts(&mounts)? {
+        let result =
+            File::open(&path).and_then(|file| check(unsafe { libc::syncfs(file.as_raw_fd()) }));
+        if let Err(error) = result {
+            failed.get_or_insert_with(|| io::Error::other(format!("{}: {error}", path.display())));
+        }
+    }
+    failed.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]

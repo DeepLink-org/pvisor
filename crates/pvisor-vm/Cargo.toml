@@ -103,3 +103,7 @@ path = "src/probes/readonly_dax_case.rs"
 [[example]]
 name = "guest_metadata_case"
 path = "src/probes/guest_metadata_case.rs"
+
+[[example]]
+name = "guest_writeback_case"
+path = "src/probes/guest_writeback_case.rs"

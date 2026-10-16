@@ -200,6 +200,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 - **guest 写合并开关对照：** 同一冻结的直接队列 GNU release/gateway 制品，仅切换宿主 runner 的 `PVISOR_VM_FS_WRITEBACK=1` / `0`，由专用 worker 恢复并校验原环境。Linux VM 的 rootfs/workspace 均无 DAX 窗口；与 B-FS-TOOLS 相同的七项操作、完整任务和校验，整父组 CPU 0,1、两核 quota、16 GiB、swap 0，guest 2 vCPU/16 GiB。热宿主缓存、每次私有 namespace/pivot_root、独立工作区与工具缓存；每臂 3 warmups、30 个 seeded 随机配对，共 60 个正式任务。输入与制品摘要、完整 upper 字节、Run Bundle、正常退出、预算和外部构建/测试门禁通过后才能发布；保留慢有效样本，分离簇不给整体排名，5,000 次配对 bootstrap，不报告 P95/P99。原始及冻结执行入口保留 `.data/writeback-ab-*` 与 `.data/writeback-quick-*`；工程表和 CSV 进入 `design/filesystem-performance-analysis.md#writeback-ab`，生产默认值和跨运行时用户表不由该开关实验改写。
 
+- **guest 目录镜像与惰性 OPEN：** `guest_cache.py`，同一冻结 release CLI/SDK 和固件切换 `PVISOR_VM_GUEST_CACHE=0/1`，writeback 固定关闭。普通 `--safe` CLI 工作区与 SDK 显式 Immutable lower 独立成批；2 vCPU/4096 MiB、热宿主输入、新 VM/upper、3 warmups/30 seeded 随机配对。分列 2048 路径首次/重复 stat、深目录 stat、目录枚举、64 MiB 读取、1000 次热 open/fstat 与 open/read、宽目录单文件访问及 1.3s 空闲后 stat。校验全部数据、退出/Bundle 和输入不变，保留全部有效慢样本，配对 bootstrap 95% CI、先检查分布，不报告 P99。独立 B-FS-DIAG 运行用 prime-only 差分核对 READINDEX/OPEN/GETATTR 等请求，不把 profiling 耗时混入正式样本；声明资格、TTL 和跨文件数据缓存策略差异，不将 SDK 不可变 share 外推到普通 CLI 或整个 Agent。报告、来源、失败和完整数据保留 `.data/guest-cache-*`。
+
 ### B-FS-DIAG：文件系统请求成本分解 {#b-fs-diag}
 
 - **角色：** diagnostic

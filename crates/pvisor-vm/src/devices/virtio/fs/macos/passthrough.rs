@@ -2323,7 +2323,7 @@ impl FileSystem for PassthroughFs {
             }
         }
 
-        self.do_getattr(&ctx, inode)
+        self.getattr(ctx, inode, handle)
     }
 
     fn rename(

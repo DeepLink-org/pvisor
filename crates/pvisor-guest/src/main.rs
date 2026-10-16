@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(any(target_os = "linux", all(test, unix)))]
+mod mounts;
 
 fn main() {
     #[cfg(target_os = "linux")]

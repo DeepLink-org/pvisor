@@ -60,6 +60,9 @@ const FOPEN_NONSEEKABLE: u32 = 4;
 /// Allow caching this directory.
 const FOPEN_CACHE_DIR: u32 = 8;
 
+/// A lower object whose opened identity survives a later upper copy-up.
+const FOPEN_PVISOR_LOWER: u32 = 1 << 30;
+
 bitflags! {
     /// Options controlling the behavior of files opened by the server in response
     /// to an open or create request.
@@ -68,6 +71,9 @@ bitflags! {
         const KEEP_CACHE = FOPEN_KEEP_CACHE;
         const NONSEEKABLE = FOPEN_NONSEEKABLE;
         const CACHE_DIR = FOPEN_CACHE_DIR;
+        /// With PVISOR_WRITEBACK, reads of this original lower object bypass
+        /// the shared inode cache after a writable open or truncate.
+        const PVISOR_LOWER = FOPEN_PVISOR_LOWER;
     }
 }
 
@@ -190,6 +196,9 @@ const ALLOW_IDMAP: u64 = 1 << 40;
 /// patched FUSE client; stock clients leave it clear and keep per-request
 /// lookups.
 const PVISOR_META: u64 = 1 << 41;
+
+/// Guest-owned cross-file writeback; negotiated only with WRITEBACK_CACHE.
+const PVISOR_WRITEBACK: u64 = 1 << 42;
 
 /// `ReadIndexOut.flags`: no further directory pages exist.
 pub const READINDEX_COMPLETE: u32 = 1;
@@ -454,6 +463,11 @@ bitflags! {
         /// readdir, and read-only open locally. Host requests remain for page
         /// misses, file bytes, and operations that change the stage.
         const PVISOR_META = PVISOR_META;
+
+        /// Keep cached writes and their handles across close, then submit them
+        /// by byte threshold or timer. Only guest-owned writeback sessions
+        /// enable this; ordinary FUSE guests keep their existing close behavior.
+        const PVISOR_WRITEBACK = PVISOR_WRITEBACK;
     }
 }
 

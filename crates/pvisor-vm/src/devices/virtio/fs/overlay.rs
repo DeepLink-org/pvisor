@@ -9,7 +9,7 @@ use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
@@ -670,9 +670,11 @@ pub struct OverlayFs {
     // New INITs use the caller's current preference. Restoring an already
     // negotiated session must not silently change its saved writeback mode.
     new_session_writeback: bool,
+    // Derived from INIT or restored native state, never a second snapshot field.
+    writeback_active: AtomicBool,
     // Only the root device opts in, and each OPEN still requires an explicit
-    // physical-lower stability promise. Upper and mutable data stay uncached
-    // across opens. This preference is not a persisted handle/cache object.
+    // physical-lower stability promise. Guest-owned writeback separately keeps
+    // upper cache pages. This preference is not a persisted handle/cache object.
     immutable_data_cache: bool,
     virtual_metadata: bool,
     snapshot_config: Config,
@@ -856,6 +858,7 @@ impl OverlayFs {
             io_activity: Arc::new(IoActivity::default()),
             core,
             new_session_writeback,
+            writeback_active: AtomicBool::new(false),
             immutable_data_cache: false,
             snapshot_config: cfg,
             roots,
@@ -1586,6 +1589,10 @@ impl FileSystem for OverlayFs {
         for (layer, saved) in self.layers.iter().zip(&state.layers) {
             layer.restore_state(saved)?;
         }
+        self.writeback_active.store(
+            matches!(state.layers.first(), Some(FsSnapshot::Passthrough(layer)) if layer.writeback),
+            Ordering::Relaxed,
+        );
         self.core.restore_hard_links(&state.hard_links)?;
         let sources = state
             .hard_link_origins
@@ -1628,6 +1635,13 @@ impl FileSystem for OverlayFs {
         if capable.contains(FsOptions::DO_READDIRPLUS) {
             options |= capable & directory_options;
         }
+        if options.contains(FsOptions::WRITEBACK_CACHE) {
+            options |= capable & FsOptions::PVISOR_WRITEBACK;
+        }
+        self.writeback_active.store(
+            options.contains(FsOptions::WRITEBACK_CACHE),
+            Ordering::Relaxed,
+        );
         Ok(options)
     }
 
@@ -1709,11 +1723,38 @@ impl FileSystem for OverlayFs {
         ctx: Context,
         inode: u64,
         attr: bindings::stat64,
-        _handle: Option<u64>,
+        handle: Option<u64>,
         valid: SetattrValid,
     ) -> io::Result<(bindings::stat64, Duration)> {
         let _operation = self.write_operation()?;
-        let path = self.path(inode)?;
+        let path = match self.path(inode) {
+            Ok(path) => path,
+            Err(error) => {
+                // Writeback ctime/mtime may follow unlink or replacement. Never
+                // resolve its former name, which could now name a different file.
+                if valid.is_empty() || !(SetattrValid::MTIME | SetattrValid::CTIME).contains(valid)
+                {
+                    return Err(error);
+                }
+                let handles = self.handles.lock().unwrap();
+                let id = handle.or_else(|| handles.iter().find_map(|(id, h)| {
+                    matches!(h, Handle::File(h) if h.overlay_inode == inode && h.layer.0 == 0).then_some(*id)
+                })).ok_or(error)?;
+                let h = match handles.get(&id) {
+                    Some(Handle::File(h)) if h.overlay_inode == inode && h.layer.0 == 0 => {
+                        h.clone()
+                    }
+                    _ => return Err(io::Error::from_raw_os_error(libc::EBADF)),
+                };
+                drop(handles);
+                let _io = self.io_activity.fence(vec![id], false);
+                _io.drain();
+                let (mut attr, timeout) =
+                    self.layers[0].setattr(ctx, h.inode, attr, Some(h.handle), valid)?;
+                attr.st_ino = inode as _;
+                return Ok((attr, timeout));
+            }
+        };
         let _io = self.fence_paths(&[&path]);
         self.core
             .prepare_metadata_change(&path)
@@ -1966,6 +2007,14 @@ impl FileSystem for OverlayFs {
         // old lower pages rather than reusing this read-only optimization.
         if self.immutable_data_cache && readonly && immutable_regular {
             options |= OpenOptions::KEEP_CACHE;
+        }
+        // The guest owns upper writes; reopening must not launder its dirty
+        // pages one at a time through cache invalidation.
+        if layer.0 == 0 && self.writeback_active.load(Ordering::Relaxed) {
+            options |= OpenOptions::KEEP_CACHE;
+        }
+        if layer.0 != 0 && readonly && self.writeback_active.load(Ordering::Relaxed) {
+            options |= OpenOptions::PVISOR_LOWER;
         }
         let id = self.allocate_handle(Handle::File(Arc::new(FileHandle {
             overlay_inode: inode,
@@ -2654,7 +2703,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             std::fs::create_dir(temp.path().join("lower")).unwrap();
             let fs = writeback_test_overlay(temp.path(), false, setting);
-            let server = super::super::server::Server::new(WritebackTestFs(fs.clone()));
+            let server = super::super::server::Server::new(WritebackTestFs(fs.clone()), true);
             let options = negotiate_writeback_test_session(&server, capable);
             assert_eq!(options.contains(FsOptions::WRITEBACK_CACHE), expected);
             let state = server
@@ -2673,7 +2722,7 @@ mod tests {
         std::fs::create_dir(temp.path().join("lower")).unwrap();
         std::fs::write(temp.path().join("lower/file"), b"abcd").unwrap();
         let fs = writeback_test_overlay(temp.path(), false, Some("1"));
-        let server = super::super::server::Server::new(WritebackTestFs(fs.clone()));
+        let server = super::super::server::Server::new(WritebackTestFs(fs.clone()), true);
         let options = negotiate_writeback_test_session(&server, FsOptions::WRITEBACK_CACHE);
         let ctx = Context {
             uid: 0,
@@ -2691,7 +2740,7 @@ mod tests {
         drop((server, fs));
 
         let fs = writeback_test_overlay(temp.path(), true, None);
-        let server = super::super::server::Server::new(WritebackTestFs(fs.clone()));
+        let server = super::super::server::Server::new(WritebackTestFs(fs.clone()), true);
         server.restore_state(&saved).unwrap();
         fs.inode_alloc.restore_next(saved.next_inode).unwrap();
         let recaptured = server
@@ -2771,7 +2820,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             std::fs::create_dir(temp.path().join("lower")).unwrap();
             let fs = writeback_test_overlay(temp.path(), false, None);
-            let server = super::super::server::Server::new(WritebackTestFs(fs.clone()));
+            let server = super::super::server::Server::new(WritebackTestFs(fs.clone()), true);
             let saved = server
                 .capture_state(fs.inode_alloc.snapshot_next())
                 .unwrap();
@@ -2780,7 +2829,7 @@ mod tests {
             drop((server, fs));
 
             let fs = writeback_test_overlay(temp.path(), true, setting);
-            let server = super::super::server::Server::new(WritebackTestFs(fs.clone()));
+            let server = super::super::server::Server::new(WritebackTestFs(fs.clone()), true);
             server.restore_state(&saved).unwrap();
             fs.inode_alloc.restore_next(saved.next_inode).unwrap();
             assert_eq!(
@@ -2807,7 +2856,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             std::fs::create_dir(temp.path().join("lower")).unwrap();
             let fs = writeback_test_overlay(temp.path(), false, Some("1"));
-            let server = super::super::server::Server::new(WritebackTestFs(fs.clone()));
+            let server = super::super::server::Server::new(WritebackTestFs(fs.clone()), true);
             negotiate_writeback_test_session(&server, FsOptions::WRITEBACK_CACHE);
             let saved = server
                 .capture_state(fs.inode_alloc.snapshot_next())
@@ -2815,7 +2864,7 @@ mod tests {
             drop((server, fs));
 
             let fs = writeback_test_overlay(temp.path(), true, setting);
-            let server = super::super::server::Server::new(WritebackTestFs(fs.clone()));
+            let server = super::super::server::Server::new(WritebackTestFs(fs.clone()), true);
             server.restore_state(&saved).unwrap();
             fs.inode_alloc.restore_next(saved.next_inode).unwrap();
             server
@@ -2844,7 +2893,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir(temp.path().join("lower")).unwrap();
         let fs = writeback_test_overlay(temp.path(), false, Some("1"));
-        let server = super::super::server::Server::new(WritebackTestFs(fs.clone()));
+        let server = super::super::server::Server::new(WritebackTestFs(fs.clone()), true);
         negotiate_writeback_test_session(&server, FsOptions::WRITEBACK_CACHE);
         let saved = server
             .capture_state(fs.inode_alloc.snapshot_next())
@@ -2852,7 +2901,7 @@ mod tests {
         drop((server, fs));
 
         let fs = writeback_test_overlay(temp.path(), true, Some("0"));
-        let server = super::super::server::Server::new(WritebackTestFs(fs.clone()));
+        let server = super::super::server::Server::new(WritebackTestFs(fs.clone()), true);
         assert!(server.restore_state(&saved).is_err());
         assert_eq!(
             server
@@ -2864,7 +2913,7 @@ mod tests {
         drop((server, fs));
 
         let fs = writeback_test_overlay(temp.path(), true, None);
-        let server = super::super::server::Server::new(WritebackTestFs(fs.clone()));
+        let server = super::super::server::Server::new(WritebackTestFs(fs.clone()), true);
         let mut mismatched = saved.clone();
         mismatched.options &= !FsOptions::WRITEBACK_CACHE.bits();
         assert!(server.restore_state(&mismatched).is_err());
@@ -2956,6 +3005,122 @@ mod tests {
             let count = io::Read::read(&mut self.0, &mut bytes)?;
             file.write_at(&bytes[..count], offset)
         }
+    }
+
+    #[test]
+    fn detached_writeback_times_use_the_open_object_after_name_reuse() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        std::fs::write(temp.path().join("lower/file"), b"original").unwrap();
+        let fs = parent_cache_fixture(temp.path());
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
+        let handle = fs
+            .open(ctx, inode, false, libc::O_RDWR as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let mut attrs = fs.getattr(ctx, inode, Some(handle)).unwrap().0;
+        fs.unlink(ctx, fuse::ROOT_ID, c"file").unwrap();
+        let (replacement, replacement_handle, _) = fs
+            .create(
+                ctx,
+                fuse::ROOT_ID,
+                c"file",
+                0o600,
+                false,
+                (libc::O_RDWR | libc::O_CREAT) as u32,
+                0,
+                Extensions::default(),
+            )
+            .unwrap();
+        attrs.st_mtime = 12345;
+        attrs.st_mtime_nsec = 0;
+        let (updated, _) = fs
+            .setattr(
+                ctx,
+                inode,
+                attrs,
+                Some(handle),
+                SetattrValid::MTIME | SetattrValid::CTIME,
+            )
+            .unwrap();
+        assert_eq!(updated.st_mtime, 12345);
+        assert_ne!(
+            fs.getattr(ctx, replacement.inode, replacement_handle)
+                .unwrap()
+                .0
+                .st_mtime,
+            12345
+        );
+        assert!(
+            fs.setattr(ctx, inode, attrs, Some(handle), SetattrValid::SIZE)
+                .is_err()
+        );
+        assert!(
+            fs.setattr(ctx, inode, attrs, replacement_handle, SetattrValid::MTIME)
+                .is_err()
+        );
+        fs.release(ctx, inode, 0, handle, false, false, None)
+            .unwrap();
+        fs.release(
+            ctx,
+            replacement.inode,
+            0,
+            replacement_handle.unwrap(),
+            false,
+            false,
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn writeback_keeps_owned_upper_pages_after_restore() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        std::fs::write(temp.path().join("lower/file"), b"original").unwrap();
+        let config = parent_cache_fixture(temp.path()).snapshot_config.clone();
+        let fs = OverlayFs::build_with_writeback(
+            config.clone(),
+            Arc::new(InodeAllocator::new()),
+            false,
+            Some("1"),
+        )
+        .unwrap();
+        assert!(
+            fs.init(FsOptions::WRITEBACK_CACHE | FsOptions::PVISOR_WRITEBACK)
+                .unwrap()
+                .contains(FsOptions::PVISOR_WRITEBACK)
+        );
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
+        let (handle, flags) = fs.open(ctx, inode, false, libc::O_RDWR as u32).unwrap();
+        assert!(flags.contains(OpenOptions::KEEP_CACHE));
+        fs.release(ctx, inode, 0, handle.unwrap(), false, false, None)
+            .unwrap();
+        let snapshot = fs.capture_state().unwrap();
+        drop(fs);
+        let restored =
+            OverlayFs::build_with_writeback(config, Arc::new(InodeAllocator::new()), true, None)
+                .unwrap();
+        restored.init(FsOptions::empty()).unwrap();
+        restored.restore_state(&snapshot).unwrap();
+        let (handle, flags) = restored
+            .open(ctx, inode, false, libc::O_RDONLY as u32)
+            .unwrap();
+        assert!(flags.contains(OpenOptions::KEEP_CACHE));
+        restored
+            .release(ctx, inode, 0, handle.unwrap(), false, false, None)
+            .unwrap();
     }
 
     #[test]

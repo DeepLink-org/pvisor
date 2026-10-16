@@ -1,0 +1,55 @@
+From: pVisor maintainers
+Subject: [PATCH] fuse: reserve dirty budget for guest-owned writeback
+
+diff --git a/fs/fuse/file.c b/fs/fuse/file.c
+--- a/fs/fuse/file.c
++++ b/fs/fuse/file.c
+@@ -795,12 +795,21 @@
+ 	}
+ }
+ 
+-int fuse_pvisor_wb_enable(struct fuse_conn *fc)
+-{
++int fuse_pvisor_wb_enable(struct fuse_mount *fm)
++{
++	struct fuse_conn *fc = fm->fc;
++	struct backing_dev_info *bdi = fm->sb->s_bdi;
++
+ 	INIT_DELAYED_WORK(&fc->pvisor_wb_work, fuse_pvisor_wb_work);
+ 	fc->pvisor_wb_wq = alloc_workqueue("fuse-pvisor-wb",
+ 					 WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
+-	return fc->pvisor_wb_wq ? 0 : -ENOMEM;
++	if (!fc->pvisor_wb_wq)
++		return -ENOMEM;
++
++	/* Keep strict accounting, reserving our working set if budgets permit. */
++	bdi_set_max_ratio(bdi, 100);
++	bdi_set_min_bytes(bdi, PVISOR_WB_HIGH_WATER);
++	return 0;
+ }
+ 
+ int fuse_pvisor_wb_drain(struct fuse_conn *fc)
+diff --git a/fs/fuse/fuse_i.h b/fs/fuse/fuse_i.h
+--- a/fs/fuse/fuse_i.h
++++ b/fs/fuse/fuse_i.h
+@@ -1089,7 +1089,7 @@
+ void pvisor_note_rename(struct inode *olddir, struct inode *newdir);
+ int pvisor_readdir(struct file *file, struct dir_context *ctx);
+ void pvisor_evict(struct inode *inode);
+-int fuse_pvisor_wb_enable(struct fuse_conn *fc);
++int fuse_pvisor_wb_enable(struct fuse_mount *fm);
+ int fuse_pvisor_wb_drain(struct fuse_conn *fc);
+ int fuse_pvisor_bind(struct file *file);
+ int fuse_pvisor_bind_pending(struct inode *inode);
+diff --git a/fs/fuse/inode.c b/fs/fuse/inode.c
+--- a/fs/fuse/inode.c
++++ b/fs/fuse/inode.c
+@@ -1369,7 +1369,7 @@
+ 				fc->pvisor_meta = 1;
+ 			if ((flags & FUSE_PVISOR_WRITEBACK) && fc->writeback_cache &&
+ 			    fc->no_lock && fc->no_flock &&
+-			    fuse_pvisor_wb_enable(fc))
++			    fuse_pvisor_wb_enable(fm))
+ 				ok = false;
+ 		} else {
+ 			ra_pages = fc->max_read / PAGE_SIZE;
