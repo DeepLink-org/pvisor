@@ -1,238 +1,61 @@
-# Why the Agent era needs pVisor
+# Why Agents Need pVisor
 
-**microVMs lower the cost of an individual sandbox. pVisor aims to reduce the full lifecycle cost of Agent execution, from environment preparation through execution, waiting, and result delivery.**
+**pVisor aims to establish a new execution model for Agents: Agents retain their sequential programming model, while a shared execution engine takes over supported I/O, reclaims resources during waits, and resumes the original execution timeline when events are ready.**
 
-Having more Agents explore, divide work, and verify results in parallel is an important way to improve problem solving. As scale grows, so do the costs: preparing a thousand environments, retaining a thousand execution states, waiting for a thousand model responses, and finding results worth accepting among all those attempts. Faster sandbox startup does not automatically remove these expenses.
+Scaling autonomous Agent execution requires changing how resources follow tasks. Faster sandbox startup is a foundation. The larger opportunity is to keep many stateful Agents progressing without retaining a complete resident environment for every timeline throughout its lifetime.
 
-pVisor aims to scale autonomous Agent execution. It uses processes, containers, or VMs as execution boundaries while managing environments, file changes, resource lifecycles, and execution records. Assessing the value of this layer requires looking at the whole task.
+## An Agent's timeline is continuous; its resource demand is intermittent {#waiting-cost}
 
-pVisor's core insight is that **waiting for I/O need not keep the entire guest resident.** The central engineering challenge is to take over I/O such as file downloads, LLM requests, and bulk writes, allowing the host to continue processing requests while the guest is offloaded, then resume execution when results are ready. This calls for designing file, network, and memory lifecycles together. It also explains why making I/O asynchronous at scale matters more than simply shrinking the VM.
+A Coding Agent typically follows its own timeline: read a repository, request a model response, edit code, run tests, and choose the next step from the results. Tools, child processes, and background services may run concurrently, while the task retains state across turns.
 
-## From the price of a sandbox to the cost of a useful result {#cost-per-result}
+Computation and waiting alternate along this timeline. While the Agent waits for a model response, inference happens in an external service, but its sandbox may still retain memory, caches, and process state.
 
-Suppose a thousand Agents attempt to fix the same bug, and one solution is eventually accepted. This example illustrates the costs; it is not a performance measurement.
+DeepSeek's **DSec (DeepSeek Elastic Compute)** report provides production evidence. In a week of samples from early 2026, about 90% of sandboxes in both the container and microVM backends averaged at most 5% of their requested CPU. Median lifetimes were 17.4 and 15.5 minutes respectively, with both P99s exceeding three hours. The report also describes sandboxes waiting for the model's next action while retaining state and caches. [DSec §1 and §4.3, Figs. 5 and 7](https://arxiv.org/html/2609.22978v1#S4.SS3)
 
-The attempts may depend on the same repository baseline, compilers, and packages. Their process state and changes must remain separate. Failed changes can be discarded, while successful changes need review before merging. Identical content offers opportunities for sharing, and attempts still need clear boundaries.
+![DSec production statistics and schematic Agent phases: long lifetimes, sparse CPU use, and potentially continuous state residency](assets/agent-workload-phases.svg)
 
-Measuring only the milliseconds and MiB needed to start a sandbox covers just part of this chain.
+These observations support **intermittent computation over long lifetimes**. Computation and waits recur across interaction turns without a fixed period. The phase timeline above is illustrative, not a measured DSec trace.
 
-| Lifecycle stage | Source of cost | What is needed beyond the VM substrate | pVisor mechanisms and engineering challenges |
-| --- | --- | --- | --- |
-| Bringing in an environment | Installing tools, adapting dependencies, and building an execution environment | Image ingestion and environment management | Use Linux OCI images directly and reuse existing environments without requiring users to build a separate VM disk image |
-| Preparation and distribution | Repeatedly downloading, copying, and unpacking identical content | Content caching, sharing, and retrieval on demand | Shared image cache, pinned versions, and file content read on access |
-| Running tools | File operations, data movement, and communication across boundaries | Compatible system calls and controlled I/O paths | A Linux guest runs programs; host file services and network egress enforce policy |
-| Waiting for the model or a download | CPU is idle while state and memory remain resident | Cooperation between host I/O proxies, reclamation, and restoration | Proxies and memory primitives already exist; the central challenge is to let the host continue requests while the guest is offloaded |
-| Bulk writes | Repeated waits for writeback; dirty pages and device requests keep guest memory resident | Bounded asynchronous queues, data ownership handoff, and completion notification | An explicit batched writeback path already exists; the central challenge is for the host to own pending write data, removing I/O's dependency on guest residency |
-| Retrying after failure | Preparing the environment again and handling failed output | Isolated changes and a reusable starting point | Staging, logical checkpoints and forks of stopped Jobs, and independent disposal of failed changes |
-| Investigation and delivery | Inspecting execution, finding changes, and resolving overwrite conflicts | Execution records and a result acceptance workflow | Run Bundle, optional model request capture, apply by path, disposal of unaccepted changes, and refusal to overwrite on conflict |
+As concurrency grows, residency during waits accumulates. **Continuous logical execution need not require continuous physical resource occupancy.** The unit to optimize is therefore the Agent's complete lifecycle, from receiving an environment to delivering a result.
 
-A VM can host these capabilities, but does not define them. The execution layer must organize file staging, image distribution, idle-state reclamation, and result acceptance. This is the concrete meaning of “pVisor is not another virtual machine”: the product delivers a task workflow from execution through review, with virtualization as one of its isolation mechanisms.
+## A familiar transition in I/O execution models {#io-models}
 
-A more useful business metric is:
+High-concurrency servers have faced a similar change in resource organization. On a single thread processing requests sequentially, one request waiting for I/O delays later requests. A thread per connection preserves sequential code while allowing several timelines to overlap. When many connections wait, however, each retains a thread stack and execution context.
 
-```text
-Cost per useful result
-  = Model, environment, machine, control-plane, and result-handling costs across all attempts
-    / Number of results ultimately accepted
-```
+![From sequential processing on one thread to a thread per request: more concurrency, but waiting threads retain their execution contexts](assets/io-thread-timelines.svg)
 
-Failed attempts also contribute to the numerator. Machine costs and human time should be recorded separately and converted using explicit unit prices before adding them. End-to-end latency, correctness, and failure rate still need separate observation. pVisor does not change the model's inference price, and resource optimization does not itself improve task success rates.
+Event-driven execution centralizes waiting so fewer threads can handle many connections. Reactors commonly use readiness notifications such as epoll; Proactors organize execution around asynchronous completion; IOCP provides completion notifications and concurrent processing. Adopting these models directly often requires splitting sequential code into state machines or callbacks and managing more execution state. [epoll](https://man7.org/linux/man-pages/man7/epoll.7.html), [IOCP](https://learn.microsoft.com/en-us/windows/win32/fileio/i-o-completion-ports)
 
-## Production workloads reveal where costs diverge {#workload-evidence}
+Transparent coroutines concentrate this adaptation in the runtime. Programs continue to express logic sequentially, while syscall hooks or standard-library integration hand supported blocking I/O to an event engine. The runtime suspends the coroutine during the wait and resumes it at the original call when ready. For example, libco combines socket-function hooks with epoll / kqueue so business logic can retain synchronous calls while executing asynchronously. [libco](https://github.com/Tencent/libco), [Go runtime scheduling](https://go.dev/doc/faq#goroutines)
 
-DeepSeek's DSec technical report, published in September 2026, describes production sandboxes for Agent training and evaluation. It provides concrete evidence for resource management decisions, moving the comparison beyond the intuition that “Agents should be lightweight.”
+![Reactors and Proactors share an event engine; transparent coroutines preserve sequential timelines above it, with runtime-managed suspension and resumption](assets/io-events-coroutines.svg)
 
-| Observation | Published data | Statistical meaning |
-| --- | --- | --- |
-| CPU usage of DSec containers and microVMs | About 90% of sandboxes use no more than 5% of their requested CPU capacity on average | The denominator is requested CPU capacity, not whole-machine utilization |
-| DSec sandbox lifetimes | Medians of 17.4 and 15.5 minutes, respectively; p99 exceeds three hours for both backends | Includes waiting; does not equal a single command's duration or a complete task's duration |
-| Historical Azure VM workloads | 60% of VMs have average virtual CPU utilization below 20% | A mixed IaaS/PaaS sample from 2016–2017, sampled every five minutes |
+The figure uses one worker to illustrate sharing; implementations can use several. A Reactor signals that I/O can be attempted; a Proactor signals completion of a submitted operation. Coroutines let applications avoid splitting their state around those events. Transparency means preserving call semantics on integrated I/O paths, rather than automatic, lossless migration of arbitrary multithreaded programs.
 
-DSec's data comes from production samples in early 2026; the lifetime sample contains 30K containers and 10K microVMs. Azure's data comes from the historical Resource Central study. The periods, workloads, and sampling methods differ, so dividing these figures cannot establish an efficiency multiplier. [DSec §4.3](https://arxiv.org/html/2609.22978v1#S4.SS3), [Resource Central §3.2](https://www.microsoft.com/en-us/research/wp-content/uploads/2017/10/Resource-Central-SOSP17.pdf)
+**pVisor aims to bring this transition to Agent execution.** Agents continue using their existing code and Linux tools. The execution engine turns supported waits into event-driven progress and resumption. Adaptation is concentrated in the runtime, avoiding a concurrency rewrite for every Agent.
 
-**An environment may need to remain alive while computation happens only some of the time.** CPU overcommit therefore solves only part of the problem. As long as state is retained, memory, file caches, and writable data continue to affect node capacity.
+## Use the VM to hold the Agent's execution context {#agent-iocp}
 
-Cloud computing has long dealt with low utilization, short requests, and long jobs. The Borg paper distinguishes long-running services handling requests lasting a few microseconds to a few hundred milliseconds from batch jobs lasting a few seconds to a few days. The Azure Functions study found that 50% of functions had average execution times below one second, excluding cold starts. [Borg §2.1](https://research.google.com/pubs/archive/43438.pdf), [Serverless in the Wild §3.4](https://www.microsoft.com/en-us/research/uploads/prod/2020/05/serverless-ATC20.pdf)
+Following the coroutine model, pVisor extends the scheduling unit to the Agent's entire execution environment. A coroutine retains its call stack and local variables. A VM holds the Agent's processes, memory and Linux kernel state, allowing the runtime to preserve and restore its execution context outside the application.
 
-The difference in Agent workloads therefore needs to be understood across the full execution trajectory. Tool execution, model waits, and further exploration alternate; the environment retains state across turns, and earlier feedback determines what happens next and how much longer execution continues. Long-running services typically handle many requests through stable replicas, while Agent exploration may continually create and discard new attempts. What changes is the combination of workload properties and the unit the platform needs to optimize.
+![The mechanism: coroutines adapt waits at call boundaries; pVisor takes over I/O at Linux virtual-device and protocol boundaries, preserving sequential application calls](assets/agent-vm-coroutine-bridge.svg)
 
-## Manage the cost of waiting when duration is unknown {#waiting-cost}
+**Transparency to the Agent means running its existing code, using its existing Linux tools and making its existing calls.** File and network I/O crosses Linux and virtual devices into the host, where pVisor takes ownership on integrated device and protocol paths. Changes to the guest kernel, VMM and host services are concentrated at this layer. The Agent needs no asynchronous rewrite or explicit suspend, offload or resume interface. [VM execution path](../design/vm-runtime.md)
 
-An Agent task may finish after one tool call or go through many rounds of editing, testing, and exploration. Even two tasks with similar total durations may have different resource profiles: one compiles continuously, while the other spends most of its time waiting for the model.
+## The Agent sees continuous execution; the host schedules events {#execution-path}
 
-At least three durations need separate observation: **time spent running tools, end-to-end task time, and environment retention time**. Combining them into a single “runtime” makes it difficult to decide whether to optimize startup, execution, or waiting.
+Consider a model request on a supported proxy path. The Agent issues the request and waits as usual. pVisor hands it to the host to advance. When the entire guest can safely wait, pVisor retains its context and reclaims offloadable memory, making reusable resources available to other Agents. When a response arrives, pVisor restores that context and returns from the original call. The Agent proceeds to handle the result.
 
-During waits, a useful measurement is the integral of physical memory over time, for example in GB·s. Removing ten milliseconds of startup overhead does not automatically offset retaining state for tens of additional minutes. Likewise, pausing a vCPU stops computation without automatically releasing guest RAM.
+![Two views: Agent A waits for its original call; the host advances I/O and runs B and C during the wait, then restores A to resume in place](assets/agent-transparent-scheduling.svg)
 
-Reclamation during waits must answer two questions: when reclamation is worthwhile, and whether execution can continue correctly after restoration. Offload incurs write, compression, and restoration costs. Model connections, network timeouts, timers, and external services do not all pause with the guest. Reclamation makes sense only when the expected residency savings cover those costs and restoration meets the latency constraints.
+This places several Agent timelines under a shared execution engine: **each Agent retains its logical progress, while pVisor schedules its physical resource occupancy.** Resumption continues the same process and execution attempt. The VM preserves machine context across the wait; the host retains the I/O state needed to keep the operation progressing.
 
-pVisor already has memory primitives for different purposes: sharing identical content, compressing an instance's cold pages, and explicitly offloading a whole VM for restoration within the same process. They have platform and configuration limits and cannot be combined arbitrarily. The [memory subsystem](../design/memory-optimization/index.md) defines these boundaries. The [wait observation and offload experiment](../design/experimental/vcpu-idle-offload/index.md) remains an observation prototype; it has not delivered the full loop of automatically offloading when model reasoning starts and waking when the response arrives.
+Transparency is bounded by the original call's semantics: results, errors, file ordering and synchronization requirements must remain intact. The host must own independent requests and data before removing I/O's dependency on guest RAM. Model requests also require protocol integration; ordinary TCP forwarding cannot automatically take over a TLS session inside the guest. A guest with runnable background work continues executing.
 
-This reveals pVisor's core insight: **progressing I/O requires the request state whose ownership has been handed off, not the continued residency of the entire guest.** The execution layer needs to manage environment retention time, I/O processing time, and resource residency separately.
+## Complete one transparent wait path first {#validation}
 
-## IOCP at the Agent level is the central engineering challenge {#agent-iocp}
+Start with one I/O path and complete the loop: take ownership → offload safely → advance on the host → wake on an event → return from the original call. Then extend to streaming and more tools. Validation must check call semantics and whether fixed resources support more useful execution after counting host buffers, offload and restoration costs.
 
-IOCP, or I/O Completion Ports, provides a model for submitting asynchronous I/O, collecting completion notifications, and scheduling handlers. IOCP at the Agent level borrows this idea and extends the scheduling unit to an execution environment, forming pVisor's core architectural position. It borrows the organization of submission and completion queues, rather than implementing the Windows API. [Microsoft IOCP documentation](https://learn.microsoft.com/en-us/windows/win32/fileio/i-o-completion-ports)
+Existing foundations include controlled file and network paths, pause and RAM-offload primitives, and an experimental host write buffer. Automatic wait detection, I/O handoff, completion-driven wakeups and resumption scheduling still need end-to-end integration and validation. The two figures illustrate that target mechanism. [Wait and offload experiment](../design/experimental/vcpu-idle-offload/index.md), [Agent I/O completion](../design/experimental/agent-io-completion/index.md)
 
-In this model, once an Agent initiates an external operation, pVisor takes responsibility for progressing the request and retaining its result. If the entire guest temporarily has no other work to run, its resident footprint can be reduced after a safe handoff. Execution resumes when a result, error, or progress event requiring attention arrives. **Progressing I/O no longer requires keeping the entire guest in memory throughout the wait.**
-
-![Core architecture and engineering path: the host owns requests and continues I/O; the guest is offloaded after a safe handoff and resumes on completion](assets/agent-io-completion.svg)
-
-| Operation | What the host needs to take over | When the guest needs to return |
-| --- | --- | --- |
-| File download | The authorized download request, connection, destination file, and temporary storage; publish the result on completion as agreed | When the file is available, the operation fails, or progress or cancellation needs handling |
-| LLM request | The upstream request, response or streaming data, and bounded result buffering | When the answer is ready or the streaming delivery policy requires data consumption |
-| Bulk writes | Bytes whose ownership has been handed off, the target object, write ordering, and background submission | When synchronization or error consumption is needed, or subsequent execution can proceed |
-
-This requires requests with explicit application or file semantics. An ordinary TCP proxy sees only bytes. If TLS remains inside the guest, it also cannot fully handle arbitrary HTTPS downloads on the application's behalf. Downloads need a host proxy that can execute independently and write to the destination file. LLM requests need an explicit model protocol path. Streaming responses also require policies for waking in batches and applying backpressure; the entire stream cannot be assumed to fit in an unlimited buffer.
-
-### Hand off I/O ownership before offloading the guest {#io-ownership}
-
-The key change is to break the binding between a request and guest RAM. Putting a synchronous function in a thread pool or stopping a vCPU does not accomplish this automatically.
-
-1. **Receive and admit.** Validate authorization, bind the Attempt, session generation, and request identities, reserve budgets for requests, bytes, and result buffers, and distinguish operations that have been accepted from those that have not.
-2. **Hand off data and objects.** The host owns the bytes or independently valid backing required by the request, together with file handles and connections. End borrows of guest RAM that may be reclaimed. Operations still depending on guest pages must finish accessing them first; they must not touch those pages after reclamation.
-3. **Offload and continue.** Confirm that the guest has reached a safe waiting point, drain device phases still accessing its RAM, and then perform offload. Operations already owned by the host continue independently, with completions and errors retained in budgeted queues or storage.
-4. **Restore and deliver.** Decide when to restore based on completion, timeout, cancellation, or buffer pressure. Completion events must also be latched during transitions into and out of offload, with a direct notification path to the controller; waking must not first depend on guest RAM being available. After reestablishing RAM and device access and confirming resumption, verify the request and execution identities, then deliver results or device completion notifications according to the protocol. Do not require the guest to consume all data before allowing it to run, or hold queue or proxy locks while synchronously waiting for resumption. A completion event must not override a manual pause or wake an Attempt that has ended.
-
-The existing virtio-fs path holds a RAM lease from reading the guest buffer through publishing to the used ring. Offload must wait for these accesses to finish. The central engineering challenge is to split “accessing guest memory” from “waiting for host I/O” so that the latter no longer holds the former's lease for the entire wait. [Current device and RAM contracts](../design/vm-runtime.md#virtio)
-
-The existing Gateway already provides a cooperation point: an Agent can declare that the entire guest is quiescent during a particular inference wait, allowing the embedding runtime to join the wait and delivery barriers through `ModelWaitLifecycle`. Automatic native resource release and RAM reclamation are not yet connected to this interface. An ordinary model request alone also cannot establish that other tools or background tasks are idle. [Gateway wait interface](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-gateway/README.md)
-
-Host queues and guest state must share a lifecycle that can be reconciled. The capture scope of existing snapshots does not automatically cover requests in flight under host ownership, completion queues, or external effects. Durable checkpoints must bring the identities and commit progress of these states into a single recovery contract. Completion delivery needs deduplication, and pause or cancellation does not automatically undo external effects. Reconciling and recovering requests after a host crash requires a separate contract. Replaying a machine snapshot must not blindly resend LLM requests, downloads, or writes.
-
-### Asynchronous writes determine whether waiting can truly be handed off {#asynchronous-writes}
-
-Bulk writes are especially important. If every file write waits for the host to finish, the guest repeatedly enters short waits. If bytes are merely written to the guest page cache, they still belong to the guest and may keep its memory resident. Creating longer offload windows requires actually handing the data and responsibility for submission to the host, then using bounded queues to coalesce scheduling and perform background writes.
-
-Engineering can proceed in stages: first preserve the original syscall's blocking semantics, with the host taking over I/O and the guest offloaded until restoration on completion returns the actual result; then implement write-behind, allowing the call to return when the host has accepted the data while submission continues in the background. The latter also requires a host write cache and more complete visibility and error contracts.
-
-Several completion points need to be distinguished: the request has been accepted, the host owns the required data, the file write has completed, synchronization has made it durable, and the result has been delivered to the guest. An ordinary `write` has different return conditions from the durability conditions of `fsync`; making I/O asynchronous must preserve each promise, including synchronous semantics for `O_SYNC` / `O_DSYNC` writes. Subsequent reads must observe writes as agreed. Ordering on the same object, short writes, disk-full conditions, delayed errors, and synchronization barriers before a task ends must all remain correct.
-
-An explicitly enabled writeback path already batches across files, but its data still resides primarily in the guest page cache. It does not establish that the host can continue writing while the guest is offloaded. It provides a foundation for batching; IOCP at the Agent level still requires cooperation among data ownership, completion queues, and the offload protocol. [Existing writeback mechanism and limits](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-vm/README.md)
-
-### Allow more buffering to reduce whole-guest residency {#buffer-memory-tradeoff}
-
-The fewest copies, the smallest buffers, and the lowest lifecycle cost are not always the same objective. If zero-copy requires retaining guest pages, while copying to the host allows more guest memory to be released, an extra copy and some bounded buffering may be worthwhile.
-
-The measurement should cover the net effect over the entire waiting interval:
-
-```text
-Net memory-time saved
-  = ∫(baseline guest residency − guest residency after offload
-       − added request buffers − added completion buffers − added execution-engine overhead)dt
-```
-
-Account for buffers, page caches, and pages of recovery backing that remain resident using actual whole-node physical memory. Configured capacity or a reduction in one VMM's RSS is not a substitute. Offload file sizes and storage I/O are charged separately. Positive net memory savings are not enough: copying, encoding, I/O, and restoration latency also enter the cost assessment. Each Attempt and the whole node need budgets for request counts, bytes, dirty data, and completion queues. Exhausting a budget must trigger backpressure, spilling to storage, or restoration to consume results, so unbounded host memory does not simply replace guest memory.
-
-The case for investing in asynchronous writes therefore includes both throughput and freeing more execution environments from the cost of remaining resident while waiting. **Replacing an entire waiting guest with bounded host I/O state is pVisor's core benefit and validation target.**
-
-## Which state should the control plane pay to keep consistent? {#control-plane}
-
-Frequent environment creation and destruction brings management costs that could otherwise be amortized into the task's critical path. The number of object updates, persistence operations, and controller notifications required by an attempt may deserve as much optimization as execution itself.
-
-Kubernetes controllers use asynchronous loops to bring actual state toward desired state. etcd KV operations provide linearizability by default, while watch notifications have their own semantics. Management overhead accumulates as frequent lifecycle operations pass through the API Server, object serialization, etcd persistence, and rate limiting. [Kubernetes controllers](https://kubernetes.io/docs/concepts/architecture/controller/), [etcd API guarantees](https://etcd.io/docs/v3.6/learning/api_guarantees/)
-
-The Kubedirect study at NSDI 2026 used Kubernetes v1.32.0 to scale batches of 100–800 Pods in an 80-node cluster. It found that controllers exchanging state through the API Server formed the main bottleneck. Kubedirect moves reconstructable intermediate state out of this path while preserving state convergence and termination semantics. This points to reducing unnecessary durable coordination while retaining the Kubernetes ecosystem. [Kubedirect §2–3](https://www.usenix.org/system/files/nsdi26-qi.pdf)
-
-| State or operation | Possible strategy | Boundary to preserve |
-| --- | --- | --- |
-| Observing node load and selecting placement candidates | Tolerate stale views, choose optimistically, and select again after failure | Nodes retain final admission authority to keep resource allocation under control |
-| Preparation intermediate state that has not executed and has no side effects | Regenerate after failure and converge asynchronously | An action that has already executed must not be treated as unexecuted |
-| Execution identity, permissions, quotas, and result submission | Define ownership, authorization, and commit protocols | Delayed state must not permit unauthorized access or duplicate acceptance |
-| External actions such as sending messages or writing databases | Use business-appropriate idempotency keys, deduplication, or reconciliation | A timeout does not mean nothing happened; retrying does not roll back an action |
-
-Agents can tolerate failed exploration, leaving room to optimize replaceable attempts. Important progress and non-repeatable side effects still need protection. The claim that eventual consistency is sufficient should apply only to state suited to that model.
-
-pVisor currently handles execution on a single machine. Cross-node placement, workflows, and retries belong to Kubernetes, Ray, or other external orchestrators. This separation allows execution-path optimization to proceed independently; pVisor does not currently provide a new cluster scheduling system. [Cluster execution direction](../design/research/cluster-execution.md)
-
-## What processes, containers, and VMs isolate {#isolation-boundaries}
-
-![User-space, kernel, and typical I/O boundaries of processes, containers, and VMs](assets/agent-isolation-boundaries.svg)
-
-Ordinary processes typically have separate user-space virtual address spaces and can also explicitly share memory. Different processes still call the same host kernel. Isolation of user address spaces does not isolate kernel failure domains.
-
-Containers continue to use the host kernel. Namespaces isolate views of resources such as processes, mounts, and networks; cgroups provide resource accounting and limits. Capabilities, seccomp, and LSMs can add access control. **Namespaces and cgroups do not create separate kernel address spaces.**
-
-A VM has its own guest kernel and memory, separated from the host through hardware virtualization and address translation. Guest system calls can complete within the guest. Access to external files or networks then crosses virtual devices into the host path. The host virtualization layer, VMM, and device implementations remain part of the security boundary. [Isolation mechanisms](../design/isolation.md), [executor boundaries](../security/executor-boundaries.md)
-
-Adding boundaries generally adds protocol processing, synchronization, and possible data copying. Stronger isolation does not, however, make every I/O operation slower: guest caches can avoid crossings, shared mappings can reduce copying, and batching can amortize notifications. Comparisons must examine concrete paths instead of ranking processes, containers, and VMs by name alone.
-
-For Agents, an independent guest kernel means the workload does not use the host syscall interface as its own kernel interface. Removing unused drivers and devices reduces the capabilities the guest must carry. Overall security still depends on the host boundary and implementation, and cannot be inferred from kernel size alone.
-
-## Why microVMs are used and what further specialization can change {#runtime-choice}
-
-microVMs have a straightforward appeal: hardware virtualization provides a kernel boundary while preserving the existing Linux tool ecosystem and reducing VMM and device-model overhead. Firecracker already uses a minimal device model and a stripped-down Linux guest. Choosing a microVM is itself a form of specialization for a purpose. [Firecracker design](https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md)
-
-Unikernels specialize the software stack from another direction, combining the application and required operating-system components into a dedicated image. This is a different dimension from microVMs; a unikernel can also run on a virtualization platform. [Original Unikernels paper](https://anil.recoil.org/papers/2013-asplos-mirage/)
-
-Agents dynamically run shells, package managers, compilers, and subprocesses, making broad software compatibility important. Traditional application-specific unikernels often require adapting software or selecting components in advance. The original Firecracker paper also explains that its need to run unmodified Linux programs led it away from the unikernel approach discussed at the time. [Firecracker §2.1.3](https://www.usenix.org/system/files/nsdi20-paper-agache.pdf)
-
-| Approach | Suitable conditions | Tradeoffs |
-| --- | --- | --- |
-| Host processes or containers | Prioritize reuse of the host kernel, tools, and caches | Shared kernel boundary; task-level policy and result management are still needed |
-| An existing microVM plus an execution layer | Require an independent guest kernel and broad Linux compatibility | Environment distribution and result management require integration; I/O ownership handoff and waking on completion extend beyond machine-control APIs alone |
-| Application-specific unikernel | The application and its required components can be determined in advance | Dynamic tools, process semantics, and compatibility need individual evaluation |
-| pVisor's specialized Linux execution environment | Retain Linux user space and design file, network, and memory lifecycles together around IOCP at the Agent level | Guest/VMM protocols, I/O completion semantics, platform adaptation, and compatibility require maintenance |
-
-pVisor draws on specialization for a purpose: tailor Linux and devices to execution needs, and let the host provide controlled environment and result services. The current VM path still consists of a Linux guest with separate user-space processes, so it is not a unikernel in the strict sense.
-
-IOCP at the Agent level determines the focus of specialization: pVisor needs to coordinate I/O takeover, safe handoff of guest memory, and restoration on completion. microVM pause, snapshot, and restore APIs alone do not define completion semantics for downloads, model responses, or asynchronous file submission. For example, pausing Firecracker stops device event processing, allowed in-flight asynchronous block I/O still needs to be drained when taking a snapshot, and restoration in another process does not guarantee preservation of connections. [Firecracker snapshot contract](https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/snapshot-support.md)
-
-This capability spans machine control, file services, model protocols, and runtime scheduling; a microVM can continue to provide the substrate. Specialization should focus on making these parts cooperate, giving I/O an explicit owner and a way to progress while the guest is offloaded.
-
-Specialization also involves the trust model. Public clouds serve mutually untrusted tenants and must carefully restrict sharing. Multiple Agents in the same trust domain can use common read-only inputs. The original Firecracker paper's production recommendations include disabling same-page merging and avoiding file sharing to mitigate side channels. pVisor's current [threat model](../security/threat-model.md) does not promise hostile multitenant or side-channel isolation; sharing benefits carry security tradeoffs. [Firecracker §3.4](https://www.usenix.org/system/files/nsdi20-paper-agache.pdf)
-
-## How pVisor turns lifecycle requirements into execution paths {#execution-path}
-
-![The Linux guest runs programs; file and network requests cross device boundaries into host services](assets/agent-execution-path.svg)
-
-### Reuse the Linux ecosystem to reduce environment adaptation {#oci-environments}
-
-The pVisor VM executor directly accepts Linux OCI images matching the host architecture, supporting `linux/amd64` and `linux/arm64`. You can reuse an open-source project's existing user-space environment without first converting it into a bootable VM disk. Image pulling does not depend on Docker, Podman, or Buildah. [VM executor](../guides/executors/vm.md)
-
-This reduces the cost of bringing in an environment. OCI format support does not imply support for arbitrary devices, kernel features, or Docker deployment configurations; workloads must still fit the selected guest and network capabilities. The current kernel also makes specific tradeoffs: for example, the generic x86_64 configuration removes capabilities such as ACPI/PCI while also disabling guest CPU vulnerability mitigations. This is not a security improvement in every respect. The [firmware documentation](https://github.com/DeepLink-org/pvisor/blob/main/fw/README.md) and [platform matrix](../reference/platforms.md) maintain the configurations and limits.
-
-### Treat environment content as shared input {#shared-environment}
-
-Prepared or published images can be read through a shared cache by version, file, and content block. The VM connects directly to the file backend and retrieves content on access, without fully materializing the environment for each execution. Preparing an image absent from the cache for the first time may still require a full download and extraction. Full export, snapshots, or copy-up may also need to fetch data that has not yet been read. [Shared image cache](../reference/shared-image-cache.md)
-
-Three things need to be distinguished here: deduplicating disk content, reusing the host cache, and sharing the same physical pages among guests. These are different optimizations. DSec's Firecracker experiment used virtio-pmem and DAX to eliminate duplicate guest page caches, reducing peak host memory by 40.2%. This demonstrates the value of optimizing resource paths and shows that improvements can happen within a microVM. [DSec §8.4](https://arxiv.org/html/2609.22978v1#S8.SS4)
-
-### Keep system calls local and handle external access at device boundaries {#device-boundary}
-
-Ordinary instructions and most system calls execute inside the guest. Cache hits, tmpfs, and procfs operations can stay there. Requests for exported file trees cross virtio-fs into the host file service; network traffic crosses virtio-net into controlled host egress. pVisor places its control points at these device boundaries. [VM execution path](../design/vm-runtime.md), [file service](../design/overlayfs.md), [network data plane](../design/overlaynet.md)
-
-This division lets compatibility and control work together. Guest Linux provides mature process semantics; the host file service manages visible views, staged writes, and conflict baselines; network egress enforces access policy. The [shared filesystem service decision](../design/decisions/0007-shared-filesystem-service.md) explains these responsibilities.
-
-Requests across the boundary can also be optimized according to their specific semantics. Directory mirroring reduces metadata round trips when the underlying content is stable and paths for modifying it are controlled. Lazy read-only open defers binding a host handle until data is needed. Both must preserve authorization, object lifecycles, and error-handling contracts. A read-only mount alone does not guarantee that the underlying physical content never changes. [VM file protocol and applicability](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-vm/README.md)
-
-### Separate execution completion from result acceptance {#result-acceptance}
-
-During a staged run, file changes first enter the Job's stage. After execution, you can inspect changes and records, then choose apply or drop. If host files have changed, pVisor refuses to overwrite them directly. Failed attempts can therefore leave inspectable artifacts without handing over an entire machine as the result. [Staging semantics](../concepts/staging.md)
-
-Logical forks of native Jobs require the source Job to be stopped. They reuse staged file state and conflict baselines, not arbitrary process memory. Dropping files does not undo external API actions, database writes, or messages already sent. [Logical checkpoints and forks](../guides/fork-checkpoint.md), [failure semantics](../design/failure-semantics.md)
-
-These capabilities belong to the native Job workflow. The separate daemon currently provides a local VM lifecycle API, without stage/apply, checkpoint/fork, or offload APIs. Capabilities from the two entry points cannot be treated as interchangeable. [Daemon integration boundaries](../guides/daemon/boundaries.md)
-
-## Validate the choice against complete tasks {#validation}
-
-A smaller kernel, fewer VM exits, and lower memory use in one component can explain where gains come from. The choice of approach ultimately depends on whether those gains improve complete tasks.
-
-Comparisons should use the same tools, inputs, and result validation, and declare the same security constraints. A baseline using an existing microVM should also have a reasonably stripped-down guest and implement the task semantics being compared. The difference between a full Ubuntu cold start and a stripped-down pVisor environment alone cannot establish the need for a custom runtime.
-
-| Question | Evidence to observe |
-| --- | --- |
-| Is preparation cost amortized? | Environment readiness time on first use and reuse, network bytes, and the amount of data actually materialized |
-| Is waiting cheaper? | Whole-node physical memory integrated over time, including the VMM, caches, shared services, and restoration headroom |
-| Can I/O progress independently of the guest? | Download, model response, and write progress while the guest is offloaded; whether device borrows have ended; whether completion notifications are delivered correctly |
-| Is asynchronous buffering worthwhile? | Physical footprint of added buffers and completion queues, net GB·s saved, copying and writeback costs, and backpressure when budgets are exhausted |
-| Is restoration worthwhile? | p99 of the first tool call after restoration, connection and timer behavior, and peaks when many instances restore together |
-| Do parallel attempts produce more useful work? | Completion throughput and result acceptance rate under fixed resource and latency constraints, using the same validation |
-| Do failure and delivery costs fall? | Repeated work before retrying, record completeness, review time, and conflict-handling outcomes |
-
-Similar environments and multiple waiting rounds are worth testing. Heavy writes, low environment reuse, and frequent wakes should also be included. Sharing, compression, and offload each have costs; evaluations should not select only workloads that favor one mechanism.
-
-pVisor's case for its own runtime must rest on demonstrated benefits to complete tasks from jointly optimizing the guest, file service, and resource lifecycle. The central engineering and validation target is continued host I/O while the guest is offloaded, exchanging bounded request state and buffers for lower whole-node residency costs. The underlying VMM can be reused; the execution layer needs to establish cooperation among I/O takeover, completion delivery, and resource restoration.
-
-**Cheap sandbox startup is a starting point. Every stage from acquiring an environment to delivering an acceptable result deserves optimization.**
+**pVisor aims to give Agents the familiar execution style of transparent coroutines, with a runtime that turns waits into opportunities to share resources. The VM provides the context and control boundary for that transition.**

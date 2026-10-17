@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 686" width="1120" height="686" role="img" aria-labelledby="title desc" xml:lang="zh" style="max-width:100%;height:auto">
+<title id="title">Agent 的连续调用与宿主的事件调度</title>
+<desc id="desc">目标执行模型，非已交付闭环。Agent A 发起普通 I/O 调用并等待。pVisor 将请求与数据交接给宿主，确认整个 guest 可安全等待后保存执行上下文并回收可卸载内存。宿主继续 I/O，可复用的运行预算转给 B 和 C；完成事件触发恢复 A，随后原调用返回。时间线为非等比例机制示意，恢复不是重启或重跑任务。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif;fill:#172033} .muted{fill:#526176}</style>
+<rect width="1120" height="686" rx="16" fill="white"/>
+<text x="32" y="43" font-size="17" font-weight="700" text-anchor="start" style="fill:#2563eb">05 · 两个视角</text>
+<text x="32" y="80" font-size="28" font-weight="700" text-anchor="start" style="fill:#172033">Agent 等一次调用，宿主调度多条时间线</text>
+<text x="32" y="113" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">目标执行模型 · 上层调用方式保持不变，下层资源随计算与等待重新安排。</text>
+<rect x="32" y="139" width="1056" height="126" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+<text x="52" y="176" font-size="20" font-weight="600" text-anchor="start" style="fill:#2563eb">Agent 视角</text>
+<rect x="202" y="154" width="118" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="261.0" y="179" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">调用 I/O</text>
+<rect x="320" y="154" width="580" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="610.0" y="179" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">等待原调用返回</text>
+<rect x="900" y="154" width="142" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="971.0" y="179" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">继续执行</text>
+<text x="202" y="232" font-size="18" font-weight="400" text-anchor="start" style="fill:#2563eb">同一个 Agent、同一个进程、同一次调用；无需编写挂起或恢复逻辑。</text>
+<rect x="32" y="283" width="1056" height="342" rx="10" fill="#f8fafc" stroke="#dbe3ed"/>
+<text x="52" y="312" font-size="20" font-weight="600" text-anchor="start" style="fill:#172033">宿主视角</text>
+<text x="52" y="366" font-size="19" font-weight="400" text-anchor="start" style="fill:#172033">VM A</text>
+<rect x="202" y="340" width="220" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="312.0" y="365" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">执行 / 交接 I/O</text>
+<rect x="422" y="340" width="378" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="611.0" y="365" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">保存上下文 · 回收可卸载内存</text>
+<rect x="800" y="340" width="100" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="850.0" y="365" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">恢复</text>
+<rect x="900" y="340" width="142" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="971.0" y="365" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">原处续跑</text>
+<text x="52" y="466" font-size="19" font-weight="400" text-anchor="start" style="fill:#059669">宿主 I/O</text>
+<rect x="320" y="440" width="102" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="371.0" y="465" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">接管</text>
+<rect x="422" y="440" width="378" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="611.0" y="465" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">宿主独立推进请求</text>
+<rect x="800" y="440" width="100" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="850.0" y="465" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">完成</text>
+<path d="M422 378 L422 436" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="440" y="413" font-size="16" font-weight="400" text-anchor="start" style="fill:#526176">数据已交接，I/O 不再借用 guest RAM</text>
+<path d="M800 437 L800 380" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="820" y="413" font-size="16" font-weight="400" text-anchor="start" style="fill:#059669">完成 → 恢复</text>
+<path d="M1044 358 H1070 V172 H1045" fill="none" stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+<text x="52" y="569" font-size="19" font-weight="400" text-anchor="start" style="fill:#172033">运行预算</text>
+<rect x="202" y="543" width="220" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="312.0" y="568" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A</text>
+<rect x="422" y="543" width="180" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="512.0" y="568" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">B</text>
+<rect x="602" y="543" width="198" height="36" rx="6" fill="#b45309" stroke="#b45309"/>
+<text x="701.0" y="568" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">C</text>
+<rect x="800" y="543" width="242" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="921.0" y="568" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A 恢复并执行</text>
+<text x="202" y="605" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">等待窗口里，可复用的执行资源服务其他 Agent。</text>
+<text x="32" y="660" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">时间线仅示意；完整 guest 可安全等待、I/O 所有权已交接后，才进入内存卸载窗口。</text>
+</svg>

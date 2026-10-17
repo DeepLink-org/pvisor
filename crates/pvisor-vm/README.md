@@ -842,6 +842,36 @@ guest RAM 引用；后续 READ/SETATTR/FLUSH 等阻塞请求仍可能持 RAM 引
 完整 Agent IOCP 与阻塞存储期间的 VM offload 尚未实现。设计见
 [EXP-003](../../docs/src/zh/design/experimental/agent-io-completion/index.md)。
 
+### 文件 I/O 的合版验收线
+
+文件 I/O 先作为独立机制验收，再接入 Attempt 调度、Gateway 与 RAM
+offload/resume。及格不要求所有 FUSE 请求异步，也不以 WRITE 提前返回
+或单个吞吐数字代替生命周期正确性。首个候选范围是 Linux staged overlay、
+独占 upper、guest writeback=0、DAX=0、host writeback=1。
+
+| 合同 | 当前状态与剩余验收 |
+| --- | --- |
+| 输入接管 | 先验证、预留预算、完整复制并固定 native 对象，再确认接收；后台不得持 guest descriptor、Reader/Writer 或 RAM lease。 |
+| 完成与错误 | 区分 accepted、completed 与 durable；已确认的短写、ENOSPC、EIO、worker 异常必须在同步和最终收尾暴露。当前有 FIFO 前缀屏障和 sticky error，尚无供调度器使用的非阻塞完成通知。 |
+| 顺序与可见性 | 覆盖同一对象的不同 FD、硬链接，以及 read/getattr/open、truncate、rename/unlink、release。当前采用保守屏障，metadata 仍会全局排空；不能声称已支持对象级独立推进。 |
+| RAM 静止 | 已确认 WRITE 的后台完成不得访问或唤醒 guest RAM；在途 READ/SETATTR/FLUSH 与预算反压仍可能阻塞冻结。后续合版必须能证明这些请求已排空，或增加 host 拥有的延迟回复机制。 |
+| 封存与恢复 | RAM offload 不等于快照或 stage 封存；快照/封存须排空所需写入并检查错误，或明确拒绝。正常 guest 最终 syncfs 已有错误回传；仍须验证真实 runner 收尾期间无晚到写入、失败不能发布成功结果。 |
+| 有界与控制路径 | 字节和任务预算包含预留、排队及执行；队列满、后台失败和销毁时不能遗留等待者。当前控制屏障不占 payload 预算，阻塞宿主 syscall 仍不可立即取消。 |
+
+`write_buffer::tests::owned_input_completes_with_guest_ram_gate_closed` 验证
+descriptor 引用释放、guest 输入被复用和 RAM gate 关闭后，host 队列仍以
+原始字节完成。Linux 的
+`host_buffer_protocol_write_detaches_guest_ram_before_backing_completion`
+进一步经过真实 FUSE WRITE 解码和 OverlayFs 接管路径，分别验证成功与
+延迟 ENOSPC，后台完成不修改此前的 guest 回复。
+这两项是所有权边界测试，不等于真实 VM offload/restore 验收。
+
+合版前仍须在 Linux/KVM 跑通受阻 backing 下的暂停/恢复、完整收尾与错误
+注入；待处理请求、恢复后唤醒和 stage 生命周期也须联测。guest writeback=1
+的 close→unlink→首次 syncfs ENOENT 属于另一个模式的已知未决问题，不能
+用 host writeback 模式的结果宣称已修复。DAX、并行写 worker 和更大预算
+不作为本轮补齐验收线的前置优化。
+
 ### Guest 跨文件异步回写
 
 新固件在上述 writeback 会话中额外协商 `FUSE_PVISOR_WRITEBACK`（bit 42）。

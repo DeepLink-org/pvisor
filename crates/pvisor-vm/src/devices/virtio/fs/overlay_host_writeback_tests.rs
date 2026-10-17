@@ -154,6 +154,110 @@ fn host_buffer_block(fs: &OverlayFs, error: Option<i32>) -> HostBufferGate {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn host_buffer_protocol_write_detaches_guest_ram_before_backing_completion() {
+    use crate::devices::virtio::descriptor_utils::{
+        create_descriptor_chain, DescriptorType, OwnedDescriptorChain,
+    };
+    use crate::devices::virtio::memory_gate;
+    use std::mem::size_of;
+    use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
+
+    for failure in [None, Some(libc::ENOSPC)] {
+        let temp = tempfile::tempdir().unwrap();
+        let fs = host_buffer_fixture(temp.path());
+        let (inode, handle) = host_buffer_open_file(&fs);
+        let buffer = fs.buffered_writes().unwrap();
+        // Tuple fields drop in order: unblock before the server joins its worker.
+        let session = (
+            host_buffer_block(&fs, failure),
+            super::super::super::server::Server::new(fs, true),
+        );
+        let (backing, server) = &session;
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let ram = memory_gate::register(&mem);
+        let payload = b"host-owned";
+        let input = 0x1000;
+        let body_len = size_of::<fuse::WriteIn>() + payload.len();
+        let reply = GuestAddress(input + body_len as u64);
+        let chain = create_descriptor_chain(
+            &mem,
+            GuestAddress(0),
+            GuestAddress(input),
+            vec![
+                (DescriptorType::Readable, body_len as u32),
+                (DescriptorType::Writable, 128),
+            ],
+            0,
+        )
+        .unwrap();
+        mem.write_obj(
+            fuse::WriteIn {
+                fh: handle,
+                size: payload.len() as u32,
+                ..Default::default()
+            },
+            GuestAddress(input),
+        )
+        .unwrap();
+        let data = GuestAddress(input + size_of::<fuse::WriteIn>() as u64);
+        mem.write_slice(payload, data).unwrap();
+        let plan = OwnedDescriptorChain::new(chain).unwrap();
+        let (reader, writer) = plan.reader_writer(&mem).unwrap();
+        let reply_len = server
+            .handle_message(
+                (
+                    fuse::InHeader {
+                        len: (size_of::<fuse::InHeader>() + body_len) as u32,
+                        opcode: fuse::Opcode::Write as u32,
+                        nodeid: inode,
+                        unique: 99,
+                        ..Default::default()
+                    },
+                    reader,
+                ),
+                writer,
+                false,
+                &None,
+                &Arc::new(std::sync::atomic::AtomicI32::new(i32::MAX)),
+            )
+            .unwrap();
+        assert_eq!(
+            reply_len,
+            size_of::<fuse::OutHeader>() + size_of::<fuse::WriteOut>()
+        );
+        let header: fuse::OutHeader = mem.read_obj(reply).unwrap();
+        let written: fuse::WriteOut = mem
+            .read_obj(GuestAddress(reply.0 + size_of::<fuse::OutHeader>() as u64))
+            .unwrap();
+        assert_eq!(
+            (header.error, header.unique, written.size),
+            (0, 99, payload.len() as u32)
+        );
+        assert!(std::fs::read(temp.path().join("upper/file"))
+            .unwrap()
+            .is_empty());
+        assert!(!ram.try_close().unwrap());
+        drop(plan);
+        mem.write_slice(b"reused!!!!", data).unwrap();
+        assert!(ram.try_close().unwrap());
+
+        backing.release();
+        assert_eq!(
+            buffer.flush().err().and_then(|error| error.raw_os_error()),
+            failure
+        );
+        assert_eq!(
+            std::fs::read(temp.path().join("upper/file")).unwrap(),
+            payload
+        );
+        assert!(ram.is_idle_closed());
+        let after: fuse::OutHeader = mem.read_obj(reply).unwrap();
+        assert_eq!((after.error, after.unique), (header.error, header.unique));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn host_buffer_ordinary_write_ack_precedes_backing_io_and_read_waits_for_owned_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let fs = host_buffer_fixture(temp.path());

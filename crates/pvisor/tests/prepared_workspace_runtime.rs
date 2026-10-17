@@ -313,13 +313,10 @@ async fn executor_output_observer_runs_before_driver_terminal_publication() {
                 .push("executor-returned-before-teardown");
         })
         .build();
-    let result = runtime
-        .run(RunSpec::process("observer-order", "sh", "/bin/true"))
-        .await
-        .unwrap()
-        .wait()
-        .await
-        .unwrap();
+    let mut spec = RunSpec::process("observer-order", "sh", "/bin/sh");
+    let pvisor_core::RunInvocation::Process(process) = &mut spec.invocation;
+    process.args = vec!["-c".into(), "exit 0".into()];
+    let result = runtime.run(spec).await.unwrap().wait().await.unwrap();
     assert_eq!(result.state, RunState::Completed);
     assert_eq!(
         *order.lock().unwrap(),
@@ -347,9 +344,7 @@ fn owned_workspace_public_apply_keeps_snapshot_baseline_and_host_conflicts() {
         record.write().unwrap();
         let result = f.apply(None);
         if host_edit {
-            let error = result
-                .err()
-                .expect("apply must preserve an intervening Host edit");
+            let error = result.expect_err("apply must preserve an intervening Host edit");
             assert!(
                 error.to_string().contains("target changed after staging"),
                 "{error:#}"

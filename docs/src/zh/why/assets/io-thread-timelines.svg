@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 605" width="1120" height="605" role="img" aria-labelledby="title desc" xml:lang="zh" style="max-width:100%;height:auto">
+<title id="title">从一条时间线到多个阻塞线程</title>
+<desc id="desc">顺序处理时，A 等待 I/O 会推迟 B。每个请求一个线程后，A、B、C 可以并发，但等待期间每个线程仍持有自己的执行上下文。所有时长仅为示意。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif;fill:#172033} .muted{fill:#526176}</style>
+<rect width="1120" height="605" rx="16" fill="white"/>
+<text x="32" y="43" font-size="17" font-weight="700" text-anchor="start" style="fill:#2563eb">02 · 阻塞模型</text>
+<text x="32" y="80" font-size="28" font-weight="700" text-anchor="start" style="fill:#172033">先增加时间线，再面对等待成本</text>
+<text x="32" y="113" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">蓝 / 绿 / 棕：A / B / C 的计算片段；灰色：等待 I/O。时间从左向右。</text>
+<rect x="32" y="139" width="1056" height="162" rx="10" fill="#f8fafc" stroke="#dbe3ed"/>
+<text x="52" y="174" font-size="22" font-weight="600" text-anchor="start" style="fill:#172033">一条线程 · 按顺序处理请求</text>
+<text x="52" y="229" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">线程</text>
+<rect x="202" y="204" width="110" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="257.0" y="229" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A</text>
+<rect x="312" y="204" width="200" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="412.0" y="229" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">等待</text>
+<rect x="512" y="204" width="95" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="559.5" y="229" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A</text>
+<rect x="627" y="204" width="100" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="677.0" y="229" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">B</text>
+<rect x="727" y="204" width="210" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="832.0" y="229" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">等待</text>
+<rect x="937" y="204" width="125" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="999.5" y="229" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">B</text>
+<text x="202" y="278" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">A 没结束，B 就不能开始。</text>
+<rect x="32" y="321" width="1056" height="240" rx="10" fill="#f8fafc" stroke="#dbe3ed"/>
+<text x="52" y="356" font-size="22" font-weight="600" text-anchor="start" style="fill:#172033">多个线程 · 每个请求保留一条执行时间线</text>
+<text x="52" y="406" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">线程 A</text>
+<path d="M202 399 L1062 399" fill="none" stroke="#cbd5e1" stroke-width="2"/>
+<rect x="202" y="381" width="110" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="257.0" y="406" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A</text>
+<rect x="312" y="381" width="380" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="502.0" y="406" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">等待 I/O</text>
+<rect x="692" y="381" width="110" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="747.0" y="406" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A</text>
+<text x="52" y="457" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">线程 B</text>
+<path d="M202 450 L1062 450" fill="none" stroke="#cbd5e1" stroke-width="2"/>
+<rect x="312" y="432" width="110" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="367.0" y="457" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">B</text>
+<rect x="422" y="432" width="400" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="622.0" y="457" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">等待 I/O</text>
+<rect x="822" y="432" width="110" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="877.0" y="457" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">B</text>
+<text x="52" y="508" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">线程 C</text>
+<path d="M202 501 L1062 501" fill="none" stroke="#cbd5e1" stroke-width="2"/>
+<rect x="422" y="483" width="110" height="36" rx="6" fill="#b45309" stroke="#b45309"/>
+<text x="477.0" y="508" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">C</text>
+<rect x="532" y="483" width="400" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="732.0" y="508" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">等待 I/O</text>
+<rect x="932" y="483" width="110" height="36" rx="6" fill="#b45309" stroke="#b45309"/>
+<text x="987.0" y="508" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">C</text>
+<text x="32" y="594" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">并发增加了，但线程栈与执行上下文仍随每条时间线保留。</text>
+</svg>

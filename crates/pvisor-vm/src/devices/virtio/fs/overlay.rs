@@ -995,8 +995,7 @@ impl OverlayFs {
             && self
                 .snapshot_config
                 .lower_mutability
-                .iter()
-                .any(|mutability| *mutability == pvisor_overlay_core::LayerMutability::Immutable);
+                .contains(&pvisor_overlay_core::LayerMutability::Immutable);
         self.readonly_flush_elision_configured = true;
         self.profile
             .add("readonly_flush_elision_requested", u64::from(requested));
@@ -1028,8 +1027,7 @@ impl OverlayFs {
             && self
                 .snapshot_config
                 .lower_mutability
-                .iter()
-                .any(|m| *m == pvisor_overlay_core::LayerMutability::Immutable);
+                .contains(&pvisor_overlay_core::LayerMutability::Immutable);
         self.lower_data_cache_configured = true;
         self.profile
             .add("lower_data_cache_requested", u64::from(requested));

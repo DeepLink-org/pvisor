@@ -521,6 +521,71 @@ mod tests {
     }
 
     #[test]
+    fn owned_input_completes_with_guest_ram_gate_closed() {
+        use crate::devices::virtio::descriptor_utils::{
+            create_descriptor_chain, DescriptorType, OwnedDescriptorChain,
+        };
+        use crate::devices::virtio::memory_gate;
+        use std::io::Read;
+        use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
+
+        let buffer = WriteBuffer::new().unwrap();
+        let (entered, started) = mpsc::channel();
+        let (release, finish) = mpsc::channel();
+        submit(
+            &buffer,
+            Box::new(Blocking {
+                key: 100,
+                entered,
+                release: finish,
+                live: None,
+            }),
+            b"block",
+            0,
+        );
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let gate = memory_gate::register(&mem);
+        let input = GuestAddress(0x1000);
+        let bytes = b"accepted";
+        let chain = create_descriptor_chain(
+            &mem,
+            GuestAddress(0),
+            input,
+            vec![
+                (DescriptorType::Readable, bytes.len() as u32),
+                (DescriptorType::Writable, 16),
+            ],
+            0,
+        )
+        .unwrap();
+        mem.write_slice(bytes, input).unwrap();
+        let plan = OwnedDescriptorChain::new(chain).unwrap();
+        let (mut reader, writer) = plan.reader_writer(&mem).unwrap();
+        let permit = buffer.reserve(bytes.len()).unwrap();
+        let mut owned = vec![0; bytes.len()];
+        reader.read_exact(&mut owned).unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        permit
+            .submit(recording((1, false), &calls), owned, 0)
+            .unwrap();
+        drop((reader, writer));
+        assert!(!gate.try_close().unwrap());
+
+        // The descriptor owner releases RAM only after publishing its reply.
+        drop(plan);
+        mem.write_slice(b"reused!!", input).unwrap();
+        assert!(gate.try_close().unwrap());
+        release.send(()).unwrap();
+        buffer.flush().unwrap();
+        assert_eq!(calls.lock().unwrap()[0].bytes, bytes);
+        assert!(gate.is_idle_closed());
+        let state = buffer.shared.lock();
+        assert_eq!((state.bytes, state.jobs), (0, 0));
+    }
+
+    #[test]
     fn adjacent_writes_merge_but_offsets_handles_and_privilege_flags_do_not() {
         let buffer = WriteBuffer::new().unwrap();
         let (entered, started) = mpsc::channel();

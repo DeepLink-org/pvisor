@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 540" width="1120" height="540" role="img" aria-labelledby="title desc" xml:lang="zh" style="max-width:100%;height:auto">
+<title id="title">长生命周期，间歇性计算</title>
+<desc id="desc">上半部分汇总 DSec 的生产统计，下半部分只示意计算与等待交替，不是实测曲线，也不代表固定周期。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif;fill:#172033} .muted{fill:#526176}</style>
+<rect width="1120" height="540" rx="16" fill="white"/>
+<text x="32" y="43" font-size="17" font-weight="700" text-anchor="start" style="fill:#2563eb">01 · 负载事实</text>
+<text x="32" y="80" font-size="28" font-weight="700" text-anchor="start" style="fill:#172033">状态留得久，计算却不连续</text>
+<text x="32" y="113" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">DeepSeek DSec：2026 年初一周的生产样本 · §4.3，图 5 / 图 7</text>
+<rect x="32" y="138" width="510" height="146" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+<rect x="558" y="138" width="530" height="146" rx="10" fill="#f0fdf4" stroke="#bbf7d0"/>
+<text x="54" y="174" font-size="19" font-weight="600" text-anchor="start" style="fill:#2563eb">CPU 使用稀疏</text>
+<text x="54" y="219" font-size="36" font-weight="700" text-anchor="start" style="fill:#2563eb">≈90%</text>
+<text x="223" y="205" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">容器与 microVM 沙箱</text>
+<text x="223" y="235" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">平均使用 ≤ 申请 CPU 的 5%</text>
+<text x="580" y="174" font-size="19" font-weight="600" text-anchor="start" style="fill:#059669">生命周期较长</text>
+<text x="580" y="214" font-size="30" font-weight="700" text-anchor="start" style="fill:#059669">17.4 / 15.5 min</text>
+<text x="580" y="251" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">容器 / microVM 中位数；两者 P99 均 &gt; 3 小时</text>
+<text x="32" y="326" font-size="17" font-weight="700" text-anchor="start" style="fill:#526176">阶段示意</text>
+<text x="32" y="376" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">计算 / 等待</text>
+<rect x="202" y="351" width="112" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="258.0" y="376" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">读仓库</text>
+<rect x="314" y="351" width="264" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="446.0" y="376" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">等待模型</text>
+<rect x="578" y="351" width="124" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="640.0" y="376" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">改代码</text>
+<rect x="702" y="351" width="180" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="792.0" y="376" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">等待 I/O</text>
+<rect x="882" y="351" width="174" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="969.0" y="376" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">运行测试</text>
+<text x="32" y="435" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">环境状态</text>
+<rect x="202" y="410" width="854" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="629.0" y="435" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">进程、内存和缓存可能贯穿整个任务驻留</text>
+<text x="32" y="488" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">下方为非等比例示意；计算与等待反复交替，间隔并不固定。</text>
+<text x="32" y="518" font-size="16" font-weight="400" text-anchor="start" style="fill:#526176">生命周期样本：30K 容器、10K microVM；来源：arxiv.org/abs/2609.22978</text>
+</svg>

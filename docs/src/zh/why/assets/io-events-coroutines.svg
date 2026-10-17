@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 1000" width="1120" height="1000" role="img" aria-labelledby="title desc" xml:lang="zh" style="max-width:100%;height:auto">
+<title id="title">事件驱动与透明协程</title>
+<desc id="desc">事件模型用共享工作线程交错处理多个连接，I/O 在各自路径上推进。Reactor 收到就绪通知后由应用进行非阻塞读写；Proactor 提交异步操作后接收完成。透明协程保留顺序调用风格，由运行时适配受支持 I/O、挂起等待者并在事件到达后恢复。单线程仅用于示意，实际可扩展到多个工作线程。</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#64748b"/></marker></defs>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif;fill:#172033} .muted{fill:#526176}</style>
+<rect width="1120" height="1000" rx="16" fill="white"/>
+<text x="32" y="43" font-size="17" font-weight="700" text-anchor="start" style="fill:#2563eb">03 · 事件与协程</text>
+<text x="32" y="80" font-size="28" font-weight="700" text-anchor="start" style="fill:#172033">把等待集中起来，把顺序写法还给应用</text>
+<text x="32" y="113" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">执行资源由运行时复用；各条逻辑时间线仍然独立。</text>
+<rect x="32" y="139" width="1056" height="386" rx="10" fill="#f8fafc" stroke="#dbe3ed"/>
+<text x="52" y="177" font-size="22" font-weight="600" text-anchor="start" style="fill:#172033">Reactor / Proactor · 共享事件引擎</text>
+<text x="52" y="231" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">工作线程</text>
+<rect x="202" y="206" width="140" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="272.0" y="231" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A</text>
+<rect x="342" y="206" width="140" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="412.0" y="231" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">B</text>
+<rect x="482" y="206" width="140" height="36" rx="6" fill="#b45309" stroke="#b45309"/>
+<text x="552.0" y="231" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">C</text>
+<rect x="622" y="206" width="140" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="692.0" y="231" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A</text>
+<rect x="762" y="206" width="140" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="832.0" y="231" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">B</text>
+<rect x="902" y="206" width="140" height="36" rx="6" fill="#b45309" stroke="#b45309"/>
+<text x="972.0" y="231" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">C</text>
+<text x="52" y="279" font-size="18" font-weight="400" text-anchor="start" style="fill:#2563eb">I/O A</text>
+<path d="M342 273 L622 273" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<path d="M622 273 L622 247" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<text x="52" y="314" font-size="18" font-weight="400" text-anchor="start" style="fill:#059669">I/O B</text>
+<path d="M482 308 L762 308" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<path d="M762 308 L762 247" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<text x="52" y="349" font-size="18" font-weight="400" text-anchor="start" style="fill:#b45309">I/O C</text>
+<path d="M622 343 L902 343" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<path d="M902 343 L902 247" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 5"/>
+<text x="202" y="380" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">I/O 独立推进；线程只在有工作时处理事件。</text>
+<rect x="52" y="402" width="494" height="102" rx="10" fill="#eff6ff" stroke="#bfdbfe"/>
+<rect x="562" y="402" width="506" height="102" rx="10" fill="#f0fdf4" stroke="#bbf7d0"/>
+<text x="70" y="431" font-size="20" font-weight="600" text-anchor="start" style="fill:#2563eb">Reactor · epoll</text>
+<text x="70" y="461" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">就绪通知 → 应用非阻塞读 / 写</text>
+<text x="70" y="487" font-size="17" font-weight="400" text-anchor="start" style="fill:#526176">通知可以尝试 I/O</text>
+<text x="580" y="431" font-size="20" font-weight="600" text-anchor="start" style="fill:#059669">Proactor · 完成式异步 I/O</text>
+<text x="580" y="461" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">提交异步操作 → 完成通知</text>
+<text x="580" y="487" font-size="17" font-weight="400" text-anchor="start" style="fill:#526176">IOCP 提供完成队列与并发控制</text>
+<rect x="32" y="545" width="1056" height="382" rx="10" fill="#f8fafc" stroke="#dbe3ed"/>
+<text x="52" y="583" font-size="22" font-weight="600" text-anchor="start" style="fill:#172033">透明协程 · 顺序调用，共享调度</text>
+<text x="52" y="632" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">协程 A</text>
+<path d="M202 625 L1042 625" fill="none" stroke="#cbd5e1" stroke-width="2"/>
+<rect x="202" y="607" width="140" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="272.0" y="632" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A</text>
+<rect x="342" y="607" width="280" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="482.0" y="632" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">I/O 等待 · 挂起</text>
+<rect x="622" y="607" width="140" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="692.0" y="632" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A</text>
+<text x="52" y="683" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">协程 B</text>
+<path d="M202 676 L1042 676" fill="none" stroke="#cbd5e1" stroke-width="2"/>
+<rect x="342" y="658" width="140" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="412.0" y="683" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">B</text>
+<rect x="482" y="658" width="280" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="622.0" y="683" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">I/O 等待 · 挂起</text>
+<rect x="762" y="658" width="140" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="832.0" y="683" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">B</text>
+<text x="52" y="734" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">协程 C</text>
+<path d="M202 727 L1042 727" fill="none" stroke="#cbd5e1" stroke-width="2"/>
+<rect x="482" y="709" width="140" height="36" rx="6" fill="#b45309" stroke="#b45309"/>
+<text x="552.0" y="734" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">C</text>
+<rect x="622" y="709" width="280" height="36" rx="6" fill="#eef2f6" stroke="#dbe3ed"/>
+<text x="762.0" y="734" font-size="18" font-weight="500" text-anchor="middle" style="fill:#526176">I/O 等待 · 挂起</text>
+<rect x="902" y="709" width="140" height="36" rx="6" fill="#b45309" stroke="#b45309"/>
+<text x="972.0" y="734" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">C</text>
+<text x="202" y="792" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">系统调用挂钩 / 标准库适配 → 挂起与恢复 → 事件引擎</text>
+<path d="M622 807 L622 836" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="52" y="880" font-size="18" font-weight="400" text-anchor="start" style="fill:#172033">工作线程</text>
+<rect x="202" y="854" width="140" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="272.0" y="879" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A</text>
+<rect x="342" y="854" width="140" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="412.0" y="879" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">B</text>
+<rect x="482" y="854" width="140" height="36" rx="6" fill="#b45309" stroke="#b45309"/>
+<text x="552.0" y="879" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">C</text>
+<rect x="622" y="854" width="140" height="36" rx="6" fill="#2563eb" stroke="#2563eb"/>
+<text x="692.0" y="879" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">A</text>
+<rect x="762" y="854" width="140" height="36" rx="6" fill="#059669" stroke="#059669"/>
+<text x="832.0" y="879" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">B</text>
+<rect x="902" y="854" width="140" height="36" rx="6" fill="#b45309" stroke="#b45309"/>
+<text x="972.0" y="879" font-size="18" font-weight="500" text-anchor="middle" style="fill:white">C</text>
+<text x="32" y="960" font-size="18" font-weight="400" text-anchor="start" style="fill:#526176">两图调度原理相通：直接使用事件模型，应用拆状态；使用协程，运行时保存与恢复上下文。</text>
+<text x="32" y="989" font-size="17" font-weight="400" text-anchor="start" style="fill:#526176">单个工作线程仅作示意，可扩展到多个；透明性限于已适配的 I/O，并非任意多线程程序自动迁移。</text>
+</svg>
