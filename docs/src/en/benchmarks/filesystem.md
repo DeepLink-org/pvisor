@@ -2,25 +2,17 @@
 
 ## Main conclusions {#conclusions}
 
-**In the measured local workloads, median Ready for the fixed payload ranges from 2.63 ms for direct execution to 111.88 ms for the pVisor VM. Task time depends on access shape: read- and metadata-heavy tasks on the host path approach direct-execution levels, tasks with batch artifact writes shorten substantially with writeback, while per-write synchronization and large working sets still carry significant cost.**
+**On the measured inspection and build tasks, pVisor host approaches direct-execution levels; when VM isolation is needed, writeback shortens the wait for batch artifact writes.**
 
-- **Budget startup and task time per mode.** Median Ready: pVisor host 18.31 ms, staged 23.07 ms, VM 111.88 ms, VM + writeback 115.65 ms; judge startup waiting and task time separately.
-- **Writeback shortens tasks with batch writes.** The extraction/publication task's three-round completion median drops from 11.271 s with the default VM to 5.928 s with writeback; the read- and metadata-heavy repository inspection takes 2.128–2.155 s under both VM configurations, with no writeback benefit.
-- **Synchronized writes are the main extra cost.** The task that syncs after every 4 KiB write completes three rounds in 404.73 ms (default VM) and 543.49 ms (writeback); dense 1 KiB writes, which allow buffered merging, take 649.99 ms by default and 36.49 ms with writeback.
-- **Large working sets hit a completion limit.** At a 128 MiB working set, all VM configurations finish; at 640 MiB, four resource cells across both VM configurations did not finish within the 90-second limit — validate completion before adopting VM modes for sustained bulk writes.
+- **Writeback benefits depend on task shape.** The extraction/publication task with batch artifact writes shortens clearly; the read- and metadata-heavy repository inspection takes nearly the same time under both VM configurations, with no observed benefit.
+- **Synchronized writes are the main extra cost.** With synchronization after every write, writeback is slower and the default VM configuration is preferable; dense small writes that allow buffered merging are clearly shorter with writeback.
+- **Large working sets hit a completion limit.** For sustained writes at a 640 MiB working set, both pVisor VM configurations in this cohort timed out; other sizes require separate measurement.
 
-| Need | Selection guidance |
-|---|---|
-| Read-, query- and build-heavy tool tasks | The host path approaches direct-execution levels; staged inspection takes 0.525 s |
-| VM isolation with batch artifact writes | Enable writeback and include final synchronization in the task budget |
-| Sync-after-every-write workloads | Writeback is slower here; prefer the default VM configuration |
-| Sustained writes with working sets above 128 MiB | This cohort's VM configurations did not finish within the protocol limit; measure separately |
+Results come from a local exploratory cohort of three independent environments. Applicability conditions are in [experiment design](#interpretation); per-configuration numbers are in [data and analysis](#results).
 
-Results come from a local exploratory cohort of three independent environments. Applicability conditions are in [experiment design](#interpretation); per-configuration numbers against the other same-cohort references are in [data and analysis](#results).
+## Motivation: what to answer before choosing an execution mode {#motivation}
 
-## Motivation: why use filesystem caching and writeback? {#motivation}
-
-Repository inspection, search, incremental builds and artifact publication repeatedly read and write files. Queries, reads, writes and synchronization across isolation boundaries can all add waiting. Caching and write merging aim to reduce repeated work; you need to know whether their benefits reach complete tasks. Choosing an execution mode also requires comparing startup waiting, task completion after synchronization, and whether large working sets and concurrent writes can finish successfully.
+An agent's repository inspection, search, incremental builds and artifact publication repeatedly read and write files. Choosing an execution mode for these tasks — host, staged, container or VM — is a trade-off between isolation needs and waiting. Selection requires three answers: how long startup takes, how long a task takes from execution to artifacts on disk, and whether tasks still finish as the working set grows or concurrency increases.
 
 ## Experiment design {#interpretation}
 
@@ -44,6 +36,8 @@ On the same machine, compare direct execution (Native), pVisor host, staged file
 These are exploratory measurements from three environments, applicable to local tasks with prepared environments. Initial image acquisition, cold disks, reliable tails, network proxying and larger-scale concurrency require separate measurements. Kernels, filesystems and cache boundaries differ, so results describe complete configurations. See [reproduction configurations](#configuration-details) for storage paths and switches.
 
 ## Data and analysis {#results}
+
+Whether writeback helps depends on whether writes can be merged and how often the task must synchronize.
 
 ### Startup and complete tasks {#complete-task}
 

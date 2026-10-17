@@ -8,11 +8,11 @@
 - **Reach results sooner.** Both short-task experiments showed shorter median waits from launch to checked output with cold client caches.
 - **Reuse downloaded files.** Warm clients use cached content. The experiments required no repeat downloads of file content.
 
-These results come from local experiments with prepared image services. Cache hits still leave mounting and executor startup costs; with the complete image cached, the path that pulls the full image upfront had shorter waits in the application-startup experiments.
+These results come from local experiments with prepared image services. Cache hits still leave mounting and executor startup costs; with the complete image cached, the Docker container had shorter startup waits in the application-startup experiments.
 
-## Motivation: why use lazy images? {#motivation}
+## Motivation: how long does environment preparation take for short tasks? {#motivation}
 
-Agents frequently create disposable environments, and short tasks often read only part of an image. pVisor fetches files as they are accessed, preparing the environment as the task progresses. Evaluating lazy images means measuring downloads and waiting on first use, along with startup overhead when cached content is reused.
+Agents frequently create disposable environments, and short tasks often read only a small part of an image — yet a complete pull must finish before they can start. Before adopting on-demand loading, two questions need answers: on first use, how much less data is downloaded and how much waiting is saved; and once content is cached locally, what startup overhead reuse still carries.
 
 ## Experiment design {#interpretation}
 
@@ -42,6 +42,8 @@ Both tasks use two CPUs. Docker has a 2 GiB memory limit, pVisor has 2 GiB guest
 Results apply to local short tasks with prepared services. Initial service preparation, public networks, large-scale concurrency and bulk file I/O require separate measurements; file-read results also cannot substitute for application startup inside an image. See [downloads and sources](#run) for full environments, cache reset procedures and reproduction steps.
 
 ## Experimental data and analysis {#results}
+
+A lazy image fetches files as they are accessed, so environment preparation advances with the task.
 
 ### On-demand fetching and short-task startup {#application-comparison}
 
