@@ -178,7 +178,19 @@ pub(super) fn start_if_requested(
         #[cfg(target_os = "linux")]
         let pool = {
             let mut pool = pool;
-            pool.enable_shared_mapping()?;
+            if pool.enable_shared_mapping().is_err() {
+                // Only the negotiated sealed protocol may fall back to local
+                // decode; legacy remote GET ownership is never used on Linux.
+                let pool = crate::ram_backing::ipc::SealedClient::new(pool)?;
+                return handle.start_cold_pager(
+                    pool,
+                    pvisor_vm::api::ColdRamOptions {
+                        metrics,
+                        page_granular: false,
+                        share_resident: false,
+                    },
+                );
+            }
             pool
         };
         handle.start_cold_pager(

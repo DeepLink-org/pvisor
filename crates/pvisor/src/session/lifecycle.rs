@@ -182,7 +182,10 @@ impl Session {
             network_policy,
         };
         crate::util::startup_mark_run("session.storage_begin", context.spec.run_id.as_str());
+        let control = crate::RunControlHandle::for_session(&context, operation.clone());
         let prepared = (|| {
+            #[cfg(feature = "gateway")]
+            let runtime = runtime.bind_model_wait(control.clone())?;
             context.drivers = runtime.prepare(
                 Arc::make_mut(&mut context.spec),
                 &preparation,
@@ -234,8 +237,6 @@ impl Session {
             return Err(PVisorError::EventSink(error));
         }
         crate::util::startup_mark_run("session.events_ready", context.spec.run_id.as_str());
-        let vm_status = context.status.clone();
-        let control_operation = operation.clone();
         let join = tokio::spawn(async move {
             context
                 .complete(executor, operation, safe_profile_requested)
@@ -247,9 +248,7 @@ impl Session {
             attempt_id,
             status: status_rx,
             cancellation,
-            vm_control,
-            vm_status,
-            control_operation,
+            control,
             events,
             agentctl,
             record,

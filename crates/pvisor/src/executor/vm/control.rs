@@ -1700,3 +1700,7 @@ mod tests {
         assert!(control.command(OperationKind::RunResume).await.is_err());
     }
 }
+
+#[cfg(all(test, feature = "gateway"))]
+#[path = "model_wait_tests.rs"]
+mod model_wait_tests;

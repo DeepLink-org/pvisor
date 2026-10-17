@@ -137,6 +137,51 @@ reclamation, or automatic offload. Embedded callers query observations through
 flags are independent and are not implicitly enabled. Parser/config/control unit tests are not
 real-guest, macOS platform, energy/density, or upstream validation evidence.
 
+## Cooperative native model waits (EXP-003 M0)
+
+With the `gateway` Cargo feature, embedded callers can enable
+`GatewayDriverConfig::native_model_wait(NativeModelWait::Pause)` or
+`NativeModelWait::Offload`. The default is off. Session creates a fresh adapter
+bound to the actual Run/Attempt before starting Gateway. Linux x86_64 VM execution
+and an enabled Gateway are required; a custom `model_wait` lifecycle conflicts.
+There is no CLI/config-file toggle for this prototype.
+
+The trusted workload declares whole-guest quiescence with
+`x-pvisor-inference-idle: true`. It must be the guest's only runnable work and
+have no outstanding filesystem/device operations. Ordinary model calls retain
+normal forwarding. This declaration does not discover other runnable processes
+or transfer dirty guest pages. Pause stops vCPUs; Offload also uses the existing
+shared file-backed RAM/device barrier. Private COW/pager RAM remains unsupported
+for offload. A failed device drain fails the Attempt instead of probing idleness.
+
+At most one declared wait is reserved per Attempt, including accepted controls
+and cancellation cleanup. Foreign/missing Run or Attempt identities and parallel
+waits are rejected before upstream dispatch. Entry waits for native ACK; delivery
+waits for resume ACK. Buffered bodies and supplier failures use the existing
+Gateway barrier; SSE resumes on its first nonempty network chunk, which may be a
+heartbeat. Full inference spooling and the guest submit/wait/cancel/ack protocol
+remain unimplemented.
+
+Manual pause, resume and offload share the native transition lock and revoke the
+automatic pause epoch when admitted, even if the later native operation fails.
+Delivery after manual pause waits for an explicit resume or Attempt cancellation.
+Dropped handlers enqueue bounded cleanup of only their own pause; uncertain
+native ACKs or failed cleanup cancel the Attempt. Execution capture/suspend is
+rejected while a reservation exists. The existing runtime retains resource
+admission and its storage lease; this prototype does not release/reacquire CPU
+reservations or introduce a scheduler lease. Control observations include
+`model_wait_epoch` (null for manual operations).
+
+`native_model_wait_case` drives a real guest through Gateway and a gated local
+model supplier, with an 8 MiB guest-memory digest checked after delivery. Build
+with `cargo build --locked -p pvisor --features gateway --example
+native_model_wait_case`; pass `running`, `pause`, `offload`, `manual` or `cancel`
+and a fresh output directory. Dynamic builds require
+`PVISOR_CASE_VM_LIBRARY_DIR`; optional `PVISOR_CASE_ROOTFS` and
+`PVISOR_CASE_VM_PYTHON` select guest inputs (defaults `/` and `/usr/bin/python3`).
+Each run writes `result.json` with final status and control observations. These
+are correctness checks, not memory-saving, throughput or density measurements.
+
 ## Host Job service and AgentCtl
 
 All built-in Job CLI operations (`run`, `status`, `kill`, `suspend`, `resume`,

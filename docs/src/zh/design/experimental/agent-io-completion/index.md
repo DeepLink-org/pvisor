@@ -1,15 +1,15 @@
-# EXP-003（设计阶段）：Agent 异步 I/O 与完成队列
+# EXP-003（受限 PoC）：Agent 异步 I/O 与完成队列
 
 让 pVisor 接管下载、模型请求和批量写入的输入、执行与结果。guest 提交工作后可以继续计算，或者在整个 guest 进入等待时卸载内存；host 继续推进 I/O，保存完成结果，再由现有 Attempt 控制者恢复 guest 并交付。
 
 | 项目 | 当前状态 |
 |---|---|
-| 阶段 | **设计阶段（RFC），2026-10-17；host 写缓存基础已实现，完整 Agent IOCP 待实现与验收** |
+| 阶段 | **受限 PoC，2026-10-18；M0 原生等待闭环与 host 写缓存基础已实现，完整 Agent IOCP 待实现与验收** |
 | 第一阶段 | Linux x86_64/KVM、共享文件 RAM、单一 Attempt 独占 stage；默认关闭 |
 | 文件系统路径 | 首版 Linux host 写缓存：WB=0、DAX=0；guest 批量 transfer 和更大缓存后续接入 |
 | Agent 路径 | 拟议的受限 submit / wait / cancel / ack；首版假设允许薄适配，兼容性选择尚待确认 |
 | 资源目标 | 降低 host 交互次数和 guest 驻留时间，提高固定 CPU/内存预算下的有效吞吐 |
-| 接口状态 | 以下任务和完成协议仍为拟议合同；host 缓存使用私有实验环境变量，无公开 Agent API 或 CLI 特性开关 |
+| 接口状态 | 以下任务和完成协议仍为拟议合同；host 缓存使用私有实验环境变量，M0 提供默认关闭的嵌入式 Gateway 配置；无公开 Agent 任务 API 或 CLI 特性开关 |
 
 ## 1. 问题提出 {#problem}
 
@@ -17,7 +17,7 @@
 
 guest 页缓存可以合并小写入、提前返回普通 write。Linux FUSE 的 writeback-cache 已提供这种能力；部分页写入还可能触发回读，即使文件以 O_WRONLY 打开。[FUSE I/O 模式](https://docs.kernel.org/filesystems/fuse/fuse-io.html)
 
-当前分支的 `0042-fuse-batched-writeback.patch` 使用 1 MiB/10 ms 提交条件、16 MiB 高水位和 256 句柄上限；数据仍在 guest pagecache。host 文件请求执行期间持有 guest RAM lease，直到 used-ring 发布才释放。扩大 guest 缓冲会增加可合并的数据，也会增加未转移的脏数据和可能需要 offload 的 RAM。
+早期 `0042-fuse-batched-writeback.patch` 使用 1 MiB/10 ms 提交条件、16 MiB 高水位和 256 句柄上限。当前 0048/0049 改为按实际脏页与临时 WRITE 页计账，软目标为 guest 可用 RAM 的 1/8、限制在 16–256 MiB，仍保留 256 个句柄 lease；具体提交条件见 [VM 缓存合同](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-vm/README.md)。数据仍在 guest pagecache。host 文件请求执行期间持有 guest RAM lease，直到 used-ring 发布才释放。扩大 guest 缓冲会增加可合并的数据，也会增加未转移的脏数据和可能需要 offload 的 RAM。
 
 目标流水线需要一个明确的所有权交接点：host 已经拥有输入字节、目标对象和预算之后，后台 I/O 才能脱离 guest RAM 继续执行。仅把同步 pwrite 放在线程里，或把 guest 地址传给 io_uring，仍然依赖 guest 内存。io_uring 的读写数据缓冲必须保持有效直到完成。[liburing 缓冲生命周期](https://github.com/axboe/liburing/blob/master/man/io_uring.7)
 
@@ -26,12 +26,12 @@ guest 页缓存可以合并小写入、提前返回普通 write。Linux FUSE 的
 | 现有机制 | 可以复用 | 尚缺的连接 |
 |---|---|---|
 | guest writeback、host 缓存与文件操作屏障 | 小写入合并、host 字节接管、对象操作排序、freeze | guest transfer fence、按对象并行、脱离 RAM 的阻塞回复 |
-| Gateway `ModelWaitLifecycle` | upstream 前 enter、回复前 delivery barrier、取消清理 | 实际绑定 native offload/resume 的 Attempt 适配器 |
+| Gateway `ModelWaitLifecycle` | upstream 前 enter、回复前 delivery barrier、取消清理 | M0 已绑定 native offload/resume；完整结果 spool 与资源再准入仍待接入 |
 | OverlayNet host TCP | egress 授权、host socket、反压 | 独立 HTTP/TLS 下载、结果 spool、完成唤醒 |
-| VM pause/offload/resume | CPU 停止、设备 RAM gate、回收与恢复 | 自动等待的暂停归属、陈旧完成隔离、恢复资源准入 |
+| VM pause/offload/resume | CPU 停止、设备 RAM gate、回收与恢复 | M0 已实现暂停归属与陈旧等待隔离；尚未释放或重新申请资源配额 |
 | AgentCtl 协作静默 | 固定参与者、generation、匹配 ACK | VM 内受限 transport 与 I/O 任务协议 |
 
-这些状态来自当前 `feature/emb_meta`：`fw/patches/0042-fuse-batched-writeback.patch`、`crates/pvisor-vm/src/devices/virtio/fs/worker/scheduler.rs`、`crates/pvisor-gateway/src/model_wait.rs`、`crates/pvisor-overlaynet/src/vm.rs` 与 `crates/pvisor/src/runtime/agentctl.rs`。Gateway 生产配置尚无 native model-wait 实现；AgentCtl 当前是 host Unix socket，VM executor 主动删除对应环境变量，不能直接把 Host 凭据转给 guest。
+这些状态来自当前 `feature/emb_meta`：`fw/patches/0042-fuse-batched-writeback.patch`、`crates/pvisor-vm/src/devices/virtio/fs/worker/scheduler.rs`、`crates/pvisor-gateway/src/model_wait.rs`、`crates/pvisor-overlaynet/src/vm.rs` 与 `crates/pvisor/src/runtime/agentctl.rs`。Gateway 的嵌入式配置已可显式安装 Attempt 绑定的 native model-wait 原型，默认关闭；AgentCtl 当前是 host Unix socket，VM executor 主动删除对应环境变量，不能直接把 Host 凭据转给 guest。
 
 普通 HTTPS 的 TLS 状态在 guest 内。当前 TCP bridge 的每流 host 接收额度为 64 KiB，smoltcp 另有 64 KiB 缓冲；guest 停读后最终反压。完整下载需要 host 拥有应用层请求及结果落点，才能在 guest 卸载后持续推进。
 
@@ -90,7 +90,7 @@ guest 缓冲承担短期合并；较长积压进入 host 有界内存池或私�
 
 异步接收前必须固定文件对象，后台不能按旧路径重新打开。对象保留需要覆盖待写数据、延迟 inode metadata、LOOKUP/FORGET、打开句柄及队列引用，正确处理 unlink、同名替换、hardlink 和 copy-up。
 
-当前已知 close → unlink → 首次 syncfs 的 ENOENT 需要先修复：unlink 后 inode 时间仍可能待回写，host 却已经没有 pathname 或存活 handle。现有保留 reader 的用例不能覆盖最后一个 handle 已释放的情形。应保留正确对象生命周期，不能忽略 ENOENT，也不能写到同名新文件或 immutable lower。
+历史 close → unlink → 首次 syncfs 的 ENOENT 已由宿主对象退休机制修复：guest WB 会话在 unlink/覆盖 rename 后保留原 nodeid，upper 保留 native O_PATH 引用，lower 仅保留逻辑属性；最终 FORGET 才释放。最后一个 handle 关闭后，延迟 MTIME/CTIME 仍绑定原对象，不忽略未知 ENOENT，不写入同名新文件或 immutable lower。该修复及其独立 SDK 证据已在 VM crate 中；M1 仍需验证阻塞写入、RAM 卸载与 Attempt 收尾的联合行为。
 
 旧 VM virtio-fs host server 路径对 FUSE_SYNCFS 返回 ENOSYS，guest 可把它当作成功并关闭后续调用。新 host 缓存会话增加真实同步与错误屏障；未启用时保留旧行为，因此旧会话的 guest syncfs 成功不能单独证明 host 存储耐久。单文件 fsync/fdatasync 继续使用现有路径。
 
@@ -140,21 +140,42 @@ M0 验证整个控制闭环，M1 同时推进大规模异步写入的数据所�
 
 M0 不能假设已有 VM AgentCtl 全参与者通道。未来安全等待确认输入已接管和参与者静默，不要求所有 host 任务 completed，否则会消除 I/O 与内存卸载的重叠窗口。
 
+#### M0：已实现的原生等待适配器 {#native-model-wait}
+
+启用 `gateway` Cargo feature 的嵌入式调用方可选择：
+
+```rust
+let gateway = pvisor::GatewayDriverConfig::new(proxy)
+    .native_model_wait(pvisor::NativeModelWait::Offload);
+```
+
+`Pause` 仅停 vCPU，`Offload` 还使用现有共享文件 RAM 卸载屏障。默认关闭；仅接入 Linux x86_64 VM，要求 Gateway 启用，与自定义 `model_wait` 冲突。Session 在每次 Attempt 启动时绑定独立身份与等待状态。没有 CLI 或配置文件开关。
+
+首版要求可信的单一工作负载用 `x-pvisor-inference-idle: true` 声明整个 guest 静默，且没有尚未完成的文件系统或设备操作。声明不自动发现其他 runnable 进程，也不提交尚在 guest 中的脏页。普通请求保留原路径；私有 COW/pager RAM 不支持卸载，设备排空超时仍导致 Attempt 失败。
+
+每个 Attempt 最多保留一个等待，包括已接受的原生操作和取消清理。缺失或不同的 Run/Attempt 身份、并发等待在 upstream dispatch 前拒绝。进入和交付分别等待原生 pause/offload 与 resume ACK。人工 pause/resume/offload 与自动操作共享控制锁，准入后撤销自动暂停 epoch，即使后续原生操作失败也不归还自动所有权。人工暂停后的交付等待显式 resume 或取消；丢弃 handler 只清理自身暂停，未知 ACK 或清理失败会取消 Attempt。等待存在时拒绝执行 checkpoint/suspend。
+
+该原型始终保留现有资源准入和存储 lease，没有释放或重新申请 CPU 配额。控制观察增加 `model_wait_epoch`，人工操作为 null。SSE 仍在第一个非空网络 chunk 恢复，heartbeat 也可触发；完整推理 spool、通用 guest 任务协议与 guest transfer fence 尚未实现。
+
 ### 2.9 已实现的 host 写缓存基础 {#host-write-buffer}
 
 私有实验变量 `PVISOR_VM_FS_HOST_WRITEBACK=1` 开启 Linux staged virtio-fs 的 host 写缓存，未设置或 `0` 关闭，非法值拒绝；当前要求 guest writeback=0、DAX=0。每连接最多 64 MiB payload 和 1024 个预留/排队/执行项。先预留再复制，完整接管之后回复 WRITE；相邻同句柄、连续 offset、相同 killpriv 的写按 1 MiB / 64 chunks / 10 ms 聚合，用一次 pwritev 执行。单 FIFO 先保证跨 FD/硬链接顺序。
 
 缓存只接收符合条件的 upper 普通文件写；同步、direct、append、导出或 DAX 路径保留原行为。metadata、读、namespace、关闭和同步等待已接收写；错误保留到会话结束，RELEASE 完成清理后报告错误，capture 拒绝隐藏失败。DESTROY/drop 排空并 join。新缓存会话的 FUSE_SYNCFS 排空、同步 preimage，再同步 upper 所在宿主文件系统；PID 1 的最终同步可以观察异步错误。队列不保存 guest Reader 或 RAM lease，但满队列背压和后续依赖请求仍可能持有当前 virtqueue 的 RAM 引用。
 
-WB=0 的 close 仍通过 FLUSH 排空，因此收益重点是保持打开文件的连续写，不能据此宣称大量 write-close 小文件已跨文件合并。该基础没有实现完整 offload、Agent 任务协议、guest transfer fence 或对象级并行；原有 guest WB=1 的 unlink 错误没有在此改动中修复，新 host 模式与之互斥。
+WB=0 的 close 仍通过 FLUSH 排空，因此收益重点是保持打开文件的连续写，不能据此宣称大量 write-close 小文件已跨文件合并。该基础没有实现完整 offload、Agent 任务协议、guest transfer fence 或对象级并行；guest WB=1 的 unlink 错误已由独立的对象退休机制修复，新 host 模式仍与 guest WB=1 互斥。
 
 快速实验沿用五个新环境、每任务内部三轮，保留 Ready 排除退出的独立指标，不加入主机干扰门禁。另记录 accepted、completed、durable、Job 完成各自耗时，统计总 CPU、整个受控进程/cgroup 及内核缓存内存、驻留内存时间积分、offload/load 耗时、唤醒次数和 backing 请求；避免把延后到退出的工作算成收益。测量前按 `benchmark/README.md` 登记或复用协议，原始数据留在 benchmark `.data/`，不混入用户排名。
 
 ### 2.10 当前验证记录 {#validation}
 
-2026-10-17：完成现有 writeback、Gateway、OverlayNet、VM RAM gate 和 Attempt 控制的静态核对，并实现 host 写缓存基础。guest 通道、自动恢复与新性能实验尚未实现。完整 IOCP 的待执行语义检查至少包括阻塞写期间 offload 无 RAM 访问、最后句柄关闭后 unlink/syncfs、完成空洞、短写/ENOSPC、满队列同步退出，以及完成与人工暂停/取消竞争。
+2026-10-17：完成现有 writeback、Gateway、OverlayNet、VM RAM gate 和 Attempt 控制的静态核对，并实现 host 写缓存基础。当时 guest 通道、自动恢复与新性能实验尚未实现；M0 的后续进展见下文。完整 IOCP 的待执行语义检查至少包括阻塞写期间 offload 无 RAM 访问、最后句柄关闭后 unlink/syncfs、完成空洞、短写/ENOSPC、满队列同步退出，以及完成与人工暂停/取消竞争。
 
 host 缓存基础的 Linux 验证：`just test pvisor-vm -- --test-threads=8` 通过 486 项、跳过 8 项（含 25 项新增缓存/协议检查）；文件系统/API/快照子集 192 项通过。沙箱内未暴露 `/dev/kvm` 的硬件检查失败，访问实际 KVM 后完整套件通过。CLI 与 VM shim 消费者编译检查通过。真实 KVM 的既有 `guest_writeback_case` 在 host 缓存开启、guest WB=0 时通过正常全流程及故障流程：256 个文件与 32 MiB 连续写、关闭/读取/重命名/删除/卸载验证通过，文件大小限制造成实际 64 KiB 短写后，最终 guest 状态为 125。以上是正确性记录，不是吞吐或延迟提升的测量。
+
+2026-10-18：M0 原生适配器通过 Linux 验证。`just test pvisor pvisor-gateway -- --features gateway --test-threads=8` 通过 980 项、跳过 8 项；随后补充的定向原生等待套件 12 项通过，覆盖 ACK 屏障、进入/恢复中丢弃请求、并发和陈旧身份拒绝、人工接管、取消、清理失败及配置冲突。CLI 和 shim 消费者编译通过；关闭 `gateway` 的 runtime 编译通过。
+
+`native_model_wait_case` 在真实 KVM 上通过 `running`、`pause`、`offload`、`manual`、`cancel` 五个用例：guest 经 Gateway 访问本机延迟供应方，普通路径保持运行；自动路径在 upstream dispatch 前收到暂停/卸载 ACK；人工暂停不被完成事件解除；取消后没有自动恢复。成功交付后校验 guest 的 8 MiB 内容摘要。完整 `result.json` 与控制观察保留在本地 `/tmp/pvisor-iocp-m0-*-20261018*/`；固件使用仓库构建缓存 `581b3346…`，对应来源记录保存在 `/tmp/pvisor-iocp-firmware/libkrunfw.SOURCE`。这些用例证明控制和内容完整性，不证明驻留内存减少、密度或性能收益；macOS/HVF 未验收。M1–M4 的剩余门槛仍保留。当前既有对象退休与 host 输入脱离 RAM 的 8 项定向测试也通过；这不是阻塞 backing 下的真实 VM 联合验证。选定 crate 的 `cargo clippy --locked -p pvisor --features gateway --lib --no-deps -- -D warnings` 通过。包含依赖的严格 Clippy 检查在未改动的 `pvisor-vm/src/devices/virtio/fs/guest_index.rs` 遇到 5 项 `unnecessary_cast`，不能记为通过。
 
 ## 3. 方案讨论和对比 {#alternatives}
 

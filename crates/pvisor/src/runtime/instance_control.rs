@@ -630,7 +630,7 @@ mod tests {
     async fn response_timeout_and_disconnect_keep_the_control_waiter_admitted() {
         let handle = mock().await;
         handle.controls().wait_ready().await.unwrap();
-        let transition = handle.vm_control.transition.lock().await;
+        let transition = handle.control.transition_for_test().lock().await;
         let (mut client, server) = UnixStream::pair().unwrap();
         let mut bytes = serde_json::to_vec(&request(&handle, HostVmCommand::Resume)).unwrap();
         bytes.push(b'\n');
@@ -666,7 +666,7 @@ mod tests {
         let handle = mock().await;
         handle.controls().wait_ready().await.unwrap();
         let path = handle.control_socket().unwrap();
-        let transition = handle.vm_control.transition.lock().await;
+        let transition = handle.control.transition_for_test().lock().await;
         let mut bytes = serde_json::to_vec(&request(&handle, HostVmCommand::Pause)).unwrap();
         bytes.push(b'\n');
         for _ in 0..MAX_CONNECTIONS {

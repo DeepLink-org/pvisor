@@ -8,7 +8,7 @@
 |---|---|---|---|
 | EXP-001 | [vCPU 空闲观测与自动内存卸载](vcpu-idle-offload/index.md) | **观测原型阶段**（M0；KVM 实测，HVF 未验收） | 不修改 Agent 和 guest 内核，利用 VM 等待窗口自动 offload，并由宿主事件/deadline 恢复 |
 | EXP-002 | [Guest 内核文件系统缓存与延迟后端绑定](guest-stage-cache/index.md) | **设计阶段**（RFC，未实现） | guest 本地完成有效缓存内的元数据查询与普通只读 open；VMM 保留 stage、数据回源和持久化权限 |
-| EXP-003 | [Agent 异步 I/O 与完成队列](agent-io-completion/index.md) | **设计阶段**（host 写缓存基础已实现；完整 IOCP 未实现） | host 接管下载、模型请求与待写字节，后台 I/O 与 guest 内存卸载重叠，并由 Attempt owner 恢复交付 |
+| EXP-003 | [Agent 异步 I/O 与完成队列](agent-io-completion/index.md) | **受限 PoC**（M0 与 host 写缓存基础已实现；完整 IOCP 未实现） | host 接管下载、模型请求与待写字节，后台 I/O 与 guest 内存卸载重叠，并由 Attempt owner 恢复交付 |
 
 ## CLI 特性入口
 

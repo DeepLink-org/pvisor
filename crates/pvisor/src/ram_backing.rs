@@ -8,6 +8,9 @@ pub mod inventory;
 pub mod ipc;
 /// Experimental resident compression interfaces; not enabled by VM settings.
 pub mod resident;
+/// Linux daemon-owned sealed compressed blocks with client-local recovery.
+#[cfg(target_os = "linux")]
+pub mod sealed;
 /// Linux daemon-owned physical pages, mapped privately by VMs for kernel COW.
 #[cfg(target_os = "linux")]
 pub mod shared;

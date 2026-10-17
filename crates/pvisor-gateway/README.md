@@ -53,8 +53,13 @@ Implementations must enqueue bounded, fenced cleanup without blocking the
 Gateway's I/O thread, including when an async operation was interrupted after
 an uncertain effect.
 
-Gateway supplies the embedding interface, not distributed wait ownership or
-an automatic native CPU-release adapter.
+Gateway supplies the embedding interface. pVisor's optional
+`GatewayDriverConfig::native_model_wait(NativeModelWait::Pause | Offload)` binds
+it to a fresh Attempt on Linux x86_64; see the
+[native wait contract](../pvisor/README.md#cooperative-native-model-waits-exp-003-m0).
+That prototype retains resource admission and supports one trusted whole-guest
+wait, with manual pause ownership and native ACK barriers. It does not provide
+distributed wait ownership, CPU reservation release or full inference spooling.
 `pvisor-daemon` does not currently integrate this Gateway lifecycle; its execd
 proxy must not be described as native inference-wait coordination.
 

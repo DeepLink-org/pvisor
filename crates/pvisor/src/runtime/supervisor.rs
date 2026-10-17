@@ -121,6 +121,8 @@ pub struct RuntimeSupervisorBuilder {
     gateway_enabled: bool,
     #[cfg(feature = "gateway")]
     model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
+    #[cfg(feature = "gateway")]
+    native_model_wait: Option<crate::NativeModelWait>,
     storage: Option<PathBuf>,
     #[cfg(feature = "gateway")]
     #[cfg(feature = "gateway")]
@@ -226,6 +228,7 @@ impl RuntimeSupervisorBuilder {
         self.gateway_output_dir = Some(gateway.output_dir);
         self.gateway_enabled = gateway.gateway_enabled;
         self.model_wait = gateway.model_wait;
+        self.native_model_wait = gateway.native_model_wait;
         self
     }
 
@@ -265,6 +268,8 @@ impl RuntimeSupervisorBuilder {
             gateway_enabled: self.gateway_enabled,
             #[cfg(feature = "gateway")]
             model_wait: self.model_wait,
+            #[cfg(feature = "gateway")]
+            native_model_wait: self.native_model_wait,
             storage: self.storage,
             #[cfg(feature = "gateway")]
             #[cfg(feature = "gateway")]
@@ -289,6 +294,8 @@ pub struct RuntimeSupervisor {
     gateway_enabled: bool,
     #[cfg(feature = "gateway")]
     model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
+    #[cfg(feature = "gateway")]
+    native_model_wait: Option<crate::NativeModelWait>,
     storage: Option<PathBuf>,
     #[cfg(feature = "gateway")]
     #[cfg(feature = "gateway")]
@@ -305,6 +312,37 @@ impl Default for RuntimeSupervisor {
 }
 
 impl RuntimeSupervisor {
+    #[cfg(feature = "gateway")]
+    pub(crate) fn bind_model_wait(
+        &self,
+        controls: crate::RunControlHandle,
+    ) -> anyhow::Result<Self> {
+        let mut bound = self.clone();
+        if let Some(mode) = self.native_model_wait {
+            anyhow::ensure!(
+                cfg!(all(target_os = "linux", target_arch = "x86_64")),
+                "native model waits require Linux x86_64"
+            );
+            anyhow::ensure!(
+                self.proxy.is_some() && self.gateway_enabled,
+                "native model waits require an enabled Gateway"
+            );
+            anyhow::ensure!(
+                self.model_wait.is_none(),
+                "native model waits conflict with a custom model-wait lifecycle"
+            );
+            anyhow::ensure!(
+                controls.status().attempt.executor.kind
+                    == pvisor_core::ExecutorKind::VirtualMachine,
+                "native model waits require a VM executor"
+            );
+            bound.model_wait = Some(Arc::new(super::run::model_wait::NativeLifecycle::new(
+                controls, mode,
+            )));
+        }
+        Ok(bound)
+    }
+
     pub(crate) fn storage_path(&self) -> Option<&std::path::Path> {
         self.storage.as_deref()
     }

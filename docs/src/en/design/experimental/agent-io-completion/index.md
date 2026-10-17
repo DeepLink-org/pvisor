@@ -1,15 +1,15 @@
-# EXP-003 (design stage): Agent asynchronous I/O and completion queues
+# EXP-003 (restricted PoC): Agent asynchronous I/O and completion queues
 
 Let pVisor own the inputs, execution and results of downloads, model calls and bulk writes. After submitting work, the guest can compute further or offload memory when the whole guest is waiting. The host continues I/O, retains completion results, and lets the existing Attempt owner resume the guest and deliver them.
 
 | Item | Current status |
 |---|---|
-| Stage | **Design stage (RFC), 2026-10-17; host write-buffer foundation implemented, complete Agent IOCP pending implementation and validation** |
+| Stage | **Restricted PoC, 2026-10-18; M0 native wait loop and host write-buffer foundation implemented, complete Agent IOCP pending implementation and validation** |
 | Initial profile | Linux x86_64/KVM, shared file RAM, one Attempt exclusively owning its stage; disabled by default |
 | Filesystem path | Initial Linux host write buffer: WB=0, DAX=0; guest batch transfer and larger caches follow later |
 | Agent path | Proposed scoped submit / wait / cancel / ack; the first version assumes a thin adapter is allowed, with compatibility choice pending |
 | Resource objective | Reduce host interactions and guest resident time; improve useful throughput under fixed CPU/memory budgets |
-| Interface status | Task and completion protocols below remain proposed contracts; the host buffer uses a private experimental environment variable, with no public Agent API or CLI feature switch |
+| Interface status | Task and completion protocols below remain proposed contracts; the host buffer uses a private experimental environment variable and M0 provides default-off embedded Gateway configuration; no public Agent task API or CLI feature switch |
 
 ## 1. Problem statement {#problem}
 
@@ -17,7 +17,7 @@ Let pVisor own the inputs, execution and results of downloads, model calls and b
 
 The guest page cache can coalesce small writes and return ordinary write calls early. Linux FUSE writeback-cache already provides this behavior; partial-page writes may also require reads, even for O_WRONLY files. [FUSE I/O modes](https://docs.kernel.org/filesystems/fuse/fuse-io.html)
 
-The current branch's `0042-fuse-batched-writeback.patch` uses 1 MiB/10 ms submission conditions, a 16 MiB high watermark and a 256-handle limit. Data remains in guest pagecache. Host filesystem requests hold a guest RAM lease until used-ring publication. Larger guest buffers allow more coalescing while increasing dirty data awaiting transfer and potentially the RAM that offload must preserve.
+The early `0042-fuse-batched-writeback.patch` used 1 MiB/10 ms submission conditions, a 16 MiB high watermark and a 256-handle limit. Current 0048/0049 accounts actual dirty and temporary WRITE pages, with a soft target of one eighth of available guest RAM bounded to 16–256 MiB, retaining 256 handle leases. See the [VM cache contract](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-vm/README.md) for submission conditions. Data remains in guest pagecache. Host filesystem requests hold a guest RAM lease until used-ring publication. Larger guest buffers allow more coalescing while increasing dirty data awaiting transfer and potentially the RAM that offload must preserve.
 
 The pipeline needs an explicit ownership handoff: the host must own the input bytes, target object and budget before backend I/O can run independently of guest RAM. Moving synchronous pwrite to a thread or passing guest addresses to io_uring retains that memory dependency. io_uring read/write data buffers must remain valid until completion. [liburing buffer lifetime](https://github.com/axboe/liburing/blob/master/man/io_uring.7)
 
@@ -26,12 +26,12 @@ The pipeline needs an explicit ownership handoff: the host must own the input by
 | Existing mechanism | Reusable foundation | Missing integration |
 |---|---|---|
 | Guest writeback, host buffer and filesystem operation barriers | Small-write coalescing, host byte ownership, object ordering, freeze | Guest transfer fence, object concurrency, blocked replies independent of RAM |
-| Gateway `ModelWaitLifecycle` | enter before upstream, delivery barrier before replies, cancellation cleanup | Attempt adapter actually invoking native offload/resume |
+| Gateway `ModelWaitLifecycle` | enter before upstream, delivery barrier before replies, cancellation cleanup | M0 now invokes native offload/resume; full result spool and resource readmission remain |
 | OverlayNet host TCP | Egress authorization, host sockets, backpressure | Independent HTTP/TLS downloads, result spool, completion wakeup |
-| VM pause/offload/resume | CPU stop, device RAM gate, reclamation and restoration | Automatic-wait pause ownership, stale completion isolation, resource admission on resume |
+| VM pause/offload/resume | CPU stop, device RAM gate, reclamation and restoration | M0 now owns pauses and fences stale waits; resource reservations are not released or reacquired |
 | AgentCtl cooperative quiescence | Fixed participants, generation, matching ACKs | Scoped VM guest transport and I/O task protocol |
 
-These observations refer to current `feature/emb_meta`: `fw/patches/0042-fuse-batched-writeback.patch`, `crates/pvisor-vm/src/devices/virtio/fs/worker/scheduler.rs`, `crates/pvisor-gateway/src/model_wait.rs`, `crates/pvisor-overlaynet/src/vm.rs` and `crates/pvisor/src/runtime/agentctl.rs`. Gateway production configuration has no native model-wait implementation. AgentCtl currently uses a host Unix socket; the VM executor removes its environment variables, so Host credentials cannot simply be forwarded to the guest.
+These observations refer to current `feature/emb_meta`: `fw/patches/0042-fuse-batched-writeback.patch`, `crates/pvisor-vm/src/devices/virtio/fs/worker/scheduler.rs`, `crates/pvisor-gateway/src/model_wait.rs`, `crates/pvisor-overlaynet/src/vm.rs` and `crates/pvisor/src/runtime/agentctl.rs`. Embedded Gateway configuration can now explicitly install an Attempt-bound native model-wait prototype, disabled by default. AgentCtl currently uses a host Unix socket; the VM executor removes its environment variables, so Host credentials cannot simply be forwarded to the guest.
 
 Ordinary HTTPS retains TLS state in the guest. The current TCP bridge gives each flow 64 KiB of host receive credits, plus a separate 64 KiB smoltcp buffer. Guest inactivity eventually causes backpressure. A full download needs a host-owned application request and result destination to continue while the guest is offloaded.
 
@@ -90,7 +90,7 @@ Guest buffers serve short coalescing windows. Longer backlogs use bounded host m
 
 Pin the file object before asynchronous acceptance. Background workers must not reopen an old pathname. Object retention must cover pending data, delayed inode metadata, LOOKUP/FORGET, open handles and queue references, handling unlink, same-name replacement, hardlinks and copy-up correctly.
 
-First fix the known close → unlink → first syncfs ENOENT path: inode timestamps can still require writeback after unlink, while the host has neither a pathname nor a surviving handle. Existing cases retaining a reader do not cover release of the last handle. Preserve the correct object lifetime; do not ignore ENOENT or modify a new same-name file or immutable lower.
+The historical close → unlink → first syncfs ENOENT is fixed by host object retirement: guest WB sessions retain the original nodeid after unlink or overwrite-rename, pin an upper native O_PATH reference or keep logical lower attributes, and release it at final FORGET. Delayed MTIME/CTIME after last-handle close still targets the original object, without ignoring unknown ENOENT or modifying a replacement name or immutable lower. The VM crate already contains this fix and independent SDK evidence; M1 still needs joint validation of blocked writes, RAM offload and Attempt teardown.
 
 The legacy VM virtio-fs host server path returns ENOSYS for FUSE_SYNCFS; the guest may treat that as success and disable subsequent calls. New host-buffer sessions add a real synchronization/error barrier. Disabled sessions retain legacy behavior, so guest syncfs success in those sessions alone does not prove host storage durability. Per-file fsync/fdatasync retain their existing path.
 
@@ -140,21 +140,42 @@ M0 validates the control loop while M1 advances ownership for large-scale asynch
 
 M0 cannot assume an existing all-participant VM AgentCtl transport. Future safe-wait acknowledgment requires adopted inputs and quiescent participants, without requiring every host task to be completed, which would remove the overlap window.
 
+#### M0: implemented native wait adapter {#native-model-wait}
+
+Embedded callers using the `gateway` Cargo feature can select:
+
+```rust
+let gateway = pvisor::GatewayDriverConfig::new(proxy)
+    .native_model_wait(pvisor::NativeModelWait::Offload);
+```
+
+`Pause` stops vCPUs; `Offload` also uses the existing shared file-backed RAM barrier. Disabled by default, the adapter supports Linux x86_64 VMs, requires an enabled Gateway and conflicts with a custom `model_wait`. Session binds a fresh identity and wait state for each Attempt. There is no CLI or configuration-file toggle.
+
+The first version requires a trusted single workload to declare whole-guest quiescence with `x-pvisor-inference-idle: true`, with no outstanding filesystem or device operations. The declaration neither discovers other runnable processes nor submits dirty guest pages. Ordinary requests retain their existing path. Private COW/pager RAM cannot offload; a device-drain timeout still fails the Attempt.
+
+Each Attempt holds at most one wait, including accepted native operations and cancellation cleanup. Missing or foreign Run/Attempt identities and concurrent waits are rejected before upstream dispatch. Entry and delivery await native pause/offload and resume ACKs respectively. Manual pause/resume/offload shares the control lock and revokes the automatic pause epoch on admission, even if the later native operation fails. Delivery after a manual pause waits for explicit resume or cancellation. Dropped handlers clean up only their own pause; unknown ACKs or failed cleanup cancel the Attempt. Execution checkpoint/suspend is rejected while a wait exists.
+
+This prototype retains existing resource admission and the storage lease throughout; it does not release or reacquire CPU reservations. Control observations add `model_wait_epoch`, null for manual operations. SSE still resumes at the first nonempty network chunk, including a heartbeat. Full inference spooling, the general guest task protocol and the guest transfer fence remain unimplemented.
+
 ### 2.9 Implemented host write-buffer foundation {#host-write-buffer}
 
 The private experimental variable PVISOR_VM_FS_HOST_WRITEBACK=1 enables the Linux staged virtio-fs host buffer. Unset or 0 disables it; invalid values fail. Guest writeback=0 and DAX=0 are currently required. Each connection permits 64 MiB of payload and 1024 reserved/queued/executing items. Reserve before copying and reply WRITE after full adoption. Adjacent writes sharing a handle, contiguous offset and killpriv semantics batch at 1 MiB / 64 chunks / 10 ms into one pwritev. A single FIFO initially preserves cross-FD/hardlink ordering.
 
 The cache accepts eligible upper regular-file writes; synchronous, direct, append, exported or DAX paths retain existing behavior. Metadata, reads, namespace operations, close and synchronization wait for accepted writes. Errors remain sticky through the session; RELEASE cleans up before returning errors, and capture cannot hide failures. DESTROY/drop drains and joins. New host-buffer FUSE_SYNCFS drains, synchronizes preimages and then synchronizes the host filesystem containing upper. PID 1's final barrier can observe asynchronous errors. The queue retains no guest Reader or RAM lease, although full-queue backpressure and subsequent dependent requests may retain the current virtqueue RAM reference.
 
-With WB=0, close still drains through FLUSH. The initial benefit targets continuously written open files; many small write-close files do not automatically merge across files. This foundation does not implement complete offload, Agent task protocols, guest transfer fences or per-object parallelism. The existing guest WB=1 unlink error is not fixed here; the new host mode excludes that combination.
+With WB=0, close still drains through FLUSH. The initial benefit targets continuously written open files; many small write-close files do not automatically merge across files. This foundation does not implement complete offload, Agent task protocols, guest transfer fences or per-object parallelism. The guest WB=1 unlink error is fixed by independent object retirement; the new host mode still excludes guest WB=1.
 
 Quick experiments retain five fresh environments, three internal rounds per task, and a separate Ready metric excluding exit, without host-interference gates. Also measure accepted, completed, durable and Job completion times, total CPU, memory across controlled processes/cgroups and kernel caches, resident-memory time integral, offload/load latency, wake count and backing requests. Work deferred to exit must remain visible. Follow benchmark/README.md to register or reuse a protocol before measurement; raw evidence stays in benchmark .data/, separate from user rankings.
 
 ### 2.10 Current validation record {#validation}
 
-2026-10-17: static review of existing writeback, Gateway, OverlayNet, VM RAM gates and Attempt control is complete, and the host write-buffer foundation is implemented. Guest transport, automatic restoration and new performance experiments remain unimplemented. Pending complete-IOCP checks include offload without RAM access during blocked writes, unlink/syncfs after last-handle close, completion holes, short writes/ENOSPC, synchronization/exit with full queues, and completion racing with manual pause/cancellation.
+2026-10-17: static review of existing writeback, Gateway, OverlayNet, VM RAM gates and Attempt control is complete, and the host write-buffer foundation is implemented. At that point guest transport, automatic restoration and new performance experiments remained unimplemented; subsequent M0 progress appears below. Pending complete-IOCP checks include offload without RAM access during blocked writes, unlink/syncfs after last-handle close, completion holes, short writes/ENOSPC, synchronization/exit with full queues, and completion racing with manual pause/cancellation.
 
 Linux foundation validation: just test pvisor-vm -- --test-threads=8 passed 486 tests and skipped 8, including 25 new cache/protocol checks; the filesystem/API/snapshot subset passed 192. Hardware checks failed where the sandbox hid /dev/kvm; the complete suite passed with access to actual KVM. CLI and VM shim consumer compilation checks passed. The existing guest_writeback_case on real KVM passed normal and fault modes with host buffering enabled and guest WB=0: 256 files and a continuous 32 MiB write, close/read/rename/delete/unmount checks passed; after a file-size limit caused an actual 64 KiB short write, final guest status was 125. These are correctness results, not throughput or latency improvement measurements.
+
+2026-10-18: the M0 native adapter passed Linux validation. `just test pvisor pvisor-gateway -- --features gateway --test-threads=8` passed 980 tests and skipped 8; the subsequently extended native-wait suite passed 12 targeted tests covering ACK barriers, dropped entry/delivery, parallel and stale identity rejection, manual ownership, cancellation, cleanup failure and configuration conflicts. CLI and shim consumers compiled; the runtime also compiled without `gateway`.
+
+On real KVM, `native_model_wait_case` passed `running`, `pause`, `offload`, `manual` and `cancel`: the guest calls a delayed local supplier through Gateway; ordinary forwarding stays running; automatic entry receives pause/offload ACK before upstream dispatch; completion does not override manual pause; cancellation causes no automatic resume. Successful delivery checks an 8 MiB guest-content digest. Complete `result.json` files and control observations remain locally under `/tmp/pvisor-iocp-m0-*-20261018*/`; firmware uses repository build cache `581b3346…`, with its source receipt at `/tmp/pvisor-iocp-firmware/libkrunfw.SOURCE`. These cases establish control and content integrity, not reduced residency, density or performance gains. macOS/HVF is unvalidated. Outstanding M1–M4 gates remain. Eight targeted existing object-retirement and host-input/RAM-independence tests also passed; they do not constitute real-VM integration under blocked backing. The selected crate passed `cargo clippy --locked -p pvisor --features gateway --lib --no-deps -- -D warnings`. Strict Clippy including dependencies encountered five `unnecessary_cast` findings in unchanged `pvisor-vm/src/devices/virtio/fs/guest_index.rs` and cannot be recorded as passing.
 
 ## 3. Alternatives and comparison {#alternatives}
 

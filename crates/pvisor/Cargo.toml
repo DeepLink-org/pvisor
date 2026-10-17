@@ -75,5 +75,9 @@ name = "vm_vcpu_observe"
 path = "examples/vm_vcpu_observe.rs"
 
 [[example]]
+name = "native_model_wait_case"
+required-features = ["gateway"]
+
+[[example]]
 name = "guest_init_bench"
 path = "../../benchmark/pvisor/guest_init.rs"

@@ -1,11 +1,16 @@
 //! Experimental cross-process compressed pool over caller-authorized Unix streams.
 //! The caller owns endpoint authentication, connection limits and service lifetime.
-//! Encoded data lives once in the host pool; GET restores a bounded block. There
-//! is no disk backing and no implicit VM eviction in this transport.
+//! Legacy GET restores a bounded block; Linux sealed clients own compressed
+//! memfds and decode locally. No disk backing or implicit VM eviction here.
+#[cfg(target_os = "linux")]
+#[path = "sealed_client.rs"]
+mod sealed_client;
 use super::{
     BLOCK_BYTES, ImageId, invalid,
     resident::{CompressedObject, CompressedPool, identity},
 };
+#[cfg(target_os = "linux")]
+pub use sealed_client::{SealedClient, SealedReference};
 use std::{
     collections::BTreeMap,
     io::{self, Read, Write},
@@ -23,6 +28,8 @@ const STATS: u8 = 4;
 const PUT_SHARED: u8 = 5;
 const MAPPING: u8 = 6;
 const PUT_DUPLICATE: u8 = 7;
+const SEALED: u8 = 8;
+const PUT_SEALED: u8 = 9;
 
 /// A connection-owned reference, not an object ID that grants global access.
 pub struct RemoteObject {
@@ -106,15 +113,31 @@ pub fn serve_shared(
     serve_inner(stream, Owner::Shared(pool), max_references)
 }
 
+/// Serve immutable compressed objects to authorized Linux clients. Outstanding
+/// references on disconnect stay budgeted until pidfd proves peer exit; client
+/// descriptors remain valid even if this service exits. No socket reconnection.
+#[cfg(target_os = "linux")]
+pub fn serve_sealed(
+    stream: UnixStream,
+    pool: Arc<Mutex<super::sealed::SealedPool>>,
+    max_references: usize,
+) -> io::Result<()> {
+    serve_inner(stream, Owner::Sealed(pool), max_references)
+}
+
 enum Owner {
     Compressed(Arc<Mutex<CompressedPool>>),
     #[cfg(target_os = "linux")]
     Shared(Arc<Mutex<super::shared::SharedPool>>),
+    #[cfg(target_os = "linux")]
+    Sealed(Arc<Mutex<super::sealed::SealedPool>>),
 }
 enum Reference {
     Compressed(Arc<CompressedObject>),
     #[cfg(target_os = "linux")]
     Shared(Arc<super::shared::SharedObject>),
+    #[cfg(target_os = "linux")]
+    Sealed(Arc<super::sealed::SealedObject>),
 }
 impl Reference {
     fn id(&self) -> ImageId {
@@ -122,6 +145,8 @@ impl Reference {
             Self::Compressed(o) => o.id(),
             #[cfg(target_os = "linux")]
             Self::Shared(o) => o.id(),
+            #[cfg(target_os = "linux")]
+            Self::Sealed(o) => o.id(),
         }
     }
     fn length(&self) -> usize {
@@ -129,6 +154,8 @@ impl Reference {
             Self::Compressed(o) => o.length(),
             #[cfg(target_os = "linux")]
             Self::Shared(_) => 4096,
+            #[cfg(target_os = "linux")]
+            Self::Sealed(o) => o.length(),
         }
     }
     fn restore(&self, out: &mut [u8]) -> io::Result<()> {
@@ -136,6 +163,8 @@ impl Reference {
             Self::Compressed(o) => o.restore(out),
             #[cfg(target_os = "linux")]
             Self::Shared(o) => o.restore(out),
+            #[cfg(target_os = "linux")]
+            Self::Sealed(o) => o.restore(out),
         }
     }
     fn count(&self) -> usize {
@@ -143,6 +172,8 @@ impl Reference {
             Self::Compressed(o) => Arc::strong_count(o),
             #[cfg(target_os = "linux")]
             Self::Shared(o) => Arc::strong_count(o),
+            #[cfg(target_os = "linux")]
+            Self::Sealed(o) => Arc::strong_count(o),
         }
     }
     fn offset(&self) -> Option<u64> {
@@ -150,6 +181,8 @@ impl Reference {
             Self::Compressed(_) => None,
             #[cfg(target_os = "linux")]
             Self::Shared(o) => Some(o.offset()),
+            #[cfg(target_os = "linux")]
+            Self::Sealed(_) => None,
         }
     }
 }
@@ -159,7 +192,16 @@ impl Owner {
             Self::Compressed(_) => false,
             #[cfg(target_os = "linux")]
             Self::Shared(_) => true,
+            #[cfg(target_os = "linux")]
+            Self::Sealed(_) => false,
         }
+    }
+    fn is_sealed(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if matches!(self, Self::Sealed(_)) {
+            return true;
+        }
+        false
     }
     fn intern(&self, bytes: &[u8], duplicate: bool, session: [u8; 16]) -> io::Result<Reference> {
         #[cfg(not(target_os = "linux"))]
@@ -180,10 +222,26 @@ impl Owner {
                 })
                 .map(Reference::Shared)
             }
+            #[cfg(target_os = "linux")]
+            Self::Sealed(pool) => pool
+                .lock()
+                .map_err(|_| io::Error::other("pool poisoned"))?
+                .intern(bytes)
+                .map(Reference::Sealed),
         }
     }
     fn collect(&self, id: Option<ImageId>) -> io::Result<()> {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::Sealed(pool) => {
+                let mut pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
+                if let Some(id) = id {
+                    pool.collect_one(id);
+                } else {
+                    pool.collect();
+                }
+                Ok(())
+            }
             Self::Compressed(pool) => {
                 let mut pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
                 if let Some(id) = id {
@@ -206,6 +264,11 @@ impl Owner {
     }
     fn stats(&self) -> io::Result<(u64, u64)> {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::Sealed(pool) => Ok(pool
+                .lock()
+                .map_err(|_| io::Error::other("pool poisoned"))?
+                .stats()),
             Self::Compressed(pool) => {
                 let pool = pool.lock().map_err(|_| io::Error::other("pool poisoned"))?;
                 Ok((pool.encoded_bytes() as u64, pool.object_count() as u64))
@@ -220,7 +283,7 @@ impl Owner {
 }
 fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io::Result<()> {
     #[cfg(target_os = "linux")]
-    let peer = if matches!(&pool, Owner::Shared(_)) {
+    let peer = if pool.is_shared() || pool.is_sealed() {
         Some(super::shared::peer_pidfd(&stream)?)
     } else {
         None
@@ -243,7 +306,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                 Err(error) => return Err(error),
             }
             match operation[0] {
-                PUT | PUT_SHARED | PUT_DUPLICATE => {
+                PUT | PUT_SHARED | PUT_DUPLICATE | PUT_SEALED => {
                     let size = read_u32(&mut stream)? as usize;
                     if size == 0 || size > BLOCK_BYTES {
                         return Err(invalid("invalid pool block length"));
@@ -254,8 +317,10 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                         reject(&mut stream, "pool reference budget exhausted")?;
                         continue;
                     }
-                    if operation[0] != PUT && !pool.is_shared() {
-                        reject(&mut stream, "physical sharing unsupported by this pool")?;
+                    if (operation[0] == PUT_SEALED) != pool.is_sealed()
+                        || (matches!(operation[0], PUT_SHARED | PUT_DUPLICATE) && !pool.is_shared())
+                    {
+                        reject(&mut stream, "publication mode unsupported by this pool")?;
                         continue;
                     }
                     let interned = pool.intern(&bytes, operation[0] == PUT_DUPLICATE, session);
@@ -269,17 +334,28 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     next += 1;
                     let id = object.id();
                     let offset = object.offset();
-                    references.insert(next, object);
                     // Reference remains owned even if this response fails; session cleanup releases it.
                     let mut reply = Vec::with_capacity(53);
                     reply.push(0);
                     reply.extend_from_slice(&next.to_le_bytes());
                     reply.extend_from_slice(&id);
                     reply.extend_from_slice(&(size as u32).to_le_bytes());
-                    if operation[0] != PUT {
+                    if matches!(operation[0], PUT_SHARED | PUT_DUPLICATE) {
                         reply.extend_from_slice(&offset.unwrap().to_le_bytes());
                     }
+                    references.insert(next, object);
                     stream.write_all(&reply)?;
+                    #[cfg(target_os = "linux")]
+                    if let Reference::Sealed(object) = &references[&next] {
+                        send_mapping_fd(&stream, object.file().as_raw_fd())?;
+                    }
+                }
+                SEALED => {
+                    if pool.is_sealed() {
+                        stream.write_all(&[0])?;
+                    } else {
+                        reject(&mut stream, "sealed compression unsupported by this pool")?;
+                    }
                 }
                 MAPPING => {
                     #[cfg(target_os = "linux")]

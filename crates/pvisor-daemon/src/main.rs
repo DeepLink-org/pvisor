@@ -48,6 +48,9 @@ enum Command {
         /// Enable the daemon-owned experimental shared cold-page pool.
         #[arg(long)]
         memory_pool: bool,
+        /// Physical page sharing or sealed compression plus content deduplication.
+        #[arg(long, value_enum, requires = "memory_pool")]
+        memory_pool_mode: Option<pvisor_daemon::memory_pool::PoolMode>,
     },
     /// Print the fixed protocol baseline, not a claim of full API support.
     Protocol,
@@ -108,6 +111,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             memory_bytes,
             max_timeout_seconds,
             memory_pool,
+            memory_pool_mode,
         } => {
             anyhow::ensure!(
                 cfg!(all(target_os = "linux", target_arch = "x86_64")),
@@ -151,7 +155,10 @@ async fn run(command: Command) -> anyhow::Result<()> {
                     Some(pvisor_daemon::memory_pool::ensure_service(
                         &runtime_state.canonicalize()?,
                         &executable,
-                        Default::default(),
+                        pvisor_daemon::memory_pool::PoolConfig {
+                            mode: memory_pool_mode.unwrap_or_default(),
+                            ..Default::default()
+                        },
                     )?)
                 } else {
                     None

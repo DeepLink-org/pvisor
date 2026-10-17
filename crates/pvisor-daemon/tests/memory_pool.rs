@@ -22,6 +22,7 @@ fn daemon_pool_shares_objects_and_survives_owner_reopen_without_replacement() {
     fs::create_dir(&directory).unwrap();
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
     let config = PoolConfig {
+        mode: Default::default(),
         max_bytes: 4096,
         max_objects: 16,
         max_connections: 8,

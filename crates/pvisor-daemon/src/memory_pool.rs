@@ -1,12 +1,17 @@
 //! Daemon-owned cold-page pool. Its detached service outlives API restarts.
-//! Losing the service fails dependent VMs; no replacement of live references.
+//! Physical sharing requires a live owner. Compressed clients retain sealed
+//! backing and restore locally after service loss; neither mode replaces state.
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
 use pvisor::ram_backing::ipc::PoolClient;
 #[cfg(not(target_os = "linux"))]
 use pvisor::ram_backing::{ipc::serve, resident::CompressedPool};
 #[cfg(target_os = "linux")]
-use pvisor::ram_backing::{ipc::serve_shared as serve, shared::SharedPool};
+use pvisor::ram_backing::{
+    ipc::{SealedClient, serve_sealed, serve_shared},
+    sealed::SealedPool,
+    shared::SharedPool,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -24,9 +29,23 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Linux storage selection, fixed for the lifetime of this pool state directory.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum PoolMode {
+    /// Raw 4 KiB pages shared by private mappings and kernel COW; no userfaultfd.
+    #[default]
+    Physical,
+    /// Deduplicated sealed compressed blocks; VM restore requires kernel-fault userfaultfd.
+    Compressed,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PoolConfig {
+    /// Missing in older persisted configurations means physical sharing.
+    #[serde(default)]
+    pub mode: PoolMode,
     pub max_bytes: usize,
     pub max_objects: usize,
     pub max_connections: usize,
@@ -35,6 +54,7 @@ pub struct PoolConfig {
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
+            mode: PoolMode::Physical,
             max_bytes: 512 * 1024 * 1024,
             max_objects: 32768,
             max_connections: 32,
@@ -50,7 +70,7 @@ fn private_directory(path: &Path) -> Result<()> {
     );
     Ok(())
 }
-fn probe(socket: &Path) -> Result<()> {
+fn probe(socket: &Path, mode: PoolMode) -> Result<()> {
     let stream = UnixStream::connect(socket)?;
     #[cfg(target_os = "linux")]
     {
@@ -74,7 +94,21 @@ fn probe(socket: &Path) -> Result<()> {
     let mut client = PoolClient::new(stream, Duration::from_secs(2))?;
     client.stats()?;
     #[cfg(target_os = "linux")]
-    client.enable_shared_mapping().context("pool lacks physical sharing; preserve active VMs and use a fresh pool state for this version")?;
+    match mode {
+        PoolMode::Physical => client
+            .enable_shared_mapping()
+            .context("pool lacks physical sharing; preserve active VMs and use fresh pool state")?,
+        PoolMode::Compressed => {
+            SealedClient::new(client).context(
+                "pool lacks sealed compression; preserve active VMs and use fresh pool state",
+            )?;
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    ensure!(
+        mode == PoolMode::Physical,
+        "sealed compressed pool requires Linux"
+    );
     Ok(())
 }
 /// Called under the daemon's exclusive state lock. Reuse only its private,
@@ -104,7 +138,7 @@ pub fn ensure_service(state: &Path, executable: &Path, config: PoolConfig) -> Re
     }
     let socket = directory.join("pool.sock");
     if socket.try_exists()? {
-        probe(&socket)
+        probe(&socket, config.mode)
             .context("existing pool unavailable; refusing to replace live RAM ownership")?;
         return Ok(socket);
     }
@@ -136,7 +170,7 @@ pub fn ensure_service(state: &Path, executable: &Path, config: PoolConfig) -> Re
         if let Some(status) = child.try_wait()? {
             anyhow::bail!("memory-pool service exited: {status}");
         }
-        if socket.try_exists()? && probe(&socket).is_ok() {
+        if socket.try_exists()? && probe(&socket, config.mode).is_ok() {
             return Ok(socket);
         }
         ensure!(
@@ -154,6 +188,11 @@ pub fn ensure_service(state: &Path, executable: &Path, config: PoolConfig) -> Re
 pub fn run(directory: &Path) -> Result<()> {
     private_directory(directory)?;
     let config: PoolConfig = serde_json::from_slice(&fs::read(directory.join("config.json"))?)?;
+    #[cfg(not(target_os = "linux"))]
+    ensure!(
+        config.mode == PoolMode::Physical,
+        "sealed compressed pool requires Linux"
+    );
     ensure!(
         config.max_bytes > 0
             && config.max_objects > 0
@@ -181,14 +220,21 @@ pub fn run(directory: &Path) -> Result<()> {
         config.max_objects,
     )));
     #[cfg(target_os = "linux")]
-    let pool = Arc::new(Mutex::new(SharedPool::new(
-        config.max_bytes,
-        config.max_objects,
-    )?));
+    let pool = (config.mode == PoolMode::Physical)
+        .then(|| SharedPool::new(config.max_bytes, config.max_objects))
+        .transpose()?
+        .map(|pool| Arc::new(Mutex::new(pool)));
+    #[cfg(target_os = "linux")]
+    let sealed = (config.mode == PoolMode::Compressed).then(|| {
+        Arc::new(Mutex::new(SealedPool::new(
+            config.max_bytes,
+            config.max_objects,
+        )))
+    });
     let connections = Arc::new(AtomicUsize::new(0));
     println!(
         "{}",
-        serde_json::json!({"ready": true, "socket": socket, "daemon_owned": true})
+        serde_json::json!({"ready": true, "socket": socket, "daemon_owned": true, "mode": config.mode})
     );
     for stream in listener.incoming() {
         let stream = stream?;
@@ -220,10 +266,19 @@ pub fn run(directory: &Path) -> Result<()> {
             continue;
         }
         let owner = pool.clone();
+        #[cfg(target_os = "linux")]
+        let sealed = sealed.clone();
         let count = connections.clone();
         let refs = config.max_references;
         std::thread::spawn(move || {
-            if let Err(error) = serve(stream, owner, refs) {
+            #[cfg(target_os = "linux")]
+            let result = match owner {
+                Some(owner) => serve_shared(stream, owner, refs),
+                None => serve_sealed(stream, sealed.unwrap(), refs),
+            };
+            #[cfg(not(target_os = "linux"))]
+            let result = serve(stream, owner, refs);
+            if let Err(error) = result {
                 eprintln!("memory-pool session: {error}");
             }
             count.fetch_sub(1, Ordering::AcqRel);
