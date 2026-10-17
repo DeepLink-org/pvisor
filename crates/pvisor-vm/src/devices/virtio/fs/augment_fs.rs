@@ -263,6 +263,10 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> 
         self.inner.destroy()
     }
 
+    fn syncfs(&self, ctx: Context) -> io::Result<()> {
+        self.inner.syncfs(ctx)
+    }
+
     fn lookup(&self, ctx: Context, parent: Inode, name: &CStr) -> io::Result<Entry> {
         let key = (parent, CString::from(name));
         {

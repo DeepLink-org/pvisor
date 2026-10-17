@@ -16,6 +16,7 @@ mod server;
 pub mod snapshot;
 pub mod virtual_entry;
 mod worker;
+mod write_buffer;
 
 #[cfg(target_os = "linux")]
 pub mod linux;

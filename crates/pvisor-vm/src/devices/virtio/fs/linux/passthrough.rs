@@ -273,6 +273,49 @@ struct LinuxStatx {
 
 const STATX_BASIC_STATS: u32 = 0x0000_07ff;
 const STATX_MNT_ID: u32 = 0x0000_1000;
+const STATX_ATTR_DAX: u64 = 0x0020_0000;
+
+fn buffered_write_file_eligible(file: &File, exported: bool) -> io::Result<bool> {
+    if exported {
+        return Ok(false);
+    }
+    // Check the pinned open description, including mutable status flags.
+    // Linux pwritev still appends when O_APPEND is set on the description.
+    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if !matches!(flags & libc::O_ACCMODE, libc::O_WRONLY | libc::O_RDWR)
+        || flags & (libc::O_DIRECT | libc::O_SYNC | libc::O_DSYNC | libc::O_APPEND) != 0
+    {
+        return Ok(false);
+    }
+    let mut stx = MaybeUninit::<LinuxStatx>::zeroed();
+    // SAFETY: file pins the FD; the empty path and output remain valid through
+    // the syscall. The local statx ABI also supports musl builds.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_statx,
+            file.as_raw_fd(),
+            c"".as_ptr(),
+            libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
+            STATX_BASIC_STATS,
+            stx.as_mut_ptr(),
+        )
+    };
+    if result < 0 {
+        let error = io::Error::last_os_error();
+        return match error.raw_os_error() {
+            Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP) => Ok(false),
+            _ => Err(error),
+        };
+    }
+    // SAFETY: statx succeeded and initialized the zeroed output.
+    let stx = unsafe { stx.assume_init() };
+    Ok(stx.stx_mask & 1 != 0
+        && u32::from(stx.stx_mode) & libc::S_IFMT == libc::S_IFREG
+        && stx.stx_attributes & STATX_ATTR_DAX == 0)
+}
 
 fn statx_evidence(f: &File) -> io::Result<(libc::stat64, u64, u32)> {
     let mut stx = MaybeUninit::<LinuxStatx>::zeroed();
@@ -854,6 +897,77 @@ impl PassthroughFs {
         #[allow(clippy::readonly_write_lock)]
         let file = lease.0.file.write().unwrap();
         reader.read_to(&file, size as usize, offset)
+    }
+
+    /// Qualify this pinned native FD for asynchronous positional writes.
+    /// Callers must separately exclude guest DAX mappings and order exports.
+    pub(in crate::devices::virtio::fs) fn buffered_write_eligible(
+        &self,
+        lease: &HandleLease,
+    ) -> io::Result<bool> {
+        let file = lease.0.file.read().unwrap();
+        buffered_write_file_eligible(&file, lease.0.exported.load(Ordering::Relaxed))
+    }
+
+    /// Submit up to 64 host-owned contiguous chunks in one positional syscall.
+    /// Returns the actual count, including a successful short write; the owner
+    /// must retain/report its unwritten suffix. EINTR retries have no progress.
+    pub(in crate::devices::virtio::fs) fn write_buffered_leased(
+        &self,
+        lease: &HandleLease,
+        chunks: &[&[u8]],
+        offset: u64,
+        kill_priv: bool,
+    ) -> io::Result<usize> {
+        let length = chunks.iter().try_fold(0usize, |length, chunk| {
+            length.checked_add(chunk.len()).ok_or_else(einval)
+        })?;
+        if chunks.len() > 64
+            || length > isize::MAX as usize
+            || offset > i64::MAX as u64
+            || offset
+                .checked_add(length as u64)
+                .is_none_or(|end| end > i64::MAX as u64)
+        {
+            return Err(einval());
+        }
+        let _killpriv_guard = if kill_priv {
+            drop_effective_cap(Capability::CAP_FSETID)?
+        } else {
+            None
+        };
+        #[allow(clippy::readonly_write_lock)]
+        let file = lease.0.file.write().unwrap();
+        if !buffered_write_file_eligible(&file, lease.0.exported.load(Ordering::Relaxed))? {
+            return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+        }
+        let mut vectors: [libc::iovec; 64] = std::array::from_fn(|_| libc::iovec {
+            iov_base: std::ptr::null_mut(),
+            iov_len: 0,
+        });
+        for (vector, chunk) in vectors.iter_mut().zip(chunks) {
+            vector.iov_base = chunk.as_ptr().cast_mut().cast();
+            vector.iov_len = chunk.len();
+        }
+        loop {
+            // SAFETY: the native write lock pins the FD; every immutable
+            // host-owned chunk and the bounded iovec array outlive pwritev.
+            let result = unsafe {
+                libc::pwritev(
+                    file.as_raw_fd(),
+                    vectors.as_ptr(),
+                    chunks.len() as libc::c_int,
+                    offset as libc::off_t,
+                )
+            };
+            if result >= 0 {
+                return Ok(result as usize);
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
     }
 
     pub fn new(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<PassthroughFs> {
@@ -2494,6 +2608,180 @@ impl PassthroughFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn buffered_write_fixture(flags: i32) -> (tempfile::TempDir, PassthroughFs, HandleLease) {
+        use std::os::unix::fs::OpenOptionsExt;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"abcdefgh").unwrap();
+        let fs = PassthroughFs::new(
+            Config {
+                root_dir: root.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(flags & libc::O_ACCMODE != libc::O_WRONLY)
+            .write(flags & libc::O_ACCMODE != libc::O_RDONLY)
+            .custom_flags(flags & !libc::O_ACCMODE)
+            .open(root.path().join("file"))
+            .unwrap();
+        let lease = HandleLease(Arc::new(HandleData {
+            directory_snapshot: None,
+            inode: 1,
+            file: RwLock::new(file),
+            exported: AtomicBool::new(false),
+        }));
+        (root, fs, lease)
+    }
+
+    #[test]
+    fn buffered_write_qualification_checks_actual_flags_type_and_exports() {
+        for flags in [libc::O_WRONLY, libc::O_RDWR] {
+            let (_root, fs, lease) = buffered_write_fixture(flags);
+            assert!(fs.buffered_write_eligible(&lease).unwrap());
+        }
+        for flags in [
+            libc::O_RDONLY,
+            libc::O_RDWR | libc::O_APPEND,
+            libc::O_RDWR | libc::O_SYNC,
+            libc::O_RDWR | libc::O_DSYNC,
+            libc::O_RDWR | libc::O_DIRECT,
+        ] {
+            let (_root, fs, lease) = buffered_write_fixture(flags);
+            assert!(
+                !fs.buffered_write_eligible(&lease).unwrap(),
+                "flags={flags:#x}"
+            );
+        }
+        let (root, fs, lease) = buffered_write_fixture(libc::O_RDWR);
+        lease.0.exported.store(true, Ordering::Relaxed);
+        assert!(!fs.buffered_write_eligible(&lease).unwrap());
+        let directory = HandleLease(Arc::new(HandleData {
+            directory_snapshot: None,
+            inode: 1,
+            file: RwLock::new(File::open(root.path()).unwrap()),
+            exported: AtomicBool::new(false),
+        }));
+        assert!(!fs.buffered_write_eligible(&directory).unwrap());
+    }
+
+    #[test]
+    fn buffered_write_merges_chunks_on_pinned_object_without_moving_file_offset() {
+        let (root, fs, lease) = buffered_write_fixture(libc::O_RDWR);
+        std::fs::rename(root.path().join("file"), root.path().join("saved")).unwrap();
+        std::fs::write(root.path().join("file"), b"replacement").unwrap();
+        {
+            let file = lease.0.file.read().unwrap();
+            assert_eq!(
+                unsafe { libc::lseek(file.as_raw_fd(), 3, libc::SEEK_SET) },
+                3
+            );
+        }
+        assert_eq!(
+            fs.write_buffered_leased(&lease, &[b"12", b"3", b"45"], 2, false)
+                .unwrap(),
+            5
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("saved")).unwrap(),
+            b"ab12345h"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"replacement"
+        );
+        let file = lease.0.file.read().unwrap();
+        assert_eq!(
+            unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_CUR) },
+            3
+        );
+    }
+
+    #[test]
+    fn buffered_write_rechecks_append_and_validates_vectors_and_offsets() {
+        let (root, fs, lease) = buffered_write_fixture(libc::O_RDWR);
+        assert!(fs.buffered_write_eligible(&lease).unwrap());
+        {
+            let file = lease.0.file.read().unwrap();
+            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+            assert!(flags >= 0);
+            assert_eq!(
+                unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags | libc::O_APPEND) },
+                0
+            );
+        }
+        assert!(!fs.buffered_write_eligible(&lease).unwrap());
+        assert_eq!(
+            fs.write_buffered_leased(&lease, &[b"x"], 0, false)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EOPNOTSUPP)
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"abcdefgh"
+        );
+        for (chunks, offset) in [
+            (vec![b"x".as_slice(); 65], 0),
+            (Vec::new(), i64::MAX as u64 + 1),
+            (vec![b"x".as_slice()], i64::MAX as u64),
+        ] {
+            assert_eq!(
+                fs.write_buffered_leased(&lease, &chunks, offset, false)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EINVAL)
+            );
+        }
+    }
+
+    #[test]
+    fn buffered_write_preserves_successful_partial_count_and_later_error() {
+        const CHILD: &str = "PVISOR_NATIVE_BUFFERED_WRITE_PARTIAL_CHILD";
+        if std::env::var_os(CHILD).as_deref() != Some(std::ffi::OsStr::new("1")) {
+            // Isolate the process-wide file limit from all other test threads.
+            let thread = std::thread::current();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", thread.name().unwrap(), "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "partial-write child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let (root, fs, lease) = buffered_write_fixture(libc::O_RDWR);
+        let limit = libc::rlimit {
+            rlim_cur: 4,
+            rlim_max: 4,
+        };
+        // SAFETY: this isolated child owns its signal disposition and limits.
+        unsafe {
+            libc::signal(libc::SIGXFSZ, libc::SIG_IGN);
+            assert_eq!(libc::setrlimit(libc::RLIMIT_FSIZE, &limit), 0);
+        }
+        assert_eq!(
+            fs.write_buffered_leased(&lease, &[b"123", b"456"], 0, false)
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"1234efgh"
+        );
+        assert_eq!(
+            fs.write_buffered_leased(&lease, &[b"x"], 4, false)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EFBIG)
+        );
+    }
 
     fn qualification_profile(name: &str) -> pvisor_overlay_core::profile::Profile {
         let profile = pvisor_overlay_core::profile::Profile::enabled(name);

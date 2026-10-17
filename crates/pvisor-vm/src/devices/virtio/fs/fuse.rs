@@ -1024,6 +1024,15 @@ pub struct FsyncIn {
 }
 unsafe impl ByteValued for FsyncIn {}
 
+/// Connection-wide synchronization request; the reserved field is ignored.
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct SyncfsIn {
+    pub padding: u64,
+}
+// SAFETY: the C-compatible structure contains a single integer and no padding.
+unsafe impl ByteValued for SyncfsIn {}
+
 #[repr(C)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct SetxattrIn {

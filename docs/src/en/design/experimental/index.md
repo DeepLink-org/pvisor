@@ -8,6 +8,7 @@ Register implementable, verifiable capabilities that support higher execution de
 |---|---|---|---|
 | EXP-001 | [vCPU idle observation and automatic RAM offload](vcpu-idle-offload/index.md) | **Observation prototype stage** (M0; KVM measured, HVF not validated) | Find VM waiting windows without changing the Agent or guest kernel; offload and restore on host events/deadlines |
 | EXP-002 | [Guest kernel filesystem cache and deferred backend binding](guest-stage-cache/index.md) | **Design stage** (RFC, not implemented) | Complete valid cached metadata operations and ordinary read-only open locally; retain VMM authority over stage, data supply and durability |
+| EXP-003 | [Agent asynchronous I/O and completion queues](agent-io-completion/index.md) | **Design stage** (host write-buffer foundation implemented; complete IOCP pending) | Host-owned downloads, model calls and pending write bytes overlap backend I/O with guest RAM offload; the Attempt owner restores and delivers results |
 
 ## CLI feature entry points
 

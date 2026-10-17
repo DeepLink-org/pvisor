@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700" width="1200" height="700" role="img" aria-labelledby="title desc" xml:lang="zh" style="max-width:100%;height:auto">
+  <title id="title">核心攻关：Agent 级 I/O completion</title>
+  <desc id="desc">pVisor 的核心架构与攻关路径，协议闭环尚未完成。时间从左向右。Guest 运行后提交请求并交接 payload；宿主接管独立 buffer 和请求。排空所有 guest RAM 与 descriptor 借用、提交恢复数据后，Guest 可安全卸载而不终止。下载、LLM 请求或批量写在宿主持有的状态上继续推进，不访问已卸载的 guest RAM。结果进入有界完成队列或暂存对象，触发唤醒；先恢复 guest RAM，再交付完成并继续同一个执行尝试。宿主缓冲和结果暂存消耗内存，必须计入净驻留收益。当前整 VM offload 仍要求先排空设备请求，此图不表示已有能力。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#475569"/></marker>
+    <marker id="green-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 Z" fill="#059669"/></marker>
+  </defs>
+  <style>
+    text { font-family: "Noto Sans", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; fill: #172033; }
+    .muted { fill: #475569; }
+    .guest { fill: #eff6ff; stroke: #60a5fa; stroke-width: 1.5; }
+    .host { fill: #ecfdf5; stroke: #34d399; stroke-width: 1.5; }
+    .arrow { fill: none; stroke: #475569; stroke-width: 1.8; marker-end: url(#arrow); }
+    .host-arrow { fill: none; stroke: #059669; stroke-width: 2; marker-end: url(#green-arrow); }
+    .offload { stroke-dasharray: 7 5; }
+  </style>
+  <rect width="1200" height="700" fill="#ffffff"/>
+  <text x="24" y="43" font-size="28" text-anchor="start" font-weight="700">核心攻关：Agent 级 I/O completion</text>
+  <text x="24" y="76" font-size="16" text-anchor="start" class="muted">执行环境可以安全停驻；已交接给宿主的 I/O 继续推进，完成后再唤醒执行。</text>
+  <path d="M 180 115 L 1168 115" class="arrow"/>
+  <text x="1082" y="103" font-size="14" text-anchor="start" class="muted">时间 →</text>
+  <rect x="160" y="136" width="1016" height="150" rx="12" fill="#f8fafc" stroke="#cbd5e1"/>
+  <rect x="160" y="318" width="1016" height="148" rx="12" fill="#f0fdf4" stroke="#bbf7d0"/>
+  <rect x="560" y="146" width="350" height="310" rx="12" fill="#f0f9ff" stroke="#60a5fa" class="offload" stroke-width="1.5"/>
+  <text x="24" y="186" font-size="16" text-anchor="start" font-weight="700" style="fill:#1d4ed8">Guest 执行体</text>
+  <text x="24" y="211" font-size="12" text-anchor="start" class="muted">程序与 Linux 状态</text>
+  <text x="24" y="370" font-size="17" text-anchor="start" font-weight="700" style="fill:#047857">宿主 I/O</text>
+  <text x="24" y="396" font-size="12" text-anchor="start" class="muted">独立对象与任务</text>
+  <rect x="180" y="173" width="150" height="74" rx="12" fill="#eff6ff" stroke="#60a5fa"/>
+  <text x="255.0" y="201" font-size="14" text-anchor="middle" font-weight="600" style="fill:#1e3a8a">运行程序</text>
+  <text x="255.0" y="227" font-size="13" text-anchor="middle" style="fill:#1e3a8a">发起 I/O 请求</text>
+  <rect x="360" y="173" width="180" height="74" rx="12" fill="#eff6ff" stroke="#60a5fa"/>
+  <text x="450.0" y="201" font-size="14" text-anchor="middle" font-weight="600" style="fill:#1e3a8a">提交请求与 payload</text>
+  <text x="450.0" y="227" font-size="13" text-anchor="middle" style="fill:#1e3a8a">交接数据所有权</text>
+  <rect x="938" y="173" width="230" height="74" rx="12" fill="#eff6ff" stroke="#60a5fa"/>
+  <text x="1053.0" y="201" font-size="14" text-anchor="middle" font-weight="600" style="fill:#1e3a8a">恢复 guest RAM</text>
+  <text x="1053.0" y="227" font-size="13" text-anchor="middle" style="fill:#1e3a8a">交付完成，继续执行</text>
+  <rect x="575" y="166" width="320" height="85" rx="12" fill="#eff6ff" stroke="#3b82f6" class="offload" stroke-width="1.7"/>
+  <text x="735" y="198" font-size="17" text-anchor="middle" font-weight="600" style="fill:#1e3a8a">安全卸载 · 同一 Attempt</text>
+  <text x="735" y="227" font-size="14" text-anchor="middle" style="fill:#1e3a8a">执行体停驻，降低 RAM 驻留</text>
+  <path d="M 332 210 L 356 210" class="arrow"/>
+  <path d="M 542 210 L 570 210" class="arrow offload"/>
+  <path d="M 897 210 L 934 210" class="arrow offload"/>
+  <text x="735" y="274" font-size="13" text-anchor="middle" style="fill:#1d4ed8">卸载窗口：宿主 I/O 不访问 guest RAM</text>
+  <path d="M 450 250 L 450 345" class="host-arrow"/>
+  <text x="466" y="302" font-size="13" text-anchor="start" style="fill:#047857">数据交接</text>
+  <rect x="360" y="350" width="180" height="84" rx="12" fill="#ecfdf5" stroke="#34d399"/>
+  <text x="450.0" y="376" font-size="14" text-anchor="middle" font-weight="600" style="fill:#065f46">接管 buffer / request</text>
+  <text x="450.0" y="401" font-size="12" text-anchor="middle" style="fill:#065f46">持有独立数据或对象</text>
+  <text x="450.0" y="422" font-size="12" text-anchor="middle" style="fill:#065f46">不保留 guest 内存借用</text>
+  <rect x="575" y="350" width="320" height="84" rx="12" fill="#ecfdf5" stroke="#34d399"/>
+  <text x="735.0" y="376" font-size="14" text-anchor="middle" font-weight="600" style="fill:#065f46">下载 / LLM / 批量写继续推进</text>
+  <text x="735.0" y="401" font-size="12" text-anchor="middle" style="fill:#065f46">宿主持有连接、请求与 payload</text>
+  <text x="735.0" y="422" font-size="12" text-anchor="middle" style="fill:#065f46">I/O 进行时不需要 guest 执行</text>
+  <rect x="938" y="350" width="230" height="84" rx="12" fill="#ecfdf5" stroke="#34d399"/>
+  <text x="1053.0" y="376" font-size="14" text-anchor="middle" font-weight="600" style="fill:#065f46">有界完成队列 / 结果暂存</text>
+  <text x="1053.0" y="401" font-size="12" text-anchor="middle" style="fill:#065f46">保留结果或对象句柄</text>
+  <text x="1053.0" y="422" font-size="12" text-anchor="middle" style="fill:#065f46">容量上限、背压和过期处理</text>
+  <path d="M 542 392 L 570 392" class="host-arrow"/>
+  <path d="M 897 392 L 934 392" class="host-arrow"/>
+  <path d="M 1053 347 L 1053 251" class="host-arrow offload"/>
+  <text x="1068" y="302" font-size="12" text-anchor="start" style="fill:#047857">完成 → 唤醒</text>
+  <rect x="24" y="494" width="560" height="141" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="42" y="523" font-size="17" text-anchor="start" font-weight="600">安全停驻的前提</text>
+  <text x="42" y="550" font-size="13" text-anchor="start" class="muted">先停 vCPU，排空 guest RAM / descriptor 借用。</text>
+  <text x="42" y="572" font-size="13" text-anchor="start" class="muted">宿主自有 I/O 可继续；guest 完成交付等待恢复。</text>
+  <text x="42" y="594" font-size="13" text-anchor="start" class="muted">已接受 ≠ 已持久化 ≠ 已完成 ≠ guest 已接收。</text>
+  <text x="42" y="616" font-size="13" text-anchor="start" class="muted">超时或取消须核对结果；非幂等操作不能盲目重放。</text>
+  <rect x="600" y="494" width="576" height="141" rx="12" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="618" y="523" font-size="17" text-anchor="start" font-weight="600">内存取舍：用宿主缓冲，换整份 guest 的驻留时间</text>
+  <text x="618" y="550" font-size="13" text-anchor="start" class="muted">净收益（GiB·s） ≈ (G − H) × T</text>
+  <text x="618" y="572" font-size="13" text-anchor="start" class="muted">G：实际释放的物理内存；H：新增 buffer、队列与页缓存</text>
+  <text x="618" y="594" font-size="13" text-anchor="start" class="muted">T：卸载时长；实际收益按各项驻留量随时间积分。</text>
+  <text x="618" y="616" font-size="13" text-anchor="start" class="muted">同时计入复制、卸载与恢复成本，以及并发唤醒峰值。</text>
+  <text x="24" y="662" font-size="14" text-anchor="start" class="muted">核心架构示意；当前 whole-VM offload 仍先排空设备请求，尚未实现图中的宿主接管与自动唤醒闭环。</text>
+  <text x="24" y="686" font-size="14" text-anchor="start" class="muted">借鉴提交 / 完成队列的组织方式，不表示实现 Windows IOCP API，也不等于终止或重新执行 Guest。</text>
+</svg>

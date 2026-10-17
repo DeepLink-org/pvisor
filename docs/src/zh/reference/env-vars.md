@@ -41,6 +41,8 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor run --safe \
 
 `PVISOR_STARTUP_TIMING` 默认启用启动阶段日志；设为 `0` 关闭，适合不带日志开销的测量。它只影响诊断输出，不改变任务策略。
 
+`PVISOR_VM_FS_HOST_WRITEBACK` 是默认关闭的实验性 host 写缓存：未设置或 `0` 关闭，`1` 启用，其他值拒绝。当前只支持 Linux staged virtio-fs、guest writeback 关闭和 DAX 关闭；每连接 64 MiB payload、1024 个在途项，相邻连续写按最多 1 MiB 或 10 ms 聚合。显式同步与退出仍观察后台错误；完整 Agent IOCP 和自动卸载尚未接通。范围与同步合同见 [EXP-003](../design/experimental/agent-io-completion/index.md#host-write-buffer)。
+
 下面两个变量影响 Linux x86_64 musl **构建时**嵌入的 guest 内核：
 
 | 变量 | 输入 | 优先级 |

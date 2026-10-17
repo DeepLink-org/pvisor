@@ -192,6 +192,7 @@ impl<F: FileSystem + Sync> Server<F> {
             x if x == Opcode::Readdirplus as u32 => "READDIRPLUS",
             x if x == Opcode::Create as u32 => "CREATE",
             x if x == Opcode::Fsync as u32 => "FSYNC",
+            x if x == Opcode::Syncfs as u32 => "SYNCFS",
             x if x == Opcode::Release as u32 => "RELEASE",
             x if x == Opcode::Setattr as u32 => "SETATTR",
             x if x == Opcode::Readlink as u32 => "READLINK",
@@ -246,6 +247,7 @@ impl<F: FileSystem + Sync> Server<F> {
             x if x == Opcode::Statfs as u32 => self.statfs(in_header, w),
             x if x == Opcode::Release as u32 => self.release(in_header, r, w),
             x if x == Opcode::Fsync as u32 => self.fsync(in_header, r, w),
+            x if x == Opcode::Syncfs as u32 => self.syncfs(in_header, r, w),
             x if x == Opcode::Setxattr as u32 => self.setxattr(in_header, r, w),
             x if x == Opcode::Getxattr as u32 => self.getxattr(in_header, r, w),
             x if x == Opcode::Listxattr as u32 => self.listxattr(in_header, r, w),
@@ -888,6 +890,17 @@ impl<F: FileSystem + Sync> Server<F> {
         ) {
             Ok(()) => reply_ok(None::<u8>, None, in_header.unique, w),
             Err(e) => reply_error(e, in_header.unique, w),
+        }
+    }
+
+    fn syncfs(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
+        if (in_header.len as usize) < size_of::<InHeader>() + size_of::<SyncfsIn>() {
+            return Err(Error::InvalidHeaderLength);
+        }
+        let _: SyncfsIn = r.read_obj().map_err(Error::DecodeMessage)?;
+        match self.fs.syncfs(Context::from(in_header)) {
+            Ok(()) => reply_ok(None::<u8>, None, in_header.unique, w),
+            Err(error) => reply_error(error, in_header.unique, w),
         }
     }
 
@@ -2406,6 +2419,15 @@ mod guest_cache_tests {
         opcode: Opcode,
         body: &[u8],
     ) -> (OutHeader, Vec<u8>) {
+        try_request(server, opcode, body, body.len()).unwrap()
+    }
+
+    fn try_request<F: FileSystem + Sync>(
+        server: &Server<F>,
+        opcode: Opcode,
+        body: &[u8],
+        declared_body_len: usize,
+    ) -> Result<(OutHeader, Vec<u8>)> {
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
         let chain = create_descriptor_chain(
             &mem,
@@ -2421,26 +2443,24 @@ mod guest_cache_tests {
         mem.write_slice(body, GuestAddress(0x100)).unwrap();
         let plan = OwnedDescriptorChain::new(chain).unwrap();
         let (reader, writer) = plan.reader_writer(&mem).unwrap();
-        let count = server
-            .handle_message(
-                (
-                    InHeader {
-                        len: (size_of::<InHeader>() + body.len()) as u32,
-                        opcode: opcode as u32,
-                        nodeid: ROOT_ID,
-                        unique: 1,
-                        ..Default::default()
-                    },
-                    reader,
-                ),
-                writer,
-                false,
-                &None,
-                &Arc::new(AtomicI32::new(0)),
-                #[cfg(target_os = "macos")]
-                &None,
-            )
-            .unwrap();
+        let count = server.handle_message(
+            (
+                InHeader {
+                    len: (size_of::<InHeader>() + declared_body_len) as u32,
+                    opcode: opcode as u32,
+                    nodeid: ROOT_ID,
+                    unique: 1,
+                    ..Default::default()
+                },
+                reader,
+            ),
+            writer,
+            false,
+            &None,
+            &Arc::new(AtomicI32::new(0)),
+            #[cfg(target_os = "macos")]
+            &None,
+        )?;
         let address = 0x100 + body.len() as u64;
         let header: OutHeader = mem.read_obj(GuestAddress(address)).unwrap();
         assert_eq!(header.len as usize, count);
@@ -2450,7 +2470,88 @@ mod guest_cache_tests {
             GuestAddress(address + size_of::<OutHeader>() as u64),
         )
         .unwrap();
-        (header, bytes)
+        Ok((header, bytes))
+    }
+
+    struct SyncfsFs {
+        calls: std::sync::atomic::AtomicUsize,
+        error: Option<i32>,
+    }
+
+    impl FileSystem for SyncfsFs {
+        type Inode = u64;
+        type Handle = u64;
+
+        fn syncfs(&self, ctx: Context) -> io::Result<()> {
+            assert_eq!((ctx.uid, ctx.gid, ctx.pid), (0, 0, 0));
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            match self.error {
+                Some(error) => Err(io::Error::from_raw_os_error(error)),
+                None => Ok(()),
+            }
+        }
+    }
+
+    #[test]
+    fn syncfs_dispatches_connection_barrier_and_propagates_backing_error() {
+        assert_eq!(size_of::<SyncfsIn>(), 8);
+        // The padding is reserved, not an inode, handle, or synchronization flag.
+        let body = SyncfsIn { padding: u64::MAX };
+        for error in [None, Some(libc::EIO), Some(libc::ENOSPC)] {
+            let server = Server::new(
+                SyncfsFs {
+                    calls: Default::default(),
+                    error,
+                },
+                false,
+            );
+            let (header, bytes) = request(&server, Opcode::Syncfs, body.as_slice());
+            assert_eq!(header.unique, 1);
+            assert_eq!(header.error, -error.unwrap_or(0));
+            assert!(bytes.is_empty());
+            assert_eq!(server.fs.calls.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[test]
+    fn syncfs_keeps_unsupported_adapters_on_enosys() {
+        let (header, bytes) = request(
+            &Server::new(NullFs, false),
+            Opcode::Syncfs,
+            SyncfsIn::default().as_slice(),
+        );
+        assert_eq!(header.error, -bindings::LINUX_ENOSYS);
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn syncfs_rejects_short_header_and_truncated_descriptors_before_dispatch() {
+        let server = Server::new(
+            SyncfsFs {
+                calls: Default::default(),
+                error: None,
+            },
+            false,
+        );
+        let body = SyncfsIn::default();
+        for length in 0..size_of::<SyncfsIn>() {
+            // Even a complete descriptor cannot fill a body excluded by len.
+            assert!(matches!(
+                try_request(&server, Opcode::Syncfs, body.as_slice(), length),
+                Err(Error::InvalidHeaderLength)
+            ));
+            // Conversely, a claimed complete frame cannot extend the descriptor.
+            assert!(matches!(
+                try_request(
+                    &server,
+                    Opcode::Syncfs,
+                    &body.as_slice()[..length],
+                    size_of::<SyncfsIn>()
+                ),
+                Err(Error::DecodeMessage(_))
+            ));
+        }
+        assert_eq!(server.fs.calls.load(Ordering::Relaxed), 0);
     }
 
     fn negotiate<F: FileSystem + Sync>(server: &Server<F>, capable: FsOptions) -> FsOptions {

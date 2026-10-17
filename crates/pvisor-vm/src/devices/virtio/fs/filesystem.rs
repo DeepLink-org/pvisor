@@ -916,6 +916,18 @@ pub trait FileSystem {
         Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
+    /// Synchronize the contents and metadata owned by this filesystem connection.
+    ///
+    /// Implementations must drain accepted writes and perform their backing-store
+    /// synchronization before returning success. Failures must remain visible to
+    /// the caller; a failed synchronization does not roll back completed writes.
+    /// The request carries neither an inode nor an open handle. The default
+    /// returns `ENOSYS`, preserving unsupported adapters' existing behavior; the
+    /// guest may treat that response as success and omit subsequent requests.
+    fn syncfs(&self, ctx: Context) -> io::Result<()> {
+        Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
+    }
+
     /// Allocate requested space for file data.
     ///
     /// If this function returns success, then the file sytem must guarantee that it is possible to

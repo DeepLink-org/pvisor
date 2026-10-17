@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Instant;
 
 use crate::utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
-use crate::utils::eventfd::{EFD_NONBLOCK, EventFd};
+use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
 use vm_memory::GuestMemoryMmap;
 
 use super::super::Queue;
@@ -332,7 +332,11 @@ impl RequestPool {
         // if arm wins, that worker signals the sleeping owner. Never park with
         // an already queued completion, but still poll stop/kick events first.
         self.awaiting_wake.swap(true, Ordering::AcqRel);
-        if self.completed.is_empty() { -1 } else { 0 }
+        if self.completed.is_empty() {
+            -1
+        } else {
+            0
+        }
     }
 
     fn submit(&mut self, mut request: Request) {
@@ -396,6 +400,18 @@ fn guest_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
         Some(_) => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "PVISOR_VM_GUEST_CACHE must be 0 or 1",
+        )),
+    }
+}
+
+fn host_writeback_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
+    match setting {
+        None => Ok(false),
+        Some(value) if value == "0" => Ok(false),
+        Some(value) if value == "1" => Ok(true),
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "PVISOR_VM_FS_HOST_WRITEBACK must be 0 or 1",
         )),
     }
 }
@@ -517,6 +533,8 @@ impl FsWorker {
         let root_data_cache = root_data_cache_enabled(&fs_tag, cache_setting.as_deref())?;
         let guest_cache =
             guest_cache_enabled(std::env::var_os("PVISOR_VM_GUEST_CACHE").as_deref())?;
+        let host_writeback =
+            host_writeback_enabled(std::env::var_os("PVISOR_VM_FS_HOST_WRITEBACK").as_deref())?;
         let directory_cache_capacity = directory_cache_capacity(
             std::env::var_os("PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY").as_deref(),
         )?;
@@ -539,6 +557,7 @@ impl FsWorker {
                 } else {
                     OverlayFs::new(cfg, inode_alloc.clone())?
                 };
+                inner.configure_host_writeback(host_writeback, shm_region.is_some())?;
                 inner.configure_immutable_data_cache(root_data_cache);
                 inner.configure_directory_cache_capacity(directory_cache_capacity)?;
                 inner.configure_exclusive_upper_absence_cache(
@@ -864,7 +883,7 @@ impl FsWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::virtio::descriptor_utils::{DescriptorType, create_descriptor_chain};
+    use crate::devices::virtio::descriptor_utils::{create_descriptor_chain, DescriptorType};
     use std::time::Duration;
     use vm_memory::GuestAddress;
 
@@ -895,6 +914,31 @@ mod tests {
         worker.dispatch_profile =
             pvisor_overlay_core::profile::Profile::enabled("virtio-fs-dispatch");
         worker
+    }
+
+    #[test]
+    fn host_writeback_defaults_off_and_rejects_invalid_settings() {
+        use std::ffi::OsStr;
+
+        assert!(!host_writeback_enabled(None).unwrap());
+        assert!(!host_writeback_enabled(Some(OsStr::new("0"))).unwrap());
+        assert!(host_writeback_enabled(Some(OsStr::new("1"))).unwrap());
+        for value in [
+            b"".as_slice(),
+            b"false",
+            b"true",
+            b"2",
+            b"-1",
+            b"01",
+            b" 1",
+            b"1 ",
+            b"1\n",
+            b"\xff",
+        ] {
+            let error = host_writeback_enabled(Some(OsStr::from_bytes(value))).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains("PVISOR_VM_FS_HOST_WRITEBACK"));
+        }
     }
 
     #[test]
@@ -1246,14 +1290,12 @@ mod tests {
             });
         }
         assert_eq!(normal.used.idx.get(), 2);
-        assert!(
-            !worker
-                .dispatch_profile
-                .report()
-                .unwrap()
-                .measurements
-                .contains_key("notification_checks")
-        );
+        assert!(!worker
+            .dispatch_profile
+            .report()
+            .unwrap()
+            .measurements
+            .contains_key("notification_checks"));
         worker.notify_completed([false, true]);
         let report = worker.dispatch_profile.report().unwrap();
         assert_eq!(report.measurements["published_completions"].units, 2);

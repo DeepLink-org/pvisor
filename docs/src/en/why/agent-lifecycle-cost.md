@@ -6,6 +6,8 @@ Having more Agents explore, divide work, and verify results in parallel is an im
 
 pVisor aims to scale autonomous Agent execution. It uses processes, containers, or VMs as execution boundaries while managing environments, file changes, resource lifecycles, and execution records. Assessing the value of this layer requires looking at the whole task.
 
+pVisor's core insight is that **waiting for I/O need not keep the entire guest resident.** The central engineering challenge is to take over I/O such as file downloads, LLM requests, and bulk writes, allowing the host to continue processing requests while the guest is offloaded, then resume execution when results are ready. This calls for designing file, network, and memory lifecycles together. It also explains why making I/O asynchronous at scale matters more than simply shrinking the VM.
+
 ## From the price of a sandbox to the cost of a useful result {#cost-per-result}
 
 Suppose a thousand Agents attempt to fix the same bug, and one solution is eventually accepted. This example illustrates the costs; it is not a performance measurement.
@@ -14,12 +16,13 @@ The attempts may depend on the same repository baseline, compilers, and packages
 
 Measuring only the milliseconds and MiB needed to start a sandbox covers just part of this chain.
 
-| Lifecycle stage | Source of cost | What is needed beyond the VM substrate | pVisor mechanisms and direction |
+| Lifecycle stage | Source of cost | What is needed beyond the VM substrate | pVisor mechanisms and engineering challenges |
 | --- | --- | --- | --- |
 | Bringing in an environment | Installing tools, adapting dependencies, and building an execution environment | Image ingestion and environment management | Use Linux OCI images directly and reuse existing environments without requiring users to build a separate VM disk image |
 | Preparation and distribution | Repeatedly downloading, copying, and unpacking identical content | Content caching, sharing, and retrieval on demand | Shared image cache, pinned versions, and file content read on access |
 | Running tools | File operations, data movement, and communication across boundaries | Compatible system calls and controlled I/O paths | A Linux guest runs programs; host file services and network egress enforce policy |
-| Waiting for the model | CPU is idle while state and memory remain resident | Reclamation and restoration policies | Sharing, cold-page compression, and explicit offload already exist; automatically coordinating reclamation with model waits remains under research |
+| Waiting for the model or a download | CPU is idle while state and memory remain resident | Cooperation between host I/O proxies, reclamation, and restoration | Proxies and memory primitives already exist; the central challenge is to let the host continue requests while the guest is offloaded |
+| Bulk writes | Repeated waits for writeback; dirty pages and device requests keep guest memory resident | Bounded asynchronous queues, data ownership handoff, and completion notification | An explicit batched writeback path already exists; the central challenge is for the host to own pending write data, removing I/O's dependency on guest residency |
 | Retrying after failure | Preparing the environment again and handling failed output | Isolated changes and a reusable starting point | Staging, logical checkpoints and forks of stopped Jobs, and independent disposal of failed changes |
 | Investigation and delivery | Inspecting execution, finding changes, and resolving overwrite conflicts | Execution records and a result acceptance workflow | Run Bundle, optional model request capture, apply by path, disposal of unaccepted changes, and refusal to overwrite on conflict |
 
@@ -65,7 +68,64 @@ Reclamation during waits must answer two questions: when reclamation is worthwhi
 
 pVisor already has memory primitives for different purposes: sharing identical content, compressing an instance's cold pages, and explicitly offloading a whole VM for restoration within the same process. They have platform and configuration limits and cannot be combined arbitrarily. The [memory subsystem](../design/memory-optimization/index.md) defines these boundaries. The [wait observation and offload experiment](../design/experimental/vcpu-idle-offload/index.md) remains an observation prototype; it has not delivered the full loop of automatically offloading when model reasoning starts and waking when the response arrives.
 
-This defines a research goal: **manage environment retention time separately from the amount of resident resources.**
+This reveals pVisor's core insight: **progressing I/O requires the request state whose ownership has been handed off, not the continued residency of the entire guest.** The execution layer needs to manage environment retention time, I/O processing time, and resource residency separately.
+
+## IOCP at the Agent level is the central engineering challenge {#agent-iocp}
+
+IOCP, or I/O Completion Ports, provides a model for submitting asynchronous I/O, collecting completion notifications, and scheduling handlers. IOCP at the Agent level borrows this idea and extends the scheduling unit to an execution environment, forming pVisor's core architectural position. It borrows the organization of submission and completion queues, rather than implementing the Windows API. [Microsoft IOCP documentation](https://learn.microsoft.com/en-us/windows/win32/fileio/i-o-completion-ports)
+
+In this model, once an Agent initiates an external operation, pVisor takes responsibility for progressing the request and retaining its result. If the entire guest temporarily has no other work to run, its resident footprint can be reduced after a safe handoff. Execution resumes when a result, error, or progress event requiring attention arrives. **Progressing I/O no longer requires keeping the entire guest in memory throughout the wait.**
+
+![Core architecture and engineering path: the host owns requests and continues I/O; the guest is offloaded after a safe handoff and resumes on completion](assets/agent-io-completion.svg)
+
+| Operation | What the host needs to take over | When the guest needs to return |
+| --- | --- | --- |
+| File download | The authorized download request, connection, destination file, and temporary storage; publish the result on completion as agreed | When the file is available, the operation fails, or progress or cancellation needs handling |
+| LLM request | The upstream request, response or streaming data, and bounded result buffering | When the answer is ready or the streaming delivery policy requires data consumption |
+| Bulk writes | Bytes whose ownership has been handed off, the target object, write ordering, and background submission | When synchronization or error consumption is needed, or subsequent execution can proceed |
+
+This requires requests with explicit application or file semantics. An ordinary TCP proxy sees only bytes. If TLS remains inside the guest, it also cannot fully handle arbitrary HTTPS downloads on the application's behalf. Downloads need a host proxy that can execute independently and write to the destination file. LLM requests need an explicit model protocol path. Streaming responses also require policies for waking in batches and applying backpressure; the entire stream cannot be assumed to fit in an unlimited buffer.
+
+### Hand off I/O ownership before offloading the guest {#io-ownership}
+
+The key change is to break the binding between a request and guest RAM. Putting a synchronous function in a thread pool or stopping a vCPU does not accomplish this automatically.
+
+1. **Receive and admit.** Validate authorization, bind the Attempt, session generation, and request identities, reserve budgets for requests, bytes, and result buffers, and distinguish operations that have been accepted from those that have not.
+2. **Hand off data and objects.** The host owns the bytes or independently valid backing required by the request, together with file handles and connections. End borrows of guest RAM that may be reclaimed. Operations still depending on guest pages must finish accessing them first; they must not touch those pages after reclamation.
+3. **Offload and continue.** Confirm that the guest has reached a safe waiting point, drain device phases still accessing its RAM, and then perform offload. Operations already owned by the host continue independently, with completions and errors retained in budgeted queues or storage.
+4. **Restore and deliver.** Decide when to restore based on completion, timeout, cancellation, or buffer pressure. Completion events must also be latched during transitions into and out of offload, with a direct notification path to the controller; waking must not first depend on guest RAM being available. After reestablishing RAM and device access and confirming resumption, verify the request and execution identities, then deliver results or device completion notifications according to the protocol. Do not require the guest to consume all data before allowing it to run, or hold queue or proxy locks while synchronously waiting for resumption. A completion event must not override a manual pause or wake an Attempt that has ended.
+
+The existing virtio-fs path holds a RAM lease from reading the guest buffer through publishing to the used ring. Offload must wait for these accesses to finish. The central engineering challenge is to split “accessing guest memory” from “waiting for host I/O” so that the latter no longer holds the former's lease for the entire wait. [Current device and RAM contracts](../design/vm-runtime.md#virtio)
+
+The existing Gateway already provides a cooperation point: an Agent can declare that the entire guest is quiescent during a particular inference wait, allowing the embedding runtime to join the wait and delivery barriers through `ModelWaitLifecycle`. Automatic native resource release and RAM reclamation are not yet connected to this interface. An ordinary model request alone also cannot establish that other tools or background tasks are idle. [Gateway wait interface](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-gateway/README.md)
+
+Host queues and guest state must share a lifecycle that can be reconciled. The capture scope of existing snapshots does not automatically cover requests in flight under host ownership, completion queues, or external effects. Durable checkpoints must bring the identities and commit progress of these states into a single recovery contract. Completion delivery needs deduplication, and pause or cancellation does not automatically undo external effects. Reconciling and recovering requests after a host crash requires a separate contract. Replaying a machine snapshot must not blindly resend LLM requests, downloads, or writes.
+
+### Asynchronous writes determine whether waiting can truly be handed off {#asynchronous-writes}
+
+Bulk writes are especially important. If every file write waits for the host to finish, the guest repeatedly enters short waits. If bytes are merely written to the guest page cache, they still belong to the guest and may keep its memory resident. Creating longer offload windows requires actually handing the data and responsibility for submission to the host, then using bounded queues to coalesce scheduling and perform background writes.
+
+Engineering can proceed in stages: first preserve the original syscall's blocking semantics, with the host taking over I/O and the guest offloaded until restoration on completion returns the actual result; then implement write-behind, allowing the call to return when the host has accepted the data while submission continues in the background. The latter also requires a host write cache and more complete visibility and error contracts.
+
+Several completion points need to be distinguished: the request has been accepted, the host owns the required data, the file write has completed, synchronization has made it durable, and the result has been delivered to the guest. An ordinary `write` has different return conditions from the durability conditions of `fsync`; making I/O asynchronous must preserve each promise, including synchronous semantics for `O_SYNC` / `O_DSYNC` writes. Subsequent reads must observe writes as agreed. Ordering on the same object, short writes, disk-full conditions, delayed errors, and synchronization barriers before a task ends must all remain correct.
+
+An explicitly enabled writeback path already batches across files, but its data still resides primarily in the guest page cache. It does not establish that the host can continue writing while the guest is offloaded. It provides a foundation for batching; IOCP at the Agent level still requires cooperation among data ownership, completion queues, and the offload protocol. [Existing writeback mechanism and limits](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-vm/README.md)
+
+### Allow more buffering to reduce whole-guest residency {#buffer-memory-tradeoff}
+
+The fewest copies, the smallest buffers, and the lowest lifecycle cost are not always the same objective. If zero-copy requires retaining guest pages, while copying to the host allows more guest memory to be released, an extra copy and some bounded buffering may be worthwhile.
+
+The measurement should cover the net effect over the entire waiting interval:
+
+```text
+Net memory-time saved
+  = ∫(baseline guest residency − guest residency after offload
+       − added request buffers − added completion buffers − added execution-engine overhead)dt
+```
+
+Account for buffers, page caches, and pages of recovery backing that remain resident using actual whole-node physical memory. Configured capacity or a reduction in one VMM's RSS is not a substitute. Offload file sizes and storage I/O are charged separately. Positive net memory savings are not enough: copying, encoding, I/O, and restoration latency also enter the cost assessment. Each Attempt and the whole node need budgets for request counts, bytes, dirty data, and completion queues. Exhausting a budget must trigger backpressure, spilling to storage, or restoration to consume results, so unbounded host memory does not simply replace guest memory.
+
+The case for investing in asynchronous writes therefore includes both throughput and freeing more execution environments from the cost of remaining resident while waiting. **Replacing an entire waiting guest with bounded host I/O state is pVisor's core benefit and validation target.**
 
 ## Which state should the control plane pay to keep consistent? {#control-plane}
 
@@ -111,11 +171,15 @@ Agents dynamically run shells, package managers, compilers, and subprocesses, ma
 | Approach | Suitable conditions | Tradeoffs |
 | --- | --- | --- |
 | Host processes or containers | Prioritize reuse of the host kernel, tools, and caches | Shared kernel boundary; task-level policy and result management are still needed |
-| An existing microVM plus an execution layer | Require an independent guest kernel and broad Linux compatibility | Environment distribution, file results, and reclamation during waits require additional integration |
+| An existing microVM plus an execution layer | Require an independent guest kernel and broad Linux compatibility | Environment distribution and result management require integration; I/O ownership handoff and waking on completion extend beyond machine-control APIs alone |
 | Application-specific unikernel | The application and its required components can be determined in advance | Dynamic tools, process semantics, and compatibility need individual evaluation |
-| pVisor's specialized Linux execution environment | Retain Linux user space while jointly managing host file services, policy, and resource lifecycles | Guest/VMM protocols, platform adaptation, and compatibility require maintenance |
+| pVisor's specialized Linux execution environment | Retain Linux user space and design file, network, and memory lifecycles together around IOCP at the Agent level | Guest/VMM protocols, I/O completion semantics, platform adaptation, and compatibility require maintenance |
 
 pVisor draws on specialization for a purpose: tailor Linux and devices to execution needs, and let the host provide controlled environment and result services. The current VM path still consists of a Linux guest with separate user-space processes, so it is not a unikernel in the strict sense.
+
+IOCP at the Agent level determines the focus of specialization: pVisor needs to coordinate I/O takeover, safe handoff of guest memory, and restoration on completion. microVM pause, snapshot, and restore APIs alone do not define completion semantics for downloads, model responses, or asynchronous file submission. For example, pausing Firecracker stops device event processing, allowed in-flight asynchronous block I/O still needs to be drained when taking a snapshot, and restoration in another process does not guarantee preservation of connections. [Firecracker snapshot contract](https://github.com/firecracker-microvm/firecracker/blob/main/docs/snapshotting/snapshot-support.md)
+
+This capability spans machine control, file services, model protocols, and runtime scheduling; a microVM can continue to provide the substrate. Specialization should focus on making these parts cooperate, giving I/O an explicit owner and a way to progress while the guest is offloaded.
 
 Specialization also involves the trust model. Public clouds serve mutually untrusted tenants and must carefully restrict sharing. Multiple Agents in the same trust domain can use common read-only inputs. The original Firecracker paper's production recommendations include disabling same-page merging and avoiding file sharing to mitigate side channels. pVisor's current [threat model](../security/threat-model.md) does not promise hostile multitenant or side-channel isolation; sharing benefits carry security tradeoffs. [Firecracker §3.4](https://www.usenix.org/system/files/nsdi20-paper-agache.pdf)
 
@@ -161,12 +225,14 @@ Comparisons should use the same tools, inputs, and result validation, and declar
 | --- | --- |
 | Is preparation cost amortized? | Environment readiness time on first use and reuse, network bytes, and the amount of data actually materialized |
 | Is waiting cheaper? | Whole-node physical memory integrated over time, including the VMM, caches, shared services, and restoration headroom |
+| Can I/O progress independently of the guest? | Download, model response, and write progress while the guest is offloaded; whether device borrows have ended; whether completion notifications are delivered correctly |
+| Is asynchronous buffering worthwhile? | Physical footprint of added buffers and completion queues, net GB·s saved, copying and writeback costs, and backpressure when budgets are exhausted |
 | Is restoration worthwhile? | p99 of the first tool call after restoration, connection and timer behavior, and peaks when many instances restore together |
 | Do parallel attempts produce more useful work? | Completion throughput and result acceptance rate under fixed resource and latency constraints, using the same validation |
 | Do failure and delivery costs fall? | Repeated work before retrying, record completeness, review time, and conflict-handling outcomes |
 
 Similar environments and multiple waiting rounds are worth testing. Heavy writes, low environment reuse, and frequent wakes should also be included. Sharing, compression, and offload each have costs; evaluations should not select only workloads that favor one mechanism.
 
-pVisor's case for its own runtime must rest on demonstrated benefits to complete tasks from jointly optimizing the guest, file service, and resource lifecycle. If an existing VMM plus an execution layer can achieve the same result with lower maintenance costs, reusing it also serves the product goal.
+pVisor's case for its own runtime must rest on demonstrated benefits to complete tasks from jointly optimizing the guest, file service, and resource lifecycle. The central engineering and validation target is continued host I/O while the guest is offloaded, exchanging bounded request state and buffers for lower whole-node residency costs. The underlying VMM can be reused; the execution layer needs to establish cooperation among I/O takeover, completion delivery, and resource restoration.
 
 **Cheap sandbox startup is a starting point. Every stage from acquiring an environment to delivering an acceptable result deserves optimization.**

@@ -805,7 +805,44 @@ staged OverlayFS 的新会话默认不协商 FUSE_WRITEBACK_CACHE；构造前设
 机器快照保留 guest 脏页，不声称排空 virtqueue 已把 guest 脏页刷到 stage。
 恢复仍拒绝 exported descriptors/DAX 等既有不支持状态。
 
-### 跨文件异步回写
+### Host 大粒度写缓存基础
+
+Linux staged virtio-fs 可用实验变量 `PVISOR_VM_FS_HOST_WRITEBACK=1` 开启
+host 拥有的异步写缓存；未设置或 `0` 关闭，其他值（含非 UTF-8）拒绝。
+首版要求 guest `PVISOR_VM_FS_WRITEBACK=0`（默认）、DAX 关闭；macOS、
+DAX 和恢复 guest-writeback 会话明确不支持。直接共享目录的 passthrough
+不使用此缓存。该机制不需要新增固件补丁或公开 VM API。
+
+每个连接的 host payload 预算是 **64 MiB**，最多 **1024 个预留/排队/执行项**。
+先取得预算、完整复制 guest 输入并保留 native 对象/文件 I/O lease，再回复 WRITE。
+后台项不保存 guest Reader、descriptor chain 或 RAM lease。相邻、同一打开
+句柄、相同 killpriv 语义及连续 offset 的写最多聚合 **1 MiB / 64 chunks**，
+最老待处理写入达到 **10 ms** 或同步屏障到来时也提交；以一次 `pwritev` 执行。
+单 FIFO 保证多 FD/硬链接已接收写的顺序，后续可在此合同上增加对象级并行。
+
+只缓存 upper 的普通可写 native FD；请求与实际 FD 的 direct/sync/append
+形态、导出 FD 和 DAX 文件保留同步路径。后台再次核对 FD 条件，保留原有
+CAP_FSETID 行为。预算包含尚在复制和正在执行的数据；超预算反压，控制屏障
+不消费数据额度。64 MiB 限制 payload，句柄、队列元数据和分配器另有开销。
+
+READ、metadata/OPEN、namespace 修改、FLUSH、FSYNC、RELEASE 和机器
+capture/restore 等待相应已接收前缀或已有 I/O fence。短写、EIO/ENOSPC 与
+worker 异常作为 sticky error 保留到会话销毁；同步与捕获不能掩盖失败，
+RELEASE 即使返回错误也完成句柄清理。DESTROY 排空并 join，新的 INIT
+创建新队列；普通 owner drop 同样等待后台退出，不留下越过 stage 生命周期的写。
+
+新缓存会话实现 FUSE_SYNCFS，并由 AugmentFs 转发：排空接收的写与文件 I/O，
+同步 preimage，再对 upper 所在宿主文件系统执行真实 `syncfs`。PID 1 既有
+最终同步由此能观察后台错误；该调用也可能同步同一宿主文件系统的其他写入。
+未启用新缓存的会话保留原 ENOSYS 行为，不能据其 syncfs 成功宣称 backing 耐久。
+
+首版主要覆盖保持打开文件的连续写入。WB=0 的 close 仍通过 FLUSH 排空，
+大量小文件 write-close 不会因此自动跨文件合并。它提前释放已接收 WRITE 的
+guest RAM 引用；后续 READ/SETATTR/FLUSH 等阻塞请求仍可能持 RAM 引用，
+完整 Agent IOCP 与阻塞存储期间的 VM offload 尚未实现。设计见
+[EXP-003](../../docs/src/zh/design/experimental/agent-io-completion/index.md)。
+
+### Guest 跨文件异步回写
 
 新固件在上述 writeback 会话中额外协商 `FUSE_PVISOR_WRITEBACK`（bit 42）。
 它独立于 `PVISOR_VM_GUEST_CACHE`，复用 guest 页缓存；缓存式 `write(2)`

@@ -41,6 +41,8 @@ Proxy mode also injects upper/lowercase `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PR
 
 `PVISOR_STARTUP_TIMING` enables startup phase logs by default; set it to `0` to disable them for measurements without logging overhead. It changes diagnostic output, not task policy.
 
+`PVISOR_VM_FS_HOST_WRITEBACK` enables an experimental host write cache, disabled by default: unset or `0` disables it, `1` enables it, and other values are rejected. It currently requires Linux staged virtio-fs, guest writeback disabled and DAX disabled. Each connection allows 64 MiB of payload and 1024 outstanding items; adjacent contiguous writes batch up to 1 MiB or 10 ms. Explicit synchronization and exit still observe background errors. Complete Agent IOCP and automatic offload remain pending. See [EXP-003](../design/experimental/agent-io-completion/index.md#host-write-buffer) for scope and synchronization contracts.
+
 The following configure the guest kernel embedded **at build time** in Linux x86_64 musl builds:
 
 | Variable | Input | Precedence |

@@ -191,6 +191,7 @@ nav = [
       { "阶段与范围" = "design/experimental/index.md" },
       { "EXP-001（观测原型）：vCPU 空闲观测与自动内存卸载" = "design/experimental/vcpu-idle-offload/index.md" },
       { "EXP-002（设计阶段）：Guest 内核文件系统缓存" = "design/experimental/guest-stage-cache/index.md" },
+      { "EXP-003（设计阶段）：Agent 异步 I/O 与完成队列" = "design/experimental/agent-io-completion/index.md" },
     ] },
     { "研究方向" = [
       { "研究方向" = "design/research/index.md" },

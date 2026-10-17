@@ -763,6 +763,26 @@ impl PassthroughFs {
         result
     }
 
+    /// Host-owned asynchronous write buffering is currently Linux-only.
+    pub(in crate::devices::virtio::fs) fn buffered_write_eligible(
+        &self,
+        _lease: &HandleLease,
+    ) -> io::Result<bool> {
+        Ok(false)
+    }
+
+    /// Preserve the private cross-platform signature without enabling an
+    /// unvalidated macOS write-buffering or privilege-removal path.
+    pub(in crate::devices::virtio::fs) fn write_buffered_leased(
+        &self,
+        _lease: &HandleLease,
+        _chunks: &[&[u8]],
+        _offset: u64,
+        _kill_priv: bool,
+    ) -> io::Result<usize> {
+        Err(linux_error(io::Error::from_raw_os_error(libc::EOPNOTSUPP)))
+    }
+
     pub fn new(cfg: Config, inode_alloc: Arc<InodeAllocator>) -> io::Result<PassthroughFs> {
         let root = CString::new(cfg.root_dir.as_str()).expect("CString::new failed");
 

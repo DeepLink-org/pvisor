@@ -28,12 +28,25 @@ use super::filesystem::{
 use super::fuse;
 use super::inode_alloc::InodeAllocator;
 use super::passthrough::{self, PassthroughFs};
+use super::write_buffer::{Target as BufferedWriteTarget, WriteBuffer};
 
 const TTL: Duration = Duration::from_secs(1);
 pub(super) const DEFAULT_DIRECTORY_CACHE_CAPACITY: usize = 256;
 pub(super) const MAX_DIRECTORY_CACHE_CAPACITY: usize = 4096;
 const RENAME_NOREPLACE: u32 = 1;
 const RENAME_EXCHANGE: u32 = 2;
+
+fn buffered_request_flags(flags: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        flags & (libc::O_DIRECT | libc::O_SYNC | libc::O_DSYNC | libc::O_APPEND) as u32 == 0
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = flags;
+        false
+    }
+}
 
 fn shared_open_qualification_enabled(setting: Option<&OsStr>) -> io::Result<bool> {
     match setting {
@@ -235,6 +248,38 @@ impl Drop for FileIoLease {
                 self.activity.ready.notify_all();
             }
         }
+    }
+}
+
+/// Owns native object admission and bytes without retaining a guest RAM lease.
+struct BufferedWrite {
+    lease: FileIoLease,
+    fs: Arc<PassthroughFs>,
+    kill_priv: bool,
+    profile: pvisor_overlay_core::profile::Profile,
+}
+
+impl BufferedWriteTarget for BufferedWrite {
+    fn merge_key(&self) -> (u64, bool) {
+        (self.lease.id, self.kill_priv)
+    }
+
+    fn write(&self, chunks: &[&[u8]], offset: u64) -> io::Result<usize> {
+        self.profile.add("host_writeback_backing_batches", 1);
+        let result =
+            self.fs
+                .write_buffered_leased(&self.lease.native, chunks, offset, self.kill_priv);
+        match &result {
+            Ok(bytes) => {
+                self.profile
+                    .add("host_writeback_backing_bytes", *bytes as u64);
+                if *bytes != chunks.iter().map(|chunk| chunk.len()).sum::<usize>() {
+                    self.profile.add("host_writeback_backing_errors", 1);
+                }
+            }
+            Err(_) => self.profile.add("host_writeback_backing_errors", 1),
+        }
+        result
     }
 }
 
@@ -749,6 +794,10 @@ pub struct OverlayFs {
     // uses the handle map and scoped fences without acquiring this guard.
     operation_lock: RwLock<()>,
     io_activity: Arc<IoActivity>,
+    // Dropped before Core/layers. The worker owns only native object leases,
+    // never guest Readers, descriptor chains, or RAM gate access.
+    host_writeback: bool,
+    write_buffer: RwLock<Option<Arc<WriteBuffer>>>,
     core: FilesystemService,
     // New INITs use the caller's current preference. Restoring an already
     // negotiated session must not silently change its saved writeback mode.
@@ -804,6 +853,41 @@ impl OverlayFs {
 
     pub(super) fn configure_immutable_data_cache(&mut self, enabled: bool) {
         self.immutable_data_cache = enabled;
+    }
+
+    pub(super) fn configure_host_writeback(&mut self, enabled: bool, dax: bool) -> io::Result<()> {
+        if !enabled {
+            return Ok(());
+        }
+        if !cfg!(target_os = "linux") || dax || self.new_session_writeback {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "host writeback requires Linux, DAX=0 and guest writeback=0",
+            ));
+        }
+        let buffer = Arc::new(WriteBuffer::new()?);
+        *self.write_buffer.get_mut().unwrap() = Some(buffer);
+        self.host_writeback = true;
+        self.profile.add("host_writeback_enabled", 1);
+        self.profile
+            .add("host_writeback_capacity_bytes", 64 * 1024 * 1024);
+        Ok(())
+    }
+
+    fn buffered_writes(&self) -> Option<Arc<WriteBuffer>> {
+        if !self.host_writeback {
+            return None;
+        }
+        self.write_buffer.read().unwrap().clone()
+    }
+
+    /// Wait for the accepted prefix. Errors remain sticky in the queue until
+    /// FLUSH/FSYNC/SYNCFS or capture observes them; namespace cleanup still runs.
+    fn drain_buffered_writes(&self) -> io::Result<()> {
+        match self.buffered_writes() {
+            Some(buffer) => buffer.flush(),
+            None => Ok(()),
+        }
     }
 
     /// The explicit preference promises exclusive upper namespace ownership,
@@ -1011,9 +1095,14 @@ impl OverlayFs {
 
     fn read_operation(&self) -> io::Result<std::sync::RwLockReadGuard<'_, ()>> {
         let _wait = self.profile.span("operation_read_lock_wait");
-        self.operation_lock
+        let guard = self
+            .operation_lock
             .read()
-            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))
+            .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
+        // A completed WRITE reply must be reflected in subsequent metadata.
+        // Preserve cleanup operations even after a recorded asynchronous error.
+        let _ = self.drain_buffered_writes();
+        Ok(guard)
     }
 
     fn write_operation(&self) -> io::Result<WriteOperation<'_>> {
@@ -1022,6 +1111,7 @@ impl OverlayFs {
             .operation_lock
             .write()
             .map_err(|_| io::Error::from_raw_os_error(libc::EIO))?;
+        let _ = self.drain_buffered_writes();
         let upper_namespace = self.core.upper_namespace_mutation();
         Ok(WriteOperation {
             _upper_namespace: upper_namespace,
@@ -1198,6 +1288,8 @@ impl OverlayFs {
             profile,
             operation_lock: RwLock::new(()),
             io_activity: Arc::new(IoActivity::default()),
+            host_writeback: false,
+            write_buffer: RwLock::new(None),
             core,
             new_session_writeback,
             writeback_active: AtomicBool::new(false),
@@ -1980,6 +2072,7 @@ impl FileSystem for OverlayFs {
         }
         let _io = self.io_activity.fence(Vec::new(), true);
         _io.drain();
+        self.drain_buffered_writes()?;
         self.core.sync_preimages()?;
         for root in self.roots.iter().skip(1) {
             backend::materialize_tree(root)?;
@@ -2130,8 +2223,20 @@ impl FileSystem for OverlayFs {
                 "negative entry cache cannot restore a writeback-enabled session",
             ));
         }
+        if self.host_writeback
+            && state
+                .layers
+                .iter()
+                .any(|saved| matches!(saved, FsSnapshot::Passthrough(layer) if layer.writeback))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "host writeback cannot restore a guest-writeback session",
+            ));
+        }
         let _io = self.io_activity.fence(Vec::new(), true);
         _io.drain();
+        self.drain_buffered_writes()?;
         if state.config != self.snapshot_config
             || state.layers.len() != self.layers.len()
             || state.next_handle == 0
@@ -2240,6 +2345,12 @@ impl FileSystem for OverlayFs {
 
     fn init(&self, capable: FsOptions) -> io::Result<FsOptions> {
         let _operation = self.write_operation()?;
+        if self.host_writeback {
+            let mut buffer = self.write_buffer.write().unwrap();
+            if buffer.is_none() {
+                *buffer = Some(Arc::new(WriteBuffer::new()?));
+            }
+        }
         let mut capable = capable;
         if !self.new_session_writeback {
             capable.remove(FsOptions::WRITEBACK_CACHE);
@@ -2319,6 +2430,11 @@ impl FileSystem for OverlayFs {
         let _operation = self.write_operation().unwrap();
         let _io = self.io_activity.fence(Vec::new(), true);
         _io.drain();
+        if let Some(buffer) = self.write_buffer.write().unwrap().take() {
+            if let Err(error) = buffer.stop() {
+                log::error!("host writeback teardown failed: {error}");
+            }
+        }
         self.clear_directory_cache();
         self.handles.lock().unwrap().clear();
         for layer in &self.layers {
@@ -2759,6 +2875,7 @@ impl FileSystem for OverlayFs {
     ) -> io::Result<usize> {
         let _span = self.profile.span("read");
         let lease = self.file_io_lease(handle)?;
+        self.drain_buffered_writes()?;
         let h = &lease.handle;
         let backing = self.roots[h.layer.0].join(OsStr::from_bytes(&h.relative_path));
         if let Some(bytes) = self
@@ -2778,16 +2895,48 @@ impl FileSystem for OverlayFs {
         ctx: Context,
         _inode: u64,
         handle: u64,
-        r: R,
+        mut r: R,
         size: u32,
         offset: u64,
         _lock_owner: Option<u64>,
         _delayed_write: bool,
         kill_priv: bool,
-        _flags: u32,
+        flags: u32,
     ) -> io::Result<usize> {
         let _span = self.profile.span("write");
         let lease = self.file_io_lease(handle)?;
+        if let Some(buffer) = self.buffered_writes() {
+            if lease.handle.layer.0 == 0
+                && buffered_request_flags(flags)
+                && self.layers[0].buffered_write_eligible(&lease.native)?
+                && size != 0
+            {
+                if offset
+                    .checked_add(u64::from(size))
+                    .is_none_or(|end| end > i64::MAX as u64)
+                {
+                    return Err(io::Error::from_raw_os_error(libc::EFBIG));
+                }
+                // Reserve before allocation or copying. The permit also covers
+                // the in-flight backend write, not just the pending FIFO.
+                let permit = buffer.reserve(size as usize)?;
+                let mut bytes = vec![0; size as usize];
+                r.read_exact(&mut bytes)?;
+                let target = BufferedWrite {
+                    fs: self.layers[0].clone(),
+                    lease,
+                    kill_priv,
+                    profile: self.profile.clone(),
+                };
+                permit.submit(Box::new(target), bytes, offset)?;
+                self.profile.add("host_writeback_accepted_requests", 1);
+                self.profile
+                    .add("host_writeback_accepted_bytes", u64::from(size));
+                return Ok(size as usize);
+            }
+            // Synchronous/direct/append paths cannot overtake accepted writes.
+            buffer.flush()?;
+        }
         self.layers[lease.handle.layer.0].write_leased(
             ctx,
             &lease.native,
@@ -2800,17 +2949,46 @@ impl FileSystem for OverlayFs {
 
     fn flush(&self, _ctx: Context, _inode: u64, handle: u64, _lock_owner: u64) -> io::Result<()> {
         let lease = self.file_io_lease(handle)?;
+        self.drain_buffered_writes()?;
         self.layers[lease.handle.layer.0].flush_leased(&lease.native)
     }
 
     fn fsync(&self, _ctx: Context, _inode: u64, datasync: bool, handle: u64) -> io::Result<()> {
         let lease = self.file_io_lease(handle)?;
+        self.drain_buffered_writes()?;
         self.core.sync_preimages()?;
         self.layers[lease.handle.layer.0].sync_leased(&lease.native, datasync)
     }
 
+    fn syncfs(&self, _ctx: Context) -> io::Result<()> {
+        // Legacy sessions retain their existing ENOSYS behavior. For the new
+        // cache this is also the supervisor's final asynchronous-error fence.
+        if !self.host_writeback {
+            return Err(io::Error::from_raw_os_error(libc::ENOSYS));
+        }
+        let _operation = self.write_operation()?;
+        let _io = self.io_activity.fence(Vec::new(), true);
+        _io.drain();
+        self.drain_buffered_writes()?;
+        self.core.sync_preimages().map_err(linux_error)?;
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            let upper = std::fs::File::open(&self.roots[0]).map_err(linux_error)?;
+            // SAFETY: the opened upper root pins the target filesystem until
+            // syncfs completes, including files closed before this request.
+            if unsafe { libc::syncfs(upper.as_raw_fd()) } < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+    }
+
     fn fsyncdir(&self, _ctx: Context, inode: u64, _datasync: bool, _handle: u64) -> io::Result<()> {
         let _operation = self.write_operation()?;
+        self.drain_buffered_writes()?;
         self.core.sync_preimages().map_err(linux_error)?;
         let entry = self
             .core
@@ -2853,7 +3031,7 @@ impl FileSystem for OverlayFs {
                     lock_owner,
                 );
                 self.layers[h.layer.0].forget(ctx, h.inode, 1);
-                result
+                result.and_then(|()| self.drain_buffered_writes())
             }
             _ => Err(io::Error::from_raw_os_error(libc::EBADF)),
         }
@@ -3160,6 +3338,12 @@ impl FileSystem for OverlayFs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    mod host_writeback {
+        use super::*;
+        include!("overlay_host_writeback_tests.rs");
+    }
 
     #[cfg(target_os = "linux")]
     fn negative_entry_fixture(root: &Path) -> OverlayFs {
