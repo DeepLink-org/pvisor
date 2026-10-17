@@ -2,8 +2,12 @@
 use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
-    os::fd::AsRawFd,
-    os::unix::fs::MetadataExt,
+    os::fd::{AsRawFd, IntoRawFd},
+    os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Barrier,
+    },
     time::{Duration, Instant},
 };
 
@@ -37,6 +41,7 @@ fn check_writeback_budget(mount: &str) {
 }
 
 unsafe extern "C" {
+    fn close(fd: i32) -> i32;
     fn mount(
         source: *const std::ffi::c_char,
         target: *const std::ffi::c_char,
@@ -46,6 +51,141 @@ unsafe extern "C" {
     ) -> i32;
     fn syncfs(fd: i32) -> i32;
     fn umount(target: *const std::ffi::c_char) -> i32;
+    fn mmap(
+        address: *mut std::ffi::c_void,
+        length: usize,
+        protection: i32,
+        flags: i32,
+        fd: i32,
+        offset: i64,
+    ) -> *mut std::ffi::c_void;
+    fn msync(address: *mut std::ffi::c_void, length: usize, flags: i32) -> i32;
+    fn munmap(address: *mut std::ffi::c_void, length: usize) -> i32;
+}
+
+const REDIRTY_THREADS: usize = 4;
+const REDIRTY_PASSES: usize = 3;
+const REDIRTY_SLOTS: usize = 512;
+const REDIRTY_SLOT_BYTES: usize = 1024;
+const REDIRTY_PREFIX: usize = 256;
+
+fn redirty_bytes(worker: usize, pass: usize, slot: usize) -> [u8; REDIRTY_SLOT_BYTES] {
+    std::array::from_fn(|index| {
+        (worker as u8).wrapping_mul(0x35)
+            ^ (pass as u8).wrapping_mul(0x43)
+            ^ (slot as u8).wrapping_mul(0x1d)
+            ^ (index as u8).wrapping_mul(7)
+    })
+}
+
+fn checked_close(file: File) {
+    // close may have consumed the descriptor even on error; never retry it.
+    assert_eq!(
+        unsafe { close(file.into_raw_fd()) },
+        0,
+        "close failed: {}",
+        std::io::Error::last_os_error()
+    );
+}
+
+fn concurrent_redirty() {
+    const PATH: &str = "/probe/multifd-redirty";
+    let length = REDIRTY_PREFIX + REDIRTY_THREADS * REDIRTY_SLOTS * REDIRTY_SLOT_BYTES;
+    let initial = File::create(PATH).unwrap();
+    initial.set_len(length as u64).unwrap();
+    let inode = initial.metadata().unwrap().ino();
+    checked_close(initial);
+    let barrier = Arc::new(Barrier::new(REDIRTY_THREADS));
+    let active = Arc::new(AtomicUsize::new(0));
+    let reopens_with_peer = Arc::new(AtomicUsize::new(0));
+    let mut threads = Vec::new();
+    for worker in 0..REDIRTY_THREADS {
+        let barrier = barrier.clone();
+        let active = active.clone();
+        let reopens_with_peer = reopens_with_peer.clone();
+        threads.push(std::thread::spawn(move || {
+            let open = || {
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(PATH)
+                    .unwrap()
+            };
+            let mut file = open();
+            assert_eq!(file.metadata().unwrap().ino(), inode);
+            active.fetch_add(1, Ordering::SeqCst);
+            let mut reopens = 0;
+            for pass in 0..REDIRTY_PASSES {
+                barrier.wait();
+                for slot in 0..REDIRTY_SLOTS {
+                    // Bytes never overlap between workers. Their 1-KiB slots
+                    // share 4-KiB pages; the 256-byte prefix also makes every
+                    // fourth slot straddle a page boundary. Each pass dirties
+                    // these same pages again, without a per-pass fsync.
+                    let offset =
+                        REDIRTY_PREFIX + (slot * REDIRTY_THREADS + worker) * REDIRTY_SLOT_BYTES;
+                    assert_eq!(
+                        file.write_at(&redirty_bytes(worker, pass, slot), offset as u64)
+                            .unwrap(),
+                        REDIRTY_SLOT_BYTES,
+                        "short concurrent pwrite"
+                    );
+                    if (slot + worker * 11 + 1) % 53 == 0 {
+                        if active.load(Ordering::SeqCst) > 1 {
+                            reopens_with_peer.fetch_add(1, Ordering::SeqCst);
+                        }
+                        checked_close(file);
+                        file = open();
+                        reopens += 1;
+                    }
+                    if (slot + worker * 29 + 1) % 127 == 0 {
+                        // Let the 10-ms submit timer run while all writers are
+                        // still live. This is a lifecycle oracle, not timing.
+                        std::thread::sleep(Duration::from_millis(15));
+                    }
+                }
+            }
+            checked_close(file);
+            active.fetch_sub(1, Ordering::SeqCst);
+            reopens
+        }));
+    }
+    let reopens: usize = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .sum();
+    assert_eq!(active.load(Ordering::SeqCst), 0);
+    assert!(reopens_with_peer.load(Ordering::SeqCst) > 0);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(PATH)
+        .unwrap();
+    file.sync_all().unwrap();
+    assert_eq!(
+        unsafe { syncfs(file.as_raw_fd()) },
+        0,
+        "concurrent syncfs failed: {}",
+        std::io::Error::last_os_error()
+    );
+    checked_close(file);
+    let mut expected = vec![0; length];
+    for slot in 0..REDIRTY_SLOTS {
+        for worker in 0..REDIRTY_THREADS {
+            let offset = REDIRTY_PREFIX + (slot * REDIRTY_THREADS + worker) * REDIRTY_SLOT_BYTES;
+            expected[offset..offset + REDIRTY_SLOT_BYTES].copy_from_slice(&redirty_bytes(
+                worker,
+                REDIRTY_PASSES - 1,
+                slot,
+            ));
+        }
+    }
+    assert_eq!(
+        fs::read(PATH).unwrap(),
+        expected,
+        "concurrent redirty lost bytes"
+    );
+    println!("GUEST_WRITEBACK_MULTI_FD_PASS threads={REDIRTY_THREADS} passes={REDIRTY_PASSES} reopens={reopens} bytes={length}");
 }
 
 fn main() {
@@ -97,6 +237,39 @@ fn main() {
         println!("GUEST_WRITEBACK_ERROR_ARMED");
         return;
     }
+    for index in 0..8 {
+        let path = format!("/probe/closed-unlinked-{index}");
+        fs::write(&path, b"pending metadata").unwrap();
+        if index % 2 == 0 {
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        fs::remove_file(&path).unwrap();
+        let directory = File::open("/probe").unwrap();
+        assert_eq!(
+            unsafe { syncfs(directory.as_raw_fd()) },
+            0,
+            "closed/unlinked metadata was not synchronized: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    fs::write("/probe/closed-victim", b"victim").unwrap();
+    fs::write("/probe/closed-source", b"replacement").unwrap();
+    std::thread::sleep(Duration::from_millis(40));
+    fs::rename("/probe/closed-source", "/probe/closed-victim").unwrap();
+    let directory = File::open("/probe").unwrap();
+    assert_eq!(
+        unsafe { syncfs(directory.as_raw_fd()) },
+        0,
+        "closed rename victim metadata was not synchronized: {}",
+        std::io::Error::last_os_error()
+    );
+    assert_eq!(fs::read("/probe/closed-victim").unwrap(), b"replacement");
+    if let Ok(budget) = fs::read_to_string("/sys/module/fuse/parameters/pvisor_wb_budget_bytes") {
+        let budget: u64 = budget.trim().parse().unwrap();
+        assert!((16 << 20..=256 << 20).contains(&budget));
+        println!("WB_PRESSURE_TARGET_VERIFIED bytes={budget}");
+    }
+    println!("GUEST_WRITEBACK_DETACHED_PASS");
     fs::write("/batch-share/closed-before-unmount", b"drained").unwrap();
     assert_eq!(unsafe { umount(c"/batch-share".as_ptr()) }, 0);
     fs::create_dir("/control").unwrap();
@@ -158,12 +331,53 @@ fn main() {
     file.write_all(b"x").unwrap();
     file.sync_all().unwrap();
     assert_eq!(fs::read("/probe/truncate").unwrap(), b"DxD");
-    // More than the pending-byte high-water mark, with a live fd for fsync.
+    // One write exceeds the RAM/8 pressure target in the 512 MiB guest.
     let mut file = File::create("/probe/pressure").unwrap();
-    file.write_all(&vec![0x5a; 32 << 20]).unwrap();
+    file.write_all(&vec![0x5a; 128 << 20]).unwrap();
     file.sync_all().unwrap();
     assert_eq!(unsafe { syncfs(file.as_raw_fd()) }, 0);
     drop(file);
+    // Repeated writes of the same page must not consume a cumulative-byte budget.
+    let mut overwritten = File::create("/probe/overwritten").unwrap();
+    for index in 0..16384 {
+        overwritten.seek(SeekFrom::Start(0)).unwrap();
+        overwritten.write_all(&[index as u8; 4096]).unwrap();
+    }
+    overwritten.sync_all().unwrap();
+    assert_eq!(fs::read("/probe/overwritten").unwrap(), vec![255; 4096]);
+    let mut synchronous = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .custom_flags(0x101000)
+        .open("/probe/synchronous")
+        .unwrap(); // Linux O_SYNC
+    synchronous.write_all(&[0x73; 8192]).unwrap();
+    drop(synchronous);
+    let mapped = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open("/probe/mapped")
+        .unwrap();
+    let length = 8 << 20;
+    mapped.set_len(length as u64).unwrap();
+    let address = unsafe { mmap(std::ptr::null_mut(), length, 3, 1, mapped.as_raw_fd(), 0) }; // shared R/W
+    assert_ne!(
+        address as isize,
+        -1,
+        "mmap failed: {}",
+        std::io::Error::last_os_error()
+    );
+    unsafe {
+        std::ptr::write_bytes(address.cast::<u8>(), 0x6b, length);
+    }
+    assert_eq!(unsafe { msync(address, length, 4) }, 0); // MS_SYNC
+    mapped.sync_all().unwrap();
+    assert_eq!(unsafe { munmap(address, length) }, 0);
+    assert_eq!(fs::read("/probe/mapped").unwrap(), vec![0x6b; length]);
+    concurrent_redirty();
     // PID 1's final barrier must drain this last short commit before reporting success.
     fs::write("/probe/final", b"final").unwrap();
     println!("GUEST_WRITEBACK_PAYLOAD_PASS");

@@ -16,8 +16,8 @@
     "Measured scope": "Original metrics and sources retained; no matching new measurements"
   },
   "[filesystem](filesystem.md)": {
-    "Data status": "Fully rerun",
-    "Measured scope": "Eight-backend seven-tool phases and launch through exit; native whole-command probes are separate"
+    "Data status": "Partially rerun",
+    "Measured scope": "Nine modes including Docker, Firecracker, QEMU q35/microvm; 12 mechanisms, four resource anchors, three tasks; Ready excludes exit; N3 fresh environments with three resident rounds"
   },
   "Overview": {
     "Data status": "Historical data",
@@ -28,8 +28,8 @@
     "Measured scope": "Original metrics and sources retained; no matching new measurements"
   },
   "[lazy-image-startup](lazy-image-startup.md)": {
-    "Data status": "Historical data",
-    "Measured scope": "Original metrics and sources retained; no matching new measurements"
+    "Data status": "Partially rerun",
+    "Measured scope": "Same host staged executor, four-file lazy loading; N30 cold/warm including fetch and mount; VM application startup retains separate historical data"
   },
   "[methodology](methodology.md)": {
     "Data status": "Historical data",

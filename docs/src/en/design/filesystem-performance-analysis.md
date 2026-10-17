@@ -2,6 +2,10 @@
 
 ## Current conclusions and measurement coverage {#filesystem-status}
 
+The [filesystem I/O curves](filesystem-io-performance-analysis.md) compare request size, concurrency, synchronization, capacity and reuse working sets. Independent N30 and ordinary-CLI comparisons do not support enabling host-owned asynchronous batching by default; request counts distinguish backing coalescing from FUSE WRITE reduction.
+
+The 2026-10-17 [guest-kernel writeback followup](filesystem-io-performance-analysis.md#guest-writeback) fixes object lifetime for closed unlink/rename followed by syncfs, and verifies cross-batch progress with delayed backing. Historical statements below that ENOENT remains unresolved describe their own frozen versions; their timings, failures, and conclusions remain intact. The SDK fix does not establish a new ordinary-CLI WB=1 performance result.
+
 [Scoped automatic read-only FLUSH requests in ordinary CLI execution](#cli-auto-flush) reduce the three-round seven-tool total by 7.26%, 95% CI [2.25%, 15.51%], with authenticated prepared rootfs/workspace and improvement in all five pairs. All rg rounds improve by approximately 16%–17%; Ready and npm show no detected difference. Eligible Linux x86_64 fresh native execution requests the feature when the host variable is absent; explicit 0, older peers and ineligible fds preserve the original FLUSH. DATA, NE, WB and DAX are not automatically enabled.
 
 [The ordinary-CLI standard negative-entry comparison](#cli-negative-entry-cache), with DATA 0/FLUSH 1 fixed, did not establish an aggregate benefit: a 1.73% three-round seven-tool reduction, 95% CI [-3.45%, 5.26%]. Third-round npm improved 12.27%, while hot_open slowed 2.50%. Query reductions are verified; NE remains disabled by default.
@@ -26,7 +30,7 @@ The [exclusive-upper physical-absence cache](#exclusive-upper-absence-cache) red
 
 [The rejected attribute-TTL candidate and page-cache isolation diagnostics](#attribute-ttl-coherence) establish new stale hardlink nlink from the removed candidate, with no formal performance samples, and an existing lower/upper page-cache isolation gap.
 
-The 2026-10-16 [Ready and three-resident-round comparison](../benchmarks/filesystem.md#quick-results) has five independent environments for each of nine configurations, three rounds per environment, 45 successful environments and no interference gate. Startup uses Ready only; resident operation clocks exclude exit. It remains independent of the historical N30 and engineering A/B below.
+The 2026-10-16 [Ready and three-resident-round comparison](../benchmarks/filesystem-resident.csv) has five independent environments for each of nine configurations, three rounds per environment, 45 successful environments and no interference gate. Startup uses Ready only; resident operation clocks exclude exit. It remains independent of the historical N30 and engineering A/B below.
 
 The [four-arm owned-input engineering comparison](#owned-input-cache) supports resident-tool gains from rootfs cache eligibility: the third-round seven-tool sum falls by 25.80%, or 19.83% with the workspace snapshot also enabled. Workspace treatment alone has no detected difference in the third-round sum. Its engineering entry omits the CLI Host service; these results leave ordinary CLI user tables unchanged.
 

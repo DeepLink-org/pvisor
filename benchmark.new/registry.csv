@@ -1,9 +1,13 @@
 benchmark_id,role,entry,status
 B-LAZY-STARTUP,user-facing,startup/lazy_startup.json,requires-single-condition-command
+B-LAZY-STARTUP,user-facing,startup/image_compare.json,explicit-python-paired-prepared-images
+B-LAZY-STARTUP,user-facing,startup/image_lazy_compare.json,explicit-python-paired-cold-warm-images
+B-LAZY-STARTUP,user-facing,startup/stage_lazy_compare.json,explicit-python-paired-same-staged-executor
 B-STARTUP-ENG,engineering A/B,startup/guest_init.json,requires-single-condition-command
 B-KERNEL-ENG,engineering A/B,startup/kernel.json,requires-single-condition-command
 B-STARTUP-DIAG,diagnostic,startup/diagnostic.json,requires-single-condition-command
 B-FS-TOOLS,user-facing,filesystem/tools.json,prepared-python-filesystem
+B-FS-TOOLS,user-facing,filesystem/user_workloads.json,explicit-python-layered-nine-mode-cross-runtime
 B-FS-ENG,engineering A/B,filesystem/ab.json,requires-single-condition-command
 B-FS-ENG,engineering A/B,filesystem/dax_ab.json,explicit-python-paired-dax
 B-FS-DIAG,diagnostic,filesystem/diagnostic.json,requires-single-condition-command

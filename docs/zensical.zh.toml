@@ -156,6 +156,7 @@ nav = [
     ] },
     { "文件系统子系统" = [
       { "文件架构、请求与暂存" = "design/overlayfs.md" },
+      { "缓存与异步写入性能曲线" = "design/filesystem-io-performance-analysis.md" },
       { "共享镜像缓存 v1：独立元数据与共享内容" = "design/shared-image-cache-storage.md" },
       { "Lazy Image V2：目录局部化打包与按需索引" = "design/lazy-image-v2.md" },
     ] },

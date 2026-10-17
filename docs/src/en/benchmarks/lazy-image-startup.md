@@ -1,47 +1,65 @@
-# How much startup waiting can on-demand image reads save for shell and NumPy tasks?
+# How much waiting can lazy images save for startup and file loading?
 
-## Conclusions {#conclusions}
+## Main conclusions {#conclusions}
 
-**With Linux/KVM, prepared local image services and warm host page caches, pVisor lazy VM reaches checked output at cold-client P50 186.1 ms for Ubuntu shell and 778.0 ms for a small NumPy script. Both same-cohort Docker comparisons support shorter cold-client median waits; warm-client Docker is faster.**
+**pVisor reads image files on demand, reducing environment preparation time for short tasks.**
 
-| Need | Selection implication |
-|---|---|
-| Uncached image, short shell or NumPy task | On-demand reads reduce content downloads and cold-client median waiting under these conditions |
-| Complete image already cached locally | Docker produces checked output sooner; lazy VM still incurs VM/Job startup and teardown |
-| First deployment of the image service | Budget upstream download, unpack and indexing separately; cached preparation does not measure these costs |
+- **Download on demand.** Tasks can start before the complete image is downloaded. Cold clients fetched less data in the shell and NumPy experiments.
+- **Reach results sooner.** Both short-task experiments showed shorter median waits from launch to checked output with cold client caches.
+- **Reuse downloaded files.** Warm clients use cached content. The experiments required no repeat downloads of file content.
 
-<!-- measurement-status:start -->
+These results come from local experiments with prepared image services. Cache hits still leave mounting and executor startup costs; with the complete image cached, Docker had shorter waits in the application-startup experiments.
 
-The numbers and conclusions on this page still belong to the original historical cohorts. The new framework has no matching rerun yet; see [measurement coverage](index.md#measurement-coverage).
+## Motivation: why use lazy images? {#motivation}
 
-<!-- measurement-status:end -->
-
-## Motivation {#motivation}
-
-Downloading and unpacking a complete image can cost more than a short task in a disposable environment. Choosing on-demand reads requires distinguishing service preparation from client startup and checking whether the advantage persists after caching.
+Agents frequently create disposable environments, and short tasks often read only part of an image. pVisor fetches files as they are accessed, preparing the environment as the task progresses. Evaluating lazy images means measuring downloads and waiting on first use, along with startup overhead when cached content is reused.
 
 ## Experiment design {#interpretation}
 
-`B-LAZY-STARTUP`, Linux x86_64/KVM, Fedora kernel 7.2.8-200.fc44.x86_64, Docker 29.7.2 with overlayfs/containerd image store. Both paths use the same pinned amd64 manifest per workload: Ubuntu 26.04 shell; Python 3.13.14 / NumPy 2.5.2 from `amancevice/pandas` (pandas is not imported). Docker pulls complete compressed blobs from a fresh Distribution registry; pVisor uses real `pvisor-cache serve` with client binary index pages, upstream pooling and the persistent private bridge enabled. Static release artifacts and embedded firmware match retained fresh-build evidence.
+### What is compared? {#evidence}
 
-Shell verifies `/etc/os-release` before its unique marker. NumPy uses `-B -u`, `PYTHONHASHSEED=0` and one thread per numerical library, checks versions, verifies square sum 1240 and matrix-product sum 3680 for an int64 4×4 array, then prints its marker. Every launch must exit 0. **Ready** ends at checked output; **Completion** includes exit and output-stream closure.
+Two experiments measure short-task startup and few-file reads separately. Startup uses Docker's complete pull as the reference; file reads use the same execution environment, with [TurboOCI][ref-turbooci] / [OverlayBD][ref-overlaybd] as the reference.
 
-Each workload is an independent 30-round cohort, with randomized Docker/lazy order, cold immediately followed by warm, and a new container/VM/workspace/stage each launch. One initial round and three warmups are excluded. Cold Docker must fetch all blobs; cold lazy uses a fresh client cache; warm reuses the corresponding cache and must transfer no content. Any correctness, accounting or teardown failure invalidates the campaign; valid slow samples are retained. Sampling runs without concurrent tests or builds.
+### File-read comparison {#stage-file-design}
 
-| Control | Configuration and scope |
-|---|---|
-| Workload budget | CPUs 0/1; Docker two-core quota and 2 GiB hard limit with no extra swap; VM 2 vCPU and 2 GiB guest RAM, differing from an enclosing process-tree limit |
-| Services | Registry/cache CPUs 2/3; daemon/containerd and proxies are not fully constrained to an equal whole-system budget |
-| Network/cache | Local loopback, HTTPS registry versus authenticated unencrypted TCP cache; no RTT/bandwidth injection; warm services and host page cache |
-| Isolation/validation | Private user/mount/PID namespace and pivot_root preserve the existing listener; output, Run Bundle, frozen bytes, cold/warm accounting and namespace teardown checked |
+On the same Linux machine, the same program reads and verifies four files from the same Ubuntu 26.04 image, comparing pVisor with OverlayBD. Both use the same execution environment, changing only image loading; each trial remounts the image and creates a working directory. This represents tasks that access few files, without running programs inside the image.
 
-Registry preparation publishes validated retained **original compressed OCI blobs**; the cache service receives a copied supported store and performs cached Prepare. No upstream pull/unpack/index time is measured. Host trees are bound read/write; these checks do not establish complete host integrity. WAN, concurrency, full distribution boot, large computation, equal whole-system budgets and pure VMM/lazy-algorithm contributions remain unmeasured. Separate workload and historical cohorts are not pooled or used for implementation speedup claims.
+The task uses two fixed CPUs and image services use two other CPUs; service memory is not constrained to an equal total limit.
 
-## Data and analysis {#results}
+### Short-task startup comparison {#vm-design}
 
-### Ubuntu shell client startup waiting {#startup}
+Run an Ubuntu shell and a Python script performing NumPy array calculations, covering a lightweight command and a short task that loads dependencies. Each task fixes the same image, command and output checks across paths: Docker pulls the complete image, while pVisor reads on demand and runs in a VM. Every trial creates a new container or VM; the two workloads are analyzed separately.
 
-Measured 2026-10-10; n=30 per cell, 120 formal samples, zero formal failures or speed exclusions. Units ms. Unsplit distributions report P50; separated distributions report cluster medians and proportions. P95 is reference-only; cluster causes are undetermined.
+Both tasks use two CPUs. Docker has a 2 GiB memory limit, pVisor has 2 GiB guest RAM, and image services use two other CPUs. Container and VM limits cover different resource scopes, and background services are not covered by an equal whole-system limit; results describe each complete usage path.
+
+### Measurement method {#measurement}
+
+- **Cache and network:** Image services are prepared beforehand and accessed through local connections, retaining host page caches. Cold clients start with empty image caches; warm clients reuse previously fetched content. Both create a new execution environment.
+- **Sampling:** 3 warmup rounds precede 30 paired rounds with randomized path order; each path has a cold trial followed by a warm trial. Preflight and warmup trials are excluded, and all valid slow samples are retained. Predefined background interference invalidates the entire file-read cohort.
+- **Timing:** The primary metric, Ready, runs from launch to checked output, excluding exit and cleanup. Supplementary Completion runs through normal process exit and output-stream closure; the file-read comparison also includes unmount cleanup. Fetching, mounting and execution are timed; service preparation and cache reset are excluded. Response bytes are counted through Completion.
+- **Validation:** Check file content or calculation results, execution records, actual mounts and resource cleanup. Cold clients must fetch content, and warm clients must not fetch it again. An execution, validation or cleanup failure invalidates the cohort; failures are never counted as zero time.
+
+Results apply to local short tasks with prepared services. Initial service preparation, public networks, large-scale concurrency and bulk file I/O require separate measurements; file-read results also cannot substitute for application startup inside an image. See [downloads and sources](#run) for full environments, cache reset procedures and reproduction steps.
+
+## Experimental data and analysis {#results}
+
+### On-demand fetching and short-task startup {#application-comparison}
+
+Shell and NumPy were measured in independent cohorts on 2026-10-10, with n=30 per condition and Docker's complete pull as the reference. Waiting differences are differences in median Ready; fetch reductions use total application response bodies through Completion.
+
+| Task | Cold cache: less waiting with pVisor (ms) | Cold cache: less data fetched with pVisor | Warm cache: more waiting with pVisor (ms) |
+|---|---:|---:|---:|
+| Shell | 575.0 | 91.2% | 60.9 |
+| NumPy | 396.6 | 65.4% | 339.2 |
+
+Cold clients fetch files on demand, with smaller response payloads and shorter median waits for both tasks. Docker starts faster when the complete image is cached. Lazy-loading benefits depend on how much content a task reads and whether that content is already local.
+
+<details markdown="1">
+<summary>Startup distributions, confidence intervals and complete fetch statistics</summary>
+
+#### Ubuntu shell client startup waiting {#startup}
+
+Measured 2026-10-10; n=30 per cell, 120 formal samples, zero formal failures or speed exclusions. Units ms. Unsplit distributions report P50; separated distributions report cluster medians and sample proportions. P95 is reference-only; cluster causes are undetermined.
 
 | Path / cache | Ready: P50 or cluster medians (proportions) | Ready P95 | Completion: P50 or cluster medians (proportions) | Completion P95 |
 |---|---:|---:|---:|---:|
@@ -50,11 +68,16 @@ Measured 2026-10-10; n=30 per cell, 120 formal samples, zero formal failures or 
 | Docker warm | 85.0 (24/30); 212.6 (6/30) | 225.5 | 113.6 (22/30); 280.3 (8/30) | 317.2 |
 | pVisor lazy warm | 151.0 | 184.2 | 267.3 | 310.0 |
 
-Docker minus lazy **marginal median Ready differences**, with 5,000 paired-round bootstrap resamples: Cold: **575.0 ms**, 95% CI **[384.5, 841.3] ms**; Warm: **-60.9 ms**, 95% CI **[-68.3, -30.4] ms**. These intervals describe overall medians, not individual cluster centers or every launch.
+With 5,000 paired-round bootstrap resamples, report **Docker minus lazy marginal median Ready differences**; n=30 pairs, units ms. The intervals describe overall medians, not individual cluster centers or every launch.
 
-### Small Python/NumPy script {#numpy}
+| Client cache | Median Ready difference (ms) | Paired 95% CI (ms) |
+|---|---:|---:|
+| Cold | 575.0 | [384.5, 841.3] |
+| Warm | -60.9 | [-68.3, -30.4] |
 
-Independent cohort, also measured 2026-10-10, n=30 per cell / 120 formal samples, no failures or speed exclusions; ms and the same distribution rules.
+#### Small Python/NumPy script {#numpy}
+
+Independent cohort, also measured 2026-10-10, n=30 per cell, 120 formal samples, no failures or speed exclusions; units ms and the same distribution rules.
 
 | Path / cache | Ready: P50 or cluster medians (proportions) | Ready P95 | Completion: P50 or cluster medians (proportions) | Completion P95 |
 |---|---:|---:|---:|---:|
@@ -63,41 +86,130 @@ Independent cohort, also measured 2026-10-10, n=30 per cell / 120 formal samples
 | Docker warm | 120.7 (24/30); 196.6 (6/30) | 211.5 | 161.9 (24/30); 271.1 (6/30) | 276.7 |
 | pVisor lazy warm | 462.2 | 521.3 | 606.8 | 677.0 |
 
-Docker minus lazy marginal median Ready differences: Cold: **396.6 ms**, 95% CI **[231.7, 1,055.3] ms**; Warm: **-339.2 ms**, 95% CI **[-345.9, -332.4] ms**. Cold waiting favors lazy under this configuration; warm waiting favors Docker. Lazy cold Ready ranges from 682.8 to 2,397.3 ms, so a smaller median does not promise a shorter wait on every launch. Completion also includes Job teardown costs.
+Again report Docker minus lazy marginal median Ready differences, with n=30 pairs and 5,000 paired bootstrap resamples; units ms.
 
-### Client payloads {#transfer}
-
-Bytes through Completion, n=30 per cell; all counts within each cell are identical.
-
-| Workload / path / cache | File content or OCI blobs | Binary Metadata Data | Total responses |
-|---|---:|---:|---:|
-| Shell / docker / cold | 41,842,292 | 0 | 41,843,684 |
-| Shell / docker / warm | 0 | 0 | 0 |
-| Shell / lazy / cold | 2,580,417 | 1,117,945 | 3,702,376 |
-| Shell / lazy / warm | 0 | 0 | 641 |
-| NumPy / docker / cold | 115,930,809 | 0 | 115,932,435 |
-| NumPy / docker / warm | 0 | 0 | 0 |
-| NumPy / lazy / cold | 36,957,665 | 3,085,982 | 40,072,915 |
-| NumPy / lazy / warm | 0 | 0 | 816 |
-
-Docker content counts compressed layers and config; lazy content counts uncompressed Read Data. Binary index pages are counted separately as Metadata Data and included in total responses. Thus fewer file-content bytes do not specify total wire savings. Docker responses exclude HTTP headers/TLS; both paths exclude TCP/IP overhead. Warm lazy still performs Prepare/Ping.
-
-### Cached service preparation {#preparation}
-
-Seconds, n=1 per operation; excluded from client timers. Registry publication excludes the preceding validation/archive step; all preparation phases remain in retained evidence.
-
-| Cached preparation operation | Shell | NumPy |
+| Client cache | Median Ready difference (ms) | Paired 95% CI (ms) |
 |---|---:|---:|
-| Store copy | 5.503 | 3.562 |
+| Cold | 396.6 | [231.7, 1,055.3] |
+| Warm | -339.2 | [-345.9, -332.4] |
+
+Under these configurations, cold-client median waiting favors lazy loading and warm-client waiting favors Docker. NumPy imports require more files, increasing fetching on the lazy path; Completion also includes Job teardown costs. A smaller median does not promise a shorter wait on every launch.
+
+#### Client payloads {#transfer}
+
+Units bytes, counted through Completion, n=30 per cell; all counts within each cell are identical.
+
+| Workload / path / cache | File content or OCI blobs | Binary Metadata Data | Total responses | Reduction from cold Docker for the same workload |
+|---|---:|---:|---:|---:|
+| Shell / docker / cold | 41,842,292 | 0 | 41,843,684 | Baseline |
+| Shell / docker / warm | 0 | 0 | 0 | — |
+| Shell / lazy / cold | 2,580,417 | 1,117,945 | 3,702,376 | 91.2% |
+| Shell / lazy / warm | 0 | 0 | 641 | — |
+| NumPy / docker / cold | 115,930,809 | 0 | 115,932,435 | Baseline |
+| NumPy / docker / warm | 0 | 0 | 0 | — |
+| NumPy / lazy / cold | 36,957,665 | 3,085,982 | 40,072,915 | 65.4% |
+| NumPy / lazy / warm | 0 | 0 | 816 | — |
+
+Reduction is `1 − lazy total responses / Docker total responses`, comparing only cold clients for the same workload. Docker content counts compressed layers and config; lazy content counts uncompressed Read Data. Binary index pages are counted separately as Metadata Data and included in total responses; this column measures application response bodies rather than total wire traffic. Docker responses exclude HTTP headers/TLS; both paths exclude TCP/IP overhead. Warm lazy still performs Prepare/Ping.
+
+</details>
+
+### On-demand reads and cache reuse {#stage-comparison}
+
+Measured 2026-10-17, n=30 per condition; all 120 formal executions and 12 warmups passed validation, with zero failures or exclusions. This experiment reads and verifies only four files, and is analyzed separately from the application-startup cohorts.
+
+| Client cache | pVisor Ready P50 (ms) | OverlayBD Ready P50 (ms) | Less waiting with pVisor |
+|---|---:|---:|---:|
+| Cold | 78.15 | 233.29 | 66.5% |
+| Warm | 52.15 | 161.19 | 67.6% |
+
+pVisor completes the four-file check in a median 78.15 ms cold and 52.15 ms warm. Warm clients reuse file content on both paths. Timing includes opening the image, mounting and execution, so the differences reflect the complete loading implementations.
+
+<details markdown="1">
+<summary>Complete file-read times, confidence intervals and fetch statistics</summary>
+
+Measured 2026-10-17, n=30 per cell; all 120 formal executions and 12 warmups passed independent audit, with zero failures or exclusions. Units ms; all distributions are unsplit and report P50. Different dates and application-startup cohorts are analyzed separately.
+
+| File-loading path / client cache | Ready P50 (ms) | Completion P50 (ms) |
+|---|---:|---:|
+| pVisor host FUSE / cold | 78.15 | 99.97 |
+| OverlayBD ext4 / cold | 233.29 | 384.27 |
+| pVisor host FUSE / warm | 52.15 | 83.62 |
+| OverlayBD ext4 / warm | 161.19 | 296.69 |
+
+With 5,000 paired-round bootstrap resamples, median differences are **pVisor minus OverlayBD**, so negative values mean less waiting with pVisor. Waiting reduction is `1 − pVisor P50 / OverlayBD P50`, calculated from unrounded statistics within the same cohort. Each cell has n=30; differences are in ms and reductions in %. All four difference intervals exclude zero.
+
+| Client cache | Metric | Median difference and 95% CI (ms) | Waiting reduction and 95% CI (%) |
+|---|---|---:|---:|
+| Cold | Ready | -155.14 [-171.64, -145.16] | 66.5 [63.2, 68.8] |
+| Warm | Ready | -109.04 [-116.76, -103.18] | 67.6 [66.1, 69.0] |
+| Cold | Completion | -284.29 [-299.20, -268.76] | 74.0 [71.8, 75.0] |
+| Warm | Completion | -213.08 [-234.06, -202.03] | 71.8 [70.4, 77.8] |
+
+Application responses observed after completion are below, in bytes, n=30 per cell, reporting P50. Cold OverlayBD content varies with the ranges actually fetched.
+
+| File-loading path / client cache | Content payload P50 (B) | Metadata payload P50 (B) | Total responses P50 (B) |
+|---|---:|---:|---:|
+| pVisor host FUSE / cold | 2,575,738 | 921,337 | 3,500,548 |
+| OverlayBD ext4 / cold | 4,292,610 | 1,502,328 | 5,794,938 |
+| pVisor host FUSE / warm | 0 | 0 | 619 |
+| OverlayBD ext4 / warm | 0 | 0 | 0 |
+
+For a few-file read under these conditions, pVisor's file-level path reduces both waiting and content fetching. Warm clients on both paths avoid downloading file content again, while opening, mounting and stage execution costs remain. pVisor content counts uncompressed `Read Data`; OverlayBD content counts Range responses from original compressed OCI layers. Total responses count cache frames and data or registry response bodies, respectively. Both exclude TCP/IP overhead, and registry counts also exclude HTTP headers. These counters are not wire-traffic measurements or estimates of transfer at Ready.
+
+</details>
+
+### Service-side cache preparation {#preparation}
+
+Units s, n=1 per operation, all excluded from client timers. Registry publication excludes the preceding validation/archive step; complete preparation phases remain in retained evidence.
+
+| Cache preparation operation | Shell | NumPy |
+|---|---:|---:|
+| Cache store copy | 5.503 | 3.562 |
 | Original OCI blobs → registry | 0.501 | 0.301 |
 | Cached cache-service Prepare | 2.385 | 0.002 |
 
-These are local cached preparation costs. Initial upstream download, unpack and indexing remain unmeasured for these artifacts; historical first-pull observations use different artifacts and are not substituted here.
+These are local cached preparation costs. Initial upstream download, unpacking and indexing remain unmeasured for these artifacts; historical first-pull observations use different artifacts and are not substituted here.
+
+<details markdown="1">
+<summary>Comparison scope for the upstream performance table</summary>
+
+### Relation to the upstream performance table {#upstream-comparison}
+
+The [official TurboOCI performance table][ref-turbooci-performance] times image pull through service availability, using `rpull` for lazy paths. The stage workload here verifies four files read-only; shell and NumPy application startup use separate experiments. The upstream services, images and environment differ from these conditions. Their seconds are not divided by local milliseconds to calculate speedups; all tables here use their explicitly identified pVisor experiment cohorts.
+
+</details>
 
 ### Downloads and sources {#run}
+
+<details markdown="1">
+<summary>Statistics downloads, sources and reproduction methods</summary>
+
+<!-- measurement-status:start -->
+
+The same-stage file-loading comparison has completed measurement through the new framework; the VM / Docker shell and NumPy data retain their independent historical cohorts. See [measurement coverage](index.md#measurement-coverage).
+
+<!-- measurement-status:end -->
+
+[Stage statistics CSV](lazy-stage-summary.csv) · [Stage paired differences CSV](lazy-stage-comparisons.csv) · [Stage provenance summary](../assets/benchmarks/lazy-stage.provenance.json) · [Stage reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md#stage-lazy)
+
+Stage raw evidence stays in `benchmark.new/startup/.data/overlaybd-lab-20261017/stage-lazy-20261017-a/`. The independent audit recomputes raw clocks and rechecks file validation, mount and device identities, Run Bundles, per-request bytes, 33 rounds of background observations and cleanup, and verifies the semspec export. Binary, runtime-library and frozen-harness hashes are retained; their exact correspondence to a source build is unverified. Only processed statistics and compact provenance are published; raw samples and full inventories stay in local evidence.
 
 [Shell statistics CSV](lazy-startup-summary.csv) · [Shell differences/preparation CSV](lazy-startup-details.csv) · [Shell provenance CSV](lazy-startup-provenance.csv)
 
 [NumPy statistics CSV](lazy-numpy-summary.csv) · [NumPy differences/preparation CSV](lazy-numpy-details.csv) · [NumPy provenance CSV](lazy-numpy-provenance.csv) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#current-implementation-dockerlazy-comparison)
 
-Raw evidence stays in `benchmark/pvisor/.data/lazy-shell-current-formal-20261010/` and `lazy-numpy-current-formal-20261010-2/`; each `derive.py` rechecks all 136 launches, frozen inputs, retained OCI digests and teardown receipts before regenerating CSVs. Build evidence is in `.data/lazy-current-build-20261010/`: 1,193 frozen source inputs and measured binary digests match the retained fresh build. This verifies the recorded relationship, without establishing hermetic reproducibility. Failed preflights/campaigns and historical 2026-10-07 cohorts remain separate. These observations are also separate from [prepared-environment startup](startup.md).
+Raw evidence stays in `benchmark/pvisor/.data/lazy-shell-current-formal-20261010/` and `lazy-numpy-current-formal-20261010-2/`; each `derive.py` rechecks all 136 launches, frozen inputs, retained OCI digests and cleanup receipts before regenerating CSVs. Build evidence is in `.data/lazy-current-build-20261010/`: 1,193 frozen source inputs and measured binary digests match the retained fresh build. This verifies the recorded relationship without establishing hermetic reproducibility. Failed preflights/cohorts and historical 2026-10-07 data remain separate. These observations are also separate from [prepared-environment startup](startup.md).
+
+</details>
+
+### References {#references}
+
+1. containerd. [OverlayBD README (v1.0.18)][ref-overlaybd]. Layered block images, the TCMU backend and integration with Accelerated Container Image.
+2. containerd. [Overlaybd — TurboOCIv1][ref-turbooci], including [Performance][ref-turbooci-performance]. Original OCI content, metadata images and upstream timing definitions; repository `main` documentation, accessed 2026-10-17.
+3. Huiba Li et al. [DADI: Block-Level Image Service for Agile and Elastic Application Deployment][ref-dadi]. USENIX ATC 2020, pp. 727–740. Research background for block-level on-demand image services.
+
+[ref-overlaybd]: https://github.com/containerd/overlaybd/blob/v1.0.18/README.md
+[ref-turbooci]: https://github.com/containerd/accelerated-container-image/blob/main/docs/TURBO_OCI.md
+[ref-turbooci-performance]: https://github.com/containerd/accelerated-container-image/blob/main/docs/TURBO_OCI.md#performance
+[ref-dadi]: https://www.usenix.org/conference/atc20/presentation/li-huiba

@@ -41,7 +41,19 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor run --safe \
 
 `PVISOR_STARTUP_TIMING` 默认启用启动阶段日志；设为 `0` 关闭，适合不带日志开销的测量。它只影响诊断输出，不改变任务策略。
 
+`PVISOR_VM_FS_WRITEBACK` 控制 guest 写回：新建 staged VM 会话默认关闭，`1` 显式请求，`0` 关闭；未覆盖的恢复会话保留原协商模式，显式 `0` 拒绝已开启写回的快照。它与下方 host 写缓存互斥。本次新固件/宿主修复的验证范围为 Linux x86_64/KVM，不能据此外推 macOS。
+
+协商 bit 42 的0048固件按实际脏页与临时 FUSE WRITE 页施加背压，不累计 write 字节。每连接/BDI 的软压力目标是内核实际 RAM 的1/8，截在16–256 MiB，最多保留256个句柄 lease；提交与完成使用独立队列。干净页缓存不计入目标，rootfs/workspace独立BDI可各有一份，Linux全局dirty/回收规则继续约束总量。原生BDI另尽力申请16 MiB最低份额，失败有警告，不是固定字节保证。
+
+其上的0049将提前提交提示改为压力目标的1/4，截在1–16 MiB；小量写入仍由10 ms timer推进，协商的单次WRITE上限仍为1 MiB。入队在连接锁外只读近似脏页数，不重复逐folio背压检查，也不调度空pending；实际压力检查、完整性回写前后的两次WRITE屏障和错误传播保留。0049v2还在启动request virtqueue前预分配有界scatterlist元数据，按原VQ锁保护并复用；文件页与每请求argbuf保持原有完成期所有权，其他原子分配仍然存在。
+
+0048历史证据与0049v2新批次分别保留。新固件已通过Linux x86_64/KVM的FULL/ERROR、7项固件合同、五次原压力历史复跑、独立N5曲线及普通CLI的WB0/1对照；正确性收据保留当时50项Python合同，后续CLI合同另有记录。CLI七工具整体与Ready未检出收益，新会话默认仍关闭。范围、逐工作负载结果与来源见[独立实验](../design/filesystem-io-performance-analysis.md#guest-writeback-tuning)。
+
+在 guest 中读取 `/sys/module/fuse/parameters/pvisor_wb_budget_bytes` 可查看生效目标；这是只读诊断参数，不能经 sysfs 或 boot argument 设置。可写close可延迟完成，只读close保留原生FLUSH，fsync/O_SYNC和最终syncfs的错误边界保留。新宿主按FORGET保留unlink/rename覆盖后的upper对象引用或lower逻辑属性；仍有detached/orphan引用时snapshot返回Unsupported，旧快照未知计数的有限节点保守保留到DESTROY。完整Agent IOCP/offload仍未验收。
+
 `PVISOR_VM_FS_HOST_WRITEBACK` 是默认关闭的实验性 host 写缓存：未设置或 `0` 关闭，`1` 启用，其他值拒绝。当前只支持 Linux staged virtio-fs、guest writeback 关闭和 DAX 关闭；每连接 64 MiB payload、1024 个在途项，相邻连续写按最多 1 MiB 或 10 ms 聚合。显式同步与退出仍观察后台错误；完整 Agent IOCP 和自动卸载尚未接通。范围与同步合同见 [EXP-003](../design/experimental/agent-io-completion/index.md#host-write-buffer)。
+
+`PVISOR_VM_FS_HOST_WRITEBACK_CONFIG` 是私有工程调参 JSON：`capacity_mib` 为 4–256、`jobs` 为 1–4096、`batch_kib` 为 4–4096 且不超过容量、`chunks` 为 1–64、`delay_us` 为 0–50000。未设置沿用上述默认参数；未知、重复字段、错误类型和越界值拒绝。`qualification_lock` 和 `synchronous` 用于保留旧资格锁或等待 owned worker 完成的消融；不属于稳定产品设置。曲线和适用范围见[文件系统 I/O 实验](../design/filesystem-io-performance-analysis.md)。
 
 下面两个变量影响 Linux x86_64 musl **构建时**嵌入的 guest 内核：
 

@@ -85,6 +85,24 @@ pub struct Server<F: FileSystem + Sync> {
     options: AtomicU64,
 }
 
+/// Accepted READDIRPLUS entries acquire references before they are serialized.
+/// Until the complete successful reply header is written, the RPC owns those
+/// references: an error discards the whole payload and the guest cannot FORGET
+/// any of them. The filesystem cancels only the current callback's zero/error.
+struct DirectoryReplyLookups<'a, F: FileSystem> {
+    fs: &'a F,
+    ctx: Context,
+    accepted: Vec<u64>,
+}
+
+impl<F: FileSystem> Drop for DirectoryReplyLookups<'_, F> {
+    fn drop(&mut self) {
+        for inode in self.accepted.drain(..) {
+            self.fs.forget(self.ctx, inode.into(), 1);
+        }
+    }
+}
+
 impl<F: FileSystem + Sync> Server<F> {
     pub fn new(fs: F, guest_cache: bool) -> Server<F> {
         Server {
@@ -802,6 +820,22 @@ impl<F: FileSystem + Sync> Server<F> {
         let delayed_write = write_flags & WRITE_CACHE != 0;
         let kill_priv = write_flags & WRITE_KILL_PRIV != 0;
 
+        self.profile.add("write_payload_bytes", u64::from(size));
+        self.profile
+            .add("write_background_requests", u64::from(delayed_write));
+        self.profile.add(
+            match size {
+                0..=1024 => "write_size_le_1024",
+                1025..=4096 => "write_size_le_4096",
+                4097..=16384 => "write_size_le_16384",
+                16385..=65536 => "write_size_le_65536",
+                65537..=131072 => "write_size_le_131072",
+                131073..=1048576 => "write_size_le_1048576",
+                _ => "write_size_gt_1048576",
+            },
+            1,
+        );
+
         let data_reader = ZCReader(r);
 
         match self.fs.write(
@@ -1128,6 +1162,19 @@ impl<F: FileSystem + Sync> Server<F> {
 
         match self.fs.init(capable) {
             Ok(want) => {
+                for label in [
+                    "write_payload_bytes",
+                    "write_background_requests",
+                    "write_size_le_1024",
+                    "write_size_le_4096",
+                    "write_size_le_16384",
+                    "write_size_le_65536",
+                    "write_size_le_131072",
+                    "write_size_le_1048576",
+                    "write_size_gt_1048576",
+                ] {
+                    self.profile.add(label, 0);
+                }
                 let mut enabled = capable & (want | supported);
                 if !enabled.contains(FsOptions::WRITEBACK_CACHE) {
                     enabled.remove(FsOptions::PVISOR_WRITEBACK);
@@ -1223,6 +1270,11 @@ impl<F: FileSystem + Sync> Server<F> {
 
         // Skip over enough bytes for the header.
         let mut cursor = w.split_at(size_of::<OutHeader>()).unwrap();
+        let mut lookups = DirectoryReplyLookups {
+            fs: &self.fs,
+            ctx: Context::from(in_header),
+            accepted: Vec::new(),
+        };
 
         let res = if plus {
             self.fs.readdirplus(
@@ -1231,7 +1283,14 @@ impl<F: FileSystem + Sync> Server<F> {
                 fh.into(),
                 size,
                 offset,
-                |d, e| add_dirent(&mut cursor, size, d, Some(e)),
+                |d, e| {
+                    let inode = e.inode;
+                    let written = add_dirent(&mut cursor, size, d, Some(e))?;
+                    if written != 0 && inode != 0 && inode != ROOT_ID {
+                        lookups.accepted.push(inode);
+                    }
+                    Ok(written)
+                },
             )
         } else {
             self.fs.readdir(
@@ -1256,6 +1315,9 @@ impl<F: FileSystem + Sync> Server<F> {
             };
 
             w.write_all(out.as_slice()).map_err(Error::EncodeMessage)?;
+            // The guest now owns every accepted entry. Header encode failure
+            // above leaves the guard armed, just like an overall FS error.
+            lookups.accepted.clear();
             Ok(out.len as usize)
         }
     }
@@ -1292,9 +1354,14 @@ impl<F: FileSystem + Sync> Server<F> {
             offset,
             size,
         ) {
-            Ok(page) => {
+            Ok(mut page) => {
                 let payload = super::guest_index::encode_page(&page);
                 if w.available_bytes() < size_of::<OutHeader>() + payload.len() {
+                    super::guest_index::cancel_directory_page(
+                        &self.fs,
+                        Context::from(in_header),
+                        &mut page,
+                    );
                     return reply_error(
                         linux_error(io::Error::from_raw_os_error(libc::ENOMEM)),
                         in_header.unique,
@@ -1306,8 +1373,17 @@ impl<F: FileSystem + Sync> Server<F> {
                     error: 0,
                     unique: in_header.unique,
                 };
-                w.write_all(out.as_slice()).map_err(Error::EncodeMessage)?;
-                w.write_all(&payload).map_err(Error::EncodeMessage)?;
+                if let Err(error) = w
+                    .write_all(out.as_slice())
+                    .and_then(|_| w.write_all(&payload))
+                {
+                    super::guest_index::cancel_directory_page(
+                        &self.fs,
+                        Context::from(in_header),
+                        &mut page,
+                    );
+                    return Err(Error::EncodeMessage(error));
+                }
                 Ok(out.len as usize)
             }
             Err(error) => reply_error(error, in_header.unique, w),
@@ -2748,6 +2824,196 @@ mod guest_cache_tests {
                 }
             }
         }
+    }
+
+    struct DirectoryReplyFs {
+        fail_after_first: bool,
+        second_entry: bool,
+        refs: std::sync::Mutex<std::collections::HashMap<u64, u64>>,
+        forgotten: std::sync::Mutex<Vec<u64>>,
+    }
+
+    impl DirectoryReplyFs {
+        fn new(fail_after_first: bool, second_entry: bool) -> Self {
+            Self {
+                fail_after_first,
+                second_entry,
+                refs: Default::default(),
+                forgotten: Default::default(),
+            }
+        }
+    }
+
+    impl FileSystem for DirectoryReplyFs {
+        type Inode = u64;
+        type Handle = u64;
+
+        fn forget(&self, _ctx: Context, inode: u64, count: u64) {
+            let mut refs = self.refs.lock().unwrap();
+            let current = refs.get_mut(&inode).expect("forget of an unowned entry");
+            *current = current.checked_sub(count).expect("entry forgotten twice");
+            self.forgotten.lock().unwrap().push(inode);
+        }
+
+        fn readdirplus<F>(
+            &self,
+            ctx: Context,
+            _inode: u64,
+            _handle: u64,
+            _size: u32,
+            _offset: u64,
+            mut add_entry: F,
+        ) -> io::Result<()>
+        where
+            F: FnMut(DirEntry, Entry) -> io::Result<usize>,
+        {
+            for inode in if self.second_entry {
+                &[11, 22][..]
+            } else {
+                &[11][..]
+            } {
+                *self.refs.lock().unwrap().entry(*inode).or_default() += 1;
+                // SAFETY: stat64 is a scalar POD; only the serialized fixture
+                // attributes are used, with no pointers or ownership.
+                let attr = unsafe { std::mem::zeroed() };
+                let added = add_entry(
+                    DirEntry {
+                        ino: *inode,
+                        offset: *inode,
+                        type_: 8,
+                        name: b"x",
+                    },
+                    Entry {
+                        inode: *inode,
+                        generation: 0,
+                        attr,
+                        attr_flags: 0,
+                        attr_timeout: std::time::Duration::ZERO,
+                        entry_timeout: std::time::Duration::ZERO,
+                    },
+                );
+                match added {
+                    Ok(0) => {
+                        self.forget(ctx, *inode, 1);
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        self.forget(ctx, *inode, 1);
+                        return Err(error);
+                    }
+                    Ok(_) => {}
+                }
+                if self.fail_after_first {
+                    // The next entry's policy/metadata query fails before its
+                    // callback. The entire request will return an error.
+                    return Err(io::Error::from_raw_os_error(libc::EACCES));
+                }
+            }
+            Ok(())
+        }
+
+        fn readdir<F>(
+            &self,
+            _ctx: Context,
+            _inode: u64,
+            _handle: u64,
+            _size: u32,
+            _offset: u64,
+            mut add_entry: F,
+        ) -> io::Result<()>
+        where
+            F: FnMut(DirEntry) -> io::Result<usize>,
+        {
+            add_entry(DirEntry {
+                ino: 11,
+                offset: 1,
+                type_: 8,
+                name: b"x",
+            })?;
+            Err(io::Error::from_raw_os_error(libc::EACCES))
+        }
+    }
+
+    fn one_plus_entry_bytes() -> u32 {
+        (size_of::<EntryOut>() + ((size_of::<Dirent>() + 1 + 7) & !7)) as u32
+    }
+
+    #[test]
+    fn readdirplus_rpc_error_releases_previously_accepted_entries() {
+        let server = Server::new(DirectoryReplyFs::new(true, false), true);
+        let (header, bytes) = request(
+            &server,
+            Opcode::Readdirplus,
+            ReadIn {
+                fh: 1,
+                size: one_plus_entry_bytes(),
+                ..Default::default()
+            }
+            .as_slice(),
+        );
+        assert_eq!(header.error, -libc::EACCES);
+        assert!(bytes.is_empty());
+        assert_eq!(server.fs.refs.lock().unwrap().get(&11), Some(&0));
+        assert_eq!(*server.fs.forgotten.lock().unwrap(), vec![11]);
+    }
+
+    #[test]
+    fn readdirplus_full_buffer_keeps_accepted_reference_and_cancels_current_once() {
+        let server = Server::new(DirectoryReplyFs::new(false, true), true);
+        let size = one_plus_entry_bytes();
+        let (header, bytes) = request(
+            &server,
+            Opcode::Readdirplus,
+            ReadIn {
+                fh: 1,
+                size,
+                ..Default::default()
+            }
+            .as_slice(),
+        );
+        assert_eq!(header.error, 0);
+        assert_eq!(bytes.len(), size as usize);
+        assert_eq!(server.fs.refs.lock().unwrap().get(&11), Some(&1));
+        assert_eq!(server.fs.refs.lock().unwrap().get(&22), Some(&0));
+        assert_eq!(*server.fs.forgotten.lock().unwrap(), vec![22]);
+    }
+
+    #[test]
+    fn uncommitted_directory_reply_releases_each_repeated_lookup() {
+        let fs = DirectoryReplyFs::new(false, false);
+        fs.refs.lock().unwrap().insert(11, 2);
+        {
+            let _reply = DirectoryReplyLookups {
+                fs: &fs,
+                ctx: Context {
+                    uid: 0,
+                    gid: 0,
+                    pid: 0,
+                },
+                accepted: vec![11, 11],
+            };
+            // Drop is also the reply-header encoding-error path: no commit.
+        }
+        assert_eq!(fs.refs.lock().unwrap().get(&11), Some(&0));
+        assert_eq!(*fs.forgotten.lock().unwrap(), vec![11, 11]);
+    }
+
+    #[test]
+    fn readdir_error_does_not_create_lookup_rollback() {
+        let server = Server::new(DirectoryReplyFs::new(true, false), true);
+        let (header, _) = request(
+            &server,
+            Opcode::Readdir,
+            ReadIn {
+                fh: 1,
+                size: 64,
+                ..Default::default()
+            }
+            .as_slice(),
+        );
+        assert_eq!(header.error, -libc::EACCES);
+        assert!(server.fs.forgotten.lock().unwrap().is_empty());
+        assert!(server.fs.refs.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -156,6 +156,7 @@ nav = [
     ] },
     { "Filesystem subsystem" = [
       { "File architecture, requests and staging" = "design/overlayfs.md" },
+      { "Cache and asynchronous-write performance curves" = "design/filesystem-io-performance-analysis.md" },
       { "Shared image cache v1: independent metadata and shared content" = "design/shared-image-cache-storage.md" },
       { "Lazy Image V2: Directory-Local Packing and On-Demand Indexes" = "design/lazy-image-v2.md" },
     ] },

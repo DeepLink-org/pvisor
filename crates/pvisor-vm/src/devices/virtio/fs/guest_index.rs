@@ -28,7 +28,7 @@ pub const GUEST_META_VALID: Duration = Duration::from_secs(24 * 60 * 60);
 const BACKING_COOKIE_BASE: u64 = 1 << 62;
 
 /// One directory page, ready to place after the FUSE output header.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DirectoryPage {
     /// Cookie the guest passes to fetch the following page.
     pub next_offset: u64,
@@ -36,6 +36,33 @@ pub struct DirectoryPage {
     pub complete: bool,
     /// `fuse_direntplus` records, 8-byte aligned, in directory order.
     pub records: Vec<u8>,
+    // One acquired lookup per accepted backing record. This is not wire data:
+    // successful reply publication transfers these references to the guest.
+    lookup_inodes: Vec<u64>,
+}
+
+/// Cancel an unpublished page's backing lookups, exactly once.
+///
+/// Synthetic entries do not acquire backing lookups. A decoded page owns none;
+/// wire node IDs must never become authority to release host references.
+pub(super) fn cancel_directory_page<F: FileSystem>(fs: &F, ctx: Context, page: &mut DirectoryPage) {
+    for inode in page.lookup_inodes.drain(..) {
+        fs.forget(ctx, inode.into(), 1);
+    }
+}
+
+struct PendingLookups<'a, F: FileSystem> {
+    fs: &'a F,
+    ctx: Context,
+    inodes: Vec<u64>,
+}
+
+impl<F: FileSystem> Drop for PendingLookups<'_, F> {
+    fn drop(&mut self) {
+        for inode in self.inodes.drain(..) {
+            self.fs.forget(self.ctx, inode.into(), 1);
+        }
+    }
 }
 
 /// Read one merged directory page from `inode` at `offset`.
@@ -43,7 +70,9 @@ pub struct DirectoryPage {
 /// `max_bytes` is the reply budget including [`ReadIndexOut`]. The filesystem
 /// opens the directory for the duration of the read and closes it before
 /// returning, including when reading entries fails. `readdirplus` publishes
-/// the lookup counts the guest cache consumes.
+/// the lookup counts the guest cache consumes. A successful page still owns
+/// its unpublished lookups: the caller must cancel it if reply publication
+/// fails. A completely published reply transfers the references to the guest.
 pub fn read_directory_page<F: FileSystem>(
     fs: &F,
     ctx: Context,
@@ -66,7 +95,10 @@ pub fn read_directory_page<F: FileSystem>(
     let released = fs.releasedir(ctx, inode.into(), 0, handle.into());
     match (page, released) {
         (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
+        (Ok(mut page), Err(error)) => {
+            cancel_directory_page(fs, ctx, &mut page);
+            Err(error)
+        }
         (Ok(page), Ok(())) => Ok(page),
     }
 }
@@ -86,6 +118,11 @@ fn collect_page<F: FileSystem>(
     let mut stopped = false;
     let mut last_offset = offset;
     let mut wrote = false;
+    let mut lookups = PendingLookups {
+        fs,
+        ctx,
+        inodes: Vec::new(),
+    };
 
     if offset < BACKING_COOKIE_BASE {
         for (name, attrs) in synthetics {
@@ -131,18 +168,29 @@ fn collect_page<F: FileSystem>(
                     .iter()
                     .any(|name| name.as_slice() == entry.name)
                 {
+                    // readdirplus acquired the current lookup before calling
+                    // us, but the synthetic entry replaces it on the wire.
+                    // Report progress so enumeration continues; returning zero
+                    // would make the filesystem cancel the current entry too.
+                    if attrs.inode != 0 {
+                        fs.forget(ctx, attrs.inode.into(), 1);
+                    }
                     return Ok(1);
                 }
                 if entry.offset >= BACKING_COOKIE_BASE {
                     return Err(linux_error(io::Error::from_raw_os_error(libc::EOVERFLOW)));
                 }
                 entry.offset += BACKING_COOKIE_BASE;
+                let inode = attrs.inode;
                 match push_record(&mut records, budget, &entry, attrs, true) {
                     Ok(0) => {
                         stopped = true;
                         Ok(0)
                     }
                     Ok(written) => {
+                        if inode != 0 {
+                            lookups.inodes.push(inode);
+                        }
                         wrote = true;
                         last_offset = entry.offset;
                         Ok(written)
@@ -159,6 +207,7 @@ fn collect_page<F: FileSystem>(
         next_offset: last_offset,
         complete: !stopped,
         records,
+        lookup_inodes: std::mem::take(&mut lookups.inodes),
     })
 }
 
@@ -244,6 +293,7 @@ pub fn decode_page(bytes: &[u8]) -> io::Result<DirectoryPage> {
         next_offset: header.next_offset,
         complete: (header.flags & READINDEX_COMPLETE) != 0,
         records: bytes[header_len..].to_vec(),
+        lookup_inodes: Vec::new(),
     })
 }
 
@@ -292,15 +342,20 @@ impl<T: ByteValued> ReadBytes for T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
+    #[derive(Default)]
     struct FakeFs {
         names: Vec<&'static [u8]>,
         synthetics: Vec<&'static [u8]>,
         opened: AtomicUsize,
         closed: AtomicUsize,
         fail_release: Mutex<bool>,
+        fail_read_after: Option<usize>,
+        lookup_refs: Mutex<BTreeMap<u64, u64>>,
+        forgotten: Mutex<Vec<(u64, u64)>>,
     }
 
     impl FileSystem for FakeFs {
@@ -309,6 +364,19 @@ mod tests {
 
         fn supports_directory_image(&self) -> bool {
             true
+        }
+
+        fn forget(&self, _ctx: Context, inode: Self::Inode, count: u64) {
+            let mut refs = self.lookup_refs.lock().unwrap();
+            let remaining = refs
+                .get_mut(&inode)
+                .expect("forget without acquired lookup");
+            assert!(*remaining >= count, "lookup reference released twice");
+            *remaining -= count;
+            if *remaining == 0 {
+                refs.remove(&inode);
+            }
+            self.forgotten.lock().unwrap().push((inode, count));
         }
 
         fn opendir(
@@ -339,7 +407,7 @@ mod tests {
 
         fn readdirplus<C>(
             &self,
-            _ctx: Context,
+            ctx: Context,
             _inode: Self::Inode,
             _handle: Self::Handle,
             _size: u32,
@@ -350,9 +418,14 @@ mod tests {
             C: FnMut(DirEntry, Entry) -> io::Result<usize>,
         {
             for (index, name) in self.names.iter().enumerate().skip(offset as usize) {
+                if self.fail_read_after == Some(index) {
+                    return Err(io::Error::from_raw_os_error(libc::EIO));
+                }
                 let mut attr: super::super::super::bindings::stat64 = unsafe { std::mem::zeroed() };
                 attr.st_ino = (index as u64) + 10;
                 attr.st_mode = (libc::S_IFREG | 0o644) as _;
+                let inode = (index as u64) + 10;
+                *self.lookup_refs.lock().unwrap().entry(inode).or_default() += 1;
                 let written = add_entry(
                     DirEntry {
                         ino: attr.st_ino,
@@ -368,9 +441,17 @@ mod tests {
                         attr_timeout: Duration::from_secs(1),
                         entry_timeout: Duration::from_secs(1),
                     },
-                )?;
-                if written == 0 {
-                    break;
+                );
+                match written {
+                    Ok(0) => {
+                        self.forget(ctx, inode, 1);
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        self.forget(ctx, inode, 1);
+                        return Err(error);
+                    }
                 }
             }
             Ok(())
@@ -418,13 +499,17 @@ mod tests {
             opened: AtomicUsize::new(0),
             closed: AtomicUsize::new(0),
             fail_release: Mutex::new(false),
+            ..Default::default()
         };
         let first = read_directory_page(&fs, context(), 1, 0, 256).unwrap();
         assert!(!first.complete);
         assert_eq!(record_names(&first.records).unwrap(), vec![b"a".to_vec()]);
         let encoded = encode_page(&first);
         let decoded = decode_page(&encoded).unwrap();
-        assert_eq!(decoded, first);
+        assert_eq!(decoded.next_offset, first.next_offset);
+        assert_eq!(decoded.complete, first.complete);
+        assert_eq!(decoded.records, first.records);
+        assert!(decoded.lookup_inodes.is_empty());
 
         let mut offset = first.next_offset;
         let mut seen = vec![b"a".to_vec()];
@@ -455,6 +540,7 @@ mod tests {
             opened: AtomicUsize::new(0),
             closed: AtomicUsize::new(0),
             fail_release: Mutex::new(false),
+            ..Default::default()
         };
         let small = read_directory_page(&fs, context(), 1, 0, 4096).unwrap();
         assert!(!small.complete);
@@ -482,6 +568,7 @@ mod tests {
             opened: AtomicUsize::new(0),
             closed: AtomicUsize::new(0),
             fail_release: Mutex::new(false),
+            ..Default::default()
         };
         let server = Server::new(fs, true);
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 2 << 20)]).unwrap();
@@ -587,6 +674,7 @@ mod tests {
             opened: AtomicUsize::new(0),
             closed: AtomicUsize::new(0),
             fail_release: Mutex::new(false),
+            ..Default::default()
         };
         let page = read_directory_page(&fs, context(), 1, 0, 1 << 20).unwrap();
         assert!(page.complete);
@@ -636,6 +724,7 @@ mod tests {
                 opened: AtomicUsize::new(0),
                 closed: AtomicUsize::new(0),
                 fail_release: Mutex::new(false),
+                ..Default::default()
             },
             &InodeAllocator::new(),
             [".pvisor-guest.json", "init.krun"]
@@ -716,6 +805,7 @@ mod tests {
             opened: AtomicUsize::new(0),
             closed: AtomicUsize::new(0),
             fail_release: Mutex::new(false),
+            ..Default::default()
         };
         let page = read_directory_page(&fs, context(), 1, 0, 256).unwrap();
         assert!(page.complete);
@@ -798,6 +888,7 @@ mod tests {
             opened: AtomicUsize::new(0),
             closed: AtomicUsize::new(0),
             fail_release: Mutex::new(false),
+            ..Default::default()
         };
         let page = read_directory_page(&fs, context(), 1, 0, 4096).unwrap();
         let entry = EntryOut::read_bytes(&page.records[..size_of::<EntryOut>()]).unwrap();
@@ -807,5 +898,88 @@ mod tests {
         let start = size_of::<EntryOut>() - size_of::<Attr>();
         let attr = Attr::read_bytes(&page.records[start..size_of::<EntryOut>()]).unwrap();
         assert_eq!(attr.mode, u32::from(libc::S_IFREG) | 0o644);
+    }
+
+    #[test]
+    fn shadowed_backing_lookup_is_cancelled_without_touching_synthetics() {
+        let fs = FakeFs {
+            names: vec![b"hidden", b"visible"],
+            synthetics: vec![b"hidden"],
+            ..Default::default()
+        };
+        let mut page = read_directory_page(&fs, context(), 1, 0, 4096).unwrap();
+        assert_eq!(
+            record_names(&page.records).unwrap(),
+            [b"hidden".to_vec(), b"visible".to_vec()]
+        );
+        assert_eq!(*fs.forgotten.lock().unwrap(), [(10, 1)]);
+        assert_eq!(*fs.lookup_refs.lock().unwrap(), BTreeMap::from([(11, 1)]));
+        assert_eq!(page.lookup_inodes, [11]);
+        cancel_directory_page(&fs, context(), &mut page);
+        cancel_directory_page(&fs, context(), &mut page);
+        assert!(fs.lookup_refs.lock().unwrap().is_empty());
+        assert_eq!(*fs.forgotten.lock().unwrap(), [(10, 1), (11, 1)]);
+    }
+
+    #[test]
+    fn failed_enumeration_rolls_back_previously_accepted_lookups() {
+        let fs = FakeFs {
+            names: vec![b"a", b"b", b"c"],
+            fail_read_after: Some(2),
+            ..Default::default()
+        };
+        let error = read_directory_page(&fs, context(), 1, 0, 4096).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EIO));
+        assert!(fs.lookup_refs.lock().unwrap().is_empty());
+        assert_eq!(*fs.forgotten.lock().unwrap(), [(10, 1), (11, 1)]);
+        assert_eq!(fs.closed.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn malformed_later_record_cancels_current_and_previous_lookups_once() {
+        let fs = FakeFs {
+            names: vec![b"accepted", b"invalid/name"],
+            ..Default::default()
+        };
+        let error = read_directory_page(&fs, context(), 1, 0, 4096).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EIO));
+        assert!(fs.lookup_refs.lock().unwrap().is_empty());
+        // The filesystem cancels the rejected current callback; the page guard
+        // separately cancels its earlier accepted entry.
+        assert_eq!(*fs.forgotten.lock().unwrap(), [(11, 1), (10, 1)]);
+        assert_eq!(fs.closed.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn failed_directory_close_cancels_every_unpublished_backing_lookup() {
+        let fs = FakeFs {
+            names: vec![b"a", b"b"],
+            fail_release: Mutex::new(true),
+            ..Default::default()
+        };
+        let error = read_directory_page(&fs, context(), 1, 0, 4096).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EIO));
+        assert!(fs.lookup_refs.lock().unwrap().is_empty());
+        assert_eq!(*fs.forgotten.lock().unwrap(), [(10, 1), (11, 1)]);
+        assert_eq!(fs.closed.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn page_budget_retains_only_emitted_refs_and_decode_owns_none() {
+        let fs = FakeFs {
+            names: vec![b"a", b"b", b"c"],
+            ..Default::default()
+        };
+        let mut page = read_directory_page(&fs, context(), 1, 0, 256).unwrap();
+        assert!(!page.complete);
+        assert_eq!(record_names(&page.records).unwrap(), [b"a".to_vec()]);
+        assert_eq!(page.lookup_inodes, [10]);
+        assert_eq!(*fs.forgotten.lock().unwrap(), [(11, 1)]);
+        let mut decoded = decode_page(&encode_page(&page)).unwrap();
+        cancel_directory_page(&fs, context(), &mut decoded);
+        assert_eq!(*fs.lookup_refs.lock().unwrap(), BTreeMap::from([(10, 1)]));
+        cancel_directory_page(&fs, context(), &mut page);
+        assert!(fs.lookup_refs.lock().unwrap().is_empty());
+        assert_eq!(*fs.forgotten.lock().unwrap(), [(11, 1), (10, 1)]);
     }
 }

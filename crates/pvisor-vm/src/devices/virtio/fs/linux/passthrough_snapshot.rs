@@ -313,6 +313,7 @@ pub(super) fn restore(fs: &PassthroughFs, state: &FsSnapshot) -> io::Result<()> 
             saved.handle,
             Arc::new(HandleData {
                 inode: saved.inode,
+                qualification_fd: file.as_raw_fd(),
                 file: RwLock::new(file),
                 exported: AtomicBool::new(false),
                 directory_snapshot: saved.directory_entries.clone(),

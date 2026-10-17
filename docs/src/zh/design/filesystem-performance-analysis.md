@@ -2,6 +2,10 @@
 
 ## 当前结论与测量覆盖 {#filesystem-status}
 
+[文件系统 I/O 曲线](filesystem-io-performance-analysis.md)系统比较请求粒度、并发、同步、容量与复用工作集；独立 N30 和普通 CLI 对照未支持默认开启 host-owned 异步合批，请求计数解释了 backing 合并与 FUSE WRITE 数量的区别。
+
+2026-10-17 的[guest 内核写回后续](filesystem-io-performance-analysis.md#guest-writeback)修复了关闭后 unlink/rename 再 syncfs 的对象生命周期问题，并用真实延迟 backing 验证跨批流水推进。本页历史批次中“ENOENT 未修复”指各自当时的冻结版本，旧时间、失败与结论保持原状；后续 SDK 修复不构成新的普通 CLI WB=1 性能验收。
+
 [普通 CLI 的限定只读 FLUSH 自动请求](#cli-auto-flush)在认证 prepared rootfs/workspace 下，将三轮七工具累计降低7.26%，95% CI [2.25%, 15.51%]，五对均改善；rg三轮改善约16%–17%，Ready与npm未检出差异。Linux x86_64的合格fresh native入口在宿主变量缺省时自动请求，显式0及旧peer/不合格fd保留原FLUSH；DATA、NE、WB、DAX不自动开启。
 
 [普通 CLI 的标准负项 entry 对照](#cli-negative-entry-cache)在DATA0/FLUSH1下未检出整体收益：三轮七工具累计降幅1.73%，95% CI [-3.45%, 5.26%]；第三轮npm改善12.27%，hot_open慢2.50%。查询减少已确认，NE继续默认关闭。
@@ -26,7 +30,7 @@
 
 [属性 TTL 候选被拒绝与页缓存对象隔离](#attribute-ttl-coherence)：候选新增 hardlink nlink 陈旧，已撤除且无正式性能样本；整页探针同时确认既有 lower/upper 页缓存隔离问题。
 
-2026-10-16 的[Ready 与三轮驻留任务对照](../benchmarks/filesystem.md#quick-results)：九个配置各五个独立环境、每环境三轮，45 个环境全部通过，无干扰门禁；只以 Ready 报告启动，工具分轮计时不含退出。它与以下历史 N30 及工程 A/B 独立统计。
+2026-10-16 的[Ready 与三轮驻留任务对照](../benchmarks/filesystem-resident.csv)：九个配置各五个独立环境、每环境三轮，45 个环境全部通过，无干扰门禁；只以 Ready 报告启动，工具分轮计时不含退出。它与以下历史 N30 及工程 A/B 独立统计。
 
 [封存输入四组工程对照](#owned-input-cache)支持 rootfs 缓存资格带来的驻留工具收益：第三轮七工具合计下降 25.80%，同时启用工作区快照下降 19.83%；工作区单独处理在第三轮合计未检出差异。该工程入口省略 CLI Host 服务，结果不改写普通 CLI 用户表。
 

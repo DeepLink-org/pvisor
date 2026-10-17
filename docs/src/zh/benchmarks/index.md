@@ -12,7 +12,7 @@
 
 <!-- measurement-status:start -->
 
-文件系统采用 Ready 与三轮驻留任务口径：九配置各 5 个独立环境、每环境 3 轮，45 个环境全部通过，无干扰门禁。历史 N30 与一次性任务独立保留。其他主题继续使用各自批次。
+文件系统采用九配置、19项分层负载，每个单元三个独立新环境、每环境三轮，无干扰门禁。实际执行505个环境，501个通过、4个资源单元超时，另有8个后续样本按协议未执行。历史N5/N30与一次性任务独立保留，其他主题继续使用各自批次。
 
 <!-- measurement-status:end -->
 
@@ -22,21 +22,23 @@
 
 ## 实验设计 {#interpretation}
 
-复用[启动](startup.md)、[文件系统](filesystem.md)、[修复任务](agent-tasks.md)和[完整审查流程](supervision-cost.md)的独立注册实验。启动与修复每后端 60 次、3 次预热；文件系统当前为九配置各 5 个新环境、每环境三轮、无额外预热，历史 N30 单独保留；审查流程每规模/条件/后端 30 次、3 次预热。同机 CPU 0,1、热缓存、随机交替执行，全部通过正确性校验，没有按速度剔除。各主题的负载、资源和计时边界不同，不合并其分布。Docker 使用 rootless overlay2；完整审查流程对照是原生 Git/reflink，不是容器或 VM 安全排名。
+复用[启动](startup.md)、[文件系统](filesystem.md)、[修复任务](agent-tasks.md)和[完整审查流程](supervision-cost.md)的独立注册实验。启动与修复每后端 60 次、3 次预热；文件系统当前为九配置、19项负载，每个单元N3新环境、内部三轮、无额外预热，历史N5/N30单独保留；审查流程每规模/条件/后端 30 次、3 次预热。同机CPU 0,1，缓存按各专题设定，随机交替执行；有效计时均通过正确性校验，失败和未执行另列，没有按速度剔除。各主题的负载、资源和计时边界不同，不合并其分布。Docker 使用 rootless overlay2；完整审查流程对照是原生 Git/reflink，不是容器或 VM 安全排名。
 
 [网络](network.md)每条件 30 个独立批次、3 次预热；小请求以每批 256 请求的中位数作为一个样本，origin 在负载 CPU 预算之外，内存没有统一限额。[容量](density.md)在共同两核、2 GiB、零 swap 预算下，按并发度和空闲/有效工具负载分别运行五轮，保留所有失败、未知和 OOM。
 
-[镜像按需启动](lazy-image-startup.md)按 Ubuntu shell 和 Python/NumPy 负载分别测量同一固定镜像的客户端冷/热缓存等待与内容载荷；当前制品的两种负载均支持 lazy 冷客户端中位等待更短，热缓存 Docker 更快；文件内容、二进制索引和总响应分别计数。它使用预准备的本机 registry/cache 服务，网络、Docker image store 和内存配置与上述启动对照不同，分别报告，不合并为统一排名。
+[惰性镜像](lazy-image-startup.md)分别测量同一 host staged 执行器的文件加载，以及 Docker / lazy VM 的 shell、NumPy 应用启动。同一 stage 的四文件校验中，pVisor 文件级路径的冷、热客户端中位等待都短于 OverlayBD；历史 VM 对照支持冷客户端选择 lazy、热客户端选择 Docker。两类实验使用预准备的本机服务，分别记录文件内容、元数据和总响应，保留各自的缓存、执行边界与预算，不合并成统一排名。
 
 ## 实验数据和分析 {#results}
 
 2026-10-06 的启动、文件系统和修复共 1,440 个有效样本，完整审查流程 360 个；2026-10-07 的独立 stock 内核启动对照为 240 个有效样本，失败均为 0。2026-10-12 所选冻结源码文件系统对照另有 240 个有效样本、失败 0，使用每任务独立缓存与统一父组资源约束。各批次不合并，中位数差异和 95% 配对 bootstrap 区间见各专题。
 
+分层文件系统对照独立执行505个环境，501个通过、4个资源单元超时，8个后续样本按协议未执行；完整任务与资源边界分别报告。
+
 | 问题 | 实测水位（耗时为 P50） |
 |---|---|
 | [Startup](startup.md) | stock 对照：VM 100.91 ms；Firecracker 285.04 ms；QEMU microvm 321.56 ms；q35 702.98 ms |
 | [Repair completion](agent-tasks.md) | staged 0.64 s; Docker 0.81 s; VM 3.25 s; QEMU microvm 1.40 s |
-| [Ready 与三轮工具](filesystem.md#quick-results) | N=5，Ready：staged 209.56 ms; Docker 450.94 ms; VM 749.15 ms; Firecracker 854.79 ms |
+| [分层文件系统任务](filesystem.md#complete-task) | N=3，三轮发布：VM 11.271 s；VM + writeback 5.928 s；Docker 2.053 s；Firecracker 4.305 s；QEMU q35/microvm 4.065/3.851 s |
 | [Review workflow](supervision-cost.md) | 10,000 files: stage 141 ms; Git 248 ms; reflink 343 ms |
 | [网络](network.md) | 八线程小请求：原生 0.69 ms；host proxy 10.09 ms；VM 2.10 ms |
 | [活跃容量](density.md) | 2 GiB：stage/Podman 32 路、VM 16 路通过全部五轮 |
@@ -56,10 +58,12 @@
 
 {{ table("measurement-coverage.render.json", {"markdown":true}) }}
 
-[覆盖清单 CSV](measurement-coverage.csv)。 文件系统的完整复测状态对应历史 N30 验收；当前 Ready/驻留数据为各配置五个独立环境、每环境三轮。
+[覆盖清单 CSV](measurement-coverage.csv)。 文件系统覆盖对应九配置、19项负载的N3协议，四个资源单元不完整；历史N5/N30不填补新协议的缺失。
 
 ### 数据下载与复现 {#run}
 
-[分轮统计 CSV](filesystem-resident.csv) · [同批差异与区间](filesystem-resident-comparisons.csv) · [来源与条件](filesystem-resident-provenance.csv)
+[九配置分层统计](filesystem-layered-references-levels.csv) · [Ready](filesystem-layered-references-ready.csv) · [来源摘要](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
+
+[历史分轮统计 CSV](filesystem-resident.csv) · [同批差异与区间](filesystem-resident-comparisons.csv) · [来源与条件](filesystem-resident-provenance.csv)
 
 [历史 N30 文件系统统计](filesystem.csv) · [同批文件系统置信区间](filesystem-comparisons.csv) · [历史 N30 文件系统来源](filesystem-provenance.csv) · [历史 Runtime 统计](runtime-summary.csv) · [历史 Runtime 置信区间](runtime-comparisons.csv) · [历史 Runtime 来源](runtime-provenance.csv) · [Workflow statistics](workflow-summary.csv) · [Workflow intervals](workflow-comparisons.csv) · [Workflow provenance](workflow-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

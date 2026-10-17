@@ -3,10 +3,10 @@ benchmarks/agent-tasks.md,,agent/agent.json,historical
 benchmarks/cluster-scalability.md,,,historical
 benchmarks/compare-rl-infra.md,,,historical
 benchmarks/density.md,,density/density.json,historical
-benchmarks/filesystem.md,B-FS-TOOLS accepted reference cohort fo5a4e7d2b-f,agent/macos.json,full
+benchmarks/filesystem.md,B-FS-TOOLS accepted reference cohort user-layered-references-v2-20261017,agent/macos.json,partial
 benchmarks/index.md,,,historical
 benchmarks/isolation-tests.md,,isolation/isolation.json,historical
-benchmarks/lazy-image-startup.md,,startup/lazy_startup.json,historical
+benchmarks/lazy-image-startup.md,startup/stage_lazy_compare.json stage-lazy-20261017-a,startup/lazy_startup.json,partial
 benchmarks/methodology.md,,,historical
 benchmarks/network.md,,network/network.json,historical
 benchmarks/replay-fidelity.md,replay/replay.json,,partial

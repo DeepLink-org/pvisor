@@ -820,6 +820,20 @@ DAX 和恢复 guest-writeback 会话明确不支持。直接共享目录的 pass
 最老待处理写入达到 **10 ms** 或同步屏障到来时也提交；以一次 `pwritev` 执行。
 单 FIFO 保证多 FD/硬链接已接收写的顺序，后续可在此合同上增加对象级并行。
 
+私有工程变量 `PVISOR_VM_FS_HOST_WRITEBACK_CONFIG` 接受严格 JSON object，
+未知/重复字段、错误类型与越界值在连接建立前拒绝；未设置使用上述默认值。
+字段为 `capacity_mib`（4–256）、`jobs`（1–4096）、`batch_kib`（4–4096，
+不超过容量）、`chunks`（1–64）和 `delay_us`（0–50000）。单个大请求不为
+满足合批大小而拆分，单独执行；`chunks=1,delay_us=0` 是不合并的异步对照。
+`qualification_lock=true` 恢复前台资格检查等待后台 native I/O 锁的旧路径；
+默认 false 在保留 File 的同一个 HandleLease 中查询固定 FD，实时核对 flags、
+export 和 statx，不缓存可变资格。后台仍持 native 写锁并再次核对资格。
+`synchronous=true` 在相同 host-owned 复制与 worker 路径后等排空才回复，
+用于测量复制、线程调度和异步接管的消融，并非原同步实现。上述控制是会话
+局部实验接口，不写入 snapshot；DESTROY 后 INIT 沿用当前连接的配置。
+队列诊断包含预算内预留/排队/执行项高水位、实际批次数和预算等待；每队列
+退出后只记录一次，跨重连的 peak sum 不能当单次最大值。
+
 只缓存 upper 的普通可写 native FD；请求与实际 FD 的 direct/sync/append
 形态、导出 FD 和 DAX 文件保留同步路径。后台再次核对 FD 条件，保留原有
 CAP_FSETID 行为。预算包含尚在复制和正在执行的数据；超预算反压，控制屏障
@@ -868,43 +882,74 @@ descriptor 引用释放、guest 输入被复用和 RAM gate 关闭后，host 队
 
 合版前仍须在 Linux/KVM 跑通受阻 backing 下的暂停/恢复、完整收尾与错误
 注入；待处理请求、恢复后唤醒和 stage 生命周期也须联测。guest writeback=1
-的 close→unlink→首次 syncfs ENOENT 属于另一个模式的已知未决问题，不能
-用 host writeback 模式的结果宣称已修复。DAX、并行写 worker 和更大预算
-不作为本轮补齐验收线的前置优化。
+的历史 close→unlink→syncfs ENOENT 已有独立的宿主对象生命周期修复与 SDK
+正确性证据，见下文；这不属于 host 写缓存或完整 Agent IOCP 的验收。
+DAX、并行写 worker 和更大预算不作为补齐验收线的前置优化。
 
 ### Guest 跨文件异步回写
 
-新固件在上述 writeback 会话中额外协商 `FUSE_PVISOR_WRITEBACK`（bit 42）。
-它独立于 `PVISOR_VM_GUEST_CACHE`，复用 guest 页缓存；缓存式 `write(2)`
-返回后，连接级调度器累计不同文件的写入，达到 **1 MiB** 或首笔待处理
-写入经过 **10 ms** 后，先提交整个批次的标准 FUSE WRITE，再等待完成。
-定时器是调度目标，宿主拥塞或调度延迟可使实际回写更晚。各文件仍独立写入，
-不引入多文件原子事务或第二份内容缓存。
+Guest writeback 仍为新会话默认关闭的显式选项：构造前设置
+`PVISOR_VM_FS_WRITEBACK=1` 开启，`0` 关闭。它与
+`PVISOR_VM_FS_HOST_WRITEBACK=1` 互斥；二者不能同时接管写入。
+以下新固件与宿主修复的实际验证范围为 Linux x86_64/KVM，未据此验收 macOS。
 
-普通文件关闭不再逐个等待数据回写；调度器持有 inode 和宿主句柄的引用，
-完成后才释放，避免 fd 关闭后丢失回写目标。重开 upper 文件保留 guest
-缓存；已打开的 lower 句柄在 copy-up 后读取原对象，不读取 upper 的缓存
-字节。删除/覆盖后的后台时间戳更新使用保留的 upper 句柄，不按旧名字重定位。
+固件在合格 writeback 会话中协商 `FUSE_PVISOR_WRITEBACK`（bit 42），
+独立于 `PVISOR_VM_GUEST_CACHE`，继续复用原生 guest 页缓存与 FUSE WRITE。
+0048 以 backing device 的实际 `WB_RECLAIMABLE` 脏页和 FUSE 自行记账的
+临时 `WB_WRITEBACK` WRITE 页为依据，不再累计用户 write 字节；同页覆盖、
+不同 fd 或 hardlink 别名不会重复消耗一份操作字节额度。干净页缓存不在这个计数中，
+内存元数据和句柄也另有开销，不引入第二份文件内容缓存。
 
-每个连接最多保留 **256 个待处理句柄**；累计未完成写入达到 **16 MiB**
-高水位后，生产者等待队列推进。宿主协商的后台请求上限是 **64**，拥塞
-阈值为 **48**。16 MiB 是背压高水位，并非整个 guest 页缓存的硬上限；
-单次大写和 Linux 原有脏页管理仍会影响实际内存与等待。
-协商批量回写后，固件解除 FUSE 默认的 1% 脏页份额上限，并尝试预留
-16 MiB 的最低份额，避免冷挂载的动态带宽估算在达到队列高水位前限流。
-FUSE 严格记账保持开启，包括临时回写页；低内存或其他挂载耗尽全局
-最低份额预算时，预留可失败，仍由 Linux 的现有限制施加背压。
+每个连接/BDI 的软压力目标为 guest `totalram_pages()/8`，截在 **16–256 MiB**。
+它使用内核实际可用页数，不以 VM 配置的名义内存推算固定字节；协商生效后可读取
+`/sys/module/fuse/parameters/pvisor_wb_budget_bytes` 查看当前目标。
+该诊断参数只有只读 getter，不能经 sysfs 或 boot argument 调参。
+生产者在写入 folio 解锁、释放后检查脏页加临时 WRITE 页，达到目标便唤醒原生
+BDI flusher 并等待推进；错误或断连结束该等待。目标是背压水位，不是整个 guest
+页缓存或 RAM 的硬上限；独立 rootfs/workspace BDI 可各占一份目标，Linux 原有
+全局 dirty、回收和内存压力规则继续约束总量。
 
-显式 fsync/fdatasync 保持同步；syncfs 和卸载会排空批量队列。异步错误
-保留在连接中，后续同步操作及关闭可见；PID 1 在报告任务成功前同步所有
-virtio-fs 挂载，任一同步失败以 125 退出。宿主直接读取 stage 前必须经过
-这个边界。仅排空 host virtqueue 仍不能证明 guest 脏页已经回写；完整 VM
-快照继续同时保存 guest RAM、调度器状态和保留的 host 句柄。
-后台 WRITE 的短写按错误处理，不能用成功回复丢弃未写出的剩余字节。
+每连接最多保留 **256 个句柄 lease**，包括排队、提交与等待完成的对象。
+0049 将提前提交提示设为压力目标页数的 **1/4，截在 1–16 MiB**；512 MiB guest
+通常对应16 MiB提示，单次协商的 FUSE WRITE 上限仍为1 MiB。小量写入继续由首笔
+待处理工作的 **10 ms** timer 推进，句柄上限和显式同步也能提前推进。
+入队前在连接锁外读取近似脏页数，仅用于调度提示；不再逐次求完整 per-CPU 和，
+也不重复执行写返回后的背压检查。逐 folio 的实际压力检查保持不变；入队路径只在
+pending 非空时调度提交，完成线程负责把再次写脏的句柄重新入队。
+0049v2 还在启动每个 request virtqueue 前预分配有界 scatterlist 与指针数组，
+在原有 VQ 锁内构造并提交描述符后复用，消除满1 MiB WRITE 的瞬时16 KiB
+`GFP_ATOMIC` scatterlist 分配。scratch 只存传输元数据；文件页与独占请求
+argbuf 保持原有完成期所有权，其他原子分配和原生内存压力边界仍然存在。
+独立完成队列先等待已提交的临时 WRITE，再执行可能发送 SETATTR 的数据完整性
+回写，最后再次等待新提交 WRITE，再做 FLUSH/RELEASE。
+一个 inode 的完成等待不占用提交工作队列；重新写脏会重新排队，
+保持原 inode/handle 引用到最终释放。timer 是调度目标，实际延迟可能更长；
+宿主准入与后端阻塞仍可能串行化实际请求，不等于非阻塞全链路 IOCP 或多文件原子事务。
+宿主协商的后台请求上限仍为64，
+拥塞阈值48，原生请求背压继续适用。
 
-该扩展只用于 guest 独占修改的普通缓存文件；DAX、direct I/O 和远程锁
-保留原路径。共享 mmap 的脏页继续由 Linux 的原有回写与同步机制处理。
-旧 guest/host 未协商 bit 42 时仍使用原 writeback 关闭行为。
+固件解除 FUSE 默认1%的最大脏页份额，并向原生 BDI 尽力申请 **16 MiB**
+最低份额；它独立于 RAM 比例压力目标。BDI 的字节设置转换为当时的 dirty 比例，
+并非持久绝对字节保证。全局最低份额不足或低内存时申请可失败并记录警告；
+FUSE 严格记账及临时回写页记账保持，不能重新开启默认 WRITEBACK_ACCT 而双计。
+
+可写普通文件的 close 不逐个等待数据完成，队列持 inode 和宿主句柄引用到收尾。
+只读 close 恢复原生 FLUSH 及原有写同步/错误检查，不以 WB 协商代替本地后端资格。
+显式 fsync/fdatasync 和 O_SYNC 保留同步语义；syncfs/卸载排空提交与完成两队列。
+异步错误在连接中保持 sticky，后续同步及关闭可见；PID1 在报告成功前同步所有
+virtio-fs 挂载，任一失败以125退出。宿主读取 stage 前须经过该边界，但它不单独
+证明宿主介质耐久；仅排空 virtqueue 也不证明 guest 脏页已回写。
+后台 WRITE 的短写仍为错误，不能以成功回复丢弃尾部。DAX、direct I/O 与远程锁
+保留原路径；共享 mmap 脏页继续使用 Linux 原有的回写与同步，没有新增 fault 等待。
+
+宿主在 WB 会话成功 unlink 或 rename-overwrite 后，按原 guest nodeid 保留已退休的
+普通文件身份：upper 保留一个 native O_PATH lookup 引用；lower 只保留逻辑属性
+墓碑，时间戳回写不修改物理 lower。关闭所有 fd 后，纯 MTIME/CTIME SETATTR
+仍能绑定原对象，不重新打开旧名字，也不吞未知 ENOENT。guest LOOKUP 引用精确
+跟踪到 FORGET，未发布的 READDIRPLUS/READINDEX 引用须回滚，最后一个引用释放
+退休对象。仍有 detached/orphan 引用时 snapshot 返回 Unsupported，不能序列化为
+失效路径。新 snapshot 保存已知引用；旧 WB snapshot 缺少计数时，仅其有限旧节点
+集合保守保留到 DESTROY，新节点仍正常计数，不能推断它们已收到 FORGET。
 
 真实 guest 回归（固件和输入路径使用绝对路径）：
 
@@ -920,12 +965,28 @@ lookup/目录 alias 协议、regular-file mutation 与 deferred-open 发布的�
 
 writeback 预算探针按目标挂载的 `st_dev` 定位 BDI，分别检查根与附加 share 的
 strict limit、最大份额和最低字节预留，避免把无关 loop 设备当成 virtio-fs。
-2026-10-16 的当前 supervisor 复测中，正常写回/卸载与 EIO→125 通过；普通 CLI
-在 writeback 开启后关闭文件、再 unlink、再 syncfs 可返回 ENOENT，0044 与 0045
-均可见。该时间戳回写路径尚未修复，不能据 SDK 正常用例通过宣称 CLI 写回完整通过。
+2026-10-16 的历史 supervisor 复测记录了普通 CLI 在 WB 开启后
+close→unlink→syncfs 返回 ENOENT，旧0044/0045固件均可见；旧制品与失败现场保留。
+2026-10-17 的新宿主 SDK 回归在新0048与旧0047固件上均通过完整探针，
+包括 fd 已关闭的 unlink/rename-overwrite 后 syncfs；这验证宿主对象退休修复
+不依赖新压力算法。新宿主+0048的 backing EIO 用例也通过，PID1 以125报告失败。
+本地[正确性收据](../../benchmark.new/filesystem/.data/guest-writeback-correctness-20261017/receipt.json)
+关联三组成功与旧组合失败日志，保留为0048历史证据。
+
+0049v2 的[独立正确性收据](../../benchmark.new/filesystem/.data/guest-writeback-tuning-correctness-v2-20261017/receipt.json)
+关联新固件 FULL、故障注入 ERROR、同 inode 多 FD、7项固件合同及当时50项
+filesystem Python 合同；511项 Rust 通过与8项跳过明确复用未变化的宿主实现范围。
+原失败写入历史随后在512 MiB guest／2 GiB父预算下由5个全新 guest 完成，
+[压力验证](../../benchmark.new/filesystem/.data/guest-writeback-memory-v2-20261017/verification.json)
+保留225行、guest与host全字节校验及原分配错误未复现的记录。
+新的四臂 N5 曲线完成20个环境、900行；普通 CLI 则以同一0049v2固件对照
+WB0/1，PRE、独立诊断与 N5正式环境均通过。CLI七工具整体及 Ready 未检出收益，
+逐工作负载结果与回退点见[独立实验](../../docs/src/zh/design/filesystem-io-performance-analysis.md#guest-writeback-tuning)
+和[普通 CLI 数据](../../docs/src/zh/design/filesystem-guest-writeback-cli-comparisons.csv)。
+探针时间不作为性能样本，新会话默认仍关闭 guest writeback。
 
 ```bash
-rustc --edition=2021 --target aarch64-unknown-linux-musl -C linker=rust-lld \
+rustc --edition=2021 --target x86_64-unknown-linux-musl -C linker=rust-lld \
   crates/pvisor-vm/src/probes/guest_writeback_guest.rs -o /tmp/writeback-guest
 cargo build --locked -p pvisor-vm --example guest_writeback_case
 PVISOR_VM_FS_WRITEBACK=1 target/debug/examples/guest_writeback_case \
@@ -934,10 +995,20 @@ PVISOR_VM_FS_WRITEBACK=1 target/debug/examples/guest_writeback_case \
   ROOTFS FIRMWARE /tmp/writeback-guest error
 ```
 
-macOS 需要为探针签署既有 Hypervisor entitlement。父进程拥有临时 upper，
-验证空闲定时回写、256 文件关闭重开可见性、rename/unlink、截断、32 MiB
-高水位写入、关闭后立即卸载及任务退出前最后一次提交；故障用例以独立 runner 的文件大小
-限制模拟后台写失败，并要求最终状态为 125。PASS 表示正确性，不是性能结果。
+上述命令对应 Linux x86_64 新验证路径。父进程拥有临时 upper，并校验
+空闲定时回写、256文件关闭重开、rename/unlink、截断、关闭后立即卸载和最终提交。
+当前 full 探针还写入128 MiB以越过该小内存 guest 的压力目标，对同一4 KiB页
+覆盖16384次，并核对 O_SYNC 与8 MiB共享 mmap/msync及完整内容。故障用例用
+独立 runner 的文件大小限制模拟后台写失败，要求最终125。旧macOS/HVF入口仍需
+原有 entitlement；没有本次0048/宿主修复的对应新验证。PASS仅表示所述正确性范围。
+
+新增同 inode 多 FD 回归使用4线程独立打开同一文件，三代重写互不重叠的1 KiB
+字节区间；这些区间共享4 KiB页，部分写跨页。文件为2 MiB加256字节，累计写入
+6 MiB，交错114次 checked-close/reopen，并在写线程仍活动时短暂空闲15 ms，
+给提交 timer 推进机会。最后显式 fsync、syncfs，guest 与宿主分别核对完整长度及
+全部字节。该新增 full 探针已在0048基线上通过；[独立调用记录](../../benchmark.new/filesystem/.data/guest-writeback-tuning-correctness-20261017/full-baseline-0048.invocation.json)
+与原0048性能批次分开。0049v2 的新 FULL 也通过该用例，记录在上方的新正确性收据中；
+该正确性结果不用于推导性能收益。
 
 本次只修改 VM virtio-fs 执行路径，不改宿主 FUSE 的 dispatch。
 回归覆盖直接 kick/stop、短操作不偷取、长操作 backlog 原 ring 完成、

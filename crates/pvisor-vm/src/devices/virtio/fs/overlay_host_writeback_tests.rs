@@ -580,6 +580,84 @@ fn host_buffer_snapshot_drains_then_restore_and_new_init_have_empty_queues() {
         .unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn host_buffer_custom_options_survive_destroy_and_new_init() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut fs = OverlayFs::build_with_writeback(
+        host_buffer_config(temp.path()),
+        Arc::new(InodeAllocator::new()),
+        false,
+        Some("0"),
+    )
+    .unwrap();
+    let options = WriteBufferOptions {
+        budget_bytes: 4 * 1024 * 1024,
+        max_jobs: 3,
+        batch_bytes: 4096,
+        max_chunks: 1,
+        max_delay: Duration::ZERO,
+    };
+    fs.configure_host_writeback_options(true, false, options, true, false)
+        .unwrap();
+    for session in 0..2 {
+        let negotiated = fs
+            .init(FsOptions::WRITEBACK_CACHE | FsOptions::PVISOR_WRITEBACK)
+            .unwrap();
+        assert!(!negotiated.intersects(FsOptions::WRITEBACK_CACHE | FsOptions::PVISOR_WRITEBACK));
+        assert_eq!(fs.host_writeback_options.budget_bytes, options.budget_bytes);
+        assert_eq!(fs.host_writeback_options.max_jobs, options.max_jobs);
+        assert_eq!(fs.host_writeback_options.batch_bytes, options.batch_bytes);
+        assert_eq!(fs.host_writeback_options.max_chunks, options.max_chunks);
+        assert_eq!(fs.host_writeback_options.max_delay, options.max_delay);
+        assert!(fs.host_writeback_qualification_lock);
+        assert!(!fs.host_writeback_synchronous);
+        let buffer = fs.buffered_writes().unwrap();
+        assert_eq!(
+            buffer
+                .reserve(options.budget_bytes + 1)
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let (inode, handle) = if session == 0 {
+            host_buffer_open_file(&fs)
+        } else {
+            let ctx = host_buffer_context();
+            let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
+            let handle = fs
+                .open(ctx, inode, false, libc::O_RDWR as u32)
+                .unwrap()
+                .0
+                .unwrap();
+            (inode, handle)
+        };
+        let gate = host_buffer_block(&fs, None);
+        host_buffer_write(&fs, inode, handle, b"aa", 0).unwrap();
+        host_buffer_write(&fs, inode, handle, b"bb", 2).unwrap();
+        // One blocking control target plus two accepted native writes. The
+        // custom one-chunk limit must apply after both INITs, rather than
+        // silently returning to default coalescing after DESTROY.
+        assert_eq!(buffer.stats().peak_jobs, 3);
+        gate.release();
+        fs.flush(host_buffer_context(), inode, handle, 0).unwrap();
+        assert_eq!((buffer.stats().total_jobs, buffer.stats().batches), (3, 3));
+        assert_eq!(
+            std::fs::read(temp.path().join("upper/file")).unwrap(),
+            b"aabb"
+        );
+        fs.release(host_buffer_context(), inode, 0, handle, false, false, None)
+            .unwrap();
+        fs.destroy();
+        assert!(fs.buffered_writes().is_none());
+        assert_eq!(
+            buffer.reserve(1).err().unwrap().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+    }
+}
+
 #[test]
 fn host_buffer_configuration_rejects_dax_platform_and_guest_writeback_conflicts() {
     let temp = tempfile::tempdir().unwrap();

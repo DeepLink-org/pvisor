@@ -20,6 +20,24 @@ from fs_timing import (
 from workload import validate_fixture
 
 
+def _same_trial_command(actual, expected):
+    if not isinstance(actual, list) or len(actual) != len(expected) or actual[1:] != expected[1:]:
+        return False
+    try:
+        actual_python, expected_python = Path(actual[0]), Path(expected[0])
+        # uv can launch preparation as bin/python and the fixed script row as
+        # bin/python3. Preserve the environment's bin directory and executable
+        # identity; do not accept another virtual environment or altered argv.
+        return (
+            actual_python.is_absolute()
+            and actual_python.parent.resolve(strict=True)
+            == expected_python.parent.resolve(strict=True)
+            and actual_python.resolve(strict=True) == expected_python.resolve(strict=True)
+        )
+    except (OSError, TypeError, ValueError):
+        return False
+
+
 def audit_filesystem(batch, manifest, evidence, resolved, template):
     batch = Path(batch)
     if (
@@ -70,7 +88,7 @@ def audit_filesystem(batch, manifest, evidence, resolved, template):
         for path, (phase, index) in zip(expected_paths, phases):
             trial = json.loads(path.read_text())
             if (
-                trial["command"] != command(batch, mode)
+                not _same_trial_command(trial["command"], command(batch, mode))
                 or (trial["phase"], trial["index"]) != (phase, index)
                 or "error" in trial
             ):

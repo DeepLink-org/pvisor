@@ -90,6 +90,10 @@ struct InodeData {
 struct HandleData {
     directory_snapshot: Option<Vec<super::super::snapshot::DirectoryEntrySnapshot>>,
     inode: Inode,
+    // Non-owning alias of file's descriptor, captured before the handle is
+    // shared. The File is never replaced or closed before this HandleData's
+    // final Arc drops. Its lock orders I/O effects, not descriptor lifetime.
+    qualification_fd: RawFd,
     file: RwLock<File>,
     exported: AtomicBool,
 }
@@ -276,12 +280,18 @@ const STATX_MNT_ID: u32 = 0x0000_1000;
 const STATX_ATTR_DAX: u64 = 0x0020_0000;
 
 fn buffered_write_file_eligible(file: &File, exported: bool) -> io::Result<bool> {
+    buffered_write_fd_eligible(file.as_raw_fd(), exported)
+}
+
+/// The caller retains the actual File owner throughout these live queries.
+/// No status flags, backing attributes or eligibility decisions are cached.
+fn buffered_write_fd_eligible(fd: RawFd, exported: bool) -> io::Result<bool> {
     if exported {
         return Ok(false);
     }
     // Check the pinned open description, including mutable status flags.
     // Linux pwritev still appends when O_APPEND is set on the description.
-    let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -291,12 +301,12 @@ fn buffered_write_file_eligible(file: &File, exported: bool) -> io::Result<bool>
         return Ok(false);
     }
     let mut stx = MaybeUninit::<LinuxStatx>::zeroed();
-    // SAFETY: file pins the FD; the empty path and output remain valid through
+    // SAFETY: the caller pins the FD; the empty path and output remain valid through
     // the syscall. The local statx ABI also supports musl builds.
     let result = unsafe {
         libc::syscall(
             libc::SYS_statx,
-            file.as_raw_fd(),
+            fd,
             c"".as_ptr(),
             libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW,
             STATX_BASIC_STATS,
@@ -909,6 +919,21 @@ impl PassthroughFs {
         buffered_write_file_eligible(&file, lease.0.exported.load(Ordering::Relaxed))
     }
 
+    /// Query the same live qualification without waiting for native I/O.
+    /// The lease's Arc retains the never-replaced File behind qualification_fd;
+    /// no File reference is created or borrowed through the I/O lock. Native
+    /// flags, exported status and statx attributes are still queried each time.
+    /// Callers must separately exclude guest DAX mappings and order exports.
+    pub(in crate::devices::virtio::fs) fn buffered_write_eligible_unlocked(
+        &self,
+        lease: &HandleLease,
+    ) -> io::Result<bool> {
+        buffered_write_fd_eligible(
+            lease.0.qualification_fd,
+            lease.0.exported.load(Ordering::Relaxed),
+        )
+    }
+
     /// Submit up to 64 host-owned contiguous chunks in one positional syscall.
     /// Returns the actual count, including a successful short write; the owner
     /// must retain/report its unwritten suffix. EINTR retries have no progress.
@@ -1256,13 +1281,14 @@ impl PassthroughFs {
             } else {
                 None
             };
-            RwLock::new(self.open_inode(inode, flags as i32)?)
+            self.open_inode(inode, flags as i32)?
         };
 
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
         let data = HandleData {
             inode,
-            file,
+            qualification_fd: file.as_raw_fd(),
+            file: RwLock::new(file),
             exported: Default::default(),
             directory_snapshot: None,
         };
@@ -1693,8 +1719,12 @@ impl FileSystem for PassthroughFs {
             // so we'll just skip the checks here.
             let name = unsafe { CStr::from_bytes_with_nul_unchecked(dir_entry.name) };
             let entry = self.lookup(ctx, inode, name)?;
-
-            add_entry(dir_entry, entry)
+            let lookup_inode = entry.inode;
+            let result = add_entry(dir_entry, entry);
+            if !matches!(&result, Ok(written) if *written != 0) {
+                self.forget(ctx, lookup_inode, 1);
+            }
+            result
         })
     }
 
@@ -1767,14 +1797,15 @@ impl FileSystem for PassthroughFs {
         }
 
         // Safe because we just opened this fd.
-        let file = RwLock::new(unsafe { File::from_raw_fd(fd) });
+        let file = unsafe { File::from_raw_fd(fd) };
 
         let entry = self.lookup(ctx, parent, name)?;
 
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
         let data = HandleData {
             inode: entry.inode,
-            file,
+            qualification_fd: file.as_raw_fd(),
+            file: RwLock::new(file),
             exported: Default::default(),
             directory_snapshot: None,
         };
@@ -2630,6 +2661,7 @@ mod tests {
         let lease = HandleLease(Arc::new(HandleData {
             directory_snapshot: None,
             inode: 1,
+            qualification_fd: file.as_raw_fd(),
             file: RwLock::new(file),
             exported: AtomicBool::new(false),
         }));
@@ -2641,6 +2673,7 @@ mod tests {
         for flags in [libc::O_WRONLY, libc::O_RDWR] {
             let (_root, fs, lease) = buffered_write_fixture(flags);
             assert!(fs.buffered_write_eligible(&lease).unwrap());
+            assert!(fs.buffered_write_eligible_unlocked(&lease).unwrap());
         }
         for flags in [
             libc::O_RDONLY,
@@ -2654,17 +2687,90 @@ mod tests {
                 !fs.buffered_write_eligible(&lease).unwrap(),
                 "flags={flags:#x}"
             );
+            assert!(
+                !fs.buffered_write_eligible_unlocked(&lease).unwrap(),
+                "flags={flags:#x}"
+            );
         }
         let (root, fs, lease) = buffered_write_fixture(libc::O_RDWR);
         lease.0.exported.store(true, Ordering::Relaxed);
         assert!(!fs.buffered_write_eligible(&lease).unwrap());
+        assert!(!fs.buffered_write_eligible_unlocked(&lease).unwrap());
+        let file = File::open(root.path()).unwrap();
         let directory = HandleLease(Arc::new(HandleData {
             directory_snapshot: None,
             inode: 1,
-            file: RwLock::new(File::open(root.path()).unwrap()),
+            qualification_fd: file.as_raw_fd(),
+            file: RwLock::new(file),
             exported: AtomicBool::new(false),
         }));
         assert!(!fs.buffered_write_eligible(&directory).unwrap());
+        assert!(!fs.buffered_write_eligible_unlocked(&directory).unwrap());
+    }
+
+    #[test]
+    fn buffered_unlocked_qualification_progresses_while_native_write_lock_is_held() {
+        let (_root, fs, lease) = buffered_write_fixture(libc::O_RDWR);
+        std::thread::scope(|scope| {
+            // Declared inside the scope closure so an assertion failure drops
+            // the guard before scoped threads are joined during unwinding.
+            let native_write = lease.0.file.write().unwrap();
+            let (started, starting) = std::sync::mpsc::channel();
+            let (locked, locked_result) = std::sync::mpsc::channel();
+            let fs_ref = &fs;
+            let lease_ref = &lease;
+            scope.spawn(move || {
+                started.send(()).unwrap();
+                locked
+                    .send(fs_ref.buffered_write_eligible(lease_ref))
+                    .unwrap();
+            });
+            starting.recv_timeout(Duration::from_secs(2)).unwrap();
+            let (unlocked, unlocked_result) = std::sync::mpsc::channel();
+            scope.spawn(move || {
+                unlocked
+                    .send(fs_ref.buffered_write_eligible_unlocked(lease_ref))
+                    .unwrap();
+            });
+            assert!(unlocked_result
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap());
+            assert!(matches!(
+                locked_result.recv_timeout(Duration::from_millis(30)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            drop(native_write);
+            assert!(locked_result
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap());
+        });
+    }
+
+    #[test]
+    fn buffered_unlocked_qualification_keeps_the_fd_after_release_and_name_reuse() {
+        let (root, fs, _unused) = buffered_write_fixture(libc::O_RDWR);
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
+        let handle = fs
+            .open(ctx, inode, false, libc::O_RDWR as u32)
+            .unwrap()
+            .0
+            .unwrap();
+        let lease = fs.lease_handle(inode, handle).unwrap();
+        fs.release(ctx, inode, 0, handle, false, false, None)
+            .unwrap();
+        fs.forget(ctx, inode, 1);
+        std::fs::remove_file(root.path().join("file")).unwrap();
+        std::fs::create_dir(root.path().join("file")).unwrap();
+        assert!(fs.buffered_write_eligible(&lease).unwrap());
+        assert!(fs.buffered_write_eligible_unlocked(&lease).unwrap());
     }
 
     #[test]
@@ -2713,6 +2819,7 @@ mod tests {
             );
         }
         assert!(!fs.buffered_write_eligible(&lease).unwrap());
+        assert!(!fs.buffered_write_eligible_unlocked(&lease).unwrap());
         assert_eq!(
             fs.write_buffered_leased(&lease, &[b"x"], 0, false)
                 .unwrap_err()

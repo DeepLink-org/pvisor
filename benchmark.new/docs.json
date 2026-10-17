@@ -88,7 +88,17 @@
         "filesystem-quick-provenance.csv",
         "filesystem-resident.csv",
         "filesystem-resident-provenance.csv",
-        "filesystem-resident-comparisons.csv"
+        "filesystem-resident-comparisons.csv",
+        "filesystem-layered-levels.csv",
+        "filesystem-layered-ready.csv",
+        "filesystem-layered-environments.csv",
+        "filesystem-layered-rows.csv",
+        "filesystem-layered-failures.csv",
+        "filesystem-layered-references-levels.csv",
+        "filesystem-layered-references-ready.csv",
+        "filesystem-layered-references-environments.csv",
+        "filesystem-layered-references-rows.csv",
+        "filesystem-layered-references-failures.csv"
       ]
     },
     {
@@ -104,8 +114,8 @@
           "kind": "coverage",
           "rows": 14,
           "columns": [
-            "\u6570\u636e\u72b6\u6001",
-            "\u5b9e\u6d4b\u8303\u56f4"
+            "数据状态",
+            "实测范围"
           ],
           "options": {
             "markdown": true
@@ -127,7 +137,9 @@
         "filesystem-quick-provenance.csv",
         "filesystem-resident.csv",
         "filesystem-resident-provenance.csv",
-        "filesystem-resident-comparisons.csv"
+        "filesystem-resident-comparisons.csv",
+        "filesystem-layered-references-levels.csv",
+        "filesystem-layered-references-ready.csv"
       ]
     },
     {
@@ -158,7 +170,9 @@
         "lazy-numpy-summary.csv",
         "lazy-startup-details.csv",
         "lazy-startup-provenance.csv",
-        "lazy-startup-summary.csv"
+        "lazy-startup-summary.csv",
+        "lazy-stage-summary.csv",
+        "lazy-stage-comparisons.csv"
       ]
     },
     {
@@ -231,11 +245,11 @@
           "kind": "published",
           "columns": [
             "N",
-            "Ready \u4e2d\u4f4d\u6570 ms",
-            "Ready \u5747\u503c ms",
-            "Ready \u6807\u51c6\u5dee ms",
-            "Ready \u6700\u5c0f ms",
-            "Ready \u6700\u5927 ms"
+            "Ready 中位数 ms",
+            "Ready 均值 ms",
+            "Ready 标准差 ms",
+            "Ready 最小 ms",
+            "Ready 最大 ms"
           ],
           "rows": 8,
           "options": {}
@@ -245,11 +259,11 @@
           "kind": "published",
           "columns": [
             "N",
-            "Exit \u4e2d\u4f4d\u6570 ms",
-            "Exit \u5747\u503c ms",
-            "Exit \u6807\u51c6\u5dee ms",
-            "Exit \u6700\u5c0f ms",
-            "Exit \u6700\u5927 ms"
+            "Exit 中位数 ms",
+            "Exit 均值 ms",
+            "Exit 标准差 ms",
+            "Exit 最小 ms",
+            "Exit 最大 ms"
           ],
           "rows": 8,
           "options": {}
@@ -488,6 +502,74 @@
     },
     {
       "locale": "zh",
+      "page": "design/filesystem-io-performance-analysis.md",
+      "benchmark_ids": [
+        "B-FS-ENG",
+        "B-FS-DIAG"
+      ],
+      "role": "engineering evidence",
+      "tables": [],
+      "source_csv": [
+        "filesystem-io-cli-comparisons.csv",
+        "filesystem-io-cli.csv",
+        "filesystem-io-confirm-environments.csv",
+        "filesystem-io-confirm-levels.csv",
+        "filesystem-io-confirm.csv",
+        "filesystem-io-counters.csv",
+        "filesystem-io-parameters-environments.csv",
+        "filesystem-io-parameters-levels.csv",
+        "filesystem-io-parameters.csv",
+        "filesystem-io-read-cache-comparisons.csv",
+        "filesystem-io-read-cache-environments.csv",
+        "filesystem-io-read-cache-round-comparisons.csv",
+        "filesystem-io-read-cache-round-ratios.csv",
+        "filesystem-io-read-cache-rounds.csv",
+        "filesystem-io-read-cache.csv",
+        "filesystem-io-read-count-round-summary.csv",
+        "filesystem-io-read-count-rounds.csv",
+        "filesystem-io-read-count-summary.csv",
+        "filesystem-io-read-counts.csv",
+        "filesystem-io-resource-comparisons.csv",
+        "filesystem-io-resources.csv",
+        "filesystem-io-shape-comparisons.csv",
+        "filesystem-io-shape-environments.csv",
+        "filesystem-io-shape.csv",
+        "filesystem-guest-writeback-levels.csv",
+        "filesystem-guest-writeback-environments.csv",
+        "filesystem-guest-writeback-time-levels.csv",
+        "filesystem-guest-writeback-time-comparisons.csv",
+        "filesystem-guest-writeback-throughput-comparisons.csv",
+        "filesystem-guest-writeback-enablement-comparisons.csv",
+        "filesystem-guest-writeback-write-requests.csv",
+        "filesystem-guest-writeback-write-histogram.csv",
+        "filesystem-guest-writeback-pipeline.csv",
+        "filesystem-guest-writeback-write-request-rounds.csv",
+        "filesystem-guest-writeback-diagnostic-flags.csv",
+        "filesystem-guest-writeback-tuning-levels.csv",
+        "filesystem-guest-writeback-tuning-environments.csv",
+        "filesystem-guest-writeback-tuning-time-levels.csv",
+        "filesystem-guest-writeback-tuning-time-comparisons.csv",
+        "filesystem-guest-writeback-tuning-throughput-comparisons.csv",
+        "filesystem-guest-writeback-tuning-enablement-comparisons.csv",
+        "filesystem-guest-writeback-tuning-write-requests.csv",
+        "filesystem-guest-writeback-tuning-write-request-rounds.csv",
+        "filesystem-guest-writeback-tuning-write-histogram.csv",
+        "filesystem-guest-writeback-tuning-diagnostic-flags.csv",
+        "filesystem-guest-writeback-tuning-pipeline.csv",
+        "filesystem-guest-writeback-cli.csv",
+        "filesystem-guest-writeback-cli-comparisons.csv",
+        "filesystem-guest-writeback-cli-environments.csv",
+        "filesystem-guest-writeback-cli-counters.csv",
+        "filesystem-workloads-v2-comparisons.csv",
+        "filesystem-workloads-v2-levels.csv",
+        "filesystem-workloads-v2-environments.csv",
+        "filesystem-workloads-v2-progress.csv",
+        "filesystem-workloads-v2-mixed.csv",
+        "filesystem-workloads-v2-counters.csv"
+      ]
+    },
+    {
+      "locale": "zh",
       "page": "design/agent-task-performance-analysis.md",
       "benchmark_ids": [
         "B-AGENT-TASK"
@@ -611,7 +693,17 @@
         "filesystem-quick-provenance.csv",
         "filesystem-resident.csv",
         "filesystem-resident-provenance.csv",
-        "filesystem-resident-comparisons.csv"
+        "filesystem-resident-comparisons.csv",
+        "filesystem-layered-levels.csv",
+        "filesystem-layered-ready.csv",
+        "filesystem-layered-environments.csv",
+        "filesystem-layered-rows.csv",
+        "filesystem-layered-failures.csv",
+        "filesystem-layered-references-levels.csv",
+        "filesystem-layered-references-ready.csv",
+        "filesystem-layered-references-environments.csv",
+        "filesystem-layered-references-rows.csv",
+        "filesystem-layered-references-failures.csv"
       ]
     },
     {
@@ -650,7 +742,9 @@
         "filesystem-quick-provenance.csv",
         "filesystem-resident.csv",
         "filesystem-resident-provenance.csv",
-        "filesystem-resident-comparisons.csv"
+        "filesystem-resident-comparisons.csv",
+        "filesystem-layered-references-levels.csv",
+        "filesystem-layered-references-ready.csv"
       ]
     },
     {
@@ -681,7 +775,9 @@
         "lazy-numpy-summary.csv",
         "lazy-startup-details.csv",
         "lazy-startup-provenance.csv",
-        "lazy-startup-summary.csv"
+        "lazy-startup-summary.csv",
+        "lazy-stage-summary.csv",
+        "lazy-stage-comparisons.csv"
       ]
     },
     {
@@ -1007,6 +1103,74 @@
         "filesystem-cli-auto-flush-owner-totals.csv",
         "filesystem-cli-auto-flush-provenance.csv",
         "filesystem-cli-auto-flush-counters-provenance.csv"
+      ]
+    },
+    {
+      "locale": "en",
+      "page": "design/filesystem-io-performance-analysis.md",
+      "benchmark_ids": [
+        "B-FS-ENG",
+        "B-FS-DIAG"
+      ],
+      "role": "engineering evidence",
+      "tables": [],
+      "source_csv": [
+        "filesystem-io-cli-comparisons.csv",
+        "filesystem-io-cli.csv",
+        "filesystem-io-confirm-environments.csv",
+        "filesystem-io-confirm-levels.csv",
+        "filesystem-io-confirm.csv",
+        "filesystem-io-counters.csv",
+        "filesystem-io-parameters-environments.csv",
+        "filesystem-io-parameters-levels.csv",
+        "filesystem-io-parameters.csv",
+        "filesystem-io-read-cache-comparisons.csv",
+        "filesystem-io-read-cache-environments.csv",
+        "filesystem-io-read-cache-round-comparisons.csv",
+        "filesystem-io-read-cache-round-ratios.csv",
+        "filesystem-io-read-cache-rounds.csv",
+        "filesystem-io-read-cache.csv",
+        "filesystem-io-read-count-round-summary.csv",
+        "filesystem-io-read-count-rounds.csv",
+        "filesystem-io-read-count-summary.csv",
+        "filesystem-io-read-counts.csv",
+        "filesystem-io-resource-comparisons.csv",
+        "filesystem-io-resources.csv",
+        "filesystem-io-shape-comparisons.csv",
+        "filesystem-io-shape-environments.csv",
+        "filesystem-io-shape.csv",
+        "filesystem-guest-writeback-levels.csv",
+        "filesystem-guest-writeback-environments.csv",
+        "filesystem-guest-writeback-time-levels.csv",
+        "filesystem-guest-writeback-time-comparisons.csv",
+        "filesystem-guest-writeback-throughput-comparisons.csv",
+        "filesystem-guest-writeback-enablement-comparisons.csv",
+        "filesystem-guest-writeback-write-requests.csv",
+        "filesystem-guest-writeback-write-histogram.csv",
+        "filesystem-guest-writeback-pipeline.csv",
+        "filesystem-guest-writeback-write-request-rounds.csv",
+        "filesystem-guest-writeback-diagnostic-flags.csv",
+        "filesystem-guest-writeback-tuning-levels.csv",
+        "filesystem-guest-writeback-tuning-environments.csv",
+        "filesystem-guest-writeback-tuning-time-levels.csv",
+        "filesystem-guest-writeback-tuning-time-comparisons.csv",
+        "filesystem-guest-writeback-tuning-throughput-comparisons.csv",
+        "filesystem-guest-writeback-tuning-enablement-comparisons.csv",
+        "filesystem-guest-writeback-tuning-write-requests.csv",
+        "filesystem-guest-writeback-tuning-write-request-rounds.csv",
+        "filesystem-guest-writeback-tuning-write-histogram.csv",
+        "filesystem-guest-writeback-tuning-diagnostic-flags.csv",
+        "filesystem-guest-writeback-tuning-pipeline.csv",
+        "filesystem-guest-writeback-cli.csv",
+        "filesystem-guest-writeback-cli-comparisons.csv",
+        "filesystem-guest-writeback-cli-environments.csv",
+        "filesystem-guest-writeback-cli-counters.csv",
+        "filesystem-workloads-v2-comparisons.csv",
+        "filesystem-workloads-v2-levels.csv",
+        "filesystem-workloads-v2-environments.csv",
+        "filesystem-workloads-v2-progress.csv",
+        "filesystem-workloads-v2-mixed.csv",
+        "filesystem-workloads-v2-counters.csv"
       ]
     },
     {

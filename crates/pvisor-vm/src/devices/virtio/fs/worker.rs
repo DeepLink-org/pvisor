@@ -30,6 +30,7 @@ use super::passthrough::{self, PassthroughFs};
 use super::read_only::PassthroughFsRo;
 use super::server::Server;
 use super::virtual_entry::VirtualDirEntry;
+use super::write_buffer::WriteBufferOptions;
 use crate::devices::virtio::{InterruptTransport, VirtioShmRegion};
 
 mod scheduler;
@@ -416,6 +417,79 @@ fn host_writeback_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool>
     }
 }
 
+/// Private engineering controls. Values never enter the public VM contract or
+/// snapshots; each new connection validates them before admitting any request.
+#[derive(Debug, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct HostWritebackConfig {
+    capacity_mib: usize,
+    jobs: usize,
+    batch_kib: usize,
+    chunks: usize,
+    delay_us: u64,
+    qualification_lock: bool,
+    synchronous: bool,
+}
+
+impl Default for HostWritebackConfig {
+    fn default() -> Self {
+        Self {
+            capacity_mib: 64,
+            jobs: 1024,
+            batch_kib: 1024,
+            chunks: 64,
+            delay_us: 10_000,
+            qualification_lock: false,
+            synchronous: false,
+        }
+    }
+}
+
+impl HostWritebackConfig {
+    fn options(&self) -> io::Result<WriteBufferOptions> {
+        let invalid =
+            || io::Error::new(io::ErrorKind::InvalidInput, "host writeback size overflow");
+        let options = WriteBufferOptions {
+            budget_bytes: self
+                .capacity_mib
+                .checked_mul(1024 * 1024)
+                .ok_or_else(invalid)?,
+            max_jobs: self.jobs,
+            batch_bytes: self.batch_kib.checked_mul(1024).ok_or_else(invalid)?,
+            max_chunks: self.chunks,
+            max_delay: std::time::Duration::from_micros(self.delay_us),
+        };
+        options.validate()?;
+        Ok(options)
+    }
+}
+
+fn host_writeback_config(setting: Option<&std::ffi::OsStr>) -> io::Result<HostWritebackConfig> {
+    let config = match setting {
+        None => HostWritebackConfig::default(),
+        Some(value) => {
+            let invalid = |error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("PVISOR_VM_FS_HOST_WRITEBACK_CONFIG: {error}"),
+                )
+            };
+            let parsed: serde_json::Value =
+                serde_json::from_slice(value.as_bytes()).map_err(invalid)?;
+            if !parsed.is_object() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "PVISOR_VM_FS_HOST_WRITEBACK_CONFIG must be a JSON object",
+                ));
+            }
+            // Decode the original bytes so duplicate fields are also rejected.
+            serde_json::from_slice(value.as_bytes()).map_err(invalid)?
+        }
+    };
+    config.options()?;
+    Ok(config)
+}
+
 fn exclusive_upper_absence_cache_enabled(setting: Option<&std::ffi::OsStr>) -> io::Result<bool> {
     match setting {
         None => Ok(false),
@@ -535,6 +609,9 @@ impl FsWorker {
             guest_cache_enabled(std::env::var_os("PVISOR_VM_GUEST_CACHE").as_deref())?;
         let host_writeback =
             host_writeback_enabled(std::env::var_os("PVISOR_VM_FS_HOST_WRITEBACK").as_deref())?;
+        let host_writeback_config = host_writeback_config(
+            std::env::var_os("PVISOR_VM_FS_HOST_WRITEBACK_CONFIG").as_deref(),
+        )?;
         let directory_cache_capacity = directory_cache_capacity(
             std::env::var_os("PVISOR_VM_FS_DIRECTORY_CACHE_CAPACITY").as_deref(),
         )?;
@@ -557,7 +634,13 @@ impl FsWorker {
                 } else {
                     OverlayFs::new(cfg, inode_alloc.clone())?
                 };
-                inner.configure_host_writeback(host_writeback, shm_region.is_some())?;
+                inner.configure_host_writeback_options(
+                    host_writeback,
+                    shm_region.is_some(),
+                    host_writeback_config.options()?,
+                    host_writeback_config.qualification_lock,
+                    host_writeback_config.synchronous,
+                )?;
                 inner.configure_immutable_data_cache(root_data_cache);
                 inner.configure_directory_cache_capacity(directory_cache_capacity)?;
                 inner.configure_exclusive_upper_absence_cache(
@@ -914,6 +997,42 @@ mod tests {
         worker.dispatch_profile =
             pvisor_overlay_core::profile::Profile::enabled("virtio-fs-dispatch");
         worker
+    }
+
+    #[test]
+    fn host_writeback_config_is_bounded_and_rejects_unknown_fields() {
+        use std::ffi::OsStr;
+        let default = host_writeback_config(None).unwrap();
+        assert_eq!(default.options().unwrap().budget_bytes, 64 << 20);
+        assert!(!default.qualification_lock);
+        let unmerged = host_writeback_config(Some(OsStr::new(
+            r#"{"chunks":1,"delay_us":0,"capacity_mib":4,"batch_kib":4}"#,
+        )))
+        .unwrap();
+        assert_eq!(unmerged.options().unwrap().max_chunks, 1);
+        for value in [
+            b"".as_slice(),
+            b"null",
+            b"[]",
+            b"{\"unknown\":1}",
+            b"{\"capacity_mib\":0}",
+            b"{\"capacity_mib\":257}",
+            b"{\"jobs\":0}",
+            b"{\"chunks\":65}",
+            b"{\"delay_us\":50001}",
+            b"{\"batch_kib\":8192}",
+            b"{\"jobs\":-1}",
+            b"{\"qualification_lock\":1}",
+            b"\xff",
+        ] {
+            assert_eq!(
+                host_writeback_config(Some(OsStr::from_bytes(value)))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::InvalidInput,
+                "{value:?}"
+            );
+        }
     }
 
     #[test]

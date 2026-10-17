@@ -200,21 +200,91 @@ imported reference, matching the ordinary lookup path.
 
 With negotiated `FUSE_PVISOR_WRITEBACK` (bit 42) and WRITEBACK_CACHE, ordinary
 cached writes and closes retain inode/handle leases in a connection-local queue.
-The queue submits across files at 1 MiB or a 10 ms timer, using ordinary FUSE
-WRITE requests. It keeps at most 256 pending handles and applies producer
-backpressure at a 16 MiB outstanding-byte high-water mark; host background
+The queue uses ordinary FUSE WRITE requests and a bounded 10 ms submission
+timer. `0049-fuse-coalesce-writeback-kicks.patch` advances that timer when dirty
+pages reach one quarter of the connection's pressure target, clamped to
+1–16 MiB. A 512 MiB guest therefore normally has a 16 MiB submission hint;
+this is separate from its approximately 64 MiB pressure target and does not
+change the negotiated 1 MiB maximum WRITE payload. Small and low-rate writes
+still progress on the timer; the 256-handle limit and explicit synchronization
+can force earlier progress.
+
+Queue admission reads only an approximate dirty-page counter, before taking
+the connection lock. This count controls early scheduling, so its bounded
+error cannot weaken the actual per-folio pressure check. It does not repeat
+that check after a buffered write returns, sum all per-CPU counters per small
+write, or schedule an empty submit pass for a handle already being completed.
+Completion retains responsibility for requeueing a redirtied handle.
+For virtio-fs, 0049 reserves scatterlist scratch before starting each request
+virtqueue and reuses it under the existing queue lock through descriptor
+submission. A full 1 MiB WRITE no longer allocates a transient 16 KiB
+scatterlist with `GFP_ATOMIC`, which cannot reclaim clean cache when free
+memory is low. The scratch capacity covers both negotiated page vectors and
+their headers; its lifetime belongs to the existing device owner, including
+partial setup failure. Request argument buffers and data pages retain their
+original per-request completion lifetime. Virtqueue descriptor admission and
+its existing backpressure stay unchanged.
+`0048-fuse-pipeline-native-writeback-pressure.patch` separates
+best-effort `WB_SYNC_NONE` submission from a data-integrity completion worker;
+a completion wait on one inode does not stop later files from being submitted.
+Completion waits for that inode's already submitted temporary WRITEs before
+the native data/metadata integrity pass, which may send timestamp SETATTR.
+It retains a second WRITE barrier after that pass for newly submitted pages.
+This avoids holding a host namespace-admission lock behind an earlier WRITE
+when the host orders SETATTR against the same inode's active I/O. Host namespace
+serialization and guest metadata RPCs remain separate possible bottlenecks.
+The queue retains at most 256 inode/handle leases across both stages, through
+backend FLUSH, RELEASE and final reference disposal. Virtio-fs auto-submount
+RELEASE remains synchronous. Read-only descriptors retain ordinary native FLUSH
+and its errors; writable close may report a previously recorded asynchronous
+error while its final FLUSH/RELEASE completes later.
+
+Producer pressure uses the native BDI's actual dirty pages plus FUSE's temporary
+WRITE pages. Repeated writes to an already dirty page and multiple descriptors
+do not accumulate fictitious byte credits. Each connection/BDI has a target of
+one eighth of managed guest RAM, clamped to 16–256 MiB; a 512 MiB guest has
+approximately a 64 MiB target per BDI. Independent rootfs/workspace BDIs each
+have a target and handle bound; the native global dirty limit still constrains
+their combined pressure. Buffered writes check pressure after unlocking each completed folio,
+including within a single large write, and wake the native BDI flusher. Native
+WRITE completion can release this pressure independently of the completion
+worker's inode lock. A timed recheck also observes native flusher and mmap
+writeback progress. `/sys/module/fuse/parameters/pvisor_wb_budget_bytes` reports
+the active target after negotiation and rejects writes; it is not a tuning
+parameter. Native per-CPU counters provide a cheap check away from the target;
+near it, their full sums decide whether to wait. Native dirty throttling and
+memory reclaim remain active, including for mmap. Concurrent dirtying can
+overshoot the target; it is not an allocation cap on all guest pagecache, and
+clean cached pages remain outside this pressure budget. Host background
 requests are independently bounded. Pages remain in the native guest cache.
 Negotiated sessions lift FUSE's default 1% dirty-share ceiling and request a
 16 MiB minimum dirty share, avoiding cold-device bandwidth throttling before
-the queue reaches its high-water mark. Strict FUSE accounting stays enabled,
+the queue reaches its pressure target. Strict FUSE accounting stays enabled,
 including for temporary writeback pages. The reservation is best effort when
 other mounts or a small guest exhaust the global dirty-share budget; ordinary
-Linux memory-pressure limits still apply.
-fsync remains synchronous; syncfs/unmount drain the queue, and asynchronous
+Linux memory-pressure limits still apply, and reservation failure is logged.
+The BDI ratio setters are not a persistent fixed-byte limit.
+fsync and O_SYNC/O_DSYNC keep their synchronous native paths; syncfs/unmount
+drain both workers, and asynchronous
 errors stay visible to later synchronization. Remote-lock and DAX sessions do
 not use this extension. Original lower reads after copy-up bypass the upper
 inode's data cache through their retained handles. The guest supervisor must
 check final virtio-fs synchronization before reporting successful task exit.
+`fw/tests/test_writeback_pipeline_contract.py` compiles the actual patched
+functions with observable stubs to check page-accounting decisions, long-write
+lock ordering, separate submission, rescan/drain, sticky errors and final
+reference/RELEASE ordering. The independent
+`fw/tests/test_writeback_kick_contract.py` executes 0049's actual queue body
+alongside those unchanged lifecycle and pressure functions, checking the
+submission hint, non-extending timer, cheap queue admission and rescan after
+an in-flight generation. `fw/tests/test_virtio_sg_scratch_contract.py` executes
+the actual allocation, final cleanup and enqueue bodies with observable
+allocation, queue-lock and descriptor-copy stubs. It checks partial setup
+failure, bounded scratch reuse and retained per-request argument buffers;
+it does not replace real memory-pressure or concurrent transport validation.
+Firmware compilation and real guest stress,
+concurrent mmap/reclaim, failure/disconnect, synchronization and teardown tests
+remain required before making performance or default-enablement claims.
 
 ## Building
 

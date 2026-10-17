@@ -7,6 +7,23 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn expected_multifd_redirty() -> Vec<u8> {
+    // Four independent opens write disjoint 1-KiB slots of the same inode for
+    // three passes. The first 256 bytes stay zero, and slots share/cross pages.
+    let mut expected = vec![0; 256 + 2 * 1024 * 1024];
+    for (index, bytes) in expected[256..].chunks_exact_mut(1024).enumerate() {
+        let worker = index % 4;
+        let slot = index / 4;
+        for (offset, byte) in bytes.iter_mut().enumerate() {
+            *byte = (worker as u8).wrapping_mul(0x35)
+                ^ 2u8.wrapping_mul(0x43)
+                ^ (slot as u8).wrapping_mul(0x1d)
+                ^ (offset as u8).wrapping_mul(7);
+        }
+    }
+    expected
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let args: Vec<_> = std::env::args_os().skip(1).collect();
@@ -155,6 +172,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::fs::read(root.path().join("extra-upper/closed-before-unmount"))?,
         b"drained"
     );
+    assert_eq!(
+        std::fs::read(root.path().join("upper/probe/closed-victim"))?,
+        b"replacement"
+    );
+    for index in 0..8 {
+        assert!(!root
+            .path()
+            .join(format!("upper/probe/closed-unlinked-{index}"))
+            .exists());
+    }
     for index in 0..256 {
         assert_eq!(
             std::fs::read(root.path().join(format!("upper/probe/file-{index:04}")))?,
@@ -163,7 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     assert_eq!(
         std::fs::read(root.path().join("upper/probe/pressure"))?,
-        vec![0x5a; 32 << 20]
+        vec![0x5a; 128 << 20]
     );
     assert_eq!(
         std::fs::read(root.path().join("upper/probe/final"))?,
@@ -174,6 +201,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         b"renamed"
     );
     assert!(!root.path().join("upper/probe/deleted").exists());
+    assert_eq!(
+        std::fs::read(root.path().join("upper/probe/overwritten"))?,
+        vec![255; 4096]
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("upper/probe/synchronous"))?,
+        vec![0x73; 8192]
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("upper/probe/mapped"))?,
+        vec![0x6b; 8 << 20]
+    );
+    assert_eq!(
+        std::fs::read(root.path().join("upper/probe/multifd-redirty"))?,
+        expected_multifd_redirty()
+    );
     println!("GUEST_WRITEBACK_PASS");
     Ok(())
 }

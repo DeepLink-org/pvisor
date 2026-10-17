@@ -220,6 +220,10 @@ Write for a developer who is deciding whether to adopt pVisor and then how to us
 it. The models are the uv, Ruff and Ray docs.
 
 - Lead with the outcome or the command, then explain. Short paragraphs, one idea each.
+- Lead with what pVisor does and why it is useful. Use concrete verbs and short
+  claims, supported by examples or measurements. Put comparison details in the
+  experiment and data sections. State applicable conditions once; preserve
+  unfavorable results and distinguish measured benefits from expectations.
 - Describe purpose, behavior and scope directly. Avoid rhetorical contrasts such as
   “不是……而是……” / “not X, but Y”, imagined objections and repeated disclaimers.
   Express limitations as concrete prerequisites, unsupported operations, verification

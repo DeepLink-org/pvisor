@@ -771,6 +771,14 @@ impl PassthroughFs {
         Ok(false)
     }
 
+    /// Preserve Linux's private candidate signature; buffering remains unsupported.
+    pub(in crate::devices::virtio::fs) fn buffered_write_eligible_unlocked(
+        &self,
+        _lease: &HandleLease,
+    ) -> io::Result<bool> {
+        Ok(false)
+    }
+
     /// Preserve the private cross-platform signature without enabling an
     /// unvalidated macOS write-buffering or privilege-removal path.
     pub(in crate::devices::virtio::fs) fn write_buffered_leased(
@@ -1991,6 +1999,7 @@ impl FileSystem for PassthroughFs {
     where
         F: FnMut(DirEntry, Entry) -> io::Result<usize>,
     {
+        let mut callback_error = None;
         self.do_readdir(inode, handle, size, offset, |dir_entry| {
             // Safe because the kernel guarantees that the buffer is nul-terminated. Additionally,
             // the kernel will pad the name with '\0' bytes up to 8-byte alignment and there's no
@@ -1999,10 +2008,29 @@ impl FileSystem for PassthroughFs {
             // interior '\0' bytes. We trust the kernel to provide us with properly formatted data
             // so we'll just skip the checks here.
             let name = unsafe { CStr::from_bytes_with_nul_unchecked(dir_entry.name) };
-            let entry = self.lookup(ctx, inode, name)?;
-
-            add_entry(dir_entry, entry)
-        })
+            let result = self.lookup(ctx, inode, name).and_then(|entry| {
+                let lookup_inode = entry.inode;
+                let result = add_entry(dir_entry, entry);
+                if !matches!(&result, Ok(written) if *written != 0) {
+                    self.forget(ctx, lookup_inode, 1);
+                }
+                result
+            });
+            match result {
+                Err(error) => {
+                    // do_readdir treats callback errors as a partial success.
+                    // READDIRPLUS must report failure so an unpublished page
+                    // can release its previously accepted lookup references.
+                    callback_error = Some(error);
+                    Ok(0)
+                }
+                result => result,
+            }
+        })?;
+        match callback_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     fn open(

@@ -25,6 +25,7 @@ def module(name, path):
 
 
 FILESYSTEM = module("filesystem_prepare_tests", ROOT / "filesystem/prepare.py")
+AUDIT = module("filesystem_audit_tests", ROOT / "filesystem/audit.py")
 from fs_timing import (  # noqa: E402
     FIELDS,
     FIXTURE_SCOPE,
@@ -42,6 +43,34 @@ SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug
 
 
 class FilesystemContracts(unittest.TestCase):
+    def test_interpreter_alias_requires_same_bin_directory_binary_and_remaining_arguments(self):
+        with workspace() as (root, resources):
+            binary = root / "interpreter"
+            binary.touch()
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            python, python3 = bin_dir / "python", bin_dir / "python3"
+            python.symlink_to(binary)
+            python3.symlink_to(binary)
+            expected = [str(python), "workload.py", "metadata", "fixture"]
+            self.assertTrue(AUDIT._same_trial_command(expected, expected))
+            self.assertTrue(AUDIT._same_trial_command([str(python3), *expected[1:]], expected))
+            other_bin = root / "other-bin"
+            other_bin.mkdir()
+            other_python = other_bin / "python3"
+            other_python.symlink_to(binary)
+            other_binary = bin_dir / "other-interpreter"
+            other_binary.touch()
+            for altered in (
+                [str(other_python), *expected[1:]],
+                [str(other_binary), *expected[1:]],
+                [str(python3), "other-workload.py", *expected[2:]],
+                [*expected, "--extra"],
+                ["python3", *expected[1:]],
+            ):
+                with self.subTest(command=altered):
+                    self.assertFalse(AUDIT._same_trial_command(altered, expected))
+
     def test_modified_command_or_extra_arguments_are_rejected_before_preparation(self):
         table = json.loads((ROOT / "filesystem/tools.json").read_text())
         for expression in (
