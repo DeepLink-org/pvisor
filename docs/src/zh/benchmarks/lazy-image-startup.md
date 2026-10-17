@@ -8,7 +8,7 @@
 - **更快获得结果。** 两种短任务的冷客户端实验均缩短了从启动到得到校验结果的中位等待。
 - **复用已下载的文件。** 热客户端直接使用缓存，实验中没有重复下载文件内容。
 
-以上结果来自镜像服务已准备好的本机实验。缓存命中后，挂载和执行器启动仍有开销；完整镜像已缓存时，应用启动实验中的 Docker 等待更短。
+以上结果来自镜像服务已准备好的本机实验。缓存命中后，挂载和执行器启动仍有开销；完整镜像已缓存时，应用启动实验中预先完整拉取的路径等待更短。
 
 ## Motivation：为何需要惰性镜像 {#motivation}
 
@@ -180,7 +180,7 @@ pVisor 完成四文件校验的中位等待为冷缓存 78.15 ms、热缓存 52.
 
 </details>
 
-### 数据下载与来源 {#run}
+### 来源与复现 {#run}
 
 <details markdown="1">
 <summary>查看统计下载、来源与复现方法</summary>
@@ -195,11 +195,9 @@ pVisor 完成四文件校验的中位等待为冷缓存 78.15 ms、热缓存 52.
 
 Stage 原始证据保留在 `benchmark.new/startup/.data/overlaybd-lab-20261017/stage-lazy-20261017-a/`；独立审计复算原始时钟、文件校验、挂载与设备身份、Run Bundle、逐请求字节、33 轮后台观察及清理，并核对 semspec 导出。二进制、runtime 库与冻结 harness 有摘要收据，精确源码构建对应关系未验证。公开下载仅包含加工统计与精简来源，原始样本和完整清单留在本地证据目录。
 
-[Shell 统计 CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-startup-summary.csv) · [Shell 差异与准备 CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-startup-details.csv) · [Shell 来源 CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-startup-provenance.csv)
+[复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#current-implementation-dockerlazy-comparison)
 
-[NumPy 统计 CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-numpy-summary.csv) · [NumPy 差异与准备 CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-numpy-details.csv) · [NumPy 来源 CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-numpy-provenance.csv) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#current-implementation-dockerlazy-comparison)
-
-原始证据保留在 `benchmark/pvisor/.data/lazy-shell-current-formal-20261010/` 和 `lazy-numpy-current-formal-20261010-2/`，各批 `derive.py` 重查全部 136 次启动、冻结输入、保留 OCI 摘要和清理收据后生成 CSV。构建证据为 `.data/lazy-current-build-20261010/`：1,193 个冻结源码输入及实测二进制摘要与独立新构建一致，核验记录的来源关系但不证明 hermetic 可复现。失败预检/批次及 2026-10-07 历史数据独立保留。这些观测也不与[预准备环境启动](startup.md)合并。
+完整 CSV/JSON 与原始证据保留在 `benchmark/pvisor/.data/lazy-shell-current-formal-20261010/` 和 `lazy-numpy-current-formal-20261010-2/`，各批 `derive.py` 重查全部 136 次启动、冻结输入、保留 OCI 摘要和清理收据后生成 CSV。构建证据为 `.data/lazy-current-build-20261010/`：1,193 个冻结源码输入及实测二进制摘要与独立新构建一致，核验记录的来源关系但不证明 hermetic 可复现。失败预检/批次及 2026-10-07 历史数据独立保留。这些观测也不与[预准备环境启动](startup.md)合并。
 
 </details>
 

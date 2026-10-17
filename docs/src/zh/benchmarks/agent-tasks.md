@@ -35,7 +35,7 @@ Linux x86_64，AMD Ryzen 7 9700X，Fedora 7.2.8-200.fc44.x86_64。执行进程�
 
 ## 实验数据和分析 {#results}
 
-测于 2026-10-06，固定计划每个后端 60/60 有效，正式失败 0；环境与 CLI 的样本数和预检失败另列。输出、退出和执行器记录必须通过校验；暂存模式还验证宿主原文件不变和完整改动保留。保留所有有效慢样本，没有按耗时剔除。表格通常为 P50；分离分布展示各簇中位数和数量，P95 仅作观察参考。原始报告、二进制、输入与源码摘要保存在忽略的 `.data/`，公开 CSV 保留负载、批次和来源关联。
+测于 2026-10-06，固定计划每个后端 60/60 有效，正式失败 0；环境与 CLI 的样本数和预检失败另列。输出、退出和执行器记录必须通过校验；暂存模式还验证宿主原文件不变和完整改动保留。保留所有有效慢样本，没有按耗时剔除。表格通常为 P50；分离分布展示各簇中位数和数量，P95 仅作观察参考。原始报告、二进制、输入与源码摘要保存在忽略的 `.data/`，本地完整 CSV/JSON 保留负载、批次和来源关联。
 
 ### 固定修复与测试 {#reference-env}
 
@@ -100,6 +100,8 @@ Claude 使用 `--bare`、只允许 Bash；Codex 使用 `--ephemeral` 和 `danger
 
 <a id="full-ubuntu"></a>
 
-### 数据下载与复现 {#run}
+### 来源与复现 {#run}
 
-[场景证据 CSV](../../../overrides/assets/benchmarks/data/task/task-scenarios.csv) · [整理后的统计 CSV](../../../overrides/assets/benchmarks/data/agent/agent-tasks.csv) · [全部运行时统计](../../../overrides/assets/benchmarks/data/runtime/runtime-summary.csv) · [差异与 95% 置信区间](../../../overrides/assets/benchmarks/data/runtime/runtime-comparisons.csv) · [源码与制品来源](../../../overrides/assets/benchmarks/data/runtime/runtime-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+完整 CSV/JSON 和原始记录保存在对应本地批次或文档数据归档。
+
+[比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

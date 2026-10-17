@@ -64,8 +64,8 @@ Host deny-all and VM deny-all each block direct sockets to the same local servic
 
 Podman host network supplies an ordinary OCI control. pVisor OCI additionally uses a policy proxy, so boundaries differ. Docker bridge, Firecracker/QEMU networking, macOS, TLS and public APIs are unmeasured and receive no numeric ranking. Complete-task Docker/Firecracker/QEMU comparisons are in the [end-to-end tasks](agent-tasks.md).
 
-### Downloads and reproduction {#run}
+### Sources and reproduction {#run}
 
-[Network statistics CSV](../../../overrides/assets/benchmarks/data/network/network-summary.csv) · [Paired comparisons CSV](../../../overrides/assets/benchmarks/data/network/network-comparisons.csv) · [Artifacts and validation summary](../../../overrides/assets/benchmarks/data/network/network-provenance.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
-Raw reports, response timings, command logs, input/build receipts and per-invocation output audits stay in local `.data/`.
+Complete CSV/JSON, raw reports, response timings, command logs, input/build receipts and per-invocation output audits remain in their local cohorts or the documentation data archive.

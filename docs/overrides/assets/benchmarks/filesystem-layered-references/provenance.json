@@ -1,0 +1,1228 @@
+{
+  "analysis": {
+    "analyzer_sha256": "76313f2375a1d2e89cfc7de65c5f065a7eac3db20c0c58229d30e3eff1671392",
+    "protocol_sha256": "7525dfe39349c9f8bbcc71c2beff8a38b9f185d77d4785d16cf0119bf9d5abff",
+    "records_sha256": "ba934cfd00d9b80f856ac0d60d5f726e3c5363fb153ca1db810faa8791faf7de",
+    "summary_sha256": "6df5a7c7185c17acb73b15872c73a57449a0eca6f0e45fcdf022881a3f4aae25"
+  },
+  "batch": "user-layered-references-v2-20261017",
+  "benchmark_id": "B-FS-TOOLS",
+  "budget": {
+    "cpu_placement": "inherited affinity; host user cgroup has no cpuset delegation",
+    "cpus": [
+      0,
+      1
+    ],
+    "guest_mib": 512,
+    "guest_vcpus": 2,
+    "memory_bytes": 2147483648,
+    "quota": "200000 100000",
+    "swap_bytes": 0
+  },
+  "cache": "fresh case environment; three dependent rounds reuse state and verification-warmed pages; shared prepared host inputs; no cold-disk claim",
+  "complete_cells": [
+    {
+      "backend": "native",
+      "case_id": "M01"
+    },
+    {
+      "backend": "host",
+      "case_id": "M01"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M01"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M01"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M01"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M01"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M01"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M01"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M01"
+    },
+    {
+      "backend": "native",
+      "case_id": "M02"
+    },
+    {
+      "backend": "host",
+      "case_id": "M02"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M02"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M02"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M02"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M02"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M02"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M02"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M02"
+    },
+    {
+      "backend": "native",
+      "case_id": "M03"
+    },
+    {
+      "backend": "host",
+      "case_id": "M03"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M03"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M03"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M03"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M03"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M03"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M03"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M03"
+    },
+    {
+      "backend": "native",
+      "case_id": "M04"
+    },
+    {
+      "backend": "host",
+      "case_id": "M04"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M04"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M04"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M04"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M04"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M04"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M04"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M04"
+    },
+    {
+      "backend": "native",
+      "case_id": "M05"
+    },
+    {
+      "backend": "host",
+      "case_id": "M05"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M05"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M05"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M05"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M05"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M05"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M05"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M05"
+    },
+    {
+      "backend": "native",
+      "case_id": "M06"
+    },
+    {
+      "backend": "host",
+      "case_id": "M06"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M06"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M06"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M06"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M06"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M06"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M06"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M06"
+    },
+    {
+      "backend": "native",
+      "case_id": "M07"
+    },
+    {
+      "backend": "host",
+      "case_id": "M07"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M07"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M07"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M07"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M07"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M07"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M07"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M07"
+    },
+    {
+      "backend": "native",
+      "case_id": "M08"
+    },
+    {
+      "backend": "host",
+      "case_id": "M08"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M08"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M08"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M08"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M08"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M08"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M08"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M08"
+    },
+    {
+      "backend": "native",
+      "case_id": "M09"
+    },
+    {
+      "backend": "host",
+      "case_id": "M09"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M09"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M09"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M09"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M09"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M09"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M09"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M09"
+    },
+    {
+      "backend": "native",
+      "case_id": "M10"
+    },
+    {
+      "backend": "host",
+      "case_id": "M10"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M10"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M10"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M10"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M10"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M10"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M10"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M10"
+    },
+    {
+      "backend": "native",
+      "case_id": "M11"
+    },
+    {
+      "backend": "host",
+      "case_id": "M11"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M11"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M11"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M11"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M11"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M11"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M11"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M11"
+    },
+    {
+      "backend": "native",
+      "case_id": "M12"
+    },
+    {
+      "backend": "host",
+      "case_id": "M12"
+    },
+    {
+      "backend": "staged",
+      "case_id": "M12"
+    },
+    {
+      "backend": "vm",
+      "case_id": "M12"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "M12"
+    },
+    {
+      "backend": "docker",
+      "case_id": "M12"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "M12"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "M12"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "M12"
+    },
+    {
+      "backend": "native",
+      "case_id": "R01"
+    },
+    {
+      "backend": "host",
+      "case_id": "R01"
+    },
+    {
+      "backend": "staged",
+      "case_id": "R01"
+    },
+    {
+      "backend": "vm",
+      "case_id": "R01"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "R01"
+    },
+    {
+      "backend": "docker",
+      "case_id": "R01"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "R01"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "R01"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "R01"
+    },
+    {
+      "backend": "native",
+      "case_id": "R02"
+    },
+    {
+      "backend": "host",
+      "case_id": "R02"
+    },
+    {
+      "backend": "staged",
+      "case_id": "R02"
+    },
+    {
+      "backend": "vm",
+      "case_id": "R02"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "R02"
+    },
+    {
+      "backend": "docker",
+      "case_id": "R02"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "R02"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "R02"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "R02"
+    },
+    {
+      "backend": "native",
+      "case_id": "R03"
+    },
+    {
+      "backend": "host",
+      "case_id": "R03"
+    },
+    {
+      "backend": "staged",
+      "case_id": "R03"
+    },
+    {
+      "backend": "docker",
+      "case_id": "R03"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "R03"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "R03"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "R03"
+    },
+    {
+      "backend": "native",
+      "case_id": "R04"
+    },
+    {
+      "backend": "host",
+      "case_id": "R04"
+    },
+    {
+      "backend": "staged",
+      "case_id": "R04"
+    },
+    {
+      "backend": "docker",
+      "case_id": "R04"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "R04"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "R04"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "R04"
+    },
+    {
+      "backend": "native",
+      "case_id": "S01"
+    },
+    {
+      "backend": "host",
+      "case_id": "S01"
+    },
+    {
+      "backend": "staged",
+      "case_id": "S01"
+    },
+    {
+      "backend": "vm",
+      "case_id": "S01"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "S01"
+    },
+    {
+      "backend": "docker",
+      "case_id": "S01"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "S01"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "S01"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "S01"
+    },
+    {
+      "backend": "native",
+      "case_id": "S02"
+    },
+    {
+      "backend": "host",
+      "case_id": "S02"
+    },
+    {
+      "backend": "staged",
+      "case_id": "S02"
+    },
+    {
+      "backend": "vm",
+      "case_id": "S02"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "S02"
+    },
+    {
+      "backend": "docker",
+      "case_id": "S02"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "S02"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "S02"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "S02"
+    },
+    {
+      "backend": "native",
+      "case_id": "S03"
+    },
+    {
+      "backend": "host",
+      "case_id": "S03"
+    },
+    {
+      "backend": "staged",
+      "case_id": "S03"
+    },
+    {
+      "backend": "vm",
+      "case_id": "S03"
+    },
+    {
+      "backend": "vm-writeback",
+      "case_id": "S03"
+    },
+    {
+      "backend": "docker",
+      "case_id": "S03"
+    },
+    {
+      "backend": "fc-system",
+      "case_id": "S03"
+    },
+    {
+      "backend": "qemu",
+      "case_id": "S03"
+    },
+    {
+      "backend": "qemu-microvm",
+      "case_id": "S03"
+    }
+  ],
+  "configuration_scope": "declared launch inputs; requested cache/writeback settings are not independent runtime-negotiation measurements",
+  "counts": {
+    "backends": 9,
+    "cases": 19,
+    "complete_cells": 167,
+    "defects": 16,
+    "expected_environments": 513,
+    "expected_round_rows": 1539,
+    "observed_environments": 505,
+    "observed_round_rows": 1503
+  },
+  "execution": {
+    "attempted": 505,
+    "failed": 4,
+    "failure_policy": "all failures retained without replacement; after first backend/case failure remaining planned observations for that cell are explicitly skipped; incomplete cells get no median",
+    "skip_remaining_on_case_failure": true,
+    "skipped": 8,
+    "trial_timeout_seconds": 90,
+    "valid": 501
+  },
+  "firmware": {
+    "actual_config_sha256": "2ebce6af5a4dedf209d89f4c3cf0f4c3ca7b979f00fd3f63d05346e6e7a41178",
+    "build_id": "581b3346b633d361339c27c12d808abab12bcd6d6c7e4e375f25cc32dde3328b",
+    "sha256": "e0fde88b23e59f86a37afce0a163061393db66d561f8664304d26cab27730be4",
+    "source_receipt_sha256": "a401475053c65ce5ef849ad6c8e071926e0aa726788f6dec727200d4b0a9ad6c"
+  },
+  "frozen_artifact_manifest": {
+    "files": 50,
+    "sha256": "4d217aef80c4517a990cebc0a899452acab74eb381ae9fbb09cd833265e7514f"
+  },
+  "gates": {
+    "interference": false,
+    "inventory": false,
+    "quiet": false
+  },
+  "host": {
+    "filesystems": [
+      {
+        "fstype": "btrfs",
+        "options": "rw,relatime,compress=zstd:1,ssd,discard=async,space_cache=v2,subvolid=257,subvol=/home"
+      }
+    ],
+    "platform": "Linux-7.2.10-200.fc44.x86_64-x86_64-with-glibc2.43",
+    "uname": [
+      "Linux",
+      "fedora",
+      "7.2.10-200.fc44.x86_64",
+      "#1 SMP PREEMPT_DYNAMIC Sun Oct 11 18:11:51 UTC 2026",
+      "x86_64",
+      ""
+    ]
+  },
+  "host_observation": {
+    "cpu_model": "AMD Ryzen 7 9700X 8-Core Processor",
+    "observed_unix": 1792244576.7685368,
+    "phase": "formal campaign launch; observer metadata only",
+    "uname": [
+      "Linux",
+      "fedora",
+      "7.2.10-200.fc44.x86_64",
+      "#1 SMP PREEMPT_DYNAMIC Sun Oct 11 18:11:51 UTC 2026",
+      "x86_64",
+      ""
+    ]
+  },
+  "inputs": {
+    "cli-build-receipt.json": "3f790a1d6b6532346043ceb8ac42ab82abdd3ee7f24ea35a7d903239dda781f3",
+    "firmware-source.json": "a401475053c65ce5ef849ad6c8e071926e0aa726788f6dec727200d4b0a9ad6c",
+    "fixture-manifest.json": "0027c0feb975c128164a4a669182ca82a1bed75079be6ab31e792f39b4749ed9",
+    "host-observation.json": "adb4aa229801d8da3e169d982f1f765528ab85219d53b0fab055fcd5aa902e5c",
+    "in.bench.json": "80e616d240c1ee5ff2fb2c72662548b754e8f4faa823f5237d473f1f32e6f47b",
+    "in.json": "b34d147eef66be8a761e635704f21e782684b7420f39b9759d917ee585e9b144",
+    "in.render.json": "4b65de0dae08293b2ec777f1a015c1a20fbd41ea01149c13b80d662078f163ae",
+    "protocol.json": "7525dfe39349c9f8bbcc71c2beff8a38b9f185d77d4785d16cf0119bf9d5abff",
+    "records.json": "ba934cfd00d9b80f856ac0d60d5f726e3c5363fb153ca1db810faa8791faf7de",
+    "reference-runtime-observation.json": "08a6342e9c91718d77fbf410390e9c8a625b0974e44e17d7f79dfcbb3b1b0b51",
+    "skipped.json": "c8fb0a7cd543a840ec237198bfbed206897d26acc0bedfcaabd12eee7dcb02b2",
+    "status.json": "123b6742768cb27ab3cd95dc4e376ee525efc86baff7a7482f6a1817768e3421",
+    "toolroot-receipt.json": "6bc78357e9bbfbe1ad8055881d2e50dbc7b99e92cadaf092141b7ab7016f6806"
+  },
+  "limitations": [
+    "N3 exploration, no reliable tails or population-wide ranking",
+    "reference runtime storage stacks differ; not pure VMM overhead",
+    "resource WSS changes retained bytes and final sync volume",
+    "four resource anchors are not a dense capacity curve or established pressure knee",
+    "Native/host share a 2 GiB parent budget; VM has 512 MiB guest RAM inside that same parent. These are different memory/cache boundaries.",
+    "Resource WSS uses a fixed 512 MiB reference across modes, not measured native RAM; 128/640 MiB anchors also change retained bytes and final synchronization volume.",
+    "Full round validation can warm pages for later resident rounds; no cold-disk or independent-round claim.",
+    "Declared work includes periodic fsync/checked closes; completed adds final synchronization. Setup, validation, startup and teardown are separate.",
+    "Directory rootfs has no authenticated Immutable generation; user results do not establish directory-image or lower-data-cache coverage.",
+    "Formal timing disables profiling; no per-op request elimination, dirty-page/queue peaks, tail latency or power-loss durability is inferred.",
+    "Mode levels are descriptive N3 exploration; no composite system score or paired causal optimization estimate.",
+    "Docker overlay2 output with readonly bind input, reference VM ext4 block storage and pVisor staged/virtio-fs are different storage paths. Cross-mode timing includes those configured paths; it does not isolate VMM overhead.",
+    "Reference VM stock kernels differ from the pVisor guest kernel and firmware; configured memory and observed guest MemTotal are reported separately."
+  ],
+  "modes": [
+    {
+      "id": "native",
+      "label": "Native"
+    },
+    {
+      "id": "host",
+      "label": "pVisor host"
+    },
+    {
+      "id": "staged",
+      "label": "pVisor staged"
+    },
+    {
+      "id": "vm",
+      "label": "pVisor VM"
+    },
+    {
+      "id": "vm-writeback",
+      "label": "pVisor VM + writeback"
+    },
+    {
+      "id": "docker",
+      "label": "Docker"
+    },
+    {
+      "id": "fc-system",
+      "label": "Firecracker (stock kernel)"
+    },
+    {
+      "id": "qemu",
+      "label": "QEMU q35"
+    },
+    {
+      "id": "qemu-microvm",
+      "label": "QEMU microvm"
+    }
+  ],
+  "observed_guest_memory": {
+    "fc-system": {
+      "configured_guest_memory_mib": 512,
+      "configured_value_scope": "requested VM allocation; distinct from guest-visible MemTotal",
+      "environments_reporting_memtotal": 57,
+      "observed_ready_memtotal_kib": [
+        454820
+      ],
+      "valid_environments": 57
+    },
+    "qemu": {
+      "configured_guest_memory_mib": 512,
+      "configured_value_scope": "requested VM allocation; distinct from guest-visible MemTotal",
+      "environments_reporting_memtotal": 57,
+      "observed_ready_memtotal_kib": [
+        454648,
+        454652
+      ],
+      "valid_environments": 57
+    },
+    "qemu-microvm": {
+      "configured_guest_memory_mib": 512,
+      "configured_value_scope": "requested VM allocation; distinct from guest-visible MemTotal",
+      "environments_reporting_memtotal": 57,
+      "observed_ready_memtotal_kib": [
+        454804,
+        454808
+      ],
+      "valid_environments": 57
+    },
+    "vm": {
+      "configured_guest_memory_mib": 512,
+      "configured_value_scope": "requested VM allocation; distinct from guest-visible MemTotal",
+      "environments_reporting_memtotal": 51,
+      "observed_ready_memtotal_kib": [
+        528412
+      ],
+      "valid_environments": 51
+    },
+    "vm-writeback": {
+      "configured_guest_memory_mib": 512,
+      "configured_value_scope": "requested VM allocation; distinct from guest-visible MemTotal",
+      "environments_reporting_memtotal": 51,
+      "observed_ready_memtotal_kib": [
+        528412
+      ],
+      "valid_environments": 51
+    }
+  },
+  "outputs": {
+    "docs/overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg": "fb690b93ea91d4d1378c8c0ef70134c410408c6987558360022799854b9083a8",
+    "docs/overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg": "24100a4cefb3815f34792f7a0295e0b6a07f60d603a5bf4235e14facb8ebb6dd",
+    "docs/overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.svg": "8361dbf9c06f3cfd45c88f1bc788d74c3dd5836c61c3ce6ba49bd8bbf1c56026",
+    "docs/overrides/assets/benchmarks/filesystem-layered-references/write-request-size.svg": "ce00344cdccddcfb25533ade8b48553cf5cc916ce8f1fc8fb931530e8b829046",
+    "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv": "34a68a634e6108c64d6940760b3a2a774f6dbedee0f20014f92ca82009c19f05",
+    "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv": "26c88bece7a41ba95fb8bd5cb5a270dbc87d8ab965f1724d5ff1229975846c64",
+    "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv": "0b35bfe87943133d3cf8c9ddc639016440baa3a6c5f2b0de3d09795f1a1dc1d1"
+  },
+  "payload": {
+    "sha256": "04696784264d95b50ecfd9d13e2c82aac8cf79e7be0a13b3b5518e5eebfc59bb",
+    "source_sha256": {
+      "harness/workloads_v2_guest.rs": "d3f8227b3d5089e91ac0706fd795701ef1b309a3b0bbc49e7bf3af8abeeeb034",
+      "harness/workloads_v2_scenarios.rs": "a239e72a5e59ad0463ed94760995105439e4babef13072a4218919141ce31893"
+    }
+  },
+  "publisher_sha256": "9b13941d9a792ec3a8aca13926d194873198e7aca372c330fe3feca206d8b134",
+  "reference_configuration": {
+    "docker": {
+      "actual_parent_limits": {
+        "cpu.max": "200000 100000",
+        "memory.max": "2147483648",
+        "memory.swap.max": "0"
+      },
+      "cpu_placement": "affinity",
+      "image_id": "sha256:0847faafffcafd526f348743677527e0db588b46b31b7142d1cab17f95834cb5",
+      "image_inspection_sha256": "d42d179b93b418bb651e7349c0dcf28ca20118520301d5e41e22d3d65c8ca6f9",
+      "input": "same frozen fixture, read-only bind at workspace/input",
+      "launcher_sha256": "d47ccf28bf7aaeca60f0a96af30ab4ee5f61a7f9705ee1cc082d8c547210ef3f",
+      "launcher_source_sha256": "ef3dde7e512e7f21efd6b01da31668cad2c1f96333da2cf67833acd9af663da1",
+      "limitation": "payload and daemon affinity 0,1; no delegated cpuset, so early runc CPU placement is not proven",
+      "output": "container writable overlay2 layer; copied out after timing",
+      "ready": "host pre-exec marker before docker start --attach; create/import excluded",
+      "runtime_cgroup_observation": "host cgroup namespace; payload reports actual parent path once before exec",
+      "setup_sha256": "6bde13efa3bad434104db7cad93882cca5af95220e4cf8a24053a48a4b062498",
+      "storage_driver": "overlay2"
+    },
+    "fc-system": {
+      "assets_summary": {
+        "disk_sha256": {
+          "root_disk": "c3c0fcb52cbfe63fbf80159a66990c6d66e875a3bc1b1b8fede40098dce4efab",
+          "work_disk": "582ca7367061104dabc8ed0ce4d79f319b735911f386e94b37034e57b6ee807c"
+        },
+        "kernel_receipt_sha256": "b9f102941262a6671f52e5cb0f361df5b8a45192b8e54e71ad00d6fd559ed350",
+        "kernel_sha256": {
+          "config": "de2947fbecd9addbf0612ba44a963e082bb34a35a552184b10a00e62690756f8",
+          "extractor": "f81eb1706b6be6fe452d6dfa019b8b3b06030e27316a64c5e16c267a40584126",
+          "initrd": "9da85569fdccde17f235407a1cd87a6fcaae25c89f90c47de30239c4f78c9069",
+          "kernel": "50a85e7c4c13307eb8a9ef79873e550ee21ef53a91c45f9b69cabc5c91ad2703",
+          "provenance": "0dd26dab29b058294df69a271a5737ce48f2a17a69e7cf6472be969a1a7d039a",
+          "vmlinuz": "2e8f2993295da228471a6e6849469b40be4513303f413029f62e565d44d4fc47"
+        },
+        "manifest": {
+          "files": 25,
+          "sha256": "6474c8930711c34cdc7355260e4e405e233e20a940bd394b1e8ac60d801cea12"
+        },
+        "minimal_init_sha256": {
+          "init": "fa145f0a7d929ad2392d669f30f614f60e79b6716ce967f0452033b081feddcf",
+          "init.c": "f020db152a0cca542dd4ae1eea92e9683a1926cfd71cae5c783e33639054653c"
+        },
+        "root_disk_bytes": 8589934592,
+        "schema": 1,
+        "work_disk_bytes": 8589934592
+      },
+      "device_cache": "Firecracker Writeback with flush enabled",
+      "durability": "payload file/directory synchronization retained; normal work unmount/reboot-to-exit outside completion clock",
+      "executor": "Firecracker",
+      "guest_memory_mib": 512,
+      "guest_vcpus": 2,
+      "kernel": {
+        "distribution": "Fedora Linux 44",
+        "origin": "official-distro-stock",
+        "package": "kernel-core",
+        "package_version": "7.2.8-200.fc44.x86_64",
+        "pvisor_firmware": false,
+        "source_url": "https://src.fedoraproject.org/rpms/kernel"
+      },
+      "network": "no network device",
+      "runtime": {
+        "sha256": "c41309a2452e05149c5183e867c4d34b9b8d07e2885673d465714e238ad57d98",
+        "version": "Firecracker v1.13.1\n\n2026-10-17T21:41:04.593999421 [anonymous-instance:main] Firecracker exiting successfully. exit_code=0"
+      },
+      "storage": "private root and workspace ext4/virtio-blk; root remounted readonly; input readonly bind",
+      "transport": "virtio-mmio",
+      "userspace": "same frozen prepared tools and static payload; minimal PID1, no distro services"
+    },
+    "qemu": {
+      "assets_summary": {
+        "disk_sha256": {
+          "root_disk": "c3c0fcb52cbfe63fbf80159a66990c6d66e875a3bc1b1b8fede40098dce4efab",
+          "work_disk": "582ca7367061104dabc8ed0ce4d79f319b735911f386e94b37034e57b6ee807c"
+        },
+        "kernel_receipt_sha256": "b9f102941262a6671f52e5cb0f361df5b8a45192b8e54e71ad00d6fd559ed350",
+        "kernel_sha256": {
+          "config": "de2947fbecd9addbf0612ba44a963e082bb34a35a552184b10a00e62690756f8",
+          "extractor": "f81eb1706b6be6fe452d6dfa019b8b3b06030e27316a64c5e16c267a40584126",
+          "initrd": "9da85569fdccde17f235407a1cd87a6fcaae25c89f90c47de30239c4f78c9069",
+          "kernel": "50a85e7c4c13307eb8a9ef79873e550ee21ef53a91c45f9b69cabc5c91ad2703",
+          "provenance": "0dd26dab29b058294df69a271a5737ce48f2a17a69e7cf6472be969a1a7d039a",
+          "vmlinuz": "2e8f2993295da228471a6e6849469b40be4513303f413029f62e565d44d4fc47"
+        },
+        "manifest": {
+          "files": 25,
+          "sha256": "6474c8930711c34cdc7355260e4e405e233e20a940bd394b1e8ac60d801cea12"
+        },
+        "minimal_init_sha256": {
+          "init": "fa145f0a7d929ad2392d669f30f614f60e79b6716ce967f0452033b081feddcf",
+          "init.c": "f020db152a0cca542dd4ae1eea92e9683a1926cfd71cae5c783e33639054653c"
+        },
+        "root_disk_bytes": 8589934592,
+        "schema": 1,
+        "work_disk_bytes": 8589934592
+      },
+      "boot_firmware": {
+        "name": "bios-256k.bin",
+        "sha256": "3068c0b80988e2f2b04eaeda0b950e139b1760f5d269fc3587b819ff1f9f06c1"
+      },
+      "device_cache": "QEMU cache=writeback with flush enabled",
+      "durability": "payload file/directory synchronization retained; normal work unmount/reboot-to-exit outside completion clock",
+      "executor": "QEMU q35",
+      "guest_memory_mib": 512,
+      "guest_vcpus": 2,
+      "kernel": {
+        "distribution": "Fedora Linux 44",
+        "origin": "official-distro-stock",
+        "package": "kernel-core",
+        "package_version": "7.2.8-200.fc44.x86_64",
+        "pvisor_firmware": false,
+        "source_url": "https://src.fedoraproject.org/rpms/kernel"
+      },
+      "network": "no network device",
+      "runtime": {
+        "sha256": "27cd395848940fc6482256d85096fc64bc4fe3f3e909824d51c202f8314cd9e9",
+        "version": "QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers"
+      },
+      "storage": "private root and workspace ext4/virtio-blk; root remounted readonly; input readonly bind",
+      "transport": "virtio-pci",
+      "userspace": "same frozen prepared tools and static payload; minimal PID1, no distro services"
+    },
+    "qemu-microvm": {
+      "assets_summary": {
+        "disk_sha256": {
+          "root_disk": "c3c0fcb52cbfe63fbf80159a66990c6d66e875a3bc1b1b8fede40098dce4efab",
+          "work_disk": "582ca7367061104dabc8ed0ce4d79f319b735911f386e94b37034e57b6ee807c"
+        },
+        "kernel_receipt_sha256": "b9f102941262a6671f52e5cb0f361df5b8a45192b8e54e71ad00d6fd559ed350",
+        "kernel_sha256": {
+          "config": "de2947fbecd9addbf0612ba44a963e082bb34a35a552184b10a00e62690756f8",
+          "extractor": "f81eb1706b6be6fe452d6dfa019b8b3b06030e27316a64c5e16c267a40584126",
+          "initrd": "9da85569fdccde17f235407a1cd87a6fcaae25c89f90c47de30239c4f78c9069",
+          "kernel": "50a85e7c4c13307eb8a9ef79873e550ee21ef53a91c45f9b69cabc5c91ad2703",
+          "provenance": "0dd26dab29b058294df69a271a5737ce48f2a17a69e7cf6472be969a1a7d039a",
+          "vmlinuz": "2e8f2993295da228471a6e6849469b40be4513303f413029f62e565d44d4fc47"
+        },
+        "manifest": {
+          "files": 25,
+          "sha256": "6474c8930711c34cdc7355260e4e405e233e20a940bd394b1e8ac60d801cea12"
+        },
+        "minimal_init_sha256": {
+          "init": "fa145f0a7d929ad2392d669f30f614f60e79b6716ce967f0452033b081feddcf",
+          "init.c": "f020db152a0cca542dd4ae1eea92e9683a1926cfd71cae5c783e33639054653c"
+        },
+        "root_disk_bytes": 8589934592,
+        "schema": 1,
+        "work_disk_bytes": 8589934592
+      },
+      "boot_firmware": {
+        "name": "qboot.rom",
+        "sha256": "9b9dfc6c25740d6225625570d71cab6805cc9216e68c8932e343266daaeb8c4b"
+      },
+      "device_cache": "QEMU cache=writeback with flush enabled",
+      "durability": "payload file/directory synchronization retained; normal work unmount/reboot-to-exit outside completion clock",
+      "executor": "QEMU microvm",
+      "guest_memory_mib": 512,
+      "guest_vcpus": 2,
+      "kernel": {
+        "distribution": "Fedora Linux 44",
+        "origin": "official-distro-stock",
+        "package": "kernel-core",
+        "package_version": "7.2.8-200.fc44.x86_64",
+        "pvisor_firmware": false,
+        "source_url": "https://src.fedoraproject.org/rpms/kernel"
+      },
+      "network": "no network device",
+      "runtime": {
+        "sha256": "27cd395848940fc6482256d85096fc64bc4fe3f3e909824d51c202f8314cd9e9",
+        "version": "QEMU emulator version 10.2.2 (qemu-10.2.2-1.fc44)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers"
+      },
+      "storage": "private root and workspace ext4/virtio-blk; root remounted readonly; input readonly bind",
+      "transport": "virtio-mmio",
+      "userspace": "same frozen prepared tools and static payload; minimal PID1, no distro services"
+    }
+  },
+  "reference_runtime_observation": {
+    "docker_version": {
+      "Client": {
+        "ApiVersion": "1.56",
+        "Arch": "amd64",
+        "Os": "linux",
+        "Version": "29.8.2"
+      },
+      "Server": {
+        "ApiVersion": "1.56",
+        "Arch": "amd64",
+        "Components": [
+          {
+            "Name": "Engine",
+            "Version": "29.8.2"
+          },
+          {
+            "Name": "containerd",
+            "Version": "2.3.5"
+          },
+          {
+            "Name": "runc",
+            "Version": "1.5.2"
+          },
+          {
+            "Name": "docker-init",
+            "Version": "0.19.0"
+          },
+          {
+            "Name": "rootlesskit",
+            "Version": "3.2.0"
+          }
+        ],
+        "MinAPIVersion": "1.40",
+        "Os": "linux",
+        "Version": "29.8.2"
+      }
+    }
+  },
+  "resource_scale": "128/640 MiB WSS and 1 GiB logical writes at fixed 512 MiB reference; native/host have parent 2 GiB, not 512 MiB guest limit",
+  "role": "user-facing",
+  "sampling": {
+    "aggregate_score": null,
+    "comparison": "cross-mode descriptive levels; no paired causal speedup or confidence interval",
+    "dependent_rounds_per_environment": 3,
+    "estimator": "median of independent environment observations; sum three rounds inside each environment before the aggregate median",
+    "failures": "all retained; no medians for an incomplete backend/case cell; no zero filling or replacement",
+    "independent_environments_per_case_backend": 3,
+    "ready": "launch to payload Ready before case setup; teardown excluded; per-case cohorts, primary M01 only",
+    "sample_ids": [
+      1,
+      2,
+      3
+    ],
+    "tails": "not measured; N3 environment means do not establish P95/P99",
+    "task": "payload work plus declared final synchronization; setup, validation, startup and exit excluded"
+  },
+  "schema": 1,
+  "scope": "fresh cross-mode layered filesystem cohort; 12 mechanisms, four resource anchors, three separate complete workflows",
+  "source": {
+    "artifacts": {
+      "embedded-guest": "493098ca81ae216d4a8fff348ec4f8833172f235a9624c70addd31e7c89e63aa",
+      "pvisor": "f9875b52b041e99cc62871284b68b7183834d238b74e6b4d9851f9d3744fe0a9",
+      "pvisor-cache": "fa1eaf5bdefb180d9a0e179db8809331bcba9debeba7d98327b1273bb142a72d"
+    },
+    "build_profile": "performance",
+    "build_receipt_sha256": "3f790a1d6b6532346043ceb8ac42ab82abdd3ee7f24ea35a7d903239dda781f3",
+    "head": "1a9395eebb8555443323f84be5ab2116bf605a69",
+    "source_files": 1141,
+    "source_hashes_sha256": "1891dcb1ffcb7ec78dadf56831b451509b80e2406c5f0811d2f68184889a2dde"
+  },
+  "state": "partial",
+  "timing": "Ready from common pre-exec launch marker; isolation harness preparation and exit excluded; completed=work+final_sync, setup/validation separate",
+  "toolroot": {
+    "installed": {
+      "bench-artifacts/libkrunfw.so.5.6.2": "e0fde88b23e59f86a37afce0a163061393db66d561f8664304d26cab27730be4",
+      "bench-artifacts/payload": "7fbc8103e8791706e1c9cca01737de00466a4282e5f9da47b2722d5e20278be1",
+      "bench-artifacts/pvisor": "f9875b52b041e99cc62871284b68b7183834d238b74e6b4d9851f9d3744fe0a9",
+      "bench-artifacts/pvisor-cache": "fa1eaf5bdefb180d9a0e179db8809331bcba9debeba7d98327b1273bb142a72d",
+      "bench-artifacts/pvisor-guest": "493098ca81ae216d4a8fff348ec4f8833172f235a9624c70addd31e7c89e63aa",
+      "bench-artifacts/workload": "04696784264d95b50ecfd9d13e2c82aac8cf79e7be0a13b3b5518e5eebfc59bb"
+    },
+    "prepared_tools": {
+      "usr/bin/cc": "153e46b4657620f2baef1b4a70b4b4f275772faa5b0fb9e415697e87ebcb7fea",
+      "usr/bin/git": "86c21d0ccccfb45c107c213b693d1132413959f71c6b0a4165f07c5072d47b34",
+      "usr/bin/python3": "0d64bd6d66d68dac91cdadafc46e22d4f09f22bdc997aaae870f42865b024a3e",
+      "usr/libexec/gcc/x86_64-redhat-linux/16/cc1": "db2d9b0c3b8172c4aba92c570eba00c8c862c9f69d93735a448a5fe4596ac275"
+    },
+    "receipt_sha256": "6bc78357e9bbfbe1ad8055881d2e50dbc7b99e92cadaf092141b7ab7016f6806",
+    "runtime_dependencies": {
+      "lib64/ld-linux-x86-64.so.2": "4e5d39355699e90fa29313d3100e82af4a23290028c58c364d6a249ef6a78e5e",
+      "lib64/libbz2.so.1": "ef3c4ed7e70d03d7c406fb1cea9552e74d0b20006e7d8f66a60dc1a6009f4800",
+      "lib64/libc.so.6": "a5c5ad9d59d3c69eda93aa8f82930ba06cc4e893a113e66c85ad6e96243d53c8",
+      "lib64/libgcc_s.so.1": "c71a62b5ef442ab8cf4470874dee6f2383d73a744f0006b6d287412f131c2e09",
+      "lib64/libm.so.6": "16a03ce6d24c8a46742206d4a9c1d35bb6577ae2384f153dc6ef4a4b62b5357f"
+    }
+  },
+  "validation": "guest round oracle, checked completion and independent host final retained-state oracle; physical overlay markers strictly interpreted",
+  "vm_configuration": {
+    "vm": {
+      "dax": false,
+      "dax_source": "product OverlayFS VM device path disables DAX",
+      "environment": {
+        "PVISOR_FS_PROFILE": "0",
+        "PVISOR_STARTUP_PROFILE": "0",
+        "PVISOR_STARTUP_TIMING": "0",
+        "PVISOR_VM_FS_HOST_WRITEBACK": "0",
+        "PVISOR_VM_FS_WRITEBACK": "0",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": "/__pvisor_reference_no_pyc__",
+        "RUST_LOG": "off"
+      },
+      "executor": "ordinary pvisor CLI VM",
+      "guest_memory_mib": 512,
+      "guest_vcpus": 2,
+      "host_lifecycle": "fresh private Host per case/environment",
+      "requested_guest_writeback": 0,
+      "requested_host_writeback": 0,
+      "rootfs_ownership": "ordinary directory; no immutable-generation claim"
+    },
+    "vm-writeback": {
+      "dax": false,
+      "dax_source": "product OverlayFS VM device path disables DAX",
+      "environment": {
+        "PVISOR_FS_PROFILE": "0",
+        "PVISOR_STARTUP_PROFILE": "0",
+        "PVISOR_STARTUP_TIMING": "0",
+        "PVISOR_VM_FS_HOST_WRITEBACK": "0",
+        "PVISOR_VM_FS_WRITEBACK": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": "/__pvisor_reference_no_pyc__",
+        "RUST_LOG": "off"
+      },
+      "executor": "ordinary pvisor CLI VM",
+      "guest_memory_mib": 512,
+      "guest_vcpus": 2,
+      "host_lifecycle": "fresh private Host per case/environment",
+      "requested_guest_writeback": 1,
+      "requested_host_writeback": 0,
+      "rootfs_ownership": "ordinary directory; no immutable-generation claim"
+    }
+  },
+  "publication_layout": {
+    "archive": "docs-assets-cleanup-20261018",
+    "original_provenance_sha256": "e3532effa8c7498e7e02cc9e45f551969a5103fdd31c501c96ef6937a1c53bf6",
+    "formats": [
+      "csv",
+      "svg"
+    ],
+    "scope": "Public paths deduplicated; measurements and retained output hashes unchanged. Original full publication receipt retained in the local archive."
+  },
+  "download_projection": {
+    "archive": "docs-assets-prune-20261018",
+    "previous_provenance_sha256": "a4c3dbd467664e124d7d18e361b5e2574f886e3a761142d912cce0b4261cd5e9",
+    "archived_outputs": {
+      "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-environments.csv": "b68fcb716a49113112a6664bf7c4c224c9db1400094730e06e3bdc0b5096f553",
+      "docs/overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-rows.csv": "3f451ad1fae2fc48e53aeb75e0c141e82d16a7957b3eccef45f87c5e17d59248"
+    },
+    "measurement_scope_changed": false
+  }
+}

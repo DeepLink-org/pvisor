@@ -1,16 +1,26 @@
 # 选择执行模式后，文件系统任务要等多久？
 
+## 主要结论 {#conclusions}
+
+**在已测的本机负载中，固定负载的 Ready 中位数从直接运行的 2.63 ms 到 pVisor VM 的 111.88 ms。任务耗时取决于读写形态：读取与元数据为主的任务在 host 路径接近直接运行，含批量产物写入的任务可通过写回明显缩短，逐次同步写入与大工作集写入仍有明显成本。**
+
+- **按模式分别预算启动与任务。** Ready 中位数：pVisor host 18.31 ms、staged 23.07 ms、VM 111.88 ms、VM + 写回 115.65 ms；启动等待与任务耗时分别判断。
+- **写回缩短含批量写入的任务。** 解包发布任务的三轮完成中位数从默认 VM 的 11.271 s 降至 5.928 s；以读取和元数据为主的仓库巡检在两种 VM 配置下为 2.128–2.155 s，写回不能改善。
+- **同步写入是主要额外成本。** 每写 4 KiB 即同步的任务，三轮完成中位数为默认 VM 404.73 ms、写回 543.49 ms；允许缓冲合并的 1 KiB 密集小写为默认 649.99 ms、写回 36.49 ms。
+- **大工作集写入存在完成性短板。** 128 MiB 工作集下各 VM 配置均可完成；640 MiB 工作集下两种 VM 配置的四个资源单元均未在 90 秒上限内完成，持续大批量写入需先验证完成性。
+
+| 需求 | 选型含义 |
+|---|---|
+| 以读取、查询、编译为主的工具任务 | host 路径接近直接运行水位；staged 巡检为 0.525 s |
+| 需要 VM 隔离且任务含批量产物写入 | 开启写回，并把最终同步计入任务预算 |
+| 逐写即同步的负载 | 写回反而更慢，宜使用默认 VM 配置 |
+| 工作集超过 128 MiB 的持续写入 | 本批 VM 配置未在协议上限内完成，需另测 |
+
+结果来自三个独立环境的本机浅测；适用条件见[实验设计](#interpretation)，与同批其他方案的逐项数字见[实验数据和分析](#results)。
+
 ## Motivation：为何需要文件系统缓存与写回 {#motivation}
 
 Agent 的仓库巡检、搜索、增量编译和产物发布会反复读写文件，跨越隔离边界的查询、读写与同步都可能增加等待。缓存与写入合并旨在减少重复工作，用户需要判断这些收益能否进入完整任务。选择执行模式时，还要同时比较启动等待、同步后的任务完成时间，以及大工作集和并发写入能否顺利完成。
-
-## 主要结论 {#conclusions}
-
-**在已测负载中，pVisor VM 启动快、同步写入等待短，写回模式下的密集小写与容器处于同一量级。**
-
-- **虚拟机启动更快。** 默认 pVisor VM 的 Ready 中位数为 **111.88 ms**，短于同批 Firecracker 和两种 QEMU 配置。
-- **频繁同步写入更快。** 每写 4 KiB 即同步的任务，默认 pVisor VM 三轮完成中位数为 **404.73 ms**；Firecracker 和两种 QEMU 为 **1,015.66–1,160.67 ms**。
-- **密集小写接近容器性能。** 每次写入 1 KiB 的任务，pVisor VM 写回模式三轮完成中位数为 **36.49 ms**，Docker 为 **31.66 ms**。
 
 ## 实验设计 {#interpretation}
 
@@ -80,12 +90,19 @@ Agent 的仓库巡检、搜索、增量编译和产物发布会反复读写文�
 
 单位 **ms**，每环境三轮完成时间之和的 **N=3 中位数**。小写任务每轮写入 4 MiB，每次 1 KiB；逐次同步任务每轮写入 1 MiB，每次 4 KiB 后立即同步。
 
-| pVisor VM 配置 | 密集小写完成（ms） | 逐次同步完成（ms） |
+| 配置 | 密集小写完成（ms） | 逐次同步完成（ms） |
 | --- | ---: | ---: |
-| 默认 | 649.99 | 404.73 |
-| 开启写回 | 36.49 | 543.49 |
+| Native | 25.61 | 298.14 |
+| pVisor host | 24.77 | 608.67 |
+| pVisor staged | 193.37 | 356.77 |
+| pVisor VM | 649.99 | 404.73 |
+| pVisor VM + writeback | 36.49 | 543.49 |
+| Docker | 31.66 | 355.65 |
+| Firecracker (stock kernel) | 45.98 | 1015.66 |
+| QEMU q35 | 24.17 | 1043.30 |
+| QEMU microvm | 24.62 | 1160.67 |
 
-允许缓冲合并时，这组配置的小写等待较短；每次写后立即同步则限制合并空间，开启写回后反而更慢。评估持续写入应计入最终同步，不能只看写入调用返回。
+允许缓冲合并时，写回模式的密集小写（36.49 ms）与 Native（25.61 ms）、Docker（31.66 ms）处于相近水位，默认 VM 则明显更慢；每次写后立即同步限制了合并空间，开启写回后反而更慢，而默认 VM 在这项负载上短于同批 Firecracker 与 QEMU 参照。评估持续写入应计入最终同步，不能只看写入调用返回。
 
 <details markdown="1">
 <summary>请求粒度、同步边界与全部机制明细</summary>
@@ -128,7 +145,21 @@ Agent 的仓库巡检、搜索、增量编译和产物发布会反复读写文�
 
 ### 工作集与并发边界 {#resource-boundary}
 
-每轮写入 **1 GiB**，只改变工作集 **128/640 MiB** 和并发写入者 **1/4**。在 640 MiB 工作集下，默认与开启写回的 pVisor VM 各有两个单元在 90 秒内未完成；这四个单元均没有完整 N=3 结果。超时不计作零吞吐，也不能换算成正常耗时。
+每轮写入 **1 GiB**，只改变工作集 **128/640 MiB** 和并发写入者 **1/4**。128 MiB 下九种配置均完成，三轮完成时间之和的 N=3 中位数如下（单位 **s**，每轮四个文件、合计写入 1 GiB）：
+
+| 配置 | 128 MiB、1 写入者（s） | 128 MiB、4 写入者（s） |
+| --- | ---: | ---: |
+| Native | 2.676 | 1.571 |
+| pVisor host | 2.722 | 1.494 |
+| pVisor staged | 13.182 | 9.247 |
+| pVisor VM | 41.545 | 15.751 |
+| pVisor VM + writeback | 4.195 | 2.073 |
+| Docker | 2.822 | 1.550 |
+| Firecracker (stock kernel) | 3.006 | 1.825 |
+| QEMU q35 | 2.566 | 1.685 |
+| QEMU microvm | 2.605 | 2.414 |
+
+128 MiB 下，写回 VM 与容器及参考 VM 处于同一量级，默认 VM 的持续同步写入成本明显更高；四个写入者分摊每轮固定的 1 GiB 写入，合计完成时间相应更短。640 MiB 工作集下，默认与开启写回的 pVisor VM 各有两个单元在 90 秒内未完成；这四个单元均没有完整 N=3 结果。超时不计作零吞吐，也不能换算成正常耗时。
 
 <details markdown="1">
 <summary>查看工作集、并发曲线与失败明细</summary>
@@ -150,10 +181,10 @@ Agent 的仓库巡检、搜索、增量编译和产物发布会反复读写文�
 
 ### 启动等待的取值范围 {#quick-results}
 
+共同静态 payload 的 Ready 中位数：pVisor VM 111.88 ms、Firecracker 355.85 ms、QEMU q35 690.86 ms、QEMU microvm 319.05 ms。启动等待与后续任务耗时分别判断。
+
 <details markdown="1">
 <summary>查看九种配置的 Ready 与范围</summary>
-
-共同静态 payload 的 Ready 中位数：pVisor VM 111.88 ms、Firecracker 355.85 ms、QEMU q35 690.86 ms、QEMU microvm 319.05 ms。启动等待与后续任务耗时分别判断。
 
 单位 **ms**，固定元数据负载启动前的共同静态 payload Ready，每配置三个新环境；未把所有负载的启动混为更多独立样本。中位数与范围排除 namespace 准备、任务执行、退出和收尾；这不是旧版 Python Ready 或完整发行版启动。
 
@@ -215,16 +246,16 @@ Native/host/容器使用父组内存，VM 另受 guest 内存边界限制；不�
 <details markdown="1">
 <summary>查看独立保留的历史口径</summary>
 
-原七工具的 [N=5 Ready/驻留环境统计](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident.csv)与[来源](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident-provenance.csv)、[历史 N=30 统计](../../../overrides/assets/benchmarks/data/filesystem/tools/filesystem.csv)，以及此前五模式分层对照，各自保留原始口径；不填入新的 19 项表格，也不计算跨批次优化幅度。
+原七工具的 N=5 Ready/驻留环境统计与来源、历史 N=30 统计，以及此前五模式分层对照，各自保留原始口径；不填入新的 19 项表格，也不计算跨批次优化幅度。
 
 </details>
 
-### 数据下载与复现 {#run}
+### 来源与复现 {#run}
 
 [工作流图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.svg) · [请求粒度图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/write-request-size.svg) · [资源图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg) · [机制图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg)
 
-[全部分层统计](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [逐环境](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-environments.csv) · [逐轮原值](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-rows.csv) · [失败与缺失](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv) · [来源摘要](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
+[全部分层统计](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [失败与缺失](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv) · [来源摘要](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
 
-CSV 的 write_ops/read_ops 是负载显式逻辑操作数，不是 guest→host 请求数，也不包含子工具内部全部 I/O。
+本地完整统计中的 write_ops/read_ops 是负载显式逻辑操作数，不是 guest→host 请求数，也不包含子工具内部全部 I/O。
 
-2026-10-17，独立用户配置批次；原始记录、冻结入口、工具及固件收据保存在本地 `benchmark.new/filesystem/.data/user-layered-references-v2-20261017/`。[复现步骤](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md#user-workloads)。[缓存与异步写工程分析](../design/filesystem-io-performance-analysis.md)独立解释实现开关与请求计数，不用于补齐用户对照。
+2026-10-17，独立用户配置批次；完整 CSV/JSON、原始记录、冻结入口、工具及固件收据保存在本地 `benchmark.new/filesystem/.data/user-layered-references-v2-20261017/`。[复现步骤](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md#user-workloads)。[缓存与异步写工程分析](../design/filesystem-io-performance-analysis.md)独立解释实现开关与请求计数，不用于补齐用户对照。

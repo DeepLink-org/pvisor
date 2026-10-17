@@ -100,7 +100,7 @@ The offload operation happens when entering the idle state and is reported separ
 | Memory offload | 44.1 / 98.1 | 186.4 / 186.3 |
 | Compressed offload | 739.4 / 904.0 | 15.5 / 146.0 |
 
-Compressed backing saves storage for repeated contents but requires encoding, decoding and transient memory. Do not set the complete task's memory cap from its parked reading. CSVs retain peaks, phase CPU and complete measurement scope.
+Compressed backing saves storage for repeated contents but requires encoding, decoding and transient memory. Do not set the complete task's memory cap from its parked reading. Complete local statistics retain peaks, phase CPU and measurement scope.
 
 ### Four VMs with 512 MiB each: strategy comparison {#linux-lifecycle}
 
@@ -133,8 +133,8 @@ The physical pool does not compress unique pages and does not require userfaultf
 
 Append `--memory-pool` to `pvisor-daemon serve` to enable it; the default is off. The pool runs separately from the API process and retains objects across API restart. See [the daemon guide](../../guides/daemon/index.md#memory-pool) for configuration and budgets. This run measures the real daemon pool component and VM path; it does not start the complete OpenSandbox API/SDK data plane or establish long-term stability, real Agent latency or production density.
 
-### Data and reproduction {#run}
+### Sources and reproduction {#run}
 
-[Single-instance readings](../../../../overrides/assets/benchmarks/data/memory/memory-choices.csv) · [Single-instance observed differences](../../../../overrides/assets/benchmarks/data/memory/memory-choices-comparisons.csv) · [Single-instance provenance](../../../../overrides/assets/benchmarks/data/memory/memory-choices-provenance.csv) · [Multi-instance readings](../../../../overrides/assets/benchmarks/data/memory/memory-sharing.csv) · [Multi-instance observed differences](../../../../overrides/assets/benchmarks/data/memory/memory-sharing-comparisons.csv) · [Multi-instance provenance](../../../../overrides/assets/benchmarks/data/memory/memory-sharing-provenance.csv) · [Reproduction commands](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#user-memory-saving-choices)
+[Reproduction commands](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#user-memory-saving-choices)
 
-These CSVs use only the new 512 MiB static cohorts, retaining configuration, N=1, resident/cache scope and source, binary, harness and input-digest links. Original evidence remains local under `.data/`, separate from earlier 256 MiB or historical snapshot results.
+Complete CSV/JSON uses only the new 512 MiB static cohorts, retaining configuration, N=1, resident/cache scope and source, binary, harness and input-digest links. It remains with raw records in local cohorts or the documentation data archive, separate from earlier 256 MiB or historical snapshot results.

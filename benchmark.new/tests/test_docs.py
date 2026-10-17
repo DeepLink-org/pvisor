@@ -94,7 +94,7 @@ class DocumentationTests(unittest.TestCase):
                     page="benchmarks/replay-fidelity.md",
                     tables=[
                         dict(
-                            json="benchmarks/replay-semspec.render.json",
+                            json="../../overrides/assets/benchmarks/replay-semspec.render.json",
                             kind="published",
                             rows=1,
                             columns=list(resolved["codex"]),
@@ -112,7 +112,7 @@ class DocumentationTests(unittest.TestCase):
                             manifest["entry"]: dict(
                                 benchmark_id="B-REPLAY",
                                 page="benchmarks/replay-fidelity.md",
-                                table="benchmarks/replay-semspec.render.json",
+                                table="../../overrides/assets/benchmarks/replay-semspec.render.json",
                                 csv="replay-semspec.csv",
                                 show_batch=False,
                             )
@@ -148,7 +148,7 @@ class DocumentationTests(unittest.TestCase):
                 },
             )
             self.assertEqual(raw_path.read_bytes(), original)
-            self.assertEqual(targets[0].read_bytes(), targets[1].read_bytes())
+            self.assertEqual(targets, [root / "docs/overrides/assets/benchmarks/replay-semspec.render.json"])
             self.assertTrue(DOCS.public_csv_path(root, "replay-semspec.csv").is_file())
             for locale in ("zh", "en"):
                 self.assertFalse((root / f"docs/src/{locale}/benchmarks/replay-semspec.csv").exists())

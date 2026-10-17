@@ -175,24 +175,27 @@ network policy guide owns the executor boundary matrix (summarized in
 observations. Other articles link to these definitions. Implementation pages
 explain mechanisms and code ownership. Benchmark and comparison pages state
 method, environment and date, and keep dated raw samples in local `.data/` directories.
-Derived Markdown tables and resolved JSON tables are versioned. Processed CSV
-downloads live once under `docs/overrides/assets/benchmarks/data/`; use
-`benchmark.new/public_assets.py`'s `csv_path(repo, filename, locale)` to resolve
-their topic/study path. Both languages share numeric CSV bytes. The historical
-`index.csv` and `supervision-cost.csv` contain translated prose and use locale
-subdirectories; localized `.render.json` projections remain beside articles.
-Public figures use SVG; PDF exports stay outside the published tree.
-Public benchmark provenance summaries live once under
+Version the Markdown tables and only the resolved JSON projections needed by the
+build. Static tables already in articles, per-round/per-environment records,
+historical tables and engineering intermediate tables do not receive public
+downloads by default. `benchmark.new/public_assets.py` allowlists the necessary
+user-statistics CSVs; `csv_path(repo, filename, locale)` resolves their shared
+download path under `docs/overrides/assets/benchmarks/data/`. Both languages use
+one copy. Keep localized `.render.json` projections beside articles and complete
+CSV/JSON in the original batch's local publication directory or `.data/` archive.
+Public figures use SVG; PDF exports stay outside the published tree. Engineering
+experiments publish SVG only, retaining complete statistics and provenance locally.
+Only necessary user-benchmark provenance summaries live under
 `docs/overrides/assets/benchmarks/`; both languages link to their local
 `assets/benchmarks/` copies published by Zensical. Keep the batch, measurement
 scope, configuration and input/binary/evidence hashes in these summaries.
 Full manifests, per-file harness records, host paths and complete package receipts
 remain in the benchmark's ignored `.data/`. Publishers update the shared summary
-and only the JSON projections referenced by articles. Original records,
-unreferenced historical outputs and replaced provenance from the asset cleanup
-remain in `benchmark.new/.data/docs-assets-cleanup-20261018/`; its migration
-inventory preserves original paths, byte hashes and destinations. Moving assets
-must preserve measurement values, statistical scope and evidence hashes.
+and only the JSON projections needed by the build. Historical and engineering
+CSV/JSON and replaced provenance remain in
+`benchmark.new/.data/docs-assets-prune-20261018/`; its migration inventory preserves
+original paths, byte hashes and destinations. Reducing public files must preserve
+article tables and figures, measurement values, statistical scope and evidence hashes.
 Keep executable benchmark templates and raw `*.bench.json`
 evidence outside the published article tree; articles reference resolved JSON.
 The native `exclude` plugin excludes `.data/` at every depth, and the generated

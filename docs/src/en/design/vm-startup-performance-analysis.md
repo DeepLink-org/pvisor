@@ -20,7 +20,7 @@ All 540 formal runs and 27 warmups passed, with unchanged artifact hashes and no
 
 **Overall performance acceptance still fails:** staged startup is variable, and the [same-artifact filesystem retest](filesystem-performance-analysis.md#concurrency-retest) shows remaining VM write/tool regressions. These require separate diagnosis; host exit gains cannot stand in for other backends or internal task performance.
 
-[Full statistics, distributions and paired intervals](../../../overrides/assets/benchmarks/data/concurrency/concurrency-startup-summary.csv) · [Artifact and experiment provenance](../../../overrides/assets/benchmarks/data/concurrency/concurrency-retest-provenance.csv). Raw samples, per-trial stdout/timing, Run Bundles, inputs and build receipts are local under `benchmark.new/startup/.data/concurrency-retest2-20261011/`. These engineering version comparisons do not overwrite historical cross-runtime user tables or cover cold caches, concurrent workloads, macOS or initial service startup. Polling every 0.5 s may miss brief, inaccessible or unrecognized interference.
+Full statistics, distributions, paired intervals, artifact and provenance records remain in the local batch or archive. Raw samples, per-trial stdout/timing, Run Bundles, inputs and build receipts are under `benchmark.new/startup/.data/concurrency-retest2-20261011/`. These engineering version comparisons do not overwrite historical cross-runtime user tables or cover cold caches, concurrent workloads, macOS or initial service startup. Polling every 0.5 s may miss brief, inaccessible or unrecognized interference.
 
 ## Capability checks for current generic and trimmed kernels {#kernel-capabilities}
 
@@ -50,7 +50,7 @@ Shell uses 128 MiB guest RAM, tools 16 GiB and networking 1 GiB, under an existi
 
 Both configurations enable SMP, KVM guest, CPU mitigations, seccomp/filter, namespaces, virtio-mmio, virtio-fs, virtio-net and IPv4. Trimming disables PCI, ACPI, guest security/SELinux and audit. Both still enable `CONFIG_BLOCK`, so device trimming cannot be described as removing all block infrastructure. Configuration differences do not establish identical hardening. Validation covers the listed HTTP and private-memory restore workloads, without a complete device, TLS/DNS/UDP/IPv6, escape-resistance or SDK-state restoration guarantee. It establishes no startup, physical-memory or density gain.
 
-[Derived capability CSV](../../../overrides/assets/benchmarks/data/kernel/kernel-capabilities.csv) · [Actual configuration options CSV](../../../overrides/assets/benchmarks/data/kernel/kernel-config-capabilities.csv). The two independent raw reports, individual outputs, snapshots, input manifests and build/audit receipts stay in local `.data/`; CSVs retain cohort timestamps, sample counts and digest associations. See the [kernel configuration experiment manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#paired-kernel-configuration-experiment). Startup and complete-task gains need separate formal paired timing with the current CLI; capability passes or file sizes cannot establish them.
+Capability and actual-configuration CSVs remain in the local batch or archive, retaining cohort timestamps, sample counts and digest associations. The two independent raw reports, individual outputs, snapshots, input manifests and build/audit receipts stay in local `.data/`. See the [kernel configuration experiment manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#paired-kernel-configuration-experiment). Startup and complete-task gains need separate formal paired timing with the current CLI; capability passes or file sizes cannot establish them.
 
 ## 1. Conclusions
 
@@ -412,6 +412,8 @@ Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/follow
 
 ## 5. Reproduction and raw data
 
+Complete CSV/JSON, provenance summaries and raw records remain in each batch's local `.data/` or publication directory. Previously public data files are archived under `benchmark.new/.data/docs-assets-prune-20261018/`; the migration inventory retains original paths, byte hashes and archive locations.
+
 ### macOS / HVF
 
 Prepare the release CLI, Alpine rootfs and both firmware directories, then run:
@@ -428,7 +430,7 @@ python3 benchmark/pvisor/vm_ready.py \
 
 The output directory must not exist. The harness uses the Python standard library and existing percentile/Bundle validation helpers. Main and diagnostic batches are separate, warmups are excluded, and outputs include `results.json`, incrementally flushed `samples.jsonl`, input hashes and per-trial stdout/stderr. Its schema is `pvisor-vm-readiness/v1`; do not mix it with `startup.py` command-completion measurements.
 
-Local logs are in `target/vm-startup-20261003/`; the raw JSON link above contains the report. Historical persistence, entropy and firmware experiments remain under `review_project/03-modules/`. The older C/Rust guest-init runner comparison remains in `benchmark/pvisor/README.md`; it excludes full CLI preparation and is not directly comparable with this table.
+Local logs are in `target/vm-startup-20261003/`; the formal JSON report and previously public data files remain in the local archive described above. Historical persistence, entropy and firmware experiments remain under `review_project/03-modules/`. The older C/Rust guest-init runner comparison remains in `benchmark/pvisor/README.md`; it excludes full CLI preparation and is not directly comparable with this table.
 
 The measured harness snapshot is retained in `review_project/06-evidence/vm-startup-20261003/`; the reusable harness subsequently added explicit pipe closure and `PVISOR_STARTUP_TIMING=0` for uninstrumented samples; the snapshot preserves the measured implementation.
 

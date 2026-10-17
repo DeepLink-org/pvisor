@@ -14,7 +14,7 @@ from pathlib import Path
 
 from common import METRIC_SCOPE, READY_EXIT_SCOPE, REPO, ROOT, artifact_summary, digest, save
 from update import _publish_csv, display_table, validate_batch
-from public_assets import csv_path as public_csv_path
+from public_assets import check_public_assets, csv_path as public_csv_path, is_public_csv
 
 INVENTORY = ROOT / "docs.json"
 MACRO = re.compile(r"\{\{ table\((.*?)\) \}\}")
@@ -71,7 +71,7 @@ def check_live_tables(inventory):
         for descriptor in page["tables"]:
             if descriptor["kind"] != "published":
                 continue
-            target = base / descriptor["json"]
+            target = (base / descriptor["json"]).resolve()
             columns = dict(zip(descriptor["columns"], descriptor["columns"]))
             if page["page"] == "benchmarks/startup.md":
                 scope = READY_EXIT_SCOPE
@@ -150,11 +150,14 @@ def check_inventory():
             if (args[1] if len(args) == 2 else {}) != table["options"]:
                 raise ValueError(f"render options differ: {path}")
         for source in page["source_csv"]:
+            if not is_public_csv(Path(source).name):
+                raise ValueError(f"static or intermediate CSV belongs in local evidence: {source}")
             if not (path.parent / source).is_file():
                 raise ValueError(f"missing source CSV: {source}")
     for locale in ("zh", "en"):
         if not set((REPO / f"docs/src/{locale}/benchmarks").rglob("*.md")) <= paths:
             raise ValueError("benchmark article missing from inventory")
+    check_public_assets(REPO)
     check_live_tables(inventory)
     return len(paths), sum(len(p["tables"]) for p in inventory["pages"])
 
@@ -205,7 +208,10 @@ def publish_docs(batch):
             or target["rows"] != len(table)
         ):
             raise ValueError("public table schema differs; create a new binding")
-        targets.append(REPO / "docs/src" / locale / target["json"])
+        targets.append((REPO / "docs/src" / locale / target["json"]).resolve())
+    targets = list(dict.fromkeys(targets))
+    if not is_public_csv(binding["csv"]):
+        raise ValueError("public CSV is not in the current download inventory")
     provenance = {
         key: manifest.get(key)
         for key in (

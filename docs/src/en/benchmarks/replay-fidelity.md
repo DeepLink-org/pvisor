@@ -48,9 +48,9 @@ Mini-SWE-Agent does not trigger the split rule, so its row reports the full-samp
 
 ### Hyperfine: direct prepare-only command {#hyperfine}
 
-This independent cohort measures one fixed synthetic trajectory (task 0) per adapter, 60 runs without warmups. Hyperfine directly launches `pvisor-replay` with `--shell=none`; Python reset and fidelity checks run outside timing for every execution. All runs must preserve exact arguments, source digests and historical observations, execute zero tools and leave the workspace unchanged. Results cover full command completion, not the twenty-fixture historical distribution above. The binary digest identifies the artifact; its correspondence to current source is unverified. Host caches are retained, CPU affinity and artifact identities are recorded in the provenance download. No paired speedup or tail claim is made.
+This independent cohort measures one fixed synthetic trajectory (task 0) per adapter, 60 runs without warmups. Hyperfine directly launches `pvisor-replay` with `--shell=none`; Python reset and fidelity checks run outside timing for every execution. All runs must preserve exact arguments, source digests and historical observations, execute zero tools and leave the workspace unchanged. Results cover full command completion, not the twenty-fixture historical distribution above. The binary digest identifies the artifact; its correspondence to current source is unverified. Host caches are retained, CPU affinity and artifact identities are recorded in the batch provenance summary. No paired speedup or tail claim is made.
 
-{{ table("replay-semspec.render.json") }}
+{{ table("../../../overrides/assets/benchmarks/replay-semspec.render.json") }}
 
 [Hyperfine data CSV](../../../overrides/assets/benchmarks/data/replay/replay-semspec.csv) · [Batch provenance](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md#replay)
 
@@ -58,6 +58,8 @@ This independent cohort measures one fixed synthetic trajectory (task 0) per ada
 
 These results support structure, argument and observation fidelity for pinned short prefixes. Real sessions, newer CLIs, long prefixes, token costs, macOS, remote-connection recovery and subsequent model execution remain unmeasured. Tool replay and actual environment restoration need separate correctness and cost checks.
 
-### Downloads and reproduction {#run}
+### Sources and reproduction {#run}
 
-[Derived data CSV](../../../overrides/assets/benchmarks/data/replay/replay-fidelity.csv) · [Artifact and audit provenance CSV](../../../overrides/assets/benchmarks/data/replay/replay-provenance.csv) · [Evidence source summary](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+Complete CSV/JSON and raw records remain in their local cohorts or the documentation data archive.
+
+[Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

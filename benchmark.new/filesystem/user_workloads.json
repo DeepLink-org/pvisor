@@ -1,0 +1,3 @@
+{
+  "filesystem-user-layered": "$ python3 @BATCH@/harness/user_workloads.py --measure @BATCH@"
+}

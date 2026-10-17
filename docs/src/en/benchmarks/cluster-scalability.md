@@ -32,7 +32,7 @@ Three warmups and 30 formal batches per condition; Worker counts are randomized 
 
 ### Completed-task throughput and physical memory {#execution}
 
-Historical Controller/Worker cohort, measured on 2026-10-06 local time. The following tables and downloads describe retired artifacts, not the daemon. N=30 complete batches per condition, 12 tasks per batch. The three conditions verify 1,080 formal tasks, with zero failures or OOM. P50 is the median. Peak memory is the complete parent cgroup's `memory.peak`, including descendants, in MiB.
+Historical Controller/Worker cohort, measured on 2026-10-06 local time. The following tables describe retired artifacts, not the daemon. N=30 complete batches per condition, 12 tasks per batch. The three conditions verify 1,080 formal tasks, with zero failures or OOM. P50 is the median. Peak memory is the complete parent cgroup's `memory.peak`, including descendants, in MiB.
 
 | Workers | Completed / attempted tasks | 12-task P50, s | Validated rate P50, tasks/s | Whole-group peak P50, MiB |
 |---:|---:|---:|---:|---:|
@@ -47,7 +47,7 @@ A single Worker is capped at 0.5 cores. Additional execution slots increase avai
 | Two Workers | −15.81 | [−15.93, −15.03] |
 | Four Workers | −21.35 | [−21.36, −20.97] |
 
-Intervals use 30 paired rounds and 5,000 resamples; both exclude zero. Downloaded P95 values are descriptive only, with no P99 or production-tail guarantee.
+Intervals use 30 paired rounds and 5,000 resamples; both exclude zero. P95 values in the complete local statistics are descriptive only, with no P99 or production-tail guarantee.
 
 ### Long-term retained history {#controller}
 
@@ -62,16 +62,16 @@ N=3 independent processes per size; table values are P50, with observed minimum�
 | 100,000 | 827.9 (827.9–828.0) | 1.422 (1.410–1.435) | 196.21 |
 | 1,000,000 | 8142.4 (8127.4–8144.1) | 14.622 (14.411–14.710) | 1962.11 |
 
-The retired Controller's million-record cohort observed about 8 GiB lifecycle peak and about 14.62 s warm-log replay; neither is a current sizing recommendation. Recovery excludes Worker reconciliation and cold-disk reads. The medians across processes for typed in-memory count calls are about 107–110 ns, describing synthetic state-count calls rather than HTTP/CLI latency; see the download for details.
+The retired Controller's million-record cohort observed about 8 GiB lifecycle peak and about 14.62 s warm-log replay; neither is a current sizing recommendation. Recovery excludes Worker reconciliation and cold-disk reads. The medians across processes for typed in-memory count calls are about 107–110 ns, describing synthetic state-count calls rather than HTTP/CLI latency; details remain in the complete local statistics.
 
 ### Comparison with existing schedulers {#limits}
 
 Matched workloads and common budgets for Kubernetes, Ray and cloud sandboxes are unmeasured, so no numeric ranking is provided. The archived measurements do not size the current daemon or justify replacing a general scheduler. Single-task Docker, Firecracker and QEMU measurements are in the [end-to-end tasks](agent-tasks.md).
 
-### Historical downloads and provenance {#run}
+### Sources and reproduction {#run}
 
-All five CSVs below are unchanged historical evidence for retired Controller/Worker artifacts. There is no active Cluster measurement or publishing entry; the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md) records retirement, not a new reproduction command.
+The five CSVs remain unchanged in the local documentation data archive as historical evidence for retired Controller/Worker artifacts. There is no active Cluster measurement or publishing entry; the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md) records retirement, not a new reproduction command.
 
-[History costs CSV](../../../overrides/assets/benchmarks/data/controller/controller-history-summary.csv) · [History provenance](../../../overrides/assets/benchmarks/data/controller/controller-history-provenance.csv) · [Throughput and memory CSV](../../../overrides/assets/benchmarks/data/cluster/cluster-summary.csv) · [Paired comparisons CSV](../../../overrides/assets/benchmarks/data/cluster/cluster-comparisons.csv) · [Artifacts and budget summary](../../../overrides/assets/benchmarks/data/cluster/cluster-provenance.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
-Derived tables link one raw report to the per-task evidence audit digest. Raw reports, completion records, service logs, controls, source and binaries stay in local `.data/`. Implementation analysis is in the [Cluster technical analysis](../design/cluster-performance-analysis.md).
+Derived tables link one raw report to the per-task evidence audit digest. Complete CSV/JSON, raw reports, completion records, service logs, controls, source and binaries stay in local `.data/` or the documentation data archive. Implementation analysis is in the [Cluster technical analysis](../design/cluster-performance-analysis.md).

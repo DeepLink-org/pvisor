@@ -48,9 +48,9 @@ Mini-SWE-Agent 未触发分簇规则，该行列出全体样本的 P50。分簇�
 
 ### Hyperfine：直接执行 prepare-only 命令 {#hyperfine}
 
-独立批次为每个适配器固定一条合成轨迹（task 0），采样 60 次，无预热。hyperfine 使用 `--shell=none` 直接启动 `pvisor-replay`；Python 重置和一致性校验在每次计时外执行。所有执行必须保留精确参数、源摘要与历史观测，不执行工具、不改动工作区。数值表示完整命令结束时间，适用范围是这条固定轨迹；上方二十条轨迹的历史分布保留原口径。二进制摘要标识实测制品，与当前源码的构建对应关系未验证。保留宿主缓存；CPU 亲和性和制品标识见来源下载，不据此推导配对改善比例或尾延迟保证。
+独立批次为每个适配器固定一条合成轨迹（task 0），采样 60 次，无预热。hyperfine 使用 `--shell=none` 直接启动 `pvisor-replay`；Python 重置和一致性校验在每次计时外执行。所有执行必须保留精确参数、源摘要与历史观测，不执行工具、不改动工作区。数值表示完整命令结束时间，适用范围是这条固定轨迹；上方二十条轨迹的历史分布保留原口径。二进制摘要标识实测制品，与当前源码的构建对应关系未验证。保留宿主缓存；CPU 亲和性和制品标识见批次来源摘要，不据此推导配对改善比例或尾延迟保证。
 
-{{ table("replay-semspec.render.json") }}
+{{ table("../../../overrides/assets/benchmarks/replay-semspec.render.json") }}
 
 [Hyperfine 数据 CSV](../../../overrides/assets/benchmarks/data/replay/replay-semspec.csv) · [批次来源](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark 复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md#replay)
 
@@ -58,6 +58,8 @@ Mini-SWE-Agent 未触发分簇规则，该行列出全体样本的 P50。分簇�
 
 这些结果支持固定短前缀的结构、参数和观测保真。真实会话、新版 CLI、长前缀、token 成本、macOS、远端连接恢复及后续模型执行未测。需要工具重放或实际环境恢复时，应另行验证其正确性和成本。
 
-### 数据下载与复现 {#run}
+### 来源与复现 {#run}
 
-[加工数据 CSV](../../../overrides/assets/benchmarks/data/replay/replay-fidelity.csv) · [制品与审计来源 CSV](../../../overrides/assets/benchmarks/data/replay/replay-provenance.csv) · [证据来源摘要](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+完整 CSV/JSON 和原始记录保存在对应本地批次或文档数据归档。
+
+[比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

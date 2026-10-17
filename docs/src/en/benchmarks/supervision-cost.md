@@ -32,7 +32,7 @@ The controls are pVisor rootless stage, a detached Git worktree and a btrfs refl
 
 Timing covers task-view creation, executing edits, content review, selective application and disposal, summed across machine steps. Stage's view creation is included in run. Preparing input repositories, resetting every control to an identical starting point and harness correctness checks are excluded. Prepared, long-lived worktree reuse is unmeasured.
 
-Linux/x86_64, AMD Ryzen 7 9700X, Fedora kernel 7.2.8-200.fc44.x86_64, btrfs; the entire execution tree is pinned to host CPUs 0,1. Each backend, size and application condition has thirty independent samples and three warmups, randomized and interleaved with a fixed seed and warm caches. Git automatic maintenance is disabled; reflink is required and cannot fall back to a regular copy. Downloaded provenance identifies frozen artifacts and source digests.
+Linux/x86_64, AMD Ryzen 7 9700X, Fedora kernel 7.2.8-200.fc44.x86_64, btrfs; the entire execution tree is pinned to host CPUs 0,1. Each backend, size and application condition has thirty independent samples and three warmups, randomized and interleaved with a fixed seed and warm caches. Git automatic maintenance is disabled; reflink is required and cannot fall back to a regular copy. Local provenance identifies frozen artifacts and source digests.
 
 Normal application and a host conflict are separate conditions. Every sample must pass complete file inventory and content checks: execution leaves the original unchanged; normal application changes only the ten selected files. The conflict case changes one selected host file before application and requires refusing the entire application while preserving all host content. Stage also requires Run Bundle evidence of staging and rootless isolation. Failures are retained and counted, never timed as zero; no samples are excluded for their speed. Two sizes × two conditions × three backends produce 360 measured samples, with zero failures.
 
@@ -161,10 +161,8 @@ The data covers warm caches and small text files in one directory. It does not c
 
 ### Application-scale and recovery data {#apply-downloads}
 
-[Scale timings CSV](../../../overrides/assets/benchmarks/data/apply/apply.csv) · [Paired Git comparison CSV](../../../overrides/assets/benchmarks/data/apply/apply-comparisons.csv) · [Recovery checks CSV](../../../overrides/assets/benchmarks/data/apply/apply-recovery.csv) · [Concurrent conflicts CSV](../../../overrides/assets/benchmarks/data/apply/apply-concurrent-conflicts.csv) · [Provenance CSV](../../../overrides/assets/benchmarks/data/apply/apply-provenance.csv)
+Local provenance records binary, source, harness and raw-report digests. Timing and concurrent checks use the same binary in separate cohorts. Complete CSV/JSON, raw commands, reports and audit records remain in their local cohorts or the documentation data archive.
 
-Provenance records binary, source, harness and raw-report digests. Timing and concurrent checks use the same binary in separate cohorts. Raw commands, reports and audit records remain in local `.data/`.
+### Sources and reproduction {#run}
 
-### Downloads and reproduction {#run}
-
-[Derived table CSV](../../../overrides/assets/benchmarks/data/supervision/en/supervision-cost.csv) · [Step statistics](../../../overrides/assets/benchmarks/data/workflow/workflow-summary.csv) · [Differences and confidence intervals](../../../overrides/assets/benchmarks/data/workflow/workflow-comparisons.csv) · [Sources and artifacts](../../../overrides/assets/benchmarks/data/workflow/workflow-provenance.csv) · [Prepared-view steps](../../../overrides/assets/benchmarks/data/supervision/supervision-summary.csv) · [Prepared-view paired differences](../../../overrides/assets/benchmarks/data/supervision/supervision-comparisons.csv) · [Prepared-view provenance](../../../overrides/assets/benchmarks/data/supervision/supervision-provenance.csv) · [Evidence source summary](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv)
+[Comparison method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

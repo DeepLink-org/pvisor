@@ -32,7 +32,7 @@
 
 ### 完整任务吞吐和物理内存 {#execution}
 
-历史 Controller/Worker 批次，测量日期 2026-10-06（本地时间）。以下表格和下载对应退役制品，不是 daemon 测量。每档 N=30 个完整批次、每批 12 个任务；三个条件共校验完成 1,080 个正式任务，零失败、零 OOM。P50 为中位数；峰值内存是整个父 cgroup（含子 cgroup）的 `memory.peak`，单位 MiB。
+历史 Controller/Worker 批次，测量日期 2026-10-06（本地时间）。以下表格对应退役制品，不是 daemon 测量。每档 N=30 个完整批次、每批 12 个任务；三个条件共校验完成 1,080 个正式任务，零失败、零 OOM。P50 为中位数；峰值内存是整个父 cgroup（含子 cgroup）的 `memory.peak`，单位 MiB。
 
 | Worker 数 | 完成任务 / 尝试 | 12 任务耗时 P50，s | 有效任务速率 P50，个/s | 整组峰值内存 P50，MiB |
 |---:|---:|---:|---:|---:|
@@ -47,7 +47,7 @@
 | 两个 Worker | −15.81 | [−15.93, −15.03] |
 | 四个 Worker | −21.35 | [−21.36, −20.97] |
 
-区间来自同轮 30 对样本、5,000 次重采样；均不包含零。P95 只在下载表中作参考，没有 P99 或生产尾延迟保证。
+区间来自同轮 30 对样本、5,000 次重采样；均不包含零。P95 仅在本地完整统计中作参考，没有 P99 或生产尾延迟保证。
 
 ### 长期保留历史记录 {#controller}
 
@@ -62,16 +62,16 @@ N=3 个独立进程/规模，表内为 P50；括号是观察到的最小–最�
 | 100,000 | 827.9 (827.9–828.0) | 1.422 (1.410–1.435) | 196.21 |
 | 1,000,000 | 8142.4 (8127.4–8144.1) | 14.622 (14.411–14.710) | 1962.11 |
 
-退役 Controller 的百万记录批次观察到约 8 GiB 生命周期峰值、约 14.62 秒热日志恢复；两者都不是当前容量建议。恢复不包括 Worker 对账或冷磁盘读取。类型化内存查询的各规模的进程中位数汇总约 107–110 ns，仅代表合成状态计数调用，不是 HTTP/CLI 请求延迟；详情见下载表。
+退役 Controller 的百万记录批次观察到约 8 GiB 生命周期峰值、约 14.62 秒热日志恢复；两者都不是当前容量建议。恢复不包括 Worker 对账或冷磁盘读取。类型化内存查询的各规模的进程中位数汇总约 107–110 ns，仅代表合成状态计数调用，不是 HTTP/CLI 请求延迟；详情保存在本地完整统计中。
 
 ### 与已有调度方案的比较边界 {#limits}
 
 Kubernetes、Ray 和云端沙箱的相同负载、共同预算对照未测，不提供数值排名。历史测量不能规划当前 daemon 的容量，也不能作为替换通用调度平台的依据。单任务的 Docker、Firecracker、QEMU 对照见[端到端任务](agent-tasks.md)。
 
-### 历史数据下载与来源 {#run}
+### 来源与复现 {#run}
 
-以下五份 CSV 原字节保留，仅作为退役 Controller/Worker 制品的历史证据。没有活动 Cluster 测量或发布入口；[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)记录退役范围，不提供新复现命令。
+原五份 CSV 已在本地文档数据归档中按原字节保留，仅作为退役 Controller/Worker 制品的历史证据。没有活动 Cluster 测量或发布入口；[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)记录退役范围，不提供新复现命令。
 
-[历史成本 CSV](../../../overrides/assets/benchmarks/data/controller/controller-history-summary.csv) · [历史来源摘要](../../../overrides/assets/benchmarks/data/controller/controller-history-provenance.csv) · [吞吐与内存 CSV](../../../overrides/assets/benchmarks/data/cluster/cluster-summary.csv) · [配对比较 CSV](../../../overrides/assets/benchmarks/data/cluster/cluster-comparisons.csv) · [制品与预算摘要](../../../overrides/assets/benchmarks/data/cluster/cluster-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
-整理表关联同一原始报告及逐任务证据审计摘要。原始报告、完成记录、服务日志、控制配置、源码与二进制保存在本地 `.data/`。实现分析见[Cluster 技术分析](../design/cluster-performance-analysis.md)。
+整理表关联同一原始报告及逐任务证据审计摘要。完整 CSV/JSON、原始报告、完成记录、服务日志、控制配置、源码与二进制保存在本地 `.data/` 或文档数据归档。实现分析见[Cluster 技术分析](../design/cluster-performance-analysis.md)。

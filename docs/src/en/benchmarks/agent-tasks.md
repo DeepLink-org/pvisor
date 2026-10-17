@@ -35,7 +35,7 @@ Scenario analysis also reuses separately registered [filesystem](filesystem.md),
 
 ## Data and analysis {#results}
 
-Measured on 2026-10-06: each fixed-plan backend has 60/60 valid samples and zero measured failures; environment/CLI counts and preflight failures are listed separately. Outputs, exit and execution records must pass validation; staging also requires unchanged host originals and complete retained changes. Every valid slow sample is kept, with no timing-based exclusions. Tables normally show P50; separated distributions show cluster medians and counts. P95 is descriptive only. Raw reports, binaries and input/source manifests stay in ignored `.data/`; public CSVs retain workload, cohort and provenance associations.
+Measured on 2026-10-06: each fixed-plan backend has 60/60 valid samples and zero measured failures; environment/CLI counts and preflight failures are listed separately. Outputs, exit and execution records must pass validation; staging also requires unchanged host originals and complete retained changes. Every valid slow sample is kept, with no timing-based exclusions. Tables normally show P50; separated distributions show cluster medians and counts. P95 is descriptive only. Raw reports, binaries and input/source manifests stay in ignored `.data/`; complete local CSV/JSON retains workload, cohort and provenance associations.
 
 ### Fixed repair and tests {#reference-env}
 
@@ -100,6 +100,8 @@ Claude uses `--bare` with only Bash allowed; Codex uses `--ephemeral` and `dange
 
 <a id="full-ubuntu"></a>
 
-### Downloads and reproduction {#run}
+### Sources and reproduction {#run}
 
-[Scenario evidence CSV](../../../overrides/assets/benchmarks/data/task/task-scenarios.csv) · [Derived statistics CSV](../../../overrides/assets/benchmarks/data/agent/agent-tasks.csv) · [All runtime statistics](../../../overrides/assets/benchmarks/data/runtime/runtime-summary.csv) · [Differences and 95% confidence intervals](../../../overrides/assets/benchmarks/data/runtime/runtime-comparisons.csv) · [Source and artifact provenance](../../../overrides/assets/benchmarks/data/runtime/runtime-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+Complete CSV/JSON and raw records remain in their local cohorts or the documentation data archive.
+
+[Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

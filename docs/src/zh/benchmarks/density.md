@@ -76,8 +76,8 @@ stage 在空闲 128 路通过五轮，但相同环境加入私有数据和 Git �
 
 暂停后的压缩快照与容器 pause 容量尚未完成验证，不能由快照文件大小或单 VM 回收量推算。Firecracker/QEMU 的同预算密度未测；它们的单任务延迟见[端到端任务](agent-tasks.md)。macOS 的对应容量未测。
 
-### 数据下载与复现 {#run}
+### 来源与复现 {#run}
 
-[完整并发扫描 CSV](../../../overrides/assets/benchmarks/data/density/density-summary.csv) · [制品、预算和证据摘要](../../../overrides/assets/benchmarks/data/density/density-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
-整理表保留每个条件的尝试数、完整批次数、失败原因、未知数、OOM、观察范围和来源摘要。原始报告、日志、输入清单及源码/二进制留在本地 `.data/`；没有将失败批次移出容量统计。
+完整 CSV/JSON 保留每个条件的尝试数、完整批次数、失败原因、未知数、OOM、观察范围和来源摘要，与原始记录一起保存在对应本地批次或文档数据归档；没有将失败批次移出容量统计。

@@ -66,12 +66,12 @@ q35 and microvm use one Ubuntu template. Their samples and percentiles remain se
 
 Engineering A/B, instrumented profiles and diagnostic probes remain in [technical analysis](../design/filesystem-performance-analysis.md), outside cross-product main tables.
 
-### Data location and downloads {#evidence-format}
+### Data location and retention {#evidence-format}
 
-Markdown holds derived user-facing tables, with downloadable CSVs beside each article. Raw reports, individual samples, logs, artifact manifests and frozen harnesses live in the relevant directory’s `.data/`, ignored by Git and excluded from the site. CSV downloads contain derived statistics and source summaries, rather than claiming to contain raw samples.
+Markdown retains user-facing tables, with shared CSV downloads only for necessary user statistics. Static tables already in articles, per-round/per-environment records, historical tables and engineering intermediate tables do not receive additional exports by default. Complete CSV/JSON, raw reports, individual samples, logs, artifact manifests and frozen harnesses remain in their local cohorts or the `benchmark.new/.data/docs-assets-prune-20261018/` documentation data archive, outside the published site. Dynamic JSON is limited to display tables needed by the build; public engineering figures use SVG.
 
 See the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md) for reproduction and retention rules.
 
-### Downloads and reproduction {#run}
+### Sources and reproduction {#run}
 
-[Derived table CSV](../../../overrides/assets/benchmarks/data/methodology/methodology.csv) · [Evidence source summary](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

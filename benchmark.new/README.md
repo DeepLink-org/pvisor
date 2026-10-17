@@ -120,11 +120,13 @@ Markdown 单独一行写 `{{ table("../tools.render.json") }}`；文档构建只
 ## 文档表格
 
 [docs.json](docs.json) 登记中英文 benchmark 用户页及相关分析页的 benchmark ID、角色、
-来源 CSV，以及动态表格的 JSON 引用和发布绑定。固定历史表格直接写在 Markdown 中，
+必要公开 CSV，以及构建所需动态表格的 JSON 引用和发布绑定。固定历史表格直接写在 Markdown 中，
 保留原来的数字、统计口径、链接和对齐；构建时不再依赖逐张历史 JSON。
-加工 CSV 统一由 [public_assets.py](public_assets.py) 的 `csv_path(repo, filename, locale)`
-定位到 `docs/overrides/assets/benchmarks/data/`，按主题和实验分组；数值 CSV 中英文共用一份。
-包含译文的 `index.csv`、`supervision-cost.csv` 分语言子目录保存，本地化展示 JSON 留在文章旁。
+公开 CSV 由 [public_assets.py](public_assets.py) 白名单控制，只保留必要用户统计；
+`csv_path(repo, filename, locale)` 定位共享下载，中英文共用一份。
+正文已有的静态表、逐轮逐环境记录、历史和工程中间表不默认另行导出。
+完整 CSV/JSON 留在原批次的本地 publication 目录或 `.data/` 归档，动态 JSON 只保留构建所需投影。
+本地化展示 JSON 留在文章旁。
 复测发布的结果与自动生成的覆盖范围表继续通过 `semspec render` 读取 JSON。
 重复表头可使用 `headers`，链接、代码和对齐通过显式渲染选项保留。
 
@@ -138,20 +140,21 @@ python3 benchmark.new/docs.py publish "$batch"
 `check` 检查文章覆盖、动态 JSON 引用、表结构、未执行命令与 CSV 来源。
 公开的新表还必须逐格等于各条件最新 CSV 的展示值，样本数和计时范围不匹配会阻止构建。
 `publish` 仅接受 `docs.json` 的 live binding，校验对应时钟的原始样本与正确性 hooks，
-向共享位置追加完整精度 CSV，更新本地化展示 JSON 与批次 provenance，原 MD 无需改写。
-provenance 摘要统一保存在 `docs/overrides/assets/benchmarks/`，中英文共用一份；
+仅向共享位置发布白名单内的完整精度 CSV，更新构建所需展示 JSON 与必要用户实验的 provenance，原 MD 无需改写。
+必要 provenance 摘要统一保存在 `docs/overrides/assets/benchmarks/`，中英文共用一份；
 保留批次、计时口径、运行配置、输入/二进制与证据摘要。完整 manifest、逐文件 harness
 清单、宿主路径和软件包收据留在批次 `.data/`。启动仅发布文档引用的 Ready / Exit
 两张 JSON 表，单行复测保留其他条件的来源配置。
 发布器验证 `metric_scope` 与绑定声明的负载配置；中位数与标准差同一行，批次名称放在来源记录，不挤入数值表。
 没有 live binding 的条件会拒绝发布；工程 A/B 不写入用户表。filesystem 的历史 hyperfine 结果
-保留在本地归档，其用户表、下载和发布绑定已删除；新 Python 时钟数据需单独登记文档表与 CSV。改变历史表数据时需同步
+保留在本地归档，其用户表、下载和发布绑定已删除；新 Python 时钟数据需单独登记文档表，必要公开 CSV 按白名单发布。改变历史表数据时需同步
 登记新来源与摘要，不能让旧 CSV 或旧结论自动冒充新实验。原文章归档留在
 `.data/docs-tables-20261011/`；原 CSV 未覆盖。
 整理前的完整文档 provenance 归档于 `.data/docs-provenance-20261011/`。
-公开图表使用 SVG，不再发布 PDF。未被当前文章引用的历史输出、旧 provenance 和原始记录
-保存在 `.data/docs-assets-cleanup-20261018/`，迁移清单记录原路径、字节摘要与新位置。
-集中存放不改变统计口径或测量值；公开摘要保留与原始来源的哈希关联。
+公开图表使用 SVG，不再发布 PDF；工程实验只公开 SVG，完整统计与来源保留在本地 publication。
+历史和工程 CSV/JSON、旧 provenance 等保存在 `.data/docs-assets-prune-20261018/`，
+迁移清单记录原路径、字节摘要与新位置。裁减公开文件不改变正文表图、统计口径或测量值；
+必要公开摘要保留与原始来源的哈希关联。
 
 ## Replay
 

@@ -1,0 +1,17 @@
+case_id,backend,sample,reason
+R03,vm-writeback,1,"nonzero exit, invalid environment, or host verification missing: ValueError('executor/Ready/DONE failed')"
+R03,vm-writeback,1,three dependent round records missing or duplicated
+R03,vm,1,"nonzero exit, invalid environment, or host verification missing: ValueError('executor/Ready/DONE failed')"
+R03,vm,1,three dependent round records missing or duplicated
+R04,vm,1,"nonzero exit, invalid environment, or host verification missing: ValueError('executor/Ready/DONE failed')"
+R04,vm,1,three dependent round records missing or duplicated
+R04,vm-writeback,1,"nonzero exit, invalid environment, or host verification missing: ValueError('executor/Ready/DONE failed')"
+R04,vm-writeback,1,three dependent round records missing or duplicated
+R03,vm,2,planned fresh environment missing
+R03,vm,3,planned fresh environment missing
+R03,vm-writeback,2,planned fresh environment missing
+R03,vm-writeback,3,planned fresh environment missing
+R04,vm,2,planned fresh environment missing
+R04,vm,3,planned fresh environment missing
+R04,vm-writeback,2,planned fresh environment missing
+R04,vm-writeback,3,planned fresh environment missing

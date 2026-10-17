@@ -1,9 +1,0 @@
-{
-  "pVisor VM": {
-    "batch": "pvisor_vm-20261010T190923Z-a6pqcxmk",
-    "metric_scope": "Popen launch to receipt of exact REFERENCE_READY line; perf_counter_ns; preparation and teardown excluded",
-    "measurement_engine": "python-perf_counter_ns",
-    "evidence_sha256": "316cd941068ddf87b6d690ba4fdb124a7b7feb0c8b3c3b50179efdf70a78f7c9",
-    "manifest_sha256": "be31c9369cb2024ec98c04ed10771972c31970ce830e980cbc9e91bc846a1992"
-  }
-}

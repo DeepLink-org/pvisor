@@ -76,8 +76,8 @@ Stage passes five rounds at idle concurrency 128, but adding private data and Gi
 
 Compressed parked snapshots versus container pause have not completed validation. Snapshot file size or single-VM reclamation cannot establish capacity. Firecracker/QEMU density under this budget is unmeasured; their single-task latency is in the [end-to-end tasks](agent-tasks.md). Matching macOS capacity is unmeasured.
 
-### Downloads and reproduction {#run}
+### Sources and reproduction {#run}
 
-[Complete concurrency scan CSV](../../../overrides/assets/benchmarks/data/density/density-summary.csv) · [Artifacts, budget and evidence summary](../../../overrides/assets/benchmarks/data/density/density-provenance.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
-Derived tables retain attempts, complete batches, failure reasons, unknowns, OOM, observed ranges and source digests for every condition. Raw reports, logs, input manifests and source/binaries stay in local `.data/`; failed batches remain in capacity denominators.
+Complete CSV/JSON retains attempts, complete batches, failure reasons, unknowns, OOM, observed ranges and source digests for every condition. It remains with raw records in local cohorts or the documentation data archive; failed batches remain in capacity denominators.

@@ -305,11 +305,12 @@ class DocsTests(unittest.TestCase):
                 assert not set(path for entry in performance for path in entry.values()) & set(
                     path for entry in scenarios for path in entry.values()
                 )
-                csv_path = runpy.run_path(str(ROOT / "benchmark.new/public_assets.py"))["csv_path"]
+                check_public_assets = runpy.run_path(str(ROOT / "benchmark.new/public_assets.py"))["check_public_assets"]
+                check_public_assets(ROOT)
                 for filename in ("task-scenarios.csv", "compare-rl-infra.csv"):
-                    assert csv_path(ROOT, filename).is_file()
                     for locale in ("zh", "en"):
                         assert not (ROOT / "docs/src" / locale / "benchmarks" / filename).exists()
+
 
     def test_native_locale_configs_keep_matching_navigation_without_legacy_redirects(self):
         import tomllib

@@ -1,12 +1,10 @@
 """Publish the measured scope of every user page without inventing missing results."""
 
 import csv
-import io
 import json
 from pathlib import Path
 
 from common import REPO, ROOT, save
-from update import replace
 from public_assets import csv_path
 
 
@@ -136,11 +134,6 @@ def coverage():
                 coverage="full" if full_filesystem else "partial" if current else "historical",
             )
         )
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=list(rows[0]), lineterminator="\n")
-    writer.writeheader()
-    writer.writerows(rows)
-    replace(csv_path(REPO, "measurement-coverage.csv"), output.getvalue())
     for locale in ("zh", "en"):
         base = REPO / "docs/src" / locale / "benchmarks"
         table = {}

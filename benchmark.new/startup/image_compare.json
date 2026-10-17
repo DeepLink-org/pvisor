@@ -1,0 +1,3 @@
+{
+  "warm-prepared-paired": "$ python3 @HARNESS@/image_compare.py --measure @BATCH@"
+}

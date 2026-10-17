@@ -8,7 +8,7 @@
 - **Reach results sooner.** Both short-task experiments showed shorter median waits from launch to checked output with cold client caches.
 - **Reuse downloaded files.** Warm clients use cached content. The experiments required no repeat downloads of file content.
 
-These results come from local experiments with prepared image services. Cache hits still leave mounting and executor startup costs; with the complete image cached, Docker had shorter waits in the application-startup experiments.
+These results come from local experiments with prepared image services. Cache hits still leave mounting and executor startup costs; with the complete image cached, the path that pulls the full image upfront had shorter waits in the application-startup experiments.
 
 ## Motivation: why use lazy images? {#motivation}
 
@@ -180,7 +180,7 @@ The [official TurboOCI performance table][ref-turbooci-performance] times image 
 
 </details>
 
-### Downloads and sources {#run}
+### Sources and reproduction {#run}
 
 <details markdown="1">
 <summary>Statistics downloads, sources and reproduction methods</summary>
@@ -195,11 +195,9 @@ The same-stage file-loading comparison has completed measurement through the new
 
 Stage raw evidence stays in `benchmark.new/startup/.data/overlaybd-lab-20261017/stage-lazy-20261017-a/`. The independent audit recomputes raw clocks and rechecks file validation, mount and device identities, Run Bundles, per-request bytes, 33 rounds of background observations and cleanup, and verifies the semspec export. Binary, runtime-library and frozen-harness hashes are retained; their exact correspondence to a source build is unverified. Only processed statistics and compact provenance are published; raw samples and full inventories stay in local evidence.
 
-[Shell statistics CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-startup-summary.csv) · [Shell differences/preparation CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-startup-details.csv) · [Shell provenance CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-startup-provenance.csv)
+[Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#current-implementation-dockerlazy-comparison)
 
-[NumPy statistics CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-numpy-summary.csv) · [NumPy differences/preparation CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-numpy-details.csv) · [NumPy provenance CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-numpy-provenance.csv) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#current-implementation-dockerlazy-comparison)
-
-Raw evidence stays in `benchmark/pvisor/.data/lazy-shell-current-formal-20261010/` and `lazy-numpy-current-formal-20261010-2/`; each `derive.py` rechecks all 136 launches, frozen inputs, retained OCI digests and cleanup receipts before regenerating CSVs. Build evidence is in `.data/lazy-current-build-20261010/`: 1,193 frozen source inputs and measured binary digests match the retained fresh build. This verifies the recorded relationship without establishing hermetic reproducibility. Failed preflights/cohorts and historical 2026-10-07 data remain separate. These observations are also separate from [prepared-environment startup](startup.md).
+Complete CSV/JSON and raw evidence stay in `benchmark/pvisor/.data/lazy-shell-current-formal-20261010/` and `lazy-numpy-current-formal-20261010-2/`; each `derive.py` rechecks all 136 launches, frozen inputs, retained OCI digests and cleanup receipts before regenerating CSVs. Build evidence is in `.data/lazy-current-build-20261010/`: 1,193 frozen source inputs and measured binary digests match the retained fresh build. This verifies the recorded relationship without establishing hermetic reproducibility. Failed preflights/cohorts and historical 2026-10-07 data remain separate. These observations are also separate from [prepared-environment startup](startup.md).
 
 </details>
 

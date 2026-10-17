@@ -100,7 +100,7 @@ pvisor run --executor vm --memory 512MiB --vm-ram-dedup -- claude
 | 内存卸载 | 44.1 / 98.1 | 186.4 / 186.3 |
 | 压缩卸载 | 739.4 / 904.0 | 15.5 / 146.0 |
 
-压缩 backing 在重复内容上更省存储，但需要编码、解码和临时内存。不要按停驻时的读数设置整个任务的内存上限；峰值、阶段 CPU 与完整样本口径保留在 CSV。
+压缩 backing 在重复内容上更省存储，但需要编码、解码和临时内存。不要按停驻时的读数设置整个任务的内存上限；峰值、阶段 CPU 与完整样本口径保留在本地完整统计中。
 
 ### 四台各 512 MiB 的 VM：方案对比 {#linux-lifecycle}
 
@@ -133,8 +133,8 @@ KSM 在 60 秒内产生了实际页面合并；重复、相同随机、独有随
 
 在 `pvisor-daemon serve` 命令中添加 `--memory-pool` 即可启用，默认关闭；池与 API 进程分离，可跨 API 重启保留对象。配置和预算见 [daemon 指南](../../guides/daemon/index.md#memory-pool)。本轮测量的是实际 daemon 池组件与 VM 的路径，未启动完整 OpenSandbox API/SDK 数据面，不回答长期稳定性、真实 Agent 延迟或生产密度。
 
-### 数据与复现 {#run}
+### 来源与复现 {#run}
 
-[单实例读数](../../../../overrides/assets/benchmarks/data/memory/memory-choices.csv) · [单实例观测差值](../../../../overrides/assets/benchmarks/data/memory/memory-choices-comparisons.csv) · [单实例来源](../../../../overrides/assets/benchmarks/data/memory/memory-choices-provenance.csv) · [跨实例读数](../../../../overrides/assets/benchmarks/data/memory/memory-sharing.csv) · [跨实例观测差值](../../../../overrides/assets/benchmarks/data/memory/memory-sharing-comparisons.csv) · [跨实例来源](../../../../overrides/assets/benchmarks/data/memory/memory-sharing-provenance.csv) · [复现命令](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#user-memory-saving-choices)
+[复现命令](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#user-memory-saving-choices)
 
-这些 CSV 只使用新的 512 MiB 静态批次，保留配置、N=1、常驻/缓存口径及源码、二进制、harness 和输入摘要关联。原始证据留在本地 `.data/`，不混入此前 256 MiB 或历史快照数据。
+完整 CSV/JSON 只使用新的 512 MiB 静态批次，保留配置、N=1、常驻/缓存口径及源码、二进制、harness 和输入摘要关联，与原始记录一起保存在对应本地批次或文档数据归档，不混入此前 256 MiB 或历史快照数据。

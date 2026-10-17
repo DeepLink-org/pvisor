@@ -1,16 +1,26 @@
 # How long do filesystem tasks take in each execution mode?
 
+## Main conclusions {#conclusions}
+
+**In the measured local workloads, median Ready for the fixed payload ranges from 2.63 ms for direct execution to 111.88 ms for the pVisor VM. Task time depends on access shape: read- and metadata-heavy tasks on the host path approach direct-execution levels, tasks with batch artifact writes shorten substantially with writeback, while per-write synchronization and large working sets still carry significant cost.**
+
+- **Budget startup and task time per mode.** Median Ready: pVisor host 18.31 ms, staged 23.07 ms, VM 111.88 ms, VM + writeback 115.65 ms; judge startup waiting and task time separately.
+- **Writeback shortens tasks with batch writes.** The extraction/publication task's three-round completion median drops from 11.271 s with the default VM to 5.928 s with writeback; the read- and metadata-heavy repository inspection takes 2.128–2.155 s under both VM configurations, with no writeback benefit.
+- **Synchronized writes are the main extra cost.** The task that syncs after every 4 KiB write completes three rounds in 404.73 ms (default VM) and 543.49 ms (writeback); dense 1 KiB writes, which allow buffered merging, take 649.99 ms by default and 36.49 ms with writeback.
+- **Large working sets hit a completion limit.** At a 128 MiB working set, all VM configurations finish; at 640 MiB, four resource cells across both VM configurations did not finish within the 90-second limit — validate completion before adopting VM modes for sustained bulk writes.
+
+| Need | Selection guidance |
+|---|---|
+| Read-, query- and build-heavy tool tasks | The host path approaches direct-execution levels; staged inspection takes 0.525 s |
+| VM isolation with batch artifact writes | Enable writeback and include final synchronization in the task budget |
+| Sync-after-every-write workloads | Writeback is slower here; prefer the default VM configuration |
+| Sustained writes with working sets above 128 MiB | This cohort's VM configurations did not finish within the protocol limit; measure separately |
+
+Results come from a local exploratory cohort of three independent environments. Applicability conditions are in [experiment design](#interpretation); per-configuration numbers against the other same-cohort references are in [data and analysis](#results).
+
 ## Motivation: why use filesystem caching and writeback? {#motivation}
 
 Repository inspection, search, incremental builds and artifact publication repeatedly read and write files. Queries, reads, writes and synchronization across isolation boundaries can all add waiting. Caching and write merging aim to reduce repeated work; you need to know whether their benefits reach complete tasks. Choosing an execution mode also requires comparing startup waiting, task completion after synchronization, and whether large working sets and concurrent writes can finish successfully.
-
-## Main conclusions {#conclusions}
-
-**In the measured workloads, pVisor VM offers fast startup and short waits for synchronized writes; with writeback, dense small writes take the same order of time as containers.**
-
-- **Faster VM startup.** Default pVisor VM has a median Ready time of **111.88 ms**, shorter than Firecracker and both QEMU configurations in the same cohort.
-- **Faster frequent synchronized writes.** For the task that synchronizes after every 4 KiB write, default pVisor VM has a median three-round completion time of **404.73 ms**, compared with **1,015.66–1,160.67 ms** for Firecracker and both QEMU configurations.
-- **Dense small writes approach container performance.** For the task issuing 1 KiB writes, writeback-enabled pVisor VM has a median three-round completion time of **36.49 ms**, compared with **31.66 ms** for Docker.
 
 ## Experiment design {#interpretation}
 
@@ -80,12 +90,19 @@ Points represent three independent environments; lines connect the medians for c
 
 Units: **ms**, **N=3 medians** of summed completed times across three rounds in each environment. The small-write task writes 4 MiB per round in 1 KiB calls. The per-write synchronization task writes 1 MiB per round, synchronizing immediately after every 4 KiB write.
 
-| pVisor VM configuration | Dense small-write completion (ms) | Per-write synchronization completion (ms) |
+| Configuration | Dense small-write completion (ms) | Per-write synchronization completion (ms) |
 | --- | ---: | ---: |
-| Default | 649.99 | 404.73 |
-| Writeback enabled | 36.49 | 543.49 |
+| Native | 25.61 | 298.14 |
+| pVisor host | 24.77 | 608.67 |
+| pVisor staged | 193.37 | 356.77 |
+| pVisor VM | 649.99 | 404.73 |
+| pVisor VM + writeback | 36.49 | 543.49 |
+| Docker | 31.66 | 355.65 |
+| Firecracker (stock kernel) | 45.98 | 1015.66 |
+| QEMU q35 | 24.17 | 1043.30 |
+| QEMU microvm | 24.62 | 1160.67 |
 
-Allowing buffered merging reduces small-write waiting under these configurations. Synchronizing immediately after every write limits merging, and enabling writeback then increases waiting. Include final synchronization when evaluating sustained writes; write-call return alone is insufficient.
+With buffered merging allowed, dense small writes with writeback (36.49 ms) sit close to Native (25.61 ms) and Docker (31.66 ms), while the default VM is clearly slower. Synchronizing after every write limits merging, so writeback becomes slower there; the default VM is shorter than the same-cohort Firecracker and QEMU references on this workload. Include final synchronization when evaluating sustained writes; write-call return alone is insufficient.
 
 <details markdown="1">
 <summary>Request size, synchronization boundaries and all mechanism results</summary>
@@ -128,7 +145,21 @@ The horizontal axis shows same-cohort median ratios, with Native = 1; smaller me
 
 ### Working-set and concurrency boundaries {#resource-boundary}
 
-Each round writes **1 GiB**, varying only the **128/640 MiB** working set and **1/4** concurrent writers. At a 640 MiB working set, both default and writeback-enabled pVisor VMs have two cells that do not finish within 90 seconds; all four cells lack complete N=3 results. Timeouts are neither zero throughput nor ordinary durations.
+Each round writes **1 GiB**, varying only the **128/640 MiB** working set and **1/4** concurrent writers. At 128 MiB, all nine configurations finish; the N=3 medians of summed three-round completion times follow (unit **s**, four files and 1 GiB total written per round):
+
+| Configuration | 128 MiB, 1 writer (s) | 128 MiB, 4 writers (s) |
+| --- | ---: | ---: |
+| Native | 2.676 | 1.571 |
+| pVisor host | 2.722 | 1.494 |
+| pVisor staged | 13.182 | 9.247 |
+| pVisor VM | 41.545 | 15.751 |
+| pVisor VM + writeback | 4.195 | 2.073 |
+| Docker | 2.822 | 1.550 |
+| Firecracker (stock kernel) | 3.006 | 1.825 |
+| QEMU q35 | 2.566 | 1.685 |
+| QEMU microvm | 2.605 | 2.414 |
+
+At 128 MiB, the writeback VM sits in the same range as the container and reference-VM configurations, while the default VM's continuous synchronized writes cost clearly more; four writers share the fixed 1 GiB per round, so summed completion is correspondingly shorter. At a 640 MiB working set, both default and writeback-enabled pVisor VMs have two cells that do not finish within 90 seconds; all four cells lack complete N=3 results. Timeouts are neither zero throughput nor ordinary durations.
 
 <details markdown="1">
 <summary>Working-set/concurrency curves and failure details</summary>
@@ -151,10 +182,10 @@ Timeouts establish only that these configurations did not complete within the pr
 
 ### Startup waiting ranges {#quick-results}
 
+Median Ready times for the common static payload are: pVisor VM 111.88 ms, Firecracker 355.85 ms, QEMU q35 690.86 ms and QEMU microvm 319.05 ms. Assess startup waiting time separately from subsequent task time.
+
 <details markdown="1">
 <summary>Ready and ranges for nine configurations</summary>
-
-Median Ready times for the common static payload are: pVisor VM 111.88 ms, Firecracker 355.85 ms, QEMU q35 690.86 ms and QEMU microvm 319.05 ms. Assess startup waiting time separately from subsequent task time.
 
 Units: **ms**, common static-payload Ready before the fixed metadata workload, with three fresh environments per configuration. Startup observations from all workloads are not pooled into more independent samples. Medians and ranges exclude namespace preparation, task execution, exit and cleanup. This differs from the old Python Ready and from full-distribution boot.
 
@@ -216,16 +247,16 @@ Each executor-process run has a 90-second deadline. Normal exit, round results, 
 <details markdown="1">
 <summary>Separately retained historical measurement scopes</summary>
 
-The former seven-tool [N=5 Ready/resident statistics](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident.csv) and [provenance](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident-provenance.csv), the [historical N=30 statistics](../../../overrides/assets/benchmarks/data/filesystem/tools/filesystem.csv), and the earlier five-mode layered comparison each retain their original scope. They do not populate the new 19-workload tables or support cross-cohort improvement estimates.
+The former seven-tool N=5 Ready/resident statistics and provenance, the historical N=30 statistics, and the earlier five-mode layered comparison each retain their original scope. They do not populate the new 19-workload tables or support cross-cohort improvement estimates.
 
 </details>
 
-### Data downloads and reproduction {#run}
+### Sources and reproduction {#run}
 
 [Workflow plot SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.svg) · [Request-size plot SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/write-request-size.svg) · [Resource plot SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg) · [Mechanism plot SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg)
 
-[All layered statistics](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [Per-environment data](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-environments.csv) · [Raw round values](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-rows.csv) · [Failures and missing observations](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv) · [Provenance summary](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
+[All layered statistics](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [Failures and missing observations](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv) · [Provenance summary](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
 
-CSV write_ops/read_ops count explicit logical workload operations, not guest→host requests or all I/O inside child tools.
+In the complete local statistics, write_ops/read_ops count explicit logical workload operations, not guest→host requests or all I/O inside child tools.
 
-2026-10-17, an independent user-configuration cohort. Raw records, frozen entry points and tool/firmware receipts remain locally in `benchmark.new/filesystem/.data/user-layered-references-v2-20261017/`. [Reproduction steps](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md#user-workloads). The separate [cache and asynchronous-write engineering analysis](../design/filesystem-io-performance-analysis.md) explains implementation switches and request counts; it does not fill gaps in the user comparison.
+2026-10-17, an independent user-configuration cohort. Complete CSV/JSON, raw records, frozen entry points and tool/firmware receipts remain locally in `benchmark.new/filesystem/.data/user-layered-references-v2-20261017/`. [Reproduction steps](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md#user-workloads). The separate [cache and asynchronous-write engineering analysis](../design/filesystem-io-performance-analysis.md) explains implementation switches and request counts; it does not fill gaps in the user comparison.

@@ -50,6 +50,8 @@
 
 挂载授权、rootfs 和配置决定边界，其他配置需要单独验证。所列检查不是内核漏洞或完整逃逸审计，也不证明远端副作用可回滚；macOS 尚未测量。实际执行模式与默认行为见[执行器边界](../security/executor-boundaries.md)。
 
-### 数据下载与复现 {#run}
+### 来源与复现 {#run}
 
-[加工矩阵 CSV](../../../overrides/assets/benchmarks/data/isolation/isolation-tests.csv) · [制品与审计来源 CSV](../../../overrides/assets/benchmarks/data/isolation/isolation-provenance.csv) · [证据来源摘要](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+完整 CSV/JSON 和原始记录保存在对应本地批次或文档数据归档。
+
+[比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

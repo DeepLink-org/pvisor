@@ -66,12 +66,12 @@ q35 和 microvm 使用同一 Ubuntu 模板；样本和百分位数与其他批�
 
 工程 A/B、带计数器的 profile 和诊断探针保存在[技术分析](../design/filesystem-performance-analysis.md)，不作为跨产品主表。
 
-### 数据位置与下载 {#evidence-format}
+### 数据位置与保留 {#evidence-format}
 
-Markdown 保存面向用户的加工表格，每篇附可下载的同目录 CSV。原始报告、逐次样本、日志、制品清单和冻结 harness 放在相关目录的 `.data/`，被 Git 忽略，也不发布到站点。CSV 只保留整理后的统计和来源摘要，不能伪装成原始样本。
+Markdown 保留面向用户的表格，仅为必要的用户统计提供共享 CSV 下载；正文已有的静态表、逐轮逐环境记录以及历史和工程中间表不默认另行导出。完整 CSV/JSON、原始报告、逐次样本、日志、制品清单和冻结 harness 保存在对应本地批次或 `benchmark.new/.data/docs-assets-prune-20261018/` 文档数据归档，不发布到站点。动态 JSON 只保留构建所需的展示表，公开工程图使用 SVG。
 
 复现与来源保留规则见[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)。
 
-### 数据下载与复现 {#run}
+### 来源与复现 {#run}
 
-[整理后的表格 CSV](../../../overrides/assets/benchmarks/data/methodology/methodology.csv) · [证据来源摘要](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

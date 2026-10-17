@@ -1,4 +1,4 @@
-# Where does pVisor have an advantage over existing workflows?
+# Which workloads fit pVisor, and at what cost?
 
 ## Conclusions {#conclusions}
 
@@ -58,12 +58,12 @@ This table separates new measurements from historical evidence. Data is updated 
 
 {{ table("measurement-coverage.render.json", {"markdown":true}) }}
 
-[Coverage CSV](../../../overrides/assets/benchmarks/data/overview/measurement-coverage.csv). Filesystem coverage refers to the nine-mode, 19-workload N3 protocol, with four incomplete resource cells; historical N5/N30 does not fill its gaps.
+Filesystem coverage refers to the nine-mode, 19-workload N3 protocol, with four incomplete resource cells; historical N5/N30 does not fill its gaps.
 
-### Downloads and reproduction {#run}
+### Sources and reproduction {#run}
 
 [Nine-mode layered statistics](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [Provenance summary](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
 
-[Historical per-round statistics CSV](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident.csv) · [Same-cohort differences and intervals](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident-comparisons.csv) · [Provenance and conditions](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident-provenance.csv)
+Complete CSV/JSON and raw records for other topics remain in their local cohorts or the documentation data archive.
 
-[Historical N30 filesystem statistics](../../../overrides/assets/benchmarks/data/filesystem/tools/filesystem.csv) · [Same-cohort filesystem intervals](../../../overrides/assets/benchmarks/data/filesystem/comparisons/filesystem-comparisons.csv) · [Historical N30 filesystem provenance](../../../overrides/assets/benchmarks/data/filesystem/provenance/filesystem-provenance.csv) · [Historical runtime statistics](../../../overrides/assets/benchmarks/data/runtime/runtime-summary.csv) · [Historical runtime intervals](../../../overrides/assets/benchmarks/data/runtime/runtime-comparisons.csv) · [Historical runtime provenance](../../../overrides/assets/benchmarks/data/runtime/runtime-provenance.csv) · [Workflow statistics](../../../overrides/assets/benchmarks/data/workflow/workflow-summary.csv) · [Workflow intervals](../../../overrides/assets/benchmarks/data/workflow/workflow-comparisons.csv) · [Workflow provenance](../../../overrides/assets/benchmarks/data/workflow/workflow-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

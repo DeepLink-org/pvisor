@@ -64,8 +64,8 @@ host deny-all 和 VM deny-all 各 30/30 批次阻止对同一本地服务的直�
 
 Podman 使用 host network，提供普通 OCI 对照；pVisor OCI 还经过策略代理，所测边界不同。Docker bridge、Firecracker/QEMU 网络、macOS、TLS 和公网 API 未测，不补成数字排名。完整任务的 Docker/Firecracker/QEMU 对照见[端到端任务](agent-tasks.md)。
 
-### 数据下载与复现 {#run}
+### 来源与复现 {#run}
 
-[网络统计 CSV](../../../overrides/assets/benchmarks/data/network/network-summary.csv) · [配对比较 CSV](../../../overrides/assets/benchmarks/data/network/network-comparisons.csv) · [制品与验证摘要](../../../overrides/assets/benchmarks/data/network/network-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
-原始报告、响应计时、命令日志、输入与构建清单，以及逐次输出证据审计保存在本地 `.data/`。
+完整 CSV/JSON、原始报告、响应计时、命令日志、输入与构建清单，以及逐次输出证据审计保存在对应本地批次或文档数据归档。

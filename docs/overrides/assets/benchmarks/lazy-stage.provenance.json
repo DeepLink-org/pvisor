@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "benchmark_id": "B-LAZY-STARTUP",
+  "role": "user-facing",
+  "state": "passed",
+  "batch": "stage-lazy-20261017-a",
+  "measured_on": "2026-10-17",
+  "scope": "same-host-staged-lower-readonly",
+  "counts": {
+    "formal_rows": 120,
+    "samples_per_cell": 30,
+    "warmup_rows": 12
+  },
+  "configuration": {
+    "executor": "same pVisor host staged (rootless_process)",
+    "lowers": {
+      "pvisor": "read-only cache host FUSE",
+      "turbo": "read-only TurboOCI/OverlayBD ext4"
+    },
+    "workload": {
+      "file_count": 4,
+      "bytes_per_trial": 2575738,
+      "image_program_execution": false,
+      "source_files": {
+        "usr/lib/os-release": {
+          "bytes": 410,
+          "sha256": "cf72627ff81aef345d0a9f3807eb80f1035e0f80fe2932d12d94efc02fd68104"
+        },
+        "usr/bin/dash": {
+          "bytes": 129856,
+          "sha256": "c626229526bb58ec2d0f585f3c3ae1412e6f973b4353385042d11c38d8426917"
+        },
+        "usr/lib/x86_64-linux-gnu/libc.so.6": {
+          "bytes": 2190608,
+          "sha256": "85e64f97e348786a8fb4d9f3d52fec289e2fb86bba20f0731dfe61990525e0f7"
+        },
+        "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": {
+          "bytes": 254864,
+          "sha256": "bda779ea9e9ad234f60315477d7cfd0bdde861cd8ddd9df8cdaf62f18c4cec14"
+        }
+      }
+    },
+    "workload_cpu_affinity": [
+      12,
+      13
+    ],
+    "service_cpu_affinity": [
+      14,
+      15
+    ],
+    "clock": "Popen before common Docker exec; exact verified stdout and normal wrapper exit (includes lower open/rpull/mount, staged CLI and unmount)",
+    "cache": "fresh private client cache and remount, then same persistent client cache and new mount/stage; host page cache retained",
+    "budget": "same taskset 12,13; services 14,15; no enclosing cgroup memory cap claimed",
+    "transport": "pVisor: private Unix proxy to loopback TCP cache; TurboOCI: lab loopback HTTP registry; no WAN or latency injection",
+    "platform": "Linux-7.2.10-200.fc44.x86_64-x86_64-with-glibc2.43",
+    "source_build_relationship": "existing runtime rlib/CLI; exact source-build correspondence unverified; hashes frozen"
+  },
+  "images": {
+    "source_oci_digest": "sha256:88a381d5b5eeb2b35d3ad70925a362c37ce569daf43ede89ff818ec20e4d3794",
+    "derived_oci_digest": "sha256:2db913afbb14ee34ccf158ef310913dca4c3739c493b6e2d35258520c2721526",
+    "lab_image_id": "sha256:ccf69eefe2ad6aaa10f307bc2f728f80692e6727de55a563fd16b2ad3db0ee46"
+  },
+  "binary_sha256": {
+    "pvisor": "2eda5e349edd9ac4eba9144c7d0f9aca6f081ba26d3c6b9cba0b899e7d96ff4b",
+    "pvisor-cache": "e03d7fde16812779bcdf7c6ddce3fb8005b6b6e7049d2bb39c2be29fd816a1af",
+    "lazy-stage-mount": "4132cea308565ff78f5835b7a6bc7185e7f4d33a1e1b5783f4731a2c2d44306c",
+    "ctr": "d0c5df7388e19cdad2f8fbbed9038fdf22d3068af8910e9bc75622fe3a940bdd",
+    "overlaybd-snapshotter": "0f103437d2ca9d3fcf8ace893aad5f06af66092ab5b79e97395908fa2df2e137",
+    "overlaybd-tcmu": "de3d5cc435cb489793be933a0d43352f72710c7e5becf54237c3545e26d6243a",
+    "containerd": "0bfb5b5f841d37373a4207f309883802c5b8c6e8074362cd3a7443952fb30d9d",
+    "containerd-shim-runc-v2": "22e1268f1dc6b1a6c84202ccf1fd02a510f4a1f2e3f96b49ff4a82c1a6a03eb3",
+    "runc": "0c0f374f4f288c3f7196980495ad9dc56182f71df8eb1c591a369a581815cce9"
+  },
+  "statistics": {
+    "summary": "P50 of 30 formal samples per cell",
+    "bootstrap_replicates": 5000,
+    "bootstrap_seed": 20261017,
+    "bootstrap_unit": "paired round",
+    "interval": "percentile paired bootstrap 95% CI",
+    "estimand": "difference and ratio of marginal medians",
+    "difference_direction": "pvisor - turbo",
+    "ratio_direction": "pvisor / turbo",
+    "undefined_ratio": "blank CSV cells with ratio_defined=false"
+  },
+  "evidence_sha256": {
+    "audit.json": "9432f1f8e16c573b52fb997604ca65f356c54dd49b0205f46b978fc7eb043d51",
+    "summary.json": "ae4bb96449657a0114ab495a71a8854af3da1ee2b8ca032609131053d5fc13bb",
+    "records.json": "3c0de75be0ede5d4077dc12459a89263432c62d48e76d2af03bcf7ff0d3b2ff7",
+    "protocol.json": "88ce3dec41f74567edbb244f37c3bfeaa110c1287a3a2143a0afb320ac3e6251",
+    "in.bench.json": "a8700cbdcf2b0eb4262010cdc16bb4c6933f6989172b8b6dfac4e800d179e883",
+    "in.render.json": "2da126f50a2385c994e762536006381110f1cf1b67d95c424fa931fdea42c9bd",
+    "measured-row.json": "cda0c87375080413537eef5860e02753a039acc3d2f518b42b7d12a8e7042a1a"
+  },
+  "outputs": {
+    "docs/overrides/assets/benchmarks/data/lazy/lazy-stage-summary.csv": "2864533f01d5fd66b258bc726b81905be22d4b067da78f516d9df2276547facf",
+    "docs/overrides/assets/benchmarks/data/lazy/lazy-stage-comparisons.csv": "2c515d26923d280b1f69f7c2953c55e694de3878a843f15e6d5d3af47c224404"
+  },
+  "limitations": [
+    "The published metrics are full lower loading and staged file validation, not execution of an OCI image program.",
+    "Client open/rpull, mounting, the common staged CLI and unmount are timed. Server preparation, conversion and cold reset are excluded.",
+    "Host page cache is retained; cold describes private client state. Local Unix/TCP and HTTP paths differ; no WAN is measured.",
+    "Affinity does not establish equal whole-node CPU or memory budgets, or eliminate shared-resource interference.",
+    "Cache totals include its protocol framing; registry totals are response-body bytes. Neither is HTTP/TCP wire traffic or a Ready transfer cutoff.",
+    "Mounted-stage subphase metrics and old VM/container cohorts are not included in these CSVs."
+  ],
+  "publication_layout": {
+    "archive": "docs-assets-cleanup-20261018",
+    "original_provenance_sha256": "b06078a0368ec5c2e0cd4682ba85812af2bbd46cda327ed8c7ad94339f3c9bed",
+    "formats": [
+      "csv",
+      "svg"
+    ],
+    "scope": "Public paths deduplicated; measurements and retained output hashes unchanged. Original full publication receipt retained in the local archive."
+  }
+}

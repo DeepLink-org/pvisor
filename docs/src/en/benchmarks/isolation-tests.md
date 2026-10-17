@@ -50,6 +50,8 @@ These are path and Unix socket fixture results. TCP policy is covered separately
 
 Mount grants, rootfs and configuration determine the boundary; other configurations require separate validation. These checks are not a kernel-vulnerability or comprehensive escape audit and do not establish rollback of remote side effects. macOS remains unmeasured. See [executor boundaries](../security/executor-boundaries.md) for execution modes and current defaults.
 
-### Downloads and reproduction {#run}
+### Sources and reproduction {#run}
 
-[Derived matrix CSV](../../../overrides/assets/benchmarks/data/isolation/isolation-tests.csv) · [Artifact and audit provenance CSV](../../../overrides/assets/benchmarks/data/isolation/isolation-provenance.csv) · [Evidence source summary](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+Complete CSV/JSON and raw records remain in their local cohorts or the documentation data archive.
+
+[Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

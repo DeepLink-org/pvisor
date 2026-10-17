@@ -28,6 +28,12 @@ python3 benchmark.new/filesystem/publish_user_workloads.py --batch ABS_BATCH --c
 python3 benchmark.new/filesystem/publish_user_workloads.py --batch ABS_BATCH
 ```
 
+公开下载只保留当前九模式对照的`levels`、`ready`、`failures`三张CSV、四张SVG及一份
+来源摘要；环境点和逐轮明细不进入站点。五模式旧对照仅可输出SVG，其CSV和JSON留在
+本地。发布器仍完整验证所有原始记录、五张分析CSV与SVG/PDF图库存，再把完整派生材料
+保存在`ABS_BATCH/publication/<namespace>/`。`--check`不创建目录或写入归档；
+`--destination-root`只改变公开材料的审阅目录，本地归档始终跟随输入批次。
+
 payload/fixture批次只需完成`workloads_v2_run.py --prepare`，不需要先运行工程A/B；
 其准备协议与固定工具环境见[WORKLOADS.md](WORKLOADS.md)。CLI目录须包含
 `build-receipt.json`和`bin/{pvisor,pvisor-guest,pvisor-cache}`。新批次冻结这些制品，
@@ -123,7 +129,11 @@ python3 benchmark.new/filesystem/workloads_v2_audit.py ABS_BATCH
 `curves_cli.py` 用真实普通 CLI 七工具验证落地效果，独立于 SDK 机制曲线。
 `read_cache_curves.py` 单独扫描 1–768 MiB 的 Immutable lower 工作集，在 512 MiB
 guest 内连续五次 reopen、内部三轮，展示吞吐、READ 消除与容量边界的历史变化。
-`publish_io_curves.py` 校验来源及完整样本后，将派生 CSV 与 SVG/PDF 同步到双语工程页。
+工程发布器`publish_workloads_v2.py`、`publish_guest_writeback.py`及其tuning、CLI入口、
+`publish_io_curves.py`只向站点输出SVG。完整CSV、JSON来源摘要和对应派生图归档在
+主输入批次的`publication/<namespace>/`，PDF继续保留在原分析目录；CLI入口没有图时
+仅做本地归档。组合I/O曲线以`--shape`批次作为归档主目录。归档清单完整描述材料，
+`public_outputs`仅列实际公开的图；阶段计时、来源校验和SVG/PDF完整性检查均不减少。
 这些结果不写入下述原生工具表或跨运行时用户排名。
 
 ## 原生 metadata/read 表

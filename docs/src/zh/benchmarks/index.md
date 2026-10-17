@@ -1,4 +1,4 @@
-# pVisor 相比已有方案，在哪些场景有优势？
+# pVisor 适合哪些场景，各自代价是多少？
 
 ## 主要结论 {#conclusions}
 
@@ -58,12 +58,12 @@
 
 {{ table("measurement-coverage.render.json", {"markdown":true}) }}
 
-[覆盖清单 CSV](../../../overrides/assets/benchmarks/data/overview/measurement-coverage.csv)。 文件系统覆盖对应九配置、19项负载的N3协议，四个资源单元不完整；历史N5/N30不填补新协议的缺失。
+文件系统覆盖对应九配置、19项负载的N3协议，四个资源单元不完整；历史N5/N30不填补新协议的缺失。
 
-### 数据下载与复现 {#run}
+### 来源与复现 {#run}
 
 [九配置分层统计](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [来源摘要](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
 
-[历史分轮统计 CSV](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident.csv) · [同批差异与区间](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident-comparisons.csv) · [来源与条件](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident-provenance.csv)
+其他主题的完整 CSV/JSON 和原始记录保存在对应本地批次或文档数据归档。
 
-[历史 N30 文件系统统计](../../../overrides/assets/benchmarks/data/filesystem/tools/filesystem.csv) · [同批文件系统置信区间](../../../overrides/assets/benchmarks/data/filesystem/comparisons/filesystem-comparisons.csv) · [历史 N30 文件系统来源](../../../overrides/assets/benchmarks/data/filesystem/provenance/filesystem-provenance.csv) · [历史 Runtime 统计](../../../overrides/assets/benchmarks/data/runtime/runtime-summary.csv) · [历史 Runtime 置信区间](../../../overrides/assets/benchmarks/data/runtime/runtime-comparisons.csv) · [历史 Runtime 来源](../../../overrides/assets/benchmarks/data/runtime/runtime-provenance.csv) · [Workflow statistics](../../../overrides/assets/benchmarks/data/workflow/workflow-summary.csv) · [Workflow intervals](../../../overrides/assets/benchmarks/data/workflow/workflow-comparisons.csv) · [Workflow provenance](../../../overrides/assets/benchmarks/data/workflow/workflow-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

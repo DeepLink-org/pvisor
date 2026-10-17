@@ -62,8 +62,8 @@ Native Agent resume owns the client's session/context. Prepare-only supplies a c
 
 Training throughput, useful-sample success, reward, retries and end-to-end resource cost remain unmeasured. OpenHands, SWE-Gym and verl integrations need separate acceptance; an adapter's prefix fidelity is insufficient evidence.
 
-### Downloads and reproduction {#run}
+### Sources and reproduction {#run}
 
-[Scenario evidence CSV](../../../overrides/assets/benchmarks/data/compare/compare-rl-infra.csv) retains topic, source, cohort, statistic, counts, values and limitations. Source summaries: [density](../../../overrides/assets/benchmarks/data/density/density-summary.csv), [repair/CLI](../../../overrides/assets/benchmarks/data/agent/agent-tasks.csv), [startup](../../../overrides/assets/benchmarks/data/startup/startup.csv), [replay](../../../overrides/assets/benchmarks/data/replay/replay-fidelity.csv), [lazy startup/payload](../../../overrides/assets/benchmarks/data/lazy/lazy-startup-summary.csv), [isolation](../../../overrides/assets/benchmarks/data/isolation/isolation-tests.csv), [VM memory](../../../overrides/assets/benchmarks/data/memory/memory-choices.csv). Artifact digests and full controls stay with each owning topic's provenance downloads; raw evidence stays in local `.data/`.
+Complete CSV/JSON, artifact digests, controls and raw records for each topic remain in their local cohorts or the documentation data archive, retaining provenance and statistical scope.
 
 [Comparison method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
