@@ -298,6 +298,21 @@ slot privately: reads retain the shared physical page, while writes use kernel
 COW. This path does not require userfaultfd and does not compress unique pages.
 Local cold-RAM compression remains a separate userfaultfd mode.
 
+The physical pager uses UKSM-inspired region scheduling: productive regions
+receive larger scan quotas, COW/unstable regions lose priority, and every region
+retains exploration work. Residency queries cover only selected regions. See
+[the scanner contract](../../docs/src/en/design/memory-optimization/deduplication.md#adaptive-scan).
+
+Select `--memory-pool --memory-pool-mode compressed` for the Linux sealed
+compressed pool instead. Equal decoded 64 KiB blocks share an object across VM
+sessions; unique eligible blocks use fill/zstd compression. Each object is a
+read-only memfd sealed against writes and size changes. The client validates
+the descriptor, complete decoded bytes and identity before the pager rechecks
+and discards RAM. CPU/device accesses restore private RAM locally through the
+existing kernel-fault userfaultfd pager. Missing userfaultfd authority fails VM
+startup without fallback or host-policy changes. Physical sharing and compressed
+eviction are separate modes, fixed in persisted configuration.
+
 The daemon starts or reuses the detached
 `pvisor-daemon memory-pool --directory DIR` component with configuration-bound
 private state under `<state>/memory-pool/`. This component expects the daemon's
@@ -313,15 +328,31 @@ Indexes, VM mappings, threads and allocator memory add overhead. Budget rejectio
 keeps the original page resident. An older compressed pool is not reused by the
 physical-sharing client; drain old VMs and use fresh pool state when upgrading.
 
+Compressed-mode byte accounting includes frame headers and 4 KiB file-page
+rounding. Admission requires at least 1/8 savings after rounding plus a
+conservative 256-byte metadata allowance. The same object/connection/reference
+limits apply. Each object and delivered reference consumes a file descriptor;
+OS descriptor limits may also reject publication while preserving original RAM.
+Restore and local release issue no IPC. Bounded release batches flush during
+publication/stats, including idle pager maintenance. Disconnected pins remain
+budgeted at the publisher until pidfd confirms peer exit. After service loss,
+new publication stops permanently while retained handles still decode locally.
+Stats then count local pinned bytes/objects with cross-session sharing unknown
+(reported as zero), and emit `pvisor-sealed-pool publication_disabled=true
+accounting_scope=local-pins`. Recovery can still queue behind an in-progress
+publication's store lock; recovery scheduling and latency acceptance are unvalidated.
+
 Reserve host memory for the pool separately from sandbox admission: its process
 is outside individual sandbox cgroups and their hard limits. Scanning skips
 nonresident RAM and leaves untouched capacity sparse. Shared reads do not restore
 private RAM; COW writes and scanning consume memory and CPU; scanning releases obsolete
 pool references after writes. Budget for the actual
 working set and startup/write peaks.
-The pool must stay alive while dependent VMs run; loss fails those VMs, and a
-stale socket is not silently replaced. State-directory retention supports API
-restart, not pool-process or host-reboot recovery. The VM/pool benchmark includes
+The physical pool must stay alive while dependent VMs run; its loss fails those
+VMs. Compressed clients retain already delivered backing after service loss,
+but neither mode reconnects or silently replaces a stale socket. State-directory
+retention supports API restart, not pool-process or host-reboot recovery.
+The VM/pool benchmark includes
 the pool component in one group; it does not establish full API/SDK conformance
 or production density.
 
@@ -347,6 +378,40 @@ Run targeted checks with:
 just test pvisor-daemon
 ```
 
+Pool tests launch the actual component, check sharing/budgets and local recovery
+after killing the service, and retain disconnected pins until client exit.
+They do not exercise guest userfaultfd discard/refault or prove physical savings.
+
+The separate `compressed_pool_case` correctness driver starts at most two
+256 MiB/one-vCPU native VMs and a 32 MiB pool. It waits for known shared and
+per-guest payload blocks to have external pool references, terminates the pool,
+then checks full guest digests, private writes and virtio-fs file round trips.
+It uses the same pool component but bypasses the OpenSandbox API/image bootstrap.
+It needs KVM, kernel-fault userfaultfd authority and local guest firmware:
+
+```sh
+cargo build --locked -p pvisor-daemon --example compressed_pool_case
+PVISOR_CASE_VM_LIBRARY_DIR=/absolute/firmware \
+  PVISOR_EXPERIMENTAL_MEMORY_METRICS=1 \
+  target/debug/examples/compressed_pool_case /tmp/pv-cmp-check
+```
+
+The output path must be fresh and short; `result.json` records success/failure.
+`PVISOR_CASE_ROOTFS` and `PVISOR_CASE_VM_PYTHON` can select an alternate Linux
+rootfs/Python. On 2026-10-18, the probe passed on Linux x86_64/KVM after
+userfaultfd access was granted: both guests completed, with positive discard
+counters and increasing restoration counters after service loss. It writes
+through virtio-fs before full payload digest reads, then verifies private writes
+and a second file round trip. The result includes per-guest recovery counters.
+This establishes scoped correctness, not physical savings or latency acceptance.
+
+Append `--physical` to run the same two-VM driver against the raw-page pool.
+This mode keeps the service alive, verifies known payload sharing and independent
+writes/file I/O, then requires each guest's diagnostics to show adaptive scan,
+successful merge and COW observations. The Linux x86_64/KVM probe passed with
+the adaptive region scheduler on 2026-10-18. It does not compare scan throughput,
+CPU cost or memory savings against linear scanning or UKSM.
+
 These conventional tests do not launch native sandboxes or establish prepared-image,
 SDK, isolation or density validation.
 
@@ -361,4 +426,3 @@ SDK, isolation or density validation.
 | `runtime.rs` | Runtime trait, VM-only NativeRuntime, detached supervisor, IPC/cgroup identity and vsock bridges |
 | `memory_pool.rs` | Daemon-owned bounded cold-page pool, private socket and restart reuse |
 | `main.rs` | Daemon CLI/configuration, listener and maintenance lifecycle |
-

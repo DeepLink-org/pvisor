@@ -13,8 +13,9 @@ storage, no FUSE and no external pool. It is distinct from `vm.ram_compression`
 (FUSE file backing), and is eviction/refault probing rather than a read-access
 heat detector. Neither it nor [pooled-server compression](compression-pool.md)
 is a production-benefit claim. The macOS/HVF heap pool remains experimental and
-can fail dependent VMs when its service is lost; client-owned immutable backing
-is still a proposal.
+can fail dependent VMs when its service is lost. Linux sealed compressed backing
+is implemented experimentally, with process-level handoff/recovery tests and a
+passing two-VM guest discard/refault and file-I/O probe after service termination.
 
 ## Ownership and data flow {#architecture}
 
@@ -42,6 +43,7 @@ is required; compiled support does not grant permission and missing authority
 fails startup. It rejects dedup, file/FUSE backing, snapshot capture/restore,
 whole-VM [offload](offload.md), and external memory pools; see the
 [local contract](compression-local.md#direction). Linux sealed `memfd` pool
-delivery remains proposed; a macOS sealed equivalent is not delivered. Start from the
+delivery has process-level tests and a passing scoped real-guest UFFD probe;
+a macOS sealed equivalent is not delivered. Start from the
 [optimization architecture](index.md); [memory evidence](proof-of-concept.md#memory-evidence)
 establishes no known production net gains or verified net physical-memory savings.

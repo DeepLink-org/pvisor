@@ -17,6 +17,8 @@ pub struct SealedReference {
 pub struct SealedClient {
     client: PoolClient,
     local: BTreeMap<ImageId, (u64, usize)>,
+    pending: Vec<u64>,
+    disabled_reported: bool,
 }
 impl SealedClient {
     /// Negotiate immutable compressed handoff; legacy GET-only and physical
@@ -35,12 +37,50 @@ impl SealedClient {
         Ok(Self {
             client,
             local: BTreeMap::new(),
+            pending: Vec::new(),
+            disabled_reported: false,
         })
     }
     /// Whether the publication connection has not yet failed. This is not a
     /// liveness probe; existing references do not require a live connection.
     pub fn connected(&self) -> bool {
         self.client.stream.is_some()
+    }
+    fn disable(&mut self) {
+        self.client.stream.take();
+        self.pending.clear();
+        if !self.disabled_reported {
+            eprintln!("pvisor-sealed-pool publication_disabled=true accounting_scope=local-pins");
+            self.disabled_reported = true;
+        }
+    }
+    // Never called from restore/release: those operations perform no publisher
+    // RPC, though they may wait for another operation holding the store lock. Tokens remain covered by the server's reference limit
+    // until PUT/STATS flushes them, or process exit releases disconnected pins.
+    fn flush_releases(&mut self) {
+        while self.connected() && !self.pending.is_empty() {
+            let count = self.pending.len().min(256);
+            let tokens = &self.pending[..count];
+            let result = self.client.exchange(|stream| {
+                let mut frame = Vec::with_capacity(count * 9);
+                for token in tokens {
+                    frame.push(RELEASE);
+                    frame.extend_from_slice(&token.to_le_bytes());
+                }
+                stream.write_all(&frame)?;
+                for _ in tokens {
+                    if let Some(error) = status(stream)? {
+                        return Err(error);
+                    }
+                }
+                Ok(Ok(()))
+            });
+            if result.is_err() {
+                self.disable();
+            } else {
+                self.pending.drain(..count);
+            }
+        }
     }
     /// Publish one stable 64 KiB block. Fully consumed capacity/compressibility
     /// rejection and disabled publication return WouldBlock with no new handle.
@@ -49,6 +89,7 @@ impl SealedClient {
         if bytes.len() != BLOCK_BYTES {
             return Err(invalid("sealed pool requires 64 KiB blocks"));
         }
+        self.flush_releases();
         if !self.connected() {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -57,7 +98,7 @@ impl SealedClient {
         }
         let expected = identity(bytes);
         let session = self.client.session.clone();
-        let object = self.client.exchange(|stream| {
+        let result = self.client.exchange(|stream| {
             let mut frame = Vec::with_capacity(bytes.len() + 5);
             frame.push(PUT_SEALED);
             frame.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
@@ -80,7 +121,11 @@ impl SealedClient {
                 token,
                 object,
             }))
-        })?;
+        });
+        if !self.connected() {
+            self.disable();
+        }
+        let object = result?;
         self.local
             .entry(expected)
             .or_insert((0, object.object.charged_bytes()))
@@ -99,23 +144,14 @@ impl SealedClient {
         self.owns(object)?;
         object.object.restore(output)
     }
-    /// Drop local authority and notify the publisher when connected. A failed
-    /// notification disables publication; the service keeps disconnected pins
-    /// budgeted until this process exits. Already restored RAM remains valid.
+    /// Drop local authority without IPC and queue a bounded release token.
+    /// The next put/stats flushes notifications outside fault recovery. A failed
+    /// flush disables publication; disconnected pins stay budgeted at the
+    /// publisher until this process exits. Already restored RAM remains valid.
     pub fn release(&mut self, object: SealedReference) -> io::Result<()> {
         self.owns(&object)?;
         if self.connected() {
-            let result = self.client.exchange(|stream| {
-                stream.write_all(&[RELEASE])?;
-                stream.write_all(&object.token.to_le_bytes())?;
-                Ok(match status(stream)? {
-                    Some(error) => Err(error),
-                    None => Ok(()),
-                })
-            });
-            if result.is_err() {
-                self.client.stream.take();
-            }
+            self.pending.push(object.token);
         }
         let id = object.object.id();
         let (count, _) = self
@@ -133,11 +169,12 @@ impl SealedClient {
     /// zero cross-session count (sharing is then unknown). No reconnect or stale
     /// remote counters. Use `connected` to distinguish these accounting scopes.
     pub fn stats(&mut self) -> io::Result<PoolStats> {
+        self.flush_releases();
         if self.connected() {
             match self.client.stats() {
                 Ok(stats) => return Ok(stats),
                 Err(_) => {
-                    self.client.stream.take();
+                    self.disable();
                 }
             }
         }
@@ -172,5 +209,124 @@ impl pvisor_vm::api::ColdRamStore for SealedClient {
             session_references: stats.session_references,
             cross_session_objects: stats.cross_session_objects,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client(
+        pool: Arc<Mutex<crate::ram_backing::sealed::SealedPool>>,
+        refs: usize,
+    ) -> (SealedClient, std::thread::JoinHandle<io::Result<()>>) {
+        let (client, server) = UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || serve_sealed(server, pool, refs));
+        let mut client = PoolClient::new(client, Duration::from_secs(2)).unwrap();
+        // This is also the runtime's safe negotiation order.
+        assert!(client.enable_shared_mapping().is_err());
+        (SealedClient::new(client).unwrap(), worker)
+    }
+
+    #[test]
+    fn sealed_sessions_share_one_compressed_inode_and_release_independently() {
+        use std::os::unix::fs::MetadataExt;
+        let pool = Arc::new(Mutex::new(crate::ram_backing::sealed::SealedPool::new(
+            4096, 1,
+        )));
+        let (mut a, ta) = client(pool.clone(), 2);
+        let (mut b, tb) = client(pool, 2);
+        let bytes = vec![0x61; BLOCK_BYTES];
+        let ar = a.put(&bytes).unwrap();
+        let br = b.put(&bytes).unwrap();
+        assert_eq!(
+            ar.object.file().metadata().unwrap().ino(),
+            br.object.file().metadata().unwrap().ino()
+        );
+        let stats = a.stats().unwrap();
+        assert_eq!(
+            (
+                stats.encoded_bytes,
+                stats.objects,
+                stats.cross_session_objects
+            ),
+            (4096, 1, 1)
+        );
+        let mut out = vec![0; BLOCK_BYTES];
+        assert!(b.restore(&ar, &mut out).is_err());
+        assert!(a.restore(&ar, &mut out[..4096]).is_err());
+        a.release(ar).unwrap();
+        assert_eq!(a.stats().unwrap().session_references, 0);
+        b.restore(&br, &mut out).unwrap();
+        assert_eq!(out, bytes);
+        b.release(br).unwrap();
+        assert_eq!(b.stats().unwrap().objects, 0);
+        drop(a);
+        drop(b);
+        ta.join().unwrap().unwrap();
+        tb.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn sealed_reference_budget_and_deferred_release_preserve_connection() {
+        let pool = Arc::new(Mutex::new(crate::ram_backing::sealed::SealedPool::new(
+            4096, 1,
+        )));
+        let (mut a, worker) = client(pool, 1);
+        assert!(a.put(&[0; 4096]).is_err());
+        let ar = a.put(&vec![7; BLOCK_BYTES]).unwrap();
+        assert_eq!(
+            a.put(&vec![7; BLOCK_BYTES]).err().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            a.put(&vec![8; BLOCK_BYTES]).err().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(a.connected());
+        a.release(ar).unwrap();
+        assert_eq!(a.pending.len(), 1);
+        let next = a.put(&vec![8; BLOCK_BYTES]).unwrap();
+        assert!(a.pending.is_empty());
+        a.release(next).unwrap();
+        assert_eq!(a.stats().unwrap().objects, 0);
+        drop(a);
+        worker.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn legacy_get_pool_cannot_negotiate_sealed_ownership() {
+        let pool = Arc::new(Mutex::new(CompressedPool::new(4096, 1)));
+        let (client, server) = UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || serve(server, pool, 1));
+        let client = PoolClient::new(client, Duration::from_secs(2)).unwrap();
+        assert!(SealedClient::new(client).is_err());
+        worker.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn sealed_restore_and_release_never_contact_the_publisher() {
+        let pool = Arc::new(Mutex::new(crate::ram_backing::sealed::SealedPool::new(
+            4096, 1,
+        )));
+        let (mut a, worker) = client(pool, 1);
+        let ar = a.put(&vec![7; BLOCK_BYTES]).unwrap();
+        // Remove the transport while retaining a separate connection solely to
+        // flush cleanup. Recovery itself must work with no socket in the client.
+        let stream = a.client.stream.take().unwrap();
+        let mut out = vec![0; BLOCK_BYTES];
+        a.restore(&ar, &mut out).unwrap();
+        assert_eq!(out, vec![7; BLOCK_BYTES]);
+        let token = ar.token;
+        a.release(ar).unwrap();
+        assert_eq!(a.stats().unwrap().session_references, 0);
+        assert!(a.put(&vec![8; BLOCK_BYTES]).is_err());
+        // Explicitly finish the server's reference so its same-process pidfd
+        // does not wait for this test process to exit.
+        a.client.stream = Some(stream);
+        a.pending.push(token);
+        a.stats().unwrap();
+        drop(a);
+        worker.join().unwrap().unwrap();
     }
 }

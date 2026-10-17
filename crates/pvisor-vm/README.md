@@ -75,9 +75,9 @@ RAM 文件的 FUSE 挂载、readiness、mmap 缓存 I/O 和卸载顺序由私有
 
 Linux x86_64 支持实验性的 runtime-owned userfaultfd pager，由默认关闭的 `VmSettings.cold_ram_compression` / `--vm-cold-ram-compression` 自动启动，使用 pVisor 的 `LocalColdRamStore`，不是 FUSE `vm.ram_compression`。`ColdRamControl::start_cold_pager` 使用相同 API；Linux 的缺页与静止窗口由 runtime 内部持有，外部 `install_ram_fault_handler`、`with_ram_quiesced`、`experimental_ram_residency` 及 `FrozenMemory::experimental_ram_blocks` 返回不支持。编译能力不代表权限：必须具备 syscall 或 `/dev/userfaultfd` 的内核缺页授权，缺少授权时启动失败，不回退或修改全局 sysctl。
 
-pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro`、`gpu`、`snd`、`input` 构建及已有 device prepare/dedup advice 被拒绝。实例本地压缩使用 64 KiB 块，Linux daemon 池使用独立的 4 KiB 页；每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。实例本地 UFFD 压缩的 balloon 空闲页报告仍确认但不 discard；物理共享模式的协同回收见下文。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
+pager 仅接受 4 KiB 宿主页上的普通私有匿名可写 RAM；严格匹配身份与拓扑后排除 builder 授权的不可变 raw 固件，拒绝未知 raw、文件/COW、shared 和 hugetlb RAM，排除设备窗口。`tee`、`aws-nitro`、`gpu`、`snd`、`input` 构建及已有 device prepare/dedup advice 被拒绝。实例本地及 daemon sealed 压缩使用 64 KiB 块，Linux daemon 物理池使用独立的 4 KiB 页；压缩模式每批最多暂存 4 MiB；两次 CPU 停驻/设备 lease 排空窗口分别捕获与复核，编码发布期间 guest 继续运行。持有校验对象后才 discard；refault 校验长度、checksum 与完整 `UFFD_COPY` 后唤醒访问。UFFD 压缩的 balloon 空闲页报告仍确认但不 discard；物理共享模式的协同回收见下文。此策略是驱逐/refault 探测，不是真正的读访问热度检测器，也不是普通 pause。
 
-Linux pager 在进入采样窗口前，仅持有 pager 锁检查 cold 状态与 cooldown；没有候选时不进入 CPU/设备 barrier，但仍检查 VM 退出。首次 barrier 仍必须停驻 CPU 并排空设备 lease，才能安全复制 live RAM；存储编码/发布不持有 barrier，全部发布被拒绝或批次为空时跳过提交窗口，拒绝后的 cooldown 只更新元数据。成功发布仍在第二次 barrier 内复核 live bytes 后才 discard。缺页查找按宿主地址排序的块做二分查找（不是 guest 地址顺序），并检查块长度，拒绝映射间隙及不足一个块的尾部之外的地址。这里描述实现与正确性契约，不声明实测性能收益。
+Linux pager 在进入采样窗口前，仅持有 pager 锁检查 cold 状态与 cooldown；没有候选时不进入 CPU/设备 barrier，但仍检查 VM 退出，并在锁与屏障外调用 store stats 处理延后的引用释放。首次 barrier 仍必须停驻 CPU 并排空设备 lease，才能安全复制 live RAM；存储编码/发布不持有 barrier，全部发布被拒绝或批次为空时跳过提交窗口，拒绝后的 cooldown 只更新元数据。成功发布仍在第二次 barrier 内复核 live bytes 后才 discard。缺页查找按宿主地址排序的块做二分查找（不是 guest 地址顺序），并检查块长度，拒绝映射间隙及不足一个块的尾部之外的地址。这里描述实现与正确性契约，不声明实测性能收益。
 
 缺页恢复持有 pager 锁后才进入 store；发布必须先释放 store 锁，再更新
 pager 的 cooldown，包括不可压缩或容量不足的拒绝路径。禁止持有 store
@@ -89,13 +89,39 @@ Linux daemon 物理共享模式使用同一采样/复核屏障，但不注册 us
 宿主 store 提供只读、大小封印的文件与被引用固定的 4 KiB 槽位；发布后复核
 live bytes，再以 MAP_PRIVATE 替换原位置映射。读取保持共享，写入由内核 COW
 隔离；pagemap 的 present/file 位用于跳过仍共享的页并发现已写入的私有页，
-不读取 PFN。共享模式每批最多暂存 1 MiB；驻留状态按连续 RAM 区间批量
-查询，逐页采样/复核仍在屏障内。跨实例重复候选进入物理池，独有候选只保留
+不读取 PFN。共享模式每批最多暂存 1 MiB；驻留状态只查询选中的最多 2 MiB
+连续区域，逐页采样/复核仍在屏障内。跨实例重复候选进入物理池，独有候选只保留
 有界摘要；写入成为私有页后，发布前释放旧池引用，即使新页被拒绝。
 替换后才释放仍被映射的旧引用；worker 退出仍保留映射，连接断开由池通过
 pidfd 确认进程退出后释放引用，不能把断连当作可安全复用槽位的证明。
-该模式不压缩独有页，也不要求 userfaultfd；前述 UFFD 驱逐/恢复契约只适用于
-实例本地冷压缩。快照、offload 与 KSM advice 仍互斥。
+该模式不压缩独有页，也不要求 userfaultfd；前述 UFFD 驱逐/恢复契约适用于
+实例本地及 daemon sealed 冷压缩。快照、offload 与 KSM advice 仍互斥。
+
+物理页扫描借鉴 [UKSM 的区域分层设计](https://www.usenix.org/system/files/conference/fast18/fast18-xia.pdf)，
+由私有 `cold_ram_scan.rs` 调度，每个 RAM mapping 分成最多 2 MiB 的区域；
+区域不会跨越映射边界。四级配额为每轮 16/64/256/512 页，初始最低级；
+至少采样 8 页、成功合并比例达到 10% 且变化数低于合并数一半时升一级。
+观察到 COW、发布复核失败或共享页提前释放，会增加变化计数；变化数达到
+合并数一半时回最低级，其余低收益轮次降一级。已全部共享的区域也会降频。
+每个区域始终保留最低探测配额，带随机起点和互质步长的遍历在重复前覆盖
+区域所有页；这不保留逐页随机排列数组。按区域轮转，每次最多取 64 页，
+单批最多考察 4096 个索引，选择阶段保留 8 ms 软时间预算，完整轮次之间
+至少休息 250 ms。低优先级区域的实际发现延迟仍取决于 RAM 大小、冷却期
+和 VM/IPC 调度；这些参数是当前策略常量，不是实测 CPU 百分比保证。
+512 MiB RAM 额外区域元数据不超过 32 KiB，不改变既有逐页状态大小。
+
+这份 Rust 策略独立实现区域调度，没有移植 UKSM 内核补丁或 APH 部分页哈希。
+完整内容哈希、字节比较、两阶段发布及 COW 所有权契约继续决定能否合并。
+`PVISOR_EXPERIMENTAL_MEMORY_METRICS=1` 增加 `pvisor-shared-scan` 诊断，记录
+区域级别、探测、成功合并、COW 和变化计数；计数不等于净物理节省。
+确定性测试覆盖完整遍历、公平性、升降级、负载变化与元数据上限；已有真实
+映射测试也断言 COW/复核失败的反馈。双 VM correctness driver 的 `--physical`
+模式见 [daemon README](../pvisor-daemon/README.md#validation)。
+
+daemon sealed store 的编码、IPC 和描述符校验在 pVisor 中；本 crate 仅持有
+`ColdRamStore` 引用。对象交付后 restore/release 不执行 IPC，池丢失停止新发布但
+保留本地恢复能力。无候选时的 store stats 也会处理延后释放。store 互斥锁仍可能
+让恢复排在在途发布之后；这不构成恢复优先调度或尾延迟验收。
 
 共享模式将 balloon free-page reporting 交给 pager：每个设备最多保留一条
 未确认的 descriptor chain，仅暂存 guest 地址/长度与完成状态，不保留 device

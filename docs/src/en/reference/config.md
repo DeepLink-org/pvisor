@@ -110,7 +110,7 @@ Definitions come from `crates/pvisor/src/config.rs`. Internally resolved and `se
 - There is no general config-directory-relative path guarantee. Start from the intended workspace and use absolute paths across environments.
 
 
-`[vm].memory_pool` is the socket path of the experimental macOS / Apple Silicon shared cold-page pool, unset by default. CLI uses `--vm-memory-pool SOCKET`; Rust SDK uses `VmSettings.memory_pool`. Linux deliberately rejects external pools; use `cold_ram_compression` for bounded instance-local storage. See [first-version memory sharing](../design/memory-optimization/proof-of-concept.md#v1-integration).
+`[vm].memory_pool` selects an experimental external pool socket, unset by default. CLI uses `--vm-memory-pool SOCKET`; Rust SDK uses `VmSettings.memory_pool`. Linux negotiates physical-page sharing or sealed compressed objects; compressed mode requires kernel-fault userfaultfd and retains local recovery after service loss. Apple Silicon retains its legacy remote pool. See [daemon pool modes](../guides/daemon/index.md#memory-pool).
 
 ## Fields in commonly used groups {#settings}
 
@@ -211,7 +211,8 @@ cold pager's single option enables both reclaim and compression, not independent
 toggles. It conflicts with backing/FUSE compression, dedup, external pools,
 snapshot capture/restore, snapshot filesystem pools and whole-VM offload.
 Dedup conflicts with both compression modes and external pools. Linux external
-pools remain unsupported. Conflicts apply to the merged config, not just CLI flags.
+pools select physical sharing or sealed compression as described above. Conflicts
+apply to the merged config, not just CLI flags.
 
 VM memory is measured in MiB and CPU count is a positive integer. `ram_backing` retains a RAM file; `ram_compression` enables the corresponding compressed backing. Compressed backing and shared pools on macOS have additional FUSE requirements; see [Memory-sharing proof of concept](../design/memory-optimization/proof-of-concept.md).
 
@@ -224,7 +225,7 @@ userfaultfd syscall or `/dev/userfaultfd` authority is required; compiled suppor
 is not permission and missing authority fails startup without fallback or global
 sysctl changes. Admission rejects `ram_backing`, `ram_compression`, `ram_dedup`,
 `snapshot_filesystem_pool`, snapshot capture/restore and whole-VM offload;
-Linux also rejects `memory_pool` and `PVISOR_EXPERIMENTAL_MEMORY_POOL`.
+Instance-local compression rejects `memory_pool` and `PVISOR_EXPERIMENTAL_MEMORY_POOL`; external sealed compression is a separate store selection.
 See [local compression](../design/memory-optimization/compression-local.md) for
 ACL commands, mapping/build restrictions, bounded budgets and validated refaults.
 This is ongoing guest-independent eviction/refault probing, not ordinary pause
@@ -353,7 +354,7 @@ Field names and types are checked against the Rust serde structures during the d
 | `vm.ram_compression` | `bool` | `false` | Seekable compressed backing; `--vm-ram-compression` |
 | `vm.cold_ram_compression` | `bool` | `false` | Experimental Linux x86_64 local live pager; kernel-fault userfaultfd authority required; no FUSE/pool; `--vm-cold-ram-compression` selects VM |
 | `vm.ram_dedup` | `bool` | `false` | Opt-in best-effort host RAM dedup advice; `--vm-ram-dedup` selects VM; conflicts with memory pool/compression; accepted advice is not savings |
-| `vm.memory_pool` | `Option<PathBuf>` | `unset` | Experimental macOS pool socket; `--vm-memory-pool` |
+| `vm.memory_pool` | `Option<PathBuf>` | `unset` | Experimental Linux physical/sealed-compressed or macOS legacy pool socket; `--vm-memory-pool` |
 | `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `unset` | Host-owned immutable snapshot lower pool; Linux x86-64 no-network private-RAM profile; `--vm-snapshot-filesystem-pool` |
 | `vm.node_socket` | `Option<PathBuf>` | `unset` | Same-host node resource socket; restored shared read-only RAM stays pinned until native VM exit; `--vm-node-socket` |
 | `vm.rootfs` | `Option<PathBuf>` | `unset` | Linux directory; CLI defaults to host `/` on Linux; `--rootfs` |

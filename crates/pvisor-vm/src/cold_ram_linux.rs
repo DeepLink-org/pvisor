@@ -16,6 +16,9 @@ use std::{
 };
 use vm_memory::{GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
 
+#[path = "cold_ram_scan.rs"]
+mod scan;
+
 const BLOCK: usize = 64 * 1024;
 const BATCH_BYTES: usize = 4 * 1024 * 1024;
 static PENDING: AtomicU64 = AtomicU64::new(0);
@@ -225,6 +228,15 @@ impl<O> std::ops::DerefMut for Pages<O> {
     }
 }
 impl<O> Pages<O> {
+    fn shared_scanner(&self, seed: u64) -> scan::Scanner {
+        debug_assert_eq!(self.block_bytes, 4096);
+        scan::Scanner::new(
+            self.regions
+                .iter()
+                .map(|(first, range)| *first..*first + (range.len as usize).div_ceil(4096)),
+            seed,
+        )
+    }
     fn enable_checksums(&mut self) {
         self.checksums.resize(self.states.len(), [0; 32]);
     }
@@ -251,6 +263,7 @@ struct Pager<S: ColdRamStore> {
     uffd: Option<Arc<Uffd>>,
     pagemap: Option<std::fs::File>,
     share_resident: bool,
+    shared_scan: Option<scan::Scanner>,
     cursor: usize,
     restored: u64,
     discarded: u64,
@@ -428,7 +441,11 @@ fn publish_snapshot<S: ColdRamStore>(
             .lock()
             .map_err(|_| io::Error::other("pager poisoned"))?;
         if state.share_resident && !state.file_page(state.pages.range(snapshot.index))? {
-            state.pages[snapshot.index].cold.take().map(|cold| *cold)
+            let retired = state.pages[snapshot.index].cold.take().map(|cold| *cold);
+            if retired.is_some() {
+                state.shared_scan.as_mut().unwrap().cow(snapshot.index);
+            }
+            retired
         } else {
             None
         }
@@ -531,6 +548,7 @@ impl<S: ColdRamStore> Pager<S> {
             for index in first..=last {
                 if let Some(object) = self.pages[index].cold.take() {
                     retired.push(*object);
+                    self.shared_scan.as_mut().unwrap().invalidated(index);
                 }
                 self.pages[index].eligible_at =
                     deadline(Instant::now() + Duration::from_millis(250));
@@ -548,56 +566,83 @@ impl<S: ColdRamStore> Pager<S> {
         let bits = u64::from_ne_bytes(bytes);
         Ok(bits & ((1 << 63) | (1 << 61)) == (1 << 63) | (1 << 61))
     }
-    /// One mincore call per contiguous RAM run instead of one syscall per
-    /// sparse 4 KiB page. The commit barrier still rechecks every selected page.
-    fn resident_bitmap(&self) -> io::Result<Vec<u8>> {
-        let mut bits = vec![0; self.pages.len()];
-        for &(begin, range) in &self.pages.regions {
-            let end = begin + (range.len as usize).div_ceil(4096);
-            let result = unsafe {
-                libc::mincore(
-                    range.start as *mut libc::c_void,
-                    range.len as usize,
-                    bits[begin..end].as_mut_ptr(),
-                )
-            };
-            if result != 0 {
-                return Err(io::Error::last_os_error());
-            }
+    /// Query only the selected contiguous region (at most 2 MiB), without
+    /// touching sparse RAM. The barrier rechecks each page before copying.
+    fn resident_bitmap(&self, pages: std::ops::Range<usize>) -> io::Result<Vec<u8>> {
+        let range = self.pages.range(pages.start);
+        let mut bits = vec![0; pages.len()];
+        let result = unsafe {
+            libc::mincore(
+                range.start as *mut libc::c_void,
+                pages.len() * 4096,
+                bits.as_mut_ptr(),
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
         }
         Ok(bits)
     }
+
+    fn shared_candidates(&mut self) -> Vec<usize> {
+        self.shared_scan.as_mut().unwrap().begin_round();
+        let mut candidates = Vec::new();
+        let mut visited = 0;
+        let now = Instant::now();
+        let limit = BATCH_BYTES / 4 / 4096;
+        while candidates.len() < limit && visited < 4096 && now.elapsed() < Duration::from_millis(8)
+        {
+            let Some(visit) = self
+                .shared_scan
+                .as_mut()
+                .unwrap()
+                .next((limit - candidates.len()).min(4096 - visited))
+            else {
+                break;
+            };
+            let resident = self
+                .resident_bitmap(visit.region.clone())
+                .unwrap_or_else(|error| fatal(error));
+            visited += visit.pages.len();
+            for index in visit.pages {
+                let page = &self.pages[index];
+                if deadline(now) < page.eligible_at || resident[index - visit.region.start] & 1 == 0
+                {
+                    continue;
+                }
+                if page.cold.is_some()
+                    && self
+                        .file_page(self.pages.range(index))
+                        .unwrap_or_else(|error| fatal(error))
+                {
+                    continue;
+                }
+                candidates.push(index);
+            }
+        }
+        candidates.sort_unstable();
+        candidates
+    }
+
     fn candidates(&mut self) -> Vec<usize> {
-        let resident = self
-            .share_resident
-            .then(|| self.resident_bitmap().unwrap_or_else(|error| fatal(error)));
+        if self.share_resident {
+            return self.shared_candidates();
+        }
         let mut candidates = Vec::new();
         let mut candidate_bytes = 0;
         let now = Instant::now();
         for _ in 0..self.pages.len() {
-            let limit = if self.share_resident {
-                BATCH_BYTES / 4
-            } else {
-                BATCH_BYTES
-            };
-            if candidate_bytes >= limit || now.elapsed() >= Duration::from_millis(8) {
+            if candidate_bytes >= BATCH_BYTES || now.elapsed() >= Duration::from_millis(8) {
                 break;
             }
             let index = self.cursor;
             self.cursor = (self.cursor + 1) % self.pages.len();
             let range = self.pages.range(index);
             let page = &self.pages[index];
-            if deadline(now) < page.eligible_at
-                || (page.cold.is_some()
-                    && (!self.share_resident
-                        || self.file_page(range).unwrap_or_else(|error| fatal(error))))
-            {
+            if deadline(now) < page.eligible_at || page.cold.is_some() {
                 continue;
             }
-            if resident.as_ref().map_or_else(
-                || fully_resident(range).unwrap_or_else(|error| fatal(error)),
-                |bits| bits[index] & 1 != 0,
-            ) {
+            if fully_resident(range).unwrap_or_else(|error| fatal(error)) {
                 candidates.push(index);
                 candidate_bytes += range.len as usize;
             }
@@ -639,6 +684,9 @@ impl<S: ColdRamStore> Pager<S> {
                 unsafe { std::slice::from_raw_parts(range.start as *const u8, range.len as usize) }
                     .to_vec();
             PENDING.fetch_add(bytes.len() as u64, Ordering::SeqCst);
+            if let Some(scanner) = &mut self.shared_scan {
+                scanner.sampled(index);
+            }
             batch.0.push(Snapshot { index, bytes });
         }
         batch
@@ -654,6 +702,9 @@ impl<S: ColdRamStore> Pager<S> {
         if live != snapshot.bytes {
             page.eligible_at = deadline(Instant::now() + Duration::from_secs(30));
             self.rejected += 1;
+            if let Some(scanner) = &mut self.shared_scan {
+                scanner.invalidated(snapshot.index);
+            }
             return Ok(Some(object));
         }
         if self.share_resident {
@@ -708,6 +759,11 @@ impl<S: ColdRamStore> Pager<S> {
                 std::ptr::read_volatile(mapped.cast::<u8>());
             }
             let previous = page.cold.replace(Box::new(object));
+            let scanner = self.shared_scan.as_mut().unwrap();
+            scanner.merged(snapshot.index);
+            if previous.is_some() {
+                scanner.cow(snapshot.index);
+            }
             self.discarded += 4096;
             // Release the old reference only outside the barrier, after its
             // mapping has been replaced. On transport loss the owner pins slots
@@ -934,6 +990,9 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             })?;
         Ok::<_, io::Error>(Arc::new(Mutex::new(Pager {
             memory,
+            shared_scan: options
+                .share_resident
+                .then(|| pages.shared_scanner(rand::random())),
             pages,
             store: Arc::new(Mutex::new(store)),
             uffd,
@@ -1038,7 +1097,11 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
     let worker = std::thread::Builder::new().name("pvisor-cold-pager".into()).spawn(move || {
         let pool = worker_pager.lock().unwrap().store.clone();
         loop {
-            std::thread::sleep(Duration::from_millis(if options.share_resident { 1 } else { 250 }));
+            // A full adaptive scan round always yields, even when every region
+            // is productive. Empty/sparse rounds cannot spin at the 1 ms pace.
+            let round_complete = worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned"))
+                .shared_scan.as_ref().is_none_or(scan::Scanner::round_complete);
+            std::thread::sleep(Duration::from_millis(if round_complete { 250 } else { 1 }));
             // Empty scans still need to observe VM teardown without a barrier.
             if handle.vmm.upgrade().is_none() {
                 break;
@@ -1070,10 +1133,10 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
             let batch = match sampled {
                 Ok(Some(batch)) => batch,
                 Ok(None) => {
-                    if options.share_resident {
-                        pool.lock().unwrap_or_else(|_| fatal("store poisoned")).stats().unwrap_or_else(|error| fatal(error));
-                        std::thread::sleep(Duration::from_millis(250));
-                    }
+                    // Flush deferred store releases and check owner health even
+                    // when no RAM is eligible. No pager lock or VM barrier is
+                    // held here; release itself performs no publication IPC.
+                    pool.lock().unwrap_or_else(|_| fatal("store poisoned")).stats().unwrap_or_else(|error| fatal(error));
                     continue;
                 },
                 Err(error) if error == "VMM has stopped" => break,
@@ -1122,6 +1185,10 @@ pub(crate) fn start<S: ColdRamStore + 'static>(
                     pager.restore_count, pager.restore_total_us, pager.restore_max_us,
                     batch.0.len(), stats.encoded_bytes, stats.objects, stats.session_references,
                     stats.cross_session_objects, std::process::id());
+                if let Some(scanner) = &pager.shared_scan {
+                    eprintln!("pvisor-shared-scan regions_by_level={:?} probed_pages_total={} successful_merges_total={} cow_breaks_total={} unstable_total={} pid={}",
+                        scanner.levels(), scanner.probes, scanner.merges, scanner.cow_breaks, scanner.unstable, std::process::id());
+                }
             }
         }
         worker_pager.lock().unwrap_or_else(|_| fatal("pager poisoned")).shutdown().unwrap_or_else(|error| fatal(error));
@@ -1269,6 +1336,7 @@ mod tests {
         let pages = host_sorted_pages(&ranges(&memory, u64::MAX).unwrap(), Instant::now(), 4096);
         Pager {
             memory,
+            shared_scan: Some(pages.shared_scanner(0)),
             pages,
             store: Arc::new(Mutex::new(SharedStore::default())),
             uffd: None,
@@ -1459,7 +1527,7 @@ mod tests {
             unsafe { libc::madvise(empty.start as *mut libc::c_void, 4096, libc::MADV_DONTNEED) },
             0
         );
-        let bits = pager.resident_bitmap().unwrap();
+        let bits = pager.resident_bitmap(0..2).unwrap();
         assert_eq!(bits[0] & 1, 1);
         assert_eq!(bits[1] & 1, 0);
         assert_eq!(pager.sample().0.len(), 1);
@@ -1482,6 +1550,16 @@ mod tests {
                 .is_none()
         );
         assert_eq!(store.lock().unwrap().releases, 1);
+        assert_eq!(
+            pager
+                .lock()
+                .unwrap()
+                .shared_scan
+                .as_ref()
+                .unwrap()
+                .cow_breaks,
+            1
+        );
         assert!(pager.lock().unwrap().pages[snapshot.index].cold.is_none());
         let mut value = [0];
         pager
@@ -1501,6 +1579,7 @@ mod tests {
         let unused = pager.commit(&batch.0[0], object).unwrap().unwrap();
         pager.store.lock().unwrap().release(unused).unwrap();
         assert!(!pager.file_page(pager.pages.range(0)).unwrap());
+        assert_eq!(pager.shared_scan.as_ref().unwrap().unstable, 1);
         let mut bytes = [0];
         pager
             .memory
@@ -1528,6 +1607,7 @@ mod tests {
         let pages = host_sorted_pages(&mappings, Instant::now(), BLOCK);
         Pager {
             memory,
+            shared_scan: None,
             pages,
             store: Arc::new(Mutex::new(CompressedStore::default())),
             uffd: Some(Arc::new(uffd)),

@@ -110,7 +110,7 @@ workload-aware-memory-offloading = true
 - 含路径的配置没有“以配置文件目录为根”的通用承诺；从预期工作区启动，跨环境使用绝对路径。
 
 
-`[vm].memory_pool` 是实验性 macOS / Apple Silicon 共享冷页池的 socket 路径，默认未设置；CLI 对应 `--vm-memory-pool SOCKET`，Rust SDK 对应 `VmSettings.memory_pool`。Linux 有意拒绝外部池；有界实例本地存储使用 `cold_ram_compression`。见[首版内存共享](../design/memory-optimization/proof-of-concept.md#v1-integration)。
+`[vm].memory_pool` 是实验性外部池的 socket 路径，默认未设置；CLI 对应 `--vm-memory-pool SOCKET`，Rust SDK 对应 `VmSettings.memory_pool`。Linux 协商物理页共享或 sealed 压缩对象；压缩模式要求内核缺页 userfaultfd，并在服务丢失后保留本地恢复。Apple Silicon 保留 legacy 远程池。见[daemon 池模式](../guides/daemon/index.md#memory-pool)。
 
 ## 常用分组的具体字段 {#settings}
 
@@ -204,8 +204,8 @@ CLI stderr 打印 `--vm-socket`、`--vm-job-id` 和 `--vm-attempt-id`，供
 之外，并与 Job 位于同一卷；其 Linux x86_64 无网络 profile 不代表通用 VM
 快照支持。本地冷 pager 的单一选项同时启用回收与压缩，不是独立开关。
 它与 backing/FUSE 压缩、去重、外部池、快照捕获/恢复、快照文件系统池及
-整 VM offload 互斥。去重与两种压缩模式及外部池互斥。Linux 外部池仍不受
-支持。冲突针对合并后的配置，不只是 CLI 标志。
+整 VM offload 互斥。去重与两种压缩模式及外部池互斥。Linux 外部池按上述
+协议选择物理共享或 sealed 压缩。冲突针对合并后的配置，不只是 CLI 标志。
 
 VM 的内存以 MiB 为单位，CPU 是正整数。`ram_backing` 保存 RAM 文件；`ram_compression` 启用相应的压缩 backing。macOS 的压缩 backing 与共享池有额外 FUSE 条件，见[内存共享概念验证](../design/memory-optimization/proof-of-concept.md)。
 
@@ -216,8 +216,8 @@ VM executor 时启用实验性的 Linux x86_64 实例本地 live 压缩；
 `ram_compression`。必须具备 userfaultfd syscall 或 `/dev/userfaultfd` 的
 内核缺页权限；编译支持不代表权限，缺少权限时启动失败，不回退或修改
 全局 sysctl。准入拒绝 `ram_backing`、`ram_compression`、`ram_dedup`、
-`snapshot_filesystem_pool`、快照捕获/恢复及整 VM offload；Linux 还拒绝
-`memory_pool` 及 `PVISOR_EXPERIMENTAL_MEMORY_POOL`。ACL 命令、映射/构建
+`snapshot_filesystem_pool`、快照捕获/恢复及整 VM offload；实例本地压缩还拒绝
+`memory_pool` 及 `PVISOR_EXPERIMENTAL_MEMORY_POOL`，外部 sealed 压缩是独立的 store 选择。ACL 命令、映射/构建
 限制、有界预算及经过校验的 refault 见
 [实例内压缩](../design/memory-optimization/compression-local.md)。这是持续
 进行且无需 guest 参与的驱逐/refault 探测，不是普通 pause 或读访问热度
@@ -330,7 +330,7 @@ backing/control 路径。首次准备复制并完整校验，后续认证小记�
 | `vm.ram_compression` | `bool` | `false` | Seekable 压缩 backing；`--vm-ram-compression` |
 | `vm.cold_ram_compression` | `bool` | `false` | 实验性 Linux x86_64 本地 live pager；需内核缺页 userfaultfd 权限；无 FUSE/外部池；`--vm-cold-ram-compression` 选择 VM |
 | `vm.ram_dedup` | `bool` | `false` | 显式启用尽力而为的宿主 RAM 去重建议；`--vm-ram-dedup` 选择 VM；与内存池/压缩互斥；接受建议不等于节省 |
-| `vm.memory_pool` | `Option<PathBuf>` | `未设置` | 实验性 macOS pool socket；`--vm-memory-pool` |
+| `vm.memory_pool` | `Option<PathBuf>` | `未设置` | 实验性 Linux 物理/sealed 压缩或 macOS legacy pool socket；`--vm-memory-pool` |
 | `vm.snapshot_filesystem_pool` | `Option<PathBuf>` | `未设置` | 宿主管理的不可变快照 lower 池；仅 Linux x86-64 无网络私有 RAM 配置；`--vm-snapshot-filesystem-pool` |
 | `vm.node_socket` | `Option<PathBuf>` | `未设置` | 同宿主 node 资源服务 socket；恢复时保留共享只读 RAM backing 的引用，直到 native VM 退出；`--vm-node-socket` |
 | `vm.rootfs` | `Option<PathBuf>` | `未设置` | Linux 根目录；Linux CLI 默认宿主 `/`；`--rootfs` |

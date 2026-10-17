@@ -19,7 +19,7 @@ const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK 
 
 /// Immutable encoded RAM, independently owned by its file descriptor.
 /// Decoding verifies the original content identity on every restore.
-pub struct SealedObject {
+pub(super) struct SealedObject {
     file: File,
     id: ImageId,
     length: usize,
@@ -27,6 +27,12 @@ pub struct SealedObject {
 }
 impl SealedObject {
     pub(super) fn receive(file: File, id: ImageId, bytes: &[u8]) -> io::Result<Self> {
+        if unsafe { libc::sysconf(libc::_SC_PAGESIZE) } != 4096 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "sealed RAM pool requires 4 KiB host pages",
+            ));
+        }
         let seals = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GET_SEALS) };
         let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
         let size = file.metadata()?.len();
@@ -35,6 +41,8 @@ impl SealedObject {
             || flags < 0
             || flags & libc::O_ACCMODE != libc::O_RDONLY
             || !(46..=(45 + BLOCK_BYTES) as u64).contains(&size)
+            || bytes.len() != BLOCK_BYTES
+            || (size as usize).div_ceil(4096) * 4096 + 256 > bytes.len() * 7 / 8
         {
             return Err(invalid(
                 "encoded pool descriptor must be read-only, fully sealed and bounded",
@@ -93,7 +101,8 @@ pub struct SealedPool {
 }
 impl SealedPool {
     /// Budgets bound resident file pages and object count independently; zero
-    /// admits no objects. Does not change host memory policy or resource limits.
+    /// admits no objects. Publication requires 4 KiB host pages. Does not change
+    /// host memory policy or resource limits.
     pub fn new(max_bytes: usize, max_objects: usize) -> Self {
         Self {
             objects: BTreeMap::new(),
@@ -103,6 +112,12 @@ impl SealedPool {
         }
     }
     pub(super) fn intern(&mut self, bytes: &[u8]) -> io::Result<Arc<SealedObject>> {
+        if unsafe { libc::sysconf(libc::_SC_PAGESIZE) } != 4096 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "sealed RAM pool requires 4 KiB host pages",
+            ));
+        }
         if bytes.len() != BLOCK_BYTES {
             return Err(invalid("sealed pool requires 64 KiB blocks"));
         }
@@ -168,5 +183,152 @@ impl SealedPool {
     }
     pub(super) fn stats(&self) -> (u64, u64) {
         (self.bytes as u64, self.objects.len() as u64)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::MetadataExt;
+
+    fn noise() -> Vec<u8> {
+        let mut state = 0x71a582e3u32;
+        (0..BLOCK_BYTES)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sealed_pool_deduplicates_compressed_blocks_and_accounts_file_pages() {
+        let mut pool = SealedPool::new(8192, 2);
+        for bytes in [
+            vec![7; BLOCK_BYTES],
+            (0..BLOCK_BYTES).map(|i| (i % 251) as u8).collect(),
+        ] {
+            let a = pool.intern(&bytes).unwrap();
+            let b = pool.intern(&bytes).unwrap();
+            assert!(Arc::ptr_eq(&a, &b));
+            assert_eq!(
+                a.file.metadata().unwrap().ino(),
+                b.file.metadata().unwrap().ino()
+            );
+            assert_eq!(a.charged_bytes(), 4096);
+            let mut output = vec![0; BLOCK_BYTES];
+            b.restore(&mut output).unwrap();
+            assert_eq!(output, bytes);
+            assert!(a.file.write_all_at(b"!", 0).is_err());
+            let writable = std::fs::OpenOptions::new()
+                .write(true)
+                .open(format!("/proc/self/fd/{}", a.file.as_raw_fd()))
+                .unwrap();
+            assert!(writable.write_all_at(b"!", 0).is_err());
+            assert!(writable.set_len(0).is_err());
+            pool.collect();
+            assert_eq!(pool.stats(), (4096, 1));
+            drop(a);
+            drop(b);
+            pool.collect();
+            assert_eq!(pool.stats(), (0, 0));
+        }
+    }
+
+    #[test]
+    fn sealed_pool_rejects_raw_short_and_over_budget_without_mutation() {
+        let mut pool = SealedPool::new(4096, 1);
+        assert!(pool.intern(&[1; 4096]).is_err());
+        assert_eq!(
+            pool.intern(&noise()).err().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(pool.stats(), (0, 0));
+        let first = pool.intern(&vec![1; BLOCK_BYTES]).unwrap();
+        assert_eq!(
+            pool.intern(&vec![2; BLOCK_BYTES]).err().unwrap().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(pool.stats(), (4096, 1));
+        let id = first.id();
+        drop(first);
+        pool.collect_one(id);
+        assert_eq!(pool.stats(), (0, 0));
+        assert!(pool.intern(&vec![2; BLOCK_BYTES]).is_ok());
+        for (bytes, objects) in [(4095, 1), (4096, 0)] {
+            assert!(
+                SealedPool::new(bytes, objects)
+                    .intern(&vec![1; BLOCK_BYTES])
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn sealed_pool_compares_bytes_after_identity_hit_and_handles_outlive_owner() {
+        let mut pool = SealedPool::new(8192, 2);
+        let bytes = vec![3; BLOCK_BYTES];
+        let object = pool.intern(&bytes).unwrap();
+        let other = vec![4; BLOCK_BYTES];
+        // Force a digest collision in the private index to exercise full comparison.
+        pool.objects.insert(identity(&other), object.clone());
+        assert_eq!(
+            pool.intern(&other).err().unwrap().kind(),
+            io::ErrorKind::InvalidData
+        );
+        drop(pool);
+        let mut output = vec![0; BLOCK_BYTES];
+        object.restore(&mut output).unwrap();
+        assert_eq!(output, bytes);
+        assert!(object.restore(&mut output[..4096]).is_err());
+    }
+
+    #[test]
+    fn sealed_delivery_rejects_mutable_writable_forged_and_oversized_backing() {
+        fn file(frame: &[u8], seals: i32, writable: bool) -> File {
+            let fd = unsafe {
+                libc::memfd_create(
+                    c"pvisor-sealed-invalid".as_ptr(),
+                    libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+                )
+            };
+            assert!(fd >= 0);
+            let file = unsafe { File::from_raw_fd(fd) };
+            file.write_all_at(frame, 0).unwrap();
+            assert_eq!(unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, seals) }, 0);
+            if writable {
+                file
+            } else {
+                File::open(format!("/proc/self/fd/{fd}")).unwrap()
+            }
+        }
+        let bytes = vec![9; BLOCK_BYTES];
+        let frame = CompressedObject::from_bytes(&bytes).unwrap().frame();
+        let id = identity(&bytes);
+        for (seals, writable) in [
+            (0, false),
+            (libc::F_SEAL_GROW | libc::F_SEAL_SHRINK, false),
+            (SEALS, true),
+        ] {
+            assert!(SealedObject::receive(file(&frame, seals, writable), id, &bytes).is_err());
+        }
+        let mut bad = frame.clone();
+        bad[45] ^= 1;
+        assert!(SealedObject::receive(file(&bad, SEALS, false), id, &bytes).is_err());
+        let mut bad = frame.clone();
+        bad[8] ^= 1;
+        assert!(SealedObject::receive(file(&bad, SEALS, false), id, &bytes).is_err());
+        assert!(
+            SealedObject::receive(file(&vec![0; BLOCK_BYTES + 46], SEALS, false), id, &bytes)
+                .is_err()
+        );
+        let mut raw = b"PVBLK1\0\0".to_vec();
+        raw.extend_from_slice(&id);
+        raw.extend_from_slice(&(BLOCK_BYTES as u32).to_le_bytes());
+        raw.push(1);
+        raw.extend_from_slice(&bytes);
+        assert!(SealedObject::receive(file(&raw, SEALS, false), id, &bytes).is_err());
     }
 }

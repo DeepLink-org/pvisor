@@ -1,7 +1,6 @@
 //! Single-node ownership: durable sandbox intentions, bounded admission and
 //! runtime reconciliation. No Worker placement, DAG or distributed lease.
 pub mod api;
-mod e2b;
 mod models;
 mod store;
 #[cfg(test)]

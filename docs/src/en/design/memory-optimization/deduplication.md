@@ -4,7 +4,7 @@ Share identical content across pVisor instances while preserving independent wri
 
 ## Architectural goal {#architecture}
 
-Share known-identical immutable RAM baselines first, then let Linux KSM discover duplicate private pages that arise during execution. Instances own checkpoint saving, compression, and restoration; sharing does not take ownership of the only copy of state. See [Memory optimization](index.md) for common boundaries.
+Share known-identical immutable RAM baselines first. For duplicate private pages created during execution, explicitly select either the daemon physical pool or Linux KSM. Instances own checkpoint saving, compression, and restoration; sharing does not take ownership of the only copy of state. See [Memory optimization](index.md) for common boundaries.
 
 | Approach | Shared content | Main tradeoff |
 | --- | --- | --- |
@@ -31,6 +31,56 @@ Explicit `serve --memory-pool` enables raw-page sharing in the daemon-owned pool
 
 References pin slots until mappings are removed; disconnects retain them until pidfd confirms peer exit. The pool owns live shared pages, so its loss fails dependent VMs. It does not supply durable snapshots or process-restart recovery. See [Shared working sets](../daemon/shared-working-set.md) for budgets and failure scope.
 
+### Adaptive region scanning {#adaptive-scan}
+
+The physical pager uses region scheduling inspired by [UKSM's hierarchical
+region distilling](https://www.usenix.org/system/files/conference/fast18/fast18-xia.pdf).
+The reference implementation is [dolohow/uksm at acb96fbc](https://github.com/dolohow/uksm/tree/acb96fbc9e04e7aa967e8e9af011494c77f58aed).
+UKSM prioritizes productive regions and reduces work on regions with frequent
+COW breaks. pVisor implements this scheduling idea independently in Rust.
+
+Each eligible RAM mapping is divided into regions of at most 2 MiB. Four levels
+allow 16, 64, 256 or 512 page probes per round. A region starts at the lowest
+level. After at least eight samples, a successful-merge ratio of at least 10%
+can promote it one level when churn is less than half the merge count. Observed
+COW, a failed live-byte recheck or early release of shared pages contributes to
+churn. Churn reaching half the merge count resets priority to the lowest level;
+otherwise an unproductive round demotes it one level. Fully shared regions also
+slow down as further samples stop producing new merges.
+
+Every region keeps an exploration quota. A seeded coprime traversal covers all
+page offsets before repeating, including partial regions, without storing a
+per-page permutation. Regions receive round-robin visits of at most 64 probes.
+Only the selected region receives a residency query; sparse RAM is not touched.
+A batch examines at most 4,096 indexes, selects at most 1 MiB of candidates and
+retains an 8 ms soft selection budget. Complete rounds yield for at least 250 ms.
+The constants bound work; they do not guarantee a CPU percentage or a discovery
+deadline under arbitrary RAM sizes, cooldowns, VM scheduling or IPC delays.
+
+This policy controls Linux physical-page selection. It does not use guest
+application VMA information, install a kernel patch or replace content identity
+with UKSM's adaptive partial-page hash. Full hashes, byte comparisons, CPU/device
+quiescence and the second live-byte check still gate sharing. The compression
+pager retains its separate eviction/refault policy.
+
+Deterministic tests cover coverage, fairness, priority changes, workload changes
+and metadata bounds. The Linux x86_64 two-VM correctness probe passed on
+2026-10-18: both guests completed content/private-write/file checks, and their
+logs recorded scans, successful merges and COW breaks. Reproduce it with:
+
+```bash
+cargo build --locked -p pvisor-daemon --example compressed_pool_case
+PVISOR_CASE_VM_LIBRARY_DIR=/absolute/firmware \
+  PVISOR_EXPERIMENTAL_MEMORY_METRICS=1 \
+  target/debug/examples/compressed_pool_case /tmp/pv-scan-check --physical
+```
+
+Use a fresh short output path. `result.json` includes guest outcomes and scan
+counters. The probe uses two 256 MiB/one-vCPU VMs, keeps the pool alive and does
+not require userfaultfd in physical mode. It measures no performance comparison
+against linear scanning or UKSM; production CPU, latency and net-memory benefits
+remain unvalidated.
+
 ## Linux KSM {#ksm}
 
 KSM accepts `MADV_MERGEABLE` advice for suitable private anonymous RAM, with the kernel scanning, merging, and handling COW in the background. It requires neither discovery between pVisor instances nor a userspace service holding shared pages.
@@ -38,6 +88,12 @@ KSM accepts `MADV_MERGEABLE` advice for suitable private anonymous RAM, with the
 Successful registration is not evidence that pages have been scanned or merged, and provides no synchronous completion deadline. Instances register suitable regions only; an administrator or host coordinator owns global scanning budgets so instances do not overwrite each other's global settings.
 
 KSM does not merge file page-cache pages. Adding advice to the current `MAP_SHARED` live backing does not enable deduplication. Anonymous COW pages from private mappings can be candidates, with eligibility and benefits validated on the actual kernel. macOS has no standard Linux KSM capability; UKSM is an algorithmic reference, not a deployment dependency.
+
+The explicit `--memory-pool-mode compressed` alternative deduplicates decoded
+64 KiB identities into sealed compressed objects and restores private RAM
+locally through userfaultfd. Its component tests and two-VM service-loss
+correctness probe are separate from physical-page-sharing evidence; see
+[pooled compression](compression-pool.md).
 
 ## Key tradeoffs {#tradeoffs}
 

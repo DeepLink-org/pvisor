@@ -771,7 +771,7 @@ writes after the last resume may be discarded, leaving only the last committed h
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`; FUSE/macFUSE Seekable backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`; Linux x86_64 local live cold pager |
 | `--vm-ram-dedup[=BOOL]` | `ram_dedup` | `false`; best-effort host dedup advice |
-| `--vm-memory-pool SOCKET` | `memory_pool` | Unset: experimental external pool; Linux shares physical pages without userfaultfd |
+| `--vm-memory-pool SOCKET` | `memory_pool` | Unset: external pool; Linux physical sharing or sealed compression (the latter requires userfaultfd) |
 | `--vm-node-socket SOCKET` | `node_socket` | Unset: same-host node resource service for immutable images/restored RAM |
 | `--vm-snapshot-filesystem-pool DIR` | `snapshot_filesystem_pool` | Unset: owned copies; optional host-owned immutable lower pool for Linux x86_64 no-network native checkpoints |
 
@@ -894,8 +894,8 @@ fallback, and pVisor changes no global sysctl. See [local compression](../design
 for a user-specific ACL grant/revoke example and restricted mappings/build features.
 It rejects `vm.ram_backing`, `vm.ram_compression`, `vm.ram_dedup`,
 `vm.snapshot_filesystem_pool`, snapshot capture/restore and whole-VM offload.
-Linux external `vm.memory_pool` maps physical pool pages privately: reads
-retain sharing and writes use COW, without userfaultfd. It requires private anonymous RAM and is mutually
+Linux external `vm.memory_pool` negotiates physical sharing (private COW mappings,
+no userfaultfd) or sealed compressed objects (local decode, kernel-fault userfaultfd). It requires private anonymous RAM and is mutually
 exclusive with instance-local compression. Guest execution continues between short capture/recheck windows
 without application participation: this is eviction/refault probing, not ordinary
 pause or a true read-access heat detector. No production-density gain is promised.
@@ -1122,4 +1122,4 @@ and the native container executor keep their current behavior. See the
 limits and SSH remote access.
 
 
-Enable the daemon-owned experimental pool with `pvisor-daemon serve --memory-pool`; its detached `memory-pool --directory DIR` component uses daemon-provisioned private configuration. Native `pvisor run --vm-memory-pool SOCKET` remains an explicit runtime option with platform/protocol limits, not a service launcher. Pool loss fails dependent VMs. See [daemon pool activation and budgets](../guides/daemon/index.md#memory-pool); historical macOS compressed-pool results retain their [version scope](../design/memory-optimization/proof-of-concept.md#v1-integration).
+Enable the daemon-owned experimental pool with `pvisor-daemon serve --memory-pool`; its detached `memory-pool --directory DIR` component uses daemon-provisioned private configuration. Native `pvisor run --vm-memory-pool SOCKET` remains an explicit runtime option with platform/protocol limits, not a service launcher. Physical/legacy pool loss fails dependent VMs; Linux sealed-compressed clients retain local recovery and stop new publication. Select it with daemon `--memory-pool-mode compressed`. See [daemon pool activation and budgets](../guides/daemon/index.md#memory-pool); historical macOS compressed-pool results retain their [version scope](../design/memory-optimization/proof-of-concept.md#v1-integration).

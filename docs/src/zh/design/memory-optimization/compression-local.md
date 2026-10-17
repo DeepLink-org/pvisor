@@ -84,11 +84,13 @@ sudo setfacl -x u:reiase /dev/userfaultfd
 当前 Linux daemon 的 `--memory-pool` 使用 raw-page 物理共享：只读、大小封印的
 memfd 槽位经引用固定后，由 VM 以 `MAP_PRIVATE` 映射；它不注册 userfaultfd，
 也不压缩独有内容。两条路径复用采样/复核屏障，恢复方式和对象生命周期不同。
-部署入口见 [daemon memory pool](../../guides/daemon/index.md#memory-pool)。
+添加 `--memory-pool-mode compressed` 可改选 sealed 64 KiB 压缩对象共享；
+该模式需要内核缺页 userfaultfd，服务丢失后保留本地恢复。独立双 VM 正确性
+探针已验证池终止后的 guest refault 和文件 I/O，见[池化压缩](compression-pool.md)。部署入口见 [daemon memory pool](../../guides/daemon/index.md#memory-pool)。
 
 选择策略是实验性的驱逐/refault 探测，不是真正的读访问热度检测器：
 字节不变仍可能被频繁读取。重新核对保护内容，不保证工作负载延迟。
-历史的编码对象池与更广的客户端持有方案保留在[池化压缩](compression-pool.md)，
+历史编码池与 Linux 客户端持有 sealed backing 的实现见[池化压缩](compression-pool.md)，
 不能用它们替代当前物理池的合同；macOS 尚未交付等价的 daemon 物理共享路径。
 
 ## 证据边界 {#evidence}

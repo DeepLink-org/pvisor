@@ -34,10 +34,11 @@ VM runtime 拥有地址映射和 CPU/设备一致性，Job 与 snapshot store �
 | snapshot 基线＋private COW | 从同一已校验 backing 恢复的未修改页 | 写后私有化；要求正确 backing 身份与兼容 profile |
 | Linux KSM advice | 合格私有 RAM 中的重复内容（包括私有文件 COW 候选） | 异步扫描与 COW；宿主管理员控制 scanner |
 | daemon physical page pool | 不同 VM session 中相同的驻留 4 KiB 页 | 有界扫描、引用和独立 pool 故障域；不压缩唯一页 |
+| daemon sealed compressed pool | 相同或独有但可压缩的冷 64 KiB 块 | 不可变编码句柄共享、本地恢复；要求 userfaultfd，双 VM 正确性探针已通过 |
 | local live compression | 实例内独特但可压缩的冷内容 | userfaultfd 权限、编码 CPU 与 refault 成本 |
 | whole-VM offload | 可停驻并保留恢复来源的闲置状态 | 写入与恢复成本、存储和峰值余量 |
 
-去重机制见[内存去重](deduplication.md)，编码与存储取舍见[内存压缩](compression.md)、[实例内压缩](compression-local.md)与[卸载文件格式](offload-format.md)。历史[池化服务器压缩](compression-pool.md)保存编码对象，当前 Linux daemon physical pool 共享原文页，两种机制分别维护。
+去重机制见[内存去重](deduplication.md)，编码与存储取舍见[内存压缩](compression.md)、[实例内压缩](compression-local.md)与[卸载文件格式](offload-format.md)。[池化服务器压缩](compression-pool.md)通过显式 Linux 模式共享 sealed 编码对象，默认 daemon physical pool 共享原文页，两种机制分别维护。
 
 ## 所有权与发布顺序 {#ownership}
 
@@ -66,11 +67,11 @@ Linux 实例内冷压缩以 64 KiB 块工作。第一次短静止窗口捕获候
 
 默认 Linux daemon pool 配置有512 MiB storage、32,768 objects、32 connections和每连接32,768 references；4 KiB object ceiling实际将distinct共享内容限制为128 MiB。索引、映射与线程另有开销；put被拒绝时保留原 resident 页。具体部署见[共享工作集](../daemon/shared-working-set.md)和[daemon 运维](../daemon/operations.md)。
 
-Pool丢失会使依赖VM失败；API重启可复用仍存活的pool，pool进程或宿主重启恢复尚未实现。压缩路径恢复时需要原文和缓冲，节省量也不能直接换成相同数量的新实例。
+物理/legacy pool 丢失会使依赖 VM 失败；Linux sealed 压缩客户端保留已交付句柄的本地恢复，停止新发布。API重启可复用仍存活的pool，pool进程或宿主重启恢复尚未实现。压缩路径恢复时需要原文和缓冲，节省量也不能直接换成相同数量的新实例。
 
 ## 当前实现与组合限制 {#direction}
 
-Linux daemon 使用显式 `serve --memory-pool` 启用原文页共享；它不需要 userfaultfd。实例内 live compression 使用独立 userfaultfd 模式。Snapshot capture/restore、file backing、whole-VM offload、KSM advice与冷页路径存在明确互斥检查；调用方应按支持profile选择，组合不自动热切换。
+Linux daemon 使用显式 `serve --memory-pool` 启用原文页共享；它不需要 userfaultfd。实例内 live compression 和 `--memory-pool-mode compressed` 使用 userfaultfd。sealed 池已有组件级服务退出测试，双 VM 探针也已验证服务终止后的回收/refault 与文件 I/O；生产密度和延迟仍待验收。Snapshot capture/restore、file backing、whole-VM offload、KSM advice与冷页路径存在明确互斥检查；调用方应按支持profile选择，组合不自动热切换。
 
 新共享和offload证据按配置、样本和计费范围保留在[VM 内存基准](../../benchmarks/vm-memory/index.md)。Ready省内存不保证更低lifecycle peak，高写入会减少共享收益。[概念验证](proof-of-concept.md)保留历史机制和失败材料；完整状态合同见[环境快照](../environment-snapshot.md)。
 

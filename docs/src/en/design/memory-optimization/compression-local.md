@@ -95,12 +95,16 @@ uses raw-page physical sharing: reference-pinned slots in a read-only,
 size-sealed memfd are mapped by VMs with `MAP_PRIVATE`. It registers no
 userfaultfd and does not compress unique contents. The paths reuse sampling
 and recheck barriers but have different restoration and object lifetimes.
+Add `--memory-pool-mode compressed` to select sealed 64 KiB compressed-object
+sharing instead; that mode requires kernel-fault userfaultfd and retains local
+recovery after service loss. A separate two-VM correctness probe validates guest
+refault and file I/O after pool termination; see [pooled compression](compression-pool.md).
 See [daemon memory pool](../../guides/daemon/index.md#memory-pool) for deployment.
 
 Selection is experimental eviction/refault probing, not a read-access heat
 detector: unchanged bytes can still be read frequently. Rechecks protect content,
 not workload latency. Historical encoded-object pooling and broader client-owned
-proposals remain in [pooled compression](compression-pool.md); they do not replace
+sealed backing are described in [pooled compression](compression-pool.md); they do not replace
 the current physical-pool contract. macOS has no equivalent delivered daemon
 physical-sharing path.
 

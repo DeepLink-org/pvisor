@@ -22,6 +22,7 @@ Anonymous-page scanning, cold-page compression and whole-VM offload remain separ
 | Snapshot lazy reader | Validate/decode blocks on fault with bounded decoded cache | First-access costs remain; legacy raw formats can require full validation |
 | Historical macOS compressed pool | Session references and private cold-page restoration | Recorded-version mechanism; separate from the current Linux protocol |
 | Daemon-owned Linux pool | Resident duplicate 4 KiB pages shared through bounded memfd slots and private COW mappings | Explicit `serve --memory-pool`; separate budgets and failure scope, no unique-page compression |
+| Daemon sealed compressed pool | Shared immutable encoded 64 KiB blocks; client-local decode and private restoration | Explicit compressed mode; userfaultfd required; component tests and scoped two-VM correctness probe passed |
 | NativeRuntime daemon | Independent immutable rootfs, private VM writes | Optional daemon-owned pool; no automatic node socket acquisition, RAM restore or lazy snapshot integration |
 
 Additional source areas: `image/cache/lazy.rs`, `image/cache/portable/binary.rs`, `executor/vm/restore_ram.rs`, `environment_snapshot/lazy.rs` and `pvisor-vm/src/memory.rs`. Native node acquisition validates authorized stores, publication and compatibility rather than accepting cache presence as authority.
@@ -64,6 +65,6 @@ No new measurements or PASS claims are available. Separate native-path experimen
 
 Use at most four simultaneous real native guests, counting live source VMs; cap each guest and service. Do not flush global page cache or infer sharing from untouched-page savings. Freeze workloads, sample counts and meaningful thresholds before collection. Historical independent fresh-boot probes neither establish nor refute native sharing, and do not establish daemon density.
 
-The daemon pool is separate from node-backed restoration. Pool loss fails dependent VMs; API restart retains the detached component but cannot recover failed pool contents. See [activation, ownership and limits](../../guides/daemon/index.md#memory-pool).
+The daemon pool is separate from node-backed restoration. Physical-pool loss fails dependent VMs; sealed-compressed clients retain delivered handles for local recovery and stop new publication; API restart retains the detached component but cannot recover failed pool contents. See [activation, ownership and limits](../../guides/daemon/index.md#memory-pool).
 
 Related designs: [responsibility convergence](responsibility-convergence.md), [shared image storage](../shared-image-cache-storage.md), [memory optimization](../memory-optimization/index.md) and [experimental cold RAM pool](../memory-optimization/proof-of-concept.md).

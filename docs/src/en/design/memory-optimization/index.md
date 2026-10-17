@@ -34,10 +34,11 @@ Pin a reliable backing or recovery source before unmapping or reclaiming origina
 | Snapshot baseline + private COW | Unmodified pages restored from the same verified backing | Writes become private; backing identity and compatible profiles are required |
 | Linux KSM advice | Duplicate content in eligible private RAM, including private file COW candidates | Asynchronous scanning and COW; host administrators control the scanner |
 | Daemon physical page pool | Equal resident 4 KiB pages in different VM sessions | Bounded scans and references, separate pool failure domain; no compression of unique pages |
+| Daemon sealed compressed pool | Equal or unique compressible cold 64 KiB blocks | Shared immutable encoded handles, local recovery; userfaultfd required; scoped two-VM correctness probe passed |
 | Local live compression | Unique compressible cold content within an instance | userfaultfd permissions, encoding CPU and refault costs |
 | Whole-VM offload | Idle state with a retained recovery source | Write/restore costs, storage and peak headroom |
 
-See [Memory deduplication](deduplication.md), [Memory compression](compression.md), [Per-instance compression](compression-local.md) and [Offload format](offload-format.md). Historical [pooled-server compression](compression-pool.md) retains encoded objects; the current Linux daemon physical pool shares raw pages. They remain separate mechanisms.
+See [Memory deduplication](deduplication.md), [Memory compression](compression.md), [Per-instance compression](compression-local.md) and [Offload format](offload-format.md). [Pooled-server compression](compression-pool.md) shares sealed encoded objects in an explicit Linux mode; the default daemon physical pool shares raw pages. They remain separate mechanisms.
 
 ## Ownership and publication order {#ownership}
 
@@ -66,11 +67,11 @@ A node budget includes shared working sets, private COW, per-instance overhead, 
 
 The default Linux daemon pool specifies 512 MiB storage, 32,768 objects, 32 connections and 32,768 references per connection. The 4 KiB object ceiling bounds distinct shared content to 128 MiB. Indexes, mappings and threads add overhead; rejected puts leave original pages resident. See [Shared working sets](../daemon/shared-working-set.md) and [daemon operations](../daemon/operations.md) for deployment.
 
-Losing the pool fails dependent VMs. API restart can reuse a live pool; pool-process or host-reboot recovery is unimplemented. Compression restoration needs uncompressed pages and buffers, so savings cannot directly become equal capacity for new instances.
+Losing the physical/legacy pool fails dependent VMs. Linux sealed-compressed clients retain local recovery from already delivered handles and stop new publication. API restart can reuse a live pool; pool-process or host-reboot recovery is unimplemented. Compression restoration needs uncompressed pages and buffers, so savings cannot directly become equal capacity for new instances.
 
 ## Implementation and combinations {#direction}
 
-The Linux daemon enables raw-page sharing explicitly with `serve --memory-pool`; it does not require userfaultfd. Per-instance live compression uses a separate userfaultfd mode. Snapshot capture/restore, file backing, whole-VM offload, KSM advice and cold-page paths have explicit incompatibility checks. Callers select supported profiles; combinations do not switch automatically at runtime.
+The Linux daemon enables raw-page sharing explicitly with `serve --memory-pool`; it does not require userfaultfd. Per-instance live compression and `--memory-pool-mode compressed` use userfaultfd. The sealed pool has component-level service-loss tests and a passing two-VM probe covering eviction/refault and file I/O after service termination; production-density and latency acceptance remain open. Snapshot capture/restore, file backing, whole-VM offload, KSM advice and cold-page paths have explicit incompatibility checks. Callers select supported profiles; combinations do not switch automatically at runtime.
 
 [VM memory benchmarks](../../benchmarks/vm-memory/index.md) retain sharing and offload evidence by configuration, samples and accounting scope. Ready-stage savings do not guarantee lower lifecycle peaks, and writes reduce sharing. [Proofs of concept](proof-of-concept.md) retain historical mechanisms and failures; [Environment snapshots](../environment-snapshot.md) define complete-state contracts.
 

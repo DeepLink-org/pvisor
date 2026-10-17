@@ -22,6 +22,7 @@
 | Snapshot lazy reader | 缺页时校验／解码块，decoded cache 有界 | 保留首次访问成本；旧 raw 格式可能要求完整校验 |
 | 历史 macOS 压缩池 | Session 引用与私有冷页恢复 | 记录版本的机制；与当前 Linux 协议分开 |
 | Daemon 自有 Linux 池 | 重复驻留 4 KiB 页，通过有界 memfd slot 和私有 COW 映射共享 | 显式 `serve --memory-pool`；独立预算和故障范围，不压缩唯一页 |
+| Daemon sealed 压缩池 | 共享不可变编码 64 KiB 块，客户端本地解码并恢复私有 RAM | 显式压缩模式；要求 userfaultfd，组件测试与双 VM 正确性探针已通过 |
 | NativeRuntime daemon | 独立不可变 rootfs、VM 私有写入 | 可选 daemon 自有池；无自动 node socket 获取、RAM restore 或 lazy snapshot 集成 |
 
 其他源码区域：`image/cache/lazy.rs`、`image/cache/portable/binary.rs`、`executor/vm/restore_ram.rs`、`environment_snapshot/lazy.rs` 与 `pvisor-vm/src/memory.rs`。原生 node acquire 校验授权 store、发布与兼容性，不以缓存存在替代权威。
@@ -64,6 +65,6 @@
 
 最多同时四个真实原生 guest，包括活动 source VM；限制每个 guest 与服务。不要清空全局 page cache，也不从未触碰页节省推断共享。采集前固定工作负载、样本数和有效阈值。历史独立 fresh-boot 探针既不建立也不否定原生共享，不建立 daemon 密度。
 
-Daemon 池与 node backing 恢复分开。池丢失会使依赖 VM 失败；API 重启保留独立组件，但不能恢复已失败的池内容。见[启用、所有权和限制](../../guides/daemon/index.md#memory-pool)。
+Daemon 池与 node backing 恢复分开。物理池丢失会使依赖 VM 失败；sealed 压缩客户端保留已交付句柄的本地恢复并停止新发布；API 重启保留独立组件，但不能恢复已失败的池内容。见[启用、所有权和限制](../../guides/daemon/index.md#memory-pool)。
 
 相关设计：[职责收敛](responsibility-convergence.md)、[共享镜像存储](../shared-image-cache-storage.md)、[内存优化](../memory-optimization/index.md)与[实验冷 RAM pool](../memory-optimization/proof-of-concept.md)。

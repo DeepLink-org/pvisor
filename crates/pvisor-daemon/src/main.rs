@@ -199,3 +199,43 @@ async fn shutdown() {
     let _ = tokio::signal::ctrl_c().await;
     // Detached native supervisors and durable ownership survive daemon-only restart.
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pvisor_daemon::memory_pool::PoolMode;
+
+    #[test]
+    fn compressed_pool_selection_requires_explicit_pool_enablement() {
+        let base = [
+            "pvisor-daemon",
+            "serve",
+            "--api-key",
+            "fixture-key",
+            "--images-dir",
+            "/images",
+            "--cgroup-root",
+            "/groups",
+        ];
+        let mut args = base.to_vec();
+        args.extend(["--memory-pool-mode", "compressed"]);
+        assert!(Args::try_parse_from(&args).is_err());
+        args.push("--memory-pool");
+        assert!(matches!(
+            Args::try_parse_from(&args).unwrap().command,
+            Command::Serve {
+                memory_pool: true,
+                memory_pool_mode: Some(PoolMode::Compressed),
+                ..
+            }
+        ));
+        assert!(matches!(
+            Args::try_parse_from(base).unwrap().command,
+            Command::Serve {
+                memory_pool: false,
+                memory_pool_mode: None,
+                ..
+            }
+        ));
+    }
+}

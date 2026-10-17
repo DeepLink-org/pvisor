@@ -549,6 +549,7 @@ mod tests {
             cpu_millis: 1000,
             memory_bytes: 64 * 1024 * 1024,
             endpoint_token: "fixture-endpoint-token-at-least-32-bytes".into(),
+            e2b: None,
         }
     }
 

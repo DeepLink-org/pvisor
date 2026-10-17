@@ -2162,7 +2162,7 @@ mod tests {
             &service,
             &identity,
             temp.path(),
-            &health_client().unwrap(),
+            &health_client(None).unwrap(),
             &BTreeMap::new(),
             Operation::Pause,
         )
@@ -2179,7 +2179,7 @@ mod tests {
                 &service,
                 &identity,
                 temp.path(),
-                &health_client().unwrap(),
+                &health_client(None).unwrap(),
                 &BTreeMap::new(),
                 Operation::Inspect,
             )
@@ -2206,6 +2206,7 @@ mod tests {
             env: BTreeMap::new(),
             cpu_millis: 500,
             memory_bytes: 64 * MIB,
+            e2b: None,
         }
     }
     fn identity_fixture(temp: &Path) -> (Identity, PathBuf) {
@@ -2229,6 +2230,7 @@ mod tests {
                 cmd: vec!["/guest/default".into()],
                 env: BTreeMap::from([("PATH".into(), "/guest/bin".into())]),
                 library_dir: None,
+                e2b: None,
             },
             cgroup: temp
                 .join("groups")
@@ -2988,7 +2990,7 @@ mod tests {
             (EXECD_PORT, endpoint.clone()),
             (EGRESS_PORT, endpoint.clone()),
         ]);
-        let client = health_client().unwrap();
+        let client = health_client(None).unwrap();
         let result = observe_control(
             &directory,
             &client,
@@ -3073,7 +3075,7 @@ mod tests {
     async fn endpoint_requires_current_live_running_state_and_deletion_fence() {
         let temp = tempfile::tempdir().unwrap();
         let (identity, directory) = identity_fixture(temp.path());
-        let client = health_client().unwrap();
+        let client = health_client(None).unwrap();
         let endpoints = BTreeMap::from([(EXECD_PORT, "http://127.0.0.1:1".into())]);
         for state in [
             RuntimeState::Paused,
@@ -3133,7 +3135,7 @@ mod tests {
     async fn inspect_still_rejects_unready_services() {
         let temp = tempfile::tempdir().unwrap();
         let (_, directory) = identity_fixture(temp.path());
-        let client = health_client().unwrap();
+        let client = health_client(None).unwrap();
         let endpoints = BTreeMap::from([(EXECD_PORT, "http://127.0.0.1:1".into())]);
         assert!(
             observe_control(

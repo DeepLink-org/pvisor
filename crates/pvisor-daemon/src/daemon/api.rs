@@ -20,6 +20,8 @@
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+#[cfg(test)]
+use axum::http::Uri;
 use axum::{
     Json, Router,
     body::{Body, to_bytes},
@@ -27,7 +29,7 @@ use axum::{
         DefaultBodyLimit, MatchedPath, Path, RawQuery, Request, State,
         rejection::{JsonRejection, PathRejection},
     },
-    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, get, post},
@@ -35,7 +37,7 @@ use axum::{
 use serde_json::{Value, json};
 use url::{Host, Url};
 
-use super::{ApiError, CreateRequest, Daemon, EndpointResponse, RenewRequest, Sandbox, e2b};
+use super::{ApiError, CreateRequest, Daemon, EndpointResponse, RenewRequest, Sandbox};
 
 const CONTROL_BODY_LIMIT: usize = 1024 * 1024;
 const PROXY_HEADERS_TIMEOUT: Duration = Duration::from_secs(120);
@@ -45,7 +47,6 @@ const PROXY_PATH_ROUTE: &str = "/v1/sandboxes/{id}/proxy/{port}/{*path}";
 
 pub fn router(daemon: Arc<Daemon>) -> Router {
     Router::new()
-        .merge(e2b::routes())
         .route("/v1/sandboxes", get(list).post(create))
         .route("/v1/sandboxes/{id}", get(get_sandbox).delete(delete))
         .route("/v1/sandboxes/{id}/pause", post(pause))
@@ -101,7 +102,6 @@ async fn request_policy(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let e2b_request = !request.uri().path().starts_with("/v1/");
     let request_id = HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
         .expect("UUID is a valid header value");
     request
@@ -113,19 +113,13 @@ async fn request_policy(
         .is_some_and(|path| {
             matches!(
                 path.as_str(),
-                PROXY_ROUTE | PROXY_TRAILING_ROUTE | PROXY_PATH_ROUTE | e2b::PROXY_ROUTE | e2b::PROXY_PATH_ROUTE
+                PROXY_ROUTE | PROXY_TRAILING_ROUTE | PROXY_PATH_ROUTE
             )
         });
     let mut response = if is_proxy {
         next.run(request).await
-    } else if !(if e2b_request {
-        e2b::authorized(&daemon, request.headers())
-    } else {
-        control_authorized(&daemon, request.headers())
-    }) {
-        protocol_error(unauthorized(), e2b_request)
-    } else if e2b_request && request.headers().contains_key("idempotency-key") {
-        protocol_error(ApiError::new(501, "NOT_SUPPORTED", "Idempotency keys are not supported"), true)
+    } else if !control_authorized(&daemon, request.headers()) {
+        unauthorized().into_response()
     } else {
         // Buffer only bounded control bodies. Proxy requests never enter this branch.
         let (parts, body) = request.into_parts();
@@ -135,16 +129,12 @@ async fn request_policy(
                     .await
             }
             Err(_) => {
-                protocol_error(ApiError::bad_request("Control body is unreadable or exceeds 1 MiB"), e2b_request)
+                ApiError::bad_request("Control body is unreadable or exceeds 1 MiB").into_response()
             }
         }
     };
     response.headers_mut().insert("x-request-id", request_id);
     response
-}
-
-fn protocol_error(error: ApiError, e2b_request: bool) -> Response {
-    if e2b_request { e2b::error_response(error) } else { error.into_response() }
 }
 
 fn single_credential(headers: &HeaderMap, name: &'static str) -> bool {
@@ -167,17 +157,17 @@ fn unauthorized() -> ApiError {
     )
 }
 
-async fn not_found(request: Request) -> Response {
-    protocol_error(ApiError::new(404, "NOT_FOUND", "Unknown API route"),
-        !request.uri().path().starts_with("/v1/"))
+async fn not_found() -> Response {
+    ApiError::new(404, "NOT_FOUND", "Unknown API route").into_response()
 }
 
-async fn method_not_allowed(request: Request) -> Response {
-    protocol_error(ApiError::new(
+async fn method_not_allowed() -> Response {
+    ApiError::new(
         405,
         "METHOD_NOT_ALLOWED",
         "Method is not supported on this route",
-    ), !request.uri().path().starts_with("/v1/"))
+    )
+    .into_response()
 }
 
 async fn unsupported() -> ApiError {
@@ -458,8 +448,13 @@ fn strip_service_headers(headers: &mut HeaderMap, request: bool, envd: bool) {
     }
     // envd uses Basic authorization to select the guest Unix user. Bearer
     // credentials and all OpenSandbox Authorization headers remain control data.
-    if !request || !envd || headers.get_all(header::AUTHORIZATION).iter().count() != 1
-        || !headers.get(header::AUTHORIZATION).is_some_and(|value| value.as_bytes().starts_with(b"Basic ")) {
+    if !request
+        || !envd
+        || headers.get_all(header::AUTHORIZATION).iter().count() != 1
+        || !headers
+            .get(header::AUTHORIZATION)
+            .is_some_and(|value| value.as_bytes().starts_with(b"Basic "))
+    {
         headers.remove(header::AUTHORIZATION);
     }
     if request {
@@ -483,6 +478,7 @@ fn strip_service_headers(headers: &mut HeaderMap, request: bool, envd: bool) {
     }
 }
 
+#[cfg(test)]
 fn proxy_url(base: &str, uri: &Uri) -> Result<Url, ApiError> {
     let suffix = uri.path().splitn(7, '/').nth(6).unwrap_or_default();
     upstream_url(base, &format!("/{suffix}"), uri.query())
@@ -553,7 +549,12 @@ async fn proxy(
         path.get("port")
             .ok_or_else(|| ApiError::bad_request("Missing port"))?,
     )?;
-    let suffix = request.uri().path().splitn(7, '/').nth(6).unwrap_or_default();
+    let suffix = request
+        .uri()
+        .path()
+        .splitn(7, '/')
+        .nth(6)
+        .unwrap_or_default();
     let guest_path = format!("/{suffix}");
     forward(&daemon, id, port, request, guest_path).await
 }
@@ -567,8 +568,13 @@ pub(super) async fn forward(
 ) -> Result<Response, ApiError> {
     if request.method() == Method::CONNECT
         || request.headers().contains_key(header::UPGRADE)
-        || request.headers().contains_key("sec-websocket-key") {
-        return Err(ApiError::new(501, "NOT_IMPLEMENTED", "WebSocket upgrades and CONNECT are not supported"));
+        || request.headers().contains_key("sec-websocket-key")
+    {
+        return Err(ApiError::new(
+            501,
+            "NOT_IMPLEMENTED",
+            "WebSocket upgrades and CONNECT are not supported",
+        ));
     }
     // Shared admission permits parallel proxies; exclusive lifecycle writers
     // fence delete/rebind and prevent new readers starving a queued control.

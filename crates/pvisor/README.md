@@ -369,7 +369,7 @@ The exchange takes an `AgentCtlHostRequest<HostVmCommand>` and returns an
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`; FUSE/macFUSE backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`; Linux x86_64 local cold pager |
 | `--vm-ram-dedup[=BOOL]` | `ram_dedup` | `false`; best-effort host advice |
-| `--vm-memory-pool SOCKET` | `memory_pool` | Unset; experimental Apple Silicon pool, unsupported on Linux |
+| `--vm-memory-pool SOCKET` | `memory_pool` | Unset; experimental Linux physical/sealed-compressed or Apple Silicon legacy pool |
 | `--vm-node-socket SOCKET` | `node_socket` | Unset; same-host resource service |
 | `--vm-snapshot-filesystem-pool DIR` | `snapshot_filesystem_pool` | Unset; Linux x86_64 no-network native checkpoint lower pool |
 
@@ -403,7 +403,10 @@ and [configuration example](../../docs/src/en/reference/config.md#vm-control-mem
 
 `pvisor-daemon serve --memory-pool` enables the daemon-owned experimental pool;
 the daemon starts or reuses its detached `pvisor-daemon memory-pool --directory DIR`
-component. Keep the pool alive until dependent VMs exit; API restart does not
+component. Linux `--memory-pool-mode compressed` selects shared sealed compressed
+objects instead of default physical-page sharing. Compressed clients retain
+validated handles and local recovery after pool loss, while new publication
+stops. Physical/legacy pool loss still fails dependent VMs. API restart does not
 provide pool-process or host-reboot recovery. Reserve pool/host overhead outside
 sandbox admission limits. See the [daemon boundary](../pvisor-daemon/README.md).
 
@@ -421,7 +424,8 @@ anonymous ordinary RAM using `LocalColdRamStore`, without a live backing file,
 FUSE or a service. This is separate from `vm.ram_compression` (FUSE backing).
 Kernel-fault syscall or `/dev/userfaultfd` authority is required; compiled support
 is not permission, and missing authority fails startup without fallback or global
-sysctl changes. Linux external `memory_pool` is deliberately unsupported.
+sysctl changes. Linux external `memory_pool` negotiates physical-page sharing or
+sealed compression; only the latter uses the 64 KiB userfaultfd pager.
 
 The store rejects raw/poorly compressed blocks, caps encoded payload at half
 configured RAM and bounds object count by the configured 64 KiB block count.
@@ -432,8 +436,9 @@ not ordinary pause or a read-access heat detector. Admission rejects dedup,
 file/FUSE backing, snapshot capture/restore and whole-VM offload combinations.
 See [local compression](../../docs/src/en/design/memory-optimization/compression-local.md)
 for user-specific device ACLs, restricted mappings/build features and ownership.
-This delivers an experimental mechanism, not a production-density claim; sealed
-`memfd` pooling remains proposed.
+This delivers an experimental mechanism, not a production-density claim. Sealed
+pool handoff and service-exit recovery have process-level tests; guest UFFD
+recovery and production latency/density need separate validation.
 
 The daemon's VM-only `NativeRuntime` embeds this crate in detached supervisor
 subprocesses. Its CLI uses explicit flags.

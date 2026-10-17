@@ -11,7 +11,8 @@ userfaultfd pager 及有界本地存储，不需要 FUSE 或外部池。它区�
 `vm.ram_compression`（FUSE 文件 backing），采用驱逐/refault 探测，而非
 读访问热度检测。它与[池化服务器压缩](compression-pool.md)都不是生产
 收益承诺。macOS/HVF 堆冷池仍属实验，服务丢失可能导致依赖它的 VM 失败；
-客户端持有不可变 backing 的方案仍属提案。
+Linux 客户端持有 sealed 压缩 backing 已实验性实现，并有进程级交付/恢复测试；
+双 VM 探针已验证服务终止后的 guest discard/refault 与文件 I/O。
 
 ## 所有权与数据流 {#architecture}
 
@@ -35,6 +36,7 @@ Linux 本地 pager 在回收 RAM 前发布并校验对象，恢复通过经过�
 `UFFD_COPY` 完成。必须具备内核缺页 userfaultfd 权限；编译支持不代表
 授权，缺少权限时启动失败。它拒绝去重、文件/FUSE backing、快照捕获/恢复、
 整 VM [offload](offload.md) 及外部内存池，见[本地合同](compression-local.md#direction)。
-Linux sealed `memfd` 池化交付仍是提案，macOS 的等价 sealed 方案尚未交付。
+Linux sealed `memfd` 池化交付已有进程级测试和通过的真实 guest UFFD 正确性探针；
+macOS 的等价 sealed 方案尚未交付。
 从[优化架构](index.md)出发；[内存证据](proof-of-concept.md#memory-evidence)
 尚未建立已知的生产净收益，也未验证净物理内存节省。

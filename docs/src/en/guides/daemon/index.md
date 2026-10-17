@@ -72,6 +72,19 @@ The shared pool and idle release work together without another switch. When the 
 
 The component runs independently of the API process and retains pages across API restart. After disconnect, pidfd-confirmed VM process exit is required before releasing mapped references, preventing reuse of slots still being read. Pool loss fails dependent VMs; live pools are not automatically replaced. Default limits are 512 MiB of page data, 32,768 objects, 32 connections and 32,768 references per connection: at 4 KiB per object, the object ceiling limits the default pool to 128 MiB of distinct pages and each VM to 128 MiB of references. Unique candidates retain bounded hashes only; budget rejection keeps the original page. Indexes, mappings, threads and allocator memory add overhead. The pool is outside individual sandbox cgroups and admission limits; reserve host headroom. Scanning skips nonresident pages; budget for startup and write peaks. Drain old VMs and use fresh state when upgrading from the compressed pool. VM/pool tests do not establish complete OpenSandbox SDK end-to-end conformance.
 
+To select the experimental compressed mode, append
+`--memory-pool --memory-pool-mode compressed` instead. It shares equal decoded
+64 KiB blocks as sealed fill/zstd objects and also compresses unique eligible
+contents. VM startup requires kernel-fault userfaultfd authority. Clients
+validate immutable handles before reclaiming RAM and decode locally on recovery;
+after pool loss, retained handles remain usable and new publication stops.
+Budgets count page-rounded encoded files, with separate object/descriptor and
+reference bounds. Original RAM survives compression or budget rejection.
+The mode is fixed in persisted state; drain old instances and use fresh state to
+switch. Process-level sharing/service-loss tests and a two-VM probe of guest
+UFFD reclaim/refault and file I/O after pool termination pass. See
+[sealed compressed pool contracts](../../design/memory-optimization/compression-pool.md).
+
 ## Connect clients {#clients}
 
 Use OpenSandbox SDK 1.1.0 with your chosen domain and protocol, supplying the lifecycle API key. Creation requires `image`, an `entrypoint` argv and `resourceLimits` containing exactly `cpu` and `memory`. An optional `timeout` is in seconds and must be at least 60; omission or null means manual cleanup. No prepared-image name is supplied here because there is no validated drop-in image recipe.

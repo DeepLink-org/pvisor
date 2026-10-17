@@ -72,6 +72,16 @@ EOF
 
 池组件独立于 API 进程，可跨 API 重启保留页面。连接断开后，用 pidfd 确认 VM 进程退出才释放映射引用，防止仍被读取的槽位被复用。池进程丢失会使依赖 VM 失败，不会自动替换活动池。默认上限为 512 MiB 页面数据、32,768 个对象、32 个连接，每个连接 32,768 个引用：4 KiB 对象数限制使默认池最多保存 128 MiB 不同页面，每 VM 最多引用 128 MiB。独有候选仅保存有界摘要，预算不足时保留原页。索引、映射、线程和分配器另有开销；池在单个沙箱 cgroup 与准入额度之外，需预留宿主余量。扫描跳过未驻留页，总预算仍应包含启动和写入峰值。升级旧压缩池时先排空旧 VM，再使用新状态目录。这个开关的 VM/池测试不等于完整 OpenSandbox SDK 端到端验证。
 
+若要选择实验性压缩模式，改为添加
+`--memory-pool --memory-pool-mode compressed`。相同的解码后 64 KiB 块共享
+sealed fill/zstd 对象，独有可压缩内容也能入池。VM 启动需要内核缺页
+userfaultfd 权限。客户端先校验不可变句柄再回收 RAM，恢复时本地解码；
+池丢失后已持有句柄仍可用，新发布停止。预算计入向页取整的编码文件，
+对象/描述符和引用数分别有界；压缩或预算拒绝会保留原 RAM。
+模式绑定持久配置，切换需排空旧实例并使用新状态目录。进程级共享与服务退出
+测试通过，双 VM 探针也已验证池终止后的 guest UFFD 回收/refault 与文件 I/O。
+见 [sealed 压缩池合同](../../design/memory-optimization/compression-pool.md)。
+
 ## 连接客户端 {#clients}
 
 使用 OpenSandbox SDK 1.1.0，配置选定的 domain、protocol 与生命周期 API key。创建请求需要 `image`、`entrypoint` argv，以及恰好包含 `cpu`、`memory` 的 `resourceLimits`。可选 `timeout` 以秒计，至少 60 秒；省略或 null 表示手动清理。这里不提供 prepared-image 名称，因为目前没有经过验证的开箱即用镜像配方。

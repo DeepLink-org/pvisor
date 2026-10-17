@@ -1071,6 +1071,7 @@ async fn invalid_runtime_spec_is_rejected_before_admission_and_runtime_calls() {
             env: validated.env,
             cpu_millis: validated.cpu_millis,
             memory_bytes: validated.memory_bytes,
+            e2b: None,
         };
         let validation_error = crate::runtime::validate_spec(&spec).unwrap_err();
         assert!(
