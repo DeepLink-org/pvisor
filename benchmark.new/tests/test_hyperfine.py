@@ -74,6 +74,15 @@ class RegistryTests(unittest.TestCase):
                 )
                 self.assertTrue(path.with_suffix(".py").is_file())
                 continue
+            if row["status"] == "explicit-python-paired-memory":
+                self.assertEqual(row["benchmark_id"], "B-MEMORY-SCALE")
+                self.assertEqual(row["role"], "engineering A/B")
+                self.assertEqual(row["entry"], "memory/scanner_compare.json")
+                self.assertEqual(table, {"paired-memory":
+                    "$ python3 @REPO@/benchmark.new/memory/scanner_compare.py --build @BUILD@ "
+                    "--rootfs @ROOTFS@ --firmware @FIRMWARE@ --output @OUTPUT@ --samples @SAMPLES@"})
+                self.assertTrue(path.with_suffix(".py").is_file())
+                continue
             if isinstance(next(iter(table.values())), str):
                 for command in table.values():
                     self.assertTrue(command.startswith("$ hyperfine "))

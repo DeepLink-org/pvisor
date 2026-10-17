@@ -1,0 +1,3 @@
+{
+  "paired-memory": "$ python3 @REPO@/benchmark.new/memory/scanner_compare.py --build @BUILD@ --rootfs @ROOTFS@ --firmware @FIRMWARE@ --output @OUTPUT@ --samples @SAMPLES@"
+}
