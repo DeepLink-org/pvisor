@@ -135,6 +135,6 @@ KSM 在 60 秒内产生了实际页面合并；重复、相同随机、独有随
 
 ### 数据与复现 {#run}
 
-[单实例读数](memory-choices.csv) · [单实例观测差值](memory-choices-comparisons.csv) · [单实例来源](memory-choices-provenance.csv) · [跨实例读数](memory-sharing.csv) · [跨实例观测差值](memory-sharing-comparisons.csv) · [跨实例来源](memory-sharing-provenance.csv) · [复现命令](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#user-memory-saving-choices)
+[单实例读数](../../../../overrides/assets/benchmarks/data/memory/memory-choices.csv) · [单实例观测差值](../../../../overrides/assets/benchmarks/data/memory/memory-choices-comparisons.csv) · [单实例来源](../../../../overrides/assets/benchmarks/data/memory/memory-choices-provenance.csv) · [跨实例读数](../../../../overrides/assets/benchmarks/data/memory/memory-sharing.csv) · [跨实例观测差值](../../../../overrides/assets/benchmarks/data/memory/memory-sharing-comparisons.csv) · [跨实例来源](../../../../overrides/assets/benchmarks/data/memory/memory-sharing-provenance.csv) · [复现命令](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#user-memory-saving-choices)
 
 这些 CSV 只使用新的 512 MiB 静态批次，保留配置、N=1、常驻/缓存口径及源码、二进制、harness 和输入摘要关联。原始证据留在本地 `.data/`，不混入此前 256 MiB 或历史快照数据。

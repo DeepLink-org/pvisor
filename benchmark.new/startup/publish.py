@@ -22,6 +22,8 @@ def publish_startup(directory, source):
     module = importlib.util.module_from_spec(spec)
     sys.path.insert(0, str(ROOT))
     spec.loader.exec_module(module)
+    from public_assets import csv_path
+
     source = Path(source)
     metadata = json.loads((Path(directory) / "manifest.json").read_text())
     scope = metadata["metric_scope"]
@@ -29,30 +31,26 @@ def publish_startup(directory, source):
         raise ValueError("startup publication requires paired Ready / Exit data")
     stem = "startup-timing"
     filename = stem + ".csv"
-    csvs = [source / locale / "benchmarks" / filename for locale in ("zh", "en")]
-    if (csvs[0].read_bytes() if csvs[0].exists() else None) != (
-        csvs[1].read_bytes() if csvs[1].exists() else None
-    ):
-        raise ValueError("bilingual startup CSV histories differ")
+    csv_target = csv_path(source.parent.parent, filename)
     validated = module.validate_batch(directory)
-    for path in csvs:
-        module._publish_csv(directory, path, *validated, dry_run=True)
-        if path.exists():
-            with path.open() as stream:
-                if any(row["metric_scope"] != scope for row in csv.DictReader(stream)):
-                    raise ValueError("mixed Ready metric scopes")
+    module._publish_csv(directory, csv_target, *validated, dry_run=True)
+    if csv_target.exists():
+        with csv_target.open() as stream:
+            if any(row["metric_scope"] != scope for row in csv.DictReader(stream)):
+                raise ValueError("mixed Ready metric scopes")
     provenance_path = source.parent / "overrides/assets/benchmarks" / (stem + ".provenance.json")
     previous = json.loads(provenance_path.read_text()) if provenance_path.exists() else {}
     # Validate the new configuration before writing CSVs.
     current_configuration = configuration(
         directory, {"batch": metadata["batch"], "condition": metadata["conditions"][0]}, {}
     )
-    for locale, path in zip(("zh", "en"), csvs):
-        module._publish_csv(directory, path, *validated)
-        with path.open() as stream:
-            latest = {row["condition"]: row for row in csv.DictReader(stream)}
-        if any(r["metric_scope"] != scope for r in latest.values()):
-            raise ValueError("mixed Ready metric scopes")
+    module._publish_csv(directory, csv_target, *validated)
+    with csv_target.open() as stream:
+        latest = {row["condition"]: row for row in csv.DictReader(stream)}
+    if any(r["metric_scope"] != scope for r in latest.values()):
+        raise ValueError("mixed Ready metric scopes")
+    for locale in ("zh", "en"):
+        path = source / locale / "benchmarks" / filename
         from timing import FIELDS
 
         fields = FIELDS

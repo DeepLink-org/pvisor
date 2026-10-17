@@ -191,13 +191,13 @@ The same-stage file-loading comparison has completed measurement through the new
 
 <!-- measurement-status:end -->
 
-[Stage statistics CSV](lazy-stage-summary.csv) · [Stage paired differences CSV](lazy-stage-comparisons.csv) · [Stage provenance summary](../assets/benchmarks/lazy-stage.provenance.json) · [Stage reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md#stage-lazy)
+[Stage statistics CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-stage-summary.csv) · [Stage paired differences CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-stage-comparisons.csv) · [Stage provenance summary](../assets/benchmarks/lazy-stage.provenance.json) · [Stage reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md#stage-lazy)
 
 Stage raw evidence stays in `benchmark.new/startup/.data/overlaybd-lab-20261017/stage-lazy-20261017-a/`. The independent audit recomputes raw clocks and rechecks file validation, mount and device identities, Run Bundles, per-request bytes, 33 rounds of background observations and cleanup, and verifies the semspec export. Binary, runtime-library and frozen-harness hashes are retained; their exact correspondence to a source build is unverified. Only processed statistics and compact provenance are published; raw samples and full inventories stay in local evidence.
 
-[Shell statistics CSV](lazy-startup-summary.csv) · [Shell differences/preparation CSV](lazy-startup-details.csv) · [Shell provenance CSV](lazy-startup-provenance.csv)
+[Shell statistics CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-startup-summary.csv) · [Shell differences/preparation CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-startup-details.csv) · [Shell provenance CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-startup-provenance.csv)
 
-[NumPy statistics CSV](lazy-numpy-summary.csv) · [NumPy differences/preparation CSV](lazy-numpy-details.csv) · [NumPy provenance CSV](lazy-numpy-provenance.csv) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#current-implementation-dockerlazy-comparison)
+[NumPy statistics CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-numpy-summary.csv) · [NumPy differences/preparation CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-numpy-details.csv) · [NumPy provenance CSV](../../../overrides/assets/benchmarks/data/lazy/lazy-numpy-provenance.csv) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#current-implementation-dockerlazy-comparison)
 
 Raw evidence stays in `benchmark/pvisor/.data/lazy-shell-current-formal-20261010/` and `lazy-numpy-current-formal-20261010-2/`; each `derive.py` rechecks all 136 launches, frozen inputs, retained OCI digests and cleanup receipts before regenerating CSVs. Build evidence is in `.data/lazy-current-build-20261010/`: 1,193 frozen source inputs and measured binary digests match the retained fresh build. This verifies the recorded relationship without establishing hermetic reproducibility. Failed preflights/cohorts and historical 2026-10-07 data remain separate. These observations are also separate from [prepared-environment startup](startup.md).
 

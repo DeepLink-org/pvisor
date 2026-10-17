@@ -57,8 +57,10 @@ by `python3 benchmark.new/docs.py publish BATCH`. Links/code in dynamic JSON
 tables opt into `markdown: true`, with `row_names: false` when the first column
 is already present. Semspec validates optional alignments and displayed headers.
 
-Native `watch` entries track benchmark data files for preview rebuilds. Add table
-data stored in other directories to the locale configuration's `watch` list.
+Native `watch` entries track article-side benchmark tables for preview rebuilds.
+Both projects use `theme.custom_dir = "overrides"`; Zensical also watches that
+theme directory, covering shared benchmark CSV, SVG and provenance assets.
+Add table data outside the source and theme directories to `watch` explicitly.
 `docs-build` also uses Zensical's `--clean` to discard cached table expansions.
 
 `docs-serve` sets `PVISOR_DOCS_LIVE=1` and renders tables with semspec's
@@ -173,14 +175,24 @@ network policy guide owns the executor boundary matrix (summarized in
 observations. Other articles link to these definitions. Implementation pages
 explain mechanisms and code ownership. Benchmark and comparison pages state
 method, environment and date, and keep dated raw samples in local `.data/` directories.
-Derived Markdown tables, resolved JSON tables and same-directory CSV downloads
-are versioned. Public benchmark provenance summaries live once under
+Derived Markdown tables and resolved JSON tables are versioned. Processed CSV
+downloads live once under `docs/overrides/assets/benchmarks/data/`; use
+`benchmark.new/public_assets.py`'s `csv_path(repo, filename, locale)` to resolve
+their topic/study path. Both languages share numeric CSV bytes. The historical
+`index.csv` and `supervision-cost.csv` contain translated prose and use locale
+subdirectories; localized `.render.json` projections remain beside articles.
+Public figures use SVG; PDF exports stay outside the published tree.
+Public benchmark provenance summaries live once under
 `docs/overrides/assets/benchmarks/`; both languages link to their local
 `assets/benchmarks/` copies published by Zensical. Keep the batch, measurement
 scope, configuration and input/binary/evidence hashes in these summaries.
 Full manifests, per-file harness records, host paths and complete package receipts
 remain in the benchmark's ignored `.data/`. Publishers update the shared summary
-and only the JSON projections referenced by articles.
+and only the JSON projections referenced by articles. Original records,
+unreferenced historical outputs and replaced provenance from the asset cleanup
+remain in `benchmark.new/.data/docs-assets-cleanup-20261018/`; its migration
+inventory preserves original paths, byte hashes and destinations. Moving assets
+must preserve measurement values, statistical scope and evidence hashes.
 Keep executable benchmark templates and raw `*.bench.json`
 evidence outside the published article tree; articles reference resolved JSON.
 The native `exclude` plugin excludes `.data/` at every depth, and the generated

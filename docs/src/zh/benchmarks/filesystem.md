@@ -215,15 +215,15 @@ Native/host/容器使用父组内存，VM 另受 guest 内存边界限制；不�
 <details markdown="1">
 <summary>查看独立保留的历史口径</summary>
 
-原七工具的 [N=5 Ready/驻留环境统计](filesystem-resident.csv)与[来源](filesystem-resident-provenance.csv)、[历史 N=30 统计](filesystem.csv)，以及此前五模式分层对照，各自保留原始口径；不填入新的 19 项表格，也不计算跨批次优化幅度。
+原七工具的 [N=5 Ready/驻留环境统计](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident.csv)与[来源](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident-provenance.csv)、[历史 N=30 统计](../../../overrides/assets/benchmarks/data/filesystem/tools/filesystem.csv)，以及此前五模式分层对照，各自保留原始口径；不填入新的 19 项表格，也不计算跨批次优化幅度。
 
 </details>
 
 ### 数据下载与复现 {#run}
 
-[工作流图 PDF](../../../overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.pdf) · [请求粒度图 PDF](../../../overrides/assets/benchmarks/filesystem-layered-references/write-request-size.pdf) · [资源图 PDF](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.pdf) · [机制图 PDF](../../../overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.pdf)
+[工作流图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.svg) · [请求粒度图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/write-request-size.svg) · [资源图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg) · [机制图 SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg)
 
-[全部分层统计](filesystem-layered-references-levels.csv) · [Ready](filesystem-layered-references-ready.csv) · [逐环境](filesystem-layered-references-environments.csv) · [逐轮原值](filesystem-layered-references-rows.csv) · [失败与缺失](filesystem-layered-references-failures.csv) · [来源摘要](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
+[全部分层统计](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [逐环境](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-environments.csv) · [逐轮原值](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-rows.csv) · [失败与缺失](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv) · [来源摘要](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
 
 CSV 的 write_ops/read_ops 是负载显式逻辑操作数，不是 guest→host 请求数，也不包含子工具内部全部 I/O。
 

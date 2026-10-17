@@ -78,6 +78,6 @@ stage 在空闲 128 路通过五轮，但相同环境加入私有数据和 Git �
 
 ### 数据下载与复现 {#run}
 
-[完整并发扫描 CSV](density-summary.csv) · [制品、预算和证据摘要](density-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[完整并发扫描 CSV](../../../overrides/assets/benchmarks/data/density/density-summary.csv) · [制品、预算和证据摘要](../../../overrides/assets/benchmarks/data/density/density-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
 整理表保留每个条件的尝试数、完整批次数、失败原因、未知数、OOM、观察范围和来源摘要。原始报告、日志、输入清单及源码/二进制留在本地 `.data/`；没有将失败批次移出容量统计。

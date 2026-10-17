@@ -64,6 +64,6 @@ Lazy 冷客户端 Ready 排除镜像服务首次准备；镜像已缓存时，Do
 
 ### 数据下载与复现 {#run}
 
-[场景证据 CSV](compare-rl-infra.csv)保留主题、来源、批次、统计量、样本数、数值与限制。来源摘要：[密度](density-summary.csv)、[修复/CLI](agent-tasks.csv)、[启动](startup.csv)、[回放](replay-fidelity.csv)、[lazy 启动/内容](lazy-startup-summary.csv)、[隔离](isolation-tests.csv)、[VM 内存](vm-memory/memory-choices.csv)。制品摘要与完整控制条件保留在所属主题的 provenance 下载中；原始证据保留在本地 `.data/`。
+[场景证据 CSV](../../../overrides/assets/benchmarks/data/compare/compare-rl-infra.csv)保留主题、来源、批次、统计量、样本数、数值与限制。来源摘要：[密度](../../../overrides/assets/benchmarks/data/density/density-summary.csv)、[修复/CLI](../../../overrides/assets/benchmarks/data/agent/agent-tasks.csv)、[启动](../../../overrides/assets/benchmarks/data/startup/startup.csv)、[回放](../../../overrides/assets/benchmarks/data/replay/replay-fidelity.csv)、[lazy 启动/内容](../../../overrides/assets/benchmarks/data/lazy/lazy-startup-summary.csv)、[隔离](../../../overrides/assets/benchmarks/data/isolation/isolation-tests.csv)、[VM 内存](../../../overrides/assets/benchmarks/data/memory/memory-choices.csv)。制品摘要与完整控制条件保留在所属主题的 provenance 下载中；原始证据保留在本地 `.data/`。
 
 [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

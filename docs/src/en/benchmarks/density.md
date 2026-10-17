@@ -78,6 +78,6 @@ Compressed parked snapshots versus container pause have not completed validation
 
 ### Downloads and reproduction {#run}
 
-[Complete concurrency scan CSV](density-summary.csv) · [Artifacts, budget and evidence summary](density-provenance.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Complete concurrency scan CSV](../../../overrides/assets/benchmarks/data/density/density-summary.csv) · [Artifacts, budget and evidence summary](../../../overrides/assets/benchmarks/data/density/density-provenance.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
 Derived tables retain attempts, complete batches, failure reasons, unknowns, OOM, observed ranges and source digests for every condition. Raw reports, logs, input manifests and source/binaries stay in local `.data/`; failed batches remain in capacity denominators.

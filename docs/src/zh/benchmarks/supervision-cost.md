@@ -161,10 +161,10 @@ stage 的工具执行和合入仍有额外成本，但创建独立视图、按�
 
 ### 合入规模与恢复的数据 {#apply-downloads}
 
-[规模耗时 CSV](apply.csv) · [Git 配对对照 CSV](apply-comparisons.csv) · [恢复检查 CSV](apply-recovery.csv) · [并发冲突 CSV](apply-concurrent-conflicts.csv) · [来源摘要 CSV](apply-provenance.csv)
+[规模耗时 CSV](../../../overrides/assets/benchmarks/data/apply/apply.csv) · [Git 配对对照 CSV](../../../overrides/assets/benchmarks/data/apply/apply-comparisons.csv) · [恢复检查 CSV](../../../overrides/assets/benchmarks/data/apply/apply-recovery.csv) · [并发冲突 CSV](../../../overrides/assets/benchmarks/data/apply/apply-concurrent-conflicts.csv) · [来源摘要 CSV](../../../overrides/assets/benchmarks/data/apply/apply-provenance.csv)
 
 来源摘要记录二进制、源码、harness 和原始报告的摘要。性能与并发检查使用同一二进制、分别采样；原始命令、报告和审计记录保存在本地 `.data/`。
 
 ### 数据下载与复现 {#run}
 
-[整理后的表格 CSV](supervision-cost.csv) · [各步骤统计](workflow-summary.csv) · [差异与置信区间](workflow-comparisons.csv) · [来源与制品](workflow-provenance.csv) · [预备视图各步骤](supervision-summary.csv) · [预备视图配对差异](supervision-comparisons.csv) · [预备视图来源](supervision-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[整理后的表格 CSV](../../../overrides/assets/benchmarks/data/supervision/zh/supervision-cost.csv) · [各步骤统计](../../../overrides/assets/benchmarks/data/workflow/workflow-summary.csv) · [差异与置信区间](../../../overrides/assets/benchmarks/data/workflow/workflow-comparisons.csv) · [来源与制品](../../../overrides/assets/benchmarks/data/workflow/workflow-provenance.csv) · [预备视图各步骤](../../../overrides/assets/benchmarks/data/supervision/supervision-summary.csv) · [预备视图配对差异](../../../overrides/assets/benchmarks/data/supervision/supervision-comparisons.csv) · [预备视图来源](../../../overrides/assets/benchmarks/data/supervision/supervision-provenance.csv) · [证据来源摘要](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

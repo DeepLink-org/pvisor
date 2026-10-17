@@ -102,4 +102,4 @@ Claude uses `--bare` with only Bash allowed; Codex uses `--ephemeral` and `dange
 
 ### Downloads and reproduction {#run}
 
-[Scenario evidence CSV](task-scenarios.csv) · [Derived statistics CSV](agent-tasks.csv) · [All runtime statistics](runtime-summary.csv) · [Differences and 95% confidence intervals](runtime-comparisons.csv) · [Source and artifact provenance](runtime-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Scenario evidence CSV](../../../overrides/assets/benchmarks/data/task/task-scenarios.csv) · [Derived statistics CSV](../../../overrides/assets/benchmarks/data/agent/agent-tasks.csv) · [All runtime statistics](../../../overrides/assets/benchmarks/data/runtime/runtime-summary.csv) · [Differences and 95% confidence intervals](../../../overrides/assets/benchmarks/data/runtime/runtime-comparisons.csv) · [Source and artifact provenance](../../../overrides/assets/benchmarks/data/runtime/runtime-provenance.csv) · [Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

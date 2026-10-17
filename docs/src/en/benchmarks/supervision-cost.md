@@ -161,10 +161,10 @@ The data covers warm caches and small text files in one directory. It does not c
 
 ### Application-scale and recovery data {#apply-downloads}
 
-[Scale timings CSV](apply.csv) · [Paired Git comparison CSV](apply-comparisons.csv) · [Recovery checks CSV](apply-recovery.csv) · [Concurrent conflicts CSV](apply-concurrent-conflicts.csv) · [Provenance CSV](apply-provenance.csv)
+[Scale timings CSV](../../../overrides/assets/benchmarks/data/apply/apply.csv) · [Paired Git comparison CSV](../../../overrides/assets/benchmarks/data/apply/apply-comparisons.csv) · [Recovery checks CSV](../../../overrides/assets/benchmarks/data/apply/apply-recovery.csv) · [Concurrent conflicts CSV](../../../overrides/assets/benchmarks/data/apply/apply-concurrent-conflicts.csv) · [Provenance CSV](../../../overrides/assets/benchmarks/data/apply/apply-provenance.csv)
 
 Provenance records binary, source, harness and raw-report digests. Timing and concurrent checks use the same binary in separate cohorts. Raw commands, reports and audit records remain in local `.data/`.
 
 ### Downloads and reproduction {#run}
 
-[Derived table CSV](supervision-cost.csv) · [Step statistics](workflow-summary.csv) · [Differences and confidence intervals](workflow-comparisons.csv) · [Sources and artifacts](workflow-provenance.csv) · [Prepared-view steps](supervision-summary.csv) · [Prepared-view paired differences](supervision-comparisons.csv) · [Prepared-view provenance](supervision-provenance.csv) · [Evidence source summary](evidence-sources.csv)
+[Derived table CSV](../../../overrides/assets/benchmarks/data/supervision/en/supervision-cost.csv) · [Step statistics](../../../overrides/assets/benchmarks/data/workflow/workflow-summary.csv) · [Differences and confidence intervals](../../../overrides/assets/benchmarks/data/workflow/workflow-comparisons.csv) · [Sources and artifacts](../../../overrides/assets/benchmarks/data/workflow/workflow-provenance.csv) · [Prepared-view steps](../../../overrides/assets/benchmarks/data/supervision/supervision-summary.csv) · [Prepared-view paired differences](../../../overrides/assets/benchmarks/data/supervision/supervision-comparisons.csv) · [Prepared-view provenance](../../../overrides/assets/benchmarks/data/supervision/supervision-provenance.csv) · [Evidence source summary](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv)

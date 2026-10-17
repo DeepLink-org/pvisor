@@ -74,4 +74,4 @@ Markdown 保存面向用户的加工表格，每篇附可下载的同目录 CSV�
 
 ### 数据下载与复现 {#run}
 
-[整理后的表格 CSV](methodology.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[整理后的表格 CSV](../../../overrides/assets/benchmarks/data/methodology/methodology.csv) · [证据来源摘要](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

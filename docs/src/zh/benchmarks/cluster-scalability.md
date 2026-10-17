@@ -72,6 +72,6 @@ Kubernetes、Ray 和云端沙箱的相同负载、共同预算对照未测，不
 
 以下五份 CSV 原字节保留，仅作为退役 Controller/Worker 制品的历史证据。没有活动 Cluster 测量或发布入口；[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)记录退役范围，不提供新复现命令。
 
-[历史成本 CSV](controller-history-summary.csv) · [历史来源摘要](controller-history-provenance.csv) · [吞吐与内存 CSV](cluster-summary.csv) · [配对比较 CSV](cluster-comparisons.csv) · [制品与预算摘要](cluster-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[历史成本 CSV](../../../overrides/assets/benchmarks/data/controller/controller-history-summary.csv) · [历史来源摘要](../../../overrides/assets/benchmarks/data/controller/controller-history-provenance.csv) · [吞吐与内存 CSV](../../../overrides/assets/benchmarks/data/cluster/cluster-summary.csv) · [配对比较 CSV](../../../overrides/assets/benchmarks/data/cluster/cluster-comparisons.csv) · [制品与预算摘要](../../../overrides/assets/benchmarks/data/cluster/cluster-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
 整理表关联同一原始报告及逐任务证据审计摘要。原始报告、完成记录、服务日志、控制配置、源码与二进制保存在本地 `.data/`。实现分析见[Cluster 技术分析](../design/cluster-performance-analysis.md)。

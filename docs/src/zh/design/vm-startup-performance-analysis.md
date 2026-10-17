@@ -20,7 +20,7 @@ B-STARTUP-REVISION-ENG，Linux/KVM/FUSE；每后端、每版本 3 次预热、60
 
 **整轮性能验收仍不通过：** staged 启动存在明显波动，且[同制品文件系统复测](filesystem-performance-analysis.md#concurrency-retest)显示 VM 写入和工具成本仍退化。需要独立诊断，不能拿 host 的退出收益替代其他后端或任务内部性能结论。
 
-[完整统计、分布与配对区间](concurrency-startup-summary.csv) · [制品与实验来源](concurrency-retest-provenance.csv)。原始数据、每次 stdout/时序、Run Bundle、输入与构建收据在本地 `benchmark.new/startup/.data/concurrency-retest2-20261011/`。这些工程版本比较不重写用户页的历史跨运行时表，不覆盖冷缓存、并发负载、macOS 或服务首次启动；0.5 s 干扰检测可能漏掉短暂、不可见或未识别活动。
+[完整统计、分布与配对区间](../../../overrides/assets/benchmarks/data/concurrency/concurrency-startup-summary.csv) · [制品与实验来源](../../../overrides/assets/benchmarks/data/concurrency/concurrency-retest-provenance.csv)。原始数据、每次 stdout/时序、Run Bundle、输入与构建收据在本地 `benchmark.new/startup/.data/concurrency-retest2-20261011/`。这些工程版本比较不重写用户页的历史跨运行时表，不覆盖冷缓存、并发负载、macOS 或服务首次启动；0.5 s 干扰检测可能漏掉短暂、不可见或未识别活动。
 
 ## 当前通用与裁剪内核的能力检查 {#kernel-capabilities}
 
@@ -50,7 +50,7 @@ Shell 使用 128 MiB guest RAM，工具使用 16 GiB，网络使用 1 GiB；它�
 
 两种配置都启用 SMP、KVM guest、CPU mitigations、seccomp/filter、namespaces、virtio-mmio、virtio-fs、virtio-net、IPv4。裁剪配置关闭 PCI、ACPI、guest security/SELinux 和 audit；两者仍启用 `CONFIG_BLOCK`，不能将设备裁剪概括成所有块设备基础设施都消失。配置变化不构成相同加固程度的对照。这里只验证上述 HTTP 和私有内存恢复负载，没有建立完整设备、TLS/DNS/UDP/IPv6、安全逃逸或 SDK 状态恢复的兼容性保证，也没有证明启动、物理内存或密度收益。
 
-[整理后的能力检查 CSV](kernel-capabilities.csv) · [实际配置选项 CSV](kernel-config-capabilities.csv)。两批独立原始报告、逐次输出、快照、输入清单、构建与审核回执保留在本地 `.data/`；CSV 保留批次时间、样本数和摘要关联。复现见[内核配置实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#paired-kernel-configuration-experiment)。启动与完整任务收益需使用当前 CLI 另跑正式配对计时，不能由能力通过或文件尺寸推出。
+[整理后的能力检查 CSV](../../../overrides/assets/benchmarks/data/kernel/kernel-capabilities.csv) · [实际配置选项 CSV](../../../overrides/assets/benchmarks/data/kernel/kernel-config-capabilities.csv)。两批独立原始报告、逐次输出、快照、输入清单、构建与审核回执保留在本地 `.data/`；CSV 保留批次时间、样本数和摘要关联。复现见[内核配置实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#paired-kernel-configuration-experiment)。启动与完整任务收益需使用当前 CLI 另跑正式配对计时，不能由能力通过或文件尺寸推出。
 
 ## 1. 结论
 

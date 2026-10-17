@@ -74,4 +74,4 @@ See the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchma
 
 ### Downloads and reproduction {#run}
 
-[Derived table CSV](methodology.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Derived table CSV](../../../overrides/assets/benchmarks/data/methodology/methodology.csv) · [Evidence source summary](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

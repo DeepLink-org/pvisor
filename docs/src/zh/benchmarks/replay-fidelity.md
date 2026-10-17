@@ -52,7 +52,7 @@ Mini-SWE-Agent 未触发分簇规则，该行列出全体样本的 P50。分簇�
 
 {{ table("replay-semspec.render.json") }}
 
-[Hyperfine 数据 CSV](replay-semspec.csv) · [批次来源](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark 复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md#replay)
+[Hyperfine 数据 CSV](../../../overrides/assets/benchmarks/data/replay/replay-semspec.csv) · [批次来源](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark 复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md#replay)
 
 ### 适用边界 {#acceptance}
 
@@ -60,4 +60,4 @@ Mini-SWE-Agent 未触发分簇规则，该行列出全体样本的 P50。分簇�
 
 ### 数据下载与复现 {#run}
 
-[加工数据 CSV](replay-fidelity.csv) · [制品与审计来源 CSV](replay-provenance.csv) · [证据来源摘要](evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[加工数据 CSV](../../../overrides/assets/benchmarks/data/replay/replay-fidelity.csv) · [制品与审计来源 CSV](../../../overrides/assets/benchmarks/data/replay/replay-provenance.csv) · [证据来源摘要](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

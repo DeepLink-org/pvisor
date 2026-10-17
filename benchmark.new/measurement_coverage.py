@@ -7,13 +7,13 @@ from pathlib import Path
 
 from common import REPO, ROOT, save
 from update import replace
+from public_assets import csv_path
 
 
 def filesystem_publication():
     """Recognize an accepted reference cohort, separate from row-clock bindings."""
     import hashlib
 
-    base = REPO / "docs/src/zh/benchmarks"
     for prefix, modes in (("filesystem-layered-references", 9), ("filesystem-layered", 5)):
         layered = REPO / "docs/overrides/assets/benchmarks" / prefix / "provenance.json"
         if not layered.exists():
@@ -46,7 +46,7 @@ def filesystem_publication():
     ):
         raise ValueError("invalid accepted filesystem publication receipt")
     for name in ("filesystem.csv", "filesystem-comparisons.csv", "filesystem-provenance.csv"):
-        if hashlib.sha256((base / name).read_bytes()).hexdigest() != evidence["csv_sha256"][name]:
+        if hashlib.sha256(csv_path(REPO, name).read_bytes()).hexdigest() != evidence["csv_sha256"][name]:
             raise ValueError("filesystem export changed after publication audit: " + name)
     return evidence
 
@@ -61,8 +61,8 @@ def lazy_stage_publication():
     evidence = json.loads(receipt.read_text())
     counts = evidence.get("counts", {})
     expected = {
-        f"docs/src/{locale}/benchmarks/lazy-stage-{name}.csv"
-        for locale in ("zh", "en") for name in ("summary", "comparisons")
+        str(csv_path(REPO, f"lazy-stage-{name}.csv").relative_to(REPO))
+        for name in ("summary", "comparisons")
     }
     if (evidence.get("benchmark_id") != "B-LAZY-STARTUP"
             or evidence.get("role") != "user-facing"
@@ -140,9 +140,9 @@ def coverage():
     writer = csv.DictWriter(output, fieldnames=list(rows[0]), lineterminator="\n")
     writer.writeheader()
     writer.writerows(rows)
+    replace(csv_path(REPO, "measurement-coverage.csv"), output.getvalue())
     for locale in ("zh", "en"):
         base = REPO / "docs/src" / locale / "benchmarks"
-        replace(base / "measurement-coverage.csv", output.getvalue())
         table = {}
         for row in rows:
             page = row["page"].removeprefix("benchmarks/")

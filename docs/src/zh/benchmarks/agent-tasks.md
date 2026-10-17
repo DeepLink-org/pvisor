@@ -102,4 +102,4 @@ Claude 使用 `--bare`、只允许 Bash；Codex 使用 `--ephemeral` 和 `danger
 
 ### 数据下载与复现 {#run}
 
-[场景证据 CSV](task-scenarios.csv) · [整理后的统计 CSV](agent-tasks.csv) · [全部运行时统计](runtime-summary.csv) · [差异与 95% 置信区间](runtime-comparisons.csv) · [源码与制品来源](runtime-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[场景证据 CSV](../../../overrides/assets/benchmarks/data/task/task-scenarios.csv) · [整理后的统计 CSV](../../../overrides/assets/benchmarks/data/agent/agent-tasks.csv) · [全部运行时统计](../../../overrides/assets/benchmarks/data/runtime/runtime-summary.csv) · [差异与 95% 置信区间](../../../overrides/assets/benchmarks/data/runtime/runtime-comparisons.csv) · [源码与制品来源](../../../overrides/assets/benchmarks/data/runtime/runtime-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

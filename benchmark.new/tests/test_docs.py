@@ -149,6 +149,9 @@ class DocumentationTests(unittest.TestCase):
             )
             self.assertEqual(raw_path.read_bytes(), original)
             self.assertEqual(targets[0].read_bytes(), targets[1].read_bytes())
+            self.assertTrue(DOCS.public_csv_path(root, "replay-semspec.csv").is_file())
+            for locale in ("zh", "en"):
+                self.assertFalse((root / f"docs/src/{locale}/benchmarks/replay-semspec.csv").exists())
             for target in targets:
                 self.assertFalse(target.with_suffix(".provenance.json").exists())
 
@@ -200,7 +203,8 @@ class DocumentationTests(unittest.TestCase):
             base.mkdir(parents=True)
             columns = ["N", "Median ms", "Mean ms", "SD ms", "Min ms", "Max ms"]
             header = ["condition", "role", "benchmark_id", "metric_scope", "runs", *columns]
-            csv_path = base / "results.csv"
+            csv_path = DOCS.public_csv_path(root, "results.csv")
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
             with csv_path.open("w") as stream:
                 writer = csv.writer(stream)
                 writer.writerow(header)

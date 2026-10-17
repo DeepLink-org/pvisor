@@ -14,6 +14,7 @@ from pathlib import Path
 
 from common import METRIC_SCOPE, READY_EXIT_SCOPE, REPO, ROOT, artifact_summary, digest, save
 from update import _publish_csv, display_table, validate_batch
+from public_assets import csv_path as public_csv_path
 
 INVENTORY = ROOT / "docs.json"
 MACRO = re.compile(r"\{\{ table\((.*?)\) \}\}")
@@ -85,7 +86,7 @@ def check_live_tables(inventory):
                             ("最大", "max"),
                         ):
                             columns[display] = columns[display].replace(zh, en)
-                csv_path = target.with_name("startup-timing.csv")
+                csv_path = public_csv_path(REPO, "startup-timing.csv")
                 benchmark_id = "B-STARTUP"
             else:
                 binding = next(
@@ -104,7 +105,7 @@ def check_live_tables(inventory):
                     for label, expression in json.loads((ROOT / entry).read_text()).items():
                         argv = shlex.split(expression[2:])
                         names[label] = argv[argv.index("--command-name") + 1]
-                csv_path = target.with_name(binding["csv"])
+                csv_path = public_csv_path(REPO, binding["csv"])
                 scope = binding.get("metric_scope", METRIC_SCOPE)
                 benchmark_id = binding["benchmark_id"]
             expected = csv_table(csv_path, names, columns, scope, benchmark_id)
@@ -230,7 +231,7 @@ def publish_docs(batch):
     provenance["artifacts"] = artifact_summary(manifest["artifacts"])
     provenance["publisher_sha256"] = digest(Path(__file__))
     # Validate both CSV schemas and batch collisions before changing any table.
-    csv_paths = [path.with_name(binding["csv"]) for path in targets]
+    csv_paths = [public_csv_path(REPO, binding["csv"])]
     for path in csv_paths:
         _publish_csv(batch, path, manifest, resolved, results, dry_run=True)
     for path in csv_paths:

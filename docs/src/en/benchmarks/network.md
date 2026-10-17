@@ -66,6 +66,6 @@ Podman host network supplies an ordinary OCI control. pVisor OCI additionally us
 
 ### Downloads and reproduction {#run}
 
-[Network statistics CSV](network-summary.csv) · [Paired comparisons CSV](network-comparisons.csv) · [Artifacts and validation summary](network-provenance.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Network statistics CSV](../../../overrides/assets/benchmarks/data/network/network-summary.csv) · [Paired comparisons CSV](../../../overrides/assets/benchmarks/data/network/network-comparisons.csv) · [Artifacts and validation summary](../../../overrides/assets/benchmarks/data/network/network-provenance.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
 Raw reports, response timings, command logs, input/build receipts and per-invocation output audits stay in local `.data/`.

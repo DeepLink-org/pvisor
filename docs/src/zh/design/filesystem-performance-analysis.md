@@ -30,7 +30,7 @@
 
 [属性 TTL 候选被拒绝与页缓存对象隔离](#attribute-ttl-coherence)：候选新增 hardlink nlink 陈旧，已撤除且无正式性能样本；整页探针同时确认既有 lower/upper 页缓存隔离问题。
 
-2026-10-16 的[Ready 与三轮驻留任务对照](../benchmarks/filesystem-resident.csv)：九个配置各五个独立环境、每环境三轮，45 个环境全部通过，无干扰门禁；只以 Ready 报告启动，工具分轮计时不含退出。它与以下历史 N30 及工程 A/B 独立统计。
+2026-10-16 的[Ready 与三轮驻留任务对照](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident.csv)：九个配置各五个独立环境、每环境三轮，45 个环境全部通过，无干扰门禁；只以 Ready 报告启动，工具分轮计时不含退出。它与以下历史 N30 及工程 A/B 独立统计。
 
 [封存输入四组工程对照](#owned-input-cache)支持 rootfs 缓存资格带来的驻留工具收益：第三轮七工具合计下降 25.80%，同时启用工作区快照下降 19.83%；工作区单独处理在第三轮合计未检出差异。该工程入口省略 CLI Host 服务，结果不改写普通 CLI 用户表。
 
@@ -62,9 +62,9 @@
 
 普通 rootfs/workspace 默认不创建 DAX 窗口；不可变 share 保留显式 DAX 配置。新建 VM 写合并默认关闭，`PVISOR_VM_FS_WRITEBACK=1` / `0` 可显式配置；默认恢复已协商快照时保留原模式，显式 `PVISOR_VM_FS_WRITEBACK=0` 会拒绝已开启写合并的快照；stage 同步默认串行。历史工程表的制品与条件保留，不将其百分比累加或折算成当前用户批次的收益。
 
-2026-10-12 所选冻结源码/默认配置已完成跨运行时七工具复测：八个后端各 30 次，共 240 个有效任务，DAX 关闭、新 VM 写合并默认关闭，见[历史 N30 统计](../benchmarks/filesystem.csv)。新用户数据来自独立 `fo5a4e7d2b-f` 批次，不与历史合并，也不计算跨批次因果加速。旧有效与拒绝批次继续分别保留，见[验收范围 CSV](filesystem-measurement-status.csv)。
+2026-10-12 所选冻结源码/默认配置已完成跨运行时七工具复测：八个后端各 30 次，共 240 个有效任务，DAX 关闭、新 VM 写合并默认关闭，见[历史 N30 统计](../../../overrides/assets/benchmarks/data/filesystem/tools/filesystem.csv)。新用户数据来自独立 `fo5a4e7d2b-f` 批次，不与历史合并，也不计算跨批次因果加速。旧有效与拒绝批次继续分别保留，见[验收范围 CSV](../../../overrides/assets/benchmarks/data/filesystem/measurement-status/filesystem-measurement-status.csv)。
 
-macOS 的[复制期间响应性与 journal 锁](#host-concurrency)、Linux HOST 的[不可变 lower 缓存](#immutable-lower-cache)各有独立有效实验；[扩展内核缓存](#host-cache-evidence)只有正确性和请求计数通过，正式时间未验收。冷磁盘、大型仓库和并发吞吐没有匹配的新测量。[工程结论索引 CSV](filesystem-evidence-overview.csv)保留表格的批次、指标、来源和完整精度。
+macOS 的[复制期间响应性与 journal 锁](#host-concurrency)、Linux HOST 的[不可变 lower 缓存](#immutable-lower-cache)各有独立有效实验；[扩展内核缓存](#host-cache-evidence)只有正确性和请求计数通过，正式时间未验收。冷磁盘、大型仓库和并发吞吐没有匹配的新测量。[工程结论索引 CSV](../../../overrides/assets/benchmarks/data/filesystem/evidence-overview/filesystem-evidence-overview.csv)保留表格的批次、指标、来源和完整精度。
 
 ## Linux：普通 CLI 的限定只读 FLUSH 自动请求 {#cli-auto-flush}
 
@@ -124,7 +124,7 @@ off Ready保留956.412 ms的慢值，其余四个821.542–829.375 ms；auto为8
 
 未变化的VM/0047机制可复用已有SDK的旧lower fd/整页copy-up、mmap/close、ATIME及旧peer证据；这些不是新CLI语义矩阵的重跑。既有fstat对象语义、copy_file_range边界仍未修复；short-read的19项C程序证据不等于完整内核故障注入。该结果支持限定入口的只读FLUSH默认接入，不扩大到任意SDK、live lower、长TTL或写回策略。
 
-[耗时摘要](filesystem-cli-auto-flush-summary.csv)、[全部32项比较](filesystem-cli-auto-flush-comparisons.csv)、[耗时来源](filesystem-cli-auto-flush-provenance.csv)保留全部原值；[逐工具计数](filesystem-cli-auto-flush-counters.csv)、[实例生命周期](filesystem-cli-auto-flush-owner-totals.csv)、[计数来源](filesystem-cli-auto-flush-counters-provenance.csv)保留独立N1与实际caller证据。原始报告、新制品与原准备费用关联保存在本地 `benchmark/.data/af17-cli/`，不与旧批次合并。
+[耗时摘要](../../../overrides/assets/benchmarks/data/filesystem/cli-auto-flush/filesystem-cli-auto-flush-summary.csv)、[全部32项比较](../../../overrides/assets/benchmarks/data/filesystem/cli-auto-flush/filesystem-cli-auto-flush-comparisons.csv)、[耗时来源](../../../overrides/assets/benchmarks/data/filesystem/cli-auto-flush/filesystem-cli-auto-flush-provenance.csv)保留全部原值；[逐工具计数](../../../overrides/assets/benchmarks/data/filesystem/cli-auto-flush/filesystem-cli-auto-flush-counters.csv)、[实例生命周期](../../../overrides/assets/benchmarks/data/filesystem/cli-auto-flush/filesystem-cli-auto-flush-owner-totals.csv)、[计数来源](../../../overrides/assets/benchmarks/data/filesystem/cli-auto-flush/filesystem-cli-auto-flush-counters-provenance.csv)保留独立N1与实际caller证据。原始报告、新制品与原准备费用关联保存在本地 `benchmark/.data/af17-cli/`，不与旧批次合并。
 
 ## Linux：普通 CLI 的标准负项 entry 对照 {#cli-negative-entry-cache}
 
@@ -178,7 +178,7 @@ NE开启的整个owner生命周期回复rootfs1056、workspace421，路径回退
 
 结果不支持默认开启NE或继续盲目扩大缓存。静态代码检查找到一个更窄的候选：一次解析内复用已有完整Immutable父身份向量，减少miss为组装完整证明而重复查询祖先；Mutable/upper最终重查、merged可见性、权限/alias和失败语义须保留。该候选尚未实现或测量。
 
-[耗时摘要](filesystem-cli-negative-entry-cache-summary.csv)、[全部32项比较](filesystem-cli-negative-entry-cache-comparisons.csv)及[耗时来源](filesystem-cli-negative-entry-cache-provenance.csv)保留64组五值向量；[逐工具计数](filesystem-cli-negative-entry-cache-counters.csv)、[owner生命周期](filesystem-cli-negative-entry-cache-owner-totals.csv)及[计数来源](filesystem-cli-negative-entry-cache-counters-provenance.csv)保留独立N1证据。原始样本、旧制品关联与新审计位于本地 `benchmark/.data/cne17-cli/`。
+[耗时摘要](../../../overrides/assets/benchmarks/data/filesystem/cli-negative-entry-cache/filesystem-cli-negative-entry-cache-summary.csv)、[全部32项比较](../../../overrides/assets/benchmarks/data/filesystem/cli-negative-entry-cache/filesystem-cli-negative-entry-cache-comparisons.csv)及[耗时来源](../../../overrides/assets/benchmarks/data/filesystem/cli-negative-entry-cache/filesystem-cli-negative-entry-cache-provenance.csv)保留64组五值向量；[逐工具计数](../../../overrides/assets/benchmarks/data/filesystem/cli-negative-entry-cache/filesystem-cli-negative-entry-cache-counters.csv)、[owner生命周期](../../../overrides/assets/benchmarks/data/filesystem/cli-negative-entry-cache/filesystem-cli-negative-entry-cache-owner-totals.csv)及[计数来源](../../../overrides/assets/benchmarks/data/filesystem/cli-negative-entry-cache/filesystem-cli-negative-entry-cache-counters-provenance.csv)保留独立N1证据。原始样本、旧制品关联与新审计位于本地 `benchmark/.data/cne17-cli/`。
 
 ## Linux：普通 CLI 的数据页与只读 FLUSH 四臂对照 {#cli-data-flush-factorial}
 
@@ -269,7 +269,7 @@ metadata 第二、三轮在四臂仍各有2050个 workspace GETATTR；stream_wri
 
 [已有 fstat 与 copy_file_range 边界](#immutable-lower-data-coherence)仍未修复；真实 O_PATH 使用 raw openat/F_GETFL/EBADF 硬断言，musl 构造差异仅作诊断。19个实际短读函数/调用方 C 案例使用原语桩，不是完整 guest/kernel 故障注入。Mutable、upper、多硬链接、远端等不合格来源继续回退；协商后的快照捕获/恢复仍拒绝，prepared workspace 仍限 fresh 入口，见[CLI 条件](../reference/cli.md#prepared-workspace)。
 
-该批结果支持优先接通普通 CLI 的只读FLUSH，后续已完成[限定prepared-rootfs自动请求](#cli-auto-flush)；DATA适合重复小文件读取，但未证明在FLUSH基础上的整体额外收益，仍默认关闭。通用VM worker的FLUSH缺省仍关闭，不据此放宽属性TTL、开启WB或修改用户跨运行时表。[耗时摘要](filesystem-cli-data-flush-factorial-summary.csv)、[全部比较](filesystem-cli-data-flush-factorial-comparisons.csv)与[耗时来源](filesystem-cli-data-flush-factorial-provenance.csv)保留128组向量和160个区间；[逐工具计数](filesystem-cli-data-flush-factorial-counters.csv)、[实例生命周期](filesystem-cli-data-flush-factorial-owner-totals.csv)与[计数来源](filesystem-cli-data-flush-factorial-counters-provenance.csv)保留独立N1证据。原始报告、冻结制品关联和复用审查留在本地 `benchmark/.data/cdf17-cli/`。
+该批结果支持优先接通普通 CLI 的只读FLUSH，后续已完成[限定prepared-rootfs自动请求](#cli-auto-flush)；DATA适合重复小文件读取，但未证明在FLUSH基础上的整体额外收益，仍默认关闭。通用VM worker的FLUSH缺省仍关闭，不据此放宽属性TTL、开启WB或修改用户跨运行时表。[耗时摘要](../../../overrides/assets/benchmarks/data/filesystem/cli-data-flush-factorial/filesystem-cli-data-flush-factorial-summary.csv)、[全部比较](../../../overrides/assets/benchmarks/data/filesystem/cli-data-flush-factorial/filesystem-cli-data-flush-factorial-comparisons.csv)与[耗时来源](../../../overrides/assets/benchmarks/data/filesystem/cli-data-flush-factorial/filesystem-cli-data-flush-factorial-provenance.csv)保留128组向量和160个区间；[逐工具计数](../../../overrides/assets/benchmarks/data/filesystem/cli-data-flush-factorial/filesystem-cli-data-flush-factorial-counters.csv)、[实例生命周期](../../../overrides/assets/benchmarks/data/filesystem/cli-data-flush-factorial/filesystem-cli-data-flush-factorial-owner-totals.csv)与[计数来源](../../../overrides/assets/benchmarks/data/filesystem/cli-data-flush-factorial/filesystem-cli-data-flush-factorial-counters-provenance.csv)保留独立N1证据。原始报告、冻结制品关联和复用审查留在本地 `benchmark/.data/cdf17-cli/`。
 
 ## Linux：普通 CLI 的封存工作区入口 {#cli-prepared-workspace}
 
@@ -313,7 +313,7 @@ metadata 第二、三轮在四臂仍各有2050个 workspace GETATTR；stream_wri
 | rg 第 3 轮 | 330.227 | 305.918 | 7.36 | [7.13, 8.88] |
 | stream_write 第 2 轮 | 398.455 | 418.566 | -5.05 | [-5.05, -1.67] |
 
-首轮 git 的点估计更慢、区间跨零；npm 三轮均未检出差异，stream_write 第二轮有退化信号。所有 32 项及完整精度保留在[耗时摘要](filesystem-cli-prepared-workspace-summary.csv)与[配对比较](filesystem-cli-prepared-workspace-comparisons.csv)。
+首轮 git 的点估计更慢、区间跨零；npm 三轮均未检出差异，stream_write 第二轮有退化信号。所有 32 项及完整精度保留在[耗时摘要](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-workspace/filesystem-cli-prepared-workspace-summary.csv)与[配对比较](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-workspace/filesystem-cli-prepared-workspace-comparisons.csv)。
 
 累计五对原值按配对次序为 live `[4640.929, 4976.164, 4688.372, 4461.678, 4722.226]`、封存 `[4545.601, 4433.041, 4443.913, 4442.037, 4511.719]` ms。五对均改善，其中一对仅缩短 19.641 ms，不能只看累计中位数忽略幅度差异。
 
@@ -347,9 +347,9 @@ LOOKUP 与 Core 查询明显减少，内容读取和句柄往返没有减少。m
 
 首轮 git 的实际 `fingerprint_content` span 为 2055→1、内容指纹读取字节为 2,261,307→0；封存组剩余一次复用内容索引。七工具首轮对应为 2156→1、69,375,691→0 字节。frozen baseline 跳过 live 读取时的 preimage 发布，修改仍须保留基线与冲突证据；内容索引复用也保留 metadata/xattr/身份检查。`journal_log` 包含已有记录检查与提升，调用次数不等于新持久写入次数。公开 CSV 的 `core_fingerprint_calls` 对应非 compact 路径的 generic fallback 标签；其值为 0 不表示 compact 路径没有指纹工作。
 
-两个挂载的全生命周期 READINDEX 均不为零，可能发生在首个工具阶段之前；阶段差分不能代表整个 owner。[逐操作计数](filesystem-cli-prepared-workspace-counters.csv)、[owner 累计](filesystem-cli-prepared-workspace-owner-totals.csv)与[计数来源](filesystem-cli-prepared-workspace-counters-provenance.csv)保留完整范围。这些是软件请求与查询计数，不是磁盘 I/O，也不能与 inclusive span 相加计算工具耗时占比。
+两个挂载的全生命周期 READINDEX 均不为零，可能发生在首个工具阶段之前；阶段差分不能代表整个 owner。[逐操作计数](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-workspace/filesystem-cli-prepared-workspace-counters.csv)、[owner 累计](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-workspace/filesystem-cli-prepared-workspace-owner-totals.csv)与[计数来源](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-workspace/filesystem-cli-prepared-workspace-counters-provenance.csv)保留完整范围。这些是软件请求与查询计数，不是磁盘 I/O，也不能与 inclusive span 相加计算工具耗时占比。
 
-普通 CLI 下独立lower数据页和只读FLUSH的增量覆盖已由[独立四臂对照](#cli-data-flush-factorial)计时；GETATTR/写入分离取值的具体原因仍需同批对照和原有copy-up、old fd/mmap、别名及冲突oracle。该入口没有修复既有[共享页边界](#attribute-ttl-coherence)或 WB 的 unlink→syncfs 问题，也不支持自动开启未受测组合。复用准备输入的收益取决于实际启动次数，1.415 s 的准备成本应单独摊销。[来源摘要](filesystem-cli-prepared-workspace-provenance.csv)保留制品、源码与正式/诊断证据的精简 hash 关联；完整原始记录保留在本地工程证据中。
+普通 CLI 下独立lower数据页和只读FLUSH的增量覆盖已由[独立四臂对照](#cli-data-flush-factorial)计时；GETATTR/写入分离取值的具体原因仍需同批对照和原有copy-up、old fd/mmap、别名及冲突oracle。该入口没有修复既有[共享页边界](#attribute-ttl-coherence)或 WB 的 unlink→syncfs 问题，也不支持自动开启未受测组合。复用准备输入的收益取决于实际启动次数，1.415 s 的准备成本应单独摊销。[来源摘要](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-workspace/filesystem-cli-prepared-workspace-provenance.csv)保留制品、源码与正式/诊断证据的精简 hash 关联；完整原始记录保留在本地工程证据中。
 
 ## Linux：同次 OPEN 资格证据复用 {#shared-open-qualification}
 
@@ -379,7 +379,7 @@ LOOKUP 与 Core 查询明显减少，内容读取和句柄往返没有减少。m
 
 各轮 npm 和 rg 也都未检出差异。三轮累计五对原值按配对次序为关闭 `[3839.372, 3809.365, 3654.956, 3504.987, 3912.779]`、开启 `[3644.779, 3464.083, 3599.055, 3670.007, 3906.615]` ms：四对缩短，一对增加 165.020 ms，变化幅度不一致。第一轮 git 的关闭组包含 227.544 ms，其余为 382.786–405.386 ms；第二轮 write 的范围为 77.930–154.502 ms 与 77.935–156.292 ms，metadata 为 76.061–145.899 ms 与 75.564–137.783 ms。全部观察保留，N5不足以确认稳定分簇、尾延迟或原因，不作宿主干扰归因。
 
-32个未校正区间中，只有第二轮 stream_write 有改善信号：435.356→375.640 ms，降幅13.72%，95% CI [0.65%, 15.22%]。第一、三轮没有重复支持，独立诊断中该阶段 workspace 四类资格查询均为零；rootfs 仍有子进程启动查询。因此不能把这个单项信号解释成共享资格直接加速了写入。完整32项分布和区间保留在[耗时摘要](filesystem-shared-open-qualification-summary.csv)及[配对比较](filesystem-shared-open-qualification-comparisons.csv)。
+32个未校正区间中，只有第二轮 stream_write 有改善信号：435.356→375.640 ms，降幅13.72%，95% CI [0.65%, 15.22%]。第一、三轮没有重复支持，独立诊断中该阶段 workspace 四类资格查询均为零；rootfs 仍有子进程启动查询。因此不能把这个单项信号解释成共享资格直接加速了写入。完整32项分布和区间保留在[耗时摘要](../../../overrides/assets/benchmarks/data/filesystem/shared-open-qualification/filesystem-shared-open-qualification-summary.csv)及[配对比较](../../../overrides/assets/benchmarks/data/filesystem/shared-open-qualification/filesystem-shared-open-qualification-comparisons.csv)。
 
 ### 独立计数：消除重复分类，没有消除 OPEN
 
@@ -399,15 +399,15 @@ LOOKUP 与 Core 查询明显减少，内容读取和句柄往返没有减少。m
 | rootfs | 1052 → 1052 | 0 → 0 | 0 → 0 | 1052 → 1052 | 21652 → 21652 |
 | workspace | 2681 → 2681 | 277 → 277 | 542 → 542 | 2682 → 2682 | 36601 → 36597 |
 
-第三轮 LOOKUP/GETATTR 也分别保持 rootfs 947/450、workspace 306/2626。两挂载各轮 OPEN、FLUSH、RELEASE 均不变；READ不能笼统说全部相同，rootfs 第一轮为1231→1236，后两轮为零，workspace各轮相同。这支持“重复资格分类被消除”的机制判断，不能据此计算资格查询在工具耗时中的占比。[逐操作计数](filesystem-shared-open-qualification-counters.csv)、[请求摘要](filesystem-shared-open-qualification-rpc-summary.csv)、[owner累计](filesystem-shared-open-qualification-owner-totals.csv)和[计数来源](filesystem-shared-open-qualification-counters-provenance.csv)保留全部九个资格标签与边界。
+第三轮 LOOKUP/GETATTR 也分别保持 rootfs 947/450、workspace 306/2626。两挂载各轮 OPEN、FLUSH、RELEASE 均不变；READ不能笼统说全部相同，rootfs 第一轮为1231→1236，后两轮为零，workspace各轮相同。这支持“重复资格分类被消除”的机制判断，不能据此计算资格查询在工具耗时中的占比。[逐操作计数](../../../overrides/assets/benchmarks/data/filesystem/shared-open-qualification/filesystem-shared-open-qualification-counters.csv)、[请求摘要](../../../overrides/assets/benchmarks/data/filesystem/shared-open-qualification-rpc/filesystem-shared-open-qualification-rpc-summary.csv)、[owner累计](../../../overrides/assets/benchmarks/data/filesystem/shared-open-qualification/filesystem-shared-open-qualification-owner-totals.csv)和[计数来源](../../../overrides/assets/benchmarks/data/filesystem/shared-open-qualification/filesystem-shared-open-qualification-counters-provenance.csv)保留全部九个资格标签与边界。
 
 ### 正确性与覆盖边界
 
 18个独立真实 guest 通过310项硬case、216个注册final和648个同步checkpoint。两SQ设置各保留完整五模式、NE开启的92项case，另测NE关闭16项、DATA-only25项、FLUSH-only11项及旧0046 peer适用的close/fallback11项。原整页、固定EOF、别名/copy-up、mmap、direct I/O、raw O_PATH/EBADF、ATIME、负项、exclusion、权限、修改并发及关闭 oracle 保持。
 
-合格跨fd三轮OPEN/RELEASE均为 `[1,1,1]`、READ为 `[1,0,0]`；组合资格分类为7→3，DATA-only为4→3。FLUSH-only与旧peer DATA实际为0、FLUSH为1、共享分类尝试为零；Mutable的DATA/FLUSH/负项资格均为0。普通重复负项在NE开启时为1次LOOKUP，关闭时为32次；Mutable和两exclusion区间都保持32次、负项回复0，TTL到期后重新查找。[硬case清单](filesystem-shared-open-qualification-probes.csv)与[探针来源](filesystem-shared-open-qualification-probes-provenance.csv)保留范围；这些不是普通CLI、远端backend、真实snapshot恢复或不支持statx故障的VM验证。
+合格跨fd三轮OPEN/RELEASE均为 `[1,1,1]`、READ为 `[1,0,0]`；组合资格分类为7→3，DATA-only为4→3。FLUSH-only与旧peer DATA实际为0、FLUSH为1、共享分类尝试为零；Mutable的DATA/FLUSH/负项资格均为0。普通重复负项在NE开启时为1次LOOKUP，关闭时为32次；Mutable和两exclusion区间都保持32次、负项回复0，TTL到期后重新查找。[硬case清单](../../../overrides/assets/benchmarks/data/filesystem/shared-open-qualification/filesystem-shared-open-qualification-probes.csv)与[探针来源](../../../overrides/assets/benchmarks/data/filesystem/shared-open-qualification/filesystem-shared-open-qualification-probes-provenance.csv)保留范围；这些不是普通CLI、远端backend、真实snapshot恢复或不支持statx故障的VM验证。
 
-候选没有修复既有 namespace fd `fstat` 与 `copy_file_range` 边界，也没有修复WB开启时已知的 unlink→syncfs ENOENT。受测WB为0；本节不支持默认开启新机制，也不把SDK入口结果外推到普通CLI或完整Agent。[来源摘要](filesystem-shared-open-qualification-provenance.csv)只公开精简 hash 关联及 499 个冻结源文件的来源摘要；冻结制品、源文件、完整报告及全部原始观察保留在本地 `benchmark/.data/sq17b/`、`benchmark/.data/sq17bm/` 与 `benchmark/.data/sq17bp/`。
+候选没有修复既有 namespace fd `fstat` 与 `copy_file_range` 边界，也没有修复WB开启时已知的 unlink→syncfs ENOENT。受测WB为0；本节不支持默认开启新机制，也不把SDK入口结果外推到普通CLI或完整Agent。[来源摘要](../../../overrides/assets/benchmarks/data/filesystem/shared-open-qualification/filesystem-shared-open-qualification-provenance.csv)只公开精简 hash 关联及 499 个冻结源文件的来源摘要；冻结制品、源文件、完整报告及全部原始观察保留在本地 `benchmark/.data/sq17b/`、`benchmark/.data/sq17bm/` 与 `benchmark/.data/sq17bp/`。
 
 ## Linux：普通 CLI 的 prepared-rootfs 入口 {#cli-prepared-rootfs}
 
@@ -435,7 +435,7 @@ LOOKUP 与 Core 查询明显减少，内容读取和句柄往返没有减少。m
 | 第 2 轮七工具合计 | 1431.477 | 1181.038 | 17.50 | [11.00, 30.70] |
 | 第 3 轮七工具合计 | 1351.539 | 1206.185 | 10.75 | [4.26, 18.49] |
 
-第二、三轮合计有改善信号，第一轮合计未检出差异。较明确的单项信号如下；其他单项保留在[完整比较](filesystem-cli-prepared-rootfs-comparisons.csv)，不能将七工具累计改善写成每项工具都改善。
+第二、三轮合计有改善信号，第一轮合计未检出差异。较明确的单项信号如下；其他单项保留在[完整比较](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-rootfs/filesystem-cli-prepared-rootfs-comparisons.csv)，不能将七工具累计改善写成每项工具都改善。
 
 | 单项 | 普通 path | prepared | 降幅 % | 95% CI % |
 |---|---:|---:|---:|---:|
@@ -478,11 +478,11 @@ LOOKUP 与 Core 查询明显减少，内容读取和句柄往返没有减少。m
 | FLUSH | 4785 → 4785 | 2681 → 2681 | 2681 → 2681 |
 | Core 查询 | 156125 → 155551 | 89391 → 92646 | 91577 → 89088 |
 
-工作区 OPEN、READ、FLUSH 未变，LOOKUP 与 Core 有双向变化，第二轮还增加；workspace 首轮 fingerprint 字节两组同为 69,375,691，后两轮为零。这里没有 frozen baseline 或工作区数据缓存处理。软件查询不是磁盘 I/O，inclusive span 不可相加推导 worker 时间。[逐工具计数](filesystem-cli-prepared-rootfs-counters.csv)和[计数来源](filesystem-cli-prepared-rootfs-counters-provenance.csv)保留全部阶段与实际开关。
+工作区 OPEN、READ、FLUSH 未变，LOOKUP 与 Core 有双向变化，第二轮还增加；workspace 首轮 fingerprint 字节两组同为 69,375,691，后两轮为零。这里没有 frozen baseline 或工作区数据缓存处理。软件查询不是磁盘 I/O，inclusive span 不可相加推导 worker 时间。[逐工具计数](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-rootfs/filesystem-cli-prepared-rootfs-counters.csv)和[计数来源](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-rootfs/filesystem-cli-prepared-rootfs-counters-provenance.csv)保留全部阶段与实际开关。
 
 联合处理还改变 checkpoint 准入：Bundle 的 `executor_plan.supports_checkpoint` 声明为 path=true、prepared=false，这是计划声明而非一次 checkpoint 成功的观测。记录保留 control socket/pool 配置；私有临时 RunnerSpec 的 native binding 未留存，实际值未知，只能从冻结源码推断 prepared 跳过 binding、普通无网络路径可在 drivers 提供 store 时绑定。没有为对照关闭普通路径能力，Ready 差异不能单独归因于 cache，也不证明普通路径每次进行了全树快照审计。
 
-该结果支持继续完善有明确所有权的普通 CLI prepared-rootfs 入口；它不支持将活目录误标 Immutable、自动开启未受测的新协议，或把不同批次的收益相加/相乘。封存准备成本和缺失的首次导入时钟需要在产品决策中单独考虑。[耗时摘要](filesystem-cli-prepared-rootfs-summary.csv)、[完整比较](filesystem-cli-prepared-rootfs-comparisons.csv)和[来源](filesystem-cli-prepared-rootfs-provenance.csv)保留五对样本、32 个区间与冻结证据关联。原始时序、独立计数、输入准备和制品证据保留在本地 `benchmark/.data/pc17b/`。
+该结果支持继续完善有明确所有权的普通 CLI prepared-rootfs 入口；它不支持将活目录误标 Immutable、自动开启未受测的新协议，或把不同批次的收益相加/相乘。封存准备成本和缺失的首次导入时钟需要在产品决策中单独考虑。[耗时摘要](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-rootfs/filesystem-cli-prepared-rootfs-summary.csv)、[完整比较](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-rootfs/filesystem-cli-prepared-rootfs-comparisons.csv)和[来源](../../../overrides/assets/benchmarks/data/filesystem/cli-prepared-rootfs/filesystem-cli-prepared-rootfs-provenance.csv)保留五对样本、32 个区间与冻结证据关联。原始时序、独立计数、输入准备和制品证据保留在本地 `benchmark/.data/pc17b/`。
 
 ## Linux：标准负项 entry 缓存 {#standard-negative-entry-cache}
 
@@ -511,7 +511,7 @@ LOOKUP 与 Core 查询明显减少，内容读取和句柄往返没有减少。m
 | 第 3 轮七工具合计 | 895.260 | 857.833 | 4.18 | [-4.95, 14.56] |
 | 第 3 轮 npm | 470.086 | 408.606 | 13.08 | [5.95, 20.50] |
 
-主要指标、Ready 和三轮各自合计的区间均跨零。第三轮 npm 的五对样本都向更短耗时变化，但它是未校正多重比较的单项信号；第一、二轮 npm 和三轮 rg 均未检出差异。32 个指标中另有第二轮 stream_write 的 8.58% 信号，95% CI [0.10%, 15.02%]，不据此推导写路径改善。全部分布和区间保留在[配对比较](filesystem-negative-entry-cache-comparisons.csv)中。
+主要指标、Ready 和三轮各自合计的区间均跨零。第三轮 npm 的五对样本都向更短耗时变化，但它是未校正多重比较的单项信号；第一、二轮 npm 和三轮 rg 均未检出差异。32 个指标中另有第二轮 stream_write 的 8.58% 信号，95% CI [0.10%, 15.02%]，不据此推导写路径改善。全部分布和区间保留在[配对比较](../../../overrides/assets/benchmarks/data/filesystem/negative-entry-cache/filesystem-negative-entry-cache-comparisons.csv)中。
 
 三轮累计五个观察的范围为关闭 3595.534–3755.754 ms、开启 3576.400–3697.274 ms，存在重叠。write 的取值较分散：第二轮关闭 78.188–154.617 ms、开启 78.542–154.637 ms；第三轮关闭 78.335–141.832 ms、开启 77.793–154.746 ms。metadata 第二轮也有 75.493–148.861 ms 与 90.182–138.570 ms 的跨度。所有这些有效观察均保留；N5 不足以确认稳定分簇或解释原因，不作宿主干扰归因，也不通过删除慢值收窄区间。
 
@@ -549,13 +549,13 @@ workspace 七工具三轮 LOOKUP 减少 4.63%、Core 查询减少 0.49%。其中
 | rootfs | 1200 / 1052 / 1052 | 1231 / 0 / 0 | 0 / 0 / 0 | 1200 / 1052 / 1052 |
 | workspace | 4497 / 2681 / 2681 | 2494 / 277 / 277 | 563 / 542 / 542 | 4780 / 2682 / 2682 |
 
-开启组完整 owner 生命周期的负项回复为 rootfs 1041 次、workspace 420 次；七工具三轮阶段分别为 974 次和 418 次，差额属于其他操作或启动/退出等范围。它们是 host 决定返回标准负项 entry 的次数，不是 guest cache hit 数，也不是全部 ENOENT。全局 Core 物理查询不等于 native OPEN 资格检查次数、磁盘 I/O 或耗时占比；inclusive span 不能相加推导 worker 时间。[逐工具计数](filesystem-negative-entry-cache-counters.csv)与[计数来源](filesystem-negative-entry-cache-counters-provenance.csv)保留边界及实际资格。
+开启组完整 owner 生命周期的负项回复为 rootfs 1041 次、workspace 420 次；七工具三轮阶段分别为 974 次和 418 次，差额属于其他操作或启动/退出等范围。它们是 host 决定返回标准负项 entry 的次数，不是 guest cache hit 数，也不是全部 ENOENT。全局 Core 物理查询不等于 native OPEN 资格检查次数、磁盘 I/O 或耗时占比；inclusive span 不能相加推导 worker 时间。[逐工具计数](../../../overrides/assets/benchmarks/data/filesystem/negative-entry-cache/filesystem-negative-entry-cache-counters.csv)与[计数来源](../../../overrides/assets/benchmarks/data/filesystem/negative-entry-cache/filesystem-negative-entry-cache-counters-provenance.csv)保留边界及实际资格。
 
 ### 正确性与产品覆盖
 
 两组共 10 个独立真实 guest VM，通过 184 个硬 case，120 个注册实例各有唯一 final，612 个同步 token 完整。每组保留原 14 个负项 case，并新增现有 exclusion 子项与缺失 exclusion 祖先两例；原整页 4、data 25、close 11、ATIME 36 个 case 的 oracle 保持。稳定普通名字的 32 次重复缺失查询从 32 次 LOOKUP 降至 1 次，Mutable 和两个受保护区间仍为 32→32，受保护区间负项回复为 0→0；TTL 到期后重新查询。create/link/rename/unlink、失败修改、权限和并发可见性继续检查，已有 fstat 与 copy_file_range 边界没有因此修复。
 
-普通 CLI 的 prepared-rootfs 接入已单独通过一次真实 VM 正向烟测，验证配置、持久化 selector、退出及 live workspace/stage 隔离；该次 workspace 为 Mutable，DATA、FLUSH 和负项缓存均关闭，性能样本数为零。该烟测不测量 Ready 或工具提速；[普通 CLI 的独立计时](#cli-prepared-rootfs)测量了关闭这些新机制的入口联合处理，DATA/FLUSH/负项缓存开启组合仍无普通 CLI 正式性能样本。[CLI 验证摘要](filesystem-prepared-rootfs-cli-verification.csv)保留该范围。本节工程入口结果不改写普通 CLI 用户表，不与旧批次收益相加或相乘，也不构成默认开启建议。[耗时摘要](filesystem-negative-entry-cache-summary.csv)、[配对比较](filesystem-negative-entry-cache-comparisons.csv)与[来源](filesystem-negative-entry-cache-provenance.csv)保留正式结果和范围。原始时序、独立计数与冻结/探针证据分别保留在本地 `benchmark/.data/nf17m/`、`benchmark/.data/nf17p/` 和 `benchmark/.data/nf17/`。
+普通 CLI 的 prepared-rootfs 接入已单独通过一次真实 VM 正向烟测，验证配置、持久化 selector、退出及 live workspace/stage 隔离；该次 workspace 为 Mutable，DATA、FLUSH 和负项缓存均关闭，性能样本数为零。该烟测不测量 Ready 或工具提速；[普通 CLI 的独立计时](#cli-prepared-rootfs)测量了关闭这些新机制的入口联合处理，DATA/FLUSH/负项缓存开启组合仍无普通 CLI 正式性能样本。[CLI 验证摘要](../../../overrides/assets/benchmarks/data/filesystem/prepared-rootfs-cli/filesystem-prepared-rootfs-cli-verification.csv)保留该范围。本节工程入口结果不改写普通 CLI 用户表，不与旧批次收益相加或相乘，也不构成默认开启建议。[耗时摘要](../../../overrides/assets/benchmarks/data/filesystem/negative-entry-cache/filesystem-negative-entry-cache-summary.csv)、[配对比较](../../../overrides/assets/benchmarks/data/filesystem/negative-entry-cache/filesystem-negative-entry-cache-comparisons.csv)与[来源](../../../overrides/assets/benchmarks/data/filesystem/negative-entry-cache/filesystem-negative-entry-cache-provenance.csv)保留正式结果和范围。原始时序、独立计数与冻结/探针证据分别保留在本地 `benchmark/.data/nf17m/`、`benchmark/.data/nf17p/` 和 `benchmark/.data/nf17/`。
 
 ## Linux：数据页缓存与只读 FLUSH 的同批四臂对照 {#data-flush-factorial}
 
@@ -578,7 +578,7 @@ workspace 七工具三轮 LOOKUP 减少 4.63%、Core 查询减少 0.49%。其中
 
 第二轮 write 按观察间隙呈现低/高分离：四臂低值分别为 4、3、2、1 个，约 78–80 ms；其余高值约 135–156 ms。这个事后描述不是预登记分簇，N=5 也不足以建立稳定簇或尾延迟；不以单一中位数给出写入提速/退化结论。第一轮 git 的仅 FLUSH 和组合组各有四个约 388–407 ms 的值及一个更低的 237.472/219.856 ms 值，区间因此很宽。第二轮 metadata 在全关/仅 data 中也有约 75–83 与 123–144 ms 的分离观察。没有将这些现象归因为宿主干扰或具体机制。
 
-仅 data 的累计原值也有两个处于 3900–3906 ms、三个处于 4140–4283 ms；组合组四个处于 3624–3826 ms，另一个为 4240.425 ms。这些是观察间隙，不建立持久分簇。组合组同一个有效环境还包含第二轮 npm 742.262 ms、第三轮 read 85.993 ms；其余四个组合 read 为 27.170–27.281 ms。这些慢值全部进入 bootstrap。全部 32 个指标的逐环境值保留在[完整统计](filesystem-data-flush-factorial-summary.csv)中；累计的单一中位数投影不作为稳定整体排名。
+仅 data 的累计原值也有两个处于 3900–3906 ms、三个处于 4140–4283 ms；组合组四个处于 3624–3826 ms，另一个为 4240.425 ms。这些是观察间隙，不建立持久分簇。组合组同一个有效环境还包含第二轮 npm 742.262 ms、第三轮 read 85.993 ms；其余四个组合 read 为 27.170–27.281 ms。这些慢值全部进入 bootstrap。全部 32 个指标的逐环境值保留在[完整统计](../../../overrides/assets/benchmarks/data/filesystem/data-flush-factorial/filesystem-data-flush-factorial-summary.csv)中；累计的单一中位数投影不作为稳定整体排名。
 
 ### 预登记对照与局部工具信号 {#data-flush-factorial-timing}
 
@@ -602,7 +602,7 @@ workspace 七工具三轮 LOOKUP 减少 4.63%、Core 查询减少 0.49%。其中
 
 第一轮 git 的组合相对全关有 16.04% 信号，CI [1.07%, 53.60%]；相对仅 data 为 18.70%，CI [18.19%, 55.19%]，相对仅 FLUSH 则未检出差异：降幅 -2.11%，CI [-63.33%, 44.31%]。仅 data 相对全关的第一轮 git 有 3.27% 退化信号，降幅 CI [-20.92%, -1.58%]。这些区间须结合 git 的分离观察，不能把一个点估计当作稳定 git 水位。组合的第二轮 read 相对全关有 14.98% 信号，CI [11.82%, 15.21%]；第三轮因保留慢值，CI [-167.40%, 15.42%]，未检出差异，不能外推第二轮结果。
 
-五个对照的 Ready 均未检出差异。[160 项配对比较](filesystem-data-flush-factorial-comparisons.csv)与[来源摘要](filesystem-data-flush-factorial-provenance.csv)保留全部指标和统计方法。160 个逐项区间未校正多重比较，指标、轮次与对照相互相关；不进行两个单项互比或交互作用项检验，不从这些信号推出全面七工具改善，也不将旧批次的 data/FLUSH 百分比相加。
+五个对照的 Ready 均未检出差异。[160 项配对比较](../../../overrides/assets/benchmarks/data/filesystem/data-flush-factorial/filesystem-data-flush-factorial-comparisons.csv)与[来源摘要](../../../overrides/assets/benchmarks/data/filesystem/data-flush-factorial/filesystem-data-flush-factorial-provenance.csv)保留全部指标和统计方法。160 个逐项区间未校正多重比较，指标、轮次与对照相互相关；不进行两个单项互比或交互作用项检验，不从这些信号推出全面七工具改善，也不将旧批次的 data/FLUSH 百分比相加。
 
 ### 独立请求计数与组合正确性 {#data-flush-factorial-evidence}
 
@@ -620,9 +620,9 @@ B-FS-DIAG 为四臂各跑一个独立 fresh 环境，不混入正式计时。每
 | workspace rg OPEN / RELEASE | 2051 / 2051 | 2051 / 2051 | 2051 / 2051 | 2051 / 2051 |
 | workspace rg data 标记 / FLUSH 标记 | 0 / 0 | 2050 / 0 | 0 / 2050 | 2050 / 2050 |
 
-两机制分别减少 READ 与 FLUSH，组合保留了这两类请求节省；OPEN/RELEASE 没有减少。组合 rg 的对象复用为 2050 次，各 owner 的对象容量拒绝为零。[逐工具计数](filesystem-data-flush-factorial-counters.csv)与[计数来源](filesystem-data-flush-factorial-counters-provenance.csv)保留各轮和完整覆盖。native fstat、F_GETFL、statx、fstatfs 资格调用未单列计数，OPEN 标记与对象 ID 复用不等于这些调用次数；Core 查询也不覆盖全部资格成本。inclusive span 不相加，不能精确归因 git 变化或推算 worker 加速比例。
+两机制分别减少 READ 与 FLUSH，组合保留了这两类请求节省；OPEN/RELEASE 没有减少。组合 rg 的对象复用为 2050 次，各 owner 的对象容量拒绝为零。[逐工具计数](../../../overrides/assets/benchmarks/data/filesystem/data-flush-factorial/filesystem-data-flush-factorial-counters.csv)与[计数来源](../../../overrides/assets/benchmarks/data/filesystem/data-flush-factorial/filesystem-data-flush-factorial-counters-provenance.csv)保留各轮和完整覆盖。native fstat、F_GETFL、statx、fstatfs 资格调用未单列计数，OPEN 标记与对象 ID 复用不等于这些调用次数；Core 查询也不覆盖全部资格成本。inclusive span 不相加，不能精确归因 git 变化或推算 worker 加速比例。
 
-两项同时启用的独立真实 guest 四模式分别通过原整页 4、data 25、close 11、ATIME 36 个 case，共 76 个；四个 VM 的 48 个注册实例各有唯一 final，296 个同步 token 完整。[组合探针](filesystem-data-flush-factorial-probes.csv)、[探针来源](filesystem-data-flush-factorial-probes-provenance.csv)与[同步阶段](filesystem-data-flush-factorial-probe-phases.csv)保留原字节、EOF、关闭与 ATIME oracle，没有正式性能样本。真实 O_PATH 仍使用 raw openat/F_GETFL/EBADF 硬断言，musl Rust 构造差异仅作诊断；[已有 fstat 与 copy_file_range 边界](#immutable-lower-data-coherence)没有因此修复。协商后的快照捕获/恢复仍拒绝，该批未覆盖普通 CLI 的 owned-input 接入，其通用SDK默认值均为 `0`。后续[普通 CLI 四臂计时](#cli-data-flush-factorial)已覆盖DATA/FLUSH开启组合，但未扩大完整语义验收。现有封存 rootfs 入口另有[普通 CLI 对照](#cli-prepared-rootfs)，该对照保持两项新机制关闭。原始计时、计数和冻结证据分别在 `benchmark/.data/df17m/`、`benchmark/.data/df17p/` 和 `benchmark/.data/df17/`，与旧实验独立。
+两项同时启用的独立真实 guest 四模式分别通过原整页 4、data 25、close 11、ATIME 36 个 case，共 76 个；四个 VM 的 48 个注册实例各有唯一 final，296 个同步 token 完整。[组合探针](../../../overrides/assets/benchmarks/data/filesystem/data-flush-factorial/filesystem-data-flush-factorial-probes.csv)、[探针来源](../../../overrides/assets/benchmarks/data/filesystem/data-flush-factorial/filesystem-data-flush-factorial-probes-provenance.csv)与[同步阶段](../../../overrides/assets/benchmarks/data/filesystem/data-flush-factorial/filesystem-data-flush-factorial-probe-phases.csv)保留原字节、EOF、关闭与 ATIME oracle，没有正式性能样本。真实 O_PATH 仍使用 raw openat/F_GETFL/EBADF 硬断言，musl Rust 构造差异仅作诊断；[已有 fstat 与 copy_file_range 边界](#immutable-lower-data-coherence)没有因此修复。协商后的快照捕获/恢复仍拒绝，该批未覆盖普通 CLI 的 owned-input 接入，其通用SDK默认值均为 `0`。后续[普通 CLI 四臂计时](#cli-data-flush-factorial)已覆盖DATA/FLUSH开启组合，但未扩大完整语义验收。现有封存 rootfs 入口另有[普通 CLI 对照](#cli-prepared-rootfs)，该对照保持两项新机制关闭。原始计时、计数和冻结证据分别在 `benchmark/.data/df17m/`、`benchmark/.data/df17p/` 和 `benchmark/.data/df17/`，与旧实验独立。
 
 ## Linux：Immutable lower 独立数据页缓存 {#immutable-lower-data-cache}
 
@@ -651,7 +651,7 @@ B-FS-DIAG 为四臂各跑一个独立 fresh 环境，不混入正式计时。每
 | 第一轮 git | 481.001 | 494.406 | -2.79 | [-4.38, -2.16] |
 | 第一轮 hot_open | 10.186 | 10.321 | -1.32 | [-2.58, -1.16] |
 
-[完整统计](filesystem-lower-data-summary.csv)、[32 项配对比较](filesystem-lower-data-comparisons.csv)与[来源摘要](filesystem-lower-data-provenance.csv)保留逐环境值和完整精度。三轮各合计与累计均未检出差异，write、metadata、npm 也均未检出差异；第一轮 hot_open 另有退化信号。所有逐项区间未校正多重比较，三轮和各合计相互相关，N=5 不支持尾延迟或全面无退化保证。不能将 rg 的局部改善、其他候选的百分比或跨批次绝对时间相加为整体收益。
+[完整统计](../../../overrides/assets/benchmarks/data/filesystem/lower-data/filesystem-lower-data-summary.csv)、[32 项配对比较](../../../overrides/assets/benchmarks/data/filesystem/lower-data/filesystem-lower-data-comparisons.csv)与[来源摘要](../../../overrides/assets/benchmarks/data/filesystem/lower-data/filesystem-lower-data-provenance.csv)保留逐环境值和完整精度。三轮各合计与累计均未检出差异，write、metadata、npm 也均未检出差异；第一轮 hot_open 另有退化信号。所有逐项区间未校正多重比较，三轮和各合计相互相关，N=5 不支持尾延迟或全面无退化保证。不能将 rg 的局部改善、其他候选的百分比或跨批次绝对时间相加为整体收益。
 
 ### 实际协商、请求变化与剩余成本 {#immutable-lower-data-counters}
 
@@ -671,7 +671,7 @@ B-FS-DIAG 为四臂各跑一个独立 fresh 环境，不混入正式计时。每
 | workspace rg OPEN / FLUSH / RELEASE | 2051 / 2051 / 2051 | 2051 / 2051 / 2051 |
 | workspace rg 合格 OPEN 标记 / 对象 ID 复用 | 0 / 0 | 2050 / 2050 |
 
-workspace 第三轮七工具 READ 下降 88.83%。rg 的 READ 三轮分别从 2051 变为 2、1、1；其首轮标记中有 2049 次 ID 复用，说明同一轮也复用已登记对象，不能把全部收益解释为跨轮预热。各挂载 owner 的对象容量拒绝均为零。该机制减少数据读取往返，普通 OPEN、FLUSH、RELEASE 与 Core 路径仍有成本；本对照的只读 FLUSH 消除关闭。[逐工具计数](filesystem-lower-data-counters.csv)与[计数来源](filesystem-lower-data-counters-provenance.csv)保留各轮及生命周期范围。
+workspace 第三轮七工具 READ 下降 88.83%。rg 的 READ 三轮分别从 2051 变为 2、1、1；其首轮标记中有 2049 次 ID 复用，说明同一轮也复用已登记对象，不能把全部收益解释为跨轮预热。各挂载 owner 的对象容量拒绝均为零。该机制减少数据读取往返，普通 OPEN、FLUSH、RELEASE 与 Core 路径仍有成本；本对照的只读 FLUSH 消除关闭。[逐工具计数](../../../overrides/assets/benchmarks/data/filesystem/lower-data/filesystem-lower-data-counters.csv)与[计数来源](../../../overrides/assets/benchmarks/data/filesystem/lower-data/filesystem-lower-data-counters-provenance.csv)保留各轮及生命周期范围。
 
 Core 查询降低不表示全部 host 查询成本降低：新的合格 OPEN 还检查 native fstat、F_GETFL、完整 statx 身份及 fstatfs，这些不计入 Core parent/leaf 单位。每次 OPEN 的资格检查是后续可定位的成本假说，现有计数不能将第一轮 git 退化精确归因于它。inclusive span 不相加，不换算为 worker 耗时占比，也不据 N1 请求数推导工具加速比例。
 
@@ -681,9 +681,9 @@ INIT bit 44 与 OPEN bit 28 显式协商后，合格 OPEN 用固定 24 字节回
 
 真实 guest 开启组的 `review-data`、原 `review-pages`、`review-flush`、`atime` 分别为 25/25、4/4、11/11、36/36 通过；关闭组保留 data 的 17 个失败和原整页的 4 个失败，其他两个模式通过。这些是 case 结果，不是 21 个独立产品缺陷。受测范围包括 bound/unbound lower、整页与部分页写、截断/扩展、固定 EOF/SEEK_END、mmap/COW、关闭后映射、rename/unlink、sendfile/splice、切换 O_DIRECT 和回退路径。独立跨 fd 三次 open/read/close 的 READ 由关闭组 `[1,1,1]` 变为开启组 `[1,0,0]`，两组 OPEN/RELEASE 均为 `[1,1,1]`，提供实际关闭后复用的证据。旧 readonly MAP_SHARED 在 fd 关闭、upper copy-up 后 `msync(MS_SYNC)` 两组均成功；该结果只覆盖只读映射的调用，不扩展为可写共享映射的同步保证。
 
-O_PATH 硬断言使用已核验的 raw `openat` 构造 fd：两组 F_GETFL 都保留 O_PATH，raw pread 均为 -1/EBADF。原 Rust `OpenOptions::custom_flags(O_PATH)` 在该 musl target 上因 `O_ACCMODE` 包含 O_PATH 而清位，实际得到普通只读 fd；其可读结果保留为构造诊断。修正打开方式后仍要求真实 O_PATH 与 EBADF，没有降低语义断言；前三次尝试的原始失败与来源保留。最终八个 VM 的 96 个注册实例均有恰一个 final，592 个 token 和 296 个同步区间完整。[真实 guest 探针](filesystem-lower-data-probes.csv)、[探针来源](filesystem-lower-data-probes-provenance.csv)与[同步阶段](filesystem-lower-data-probe-phases.csv)记录完整证据，探针耗时不作为性能样本。
+O_PATH 硬断言使用已核验的 raw `openat` 构造 fd：两组 F_GETFL 都保留 O_PATH，raw pread 均为 -1/EBADF。原 Rust `OpenOptions::custom_flags(O_PATH)` 在该 musl target 上因 `O_ACCMODE` 包含 O_PATH 而清位，实际得到普通只读 fd；其可读结果保留为构造诊断。修正打开方式后仍要求真实 O_PATH 与 EBADF，没有降低语义断言；前三次尝试的原始失败与来源保留。最终八个 VM 的 96 个注册实例均有恰一个 final，592 个 token 和 296 个同步区间完整。[真实 guest 探针](../../../overrides/assets/benchmarks/data/filesystem/lower-data/filesystem-lower-data-probes.csv)、[探针来源](../../../overrides/assets/benchmarks/data/filesystem/lower-data/filesystem-lower-data-probes-provenance.csv)与[同步阶段](../../../overrides/assets/benchmarks/data/filesystem/lower-data/filesystem-lower-data-probe-phases.csv)记录完整证据，探针耗时不作为性能样本。
 
-独立兼容诊断使用三个 fresh VM。新 host 配旧 0046 固件时，11 个 `review-flush` case 全通过，原 `review-pages` 四个基线失败保留，data 计数明确为 requested=1、enabled=0，且无对象标记；旧 host 配新 0047 固件时，11 个 `review-flush` case 全通过。两个方向的 FLUSH 探针结果与协议调用数一致。三次运行的 36 个注册实例均有恰一个 final record。旧 host 缺少新 data 计数器，JSON 保留 NULL、CSV 留空，不能当作实际开关为 0；其回退结论依据冻结旧 host 源码/制品及正常 legacy RPC，未声称已解码 INIT。[兼容性结果](filesystem-lower-data-compat.csv)与[兼容性来源](filesystem-lower-data-compat-provenance.csv)独立保存，探针时间不作为性能证据。
+独立兼容诊断使用三个 fresh VM。新 host 配旧 0046 固件时，11 个 `review-flush` case 全通过，原 `review-pages` 四个基线失败保留，data 计数明确为 requested=1、enabled=0，且无对象标记；旧 host 配新 0047 固件时，11 个 `review-flush` case 全通过。两个方向的 FLUSH 探针结果与协议调用数一致。三次运行的 36 个注册实例均有恰一个 final record。旧 host 缺少新 data 计数器，JSON 保留 NULL、CSV 留空，不能当作实际开关为 0；其回退结论依据冻结旧 host 源码/制品及正常 legacy RPC，未声称已解码 INIT。[兼容性结果](../../../overrides/assets/benchmarks/data/filesystem/lower-data-compat/filesystem-lower-data-compat.csv)与[兼容性来源](../../../overrides/assets/benchmarks/data/filesystem/lower-data-compat/filesystem-lower-data-compat-provenance.csv)独立保存，探针时间不作为性能证据。
 
 固定数据 EOF 尚未扩展到全部文件 API：旧 fd 的 fstat 仍可能取 namespace inode 属性；`copy_file_range` 的 VFS namespace-size 边界也未修复，其 16384 字节源在当前 namespace size=4105 时只复制 4105 字节，始终单列为观察，未计作完整复制通过。另有 19 个 short-read C 用例通过，执行的是从实际 kernel patch 提取的 helper、单 folio 与 readahead 回调，配合最小内核原语 stub；这支持提前短读返回错误、保持固定 EOF 的局部逻辑，不是完整 guest 内核的传输故障注入。并发压力、回收后的热页保留与快照仍需独立验证；普通CLI性能随后已由[独立四臂对照](#cli-data-flush-factorial)计时，不构成完整语义验收。原始计时、计数与冻结证据分别保留在 `benchmark/.data/dc17m/`、`benchmark/.data/dc17p/` 和 `benchmark/.data/dc17/`。
 
@@ -711,7 +711,7 @@ O_PATH 硬断言使用已核验的 raw `openat` 构造 fd：两组 F_GETFL 都�
 | 第三轮 rg | 299.662 | 248.057 | 17.22 | [15.94, 28.40] |
 | 第三轮 npm | 475.724 | 477.645 | -0.40 | [-31.96, 12.00] |
 
-[完整统计](filesystem-readonly-flush-summary.csv)、[32 项配对比较](filesystem-readonly-flush-comparisons.csv)与[来源摘要](filesystem-readonly-flush-provenance.csv)保留完整精度、范围和逐环境值。逐项区间未校正多重比较，三个 rg 结果与各合计也不独立；N=5 不支持尾延迟或全面无退化保证。第一轮合计的信号不能替代三轮累计跨零的区间。 写入和 npm 各轮均未检出差异；写入出现较低和较高值，metadata/npm 也有明显波动。N=5 不足以建立正式分簇或精确归因，不以写入点估计宣称提速，也不事后剔除样本。
+[完整统计](../../../overrides/assets/benchmarks/data/filesystem/readonly-flush/filesystem-readonly-flush-summary.csv)、[32 项配对比较](../../../overrides/assets/benchmarks/data/filesystem/readonly-flush/filesystem-readonly-flush-comparisons.csv)与[来源摘要](../../../overrides/assets/benchmarks/data/filesystem/readonly-flush/filesystem-readonly-flush-provenance.csv)保留完整精度、范围和逐环境值。逐项区间未校正多重比较，三个 rg 结果与各合计也不独立；N=5 不支持尾延迟或全面无退化保证。第一轮合计的信号不能替代三轮累计跨零的区间。 写入和 npm 各轮均未检出差异；写入出现较低和较高值，metadata/npm 也有明显波动。N=5 不足以建立正式分簇或精确归因，不以写入点估计宣称提速，也不事后剔除样本。
 
 ### 请求变化与正确性边界 {#readonly-local-flush-evidence}
 
@@ -730,11 +730,11 @@ O_PATH 硬断言使用已核验的 raw `openat` 构造 fd：两组 F_GETFL 都�
 | workspace rg 合格 OPEN 标记 | 0 | 2050 |
 | workspace write FLUSH | 513 | 513 |
 
-rg 的 OPEN、READ、RELEASE 各 2051 次保持不变，说明候选减少的是合格只读句柄的 FLUSH 往返；write 阶段没有合格标记，原 513 次 FLUSH 保留。rootfs/workspace 的 Core parent+leaf 查询分别为 21652→21601、36962→36962，不能据此称全部 host 查询不变：开启时每个候选 OPEN 还以 native fstat、F_GETFL、fstatfs 检查资格，这些不属于 Core 查询计数。实际工具收益由正式配对时间判断；诊断 inclusive span 不相加，也不换算为精确 worker 耗时占比。[逐工具计数](filesystem-readonly-flush-counters.csv)及[计数来源](filesystem-readonly-flush-counters-provenance.csv)保留完整范围。
+rg 的 OPEN、READ、RELEASE 各 2051 次保持不变，说明候选减少的是合格只读句柄的 FLUSH 往返；write 阶段没有合格标记，原 513 次 FLUSH 保留。rootfs/workspace 的 Core parent+leaf 查询分别为 21652→21601、36962→36962，不能据此称全部 host 查询不变：开启时每个候选 OPEN 还以 native fstat、F_GETFL、fstatfs 检查资格，这些不属于 Core 查询计数。实际工具收益由正式配对时间判断；诊断 inclusive span 不相加，也不换算为精确 worker 耗时占比。[逐工具计数](../../../overrides/assets/benchmarks/data/filesystem/readonly-flush/filesystem-readonly-flush-counters.csv)及[计数来源](../../../overrides/assets/benchmarks/data/filesystem/readonly-flush/filesystem-readonly-flush-counters-provenance.csv)保留完整范围。
 
 连接 bit 43 和每次 OPEN 的 bit 29 显式协商后，guest 仍执行 `write_inode_now`、`fuse_sync_writes`、`filemap_check_errors` 及错误返回，再省略 backend FLUSH；显式 fsync 与 RELEASE 不变。资格来自正常 OPEN 后固定的只读 native FD、Immutable lower 和本地文件系统白名单，不延长 TTL 或扩大 KEEP_CACHE。协商该能力的会话暂不支持快照捕获/恢复；去除内部 dup/close 也不提供逐资源 errno 等价保证。
 
-真实 guest 的新固件关闭/开启及旧固件回退三组各 11 个 close case 全部通过；该探针 FLUSH 总数 15→6，其他协议调用数完全相同。ATIME 两组各 36 个 case 通过，请求掩码与缓存读的机制保持不变。已知整页旧 lower fd 检查在两组仍各 4 个失败，输出与[已确认的页缓存对象隔离问题](#attribute-ttl-coherence)逐字相同，不能把它们当作本功能通过或扩大 workspace 数据页缓存的依据。[独立探针](filesystem-readonly-flush-probes.csv)与[探针来源](filesystem-readonly-flush-probes-provenance.csv)保留全部七次运行、84 个注册实例的唯一 final record。探针时间不进入正式性能分布。另一个独立的旧 host / 新固件兼容性运行通过 36 个 ATIME case，其协议调用数与新 host 关闭候选的对应观察相同，保留 FLUSH；[反向兼容结果](filesystem-readonly-flush-compat.csv)及[来源](filesystem-readonly-flush-compat-provenance.csv)单独保存。旧 host 没有新计数器，字段留空，不能解释为实际开关为 0。原始计时、计数与冻结证据分别保留在 `benchmark/.data/lf17m/`、`benchmark/.data/lf17p/` 和 `benchmark/.data/lf17/`。
+真实 guest 的新固件关闭/开启及旧固件回退三组各 11 个 close case 全部通过；该探针 FLUSH 总数 15→6，其他协议调用数完全相同。ATIME 两组各 36 个 case 通过，请求掩码与缓存读的机制保持不变。已知整页旧 lower fd 检查在两组仍各 4 个失败，输出与[已确认的页缓存对象隔离问题](#attribute-ttl-coherence)逐字相同，不能把它们当作本功能通过或扩大 workspace 数据页缓存的依据。[独立探针](../../../overrides/assets/benchmarks/data/filesystem/readonly-flush/filesystem-readonly-flush-probes.csv)与[探针来源](../../../overrides/assets/benchmarks/data/filesystem/readonly-flush/filesystem-readonly-flush-probes-provenance.csv)保留全部七次运行、84 个注册实例的唯一 final record。探针时间不进入正式性能分布。另一个独立的旧 host / 新固件兼容性运行通过 36 个 ATIME case，其协议调用数与新 host 关闭候选的对应观察相同，保留 FLUSH；[反向兼容结果](../../../overrides/assets/benchmarks/data/filesystem/readonly-flush-compat/filesystem-readonly-flush-compat.csv)及[来源](../../../overrides/assets/benchmarks/data/filesystem/readonly-flush-compat/filesystem-readonly-flush-compat-provenance.csv)单独保存。旧 host 没有新计数器，字段留空，不能解释为实际开关为 0。原始计时、计数与冻结证据分别保留在 `benchmark/.data/lf17m/`、`benchmark/.data/lf17p/` 和 `benchmark/.data/lf17/`。
 
 ## Linux：独占 upper 的物理不存在缓存 {#exclusive-upper-absence-cache}
 
@@ -760,7 +760,7 @@ Immutable lower 命中后，重复解析仍需验证 upper 的物理父链。显
 | 第一轮 npm | 764.821 | 702.667 | 8.13 | [0.54, 16.58] |
 | 第三轮 rg | 297.383 | 303.871 | -2.18 | [-2.65, -1.23] |
 
-第一轮合计和 npm 有改善信号，第三轮 rg 有退化信号；Ready、第二/三轮合计和三轮累计均未检出差异。32 项逐项比较未校正多重比较，N=5 不支持尾延迟或全面无退化保证。不能用第一轮改善替代整体结论。[完整统计](filesystem-upper-absence-cache-summary.csv)、[配对区间](filesystem-upper-absence-cache-comparisons.csv)和[来源摘要](filesystem-upper-absence-cache-provenance.csv)保留全部操作、轮次和分布。
+第一轮合计和 npm 有改善信号，第三轮 rg 有退化信号；Ready、第二/三轮合计和三轮累计均未检出差异。32 项逐项比较未校正多重比较，N=5 不支持尾延迟或全面无退化保证。不能用第一轮改善替代整体结论。[完整统计](../../../overrides/assets/benchmarks/data/filesystem/upper-absence-cache/filesystem-upper-absence-cache-summary.csv)、[配对区间](../../../overrides/assets/benchmarks/data/filesystem/upper-absence-cache/filesystem-upper-absence-cache-comparisons.csv)和[来源摘要](../../../overrides/assets/benchmarks/data/filesystem/upper-absence-cache/filesystem-upper-absence-cache-provenance.csv)保留全部操作、轮次和分布。
 
 ### 查询收益、实现额外工作与边界 {#exclusive-upper-absence-counters}
 
@@ -780,7 +780,7 @@ Immutable lower 命中后，重复解析仍需验证 upper 的物理父链。显
 | workspace upper-present miss | —（关闭） | 12444 |
 | workspace OPEN / READ | 2681 / 2480 | 2681 / 2480 |
 
-rootfs 减少 15474 次物理查询，workspace 增加 1758 次。启用分支为取得完整父证明，在 cache miss 上绕过同一次逻辑 walk 的短前缀复用；不缓存的 upper `Entry` 也走完整验证，因此 12444 次 upper-present miss 带来候选实现的额外路径工作。这些 present 查询包含已有 ancestor 目录，不能由其数量推断 rg 语料位于 upper；该语料和 payload 仍来自 sealed lower。计数揭示了未被该缓存消除的工作形状，未独立测量其耗时贡献，不能据此精确归因 rg 退化。开启组的缓存错误类 miss、容量 eviction 均为零，关闭组不执行缓存查询分类。[逐工具计数](filesystem-upper-absence-cache-counters.csv)与[计数来源](filesystem-upper-absence-cache-counters-provenance.csv)保留全部阶段、清空和分类记录；软件查询计数不等于磁盘 I/O 或精确时间分解。
+rootfs 减少 15474 次物理查询，workspace 增加 1758 次。启用分支为取得完整父证明，在 cache miss 上绕过同一次逻辑 walk 的短前缀复用；不缓存的 upper `Entry` 也走完整验证，因此 12444 次 upper-present miss 带来候选实现的额外路径工作。这些 present 查询包含已有 ancestor 目录，不能由其数量推断 rg 语料位于 upper；该语料和 payload 仍来自 sealed lower。计数揭示了未被该缓存消除的工作形状，未独立测量其耗时贡献，不能据此精确归因 rg 退化。开启组的缓存错误类 miss、容量 eviction 均为零，关闭组不执行缓存查询分类。[逐工具计数](../../../overrides/assets/benchmarks/data/filesystem/upper-absence-cache/filesystem-upper-absence-cache-counters.csv)与[计数来源](../../../overrides/assets/benchmarks/data/filesystem/upper-absence-cache/filesystem-upper-absence-cache-counters-provenance.csv)保留全部阶段、清空和分类记录；软件查询计数不等于磁盘 I/O 或精确时间分解。
 
 缓存只在显式 upper 独占、目录权限及 root/物理祖先/mount 稳定契约下使用。每个独占 namespace 操作先禁用并清空，guard 退出再清空并恢复，覆盖失败、部分发布、快照和 teardown；与 upper 同路径、父子或符号链接别名重叠的 journal 拒绝启用。仅保留 physical upper 的 MissingLeaf、UnavailableParent 和完整成功父证明，不保存 Entry、错误、merged winner、策略、whiteout/opaque 或 journal 决策，也不改变 guest TTL 或数据页策略。Core/HOST 普通路径不推断这一契约，默认仍为 `0`。
 
@@ -798,7 +798,7 @@ lower 物理元数据缓存、guest 目录镜像资格、frozen baseline 的读�
 
 整页探针在 Immutable root lower 上打开旧只读 fd，再由可写 fd 触发 copy-up，以 `pwrite` 在 offset 0 写入 4 KiB 或 8 KiB；旧 fd 在可写 OPEN 前已显式绑定或仍为延迟绑定，形成四个独立 case；后者仍须经过 mutation drain。使用同一可写 fd 交替读取 upper，先检查旧 fd，每次核对完整 16 KiB。两种开关下，四个 case 的旧 fd 都在首字节出现内容差异，upper 内容校验没有报告差异。这确认既有 guest 共享 inode/page-cache 路径不能完整隔离原 lower 对象与新 upper 对象，问题已存在于候选关闭时。扩大 workspace `KEEP_CACHE` 前须解决这一对象隔离边界；这些结果不覆盖 mmap、并发、其他 offset 或所有挂载类型。
 
-ATIME 两组各 36 个 case 通过，不提供性能结论，也不能抵消上述失败。其余 `review-attrs` 断言保留为待单独审查的原始诊断；粗略失败数量不等于独立产品缺陷数。原始输出和拒绝决定保存在 `benchmark/.data/ac17/probes/` 与 `decision.json`，冻结候选源码、二进制和固件身份一并保留。[12 行决定性证据](filesystem-cache-coherence-cases.csv)及[来源摘要](filesystem-cache-coherence-provenance.csv)仅整理上述八个整页 case、两个保留 fd 的属性结果及两条 ATIME 汇总。
+ATIME 两组各 36 个 case 通过，不提供性能结论，也不能抵消上述失败。其余 `review-attrs` 断言保留为待单独审查的原始诊断；粗略失败数量不等于独立产品缺陷数。原始输出和拒绝决定保存在 `benchmark/.data/ac17/probes/` 与 `decision.json`，冻结候选源码、二进制和固件身份一并保留。[12 行决定性证据](../../../overrides/assets/benchmarks/data/filesystem/cache-coherence/filesystem-cache-coherence-cases.csv)及[来源摘要](../../../overrides/assets/benchmarks/data/filesystem/cache-coherence/filesystem-cache-coherence-provenance.csv)仅整理上述八个整页 case、两个保留 fd 的属性结果及两条 ATIME 汇总。
 
 ## Linux：Immutable 物理 lower 负项缓存 {#immutable-lower-negative-cache}
 
@@ -822,7 +822,7 @@ ATIME 两组各 36 个 case 通过，不提供性能结论，也不能抵消上�
 | 第二轮七工具合计 | 1136.160 | 1115.354 | 1.83 | [-7.60, 4.49] |
 | 第三轮七工具合计 | 1127.554 | 1108.215 | 1.72 | [-13.52, 10.31] |
 
-Ready、九操作各三轮、三个分轮合计和三轮累计，共 32 项比较的区间均跨零，未检出单项或整体差异。逐项区间未校正多重比较；N=5 不支持尾延迟或全面无退化保证。[完整统计](filesystem-negative-cache-summary.csv)、[配对区间](filesystem-negative-cache-comparisons.csv)和[来源摘要](filesystem-negative-cache-provenance.csv)保留逐工具分布与完整精度。
+Ready、九操作各三轮、三个分轮合计和三轮累计，共 32 项比较的区间均跨零，未检出单项或整体差异。逐项区间未校正多重比较；N=5 不支持尾延迟或全面无退化保证。[完整统计](../../../overrides/assets/benchmarks/data/filesystem/negative-cache/filesystem-negative-cache-summary.csv)、[配对区间](../../../overrides/assets/benchmarks/data/filesystem/negative-cache/filesystem-negative-cache-comparisons.csv)和[来源摘要](../../../overrides/assets/benchmarks/data/filesystem/negative-cache/filesystem-negative-cache-provenance.csv)保留逐工具分布与完整精度。
 
 ### 查询变化与优化边界 {#immutable-lower-negative-counters}
 
@@ -842,7 +842,7 @@ Ready、九操作各三轮、三个分轮合计和三轮累计，共 32 项比�
 | workspace UnavailableParent miss | 8 | 8 |
 | workspace OPEN / READ | 2681 / 2480 | 2681 / 2480 |
 
-rootfs 的 674 次重复 MissingLeaf 查询变为负项命中，物理查询减少 4432 次；workspace 只替代两次 MissingLeaf，八次父目录不可用仍重新查询。两组错误类 miss 均为零。工作区的物理查询没有下降，实际 OPEN/READ 也保持不变。软件查询计数不等于磁盘 I/O，不能换算为精确耗时或解释全部工具差异。[逐工具计数](filesystem-negative-cache-counters.csv)与[计数来源](filesystem-negative-cache-counters-provenance.csv)保留完整阶段和实例覆盖。
+rootfs 的 674 次重复 MissingLeaf 查询变为负项命中，物理查询减少 4432 次；workspace 只替代两次 MissingLeaf，八次父目录不可用仍重新查询。两组错误类 miss 均为零。工作区的物理查询没有下降，实际 OPEN/READ 也保持不变。软件查询计数不等于磁盘 I/O，不能换算为精确耗时或解释全部工具差异。[逐工具计数](../../../overrides/assets/benchmarks/data/filesystem/negative-cache/filesystem-negative-cache-counters.csv)与[计数来源](../../../overrides/assets/benchmarks/data/filesystem/negative-cache/filesystem-negative-cache-counters-provenance.csv)保留完整阶段和实例覆盖。
 
 该机制只保存 eligible Immutable 物理 lower 的 MissingLeaf 与完整父身份；upper、whiteout、opaque、其他 lower、访问策略和读观察仍逐次检查。它不保存错误、UnavailableParent 或合并视图不存在，也不延长 guest 的负 dentry TTL。正负项共用原有 4096 项上限和清空淘汰策略。只有 namespace、祖先、挂载身份和 hardlink 别名在 owner 生命周期内真正稳定的 lower 才能使用；普通目录、只读挂载和 frozen baseline 本身不构成资格。未设置或设为 `0` 保持关闭。
 
@@ -866,13 +866,13 @@ rootfs 的 674 次重复 MissingLeaf 查询变为负项命中，物理查询减�
 | 三轮七工具累计 | 4279.878 | 4267.253 | 0.29 | [-0.91, 1.89] |
 | 第一轮 npm | 751.310 | 674.267 | 10.25 | [1.63, 11.91] |
 
-第一轮 npm 有改善信号，Ready 与整体累计均未检出差异。32 项逐项比较未校正多重比较，N=5 不支持尾延迟结论；该单项信号尚不足以支持默认扩容。[完整统计](filesystem-cache-capacity-summary.csv)、[配对区间](filesystem-cache-capacity-comparisons.csv)和[来源摘要](filesystem-cache-capacity-provenance.csv)保留各操作与轮次。
+第一轮 npm 有改善信号，Ready 与整体累计均未检出差异。32 项逐项比较未校正多重比较，N=5 不支持尾延迟结论；该单项信号尚不足以支持默认扩容。[完整统计](../../../overrides/assets/benchmarks/data/filesystem/cache-capacity/filesystem-cache-capacity-summary.csv)、[配对区间](../../../overrides/assets/benchmarks/data/filesystem/cache-capacity/filesystem-cache-capacity-comparisons.csv)和[来源摘要](../../../overrides/assets/benchmarks/data/filesystem/cache-capacity/filesystem-cache-capacity-provenance.csv)保留各操作与轮次。
 
 ### 计数与后续优化范围 {#directory-cache-atime-counters}
 
 独立 B-FS-DIAG 每容量一个新环境，两次均有效，rootfs/workspace 的四组件阶段记录与全部注册实例 final record 完整。第三轮七工具合计中，rootfs 目录 FD cache miss 和 eviction 均从 252 降为 0，Core parent-stat 加 leaf-stat 仅从 21,653 变为 21,652。减少原生目录句柄的重建没有同步消除 Core 的路径验证，不能由 cache miss 的降幅推导工具加速比。
 
-两种容量下，rootfs 的 674 次 Immutable cache miss 全部是物理 lower 叶子不存在，错误类为 0；workspace 为 2 次叶子不存在和 8 次父目录不可用，错误类同样为 0。这些分类限定了后续调查对象。[独立负项缓存对照](#immutable-lower-negative-cache)已减少重复 MissingLeaf 查询，尚未检出工具累计耗时收益；upper、whiteout 与合并命名空间的检查仍需保留。[逐工具计数](filesystem-cache-capacity-counters.csv)和[计数来源](filesystem-cache-capacity-counters-provenance.csv)区分阶段边界与完整实例覆盖，软件查询计数不代表磁盘 I/O 或精确时间归因。
+两种容量下，rootfs 的 674 次 Immutable cache miss 全部是物理 lower 叶子不存在，错误类为 0；workspace 为 2 次叶子不存在和 8 次父目录不可用，错误类同样为 0。这些分类限定了后续调查对象。[独立负项缓存对照](#immutable-lower-negative-cache)已减少重复 MissingLeaf 查询，尚未检出工具累计耗时收益；upper、whiteout 与合并命名空间的检查仍需保留。[逐工具计数](../../../overrides/assets/benchmarks/data/filesystem/cache-capacity/filesystem-cache-capacity-counters.csv)和[计数来源](../../../overrides/assets/benchmarks/data/filesystem/cache-capacity/filesystem-cache-capacity-counters-provenance.csv)区分阶段边界与完整实例覆盖，软件查询计数不代表磁盘 I/O 或精确时间归因。
 
 ### read→statx 的 ATIME 因果诊断 {#directory-cache-atime-cause}
 
@@ -885,7 +885,7 @@ rootfs 的 674 次重复 MissingLeaf 查询变为负项命中，物理查询减�
 | 首次读，再请求 ATIME/BASIC | 8 | 8 / 8 | 8 |
 | 同 fd 缓存读，任意三种 mask | 12 | 0 / 0 | 0 |
 
-36 次强制 prime 各产生一次 GETATTR，36 次紧接的重复 stat 均不产生 GETATTR。prime 到首次查询仅 2.535–4.834 ms，远小于普通属性的 1 秒期限；八次 ATIME/BASIC 查询均观察到访问时间变化。结果支持实际宿主 READ 后选择性失效 ATIME，同 fd 的页缓存命中没有再次触发该失效；它不说明所有 GETATTR 都由 ATIME 引起。插桩 syscall 时长与 inclusive span 均不作为性能结果。[case 与计数 CSV](filesystem-atime-cases.csv)、[诊断来源](filesystem-atime-provenance.csv)保留完整边界；原始时间、计数与探针来源分别在 `benchmark/.data/fc17m/`、`benchmark/.data/fc17p/` 和 `benchmark/.data/fc17/`。
+36 次强制 prime 各产生一次 GETATTR，36 次紧接的重复 stat 均不产生 GETATTR。prime 到首次查询仅 2.535–4.834 ms，远小于普通属性的 1 秒期限；八次 ATIME/BASIC 查询均观察到访问时间变化。结果支持实际宿主 READ 后选择性失效 ATIME，同 fd 的页缓存命中没有再次触发该失效；它不说明所有 GETATTR 都由 ATIME 引起。插桩 syscall 时长与 inclusive span 均不作为性能结果。[case 与计数 CSV](../../../overrides/assets/benchmarks/data/filesystem/atime/filesystem-atime-cases.csv)、[诊断来源](../../../overrides/assets/benchmarks/data/filesystem/atime/filesystem-atime-provenance.csv)保留完整边界；原始时间、计数与探针来源分别在 `benchmark/.data/fc17m/`、`benchmark/.data/fc17p/` 和 `benchmark/.data/fc17/`。
 
 ## Linux：封存输入接通缓存后的四组对照 {#owned-input-cache}
 
@@ -924,7 +924,7 @@ B-FS-ENG 使用同一冻结 GNU 工程制品和 0045 固件，经正常 PVisor�
 | Cargo 增量编译 | 34.14 | 20.64 | 33.04 | 19.72 |
 | npm 安装检查 | 767.75 | 548.32 | 788.16 | 536.36 |
 
-两者启用时，npm、Cargo、git、rg 分别下降 30.14%、42.23%、76.68%、14.04%，各自区间未跨零；遍历、读取、写入未检出差异。热 open 和 stream_write 各组区间也跨零。组合处理尚未证明优于只启用 rootfs，不能据总和中位数高低断言哪组更优。[四组统计](filesystem-owned-inputs-summary.csv)、[配对区间](filesystem-owned-inputs-comparisons.csv)和[来源摘要](filesystem-owned-inputs-provenance.csv)保留完整数值与范围。
+两者启用时，npm、Cargo、git、rg 分别下降 30.14%、42.23%、76.68%、14.04%，各自区间未跨零；遍历、读取、写入未检出差异。热 open 和 stream_write 各组区间也跨零。组合处理尚未证明优于只启用 rootfs，不能据总和中位数高低断言哪组更优。[四组统计](../../../overrides/assets/benchmarks/data/filesystem/owned-inputs/filesystem-owned-inputs-summary.csv)、[配对区间](../../../overrides/assets/benchmarks/data/filesystem/owned-inputs/filesystem-owned-inputs-comparisons.csv)和[来源摘要](../../../overrides/assets/benchmarks/data/filesystem/owned-inputs/filesystem-owned-inputs-provenance.csv)保留完整数值与范围。
 
 ### 请求证据与剩余机会 {#owned-input-counters}
 
@@ -943,7 +943,7 @@ B-FS-ENG 使用同一冻结 GNU 工程制品和 0045 固件，经正常 PVisor�
 | workspace LOOKUP | 2102 | 2084 | 306 | 306 |
 | workspace Core 物理查询 | 91327 | 91160 | 38745 | 36962 |
 
-rootfs 的 READ 消失而 OPEN 保持，支持数据页复用生效、真实读取仍需对象绑定。工作区 LOOKUP 和物理查询下降，但 OPEN/READ 完全不变，解释了它没有兑现全面工具收益。第三轮 READINDEX 为零不能推出目录镜像没有使用：导入发生在更早阶段。三轮七工具的 workspace 指纹计算从基线 2156 次、69,375,691 字节降到快照条件 1 次、0 字节，进一步表明工作区结果包含 frozen-baseline 免除读观察成本的作用。[逐阶段计数](filesystem-owned-inputs-counters.csv)和[计数来源](filesystem-owned-inputs-counters-provenance.csv)保留范围与完整覆盖证据。
+rootfs 的 READ 消失而 OPEN 保持，支持数据页复用生效、真实读取仍需对象绑定。工作区 LOOKUP 和物理查询下降，但 OPEN/READ 完全不变，解释了它没有兑现全面工具收益。第三轮 READINDEX 为零不能推出目录镜像没有使用：导入发生在更早阶段。三轮七工具的 workspace 指纹计算从基线 2156 次、69,375,691 字节降到快照条件 1 次、0 字节，进一步表明工作区结果包含 frozen-baseline 免除读观察成本的作用。[逐阶段计数](../../../overrides/assets/benchmarks/data/filesystem/owned-inputs/filesystem-owned-inputs-counters.csv)和[计数来源](../../../overrides/assets/benchmarks/data/filesystem/owned-inputs/filesystem-owned-inputs-counters-provenance.csv)保留范围与完整覆盖证据。
 
 该批当时尚未覆盖普通CLI；后续真实rootfs所有权、workspace快照和数据/FLUSH组合已分别由[prepared-rootfs](#cli-prepared-rootfs)、[prepared-workspace](#cli-prepared-workspace)与[四臂对照](#cli-data-flush-factorial)独立计时，保留lease、stage/apply及外部修改边界，并不构成完整语义验收。该批 `KEEP_CACHE` 主要限于 root 设备，Immutable workspace 的 metadata 资格没有自动带来同等数据缓存；后续[独立数据页协议](#immutable-lower-data-cache)另行测量对象隔离与页面复用，默认仍关闭。普通 OPEN 的检查和绑定成本继续保留。WB 始终关闭，unlink 后最终 syncfs 的 ENOENT 尚未修复；这些结果不构成开启写合并的依据。原始时间和诊断分别保留 `benchmark/.data/oc16m/`、`benchmark/.data/oc16p/`，准备、制品、harness 与分析在 `benchmark/.data/oc16/`。
 
@@ -961,7 +961,7 @@ B-FS-ENG 批次 `flife16b` 固定同一个当前 GNU release/gateway host，SHA2
 
 ### 数据与分析 {#guest-lifetime-results}
 
-下表为中位数，负变化表示更快；区间为 5,000 次配对 bootstrap，按五个独立环境索引重采样。三轮不是十五个独立样本。49 项完整结果、范围和逐次值见[加工 CSV](filesystem-lifetime-summary.csv)，制品和失败来源见[来源 CSV](filesystem-lifetime-provenance.csv)。单项区间未校正多重比较，N=5 只作快速观察，不给尾延迟或整体性能无回退保证。
+下表为中位数，负变化表示更快；区间为 5,000 次配对 bootstrap，按五个独立环境索引重采样。三轮不是十五个独立样本。49 项完整结果、范围和逐次值见[加工 CSV](../../../overrides/assets/benchmarks/data/filesystem/lifetime/filesystem-lifetime-summary.csv)，制品和失败来源见[来源 CSV](../../../overrides/assets/benchmarks/data/filesystem/lifetime/filesystem-lifetime-provenance.csv)。单项区间未校正多重比较，N=5 只作快速观察，不给尾延迟或整体性能无回退保证。
 
 | 指标 | 轮次 | 0044 ms | 0045 ms | 变化 | 95% CI % |
 | --- | --- | ---: | ---: | ---: | --- |
@@ -1014,7 +1014,7 @@ B-FS-ENG 批次 `flife16b` 固定同一个当前 GNU release/gateway host，SHA2
 
 单位 ms；负变化表示耗时下降。区间来自同批 5,000 次配对 bootstrap；有效慢样本保留，分离簇不报告整体 P50、百分比或排名，不报告 P95/P99。
 
-[同批完整精度 CSV](filesystem-optimization-n30-summary.csv) · [制品、配置与来源](filesystem-optimization-n30-provenance.csv)。原始证据为本地 `benchmark/.data/fof1/report.json`，验收为 `benchmark/.data/fof1/derived/audit.json`。
+[同批完整精度 CSV](../../../overrides/assets/benchmarks/data/filesystem/optimization-n30/filesystem-optimization-n30-summary.csv) · [制品、配置与来源](../../../overrides/assets/benchmarks/data/filesystem/optimization-n30/filesystem-optimization-n30-provenance.csv)。原始证据为本地 `benchmark/.data/fof1/report.json`，验收为 `benchmark/.data/fof1/derived/audit.json`。
 
 ## Linux：关闭 guest 写合并的配对对照 {#writeback-ab}
 
@@ -1048,7 +1048,7 @@ Linux/KVM/FUSE/Btrfs，热宿主缓存、每次新 VM、独立 user/mount/PID na
 
 完整任务的中位数差为 -51.50 ms，95% CI [-250.56, +271.96] ms；内部总耗时差为 -38.86 ms，区间 [-259.00, +263.60] ms。写入改进没有转化为可检出的整体收益，也不能从这些时间推断 READ 请求数量或具体锁成本。Git 两组均分簇，关闭组 npm 也分簇，相关样本保留并单独展示。
 
-[完整统计 CSV](writeback-filesystem-summary.csv) · [制品、开关、预算与实验来源](writeback-provenance.csv)。原始证据在本地 `benchmark/.data/writeback-quick-20261011/`，冻结 harness、执行与验收记录在 `benchmark/pvisor/.data/writeback-ab-20261011/`。该批实际每臂 N=30，独立于 N=10 的队列快速复测和只读 DAX 实验；该历史批次的开启/关闭条件不变；当前新 VM 的默认值以所选冻结源码为准。
+[完整统计 CSV](../../../overrides/assets/benchmarks/data/writeback/writeback-filesystem-summary.csv) · [制品、开关、预算与实验来源](../../../overrides/assets/benchmarks/data/writeback/writeback-provenance.csv)。原始证据在本地 `benchmark/.data/writeback-quick-20261011/`，冻结 harness、执行与验收记录在 `benchmark/pvisor/.data/writeback-ab-20261011/`。该批实际每臂 N=30，独立于 N=10 的队列快速复测和只读 DAX 实验；该历史批次的开启/关闭条件不变；当前新 VM 的默认值以所选冻结源码为准。
 
 ## Linux：不可变只读 share 的 DAX 配对对照 {#readonly-dax-ab}
 
@@ -1083,7 +1083,7 @@ guest `CLOCK_MONOTONIC_RAW` 记录阶段时间。重复 read/parallel 是 4 遍�
 
 首次 mmap 增加约 80.92 ms，而顺序热读取每遍减少约 0.96 ms，说明减少数据 READ 请求并不足以抵消当前首次访问成本。小文件的重复 open/read/close 也出现稳定退化。首次映射、逐页 fault、窗口回收及宿主映射竞争仍需要独立诊断；这些配对时间不能将差额全部归因于某一把锁或某一步。DAX 默认关闭，保留显式 opt-in；先定位首次 mmap 和窗口压力，再决定是否接入只读工具/镜像路径。实验关闭组仍预留窗口，不能将其成本当作普通无窗口设备的精确成本。
 
-[完整统计 CSV](readonly-dax-summary.csv) · [来源与校验摘要](readonly-dax-provenance.csv)。入口与复现见仓库 `benchmark.new/filesystem/README.md`；原始日志、冻结源码和制品保存在本地 `benchmark.new/filesystem/.data/dax-20261011-final/`。该工程批次独立于七工具、跨运行时和历史启动数据。
+[完整统计 CSV](../../../overrides/assets/benchmarks/data/readonly/readonly-dax-summary.csv) · [来源与校验摘要](../../../overrides/assets/benchmarks/data/readonly/readonly-dax-provenance.csv)。入口与复现见仓库 `benchmark.new/filesystem/README.md`；原始日志、冻结源码和制品保存在本地 `benchmark.new/filesystem/.data/dax-20261011-final/`。该工程批次独立于七工具、跨运行时和历史启动数据。
 
 ## Linux：直接队列服务与局部屏障，60 样本快速复测 {#direct-queue-fast}
 
@@ -1139,7 +1139,7 @@ guest `CLOCK_MONOTONIC_RAW` 记录阶段时间。重复 read/parallel 是 4 遍�
 
 363 项 VM 库测试通过、8 项跳过，Clippy 全 targets 与 warnings-denied rustdoc 通过。回归验证直接 kick 与停止、短请求不偷取、长请求积压的原 ring 完成、同对象等待、无关 namespace 修改及等待期间新的无关 I/O admission；快照与生命周期测试保留。测量构建后仅将既有 `cfg(test)` device 测试移至文件末尾以满足 lint，生产实现一致。
 
-[快速统计与探索区间](direct-queue-filesystem-summary.csv) · [制品、取消记录与实验来源](direct-queue-provenance.csv)。原始证据在本地 `benchmark/.data/direct-queue-quick-20261011/`；源码冻结、构建、预检、取消批次、校验与静态检查记录在 `benchmark/pvisor/.data/direct-queue-retest-20261011/`。本轮不扩样、不更新跨运行时用户表；写入还需独立定位，未覆盖冷磁盘、并发吞吐或 macOS。
+[快速统计与探索区间](../../../overrides/assets/benchmarks/data/direct/direct-queue-filesystem-summary.csv) · [制品、取消记录与实验来源](../../../overrides/assets/benchmarks/data/direct/direct-queue-provenance.csv)。原始证据在本地 `benchmark/.data/direct-queue-quick-20261011/`；源码冻结、构建、预检、取消批次、校验与静态检查记录在 `benchmark/pvisor/.data/direct-queue-retest-20261011/`。本轮不扩样、不更新跨运行时用户表；写入还需独立定位，未覆盖冷磁盘、并发吞吐或 macOS。
 
 ## Linux：并发重构复测，2026-10-11 {#concurrency-retest}
 
@@ -1189,7 +1189,7 @@ Linux/KVM/FUSE/Btrfs，同一 firmware 和完整工具输入。整父组固定 C
 
 首个正式批次因外部 Cargo 活动被拒绝，27 个已有样本单独保留；上面只使用新批次，0.5 s 外部构建/测试检测未检出干扰。检测可能漏掉短暂、不可见或未识别活动。初次 VM 预检还发现空队列检查与 guest 新 descriptor 发布之间的竞态，修复后重新冻结构建并通过预检；新增 5,000 次并发发布回归测试通过。相关库 633 项通过、19 项跳过，修复后 VM 库 361 项通过、8 项跳过；完整 CLI 集成测试有 Host listener/命名空间环境失败，不计作全套通过。
 
-[完整统计与配对区间](concurrency-filesystem-summary.csv) · [制品、控制范围与实验来源](concurrency-retest-provenance.csv) · [启动与退出复测](vm-startup-performance-analysis.md#concurrency-retest)。原始报告与逐次证据在本地 `benchmark/.data/concurrency-formal2-20261011/`，构建、失败批次和校验脚本在 `benchmark/pvisor/.data/concurrency-retest-20261011/`。这些工程数据不替换历史跨运行时用户表，不证明冷磁盘、并发吞吐或 macOS 性能；需要单独诊断 VM 写入/工具成本与 staged 启动波动。
+[完整统计与配对区间](../../../overrides/assets/benchmarks/data/concurrency/concurrency-filesystem-summary.csv) · [制品、控制范围与实验来源](../../../overrides/assets/benchmarks/data/concurrency/concurrency-retest-provenance.csv) · [启动与退出复测](vm-startup-performance-analysis.md#concurrency-retest)。原始报告与逐次证据在本地 `benchmark/.data/concurrency-formal2-20261011/`，构建、失败批次和校验脚本在 `benchmark/pvisor/.data/concurrency-retest-20261011/`。这些工程数据不替换历史跨运行时用户表，不证明冷磁盘、并发吞吐或 macOS 性能；需要单独诊断 VM 写入/工具成本与 staged 启动波动。
 
 ## Linux staged 的空闲请求调度 {#host-idle-dispatch}
 
@@ -1221,7 +1221,7 @@ Linux/KVM/FUSE/Btrfs，同一 firmware 和完整工具输入。整父组固定 C
 
 完整任务中位数差为 -52.27 ms，95% CI [-65.35, -22.30] ms。读取差异区间包含零，不能宣称读取加速。68 项普通 Rust 测试、7 项真实 Linux FUSE 挂载测试、targeted Clippy 和 warnings-denied rustdoc 通过；保留复制期间 metadata/只读访问、队列饱和、FIFO、worker 与 inline 关闭排空、缓存通知和挂载并行压力覆盖。尚无该修复的 macOS 性能验收。
 
-[空闲调度统计 CSV](host-idle-dispatch-summary.csv) · [源码、制品与实验来源](host-idle-dispatch-provenance.csv)。原始报告、stdout、预算与 namespace 收据在本地 `benchmark/.data/fr10fixf3/`；冻结源码、构建收据、发布校验与外部干扰记录在 `benchmark/pvisor/.data/filesystem-regression-20261010/`。原始及中间诊断样本保留，不混入正式统计。
+[空闲调度统计 CSV](../../../overrides/assets/benchmarks/data/host/host-idle-dispatch-summary.csv) · [源码、制品与实验来源](../../../overrides/assets/benchmarks/data/host/host-idle-dispatch-provenance.csv)。原始报告、stdout、预算与 namespace 收据在本地 `benchmark/.data/fr10fixf3/`；冻结源码、构建收据、发布校验与外部干扰记录在 `benchmark/pvisor/.data/filesystem-regression-20261010/`。原始及中间诊断样本保留，不混入正式统计。
 
 ## Linux VM 的 worker 调度与完成唤醒 {#vm-completion-dispatch}
 
@@ -1266,7 +1266,7 @@ Linux/KVM/FUSE/Btrfs，同一 firmware 和完整工具输入。整父组固定 C
 
 相对仅撤销两项近期改动的回退对照，遍历 2,048 文件、读取并校验 64 MiB、离线 Cargo 编译仍有可检出的成本，不能宣称全部单请求成本恢复。三版本对照包含近期调度与 journal 语义变化，不能把每个剩余差距全归因于一次 worker 切换。呈分离簇的指标不提供单一整体排名。359 项 VM 测试、targeted Clippy、warnings-denied rustdoc 和实际 CLI/guest 执行通过；包括空闲请求复用 worker、长请求后的 metadata 接纳、乱序完成、RAM lease 保持、就绪完成不休眠和冻结排空。macOS 性能未验收。
 
-[VM 调度统计 CSV](vm-completion-dispatch-summary.csv) · [源码、制品与实验来源](vm-completion-dispatch-provenance.csv)。原始报告与各样本证据在本地 `benchmark/.data/fr10vmfixf/`，冻结源码、构建与发布校验在 `benchmark/pvisor/.data/filesystem-regression-20261010/`。这些绝对时间不与跨运行时用户页的配置拼接。
+[VM 调度统计 CSV](../../../overrides/assets/benchmarks/data/vm/vm-completion-dispatch-summary.csv) · [源码、制品与实验来源](../../../overrides/assets/benchmarks/data/vm/vm-completion-dispatch-provenance.csv)。原始报告与各样本证据在本地 `benchmark/.data/fr10vmfixf/`，冻结源码、构建与发布校验在 `benchmark/pvisor/.data/filesystem-regression-20261010/`。这些绝对时间不与跨运行时用户页的配置拼接。
 
 ## 修复后的优化候选与诊断 {#optimization-candidates}
 
@@ -1372,7 +1372,7 @@ legacy 的 64 路径观察等待显著减少，但完整哈希增加 7.329 ms，
 
 ### 加工数据、来源与复现 {#host-concurrency-evidence}
 
-[Copy-up 统计 CSV](host-copy-up-summary.csv) · [读队列统计 CSV](host-read-summary.csv) · [Journal 锁统计 CSV](journal-lock-summary.csv)。CSV 直接复制已提交的加工结果，保留批次、样本数、分布、相对/绝对置信区间与原始报告摘要；制品摘要和源码收据见来源报告。完整空闲对照、参考尾部和极值保留在 CSV 中。
+[Copy-up 统计 CSV](../../../overrides/assets/benchmarks/data/host/host-copy-up-summary.csv) · [读队列统计 CSV](../../../overrides/assets/benchmarks/data/host/host-read-summary.csv) · [Journal 锁统计 CSV](../../../overrides/assets/benchmarks/data/journal/journal-lock-summary.csv)。CSV 直接复制已提交的加工结果，保留批次、样本数、分布、相对/绝对置信区间与原始报告摘要；制品摘要和源码收据见来源报告。完整空闲对照、参考尾部和极值保留在 CSV 中。
 
 来源：[copy-up 工程报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/HOST_COPY_UP_REPORT.md)、[读队列与 journal 锁工程报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/HOST_READ_JOURNAL_REPORT.md)。原始日志、源码和制品在测量工作区的 `benchmark/pvisor/.data/host-copy-up-*`、`.data/read-*`、`.data/journal-*`，不作为站点下载发布。复现命令见[宿主 copy-up 手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#host-copy-up-scheduling-ab-on-macos)与[读队列及 journal 锁手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#read-dispatch-and-journal-fingerprint-locks-on-macos)；需要 macOS/macFUSE，不能用 Linux 上的 harness 测试代替挂载测量。
 
@@ -1442,7 +1442,7 @@ B-FS-ENG 计划以同一新冻结 release 二进制比较 native、legacy-writab
 
 计数支持延长 TTL 避免此窗口的重复 LOOKUP，以及只读 KEEP_CACHE 消除暖操作 READ callback；可写 Metadata 的 GETATTR/OPEN/READ 并未消失。完整生命周期仍包含初次读取，零暖 READ 不表示无物理读取或零任务成本。诊断耗时不进入正式分布，失败批次不拼接，旧源码 noatime 性能不替代最新源码验收；下方独立 immutable-cache 的有效结果保留其原始测量范围。
 
-[正式验收状态 CSV](kernel-cache-summary.csv) · [独立请求计数 CSV](kernel-cache-counters.csv) · [工程报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/KERNEL_CACHE_REPORT.md) · [复现与证据契约](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#extended-linux-host-api-kernel-cache)。两个 CSV 均为直接复制的派生数据，保留来源/二进制摘要与统计口径；原始样本、日志、冻结源码与回执留在 `benchmark/pvisor/.data/`，不发布到站点或改写历史结果。
+[正式验收状态 CSV](../../../overrides/assets/benchmarks/data/kernel/kernel-cache-summary.csv) · [独立请求计数 CSV](../../../overrides/assets/benchmarks/data/kernel/kernel-cache-counters.csv) · [工程报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/KERNEL_CACHE_REPORT.md) · [复现与证据契约](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#extended-linux-host-api-kernel-cache)。两个 CSV 均为直接复制的派生数据，保留来源/二进制摘要与统计口径；原始样本、日志、冻结源码与回执留在 `benchmark/pvisor/.data/`，不发布到站点或改写历史结果。
 
 ## 不可变 lower 的物理元数据缓存 {#immutable-lower-cache}
 
@@ -1472,7 +1472,7 @@ OCI 解包缓存的宿主目录仍可写，lazy 镜像的本地投影会按需�
 
 独立 profile 有 24 个实例、全部 final 记录，计时结果不含插桩。持续挂载的 cache-on 相对 off，物理 parent stat 计数下降 49.2%，leaf stat 下降 84.3%；open/read 请求数相同。计数支持减少服务端重复解析，不是减少全部 FUSE 请求或物理磁盘读取的证明；inclusive spans 不相加。cache-on 仍明显慢于 native，长期内核缓存、upper 一致性和映射/缺页路径需分别验证。
 
-[正式统计 CSV](immutable-lower-cache-summary.csv) · [全部实例计数 CSV](immutable-lower-cache-counters.csv) · [工程报告与复现命令](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md)。冻结源码、制品回执、输入清单、失败预检、正式样本和独立 profile 保存在 `benchmark/.data/immutable-cache-*`，不合并到用户性能分布。
+[正式统计 CSV](../../../overrides/assets/benchmarks/data/immutable/immutable-lower-cache-summary.csv) · [全部实例计数 CSV](../../../overrides/assets/benchmarks/data/immutable/immutable-lower-cache-counters.csv) · [工程报告与复现命令](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md)。冻结源码、制品回执、输入清单、失败预检、正式样本和独立 profile 保存在 `benchmark/.data/immutable-cache-*`，不合并到用户性能分布。
 
 ## 冻结制品的独立计数器诊断 {#current-counters}
 
@@ -1503,7 +1503,7 @@ OCI 解包缓存的宿主目录仍可写，lazy 镜像的本地投影会按需�
 
 默认缓存路径下，六个 VM 诊断中 rootfs CREATE、RENAME、WRITE 均为零，完整 final 记录支持零请求计数。rootfs READ 仍约六千次；其 span 包括服务、锁和调度，不能直接解释为磁盘或传输等待。路径解析、读取观察、工具加载和缓存写入应分别调查。修复任务的读指纹数据量很小，但 rootfs 解析仍有成本；[可执行映射探针](#exec-mapping)仅说明短进程的映射路径差异。DAX、长期属性缓存及单一函数的因果收益尚未验证，需要保持访问与暂存语义的工程 A/B 和独立正式计时。
 
-[整理后的计数 CSV](filesystem-counters.csv)保留每 filesystem scope 的三次统计、调用范围、完整覆盖和来源摘要；原始日志、冻结 harness、构建回执及整理脚本保存在本地 `.data/`。相同二进制此前使用管道捕获的诊断有五次 VM 因 stderr EAGAIN 打印 panic 中止；失败证据保留，不计入此表。普通文件捕获仅用于诊断，不能据两种捕获条件的差值推导性能收益。复现见[计数器手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#engineering-and-diagnostics)。
+[整理后的计数 CSV](../../../overrides/assets/benchmarks/data/filesystem/counters/filesystem-counters.csv)保留每 filesystem scope 的三次统计、调用范围、完整覆盖和来源摘要；原始日志、冻结 harness、构建回执及整理脚本保存在本地 `.data/`。相同二进制此前使用管道捕获的诊断有五次 VM 因 stderr EAGAIN 打印 panic 中止；失败证据保留，不计入此表。普通文件捕获仅用于诊断，不能据两种捕获条件的差值推导性能收益。复现见[计数器手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#engineering-and-diagnostics)。
 
 
 ## npm 编译缓存带来的 rootfs 请求 {#node-cache}
@@ -1523,11 +1523,11 @@ Node API 确认默认组缓存目录为 `/tmp/node-compile-cache`，禁用组状
 
 独立文件系统计数还应覆盖工具缓存，而不只是工作区写入。正式对照需要声明缓存是否跨任务复用、是否为空，以及所在存储；热页缓存与 Node 编译缓存是不同条件。任务内两次 npm 调用可以复用缓存，但不能让不同后端或不同任务意外共享。工作区内的私有空缓存是一个可控口径，不代表所有执行器默认临时目录的性能。
 
-[整理后的缓存请求 CSV](filesystem-node-cache.csv)提供每条件样本数、计数范围、final 覆盖和二进制、源码、输入、tracer、原始报告摘要。原始系统调用、状态输出及审核脚本保存在本地 `.data/`，不与用户任务耗时合并。
+[整理后的缓存请求 CSV](../../../overrides/assets/benchmarks/data/filesystem/node-cache/filesystem-node-cache.csv)提供每条件样本数、计数范围、final 覆盖和二进制、源码、输入、tracer、原始报告摘要。原始系统调用、状态输出及审核脚本保存在本地 `.data/`，不与用户任务耗时合并。
 
 保留 pVisor 默认临时目录的独立诊断同样使用六个新 VM、两个条件各三次，78 个文件系统实例都有 final 记录。guest 内 `statfs` 返回 `0x01021994`，确认是实际 tmpfs；默认启用组每次仍产生 537 个缓存文件，而 rootfs CREATE、RENAME、WRITE 都为零。禁用组三项也为零，缓存文件为零。完整工具输出和写入校验通过。这个结果证明缓存生成可以留在默认 tmpfs 中；旧 workload 的 `tools_env()` 把执行器提供的 TMPDIR 覆盖为 `/tmp`，将缓存写入转移到 rootfs overlay。诊断次数有限且有插桩，不能据此声称端到端加速；默认临时目录与工作区存储控制需要分别正式采样。
 
-[默认临时目录请求 CSV](filesystem-executor-scratch.csv)保留独立样本与来源关联，不与 `/tmp` 诊断合并统计。
+[默认临时目录请求 CSV](../../../overrides/assets/benchmarks/data/filesystem/executor-scratch/filesystem-executor-scratch.csv)保留独立样本与来源关联，不与 `/tmp` 诊断合并统计。
 
 ## FUSE 请求与 stage 服务端成本 {#fuse-lower-bound}
 
@@ -1545,7 +1545,7 @@ Node API 确认默认组缓存目录为 `/tmp/node-compile-cache`，禁用组状
 
 这五类已计数回调的数量相近。stage 额外执行内部服务工作：14,975 次 OverlayCore resolve 的 inclusive span 中位数为 143.52 ms，4,853 次读观察为 164.30 ms，2,157 次内容指纹为 45.15 ms。这些 span 嵌套、重叠，不能相加或换算为任务耗时占比。这支持把路径解析和读观察成本与内核请求流量分开测试；它不证明直通驱动提供等价语义，也不构成产品提速结论。
 
-[整理后的 FUSE 请求与服务计数](filesystem-fuse-counters.csv)保留计数范围、组件/实例作用域，以及 CLI、驱动、源码、输入和审计摘要。插桩和抽样资源观察的任务耗时不进入用户延迟表；未知的进程生命周期保留为未知。原始证据放在 `.data/`，复现方式见 benchmark README。
+[整理后的 FUSE 请求与服务计数](../../../overrides/assets/benchmarks/data/filesystem/fuse/filesystem-fuse-counters.csv)保留计数范围、组件/实例作用域，以及 CLI、驱动、源码、输入和审计摘要。插桩和抽样资源观察的任务耗时不进入用户延迟表；未知的进程生命周期保留为未知。原始证据放在 `.data/`，复现方式见 benchmark README。
 
 ## Stage 持久化计数 {#durability-counters}
 
@@ -1559,7 +1559,7 @@ Node API 确认默认组缓存目录为 `/tmp/node-compile-cache`，禁用组状
 
 Linux 每个日志 `sync` span 都调用日志文件的 `sync_all`；目录及其他文件的同步不在此计数内。strict 每任务为 339–340 次，checkpoint 均为五次。transaction 包含同步，耗时不能与 sync 相加。这明确定位了 strict 模式下可观的持久化服务成本。checkpoint 仍记录相同的 2,703 次 append 并检查结束 seal；任务结束前允许日志未同步。这些检查不证明任意崩溃窗口的保证等价，插桩 span 也不证明未插桩任务延迟有同等幅度的下降。工程入口将计时批次独立留存，至少三十轮时输出分布分簇与配对区间。
 
-[整理后的持久化计数](filesystem-durability-counters.csv)包含所有组件实例、计数范围及源码/输入/审计摘要。原始报告、stdout/stderr、输出清单和失败的发布审计尝试留在本地 `.data/`。
+[整理后的持久化计数](../../../overrides/assets/benchmarks/data/filesystem/durability/filesystem-durability-counters.csv)包含所有组件实例、计数范围及源码/输入/审计摘要。原始报告、stdout/stderr、输出清单和失败的发布审计尝试留在本地 `.data/`。
 
 ## 可执行文件映射的独立诊断 {#exec-mapping}
 
@@ -1576,7 +1576,7 @@ Linux 每个日志 `sync` span 都调用日志文件的 `sync_all`；目录及�
 
 重复启动的映射差距约 4.4 ms，同时 major faults 从 37 变为 0，支持优先调查可执行文件映射与缺页服务。major fault 计数不等于物理磁盘读取次数；这组替换同时改变了文件映射、路径访问及加载器的请求路径，不能把差距全部归因于 FUSE 传输或 DAX 缺失，也不能按完整 Agent 任务的进程数直接外推收益。生产实现需要保持访问策略、暂存观察与证据语义，再进行独立正式计时。
 
-[整理后的执行统计 CSV](filesystem-exec-summary.csv) · [来源与测量边界 CSV](filesystem-exec-provenance.csv)。原始报告、逐 VM 输出、审核和整理脚本保存在本地 `benchmark/.data/`。
+[整理后的执行统计 CSV](../../../overrides/assets/benchmarks/data/filesystem/exec/filesystem-exec-summary.csv) · [来源与测量边界 CSV](../../../overrides/assets/benchmarks/data/filesystem/exec/filesystem-exec-provenance.csv)。原始报告、逐 VM 输出、审核和整理脚本保存在本地 `benchmark/.data/`。
 
 ## 合入计划与目标持久化 {#apply-plan}
 
@@ -1600,7 +1600,7 @@ Linux 每个日志 `sync` span 都调用日志文件的 `sync_all`；目录及�
 
 合入前冲突命令的这些调用均为零。目录索引改善了计划阶段，却没有减少目标持久化的调用数；10,000 文件合入仍约 11 秒。按唯一目录在事务边界批量同步值得另做实验，但必须先验证 Prepared、TargetApplied、Committed 的落盘顺序、崩溃恢复和途中外部编辑保护。请求计数证明调用规模，不能证明这些调用占全部剩余时间；strace 用时受插桩影响，不能与嵌套 profile span 相加或用于正式收益表。
 
-[正式统计 CSV](apply-engineering-summary.csv) · [配对差异 CSV](apply-engineering-comparisons.csv) · [同步请求统计 CSV](apply-sync-counts.csv) · [来源与审核范围 CSV](apply-engineering-provenance.csv)。原始记录和整理脚本保存在本地 `benchmark/.data/`。
+[正式统计 CSV](../../../overrides/assets/benchmarks/data/apply/apply-engineering-summary.csv) · [配对差异 CSV](../../../overrides/assets/benchmarks/data/apply/apply-engineering-comparisons.csv) · [同步请求统计 CSV](../../../overrides/assets/benchmarks/data/apply/apply-sync-counts.csv) · [来源与审核范围 CSV](../../../overrides/assets/benchmarks/data/apply/apply-engineering-provenance.csv)。原始记录和整理脚本保存在本地 `benchmark/.data/`。
 
 ## 保留的独立工程实验 {#retained-experiments}
 

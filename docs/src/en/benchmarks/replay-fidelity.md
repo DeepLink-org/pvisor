@@ -52,7 +52,7 @@ This independent cohort measures one fixed synthetic trajectory (task 0) per ada
 
 {{ table("replay-semspec.render.json") }}
 
-[Hyperfine data CSV](replay-semspec.csv) · [Batch provenance](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md#replay)
+[Hyperfine data CSV](../../../overrides/assets/benchmarks/data/replay/replay-semspec.csv) · [Batch provenance](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md#replay)
 
 ### Scope {#acceptance}
 
@@ -60,4 +60,4 @@ These results support structure, argument and observation fidelity for pinned sh
 
 ### Downloads and reproduction {#run}
 
-[Derived data CSV](replay-fidelity.csv) · [Artifact and audit provenance CSV](replay-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Derived data CSV](../../../overrides/assets/benchmarks/data/replay/replay-fidelity.csv) · [Artifact and audit provenance CSV](../../../overrides/assets/benchmarks/data/replay/replay-provenance.csv) · [Evidence source summary](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

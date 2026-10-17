@@ -65,7 +65,7 @@
   - 先放回答结论的那张表，再放补充数据。
   - 每张表写明单位、统计量（P50/P95）、样本数。
   - 分析要解释数据对用户意味着什么，不复述表格。
-  - 末尾提供同目录整理后的 CSV 下载和来源摘要，复现命令链接到 `benchmark/` 的 README。原始样本与制品清单留在本地 `.data/`，不生成失效的站点下载链接。
+  - 末尾提供共享目录中整理后的 CSV 下载和来源摘要，复现命令链接到 `benchmark/` 的 README。原始样本与制品清单留在本地 `.data/`，不生成失效的站点下载链接。
 
 先写 pVisor 做了什么、带来什么收益，用具体动词和简短判断表达。对照项目的名称、版本和数据放在实验与数据节；适用条件集中说明。实测收益与预期分开，保留不利结果；多个条件同时变化时，只报告整体效果。
 
@@ -95,9 +95,9 @@
 ### 原始数据与加工数据的存储
 
 - 原始报告、逐次样本、运行日志、profile、输入与二进制清单、冻结源码和 harness 保存到生成目录的 `.data/`。全仓库 `.data/` 被 Git 忽略；忽略规则不会自动移除已跟踪文件，迁移时保留原字节并核对摘要。
-- Markdown 保存读者需要的加工表格与结论。需要支撑性下载时，同目录放整理后的 CSV，并在 Markdown 链接；CSV 必须保留批次、配置、样本数和统计口径。
+- Markdown 保存读者需要的加工表格与结论。需要支撑性下载时，整理后的 CSV 集中在 `docs/overrides/assets/benchmarks/data/`，由 [`benchmark.new/public_assets.py`](../benchmark.new/public_assets.py) 的 `csv_path(repo, filename, locale)` 按主题和实验确定路径，并在 Markdown 链接；CSV 必须保留批次、配置、样本数和统计口径。中英文共用一份数值 CSV；包含译文的 `index.csv`、`supervision-cost.csv` 分语言子目录保存。本地化的展示 `.render.json` 留在文章旁，不复制数值 CSV。
 - 不再把 typed TSV 完整报告、原始 samples CSV、压缩证据包或源码快照发布到 `docs/src/assets/benchmarks/`。保留本地数据与加工结果之间的摘要关联。
-- 发布脚本的输入和原始归档放 `.data/`，公开目录只放加工 CSV、图表与精简来源摘要。摘要保留批次、口径、配置和制品/证据哈希；完整 manifest、逐文件 harness 清单与软件包收据留在本地。双语来源摘要共用 `docs/overrides/assets/benchmarks/`。站点构建和搜索也排除 `.data/`。
+- 发布脚本的输入和原始归档放 `.data/`，公开目录只放加工 CSV、SVG 图表与精简来源摘要，不发布 PDF。摘要保留批次、口径、配置和制品/证据哈希；完整 manifest、逐文件 harness 清单与软件包收据留在本地。双语来源摘要共用 `docs/overrides/assets/benchmarks/`。未被当前文章引用的历史输出、旧 provenance 和原始记录归档于 `benchmark.new/.data/docs-assets-cleanup-20261018/`，迁移清单保留原路径、字节摘要与新位置；不得改写测量数据或把历史结果冒充新实验。站点构建和搜索也排除 `.data/`。
 - 退役脚本与模块没有新测量入口；活动 benchmark 的注册 ID、入口和复现手册必须同步。
 
 ## 注册表 {#registry}

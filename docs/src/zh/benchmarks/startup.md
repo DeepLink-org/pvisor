@@ -53,13 +53,13 @@ Exit 从同一开始时刻计至观察到正常退出。全部样本还须通过
 
 {{ table("startup-timing.exit.render.json") }}
 
-[同次样本统计 CSV](startup-timing.csv) 与 [来源 JSON](../assets/benchmarks/startup-timing.provenance.json)
+[同次样本统计 CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv) 与 [来源 JSON](../assets/benchmarks/startup-timing.provenance.json)
 记录各条件最新成功的独立批次，标准差采用正式样本的样本标准差。这是 Python 事件时钟数据，独立于
 hyperfine 完整命令实验；历史不同制品的数字不与这组样本合并。整表复测使用
 `just benchmark startup/timing`；仅复测 VM 使用 `just benchmark startup/timing "pvisor vm"`。
-[此前 VM 单条件批次](startup-ready-exit.csv) 保留，不混入新样本。
+[此前 VM 单条件批次](../../../overrides/assets/benchmarks/data/startup/startup-ready-exit.csv) 保留，不混入新样本。
 
-2026-10-11 重启后重新测量全部八个条件，[重启前后对照 CSV](startup-reboot-comparison.csv)
+2026-10-11 重启后重新测量全部八个条件，[重启前后对照 CSV](../../../overrides/assets/benchmarks/data/startup/startup-reboot-comparison.csv)
 保留两批各自的完整精度统计与来源摘要。被测 pVisor 二进制 SHA-256 为
 `d3f09687cca60b617629c215fa1359c441ab6ac19f8c63b68f1dcdf7614e6b30`，重启前后相同；
 用户态输入、被测命令、计时和统计函数也相同。框架期间新增失败处理与来源字段，均位于计时外。
@@ -112,7 +112,7 @@ host 和 staged 的等待为十几到几十毫秒，适合频繁启动的短命�
 | --- | --- | --- | --- | --- | --- | --- |
 | pVisor VM | 60 | 132.95 | 132.51 | 5.09 | 123.00 | 147.53 |
 
-[Ready 统计 CSV](startup-ready.csv) 与 [来源 JSON](../assets/benchmarks/startup-ready.provenance.json) 保留该条件
+[Ready 统计 CSV](../../../overrides/assets/benchmarks/data/startup/startup-ready.csv) 与 [来源 JSON](../assets/benchmarks/startup-ready.provenance.json) 保留该条件
 最新成功批次；标准差是正式样本的样本标准差。这是 Python 时钟数据，不是 hyperfine
 完整退出耗时。历史 Ready 使用不同二进制制品，不能只根据计时边界解释两者数值差异。
 当前 Ready / Exit 实验使用 `just benchmark startup/timing "pvisor vm"`；本节保留旧的 Ready-only 批次。
@@ -132,7 +132,7 @@ host 和 staged 的等待为十几到几十毫秒，适合频繁启动的短命�
 | QEMU | 60 | 722.08 | 711.24 | 26.75 |
 | QEMU microvm | 60 | 339.47 | 355.08 | 86.50 |
 
-空白条件尚无通过校验的新批次。它测量命令到正常退出，不等于首条输出 Ready；各行仅并列展示水平，不提供随机配对改善比例或置信区间。实际命令、极值及逐行来源见 [统计 CSV](startup-semspec.csv) 和 [来源 JSON](../assets/benchmarks/startup-semspec.provenance.json)。
+空白条件尚无通过校验的新批次。它测量命令到正常退出，不等于首条输出 Ready；各行仅并列展示水平，不提供随机配对改善比例或置信区间。实际命令、极值及逐行来源见 [统计 CSV](../../../overrides/assets/benchmarks/data/startup/startup-semspec.csv) 和 [来源 JSON](../assets/benchmarks/startup-semspec.provenance.json)。
 
 <details markdown="1">
 <summary>历史完整命令结果（包含包装器）</summary>
@@ -148,7 +148,7 @@ host 和 staged 的等待为十几到几十毫秒，适合频繁启动的短命�
 | QEMU | 60 | 748.41 | 896.73 | 319.03 |
 | QEMU microvm | 60 | 353.76 | 451.13 | 219.93 |
 
-[历史 CSV](startup-hyperfine.csv) 的计时包含外层 shell、taskset 和 timeout，保留原始口径。它与直接命令是不同批次、不同范围，不能通过相减估计包装器成本或解释为产品性能改善。
+[历史 CSV](../../../overrides/assets/benchmarks/data/startup/startup-hyperfine.csv) 的计时包含外层 shell、taskset 和 timeout，保留原始口径。它与直接命令是不同批次、不同范围，不能通过相减估计包装器成本或解释为产品性能改善。
 
 </details>
 
@@ -156,4 +156,4 @@ host 和 staged 的等待为十几到几十毫秒，适合频繁启动的短命�
 
 ### 数据下载与复现 {#run}
 
-[启动统计](startup.csv) · [VM 差异与 95% 区间](startup-stock-comparisons.csv) · [VM 源码与制品来源](startup-stock-provenance.csv) · [比较方法](methodology.md) · [历史复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls)。当前 Ready / Exit 复测见 [启动实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md)。二进制、完整输入和原始日志保留在本地忽略的 `.data/`；CSV 保留统计来源与样本数，来源记录保留 CPU/RAM 配置、报告和制品摘要。
+[启动统计](../../../overrides/assets/benchmarks/data/startup/startup.csv) · [VM 差异与 95% 区间](../../../overrides/assets/benchmarks/data/startup/startup-stock-comparisons.csv) · [VM 源码与制品来源](../../../overrides/assets/benchmarks/data/startup/startup-stock-provenance.csv) · [比较方法](methodology.md) · [历史复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls)。当前 Ready / Exit 复测见 [启动实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md)。二进制、完整输入和原始日志保留在本地忽略的 `.data/`；CSV 保留统计来源与样本数，来源记录保留 CPU/RAM 配置、报告和制品摘要。

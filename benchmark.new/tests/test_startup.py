@@ -20,6 +20,7 @@ STARTUP = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(STARTUP)
 from hooks import archive, prepare, validate, validate_output  # noqa: E402
 from publish import compact_configuration, publish_startup  # noqa: E402
+from public_assets import csv_path as public_csv_path
 
 OUTPUT = 'REFERENCE_READY\nREFERENCE_RESULT {"mode":"ready","correctness":"passed"}\n'
 SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug/semspec"))
@@ -214,7 +215,7 @@ class StartupIntegration(unittest.TestCase):
             self.assertTrue(all(v is None for v in ready["Firecracker"].values()))
             self.assertEqual(ready["Native"]["N"], exited["Native"]["N"])
             self.assertEqual(len(list((batch / "trials").iterdir())), 64)
-            csv_path = source / "en/benchmarks/startup-timing.csv"
+            csv_path = public_csv_path(root, "startup-timing.csv")
             before = csv_path.read_bytes()
             publish_startup(batch, source)
             self.assertEqual(before, csv_path.read_bytes())
@@ -234,8 +235,7 @@ class StartupIntegration(unittest.TestCase):
             writer = csv.DictWriter(buffer, fieldnames=list(rows[0]))
             writer.writeheader()
             writer.writerows(rows)
-            for locale in ("zh", "en"):
-                (source / locale / "benchmarks/startup-timing.csv").write_text(buffer.getvalue())
+            csv_path.write_text(buffer.getvalue())
             host = dict(
                 batch="previous-host",
                 metric_scope=manifest["metric_scope"],
@@ -301,9 +301,10 @@ class StartupIntegration(unittest.TestCase):
                 for locale in ("zh", "en")
             }
             publish_startup(batch, source)
-            csv_path = source / "zh/benchmarks/startup-timing.csv"
+            csv_path = public_csv_path(root, "startup-timing.csv")
             published = csv_path.read_bytes()
-            self.assertEqual(published, (source / "en/benchmarks/startup-timing.csv").read_bytes())
+            for locale in ("zh", "en"):
+                self.assertFalse((source / locale / "benchmarks/startup-timing.csv").exists())
             self.assertEqual(len(list(csv.DictReader(io.StringIO(csv_path.read_text())))), 1)
             for locale in ("zh", "en"):
                 page = source / locale / "benchmarks/startup.md"

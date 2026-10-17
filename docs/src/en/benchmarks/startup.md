@@ -55,15 +55,15 @@ New Firecracker uses the stock kernel, the same initrd and virtio-MMIO. Two PCI 
 
 {{ table("startup-timing.exit.render.json") }}
 
-The [paired-sample statistics CSV](startup-timing.csv) and [provenance JSON](../assets/benchmarks/startup-timing.provenance.json)
+The [paired-sample statistics CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv) and [provenance JSON](../assets/benchmarks/startup-timing.provenance.json)
 identify each condition’s latest successful independent batch. Standard deviation uses the formal samples and sample formula. These are
 Python event-clock data, independent of the hyperfine completion experiment. Historical results
 from different artifacts are not pooled. Rerun the entire table with `just benchmark startup/timing`,
 or just VM with `just benchmark startup/timing "pvisor vm"`.
-The [earlier VM-only cohort](startup-ready-exit.csv) remains separate.
+The [earlier VM-only cohort](../../../overrides/assets/benchmarks/data/startup/startup-ready-exit.csv) remains separate.
 
 All eight conditions were remeasured after the reboot on 2026-10-11. The
-[before/after comparison CSV](startup-reboot-comparison.csv) retains full-precision statistics
+[before/after comparison CSV](../../../overrides/assets/benchmarks/data/startup/startup-reboot-comparison.csv) retains full-precision statistics
 and provenance digests for both independent cohorts. The measured pVisor binary SHA-256 is
 `d3f09687cca60b617629c215fa1359c441ab6ac19f8c63b68f1dcdf7614e6b30`, unchanged across the reboot;
 userspace inputs, measured commands, timing and statistics functions are also unchanged.
@@ -121,7 +121,7 @@ and a valid Run Bundle remain required after the clock stops.
 | --- | --- | --- | --- | --- | --- | --- |
 | pVisor VM | 60 | 132.95 | 132.51 | 5.09 | 123.00 | 147.53 |
 
-The [Ready statistics CSV](startup-ready.csv) and [provenance JSON](../assets/benchmarks/startup-ready.provenance.json)
+The [Ready statistics CSV](../../../overrides/assets/benchmarks/data/startup/startup-ready.csv) and [provenance JSON](../assets/benchmarks/startup-ready.provenance.json)
 retain the latest successful batch for this condition. Standard deviation uses formal samples
 and the sample formula. These are Python clock measurements, separate from hyperfine completion.
 Historical Ready used a different binary artifact; timing boundaries alone cannot explain the difference.
@@ -142,7 +142,7 @@ Each row uses that condition's latest successful independent batch, without pool
 | QEMU | 60 | 722.08 | 711.24 | 26.75 |
 | QEMU microvm | 60 | 339.47 | 355.08 | 86.50 |
 
-Empty conditions have no validated new batch. This measures the command through normal exit, not first-output Ready. Rows show independent levels, without paired improvement percentages or confidence intervals. See the [statistics CSV](startup-semspec.csv) and [per-row provenance JSON](../assets/benchmarks/startup-semspec.provenance.json) for commands, extrema and sources.
+Empty conditions have no validated new batch. This measures the command through normal exit, not first-output Ready. Rows show independent levels, without paired improvement percentages or confidence intervals. See the [statistics CSV](../../../overrides/assets/benchmarks/data/startup/startup-semspec.csv) and [per-row provenance JSON](../assets/benchmarks/startup-semspec.provenance.json) for commands, extrema and sources.
 
 <details markdown="1">
 <summary>Historical complete commands (including wrappers)</summary>
@@ -158,7 +158,7 @@ Empty conditions have no validated new batch. This measures the command through 
 | QEMU | 60 | 748.41 | 896.73 | 319.03 |
 | QEMU microvm | 60 | 353.76 | 451.13 | 219.93 |
 
-The [historical CSV](startup-hyperfine.csv) includes an outer shell, taskset and timeout. Its original scope is preserved. These are different batches and scopes; subtracting them cannot estimate wrapper cost or establish product performance improvements.
+The [historical CSV](../../../overrides/assets/benchmarks/data/startup/startup-hyperfine.csv) includes an outer shell, taskset and timeout. Its original scope is preserved. These are different batches and scopes; subtracting them cannot estimate wrapper cost or establish product performance improvements.
 
 </details>
 
@@ -166,4 +166,4 @@ The [historical CSV](startup-hyperfine.csv) includes an outer shell, taskset and
 
 ### Downloads and reproduction {#run}
 
-[Startup statistics](startup.csv) · [VM differences and 95% intervals](startup-stock-comparisons.csv) · [VM source and artifact provenance](startup-stock-provenance.csv) · [Method](methodology.md) · [Historical reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls). See the [startup manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md) to reproduce the current Ready / Exit experiment. Binaries, complete inputs and raw logs stay in local ignored `.data/`; CSVs retain statistical sources and sample counts, and provenance records retain CPU/RAM configuration and report/artifact digests.
+[Startup statistics](../../../overrides/assets/benchmarks/data/startup/startup.csv) · [VM differences and 95% intervals](../../../overrides/assets/benchmarks/data/startup/startup-stock-comparisons.csv) · [VM source and artifact provenance](../../../overrides/assets/benchmarks/data/startup/startup-stock-provenance.csv) · [Method](methodology.md) · [Historical reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls). See the [startup manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md) to reproduce the current Ready / Exit experiment. Binaries, complete inputs and raw logs stay in local ignored `.data/`; CSVs retain statistical sources and sample counts, and provenance records retain CPU/RAM configuration and report/artifact digests.

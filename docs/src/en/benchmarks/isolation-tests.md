@@ -52,4 +52,4 @@ Mount grants, rootfs and configuration determine the boundary; other configurati
 
 ### Downloads and reproduction {#run}
 
-[Derived matrix CSV](isolation-tests.csv) · [Artifact and audit provenance CSV](isolation-provenance.csv) · [Evidence source summary](evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Derived matrix CSV](../../../overrides/assets/benchmarks/data/isolation/isolation-tests.csv) · [Artifact and audit provenance CSV](../../../overrides/assets/benchmarks/data/isolation/isolation-provenance.csv) · [Evidence source summary](../../../overrides/assets/benchmarks/data/overview/evidence-sources.csv) · [Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

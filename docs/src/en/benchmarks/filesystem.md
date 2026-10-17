@@ -216,15 +216,15 @@ Each executor-process run has a 90-second deadline. Normal exit, round results, 
 <details markdown="1">
 <summary>Separately retained historical measurement scopes</summary>
 
-The former seven-tool [N=5 Ready/resident statistics](filesystem-resident.csv) and [provenance](filesystem-resident-provenance.csv), the [historical N=30 statistics](filesystem.csv), and the earlier five-mode layered comparison each retain their original scope. They do not populate the new 19-workload tables or support cross-cohort improvement estimates.
+The former seven-tool [N=5 Ready/resident statistics](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident.csv) and [provenance](../../../overrides/assets/benchmarks/data/filesystem/resident/filesystem-resident-provenance.csv), the [historical N=30 statistics](../../../overrides/assets/benchmarks/data/filesystem/tools/filesystem.csv), and the earlier five-mode layered comparison each retain their original scope. They do not populate the new 19-workload tables or support cross-cohort improvement estimates.
 
 </details>
 
 ### Data downloads and reproduction {#run}
 
-[Workflow plot PDF](../../../overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.pdf) · [Request-size plot PDF](../../../overrides/assets/benchmarks/filesystem-layered-references/write-request-size.pdf) · [Resource plot PDF](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.pdf) · [Mechanism plot PDF](../../../overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.pdf)
+[Workflow plot SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/workflow-rounds.svg) · [Request-size plot SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/write-request-size.svg) · [Resource plot SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg) · [Mechanism plot SVG](../../../overrides/assets/benchmarks/filesystem-layered-references/mechanism-relative-time.svg)
 
-[All layered statistics](filesystem-layered-references-levels.csv) · [Ready](filesystem-layered-references-ready.csv) · [Per-environment data](filesystem-layered-references-environments.csv) · [Raw round values](filesystem-layered-references-rows.csv) · [Failures and missing observations](filesystem-layered-references-failures.csv) · [Provenance summary](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
+[All layered statistics](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-levels.csv) · [Ready](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-ready.csv) · [Per-environment data](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-environments.csv) · [Raw round values](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-rows.csv) · [Failures and missing observations](../../../overrides/assets/benchmarks/data/filesystem/layered-references/filesystem-layered-references-failures.csv) · [Provenance summary](../../../overrides/assets/benchmarks/filesystem-layered-references/provenance.json)
 
 CSV write_ops/read_ops count explicit logical workload operations, not guest→host requests or all I/O inside child tools.
 

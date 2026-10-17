@@ -66,6 +66,6 @@ Podman 使用 host network，提供普通 OCI 对照；pVisor OCI 还经过策�
 
 ### 数据下载与复现 {#run}
 
-[网络统计 CSV](network-summary.csv) · [配对比较 CSV](network-comparisons.csv) · [制品与验证摘要](network-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[网络统计 CSV](../../../overrides/assets/benchmarks/data/network/network-summary.csv) · [配对比较 CSV](../../../overrides/assets/benchmarks/data/network/network-comparisons.csv) · [制品与验证摘要](../../../overrides/assets/benchmarks/data/network/network-provenance.csv) · [比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
 原始报告、响应计时、命令日志、输入与构建清单，以及逐次输出证据审计保存在本地 `.data/`。
