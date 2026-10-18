@@ -1,24 +1,16 @@
 # Can the retired cluster measurements still be used?
 
-## Main conclusions {#conclusions}
+## Motivation {#motivation}
 
-**The old throughput and history measurements remain evidence only for their frozen, retired Controller/Worker implementation. They do not establish current daemon throughput, density or recovery costs. Independent local capacity and VM-memory benchmarks retain their own evidence scope; no new measurement is reported here.**
+Capacity decisions need evidence for the implementation you actually deploy. The Controller/Worker implementation is retired, so its measurements no longer describe the current daemon; use the local [capacity](density.md) and [VM memory](vm-memory/index.md) benchmarks for node sizing instead.
 
-| Need | Selection implication |
-|---|---|
-| Interpret old Cluster results | Use only the historical workload, artifacts and budgets below |
-| Size local execution or parked states | Use [capacity](density.md) and [VM memory](vm-memory/index.md), not Worker curves |
-| Size the daemon or compare schedulers | Unmeasured; do not transfer old throughput or history figures |
+The old throughput and history figures apply only to the frozen Controller/Worker build, and none of them establishes current daemon throughput, density or recovery cost. No new measurement is reported here.
 
 <!-- measurement-status:start -->
 
 These numbers and conclusions remain the original historical cohorts; the new framework has no matching rerun. See [measurement coverage](index.md#measurement-coverage).
 
 <!-- measurement-status:end -->
-
-## Motivation {#motivation}
-
-Capacity decisions require evidence for the implementation actually deployed. Retiring Controller/Worker removes the subject of these experiments; renaming its measurements would conceal that boundary. Readiness, validated work and recoverable parked states answer different questions.
 
 ## Experiment design {#interpretation}
 

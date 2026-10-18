@@ -1,25 +1,16 @@
 # 一次真实 Agent 任务要多久？
 
-## 主要结论 {#conclusions}
+## Motivation {#motivation}
 
-**需要频繁创建任务视图、保留少量改动并审查合入时，评估 pVisor staged：固定修复任务为 0.64 s，Docker 为 0.81 s；但七项工具任务 staged 为 1.09 s，Docker 为 0.82 s。pVisor VM 的修复为 3.25 s，长于 Firecracker 的 2.20 s 和 QEMU microvm 的 1.40 s，独立 guest 边界需要额外预算。**
+执行方式要按完整任务判断：环境准备、模型与工具交互、验证、审查合入和清理。频繁创建任务视图、保留少量改动并审查合入时，评估 staged；小工作区或已有容器、原生沙箱时，保留现有流程；选 VM 前先验证 CLI 兼容性和完整工具成本。云端按仓库同步、部署和运维需求比较，同条件性能与账单未测。
 
-| 需求 | 选型含义 |
-| --- | --- |
-| 大工作区、稀疏改动、每次新建任务视图 | staged 有完整机器流程优势；同时预算工具开销 |
-| 小工作区、现成容器或原生 Agent 沙箱 | 保留已有 Git/工具流程，不为单项速度全面替换 |
-| 独立 guest 内核 | 选择 VM 前验证 CLI 兼容性和完整工具成本 |
-| 远端 API 与托管弹性 | 按仓库同步、部署和运维需求评估云端；同条件性能与账单未测 |
+固定修复任务 staged 为 0.64 s，Docker 为 0.81 s；七项工具任务 staged 为 1.09 s，Docker 为 0.82 s。pVisor VM 的修复为 3.25 s，长于 Firecracker 的 2.20 s 和 QEMU microvm 的 1.40 s，独立 guest 边界要单独预算。
 
 <!-- measurement-status:start -->
 
 这些数值与结论仍属于原始历史批次；新框架尚无匹配的复测数据，见[复测覆盖](index.md#measurement-coverage)。
 
 <!-- measurement-status:end -->
-
-## Motivation {#motivation}
-
-一次任务包括环境准备、模型与工具交互、测试验证、审查合入和清理。只看启动会漏掉工具与结果处理；只看工具速度，又会漏掉反复创建工作区的成本。固定工具计划排除推理和公网波动，独立的完整审查流程衡量同样改动如何进入原工作区。
 
 ## 实验设计 {#interpretation}
 

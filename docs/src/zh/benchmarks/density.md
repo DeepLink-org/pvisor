@@ -1,24 +1,16 @@
 # 两核、2 GiB 预算能同时完成多少个工具任务？
 
-## 主要结论 {#conclusions}
+## Motivation {#motivation}
 
-**在两核、2 GiB、禁用 swap 的共同预算下，stage 与 Podman 都在 32 路 Python/Git 任务中通过全部五轮；pVisor VM 在 16 路通过全部五轮，32 路只有三轮全部通过。stage 的空闲探针达到 128 路，Podman 达到 64 路；空闲容量不能代替活跃任务容量。**
+多个 Agent 同时执行时，要看完成了多少任务，而不是创建了多少环境。stage 与 Podman 在本负载下容量相同，按隔离和审查需求二选一；每个任务都要 VM 边界时需要更多预算，空闲容量不能推算活跃容量。
 
-| 需求 | 选型含义 |
-|---|---|
-| 并行修改代码并检查 Git 结果 | stage 与 Podman 的本负载容量相同；按隔离和审查需求选择 |
-| 大量空闲环境 | stage 达到更高的已测并发度；它使用宿主进程边界 |
-| 每个任务需要 VM 边界 | 为 VM 留出更多预算；不要按空闲数规划活跃任务 |
+在两核、2 GiB、禁用 swap 的共同预算下，stage 与 Podman 都在 32 路 Python/Git 任务中通过全部五轮；pVisor VM 在 16 路通过全部五轮，32 路只有三轮。空闲探针 stage 达到 128 路，Podman 达到 64 路。
 
 <!-- measurement-status:start -->
 
 这些数值与结论仍属于原始历史批次；新框架尚无匹配的复测数据，见[复测覆盖](index.md#measurement-coverage)。
 
 <!-- measurement-status:end -->
-
-## Motivation {#motivation}
-
-多个 Agent 同时执行时，成功完成多少任务比创建多少环境更有用。容量规划还要计入运行时、辅助进程、页缓存和 VM backing，不能用单个进程 RSS 或配置内存推算。
 
 ## 实验设计 {#interpretation}
 

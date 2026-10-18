@@ -1,24 +1,16 @@
 # 退役的 Cluster 数据还能用吗？
 
-## 主要结论 {#conclusions}
+## Motivation {#motivation}
 
-**旧吞吐与历史成本测量只对冻结的、已退役的 Controller/Worker 实现有效，不能证明当前 daemon 的吞吐、密度或恢复成本。独立本机容量与 VM 内存 benchmark 仍保留各自的证据范围；这里没有新增测量。**
+容量决策需要与实际部署的实现相匹配的证据。Controller/Worker 已退役，它的测量不再描述当前 daemon；本机容量规划请用[容量](density.md)和[VM 内存](vm-memory/index.md)两个 benchmark。
 
-| 需求 | 选型含义 |
-|---|---|
-| 解读旧 Cluster 结果 | 仅限下列历史负载、制品与预算 |
-| 规划本机执行或停驻状态 | 使用[容量](density.md)和[VM 内存](vm-memory/index.md)，不使用 Worker 曲线 |
-| 规划 daemon 或比较调度系统 | 未测；不能沿用旧吞吐或历史成本数字 |
+旧的吞吐与历史成本数字只对冻结的 Controller/Worker 制品有效，都不能证明当前 daemon 的吞吐、密度或恢复成本。本页没有新增测量。
 
 <!-- measurement-status:start -->
 
 这些数值与结论仍属于原始历史批次；新框架尚无匹配的复测数据，见[复测覆盖](index.md#measurement-coverage)。
 
 <!-- measurement-status:end -->
-
-## Motivation {#motivation}
-
-容量决策需要与实际部署实现相匹配的证据。Controller/Worker 退役后，实验对象已不再存在，把旧测量改名会掩盖这一边界。就绪、有效任务完成和可恢复停驻状态回答不同问题。
 
 ## 实验设计 {#interpretation}
 

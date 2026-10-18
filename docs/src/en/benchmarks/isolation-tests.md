@@ -1,24 +1,16 @@
 # Do executors block writes outside the workspace?
 
-## Main conclusions {#conclusions}
+## Motivation {#motivation}
 
-**In the tested Linux configurations, pVisor staged, safe and VM allow inside-view operations, block the listed outside host accesses and retain workspace writes in stage across 3/3 checks each. pVisor OCI and Podman also block outside access, but their authorized writable workspace mounts modify host files directly. Host allows the listed host accesses.**
+Choose an execution mode by both the accessible paths and where writes land. A successful command alone cannot distinguish a staged write from a host modification, and the boundary also determines which performance comparisons share the same semantics.
 
-| Need | Selection implication |
-|---|---|
-| Review execution results and merge selected workspace changes | Choose a validated staged, safe or VM configuration |
-| Use an OCI writable workspace mount | Writes reach the host directly; provide review and rollback separately |
-| Allow access to host paths | Tested host keeps host paths visible and is not a workspace file sandbox |
+In the tested Linux configurations, pVisor staged, safe and VM allowed inside-view operations, blocked the listed outside host accesses and kept workspace writes in stage, 3/3 checks each. pVisor OCI and Podman also blocked outside access, but their authorized writable workspace mounts modify host files directly. Host allowed the listed host accesses.
 
 <!-- measurement-status:start -->
 
 These numbers and conclusions remain the original historical cohorts; the new framework has no matching rerun. See [measurement coverage](index.md#measurement-coverage).
 
 <!-- measurement-status:end -->
-
-## Motivation {#motivation}
-
-Choosing an execution mode requires knowing both the accessible paths and where writes land. A successful command alone cannot distinguish a staged write from a host modification. The boundary also determines which performance controls offer comparable semantics.
 
 ## Experiment design {#interpretation}
 

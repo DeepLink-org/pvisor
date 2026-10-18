@@ -1,25 +1,16 @@
 # How long does a real Agent task take?
 
-## Conclusions {#conclusions}
+## Motivation {#motivation}
 
-**Evaluate pVisor staged when you repeatedly create task views, retain sparse edits and review/apply them: fixed repair takes 0.64 s versus Docker's 0.81 s, but seven-tool completion takes 1.09 s versus Docker's 0.82 s. pVisor VM repair takes 3.25 s, behind Firecracker's 2.20 s and QEMU microvm's 1.40 s; budget the cost of an independent guest boundary.**
+Judge an execution mode by the complete task: environment preparation, model and tool interaction, verification, review and application, and cleanup. Evaluate staged when you repeatedly create task views, keep sparse edits and review them; keep an existing container or native sandbox when the workspace is small; validate CLI compatibility and complete tool cost before choosing a VM. For managed clouds, compare repository synchronization, deployment and operations needs instead.
 
-| Need | Selection implication |
-| --- | --- |
-| Large workspace, sparse edits, fresh task view each time | Staged has a complete machine-workflow advantage; also budget tool overhead |
-| Small workspace, existing container or native Agent sandbox | Keep existing Git/tool flows; do not replace everything for individual operation speed |
-| Independent guest kernel | Validate CLI compatibility and complete tool cost before choosing VM |
-| Remote API and managed elasticity | Evaluate clouds by repository synchronization, deployment and operations needs; matched performance and billing are unmeasured |
+Fixed repair takes 0.64 s staged versus Docker's 0.81 s, but seven-tool completion takes 1.09 s versus 0.82 s. pVisor VM repair takes 3.25 s, behind Firecracker's 2.20 s and QEMU microvm's 1.40 s, so budget the cost of an independent guest boundary.
 
 <!-- measurement-status:start -->
 
 These numbers and conclusions remain the original historical cohorts; the new framework has no matching rerun. See [measurement coverage](index.md#measurement-coverage).
 
 <!-- measurement-status:end -->
-
-## Motivation {#motivation}
-
-A task includes environment preparation, model/tool interaction, verification, review/application and cleanup. Startup alone misses tool and result-handling costs; tool speed alone misses repeated workspace creation. A fixed tool plan removes inference and public-network variability, while a separate complete review workflow measures how the same edits reach the original workspace.
 
 ## Experiment design {#interpretation}
 

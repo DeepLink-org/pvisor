@@ -1,26 +1,10 @@
 # How long does a usable environment take to start?
 
-## Conclusions {#conclusions}
-
-**In the independent-condition retest after the reboot on 2026-10-11, median Ready times are 33.52 ms for pVisor host, 50.59 ms for staged, 130.71 ms for VM, 105.03 ms for Docker, 287.13 ms for Firecracker MMIO, 663.25 ms for QEMU and 260.10 ms for microvm. Ready and normal Exit share sixty launches per condition. Use these tables for the measured artifacts; historical randomized-pair rankings and intervals do not carry over to the new cohorts.**
-
-The selection summary below retains the scope of its historical cohorts.
-
-| Need | Selection implication |
-| --- | --- |
-| Frequent short commands | Host and staged startup waits are in the tens of milliseconds |
-| Frequently created disposable VMs | pVisor VM waits about 0.1 seconds for the first command |
-| Complete Agent tool tasks | Use tool and repair results to choose an execution mode |
-
-<!-- measurement-status:start -->
-
-New experiments and historical data are published separately. Each table retains its timing scope and inputs from the design and provenance.
-
-<!-- measurement-status:end -->
-
 ## Motivation {#motivation}
 
-Disposable environments repeatedly pay for the first command. Choosing host, staged, containers or VMs requires knowing their startup waits and the cost of the isolation you need. Short tasks also pay for exit and tools.
+Agent workloads arrive in bursts of short-lived calls: a task finishes and its environment is discarded, then the next task builds a new one. Each call pays the startup wait again, so the cost accumulates with call volume. Startup latency decides how soon the first command runs and how often a developer is willing to create an isolated environment for one task. Short tasks also pay for exit and tool execution.
+
+pVisor's VM work brings startup close to a container: median Ready 130.71 ms against Docker rootless at 105.03 ms, and far below the reference VMs (Firecracker MMIO 287.13 ms, QEMU q35 663.25 ms). Host and staged runs are faster still, at 33.52 ms and 50.59 ms.
 
 ## Experiment design {#interpretation}
 

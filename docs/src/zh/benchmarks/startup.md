@@ -1,26 +1,10 @@
 # 启动一个可用环境要等多久？
 
-## 主要结论 {#conclusions}
-
-**2026-10-11 重启后的独立条件复测中，Ready 中位数为 pVisor host 33.52 ms、staged 50.59 ms、VM 130.71 ms、Docker 105.03 ms、Firecracker MMIO 287.13 ms、QEMU 663.25 ms 和 microvm 260.10 ms。Ready 与正常 Exit 来自同次启动的 60 个样本；当前制品的数字应按这组表格读取，历史随机配对的排名和区间不沿用到新批次。**
-
-以下选型摘要保留历史批次的适用范围。
-
-| 需求 | 选型含义 |
-| --- | --- |
-| 频繁执行短命令 | host 和 staged 的启动等待为十几到几十毫秒 |
-| 频繁创建一次性 VM | pVisor VM 的首条命令等待约 0.1 秒 |
-| 完整 Agent 工具任务 | 结合工具与修复任务结果选择执行模式 |
-
-<!-- measurement-status:start -->
-
-新增实验与历史数据分开发布；各表适用的计时范围和输入见实验设计与来源。
-
-<!-- measurement-status:end -->
-
 ## Motivation {#motivation}
 
-频繁创建一次性环境时，首条命令的等待会累积。选择 host、staged、容器或 VM，需要知道各模式的启动等待，以及隔离需求带来的成本。短任务还要预算退出和工具执行。
+Agent 应用存在大量突发、短时的调用：一个任务结束就丢弃环境，下一个任务重新创建。每次调用都要重新支付启动等待，成本随调用量累积。启动延迟决定第一条命令多久能开始，也决定开发者愿意多频繁地为单个任务创建隔离环境。短任务还要额外预算退出和工具执行。
+
+pVisor 在 VM 上的优化把启动压到接近容器：Ready 中位数 130.71 ms，对比 Docker rootless 的 105.03 ms，也远低于参考 VM（Firecracker MMIO 287.13 ms、QEMU q35 663.25 ms）。host 与 staged 更快，分别为 33.52 ms 和 50.59 ms。
 
 ## 实验设计 {#interpretation}
 

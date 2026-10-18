@@ -1,24 +1,10 @@
 # Can a recorded trajectory start a new run?
 
-## Main conclusions {#conclusions}
-
-**In the new framework, each of seven adapters passes 60/60 checks for fixed task 0, with whole prepare-only CLI medians of 5.56–5.74 ms. No tools execute and workspaces remain unchanged. Historical clusters across twenty trajectories use a different input cohort and retain their original scope; consistency of real model continuation remains unmeasured.**
-
-| Need | Selection implication |
-|---|---|
-| Prepare historical tool context across Agents | Use the validated pinned-format adapters |
-| Restore actual file state | Restore the task environment separately; prefix preparation does not replay file changes |
-| Compare native resume or RL pipeline speed | No matched-trajectory timing control is available for a ranking |
-
-<!-- measurement-status:start -->
-
-New experiments and historical data are published separately. Each table retains its timing scope and inputs from the design and provenance.
-
-<!-- measurement-status:end -->
-
 ## Motivation {#motivation}
 
-Training and reproduction need tasks to continue at an accurate historical boundary. Missing tool observations or including a future action changes the model's context; executing tools during preparation may introduce additional side effects. These properties determine whether recorded trajectories provide reliable task inputs.
+Training and reproduction need a task to continue from an accurate historical boundary. Missing tool observations or including a future action changes the model's context, and executing tools during preparation may add side effects. Use the validated pinned-format adapters to prepare context, restore file state separately, and do not rank native resume or RL pipeline speed from these numbers.
+
+Each of seven adapters passes 60/60 checks for fixed task 0, with whole prepare-only CLI medians of 5.56–5.74 ms; no tools run and workspaces stay unchanged. Historical clusters across twenty trajectories use a different input cohort and keep their original scope, and consistency of real model continuation remains unmeasured.
 
 ## Experiment design {#interpretation}
 

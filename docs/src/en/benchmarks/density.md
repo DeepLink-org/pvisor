@@ -1,24 +1,16 @@
 # How many tool tasks fit in two cores and 2 GiB?
 
-## Main conclusions {#conclusions}
+## Motivation {#motivation}
 
-**Under a shared two-core, 2 GiB, zero-swap budget, stage and Podman complete all five rounds at 32 concurrent Python/Git tasks. pVisor VM completes all five at 16, but only three at 32. Idle stage probes reach 128 and Podman reaches 64; idle occupancy does not establish active-task capacity.**
+When multiple Agents run together, count completed work rather than created environments. Stage and Podman reach the same tested task capacity under a shared budget, so choose between them by isolation and review needs; a VM boundary per task needs more room, and idle capacity does not predict active-task capacity.
 
-| Need | Selection implication |
-|---|---|
-| Parallel edits and Git checks | Stage and Podman reach the same tested task capacity; choose by isolation and review needs |
-| Many idle environments | Stage reaches higher tested concurrency, using a host-process boundary |
-| A VM boundary per task | Reserve more resources; do not size active tasks from idle counts |
+Under a shared two-core, 2 GiB, zero-swap budget, stage and Podman complete all five rounds at 32 concurrent Python/Git tasks; pVisor VM completes all five at 16 but only three at 32. Idle probes reach 128 for stage and 64 for Podman.
 
 <!-- measurement-status:start -->
 
 These numbers and conclusions remain the original historical cohorts; the new framework has no matching rerun. See [measurement coverage](index.md#measurement-coverage).
 
 <!-- measurement-status:end -->
-
-## Motivation {#motivation}
-
-When multiple Agents execute together, completed work matters more than created environments. Capacity planning must include runtimes, helpers, page cache and VM backing; neither single-process RSS nor configured RAM can establish capacity.
 
 ## Experiment design {#interpretation}
 

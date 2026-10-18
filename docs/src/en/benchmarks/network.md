@@ -1,24 +1,16 @@
 # How much latency does network control add?
 
-## Main conclusions {#conclusions}
+## Motivation {#motivation}
 
-**For eight-thread local HTTP small requests, native, pVisor host proxy and VM median request times are about 0.69, 10.09 and 2.10 ms. A 32 MiB VM transfer takes about 193.62 ms. Host-proxy small-request cost warrants attention; local measurements do not establish public model-response latency.**
+Agents request models, download dependencies and consume streams, and each workload reacts differently to proxy overhead. Separate request latency, first byte, full transmission and startup to see where waiting comes from. Budget host-proxy latency for frequent local small requests, and transmission separately from startup for downloads inside a VM.
 
-| Need | Selection implication |
-|---|---|
-| Frequent local small requests | Host proxy adds noticeable waiting; check your request rate |
-| Dependency downloads inside a VM | Budget transmission separately from environment startup |
-| Blocking direct TCP connections | Host/VM deny-all positive and negative controls are tested; latency is not isolation evidence |
+Eight-thread local HTTP small requests take 0.69 ms natively, 10.09 ms through the pVisor host proxy and 2.10 ms in a VM; a 32 MiB VM transfer takes about 193.62 ms. Local measurements do not establish public model-response latency, and blocking direct TCP connections is an isolation result rather than a latency figure.
 
 <!-- measurement-status:start -->
 
 These numbers and conclusions remain the original historical cohorts; the new framework has no matching rerun. See [measurement coverage](index.md#measurement-coverage).
 
 <!-- measurement-status:end -->
-
-## Motivation {#motivation}
-
-Agents request models, download dependencies and consume streams. These workloads respond differently to proxy overhead. Separate request latency, first byte, full transmission and startup to understand the waiting involved.
 
 ## Experiment design {#interpretation}
 

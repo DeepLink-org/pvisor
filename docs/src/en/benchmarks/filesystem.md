@@ -1,18 +1,10 @@
 # How long do file-heavy tasks take?
 
-## Main conclusions {#conclusions}
+## Motivation {#motivation}
 
-**On the measured inspection and build tasks, pVisor host approaches direct-execution levels; when VM isolation is needed, writeback shortens the wait for batch artifact writes.**
+An agent inspects repositories, searches, builds incrementally and publishes artifacts, so file reads and writes dominate these tasks. Choosing between host, staged, container and VM is a trade-off between isolation needs and waiting, and the decision needs complete task time rather than startup alone.
 
-- **Writeback benefits depend on task shape.** The extraction/publication task with batch artifact writes shortens clearly; the read- and metadata-heavy repository inspection takes nearly the same time under both VM configurations, with no observed benefit.
-- **Synchronized writes are the main extra cost.** With synchronization after every write, writeback is slower and the default VM configuration is preferable; dense small writes that allow buffered merging are clearly shorter with writeback.
-- **Large working sets hit a completion limit.** For sustained writes at a 640 MiB working set, both pVisor VM configurations in this cohort timed out; other sizes require separate measurement.
-
-Results come from a local exploratory cohort of three independent environments. Applicability conditions are in [experiment design](#interpretation); per-configuration numbers are in [data and analysis](#results).
-
-## Motivation: what to answer before choosing an execution mode {#motivation}
-
-An agent's repository inspection, search, incremental builds and artifact publication repeatedly read and write files. Choosing an execution mode for these tasks — host, staged, container or VM — is a trade-off between isolation needs and waiting. Selection requires three answers: how long startup takes, how long a task takes from execution to artifacts on disk, and whether tasks still finish as the working set grows or concurrency increases.
+On the measured tasks, pVisor host approaches direct execution, and guest writeback shortens batch artifact writes when VM isolation is required. Writeback helps only when writes can merge before synchronization: extraction and publication shorten clearly, while read- and metadata-heavy inspection shows no benefit, and synchronizing after every 4 KiB write makes writeback slower than the default VM. At a 640 MiB working set, both VM configurations timed out in this cohort.
 
 ## Experiment design {#interpretation}
 

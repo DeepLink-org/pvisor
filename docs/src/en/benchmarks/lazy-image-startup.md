@@ -1,18 +1,10 @@
 # How much startup time do lazy images save?
 
-## Main conclusions {#conclusions}
+## Motivation {#motivation}
 
-**pVisor reads image files on demand, reducing environment preparation time for short tasks.**
+Agents create disposable environments constantly, and short tasks often read only a small part of an image, yet a complete pull must finish before they start. pVisor reads image files on demand, so a task can start before the download completes and later runs reuse cached content.
 
-- **Download on demand.** Tasks can start before the complete image is downloaded. Cold clients fetched less data in the shell and NumPy experiments.
-- **Reach results sooner.** Both short-task experiments showed shorter median waits from launch to checked output with cold client caches.
-- **Reuse downloaded files.** Warm clients use cached content. The experiments required no repeat downloads of file content.
-
-These results come from local experiments with prepared image services. Cache hits still leave mounting and executor startup costs; with the complete image cached, the Docker container had shorter startup waits in the application-startup experiments.
-
-## Motivation: how long does environment preparation take for short tasks? {#motivation}
-
-Agents frequently create disposable environments, and short tasks often read only a small part of an image — yet a complete pull must finish before they can start. Before adopting on-demand loading, two questions need answers: on first use, how much less data is downloaded and how much waiting is saved; and once content is cached locally, what startup overhead reuse still carries.
+A cold shell client reaches Ready in 186.1 ms while reading 2.58 MB of content, against 41.84 MB for a full Docker OCI image. In the matched four-file probe, pVisor's cold and warm client waits are shorter than OverlayBD's. With the complete image cached, Docker still starts faster in the application-startup experiment, because cache hits leave mounting and executor startup in place.
 
 ## Experiment design {#interpretation}
 

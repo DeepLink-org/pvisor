@@ -1,26 +1,16 @@
 # Which workloads fit pVisor?
 
-## Conclusions {#conclusions}
+## Motivation {#motivation}
 
-**Use pVisor stage for large workspaces with sparse changes, and native workflows for small workspaces or tool-only execution. Do not choose a VM from its startup time.** Changing twenty of 10,000 files and retaining ten takes 141 ms in stage, 248 ms with Git worktree and 343 ms with btrfs reflink. Native workflows are faster on small workspaces. A VM's tool waiting has to come from complete-task measurements, not from its startup number.
+Choose a mode by the total cost of producing the same result. Use stage for large workspaces with sparse changes, native workflows for small workspaces or tool-only execution, and a VM only from complete-task measurements. Match evidence to the decision: task comparisons for local execution, startup plus tool data for an independent guest kernel, and success rates with resource accounting for capacity.
 
-Compare configurations on the same workload, budget and timing boundary. Startup, tool execution, application and resource occupancy answer different questions and cannot substitute for one another.
-
-| Decision | Required evidence |
-|---|---|
-| Choose local tool execution | Native, Docker and pVisor host/staged/VM task comparisons |
-| Choose an independent guest kernel | Firecracker, QEMU and pVisor startup plus tool data |
-| Set capacity or timeouts | Success rates, complete-task waiting and matching resource accounting |
+Changing twenty of 10,000 files and retaining ten takes 141 ms in stage, 248 ms with Git worktree and 343 ms with btrfs reflink; native workflows are faster on small workspaces. Startup, tool execution, application and resource occupancy answer different questions and cannot substitute for one another.
 
 <!-- measurement-status:start -->
 
 Filesystem measurements cover nine configurations and 19 layered workloads, with three independent environments per cell and three resident rounds. Of 505 executed environments, 501 pass and 4 resource cells time out; the protocol explicitly skips 8 later observations. Historical N5/N30 and single-pass tasks remain separate, and other topics keep their own cohorts.
 
 <!-- measurement-status:end -->
-
-## Motivation {#motivation}
-
-Choosing a mode requires the total cost of producing the same result. Startup time and single-command timings measure something narrower. A faster boot does not make compilation faster, and a writable bind mount and staged review are different workflows. Review and application, execution boundaries and resource occupancy decide which Agent workloads fit pVisor.
 
 ## Experiment design {#interpretation}
 

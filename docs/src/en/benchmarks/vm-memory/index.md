@@ -1,16 +1,10 @@
 # How can multiple VMs use less memory?
 
-## Main conclusions {#conclusions}
-
-Agent tools load dependencies, read files and process data, and multiple environments may use identical contents at similar times. **pVisor shares duplicate pages early and retains that sharing on subsequent reads, reducing the memory resident across these execution environments.**
-
-- **Establish sharing early.** In the shared-random preflight, the physical pool reaches the observed sustained 128 MiB drop at about 1.7 seconds, providing evidence of early reclamation for short-lived working sets.
-- **Carry sharing through the next read.** Physical sharing retains low usage after readback. Explicit immutable files can also be reused directly through DAX, while file-read hints help the scanner discover candidates earlier.
-- **Evaluate the complete cost for the working set.** Savings depend on duplication and page lifetime. Consider scanning CPU, end-of-window memory usage and the cost of restoring private RAM from compressed storage together.
-
 ## Motivation {#motivation}
 
-Agent file reads, searches and small script calls can be brief. For short-lived tool environments or working sets that are soon released or overwritten, low memory usage after tens of seconds may arrive after the sharing opportunity has passed; both the first few seconds and the end of the window matter. Library pages in a persistent VM can survive multiple calls, so tool duration is not a direct measure of how long pages remain shareable. Deployment decisions should use the working set's lifetime to balance reclamation speed, scanning CPU, readback costs and the complete runtime group's memory budget.
+Agent tools load dependencies, read files and process data, and several environments may use identical contents at the same time. pVisor shares duplicate pages early and keeps that sharing across later reads, cutting resident memory. Choose by the working set's lifetime: short-lived tools and long-lived library pages exercise different trade-offs.
+
+In the shared-random preflight, the physical pool reaches the observed sustained 128 MiB drop at about 1.7 s, while KSM takes about 27.8 s and finishes with lower memory. Evaluate scanning CPU, end-of-window memory and private-RAM restoration cost together rather than one peak.
 
 ## Experiment design {#interpretation}
 

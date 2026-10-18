@@ -1,28 +1,16 @@
 # How long does review and apply take?
 
-## Main conclusions {#conclusions}
+## Motivation {#motivation}
 
-**Creating a fresh task workspace, changing 20 of 10,000 files and retaining ten takes 141 ms at complete machine-workflow P50 with pVisor stage, 248 ms with Git worktree and 343 ms with a btrfs reflink copy. Stage suits sparse changes in large workspaces; Git costs less in small workspaces. A separate experiment on a prepared twenty-file view measures review/application/disposal at P50 of 27.71 ms for stage and 4.69 ms for Git.**
+An Agent task needs a private workspace, diff review, selective application and disposal as well as tool execution, and per-operation timings miss these costs. Compare the whole workflow that produces the same result, and keep machine time separate from human reading and decisions.
 
-Applying prepared changes alone takes pVisor apply P50 of **17 ms, 0.93 s and 14.26 s** for 10, 1,000 and 10,000 small text files, all higher than Git patches. At 100,000 files, two clusters have medians of **109.73 s and 196.87 s**. The complete workflow applies only ten files; its 141 ms cannot estimate the cost of applying all 10,000 files.
-
-| User scenario | Selection implication |
-|---|---|
-| Large workspace, sparse changes, disposable task view | Stage reduces whole-tree creation, scanning and disposal costs |
-| Small workspace or a prepared, reused Git worktree | Git is faster for small workspaces and review of a prepared twenty-file view; long-term reuse is unmeasured |
-| Estimate human supervision cost | Machine timings exclude human reading and decisions |
+Creating a fresh workspace, changing 20 of 10,000 files and retaining ten takes 141 ms with pVisor stage, 248 ms with Git worktree and 343 ms with btrfs reflink. Applying prepared changes alone takes 17 ms, 0.93 s and 14.26 s for 10, 1,000 and 10,000 small files, all above Git patches; at 100,000 files two clusters center at 109.73 s and 196.87 s. The complete workflow applies only ten files, so its 141 ms cannot estimate a full 10,000-file apply. On a prepared twenty-file view, review, application and disposal take 27.71 ms for stage and 4.69 ms for Git.
 
 <!-- measurement-status:start -->
 
 These numbers and conclusions remain the original historical cohorts; the new framework has no matching rerun. See [measurement coverage](index.md#measurement-coverage).
 
 <!-- measurement-status:end -->
-
-## Motivation {#motivation}
-
-An Agent task needs a private workspace, diff review, selective application and disposal as well as tool execution. Individual filesystem timings omit these costs. If you frequently create task workspaces, compare the entire workflow that produces the same result.
-
-Also estimate review cost with an already prepared view, and waiting and recovery costs as the number of applied files grows. Three independent experiments answer these questions without pooling samples.
 
 ## Experiment design {#interpretation}
 
