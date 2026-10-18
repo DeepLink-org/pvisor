@@ -84,8 +84,8 @@ EOF
 | `GET /v1/sandboxes` | 最近持久化的观察；支持重复 state 筛选、SDK 编码的 metadata 与 page/pageSize |
 | `GET /v1/sandboxes/{id}` | 与本机原生状态核对该沙箱 |
 | `DELETE /v1/sandboxes/{id}` | 确认原生删除后才释放预留；成功返回 204 |
-| `POST /v1/sandboxes/{id}/pause` | 确认已确认的 live vCPU pause；202 空响应体 |
-| `POST /v1/sandboxes/{id}/resume` | 确认已确认的 live vCPU resume；202 空响应体 |
+| `POST /v1/sandboxes/{id}/pause` | 确认 live vCPU 已暂停；202，空响应体 |
+| `POST /v1/sandboxes/{id}/resume` | 确认 live vCPU 已恢复；202，空响应体 |
 | `POST /v1/sandboxes/{id}/renew-expiration` | 用未来 RFC3339 时间 `expiresAt` 延长已有 TTL |
 
 将 `{id}` 替换为创建/列表返回的 sandbox ID。HTTP 断开不会取消已接受的操作。不同沙箱有独立生命周期锁；同一沙箱的控制与连接建立串行协调。

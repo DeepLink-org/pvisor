@@ -51,6 +51,6 @@ A claim is not evidence. An admission-time plan can be at most `Planned`; actual
 
 ## Apply the model to a real review
 
-List the assets the task touches, then choose a control for each: staging and conflict checks for project files, an executor for reads outside the view, the matching network boundary for ordinary egress, and Gateway or a short-lived explicit grant for model keys. External writes that must be allowed need their own service-side permissions and review.
+List the assets the task touches, then choose a control for each. Project files use staging and conflict checks; reads outside the view use an executor; ordinary egress uses the matching network boundary; model keys use Gateway or a short-lived explicit grant. External writes that must be allowed need their own service-side permissions and review.
 
 Record "request → plan → installed control → observation → uncovered part". When an observation is missing, mark the conclusion unknown; when only a cooperative control is available, describe how the workload bypasses it. Never treat an untriggered tool, an unreachable network, or a non-adversarial sample as proof that a boundary holds.

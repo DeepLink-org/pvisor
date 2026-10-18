@@ -73,7 +73,7 @@ The table uses identical random contents across instances, with N=1 per conditio
 
 KSM additionally has **0.41 CPU seconds** of global ksmd work outside the group quota, which cannot be attributed entirely to this group. Group CPU includes VMs, the pool and in-group control work; these readings measure the complete path.
 
-These curves show a tradeoff between reclamation speed and sustained cost: the physical pool reaches the observed target at about 1.7 seconds, while KSM reaches it at about 27.8 seconds and has lower memory and CPU readings at 60 seconds. Short-lived working sets place more value on memory released in the first few seconds; long-lived pages have more time to accumulate sharing benefits. Selection depends on shareable page lifetime and CPU budget.
+These curves trade reclamation speed against sustained cost. The physical pool reaches the observed target in about 1.7 s; KSM takes about 27.8 s but reads lower on memory and CPU at 60 s. Short-lived working sets place more value on memory released in the first few seconds; long-lived pages have more time to accumulate sharing benefits. Selection depends on shareable page lifetime and CPU budget.
 
 This experiment does not measure real-Agent call-duration distributions or establish benefits for subsecond calls. Time to target is not the first merge or full convergence time; pages in persistent VMs can retain sharing across multiple tool calls.
 

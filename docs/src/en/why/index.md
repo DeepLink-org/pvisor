@@ -18,7 +18,7 @@ Unattended execution needs three properties at once:
 | Reversible | Changes can be selectively merged, discarded, or forked before they are applied | Failure is cheap, so you dare to let go |
 | Checkable | Execution leaves a record you can verify | Review can sample, or even be handed to a machine |
 
-Each property has a mechanism: access boundaries installed at runtime ([file and network policies](../guides/policies/files.md)), file changes staged in a private upper until you merge them ([staging and apply](../concepts/staging.md)), and identity, event and result records written for every Job ([capabilities, evidence, and guarantee boundaries](../concepts/capabilities-and-evidence.md)).
+Each property has a mechanism: [file and network policies](../guides/policies/files.md) installed at runtime, [staging](../concepts/staging.md) that holds changes until you merge them, and [records](../concepts/capabilities-and-evidence.md) written for every Job.
 
 At scale, environment preparation, tool execution, model waiting and failure rework enter the bill too. [Agent task lifecycle cost](../design/research/agent-lifecycle-cost.md) accounts for them across pVisor's execution paths and isolation choices, including host-side I/O takeover while a guest is offloaded during a wait.
 

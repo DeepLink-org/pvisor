@@ -153,7 +153,7 @@ Each round writes **1 GiB**, varying only the **128/640 MiB** working set and **
 | QEMU q35 | 2.566 | 1.685 |
 | QEMU microvm | 2.605 | 2.414 |
 
-At 128 MiB, the writeback VM sits in the same range as the container and reference-VM configurations, while the default VM's continuous synchronized writes cost clearly more; four writers share the fixed 1 GiB per round, so summed completion is correspondingly shorter. At a 640 MiB working set, both default and writeback-enabled pVisor VMs have two cells that do not finish within 90 seconds; all four cells lack complete N=3 results. Timeouts are neither zero throughput nor ordinary durations.
+At 128 MiB, the writeback VM sits in the same range as the container and reference-VM configurations, while the default VM's continuous synchronized writes cost clearly more. Four writers share the fixed 1 GiB per round, so summed completion is correspondingly shorter. At a 640 MiB working set, both default and writeback-enabled pVisor VMs have two cells that do not finish within 90 seconds; all four cells lack complete N=3 results. Timeouts are neither zero throughput nor ordinary durations.
 
 <details markdown="1">
 <summary>Working-set/concurrency curves and failure details</summary>
