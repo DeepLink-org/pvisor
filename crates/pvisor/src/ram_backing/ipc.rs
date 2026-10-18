@@ -16,7 +16,7 @@ use std::{
     io::{self, Read, Write},
     os::fd::AsRawFd,
     os::unix::net::UnixStream,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::{Duration, Instant},
 };
 
@@ -139,6 +139,30 @@ enum Reference {
     #[cfg(target_os = "linux")]
     Sealed(Arc<super::sealed::SealedObject>),
 }
+// One weak observer per distinct live object in this connection. Weak owners
+// do not pin slots or alter the strong-reference sharing/collection contract.
+enum ObservedReference {
+    Compressed(Weak<CompressedObject>),
+    #[cfg(target_os = "linux")]
+    Shared(Weak<super::shared::SharedObject>),
+    #[cfg(target_os = "linux")]
+    Sealed(Weak<super::sealed::SealedObject>),
+}
+impl ObservedReference {
+    fn strong_count(&self) -> usize {
+        match self {
+            Self::Compressed(o) => o.strong_count(),
+            #[cfg(target_os = "linux")]
+            Self::Shared(o) => o.strong_count(),
+            #[cfg(target_os = "linux")]
+            Self::Sealed(o) => o.strong_count(),
+        }
+    }
+}
+struct LocalReferenceCount {
+    count: usize,
+    object: ObservedReference,
+}
 impl Reference {
     fn id(&self) -> ImageId {
         match self {
@@ -167,13 +191,13 @@ impl Reference {
             Self::Sealed(o) => o.restore(out),
         }
     }
-    fn count(&self) -> usize {
+    fn observe(&self) -> ObservedReference {
         match self {
-            Self::Compressed(o) => Arc::strong_count(o),
+            Self::Compressed(o) => ObservedReference::Compressed(Arc::downgrade(o)),
             #[cfg(target_os = "linux")]
-            Self::Shared(o) => Arc::strong_count(o),
+            Self::Shared(o) => ObservedReference::Shared(Arc::downgrade(o)),
             #[cfg(target_os = "linux")]
-            Self::Sealed(o) => Arc::strong_count(o),
+            Self::Sealed(o) => ObservedReference::Sealed(Arc::downgrade(o)),
         }
     }
     fn offset(&self) -> Option<u64> {
@@ -295,6 +319,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
     stream.write_all(MAGIC)?;
     stream.write_all(&session)?;
     let mut references: BTreeMap<u64, Reference> = BTreeMap::new();
+    let mut local_counts: BTreeMap<ImageId, LocalReferenceCount> = BTreeMap::new();
     let result = (|| {
         let mut next = 0u64;
         loop {
@@ -343,6 +368,13 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                     if matches!(operation[0], PUT_SHARED | PUT_DUPLICATE) {
                         reply.extend_from_slice(&offset.unwrap().to_le_bytes());
                     }
+                    local_counts
+                        .entry(id)
+                        .and_modify(|entry| entry.count += 1)
+                        .or_insert_with(|| LocalReferenceCount {
+                            count: 1,
+                            object: object.observe(),
+                        });
                     references.insert(next, object);
                     stream.write_all(&reply)?;
                     #[cfg(target_os = "linux")]
@@ -392,18 +424,21 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
                         continue;
                     };
                     let id = object.id();
+                    let entry = local_counts
+                        .get_mut(&id)
+                        .expect("reference count must exist");
+                    entry.count -= 1;
+                    if entry.count == 0 {
+                        local_counts.remove(&id);
+                    }
                     drop(object);
                     pool.collect(Some(id))?;
                     stream.write_all(&[0])?;
                 }
                 STATS => {
-                    let mut local = BTreeMap::<ImageId, (usize, &Reference)>::new();
-                    for object in references.values() {
-                        local.entry(object.id()).or_insert((0, object)).0 += 1;
-                    }
-                    let cross_session = local
+                    let cross_session = local_counts
                         .values()
-                        .filter(|(count, object)| object.count() > 1 + count)
+                        .filter(|entry| entry.object.strong_count() > 1 + entry.count)
                         .count() as u64;
                     let (payload, objects) = pool.stats()?;
                     let values = [payload, objects, references.len() as u64, cross_session];
@@ -434,6 +469,7 @@ fn serve_inner(mut stream: UnixStream, pool: Owner, max_references: usize) -> io
             std::process::abort();
         });
     }
+    drop(local_counts);
     drop(references);
     pool.collect(None)?;
     result
@@ -805,6 +841,42 @@ impl PoolClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cached_session_counts_distinguish_local_aliases_from_other_connections() {
+        let pool = Arc::new(Mutex::new(CompressedPool::new(65536, 4)));
+        let (a, sa) = UnixStream::pair().unwrap();
+        let (b, sb) = UnixStream::pair().unwrap();
+        let owner = pool.clone();
+        let ta = std::thread::spawn(move || serve(sa, owner, 8));
+        let owner = pool.clone();
+        let tb = std::thread::spawn(move || serve(sb, owner, 8));
+        let mut a = PoolClient::new(a, Duration::from_secs(5)).unwrap();
+        let mut b = PoolClient::new(b, Duration::from_secs(5)).unwrap();
+        let a1 = a.put(&[7; 4096]).unwrap();
+        let a2 = a.put(&[7; 4096]).unwrap();
+        let a3 = a.put(&[7; 4096]).unwrap();
+        assert_eq!(a.stats().unwrap().session_references, 3);
+        assert_eq!(a.stats().unwrap().cross_session_objects, 0);
+        let b1 = b.put(&[7; 4096]).unwrap();
+        assert_eq!(a.stats().unwrap().cross_session_objects, 1);
+        assert_eq!(b.stats().unwrap().cross_session_objects, 1);
+        a.release(a1).unwrap();
+        assert_eq!(a.stats().unwrap().cross_session_objects, 1);
+        b.release(b1).unwrap();
+        assert_eq!(a.stats().unwrap().cross_session_objects, 0);
+        a.release(a2).unwrap();
+        a.release(a3).unwrap();
+        assert_eq!(a.stats().unwrap().objects, 0);
+        assert_eq!(a.stats().unwrap().session_references, 0);
+        let again = a.put(&[7; 4096]).unwrap();
+        assert_eq!(a.stats().unwrap().cross_session_objects, 0);
+        a.release(again).unwrap();
+        drop(a);
+        drop(b);
+        ta.join().unwrap().unwrap();
+        tb.join().unwrap().unwrap();
+        assert_eq!(pool.lock().unwrap().object_count(), 0);
+    }
     #[test]
     fn remote_page_authority_uses_at_most_64_bytes() {
         // A full 512 MiB guest can reference 131072 pages. Keep its per-page

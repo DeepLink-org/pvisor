@@ -1,8 +1,8 @@
 //! VM-local barrier for device RAM access, including retained descriptor slices.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
-    Arc, Condvar, Mutex, OnceLock, Weak,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    Arc, Condvar, Mutex, OnceLock, Weak,
 };
 use std::time::{Duration, Instant};
 use vm_memory::{GuestMemory, GuestMemoryMmap};
@@ -16,6 +16,57 @@ struct State {
     balloon_discard_disabled: bool,
     cold_faults: Option<Arc<ColdFaultActivity>>,
     free_reports: Option<Arc<SharedFreeReports>>,
+    read_hints: Option<Arc<ReadHints>>,
+}
+
+/// Integer address ranges only: no RAM borrow, payload ownership or merge authority.
+/// At most 4096 page-aligned ranges (64 KiB of range storage) are retained.
+#[derive(Default)]
+pub(crate) struct ReadHints(Mutex<VecDeque<(u64, usize)>>);
+pub(crate) const MAX_READ_HINT_RANGES: usize = 4096;
+impl ReadHints {
+    pub(crate) fn submit(&self, address: u64, length: usize) {
+        let Some(end) = address.checked_add(length as u64) else {
+            return;
+        };
+        let Some(start) = address.checked_add(4095).map(|n| n & !4095) else {
+            return;
+        };
+        let end = end & !4095;
+        if end <= start {
+            return;
+        }
+        let length = (end - start) as usize;
+        let mut queue = self.0.lock().unwrap();
+        if let Some((previous, bytes)) = queue.back_mut() {
+            let combined = bytes
+                .checked_add(length)
+                .filter(|_| previous.checked_add(*bytes as u64) == Some(start));
+            if let Some(combined) = combined {
+                *bytes = combined;
+                return;
+            }
+        }
+        if queue.len() == MAX_READ_HINT_RANGES {
+            queue.pop_front();
+        }
+        queue.push_back((start, length));
+    }
+    /// Remove a bounded prefix; the unvisited tail keeps its FIFO position.
+    /// No queue lock may survive into the VM/device barrier.
+    pub(crate) fn take(&self, pages: usize) -> Option<(u64, usize)> {
+        let limit = pages.checked_mul(4096).filter(|n| *n != 0)?;
+        let mut queue = self.0.lock().unwrap();
+        let (address, length) = queue.front_mut()?;
+        let count = (*length).min(limit);
+        let result = (*address, count);
+        *address += count as u64;
+        *length -= count;
+        if *length == 0 {
+            queue.pop_front();
+        }
+        Some(result)
+    }
 }
 
 /// One outstanding balloon chain. The guest cannot reuse its pages before
@@ -57,11 +108,9 @@ impl SharedFreeReports {
     /// Called after remapping and releasing all retired pool references.
     pub(crate) fn complete(&self, report: &Arc<FreeReport>) -> std::io::Result<()> {
         let mut pending = self.0.lock().unwrap();
-        assert!(
-            pending
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, report))
-        );
+        assert!(pending
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, report)));
         *pending = None;
         report.done.store(true, Ordering::Release);
         report.event.write(1)
@@ -76,6 +125,7 @@ pub use crate::api::MemoryPrepare;
 pub struct MemoryGate {
     state: Mutex<State>,
     changed: Condvar,
+    read_hints_enabled: AtomicBool,
 }
 pub struct Access {
     gate: Arc<MemoryGate>,
@@ -208,6 +258,20 @@ impl MemoryGate {
         state.free_reports = Some(reports);
         Ok(())
     }
+    /// Physical pager installation owns this bounded queue. Device producers
+    /// only clone it under an existing access lease, after the drained barrier.
+    pub(crate) fn install_read_hints(&self, hints: Arc<ReadHints>) -> Result<(), &'static str> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "device memory gate poisoned")?;
+        if !state.closed || state.active != 0 || !state.balloon_discard_disabled {
+            return Err("file read hints require a drained pager gate");
+        }
+        state.read_hints = Some(hints);
+        self.read_hints_enabled.store(true, Ordering::Release);
+        Ok(())
+    }
     /// Hold the strategy lock across registration so prepare cannot activate
     /// between eligibility checking and the first accepted mapping. Advice is
     /// safe with live CPU/device accesses; it does not replace their mappings.
@@ -242,6 +306,12 @@ impl MemoryGate {
     }
 }
 impl Access {
+    pub(crate) fn read_hints(&self) -> Option<Arc<ReadHints>> {
+        if !self.gate.read_hints_enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        self.gate.state.lock().unwrap().read_hints.clone()
+    }
     pub(crate) fn free_reports(&self) -> Option<Arc<SharedFreeReports>> {
         self.gate.state.lock().unwrap().free_reports.clone()
     }
@@ -322,6 +392,54 @@ pub(crate) fn balloon_access(mem: &GuestMemoryMmap) -> Option<Arc<Access>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn read_hints_align_bound_and_split_without_payload_access() {
+        let hints = ReadHints::default();
+        hints.submit(0x1001, 3 * 4096);
+        assert_eq!(hints.take(1), Some((0x2000, 4096)));
+        assert_eq!(hints.take(16), Some((0x3000, 4096)));
+        hints.submit(u64::MAX - 1, 10);
+        hints.submit(0, 4095);
+        assert!(hints.take(1).is_none());
+        hints.submit(4096, 4096);
+        hints.submit(8192, 8192);
+        assert!(hints.take(0).is_none());
+        assert_eq!(hints.take(2), Some((4096, 8192)));
+        assert_eq!(hints.take(2), Some((12288, 4096)));
+        for n in 0..=MAX_READ_HINT_RANGES {
+            hints.submit(4096 + n as u64 * 8192, 4096);
+        }
+        assert_eq!(hints.0.lock().unwrap().len(), MAX_READ_HINT_RANGES);
+        assert_eq!(
+            hints.take(1),
+            Some((12288, 4096)),
+            "oldest scheduling hint is evicted"
+        );
+    }
+    #[test]
+    fn read_hint_installation_requires_drained_pager_and_is_vm_local() {
+        let gate = Arc::new(MemoryGate::default());
+        let hints = Arc::new(ReadHints::default());
+        let access = gate.enter();
+        assert!(access.read_hints().is_none());
+        assert!(gate.install_read_hints(hints.clone()).is_err());
+        drop(access);
+        gate.close(Duration::ZERO).unwrap();
+        assert!(gate.install_read_hints(hints.clone()).is_err());
+        gate.install_cold_faults(Arc::new(ColdFaultActivity::default()))
+            .unwrap();
+        gate.install_read_hints(hints.clone()).unwrap();
+        gate.open();
+        let access = gate.enter();
+        assert!(Arc::ptr_eq(&access.read_hints().unwrap(), &hints));
+        let other = Arc::new(MemoryGate::default());
+        assert!(other.enter().read_hints().is_none());
+        assert!(gate
+            .install_read_hints(Arc::new(ReadHints::default()))
+            .is_err());
+        drop(access);
+        gate.close(Duration::ZERO).unwrap();
+    }
     #[test]
     fn cold_policy_drains_balloon_leases_and_fault_generation_detects_races() {
         let memory = GuestMemoryMmap::from_ranges(&[(vm_memory::GuestAddress(0), 4096)]).unwrap();

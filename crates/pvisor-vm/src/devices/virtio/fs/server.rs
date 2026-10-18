@@ -765,6 +765,7 @@ impl<F: FileSystem + Sync> Server<F> {
 
         // Split the writer into 2 pieces: one for the `OutHeader` and the rest for the data.
         let data_writer = ZCWriter(w.split_at(size_of::<OutHeader>()).unwrap());
+        let read_completion = data_writer.0.file_read_completion();
 
         match self.fs.read(
             Context::from(in_header),
@@ -786,6 +787,9 @@ impl<F: FileSystem + Sync> Server<F> {
                 };
 
                 w.write_all(out.as_slice()).map_err(Error::EncodeMessage)?;
+                if let Some(completion) = read_completion {
+                    completion.finish(count);
+                }
                 Ok(out.len as usize)
             }
             Err(e) => reply_error(e, in_header.unique, w),

@@ -31,7 +31,9 @@ TUNABLES = ('run', 'pages_to_scan', 'sleep_millisecs', 'smart_scan',
 
 
 def save(path, value):
-    path.write_text(json.dumps(value, indent=2) + '\n')
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps(value, indent=2) + '\n')
+    temporary.replace(path)
 
 
 def kernel_state():

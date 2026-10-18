@@ -6,7 +6,7 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::fmt::{self, Display};
 use std::io::{self, Read, Write};
-use std::mem::{MaybeUninit, size_of};
+use std::mem::{size_of, MaybeUninit};
 use std::ops::Deref;
 use std::ptr::copy_nonoverlapping;
 use std::result;
@@ -487,7 +487,70 @@ pub struct Writer<'a> {
     buffer: DescriptorChainConsumer<'a>,
 }
 
+/// Captures only integer ranges. The access lease pins the descriptor memory
+/// until success or cancellation, including after the data Writer is consumed.
+pub(crate) struct FileReadCompletion {
+    _access: std::sync::Arc<super::memory_gate::Access>,
+    hints: std::sync::Arc<super::memory_gate::ReadHints>,
+    ranges: Vec<(u64, usize)>,
+    capacity: usize,
+}
+impl FileReadCompletion {
+    /// Only the successful byte prefix is eligible. Drop/error/EOF enqueue
+    /// nothing; an impossible count declines acceleration without touching RAM.
+    pub(crate) fn finish(self, mut count: usize) {
+        if count > self.capacity {
+            return;
+        }
+        let mut pending: Option<(u64, usize)> = None;
+        for (address, length) in self.ranges {
+            let written = count.min(length);
+            if written == 0 {
+                break;
+            }
+            let contiguous = pending
+                .as_ref()
+                .is_some_and(|(start, bytes)| start.checked_add(*bytes as u64) == Some(address));
+            if contiguous {
+                pending.as_mut().unwrap().1 += written;
+            } else {
+                if let Some((start, bytes)) = pending.take() {
+                    self.hints.submit(start, bytes);
+                }
+                pending = Some((address, written));
+            }
+            count -= written;
+            if count == 0 {
+                break;
+            }
+        }
+        if let Some((start, bytes)) = pending {
+            self.hints.submit(start, bytes);
+        }
+    }
+}
+
 impl<'a> Writer<'a> {
+    /// Capture after splitting off the response header, before handing the
+    /// writer to READ. Disabled VMs allocate no hint metadata.
+    pub(crate) fn file_read_completion(&self) -> Option<FileReadCompletion> {
+        let access = self.buffer.memory_access.as_ref()?;
+        let hints = access.read_hints()?;
+        if self.buffer.buffers.len() > super::memory_gate::MAX_READ_HINT_RANGES {
+            return None;
+        }
+        Some(FileReadCompletion {
+            _access: access.clone(),
+            hints,
+            ranges: self
+                .buffer
+                .buffers
+                .iter()
+                .map(|slice| (slice.ptr_guard().as_ptr() as u64, slice.len()))
+                .collect(),
+            capacity: self.available_bytes(),
+        })
+    }
     /// Construct a new Writer wrapper over `desc_chain`.
     pub fn new(mem: &'a GuestMemoryMmap, chain: DescriptorChain<'a>) -> Result<Writer<'a>> {
         let memory_access = chain.memory_access.clone();
@@ -690,6 +753,103 @@ pub fn create_descriptor_chain(
 mod tests {
     use super::*;
 
+    #[test]
+    fn file_read_completion_excludes_header_and_partial_tail_and_retains_lease() {
+        use super::super::memory_gate::{ColdFaultActivity, ReadHints};
+        use std::sync::Arc;
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 32768)]).unwrap();
+        let gate = super::super::memory_gate::register(&mem);
+        let hints = Arc::new(ReadHints::default());
+        gate.close(std::time::Duration::ZERO).unwrap();
+        gate.install_cold_faults(Arc::new(ColdFaultActivity::default()))
+            .unwrap();
+        gate.install_read_hints(hints.clone()).unwrap();
+        gate.open();
+        let mut writer = Writer {
+            buffer: DescriptorChainConsumer {
+                memory_access: super::super::memory_gate::access(&mem),
+                buffers: [
+                    (4080, 16),
+                    (4096, 2048),
+                    (6144, 2048),
+                    (8192, 4096),
+                    (16384, 4096),
+                ]
+                .into_iter()
+                .map(|(address, len)| mem.get_slice(GuestAddress(address), len).unwrap())
+                .collect(),
+                bytes_consumed: 0,
+            },
+        };
+        let mut data = writer.split_at(16).unwrap();
+        let completion = data.file_read_completion().unwrap();
+        data.write_all(&[0x55; 5000]).unwrap();
+        assert!(
+            hints.take(1).is_none(),
+            "only successful completion produces hints"
+        );
+        drop((data, writer));
+        assert!(
+            !gate.try_close().unwrap(),
+            "completion retains the RAM access lease"
+        );
+        completion.finish(5000);
+        let host = mem.get_host_address(GuestAddress(4096)).unwrap() as u64;
+        assert_eq!(hints.take(16), Some((host, 4096)));
+        assert!(
+            hints.take(16).is_none(),
+            "short tail and response header are excluded"
+        );
+        assert!(gate.try_close().unwrap());
+    }
+    #[test]
+    fn file_read_completion_declines_disabled_canceled_eof_and_invalid_counts() {
+        use super::super::memory_gate::{ColdFaultActivity, ReadHints};
+        use std::sync::Arc;
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 16384)]).unwrap();
+        let gate = super::super::memory_gate::register(&mem);
+        let make = || Writer {
+            buffer: DescriptorChainConsumer {
+                memory_access: super::super::memory_gate::access(&mem),
+                buffers: [mem.get_slice(GuestAddress(4096), 4096).unwrap()]
+                    .into_iter()
+                    .collect(),
+                bytes_consumed: 0,
+            },
+        };
+        assert!(make().file_read_completion().is_none());
+        let hints = Arc::new(ReadHints::default());
+        gate.close(std::time::Duration::ZERO).unwrap();
+        gate.install_cold_faults(Arc::new(ColdFaultActivity::default()))
+            .unwrap();
+        gate.install_read_hints(hints.clone()).unwrap();
+        gate.open();
+        for count in [None, Some(0), Some(4097)] {
+            let writer = make();
+            let completion = writer.file_read_completion().unwrap();
+            drop(writer);
+            if let Some(count) = count {
+                completion.finish(count);
+            } else {
+                drop(completion);
+            }
+            assert!(hints.take(1).is_none());
+            assert!(gate.try_close().unwrap());
+            gate.open();
+        }
+        let mut oversized = make();
+        oversized.buffer.buffers = vec![
+            mem.get_slice(GuestAddress(4096), 4096).unwrap();
+            super::super::memory_gate::MAX_READ_HINT_RANGES + 1
+        ]
+        .into();
+        assert!(
+            oversized.file_read_completion().is_none(),
+            "completion metadata is bounded"
+        );
+        drop(oversized);
+        assert!(gate.try_close().unwrap());
+    }
     #[test]
     fn owned_prefix_spans_fragments_and_body_keeps_captured_addresses_and_ram_lease() {
         let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();

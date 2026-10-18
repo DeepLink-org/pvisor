@@ -410,6 +410,36 @@ stops. Physical/legacy pool loss still fails dependent VMs. API restart does not
 provide pool-process or host-reboot recovery. Reserve pool/host overhead outside
 sandbox admission limits. See the [daemon boundary](../pvisor-daemon/README.md).
 
+Physical pool publication computes the complete page identity once per incoming
+page. Existing slots are compared byte-for-byte through the owner's read-only
+mapping, under the pool mutex, instead of being read and hashed again. Only the
+owner can write its size-sealed backing; referenced slots cannot be reused.
+Client publication validation, live-RAM revalidation and checksum-verified
+restore remain required. This removes redundant server work without treating
+a matching digest as proof of equal contents.
+
+Pool sessions also maintain bounded per-object local reference counts as PUT and
+RELEASE complete. STATS reads these counts through weak object observers, without
+rebuilding an index of every token. Local aliases are not counted as cross-session
+sharing; weak observers do not keep payloads alive or change pidfd pinning.
+The index is bounded by the existing per-connection reference limit and is removed
+with the last local reference. Live cross-session counts remain approximate under
+concurrent activity in other connections, as before.
+
+The `pool_memory_case` engineering helper runs the same static guest byte oracle
+as the Firecracker memory control through `pvisor-vm::api`. Its parent owns the
+four-VM resource budget and sampling. It selects off/KSM/physical/sealed/local
+mechanisms explicitly; it does not use a periodic filesystem heartbeat. The
+optional `--libraries` attachment uses the existing caller-owned immutable DAX
+contract, with `--buffered-libraries` selecting the same window and ordinary
+guest reads. Library mode requires off and a Python rootfs/script; it does not
+automatically promote mutable rootfs paths or enable DAX for normal VM launches.
+The separate `--rootfs-library` mode loads `/libraries/libpayload.so` from the
+ordinary overlay rootfs and accepts the usual memory modes. It needs the same
+Python script/rootfs, conflicts with `--libraries` and does not attach a DAX
+window. This exercises the physical pager's successful-file-READ hints through
+the normal rootfs path, with full payload and private-write validation.
+
 `pvisor-cache` remains independent, with `prepare`, `publish`, `serve`, `list`,
 `stat` and `read`. Node runtime protocols own immutable mounts and snapshot
 RAM with same-user authorization, compatibility checks and connection pins.

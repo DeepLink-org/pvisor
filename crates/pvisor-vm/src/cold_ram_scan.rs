@@ -8,6 +8,8 @@
 //! low-rate exploration quota; successful merges increase a region's quota,
 //! while observed COW/publication races reduce it. A seeded coprime walk covers
 //! every page before repeating, without a page-sized permutation allocation.
+//! After bootstrap, full low-yield regions group 64 probes into one of four
+//! rounds. Coverage remains 512 pages per 32 rounds with fewer metadata walks.
 use std::ops::Range;
 
 const REGION_PAGES: usize = 512;
@@ -23,6 +25,8 @@ struct Region {
     merged: u32,
     churn: u32,
     level: usize,
+    visited: u16,
+    quiet_left: u8,
 }
 
 pub(super) struct Visit {
@@ -65,6 +69,8 @@ impl Scanner {
                     merged: 0,
                     churn: 0,
                     level: 0,
+                    visited: 0,
+                    quiet_left: 0,
                 });
             }
         }
@@ -98,12 +104,30 @@ impl Scanner {
             } else {
                 region.level.saturating_sub(1)
             };
-            region.remaining = QUOTAS[region.level].min(region.pages.len());
+            if region.level == 0
+                && region.pages.len() == REGION_PAGES
+                && usize::from(region.visited) == REGION_PAGES
+            {
+                if region.quiet_left == 0 {
+                    region.remaining = QUOTAS[0] * 4;
+                    region.quiet_left = 3;
+                } else {
+                    region.remaining = 0;
+                    region.quiet_left -= 1;
+                }
+            } else {
+                region.quiet_left = 0;
+                region.remaining = QUOTAS[region.level].min(region.pages.len());
+            }
             region.sampled = 0;
             region.merged = 0;
             region.churn = 0;
         }
-        self.unfinished = self.regions.len();
+        self.unfinished = self
+            .regions
+            .iter()
+            .filter(|region| region.remaining != 0)
+            .count();
     }
 
     /// Round-robin bounded visits prevent a rich region from starving another
@@ -126,6 +150,7 @@ impl Scanner {
                 region.offset = (region.offset + region.stride) % region.pages.len();
             }
             region.remaining -= count;
+            region.visited = (usize::from(region.visited) + count).min(REGION_PAGES) as u16;
             if region.remaining == 0 {
                 self.unfinished -= 1;
             }
@@ -248,7 +273,15 @@ mod tests {
         }
         scanner.begin_round();
         assert_eq!(scanner.levels(), [3, 0, 0, 0]);
-        assert_eq!(scanner.next(256).unwrap().pages.len(), 16);
+        let mut after_churn = [0; 3];
+        while let Some(visit) = scanner.next(256) {
+            after_churn[visit.region.start / REGION_PAGES] += visit.pages.len();
+        }
+        assert_eq!(
+            after_churn,
+            [64, 16, 16],
+            "the bootstrapped rich region returns to the lowest average quota"
+        );
     }
 
     #[test]
@@ -275,6 +308,60 @@ mod tests {
         while scanner.next(512).is_some() {}
         scanner.begin_round();
         assert_eq!(scanner.levels(), [1, 0, 0, 0]);
+    }
+
+    #[test]
+    fn grouped_poor_regions_keep_sliding_coverage_and_reduce_region_queries() {
+        let mut scanner = Scanner::new(std::iter::once(0..1024), 19);
+        // The first walk retains the original small, frequent exploration.
+        for _ in 0..32 {
+            scanner.begin_round();
+            let mut probes = 0;
+            while let Some(visit) = scanner.next(64) {
+                probes += visit.pages.len();
+            }
+            assert_eq!(probes, 32);
+        }
+        let mut rounds = Vec::new();
+        let mut queries = 0;
+        for _ in 0..64 {
+            scanner.begin_round();
+            let mut pages = BTreeSet::new();
+            while let Some(visit) = scanner.next(64) {
+                queries += 1;
+                pages.extend(visit.pages);
+            }
+            rounds.push(pages);
+        }
+        assert_eq!(queries, 32, "two regions queried once per four rounds");
+        for window in rounds.windows(32) {
+            let covered: BTreeSet<_> = window
+                .iter()
+                .flat_map(|pages| pages.iter().copied())
+                .collect();
+            assert_eq!(covered.len(), 1024, "no change to full-walk coverage bound");
+        }
+    }
+
+    #[test]
+    fn successful_hinted_feedback_wakes_a_quiet_region_without_waiting_for_its_turn() {
+        let mut scanner = Scanner::new(std::iter::once(0..512), 21);
+        for _ in 0..33 {
+            scanner.begin_round();
+            while scanner.next(64).is_some() {}
+        }
+        scanner.begin_round();
+        assert!(
+            scanner.round_complete(),
+            "the quiet region skips this metadata-query round"
+        );
+        for page in 0..16 {
+            scanner.sampled(page);
+            scanner.merged(page);
+        }
+        scanner.begin_round();
+        assert_eq!(scanner.levels(), [0, 1, 0, 0]);
+        assert!(scanner.next(64).is_some());
     }
 
     #[test]

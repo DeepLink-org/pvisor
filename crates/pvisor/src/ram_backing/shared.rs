@@ -136,14 +136,14 @@ impl SharedPool {
         }
         let id = identity(bytes);
         if self.objects.contains_key(&id) {
-            return self.intern(bytes);
+            return self.intern_identified(bytes, id);
         }
         if self
             .candidates
             .get(&id)
             .is_some_and(|first| *first != session)
         {
-            return self.intern(bytes);
+            return self.intern_identified(bytes, id);
         }
         if !self.candidates.contains_key(&id) {
             if self.candidates.len() >= self.slots.saturating_mul(4)
@@ -169,10 +169,18 @@ impl SharedPool {
             return Err(invalid("physical pool requires a 4 KiB page"));
         }
         let id = identity(bytes);
+        self.intern_identified(bytes, id)
+    }
+    // The two entry points above validate the page length and compute its full
+    // content identity once. The identity alone never authorizes a shared hit.
+    fn intern_identified(&mut self, bytes: &[u8], id: ImageId) -> io::Result<Arc<SharedObject>> {
+        debug_assert_eq!(bytes.len(), PAGE);
         if let Some(object) = self.objects.get(&id) {
-            let mut decoded = [0; PAGE];
-            object.restore(&mut decoded)?;
-            if decoded != bytes {
+            // This owner's mapping is read-only, size-sealed and mutex-owned.
+            // Clients only hold read-only descriptors, and a referenced slot
+            // cannot be written/recycled. Compare every byte in the pinned
+            // mapping rather than pread + hashing the same immutable page again.
+            if self.page(object.offset) != bytes {
                 return Err(invalid("shared page content identity collision"));
             }
             return Ok(object.clone());
@@ -196,13 +204,7 @@ impl SharedPool {
         }
         // Fault this owner's PTE too: complete-group PSS must include all pool
         // pages, even while a published page is not yet mapped by a VM.
-        let mapped = unsafe {
-            std::slice::from_raw_parts(
-                (self.mapping.address as *const u8).add(offset as usize),
-                PAGE,
-            )
-        };
-        if mapped != bytes {
+        if self.page(offset) != bytes {
             return Err(invalid("shared page publication mismatch"));
         }
         let object = Arc::new(SharedObject {
@@ -212,6 +214,18 @@ impl SharedPool {
         });
         self.objects.insert(id, object.clone());
         Ok(object)
+    }
+    fn page(&self, offset: u64) -> &[u8] {
+        debug_assert!(offset.is_multiple_of(PAGE as u64));
+        debug_assert!(offset <= (self.mapping.len - PAGE) as u64);
+        // Only slot offsets allocated by this owner reach here. The size seals
+        // preserve the mapping extent and self keeps the mapping alive.
+        unsafe {
+            std::slice::from_raw_parts(
+                (self.mapping.address as *const u8).add(offset as usize),
+                PAGE,
+            )
+        }
     }
     pub fn collect(&mut self) -> io::Result<()> {
         let dead: Vec<_> = self
@@ -302,6 +316,20 @@ pub(super) fn wait_peer_exit(pidfd: &OwnedFd) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_hit_still_rejects_full_content_collision_and_corrupt_backing() {
+        let mut pool = SharedPool::new(PAGE, 1).unwrap();
+        let original = pool.intern(&[3; PAGE]).unwrap();
+        let mut changed = [3; PAGE];
+        changed[PAGE - 1] = 4;
+        // Force the private lookup key to collide; equality must include the
+        // last byte, not merely the externally supplied digest or a prefix.
+        assert!(pool.intern_identified(&changed, original.id()).is_err());
+        assert_eq!(pool.object_count(), 1);
+        pool.file.write_all_at(&changed, original.offset()).unwrap();
+        assert!(pool.intern(&[3; PAGE]).is_err());
+        assert!(original.restore(&mut [0; PAGE]).is_err());
+    }
     #[test]
     fn immutable_pages_are_reused_and_last_reference_releases_physical_storage() {
         let mut pool = SharedPool::new(2 * PAGE, 2).unwrap();

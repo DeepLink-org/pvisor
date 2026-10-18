@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.append(str(ROOT / "startup"))
 import common as COMMON  # noqa: E402
 from update import display_table, publish, validate_batch  # noqa: E402
 
@@ -81,6 +82,44 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual(table, {"paired-memory":
                     "$ python3 @REPO@/benchmark.new/memory/scanner_compare.py --build @BUILD@ "
                     "--rootfs @ROOTFS@ --firmware @FIRMWARE@ --output @OUTPUT@ --samples @SAMPLES@"})
+                self.assertTrue(path.with_suffix(".py").is_file())
+                continue
+            existing_python_tables = {
+                "explicit-python-paired-prepared-images": (
+                    "B-LAZY-STARTUP", "startup/image_compare.json", "warm-prepared-paired",
+                    "$ python3 @HARNESS@/image_compare.py --measure @BATCH@"),
+                "explicit-python-paired-cold-warm-images": (
+                    "B-LAZY-STARTUP", "startup/image_lazy_compare.json", "cold-warm-client-paired",
+                    "$ python3 @HARNESS@/image_lazy_compare.py --measure @BATCH@"),
+                "explicit-python-paired-same-staged-executor": (
+                    "B-LAZY-STARTUP", "startup/stage_lazy_compare.json", "same-stage-cold-warm-paired",
+                    "$ python3 @HARNESS@/stage_lazy_compare.py --measure @BATCH@"),
+                "explicit-python-layered-nine-mode-cross-runtime": (
+                    "B-FS-TOOLS", "filesystem/user_workloads.json", "filesystem-user-layered",
+                    "$ python3 @BATCH@/harness/user_workloads.py --measure @BATCH@"),
+            }
+            if row["status"] == "explicit-python-paired-pool-curves":
+                self.assertEqual(row["benchmark_id"], "B-MEMORY-SCALE")
+                self.assertEqual(row["role"], "engineering A/B")
+                self.assertEqual(row["entry"], "memory/pool_compare.json")
+                self.assertEqual(table, {"pool-curves": "$ python3 @REPO@/benchmark.new/memory/pool_compare.py "
+                    "--inputs @INPUTS@ --output @OUTPUT@ --samples 5"})
+                self.assertTrue(path.with_suffix(".py").is_file())
+                continue
+            if row["status"] == "explicit-python-paired-library-curves":
+                self.assertEqual(row["benchmark_id"], "B-MEMORY-SCALE")
+                self.assertEqual(row["role"], "engineering A/B")
+                self.assertEqual(row["entry"], "memory/library_compare.json")
+                self.assertEqual(table, {"library-curves": "$ python3 @REPO@/benchmark.new/memory/library_compare.py "
+                    "--inputs @INPUTS@ --output @OUTPUT@ --samples @SAMPLES@"})
+                self.assertTrue(path.with_suffix(".py").is_file())
+                continue
+            if row["status"] in existing_python_tables:
+                benchmark_id, entry, label, command = existing_python_tables[row["status"]]
+                self.assertEqual(row["benchmark_id"], benchmark_id)
+                self.assertEqual(row["role"], "user-facing")
+                self.assertEqual(row["entry"], entry)
+                self.assertEqual(table, {label: command})
                 self.assertTrue(path.with_suffix(".py").is_file())
                 continue
             if isinstance(next(iter(table.values())), str):
