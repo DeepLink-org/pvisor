@@ -58,7 +58,7 @@ CLI 使用同一冻结 release/gateway 二进制，仅改变真实缓存模式�
 
 完整任务点估计减少 221.37 ms，但置信区间包含零。不能将 N10 的探索性改善提升为正式整轮提速，也不能据此宣称历史退化恢复。Cargo 的 97.86 ms 改善支持工具链重复加载成本可被缓存减少；npm 改善较小。其余操作未检出差异或出现分离簇。
 
-[正式完整精度 CSV](vm-cache-confirm.csv)保留分布与精确区间。两臂的整组 CPU 时间中位数为 6.052 s 和 5.653 s，此处是描述性观测；未给出该资源指标的配对区间，不作为 CPU 收益结论。
+正式完整精度 CSV（本地归档：`.data/derived-tables-20261018/vm-cache-confirm.csv`）保留分布与精确区间。两臂的整组 CPU 时间中位数为 6.052 s 和 5.653 s，此处是描述性观测；未给出该资源指标的配对区间，不作为 CPU 收益结论。
 
 ### CLI 快速筛选
 
@@ -71,7 +71,7 @@ N10/条件；单位 ms，完整任务。此批不能与正式确认合并。
 | workspace 元数据缓存 | 4610.83 | 4518.50 | -2.00% | [-5.48%, +1.36%] | 未检出差异 |
 | 三项组合 | 4610.83 | 4218.18 | -8.52% | [-10.51%, -2.22%] | 探索性改善 |
 
-组合相对数据缓存的点估计为 -0.98%，探索性 95% CI [-7.08%, +3.81%]，未检出额外收益。因此正式确认选择较小的数据缓存候选。[快速筛选 CSV](vm-cache-screen.csv)
+组合相对数据缓存的点估计为 -0.98%，探索性 95% CI [-7.08%, +3.81%]，未检出额外收益。因此正式确认选择较小的数据缓存候选。快速筛选 CSV（本地归档：`.data/derived-tables-20261018/vm-cache-screen.csv`）
 
 ### rootfs 与 workspace 请求
 
@@ -112,7 +112,7 @@ N10/条件；单位 ms，完整任务。此批不能与正式确认合并。
 
 普通模式每次重复 exec 约有 38 个 major faults；数据缓存和 no-open 的重复窗口为零。首次 exec 仍有约 38 个 major faults，首次查询 priming 仍有 1,026 次 LOOKUP。缓存命中与首次回源是不同问题；这些结果不能折算当前 CLI 完整任务，也不证明元数据包已导入。
 
-[只读阶段完整精度 CSV](vm-cache-readonly.csv)
+只读阶段完整精度 CSV（本地归档：`.data/derived-tables-20261018/vm-cache-readonly.csv`）
 
 ### 正确性与生命周期
 
@@ -136,6 +136,6 @@ rootfs 数据缓存现默认选择 `root-data`，但仅在 `/dev/root` 的实际
 
 主归档：`benchmark.new/filesystem/.data/vm-cache-verify-20261012/`。CLI 原始批次分别在 `benchmark/.data/vmc-screen-retry/`、`vmc-confirm/`、`vmc-diagnostic-retry/`；只读在 `vmc-ro-screen/`、`vmc-ro-diag/`。冻结执行入口均通过 semspec bench 运行，正式与诊断分开。失败或验收拒绝的尝试单独保留，见主归档 `report-outline.json` 与各 launch/validity 收据，不进入上述统计。
 
-实际 CLI 实验二进制 SHA256：`683e0ed29b501ceaeb841271dd618765acdc47abc12c581748115740fe40a190`；固件 SHA256：`b61f68dac3ef20a88e1ee387733e4baed2f7c02edac940c8882e0b549dac95e4`。CLI 冻结源码清单 2,228 个文件；只读源码与制品保护清单 2,238 个文件，完整内容留在本地，来源、CSV 与报告摘要见[验收摘要](vm-cache-validation.provenance.json)。
+实际 CLI 实验二进制 SHA256：`683e0ed29b501ceaeb841271dd618765acdc47abc12c581748115740fe40a190`；固件 SHA256：`b61f68dac3ef20a88e1ee387733e4baed2f7c02edac940c8882e0b549dac95e4`。CLI 冻结源码清单 2,228 个文件；只读源码与制品保护清单 2,238 个文件，完整内容留在本地，来源、CSV 与报告摘要见验收摘要（本地归档：`.data/derived-tables-20261018/vm-cache-validation.provenance.json`）。
 
 机制参考：[Linux 6.12 FUSE OPEN/no-open](https://github.com/torvalds/linux/blob/v6.12/fs/fuse/file.c)、[virtio-fs 挂载权限默认值](https://github.com/torvalds/linux/blob/v6.12/fs/fuse/virtio_fs.c#L1432)、[EXP-002](../../docs/src/zh/design/experimental/guest-stage-cache/index.md)。

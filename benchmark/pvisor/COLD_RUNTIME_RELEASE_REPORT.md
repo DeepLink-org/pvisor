@@ -37,7 +37,7 @@
 
 规划资源时要按启动、生命周期峰值和恢复余量留空间，不能仅用 cold1 占用推算可增加的 VM 数。下一步需要多轮重复、真实热/冷工作集及完整完成任务的密度对照。
 
-下载加工数据：[四条件汇总 CSV](cold-runtime-release.csv)、[24 阶段内存与 pager 计数 CSV](cold-runtime-release-phases.csv)。off 的 pager 字段为空，表示机制未启用；累计计数不跨阶段相加，encoded store 不含索引、allocator、scratch 和原 RAM。
+下载加工数据：四条件汇总 CSV（本地归档：`.data/derived-tables-20261018/cold-runtime-release.csv`）、24 阶段内存与 pager 计数 CSV（本地归档：`.data/derived-tables-20261018/cold-runtime-release-phases.csv`）。off 的 pager 字段为空，表示机制未启用；累计计数不跨阶段相加，encoded store 不含索引、allocator、scratch 和原 RAM。
 
 来源摘要：
 

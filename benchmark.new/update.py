@@ -253,11 +253,7 @@ def _publish_csv(directory, csv_path, manifest, table, results, dry_run=False):
 def publish(directory, csv_path=None, markdown_path=None):
     manifest, table, results = validate_batch(directory)
     entry = ROOT / manifest["entry"]
-    destination = (
-        entry.parent / ".data/results"
-        if manifest["metric_scope"] in (READY_EXIT_SCOPE, FILESYSTEM_SCOPE)
-        else entry.parent / "results"
-    )
+    destination = entry.parent / ".data/results"
     csv_path = Path(csv_path or destination / (entry.stem + ".semspec.csv"))
     custom_markdown = markdown_path is not None
     markdown_path = Path(markdown_path or destination / (entry.stem + ".semspec.md"))

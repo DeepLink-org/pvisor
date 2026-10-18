@@ -107,7 +107,7 @@ SDK 自适应在读过 64 个前缀名字后，反复访问同一文件 1000 次
 - 最终固件 8 组真实客机回归通过：缓存/写回组合、异步错误、旧 fd、并发扫描/读取、部分镜像的远端名字/负查找、创建后完整枚举、触发预取项的实际读取和删除后 fd，以及正常卸载。最初新增测试曾在持有 fd 时尝试卸载；关闭该 fd 后重跑，未更改卸载断言，原日志保留。
 - 固件与 release 构建完成，运行库和 SOURCE 收据匹配。此前未修改的 macOS flat bundle 对齐测试失败仍单列保留（链接器将 64 KiB 对齐降低为 16 KiB）；未将该项计作通过。真实 ARM64 客机独立通过。
 - 未测 Linux/KVM、磁盘冷缓存、完整 Agent、其他容器或故意损坏的宿主回复。
-- [复现入口](README.md#guest-directory-images-and-deferred-opens)、[加工 CSV](guest-cache-adaptive-summary.csv)。原始数据 `.data/guest-cache-adaptive-wide-formal-20261016/`，计数 `.data/guest-cache-adaptive-wide-profiles-20261016/`（含 counter-checks.json）。冻结程序/guest/harness/内核源码/收据 `.data/guest-cache-adaptive-wide-build-20261016/`；共享输入来自 `.data/guest-cache-adaptive-validated-build-20261016/fixture` 与原始准备目录中的 rootfs，均前后验摘要。
+- [复现入口](README.md#guest-directory-images-and-deferred-opens)、加工 CSV（本地归档：`.data/derived-tables-20261018/guest-cache-adaptive-summary.csv`）。原始数据 `.data/guest-cache-adaptive-wide-formal-20261016/`，计数 `.data/guest-cache-adaptive-wide-profiles-20261016/`（含 counter-checks.json）。冻结程序/guest/harness/内核源码/收据 `.data/guest-cache-adaptive-wide-build-20261016/`；共享输入来自 `.data/guest-cache-adaptive-validated-build-20261016/fixture` 与原始准备目录中的 rootfs，均前后验摘要。
 - 早期候选、预检及被主动中断的中间计时独立保留在 `.data/guest-cache-adaptive-*`，不拼入此批。验证日志、生成器与计数断言见 `.data/guest-cache-adaptive-validation-20261016/`。
 
 | 制品 / 证据 | SHA-256 |

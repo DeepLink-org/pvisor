@@ -75,7 +75,7 @@ The final-source build/preflight/profile and three failed timing directories are
 
 Publication adds an explicit blocked-report path, without relaxing the existing accepted-cohort validator. It independently verifies the successful diagnostics and final source-version receipt, confirms all attempted timing reports failed and are refused by the normal validator, and exports **no formal timing statistics**. The publisher/tests are frozen and hashed in the new publication receipt. The normal accepted-timing path still requires a complete passed 30-sample/3-warmup cohort and all prior hash/containment/noatime checks.
 
-Files: [formal status CSV](kernel-cache-summary.csv), [verified final-source counter CSV](kernel-cache-counters.csv). Reproduction and exact output names are in the [README](README.md#extended-linux-host-api-kernel-cache). Local raw evidence is under `benchmark/pvisor/.data/kernel-cache-p1-final-*`; the blocked publication is `kernel-cache-p1-final-publication-blocked-20261007/`.
+Files: formal status CSV (local archive: `.data/derived-tables-20261018/kernel-cache-summary.csv`), verified final-source counter CSV (local archive: `.data/derived-tables-20261018/kernel-cache-counters.csv`). Reproduction and exact output names are in the [README](README.md#extended-linux-host-api-kernel-cache). Local raw evidence is under `benchmark/pvisor/.data/kernel-cache-p1-final-*`; the blocked publication is `kernel-cache-p1-final-publication-blocked-20261007/`.
 
 | Source/provenance receipt | SHA-256 |
 |---|---|

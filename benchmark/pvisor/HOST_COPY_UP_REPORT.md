@@ -65,7 +65,7 @@ open 的中位数差异区间分别为无日志 **[−7.33, +32.76] ms**、stric
 
 ### 数据与复现
 
-加工数据：[host-copy-up-summary.csv](host-copy-up-summary.csv)。包含批次、配置、样本数、P50/P95、分布形状、相对及绝对差异的置信区间与原始报告摘要。
+加工数据：host-copy-up-summary.csv（本地归档：`.data/derived-tables-20261018/host-copy-up-summary.csv`）。包含批次、配置、样本数、P50/P95、分布形状、相对及绝对差异的置信区间与原始报告摘要。
 
 复现入口见 [README 的宿主 copy-up 对照](README.md#host-copy-up-scheduling-ab-on-macos)。冻结构建位于 `benchmark/pvisor/.data/host-copy-up-build-20261010-4/`，匹配预检位于 `host-copy-up-preflight-20261010-3/`，正式证据位于 `host-copy-up-formal-20261010/`；不拼接其他批次。原始日志、制品、源码、日志指纹、harness 和独立导出审计均保存在忽略目录中。
 

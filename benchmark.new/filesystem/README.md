@@ -227,9 +227,9 @@ CLI 独立确认每臂 N30；快速筛选 N10、只读阶段 N5 与请求诊断�
 元数据长 TTL 和 no-open 仍是原型；用户跨后端页面不使用这些数字替换既有结果。
 接入条件和关闭控制见 [VM 合同](../../crates/pvisor-vm/README.md#rootfs-data-cache-default)。
 
-完整精度数据见 [CLI 确认](vm-cache-confirm.csv)、[CLI 筛选](vm-cache-screen.csv)和
-[只读阶段](vm-cache-readonly.csv)，来源及验收范围见
-[收据](vm-cache-validation.provenance.json)。冻结源码、二进制、输入、运行入口和失败
+完整精度数据见 CLI 确认（本地归档：`.data/derived-tables-20261018/vm-cache-confirm.csv`）、CLI 筛选（本地归档：`.data/derived-tables-20261018/vm-cache-screen.csv`）和
+只读阶段（本地归档：`.data/derived-tables-20261018/vm-cache-readonly.csv`），来源及验收范围见
+收据（本地归档：`.data/derived-tables-20261018/vm-cache-validation.provenance.json`）。冻结源码、二进制、输入、运行入口和失败
 尝试保留在 `.data/vm-cache-verify-20261012/`；复核使用其中的 `confirm.json`、
 `screen-retry.json`、`diagnostic-retry.json`、`ro-screen.json` 和
 `ro-diag.json`，均经 semspec bench 执行。复跑必须先为输出配置新的批次目录，

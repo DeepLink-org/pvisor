@@ -4,7 +4,7 @@ Read [the benchmark registry and writing rules](../README.md) before measuring o
 
 ## Lazy image client startup
 
-`B-LAZY-STARTUP` compares a Distribution registry's complete-image Docker path with a real `pvisor-cache serve` lazy VM path for the same pinned linux/amd64 manifest and workload. The default `ubuntu-shell` cohort uses Ubuntu 26.04; `numpy-script` is a separate Python/NumPy cohort. `torch-import` remains optional but has no formal samples; its failed attempts are retained, not performance evidence. Never pool different workloads or their preflight and formal samples. This is not OpenSandbox `pvisor-daemon serve`. See [the retained Ubuntu local report](LAZY_STARTUP_REPORT.md) and [derived Ubuntu CSV](lazy-startup-summary.csv); they do not establish NumPy or torch performance. The [bilingual user article](../../docs/src/zh/benchmarks/lazy-image-startup.md#numpy) includes the independent NumPy cohort, with [derived statistics](../../docs/src/zh/benchmarks/lazy-numpy-summary.csv), [differences/preparation](../../docs/src/zh/benchmarks/lazy-numpy-details.csv) and [provenance](../../docs/src/zh/benchmarks/lazy-numpy-provenance.csv). Historical evidence is retained at `benchmark/pvisor/.data/lazy-numpy-local-20261007/`. Its legacy `derive.py` writes historical CSVs; do not use it to overwrite current site downloads. The current implementation rerun below supplies the user article and current CSVs.
+`B-LAZY-STARTUP` compares a Distribution registry's complete-image Docker path with a real `pvisor-cache serve` lazy VM path for the same pinned linux/amd64 manifest and workload. The default `ubuntu-shell` cohort uses Ubuntu 26.04; `numpy-script` is a separate Python/NumPy cohort. `torch-import` remains optional but has no formal samples; its failed attempts are retained, not performance evidence. Never pool different workloads or their preflight and formal samples. This is not OpenSandbox `pvisor-daemon serve`. See [the retained Ubuntu local report](LAZY_STARTUP_REPORT.md) and derived Ubuntu CSV (local archive: `.data/derived-tables-20261018/lazy-startup-summary.csv`); they do not establish NumPy or torch performance. The [bilingual user article](../../docs/src/zh/benchmarks/lazy-image-startup.md#numpy) includes the independent NumPy cohort, with [derived statistics](../../docs/src/zh/benchmarks/lazy-numpy-summary.csv), [differences/preparation](../../docs/src/zh/benchmarks/lazy-numpy-details.csv) and [provenance](../../docs/src/zh/benchmarks/lazy-numpy-provenance.csv). Historical evidence is retained at `benchmark/pvisor/.data/lazy-numpy-local-20261007/`. Its legacy `derive.py` writes historical CSVs; do not use it to overwrite current site downloads. The current implementation rerun below supplies the user article and current CSVs.
 
 Finish other builds/tests before sampling. Docker access uses `sg docker -c`; KVM and both frozen executables must be usable. The successful NumPy preflight uses the existing `target/release/pvisor` launcher with the separately built `target/lazy-torch-build/release/pvisor-cache`, selected via `--cache-binary`. This static cache build includes Docker gzip compatibility; the directory name is historical and does not mean torch was measured. The commands below keep the default launcher directory `target/release` and override only the cache executable, not `--binary-dir`. A new launcher conflicts with the existing persistent Host listener: **do not kill or replace the user's listener** to run this benchmark. Preserve the compatible existing launcher/listener pairing. Finish artifact preparation and freeze the binaries before preflight; do not rebuild during sampling. Install `skopeo` and `openssl`; loopback ports 15000/15443/15444/15445 must be free. First pull the report's pinned Distribution image outside timing:
 
@@ -131,7 +131,7 @@ prefetch and socket reuse disabled (`PVISOR_LAZY_IMAGE_V2=0`) versus enabled
 (`=1`, also the default). Both modes retain common correctness/pagination fixes;
 this is a V1-compatible control, not the historical Docker/old-binary cohort.
 See [the engineering report](LAZY_IMAGE_V2_REPORT.md) and
-[derived statistics](lazy-image-v2-summary.csv). Do not put engineering A/B
+derived statistics (local archive: `.data/derived-tables-20261018/lazy-image-v2-summary.csv`). Do not put engineering A/B
 samples into the user-facing Docker comparison.
 
 Prepare artifacts and run tests before sampling; stop concurrent builds and other
@@ -194,7 +194,7 @@ previous V2 RPC/prefetch implementation. Both variants enable V2 and pooling;
 measuring prefetch/pooling, not this additional optimization.
 
 See [the index-page engineering report](LAZY_INDEX_PAGES_REPORT.md) and
-[derived statistics](lazy-index-pages-summary.csv). File content counts only
+derived statistics (local archive: `.data/derived-tables-20261018/lazy-index-pages-summary.csv`). File content counts only
 Read Data; `metadata_bytes` counts Metadata Data. RPC metadata is in JSON frames,
 so compare total `response_bytes` as well. Do not combine these independent
 samples with previous V1/V2 or Docker cohorts.
@@ -238,8 +238,8 @@ connection handlers/execution workers; it is not a protocol-only comparison.
 Older `v1-v2` and `v2-index` comparisons pin bridge V1 to preserve their scope.
 
 See [the bridge report](LAZY_BRIDGE_REPORT.md),
-[pages statistics](lazy-bridge-pages-summary.csv) and
-[RPC statistics](lazy-bridge-rpc-summary.csv). `bridge_connections` counts Unix
+pages statistics (local archive: `.data/derived-tables-20261018/lazy-bridge-pages-summary.csv`) and
+RPC statistics (local archive: `.data/derived-tables-20261018/lazy-bridge-rpc-summary.csv`). `bridge_connections` counts Unix
 accepts; existing proxy `connections` counts upstream TCP including host Prepare.
 Each launch gets a private metrics directory. Raw shared `.stats` files are read
 only after verified namespace teardown; forwarded operations reconcile after
@@ -1051,7 +1051,7 @@ wide-directory sparse access expose both savings and prefetch costs. The hot
 open/fstat workload primes metadata outside its timer; independent prime-only
 counter runs establish whether OPEN/GETATTR traffic actually disappears.
 The retained Apple Silicon result is [GUEST_CACHE_REPORT.md](GUEST_CACHE_REPORT.md)
-with [derived timings and intervals](guest-cache-summary.csv).
+with derived timings and intervals (local archive: `.data/derived-tables-20261018/guest-cache-summary.csv`).
 
 ```sh
 python3 benchmark/pvisor/guest_cache.py prepare \
@@ -1109,8 +1109,8 @@ python3 benchmark/pvisor/guest_cache_adaptive.py \
 ### Lowering and cross-file writeback
 
 See [the measured technical report](LOWERING_WRITEBACK_REPORT.md),
-[paired comparisons](lowering-writeback-summary.csv) and
-[independent request counts](lowering-writeback-requests.csv).
+paired comparisons (local archive: `.data/derived-tables-20261018/lowering-writeback-summary.csv`) and
+independent request counts (local archive: `.data/derived-tables-20261018/lowering-writeback-requests.csv`).
 
 `guest_lowering_writeback.py` serves B-FS-ENG with four frozen switch arms:
 guest cache/writeback `0/0`, `1/0`, `0/1`, `1/1`. SDK Immutable shares and ordinary
@@ -1213,7 +1213,7 @@ Build only after unrelated timing ends. After all shell/tool preflight condition
 ### Host copy-up scheduling A/B on macOS
 
 The [retained engineering report](HOST_COPY_UP_REPORT.md) and
-[derived statistics](host-copy-up-summary.csv) cover the frozen 2026-10-10 cohort.
+derived statistics (local archive: `.data/derived-tables-20261018/host-copy-up-summary.csv`) cover the frozen 2026-10-10 cohort.
 They include the measured strict-journal idle-metadata regression and open-tail
 uncertainty, alongside copy-time responsiveness. User benchmark tables are unchanged.
 
@@ -1265,8 +1265,8 @@ and paired bootstrap intervals, distribution splits and descriptive P95 only at
 ### Read dispatch and journal fingerprint locks on macOS
 
 See the [engineering report](HOST_READ_JOURNAL_REPORT.md),
-[read statistics](host-read-summary.csv) and
-[journal-lock statistics](journal-lock-summary.csv). They retain the legacy
+read statistics (local archive: `.data/derived-tables-20261018/host-read-summary.csv`) and
+journal-lock statistics (local archive: `.data/derived-tables-20261018/journal-lock-summary.csv`). They retain the legacy
 hash-time increase, uncertain long-operation tails and all slow valid samples.
 
 `host_read_journal_ab.py` / `host_read_journal_driver.rs` serve **B-FS-ENG**.
@@ -1328,7 +1328,7 @@ samples is descriptive only. Raw receipts, failures and stages remain in `.data/
 
 `kernel_cache_runner.py` / `kernel_cache_driver.rs` serve **B-FS-ENG**;
 `--profiles` serves independent **B-FS-DIAG**. The [engineering report](KERNEL_CACHE_REPORT.md)
-and derived [timing CSV](kernel-cache-summary.csv) / [counter CSV](kernel-cache-counters.csv)
+and derived timing CSV (local archive: `.data/derived-tables-20261018/kernel-cache-summary.csv`) / counter CSV (local archive: `.data/derived-tables-20261018/kernel-cache-counters.csv`)
 do not replace or modify the immutable-lower-cache experiment below. This is a direct
 Linux HOST API experiment, not `pvisor run`, VM, journaling or review guarantees.
 

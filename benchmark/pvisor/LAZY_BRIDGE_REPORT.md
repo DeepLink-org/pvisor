@@ -77,7 +77,7 @@ Benchmark **B-LAZY-ENG**，engineering A/B；不进入历史 Docker 用户页。
 - `CARGO_TARGET_DIR=target/lazy-bridge-build just build release` 成功，含 CLI/daemon 消费者。独立目录，不替换原 release 或停止现有 listener。
 - 独立审计全部 **272 次**正确输出、退出 0、唯一 VM Run Bundle；每批 1,400 个冻结源码与构建证明一致。桥原始统计与上游请求账目、内容切片摘要一致；无拒绝、队列满、busy、代理错误。namespace 清理收据通过。
 
-[索引页加工 CSV](lazy-bridge-pages-summary.csv) · [RPC 加工 CSV](lazy-bridge-rpc-summary.csv) · [复现说明](README.md#private-host-network-bridge-comparison)。原始证据为 `.data/lazy-bridge-{pages,rpc}-formal-20261009/`，各有可重复的 `derive.py`；构建证明在 `.data/lazy-bridge-build-20261009/`。不与历史批次合并。
+索引页加工 CSV（本地归档：`.data/derived-tables-20261018/lazy-bridge-pages-summary.csv`） · RPC 加工 CSV（本地归档：`.data/derived-tables-20261018/lazy-bridge-rpc-summary.csv`） · [复现说明](README.md#private-host-network-bridge-comparison)。原始证据为 `.data/lazy-bridge-{pages,rpc}-formal-20261009/`，各有可重复的 `derive.py`；构建证明在 `.data/lazy-bridge-build-20261009/`。不与历史批次合并。
 
 ```text
 pages report SHA-256

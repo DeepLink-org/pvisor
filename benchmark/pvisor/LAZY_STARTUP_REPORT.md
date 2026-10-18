@@ -74,4 +74,4 @@ Docker 内容列为压缩 OCI 层及 config；lazy 为读取的解压后文件�
 - 测量 harness SHA-256：`6f19828e5057d3e15afaf8c13081d3213b8ed764096794ef9c0abfef7914694b`
 - 原始 report SHA-256：`629a518417a82d90ab26894edcf214f27430bcde89719382c6f231ba48509fa6`
 
-[整理后的 CSV](lazy-startup-summary.csv)；[复现说明](README.md#lazy-image-client-startup)。本地原始证据位于 `benchmark/pvisor/.data/lazy-startup-local-20261007/`：report、单次 stdout/stderr、请求字节计数、Run Bundles、原始 harness、源码摘要、制品副本。原始 report 的初始单中位数 summary 不用于正文；保留原字节，分布感知统计另存 `analysis.json`。用户文档已整理为[中文专题](../../docs/src/zh/benchmarks/lazy-image-startup.md)和[英文专题](../../docs/src/en/benchmarks/lazy-image-startup.md)，站点只提供加工统计与来源 CSV，原始证据仍留在本地。
+整理后的 CSV（本地归档：`.data/derived-tables-20261018/lazy-startup-summary.csv`）；[复现说明](README.md#lazy-image-client-startup)。本地原始证据位于 `benchmark/pvisor/.data/lazy-startup-local-20261007/`：report、单次 stdout/stderr、请求字节计数、Run Bundles、原始 harness、源码摘要、制品副本。原始 report 的初始单中位数 summary 不用于正文；保留原字节，分布感知统计另存 `analysis.json`。用户文档已整理为[中文专题](../../docs/src/zh/benchmarks/lazy-image-startup.md)和[英文专题](../../docs/src/en/benchmarks/lazy-image-startup.md)，站点只提供加工统计与来源 CSV，原始证据仍留在本地。

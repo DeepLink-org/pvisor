@@ -85,7 +85,7 @@ Normal read/write/open I/O, directory snapshot creation and publication can stil
 
 ## Retained evidence and reproduction
 
-[Read statistics](host-read-summary.csv) and [journal-lock statistics](journal-lock-summary.csv) contain only processed results, with batch, configuration, sample counts, split distributions, reference tails and paired intervals. [Reproduction commands](README.md#read-dispatch-and-journal-fingerprint-locks-on-macos) create new independent outputs.
+Read statistics (local archive: `.data/derived-tables-20261018/host-read-summary.csv`) and journal-lock statistics (local archive: `.data/derived-tables-20261018/journal-lock-summary.csv`) contain only processed results, with batch, configuration, sample counts, split distributions, reference tails and paired intervals. [Reproduction commands](README.md#read-dispatch-and-journal-fingerprint-locks-on-macos) create new independent outputs.
 
 Local raw evidence (ignored, not public downloads):
 

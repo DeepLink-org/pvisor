@@ -54,7 +54,7 @@ Python 导入涉及多个目录内的模块查找与分散读取。逐文件查�
 
 ### 来源与复现
 
-[加工统计 CSV](lazy-image-v2-summary.csv) · [复现手册](README.md#lazy-image-v2-engineering-ab)
+加工统计 CSV（本地归档：`.data/derived-tables-20261018/lazy-image-v2-summary.csv`） · [复现手册](README.md#lazy-image-v2-engineering-ab)
 
 - 原始证据：`benchmark/pvisor/.data/lazy-image-v2-formal-20261008/`；136 次启动包含 16 个排除观测，保留 stdout/stderr、请求、Run Bundles、完整冻结源码/制品和隔离回执。
 - 不可变 report SHA-256：`df01c5322c9394f66bd0f76c0a721b35e4a1c2e80d036fe7dce6afcb0d5b1ee3`。

@@ -76,7 +76,7 @@ Python 导入包含大量目录查询、候选文件探测和元数据读取。�
 - 独立 `CARGO_TARGET_DIR=target/lazy-index-pages-build just build release` 成功，编译包括 CLI/daemon 消费者；不替换 `target/release` 或停止原 Host listener。
 - 审计核对 136 次输出/退出/VM Run Bundle、1,404 个冻结摘要、2,031 个构建输入、18,901 个 store 条目及 18,295 条代理记录；228 个独立 Data 切片摘要与账目吻合。退出/清理收据无 namespace 残留。
 
-最终原始证据：`.data/lazy-index-pages-formal-20261009-2/`；构建收据：`.data/lazy-index-pages-build-20261009-4/`。独立审计 `derive.py` 可重新生成 [加工 CSV](lazy-index-pages-summary.csv)。[复现命令](README.md#client-index-page-comparison)。较早的失败预检及回退正式批次保留在各自 `.data/` 目录，不与本表合并，也不据跨批次差值宣称收益。
+最终原始证据：`.data/lazy-index-pages-formal-20261009-2/`；构建收据：`.data/lazy-index-pages-build-20261009-4/`。独立审计 `derive.py` 可重新生成 加工 CSV（本地归档：`.data/derived-tables-20261018/lazy-index-pages-summary.csv`）。[复现命令](README.md#client-index-page-comparison)。较早的失败预检及回退正式批次保留在各自 `.data/` 目录，不与本表合并，也不据跨批次差值宣称收益。
 
 ```text
 report.json SHA-256

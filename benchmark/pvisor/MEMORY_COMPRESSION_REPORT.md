@@ -145,7 +145,7 @@ Retained source/build validation, not rerun for this documentation task:
 
 ### Sources and derived download
 
-Download [the clean release cold-runtime summary CSV](MEMORY_COMPRESSION_SUMMARY.csv). It contains only the four accepted engineering cells, retains configuration/n/statistic and raw/report/source identities, and is not a formal offload publication.
+Download the clean release cold-runtime summary CSV (local archive: `.data/derived-tables-20261018/MEMORY_COMPRESSION_SUMMARY.csv`). It contains only the four accepted engineering cells, retains configuration/n/statistic and raw/report/source identities, and is not a formal offload publication.
 
 Actual source identity: **`d402d60b35804a0a4ca847c1960ac54ecb3a90c2` plus frozen dirty changes**, including the test-only repair and harness changes. Repository crates/vendor/Cargo files/`.cargo` were frozen; external registry source bytes were not. Supplied receipt/hash agreement is not an independent rebuild proof. Relevant SHA-256 identities:
 

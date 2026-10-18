@@ -60,7 +60,7 @@ export SEMSPEC_BIN="$PWD/target/semspec/debug/semspec"
 batch=$(python3 benchmark.new/process/prepare.py benchmark.new/process/smoke.json --binary target/release/pvisor)
 "$SEMSPEC_BIN" bench --cwd "$batch/workspace" "$batch/in.json"
 python3 benchmark.new/update.py "$batch"
-"$SEMSPEC_BIN" render benchmark.new/process/results/smoke.semspec.md
+"$SEMSPEC_BIN" render benchmark.new/process/.data/results/smoke.semspec.md
 ```
 
 独立 filesystem 原生负载使用 Python 行命令，见 [filesystem/README.md](filesystem/README.md)。
@@ -94,12 +94,19 @@ python3 benchmark.new/update.py "$batch"
 - `manifest.json`、`harness/`：版本、CPU 亲和性、制品和冻结代码摘要、状态。
 
 `update.py` 检查全部正式样本零退出、条件和提取值与原始导出一致、输入与代码来源未变，
-再追加 `results/<entry>.semspec.csv`（启动和文件系统表使用 `.data/results/`），在模板旁生成
+再追加 `.data/results/<entry>.semspec.csv`，在模板旁生成
 `<entry>.render.json` 和引用它的结果 Markdown。
 CSV 保留完整精度及批次来源；展示 JSON 将毫秒格式化为两位小数。重复发布同批次不重复追加；
 不同 CSV schema 拒绝混合。可以通过 `--csv` / `--markdown` 指定新目标。
-Markdown 单独一行写 `{{ table("../tools.render.json") }}`；文档构建只读取已生成 JSON，
-不会运行实验。历史 results 文件和包装器计时 CSV 保留原口径，不混入新批次。
+Markdown 单独一行写 `{{ table("../../tools.render.json") }}`；文档构建只读取已生成 JSON，
+不会运行实验。CSV 和结果 Markdown 均写入入口目录下的 `.data/results/`；模板旁的
+`.render.json` 是被 Git 忽略的本地预览，文档发布仍使用独立的公开资产目录。
+历史 results 报告的表格直接保留在 Markdown 中，CSV/JSON 保留原字节归档，不混入新批次。
+
+历史派生表位于各主题的 `.data/derived-tables-20261018/`，重复预览表位于
+`.data/generated-tables-20261018/`。此次迁移的完整路径、字节数、SHA-256 和修改前的
+报告保存在本目录 `.data/generated-tables-prune-20261018/`；配置、实验入口、
+测试夹具、文档构建用表格和必要公开下载继续跟踪。
 
 `--prepare` / `--conclude` 重置并验证每次输入输出；失败不发布。构建、rootfs、镜像和服务
 预先准备，不能将旧多样本 campaign 当成单次被测命令。hyperfine 按条件顺序独立采样，

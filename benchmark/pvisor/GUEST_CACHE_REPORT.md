@@ -86,7 +86,7 @@
 
 ### 来源与复现
 
-- [复现入口与命令](README.md#guest-directory-images-and-deferred-opens)。[加工 CSV](guest-cache-summary.csv)。
+- [复现入口与命令](README.md#guest-directory-images-and-deferred-opens)。加工 CSV（本地归档：`.data/derived-tables-20261018/guest-cache-summary.csv`）。
 - 原始正式报告：`.data/guest-cache-formal-20261016/report.json`；逐次 stdout/stderr、命令、stage 与 Run Bundle 保留在各 trial 目录。
 - 请求报告：`.data/guest-cache-profiles-20261016/report.json`；输入/源码/构建收据和完整冻结 harness：`.data/guest-cache-build-20261016/`。各失败预检保留独立目录，没有混入正式数据。
 - harness 边界测试：标准库 unittest 3 项通过；仓库 `just test-py` 的 uv 依赖准备受缓存权限/网络限制，未完成。

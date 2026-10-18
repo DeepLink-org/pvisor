@@ -90,7 +90,7 @@ Mount time starts immediately before configuration/mount preparation and ends af
 
 ### Independent diagnostic profile
 
-`immutable-cache-profile-20261007`: **138 cumulative records, 24 PID/component/instance identities**, all have final records. There are three persistent overlay mounts and nine fresh whole-tools overlay mounts, each with an overlay-core and host-fuse instance. Native emits no FUSE profiles. Every record is retained byte-for-byte in regular-file stderr, also parsed in the raw report. The derived [instance counter inventory](immutable-lower-cache-counters.csv) includes **all 24 final instances**, not just a favorable root/leaf subset. A missing measurement has zero recorded units here; native has no such instance and is not a zero-work FUSE control.
+`immutable-cache-profile-20261007`: **138 cumulative records, 24 PID/component/instance identities**, all have final records. There are three persistent overlay mounts and nine fresh whole-tools overlay mounts, each with an overlay-core and host-fuse instance. Native emits no FUSE profiles. Every record is retained byte-for-byte in regular-file stderr, also parsed in the raw report. The derived instance counter inventory (local archive: `.data/derived-tables-20261018/immutable-lower-cache-counters.csv`) includes **all 24 final instances**, not just a favorable root/leaf subset. A missing measurement has zero recorded units here; native has no such instance and is not a zero-work FUSE control.
 
 Persistent **overlay-core final `measurements.*.units`**, each includes 3 rounds, untimed priming and final mutation probes:
 
@@ -164,7 +164,7 @@ cargo build --offline --release \
 
 All raw output is ignored/local, under separate `benchmark/.data/immutable-cache-*` directories: source snapshots, full build/source receipts, generated manifest/lock, release binary, fixture/pre/post inventories, launch commands/env, seeded order, protocol logs, mountinfo, full profile stderr, samples and reports. Reuse of the main Cargo target was only a build optimization, outside sampling. No `crates/**` or `docs/**` file was edited.
 
-Derived tables: [timing summary CSV](immutable-lower-cache-summary.csv), [all-instance diagnostic counters CSV](immutable-lower-cache-counters.csv). Their cohort IDs, sample counts and statistical boundaries remain explicit. Raw data is not published as a user-page asset.
+Derived tables: timing summary CSV (local archive: `.data/derived-tables-20261018/immutable-lower-cache-summary.csv`), all-instance diagnostic counters CSV (local archive: `.data/derived-tables-20261018/immutable-lower-cache-counters.csv`). Their cohort IDs, sample counts and statistical boundaries remain explicit. Raw data is not published as a user-page asset.
 
 SHA-256 provenance:
 

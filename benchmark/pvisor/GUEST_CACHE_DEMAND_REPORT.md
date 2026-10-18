@@ -83,7 +83,7 @@
 - 固件和 release 构建完成；`target/release/libkrunfw.5.dylib` 与新固件摘要一致，匹配 SOURCE 收据。macOS 使用随程序分发的 dylib。
 - `just fw test` 1 通过、1 失败：未修改的 flat bundle ABI 测试在 macOS 链接器将 64 KiB 段对齐降为 16 KiB 后，指针对齐断言失败。该失败未被忽略或改弱，也不计作通过；真实 ARM64 VM 矩阵独立通过。
 - 未测 Linux/KVM、磁盘冷缓存、完整 Agent 任务或其他容器实现。
-- [复现方法](README.md#guest-directory-images-and-deferred-opens)、[加工 CSV](guest-cache-demand-summary.csv)。原始正式报告 `.data/guest-cache-demand-final-formal-20261016/report.json`；独立请求报告 `.data/guest-cache-demand-final-profiles-20261016/report.json`；断言结果 `counter-checks.json`。
+- [复现方法](README.md#guest-directory-images-and-deferred-opens)、加工 CSV（本地归档：`.data/derived-tables-20261018/guest-cache-demand-summary.csv`）。原始正式报告 `.data/guest-cache-demand-final-formal-20261016/report.json`；独立请求报告 `.data/guest-cache-demand-final-profiles-20261016/report.json`；断言结果 `counter-checks.json`。
 - 冻结制品、harness、内核源码补丁和来源收据 `.data/guest-cache-demand-final-build-20261016/`；共享输入和未变动的宿主源码来自 `.data/guest-cache-build-20261016/`，前后均验摘要。最终预检 `.data/guest-cache-demand-final-preflight-20261016/`；失败及中间预检 `.data/guest-cache-demand-preflight{,2,3}-20261016/` 单独保留；验证日志、报告生成器及 counter 检查器在 `.data/guest-cache-demand-validation-20261016/`。
 
 | 制品 / 数据 | SHA-256 |

@@ -216,7 +216,7 @@ flowchart LR
 - 四臂不能拆开普通 Linux writeback、额外跨文件队列和脏页预算三者的单独贡献。若要回答“自研队列是否优于只开原生 FUSE writeback”，还需独立的仅原生 writeback 对照，本次未测。
 - 未测 DAX、Linux/KVM、磁盘冷缓存、完整 Agent trace、VM exit 或完整宿主 CPU/内存成本。native Linux 的热缓存不是无缓存基线；本实验也不是 Kata/Docker 比较。
 - 新基准的 5 项常规测试与磁盘保护的 3 项测试通过，macOS 二进制扩展属性随归档独立验证；现有快照归档的 15 项 Linux-only 测试在该平台跳过。既有固件 flat bundle 对齐测试失败未被改写，本次未重跑该项，也未重编等价固件。
-- [复现说明](README.md#lowering-and-cross-file-writeback)、[完整配对 CSV](lowering-writeback-summary.csv)、[请求数 CSV](lowering-writeback-requests.csv)。原始计时 `.data/lowering-writeback-final-formal-20261016/`，独立诊断 `.data/lowering-writeback-final-profiles-20261016/`，冻结源码/输入/收据 `.data/lowering-writeback-build-20261016/`；预检保留且不拼入正式样本。此前 `.data/lowering-writeback-formal-20261016/` 在 111 个成功任务后遭遇宿主 ENOSPC，连 stdout/完成记录持久化也失败；该批整批作废并保留，未补跑单个任务或拼入当前批次。
+- [复现说明](README.md#lowering-and-cross-file-writeback)、完整配对 CSV（本地归档：`.data/derived-tables-20261018/lowering-writeback-summary.csv`）、请求数 CSV（本地归档：`.data/derived-tables-20261018/lowering-writeback-requests.csv`）。原始计时 `.data/lowering-writeback-final-formal-20261016/`，独立诊断 `.data/lowering-writeback-final-profiles-20261016/`，冻结源码/输入/收据 `.data/lowering-writeback-build-20261016/`；预检保留且不拼入正式样本。此前 `.data/lowering-writeback-formal-20261016/` 在 111 个成功任务后遭遇宿主 ENOSPC，连 stdout/完成记录持久化也失败；该批整批作废并保留，未补跑单个任务或拼入当前批次。
 
 验证日志、报告生成器和最终源码/制品一致性收据保留在 `.data/lowering-writeback-validation-20261016/`。
 
