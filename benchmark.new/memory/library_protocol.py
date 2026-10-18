@@ -6,7 +6,7 @@ import subprocess
 import time
 import traceback
 
-from library_evidence import observe, pool_backing, process_start
+from library_evidence import file_mapping_stats, observe, pool_backing, process_start
 from scanner_compare import digest, save
 
 VARIANTS = {
@@ -141,10 +141,6 @@ def audit_observer(unit, stop, root):
                 source = pool_backing(wanted['pool_pid'])
             elif mode == 'dax':
                 source = inputs / 'libraries/libpayload.so'
-            elif cfg['arm'] == 'docker-rootless':
-                source = Path('/proc') / str(pids[0]) / 'root/libraries/libpayload.so'
-                if digest(source) != digest(inputs / 'libraries/libpayload.so'):
-                    raise ValueError('Docker loaded a different library image')
             else:
                 source = None
             evidence = dict(variant=cfg['library_variant'], status='passed',
@@ -156,8 +152,30 @@ def audit_observer(unit, stop, root):
                 evidence['sharing'] = observe(pids, source, inputs / 'payload')
             else:
                 evidence['sharing'] = None
+            if cfg['arm'] == 'docker-rootless':
+                canonical = digest(inputs / 'libraries/libpayload.so')
+                views = []
+                for pid in pids:
+                    source = Path('/proc') / str(pid) / 'root/libraries/libpayload.so'
+                    if digest(source) != canonical:
+                        raise ValueError('Docker loaded a different library image')
+                    before_path = root / f'docker-library-{pid}-before.smaps'
+                    before_path.write_text(Path(f'/proc/{pid}/smaps').read_text())
+                    proof = observe([pid], source, inputs / 'payload')
+                    after_path = root / f'docker-library-{pid}-after.smaps'
+                    after_path.write_text(Path(f'/proc/{pid}/smaps').read_text())
+                    if digest(source) != canonical:
+                        raise ValueError('Docker library source changed during observation')
+                    file_id = proof['maps_device'], proof['inode']
+                    views.append(dict(pid=pid, source_sha256=canonical, target=proof,
+                        smaps_sha256={path.name: digest(path) for path in (before_path, after_path)},
+                        accounting_before=file_mapping_stats(before_path.read_text(), file_id, proof['mapping_path']),
+                        accounting_after=file_mapping_stats(after_path.read_text(), file_id, proof['mapping_path'])))
+                evidence['docker_file_views'] = dict(schema='pvisor-docker-library-views/v1', processes=views,
+                    shared_target_pages_all_processes=None,
+                    scope='each OverlayFS view independently attested; cross-view same-slot count unavailable; kernel library PSS retained without equating different devices/inodes')
             evidence['observed_end_ns'] = time.monotonic_ns()
-            if (mode == 'dax' or cfg['arm'] == 'docker-rootless') and evidence['sharing']['shared_pages_all_processes'] == 0:
+            if mode == 'dax' and evidence['sharing']['shared_pages_all_processes'] == 0:
                 evidence.update(status='failed', error='shared-file library path has no shared target pages')
                 save(root / 'library-evidence.json', evidence)
                 raise ValueError(evidence['error'])
@@ -195,7 +213,11 @@ def validate_library(raw, cfg, root):
         if not any(line.startswith(f'LIBRARY_MODE {mode} statx_attributes ') for line in lines):
             raise ValueError('library guest data path missing')
     sharing = evidence.get('sharing')
-    requires_target = cfg['arm'] in ('pvisor-physical', 'docker-rootless') or mode == 'dax'
+    if cfg['arm'] == 'docker-rootless':
+        validate_docker_views(evidence.get('docker_file_views'), cfg, root, phase)
+    elif evidence.get('docker_file_views') is not None:
+        raise ValueError('unexpected Docker file-view evidence')
+    requires_target = cfg['arm'] == 'pvisor-physical' or mode == 'dax'
     if requires_target != (sharing is not None):
         raise ValueError('library sharing evidence scope mismatch')
     if sharing is None:
@@ -224,6 +246,50 @@ def validate_library(raw, cfg, root):
     if (len(set(retained)) != len(retained) or set(retained) != common
             or sharing['shared_pages_all_processes'] != len({index for index, _ in common})):
         raise ValueError('cross-VM same-slot intersection mismatch')
-    if (mode == 'dax' or cfg['arm'] == 'docker-rootless') and not common:
+    if mode == 'dax' and not common:
         raise ValueError('shared-file target sharing absent')
     return evidence
+
+
+def validate_docker_views(observation, cfg, root, phase):
+    """Audit each overlay view and its raw kernel PSS without inventing aliases."""
+    if (not observation or observation.get('schema') != 'pvisor-docker-library-views/v1'
+            or observation.get('shared_target_pages_all_processes') is not None):
+        raise ValueError('Docker file-view evidence missing or falsely equated')
+    views = observation['processes']
+    guests = set(phase['guest_pids'])
+    starts = {p['pid']: p['starttime'] for p in phase['processes']}
+    if len(views) != 4 or {view['pid'] for view in views} != guests:
+        raise ValueError('Docker file-view process ownership mismatch')
+    library = Path(cfg['inputs']) / 'libraries/libpayload.so'
+    canonical, source_bytes = digest(library), library.stat().st_size
+    for view in views:
+        pid, proof = view['pid'], view['target']
+        processes = proof.get('processes', [])
+        if (view['source_sha256'] != canonical or proof.get('schema') != 'pvisor-library-file-sharing/v2'
+                or proof.get('target_pages') != 16384 or proof.get('payload_sha256') != cfg['hashes']['1:0']
+                or len(processes) != 1 or processes[0]['pid'] != pid
+                or processes[0]['starttime'] != starts[pid]
+                or proof.get('mapping_path') != '/libraries/libpayload.so'
+                or not isinstance(proof.get('maps_device'), int) or proof['maps_device'] < 0
+                or not isinstance(proof.get('inode'), int) or proof['inode'] <= 0):
+            raise ValueError('Docker per-view canonical identity mismatch')
+        slots = [tuple(x) for x in processes[0]['payload_index_and_file_offset']]
+        if (len(slots) != 16384 or len(set(slots)) != 16384
+                or len({offset for _, offset in slots}) != 16384
+                or {index for index, _ in slots} != set(range(16384))
+                or processes[0]['payload_pages'] != 16384
+                or proof['shared_pages_all_processes'] != 16384
+                or [tuple(x) for x in proof['shared_payload_index_and_file_offset']] != slots
+                or any(offset < 0 or offset % 4096 or offset + 4096 > source_bytes for _, offset in slots)):
+            raise ValueError('Docker target payload PTE evidence incomplete')
+        expected = {f'docker-library-{pid}-{boundary}.smaps' for boundary in ('before', 'after')}
+        if set(view['smaps_sha256']) != expected:
+            raise ValueError('Docker exact-file raw accounting missing')
+        for boundary in ('before', 'after'):
+            path = root / f'docker-library-{pid}-{boundary}.smaps'
+            if digest(path) != view['smaps_sha256'][path.name]:
+                raise ValueError('Docker exact-file raw accounting changed')
+            stats = file_mapping_stats(path.read_text(), (proof['maps_device'], proof['inode']), proof['mapping_path'])
+            if stats != view['accounting_' + boundary] or stats['rss_bytes'] < 64 * 1024**2:
+                raise ValueError('Docker exact-file accounting mismatch')

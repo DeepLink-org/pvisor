@@ -103,7 +103,7 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual(row["role"], "engineering A/B")
                 self.assertEqual(row["entry"], "memory/pool_compare.json")
                 self.assertEqual(table, {"pool-curves": "$ python3 @REPO@/benchmark.new/memory/pool_compare.py "
-                    "--inputs @INPUTS@ --output @OUTPUT@ --samples 5"})
+                    "--inputs @INPUTS@ --docker-inputs @DOCKER_INPUTS@ --output @OUTPUT@ --samples 5"})
                 self.assertTrue(path.with_suffix(".py").is_file())
                 continue
             if row["status"] == "explicit-python-paired-library-curves":
@@ -111,7 +111,7 @@ class RegistryTests(unittest.TestCase):
                 self.assertEqual(row["role"], "engineering A/B")
                 self.assertEqual(row["entry"], "memory/library_compare.json")
                 self.assertEqual(table, {"library-curves": "$ python3 @REPO@/benchmark.new/memory/library_compare.py "
-                    "--inputs @INPUTS@ --output @OUTPUT@ --samples @SAMPLES@"})
+                    "--inputs @INPUTS@ --docker-inputs @DOCKER_INPUTS@ --output @OUTPUT@ --samples @SAMPLES@"})
                 self.assertTrue(path.with_suffix(".py").is_file())
                 continue
             if row["status"] in existing_python_tables:

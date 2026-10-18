@@ -1,8 +1,13 @@
 """Evidence gates for the Firecracker/pooled-memory curve experiment."""
 import copy
+import errno
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('pool_compare', Path(__file__).with_name('pool_compare.py'))
 subject = importlib.util.module_from_spec(spec)
@@ -126,6 +131,42 @@ class CurveEvidenceTests(unittest.TestCase):
                 if failure == 'origin': bad['post_write_origin_ns'] += 1
                 if failure == 'guest': bad['phases'][-1]['guest_pids'].pop()
                 with self.assertRaises(ValueError): subject.validate_worker(bad, cfg)
+
+
+@unittest.skipUnless(Path('/proc/self/smaps_rollup').exists() and hasattr(os, 'WNOWAIT'),
+                     'requires Linux procfs and waitid without reaping')
+class PssSamplingTests(unittest.TestCase):
+    def test_exited_process_with_proc_entry_does_not_invalidate_live_pss(self):
+        with tempfile.TemporaryDirectory() as directory:
+            group = Path(directory)
+            child = subprocess.Popen(['/bin/true'])
+            try:
+                os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+                self.assertTrue((Path('/proc') / str(child.pid)).exists())
+                (group / 'cgroup.procs').write_text(f'{os.getpid()}\n{child.pid}\n')
+                sample = subject.pss_sample(group)
+                self.assertNotIn('error', sample)
+                self.assertEqual(sample['exited_pids'], [child.pid])
+                self.assertEqual([p['pid'] for p in sample['processes']], [os.getpid()])
+                self.assertGreater(sample['pss_bytes'], 0)
+            finally:
+                child.wait(timeout=5)
+
+    def test_permission_and_io_failures_are_not_treated_as_process_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            group = Path(directory)
+            (group / 'cgroup.procs').write_text(f'{os.getpid()}\n')
+            rollup = Path('/proc') / str(os.getpid()) / 'smaps_rollup'
+            original = Path.read_text
+            for code in (errno.EACCES, errno.EIO):
+                def read(path, *args, **kwargs):
+                    if path == rollup: raise OSError(code, os.strerror(code), str(path))
+                    return original(path, *args, **kwargs)
+                with self.subTest(errno=code), patch.object(Path, 'read_text', read):
+                    sample = subject.pss_sample(group)
+                    self.assertIn('error', sample)
+                    self.assertEqual(sample['exited_pids'], [])
+                    self.assertNotIn('pss_bytes', sample)
 
 
 if __name__ == '__main__':

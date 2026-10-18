@@ -14,7 +14,7 @@ macOS/HVF 与 Linux/KVM 的数据融入对应主题的 benchmark 文档并同时
 
 不同平台分别计算分布，不合并样本。只有负载、计时起止、缓存状态和参数一致时才做跨平台对比；未测项目标为未测，不支持的功能写明平台限制。Linux 的 offload 数据与 macOS 的共享冷页回收数据分别解释。
 
-当前数据：[macOS 启动延迟](../benchmarks/startup.md)、[macOS 共享冷页回收](../benchmarks/vm-memory/index.md)、[Linux 生命周期与完整快照](vm-memory-performance-analysis.md#linux-methodology)。
+当前数据：[启动延迟](../benchmarks/startup.md)、[内存去重](../benchmarks/vm-memory/index.md)、[Linux 去重与共享库曲线](vm-memory-performance-analysis.md#linux-pool-curves)。旧 macOS 冷页和 Linux 快照记录保留在 [memory 实验归档](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history)。
 
 ## 环境清单
 

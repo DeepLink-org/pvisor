@@ -385,8 +385,26 @@ def validate_worker(raw, cfg):
         elif any(mapped[pid] for pid in expected_pids): raise ValueError('unexpected KSM participation')
 
 
-def pss_observer(unit, stop, root):
+def pss_sample(group):
+    """Sample live members; retain read failures and identities that exited."""
     from docker_support import group_pids
+    row = dict(monotonic_ns=time.monotonic_ns(), processes=[], exited_pids=[])
+    try:
+        for pid in group_pids(group):
+            try:
+                text = (Path('/proc') / str(pid) / 'smaps_rollup').read_text()
+                row['processes'].append(dict(pid=int(pid), pss_bytes=values(text)['Pss'] * 1024))
+            except (FileNotFoundError, ProcessLookupError):
+                row['exited_pids'].append(int(pid))
+        row['pss_bytes'] = sum(p['pss_bytes'] for p in row['processes'])
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        row['error'] = str(error)
+    return row
+
+
+def pss_observer(unit, stop, root):
     rows, group = [], None
     while not stop.wait(.5):
         if group is None:
@@ -394,17 +412,8 @@ def pss_observer(unit, stop, root):
                                capture_output=True, text=True, timeout=5)
             if r.stdout.strip(): group = Path('/sys/fs/cgroup') / r.stdout.strip().lstrip('/')
         if group is None or not group.exists(): continue
-        row = dict(monotonic_ns=time.monotonic_ns(), processes=[])
-        try:
-            for pid in group_pids(group):
-                try:
-                    text = (Path('/proc') / str(pid) / 'smaps_rollup').read_text()
-                    row['processes'].append(dict(pid=int(pid), pss_bytes=values(text)['Pss'] * 1024))
-                except FileNotFoundError: pass
-            row['pss_bytes'] = sum(p['pss_bytes'] for p in row['processes'])
-        except FileNotFoundError: continue
-        except OSError as error: row['error'] = str(error)
-        rows.append(row)
+        row = pss_sample(group)
+        if row is not None: rows.append(row)
     save(root / 'pss.json', rows)
 
 

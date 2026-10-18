@@ -7,12 +7,49 @@ import unittest
 from unittest.mock import patch
 
 from library_compare import verify_inputs
-from library_protocol import VARIANTS, command, details, environment, validate_library
+from library_protocol import VARIANTS, command, details, environment, validate_docker_views, validate_library
+from library_evidence import file_mapping_stats
 from prepare_pool import tree_manifest
 from scanner_compare import digest, save
 
 
 class LibraryProtocolTests(unittest.TestCase):
+    def test_docker_overlay_view_proofs_do_not_invent_cross_view_slot_counts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / 'libraries').mkdir()
+            library = root / 'libraries/libpayload.so'
+            with library.open('wb') as stream: stream.truncate(64 * 1024**2 + 4096)
+            slots = [[n, (n + 1) * 4096] for n in range(16384)]
+            cfg = dict(inputs=str(root), hashes={'1:0': 'payload-digest'})
+            phase = dict(guest_pids=[1, 2, 3, 4], processes=[dict(pid=n, starttime=str(n)) for n in range(1, 5)])
+            observation = dict(schema='pvisor-docker-library-views/v1',
+                               shared_target_pages_all_processes=None, processes=[])
+            for pid in range(1, 5):
+                device = 100 + pid
+                text = (f'10000000-14001000 r--p 00000000 00:{device:x} 42 /libraries/libpayload.so\n'
+                        'Rss: 65540 kB\nPss: 16385 kB\nShared_Clean: 65540 kB\n')
+                paths = [root / f'docker-library-{pid}-{part}.smaps' for part in ('before', 'after')]
+                for path in paths: path.write_text(text)
+                proof = dict(schema='pvisor-library-file-sharing/v2', target_pages=16384,
+                    payload_sha256='payload-digest', maps_device=device, inode=42, mapping_path='/libraries/libpayload.so',
+                    processes=[dict(pid=pid, starttime=str(pid), payload_pages=16384, payload_index_and_file_offset=slots)],
+                    shared_pages_all_processes=16384, shared_payload_index_and_file_offset=slots)
+                stats = file_mapping_stats(text, (device, 42), '/libraries/libpayload.so')
+                observation['processes'].append(dict(pid=pid, source_sha256=digest(library), target=proof,
+                    smaps_sha256={path.name: digest(path) for path in paths}, accounting_before=stats, accounting_after=stats))
+            validate_docker_views(observation, cfg, root, phase)
+            observation['shared_target_pages_all_processes'] = 16384
+            with self.assertRaisesRegex(ValueError, 'falsely equated'):
+                validate_docker_views(observation, cfg, root, phase)
+            observation['shared_target_pages_all_processes'] = None
+            view = observation['processes'][0]
+            view['target']['maps_device'] = 999
+            with self.assertRaises(ValueError): validate_docker_views(observation, cfg, root, phase)
+            view['target']['maps_device'] = 101
+            (root / 'docker-library-1-before.smaps').write_text('forged')
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                validate_docker_views(observation, cfg, root, phase)
+
     def cfg(self, root, variant):
         return dict(root=str(root), inputs=str(root / 'inputs'), library_variant=variant,
                     arm=VARIANTS[variant][0], pattern='random-shared')

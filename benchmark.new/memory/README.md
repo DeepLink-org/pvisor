@@ -84,7 +84,7 @@ just test-py discover -s benchmark.new/memory -p test_scanner_compare.py
 
 ## Firecracker and pooled-memory curves
 
-### Docker comparison under preparation
+### Docker comparison and qualification
 
 The requested Docker baseline uses a private rootless Docker daemon and four
 containers in one owned systemd slice, including dockerd, containerd, shims and
@@ -106,24 +106,59 @@ Each condition gets a private reflink copy of a stopped image-store seed and
 fresh containers, with network disabled and a read-only image. Preparation and
 image import occur before measurement; daemon startup remains in startup curves.
 The input receipt binds image/archive bytes, source bytes and runtime binaries.
-Docker qualification and randomized measurements are still pending.
+The static and library Docker qualifications and both full seven-arm preflights
+passed as recorded below. The current report uses these audited N=1 preflights;
+the requested scope reduction cancels further randomized performance sampling.
 
-The first complete Docker qualification (`.data/dq1/`) hit the old 128-task
-ceiling while starting the third container and is retained as failed. Protocol
-v4 gives **every arm** a 256-task ceiling, retaining 4 CPUs, 2 GiB and zero swap;
-the actual cap is checked in internal and external evidence. This admits the
-dedicated Docker runtime's startup threads without changing memory/CPU limits.
-Historical v2/v3 observations keep their exact 128-task checks and cannot supply
-the new formal cohort. `.data/q6/` was deliberately cancelled when Docker was
-requested; it is partial evidence, not a performance comparison.
+Protocol v4 gives every arm a 256-task ceiling, retaining four CPUs, 2 GiB
+and zero swap. The actual limits and task exhaustion events are checked. The
+rootless runtime uses RootlessKit network/port drivers `none` and Docker
+`--network=none`; complete runtime PSS remains required.
 
-`.data/dq2/` reached four verified ready payloads but failed complete PSS
-collection because the unused pasta networking helper denied proc reads.
-The memory workloads use no networking, so RootlessKit now uses its explicit
-`none` network and port drivers as well as Docker `--network=none`. A separate
-daemon diagnostic in `.data/dc3/` verifies readable PSS for every runtime process;
-no host proc permissions or helper security settings were changed. Both failed
-qualifications remain excluded from performance summaries.
+Docker library evidence uses four independent OverlayFS-view byte/PTE proofs
+and hash-bound smaps. Cross-view same-slot count is unavailable. Physical-pool
+and explicit DAX evidence retains cross-process backing/offset checks.
+
+### Accepted evidence and measurement status
+
+Both current preflights are complete and audited: `.data/q8/` passes all
+21 static conditions and 1,218 data-path checks; `.data/l4/` passes all seven
+library conditions and 406 checks. Every owned resource group is quiescent.
+At the user's request to shorten the experiment and write from existing data,
+the serial driver was stopped after eight successful, cleaned-up `fm7` conditions,
+before condition 8 started. `lf7` never started. All 42 owned service/slice units
+across `q8`, `l4` and `fm7` were verified inactive, and the coordinator exited.
+The partial formal cohort remains incomplete and excluded from aggregate results;
+do not restart it or launch replacement formal rounds without a new request.
+These preflights remain separate N=1 observations, with no confidence
+intervals or formal performance ranking. All six replacement plots have been
+visually inspected: static [idle](.data/q8/derived/memory-curves.svg),
+[startup](.data/q8/derived/startup-memory-curves.svg),
+[post-write](.data/q8/derived/post-write-curves.svg), and library
+[idle](.data/l4/derived/memory-curves.svg),
+[startup](.data/l4/derived/startup-memory-curves.svg),
+[post-write](.data/l4/derived/post-write-curves.svg).
+
+In q8's shared-random condition, the physical pool's sustained 128 MiB
+charged-memory drop is bracketed by [1.688, 1.739] seconds, versus
+[27.723, 27.773] for KSM. Their 60-second charged footprints are 222.61 and
+177.33 MiB, and idle group CPU costs are 5.924 and 0.384 seconds; global ksmd
+separately costs 0.41 seconds outside quota. Faster early reclamation therefore
+coexists with higher steady memory and CPU costs. Repeated-content readback
+changes sealed compression from 186.17 to 419.73 MiB, while physical sharing
+stays at 149.14 to 149.10 MiB. The source of this contrast includes private
+restoration versus shared reads, not only compression itself.
+
+In l4, physical hints on/off both retain all 16,384 target pages on common
+canonical slots across four VMs after readback; actual host settings are checked
+as `1`/`0`. Their 2-second charged footprints are 304.89/348.43 MiB and their
+60-second footprints are 256.52/259.02 MiB. Steady process PSS is
+252.94/252.46 MiB. Explicit DAX also passes the complete target-page proof;
+Docker retains its four independent file-view proofs. These observations support
+early-reclaim and read-sharing measurements, but do not establish a repeatable
+hint speedup or attribute whole-group savings solely to library bytes.
+
+### Preparation and measurement protocol
 
 `pool_compare.py` uses stock Firecracker as the primary baseline. All arms run
 the same static 64 MiB worker, including rootless Docker: no Python payload, periodic file heartbeat or
@@ -223,9 +258,9 @@ static-payload matrix or pooled with its results.
 python3 benchmark.new/memory/pool_compare.py \
   --inputs benchmark.new/memory/.data/pool-build-5 \
   --docker-inputs benchmark.new/memory/.data/docker-inputs-1 \
-  --output benchmark.new/memory/.data/q2 --preflight --prepare
+  --output /short/new-static-preflight --preflight --prepare
 target/semspec/debug/semspec bench --cwd "$PWD" \
-  benchmark.new/memory/.data/q2.input.json
+  /short/new-static-preflight.input.json
 ```
 
 Full preflight covers all seven arms and three patterns. Subsets are diagnostic
@@ -266,252 +301,20 @@ outside this accounting. Whole-condition kernel peak and sampled idle peak are
 separate metrics. Formal analysis also rechecks all input/build/source receipts,
 frozen supporting harnesses and the hashes of monitor, PSS and guard observations.
 
-### Retained first curve diagnostic
+## Published curves and archived history
 
-Local `.data/q1/` retains one random-shared group per condition, four fresh VMs
-each. [The curve](.data/q1/derived2/memory-curves.svg) and derived JSON are audited
-by `plot_pool.py`; it rejects incomplete groups, altered reports and missing
-payload/ownership evidence. This N=1 subset has no confidence or tail claim.
+The [bilingual technical analysis](../../docs/src/zh/design/vm-memory-performance-analysis.md)
+uses only the complete `q8` and `l4` preflights. It publishes idle charged-memory
+and PSS curves, with readback and CPU observations; post-write curves remain
+local. The public SVG files are byte-identical copies of each cohort's
+`derived/memory-curves.svg`. The additional library 0–5-second SVG is rendered
+from hash-verified original monitor/PSS samples for all seven variants; its
+script and output receipt are retained in `.data/docs-cleanup-20261018/`.
 
-| Condition | Ready charged MiB | 2 s charged MiB | 60 s charged MiB | 60 s PSS MiB | Idle group CPU s | First full group read ms |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Stock Firecracker | 365.0 | 365.5 | 365.3 | 366.1 | 0.150 | 646.8 |
-| pVisor physical pool | 405.8 | 223.0 | 214.6 | 212.6 | 9.291 | 902.7 |
-| pVisor sealed compressed pool | 413.6 | 418.2 | 375.6 | 385.4 | 2.789 | 650.0 |
-
-Physical sharing reduced the observed footprint quickly, but consumed more CPU.
-The full read includes byte validation, hashing and transport, not just a fault.
-Sealed compression rejects poorly compressed blocks, so similar read timing
-does not mean equally much application payload was reclaimed. A separate local
-two-session diagnostic (`pool-build-2/codec-check/result.json`) submits the same
-64 KiB random payload twice: both are rejected with insufficient compression
-savings and zero objects, proving this admission limitation. It does not
-attribute the whole VM's footprint to that block.
-
-These curves precede the cached-session-count and bulk-pagemap optimizations;
-they do not establish either optimization's performance or a KSM speed win.
-The KSM curve, full content matrix and randomized repeats remain required.
-Four-VM buffered and DAX library checks each passed 54 full-hash/isolation/exit
-acknowledgements; a separate two-VM smaps check confirmed the same library inode.
-Their receipts live in `.data/library-inputs-1/`; they are correctness evidence,
-not a Firecracker library-load performance comparison.
-
-### Static-worker curve preflight
-
-The retained six-arm projection of `.data/q3/` v2 contains 18 conditions and
-1,044 full-content, COW/peer and exit acknowledgements without OOM, swap or
-cleanup failure. Historical raw files retain the retired control; it is excluded
-from the tables and regenerated figures below. Each
-cell is N=1, with no confidence or production-density claim. The host is Linux
-7.2.10-200.fc44.x86_64 on Ryzen 7 9700X; KSM uses the recorded default parameters,
-including smart_scan=1. Each condition has four 256 MiB/one-vCPU VMs and the same
-64 MiB static payload, in a four-CPU/2 GiB/zero-swap product group.
-
-Stock Firecracker is an unmodified v1.13.1 musl build with an explicit official
-seccomp filter. `.data/fc-build-2/receipt.json` retains build provenance.
-The installed-binary q1 cohort remains separate. pVisor inputs/source evidence
-are frozen in `.data/pool-build-3/`. This build includes the cached-session-count
-and bulk-pagemap changes, before the later present-only selection/authority fix.
-
-[Charged-memory and PSS curves](.data/q3/derived-current/memory-curves.svg) and
-[audited derived metrics](.data/q3/derived-current/summary.json) retain the raw observations.
-The following values are complete-group charged MiB at 60 seconds:
-
-| Content | Firecracker | pVisor off | pVisor KSM | Physical pool | Sealed compression | Local compression |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Repeated pages | 364.8 | 398.3 | 113.5 | 148.3 | 185.7 | 116.9 |
-| Same random pages across VMs | 364.8 | 398.4 | 176.2 | 221.7 | 376.7 | 372.1 |
-| Unique random pages | 365.0 | 398.5 | 368.0 | 390.6 | 376.7 | 372.7 |
-
-For same random content, the physical pool's sustained 128 MiB charged-memory
-drop is observed between 1.67–1.72 seconds and pVisor KSM between 27.72–27.77
-seconds. These are sampled brackets
-relative to each condition's ready footprint, not exact payload convergence or
-a generalized speedup. At 60 seconds KSM has the smaller footprint.
-
-The physical pool consumes 9.10 CPU seconds in VM/pool processes during the idle
-window, versus 0.28 for pVisor KSM; global ksmd separately consumes 0.48 seconds
-in the KSM attempt. Group CPU also includes control/sampling work: 11.35 and
-0.39 seconds respectively. Global ksmd is outside the group quota and cannot be
-attributed exactly. External observers are outside these totals.
-
-Physical mode performs no compression. Its same-random group has about 72,800
-pool VMAs, 16.13 MiB slab and 20.52 MiB total kernel accounting; pVisor KSM has
-1.68 MiB slab and 5.59 MiB kernel accounting. VM system CPU continues to grow
-after mapping counts stabilize, motivating a single pagemap state query instead
-of separate mincore/pagemap walks. This is an observed cost breakdown and a
-source-guided hypothesis, not isolated syscall attribution.
-
-The first full read preserves the sharing: physical charged memory changes from
-221.7 to 222.0 MiB and pVisor KSM from 176.2 to 176.1 MiB. Immediate full-private-
-write observations are 485.2 and 367.9 MiB respectively, but v2 has no extra
-settling window, so these do not establish persistent post-write overhead.
-
-Subsequent source changes skip non-present PTEs during selection and require a
-present anonymous PTE before retiring an old shared-slot reference. A deterministic
-absent-file-PTE publication regression fails before that authority fix and passes
-after it; 40 targeted VM/KVM/API tests pass. The v3 harness and audit/statistical
-gates pass 19 Python tests. The changed product's performance and the new 30-second
-post-write curves require a separate cohort; do not attribute q3 results to it.
-
-### Present-only selection diagnostic
-
-`.data/q4/` separately validates the changed physical pool with v3 inputs from
-`.data/pool-build-4/`: all three content conditions, 174 full acknowledgements,
-the 30-second write-settling window and cleanup pass. This is a physical-only
-N=1 diagnostic, not a new full matrix or a paired causal comparison with q3.
-[Idle curves](.data/q4/derived/memory-curves.svg),
-[write-settling curves](.data/q4/derived/post-write-curves.svg) and
-[derived observations](.data/q4/derived/summary.json) retain their own source.
-
-| Content | 60 s charged MiB | VM + pool idle CPU s | Immediate full-write MiB | +10 s MiB | +30 s MiB |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Repeated pages | 147.7 | 5.42 | 416.9 | 420.3 | 420.1 |
-| Same random pages | 221.3 | 5.99 | 484.4 | 427.5 | 427.7 |
-| Unique random pages | 390.2 | 8.62 | 393.2 | 397.6 | 398.0 |
-
-Same-random readback retains sharing (221.3 to 221.6 MiB). Its old pool storage
-falls from 64.6 MiB immediately after private writes to 6.8 MiB by ten seconds,
-while logical reservation remains 128 MiB; this proves delayed slot retirement
-accounts for part of the immediate peak. The remaining charged footprint is
-not zero-overhead sharing. Unique random content still incurs substantial CPU
-with little memory benefit, so poor-region/unchanged-page work remains a target.
-Do not use the separate q3/q4 single observations as a confidence interval or
-an isolated percentage improvement. Full v3 randomized repeats remain required.
-
-### Complete write-settling preflight
-
-The retained six-arm projection of `.data/q5/` covers three contents using the
-same present-only/authority-fixed `.data/pool-build-4/` inputs. Its 1,044 full-content,
-COW/peer and exit acknowledgements and resource/cleanup gates pass. The retired
-service is inactive; this is a separate v3 N=1 diagnostic, not five-round formal
-evidence or a causal comparison with older binaries.
-
-Audited [idle curves](.data/q5/derived-current/memory-curves.svg),
-[startup observations](.data/q5/derived-current/startup-memory-curves.svg),
-[post-write curves](.data/q5/derived-current/post-write-curves.svg) and
-[derived metrics](.data/q5/derived-current/summary.json) retain the six selected arms. The historical raw cohort remains unchanged.
-Same-random content has the following complete-group observations:
-
-| Condition | Idle 60 s charged MiB | Idle VM + pool CPU s | Idle group CPU s | Immediate full-write MiB | Write +30 s MiB |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Firecracker | 364.90 | 0.12 | 0.163 | 365.82 | 366.33 |
-| pVisor KSM | 176.70 | 0.30 | 0.375 | 368.82 | 369.94 |
-| Physical pool | 221.46 | 4.98 | 7.160 | 484.40 | 427.75 |
-
-Global ksmd separately consumes 0.41 CPU seconds for pVisor KSM; it is outside
-quota and not exactly attributable.
-Physical sharing's sustained 128 MiB drop is observed at 1.678–1.729 seconds,
-pVisor KSM at 27.710–27.761, relative to
-each all-ready footprint. KSM retains the lower 60-second footprint; physical
-mode retains higher CPU and post-write overhead. Unique-random physical mode
-still costs 8.17 VM/pool CPU seconds with little saving.
-
-Subsequent source adds successful-file-READ candidate hints and groups probes in
-bootstrapped poor regions. These changes pass the complete VM package (527
-passing tests, eight skipped), including native KVM, COW and public boundary
-checks, and 30 memory-harness/target-evidence/statistical Python tests. Rustdoc
-passes with warnings denied. VM library Clippy passes with its existing
-`unnecessary_cast` allowance; the all-target run remains blocked by pre-existing
-`err_expect`, `useless_conversion` and example `chunks_exact_to_as_chunks`
-findings in untouched files. The helper and daemon consumers compile. Logs are
-`.data/pool-check-4-*`. The changed source has not yet supplied a performance
-cohort; q5 must not be attributed to it. Shared-library preflight and randomized
-formal comparisons remain required.
-
-The next frozen `.data/pool-build-5/` contains the validated file-hint and grouped
-scanner changes, plus common Python/rootfs/ext4/library inputs and C-toolchain
-identities. `.data/lcheck5/` retains two four-VM ordinary-rootfs correctness runs
-on that exact binary. Hints enabled yields positive candidate counters in every
-VM (12,809 / 12,281 / 11,250 / 9,538) and 16,376 of 16,384 target pages observed
-on common slots across all four VMs. Hints disabled yields zero counters in all
-VMs, with all 16,384 target pages shared by the background scanner when audited.
-Each run passes all 58 full-content/COW/peer/exit checks; the source library is
-unchanged and both owned units are inactive. Hints are not needed for eventual
-sharing. These runs enable metrics and collect the target proof inside the group,
-so neither the counts nor their fixed hold establish a speed advantage or net
-memory benefit. Candidate counts include other file READs and revisits. The
-separate same-binary library curve cohort is required to measure the hint effect.
-
-The first library cohort `.data/l1/` is retained as failed: target auditing
-incorrectly equated `stat.st_dev` with `/proc/PID/maps`' device field. On this
-Btrfs host the same library reports 54 through stat and 36 through maps, with
-identical inode. Upstream Linux likewise uses a subvolume device for
-[Btrfs stat](https://github.com/torvalds/linux/blob/v6.12/fs/btrfs/inode.c#L7363)
-and the superblock device for
-[maps](https://github.com/torvalds/linux/blob/v6.12/fs/proc/task_mmu.c).
-The v2 observer now calibrates device/inode/kernel pathname from its own
-untouched one-page mapping of the pinned canonical FD, then requires that exact
-identity in the VM maps. It never falls back to inode-only matching or uses
-privileged map_files/PFNs. Complete canonical bytes and before/after file-PTE
-checks remain required. Valid partial ELF metadata tails are skipped, not padded
-into invented full target pages. Both issues have retained failing regressions
-(`library-evidence-before-fix.log`, `library-tail-before-fix.log`); all 32 Python
-checks pass after repair. Two live DAX VMs then verify all 16,384 target pages
-with calibrated identity in `.data/dax5d4/`. These diagnostics are separate from
-performance samples; the failed cohort cannot supply aggregate results.
-
-### Complete ordinary-rootfs library preflight
-
-The retained six-variant projection of `.data/l2/` uses v2 target auditing and
-`.data/pool-build-5/`. All 348 selected full-payload/COW/peer/exit checks,
-actual data-path checks, resource limits and owned cleanup pass. Physical-hint
-on/off and DAX each observe all 16,384 controlled target pages on common slots
-across the four VMs after first readback. This remains N=1 per condition.
-
-[Full idle curves](.data/l2/derived-current/memory-curves.svg),
-[first five seconds](.data/l2/derived-current/early-memory-curves.svg),
-[startup observations](.data/l2/derived-current/startup-memory-curves.svg),
-[private-write curves](.data/l2/derived-current/post-write-curves.svg) and
-[audited metrics](.data/l2/derived-current/summary.json) retain the six selected condition
-identities. The historical raw cohort remains unchanged. Units below are complete-group MiB and VM-plus-pool CPU seconds over
-the 60-second idle window; all cells are single observations.
-
-| Condition | 2 s charged | 2 s PSS | 60 s charged | 60 s PSS | VM + pool CPU s |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Firecracker block | 440.34 | 440.58 | 440.73 | 440.89 | 0.09 |
-| pVisor rootfs off | 474.52 | 480.66 | 475.03 | 481.12 | 0.28 |
-| pVisor rootfs KSM | 474.91 | 480.69 | 203.57 | 209.52 | 0.31 |
-| Physical pool, hints off | 362.16 | 309.90 | 270.58 | 252.43 | 5.29 |
-| Physical pool, hints on | 300.44 | 270.07 | 256.23 | 251.85 | 5.27 |
-| Explicit immutable DAX | 227.97 | 297.63 | 228.43 | 298.09 | 0.42 |
-
-Hints show earlier reclamation in this diagnostic; steady PSS and VM/pool CPU
-are close. Charged-memory and PSS differences must stay separate: source cache
-may be charged outside the group, and PSS omits kernel overhead. At 60 seconds,
-hints-off has 87,209 pool VMAs and 19.17 MiB slab, versus 74,719 and 16.71 MiB
-with hints; pool allocated blocks are 86.44 and 86.82 MiB. The larger charged
-memory difference cannot all be assigned to canonical payload storage or net
-host savings. Formal paired uncertainty remains unmeasured.
-
-The DAX reference leaves ordinary anonymous RAM unpooled; the physical pool also
-scans other guest/Python memory. Whole-group differences therefore do not isolate
-library bytes alone. Global ksmd separately costs 0.52 CPU seconds for pVisor
-KSM, outside quota. Full library-private writes leave +30-second charged
-footprints of 699.36 / 733.18 / 466.86 / 539.19 / 524.73 / 486.73
-MiB in table order. These writes change the library's application mapping; they
-do not force eviction of clean file-cache pages or make all guest RAM unique.
-
-The affected runtime store checks also pass (`just test pvisor -- --lib -E
-"test(ram_backing)" --test-threads 2`: 44 tests, 476 outside the filter), including
-physical slot ownership, IPC references and strict compression admission. Logs
-are `.data/pool-check-5-runtime-stores.log`.
-
-### Compression admission and read-sharing mechanisms
-
-The physical pool performs no compression. In the complete q5 same-random cell
-it still reaches 221.46 MiB, while sealed/local compression reach 377.31 / 372.09
-MiB. The independent two-session 64 KiB random-block diagnostic retains zero
-sealed objects after both healthy insufficient-savings rejections. This directly
-identifies per-block compression admission as a limitation for incompressible
-cross-VM duplicates; it is not a claim that the guest payload was compressed.
-
-Readback distinguishes persistent sharing from eviction/refault as well. In q5's
-repeated-content cell, sealed compression changes from 185.46 to 419.03 MiB on
-full readback, local compression from 116.58 to 374.18, and physical sharing from
-148.65 to 148.69. The corresponding whole-group verified read times are 1,113.22 /
-1,155.44 / 833.75 ms; off is 645.33 ms. These are N=1 total read/validation costs,
-not pure codec latency. The compressed pager restores private RAM; physical
-MAP_PRIVATE reads retain canonical sharing. Compression mode also changes block
-size, admission, IPC and restoration, so this matrix does not assign a percentage
-of CPU time to the codec. Source-level codec and equality checks remain unchanged.
+The documentation before cleanup is preserved in
+`.data/docs-cleanup-20261018/`, with original paths and SHA-256 values in
+`manifest.json`. It retains historical macOS/snapshot sections, the older
+512 MiB user comparison, intermediate cohorts and failure investigations.
+Original reports, failed attempts, frozen sources and raw curves remain in their
+own directories. Historical and incomplete measurements are excluded from the
+current comparison. This documentation cleanup starts no new measurements.

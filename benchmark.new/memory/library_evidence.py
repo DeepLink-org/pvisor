@@ -146,3 +146,29 @@ def pool_backing(pid):
     if len(found) != 1:
         raise ValueError('one physical pool arena required')
     return next(iter(found.values()))
+
+
+def file_mapping_stats(text, file_identity, mapping_path):
+    """Retain kernel RSS/PSS for one exact file view; never alias overlay devices."""
+    mappings = []
+    selected = None
+    for line in text.splitlines():
+        words = line.split(maxsplit=5)
+        if len(words) >= 5 and '-' in words[0] and ':' in words[3]:
+            major, minor = (int(x, 16) for x in words[3].split(':'))
+            selected = None
+            if ((os.makedev(major, minor), int(words[4])) == file_identity
+                    and len(words) == 6 and words[5] == mapping_path):
+                selected = dict(header=line)
+                mappings.append(selected)
+        elif selected is not None and words and words[0] in (
+                'Rss:', 'Pss:', 'Shared_Clean:', 'Shared_Dirty:', 'Private_Clean:', 'Private_Dirty:'):
+            selected[words[0][:-1].lower() + '_bytes'] = int(words[1].split()[0]) * 1024
+    if not mappings or any('rss_bytes' not in row or 'pss_bytes' not in row for row in mappings):
+        raise ValueError('complete exact-file smaps accounting required')
+    rss = sum(row['rss_bytes'] for row in mappings)
+    pss = sum(row['pss_bytes'] for row in mappings)
+    if not 0 < pss <= rss:
+        raise ValueError('invalid exact-file RSS/PSS accounting')
+    return dict(mappings=mappings, rss_bytes=rss, pss_bytes=pss,
+                scope='kernel smaps for the complete library view, including ELF metadata; PSS has per-VMA KiB rounding')

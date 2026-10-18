@@ -14,7 +14,7 @@ Integrate and retain both macOS/HVF and Linux/KVM datasets in the corresponding 
 
 Calculate distributions separately for each platform. Cross-platform comparisons require matching workloads, timing boundaries, cache states and parameters. Label unmeasured areas and state platform restrictions for unsupported features. Interpret Linux offload and macOS shared cold-page reclamation as separate datasets.
 
-Available data: [macOS startup latency](../benchmarks/startup.md), [macOS shared cold-page reclamation](../benchmarks/vm-memory/index.md), and [Linux lifecycle and complete snapshots](vm-memory-performance-analysis.md#linux-methodology).
+Available data: [startup latency](../benchmarks/startup.md), [memory deduplication](../benchmarks/vm-memory/index.md), and [Linux deduplication and shared-library curves](vm-memory-performance-analysis.md#linux-pool-curves). Older macOS cold-page and Linux snapshot records remain in the [memory experiment archive](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history).
 
 ## Environment checklist
 

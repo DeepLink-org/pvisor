@@ -7,11 +7,23 @@ import sys
 import tempfile
 import unittest
 
-from library_evidence import PAGE, observe
+from library_evidence import PAGE, file_mapping_stats, observe
 
 
 @unittest.skipUnless(Path('/proc/self/pagemap').exists(), 'Linux pagemap required')
 class EvidenceTests(unittest.TestCase):
+    def test_smaps_file_views_keep_distinct_overlay_devices(self):
+        text = ('1000-3000 r--p 00000000 00:6d 42 /libraries/libpayload.so\n'
+                'Rss: 8 kB\nPss: 2 kB\nShared_Clean: 8 kB\n'
+                '3000-5000 r--p 00000000 00:71 42 /libraries/libpayload.so\n'
+                'Rss: 8 kB\nPss: 8 kB\nShared_Clean: 0 kB\n')
+        self.assertEqual(file_mapping_stats(text, (109, 42), '/libraries/libpayload.so')['pss_bytes'], 2048)
+        self.assertEqual(file_mapping_stats(text, (113, 42), '/libraries/libpayload.so')['pss_bytes'], 8192)
+        with self.assertRaises(ValueError):
+            file_mapping_stats(text, (109, 43), '/libraries/libpayload.so')
+        with self.assertRaises(ValueError):
+            file_mapping_stats(text, (109, 42), '/other/libpayload.so')
+
     def test_partial_elf_tail_is_not_a_full_target_page(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

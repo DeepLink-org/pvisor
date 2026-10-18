@@ -66,7 +66,7 @@ DeepSeek 的 **DSec（DeepSeek Elastic Compute）** 报告给出了生产证据�
 |---|---|---|
 | [The Cost of Dynamic Reasoning，v2，§IV-A、图 5](https://arxiv.org/html/2506.04301v2#S4.SS1) | 四类 benchmark、多种 Agent 工作流中，LLM 推理平均占总延迟 69.4%，工具执行占 30.2%；默认模型为 Llama-3.1-8B，使用 vLLM 0.6.6 | 支持模型阶段可能占据多数时间；LLM 阶段仍可能与工具重叠，不能直接当作整个 guest 的可卸载比例 |
 | [AgentSysBench，v1，§8.3、图 25(c,d)](https://arxiv.org/html/2608.15127v1#S8.SS3) | Mini-SWE 原型在模型规划调用超过固定时间阈值后卸载 sandbox，下一工具步骤前恢复；平均／峰值驻留内存降至基线的 1/4.6、1/2.1，延迟增加不超过 0.5% | 直接支持等待期卸载的收益潜力；指标是该次运行中全部并发 sandbox 进程的合计驻留内存，尚未证明整节点密度或整 VM 卸载 |
-| [pVisor 历史静态内存测量](../benchmarks/vm-memory/index.md#measurements)及其归档读数 | Linux x86_64/KVM，512 MiB guest、64 MiB 应用工作集；完整产品进程 PSS 约 179–181 MiB → 36 MiB，下降约 80%；含缓存的产品组 cgroup 约 224 MiB → 19 MiB | 给卸载后残留量提供参考；每条件 N=1、5 秒窗口，属于历史批次，不能代替真实 Agent 或整节点容量测量 |
+| [pVisor 历史静态内存测量](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history)及其归档读数 | Linux x86_64/KVM，512 MiB guest、64 MiB 应用工作集；完整产品进程 PSS 约 179–181 MiB → 36 MiB，下降约 80%；含缓存的产品组 cgroup 约 224 MiB → 19 MiB | 给卸载后残留量提供参考；每条件 N=1、5 秒窗口，属于历史批次，不能代替真实 Agent 或整节点容量测量 |
 
 AgentSysBench 未披露该卸载实验的阈值数值、并发数和底层卸载机制，适合作为方向证据。pVisor 的 PSS 与 cgroup 是不同口径，不能相加，也都不能直接替代整节点净回收量。
 
@@ -112,7 +112,7 @@ N_memory = floor((R_node - S_fixed - P_headroom) / m)
 
 `S_fixed` 包含系统和共享服务，`P_headroom` 为活动峰值、同时恢复及临时复制保留空间。前后的可用预算相同时，才得到表中的倍率；共享引擎或恢复余量增加时，还要乘以前后可用预算之比。等待阶段错开、恢复准入和硬预算共同决定实际可部署容量。
 
-卸载与恢复也会增加任务时间。现有同一历史静态批次中，raw 卸载操作为约 44–98 ms；随后包含恢复、64 MiB 数据摘要及写入／fsync／读回校验的完整任务，相比不卸载增加约 156–178 ms。这是后台编译环境中的单次观察差值，不是独立 resume 延迟或尾延迟保证。[计时定义与数据](../benchmarks/vm-memory/index.md#results)
+卸载与恢复也会增加任务时间。现有同一历史静态批次中，raw 卸载操作为约 44–98 ms；随后包含恢复、64 MiB 数据摘要及写入／fsync／读回校验的完整任务，相比不卸载增加约 156–178 ms。这是后台编译环境中的单次观察差值，不是独立 resume 延迟或尾延迟保证。[计时定义与数据](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history)
 
 若端到端任务时间增加比例为 `delta`，分别按原方案与新方案的完整任务计算平均驻留，每次完成任务的内存时间成本比例为：
 
