@@ -1,6 +1,6 @@
 # VM RAM offload
 
-> 架构说明见 [VM RAM offload 架构](../memory-optimization/offload.md)；本文仍作为实现与证据附录保留。
+> 架构见 [VM RAM offload 架构](../memory-optimization/offload.md)；以下是实现与证据附录。
 
 ## 1. Motivation {#motivation}
 

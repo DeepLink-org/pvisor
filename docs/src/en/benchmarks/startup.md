@@ -122,7 +122,7 @@ The complete Ready statistics CSV and provenance JSON remain local,
 retaining the latest successful batch for this condition. Standard deviation uses formal samples
 and the sample formula. These are Python clock measurements, separate from hyperfine completion.
 Historical Ready used a different binary artifact; timing boundaries alone cannot explain the difference.
-The current Ready / Exit experiment uses `just benchmark startup/timing "pvisor vm"`; this section retains the older Ready-only cohort.
+The current Ready / Exit experiment uses `just benchmark startup/timing "pvisor vm"`. The older Ready-only cohort is retained below.
 
 ### Historical Hyperfine: direct launch to normal exit {#hyperfine-startup}
 

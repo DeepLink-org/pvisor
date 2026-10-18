@@ -14,7 +14,7 @@ Applying prepared changes alone takes pVisor apply P50 of **17 ms, 0.93 s and 14
 
 <!-- measurement-status:start -->
 
-The numbers and conclusions on this page still belong to the original historical cohorts. The new framework has no matching rerun yet; see [measurement coverage](index.md#measurement-coverage).
+These numbers and conclusions remain the original historical cohorts; the new framework has no matching rerun. See [measurement coverage](index.md#measurement-coverage).
 
 <!-- measurement-status:end -->
 

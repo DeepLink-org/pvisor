@@ -4,7 +4,7 @@ To judge what a Job actually guarantees, check the requested permissions, admiss
 
 ## Policy layering rules {#layering}
 
-Policies narrow layer by layer: a later `allow` cannot override an earlier explicit `deny`. A layer that declares rules but omits `default_action` denies by default; with no policy configured at all, the network runs public and reads are unrestricted—to restrict them you must declare it. `--safe` requires isolation to be installed and rejects sensitive paths; `--strict` validates every requested dimension and refuses to run without evidence. For fields and presets see the [policy fields reference](../reference/policy.md) (in progress).
+Policies narrow layer by layer: a later `allow` cannot override an earlier explicit `deny`. A layer that declares rules but omits `default_action` denies by default; with no policy configured at all, the network runs public and reads are unrestricted—to restrict them you must declare it. `--safe` requires isolation to be installed and rejects sensitive paths; `--strict` validates every requested dimension and refuses to run without evidence. For fields and presets, see the [policy fields reference](../reference/policy.md).
 
 ## Check each dimension
 
@@ -42,7 +42,7 @@ Execution is rejected when a required control cannot be satisfied. Modes that al
 ## What records show
 
 ```text
-请求的权限 → 准入计划 → 安装控制 → 执行与观察 → 终态结果和 Run Bundle
+Requested permissions → admission plan → installed controls → execution and observations → terminal result and Run Bundle
 ```
 
 `status --review` displays the Run Bundle's controls, warnings and staged changes. File observations cover only operations that reach OverlayFS; network observations cover only traffic that reaches OverlayNet. `null` means unobserved; zero means observed with no hits. Operation counts are not a substitute for the final file diff.

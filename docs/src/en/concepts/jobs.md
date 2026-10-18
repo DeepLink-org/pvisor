@@ -7,7 +7,7 @@ pvisor run --safe --stage ../stage-001 -- codex
 pvisor status --review ../stage-001
 ```
 
-`pvisor run` creates a Job; `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` operate on it directly, with no `job` subcommand. On disk it keeps the `run-*` and Run Bundle names.
+`pvisor run` creates a Job; `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` operate on it directly, with no `job` subcommand. On disk, the directory and Run Bundle use the `run-*` name.
 
 ## Finding it again later
 
@@ -16,8 +16,8 @@ Lifecycle commands accept a selector: a Job ID, a stage directory, `run.json`, o
 `last` is a convenience that searches **default storage** only, by current workspace. With `--stage PATH` the Job lives in the stage directory, not default storage, so pass the path or ID explicitly:
 
 ```bash
-pvisor status --review ../stage-001      # 推荐：用暂存路径
-pvisor status --review run-20260102-abc  # 或者用 Job ID
+pvisor status --review ../stage-001      # stage path
+pvisor status --review run-20260102-abc  # or the Job ID
 ```
 
 When no Job belongs to the current workspace, pVisor fails instead of substituting another project's Job.

@@ -75,4 +75,4 @@ Native OverlayNet supplies VM outbound networking; OpenSandbox network-policy re
 
 ## Evidence scope {#validation}
 
-Source tests cover fake-runtime admission/lifecycle/restart/TTL, HTTP auth/schemas/filtering/endpoints and pure runtime parsing/argv. They do not establish native isolation, SDK end-to-end compatibility or density gains. No build, test, native sandbox or benchmark was run for this documentation change. Prior distributed Cluster gates and measurements do not validate this daemon.
+Source tests cover fake-runtime admission/lifecycle/restart/TTL, HTTP auth/schemas/filtering/endpoints and pure runtime parsing/argv. They do not establish native isolation, SDK end-to-end compatibility or density gains. No build, test, native sandbox or benchmark validates the current daemon. Prior distributed Cluster gates and measurements do not validate this daemon.

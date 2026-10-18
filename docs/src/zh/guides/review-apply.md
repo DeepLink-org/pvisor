@@ -8,9 +8,9 @@ pvisor status --review last
 pvisor inspect last -- git status --short
 ```
 
-`--safe` 不指定路径时，工作区改动保留在 Job 存储中；需要指定位置时用 `--stage PATH`（放在项目外，每次 Run 使用新目录）。
+不传 `--stage` 时，`--safe` 把工作区改动保留在 Job 存储中；需要指定位置时，用 `--stage PATH`，放在项目外，且每次 Run 使用新目录。
 
-`last` 解析当前工作区最新的 Job，使用 `--stage` 后由该路径代替 `last`。`status --review` 展示证据和改动，`inspect` 在只读视图中执行检查命令。见 [Job 与存储](../concepts/jobs.md)。
+`last` 解析当前工作区最新的 Job。使用了 `--stage` 时，用该路径代替 `last`。`status --review` 展示证据和改动，`inspect` 在只读视图中执行检查命令。见 [Job 与存储](../concepts/jobs.md)。
 
 ## 分批应用
 
@@ -34,11 +34,11 @@ pvisor apply last --all
 pvisor drop last
 ```
 
-丢弃只移除尚未应用的暂存改动，不能撤销已应用批次、网络调用或其他外部影响。丢弃之前想保留当前状态继续尝试，见[逻辑检查点与分叉](fork-checkpoint.md)。
+丢弃只移除尚未应用的暂存改动，不能撤销已应用批次、网络调用或其他外部影响。想在丢弃前保留当前状态、换个思路继续，见[逻辑检查点与分叉](fork-checkpoint.md)。
 
 ## 审查顺序与预期结果
 
-先确认 Job 已停止，再按以下顺序阅读：结果与退出码 → 实际文件/网络边界和警告 → 拒绝或失败的访问 → 净文件改动。允许规则和捕获记录不能代替强制力证据。
+先确认 Job 已停止，再按以下顺序读记录：结果与退出码 → 实际文件/网络边界和警告 → 拒绝或失败的访问 → 净文件改动。允许规则和捕获记录不能代替强制力证据。
 
 ```bash
 pvisor status --review --diff ../stage-001

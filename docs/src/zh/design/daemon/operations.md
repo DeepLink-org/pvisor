@@ -75,4 +75,4 @@ Bootstrap 与镜像配方**未提供，也未经端到端验证**。旧容器的
 
 ## 证据范围 {#validation}
 
-源码测试覆盖 fake-runtime 准入／生命周期／重启／TTL、HTTP 鉴权/schema/过滤/端点及纯运行时解析/argv，不建立原生隔离、SDK 端到端兼容或密度收益。本次文档修改没有运行构建、测试、原生 sandbox 或 benchmark。旧分布式 Cluster gate 和测量不验证该 daemon。
+源码测试覆盖 fake-runtime 准入／生命周期／重启／TTL、HTTP 鉴权/schema/过滤/端点及纯运行时解析/argv，不建立原生隔离、SDK 端到端兼容或密度收益。构建、测试、原生 sandbox 和 benchmark 都还没有验证当前 daemon。旧分布式 Cluster gate 和测量不验证该 daemon。

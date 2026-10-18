@@ -12,7 +12,7 @@ The runtime organizes an execution as a Session: admission resolves effective co
 
 Files and networks have different publication behavior. File changes can remain in a private upper until someone accepts them; a request sent to a remote service may already have produced an effect. File apply is consequently a separate publication action, while execution controls must act before requests leave. Examining logs afterwards cannot replace runtime restrictions.
 
-Who requests an operation, who owns the Attempt, which component processes a request, and who holds state—the layer-to-crate mapping is maintained as the ownership tables in [Core architecture](architecture.md) and is not repeated here. The walkthrough below simply connects the layers through one task.
+The layer-to-crate mapping for requests, Attempt ownership and state lives in the ownership tables in [Core architecture](architecture.md). The walkthrough below connects the layers through one task.
 
 The separate daemon embeds the runtime in a supervisor for each sandbox. After an API-process restart it can reconcile ownership of surviving supervisors; the VM does not automatically end with that API process. The daemon exposes sandbox lifecycle and service proxies, while native Jobs expose file review and supported checkpoint workflows. Their interfaces are described in [Core architecture](architecture.md) and [Daemon design](daemon/index.md). External orchestration owns cross-node placement, queues and application retries.
 
@@ -30,7 +30,7 @@ Cancellation shows why these identities matter. Closing a frontend changes obser
 
 The runtime resolves RunSpec, effective policy and executor capabilities before preparing filesystem, network and execution attachments. It calls `RunExecutor::execute` only after required launch facts commit successfully. Preparation may already have created directories or sockets, so a commit failure still requires resource cleanup.
 
-The executor returns `ExecutorOutput`; the Session continues with cleanup, observation checks and result storage. The durable Job service's `ManagedJobRun` separately owns the real Attempt join and `Server::finish`, while the frontend receives a wait adapter. A failed or dropped frontend wait requests cancellation. Accepted completion publication remains owned by a runtime task while its Tokio runtime survives.
+The executor returns `ExecutorOutput`; the Session continues with cleanup, observation checks and result storage. The durable Job service's `ManagedJobRun` separately owns the real Attempt join and `Server::finish`. The frontend receives a wait adapter. A failed or dropped frontend wait requests cancellation. Accepted completion publication remains owned by a runtime task while its Tokio runtime survives.
 
 ### Why resolve policy once?
 
@@ -93,7 +93,7 @@ The optional Linux daemon physical pool handles equal resident 4 KiB pages acros
 
 Two orderings matter. Recheck content before replacing a mapping, or writes after sampling can be lost. Release a still-mapped old slot only after removing its mapping, or slot reuse can change bytes visible to another VM. A disconnected connection alone cannot release those references: the pool waits for pidfd confirmation of peer exit.
 
-Raw-page sharing needs no userfaultfd and does not compress unique contents. It adds reference overhead and a pool-process failure domain; losing the current pool fails dependent VMs. Snapshot COW, KSM, physical pooling, cold compression and offload each have compatibility constraints. Their separate savings cannot be added into an assumed delivered combination. See [Memory optimization](memory-optimization/index.md) for budgets.
+Raw-page sharing needs no userfaultfd and does not compress unique contents. It adds reference overhead and a pool-process failure domain; losing the current pool fails dependent VMs. Snapshot COW, KSM, physical pooling, cold compression and offload each have compatibility constraints. Their savings cannot be added together into an assumed delivered total. See [Memory optimization](memory-optimization/index.md) for budgets.
 
 ### Why cold compression needs two quiescent windows
 
@@ -129,7 +129,7 @@ While an Agent reads A and produces C, a developer may change the target to D. T
 
 ![Comparing preimage A, candidate C and target D, followed by apply ledger stages](assets/apply-conflict.svg)
 
-For a live lower, protection begins with the first actual content observation, or the pre-mutation state for a write without a prior read. Frozen layouts use an explicit target baseline. Ordinary stat and directory listing do not hash every file. If an extra lower supplies B while the eventual target contains A, A remains the conflict baseline.
+For a live lower, protection starts at the first actual observation of file contents; a write without a prior read uses the pre-mutation state. Frozen layouts use an explicit target baseline. Ordinary stat and directory listing do not hash every file. If an extra lower supplies B while the eventual target contains A, A remains the conflict baseline.
 
 Under the target lock, apply first recovers pending batches, closes the selected paths over required dependencies, and compares the target with preimages. It persists Prepared intent before modifying the target, records TargetApplied after target updates, prunes accepted upper entries and finally records Committed. An interrupted operation can reconcile retained phases and recover forward.
 
@@ -147,7 +147,7 @@ Separating paths from content identity lets different paths in two images refere
 
 A `read(offset, length)` locates the inode and file-content index, computes intersecting blocks, and fetches local or remote objects only on cache misses. After the corresponding integrity checks it slices the requested range. Metadata paging and content caching have separate boundaries. Content misses do not hold a global file-service lock.
 
-A VM lazy lower directly uses the shared file service. A private metadata projection preserves structures needed for native inode/FD and path checks, while READ contents come from the content backend; sparse placeholder holes are not returned as actual file bytes. A first ordinary modification must materialize the original file and copy it up. Complete export or snapshot can also fetch previously untouched content.
+A VM lazy lower directly uses the shared file service. A private metadata projection preserves structures needed for native inode/FD and path checks, while file contents come from the content backend on a FUSE `READ`; sparse placeholder holes are not returned as actual file bytes. A first ordinary modification must materialize the original file and copy it up. Complete export or snapshot can also fetch previously untouched content.
 
 Lazy loading consequently moves some preparation work into first access. Hot-cache benefits, cold misses, metadata and copy-up costs need separate measurements. See [Shared image cache](shared-image-cache-storage.md) for storage and publication contracts. Source entry points are `pvisor/src/image/cache/backend.rs`, `direct.rs` and `storage.rs`.
 

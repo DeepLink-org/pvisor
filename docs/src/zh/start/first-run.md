@@ -21,9 +21,9 @@ git init -q && git add -A && git commit -qm init
 cat > ../agent.sh <<'SH'
 #!/usr/bin/env bash
 set -u
-printf 'print("patched")\n' >> src/app.py     # 修改源码
-rm -f src/legacy.txt                          # 删除文件
-printf 'scratch\n' > scratch.txt              # 工作区根目录的额外改动
+printf 'print("patched")\n' >> src/app.py     # edit source
+rm -f src/legacy.txt                          # delete a file
+printf 'scratch\n' > scratch.txt              # extra change at the workspace root
 cat .ssh/id_rsa >/dev/null 2>&1 || echo 'read .ssh/id_rsa: denied'
 curl -sS --max-time 5 https://example.com >/dev/null 2>&1 || echo 'reach example.com: blocked'
 SH
@@ -81,6 +81,12 @@ pvisor inspect ../agent-task-001 -- git --no-pager diff -- src
 
 `--safe` 按直接可执行文件名匹配网络预设；增加 `--overlaynet-allow` 会替换预设列表，依赖下载或其他模型服务要连同模型 API 一起列出。HOME 状态写入在退出后丢弃，不要依赖这次运行保存登录状态。其他 Agent 的凭据与接入条件见[Agent 接入](../guides/agents/index.md)。
 
-Job 停止后检查退出码、实际控制、警告和改动；非零退出也可能留下候选。想从文件状态重新尝试时，工作区 fork 要求已停止且有可重建启动策略的 host Job，父子 stage 必须在同一文件系统，并在全部 apply/drop 清理暂存数据前分叉；VM/container 或带 Gateway 路由的 Job 不支持此路径。冲突处理见[审查与应用](../guides/review-apply.md)。
+Job 停止后检查退出码、实际控制、警告和改动；非零退出也可能留下候选。以下条件同时成立时，工作区 fork 才能从文件状态重新尝试：
 
-扩大任务范围前注意两点：Linux host 的选择性代理仍是协作式，需要强制选择性出口时准备已安装 Agent 的 VM，凭据交付方式见[凭据与环境变量](../guides/policies/credentials.md)；增加并发时为每个任务准备独立 worktree 和 stage，用显式路径定位结果，逐份审查，不并发 apply 到同一目标树——[并行工作区流程](../guides/parallel-agents.md#batch)先用两个离线任务验证记录和合入，再替换成真实 Agent。
+- 父 Job 是已停止、且启动策略可重建的 host Job；
+- 父子 stage 在同一文件系统上；
+- 在全部 apply/drop 清理暂存数据之前分叉。
+
+VM/container 或带 Gateway 路由的 Job 不支持此路径。冲突处理见[审查与应用](../guides/review-apply.md)。
+
+扩大任务范围前有两项约束。Linux host 的选择性代理仍是协作式，需要强制选择性出口时准备已安装 Agent 的 VM，凭据交付方式见[凭据与环境变量](../guides/policies/credentials.md)。增加并发时为每个任务准备独立 worktree 和 stage，用显式路径定位结果，逐份审查，不并发 apply 到同一目标树；[并行工作区流程](../guides/parallel-agents.md#batch)先用两个离线任务验证记录和合入，再替换成真实 Agent。

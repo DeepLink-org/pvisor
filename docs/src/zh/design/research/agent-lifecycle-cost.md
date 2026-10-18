@@ -1,8 +1,8 @@
-# Agent 时代为何需要 pVisor
+# Agent 任务的生命周期成本
 
 **pVisor 要建立一种新的 Agent 执行范式：Agent 保持原有的顺序执行方式，由共享执行引擎接管可代理的 I/O，在等待期间回收资源，事件就绪后恢复原来的执行时间线。**
 
-让自主 Agent 的执行可以规模化，需要改变资源跟随任务的方式。启动更快的沙箱是基础；更大的机会在于，让大量有状态的 Agent 可以持续推进，而不必为每条时间线始终保留一份完整的驻留环境。
+让自主 Agent 的执行规模化，会改变资源跟随任务的方式。更快的沙箱启动是基础；更大的机会在于，让大量有状态的 Agent 持续推进，而不必为每条时间线从头到尾保留一份完整驻留环境。
 
 ## Agent 的时间线连续，资源需求却是间歇的 {#waiting-cost}
 
@@ -10,7 +10,7 @@
 
 计算与等待在这条时间线上反复交替。等待模型回答时，推理发生在外部服务，沙箱却可能继续持有内存、缓存和进程状态。
 
-DeepSeek 的 **DSec（DeepSeek Elastic Compute）** 报告给出了生产证据：在 2026 年初一周的样本中，约 90% 的容器和 microVM 沙箱，平均 CPU 使用量不超过申请量的 5%；生命周期中位数分别为 17.4 和 15.5 分钟，两者 P99 均超过 3 小时。报告也明确指出，沙箱会等待模型生成下一步动作，而状态和缓存仍然保留。[DSec §1、§4.3，图 5、图 7](https://arxiv.org/html/2609.22978v1#S4.SS3)
+DeepSeek 的 **DSec（DeepSeek Elastic Compute）** 报告给出了生产证据：2026 年初一周的样本中，容器与 microVM 两类后端约 90% 的沙箱，平均 CPU 使用量不超过申请量的 5%。生命周期中位数分别为 17.4 和 15.5 分钟，P99 均超过 3 小时。报告也明确指出，沙箱会等待模型生成下一步动作，而状态和缓存仍然保留。[DSec §1、§4.3，图 5、图 7](https://arxiv.org/html/2609.22978v1#S4.SS3)
 
 ![DSec 生产统计与 Agent 阶段示意：生命周期长、CPU 使用稀疏，状态可能持续驻留](assets/agent-workload-phases.svg)
 
@@ -24,15 +24,15 @@ DeepSeek 的 **DSec（DeepSeek Elastic Compute）** 报告给出了生产证据�
 
 ![从单线程顺序处理到每请求一线程：并发增加，等待期间仍保留各自的线程上下文](assets/io-thread-timelines.svg)
 
-事件驱动把等待集中起来，让较少的线程处理大量连接。Reactor 常用 epoll 等就绪通知，Proactor 围绕异步完成组织执行，IOCP 则提供完成通知与并发处理机制。直接采用这些模型，往往需要把顺序代码拆成状态机或回调，开发者也要管理更多执行状态。[epoll](https://man7.org/linux/man-pages/man7/epoll.7.html)、[IOCP](https://learn.microsoft.com/en-us/windows/win32/fileio/i-o-completion-ports)
+事件驱动把等待集中起来，用更少的线程处理大量连接。Reactor 等待 epoll 这类就绪通知；Proactor 提交操作后等待完成通知，IOCP 就是这种模型。直接采用这些模型，往往要把顺序代码拆成状态机或回调，并管理更多执行状态。[epoll](https://man7.org/linux/man-pages/man7/epoll.7.html)、[IOCP](https://learn.microsoft.com/en-us/windows/win32/fileio/i-o-completion-ports)
 
 透明协程进一步把这种改造集中到运行时：程序继续按顺序表达逻辑，运行时通过系统调用挂钩或标准库适配，把支持的阻塞 I/O 交给事件引擎；等待时挂起协程，就绪后从原来的调用位置继续。例如 libco 通过 socket 函数挂钩和 epoll / kqueue，让业务保留同步写法、异步执行。[libco](https://github.com/Tencent/libco)、[Go 的运行时调度](https://go.dev/doc/faq#goroutines)
 
 ![Reactor 与 Proactor 复用事件引擎；透明协程在其上保留多条顺序时间线，由运行时挂起和恢复](assets/io-events-coroutines.svg)
 
-图中用一个工作线程说明复用关系，实际可以扩展为多个。Reactor 通知“可以尝试读写”，Proactor 通知“已提交的操作完成”；协程则让应用不必直接围绕这些事件拆分状态。这里的透明，是在已适配的 I/O 上保留调用语义，并不意味着任意多线程程序都能自动、无损地迁移。
+图中用一个工作线程说明复用关系，实际可以扩展为多个。Reactor 通知“可以尝试读写”，Proactor 通知“已提交的操作完成”；协程则让应用不必直接围绕这些事件拆分状态。透明只覆盖已适配的 I/O 路径，并在那里保留调用语义；任意多线程程序仍需要显式迁移。
 
-**pVisor 希望把这种转变带到 Agent 执行层。** Agent 继续使用已有的代码和 Linux 工具，执行引擎负责把可接管的等待转成事件驱动的推进与恢复。适配工作集中在运行时，无须让每个 Agent 都重写自己的并发结构。
+**pVisor 把这种转变用到 Agent 执行层。** Agent 继续使用已有的代码和 Linux 工具；执行引擎把可接管的等待转成事件驱动的推进与恢复。适配留在运行时，Agent 不必重写并发结构。
 
 ## 用虚拟机承载 Agent 的执行上下文 {#agent-iocp}
 
@@ -40,11 +40,11 @@ DeepSeek 的 **DSec（DeepSeek Elastic Compute）** 报告给出了生产证据�
 
 ![机制对应：协程在系统调用处适配等待，pVisor 在 Linux 虚拟设备与协议边界接管 I/O；应用都保持原来的顺序调用](assets/agent-vm-coroutine-bridge.svg)
 
-**Agent 无感，意味着它继续运行原来的代码、使用原来的 Linux 工具、发起原来的调用。** 文件和网络 I/O 经过 Linux 与虚拟设备进入宿主，pVisor 在已适配的设备与协议路径接管请求。对 guest 内核、VMM 和宿主服务的改造集中在这一层，Agent 无需改写成异步程序，也无需调用专用的挂起、卸载或恢复接口。[VM 执行路径](../vm-runtime.md)
+**Agent 无感，意味着它继续运行原来的代码、使用原来的 Linux 工具、保留原来的阻塞调用。** 文件和网络 I/O 经过 Linux 与虚拟设备进入宿主，pVisor 在已适配的设备与协议路径接管请求。对 guest 内核、VMM 和宿主服务的改造集中在这一层，目标设计中，Agent 无需改写成异步程序，也无需调用专用的挂起、卸载或恢复接口。[VM 执行路径](../vm-runtime.md)
 
 ## Agent 看到连续执行，宿主按事件调度 {#execution-path}
 
-以一次可代理的模型请求为例：Agent 发起请求后照常等待。pVisor 将请求交给宿主推进，在整个 guest 可以安全等待时保存上下文、回收可卸载内存，让可复用的资源服务其他 Agent。响应到达后，pVisor 恢复这份上下文，让原来的调用返回，Agent 接着处理结果。
+以一次可代理的模型请求为例：Agent 发起请求后照常等待。pVisor 把请求交给宿主，由宿主推进；在整个 guest 可以安全等待时保存上下文、回收可卸载内存，让可复用的资源服务其他 Agent。响应到达后，pVisor 恢复这份上下文，让原来的调用返回，Agent 接着处理结果。
 
 ![两个视角：Agent A 只是等待原调用返回；宿主继续 I/O，在等待窗口运行 B 和 C，完成后恢复 A 并从原处续跑](assets/agent-transparent-scheduling.svg)
 
@@ -68,7 +68,7 @@ DeepSeek 的 **DSec（DeepSeek Elastic Compute）** 报告给出了生产证据�
 | [AgentSysBench，v1，§8.3、图 25(c,d)](https://arxiv.org/html/2608.15127v1#S8.SS3) | Mini-SWE 原型在模型规划调用超过固定时间阈值后卸载 sandbox，下一工具步骤前恢复；平均／峰值驻留内存降至基线的 1/4.6、1/2.1，延迟增加不超过 0.5% | 直接支持等待期卸载的收益潜力；指标是该次运行中全部并发 sandbox 进程的合计驻留内存，尚未证明整节点密度或整 VM 卸载 |
 | [pVisor 历史静态内存测量](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history)及其归档读数 | Linux x86_64/KVM，512 MiB guest、64 MiB 应用工作集；完整产品进程 PSS 约 179–181 MiB → 36 MiB，下降约 80%；含缓存的产品组 cgroup 约 224 MiB → 19 MiB | 给卸载后残留量提供参考；每条件 N=1、5 秒窗口，属于历史批次，不能代替真实 Agent 或整节点容量测量 |
 
-AgentSysBench 未披露该卸载实验的阈值数值、并发数和底层卸载机制，适合作为方向证据。pVisor 的 PSS 与 cgroup 是不同口径，不能相加，也都不能直接替代整节点净回收量。
+AgentSysBench 未披露该卸载实验的阈值数值、并发数和底层卸载机制，足以说明方向可行，但不能给出下面的参数取值。pVisor 的 PSS 与 cgroup 是不同口径，不能相加，也都不能直接替代整节点净回收量。
 
 负载差异同样有公开证据。[AgentCgroup，v2，§3.2](https://arxiv.org/html/2602.09345v2#S3.SS2) 的 SWE-rebench 实验中，LLM 推理仅占端到端时间的 26–44%，其余包含工具执行与初始化。因此，可卸载比例需要按目标负载设定；DSec 的低平均 CPU 使用率也不能换算成“95% 的时间可以卸载”。
 
@@ -98,7 +98,7 @@ K_memory = m0 / m1 = 1 / (1 - f * r + h)
 
 例如中性情景是 `1 - 70% × 80% + 5% = 49%`。若原来每个 Agent 平均占用 1 GiB，相同口径下预计变为约 0.49 GiB。扣除系统、共享引擎与恢复余量后，同样的 100 GiB Agent 内存预算，对应约 100 → 204 个执行上下文的平均驻留预算。
 
-`f = 70%` 已经要求大部分相关等待都能安全接管；它不是把公开研究的 69.4% 四舍五入得到的实测参数。`r = 80%` 借鉴小工作集卸载的量级，实际还受工作集、共享和缓存影响。`h = 5%` 则是待实现验证的预算：对于 1 GiB 原驻留，它允许平均新增约 51 MiB；原驻留较小或同时积压大量响应时，需要重新估算。
+`f = 70%` 假设大部分相关等待都能安全接管。它是设计假设，不是把公开研究的 69.4% 四舍五入得到的实测参数。`r = 80%` 借鉴小工作集卸载的量级，实际还受工作集、共享和缓存影响。`h = 5%` 则是待实现验证的预算：对于 1 GiB 原驻留，它允许平均新增约 51 MiB；原驻留较小或同时积压大量响应时，需要重新估算。
 
 宿主缓冲值得投入多少内存，也可以用这个模型判断。固定 `f = 70%`、`r = 80%`，若 `h` 从 5% 增至 15% 或 30%，倍率会从 2.04 降到 1.69 或 1.35。现有实验性宿主写缓存的单连接 payload 上限为 64 MiB，上限并不等于平均占用；多连接、元数据与响应暂存仍要共同受预算约束。[缓冲预算与当前限制](../experimental/agent-io-completion/index.md)
 
@@ -112,7 +112,7 @@ N_memory = floor((R_node - S_fixed - P_headroom) / m)
 
 `S_fixed` 包含系统和共享服务，`P_headroom` 为活动峰值、同时恢复及临时复制保留空间。前后的可用预算相同时，才得到表中的倍率；共享引擎或恢复余量增加时，还要乘以前后可用预算之比。等待阶段错开、恢复准入和硬预算共同决定实际可部署容量。
 
-卸载与恢复也会增加任务时间。现有同一历史静态批次中，raw 卸载操作为约 44–98 ms；随后包含恢复、64 MiB 数据摘要及写入／fsync／读回校验的完整任务，相比不卸载增加约 156–178 ms。这是后台编译环境中的单次观察差值，不是独立 resume 延迟或尾延迟保证。[计时定义与数据](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history)
+卸载与恢复也会增加任务时间。现有同一历史静态批次中，raw 卸载操作为约 44–98 ms；随后包含恢复、64 MiB 数据摘要及写入／fsync／读回校验的完整任务，相比不卸载增加约 156–178 ms。这是后台编译环境中的单次观察差值；它既不是独立 resume 延迟，也不是尾延迟保证。[计时定义与数据](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history)
 
 若端到端任务时间增加比例为 `delta`，分别按原方案与新方案的完整任务计算平均驻留，每次完成任务的内存时间成本比例为：
 
@@ -146,6 +146,6 @@ C_memory_time_new / C_memory_time_old = (m1 / m0) * (1 + delta)
 | 同时唤醒数、读写字节、活动／恢复峰值和恢复至首次有效执行的延迟分布 | 恢复余量、带宽及排队是否允许预计承载量；尾延迟需要足够样本 |
 | 原调用的输出、错误、顺序、同步、取消，以及任务完成数和端到端延迟 | 增加的执行上下文能否保持正确并完成有效工作 |
 
-现有基础包括受控文件与网络路径、暂停与内存卸载原语，以及实验性的宿主写缓存；自动识别等待、接管 I/O、完成唤醒与恢复调度仍需贯通验证。两图展示的是这一目标机制。[等待与卸载实验](../experimental/vcpu-idle-offload/index.md)、[Agent I/O 完成机制](../experimental/agent-io-completion/index.md)
+现有基础包括受控文件与网络路径、暂停与内存卸载原语，以及实验性的宿主写缓存；自动识别等待、接管 I/O、完成唤醒与恢复调度仍需贯通验证。[等待与卸载实验](../experimental/vcpu-idle-offload/index.md)、[Agent I/O 完成机制](../experimental/agent-io-completion/index.md)
 
-**pVisor 要让 Agent 像使用透明协程那样，保留熟悉的执行方式，由运行时把等待转化为资源共享的机会。虚拟机提供承载这次转变的上下文与控制边界。**
+**透明协程是最接近的先例：顺序代码、共享资源、运行时管理的等待。pVisor 把这套模型用到 Agent 执行上，由虚拟机提供上下文与控制边界。**

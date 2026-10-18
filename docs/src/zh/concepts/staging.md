@@ -2,7 +2,7 @@
 
 暂存把 Job 的工作区改动留在写时复制的 upper 层。只有显式的 `apply` 才会改变目标工作区。因此文件改动在 apply 之前是可逆的：选择合入、丢弃，或分叉。
 
-这里定义暂存契约，每条承诺对应 `docs/src/zh/cases/06-stage-apply.md` 中的一个用例，可用 `just cases --suite stage` 复现。操作流程见[审查与应用](../guides/review-apply.md)。
+每条承诺对应 `docs/src/zh/cases/06-stage-apply.md` 中的一个用例，可用 `just cases --suite stage` 复现。操作流程见[审查与应用](../guides/review-apply.md)。
 
 ## 承诺
 
@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | apply 前工作区不变 | 成功、非零退出或信号终止后，工作区的路径、类型、内容、权限位与链接目标都与初始状态一致，直到 apply | S-STAGE-001 |
 | Job 读取自己的变更 | Job 能看到自己的写入、删除与重命名，而宿主工作区不变 | S-STAGE-002 |
-| Review 表示净效果 | 清单等于净新增、删除与修改；创建后又删除的文件不出现 | S-STAGE-003 |
+| 审查清单表示净效果 | 清单等于净新增、删除与修改；创建后又删除的文件不出现 | S-STAGE-003 |
 | 全部 apply 等价直接运行 | 暂存一个脚本后执行 `apply --all`，得到的树与直接在 workspace 中运行脚本一致 | S-STAGE-004 |
 | drop 后拒绝 apply | drop 保持工作区不变；之后的 apply 被拒绝且无效果 | S-STAGE-005 |
 | 选择性 apply 只影响所选子树 | `apply --path P` 只改 P 及其后代；两个覆盖全部改动的选择性批次等价于一次 `--all` | S-STAGE-006 |

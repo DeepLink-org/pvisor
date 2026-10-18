@@ -1,6 +1,6 @@
 # VM RAM offload
 
-> See [VM RAM offload architecture](../memory-optimization/offload.md) for the architecture; this document remains the implementation and evidence appendix.
+> Architecture: [VM RAM offload](../memory-optimization/offload.md). The sections below are the implementation and evidence appendix.
 
 ## 1. Motivation {#motivation}
 

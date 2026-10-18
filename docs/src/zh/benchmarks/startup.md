@@ -113,7 +113,7 @@ host 和 staged 的等待为十几到几十毫秒，适合频繁启动的短命�
 该条件的 Ready 完整统计 CSV 与来源 JSON 保存在本地，
 保留最新成功批次；标准差是正式样本的样本标准差。这是 Python 时钟数据，不是 hyperfine
 完整退出耗时。历史 Ready 使用不同二进制制品，不能只根据计时边界解释两者数值差异。
-当前 Ready / Exit 实验使用 `just benchmark startup/timing "pvisor vm"`；本节保留旧的 Ready-only 批次。
+当前 Ready / Exit 实验使用 `just benchmark startup/timing "pvisor vm"`；旧的 Ready-only 批次保留在下方。
 
 ### 历史 Hyperfine：直接启动到正常退出 {#hyperfine-startup}
 

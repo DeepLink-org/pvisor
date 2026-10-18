@@ -14,7 +14,7 @@
 
 <!-- measurement-status:start -->
 
-本页数值和结论仍属于原始历史批次；新框架尚无匹配的复测数据，见[复测覆盖](index.md#measurement-coverage)。
+这些数值与结论仍属于原始历史批次；新框架尚无匹配的复测数据，见[复测覆盖](index.md#measurement-coverage)。
 
 <!-- measurement-status:end -->
 

@@ -7,7 +7,7 @@ pvisor run --safe --stage ../stage-001 -- codex
 pvisor status --review ../stage-001
 ```
 
-`pvisor run` 创建 Job；`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 都直接操作它，没有 `job` 子命令。磁盘上沿用 `run-*` 和 Run Bundle 的名字。
+`pvisor run` 创建 Job；`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 都直接操作它，没有 `job` 子命令。磁盘上的目录与 Run Bundle 沿用 `run-*` 名称。
 
 ## 之后怎么再找到它
 
@@ -16,8 +16,8 @@ pvisor status --review ../stage-001
 `last` 是便利写法，只在**默认存储**里按当前工作区查找。用 `--stage PATH` 时 Job 存在暂存目录中，不在默认存储里，这时显式给出路径或 ID：
 
 ```bash
-pvisor status --review ../stage-001      # 推荐：用暂存路径
-pvisor status --review run-20260102-abc  # 或者用 Job ID
+pvisor status --review ../stage-001      # stage path
+pvisor status --review run-20260102-abc  # or the Job ID
 ```
 
 找不到当前工作区的 Job 时，pVisor 会报错，而不是拿别的项目的 Job 顶上。

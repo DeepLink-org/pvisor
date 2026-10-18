@@ -133,7 +133,7 @@ This revision reads source/existing documentation without compiling or running p
 
 These cover deduplication, order and some failure boundaries. Read-only FD injection does not simulate every post-write sync_all failure. Cancellation uses memory mode rather than disk durability, and concurrent-position checks are not throughput benchmarks. A full process/power-loss matrix, long-log recovery, subscriber-lag recovery and storage-device failures remain unmeasured here.
 
-No disk throughput, p99 fsync or recovery peak-memory results are attributable to this documentation revision. Source confirms one sync_all per new disk Event, no file rewrite on duplicate submission, and full open/records scans. Growth and synchronization cost should guide the next measurements.
+Disk throughput, p99 fsync and recovery peak-memory remain unmeasured. The source confirms one `sync_all` per new disk Event, no file rewrite on duplicate submission, and full open/records scans. Growth and synchronization cost should guide the next measurements.
 
 ## 5. Usage recommendations {#usage}
 

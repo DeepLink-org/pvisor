@@ -12,7 +12,7 @@ pVisor 将这些问题落实到执行、文件、网络和状态存储的具体�
 
 文件和网络从这里分开。文件修改可以先留在私有 upper，等运行结束后再决定是否合入；发给远程服务的请求通常已经产生了外部效果。因此，文件 apply 是一个独立的发布动作，而执行边界必须在请求发出之前生效。仅在结束后检查日志无法替代运行时限制。
 
-谁发起操作、谁拥有 Attempt、哪个组件处理请求、谁持有状态——这些层次与 crate 的一一对应由[核心架构](architecture.md)的所有权表维护，本页不再重复；下面只用一次任务把各层串起来。
+层次与 crate 的对应关系由[核心架构](architecture.md)的所有权表维护，本页不再重复；下面只用一次任务把各层串起来。
 
 独立 daemon 在每个 sandbox 的 supervisor 中嵌入 runtime。API 进程重启后可以重新核对存活 supervisor 的归属；VM 的生命周期不会因此自动结束。daemon 暴露 sandbox 生命周期与服务代理，原生 Job 提供文件审查和受支持的检查点流程；两者的接口范围见[核心架构](architecture.md)和[daemon 设计](daemon/index.md)。跨节点选机、队列和业务重试属于外部编排。
 
@@ -30,7 +30,7 @@ Job 表示需要持续管理的任务身份；Attempt 表示一次实际执行�
 
 实际顺序是先解析 RunSpec，确定有效策略与执行器能力，再准备文件、网络和运行附件。必要启动事实提交成功后才调用 `RunExecutor::execute`。准备本身可能创建目录或 socket，所以提交失败仍需要清理已准备资源。
 
-执行器返回 `ExecutorOutput`，Session 继续做清理、控制观察核对和结果保存。持久 Job 服务的 `ManagedJobRun` 另外拥有真实 Attempt join 与 `Server::finish`；前端拿到等待适配器。前端等待出错或被丢弃会请求取消，已接受的完成发布仍由 runtime 任务持有，只要其 Tokio runtime 继续存活。
+执行器返回 `ExecutorOutput`，Session 继续做清理、控制观察核对和结果保存。持久 Job 服务的 `ManagedJobRun` 另外拥有真实 Attempt join 与 `Server::finish`。前端拿到的是等待适配器。前端等待出错或被丢弃会请求取消，已接受的完成发布仍由 runtime 任务持有，只要其 Tokio runtime 继续存活。
 
 ### 策略为何要解析一次
 
@@ -93,7 +93,7 @@ Linux daemon 的可选物理池处理不同 VM session 中相同的驻留 4 KiB 
 
 这里有两个关键顺序。内容必须在替换映射前复核，否则采样后发生的 guest 写入会丢失；仍被映射的旧槽位必须在撤销映射后释放，否则被复用的槽位会改变另一个 VM 看到的字节。连接断开也不能直接释放引用，池需等 pidfd 确认对端退出。
 
-raw-page 共享不需要 userfaultfd，也不压缩独有内容。它增加了池进程的故障域和引用开销；当前池丢失会让依赖 VM 失败。snapshot COW、KSM、物理池、冷压缩和 offload 有各自的兼容性限制，不能把它们的收益相加成一个已交付组合。具体预算见[内存优化](memory-optimization/index.md)。
+raw-page 共享不需要 userfaultfd，也不压缩独有内容。它增加了池进程的故障域和引用开销；当前池丢失会让依赖 VM 失败。snapshot COW、KSM、物理池、冷压缩和 offload 有各自的兼容性限制，不能把各自的收益相加，当成一个已经交付的总量。具体预算见[内存优化](memory-optimization/index.md)。
 
 ### 冷压缩为何需要两次静止窗口
 
@@ -129,7 +129,7 @@ Agent 读到 A 并生成 C 时，开发者可能已把目标文件改成 D。upp
 
 ![原像 A、候选 C、宿主 D 的比较，以及 apply 账本的三个阶段](assets/apply-conflict.svg)
 
-live lower 的保护起点是首次实际内容观察，或未读即写时的修改前状态；冻结布局使用明确对应目标的 baseline。普通 stat 和目录枚举不会哈希所有文件。若额外 lower 提供 B，而真正要覆盖的 target 是 A，冲突基线仍是 A。
+对 live lower，保护从第一次实际观察文件内容开始；没有先读的写入，则从修改前状态开始。冻结布局使用明确对应目标的 baseline。普通 stat 和目录枚举不会哈希所有文件。若额外 lower 提供 B，而真正要覆盖的 target 是 A，冲突基线仍是 A。
 
 apply 在目标锁下恢复已有未完成批次，展开选中路径的必要依赖，再检查目标是否匹配 preimage。通过后先持久化 Prepared 意图，再写目标；目标更新完成后记录 TargetApplied，裁剪已接受的 upper，最后提交 Committed。中断后可以根据保留的阶段向前核对和恢复。
 
@@ -147,7 +147,7 @@ apply 在目标锁下恢复已有未完成批次，展开选中路径的必要�
 
 一次 `read(offset, length)` 先定位 inode 和文件内容索引，计算所需块；缓存未命中才访问本地或远程对象，完成对应完整性校验后截取所需范围。元数据分页和内容缓存有各自边界；内容 miss 不占用整个文件服务的全局锁。
 
-VM 的 lazy lower 直接接入共享文件服务。私有元数据投影保留本地 inode/FD 与路径检查所需结构，文件 READ 由内容后端提供；占位文件的空洞不作为真实文件内容返回。首次普通修改需要物化原文件并 copy-up，完整导出或快照也可能下载此前未访问的内容。
+VM 的 lazy lower 直接接入共享文件服务。私有元数据投影保留本地 inode/FD 与路径检查所需结构，文件内容由内容后端通过 FUSE `READ` 提供；占位文件的空洞不作为真实文件内容返回。首次普通修改需要物化原文件并 copy-up，完整导出或快照也可能下载此前未访问的内容。
 
 因此 lazy 的主要取舍是把部分准备成本转到第一次访问。热缓存下减少的读取与冷 miss、元数据、copy-up 的成本需要分别测量。存储格式与发布规则见[共享镜像缓存](shared-image-cache-storage.md)，源码入口是 `pvisor/src/image/cache/backend.rs`、`direct.rs`、`storage.rs`。
 

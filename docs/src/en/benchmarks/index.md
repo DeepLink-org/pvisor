@@ -2,7 +2,7 @@
 
 ## Conclusions {#conclusions}
 
-**For frequently created large workspaces with sparse changes, pVisor stage completes the machine workflow sooner: changing twenty of 10,000 files and retaining ten takes 141 ms in stage, 248 ms with Git worktree and 343 ms with btrfs reflink. Native workflows are faster for small workspaces; budget VM tool waiting from each configuration’s independent measurements.**
+**Use pVisor stage for large workspaces with sparse changes, and native workflows for small workspaces or tool-only execution. Do not choose a VM from its startup time.** Changing twenty of 10,000 files and retaining ten takes 141 ms in stage, 248 ms with Git worktree and 343 ms with btrfs reflink. Native workflows are faster on small workspaces. A VM's tool waiting has to come from complete-task measurements, not from its startup number.
 
 | Scenario | Selection implication |
 |---|---|
@@ -10,7 +10,7 @@
 | Small workspace or tool execution alone | Compare native workflows and container costs |
 | VM or concurrent capacity | Require complete tool and resource measurements |
 
-When choosing across configurations, choose execution modes using measured workloads with matching budgets and timing boundaries; use different configurations to understand their individual performance levels. Startup, tool execution, application and resource occupancy answer different questions and cannot substitute for one another.
+Compare configurations on the same workload, budget and timing boundary. Startup, tool execution, application and resource occupancy answer different questions and cannot substitute for one another.
 
 | Decision | Required evidence |
 |---|---|
@@ -20,25 +20,25 @@ When choosing across configurations, choose execution modes using measured workl
 
 <!-- measurement-status:start -->
 
-Filesystem measurements cover nine configurations and 19 layered workloads, with three independent environments per cell and three resident rounds, without an interference gate. Of 505 executed environments, 501 pass and 4 resource cells time out; 8 subsequent observations are explicitly skipped. Historical N5/N30 and single-pass tasks remain separate; other topics retain their own cohorts.
+Filesystem measurements cover nine configurations and 19 layered workloads, with three independent environments per cell and three resident rounds. Of 505 executed environments, 501 pass and 4 resource cells time out; the protocol explicitly skips 8 later observations. Historical N5/N30 and single-pass tasks remain separate, and other topics keep their own cohorts.
 
 <!-- measurement-status:end -->
 
 ## Motivation {#motivation}
 
-Selection requires the total cost of producing the same result, beyond startup or a single command. Faster startup does not guarantee faster compilation, and writable mounts and staged review provide different workflows; review/application, execution boundaries and resource use determine which Agent workflows suit pVisor.
+Choosing a mode requires the total cost of producing the same result. Startup time and single-command timings measure something narrower. A faster boot does not make compilation faster, and a writable bind mount and staged review are different workflows. Review and application, execution boundaries and resource occupancy decide which Agent workloads fit pVisor.
 
 ## Experiment design {#interpretation}
 
-This reuses separately registered [startup](startup.md), [filesystem](filesystem.md), [repair](agent-tasks.md) and [complete review workflow](supervision-cost.md) experiments. Startup and repair use 60 samples per backend with three warmups; current filesystem measurements cover nine configurations and 19 workloads, with N3 fresh environments per cell and three resident rounds, without separate warmups; historical N5/N30 remains separate; review uses thirty samples and three warmups per size/condition/backend. Same host and CPUs 0,1, with cache states defined by each topic and randomized interleaving. Valid timings pass correctness checks; failures and skipped observations remain explicit, with no speed-based exclusions. Workloads, resources and timing boundaries differ across topics; distributions are not pooled. Docker uses rootless overlay2; workflow controls are native Git/reflink, not container or VM security rankings.
+This page reuses separately registered [startup](startup.md), [filesystem](filesystem.md), [repair](agent-tasks.md) and [complete review workflow](supervision-cost.md) experiments. Startup and repair use 60 samples per backend with three warmups. Filesystem measurements cover nine configurations and 19 workloads, with three fresh environments per cell and three resident rounds; historical N5/N30 cohorts stay separate. Review uses 30 samples and three warmups per size, condition and backend. All runs share the host and CPUs 0–1, with cache states defined by each topic and randomized interleaving. Valid timings pass correctness checks; failures and skipped observations stay explicit, with no speed-based exclusions. Docker uses rootless overlay2, and workflow controls are native Git and reflink rather than container or VM security rankings.
 
 [Network](network.md) uses thirty independent batches and three warmups per condition; each small-request sample is the median of 256 requests. The origin is outside the payload CPU budget and memory is not identically capped. [Capacity](density.md) uses a shared two-core, 2 GiB, zero-swap budget, five rounds per concurrency and separate idle/useful-tool conditions; every failure, unknown outcome and OOM remains counted.
 
-[Lazy images](lazy-image-startup.md) covers file loading through the same host staged executor and separate Docker/lazy VM shell and NumPy startup cohorts. For the matched four-file stage probe, pVisor has shorter cold- and warm-client median waits than OverlayBD; the historical VM comparisons favor lazy for cold clients and Docker for warm clients. Both studies use prepared local services and separate content, metadata and total-response accounting. Their cache states, execution boundaries and budgets remain distinct rather than forming a single ranking.
+[Lazy images](lazy-image-startup.md) measures file loading through the same host staged executor, plus shell and NumPy startup for Docker and lazy VMs in separate cohorts. For the matched four-file stage probe, pVisor has shorter cold- and warm-client median waits than OverlayBD; the historical VM comparisons favor lazy for cold clients and Docker for warm clients. Both studies use prepared local services and separate content, metadata and total-response accounting. Their cache states, execution boundaries and budgets remain distinct rather than forming a single ranking.
 
 ### Same-host controls and timing
 
-B-STARTUP, B-FS-TOOLS and B-AGENT-TASK use one offline tool environment and fixed inputs across native, pVisor host/staged/VM, private rootless Docker, Firecracker PCI and QEMU q35/microvm. Images, tools and daemon are prepared beforehand. Every execution uses the same two-core affinity; tool VMs have matching configured memory. Each job gets a fresh workspace, with seeded randomized runtime order. Complete Ubuntu, macOS and distinct binaries remain separate cohorts.
+The startup, filesystem-tool and end-to-end task experiments use one offline tool environment and fixed inputs across native, pVisor host/staged/VM, private rootless Docker, Firecracker PCI and QEMU q35/microvm. Images, tools and daemon are prepared beforehand. Every execution uses the same two-core affinity; tool VMs have matching configured memory. Each job gets a fresh workspace, with seeded randomized runtime order. Complete Ubuntu, macOS and distinct binaries remain separate cohorts.
 
 Downloads, benchmark compilation, image import and input copying are excluded. Timing separates first valid output, internal tools plus validation, returned results and launch-to-process-exit. Successful samples require validated outputs, observed executor and complete staging. Staged modes also verify that original host files remain unchanged.
 
@@ -76,7 +76,7 @@ The separate layered filesystem cohort executes 505 environments: 501 pass, 4 re
 
 Network has 510 valid batches. Capacity retains all 320 batches, including 57 failures. These experiments remain separate and do not form one capacity or speed ranking. Retired Controller/Worker results are [historical evidence](cluster-scalability.md), excluded from current comparisons and daemon sizing; daemon throughput, density and history costs are unmeasured.
 
-Net physical-memory savings and useful-task density from compression, trimmed-kernel benefits, full Ubuntu and macOS comparisons have not completed validation with current artifacts; no advantage is claimed for them. Cloud services, gVisor/Kata and complete RL throughput have no matched ranking. Apply, network, isolation and replay require their own evidence and cannot be inferred from these short tasks.
+Net physical-memory savings and useful-task density from compression, trimmed-kernel benefits, full Ubuntu and macOS comparisons are not yet validated on current artifacts; no advantage is claimed for them. Cloud services, gVisor/Kata and complete RL throughput have no matched ranking. Apply, network, isolation and replay require their own evidence and cannot be inferred from these short tasks.
 
 [Network](network.md) · [Apply](supervision-cost.md#apply-cost) · [Density](density.md) · [VM memory](vm-memory/index.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md)
 
@@ -96,7 +96,7 @@ q35 and microvm use one Ubuntu template. Their samples and percentiles remain se
 
 ### Tasks and resources {#product-v1}
 
-[Application](supervision-cost.md#apply-cost) · [Network](network.md) · [Concurrency](density.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md) · [Review](supervision-cost.md). Unmeasured industry alternatives are marked explicitly, without marketing numbers filling gaps.
+[Application](supervision-cost.md#apply-cost) · [Network](network.md) · [Concurrency](density.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md) · [Review](supervision-cost.md). Industry alternatives without measurements are marked as unmeasured.
 
 ### Engineering experiments and data retention {#evidence-format}
 
@@ -110,7 +110,7 @@ This table separates new measurements from historical evidence. Data is updated 
 
 {{ table("measurement-coverage.render.json", {"markdown":true}) }}
 
-Filesystem coverage refers to the nine-mode, 19-workload N3 protocol, with four incomplete resource cells; historical N5/N30 does not fill its gaps.
+Filesystem coverage refers to the nine-mode, 19-workload N3 protocol, with four incomplete resource cells; historical N5/N30 data does not fill those gaps.
 
 ### Sources and reproduction {#run}
 

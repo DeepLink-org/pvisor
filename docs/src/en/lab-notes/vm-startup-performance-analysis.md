@@ -74,7 +74,7 @@ Optimization must preserve isolation, durable Run records and attestation semant
 
 ### Timing boundaries and workload
 
-We measure from launching pVisor until a new VM executes its first shell command and returns output, labeled **Ready** in the tables. This covers host preparation, VM startup and command execution: the startup wait after a user issues a command.
+Measurement starts when pVisor launches and ends when a new VM executes its first shell command and returns output, labeled **Ready** in the tables. It covers host preparation, VM startup and command execution: the startup wait after a user issues a command.
 
 **Exit** runs from the same starting point until normal runtime exit, including result persistence and shutdown. Every trial creates a fresh VM with warm host caches. pVisor uses directories; reference image download and creation occur before timing. Complete Ubuntu additionally requires distribution services to be ready, with a separate new batch.
 

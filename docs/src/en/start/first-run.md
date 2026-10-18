@@ -21,9 +21,9 @@ git init -q && git add -A && git commit -qm init
 cat > ../agent.sh <<'SH'
 #!/usr/bin/env bash
 set -u
-printf 'print("patched")\n' >> src/app.py     # 修改源码
-rm -f src/legacy.txt                          # 删除文件
-printf 'scratch\n' > scratch.txt              # 工作区根目录的额外改动
+printf 'print("patched")\n' >> src/app.py     # edit source
+rm -f src/legacy.txt                          # delete a file
+printf 'scratch\n' > scratch.txt              # extra change at the workspace root
 cat .ssh/id_rsa >/dev/null 2>&1 || echo 'read .ssh/id_rsa: denied'
 curl -sS --max-time 5 https://example.com >/dev/null 2>&1 || echo 'reach example.com: blocked'
 SH
@@ -81,6 +81,12 @@ pvisor inspect ../agent-task-001 -- git --no-pager diff -- src
 
 `--safe` matches network presets by the direct executable filename. Adding `--overlaynet-allow` replaces the preset list, so list model APIs alongside dependency downloads or other model services. HOME writes are discarded after exit; do not depend on this run to persist login state. See [Agent integration](../guides/agents/index.md) for other agents' credentials and prerequisites.
 
-After the Job stops, check its exit code, installed controls, warnings, and changes; a nonzero exit can still leave candidates. To retry from file state, workspace fork requires a stopped host Job with reconstructible launch policy, parent and child stages must share a filesystem, and you must fork before a full apply/drop cleans up staging data; VM/container Jobs or Jobs with Gateway routes do not support this path. See [review and apply](../guides/review-apply.md) for conflict handling.
+After the Job stops, check its exit code, installed controls, warnings, and changes; a nonzero exit can still leave candidates. Workspace fork can retry from file state when all of these hold:
 
-Before expanding the task scope, note two things: selective proxies on Linux host remain cooperative, so for mandatory selective egress prepare a VM with the agent installed (see [credentials and environment](../guides/policies/credentials.md) for delivery methods); when adding concurrency, give each task a separate worktree and stage, select results by explicit paths, review each separately, and never apply concurrently into the same target tree—the [parallel workspace workflow](../guides/parallel-agents.md#batch) verifies records and merging with two offline tasks before substituting real agents.
+- the parent Job is a stopped host Job with reconstructable launch policy;
+- parent and child stages share a filesystem;
+- you fork before a full apply or drop cleans up staging data.
+
+VM/container Jobs and Jobs with Gateway routes do not support this path. See [review and apply](../guides/review-apply.md) for conflict handling.
+
+Two constraints apply before expanding the task scope. Selective proxies on the Linux host remain cooperative, so prepare a VM with the agent installed when you need mandatory selective egress ([credentials and environment](../guides/policies/credentials.md)). When adding concurrency, give each task a separate worktree and stage, select results by explicit paths, review each separately, and never apply concurrently into the same target tree; the [parallel workspace workflow](../guides/parallel-agents.md#batch) verifies records and merging with two offline tasks before you substitute real agents.

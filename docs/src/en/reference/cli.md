@@ -453,7 +453,7 @@ layers are retained, and the project base, rootfs and executor are unchanged.
 Deliver credentials to the Agent with an explicit `--pass-env`, or let a
 configured Gateway hold the upstream key on the trusted side.
 
-Startup prints the effective policy and override notices. Note that:
+Startup prints the effective policy and override notices:
 
 - Without `--safe`, host/container selective proxies remain bypassable.
 - Hostname rules cannot distinguish inference, telemetry and upload APIs under

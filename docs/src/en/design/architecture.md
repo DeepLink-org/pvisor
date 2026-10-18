@@ -4,7 +4,7 @@ pVisor processes Operations: it accepts requests, decides how to handle and plac
 
 There are two responsibilities: **core provides definitions; pvisor provides implementation.** External callers submit execution requests, control execution through a run handle and observe progress and results through Events.
 
-For the overall diagram and an end-to-end task walkthrough see [Design and internals](index.md); this page maintains crate ownership, API boundaries and the host authority path.
+For the overall diagram and an end-to-end task walkthrough see [Design and internals](index.md). The contracts below cover crate ownership, API boundaries and the host authority path.
 
 ## Definitions and implementation
 
@@ -167,7 +167,7 @@ full platform behavior; see above for macOS identity and cleanup limits.
 
 ## A production execution path
 
-For the full preparation, launch-fact commit, dispatch, cleanup and terminal-publication sequence see the walkthrough in [Design and internals](index.md#execution). This page keeps only the three ownership-level contracts.
+For the full preparation, launch-fact commit, dispatch, cleanup and terminal-publication sequence see the walkthrough in [Design and internals](index.md#execution). The three ownership-level contracts follow.
 
 `RunSpec` is execution configuration supplied by the caller; `Operation` is the structured operation description. The only current production operation is `run.execute`, with program, arguments and working directory. Executors consume the effective RunSpec and prepared driver attachments. `PVisor::resolve_operation` uses the same admission path for pre-launch review; it cannot replace execution or evidence that controls were installed.
 

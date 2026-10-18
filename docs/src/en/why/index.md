@@ -1,16 +1,16 @@
 # Why pVisor
 
-Because letting an agent finish a task unattended takes three execution-layer things, not a stronger model: limit the files and network it can touch, hold its changes short of the target until you decide, and leave a verifiable record of what ran. pVisor is the runtime that builds these three into every execution.
+Use pVisor when you want an agent to finish a task without watching every command. It limits what the agent can touch, holds its file changes until you decide what to merge, and records what ran. A mistake stays bounded, a failed attempt is cheap to drop, and a result can be checked after the run.
 
 ## Reduce intervention during execution
 
-How long an agent can run depends on how long you are willing to watch. Approve every command and human attention becomes the ceiling; go fully automatic and you must accept that it may corrupt files, read what it should not, and send requests where they should not go.
+An agent can run only as long as you are willing to watch it. Approve every command and your attention becomes the ceiling. Switch to full auto and you accept that it may corrupt files, read what it should not, or send requests to the wrong host.
 
-More tasks take more attention when every command needs approval. Execution boundaries and post-run review can reduce intervention while tasks run. The difference is amortization: process review adds one decision per step and needs a human present throughout; deferred review amortizes—results can be sampled, batched, and machine-checked, and once process facts are recorded completely they can be verified after the fact in one pass instead of being intercepted during execution.
+Approval cost scales with steps; review cost scales with results. Deferring review lets you sample results, batch them, and machine-check them. A complete record can be verified in one pass after the run instead of intercepted during it.
 
 ## Decouple supervision from execution volume
 
-To let go, every execution needs three things at once:
+Unattended execution needs three properties at once:
 
 | Property | Meaning | What it means for you |
 | --- | --- | --- |
@@ -18,9 +18,9 @@ To let go, every execution needs three things at once:
 | Reversible | Changes can be selectively merged, discarded, or forked before they are applied | Failure is cheap, so you dare to let go |
 | Checkable | Execution leaves a record you can verify | Review can sample, or even be handed to a machine |
 
-pVisor implements the three concretely: access boundaries installed at runtime ([file and network policies](../guides/policies/files.md)), file changes staged in a private upper until you merge them ([staging and apply](../concepts/staging.md)), and identity, event and result records written for every Job ([capabilities, evidence, and guarantee boundaries](../concepts/capabilities-and-evidence.md)).
+Each property has a mechanism: access boundaries installed at runtime ([file and network policies](../guides/policies/files.md)), file changes staged in a private upper until you merge them ([staging and apply](../concepts/staging.md)), and identity, event and result records written for every Job ([capabilities, evidence, and guarantee boundaries](../concepts/capabilities-and-evidence.md)).
 
-Scaling also calls for controlling environment preparation, tool execution, model waiting, and repeated work after failures. [Agent task lifecycle cost](../design/research/agent-lifecycle-cost.md) connects these costs to pVisor's execution paths, choice of isolation mechanisms, and the core insight and engineering challenge of letting the host take over I/O while the guest is offloaded during waits.
+At scale, environment preparation, tool execution, model waiting and failure rework enter the bill too. [Agent task lifecycle cost](../design/research/agent-lifecycle-cost.md) accounts for them across pVisor's execution paths and isolation choices, including host-side I/O takeover while a guest is offloaded during a wait.
 
 ## Responsibilities of the execution layer
 
@@ -30,7 +30,7 @@ Executors provide isolation through host namespaces/Seatbelt, containers, or VMs
 
 ## Today, and after {#trust-ladder}
 
-By the timing and degree of human intervention, autonomous execution falls into four levels:
+Autonomous execution falls into four levels, by when and by how much a human intervenes:
 
 | Level | How humans intervene (trust axis) | What carries it (scale axis) | Status |
 | --- | --- | --- | --- |
@@ -39,9 +39,12 @@ By the timing and degree of human intervention, autonomous execution falls into 
 | L2 | Policy and evidence determine exemptions; humans spot-check | Multiple local Jobs / one pipeline | Next |
 | L3 | Audit afterward; humans handle exceptions only | Clustered: cross-node scheduling, centralized evidence | pVisor's scale target |
 
-The four levels are a reference; pVisor's choice is L1: enforce access boundaries at runtime, stage file changes, then inspect records and results—use the `--ask` runtime approval channel when individual operations need approval. The [single-node daemon](../guides/daemon/index.md) manages local sandbox lifecycle through an API separate from native Job review; external systems such as Kubernetes and Ray handle cross-node scheduling, with pVisor providing execution semantics and checkable records within them.
+pVisor targets L1 today: enforce access boundaries at runtime, stage file changes, then inspect records and results. Use the `--ask` approval channel when an individual operation needs a human decision. The [single-node daemon](../guides/daemon/index.md) manages local sandbox lifecycle through an API separate from native Job review; Kubernetes, Ray and similar systems own cross-node scheduling, with pVisor supplying execution semantics and checkable records.
 
-The same capabilities solve different problems at different scales: a fully automated refactor with one person and one agent works today; parallel runs and batch review across many agents are next (see [parallel agents](../guides/parallel-agents.md)); teams and platforms can adopt the L1 workflow in CI today (see [running in CI](../guides/ci.md)); agentic RL and evaluation need a recorded, forkable, replayable batch execution substrate (see [RL rollouts](../guides/rl-rollouts.md) and [research directions](../design/research/index.md)).
+- **One person, one agent.** An unattended refactor with the changes reviewed before merge: available today.
+- **One person, many agents.** Parallel runs with batch review: next ([parallel agents](../guides/parallel-agents.md)).
+- **Teams and platforms.** The L1 workflow in CI: available today ([running in CI](../guides/ci.md)).
+- **Agentic RL and evaluation.** A recorded, forkable, replayable batch substrate: direction ([RL rollouts](../guides/rl-rollouts.md), [research directions](../design/research/index.md)).
 
 !!! note "Under construction"
-    "Human supervision cost per unit of agent work" has no measured data yet—requirements and acceptance criteria are in [supervision cost](../benchmarks/supervision-cost.md). The entry criteria and gap list for L2/L3 are not final; see the [roadmap](../community/roadmap.md) for progress and [concurrency density](../benchmarks/density.md) for the capacity rationale.
+    Supervision cost per unit of agent work has no measurements yet; requirements and acceptance criteria are in [supervision cost](../benchmarks/supervision-cost.md). L2/L3 entry criteria are not final: see the [roadmap](../community/roadmap.md) for progress and [concurrency density](../benchmarks/density.md) for the capacity rationale.

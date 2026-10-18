@@ -1,6 +1,6 @@
 # Run many agents on one host and review them in batches
 
-Give every parallel agent its own workspace and Stage. Each result then has a separate baseline, log, and change set, making it easy to review without mixing outputs from different agents.
+Give every parallel agent its own workspace and stage. Each result then has a separate baseline, log, and change set, making it easy to review without mixing outputs from different agents.
 
 Prepare two workspaces from the Git repository root:
 
@@ -9,11 +9,11 @@ git worktree add --detach ../pvisor-task-a HEAD
 git worktree add --detach ../pvisor-task-b HEAD
 ```
 
-Enter each directory separately and launch the commands below. Keep each Stage outside its workspace. Start with two concurrent tasks, measure resources using the [density experiment](../benchmarks/density.md), then increase concurrency.
+Enter each directory in its own terminal and run the commands below. Keep each stage outside its workspace. Start with two concurrent tasks, measure resources using the [density experiment](../benchmarks/density.md), then increase concurrency.
 
-## A manual workflow the current tools can do
+## Run two tasks in separate worktrees
 
-Run one Job in each of two independent checkouts/worktrees, with a separate stage outside the project and an explicit selector for each task. The lower layer then does not change when the other task applies, so you can review the results separately; networking and credentials are still decided by each Job's policy.
+Run one Job in each of two independent checkouts/worktrees, with a separate stage outside the project and an explicit selector for each task. Applying one task then leaves the other task's lower unchanged, so each result can be reviewed on its own. Networking and credentials remain per-Job policy decisions.
 
 ```bash
 # Terminal A / workspace A
@@ -33,11 +33,11 @@ Forking from the same stopped Job preserves a shared staged starting point, but 
 
 ## What decides how many can run
 
-Validate with two tasks first, then record processes, FUSE mounts, VM memory, disk, model-service quota, and proxy-port use. Give each Job a non-conflicting port; do not publish 8/32/128 capacity claims without data. Read the Bundle for the actual effect of resource limits; see [concurrency density](../benchmarks/density.md).
+Validate with two tasks first, then record processes, FUSE mounts, VM memory, disk, model-service quota, and proxy-port use. Give each Job a non-conflicting port, and choose concurrency from measurements rather than round numbers such as 8, 32 or 128. Read the Bundle for the actual effect of resource limits; see [concurrency density](../benchmarks/density.md).
 
 ## Validate the batch workflow with two offline tasks {#batch}
 
-Start with shell tasks to verify independent workspaces and records. Run this Bash script from the original repository directory using the two worktrees created above. Each task creates its own file; the host must support safe tasks.
+Start with shell tasks to verify independent workspaces and records. Run this Bash script from the original repository directory using the two worktrees created above. Each task creates its own file. The host executor must support `--safe` runs.
 
 ```bash
 (
@@ -75,4 +75,4 @@ git -C ../pvisor-task-a status --short
 
 A's file is written back to its own worktree. A new file appears in `git status`; ordinary `git diff` does not show it before it is added to the index. Test and commit in that worktree, then integrate through your project's merge process.
 
-When substituting agents, keep a separate Stage for every task and configure credentials and networking using [Codex](agents/codex.md) or [Claude Code](agents/claude-code.md). Map each result to its workspace before reviewing and applying it; your pipeline controls merge ordering for a shared target tree.
+When substituting agents, keep a separate stage for every task and configure credentials and networking using [Codex](agents/codex.md) or [Claude Code](agents/claude-code.md). Map each result to its workspace before reviewing and applying it; your pipeline controls merge ordering for a shared target tree.

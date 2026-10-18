@@ -1,6 +1,6 @@
 # 单机多 Agent 并行与批量审查
 
-让多个 Agent 并行解决任务时，每个任务使用独立工作区和独立 Stage。这样每份结果都有自己的基线、日志和改动，评审时不会把两个 Agent 的输出混在一起。
+让多个 Agent 并行解决任务时，每个任务使用独立工作区和独立 stage。这样每份结果都有自己的基线、日志和改动，评审时不会把两个 Agent 的输出混在一起。
 
 从 Git 仓库根目录准备两个工作区：
 
@@ -9,11 +9,11 @@ git worktree add --detach ../pvisor-task-a HEAD
 git worktree add --detach ../pvisor-task-b HEAD
 ```
 
-分别进入这两个目录，使用下面的命令启动任务。两个 Stage 都放在对应工作区之外。先从两个并发任务开始，按[并发密度实验](../benchmarks/density.md)测量资源，再增加并发。
+分别在各自的终端进入这两个目录并运行下面的命令。两个 stage 都放在对应工作区之外。先从两个并发任务开始，按[并发密度实验](../benchmarks/density.md)测量资源，再增加并发。
 
-## 现有工具能完成的手工方案
+## 在两个独立 worktree 中运行两个任务
 
-在两个独立 checkout/worktree 中各运行一个 Job，每个任务使用项目外的独立 stage 和明确选择器。这样 lower 不会因另一任务 apply 而变化，结果可以分别审查；网络和凭据仍由每个 Job 的策略决定。
+在两个独立 checkout/worktree 中各运行一个 Job，每个任务使用项目外的独立 stage 和明确选择器。一个任务 apply 不会改变另一个任务的 lower，两份结果可以分别审查。网络和凭据仍由每个 Job 的策略决定。
 
 ```bash
 # Terminal A / workspace A
@@ -33,11 +33,11 @@ pvisor status --review ../stage-b
 
 ## 运行数量由什么决定
 
-先从两个任务验证，再记录进程、FUSE 挂载、VM 内存、磁盘、模型服务额度和代理端口占用。每个 Job 使用不冲突的端口；没有数据时不发布 8/32/128 的容量承诺。资源限制的实际效果读 Bundle；容量测试见[并发密度](../benchmarks/density.md)。
+先从两个任务验证，再记录进程、FUSE 挂载、VM 内存、磁盘、模型服务额度和代理端口占用。每个 Job 使用不冲突的端口；并发度按实测决定，8、32、128 不是默认值。资源限制的实际效果读 Bundle；容量测试见[并发密度](../benchmarks/density.md)。
 
 ## 两个离线任务跑通批量流程 {#batch}
 
-先用 shell 任务验证两个工作区和两份记录能独立运行。从原仓库目录启动下面的脚本；它使用前面创建的两个 worktree，两个任务分别创建自己的文件。此示例需要 Bash 和能够运行 safe 任务的宿主。
+先用 shell 任务验证两个工作区和两份记录能独立运行。从原仓库目录启动下面的脚本；它使用前面创建的两个 worktree，两个任务分别创建自己的文件。此示例需要 Bash，宿主执行器需要支持 `--safe`。
 
 ```bash
 (
@@ -75,4 +75,4 @@ git -C ../pvisor-task-a status --short
 
 A 的文件写回它自己的 worktree；新增文件会显示在 `git status`，尚未加入 Git 索引时不会出现在普通 `git diff`。需要集成到主分支时，在该 worktree 完成测试和提交，再走项目的合并流程。
 
-替换为 Agent 时保留每个任务自己的 Stage，按 [Codex](agents/codex.md)或 [Claude Code](agents/claude-code.md)设置凭据与网络。先将每份结果映射到 workspace，再逐份评审和 apply；同一目标树的合入顺序由你的流水线控制。
+替换为 Agent 时保留每个任务自己的 stage，按 [Codex](agents/codex.md)或 [Claude Code](agents/claude-code.md)设置凭据与网络。先将每份结果映射到 workspace，再逐份评审和 apply；同一目标树的合入顺序由你的流水线控制。

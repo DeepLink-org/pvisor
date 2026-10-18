@@ -19,7 +19,7 @@ pip install pvisor
 pvisor --version
 ```
 
-wheel 将 Python 版本标记与原生 CLI 脚本直接安装到当前 Python 环境的 bin 目录，不经过 Python 启动器。项目有其他
+wheel 把 Python 版本标记与原生 CLI 脚本安装到当前 Python 环境的 bin 目录，不经过 Python 启动器。项目有其他
 Python 依赖时，建议使用虚拟环境：
 
 ```bash
@@ -33,7 +33,7 @@ pip install pvisor
 
 ## 2. 检查平台要求
 
-wheel 安装支持 macOS 和 Linux，要求 Python 3.10 或更新版本；安装后的原生 CLI 不使用 Python 启动器。普通 host Job 默认直接写入工作区；
+wheel 安装支持 macOS 和 Linux，要求 Python 3.10 或更新版本。普通 host Job 默认直接写入工作区；
 `--safe` 或 `--stage` 才使用文件系统暂存。在 macOS 上运行暂存的 host Job 前，先安装 macFUSE：
 
 ```bash
@@ -70,7 +70,7 @@ just install-cli
 ```
 
 测试特定原生构建时，直接调用其路径（例如 `target/debug/pvisor`），或把其目录放在 `PATH` 最前。
-安装后的原生脚本不使用旧启动器的 `PVISOR_BIN` 覆盖。Editable Python 安装不是原生 CLI 构建；
+安装后的原生脚本忽略 `PVISOR_BIN`。Editable Python 安装不是原生 CLI 构建；
 使用 `just build` 或 `just install-cli`。
 
 ## 单独安装单机 daemon {#daemon}

@@ -8,9 +8,9 @@ pvisor status --review last
 pvisor inspect last -- git status --short
 ```
 
-Without an explicit path, `--safe` keeps workspace changes in the Job store. To choose a location, pass `--stage PATH` with a fresh directory outside the project for each Run.
+Without `--stage`, `--safe` keeps workspace changes in the Job store. To choose a location, pass `--stage PATH`, using a fresh directory outside the project for each Run.
 
-`last` resolves the current workspace's most recent Job; after `--stage`, select that path instead of `last`. `status --review` shows evidence and changes, and `inspect` runs check commands in a read-only view. See [Jobs and storage](../concepts/jobs.md).
+`last` resolves the most recent Job for the current workspace. If you passed `--stage`, address that path instead of `last`. `status --review` shows evidence and changes, and `inspect` runs check commands in a read-only view. See [Jobs and storage](../concepts/jobs.md).
 
 ## Apply in batches
 
@@ -34,11 +34,11 @@ Stop other writers during apply: these checks cannot make a multi-file update at
 pvisor drop last
 ```
 
-Drop removes only the staged changes that have not been applied. It cannot undo applied batches, network calls, or other external effects. To keep the current state and keep trying, see [checkpoints and forks](fork-checkpoint.md).
+Drop removes only the staged changes that have not been applied. It cannot undo applied batches, network calls, or other external effects. To keep the current state and try another approach, see [checkpoints and forks](fork-checkpoint.md).
 
 ## Review order and expected results
 
-Confirm the Job has stopped, then read in this order: outcome and exit code → actual file and network boundaries and warnings → denied or failed accesses → net file changes. Allow rules and captures do not replace mandatory-control evidence.
+Confirm the Job has stopped, then read the record in this order: outcome and exit code → actual file and network boundaries and warnings → denied or failed accesses → net file changes. Allow rules and captures do not replace mandatory-control evidence.
 
 ```bash
 pvisor status --review --diff ../stage-001
