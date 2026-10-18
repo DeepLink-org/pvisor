@@ -14,17 +14,11 @@ These numbers and conclusions remain the original historical cohorts; the new fr
 
 ## Experiment design {#interpretation}
 
-Linux x86_64, AMD Ryzen 7 9700X, Fedora 7.2.8-200.fc44.x86_64. Launched process trees and the private Docker daemon are pinned to CPUs 0,1. VMs use 2 vCPU, 128 MiB for the shell probe and 16 GiB for tools. Native/Docker memory is uncapped: this is a CPU-controlled task comparison, not a capacity comparison under identical memory limits. Host/staged use rootless_process.
+Measure time from launch through exit for a fixed tool plan as complete-task time. That time is what one Agent task costs; a shorter time delivers the same verified result sooner.
 
-All backends share offline tools and fixed inputs, with a new workspace per trial. Warm caches, three warmups and 60 measured samples per fixed-plan cell; 30 for environment checks and real CLIs; backends alternate in seeded randomized order. Preparation, builds, image import and fixture resets are outside timing; complete tasks include launch and exit. 
+All backends share offline tools and fixed inputs, with a new workspace per trial, under Linux x86_64 / Ryzen 7 9700X / Fedora 7.2.8 on CPUs 0–1. VMs use 2 vCPU, 128 MiB for the shell probe and 16 GiB for tools; native and Docker memory is uncapped, so this compares CPU-controlled task time rather than capacity. Warm caches, three warmups and 60 samples per fixed-plan cell (30 for environment checks and real CLIs), with seeded randomized order.
 
-Docker Engine 29.7.2 uses a private rootless **overlay2** daemon, the classic image store and writable bind mounts. Firecracker 1.13.1 PCI runs without jailer; QEMU 10.2.2 uses q35/microvm and private ext4. pVisor VM uses virtio-fs and its own firmware. Kernels, storage and staging semantics differ: these are task costs for the stated configurations, not pure VMM or security rankings.
-
-The fixed plan inspects/searches the repository, fixes Python, runs Python/Rust/Node tests, installs 32 offline npm packages and generates a diff. Result ends at checked returned results; Completion includes exit. Tests and expected edits must pass. The tool plan does not measure model inference or establish compatibility of real Agent CLIs.
-
-These samples do not verify equal Node/npm compile-cache state across backends, and a fresh workspace does not mean an empty tool cache. Complete-task differences include each configuration's cache behavior and cannot all be attributed to staging or the VMM.
-
-Scenario analysis also reuses separately registered [filesystem](filesystem.md), [complete review workflow](supervision-cost.md), [startup](startup.md), [lazy-image](lazy-image-startup.md) and [isolation](isolation-tests.md) experiments. Review has thirty samples per cell and includes view creation, twenty edits, review, application of ten files and cleanup; Git/reflink do not supply the same isolation. Experiments remain separate: do not sum medians to estimate a real Agent task or reuse their differing budgets for one ranking.
+The fixed plan inspects and searches the repository, runs Python, Rust and Node tests, installs 32 offline npm packages and generates a diff. Result ends at checked returned results; Completion includes exit. Docker uses a private rootless overlay2 daemon, Firecracker PCI runs without jailer, QEMU uses q35/microvm, and pVisor VM uses virtio-fs: kernels, storage and staging differ, so these are task costs, not VMM or security rankings. The plan does not measure model inference or establish real-CLI compatibility, and a fresh workspace does not imply an equal tool cache.
 
 ## Data and analysis {#results}
 
@@ -83,7 +77,6 @@ The environment check runs Python, Node, Git, Cargo/Rustc and CLI version checks
 | Firecracker PCI | 1.50 | 2.98 | 7.72 |
 | QEMU q35 | 0.88 | 2.07 | 6.93 |
 | QEMU microvm | 0.80 | 2.05 | 6.86 |
-
 
 Claude Code in pVisor VM exceeded the 90 s initialization deadline during preflight: zero valid samples, excluded from latency comparisons. Other Claude conditions and every Codex condition completed the controlled tool loop.
 

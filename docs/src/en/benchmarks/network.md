@@ -14,6 +14,8 @@ These numbers and conclusions remain the original historical cohorts; the new fr
 
 ## Experiment design {#interpretation}
 
+Measure per-request time for small requests, and time to first byte plus full transfer for bulk transfers, as request latency. That latency is what an Agent pays on every call; lower latency fits more model turns or downloads into the same time.
+
 Linux/x86_64, one local HTTP origin on the same host, without Internet, TLS or DNS. Compare native, pVisor host proxy, VM auto TCP, Podman host network and pVisor OCI proxy. Every payload uses two fixed CPUs (host 0/1, two VM vCPU); memory is not identically capped and the HTTP origin sits outside the payload budget. This is not a resource-density ranking.
 
 Small requests use 256 fresh TCP connections per batch, eight threads and 1 KiB responses. Take the median within each batch, then summarize 30 independent batches; 7,680 correlated requests are not independent samples. Bulk sends 32 MiB per batch in 1 KiB writes. Stream sends ten 13-byte events, 2 ms apart. First byte means the first HTTP body byte, not model TTFT. Transfer time includes connection and reading, excluding later digest validation; worker total time includes validation.

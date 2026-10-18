@@ -14,11 +14,13 @@ These numbers and conclusions remain the original historical cohorts; the new fr
 
 ## Experiment design {#interpretation}
 
+Count the tasks that pass every check within one fixed cgroup budget as valid completed tasks. That count is how much real work the system finishes; more of them under the same budget means higher effective capacity.
+
 Compare native processes, pVisor stage, pVisor VM and Podman 5.8.7 on Linux/x86_64. Each batch has a fresh cgroup with a shared two-core quota, CPU 0/1 affinity, a 2 GiB memory limit and zero swap. The coordinator, payloads and helpers are inside the budget; Podman payload/conmon membership is checked. Each VM has 2 vCPU/256 MiB, still constrained by the common total budget.
 
 Scan concurrency 1, 2, 4, 8, 16, 32, 64 and 128, with five fresh batches per cell and no warmups. Conditions are randomized within each round. All tasks wait at a stdin readiness barrier before release. Idle tasks use the same Python environment without private data or edits. Useful tasks touch and checksum all 32 MiB of private data, edit four files in a 64-file Git repository, run `git status` and verify all contents. Stage/VM preserve the original workspace and match results to independent Run records.
 
-The primary memory metric is whole-cgroup physical accounting, including charged page cache, kernel memory and private backing. Prepared shared tool/image caches may be charged to a parent cgroup, so this does not rank net whole-machine memory. Failed, unknown and OOM outcomes remain counted; only entirely verified, no-OOM batches enter memory/timing summaries, and slow valid samples remain. Five rounds cover this workload only: they do not establish long-term reliability or tail latency, and exclude inference, large builds and real Agent CLIs.
+Memory is counted as whole-cgroup physical accounting, including charged page cache, kernel memory and private backing. Prepared shared tool/image caches may be charged to a parent cgroup, so this does not rank net whole-machine memory. Failed, unknown and OOM outcomes remain counted; only entirely verified, no-OOM batches enter memory/timing summaries, and slow valid samples remain. Five rounds cover this workload only: they do not establish long-term reliability or tail latency, and exclude inference, large builds and real Agent CLIs.
 
 ## Data and analysis {#results}
 

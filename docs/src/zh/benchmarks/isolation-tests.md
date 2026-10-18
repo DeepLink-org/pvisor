@@ -14,6 +14,8 @@
 
 ## 实验设计 {#interpretation}
 
+测量每个执行模式在路径已知的 fixture 中的边界——哪些访问放行、哪些拒绝、写入最终落在哪里——作为实际隔离边界。实际隔离边界是模式真正执行的那一层；边界越紧，宿主上可达或可改的路径越少。
+
 七种配置各运行三次独立 fixture，每次用固定种子打乱配置顺序，共 21 次。native 与 host 提供宿主可访问的对照；Podman 使用私有 overlay 存储和可写工作区挂载，pVisor OCI 使用 crun 与显式可写挂载；VM 与 OCI 使用同一份预备 Python/Git rootfs。
 
 每次必须成功读取视图内文件、写入并读回工作区文件、使用内部 Unix socketpair。视图外试探包括绝对路径、符号链接、`/proc/self/root`、父目录遍历、绝对路径和符号链接写入、宿主 Unix socket 连接，以及 lower 的绝对路径别名写入。检查实际输出、宿主最终字节、stage 内容和 Bundle 中的执行边界，不能只依据 syscall 返回值。

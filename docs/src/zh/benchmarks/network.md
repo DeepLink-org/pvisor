@@ -14,6 +14,8 @@ Agent 会请求模型、下载依赖、读取流式响应，三种负载对代�
 
 ## 实验设计 {#interpretation}
 
+测量小请求的单次耗时，以及大块传输的首字节与完整传输耗时，作为请求延迟。它是 Agent 每次调用实际支付的时间；延迟越低，同样时间内能完成更多模型轮次或下载。
+
 Linux/x86_64，同一宿主上的本地 HTTP 服务，没有公网、TLS 或 DNS。比较原生、pVisor host proxy、VM auto TCP、Podman host network 和 pVisor OCI proxy。所有 payload 使用两个固定 CPU（宿主 0/1、VM 两个 vCPU），但内存没有相同的硬上限，HTTP 服务在 payload 预算之外；这不是资源密度排名。
 
 小请求每批 256 个新 TCP 连接、八线程、每次 1 KiB；先取每批请求中位数，再统计 30 个独立批次，不能把 7,680 个相关请求当作独立样本。bulk 每批传输 32 MiB，服务按 1 KiB 块写出；stream 为十个 13 字节事件，每次间隔 2 ms。首字节是 HTTP 响应体首字节，不是模型 TTFT。传输计时包括建立连接和读取，之后的摘要校验不计入传输，但计入 worker 总时间。

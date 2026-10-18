@@ -14,29 +14,11 @@ These numbers and conclusions remain the original historical cohorts; the new fr
 
 ## Experiment design {#interpretation}
 
-### Complete task workflow: B-WORKFLOW
+Measure the machine time of the complete workflow — create the view, review, apply selected paths, discard the rest — as complete-workflow time. That time is the overhead between an Agent finishing and a change landing; shorter time means more changes are reviewed per hour.
 
-The controls are pVisor rootless stage, a detached Git worktree and a btrfs reflink copy. Inputs are identical prepared, committed and packed Git repositories containing either 100 or 10,000 files of 4 KiB each. Each task changes twenty files, produces their complete content diffs, applies the first ten and discards the rest. Git and reflink workflows extract a patch for the selected paths with `git diff`, run `git apply --check`, then apply it.
+Three backends — pVisor stage, a detached Git worktree and a btrfs reflink copy — run identical prepared repositories of 100 or 10,000 files. Each task changes twenty files, applies the first ten and discards the rest. Timing covers view creation, edits, content review, selective application and disposal; input preparation and resets are excluded. Each cell has thirty samples and three warmups, randomized with a fixed seed, warm caches, on CPUs 0–1.
 
-Timing covers task-view creation, executing edits, content review, selective application and disposal, summed across machine steps. Stage's view creation is included in run. Preparing input repositories, resetting every control to an identical starting point and harness correctness checks are excluded. Prepared, long-lived worktree reuse is unmeasured.
-
-Linux/x86_64, AMD Ryzen 7 9700X, Fedora kernel 7.2.8-200.fc44.x86_64, btrfs; the entire execution tree is pinned to host CPUs 0,1. Each backend, size and application condition has thirty independent samples and three warmups, randomized and interleaved with a fixed seed and warm caches. Git automatic maintenance is disabled; reflink is required and cannot fall back to a regular copy. Local provenance identifies frozen artifacts and source digests.
-
-Normal application and a host conflict are separate conditions. Every sample must pass complete file inventory and content checks: execution leaves the original unchanged; normal application changes only the ten selected files. The conflict case changes one selected host file before application and requires refusing the entire application while preserving all host content. Stage also requires Run Bundle evidence of staging and rootless isolation. Failures are retained and counted, never timed as zero; no samples are excluded for their speed. Two sizes × two conditions × three backends produce 360 measured samples, with zero failures.
-
-This fixed file-editing task excludes inference, compilation and human reading. Git/reflink execute native processes with different isolation. Conflict checks do not cover races between Git's check and write, or compare crash recovery and durability guarantees. These results do not rank containers, VMs or security.
-
-### Prepared-view review: B-SUPERVISION
-
-A separate experiment measures only review of a prepared view: twenty small text files already contain identical edits; review every original/edited content, apply the first ten and discard the other ten. Stage timing includes `status --review --diff`, selective `apply` and `drop`. Git timing includes complete diff review, selected patch extraction, `git apply --check`, application and worktree removal. View creation, task execution, fixtures and validation are excluded. Git 2.55.0 is identified by executable digest before sampling; the frozen stage artifact has separate provenance. Each group has thirty samples and three warmups, CPUs 0 and 1, warm caches and no benchmark-specific host memory cap. All sixty formal samples pass content, selection and execution-boundary checks, with final workspaces retained for independent audit and no speed-based exclusions. Prepared-view review is summarized separately and is not added to the complete-workflow table.
-
-### Application scale and recovery: B-APPLY
-
-The host is an AMD Ryzen 7 9700X running Linux 7.2.8-200.fc44 x86_64. Measured processes are pinned to CPUs 0 and 1, with no benchmark-specific host memory cap. Caches are warm and the page cache is not actively cleared. The workload updates small text files in one directory; staged changes and Git patches are generated before timing. Workspace preparation and subsequent verification are outside timing.
-
-At 10, 1,000, 10,000 and 100,000 files, measure pVisor apply, Git apply, native copying, drop and rejection of a conflict introduced before application. Each condition has three warmups and 30 samples, totaling 600 formal timings; a fixed seed randomizes size and operation order within each round. Successful samples must pass complete target-content checks and applicable application-ledger checks. Failures are retained separately, and all valid slow samples are retained without exclusions based on duration.
-
-Independent correctness checks include three actual SIGKILL hits at each of three durable states in a 10,000-file application, and three host-edit injections during application using the same binary. For the latter, pause after one file has changed while the file to be edited still has its original content, write and synchronize the external edit, then resume. These checks cover finite injection windows, not every concurrent schedule.
+Every sample passes full inventory and content checks: the original stays unchanged, a normal apply changes only the ten selected files, and a conflict case must refuse the whole batch while preserving host content. Failures are counted, never timed as zero. A separate prepared-view experiment measures review, apply and drop over twenty files, and an apply-scale experiment covers 10 to 100,000 files with SIGKILL and host-edit injections. The fixed editing task excludes inference, compilation and human reading, and is not a container, VM or security ranking.
 
 ## Data and analysis {#results}
 

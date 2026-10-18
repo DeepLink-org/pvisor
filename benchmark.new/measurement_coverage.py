@@ -159,9 +159,9 @@ def coverage():
             page = row["page"].removeprefix("benchmarks/")
             if page == "startup.md":
                 description = (
-                    "同次启动 Ready / Exit；完整命令另列"
+                    "启动到首条校验输出；不报告退出时间"
                     if locale == "zh"
-                    else "Same-launch Ready / Exit; whole-command time is separate"
+                    else "Launch to first checked output; exit time is not reported"
                 )
             elif page == "replay-fidelity.md":
                 description = (

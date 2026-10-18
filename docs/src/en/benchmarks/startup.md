@@ -2,151 +2,38 @@
 
 ## Motivation {#motivation}
 
-Agent workloads arrive in bursts of short-lived calls: a task finishes and its environment is discarded, then the next task builds a new one. Each call pays the startup wait again, so the cost accumulates with call volume. Startup latency decides how soon the first command runs and how often a developer is willing to create an isolated environment for one task. Short tasks also pay for exit and tool execution.
+Agent workloads arrive in bursts of short-lived calls: a task finishes and its environment is discarded, then the next task builds a new one. Each call pays the startup wait again, so the cost accumulates with call volume. Startup latency decides how soon the first command runs and how often a developer is willing to create an isolated environment for one task.
 
-pVisor's VM work brings startup close to a container: median Ready 130.71 ms against Docker rootless at 105.03 ms, and far below the reference VMs (Firecracker MMIO 287.13 ms, QEMU q35 663.25 ms). Host and staged runs are faster still, at 33.52 ms and 50.59 ms.
+pVisor's VM work brings startup close to a container: median Ready 130.71 ms against Docker rootless at 105.03 ms, and below the reference VMs (Firecracker MMIO 287.13 ms, QEMU microvm 260.10 ms, QEMU q35 663.25 ms). Host and staged runs are faster still, at 33.52 ms and 50.59 ms.
 
 ## Experiment design {#interpretation}
 
-The historical Ready / Exit comparison uses Linux x86_64 / KVM, AMD Ryzen 7 9700X, Fedora host. The controls are native, pVisor host, pVisor staged, pVisor VM, rootless Docker / overlay2, Firecracker PCI, QEMU q35 and QEMU microvm. Launch trees are pinned to CPUs 0,1; every VM has 2 vCPU / 128 MiB. Processes and containers have no memory limit.
+Measure the interval from launch to the first checked shell output as environment Ready time. That interval is how quickly the system answers a caller: a shorter Ready time means the system handles bursts of large-scale requests better.
 
-Firecracker, QEMU and microvm use the full Fedora distribution kernel, Linux 7.2.8-200.fc44.x86_64. pVisor's virtualization is based on libkrun and uses its companion libkrunfw project's customized kernel, Linux 6.12.109.
+The comparison runs on Linux x86_64 / KVM, AMD Ryzen 7 9700X, Fedora host. The controls are native, pVisor host, pVisor staged, pVisor VM, rootless Docker / overlay2, Firecracker with virtio-MMIO, QEMU q35 and QEMU microvm. Launch trees are pinned to CPUs 0,1; every VM has 2 vCPU / 128 MiB. Processes and containers have no memory limit.
 
-Prepared userspace environments run the same `/bin/sh` output probe. Each execution uses a fresh environment and private workspace; every VM boots afresh, without snapshots or environment pools. Warm page caches, three warmups and sixty measured samples per backend, with randomized interleaving within each measurement group. Environment preparation and input copying are outside startup timing. Kernel, device and storage paths differ, so results cover each complete startup configuration. This probe does not cover full distribution boot, cold images, Agent CLI initialization, concurrent capacity or snapshot restoration.
+Firecracker, QEMU and QEMU microvm use the full Fedora distribution kernel, Linux 7.2.8-200.fc44.x86_64. pVisor's virtualization is based on libkrun and uses its companion libkrunfw project's customized kernel, Linux 6.12.109.
 
-Historical Ready ends at the checked first shell marker. Exit includes execution and teardown, requiring correct output and a normal zero exit. Firecracker is stopped under control after checking markers and results and confirming no panic; only Ready is reported. Failures, panic, mismatched output or changed artifacts are excluded from timing distributions; valid slow samples are retained.
+Prepared userspace environments run the same `/bin/sh` output probe. Each execution uses a fresh environment and private workspace; every VM boots afresh, without snapshots or environment pools. Warm page caches, three warmups and sixty measured samples per backend, with randomized interleaving within each measurement group. Environment preparation and input copying are outside startup timing. Kernel, device and storage paths differ, so results cover each complete startup configuration. The probe does not cover full distribution boot, cold images, Agent CLI initialization, concurrent capacity or snapshot restoration.
 
-The historical hyperfine measurements used the independent JSON templates available at the time, executed by semspec bench, with three warmups and sixty samples. They measure the complete command through normal exit, not first-output Ready; input preparation and correctness checks are outside timing. Conditions sample independently, without pooling batches or deriving paired improvement percentages. Those batches validate the observed executor in each Run Bundle: host and staged use `rootless_process` on this machine, and VM uses `vm`; artifact digests and batch provenance are recorded separately.
+Ready ends at the checked first shell marker. Firecracker is stopped under control after checking markers and results and confirming no panic. Failures, panic, mismatched output or changed artifacts are excluded from timing distributions; valid slow samples are retained.
 
 ## Data and analysis {#results}
 
-### Python: Ready / Exit from the same launch {#python-ready-exit}
+### Environment Ready time {#ready}
 
-Each process launch records its start, receipt of the complete `REFERENCE_READY` line and
-normal exit. Three warmups and sixty formal samples are fixed; both tables below project
-columns from one command's output, without repeated sampling. Inputs are a prepared rootfs,
-2 vCPU / 128 MiB, warm caches and CPU 0,1 affinity. Python `perf_counter_ns` excludes
-interpreter startup and input preparation. Ready includes process creation, pipe reading and
-observer scheduling; Exit uses the same start through observed normal exit. Output, Run Bundle
-and unchanged inputs must pass for every sample.
-New Firecracker uses the stock kernel, the same initrd and virtio-MMIO. Two PCI preflights failed to exit normally after successful guest markers and were rejected. Historical Firecracker PCI Ready and new MMIO use different configurations; subtracting them does not establish an improvement.
-
-#### Ready
+Eight conditions measured on 2026-10-11, N=60 formal samples after three warmups. Inputs are the prepared rootfs, 2 vCPU / 128 MiB for VMs, warm caches and CPU 0,1 affinity. Python `perf_counter_ns` starts immediately before process creation and stops on receipt of the complete `REFERENCE_READY` line: process creation, pipe reading and observer scheduling are included, interpreter startup and input preparation are not. Output, Run Bundle and unchanged-input checks must pass for every sample.
 
 {{ table("startup-timing.ready.render.json") }}
 
-#### Exit
+pVisor VM starts at a median 130.71 ms, between rootless Docker at 105.03 ms and the reference VMs at 260–663 ms. Host and staged skip the kernel and device path and stop at 33.52 ms and 50.59 ms.
 
-{{ table("startup-timing.exit.render.json") }}
-
-The [same-run Ready/Exit statistics CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv) retains both the 2026-10-10 and 2026-10-11 cohorts (eight rows each). The tables select the last CSV row for each `condition`; all eight selected rows currently belong to 2026-10-11 and match the [provenance JSON](../assets/benchmarks/startup-timing.provenance.json). Use `condition` and `batch` together to identify a result; do not average the two cohorts. Standard deviation uses the formal samples and sample formula. These Python event-clock data remain independent of the hyperfine completion experiment. Rerun the entire table with `just benchmark startup/timing`,
-or just VM with `just benchmark startup/timing "pvisor vm"`.
-The earlier VM-only cohort remains separate in local evidence.
-
-All eight conditions were remeasured after the reboot on 2026-10-11. The
-complete before/after CSV/JSON remains local, retaining full-precision statistics
-and provenance digests for both independent cohorts. The measured pVisor binary SHA-256 is
-`d3f09687cca60b617629c215fa1359c441ab6ac19f8c63b68f1dcdf7614e6b30`, unchanged across the reboot;
-userspace inputs, measured commands, timing and statistics functions are also unchanged.
-Failure handling and provenance fields were added to the harness outside timing.
-VM median Ready fell from 179.22 ms to 130.71 ms (a descriptive change of -27.07%), and
-Exit from 297.79 ms to 243.53 ms. Host median Ready fell from 37.45 ms to 33.52 ms, but
-its standard deviation rose from 1.38 ms to 29.70 ms, with the final seventeen formal
-samples noticeably slower. All valid slow samples are retained. These independently sampled,
-warm-cache cohorts do not establish a causal reboot effect on their own. The historical VM
-Ready of about 101 ms used different binary and firmware artifacts; attributing the remaining
-gap requires controls with fixed artifacts.
-
-### Startup and exit times {#reference-startup}
-
-<a id="reference-exit"></a>
-<a id="legacy-startup"></a>
-
-Historical controls: unit ms, N=60 per backend, zero measured failures. Process/container and VM measurements were collected separately, with each row retaining its own statistics; all four VM controls were randomly interleaved within one group.
-
-| Runtime | Valid / failed | Ready P50 ms | Ready P95 ms | Exit P50 ms | Exit P95 ms |
-| --- | --- | --- | --- | --- | --- |
-| Native | 60 / 0 | 1.28 | 1.71 | 1.35 | 1.82 |
-| pVisor host | 60 / 0 | 12.72 | 14.18 | 24.03 | 24.71 |
-| pVisor staged | 60 / 0 | 25.13 | 26.85 | 33.84 | 44.55 |
-| pVisor VM | 60 / 0 | 100.91 | 151.27 | 141.52 | 176.59 |
-| Docker | 60 / 0 | 74.48 | 87.13 | 98.29 | 110.22 |
-| Firecracker | 60 / 0 | 285.04 | 291.88 | — | — |
-| QEMU | 60 / 0 | 702.98 | 789.36 | 725.55 | 818.85 |
-| microvm | 60 / 0 | 321.56 | 404.39 | 347.99 | 428.27 |
-
-Host and staged wait tens of milliseconds, making them suitable for frequently launched short commands. VMs also initialize a kernel and devices; choose isolation with complete-task timing in mind. Blank Firecracker Exit cells mean normal shutdown is unmeasured.
-
-| VM control | Wait saved by pVisor ms | 95% interval for difference ms | Wait reduction | Control time / pVisor time |
-| --- | --- | --- | --- | --- |
-| Firecracker | 184.12 | 181.60–185.84 | 64.6% | 2.82× |
-| QEMU | 602.06 | 582.17–635.99 | 85.6% | 6.97× |
-| microvm | 220.64 | 195.91–251.74 | 68.6% | 3.19× |
-
-Differences are differences between the two medians, with 95% intervals from 5,000 bootstrap resamples of matching rounds. All three intervals exclude zero, supporting faster pVisor VM startup for these configurations. Dedicated firmware and simplified initialization provide a shorter startup path; this comparison cannot separately quantify kernel, filesystem and VMM contributions.
+The table selects the latest validated row for each `condition` from the [statistics CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv); `condition` and `batch` together identify a result. Standard deviation uses the formal samples and the sample formula. Rerun the table with `just benchmark startup/timing`, or only the VM with `just benchmark startup/timing "pvisor vm"`.
 
 For cold-image client waiting and content downloads, see the separate [on-demand image startup](lazy-image-startup.md) experiment. Image-service preparation is recorded separately, and its samples are not pooled with these prepared-environment results.
 
-<!-- startup-hyperfine:start -->
-
-### Historical Python: Ready-only data {#python-ready}
-
-This experiment uses a prepared rootfs, 2 vCPU / 128 MiB, warm caches and CPU 0,1 affinity.
-Three warmups and sixty formal samples are fixed in the script. Python `perf_counter_ns`
-starts immediately before Popen and stops on receipt of the complete `REFERENCE_READY` line.
-Process creation, pipe reading and observer scheduling are included; interpreter startup,
-input preparation, subsequent exit and cleanup are excluded. Correct output, normal zero exit
-and a valid Run Bundle remain required after the clock stops.
-
-|  | N | Ready median ms | Ready mean ms | Ready SD ms | Ready min ms | Ready max ms |
-| --- | --- | --- | --- | --- | --- | --- |
-| pVisor VM | 60 | 132.95 | 132.51 | 5.09 | 123.00 | 147.53 |
-
-The complete Ready statistics CSV and provenance JSON remain local,
-retaining the latest successful batch for this condition. Standard deviation uses formal samples
-and the sample formula. These are Python clock measurements, separate from hyperfine completion.
-Historical Ready used a different binary artifact; timing boundaries alone cannot explain the difference.
-The current Ready / Exit experiment uses `just benchmark startup/timing "pvisor vm"`. The older Ready-only cohort is retained below.
-
-### Historical Hyperfine: direct launch to normal exit {#hyperfine-startup}
-
-Each row uses that condition's latest successful independent batch, without pooling samples. Three warmups and sixty measured samples; median, mean and standard deviation come from the same raw hyperfine export, in ms. Python preparation and checks, semspec processing and external CPU affinity setup are outside timing.
-
-|  | N | Median ms | Mean ms | SD ms |
-| --- | --- | --- | --- | --- |
-| Native | 60 | 0.42 | 0.42 | 0.02 |
-| pVisor host | 60 | 208.79 | 217.94 | 34.13 |
-| pVisor staged | 60 | 153.85 | 154.58 | 5.88 |
-| pVisor VM | 60 | 278.83 | 305.77 | 63.45 |
-| Docker | 60 | 163.92 | 168.87 | 21.38 |
-| Firecracker | — | — | — | — |
-| QEMU | 60 | 722.08 | 711.24 | 26.75 |
-| QEMU microvm | 60 | 339.47 | 355.08 | 86.50 |
-
-Empty conditions have no validated new batch. This measures the command through normal exit, not first-output Ready. Rows show independent levels, without paired improvement percentages or confidence intervals. Commands, extrema and per-row provenance remain in the complete local CSV/JSON.
-
-<details markdown="1">
-<summary>Historical complete commands (including wrappers)</summary>
-
-|  | N | Median ms | Mean ms | SD ms |
-| --- | --- | --- | --- | --- |
-| Native | 60 | 2.13 | 2.17 | 0.23 |
-| pVisor host | 60 | 165.12 | 315.84 | 259.74 |
-| pVisor staged | — | — | — | — |
-| pVisor VM | — | — | — | — |
-| Docker | 60 | 167.27 | 381.08 | 509.32 |
-| Firecracker | — | — | — | — |
-| QEMU | 60 | 748.41 | 896.73 | 319.03 |
-| QEMU microvm | 60 | 353.76 | 451.13 | 219.93 |
-
-The local historical CSV includes an outer shell, taskset and timeout. Its original scope is preserved. These are different batches and scopes; subtracting them cannot estimate wrapper cost or establish product performance improvements.
-
-</details>
-
-<!-- startup-hyperfine:end -->
-
 ### Sources and reproduction {#run}
 
-Complete CSV/JSON for startup statistics, VM differences and 95% intervals, source and artifact provenance, and raw records remain in their local cohorts or the documentation data archive. See the [startup manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md) to reproduce the current Ready / Exit experiment.
+Complete statistics, source and artifact provenance, and raw records remain in their local cohorts or the documentation data archive. See the [startup manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md) to reproduce the experiment, and the [provenance JSON](../assets/benchmarks/startup-timing.provenance.json) for the measured artifacts.
 
-[Comparison method](index.md#interpretation) · [Historical reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls)
+[Comparison method](index.md#interpretation)

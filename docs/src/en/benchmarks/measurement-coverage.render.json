@@ -41,7 +41,7 @@
   },
   "[startup](startup.md)": {
     "Data status": "Partially rerun",
-    "Measured scope": "Same-launch Ready / Exit; whole-command time is separate"
+    "Measured scope": "Launch to first checked output; exit time is not reported"
   },
   "[supervision-cost](supervision-cost.md)": {
     "Data status": "Historical data",

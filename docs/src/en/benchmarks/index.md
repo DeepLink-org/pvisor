@@ -14,33 +14,15 @@ Filesystem measurements cover nine configurations and 19 layered workloads, with
 
 ## Experiment design {#interpretation}
 
-This page reuses separately registered [startup](startup.md), [filesystem](filesystem.md), [repair](agent-tasks.md) and [complete review workflow](supervision-cost.md) experiments. Startup and repair use 60 samples per backend with three warmups. Filesystem measurements cover nine configurations and 19 workloads, with three fresh environments per cell and three resident rounds; historical N5/N30 cohorts stay separate. Review uses 30 samples and three warmups per size, condition and backend. All runs share the host and CPUs 0–1, with cache states defined by each topic and randomized interleaving. Valid timings pass correctness checks; failures and skipped observations stay explicit, with no speed-based exclusions. Docker uses rootless overlay2, and workflow controls are native Git and reflink rather than container or VM security rankings.
+Measure the startup, tool execution, apply and resource occupancy that produce one accepted result as the cost of that result. That cost decides which execution mode fits a workload; lower cost for the same verified result means the workload runs more cheaply.
 
-[Network](network.md) uses thirty independent batches and three warmups per condition; each small-request sample is the median of 256 requests. The origin is outside the payload CPU budget and memory is not identically capped. [Capacity](density.md) uses a shared two-core, 2 GiB, zero-swap budget, five rounds per concurrency and separate idle/useful-tool conditions; every failure, unknown outcome and OOM remains counted.
+This page reuses separately registered experiments. Startup and repair use 60 samples per backend with three warmups; filesystem covers nine configurations and 19 workloads with three fresh environments per cell and three rounds each; review uses 30 samples and three warmups; network uses 30 independent batches with 256-request medians; capacity uses five rounds per concurrency under a shared two-core, 2 GiB, zero-swap budget. All runs share the host and CPUs 0–1, with cache states defined by each topic and randomized interleaving.
 
-[Lazy images](lazy-image-startup.md) measures file loading through the same host staged executor, plus shell and NumPy startup for Docker and lazy VMs in separate cohorts. For the matched four-file stage probe, pVisor has shorter cold- and warm-client median waits than OverlayBD; the historical VM comparisons favor lazy for cold clients and Docker for warm clients. Both studies use prepared local services and separate content, metadata and total-response accounting. Their cache states, execution boundaries and budgets remain distinct rather than forming a single ranking.
-
-### Same-host controls and timing
-
-The startup, filesystem-tool and end-to-end task experiments use one offline tool environment and fixed inputs across native, pVisor host/staged/VM, private rootless Docker, Firecracker PCI and QEMU q35/microvm. Images, tools and daemon are prepared beforehand. Every execution uses the same two-core affinity; tool VMs have matching configured memory. Each job gets a fresh workspace, with seeded randomized runtime order. Complete Ubuntu, macOS and distinct binaries remain separate cohorts.
-
-Downloads, benchmark compilation, image import and input copying are excluded. Timing separates first valid output, internal tools plus validation, returned results and launch-to-process-exit. Successful samples require validated outputs, observed executor and complete staging. Staged modes also verify that original host files remain unchanged.
-
-### JSON tables and hyperfine {#json-tables}
-
-Tables load resolved named-row JSON before Markdown rendering. Rendering reads data and executes no benchmark. Direct-command startup and replay cohorts use hyperfine statistics; their input preparation and Python hooks are outside timing. Conditions run independently, without the randomized paired-order claim used by historical campaigns. Historical distributions, correctness counts, capacity and physical-memory readings keep their original measurement scope. Reproduction and remaining workload prerequisites are listed in the [JSON benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md).
-
-### Distributions and failures
-
-Cohorts are not pooled, and slow samples are not removed after measurement. Failures and invalid outputs are counted separately and never treated as zero latency. Capacity guards are not completed jobs. P95 is descriptive: it is omitted below 30 samples. Public P99 is omitted; small cohorts do not support stable tail-latency claims.
-
-Separated clusters are reported with counts and individual medians. The descriptive split rule is in the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md); it establishes no cause. Engineering A/B percentage claims need a 95% bootstrap interval for the median difference; user pages do not narrate optimization work.
+Valid timings pass correctness checks; failures and skipped observations stay explicit, with no speed-based exclusions. Cohorts are not pooled. P95 is descriptive and omitted below 30 samples, public P99 is omitted, and separated clusters are reported with counts and per-cluster medians.
 
 ### Isolation and resources {#reference-resources}
 
-Docker writable bind mounts write directly to the host; pVisor staging retains changes until apply. Firecracker/QEMU use private ext4, while pVisor VM uses virtio-fs with different kernels and devices. This is not a pure VMM or production-security ranking. Standalone staging boundaries follow actual records and [isolation checks](isolation-tests.md).
-
-RSS sums sampled process scopes and may double-count shared pages or miss short peaks. Docker must include actual container processes and identify its dedicated daemon. Whole-group memory must include all descendants, backing and charged cache, without double-counting overlapping cgroups. Configured RAM, RSS, macOS RAM proxies and net physical memory are distinct metrics.
+Docker uses rootless overlay2, Firecracker and QEMU use private ext4, and pVisor VM uses virtio-fs with different kernels: these are complete-configuration costs, not a pure VMM or security ranking. Engineering A/B work stays in lab notes, and complete data remains in local cohorts.
 
 ## Data and analysis {#results}
 

@@ -14,6 +14,8 @@ These numbers and conclusions remain the original historical cohorts; the new fr
 
 ## Experiment design {#interpretation}
 
+Measure active task capacity, tool and repair cost, and prefix-preparation cost as the three stages of one rollout attempt. Capacity sets how many attempts run at once, the two costs set what each attempt consumes; more capacity and lower cost mean more attempts per unit of infrastructure.
+
 This scenario analysis reuses registered local Linux/x86_64 experiments; it makes no new measurements. The owning topics define artifacts, validation and controls:
 
 - [Active capacity](density.md): shared 2 CPU / 2 GiB / zero swap, five fresh batches per cell, barrier-released Python/Git tasks with 32 MiB private data; failures remain in capacity denominators.

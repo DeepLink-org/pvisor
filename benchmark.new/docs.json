@@ -165,20 +165,6 @@
           ],
           "rows": 8,
           "options": {}
-        },
-        {
-          "json": "benchmarks/startup-timing.exit.render.json",
-          "kind": "published",
-          "columns": [
-            "N",
-            "Exit 中位数 ms",
-            "Exit 均值 ms",
-            "Exit 标准差 ms",
-            "Exit 最小 ms",
-            "Exit 最大 ms"
-          ],
-          "rows": 8,
-          "options": {}
         }
       ],
       "source_csv": [
@@ -432,20 +418,6 @@
             "Ready SD ms",
             "Ready min ms",
             "Ready max ms"
-          ],
-          "rows": 8,
-          "options": {}
-        },
-        {
-          "json": "benchmarks/startup-timing.exit.render.json",
-          "kind": "published",
-          "columns": [
-            "N",
-            "Exit median ms",
-            "Exit mean ms",
-            "Exit SD ms",
-            "Exit min ms",
-            "Exit max ms"
           ],
           "rows": 8,
           "options": {}

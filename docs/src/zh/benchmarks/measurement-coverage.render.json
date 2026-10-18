@@ -41,7 +41,7 @@
   },
   "[startup](startup.md)": {
     "数据状态": "部分复测",
-    "实测范围": "同次启动 Ready / Exit；完整命令另列"
+    "实测范围": "启动到首条校验输出；不报告退出时间"
   },
   "[supervision-cost](supervision-cost.md)": {
     "数据状态": "历史数据",

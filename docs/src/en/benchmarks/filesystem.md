@@ -8,24 +8,19 @@ On the measured tasks, pVisor host approaches direct execution, and guest writeb
 
 ## Experiment design {#interpretation}
 
-### What is compared? {#comparison-design}
+Measure the time to finish a complete task — repository inspection, incremental build or artifact publication — as complete-task time. That time is what a file-heavy task costs in the chosen mode; shorter time means more tasks finish in the same budget.
 
-On the same machine, compare direct execution (Native), pVisor host, staged file changes, default pVisor VM, pVisor VM with guest writeback, Docker, Firecracker, QEMU q35 and QEMU microvm. Every configuration uses the same inputs, programs and tools, measuring the cost of its complete storage path separately. Container images and VM disks are prepared beforehand.
+Nine configurations on one machine — native, pVisor host, staged, default VM, VM with guest writeback, Docker, Firecracker, QEMU q35 and QEMU microvm — use the same inputs, programs and tools. Images and VM disks are prepared beforehand.
 
-| Workloads | What is measured | Question answered |
+| Workloads | Coverage | Question answered |
 | --- | --- | --- |
 | 3 complete tasks | Repository inspection/search; edit, incrementally compile and run; offline extraction, artifact generation and synchronized publication | Do caching and writeback benefits reach real workflows? |
 | 12 basic operations | File queries, directory traversal, repeated reads, writes of different sizes, small files, per-write synchronization, mixed reads/writes, creation and deletion | Which access patterns benefit, and which retain extra waiting? |
 | 4 resource combinations | 128 or 640 MiB working sets, 1 or 4 concurrent writers; fixed 1 GiB written per round | Do tasks finish as working sets or concurrency grow, and how does throughput change? |
 
-### Measurement method {#measurement}
+Each workload/configuration uses three fresh environments in randomized order, three rounds each, on Linux x86_64 / Ryzen 7 9700X / Btrfs. The process tree shares two CPUs and 2 GiB with swap disabled; VMs use 2 vCPU / 512 MiB. Host caches stay warm, and the median is taken across three environments, not nine independent samples.
 
-- **Resources and cache:** Linux x86_64, Ryzen 7 9700X, Btrfs; experiment processes and private background services share a two-CPU, 2 GiB memory budget with swap disabled. VMs use 2 vCPU and 512 MiB memory. Host page caches are retained, and later rounds reuse environment state and validation-warmed pages. Containers and VMs have different cache and memory-limit scopes.
-- **Sampling:** Each workload/configuration uses three fresh environments in randomized mode order, with three consecutive rounds per environment. Sum the rounds first, then report the median and range across three independent environments. The nine rounds are not nine independent samples, and no overall score is calculated.
-- **Timing:** Ready runs only from executor launch to the common test program becoming ready, excluding tasks, exit and cleanup. Task completion includes actual work and final file/directory synchronization. Preparation, additional full validation and exit are recorded separately.
-- **Validation and failures:** Check round outputs, final file content, compiled artifacts and workspace isolation. Each environment has a 90-second limit. After the first failure in a configuration/case, remaining planned observations are marked unexecuted; failures are not zero-filled and valid slow samples are retained. There is no external-interference gate. Cells with fewer than three valid environments receive no median.
-
-These are exploratory measurements from three environments, applicable to local tasks with prepared environments. Initial image acquisition, cold disks, reliable tails, network proxying and larger-scale concurrency require separate measurements. Kernels, filesystems and cache boundaries differ, so results describe complete configurations. See [reproduction configurations](#configuration-details) for storage paths and switches.
+Task completion includes the work and final synchronization; Ready stops at test-program readiness and excludes tasks, exit and cleanup. Every environment has a 90-second limit; outputs, final contents and isolation are checked, and after a first failure the remaining planned observations are marked unexecuted. Initial image acquisition, cold disks, tail latency and larger concurrency need separate measurements.
 
 ## Data and analysis {#results}
 
@@ -151,7 +146,6 @@ At 128 MiB, the writeback VM sits in the same range as the container and referen
 <summary>Working-set/concurrency curves and failure details</summary>
 
 ![Completed throughput and final-sync share at four resource anchors](../../../overrides/assets/benchmarks/filesystem-layered-references/resource-workers.svg)
-
 
 Each round fixes logical writes at 1 GiB, four files and 4 KiB requests, varying only the 128/640 MiB working set and 1/4 workers. Throughput uses completed time; points represent independent environments. Missing points identify cells without complete N=3 results, not zero throughput. Working-set changes also affect retained data and final synchronization costs; four points cannot locate a capacity knee.
 

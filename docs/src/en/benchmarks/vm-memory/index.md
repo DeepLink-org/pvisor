@@ -8,26 +8,15 @@ In the shared-random preflight, the physical pool reaches the observed sustained
 
 ## Experiment design {#interpretation}
 
-Evaluate deduplication with compressible repeated contents, identical random contents across instances and instance-unique random contents. Use the same observation window to compare idle usage, reclamation speed, CPU and first complete readback. Evaluate library loading, file-read hints and explicit immutable DAX separately to avoid combining different workloads into one ranking.
+Measure whole-group charged memory over time, PSS and the cost of the first complete readback as memory occupancy. That occupancy is what the group costs while it runs; lower occupancy at the same readback cost fits more environments.
 
-The engineering preflights use four instances per group with 64 MiB of data each. VMs have 256 MiB RAM / 1 vCPU; each Docker container has a 256 MiB limit and one CPU quota. Complete groups have four CPUs / 2 GiB / zero swap and include the pool or dedicated rootless Docker runtime. Each condition has N=1 and a 60-second ready window. Content, private-write, exit and resource checks must pass; failed and incomplete cohorts are excluded. See the [engineering experiment design](../../lab-notes/vm-memory-performance-analysis.md#pool-design) for the environment and sampling boundaries.
+Four instances per group, 64 MiB of data each, inside a four-CPU / 2 GiB / zero-swap budget. VMs use 256 MiB and one vCPU; each container has a 256 MiB limit and one CPU quota. Each condition runs one 60-second window after readiness; content, private-write, exit and resource checks must pass, and incomplete cohorts are excluded.
 
-This compares complete configurations under common budgets and workloads. Docker uses a dedicated rootless daemon whose runtime costs are borne by four containers; a shared-daemon deployment can amortize them differently. Firecracker and pVisor use different guest kernels and virtio-blk / virtio-fs file paths, while Docker shares the host kernel. Global ksmd runs outside the group's CPU quota and is reported separately, so the results cannot all be attributed to the scanning algorithm.
-
-**Cgroup-charged memory** includes cache and kernel costs charged to the group. **PSS** proportionally allocates shared pages mapped by processes. File pages may be charged outside the group, so retain both metrics separately; do not add them or directly convert them into incremental whole-host usage. Repeated rounds, real-Agent latency and long-term capacity remain unmeasured.
-
-### Whole-group totals and per-VM averages {#memory-accounting}
-
-**The figures show totals for all four instances, without dividing by the VM count.** Daemon-backed modes include the `pvisor-daemon memory-pool` process, all VM processes and in-group helper processes. To calculate average usage per VM:
-
-- **Average process PSS** = (pool-process PSS + all VM-process PSS + in-group helper-process PSS) / 4. PSS proportionally allocates shared pages across mappings; summing RSS would count shared pages repeatedly.
-- **Average group-charged memory** = the complete cgroup's `memory.current` / 4. This already includes the pool, file cache and kernel costs charged to the group; do not add daemon memory again.
-
-This average allocates the complete group cost and does not measure the marginal cost of another VM. The experiment starts the standalone memory-pool component, without the full OpenSandbox API service. External observers are also excluded from these memory totals.
+Report whole-group totals. PSS allocates shared pages proportionally, and group-charged memory is the cgroup's `memory.current`; per-VM averages divide these totals by four and do not measure the marginal cost of another VM. Docker uses a dedicated rootless daemon, Firecracker and pVisor use different kernels and file paths, and global ksmd runs outside the group's CPU quota. Repeated rounds, real-Agent latency and long-term capacity remain unmeasured.
 
 ### Distinguishing deduplication from compression {#dedup-modes}
 
-Physical page sharing retains one copy during reads; cold compression restores private memory on access. Evaluate idle usage, reclamation speed, scanning CPU and memory after the first complete read together.
+The labels below are experimental controls, not combinable options. Physical sharing works on 4 KiB pages; local and pooled compression use 64 KiB blocks and reject poorly compressible data. Immutable-file DAX maps one backing file directly, and file-read hints only prioritize scanner candidates.
 
 | Experimental label | Memory mechanism | Cross-VM reuse | On subsequent reads |
 |---|---|---|---|
@@ -37,11 +26,7 @@ Physical page sharing retains one copy during reads; cold compression restores p
 | `physical` | Daemon holds shared physical pages with identical contents | VMs map the same page | Retain sharing; copy on write |
 | `compressed` | Daemon stores reusable compressed cold blocks | VMs reuse compressed objects | Restore instance-private RAM |
 
-Physical sharing currently operates on 4 KiB pages. Local and pooled compression mainly use 64 KiB blocks with a minimum compression-savings requirement. Identical cross-VM data that compresses poorly can therefore be rejected by the compressed path. These labels identify experimental controls, not configuration options that can all be combined.
-
-Immutable-file DAX sharing uses a separate path: VMs directly map the same offsets of one backing file, without first scanning those file pages. The library experiment uses an explicit immutable attachment; ordinary rootfs `.so` files do not acquire this property automatically. Ordinary file-read hints only prioritize candidates for the physical scanner; merging still requires content validation.
-
-## Experimental data and analysis {#results}
+## Data and analysis {#results}
 
 ### Deduplication and shared-library curves {#linux-lifecycle}
 

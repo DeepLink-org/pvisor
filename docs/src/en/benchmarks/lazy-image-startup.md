@@ -8,32 +8,15 @@ A cold shell client reaches Ready in 186.1 ms while reading 2.58 MB of content, 
 
 ## Experiment design {#interpretation}
 
-### What is compared? {#evidence}
+Measure the time from launch to the first checked output and the bytes a cold client fetches as cold-start cost. That cost is what a new environment pays before its first result; lower values start tasks sooner and move less data.
 
-Two experiments measure short-task startup and few-file reads separately. Startup uses Docker's complete pull as the reference; file reads use the same execution environment, with [TurboOCI][ref-turbooci] / [OverlayBD][ref-overlaybd] as the reference.
+Two experiments run on Linux with prepared local image services. The file-read comparison reads and verifies four files from one Ubuntu 26.04 image, comparing pVisor with OverlayBD in the same execution environment, changing only image loading. The startup comparison runs an Ubuntu shell and a NumPy script through Docker with a complete pull and through pVisor with on-demand reads in a VM; each trial creates a new container or VM.
 
-### File-read comparison {#stage-file-design}
+Both use two CPUs for the task and two for image services. Docker has a 2 GiB memory limit, pVisor has 2 GiB guest RAM, and the scopes differ. Cold clients start with empty image caches; warm clients reuse fetched content. Three warmup rounds precede 30 paired rounds with randomized path order; Ready is primary and Completion extends through normal exit. Cold clients must fetch content and warm clients must not. Execution, validation or cleanup failures invalidate the cohort.
 
-On the same Linux machine, the same program reads and verifies four files from the same Ubuntu 26.04 image, comparing pVisor with OverlayBD. Both use the same execution environment, changing only image loading; each trial remounts the image and creates a working directory. This represents tasks that access few files, without running programs inside the image.
+Results apply to local short tasks with prepared services. Initial service preparation, public networks, large-scale concurrency and bulk file I/O require separate measurements, and file-read results do not substitute for application startup inside an image.
 
-The task uses two fixed CPUs and image services use two other CPUs; service memory is not constrained to an equal total limit.
-
-### Short-task startup comparison {#vm-design}
-
-Run an Ubuntu shell and a Python script performing NumPy array calculations, covering a lightweight command and a short task that loads dependencies. Each task fixes the same image, command and output checks across paths: Docker pulls the complete image, while pVisor reads on demand and runs in a VM. Every trial creates a new container or VM; the two workloads are analyzed separately.
-
-Both tasks use two CPUs. Docker has a 2 GiB memory limit, pVisor has 2 GiB guest RAM, and image services use two other CPUs. Container and VM limits cover different resource scopes, and background services are not covered by an equal whole-system limit; results describe each complete usage path.
-
-### Measurement method {#measurement}
-
-- **Cache and network:** Image services are prepared beforehand and accessed through local connections, retaining host page caches. Cold clients start with empty image caches; warm clients reuse previously fetched content. Both create a new execution environment.
-- **Sampling:** 3 warmup rounds precede 30 paired rounds with randomized path order; each path has a cold trial followed by a warm trial. Preflight and warmup trials are excluded, and all valid slow samples are retained. Predefined background interference invalidates the entire file-read cohort.
-- **Timing:** The primary metric, Ready, runs from launch to checked output, excluding exit and cleanup. Supplementary Completion runs through normal process exit and output-stream closure; the file-read comparison also includes unmount cleanup. Fetching, mounting and execution are timed; service preparation and cache reset are excluded. Response bytes are counted through Completion.
-- **Validation:** Check file content or calculation results, execution records, actual mounts and resource cleanup. Cold clients must fetch content, and warm clients must not fetch it again. An execution, validation or cleanup failure invalidates the cohort; failures are never counted as zero time.
-
-Results apply to local short tasks with prepared services. Initial service preparation, public networks, large-scale concurrency and bulk file I/O require separate measurements; file-read results also cannot substitute for application startup inside an image. See [downloads and sources](#run) for full environments, cache reset procedures and reproduction steps.
-
-## Experimental data and analysis {#results}
+## Data and analysis {#results}
 
 A lazy image fetches files as they are accessed, so environment preparation advances with the task.
 
