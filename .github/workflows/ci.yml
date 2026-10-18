@@ -247,13 +247,15 @@ jobs:
       - name: Record isolated core budget
         run: |
           just build release
-          # Queue dispatch, read-only DAX and their contract tests bring the
-          # runtime closure to 194,578 lines; retain 1,422 lines of headroom.
-          just check-core-budget target/release/pvisor --max-dependencies 235 --max-workspace-lines 196000 --max-core-items 301 > target/pvisor-core-budget.json
+          # Agent I/O, memory sharing, main's VM fixes and their contract tests
+          # bring the runtime closure to 214,144 lines; retain 1,856 lines of headroom.
+          just check-core-budget target/release/pvisor --max-dependencies 235 --max-workspace-lines 216000 --max-core-items 301 > target/pvisor-core-budget.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: pvisor-core-budget-linux
           path: target/pvisor-core-budget.json
+          if-no-files-found: ignore
 
       - name: Run strict pVisor isolation regressions
         env:
