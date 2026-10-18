@@ -4,11 +4,9 @@
 
 ### Observed benefits and costs {#pool-findings}
 
-**The physical pool reclaims cross-VM duplicate random data early and retains sharing after complete reads; KSM has lower memory usage at 60 seconds and lower CPU cost.** File-read hints advance reclamation in the library experiment, while DAX directly reuses pages of an explicitly attached immutable file.
+**The physical pool reclaims cross-VM duplicate random data early and retains sharing after complete reads.** File-read hints advance reclamation in the library experiment, while DAX directly reuses pages of an explicitly attached immutable file. The comparisons below record reclamation speed, CPU and end-of-window usage together to examine each path's benefits and costs.
 
 The two complete preflights dated 2026-10-18 contain 21 static-memory conditions and seven library conditions, with N=1 per condition. All 1,218 / 406 content, private-write and independent-exit checks passed, along with resource, provenance and raw-evidence audits. The analysis uses only these two complete preflights; additional partial repeated measurements are excluded from aggregates. These readings provide no confidence intervals, stable ranking or production-density claim.
-
-As a deployment inference, KSM better fits long-running microservices with stable, duplicate working sets, while pVisor's physical pool better fits bursty Agents requiring early reclamation. The basis is the tradeoff between reclamation response, CPU and end-of-window usage; these experiments do not directly measure microservice or Agent throughput. Persistent Agent VMs can also benefit from KSM, and short-lived microservices may need fast sharing. The deciding factor is how long pages remain shareable.
 
 ### Why test three content types {#pool-motivation}
 
@@ -94,6 +92,6 @@ After readback, hints on, hints off and DAX each verify all **16,384 target page
 | File hints advance the early drop, with similar PSS at 60 seconds | Successful file reads prioritize candidates; background scanning can still discover identical pages | A repeatable improvement in final sharing or CPU cost |
 | Explicit DAX already shares pages at the initial reading | Identical immutable backing and offsets allow direct file-page reuse | Automatic sharing of every library in an ordinary mutable rootfs |
 
-The sustained 128 MiB drop for shared random contents occurs at about 1.7 seconds for the physical pool and 27.8 seconds for KSM. For pages with only a few seconds of shareable lifetime, this suggests KSM may miss the reclamation target under this configuration. It does not mean KSM performed no earlier merging or establish that the physical pool benefits subsecond calls. Formal claims about algorithm speed, short-tool throughput and CPU improvement still require corresponding independent experiments.
+For shared random contents, the physical pool reaches the sustained 128 MiB drop at about 1.7 seconds, while KSM reaches it at about 27.8 seconds and has lower memory and CPU readings at 60 seconds. Evaluating short-lived pages emphasizes early reclamation; long-lived pages also call for examining sustained cost. Both timescales require the actual page lifetime as context. These single observations do not establish pure algorithm speed, subsecond tool throughput or repeatable CPU improvements.
 
 Full provenance and reproduction steps remain in the [memory experiment record](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md). Local raw evidence is retained in `benchmark.new/memory/.data/q8/` and `l4/`, with audited report SHA-256 values `05958d9ca694f8aa63e81d2bce4a97ee7ad575d7dd19ed3279be91ceced03d8a` and `dfbf4fb91ea2613601bf2217dd08ddb55885591d3e1ec5c805da07b954c18f2f`. Preflight and formal samples remain separate, failed conditions are not used to complete successful cohorts, and the original post-write evidence remains intact.

@@ -2,13 +2,11 @@
 
 ## Main conclusions {#conclusions}
 
-**For memory sharing, KSM is a better fit for long-running microservices with stable, duplicate working sets; pVisor's fast physical sharing is a better fit for bursty Agent execution that needs to reclaim duplicate memory early.** The former has time to accumulate sharing benefits; the latter needs reclamation before a tool environment exits or its working set changes. This deployment assessment follows from the reclamation curves below; end-to-end advantages for real microservices and Agents still require workload-specific validation.
+Agent tools load dependencies, read files and process data, and multiple environments may use identical contents at similar times. **pVisor shares duplicate pages early and retains that sharing on subsequent reads, reducing the memory resident across these execution environments.**
 
-- **Bursty Agents prioritize early reclamation.** With identical random contents, the physical pool reaches the observed sustained 128 MiB drop at about 1.7 seconds, versus about 27.8 seconds for KSM, while consuming more CPU.
-- **Resident microservices prioritize sustained usage and scanning cost.** KSM has a lower final reading for shared random contents. Instance-unique random application data offers little sharing opportunity, limiting the physical pool's benefit.
-- **Frequent reads make retained sharing valuable.** Physical reads keep shared pages; cold compression restores private RAM. Explicit immutable files can share directly through DAX, while ordinary rootfs file hints still require scanning and content validation.
-
-The Firecracker, Docker and pVisor comparisons below use complete engineering preflights with N=1 per condition. They describe tradeoffs for these workloads without establishing a stable performance ranking or production capacity.
+- **Establish sharing early.** In the shared-random preflight, the physical pool reaches the observed sustained 128 MiB drop at about 1.7 seconds, providing evidence of early reclamation for short-lived working sets.
+- **Carry sharing through the next read.** Physical sharing retains low usage after readback. Explicit immutable files can also be reused directly through DAX, while file-read hints help the scanner discover candidates earlier.
+- **Evaluate the complete cost for the working set.** Savings depend on duplication and page lifetime. Consider scanning CPU, end-of-window memory usage and the cost of restoring private RAM from compressed storage together.
 
 ## Motivation {#motivation}
 
@@ -75,7 +73,9 @@ The table uses identical random contents across instances, with N=1 per conditio
 
 KSM additionally has **0.41 CPU seconds** of global ksmd work outside the group quota, which cannot be attributed entirely to this group. Group CPU includes VMs, the pool and in-group control work; these readings measure the complete path.
 
-**For working sets with only a few seconds of sharing opportunity, KSM's roughly 27.8-second response in this test may be too late to reach the same reclamation target.** The physical pool reaches that target at about 1.7 seconds, supporting evaluation of its early-window benefit without establishing a benefit for subsecond calls. This experiment does not measure real-Agent call-duration distributions. Time to target is not KSM's first merge, pure scanning speed or full convergence time. When VMs and pages persist across tool calls, KSM can continue accumulating sharing benefits.
+These curves show a tradeoff between reclamation speed and sustained cost: the physical pool reaches the observed target at about 1.7 seconds, while KSM reaches it at about 27.8 seconds and has lower memory and CPU readings at 60 seconds. Short-lived working sets place more value on memory released in the first few seconds; long-lived pages have more time to accumulate sharing benefits. Selection depends on shareable page lifetime and CPU budget.
+
+This experiment does not measure real-Agent call-duration distributions or establish benefits for subsecond calls. Time to target is not the first merge or full convergence time; pages in persistent VMs can retain sharing across multiple tool calls.
 
 ### Does readback preserve the saving? {#readback-cost}
 
