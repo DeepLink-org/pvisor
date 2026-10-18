@@ -18,15 +18,26 @@ def filesystem_publication():
             continue
         evidence = json.loads(layered.read_text())
         counts = evidence.get("counts", {})
-        if (evidence.get("benchmark_id") != "B-FS-TOOLS"
-                or evidence.get("role") != "user-facing"
-                or evidence.get("state") not in ("passed", "partial")
-                or counts.get("cases") != 19 or counts.get("backends") != modes
-                or counts.get("expected_environments") != 19 * modes * 3):
+        if (
+            evidence.get("benchmark_id") != "B-FS-TOOLS"
+            or evidence.get("role") != "user-facing"
+            or evidence.get("state") not in ("passed", "partial")
+            or counts.get("cases") != 19
+            or counts.get("backends") != modes
+            or counts.get("expected_environments") != 19 * modes * 3
+        ):
             raise ValueError("invalid layered filesystem publication receipt")
         if modes == 9 and [mode.get("id") for mode in evidence.get("modes", [])] != [
-                "native", "host", "staged", "vm", "vm-writeback", "docker",
-                "fc-system", "qemu", "qemu-microvm"]:
+            "native",
+            "host",
+            "staged",
+            "vm",
+            "vm-writeback",
+            "docker",
+            "fc-system",
+            "qemu",
+            "qemu-microvm",
+        ]:
             raise ValueError("reference filesystem publication mode inventory differs")
         for relative, expected in evidence["outputs"].items():
             if hashlib.sha256((REPO / relative).read_bytes()).hexdigest() != expected:
@@ -44,7 +55,10 @@ def filesystem_publication():
     ):
         raise ValueError("invalid accepted filesystem publication receipt")
     for name in ("filesystem.csv", "filesystem-comparisons.csv", "filesystem-provenance.csv"):
-        if hashlib.sha256(csv_path(REPO, name).read_bytes()).hexdigest() != evidence["csv_sha256"][name]:
+        if (
+            hashlib.sha256(csv_path(REPO, name).read_bytes()).hexdigest()
+            != evidence["csv_sha256"][name]
+        ):
             raise ValueError("filesystem export changed after publication audit: " + name)
     return evidence
 
@@ -62,14 +76,16 @@ def lazy_stage_publication():
         str(csv_path(REPO, f"lazy-stage-{name}.csv").relative_to(REPO))
         for name in ("summary", "comparisons")
     }
-    if (evidence.get("benchmark_id") != "B-LAZY-STARTUP"
-            or evidence.get("role") != "user-facing"
-            or evidence.get("state") != "passed"
-            or evidence.get("scope") != "same-host-staged-lower-readonly"
-            or counts.get("formal_rows") != 120
-            or counts.get("samples_per_cell") != 30
-            or counts.get("warmup_rows") != 12
-            or set(evidence.get("outputs", {})) != expected):
+    if (
+        evidence.get("benchmark_id") != "B-LAZY-STARTUP"
+        or evidence.get("role") != "user-facing"
+        or evidence.get("state") != "passed"
+        or evidence.get("scope") != "same-host-staged-lower-readonly"
+        or counts.get("formal_rows") != 120
+        or counts.get("samples_per_cell") != 30
+        or counts.get("warmup_rows") != 12
+        or set(evidence.get("outputs", {})) != expected
+    ):
         raise ValueError("invalid same-executor lazy image publication receipt")
     for relative, checksum in evidence["outputs"].items():
         if hashlib.sha256((REPO / relative).read_bytes()).hexdigest() != checksum:
@@ -120,7 +136,9 @@ def coverage():
                 measured = any(row.get("N") is not None for row in data.values())
             if measured:
                 current.append(entry)
-        filesystem_page = page["page"] == "benchmarks/filesystem.md" and filesystem_evidence is not None
+        filesystem_page = (
+            page["page"] == "benchmarks/filesystem.md" and filesystem_evidence is not None
+        )
         full_filesystem = filesystem_page and filesystem_evidence.get("state") == "passed"
         if filesystem_page:
             current = ["B-FS-TOOLS accepted reference cohort " + filesystem_evidence["batch"]]
@@ -154,33 +172,37 @@ def coverage():
             elif page == "filesystem.md":
                 if filesystem_evidence and filesystem_evidence.get("kind") == "layered":
                     description = (
-                        "九种配置（含Docker、Firecracker、QEMU q35/microvm）；12项机制、4项资源边界、3项完整任务；Ready与退出分开，N3新环境、内部三轮"
-                        if locale == "zh" else
-                        "Nine modes including Docker, Firecracker, QEMU q35/microvm; 12 mechanisms, four resource anchors, three tasks; Ready excludes exit; N3 fresh environments with three resident rounds"
-                    ) if filesystem_evidence["counts"]["backends"] == 9 else (
-                        "五种配置；12项机制、4项资源边界、3项完整任务；Ready与退出分开，N3新环境、内部三轮"
-                        if locale == "zh" else
-                        "Five modes; 12 mechanisms, four resource anchors, three tasks; Ready excludes exit; N3 fresh environments with three resident rounds"
+                        (
+                            "九种配置（含Docker、Firecracker、QEMU q35/microvm）；12项机制、4项资源边界、3项完整任务；Ready与退出分开，N3新环境、内部三轮"
+                            if locale == "zh"
+                            else "Nine modes including Docker, Firecracker, QEMU q35/microvm; 12 mechanisms, four resource anchors, three tasks; Ready excludes exit; N3 fresh environments with three resident rounds"
+                        )
+                        if filesystem_evidence["counts"]["backends"] == 9
+                        else (
+                            "五种配置；12项机制、4项资源边界、3项完整任务；Ready与退出分开，N3新环境、内部三轮"
+                            if locale == "zh"
+                            else "Five modes; 12 mechanisms, four resource anchors, three tasks; Ready excludes exit; N3 fresh environments with three resident rounds"
+                        )
                     )
                 else:
                     description = (
-                    (
-                        "八后端七工具内部阶段与启动至退出；原生完整命令探针另列"
-                        if locale == "zh"
-                        else "Eight-backend seven-tool phases and launch through exit; native whole-command probes are separate"
-                    )
-                    if row["coverage"] == "full"
-                    else (
-                        "原生 metadata/read 完整命令；七工具跨后端任务未复测"
-                        if locale == "zh"
-                        else "Native metadata/read whole commands; seven-tool cross-backend task not rerun"
-                    )
+                        (
+                            "八后端七工具内部阶段与启动至退出；原生完整命令探针另列"
+                            if locale == "zh"
+                            else "Eight-backend seven-tool phases and launch through exit; native whole-command probes are separate"
+                        )
+                        if row["coverage"] == "full"
+                        else (
+                            "原生 metadata/read 完整命令；七工具跨后端任务未复测"
+                            if locale == "zh"
+                            else "Native metadata/read whole commands; seven-tool cross-backend task not rerun"
+                        )
                     )
             elif page == "lazy-image-startup.md" and lazy_stage_evidence is not None:
                 description = (
                     "同一 host staged 执行器的四文件惰性加载；冷/热各 N30，含取数和挂载；VM 应用启动保留独立历史数据"
-                    if locale == "zh" else
-                    "Same host staged executor, four-file lazy loading; N30 cold/warm including fetch and mount; VM application startup retains separate historical data"
+                    if locale == "zh"
+                    else "Same host staged executor, four-file lazy loading; N30 cold/warm including fetch and mount; VM application startup retains separate historical data"
                 )
             else:
                 description = (

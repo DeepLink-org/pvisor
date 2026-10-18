@@ -5,7 +5,10 @@ import unittest
 from unittest.mock import patch
 
 from filesystem_cache_matrix import (
-    CONDITIONS, EXPECTED_INPUTS, condition_environment, trial_environment,
+    CONDITIONS,
+    EXPECTED_INPUTS,
+    condition_environment,
+    trial_environment,
     validate_qualification,
 )
 
@@ -21,8 +24,11 @@ class CacheMatrixTests(unittest.TestCase):
             condition_environment(config, "both")
 
     def test_actual_mutable_fallback_or_dax_fails_qualification(self):
-        observed = dict(EXPECTED_INPUTS["both"], dax=False,
-                        evidence={"receipt": "stage/owned-inputs-receipt.json"})
+        observed = dict(
+            EXPECTED_INPUTS["both"],
+            dax=False,
+            evidence={"receipt": "stage/owned-inputs-receipt.json"},
+        )
         validate_qualification(observed, "both")
         for fault in ("rootfs_immutable", "workspace_immutable", "dax", "evidence"):
             with self.subTest(fault=fault):
@@ -36,8 +42,12 @@ class CacheMatrixTests(unittest.TestCase):
             validate_qualification(changed, "both")
 
     def test_failed_trial_restores_interactive_environment(self):
-        original = {"PATH": "/test", "PVISOR_VM_FS_WRITEBACK": "1",
-                    "PVISOR_FS_PROFILE": "1", "PVISOR_FS_OWNED_INPUTS_CONDITION": "foreign"}
+        original = {
+            "PATH": "/test",
+            "PVISOR_VM_FS_WRITEBACK": "1",
+            "PVISOR_FS_PROFILE": "1",
+            "PVISOR_FS_OWNED_INPUTS_CONDITION": "foreign",
+        }
         with patch.dict(os.environ, original, clear=True):
             with self.assertRaisesRegex(RuntimeError, "failed trial"):
                 with trial_environment({"PVISOR_VM_FS_WRITEBACK": "0"}):

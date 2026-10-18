@@ -11,7 +11,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-SPEC = importlib.util.spec_from_file_location("measurement_coverage", ROOT / "measurement_coverage.py")
+SPEC = importlib.util.spec_from_file_location(
+    "measurement_coverage", ROOT / "measurement_coverage.py"
+)
 COVERAGE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(COVERAGE)
 
@@ -31,13 +33,30 @@ class FilesystemCoverageTests(unittest.TestCase):
         output = COVERAGE.csv_path(self.root, f"{prefix}-levels.csv")
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"synthetic test data\n")
-        evidence = dict(benchmark_id="B-FS-TOOLS", role="user-facing", state=state, batch=prefix,
-                        counts=dict(cases=19, backends=modes, expected_environments=19*modes*3),
-                        modes=[dict(id=backend) for backend in [
-                            "native", "host", "staged", "vm", "vm-writeback", "docker",
-                            "fc-system", "qemu", "qemu-microvm"][:modes]],
-                        outputs={str(output.relative_to(self.root)):
-                                 hashlib.sha256(output.read_bytes()).hexdigest()})
+        evidence = dict(
+            benchmark_id="B-FS-TOOLS",
+            role="user-facing",
+            state=state,
+            batch=prefix,
+            counts=dict(cases=19, backends=modes, expected_environments=19 * modes * 3),
+            modes=[
+                dict(id=backend)
+                for backend in [
+                    "native",
+                    "host",
+                    "staged",
+                    "vm",
+                    "vm-writeback",
+                    "docker",
+                    "fc-system",
+                    "qemu",
+                    "qemu-microvm",
+                ][:modes]
+            ],
+            outputs={
+                str(output.relative_to(self.root)): hashlib.sha256(output.read_bytes()).hexdigest()
+            },
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(evidence))
         return path, output, evidence
@@ -86,11 +105,18 @@ class LazyStageCoverageTests(unittest.TestCase):
             path = COVERAGE.csv_path(self.root, f"lazy-stage-{name}.csv")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"synthetic publication fixture\n")
-            outputs[str(path.relative_to(self.root))] = hashlib.sha256(path.read_bytes()).hexdigest()
-        evidence = dict(benchmark_id="B-LAZY-STARTUP", role="user-facing", state="passed",
-                        batch="synthetic-stage", scope="same-host-staged-lower-readonly",
-                        counts=dict(formal_rows=120, samples_per_cell=30, warmup_rows=12),
-                        outputs=outputs)
+            outputs[str(path.relative_to(self.root))] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+        evidence = dict(
+            benchmark_id="B-LAZY-STARTUP",
+            role="user-facing",
+            state="passed",
+            batch="synthetic-stage",
+            scope="same-host-staged-lower-readonly",
+            counts=dict(formal_rows=120, samples_per_cell=30, warmup_rows=12),
+            outputs=outputs,
+        )
         receipt = self.root / "docs/overrides/assets/benchmarks/lazy-stage.provenance.json"
         receipt.parent.mkdir(parents=True, exist_ok=True)
         receipt.write_text(json.dumps(evidence))

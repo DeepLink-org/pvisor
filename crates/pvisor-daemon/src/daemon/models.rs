@@ -178,7 +178,10 @@ impl CreateRequest {
     }
 }
 
-pub(super) fn validate_map(values: &BTreeMap<String, String>, environment: bool) -> Result<(), ApiError> {
+pub(super) fn validate_map(
+    values: &BTreeMap<String, String>,
+    environment: bool,
+) -> Result<(), ApiError> {
     if values.len() > 256
         || values.iter().any(|(key, value)| {
             key.is_empty()

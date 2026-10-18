@@ -4,8 +4,13 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from phase_profiles import (COMPONENTS, PHASE_PREFIX, SCOPES, collect_phase_profiles,
-                            instrument_rootfs)
+from phase_profiles import (
+    COMPONENTS,
+    PHASE_PREFIX,
+    SCOPES,
+    collect_phase_profiles,
+    instrument_rootfs,
+)
 
 
 def fixture():
@@ -15,26 +20,39 @@ def fixture():
         snapshots[scope] = {}
         for component in sorted(COMPONENTS):
             number += 1
-            profile = dict(schema=2, pid=111, component=component, instance=number,
-                           inclusive_spans=True, final_record=False,
-                           measurements={})
-            lines.append("pvisor-fs-profile-start " + json.dumps(
-                {key: profile[key] for key in ("pid", "component", "instance")}))
+            profile = dict(
+                schema=2,
+                pid=111,
+                component=component,
+                instance=number,
+                inclusive_spans=True,
+                final_record=False,
+                measurements={},
+            )
+            lines.append(
+                "pvisor-fs-profile-start "
+                + json.dumps({key: profile[key] for key in ("pid", "component", "instance")})
+            )
             snapshots[scope][component] = profile
     for token in (1, 2):
         for scope in SCOPES:
             profiles = copy.deepcopy(snapshots[scope])
             for component, profile in profiles.items():
                 measurements = profile["measurements"]
-                measurements["LOOKUP" if component == "virtio-fs-protocol"
-                             else "layer_leaf_stats"] = dict(calls=token * 5, units=0, total_ns=token * 99)
+                measurements[
+                    "LOOKUP" if component == "virtio-fs-protocol" else "layer_leaf_stats"
+                ] = dict(calls=token * 5, units=0, total_ns=token * 99)
                 if component == "virtio-fs-protocol":
                     measurements["IOCTL"] = dict(calls=token, units=0, total_ns=token * 10)
                     measurements["request_bytes"] = dict(calls=0, units=token * 180, total_ns=0)
                 if component == "virtio-fs-dispatch":
                     measurements["direct_requests"] = dict(calls=0, units=token * 6, total_ns=0)
-            lines.append(PHASE_PREFIX + json.dumps(dict(schema=1, scope=scope, token=token,
-                                                       profiles=list(profiles.values()))))
+            lines.append(
+                PHASE_PREFIX
+                + json.dumps(
+                    dict(schema=1, scope=scope, token=token, profiles=list(profiles.values()))
+                )
+            )
             if token == 2:
                 for profile in profiles.values():
                     profile["final_record"] = True
@@ -47,29 +65,43 @@ class PhaseProfileTests(unittest.TestCase):
         report = collect_phase_profiles(fixture(), operations=("rg",), rounds=1)
         self.assertEqual(len(report["rows"]), 8)
         self.assertEqual(report["unscoped_final_profiles"], [])
-        row = next(row for row in report["rows"] if row["scope"] == "rootfs"
-                   and row["component"] == "virtio-fs-protocol")
+        row = next(
+            row
+            for row in report["rows"]
+            if row["scope"] == "rootfs" and row["component"] == "virtio-fs-protocol"
+        )
         self.assertEqual(row["raw_measurements"]["IOCTL"]["calls"], 1)
         self.assertEqual(row["measurements"]["IOCTL"]["calls"], 0)
         self.assertEqual(row["measurements"]["LOOKUP"]["calls"], 5)
         self.assertEqual(row["measurements"]["request_bytes"]["units"], 100)
         self.assertNotIn("total_ns", row["measurements"]["LOOKUP"])
-        dispatch = next(row for row in report["rows"] if row["scope"] == "rootfs"
-                        and row["component"] == "virtio-fs-dispatch")
+        dispatch = next(
+            row
+            for row in report["rows"]
+            if row["scope"] == "rootfs" and row["component"] == "virtio-fs-dispatch"
+        )
         self.assertEqual(dispatch["raw_measurements"]["direct_requests"]["units"], 6)
         self.assertEqual(dispatch["measurements"]["direct_requests"]["units"], 5)
 
     def test_missing_whole_instance_is_unknown_work(self):
         lines = fixture()
-        lines.append("pvisor-fs-profile-start " + json.dumps(dict(
-            schema=1, pid=111, component="overlay-core", instance=999)))
+        lines.append(
+            "pvisor-fs-profile-start "
+            + json.dumps(dict(schema=1, pid=111, component="overlay-core", instance=999))
+        )
         with self.assertRaisesRegex(ValueError, "incomplete profile instance coverage"):
             collect_phase_profiles(lines, operations=("rg",), rounds=1)
 
     def test_missing_scope_or_component_rejects_partial_evidence(self):
         lines = fixture()
-        scope_missing = [line for line in lines if not (line.startswith(PHASE_PREFIX)
-            and json.loads(line.removeprefix(PHASE_PREFIX))["scope"] == SCOPES[1])]
+        scope_missing = [
+            line
+            for line in lines
+            if not (
+                line.startswith(PHASE_PREFIX)
+                and json.loads(line.removeprefix(PHASE_PREFIX))["scope"] == SCOPES[1]
+            )
+        ]
         with self.assertRaisesRegex(ValueError, "phase token coverage"):
             collect_phase_profiles(scope_missing, operations=("rg",), rounds=1)
         for index, line in enumerate(lines):
@@ -98,11 +130,20 @@ class PhaseProfileTests(unittest.TestCase):
 
     def test_unscoped_lifecycle_owner_retained_but_not_attributed_to_tools(self):
         lines = fixture()
-        profile = dict(schema=2, pid=111, component="overlay-core", instance=999,
-                       inclusive_spans=True, final_record=True, measurements={})
-        lines += ["pvisor-fs-profile-start " + json.dumps(
-            {key: profile[key] for key in ("pid", "component", "instance")}),
-            "pvisor-fs-profile " + json.dumps(profile)]
+        profile = dict(
+            schema=2,
+            pid=111,
+            component="overlay-core",
+            instance=999,
+            inclusive_spans=True,
+            final_record=True,
+            measurements={},
+        )
+        lines += [
+            "pvisor-fs-profile-start "
+            + json.dumps({key: profile[key] for key in ("pid", "component", "instance")}),
+            "pvisor-fs-profile " + json.dumps(profile),
+        ]
         report = collect_phase_profiles(lines, operations=("rg",), rounds=1)
         self.assertEqual(len(report["unscoped_final_profiles"]), 1)
 
@@ -114,7 +155,9 @@ class PhaseProfileTests(unittest.TestCase):
             target.write_text(source)
             instrument_rootfs(directory)
             changed = target.read_text()
-            self.assertIn('output = checked([str(root / "usr/bin/python3"), str(script), operation],', changed)
+            self.assertIn(
+                'output = checked([str(root / "usr/bin/python3"), str(script), operation],', changed
+            )
             self.assertEqual(changed.count("checkpoint(phase_descriptors, phase_token)"), 2)
             self.assertTrue(target.with_name("phase_profiles.py").is_file())
             with self.assertRaisesRegex(ValueError, "unexpected resident workload"):

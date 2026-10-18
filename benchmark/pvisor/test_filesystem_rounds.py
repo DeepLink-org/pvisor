@@ -8,21 +8,41 @@ from filesystem_rounds_workload import OPERATIONS
 
 
 def result():
-    policy = dict(dont_write_bytecode=True, prefix="/__pvisor_reference_no_pyc__", prefix_exists=False)
-    cache = dict(TMPDIR="/tmp/.data/pvisor-reference-testing", HOME="/tmp/.data/pvisor-reference-testing/reference-home",
-                 CARGO_HOME="/tmp/.data/pvisor-reference-testing/reference-cargo",
-                 NODE_COMPILE_CACHE="/tmp/.data/pvisor-reference-testing/node-compile-cache",
-                 NODE_DISABLE_COMPILE_CACHE=None, NODE_OPTIONS=None)
+    policy = dict(
+        dont_write_bytecode=True, prefix="/__pvisor_reference_no_pyc__", prefix_exists=False
+    )
+    cache = dict(
+        TMPDIR="/tmp/.data/pvisor-reference-testing",
+        HOME="/tmp/.data/pvisor-reference-testing/reference-home",
+        CARGO_HOME="/tmp/.data/pvisor-reference-testing/reference-cargo",
+        NODE_COMPILE_CACHE="/tmp/.data/pvisor-reference-testing/node-compile-cache",
+        NODE_DISABLE_COMPILE_CACHE=None,
+        NODE_OPTIONS=None,
+    )
     operations = {}
     for operation in OPERATIONS:
         values = []
         for number in (1, 2, 3):
             check = dict(opens=10000, writes=8192, bytes=8 * 1024**2, fsyncs=1)
-            values.append(dict(workload=operation, round=number, worker_ms=1.0,
-                               check=check, python_cache=policy.copy(), tool_cache=cache.copy(), tool_scratch="executor"))
+            values.append(
+                dict(
+                    workload=operation,
+                    round=number,
+                    worker_ms=1.0,
+                    check=check,
+                    python_cache=policy.copy(),
+                    tool_cache=cache.copy(),
+                    tool_scratch="executor",
+                )
+            )
         operations[operation] = dict(values[0], rounds=values)
-    return dict(filesystem=operations, workspace="/work", tool_scratch="executor",
-                tool_cache=cache, python_cache=policy)
+    return dict(
+        filesystem=operations,
+        workspace="/work",
+        tool_scratch="executor",
+        tool_cache=cache,
+        python_cache=policy,
+    )
 
 
 class ResidentRoundTests(unittest.TestCase):

@@ -33,7 +33,8 @@ SHELL = (
     'test "$VERSION_ID" = 26.04; '
     "printf 'LAZY_READY ubuntu 26.04\\n'; sleep 2"
 )
-LIVE_CHECK = r'''set -eu
+LIVE_CHECK = (
+    r"""set -eu
 leaf=$1
 test -d "$leaf"
 for attr in memory.max cpu.max cgroup.procs cgroup.events; do
@@ -52,8 +53,11 @@ ls -l /dev/sd* 2>/dev/null || true
 printf '\n=== mountinfo ===\n'
 cat /proc/self/mountinfo
 printf '\n=== container-info ===\n'
-''' + CTR + r''' --address /lab/run/containerd.sock --namespace "$2" containers info "$3"
-'''
+"""
+    + CTR
+    + r""" --address /lab/run/containerd.sock --namespace "$2" containers info "$3"
+"""
+)
 
 
 def save(path, value):
@@ -73,8 +77,11 @@ class Evidence:
         directory.mkdir()
         argv = [str(part) for part in argv]
         save(directory / "argv.json", argv)
-        status = {"started_utc": datetime.now(timezone.utc).isoformat(),
-                  "timed_out": False, "observation_performed": False}
+        status = {
+            "started_utc": datetime.now(timezone.utc).isoformat(),
+            "timed_out": False,
+            "observation_performed": False,
+        }
         output = {"stdout": bytearray(), "stderr": bytearray()}
         process = None
         observation_error = None
@@ -96,8 +103,11 @@ class Evidence:
                             selector.unregister(key.fileobj)
                             continue
                         output[key.data].extend(chunk)
-                    if (observe and not status["observation_performed"]
-                            and MARKER in output["stdout"]):
+                    if (
+                        observe
+                        and not status["observation_performed"]
+                        and MARKER in output["stdout"]
+                    ):
                         status["observation_performed"] = True
                         try:
                             observe()
@@ -132,9 +142,18 @@ def registry_manifest(evidence, port, repository, reference, name):
     receipt = {"method": "GET", "url": f"http://127.0.0.1:{port}{path}"}
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
     try:
-        connection.request("GET", path, headers={"Accept": ", ".join((
-            "application/vnd.oci.image.manifest.v1+json",
-            "application/vnd.docker.distribution.manifest.v2+json"))})
+        connection.request(
+            "GET",
+            path,
+            headers={
+                "Accept": ", ".join(
+                    (
+                        "application/vnd.oci.image.manifest.v1+json",
+                        "application/vnd.docker.distribution.manifest.v2+json",
+                    )
+                )
+            },
+        )
         response = connection.getresponse()
         receipt.update(status=response.status, headers=response.getheaders())
         body = response.read(8 * 1024 * 1024 + 1)
@@ -176,14 +195,22 @@ def audit_inventory(before, directory, *, wait):
     while True:
         after = host_inventory()
         delta = inventory_delta(before, after)
-        clean = (not delta["boot_changed"] and not delta["errors"]
-                 and all(not values for kind in ("targets", "block_devices", "uio")
-                         for values in delta[kind].values()))
+        clean = (
+            not delta["boot_changed"]
+            and not delta["errors"]
+            and all(
+                not values
+                for kind in ("targets", "block_devices", "uio")
+                for values in delta[kind].values()
+            )
+        )
         if clean or time.monotonic() >= deadline:
             save(directory / "host-after.json", after)
             save(directory / "host-delta.json", delta)
             if not clean:
-                raise RuntimeError("Host TCMU/block/UIO inventory differs; preserve lab and inspect host-delta.json")
+                raise RuntimeError(
+                    "Host TCMU/block/UIO inventory differs; preserve lab and inspect host-delta.json"
+                )
             return
         time.sleep(0.25)
 
@@ -209,7 +236,9 @@ def validate_live(raw, snapshotter, reference):
     info = json.loads(text("container-info"))
     if info.get("Snapshotter") != snapshotter or info.get("Image") != reference:
         raise ValueError("Container info does not match the frozen image and snapshotter")
-    if snapshotter == "overlaybd" and "/sys/kernel/config/target/core/user_" not in text("tcmu-targets"):
+    if snapshotter == "overlaybd" and "/sys/kernel/config/target/core/user_" not in text(
+        "tcmu-targets"
+    ):
         raise ValueError("No live TCMU target was observed for OverlayBD")
 
 
@@ -230,15 +259,33 @@ def recovery_text(container, ctr, prefix, identities):
             shlex.join(ctr + ["tasks", "delete", "--force", identity]),
             shlex.join(ctr + ["containers", "delete", identity]),
             "# After the task is absent, remove only this empty owned leaf:",
-            shlex.join(["docker", "exec", container, "sh", "-ec",
-                        'test -z "$(cat "$1/cgroup.procs")"; rmdir -- "$1"', "sh",
-                        "/sys/fs/cgroup" + prefix + "/" + identity]),
+            shlex.join(
+                [
+                    "docker",
+                    "exec",
+                    container,
+                    "sh",
+                    "-ec",
+                    'test -z "$(cat "$1/cgroup.procs")"; rmdir -- "$1"',
+                    "sh",
+                    "/sys/fs/cgroup" + prefix + "/" + identity,
+                ]
+            ),
         ]
     lines += [
         "# After all owned tasks/leaves are absent, remove only the empty owned parent:",
-        shlex.join(["docker", "exec", container, "sh", "-ec",
-                    'test -z "$(cat "$1/cgroup.procs")"; rmdir -- "$1"', "sh",
-                    "/sys/fs/cgroup" + prefix]),
+        shlex.join(
+            [
+                "docker",
+                "exec",
+                container,
+                "sh",
+                "-ec",
+                'test -z "$(cat "$1/cgroup.procs")"; rmdir -- "$1"',
+                "sh",
+                "/sys/fs/cgroup" + prefix,
+            ]
+        ),
         "Do not remove global TCMU targets, block/UIO devices, snapshots, images, or other tasks.",
         "For a lingering pull, inspect docker top and the exact recorded reference before manual recovery.",
         "Re-run overlaybd_lab.py status --lab PATH and inspect inventories before stopping the lab.",
@@ -248,17 +295,26 @@ def recovery_text(container, ctr, prefix, identities):
 
 def smoke(args):
     lab = args.lab.resolve(strict=True)
-    directory = lab / ("smoke-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                       + "-" + uuid.uuid4().hex[:8])
+    directory = lab / (
+        "smoke-"
+        + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        + "-"
+        + uuid.uuid4().hex[:8]
+    )
     directory.mkdir(exist_ok=False)
     evidence = Evidence(directory, args.timeout)
-    result = {"scope": "functional smoke only; no cache-state or performance claim",
-              "status": "failed", "evidence": str(directory), "cases": []}
+    result = {
+        "scope": "functional smoke only; no cache-state or performance claim",
+        "status": "failed",
+        "evidence": str(directory),
+        "cases": [],
+    }
     baseline = None
     docker = ctr = None
     (directory / "recovery.txt").write_text(
         "Inspect failure.txt and command evidence before retrying. No deletion is authorized "
-        "until Docker ownership and the exact smoke task IDs are established.\n")
+        "until Docker ownership and the exact smoke task IDs are established.\n"
+    )
     try:
         inputs = {}
         for name in ("lab.json", "source-image.json"):
@@ -273,19 +329,33 @@ def smoke(args):
         if not re.fullmatch(r"[a-f0-9]{12}", identity) or Path(manifest["lab"]).resolve() != lab:
             raise ValueError("Invalid lab identity/path")
         prefix = "/system.slice/pvisor-overlaybd-lab-" + identity
-        if manifest.get("owned_cgroup_prefix") != prefix or manifest.get("cgroup_namespace") != "host":
-            raise ValueError("Lab must explicitly own its cgroup prefix and use host cgroup namespace")
+        if (
+            manifest.get("owned_cgroup_prefix") != prefix
+            or manifest.get("cgroup_namespace") != "host"
+        ):
+            raise ValueError(
+                "Lab must explicitly own its cgroup prefix and use host cgroup namespace"
+            )
         namespace = manifest["namespace"]
         if not re.fullmatch(r"[A-Za-z0-9_.-]+", namespace):
             raise ValueError("Invalid private containerd namespace")
-        inspected = json.loads(evidence.command(["docker", "inspect", manifest["container"]], timeout=20))[0]
+        inspected = json.loads(
+            evidence.command(["docker", "inspect", manifest["container"]], timeout=20)
+        )[0]
         if (inspected["Config"].get("Labels") or {}).get(LABEL) != identity:
             raise ValueError("Docker lab ownership label mismatch")
-        if (not inspected["State"]["Running"] or inspected["Image"] != manifest["image_id"]
-                or inspected["HostConfig"].get("CgroupnsMode") != "host"):
+        if (
+            not inspected["State"]["Running"]
+            or inspected["Image"] != manifest["image_id"]
+            or inspected["HostConfig"].get("CgroupnsMode") != "host"
+        ):
             raise ValueError("Docker lab runtime/image/cgroup namespace differs from manifest")
-        if not any(mount.get("Destination") == "/lab" and mount.get("RW")
-                   and Path(mount["Source"]).resolve() == lab for mount in inspected["Mounts"]):
+        if not any(
+            mount.get("Destination") == "/lab"
+            and mount.get("RW")
+            and Path(mount["Source"]).resolve() == lab
+            for mount in inspected["Mounts"]
+        ):
             raise ValueError("Docker /lab bind does not match the requested owned lab")
         container = inspected["Id"]
         docker = ["docker", "exec", container]
@@ -295,61 +365,131 @@ def smoke(args):
         (directory / "recovery.txt").write_text(recovery_text(container, ctr, prefix, identities))
         port = int(manifest["port"])
         repository = source["repository"]
-        match = re.fullmatch(r"127\.0\.0\.1:" + str(port) + r"/([a-z0-9]+(?:[._/-][a-z0-9]+)*)", repository)
+        match = re.fullmatch(
+            r"127\.0\.0\.1:" + str(port) + r"/([a-z0-9]+(?:[._/-][a-z0-9]+)*)", repository
+        )
         if not match or not re.fullmatch(r"sha256:[a-f0-9]{64}", source["source_digest"]):
             raise ValueError("Source must use the owned loopback registry and a SHA-256 digest")
-        source_digest = registry_manifest(directory, port, match[1], source["source_digest"], "source")
+        source_digest = registry_manifest(
+            directory, port, match[1], source["source_digest"], "source"
+        )
         turbo_digest = registry_manifest(directory, port, match[1], "turbo", "turbo")
-        result.update(source_digest=source_digest, derived_digest=turbo_digest,
-                      source_reference=repository + "@" + source_digest,
-                      derived_reference=repository + "@" + turbo_digest,
-                      docker_container_id=container, namespace=namespace)
-        save(directory / "frozen-images.json", {key: value for key, value in result.items()
-                                                if key.endswith(("digest", "reference"))})
+        result.update(
+            source_digest=source_digest,
+            derived_digest=turbo_digest,
+            source_reference=repository + "@" + source_digest,
+            derived_reference=repository + "@" + turbo_digest,
+            docker_container_id=container,
+            namespace=namespace,
+        )
+        save(
+            directory / "frozen-images.json",
+            {key: value for key, value in result.items() if key.endswith(("digest", "reference"))},
+        )
         baseline = host_inventory()
         save(directory / "host-before.json", baseline)
         if baseline["errors"]:
             raise RuntimeError("Cannot establish host kernel-object baseline")
         # All cgroup reads occur in the host-cgroup-namespace lab container.
-        evidence.command(docker + ["sh", "-ec",
-                         'test ! -e "$1" || { test -z "$(cat "$1/cgroup.procs")"; '
-                         'test -z "$(find "$1" -mindepth 1 -maxdepth 1 -type d -print -quit)"; }',
-                         "sh", "/sys/fs/cgroup" + prefix], timeout=20)
+        evidence.command(
+            docker
+            + [
+                "sh",
+                "-ec",
+                'test ! -e "$1" || { test -z "$(cat "$1/cgroup.procs")"; '
+                'test -z "$(find "$1" -mindepth 1 -maxdepth 1 -type d -print -quit)"; }',
+                "sh",
+                "/sys/fs/cgroup" + prefix,
+            ],
+            timeout=20,
+        )
         for name, snapshotter, digest, task_id in (
-                ("oci", "overlayfs", source_digest, identities[0]),
-                ("turbo", "overlaybd", turbo_digest, identities[1])):
-            case = {"name": name, "snapshotter": snapshotter, "task_id": task_id,
-                    "image": repository + "@" + digest, "status": "failed"}
+            ("oci", "overlayfs", source_digest, identities[0]),
+            ("turbo", "overlaybd", turbo_digest, identities[1]),
+        ):
+            case = {
+                "name": name,
+                "snapshotter": snapshotter,
+                "task_id": task_id,
+                "image": repository + "@" + digest,
+                "status": "failed",
+            }
             result["cases"].append(case)
             if name == "oci":
-                pull = ["images", "pull", "--plain-http", "--snapshotter", snapshotter, case["image"]]
+                pull = [
+                    "images",
+                    "pull",
+                    "--plain-http",
+                    "--snapshotter",
+                    snapshotter,
+                    case["image"],
+                ]
             else:
                 pull = ["rpull", "--plain-http", "--snapshotter", snapshotter, case["image"]]
             evidence.command(ctr + pull)
 
             def observe():
-                raw = evidence.command(docker + ["sh", "-ec", LIVE_CHECK, "sh",
-                                       "/sys/fs/cgroup" + prefix + "/" + task_id,
-                                       namespace, task_id], timeout=15)
+                raw = evidence.command(
+                    docker
+                    + [
+                        "sh",
+                        "-ec",
+                        LIVE_CHECK,
+                        "sh",
+                        "/sys/fs/cgroup" + prefix + "/" + task_id,
+                        namespace,
+                        task_id,
+                    ],
+                    timeout=15,
+                )
                 (directory / f"{name}-live.txt").write_bytes(raw)
                 validate_live(raw, snapshotter, case["image"])
 
-            raw = evidence.command(ctr + ["run", "--rm", "--snapshotter", snapshotter,
-                                   "--cpus", "2", "--memory-limit", "2147483648",
-                                   "--cgroup", prefix + "/" + task_id,
-                                   case["image"], task_id, "/bin/sh", "-ec", SHELL], observe=observe)
+            raw = evidence.command(
+                ctr
+                + [
+                    "run",
+                    "--rm",
+                    "--snapshotter",
+                    snapshotter,
+                    "--cpus",
+                    "2",
+                    "--memory-limit",
+                    "2147483648",
+                    "--cgroup",
+                    prefix + "/" + task_id,
+                    case["image"],
+                    task_id,
+                    "/bin/sh",
+                    "-ec",
+                    SHELL,
+                ],
+                observe=observe,
+            )
             if raw != MARKER:
-                raise ValueError("Smoke stdout must be exactly LAZY_READY ubuntu 26.04 followed by newline")
+                raise ValueError(
+                    "Smoke stdout must be exactly LAZY_READY ubuntu 26.04 followed by newline"
+                )
             for resource in ("tasks", "containers"):
                 raw = evidence.command(ctr + [resource, "list"], timeout=20)
-                if task_id in [line.split()[0] for line in raw.decode().splitlines() if line.split()]:
+                if task_id in [
+                    line.split()[0] for line in raw.decode().splitlines() if line.split()
+                ]:
                     raise RuntimeError(f"Smoke {resource} object remains: {task_id}")
             # rmdir can remove only the exact empty leaf/parent owned by this lab.
-            evidence.command(docker + ["sh", "-ec",
-                             'for d in "$1" "$2"; do test ! -d "$d" || '
-                             '{ test -z "$(cat "$d/cgroup.procs")"; rmdir -- "$d"; }; done',
-                             "sh", "/sys/fs/cgroup" + prefix + "/" + task_id,
-                             "/sys/fs/cgroup" + prefix], timeout=20)
+            evidence.command(
+                docker
+                + [
+                    "sh",
+                    "-ec",
+                    'for d in "$1" "$2"; do test ! -d "$d" || '
+                    '{ test -z "$(cat "$d/cgroup.procs")"; rmdir -- "$d"; }; done',
+                    "sh",
+                    "/sys/fs/cgroup" + prefix + "/" + task_id,
+                    "/sys/fs/cgroup" + prefix,
+                ],
+                timeout=20,
+            )
             case_directory = directory / name
             case_directory.mkdir()
             audit_inventory(baseline, case_directory, wait=15)
@@ -380,8 +520,12 @@ def smoke(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--lab", type=Path, required=True, help="Existing owned OverlayBD lab directory")
-    parser.add_argument("--timeout", type=int, default=600, help="Per pull/run timeout in seconds (default: 600)")
+    parser.add_argument(
+        "--lab", type=Path, required=True, help="Existing owned OverlayBD lab directory"
+    )
+    parser.add_argument(
+        "--timeout", type=int, default=600, help="Per pull/run timeout in seconds (default: 600)"
+    )
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")

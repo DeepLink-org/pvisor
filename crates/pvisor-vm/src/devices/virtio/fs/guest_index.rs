@@ -135,7 +135,7 @@ fn collect_page<F: FileSystem>(
             let entry = DirEntry {
                 ino: attrs.attr.st_ino,
                 offset: attrs.inode,
-                type_: dir_type(attrs.attr.st_mode as u32),
+                type_: dir_type(attrs.attr.st_mode),
                 name: &name,
             };
             match push_record(&mut records, budget, &entry, attrs, false) {
@@ -211,11 +211,11 @@ fn collect_page<F: FileSystem>(
     })
 }
 
-fn dir_type(mode: u32) -> u32 {
-    match mode & (libc::S_IFMT as u32) {
-        bits if bits == libc::S_IFDIR as u32 => libc::DT_DIR as u32,
-        bits if bits == libc::S_IFLNK as u32 => libc::DT_LNK as u32,
-        bits if bits == libc::S_IFREG as u32 => libc::DT_REG as u32,
+fn dir_type(mode: libc::mode_t) -> u32 {
+    match mode & libc::S_IFMT {
+        libc::S_IFDIR => libc::DT_DIR as u32,
+        libc::S_IFLNK => libc::DT_LNK as u32,
+        libc::S_IFREG => libc::DT_REG as u32,
         _ => libc::DT_UNKNOWN as u32,
     }
 }

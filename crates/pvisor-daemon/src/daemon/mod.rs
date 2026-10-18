@@ -458,68 +458,68 @@ impl Daemon {
 
     // Caller holds the exclusive lifecycle gate, including E2B connect's TTL update.
     async fn control_locked(&self, id: &str, pause: bool) -> Result<(), ApiError> {
-            let record = self.record(id).await?;
-            if !matches!(
-                record.sandbox.status.state.as_str(),
-                "Running" | "Paused" | "Pausing" | "Resuming"
-            ) {
-                return Err(ApiError::new(
-                    409,
-                    "INVALID_SANDBOX_STATE",
-                    "sandbox lifecycle does not permit control",
-                ));
+        let record = self.record(id).await?;
+        if !matches!(
+            record.sandbox.status.state.as_str(),
+            "Running" | "Paused" | "Pausing" | "Resuming"
+        ) {
+            return Err(ApiError::new(
+                409,
+                "INVALID_SANDBOX_STATE",
+                "sandbox lifecycle does not permit control",
+            ));
+        }
+        check_expiration(record.sandbox.expires_at)?;
+        let current = self
+            .runtime
+            .inspect(id)
+            .await
+            .map_err(|e| ApiError::internal(e.to_string()))?;
+        let desired = if pause {
+            RuntimeState::Paused
+        } else {
+            RuntimeState::Running
+        };
+        if current == desired {
+            let state = if pause { "Paused" } else { "Running" };
+            // A lost ACK may leave the durable intention behind the live state.
+            // The exclusive gate and checks above retain delete/expiry fences.
+            if record.sandbox.status.state != state {
+                self.transition(id, state, None).await?;
             }
-            check_expiration(record.sandbox.expires_at)?;
-            let current = self
-                .runtime
-                .inspect(id)
-                .await
-                .map_err(|e| ApiError::internal(e.to_string()))?;
-            let desired = if pause {
-                RuntimeState::Paused
-            } else {
-                RuntimeState::Running
-            };
-            if current == desired {
-                let state = if pause { "Paused" } else { "Running" };
-                // A lost ACK may leave the durable intention behind the live state.
-                // The exclusive gate and checks above retain delete/expiry fences.
-                if record.sandbox.status.state != state {
-                    self.transition(id, state, None).await?;
-                }
-                return Ok(());
-            }
-            let allowed = if pause {
-                RuntimeState::Running
-            } else {
-                RuntimeState::Paused
-            };
-            if current != allowed {
-                return Err(ApiError::new(
-                    409,
-                    "INVALID_SANDBOX_STATE",
-                    "native state does not permit this operation",
-                ));
-            }
-            self.transition(id, if pause { "Pausing" } else { "Resuming" }, None)
-                .await?;
-            let outcome = if pause {
-                self.runtime.pause(id).await
-            } else {
-                self.runtime.resume(id).await
-            };
-            let observed =
-                outcome.map_err(|e| ApiError::new(503, "RUNTIME_UNAVAILABLE", e.to_string()))?;
-            if observed != desired {
-                return Err(ApiError::new(
-                    503,
-                    "RUNTIME_UNAVAILABLE",
-                    "native control not confirmed",
-                ));
-            }
-            self.transition(id, if pause { "Paused" } else { "Running" }, None)
-                .await?;
-            Ok(())
+            return Ok(());
+        }
+        let allowed = if pause {
+            RuntimeState::Running
+        } else {
+            RuntimeState::Paused
+        };
+        if current != allowed {
+            return Err(ApiError::new(
+                409,
+                "INVALID_SANDBOX_STATE",
+                "native state does not permit this operation",
+            ));
+        }
+        self.transition(id, if pause { "Pausing" } else { "Resuming" }, None)
+            .await?;
+        let outcome = if pause {
+            self.runtime.pause(id).await
+        } else {
+            self.runtime.resume(id).await
+        };
+        let observed =
+            outcome.map_err(|e| ApiError::new(503, "RUNTIME_UNAVAILABLE", e.to_string()))?;
+        if observed != desired {
+            return Err(ApiError::new(
+                503,
+                "RUNTIME_UNAVAILABLE",
+                "native control not confirmed",
+            ));
+        }
+        self.transition(id, if pause { "Paused" } else { "Running" }, None)
+            .await?;
+        Ok(())
     }
 
     pub async fn delete(self: &Arc<Self>, id: &str) -> Result<(), ApiError> {

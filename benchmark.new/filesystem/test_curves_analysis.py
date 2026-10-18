@@ -33,11 +33,18 @@ def protocol(samples=1):
             "sync": {"env": {"PVISOR_VM_FS_HOST_WRITEBACK": "0"}},
             "async": {"env": {"PVISOR_VM_FS_HOST_WRITEBACK": "1"}},
         },
-        "cells": [{
-            "id": "block-1k", "family": "block", "x": 1, "workload": "stream",
-            "block_bytes": 1024, "workers": 1, "bytes_per_worker": ANALYSIS.MIB,
-            "sync_every_ops": 0,
-        }],
+        "cells": [
+            {
+                "id": "block-1k",
+                "family": "block",
+                "x": 1,
+                "workload": "stream",
+                "block_bytes": 1024,
+                "workers": 1,
+                "bytes_per_worker": ANALYSIS.MIB,
+                "sync_every_ops": 0,
+            }
+        ],
     }
 
 
@@ -45,33 +52,54 @@ def record(plan, pair, condition, times=(1_000_000, 2_000_000, 6_000_000)):
     cell = plan["cells"][0]
     rows = []
     for round_no, total in enumerate(times, 1):
-        rows.append({
-            **{key: cell[key] for key in (
-                "id", "workload", "block_bytes", "workers", "bytes_per_worker", "sync_every_ops"
-            )},
-            "round": round_no,
-            "bytes": ANALYSIS.MIB,
-            "accepted_ns": total // 2,
-            "applied_ns": total // 10,
-            "fsync_ns": total // 5,
-            "close_ns": total // 10,
-            "dirsync_ns": total // 10,
-            "total_ns": total,
-            "correctness": True,
-            "periodic_fsyncs": 7,
-        })
+        rows.append(
+            {
+                **{
+                    key: cell[key]
+                    for key in (
+                        "id",
+                        "workload",
+                        "block_bytes",
+                        "workers",
+                        "bytes_per_worker",
+                        "sync_every_ops",
+                    )
+                },
+                "round": round_no,
+                "bytes": ANALYSIS.MIB,
+                "accepted_ns": total // 2,
+                "applied_ns": total // 10,
+                "fsync_ns": total // 5,
+                "close_ns": total // 10,
+                "dirsync_ns": total // 10,
+                "total_ns": total,
+                "correctness": True,
+                "periodic_fsyncs": 7,
+            }
+        )
     return {
-        "pair": pair, "condition": condition, "rows": rows, "valid": True, "returncode": 0,
-        "ready_ms": 4.0, "job_ms": 20.0, "sampled_memory_current_peak": 2 * ANALYSIS.MIB,
+        "pair": pair,
+        "condition": condition,
+        "rows": rows,
+        "valid": True,
+        "returncode": 0,
+        "ready_ms": 4.0,
+        "job_ms": 20.0,
+        "sampled_memory_current_peak": 2 * ANALYSIS.MIB,
         "resource": {"memory.peak": "999999", "cpu.stat": "usage_usec 123"},
     }
 
 
 def point(pair, condition, throughput):
     return {
-        "pair": str(pair), "condition": condition, "id": "block-1k",
-        "family": "block", "workload": "stream", "x": 1,
-        "throughput_mib_s": throughput, "accepted_mib_s": throughput * 2,
+        "pair": str(pair),
+        "condition": condition,
+        "id": "block-1k",
+        "family": "block",
+        "workload": "stream",
+        "x": 1,
+        "throughput_mib_s": throughput,
+        "accepted_mib_s": throughput * 2,
         **{phase + "_ms": 1.0 for phase in ANALYSIS.PHASES},
     }
 
@@ -103,7 +131,9 @@ class AggregationTests(unittest.TestCase):
         estimate = comparisons[0]
         self.assertEqual(estimate["n"], 5)
         self.assertEqual([row["throughput_ratio"] for row in ratios], [2.0] * 5)
-        self.assertEqual((estimate["median"], estimate["ci_low"], estimate["ci_high"]), (2.0, 2.0, 2.0))
+        self.assertEqual(
+            (estimate["median"], estimate["ci_low"], estimate["ci_high"]), (2.0, 2.0, 2.0)
+        )
         self.assertEqual(estimate["pairs"], ["0", "1", "2", "3", "4"])
         self.assertFalse(estimate["distribution"]["testable"])
 
@@ -115,8 +145,10 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(len(failures), 1)
         self.assertIn("missing", failures[0]["reasons"][0])
         summaries, comparisons, _ = ANALYSIS.summarize(plan, points)
-        self.assertEqual({row["condition"]: row["throughput_mib_s"]["n"] for row in summaries},
-                         {"sync": 2, "async": 1})
+        self.assertEqual(
+            {row["condition"]: row["throughput_mib_s"]["n"] for row in summaries},
+            {"sync": 2, "async": 1},
+        )
         self.assertEqual(comparisons[0]["n"], 1)
 
         failed = copy.deepcopy(records)
@@ -134,8 +166,12 @@ class AggregationTests(unittest.TestCase):
         self.assertEqual(json.loads(raw[0]["raw_row_json"])["round"], 1)
         self.assertEqual(points[0]["rounds"], 3)
         self.assertFalse(failures)
-        for field, value in (("workers", 99), ("correctness", False), ("total_ns", 99),
-                             ("fsync_ns", -1)):
+        for field, value in (
+            ("workers", 99),
+            ("correctness", False),
+            ("total_ns", 99),
+            ("fsync_ns", -1),
+        ):
             with self.subTest(field=field):
                 broken = copy.deepcopy(records)
                 broken[0]["rows"][0][field] = value
@@ -152,12 +188,16 @@ class AggregationTests(unittest.TestCase):
             (batch / "protocol.json").write_text(json.dumps(plan))
             (batch / "records.json").write_text(json.dumps(records))
             before = (batch / "records.json").read_bytes()
-            with mock.patch.object(ANALYSIS, "render_plots", side_effect=AssertionError("timing renderer called")) as render:
+            with mock.patch.object(
+                ANALYSIS, "render_plots", side_effect=AssertionError("timing renderer called")
+            ) as render:
                 result = ANALYSIS.analyze(batch, batch / "analysis", plots=True)
             render.assert_not_called()
             self.assertEqual(result["benchmark"], "B-FS-DIAG")
             self.assertEqual(result["plot_status"], "diagnostic_only")
-            self.assertEqual((result["curves"], result["comparisons"], result["plots"]), ([], [], []))
+            self.assertEqual(
+                (result["curves"], result["comparisons"], result["plots"]), ([], [], [])
+            )
             self.assertEqual((batch / "records.json").read_bytes(), before)
             self.assertTrue((batch / "analysis/raw_rows.csv").is_file())
             self.assertTrue((batch / "analysis/environment_resources.csv").is_file())
@@ -172,7 +212,9 @@ class AggregationTests(unittest.TestCase):
             self.assertEqual(result["status"], "incomplete_or_failed")
             self.assertEqual(result["counts"]["failed_environments"], 1)
             self.assertEqual(len(result["source"]["analysis_sha256"]), 64)
-            self.assertIn("N5 cannot test", result["statistical_scope"]["separated_distributions"]["N5_limit"])
+            self.assertIn(
+                "N5 cannot test", result["statistical_scope"]["separated_distributions"]["N5_limit"]
+            )
             self.assertTrue((batch / "derived/failures.csv").is_file())
             self.assertEqual(result["analysis_schema"], 3)
 
@@ -191,7 +233,9 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual([cluster["fraction"] for cluster in clusters], [0.5, 0.5])
         self.assertEqual([cluster["median"] for cluster in clusters], [1.0, 1.7])
         self.assertEqual(clusters[0]["pairs"], ["a", "b", "c"])
-        self.assertEqual(sorted(value for cluster in clusters for value in cluster["values"]), values)
+        self.assertEqual(
+            sorted(value for cluster in clusters for value in cluster["values"]), values
+        )
 
     def test_both_gap_and_median_ratio_and_three_per_side_are_required(self):
         for values in (
@@ -242,9 +286,19 @@ class ProtocolAxesTests(unittest.TestCase):
     def test_phase_breakdown_uses_additive_means_and_preserves_individual_totals(self):
         points = []
         for pair, (accepted, fsync) in enumerate(((1, 100), (100, 1), (1, 1))):
-            points.append({"id": "block-1k", "condition": "async", "pair": pair,
-                           "accepted_ms": accepted, "applied_ms": 0, "fsync_ms": fsync,
-                           "close_ms": 0, "dirsync_ms": 0, "total_ms": accepted + fsync})
+            points.append(
+                {
+                    "id": "block-1k",
+                    "condition": "async",
+                    "pair": pair,
+                    "accepted_ms": accepted,
+                    "applied_ms": 0,
+                    "fsync_ms": fsync,
+                    "close_ms": 0,
+                    "dirsync_ms": 0,
+                    "total_ms": accepted + fsync,
+                }
+            )
         points.append({**points[0], "id": "block-4k"})
         rows = ANALYSIS.phase_breakdown(points)
         self.assertEqual(len(rows), 1)  # Selection is fixed, independent of measurements.
@@ -254,8 +308,9 @@ class ProtocolAxesTests(unittest.TestCase):
         self.assertEqual(row["pairs"], [0, 1, 2])
         self.assertEqual(row["accepted_mean_ms"], 34)
         self.assertEqual(row["fsync_mean_ms"], 34)
-        self.assertEqual(sum(row[phase + "_mean_ms"] for phase in ANALYSIS.PHASES[:-1]),
-                         row["total_mean_ms"])
+        self.assertEqual(
+            sum(row[phase + "_mean_ms"] for phase in ANALYSIS.PHASES[:-1]), row["total_mean_ms"]
+        )
 
     def test_numeric_order_units_and_explicit_axis_contract(self):
         cells = {
@@ -281,19 +336,23 @@ class ProtocolAxesTests(unittest.TestCase):
         axes = ANALYSIS.curve_axes(categorical, categorical.keys())
         self.assertFalse(axes["numeric"])
         self.assertEqual(axes["xvalue"], {"a": 0, "b": 1})
-        reads = {"r": {"family": "readset", "x": 8, "bytes_per_worker": 8 * ANALYSIS.MIB, "workers": 1}}
+        reads = {
+            "r": {"family": "readset", "x": 8, "bytes_per_worker": 8 * ANALYSIS.MIB, "workers": 1}
+        }
         axes = ANALYSIS.curve_axes(reads, reads.keys())
         self.assertEqual(axes["label"], "Read working set (MiB)")
 
     def test_missing_parameter_factors_are_inferred_and_explicit_protocol_wins(self):
         plan = protocol()
-        plan["conditions"].update({
-            "capacity-4m": {"env": {}},
-            "batch-256k": {"env": {}},
-            "delay-100us": {"env": {}},
-            "async-old": {"env": {}},
-            "unmerged": {"env": {}},
-        })
+        plan["conditions"].update(
+            {
+                "capacity-4m": {"env": {}},
+                "batch-256k": {"env": {}},
+                "delay-100us": {"env": {}},
+                "async-old": {"env": {}},
+                "unmerged": {"env": {}},
+            }
+        )
         factors, source = ANALYSIS.condition_factors(plan)
         self.assertTrue(source.startswith("inferred"))
         self.assertEqual(factors["capacity-4m"]["capacity_mib"], 4)
@@ -301,7 +360,9 @@ class ProtocolAxesTests(unittest.TestCase):
         self.assertEqual(factors["delay-100us"]["delay_us"], 100)
         self.assertTrue(factors["async-old"]["qualification_lock"])
         self.assertEqual((factors["unmerged"]["chunks"], factors["unmerged"]["delay_us"]), (1, 0))
-        plan["conditions"]["capacity-4m"]["env"]["PVISOR_VM_FS_HOST_WRITEBACK_CONFIG"] = '{"capacity_mib": 8}'
+        plan["conditions"]["capacity-4m"]["env"]["PVISOR_VM_FS_HOST_WRITEBACK_CONFIG"] = (
+            '{"capacity_mib": 8}'
+        )
         self.assertEqual(ANALYSIS.condition_factors(plan)[0]["capacity-4m"]["capacity_mib"], 8)
         explicit = {"async": {"capacity_mib": 16}}
         plan["condition_factors"] = explicit

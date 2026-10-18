@@ -123,7 +123,9 @@ impl E2bTemplate {
                 && version.iter().all(|part| !part.is_empty()
                     && part.bytes().all(|byte| byte.is_ascii_digit())
                     && part.parse::<u32>().is_ok())
-                && version.iter().any(|part| part.parse::<u32>().unwrap_or(0) > 0),
+                && version
+                    .iter()
+                    .any(|part| part.parse::<u32>().unwrap_or(0) > 0),
             "invalid envd version"
         );
         ensure!(
@@ -714,7 +716,10 @@ impl Runtime for NativeRuntime {
         let image: PreparedImage =
             read_json(&self.config.images_dir.join(format!("{}.json", spec.image)))?;
         validate_image(&image, &self.config.state_dir)?;
-        ensure!(image.e2b == spec.e2b, "prepared image service profile changed");
+        ensure!(
+            image.e2b == spec.e2b,
+            "prepared image service profile changed"
+        );
         let generation = uuid::Uuid::new_v4().to_string();
         let group_path = self
             .config
@@ -1225,7 +1230,11 @@ fn make_run_spec(identity: &Identity) -> Result<pvisor_core::RunSpec> {
     ensure!(!argv.is_empty(), "prepared bootstrap is missing");
     let mut run = pvisor_core::RunSpec::process(
         format!("run-{}", identity.generation),
-        if identity.spec.e2b.is_some() { "e2b" } else { "opensandbox" },
+        if identity.spec.e2b.is_some() {
+            "e2b"
+        } else {
+            "opensandbox"
+        },
         argv.remove(0),
     );
     let pvisor_core::RunInvocation::Process(process) = &mut run.invocation;
@@ -1278,13 +1287,25 @@ fn health_client(token: Option<&str>) -> Result<reqwest::Client> {
 }
 async fn probe_services(client: &reqwest::Client, endpoints: &BTreeMap<u16, String>) -> Result<()> {
     if let Some(envd) = endpoints.get(&ENVD_PORT) {
-        probe_status(client, &format!("{envd}/health"), reqwest::StatusCode::NO_CONTENT).await?;
+        probe_status(
+            client,
+            &format!("{envd}/health"),
+            reqwest::StatusCode::NO_CONTENT,
+        )
+        .await?;
         // Health alone also succeeds before envd initialization. Prove both
         // authenticated API access and rejection without the bootstrap token.
         let envs = probe(client, &format!("{envd}/envs")).await?;
-        ensure!(serde_json::from_slice::<BTreeMap<String, String>>(&envs).is_ok(),
-            "invalid real envd environment response");
-        probe_status(&health_client(None)?, &format!("{envd}/envs"), reqwest::StatusCode::UNAUTHORIZED).await?;
+        ensure!(
+            serde_json::from_slice::<BTreeMap<String, String>>(&envs).is_ok(),
+            "invalid real envd environment response"
+        );
+        probe_status(
+            &health_client(None)?,
+            &format!("{envd}/envs"),
+            reqwest::StatusCode::UNAUTHORIZED,
+        )
+        .await?;
         return Ok(());
     }
     let execd = endpoints
@@ -1311,12 +1332,13 @@ fn validate_ready(bytes: &[u8]) -> Result<()> {
 async fn probe(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     probe_status(client, url, reqwest::StatusCode::OK).await
 }
-async fn probe_status(client: &reqwest::Client, url: &str, status: reqwest::StatusCode) -> Result<Vec<u8>> {
+async fn probe_status(
+    client: &reqwest::Client,
+    url: &str,
+    status: reqwest::StatusCode,
+) -> Result<Vec<u8>> {
     let mut response = client.get(url).send().await?;
-    ensure!(
-        response.status() == status,
-        "real service health failed"
-    );
+    ensure!(response.status() == status, "real service health failed");
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         ensure!(
@@ -1615,11 +1637,17 @@ pub fn validate_spec(spec: &RuntimeSpec) -> Result<()> {
     validate_argv_env(&spec.entrypoint, &spec.env)?;
     if let Some(template) = &spec.e2b {
         template.validate()?;
-        ensure!(template.cpu_millis == spec.cpu_millis && template.memory_bytes == spec.memory_bytes,
-            "E2B template resources do not match admission");
-        ensure!(spec.env.get(ENVD_TOKEN_ENV).is_some_and(|token| token.len() >= 32
-            && token.bytes().all(|byte| byte.is_ascii_alphanumeric())),
-            "E2B envd requires a private bootstrap token");
+        ensure!(
+            template.cpu_millis == spec.cpu_millis && template.memory_bytes == spec.memory_bytes,
+            "E2B template resources do not match admission"
+        );
+        ensure!(
+            spec.env
+                .get(ENVD_TOKEN_ENV)
+                .is_some_and(|token| token.len() >= 32
+                    && token.bytes().all(|byte| byte.is_ascii_alphanumeric())),
+            "E2B envd requires a private bootstrap token"
+        );
     }
     Ok(())
 }

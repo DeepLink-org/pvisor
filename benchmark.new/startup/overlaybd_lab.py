@@ -57,8 +57,13 @@ def prepare(args):
         target = rootfs / destination.lstrip("/")
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target, follow_symlinks=True)
-        receipts.append({"source": str(Path(source).resolve()),
-                         "destination": destination, "sha256": sha256(target)})
+        receipts.append(
+            {
+                "source": str(Path(source).resolve()),
+                "destination": destination,
+                "sha256": sha256(target),
+            }
+        )
 
     obd = args.overlaybd_root.resolve() / "opt/overlaybd"
     snap = args.snapshotter_root.resolve() / "opt/overlaybd/snapshotter"
@@ -67,9 +72,12 @@ def prepare(args):
             raise ValueError(f"Missing unpacked package directory: {source}")
         for path in sorted(source.rglob("*")):
             if path.is_file():
-                copy_file(path, "/opt/overlaybd/" + str(path.relative_to(obd))
-                          if path.is_relative_to(obd)
-                          else "/opt/overlaybd/snapshotter/" + str(path.relative_to(snap)))
+                copy_file(
+                    path,
+                    "/opt/overlaybd/" + str(path.relative_to(obd))
+                    if path.is_relative_to(obd)
+                    else "/opt/overlaybd/snapshotter/" + str(path.relative_to(snap)),
+                )
     executables = []
     for name in ("containerd", "containerd-shim-runc-v2", "runc"):
         source = shutil.which(name)
@@ -78,8 +86,11 @@ def prepare(args):
         destination = "/usr/local/bin/" + name
         copy_file(source, destination)
         executables.append(rootfs / destination.lstrip("/"))
-    executables.extend(path for path in (rootfs / "opt/overlaybd").rglob("*")
-                       if path.is_file() and os.access(path, os.X_OK))
+    executables.extend(
+        path
+        for path in (rootfs / "opt/overlaybd").rglob("*")
+        if path.is_file() and os.access(path, os.X_OK)
+    )
     libraries = set()
     for executable in executables:
         result = subprocess.run(["ldd", str(executable)], text=True, capture_output=True)
@@ -93,9 +104,14 @@ def prepare(args):
         # The host's dependency paths must be preserved for its ELF interpreter.
         if str(rootfs) not in path:
             copy_file(path, path)
-    bundle = next((Path(path) for path in (
-        "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/certs/ca-certificates.crt"
-    ) if Path(path).is_file()), None)
+    bundle = next(
+        (
+            Path(path)
+            for path in ("/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/certs/ca-certificates.crt")
+            if Path(path).is_file()
+        ),
+        None,
+    )
     if bundle:
         copy_file(bundle, "/etc/ssl/certs/ca-certificates.crt")
     (rootfs / "etc").mkdir(exist_ok=True)
@@ -105,20 +121,28 @@ def prepare(args):
         "cacheConfig": {"cacheType": "file", "cacheDir": "/lab/cache/registry", "cacheSizeGB": 4},
         "gzipCacheConfig": {"enable": True, "cacheDir": "/lab/cache/gzip", "cacheSizeGB": 4},
         "credentialConfig": {"mode": "file", "path": "/lab/cred.json"},
-        "ioEngine": 0, "download": {"enable": False},
-        "p2pConfig": {"enable": False}, "enableAudit": False,
+        "ioEngine": 0,
+        "download": {"enable": False},
+        "p2pConfig": {"enable": False},
+        "enableAudit": False,
     }
     save(lab / "overlaybd.json", overlaybd)
     (rootfs / "etc/overlaybd").mkdir()
     save(rootfs / "etc/overlaybd/overlaybd.json", overlaybd)
     save(lab / "cred.json", {"auths": {}})
-    save(lab / "snapshotter.json", {
-        "root": "/lab/containerd-root/io.containerd.snapshotter.v1.overlaybd",
-        "address": "/lab/run/overlaybd.sock", "verbose": "info",
-        "rwMode": "overlayfs", "runtimeType": "containerd", "autoRemoveDev": True,
-        "mirrorRegistry": [{"host": f"127.0.0.1:{args.port}", "insecure": True}],
-    })
-    (lab / "containerd.toml").write_text('''version = 2
+    save(
+        lab / "snapshotter.json",
+        {
+            "root": "/lab/containerd-root/io.containerd.snapshotter.v1.overlaybd",
+            "address": "/lab/run/overlaybd.sock",
+            "verbose": "info",
+            "rwMode": "overlayfs",
+            "runtimeType": "containerd",
+            "autoRemoveDev": True,
+            "mirrorRegistry": [{"host": f"127.0.0.1:{args.port}", "insecure": True}],
+        },
+    )
+    (lab / "containerd.toml").write_text("""version = 2
 root = "/lab/containerd-root"
 state = "/lab/run/containerd"
 disabled_plugins = ["io.containerd.grpc.v1.cri", "io.containerd.cri.v1.runtime", "io.containerd.cri.v1.images"]
@@ -127,8 +151,8 @@ disabled_plugins = ["io.containerd.grpc.v1.cri", "io.containerd.cri.v1.runtime",
 [proxy_plugins.overlaybd]
   type = "snapshot"
   address = "/lab/run/overlaybd.sock"
-''')
-    (lab / "registry.yml").write_text(f'''version: 0.1
+""")
+    (lab / "registry.yml").write_text(f"""version: 0.1
 log:
   level: info
 storage:
@@ -137,8 +161,8 @@ storage:
 http:
   addr: 0.0.0.0:{args.port}
   secret: {uuid.uuid4().hex}
-''')
-    (context / "start.sh").write_text('''#!/bin/sh
+""")
+    (context / "start.sh").write_text("""#!/bin/sh
 set -eu
 mkdir -p /lab/run /lab/log
 /bin/registry serve /lab/registry.yml > /lab/log/registry.log 2>&1 &
@@ -155,23 +179,32 @@ while kill -0 "$registry_pid" "$tcmu_pid" "$snapshotter_pid" "$containerd_pid" 2
   wait $! || true
 done
 exit 1
-''')
-    (context / "Dockerfile").write_text('''FROM registry:3
+""")
+    (context / "Dockerfile").write_text("""FROM registry:3
 COPY rootfs/ /
 COPY --chmod=0755 start.sh /usr/local/bin/lab-start
 ENV PATH="/opt/overlaybd/snapshotter:/opt/overlaybd/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ENTRYPOINT ["/usr/local/bin/lab-start"]
-''')
-    manifest = {"schema": 1, "id": identity, "container": "pvisor-overlaybd-" + identity,
-                "image": "pvisor-overlaybd-lab:" + identity, "port": args.port,
-                "lab": str(lab), "artifact_receipts": receipts,
-                "scope": "functional deployment, not benchmark results",
-                "background_download": False, "namespace": "pvisor-obd-smoke",
-                "cgroup_namespace": "host",
-                "owned_cgroup_prefix": "/system.slice/pvisor-overlaybd-lab-" + identity}
+""")
+    manifest = {
+        "schema": 1,
+        "id": identity,
+        "container": "pvisor-overlaybd-" + identity,
+        "image": "pvisor-overlaybd-lab:" + identity,
+        "port": args.port,
+        "lab": str(lab),
+        "artifact_receipts": receipts,
+        "scope": "functional deployment, not benchmark results",
+        "background_download": False,
+        "namespace": "pvisor-obd-smoke",
+        "cgroup_namespace": "host",
+        "owned_cgroup_prefix": "/system.slice/pvisor-overlaybd-lab-" + identity,
+    }
     save(lab / "lab.json", manifest)
     run(["docker", "build", "--pull=false", "-t", manifest["image"], context])
-    image = json.loads(subprocess.check_output(["docker", "image", "inspect", manifest["image"]]))[0]
+    image = json.loads(subprocess.check_output(["docker", "image", "inspect", manifest["image"]]))[
+        0
+    ]
     manifest["image_id"] = image["Id"]
     save(lab / "lab.json", manifest)
     print(lab)
@@ -182,8 +215,9 @@ def load(lab):
 
 
 def inspect_container(manifest):
-    inspected = json.loads(subprocess.check_output([
-        "docker", "inspect", manifest["container"]], timeout=20))[0]
+    inspected = json.loads(
+        subprocess.check_output(["docker", "inspect", manifest["container"]], timeout=20)
+    )[0]
     if (inspected["Config"].get("Labels") or {}).get(LABEL) != manifest["id"]:
         raise ValueError("Container ownership label mismatch")
     return inspected
@@ -243,9 +277,16 @@ def capture_baseline(lab, manifest, phase, note, container_id=None):
     inventory = host_inventory()
     if inventory["errors"]:
         raise RuntimeError("Cannot freeze incomplete host inventory: " + repr(inventory["errors"]))
-    baseline = {"schema": 1, "lab_id": manifest["id"], "captured_at_unix": time.time(),
-                "phase": phase, "predates_start": phase == "pre-start", "note": note,
-                "container_id": container_id, "host": inventory}
+    baseline = {
+        "schema": 1,
+        "lab_id": manifest["id"],
+        "captured_at_unix": time.time(),
+        "phase": phase,
+        "predates_start": phase == "pre-start",
+        "note": note,
+        "container_id": container_id,
+        "host": inventory,
+    }
     # Never overwrite an earlier observation or disguise a late observation.
     with (lab / "baseline.json").open("x") as stream:
         stream.write(json.dumps(baseline, indent=2) + "\n")
@@ -257,8 +298,14 @@ def owned_cgroups(manifest):
     if manifest.get("owned_cgroup_prefix", prefix) != prefix:
         raise ValueError("Owned cgroup prefix does not match the lab identity")
     root = Path("/sys/fs/cgroup") / prefix.lstrip("/")
-    result = {"prefix": prefix, "path": str(root), "directories": {}, "errors": [],
-              "verified": False, "scope": "caller mount/cgroup namespace"}
+    result = {
+        "prefix": prefix,
+        "path": str(root),
+        "directories": {},
+        "errors": [],
+        "verified": False,
+        "scope": "caller mount/cgroup namespace",
+    }
     try:
         if not Path("/sys/fs/cgroup/system.slice/cgroup.type").is_file():
             result["unverified"] = "Caller cannot observe the host system.slice cgroup hierarchy"
@@ -280,11 +327,23 @@ def record_baseline(args):
     manifest = load(args.lab)
     inspected = inspect_container(manifest)
     if not inspected["State"]["Running"]:
-        raise RuntimeError("Late baseline requires a running owned lab; preserve a stopped lab for recovery")
-    baseline = capture_baseline(args.lab, manifest, "late-observation", args.baseline_note, inspected["Id"])
-    print(json.dumps({"baseline": str(args.lab / "baseline.json"),
-                      "phase": baseline["phase"], "predates_start": False,
-                      "note": "This cannot reconstruct resources present before the initial launch."}, indent=2))
+        raise RuntimeError(
+            "Late baseline requires a running owned lab; preserve a stopped lab for recovery"
+        )
+    baseline = capture_baseline(
+        args.lab, manifest, "late-observation", args.baseline_note, inspected["Id"]
+    )
+    print(
+        json.dumps(
+            {
+                "baseline": str(args.lab / "baseline.json"),
+                "phase": baseline["phase"],
+                "predates_start": False,
+                "note": "This cannot reconstruct resources present before the initial launch.",
+            },
+            indent=2,
+        )
+    )
 
 
 def recovery(manifest):
@@ -296,13 +355,20 @@ def recovery(manifest):
         "While the lab is running, list each namespace's tasks, containers, images, leases and snapshots; remove only explicitly identified lab resources through the same private ctr socket.",
         "Inspect preserved host target/device/mount deltas and config paths. Never delete unrelated configfs objects or devices.",
         "Reconcile and remove only the lab's explicit cgroup prefix after its tasks exit: "
-        + manifest.get("owned_cgroup_prefix", "/system.slice/pvisor-overlaybd-lab-" + manifest["id"]),
+        + manifest.get(
+            "owned_cgroup_prefix", "/system.slice/pvisor-overlaybd-lab-" + manifest["id"]
+        ),
         "If the container exited unexpectedly, preserve it and the lab directory; recover the owned backend and reconcile kernel objects before any explicit manual removal.",
     ]
 
 
 def lifecycle_record(lab, manifest, status, **details):
-    record = {"status": status, "lab_id": manifest["id"], "recorded_at_unix": time.time(), **details}
+    record = {
+        "status": status,
+        "lab_id": manifest["id"],
+        "recorded_at_unix": time.time(),
+        **details,
+    }
     path = lab / f"lifecycle-{time.time_ns()}-{status}.json"
     save(path, record)
     save(lab / "lifecycle.json", {"status": status, "record": str(path)})
@@ -317,7 +383,11 @@ def kernel_audit(baseline, manifest, require_host_cgroups=False):
         before, after = original[kind], current[kind]
         delta[kind] = {
             "added": {name: value for name, value in after.items() if name not in before},
-            "changed": {name: value for name, value in after.items() if name in before and value != before[name]},
+            "changed": {
+                name: value
+                for name, value in after.items()
+                if name in before and value != before[name]
+            },
             "removed": sorted(set(before) - set(after)),
         }
     matches = {}
@@ -328,14 +398,18 @@ def kernel_audit(baseline, manifest, require_host_cgroups=False):
             matches[name] = target
     added_mounts = sorted(set(current["mountinfo"]) - set(original["mountinfo"]))
     removed_mounts = sorted(set(original["mountinfo"]) - set(current["mountinfo"]))
-    owned_mounts = [line for line in added_mounts if manifest["lab"] in line or "/lab/containerd-root/" in line]
+    owned_mounts = [
+        line for line in added_mounts if manifest["lab"] in line or "/lab/containerd-root/" in line
+    ]
     blockers = list(current["errors"])
     if original.get("boot_id") != current.get("boot_id"):
         blockers.append("host boot identity differs from baseline")
     # The handler is shared. Any remaining user target makes stopping unsafe,
     # including an unknown target or one already present at a late observation.
     if current["targets"]:
-        blockers.append("user-backed TCMU objects remain; no automatic object deletion is permitted")
+        blockers.append(
+            "user-backed TCMU objects remain; no automatic object deletion is permitted"
+        )
     for kind in ("block_devices", "uio"):
         if delta[kind]["added"] or delta[kind]["changed"]:
             blockers.append("new or changed host " + kind + " remain; ownership must be reconciled")
@@ -344,18 +418,42 @@ def kernel_audit(baseline, manifest, require_host_cgroups=False):
     cgroups = owned_cgroups(manifest)
     blockers.extend(cgroups["errors"])
     if require_host_cgroups and not cgroups["verified"]:
-        blockers.append("post-stop host cgroup inspection is unverified; preserve the stopped container for manual recovery")
+        blockers.append(
+            "post-stop host cgroup inspection is unverified; preserve the stopped container for manual recovery"
+        )
     if cgroups["directories"]:
-        blockers.append("owned workload cgroup prefix remains; reconcile it before stopping the lab")
-    return {"host": current, "delta": delta, "configuration_matches_lab": matches,
-            "mount_delta": {"added": added_mounts, "removed": removed_mounts,
-                            "referencing_lab": owned_mounts},
-            "owned_cgroups": cgroups, "baseline_phase": baseline["phase"], "blockers": blockers}
+        blockers.append(
+            "owned workload cgroup prefix remains; reconcile it before stopping the lab"
+        )
+    return {
+        "host": current,
+        "delta": delta,
+        "configuration_matches_lab": matches,
+        "mount_delta": {
+            "added": added_mounts,
+            "removed": removed_mounts,
+            "referencing_lab": owned_mounts,
+        },
+        "owned_cgroups": cgroups,
+        "baseline_phase": baseline["phase"],
+        "blockers": blockers,
+    }
 
 
 def ctr_output(manifest, *arguments):
-    return subprocess.check_output(["docker", "exec", manifest["container"], "ctr", "--address",
-                                    "/lab/run/containerd.sock", *arguments], text=True, timeout=20)
+    return subprocess.check_output(
+        [
+            "docker",
+            "exec",
+            manifest["container"],
+            "ctr",
+            "--address",
+            "/lab/run/containerd.sock",
+            *arguments,
+        ],
+        text=True,
+        timeout=20,
+    )
 
 
 def container_namespace_audit(manifest):
@@ -365,21 +463,38 @@ def container_namespace_audit(manifest):
         raise ValueError("Owned cgroup prefix does not match the lab identity")
     inspected = inspect_container(manifest)
     if not inspected["State"]["Running"] or inspected["HostConfig"].get("CgroupnsMode") != "host":
-        raise RuntimeError("A running owned container with host cgroup namespace is required for cgroup audit")
+        raise RuntimeError(
+            "A running owned container with host cgroup namespace is required for cgroup audit"
+        )
     # A successful visibility check is required before absence of the prefix can
     # mean empty. The shell only reads files and enumerates this exact prefix.
-    command = '''set -eu
+    command = """set -eu
 test -r /sys/fs/cgroup/cgroup.controllers
 test -r /sys/fs/cgroup/system.slice/cgroup.type
 root=/sys/fs/cgroup$1
 if test -d "$root"; then
   find "$root" -type d -print
 fi
-'''
-    directories = subprocess.check_output(["docker", "exec", manifest["container"],
-        "/bin/sh", "-c", command, "owned-cgroup-audit", prefix], text=True, timeout=20).splitlines()
-    mountinfo = subprocess.check_output(["docker", "exec", manifest["container"],
-        "/bin/cat", "/proc/self/mountinfo"], text=True, timeout=20).splitlines()
+"""
+    directories = subprocess.check_output(
+        [
+            "docker",
+            "exec",
+            manifest["container"],
+            "/bin/sh",
+            "-c",
+            command,
+            "owned-cgroup-audit",
+            prefix,
+        ],
+        text=True,
+        timeout=20,
+    ).splitlines()
+    mountinfo = subprocess.check_output(
+        ["docker", "exec", manifest["container"], "/bin/cat", "/proc/self/mountinfo"],
+        text=True,
+        timeout=20,
+    ).splitlines()
     mounts = []
     for line in mountinfo:
         before, separator, after = line.partition(" - ")
@@ -387,15 +502,25 @@ fi
             raise ValueError("Malformed owned-container mountinfo")
         mountpoint = before.split()[4].replace("\\040", " ").replace("\\134", "\\")
         if mountpoint == "/lab/containerd-root" or mountpoint.startswith("/lab/containerd-root/"):
-            mounts.append({"mountpoint": mountpoint, "filesystem": after.split()[0], "record": line})
+            mounts.append(
+                {"mountpoint": mountpoint, "filesystem": after.split()[0], "record": line}
+            )
     blockers = []
     if directories:
-        blockers.append("owned container still observes workload cgroup directories under " + prefix)
+        blockers.append(
+            "owned container still observes workload cgroup directories under " + prefix
+        )
     if mounts:
         blockers.append("owned container still observes mounts below /lab/containerd-root")
-    return {"scope": "owned container host cgroup namespace and private mount namespace",
-            "cgroups_verified": True, "owned_cgroup_prefix": prefix, "cgroup_directories": directories,
-            "mountinfo": mountinfo, "containerd_mounts": mounts, "blockers": blockers}
+    return {
+        "scope": "owned container host cgroup namespace and private mount namespace",
+        "cgroups_verified": True,
+        "owned_cgroup_prefix": prefix,
+        "cgroup_directories": directories,
+        "mountinfo": mountinfo,
+        "containerd_mounts": mounts,
+        "blockers": blockers,
+    }
 
 
 def table_rows(output, header):
@@ -421,8 +546,12 @@ def containerd_audit(manifest):
     audit = {"plugins": plugins, "snapshotters": snapshotters, "namespaces": {}, "blockers": []}
     for namespace in namespaces:
         resources = {}
-        for entity, header in (("tasks", "TASK"), ("containers", "CONTAINER"),
-                               ("images", "REF"), ("leases", "ID")):
+        for entity, header in (
+            ("tasks", "TASK"),
+            ("containers", "CONTAINER"),
+            ("images", "REF"),
+            ("leases", "ID"),
+        ):
             output = ctr_output(manifest, "--namespace", namespace, entity, "ls")
             rows = table_rows(output, header)
             resources[entity] = output
@@ -430,8 +559,9 @@ def containerd_audit(manifest):
                 audit["blockers"].append(f"namespace {namespace} retains {entity}")
         resources["snapshots"] = {}
         for snapshotter in snapshotters:
-            output = ctr_output(manifest, "--namespace", namespace, "snapshots",
-                                "--snapshotter", snapshotter, "ls")
+            output = ctr_output(
+                manifest, "--namespace", namespace, "snapshots", "--snapshotter", snapshotter, "ls"
+            )
             resources["snapshots"][snapshotter] = output
             if table_rows(output, "KEY"):
                 audit["blockers"].append(f"namespace {namespace} retains {snapshotter} snapshots")
@@ -442,7 +572,9 @@ def containerd_audit(manifest):
 def start(args):
     manifest = load(args.lab)
     manifest["cgroup_namespace"] = "host"
-    manifest.setdefault("owned_cgroup_prefix", "/system.slice/pvisor-overlaybd-lab-" + manifest["id"])
+    manifest.setdefault(
+        "owned_cgroup_prefix", "/system.slice/pvisor-overlaybd-lab-" + manifest["id"]
+    )
     owned_cgroups(manifest)  # Validate the recorded prefix before exposing cgroupns.
     save(args.lab / "lab.json", manifest)
     for module in ("target_core_user", "tcm_loop"):
@@ -461,32 +593,78 @@ def start(args):
     port = manifest["port"]
     try:
         lifecycle_record(args.lab, manifest, "starting")
-        run(["docker", "run", "-d", "--name", manifest["container"],
-         "--label", LABEL + "=" + manifest["id"], "--privileged",
-         "--cgroupns", "host",
-         "--security-opt", "label=disable", "--stop-timeout", "20",
-         "--mount", "type=bind,src=" + manifest["lab"] + ",dst=/lab",
-         "--mount", "type=bind,src=/dev,dst=/dev",
-         "--mount", "type=bind,src=/sys/kernel/config,dst=/sys/kernel/config",
-             "-p", f"127.0.0.1:{port}:{port}", manifest["image_id"]], timeout=60)
+        run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                manifest["container"],
+                "--label",
+                LABEL + "=" + manifest["id"],
+                "--privileged",
+                "--cgroupns",
+                "host",
+                "--security-opt",
+                "label=disable",
+                "--stop-timeout",
+                "20",
+                "--mount",
+                "type=bind,src=" + manifest["lab"] + ",dst=/lab",
+                "--mount",
+                "type=bind,src=/dev,dst=/dev",
+                "--mount",
+                "type=bind,src=/sys/kernel/config,dst=/sys/kernel/config",
+                "-p",
+                f"127.0.0.1:{port}:{port}",
+                manifest["image_id"],
+            ],
+            timeout=60,
+        )
         for _ in range(100):
             state = inspect_container(manifest)["State"]
             if not state["Running"]:
                 raise RuntimeError(f"Lab exited; inspect {args.lab}/log: {state}")
-            result = subprocess.run(["docker", "exec", manifest["container"],
-                "ctr", "--address", "/lab/run/containerd.sock", "plugins", "ls"],
-                capture_output=True, text=True, timeout=10)
-            if result.returncode == 0 and re.search(r"snapshotter\S*\s+overlaybd\s+.*\bok\b", result.stdout):
-                save(args.lab / "startup-check.json", {"plugins": result.stdout,
-                    "checked_at_unix": time.time(), "container_state": state})
+            result = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    manifest["container"],
+                    "ctr",
+                    "--address",
+                    "/lab/run/containerd.sock",
+                    "plugins",
+                    "ls",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0 and re.search(
+                r"snapshotter\S*\s+overlaybd\s+.*\bok\b", result.stdout
+            ):
+                save(
+                    args.lab / "startup-check.json",
+                    {
+                        "plugins": result.stdout,
+                        "checked_at_unix": time.time(),
+                        "container_state": state,
+                    },
+                )
                 lifecycle_record(args.lab, manifest, "running", container_state=state)
                 print(result.stdout)
                 return
             time.sleep(0.2)
         raise RuntimeError(f"Lab did not become ready; inspect {args.lab}/log")
     except Exception as error:
-        path = lifecycle_record(args.lab, manifest, "start-failed", error=repr(error),
-                                host=host_inventory(), recovery=recovery(manifest))
+        path = lifecycle_record(
+            args.lab,
+            manifest,
+            "start-failed",
+            error=repr(error),
+            host=host_inventory(),
+            recovery=recovery(manifest),
+        )
         print(f"Startup failed; container and data preserved. See {path}", file=sys.stderr)
         print("\n".join(recovery(manifest)), file=sys.stderr)
         raise
@@ -495,9 +673,17 @@ def start(args):
 def status(args):
     manifest = load(args.lab)
     inspected = inspect_container(manifest)
-    print(json.dumps({"container": manifest["container"], "state": inspected["State"],
-                      "registry": f"http://127.0.0.1:{manifest['port']}",
-                      "lab": manifest["lab"]}, indent=2))
+    print(
+        json.dumps(
+            {
+                "container": manifest["container"],
+                "state": inspected["State"],
+                "registry": f"http://127.0.0.1:{manifest['port']}",
+                "lab": manifest["lab"],
+            },
+            indent=2,
+        )
+    )
 
 
 def publish(args):
@@ -531,19 +717,28 @@ def publish(args):
             location = urllib.parse.urljoin(base, response.headers["Location"])
         separator = "&" if "?" in location else "?"
         location += separator + urllib.parse.urlencode({"digest": entry["digest"]})
-        request = urllib.request.Request(location, method="PUT", data=data,
-                                         headers={"Content-Type": "application/octet-stream"})
+        request = urllib.request.Request(
+            location, method="PUT", data=data, headers={"Content-Type": "application/octet-stream"}
+        )
         with urllib.request.urlopen(request, timeout=120) as response:
             if response.status != 201:
                 raise ValueError(f"Unexpected registry upload response: {response.status}")
         uploaded.append({"digest": entry["digest"], "bytes": len(data)})
-    request = urllib.request.Request(endpoint + "/manifests/source", method="PUT", data=source,
-                                     headers={"Content-Type": descriptor["mediaType"]})
+    request = urllib.request.Request(
+        endpoint + "/manifests/source",
+        method="PUT",
+        data=source,
+        headers={"Content-Type": descriptor["mediaType"]},
+    )
     with urllib.request.urlopen(request, timeout=30) as response:
         if response.headers["Docker-Content-Digest"] != descriptor["digest"]:
             raise ValueError("Published registry manifest digest mismatch")
-    receipt = {"source_digest": descriptor["digest"], "source_layout": str(args.oci_layout.resolve()),
-               "repository": f"127.0.0.1:{manifest['port']}/{args.repository}", "blobs": uploaded}
+    receipt = {
+        "source_digest": descriptor["digest"],
+        "source_layout": str(args.oci_layout.resolve()),
+        "repository": f"127.0.0.1:{manifest['port']}/{args.repository}",
+        "blobs": uploaded,
+    }
     save(args.lab / "source-image.json", receipt)
     print(json.dumps(receipt, indent=2))
 
@@ -559,13 +754,18 @@ def stop(args):
             raise ValueError("Baseline lab identity mismatch")
         details["kernel_before_stop"] = kernel_audit(baseline, manifest)
         if not inspected["State"]["Running"]:
-            raise RuntimeError("Container exited outside this stop operation; automatic removal is refused")
+            raise RuntimeError(
+                "Container exited outside this stop operation; automatic removal is refused"
+            )
         if baseline.get("container_id") and baseline["container_id"] != inspected["Id"]:
             raise ValueError("Late baseline belongs to a different container generation")
         details["containerd"] = containerd_audit(manifest)
         details["container_namespaces"] = container_namespace_audit(manifest)
-        blockers = (details["kernel_before_stop"]["blockers"] + details["containerd"]["blockers"]
-                    + details["container_namespaces"]["blockers"])
+        blockers = (
+            details["kernel_before_stop"]["blockers"]
+            + details["containerd"]["blockers"]
+            + details["container_namespaces"]["blockers"]
+        )
         if blockers:
             raise RuntimeError("; ".join(blockers))
         lifecycle_record(args.lab, manifest, "stopping", **details)
@@ -583,17 +783,29 @@ def stop(args):
             "pre_stop_all_private_namespaces_empty": True,
             "limitation": "If caller visibility is unavailable, cgroup cleanup relies on the preserved pre-stop audit; only targets/devices/mount deltas were rechecked after stop.",
         }
-        if (stopped["State"]["Running"] or stopped["State"].get("OOMKilled")
-                or stopped["State"].get("ExitCode") != 0 or stopped["State"].get("Error")):
+        if (
+            stopped["State"]["Running"]
+            or stopped["State"].get("OOMKilled")
+            or stopped["State"].get("ExitCode") != 0
+            or stopped["State"].get("Error")
+        ):
             raise RuntimeError("Lab did not stop cleanly; automatic removal is refused")
         if details["kernel_after_stop"]["blockers"]:
             raise RuntimeError("; ".join(details["kernel_after_stop"]["blockers"]))
         run(["docker", "rm", manifest["container"]], timeout=30)
         lifecycle_record(args.lab, manifest, "removed", **details)
-        print("Owned lab container removed after audits; private data retained; host modules left loaded.")
+        print(
+            "Owned lab container removed after audits; private data retained; host modules left loaded."
+        )
     except Exception as error:
-        path = lifecycle_record(args.lab, manifest, "stop-refused", error=repr(error),
-                                **details, recovery=recovery(manifest))
+        path = lifecycle_record(
+            args.lab,
+            manifest,
+            "stop-refused",
+            error=repr(error),
+            **details,
+            recovery=recovery(manifest),
+        )
         print(f"Stop/removal refused; preserved lab state: {path}", file=sys.stderr)
         print("\n".join(recovery(manifest)), file=sys.stderr)
         raise
@@ -601,14 +813,19 @@ def stop(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "start", "status", "publish", "stop", "record-baseline"))
+    parser.add_argument(
+        "action", choices=("prepare", "start", "status", "publish", "stop", "record-baseline")
+    )
     parser.add_argument("--lab", type=Path, required=True)
     parser.add_argument("--overlaybd-root", type=Path)
     parser.add_argument("--snapshotter-root", type=Path)
     parser.add_argument("--port", type=int, default=55118)
     parser.add_argument("--oci-layout", type=Path)
     parser.add_argument("--repository", default="pvisor-lab/shell")
-    parser.add_argument("--baseline-note", default="late observation of an already running lab; not a pre-start inventory")
+    parser.add_argument(
+        "--baseline-note",
+        default="late observation of an already running lab; not a pre-start inventory",
+    )
     args = parser.parse_args()
     if args.action == "prepare" and (args.overlaybd_root is None or args.snapshotter_root is None):
         parser.error("prepare requires --overlaybd-root and --snapshotter-root")

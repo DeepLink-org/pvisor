@@ -148,10 +148,14 @@ class DocumentationTests(unittest.TestCase):
                 },
             )
             self.assertEqual(raw_path.read_bytes(), original)
-            self.assertEqual(targets, [root / "docs/overrides/assets/benchmarks/replay-semspec.render.json"])
+            self.assertEqual(
+                targets, [root / "docs/overrides/assets/benchmarks/replay-semspec.render.json"]
+            )
             self.assertTrue(DOCS.public_csv_path(root, "replay-semspec.csv").is_file())
             for locale in ("zh", "en"):
-                self.assertFalse((root / f"docs/src/{locale}/benchmarks/replay-semspec.csv").exists())
+                self.assertFalse(
+                    (root / f"docs/src/{locale}/benchmarks/replay-semspec.csv").exists()
+                )
             for target in targets:
                 self.assertFalse(target.with_suffix(".provenance.json").exists())
 

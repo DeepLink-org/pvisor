@@ -7,21 +7,32 @@ Only data needed by current publication contracts is exported to the site.
 from pathlib import Path
 
 
-PUBLIC_CSV = frozenset({
-    "startup-timing.csv", "replay-semspec.csv",
-    "filesystem-layered-references-levels.csv",
-    "filesystem-layered-references-ready.csv",
-    "filesystem-layered-references-failures.csv",
-    "lazy-stage-summary.csv", "lazy-stage-comparisons.csv",
-})
-PUBLIC_PROVENANCE = frozenset({
-    "startup-timing.provenance.json", "replay-semspec.provenance.json",
-    "lazy-stage.provenance.json", "filesystem-layered-references/provenance.json",
-})
-ARTICLE_RENDER_JSON = frozenset({
-    "startup-timing.ready.render.json", "startup-timing.exit.render.json",
-    "measurement-coverage.render.json",
-})
+PUBLIC_CSV = frozenset(
+    {
+        "startup-timing.csv",
+        "replay-semspec.csv",
+        "filesystem-layered-references-levels.csv",
+        "filesystem-layered-references-ready.csv",
+        "filesystem-layered-references-failures.csv",
+        "lazy-stage-summary.csv",
+        "lazy-stage-comparisons.csv",
+    }
+)
+PUBLIC_PROVENANCE = frozenset(
+    {
+        "startup-timing.provenance.json",
+        "replay-semspec.provenance.json",
+        "lazy-stage.provenance.json",
+        "filesystem-layered-references/provenance.json",
+    }
+)
+ARTICLE_RENDER_JSON = frozenset(
+    {
+        "startup-timing.ready.render.json",
+        "startup-timing.exit.render.json",
+        "measurement-coverage.render.json",
+    }
+)
 
 
 def is_public_csv(filename):
@@ -31,12 +42,25 @@ def is_public_csv(filename):
 
 LOCALIZED_CSV = {"index.csv", "supervision-cost.csv"}
 FILESYSTEM_SERIES = (
-    "guest-writeback-tuning", "guest-writeback-cli", "guest-writeback",
-    "layered-references", "layered", "workloads-v2", "io",
+    "guest-writeback-tuning",
+    "guest-writeback-cli",
+    "guest-writeback",
+    "layered-references",
+    "layered",
+    "workloads-v2",
+    "io",
 )
 STATISTIC_SUFFIXES = (
-    "-comparisons", "-provenance", "-summary", "-counters", "-owner-totals",
-    "-rpc-summary", "-probe-phases", "-probes", "-cases", "-verification",
+    "-comparisons",
+    "-provenance",
+    "-summary",
+    "-counters",
+    "-owner-totals",
+    "-rpc-summary",
+    "-probe-phases",
+    "-probes",
+    "-cases",
+    "-verification",
 )
 
 
@@ -53,8 +77,9 @@ def csv_path(repository, filename, locale=None):
     stem = Path(filename).stem
     if stem.startswith("filesystem"):
         study = stem.removeprefix("filesystem").removeprefix("-") or "tools"
-        series = next((s for s in FILESYSTEM_SERIES
-                       if study == s or study.startswith(s + "-")), None)
+        series = next(
+            (s for s in FILESYSTEM_SERIES if study == s or study.startswith(s + "-")), None
+        )
         if series is None:
             previous = None
             while previous != study:
@@ -64,8 +89,11 @@ def csv_path(repository, filename, locale=None):
             series = study or "tools"
         group = Path("filesystem") / series
     else:
-        group = Path({"index": "overview", "measurement": "overview",
-                      "evidence": "overview"}.get(stem.split("-")[0], stem.split("-")[0]))
+        group = Path(
+            {"index": "overview", "measurement": "overview", "evidence": "overview"}.get(
+                stem.split("-")[0], stem.split("-")[0]
+            )
+        )
     if filename in LOCALIZED_CSV:
         if locale not in ("zh", "en"):
             raise ValueError("translated CSV requires zh or en locale")
@@ -95,6 +123,6 @@ def check_public_assets(repository):
         for path in articles.rglob("*"):
             if not path.is_file() or path.suffix not in {".csv", ".json", ".pdf"}:
                 continue
-            if (path.parent == articles and path.name in ARTICLE_RENDER_JSON):
+            if path.parent == articles and path.name in ARTICLE_RENDER_JSON:
                 continue
             raise ValueError(f"benchmark evidence belongs outside articles: {path}")

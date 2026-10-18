@@ -29,16 +29,31 @@ import uuid
 sys.dont_write_bytecode = True
 from overlaybd_lab import LABEL, host_inventory
 from overlaybd_smoke import (
-    CTR, SOCKET, MARKER, LIVE_CHECK, Evidence, audit_inventory,
-    recovery_text, registry_manifest, save, validate_live,
+    CTR,
+    SOCKET,
+    MARKER,
+    LIVE_CHECK,
+    Evidence,
+    audit_inventory,
+    recovery_text,
+    registry_manifest,
+    save,
+    validate_live,
 )
 
 
-SHELL = (r'. /etc/os-release; test "$ID" = ubuntu; test "$VERSION_ID" = 26.04; '
-         r'printf "LAZY_READY ubuntu %s\n" "$VERSION_ID"')
-BINARIES = (CTR, "/opt/overlaybd/snapshotter/overlaybd-snapshotter",
-            "/opt/overlaybd/bin/overlaybd-tcmu", "/usr/local/bin/containerd",
-            "/usr/local/bin/containerd-shim-runc-v2", "/usr/local/bin/runc")
+SHELL = (
+    r'. /etc/os-release; test "$ID" = ubuntu; test "$VERSION_ID" = 26.04; '
+    r'printf "LAZY_READY ubuntu %s\n" "$VERSION_ID"'
+)
+BINARIES = (
+    CTR,
+    "/opt/overlaybd/snapshotter/overlaybd-snapshotter",
+    "/opt/overlaybd/bin/overlaybd-tcmu",
+    "/usr/local/bin/containerd",
+    "/usr/local/bin/containerd-shim-runc-v2",
+    "/usr/local/bin/runc",
+)
 
 
 def digest(path):
@@ -58,13 +73,20 @@ def capture(argv, directory, timeout, *, include_pull=False):
     """Popen-to-exact-Ready/normal-exit observer, retaining invalid evidence."""
     directory.mkdir()
     save(directory / "argv.json", argv)
-    record = {"clock": "perf_counter_ns", "valid": False, "ready_ns": None,
-              "completion_ns": None, "exit_code": None,
-              "includes": "Docker exec client, ctr run, runtime and task exit",
-              "excludes": "Python startup, pull, validation and cleanup"}
+    record = {
+        "clock": "perf_counter_ns",
+        "valid": False,
+        "ready_ns": None,
+        "completion_ns": None,
+        "exit_code": None,
+        "includes": "Docker exec client, ctr run, runtime and task exit",
+        "excludes": "Python startup, pull, validation and cleanup",
+    }
     if include_pull:
-        record.update(includes="Docker exec client, in-lab shell/taskset, pull, ctr run and task exit",
-                      excludes="Python startup, reset, validation and cleanup")
+        record.update(
+            includes="Docker exec client, in-lab shell/taskset, pull, ctr run and task exit",
+            excludes="Python startup, reset, validation and cleanup",
+        )
     streams = {"stdout": bytearray(), "stderr": bytearray()}
     process = None
     ready_at = None
@@ -99,9 +121,12 @@ def capture(argv, directory, timeout, *, include_pull=False):
             record["end_ns"] = time.perf_counter_ns()
         if record["exit_code"] != 0 or bytes(streams["stdout"]) != MARKER or ready_at is None:
             raise ValueError("Trial requires exact unique Ready stdout and normal exit 0")
-        record.update(valid=True, marker_ns=ready_at,
-                      ready_ns=ready_at - record["start_ns"],
-                      completion_ns=record["end_ns"] - record["start_ns"])
+        record.update(
+            valid=True,
+            marker_ns=ready_at,
+            ready_ns=ready_at - record["start_ns"],
+            completion_ns=record["end_ns"] - record["start_ns"],
+        )
         return record
     except BaseException as error:
         record["error"] = str(error)
@@ -141,22 +166,31 @@ def verify_lab(args, directory, evidence):
     namespace = manifest["namespace"]
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", namespace):
         raise ValueError("Invalid private containerd namespace")
-    inspected = json.loads(evidence.command(["docker", "inspect", manifest["container"]], timeout=20))[0]
-    if ((inspected["Config"].get("Labels") or {}).get(LABEL) != identity
-            or inspected["Image"] != manifest["image_id"]
-            or inspected["HostConfig"].get("CgroupnsMode") != "host"
-            or inspected["HostConfig"].get("PidMode", "") not in ("", "private")
-            or not inspected["State"]["Running"]):
+    inspected = json.loads(
+        evidence.command(["docker", "inspect", manifest["container"]], timeout=20)
+    )[0]
+    if (
+        (inspected["Config"].get("Labels") or {}).get(LABEL) != identity
+        or inspected["Image"] != manifest["image_id"]
+        or inspected["HostConfig"].get("CgroupnsMode") != "host"
+        or inspected["HostConfig"].get("PidMode", "") not in ("", "private")
+        or not inspected["State"]["Running"]
+    ):
         raise ValueError("Docker label, image, cgroup/PID namespace, or running state mismatch")
-    if not any(mount.get("Destination") == "/lab" and mount.get("RW")
-               and Path(mount["Source"]).resolve() == lab for mount in inspected["Mounts"]):
+    if not any(
+        mount.get("Destination") == "/lab"
+        and mount.get("RW")
+        and Path(mount["Source"]).resolve() == lab
+        for mount in inspected["Mounts"]
+    ):
         raise ValueError("Docker /lab mount ownership mismatch")
     frozen_path = locate_frozen(lab, args.frozen_images)
     frozen = json.loads(frozen_path.read_text())
     repository = source["repository"]
     port = int(manifest["port"])
-    repository_match = re.fullmatch(r"127\.0\.0\.1:" + str(port)
-                                   + r"/([a-z0-9]+(?:[._/-][a-z0-9]+)*)", repository)
+    repository_match = re.fullmatch(
+        r"127\.0\.0\.1:" + str(port) + r"/([a-z0-9]+(?:[._/-][a-z0-9]+)*)", repository
+    )
     if not repository_match or source["source_digest"] != frozen["source_digest"]:
         raise ValueError("Frozen image source differs from the private lab source")
     for name in ("source", "derived"):
@@ -166,7 +200,13 @@ def verify_lab(args, directory, evidence):
         if frozen[name + "_reference"] != repository + "@" + image_digest:
             raise ValueError("Frozen reference does not match its repository and digest")
         registry_manifest(directory, port, repository_match[1], image_digest, name)
-    for name in ("lab.json", "source-image.json", "containerd.toml", "snapshotter.json", "overlaybd.json"):
+    for name in (
+        "lab.json",
+        "source-image.json",
+        "containerd.toml",
+        "snapshotter.json",
+        "overlaybd.json",
+    ):
         (directory / name).write_bytes((lab / name).read_bytes())
     (directory / "frozen-images.json").write_bytes(frozen_path.read_bytes())
     docker = ["docker", "exec", inspected["Id"]]
@@ -176,23 +216,37 @@ def verify_lab(args, directory, evidence):
     for line in binary_raw.decode().splitlines():
         checksum, path = line.split(maxsplit=1)
         binaries[path.strip()] = checksum
-    if set(binaries) != set(BINARIES) or not all(re.fullmatch(r"[a-f0-9]{64}", value) for value in binaries.values()):
+    if set(binaries) != set(BINARIES) or not all(
+        re.fullmatch(r"[a-f0-9]{64}", value) for value in binaries.values()
+    ):
         raise ValueError("Cannot freeze lab binary hashes")
     harness = {}
-    for path in (Path(__file__), Path(__file__).with_name("overlaybd_lab.py"),
-                 Path(__file__).with_name("overlaybd_smoke.py")):
+    for path in (
+        Path(__file__),
+        Path(__file__).with_name("overlaybd_lab.py"),
+        Path(__file__).with_name("overlaybd_smoke.py"),
+    ):
         harness[path.name] = digest(path)
         (directory / path.name).write_bytes(path.read_bytes())
-    provenance = {"lab_id": identity, "docker_container_id": inspected["Id"],
-                  "lab_image_id": manifest["image_id"], "namespace": namespace,
-                  "source_digest": frozen["source_digest"], "derived_digest": frozen["derived_digest"],
-                  "source_reference": frozen["source_reference"], "derived_reference": frozen["derived_reference"],
-                  "frozen_images_sha256": digest(frozen_path),
-                  "source_manifest_sha256": digest(directory / "source-manifest.json"),
-                  "derived_manifest_sha256": digest(directory / "derived-manifest.json"),
-                  "binaries": binaries, "harness": harness,
-                  "configs": {name: digest(directory / name) for name in
-                              ("containerd.toml", "snapshotter.json", "overlaybd.json")}}
+    provenance = {
+        "lab_id": identity,
+        "docker_container_id": inspected["Id"],
+        "lab_image_id": manifest["image_id"],
+        "namespace": namespace,
+        "source_digest": frozen["source_digest"],
+        "derived_digest": frozen["derived_digest"],
+        "source_reference": frozen["source_reference"],
+        "derived_reference": frozen["derived_reference"],
+        "frozen_images_sha256": digest(frozen_path),
+        "source_manifest_sha256": digest(directory / "source-manifest.json"),
+        "derived_manifest_sha256": digest(directory / "derived-manifest.json"),
+        "binaries": binaries,
+        "harness": harness,
+        "configs": {
+            name: digest(directory / name)
+            for name in ("containerd.toml", "snapshotter.json", "overlaybd.json")
+        },
+    }
     save(directory / "provenance.json", provenance)
     return manifest, frozen, docker, ctr, prefix, provenance
 
@@ -207,23 +261,39 @@ def no_tasks(evidence, ctr, identities=()):
 
 def cleanup(evidence, docker, prefix, task_id, baseline, directory, ctr):
     no_tasks(evidence, ctr, (task_id,))
-    evidence.command(docker + ["sh", "-ec",
-                     'for d in "$1" "$2"; do test ! -d "$d" || '
-                     '{ test -z "$(cat "$d/cgroup.procs")"; rmdir -- "$d"; }; done',
-                     "sh", "/sys/fs/cgroup" + prefix + "/" + task_id,
-                     "/sys/fs/cgroup" + prefix], timeout=20)
+    evidence.command(
+        docker
+        + [
+            "sh",
+            "-ec",
+            'for d in "$1" "$2"; do test ! -d "$d" || '
+            '{ test -z "$(cat "$d/cgroup.procs")"; rmdir -- "$d"; }; done',
+            "sh",
+            "/sys/fs/cgroup" + prefix + "/" + task_id,
+            "/sys/fs/cgroup" + prefix,
+        ],
+        timeout=20,
+    )
     audit_inventory(baseline, directory, wait=15)
 
 
 def validate_prepare(args, result, provenance, baseline, directory):
     if args.prepare_receipt is None:
-        raise ValueError("Run --action prepare once, then supply its result.json with --prepare-receipt")
+        raise ValueError(
+            "Run --action prepare once, then supply its result.json with --prepare-receipt"
+        )
     receipt = json.loads(args.prepare_receipt.read_text())
-    if (not receipt.get("valid") or not receipt.get("budgets_verified")
-            or receipt.get("action") != "prepare" or receipt.get("condition") != args.condition
-            or receipt.get("cpus") != args.cpus or receipt.get("boot_id") != baseline["boot_id"]
-            or receipt.get("workload_argv") != ["/bin/sh", "-ec", SHELL]
-            or receipt.get("memory_bytes") != 2147483648 or receipt.get("cpu_quota") != 2):
+    if (
+        not receipt.get("valid")
+        or not receipt.get("budgets_verified")
+        or receipt.get("action") != "prepare"
+        or receipt.get("condition") != args.condition
+        or receipt.get("cpus") != args.cpus
+        or receipt.get("boot_id") != baseline["boot_id"]
+        or receipt.get("workload_argv") != ["/bin/sh", "-ec", SHELL]
+        or receipt.get("memory_bytes") != 2147483648
+        or receipt.get("cpu_quota") != 2
+    ):
         raise ValueError("Prepare receipt does not match budgets, CPUs, condition, and host boot")
     old = receipt.get("provenance", {})
     # The independently frozen warm adapter can supply its live-budget proof to
@@ -235,22 +305,26 @@ def validate_prepare(args, result, provenance, baseline, directory):
     if args.scenario == "warm-prepared" and old.get("harness") != provenance["harness"]:
         raise ValueError("Warm-prepared receipt must use the same frozen harness")
     (directory / "prepare-receipt.json").write_bytes(args.prepare_receipt.read_bytes())
-    result.update(prepare_receipt_sha256=digest(args.prepare_receipt),
-                  budget_preflight_harness=old.get("harness"))
+    result.update(
+        prepare_receipt_sha256=digest(args.prepare_receipt),
+        budget_preflight_harness=old.get("harness"),
+    )
 
 
 def assert_reset_configuration(lab):
     """Reject layouts whose mutable state is outside the three reset directories."""
     overlaybd = json.loads((lab / "overlaybd.json").read_text())
     snapshotter = json.loads((lab / "snapshotter.json").read_text())
-    if (overlaybd["cacheConfig"].get("cacheType") != "file"
-            or overlaybd["cacheConfig"].get("cacheDir") != "/lab/cache/registry"
-            or overlaybd["gzipCacheConfig"].get("cacheDir") != "/lab/cache/gzip"
-            or overlaybd["download"].get("enable") is not False
-            or overlaybd.get("p2pConfig", {}).get("enable") is not False
-            or snapshotter.get("root") != "/lab/containerd-root/io.containerd.snapshotter.v1.overlaybd"
-            or snapshotter.get("address") != "/lab/run/overlaybd.sock"
-            or snapshotter.get("autoRemoveDev") is not True):
+    if (
+        overlaybd["cacheConfig"].get("cacheType") != "file"
+        or overlaybd["cacheConfig"].get("cacheDir") != "/lab/cache/registry"
+        or overlaybd["gzipCacheConfig"].get("cacheDir") != "/lab/cache/gzip"
+        or overlaybd["download"].get("enable") is not False
+        or overlaybd.get("p2pConfig", {}).get("enable") is not False
+        or snapshotter.get("root") != "/lab/containerd-root/io.containerd.snapshotter.v1.overlaybd"
+        or snapshotter.get("address") != "/lab/run/overlaybd.sock"
+        or snapshotter.get("autoRemoveDev") is not True
+    ):
         raise ValueError("Cold reset supports only the private file/block/gzip cache layout")
     config = (lab / "containerd.toml").read_text()
     for key, value in (("root", "/lab/containerd-root"), ("state", "/lab/run/containerd")):
@@ -271,7 +345,7 @@ def all_namespaces_idle(evidence, ctr):
 
 
 def pin_services(evidence, docker, cpus):
-    script = r'''set -eu
+    script = r"""set -eu
 cpus=$1
 for process in /proc/[0-9]*; do
     exe=$(readlink "$process/exe" 2>/dev/null) || continue
@@ -290,8 +364,10 @@ for process in /proc/[0-9]*; do
         printf 'AFFINITY %s %s %s %s\n' "$service" "$pid" "${thread##*/}" "$mask"
     done
 done
-'''
-    raw = evidence.command(docker + ["sh", "-ec", script, "sh", ",".join(map(str, cpus))], timeout=30)
+"""
+    raw = evidence.command(
+        docker + ["sh", "-ec", script, "sh", ",".join(map(str, cpus))], timeout=30
+    )
     services = {}
     threads = []
     for line in raw.decode().splitlines():
@@ -324,22 +400,38 @@ def reset_client(args, manifest, docker, ctr, prefix, baseline, directory, evide
     receipt_path = directory / "reset-receipt.json"
     archive_name = "retired-client-state-" + uuid.uuid4().hex
     worker = "pvisor-overlaybd-reset-" + manifest["id"] + "-" + uuid.uuid4().hex[:8]
-    receipt = {"valid": False, "phase": "preflight", "docker_container_id": docker[-1],
-               "lab_id": manifest["id"], "worker_container": worker,
-               "retired_state": str(lab / archive_name),
-               "reset_paths": ["containerd-root", "cache", "run"],
-               "preserved": ["registry", "conversion", "global host page cache", "other services"],
-               "taskset_sha256": digest(lab / "tools/taskset")}
+    receipt = {
+        "valid": False,
+        "phase": "preflight",
+        "docker_container_id": docker[-1],
+        "lab_id": manifest["id"],
+        "worker_container": worker,
+        "retired_state": str(lab / archive_name),
+        "reset_paths": ["containerd-root", "cache", "run"],
+        "preserved": ["registry", "conversion", "global host page cache", "other services"],
+        "taskset_sha256": digest(lab / "tools/taskset"),
+    }
     save(receipt_path, receipt)
     with (directory / "recovery.txt").open("a") as stream:
-        stream.write("\nRead-only reset recovery commands:\n" + "\n".join((
-            shlex.join(["docker", "inspect", docker[-1]]),
-            shlex.join(["docker", "logs", docker[-1]]),
-            shlex.join(["docker", "inspect", worker]),
-        )) + "\n")
+        stream.write(
+            "\nRead-only reset recovery commands:\n"
+            + "\n".join(
+                (
+                    shlex.join(["docker", "inspect", docker[-1]]),
+                    shlex.join(["docker", "logs", docker[-1]]),
+                    shlex.join(["docker", "inspect", worker]),
+                )
+            )
+            + "\n"
+        )
     # Empty task lists are not enough: a pull can hold a lease without a task.
     receipt["namespaces_checked"] = all_namespaces_idle(evidence, ctr)
-    evidence.command(docker + ["sh", "-ec", r'''set -eu
+    evidence.command(
+        docker
+        + [
+            "sh",
+            "-ec",
+            r"""set -eu
 root=/sys/fs/cgroup$1
 if test -d "$root"; then
   test -z "$(cat "$root/cgroup.procs")"
@@ -353,7 +445,12 @@ for process in /proc/[0-9]*; do
     */ctr|*/convertor|*/runc|*/containerd-shim-runc-v2) printf 'busy: %s %s\n' "$process" "$exe"; exit 1 ;;
   esac
 done
-''', "sh", prefix], timeout=20)
+""",
+            "sh",
+            prefix,
+        ],
+        timeout=20,
+    )
     audit_dir = directory / "reset-before-stop"
     audit_dir.mkdir()
     audit_inventory(baseline, audit_dir, wait=15)
@@ -362,7 +459,12 @@ done
     evidence.command(["docker", "stop", "--time", "30", docker[-1]], timeout=45)
     inspected = json.loads(evidence.command(["docker", "inspect", docker[-1]], timeout=20))[0]
     state = inspected["State"]
-    if state["Running"] or state.get("OOMKilled") or state.get("ExitCode") != 0 or state.get("Error"):
+    if (
+        state["Running"]
+        or state.get("OOMKilled")
+        or state.get("ExitCode") != 0
+        or state.get("Error")
+    ):
         raise RuntimeError("Owned lab did not stop normally; client state has not been reset")
     audit_dir = directory / "reset-after-stop"
     audit_dir.mkdir()
@@ -374,7 +476,7 @@ done
     save(receipt_path, receipt)
     # This ordinary temporary container mounts only this lab directory. No
     # devices, host cgroups, configfs, network, or Docker socket are exposed.
-    script = r'''set -eu
+    script = r"""set -eu
 archive=/lab/$1
 test ! -e "$archive"
 for name in containerd-root cache run registry conversion log; do
@@ -399,24 +501,55 @@ for name in containerd-root cache run; do
 done
 mkdir /lab/cache/registry /lab/cache/gzip
 stat -c 'PRESERVED %n %d:%i' /lab/registry /lab/conversion
-'''
-    raw = evidence.command(["docker", "run", "--rm", "--pull", "never", "--name", worker,
-                            "--label", LABEL + "=" + manifest["id"],
-                            "--label", "io.pvisor.overlaybd-role=client-reset",
-                            "--network", "none", "--security-opt", "label=disable",
-                            "--cpuset-cpus", ",".join(map(str, args.service_cpus)), "--cpus", "2",
-                            "--mount", "type=bind,src=" + str(lab) + ",dst=/lab",
-                            "--entrypoint", "/bin/sh", manifest["image_id"],
-                            "-ec", script, "reset-private-client", archive_name], timeout=120)
+"""
+    raw = evidence.command(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--pull",
+            "never",
+            "--name",
+            worker,
+            "--label",
+            LABEL + "=" + manifest["id"],
+            "--label",
+            "io.pvisor.overlaybd-role=client-reset",
+            "--network",
+            "none",
+            "--security-opt",
+            "label=disable",
+            "--cpuset-cpus",
+            ",".join(map(str, args.service_cpus)),
+            "--cpus",
+            "2",
+            "--mount",
+            "type=bind,src=" + str(lab) + ",dst=/lab",
+            "--entrypoint",
+            "/bin/sh",
+            manifest["image_id"],
+            "-ec",
+            script,
+            "reset-private-client",
+            archive_name,
+        ],
+        timeout=120,
+    )
     lines = raw.decode().splitlines()
     if {line for line in lines if line.startswith("EMPTY ")} != {
-            "EMPTY containerd-root", "EMPTY cache", "EMPTY run"}:
+        "EMPTY containerd-root",
+        "EMPTY cache",
+        "EMPTY run",
+    }:
         raise RuntimeError("Fresh private client directories were not verified empty")
     preserved = [line for line in lines if line.startswith("PRESERVED ")]
     if len(preserved) != 4 or preserved[:2] != preserved[2:]:
         raise RuntimeError("Registry/conversion directory identity changed during reset")
-    receipt.update(phase="starting-owned-lab", empty_directories_verified=True,
-                   preserved_directory_identity=preserved[:2])
+    receipt.update(
+        phase="starting-owned-lab",
+        empty_directories_verified=True,
+        preserved_directory_identity=preserved[:2],
+    )
     save(receipt_path, receipt)
     evidence.command(["docker", "start", docker[-1]], timeout=30)
     deadline = time.monotonic() + 60
@@ -428,7 +561,9 @@ stat -c 'PRESERVED %n %d:%i' /lab/registry /lab/conversion
         except RuntimeError:
             pass
         if time.monotonic() >= deadline:
-            raise RuntimeError("Restarted owned lab did not become healthy; preserve reset evidence")
+            raise RuntimeError(
+                "Restarted owned lab did not become healthy; preserve reset evidence"
+            )
         time.sleep(0.2)
     receipt["service_affinity"] = pin_services(evidence, docker, args.service_cpus)
     # Warm the restarted registry's metadata route from the observer, without
@@ -440,7 +575,9 @@ stat -c 'PRESERVED %n %d:%i' /lab/registry /lab/conversion
     server_dir = directory / "registry-after-restart"
     server_dir.mkdir()
     for name in ("source", "derived"):
-        registry_manifest(server_dir, int(manifest["port"]), repository, frozen[name + "_digest"], name)
+        registry_manifest(
+            server_dir, int(manifest["port"]), repository, frozen[name + "_digest"], name
+        )
     receipt["registry_process_restarted"] = True
     receipt["registry_metadata_rechecked_outside_client"] = True
     # Assert metadata/content are empty before any timed image request. Creating
@@ -454,13 +591,19 @@ stat -c 'PRESERVED %n %d:%i' /lab/registry /lab/conversion
         if any(line.strip() for line in raw.decode().splitlines()[1:]):
             raise RuntimeError(f"Reset private client still has {resource}")
     for snapshotter in ("overlayfs", "overlaybd"):
-        raw = evidence.command(ctr + ["snapshots", "--snapshotter", snapshotter, "list"], timeout=20)
+        raw = evidence.command(
+            ctr + ["snapshots", "--snapshotter", snapshotter, "list"], timeout=20
+        )
         if any(line.strip() for line in raw.decode().splitlines()[1:]):
             raise RuntimeError("Reset private client still has image snapshots")
     audit_dir = directory / "reset-after-start"
     audit_dir.mkdir()
     audit_inventory(baseline, audit_dir, wait=15)
-    tool_hash = evidence.command(docker + ["sha256sum", "/lab/tools/taskset"], timeout=20).decode().split()[0]
+    tool_hash = (
+        evidence.command(docker + ["sha256sum", "/lab/tools/taskset"], timeout=20)
+        .decode()
+        .split()[0]
+    )
     if tool_hash != receipt["taskset_sha256"]:
         raise ValueError("Service/client taskset changed across restart")
     receipt.update(valid=True, phase="empty-client-ready", metadata_and_content_empty=True)
@@ -484,7 +627,12 @@ def registry_observation(lab, cursor, directory, *, blob_roles=None):
         if 'msg="response completed"' not in line:
             continue
         fields = {}
-        for name in ("http.request.method", "http.request.uri", "http.response.status", "http.response.written"):
+        for name in (
+            "http.request.method",
+            "http.request.uri",
+            "http.response.status",
+            "http.response.written",
+        ):
             match = re.search(re.escape(name) + r'=("(?:\\.|[^"\\])*"|\S+)', line)
             if not match:
                 raise ValueError("Cannot audit registry response fields")
@@ -498,23 +646,39 @@ def registry_observation(lab, cursor, directory, *, blob_roles=None):
         elif "/blobs/" in uri:
             blob = uri.split("?", 1)[0].rsplit("/", 1)[-1]
             role = (blob_roles or {}).get(blob, "unclassified")
-        requests.append({"method": fields["http.request.method"], "uri": uri,
-                         "status": status, "body_bytes": int(fields["http.response.written"]),
-                         "role": role})
+        requests.append(
+            {
+                "method": fields["http.request.method"],
+                "uri": uri,
+                "status": status,
+                "body_bytes": int(fields["http.response.written"]),
+                "role": role,
+            }
+        )
     blobs = [item for item in requests if "/blobs/" in item["uri"] and item["method"] == "GET"]
-    summary = {"requests": requests, "request_count": len(requests),
-               "response_body_bytes": sum(item["body_bytes"] for item in requests),
-               "blob_body_bytes": sum(item["body_bytes"] for item in blobs),
-               "blob_get_requests": len(blobs),
-               "http_206_requests": sum(item["status"] == 206 for item in requests),
-               "http_200_requests": sum(item["status"] == 200 for item in requests),
-               "content_body_bytes": sum(item["body_bytes"] for item in requests if item["role"] == "content"),
-               "metadata_body_bytes": sum(item["body_bytes"] for item in requests if item["role"] == "metadata"),
-               "error_body_bytes": sum(item["body_bytes"] for item in requests if item["role"] == "error"),
-               "unclassified_body_bytes": sum(item["body_bytes"] for item in requests if item["role"] == "unclassified"),
-               "scope": "completion-observation", "ready_boundary_available": False,
-               "observation_cutoff": "after completion and cleanup audit; no Ready transfer split",
-               "accounting": "registry response-body bytes, excludes HTTP/TCP overhead"}
+    summary = {
+        "requests": requests,
+        "request_count": len(requests),
+        "response_body_bytes": sum(item["body_bytes"] for item in requests),
+        "blob_body_bytes": sum(item["body_bytes"] for item in blobs),
+        "blob_get_requests": len(blobs),
+        "http_206_requests": sum(item["status"] == 206 for item in requests),
+        "http_200_requests": sum(item["status"] == 200 for item in requests),
+        "content_body_bytes": sum(
+            item["body_bytes"] for item in requests if item["role"] == "content"
+        ),
+        "metadata_body_bytes": sum(
+            item["body_bytes"] for item in requests if item["role"] == "metadata"
+        ),
+        "error_body_bytes": sum(item["body_bytes"] for item in requests if item["role"] == "error"),
+        "unclassified_body_bytes": sum(
+            item["body_bytes"] for item in requests if item["role"] == "unclassified"
+        ),
+        "scope": "completion-observation",
+        "ready_boundary_available": False,
+        "observation_cutoff": "after completion and cleanup audit; no Ready transfer split",
+        "accounting": "registry response-body bytes, excludes HTTP/TCP overhead",
+    }
     save(directory / "registry-responses.json", summary)
     return summary
 
@@ -537,7 +701,9 @@ def run_pair(args, manifest, docker, ctr, prefix, baseline, directory, evidence,
     if args.service_cpus is None or set(args.service_cpus) & set(args.cpus):
         raise ValueError("Cold pair requires --service-cpus with two CPUs disjoint from --cpus")
     result["metric_scope"] = "Popen before docker exec to Ready/normal exit, including pull and run"
-    result["cache_scope"] = "cold private client then warm private client; registry artifacts and host page cache retained"
+    result["cache_scope"] = (
+        "cold private client then warm private client; registry artifacts and host page cache retained"
+    )
     result["service_cpus"] = args.service_cpus
     identities = ["image-cold-" + uuid.uuid4().hex[:16], "image-warm-" + uuid.uuid4().hex[:16]]
     (directory / "recovery.txt").write_text(
@@ -545,7 +711,8 @@ def run_pair(args, manifest, docker, ctr, prefix, baseline, directory, evidence,
         + "\nCold reset journal: reset-receipt.json. An incomplete reset is not rolled back automatically.\n"
         + "The original client state is retained at retired_state. Do not merge it into fresh directories.\n"
         + "Inspect the exact reset worker named in that journal if a Docker client timed out.\n"
-        + "If reset fails after stopping the lab, leave it stopped until the journal and archived paths are reviewed.\n")
+        + "If reset fails after stopping the lab, leave it stopped until the journal and archived paths are reviewed.\n"
+    )
     result["reset_receipt_file"] = str(directory / "reset-receipt.json")
     try:
         reset_client(args, manifest, docker, ctr, prefix, baseline, directory, evidence)
@@ -560,35 +727,79 @@ def run_pair(args, manifest, docker, ctr, prefix, baseline, directory, evidence,
         phase_dir = directory / phase
         phase_dir.mkdir()
         save(phase_dir / "host-before.json", baseline)
-        pull = (["rpull"] if args.condition == "turbo" else ["images", "pull"])
-        pull = ctr[3:] + pull + ["--plain-http", "--snapshotter", result["snapshotter"], result["image"]]
-        run = ctr[3:] + ["run", "--rm", "--snapshotter", result["snapshotter"],
-                         "--cpus", "2", "--cpuset-cpus", cpus,
-                         "--memory-limit", "2147483648", "--cgroup", prefix + "/" + task_id,
-                         result["image"], task_id, "/bin/sh", "-ec", SHELL]
+        pull = ["rpull"] if args.condition == "turbo" else ["images", "pull"]
+        pull = (
+            ctr[3:]
+            + pull
+            + ["--plain-http", "--snapshotter", result["snapshotter"], result["image"]]
+        )
+        run = ctr[3:] + [
+            "run",
+            "--rm",
+            "--snapshotter",
+            result["snapshotter"],
+            "--cpus",
+            "2",
+            "--cpuset-cpus",
+            cpus,
+            "--memory-limit",
+            "2147483648",
+            "--cgroup",
+            prefix + "/" + task_id,
+            result["image"],
+            task_id,
+            "/bin/sh",
+            "-ec",
+            SHELL,
+        ]
         save(phase_dir / "in-lab-argv.json", {"pull": pull, "run": run})
         script = shlex.join(pull) + " 1>&2\nexec " + shlex.join(run)
         argv = docker + ["/lab/tools/taskset", "-c", cpus, "/bin/sh", "-ec", script]
         log = args.lab.resolve() / "log/registry.log"
         stat = log.stat()
         cursor = ((stat.st_dev, stat.st_ino), stat.st_size)
-        fields = ("condition", "cpus", "service_cpus", "memory_bytes", "cpu_quota",
-                  "snapshotter", "image", "workload_argv", "provenance", "boot_id",
-                  "metric_scope", "cache_scope", "isolation", "prepare_receipt_sha256",
-                  "budget_preflight_harness")
+        fields = (
+            "condition",
+            "cpus",
+            "service_cpus",
+            "memory_bytes",
+            "cpu_quota",
+            "snapshotter",
+            "image",
+            "workload_argv",
+            "provenance",
+            "boot_id",
+            "metric_scope",
+            "cache_scope",
+            "isolation",
+            "prepare_receipt_sha256",
+            "budget_preflight_harness",
+        )
         phase_result = {name: result[name] for name in fields}
-        phase_result.update(valid=False, ready_ns=None, completion_ns=None,
-                            evidence_dir=str(phase_dir), pair_evidence_dir=str(directory),
-                            phase=phase, scenario=phase + "-client", task_id=task_id,
-                            namespace=manifest["namespace"],
-                            reset_receipt_path=str(directory / "reset-receipt.json"),
-                            reset_receipt_sha256=result["reset_receipt_sha256"])
+        phase_result.update(
+            valid=False,
+            ready_ns=None,
+            completion_ns=None,
+            evidence_dir=str(phase_dir),
+            pair_evidence_dir=str(directory),
+            phase=phase,
+            scenario=phase + "-client",
+            task_id=task_id,
+            namespace=manifest["namespace"],
+            reset_receipt_path=str(directory / "reset-receipt.json"),
+            reset_receipt_sha256=result["reset_receipt_sha256"],
+        )
         try:
             timing = capture(argv, phase_dir / "trial", args.timeout, include_pull=True)
-            phase_result.update(ready_ns=timing["ready_ns"], completion_ns=timing["completion_ns"],
-                                exit_code=timing["exit_code"])
+            phase_result.update(
+                ready_ns=timing["ready_ns"],
+                completion_ns=timing["completion_ns"],
+                exit_code=timing["exit_code"],
+            )
             cleanup(evidence, docker, prefix, task_id, baseline, phase_dir, ctr)
-            responses = registry_observation(args.lab.resolve(), cursor, phase_dir, blob_roles=blob_roles)
+            responses = registry_observation(
+                args.lab.resolve(), cursor, phase_dir, blob_roles=blob_roles
+            )
             phase_result["registry"] = responses
             # Cold starts from proved empty client directories. Warm may check
             # metadata but must not fetch any blob body, including index blobs.
@@ -597,7 +808,9 @@ def run_pair(args, manifest, docker, ctr, prefix, baseline, directory, evidence,
             if phase == "warm" and responses["blob_body_bytes"] != 0:
                 raise ValueError("Warm client unexpectedly fetched registry blob payload")
             if responses["unclassified_body_bytes"]:
-                raise ValueError("Registry blob response could not be assigned to metadata or content")
+                raise ValueError(
+                    "Registry blob response could not be assigned to metadata or content"
+                )
             phase_result["valid"] = True
         except BaseException as error:
             phase_result["error"] = str(error)
@@ -610,22 +823,51 @@ def run_pair(args, manifest, docker, ctr, prefix, baseline, directory, evidence,
 
 def execute(args):
     lab = args.lab.resolve(strict=True)
-    directory = args.output.resolve() if args.output else lab / (
-        "image-perf-" + args.action + "-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        + "-" + uuid.uuid4().hex[:8])
-    if any(directory.is_relative_to(lab / name) for name in
-           ("containerd-root", "cache", "run", "registry", "conversion", "log", "tools", "context")):
+    directory = (
+        args.output.resolve()
+        if args.output
+        else lab
+        / (
+            "image-perf-"
+            + args.action
+            + "-"
+            + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            + "-"
+            + uuid.uuid4().hex[:8]
+        )
+    )
+    if any(
+        directory.is_relative_to(lab / name)
+        for name in (
+            "containerd-root",
+            "cache",
+            "run",
+            "registry",
+            "conversion",
+            "log",
+            "tools",
+            "context",
+        )
+    ):
         raise ValueError("Evidence must be outside the lab's mutable/service/artifact directories")
     directory.mkdir(parents=True, exist_ok=False)
     evidence = Evidence(directory, args.timeout)
-    result = {"valid": False, "ready_ns": None, "completion_ns": None,
-              "evidence_dir": str(directory), "action": args.action,
-              "scenario": args.scenario, "condition": args.condition,
-              "workload_argv": ["/bin/sh", "-ec", SHELL],
-              "cpus": args.cpus, "memory_bytes": 2147483648, "cpu_quota": 2,
-              "metric_scope": "Popen before docker exec to exact Ready and normal exit 0",
-              "cache_scope": "prepared client; block/page cache state is not globally flushed",
-              "isolation": "containerd/runc shared-host-kernel container; not VM isolation"}
+    result = {
+        "valid": False,
+        "ready_ns": None,
+        "completion_ns": None,
+        "evidence_dir": str(directory),
+        "action": args.action,
+        "scenario": args.scenario,
+        "condition": args.condition,
+        "workload_argv": ["/bin/sh", "-ec", SHELL],
+        "cpus": args.cpus,
+        "memory_bytes": 2147483648,
+        "cpu_quota": 2,
+        "metric_scope": "Popen before docker exec to exact Ready and normal exit 0",
+        "cache_scope": "prepared client; block/page cache state is not globally flushed",
+        "isolation": "containerd/runc shared-host-kernel container; not VM isolation",
+    }
     baseline = None
     ctr = None
     try:
@@ -648,7 +890,9 @@ def execute(args):
             raise RuntimeError("Require readable host inventory and no live TCMU targets")
         result["boot_id"] = baseline["boot_id"]
         snapshotter = "overlaybd" if args.condition == "turbo" else "overlayfs"
-        image = frozen["derived_reference"] if args.condition == "turbo" else frozen["source_reference"]
+        image = (
+            frozen["derived_reference"] if args.condition == "turbo" else frozen["source_reference"]
+        )
         result.update(snapshotter=snapshotter, image=image)
         if args.action == "trial":
             validate_prepare(args, result, provenance, baseline, directory)
@@ -657,18 +901,46 @@ def execute(args):
             run_pair(args, manifest, docker, ctr, prefix, baseline, directory, evidence, result)
         else:
             # Re-confirm image preparation outside the timed Popen interval.
-            pull = (["rpull"] if args.condition == "turbo" else ["images", "pull"])
+            pull = ["rpull"] if args.condition == "turbo" else ["images", "pull"]
             evidence.command(ctr + pull + ["--plain-http", "--snapshotter", snapshotter, image])
-            run = ctr + ["run", "--rm", "--snapshotter", snapshotter,
-                         "--cpus", "2", "--cpuset-cpus", cpus,
-                         "--memory-limit", "2147483648", "--cgroup", prefix + "/" + task_id,
-                         image, task_id, "/bin/sh", "-ec"]
+            run = ctr + [
+                "run",
+                "--rm",
+                "--snapshotter",
+                snapshotter,
+                "--cpus",
+                "2",
+                "--cpuset-cpus",
+                cpus,
+                "--memory-limit",
+                "2147483648",
+                "--cgroup",
+                prefix + "/" + task_id,
+                image,
+                task_id,
+                "/bin/sh",
+                "-ec",
+            ]
             if args.action == "prepare":
+
                 def observe():
-                    script = LIVE_CHECK.replace("cgroup.procs cgroup.events", "cgroup.procs cgroup.events cpuset.cpus.effective")
-                    raw = evidence.command(docker + ["sh", "-ec", script, "sh",
-                                           "/sys/fs/cgroup" + prefix + "/" + task_id,
-                                           manifest["namespace"], task_id], timeout=15)
+                    script = LIVE_CHECK.replace(
+                        "cgroup.procs cgroup.events",
+                        "cgroup.procs cgroup.events cpuset.cpus.effective",
+                    )
+                    raw = evidence.command(
+                        docker
+                        + [
+                            "sh",
+                            "-ec",
+                            script,
+                            "sh",
+                            "/sys/fs/cgroup" + prefix + "/" + task_id,
+                            manifest["namespace"],
+                            task_id,
+                        ],
+                        timeout=15,
+                    )
                     (directory / "live-budgets.txt").write_bytes(raw)
                     validate_live(raw, snapshotter, image)
                     match = re.search(rb"=== cpuset.cpus.effective ===\n([^\n]+)", raw)
@@ -680,6 +952,7 @@ def execute(args):
                         effective.update(range(int(low), int(high or low) + 1))
                     if effective != set(args.cpus):
                         raise ValueError("Live task CPU set differs from the selected two CPUs")
+
                 raw = evidence.command(run + [SHELL + "; sleep 2"], observe=observe)
                 if raw != MARKER:
                     raise ValueError("Preparation requires exact marker and normal exit 0")
@@ -713,14 +986,27 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lab", type=Path, required=True)
     parser.add_argument("--condition", choices=("oci", "turbo"), required=True)
-    parser.add_argument("--scenario", choices=("warm-prepared", "cold-warm-pair"), default="warm-prepared")
+    parser.add_argument(
+        "--scenario", choices=("warm-prepared", "cold-warm-pair"), default="warm-prepared"
+    )
     parser.add_argument("--action", choices=("prepare", "trial"), default="trial")
     parser.add_argument("--cpus", type=cpu_pair, required=True)
-    parser.add_argument("--service-cpus", type=cpu_pair,
-                        help="Cold pair: restore all four owned services to this disjoint CPU pair")
-    parser.add_argument("--frozen-images", type=Path, help="Defaults to latest passed lab smoke frozen-images.json")
-    parser.add_argument("--prepare-receipt", type=Path, help="Matching successful prepare/result.json; required for trial")
-    parser.add_argument("--output", type=Path, help="New evidence directory; existing paths are refused")
+    parser.add_argument(
+        "--service-cpus",
+        type=cpu_pair,
+        help="Cold pair: restore all four owned services to this disjoint CPU pair",
+    )
+    parser.add_argument(
+        "--frozen-images", type=Path, help="Defaults to latest passed lab smoke frozen-images.json"
+    )
+    parser.add_argument(
+        "--prepare-receipt",
+        type=Path,
+        help="Matching successful prepare/result.json; required for trial",
+    )
+    parser.add_argument(
+        "--output", type=Path, help="New evidence directory; existing paths are refused"
+    )
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()
     if args.timeout <= 0:

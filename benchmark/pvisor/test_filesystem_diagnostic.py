@@ -23,14 +23,21 @@ def record(pid=1, calls=2, final=False, total_ns=2000):
 class FilesystemDiagnosticTests(unittest.TestCase):
     def test_complete_profiles_require_every_registered_instance(self):
         def start(instance=1, component="core"):
-            return "pvisor-fs-profile-start " + json.dumps(dict(schema=1, pid=1, component=component, instance=instance))
+            return "pvisor-fs-profile-start " + json.dumps(
+                dict(schema=1, pid=1, component=component, instance=instance)
+            )
 
         complete = [start(), record(final=True)]
-        assert len(collect_profiles(complete, require_complete=True, expected_components={"core"})) == 1
+        assert (
+            len(collect_profiles(complete, require_complete=True, expected_components={"core"}))
+            == 1
+        )
         with self.assertRaisesRegex(ValueError, "incomplete profile instance coverage"):
             collect_profiles(complete + [start(instance=2)], require_complete=True)
         with self.assertRaisesRegex(ValueError, "expected profile components"):
-            collect_profiles(complete, require_complete=True, expected_components={"core", "protocol"})
+            collect_profiles(
+                complete, require_complete=True, expected_components={"core", "protocol"}
+            )
         with self.assertRaisesRegex(ValueError, "registrations"):
             collect_profiles([record(final=True)], require_complete=True)
         with self.assertRaisesRegex(ValueError, "final profile"):
