@@ -613,6 +613,12 @@ alongside `lowers`, retains it in `OverlayDeviceSpec`, and projects it into
 `pvisor_vm::api::OverlayConfig`. Legacy runner metadata omitting the field defaults
 to mutable. Restored/rebound copies are not automatically promoted. The enum
 lives only in overlay-core; no duplicate runtime contract is introduced.
+When VM networking prepends the attempt-owned synthetic resolver lower, it prepends
+an immutable declaration to an explicit mutability vector as well. Existing
+declarations keep their original physical-layer association. Legacy empty vectors stay empty.
+Resolver preparation tests exercise the production preparation function and VM
+builder validation, including disabled networking and local write failure, without
+booting a guest or requiring firmware.
 
 **No automatic image/frozen promotion in this first version.** Host rootfs and
 arbitrary prepared `--rootfs` directories are mutable. OCI extraction uses

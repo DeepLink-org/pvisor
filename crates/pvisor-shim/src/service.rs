@@ -90,6 +90,10 @@ struct LiveTask {
     internal: Option<InternalChild>,
     io: ContainerIo,
     execs: HashMap<String, LiveExec>,
+    /// Host-side egress backend when the VM task opted into networking;
+    /// shut down when the task is deleted.
+    #[cfg(feature = "vm")]
+    vm_network: Option<crate::network::VmNetworkAttachment>,
     /// Task runs in a libkrun VM: exec goes through the guest agent.
     vm: bool,
 }
@@ -100,6 +104,7 @@ struct SandboxState {
     id: String,
     internal: InternalChild,
     exit_tx: watch::Sender<Option<ExitInfo>>,
+    created_at: SystemTime,
 }
 
 struct TaskInner {
@@ -218,11 +223,11 @@ impl PvisorTask {
 #[cfg(feature = "vm")]
 impl PvisorTask {
     /// Exec inside a libkrun VM task: connect to the guest agent over the
-    /// bundle's agent socket, run the process there, and relay its IO.
+    /// task's agent socket, run the process there, and relay its IO.
     async fn exec_in_vm(
         &self,
         req: ExecProcessRequest,
-        bundle: PathBuf,
+        _bundle: PathBuf,
         _init_pid: u32,
     ) -> ttrpc::Result<Empty> {
         if !cfg!(feature = "vm") {
@@ -247,7 +252,7 @@ impl PvisorTask {
         crate::plan::validate_vm_process(&process, true)
             .map_err(|error| rpc_error(Code::UNIMPLEMENTED, error.to_string()))?;
         let io = io_plan_from(false, &req.stdin, &req.stdout, &req.stderr);
-        let plan = build_exec_plan(&process, &req.id, &req.exec_id, 0, io)
+        let plan = build_exec_plan(&process, &req.id, &req.exec_id, 0, io, true)
             .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error.to_string()))?;
 
         let mut owned_io = ContainerIo::open(&plan.io)
@@ -256,7 +261,7 @@ impl PvisorTask {
             return Err(rpc_error(Code::INTERNAL, "exec io without child fds"));
         };
 
-        let socket_path = bundle.join("pvisor-agent.sock");
+        let socket_path = crate::agent::agent_socket_path(&plan.container_id);
         let (pid, stream) = tokio::task::spawn_blocking({
             let plan = plan.clone();
             let socket_path = socket_path.clone();
@@ -670,6 +675,24 @@ impl Task for PvisorTask {
         // `io.pvisor.executor=vm` routes the task to the libkrun runner;
         // everything else (lifecycle, events, kill, wait) is identical.
         let wants_vm = plan.wants_vm();
+        #[cfg(feature = "vm")]
+        let vm_network = if wants_vm {
+            crate::network::VmNetworkAttachment::start(&plan)
+                .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, format!("{error:#}")))?
+        } else {
+            None
+        };
+        #[cfg(not(feature = "vm"))]
+        let vm_net_fd: Option<i32> = None;
+        #[cfg(feature = "vm")]
+        let vm_net_fd = match vm_network.as_ref() {
+            Some(attachment) => Some(
+                attachment
+                    .guest_fd_for_child()
+                    .map_err(|error| rpc_error(Code::INTERNAL, format!("{error}")))?,
+            ),
+            None => None,
+        };
         let runner_arg = if wants_vm {
             if !cfg!(feature = "vm") {
                 return Err(rpc_error(
@@ -706,14 +729,22 @@ impl Task for PvisorTask {
                     // The VM runner lives for the whole task (it hosts the
                     // VMM), so Create must not wait for its exit; waiting is
                     // only correct for init/exec parents that relay and quit.
-                    child::spawn_internal_opts(
+                    let spawned = child::spawn_internal_opts(
                         runner_arg,
                         &plan_path,
                         &plan_bytes,
                         Some(stdio),
                         sandbox_pid,
                         false,
-                    )
+                        vm_net_fd,
+                    );
+                    // The runner owns its descriptor now; closing the
+                    // parent-side duplicate leaves the attachment's original
+                    // as the only host-side reference.
+                    if let Some(fd) = vm_net_fd {
+                        unsafe { libc::close(fd) };
+                    }
+                    spawned
                 } else {
                     child::spawn_internal(
                         runner_arg,
@@ -751,6 +782,8 @@ impl Task for PvisorTask {
                 io: owned_io,
                 execs: HashMap::new(),
                 vm: wants_vm,
+                #[cfg(feature = "vm")]
+                vm_network,
             },
         );
 
@@ -969,7 +1002,7 @@ impl Task for PvisorTask {
                 )
             })?;
         let io = io_plan_from(req.terminal, &req.stdin, &req.stdout, &req.stderr);
-        let plan = build_exec_plan(&process, &req.id, &req.exec_id, init_pid, io)
+        let plan = build_exec_plan(&process, &req.id, &req.exec_id, init_pid, io, false)
             .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error.to_string()))?;
 
         let mut owned_io = ContainerIo::open(&plan.io)
@@ -1141,6 +1174,24 @@ impl Task for PvisorTask {
             internal.close_start();
         }
         let _ = std::fs::remove_file(live.entry.bundle.join("pvisor-plan.json"));
+        if live.vm {
+            let _ = std::fs::remove_file(crate::agent::agent_socket_path(&req.id));
+        }
+        #[cfg(feature = "vm")]
+        if let Some(attachment) = live.vm_network {
+            match attachment.shutdown() {
+                Ok(snapshot) => info!(
+                    "vm network snapshot for {}: flows_opened={} denied={} connect_failures={} dns_queries={} targets={:?}",
+                    req.id,
+                    snapshot.tcp_flows_opened,
+                    snapshot.tcp_flows_denied,
+                    snapshot.tcp_connect_failures,
+                    snapshot.dns_queries,
+                    snapshot.targets
+                ),
+                Err(error) => warn!("vm network shutdown for {}: {error:#}", req.id),
+            }
+        }
 
         let mut event = TaskDelete::new();
         event.set_container_id(req.id.clone());
@@ -1288,6 +1339,7 @@ impl Sandbox for PvisorSandbox {
                     None,
                     None,
                     false,
+                    None,
                 )
             }
         })
@@ -1304,6 +1356,7 @@ impl Sandbox for PvisorSandbox {
             id: req.sandbox_id.clone(),
             internal,
             exit_tx,
+            created_at: SystemTime::now(),
         });
         Ok(CreateSandboxResponse::new())
     }
@@ -1328,8 +1381,12 @@ impl Sandbox for PvisorSandbox {
             .start()
             .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
         state.internal = internal;
+        state.created_at = SystemTime::now();
         let mut response = StartSandboxResponse::new();
         response.set_pid(state.internal.pid.unwrap_or(0));
+        // The CRI server copies this into its sandbox store; without it the
+        // pod's creation time surfaces as the epoch.
+        response.set_created_at(timestamp_from(state.created_at));
         Ok(response)
     }
 
@@ -1455,6 +1512,18 @@ impl Sandbox for PvisorSandbox {
         let mut response = SandboxStatusResponse::new();
         response.set_sandbox_id(state.id.clone());
         response.set_pid(state.internal.pid.unwrap_or(0));
+        // The CRI server resolves this string through the PodSandboxState
+        // enum names and defaults to NOTREADY for anything unrecognized, so
+        // a missing state flips every PodSandboxStatus caller (kubelet PLEG)
+        // into killing and recreating the sandbox.
+        let exit = state.exit_tx.borrow();
+        if let Some(exit) = exit.as_ref() {
+            response.set_state("SANDBOX_NOTREADY".to_string());
+            response.set_exited_at(timestamp_from(exit.exited_at));
+        } else {
+            response.set_state("SANDBOX_READY".to_string());
+            response.set_created_at(timestamp_from(state.created_at));
+        }
         Ok(response)
     }
 }

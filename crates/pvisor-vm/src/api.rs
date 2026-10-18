@@ -42,6 +42,7 @@
 use std::{
     fs::File,
     io,
+    os::fd::RawFd,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -174,6 +175,18 @@ pub trait VmConfiguration: Sized {
         one_shot: bool,
     ) -> io::Result<()>;
     fn network(&mut self, stream: std::os::unix::net::UnixStream, mac: [u8; 6]) -> io::Result<()>;
+    /// Route the task-stdio console ports (`krun-stdin`/`krun-stdout`/
+    /// `krun-stderr` plus the unnamed console) to these descriptors instead
+    /// of this process's stdio. `-1` omits that stream's port. Descriptors
+    /// are duplicated at boot, not consumed, and must stay open until then;
+    /// the caller retains ownership. Terminal detection (raw mode, window
+    /// size, tty wiring of the unnamed console) runs against the passed
+    /// descriptors. Call at most once; a second call fails without changing
+    /// configuration. Rejects configurations where every stream is omitted.
+    /// This separates workload stdio from process diagnostics: stderr
+    /// logging (`init_logging`) can target the process's own stderr while
+    /// guest output still reaches the caller's descriptors.
+    fn task_stdio(&mut self, stdin: RawFd, stdout: RawFd, stderr: RawFd) -> io::Result<()>;
     fn network_with_options(
         &mut self,
         stream: std::os::unix::net::UnixStream,

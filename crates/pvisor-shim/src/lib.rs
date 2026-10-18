@@ -19,6 +19,8 @@ pub mod child;
 pub mod fifo;
 #[cfg(target_os = "linux")]
 pub mod mount;
+#[cfg(all(target_os = "linux", feature = "vm"))]
+pub mod network;
 #[cfg(target_os = "linux")]
 pub mod service;
 #[cfg(all(target_os = "linux", feature = "vm"))]

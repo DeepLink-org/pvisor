@@ -19,7 +19,11 @@ use std::path::Path;
 
 /// Configure the Rust guest supervisor and boot the VM.
 /// Returns the guest exit code.
-pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
+pub fn boot_vm(
+    plan: &ContainerPlan,
+    network: Option<std::os::unix::net::UnixStream>,
+    stdio: Option<(i32, i32, i32)>,
+) -> Result<i32> {
     let config = plan.vm_config();
 
     let agent = vm_agent_enabled(&plan.annotations);
@@ -31,6 +35,17 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
     guest.stdio_ports = Some(std::array::from_fn(|fd| unsafe {
         libc::isatty(fd as libc::c_int) != 1
     }));
+    if network.is_some() {
+        // Egress rides pvisor-overlaynet's smoltcp backend: the guest's
+        // virtio-net device is its only network path, and every TCP flow is
+        // terminated here on the host and re-originated only when the
+        // task's policy authorizes it. The supervisor configures the
+        // static address without DHCP.
+        guest.network = Some(pvisor_guest::NetworkConfig {
+            address: pvisor_overlaynet::vm::GUEST_IPV4.octets(),
+            gateway: pvisor_overlaynet::vm::ROUTER_IPV4.octets(),
+        });
+    }
     let guest_config = serde_json::to_vec(&guest)?;
     if agent {
         // The static musl shim binary doubles as the guest agent: copy it
@@ -49,11 +64,31 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
         )?;
         agent_file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
     }
+    if network.is_some() {
+        // The smoltcp backend answers DNS on the synthetic router; without
+        // this file the guest keeps resolving through whatever resolver the
+        // image ships, which has no route off the VM. Written into the
+        // container's own writable layer, like the host path's resolv.conf.
+        let mut resolver = pvisor_overlay_core::sys::prepare_rooted_path(
+            &plan.rootfs,
+            Path::new("etc/resolv.conf"),
+            false,
+            true,
+        )
+        .context("prepare guest resolv.conf without following image symlinks")?;
+        std::io::Write::write_all(
+            &mut resolver,
+            b"nameserver 192.0.2.1\noptions timeout:2 attempts:2\n",
+        )
+        .context("write guest resolv.conf")?;
+    }
 
     let mut vm = pvisor_vm::api::VmBuilder::new(config.cpus, config.ram_mib)?;
 
-    // Use the shim's default 512 MiB DAX window.
-    vm.filesystem("/dev/root", &plan.rootfs, 1 << 29)?;
+    // The rootfs is shared read-write, so it rides plain virtio-fs without a
+    // DAX window: writable DAX requires a lifecycle contract the shim does
+    // not provide.
+    vm.filesystem("/dev/root", &plan.rootfs, 0)?;
     vm.virtual_file(
         "/dev/root",
         "/.pvisor-guest.json",
@@ -63,9 +98,18 @@ pub fn boot_vm(plan: &ContainerPlan) -> Result<i32> {
     )?;
     vm.vsock_port(
         AGENT_VSOCK_PORT,
-        plan.bundle.join("pvisor-agent.sock"),
+        crate::agent::agent_socket_path(&plan.id),
         true,
     )?;
+    if let Some(stream) = network {
+        vm.network(stream, pvisor_overlaynet::vm::VM_MAC)?;
+    }
+    if let Some((stdin, stdout, stderr)) = stdio {
+        // Route the krun-stdio console ports to the task's own descriptors:
+        // the runner's process stderr then stays free for VMM diagnostics
+        // (the io.pvisor.vm.log file) without capturing workload stderr.
+        vm.task_stdio(stdin, stdout, stderr)?;
+    }
     vm.run(|_| Ok(()))?;
     Ok(0)
 }

@@ -138,6 +138,37 @@ impl<B: Backend> Builder<B> {
         self.guest_cmdline = Some(cmdline);
         Ok(())
     }
+    /// Route the task-stdio console ports to explicit descriptors instead of
+    /// this process's stdio. See `VmConfiguration::task_stdio` for the
+    /// contract; this replaces the implicit console configuration.
+    pub fn task_stdio(&mut self, stdin: i32, stdout: i32, stderr: i32) -> io::Result<()> {
+        use std::os::fd::RawFd;
+        if self.resources.virtio_consoles.iter().any(|console| {
+            matches!(console, crate::vmm::resources::VirtioConsoleConfigMode::Autoconfigure(_))
+        }) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "task stdio is already configured",
+            ));
+        }
+        if stdin < 0 && stdout < 0 && stderr < 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "task stdio needs at least one descriptor",
+            ));
+        }
+        self.resources.disable_implicit_console = true;
+        self.resources.virtio_consoles.push(
+            crate::vmm::resources::VirtioConsoleConfigMode::Autoconfigure(
+                crate::vmm::resources::DefaultVirtioConsoleConfig {
+                    input_fd: stdin as RawFd,
+                    output_fd: stdout as RawFd,
+                    err_fd: stderr as RawFd,
+                },
+            ),
+        );
+        Ok(())
+    }
     /// Explicit zero-feature vsock: no implicit host-network TSI fallback.
     pub fn vsock_port(
         &mut self,
@@ -251,6 +282,27 @@ impl<B: Backend> Builder<B> {
 #[cfg(test)]
 mod firmware_tests {
     use super::*;
+
+    #[test]
+    fn task_stdio_replaces_implicit_console_and_validates() {
+        let mut builder = Builder::<NativeBackend>::new(1, 128).unwrap();
+        builder
+            .task_stdio(0, 1, 2)
+            .expect("explicit task stdio is accepted");
+        assert!(builder.resources.disable_implicit_console);
+        assert_eq!(builder.resources.virtio_consoles.len(), 1);
+        assert!(matches!(
+            builder.resources.virtio_consoles[0],
+            crate::vmm::resources::VirtioConsoleConfigMode::Autoconfigure(_)
+        ));
+        // A second configuration fails without disturbing the first.
+        assert!(builder.task_stdio(0, 1, 2).is_err());
+        assert_eq!(builder.resources.virtio_consoles.len(), 1);
+        // Omitting every stream is rejected.
+        let mut empty = Builder::<NativeBackend>::new(1, 128).unwrap();
+        assert!(empty.task_stdio(-1, -1, -1).is_err());
+        assert!(!empty.resources.disable_implicit_console);
+    }
 
     #[test]
     fn firmware_selection_validates_before_replacing_previous_path() {

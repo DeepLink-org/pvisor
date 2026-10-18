@@ -104,15 +104,32 @@ Host requirement: `/dev/kvm`. The static musl binary embeds its libkrunfw kernel
 Cross-builds need `PVISOR_KRUNFW_KERNEL_BUNDLE` pointing to extracted
 `kernel.bin` and `kernel.json`; native Linux builds prepare firmware automatically.
 Standard containerd/CRI Linux fields (namespaces, resources, cgroupsPath,
-masked/readonly paths, sysctls, system mounts like proc/sysfs/tmpfs) are
-accepted as no-ops for VM tasks — the guest owns that view — while bind/rbind
-mounts, `root.readonly=true` and hostname configuration are rejected: the
-runner does not install them. Snapshotter
+masked/readonly paths, sysctls, seccomp, SELinux mount labels, system mounts
+like proc/sysfs/tmpfs) and host-LSM process fields (`apparmorProfile`,
+`selinuxLabel`, `oomScoreAdj`) are accepted as no-ops for VM tasks — the
+guest kernel cannot honor host constraints — while `root.readonly=true` and
+hostname configuration are rejected (the runner does not install them).
+Bind mounts are accepted as no-ops: kubelet unconditionally bind-mounts
+`/etc/hosts`, `/etc/hostname`, `/etc/resolv.conf` and `/dev/termination-log`
+into every pod, and the guest keeps its rootfs's own files for those paths
+(host paths, ConfigMaps and emptyDir volumes do not appear in the guest). Snapshotter
 request mounts used to materialize the rootfs are distinct from OCI spec
 mounts and remain accepted. VM CPU/RAM annotations select VM shape; they
 are not enforcement of OCI cgroup limits. The `io.pvisor.vm.log` annotation
 (optional log filter, or `1` for `debug`) makes the VM runner write VMM and
 early console diagnostics to `<bundle>/pvisor-vm.log` instead of stderr.
+
+VM egress networking (feature `vm`): `io.pvisor.vm.network` selects the
+task's network posture — `off`/unset (default: no network device at all),
+`public`, or `allowlist` with `io.pvisor.vm.network.allow`
+(`host[:port]`, comma separated) and optionally
+`io.pvisor.vm.network.allow-private: "true"` for entries that resolve to
+private space (intranet mirrors). Egress rides pvisor-overlaynet's virtio-net
+smoltcp backend: the device is the guest's only network path, DNS is served
+synthetically from the in-VM router (`/etc/resolv.conf` points at
+192.0.2.1), every TCP flow terminates on the host and is re-originated only
+when policy authorizes it, and per-task counters are logged at task delete
+(`vm network snapshot ...`).
 
 VM task lifecycle: the runner is spawned detached at `Create` (it hosts the
 VMM for the whole task), waits on a start pipe for `Start`, and exits with
@@ -130,8 +147,11 @@ VM tasks boot the shim binary itself as a guest agent: at boot the
 `pvisor-guest` supervisor starts it from `/.pvisor-guest.json`, without
 a shell helper (`io.pvisor.vm.agent=off` disables it). The agent listens
 on vsock port 0x7076; libkrun proxies host connections from
-`<bundle>/pvisor-agent.sock` into the guest (so `docker exec` /
-`kubectl exec` work on VM tasks):
+`/run/pvisor-agent-<task-id-hash>.sock` into the guest (so `docker exec` /
+`kubectl exec` work on VM tasks; the socket cannot live in the bundle
+because Unix socket paths are capped at 108 bytes and containerd bundle
+paths exceed that; without `/run`, e.g. rootless, it falls back to the temp
+directory):
 
 - one agent connection per exec; frames are `[channel][length][payload]`
   with JSON control messages (`exec_start`/`started`/`exited`)
