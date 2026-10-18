@@ -6,7 +6,7 @@
 
 ### Observed benefits and costs {#pool-findings}
 
-**The physical pool reclaims cross-VM duplicate random data early and retains sharing after complete reads.** File-read hints advance reclamation in the library experiment, while DAX directly reuses pages of an explicitly attached immutable file. The comparisons below record reclamation speed, CPU and end-of-window usage together to examine each path's benefits and costs.
+**With four instances each holding the same 64 MiB of random data, the physical pool starts sustained reclamation of 128 MiB of billed memory at about 1.7 seconds, while KSM needs about 27.8 seconds; when no shareable application pages exist, the pool occupies 391.62 MiB and spends 8.1 CPU seconds scanning for no benefit.** File-read hints advance reclamation in the library experiment, while DAX directly reuses pages of an explicitly attached immutable file. All readings are single observations with N=1 per cell: no confidence intervals, stable ranking or production-density claim. The comparisons below record reclamation speed, CPU and end-of-window usage together to examine each path's benefits and costs.
 
 The two complete preflights dated 2026-10-18 contain 21 static-memory conditions and seven library conditions, with N=1 per condition. All 1,218 / 406 content, private-write and independent-exit checks passed, along with resource, provenance and raw-evidence audits. The analysis uses only these two complete preflights; additional partial repeated measurements are excluded from aggregates. These readings provide no confidence intervals, stable ranking or production-density claim.
 

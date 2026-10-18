@@ -414,7 +414,7 @@ Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/follow
 
 ## 5. Reproduction and raw data
 
-Complete CSV/JSON, provenance summaries and raw records remain in each batch's local `.data/` or publication directory. Previously public data files are archived under `benchmark.new/.data/docs-assets-prune-20261018/`; the migration inventory retains original paths, byte hashes and archive locations.
+Batch archival conventions are documented in the [lab-notes index](index.md).
 
 ### macOS / HVF
 

@@ -27,7 +27,7 @@ The [layered results and curves](#workload-v2-results) retain all 19 points and 
 
 ## Motivation {#motivation}
 
-The goal is to let the host own bytes and continue filesystem work while the guest waits for I/O, reducing background dependence on guest RAM. After accepting a WRITE, the queue holds copied bytes and a pinned native file handle. Object lifetime is separate from path names, allowing subsequent close, rename, and unlink to follow the existing ordering boundaries. The [Agent I/O completion design](experimental/agent-io-completion/index.md) owns file-lifetime and error semantics.
+The goal is to let the host own bytes and continue filesystem work while the guest waits for I/O, reducing background dependence on guest RAM. After accepting a WRITE, the queue holds copied bytes and a pinned native file handle. Object lifetime is separate from path names, allowing subsequent close, rename, and unlink to follow the existing ordering boundaries. The [Agent I/O completion design](../design/experimental/agent-io-completion/index.md) owns file-lifetime and error semantics.
 
 Three boundaries matter: accepted means bytes have transferred to the host, completed means the relevant write prefix has been applied, and durable means explicit synchronization has succeeded. Returning from WRITE cannot substitute for file or directory fsync. Queue capacity determines how much burst traffic can be absorbed; once the host page cache accepts bytes, a larger queue need not improve throughput. Whole-VM offload additionally requires other guest-RAM references and device activity to meet transfer conditions. These curves do not measure that process.
 
@@ -541,4 +541,4 @@ Warm-upper reads and immutable-lower reopens are different experiments; SDK nati
 Operation-level tails, open-loop arrivals, fair multi-VM contention, power-loss or crash durability, other hardware, and cold disk remain unmeasured. Semantic tests of host-owned bytes and pinned handles also do not establish whole-VM-offload throughput, physical RAM reclaimed, or restoration cost.
 
 
-Reproduction commands, the full matrix and remaining paper-strength validation are in `benchmark.new/filesystem/CURVES.md`. Complete CSV/JSON, provenance summaries and raw records remain in each batch's local `.data/` or publication directory. Previously public data files are archived under `benchmark.new/.data/docs-assets-prune-20261018/`; the migration inventory retains original paths, byte hashes and archive locations.
+Reproduction commands, the full matrix and remaining paper-strength validation are in `benchmark.new/filesystem/CURVES.md`. Batch archival conventions are documented in the [lab-notes index](index.md).

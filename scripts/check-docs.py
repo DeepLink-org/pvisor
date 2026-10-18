@@ -120,6 +120,72 @@ class Page(HTMLParser):
                 self.links.append((tag, attrs[key], attrs.get("class", "")))
 
 
+def check_duplicates(source):
+    """Fail on the same substantive prose paragraph appearing in multiple pages.
+
+    One fact, one home: the 2026-10 review found the same workflow copied onto
+    ten pages and the same paragraph three times verbatim. Shared boilerplate
+    that is intentional (the lab-notes provenance note) lives in blockquotes,
+    which are excluded; anything else worth repeating is worth an allowlist
+    entry with a reason.
+    """
+    issues = []
+    seen = {}
+    for locale in ("zh", "en"):
+        base = source / locale
+        if not base.is_dir():
+            continue
+        for page in sorted(base.rglob("*.md")):
+            if ".data" in page.parts:
+                continue
+            text = FENCES.sub("", page.read_text(encoding="utf-8"))
+            # measurement-status blocks are tool-managed per-page boilerplate
+            # (see benchmark.new/docs.py), intentionally identical across pages.
+            text = re.sub(
+                r"(?s)<!--\s*measurement-status:start\s*-->.*?<!--\s*measurement-status:end\s*-->",
+                "",
+                text,
+            )
+            for block in re.split(r"\n\s*\n", text):
+                lines = [ln.strip() for ln in block.splitlines()]
+                lines = [ln for ln in lines if not re.match(r"^\[[^\]]+\]:\s*\S+$", ln)]
+                if not lines or any(
+                    ln.startswith((">", "|", "#", "- ", "* ", "!", "<", "{"))
+                    or re.match(r"^\d+[.)] ", ln)
+                    for ln in lines
+                ):
+                    continue
+                normalized = re.sub(r"\s+", " ", " ".join(lines))
+                if len(normalized) < 150:
+                    continue
+                # Link definitions, inline-code paths and pure link/image
+                # pointer lines are navigation, not prose; identical targets
+                # across locales or sibling pages are expected.
+                prose = re.sub(r"!?\[[^\]]*\]\([^)]*\)", "", normalized)
+                prose = re.sub(r"`[^`]*`", "", prose)
+                # "Local raw record <path>" is the site's provenance-pointer
+                # convention; the paths themselves carry the information.
+                prose = prose.replace("Local raw record", "").replace("本地原始记录", "")
+                if len(prose.strip(" ·:|-—")) < 60:
+                    continue
+                key = hashlib.sha256(normalized.encode()).hexdigest()
+                if key in ALLOWED_DUPLICATES:
+                    continue
+                owner = f"{locale}/{page.relative_to(base)}"
+                if key in seen and seen[key] != owner:
+                    issues.append(
+                        f"duplicate paragraph in {seen[key]} and {owner}: {normalized[:60]}..."
+                    )
+                else:
+                    seen.setdefault(key, owner)
+    return issues
+
+
+# SHA-256 of normalized paragraphs that are intentionally shared, with a reason
+# in a comment on the entry. Prefer linking over adding entries here.
+ALLOWED_DUPLICATES = set()
+
+
 def check(strict=False):
     pairs = check_translations(strict=strict)
     paths = list(ROOT.rglob("*.html"))
@@ -282,6 +348,7 @@ def check(strict=False):
         first_run = (ROOT / locale / "start/first-run/index.html").read_text()
         if "<pre" not in first_run:
             issues.append(f"{locale}/start/first-run: missing rendered code block")
+    issues.extend(check_duplicates(source))
     if issues:
         raise SystemExit("\n".join(sorted(set(issues))))
     print(

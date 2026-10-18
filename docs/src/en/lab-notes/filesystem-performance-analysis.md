@@ -4,6 +4,10 @@
 
 ## Current conclusions and measurement coverage {#filesystem-status}
 
+**In the latest independent N30 paired comparison, the current default configuration versus its own cohort baseline: start-to-clean-exit -1.73% (95% CI [-5.70, -0.22]), writing 256 files -14.19% ([-17.58, -9.82]). The historical filesystem regression is not yet fully repaired; write coalescing for new VMs and DAX are both off by default. Percentages below come from their own frozen baselines and cannot be summed across batches.**
+
+Batch coverage and conclusions follow.
+
 The [filesystem I/O curves](filesystem-io-performance-analysis.md) compare request size, concurrency, synchronization, capacity and reuse working sets. Independent N30 and ordinary-CLI comparisons do not support enabling host-owned asynchronous batching by default; request counts distinguish backing coalescing from FUSE WRITE reduction.
 
 The 2026-10-17 [guest-kernel writeback followup](filesystem-io-performance-analysis.md#guest-writeback) fixes object lifetime for closed unlink/rename followed by syncfs, and verifies cross-batch progress with delayed backing. Historical statements below that ENOENT remains unresolved describe their own frozen versions; their timings, failures, and conclusions remain intact. The SDK fix does not establish a new ordinary-CLI WB=1 performance result.
@@ -40,7 +44,7 @@ The [Immutable-lower negative-cache comparison](#immutable-lower-negative-cache)
 
 [Directory-FD cache capacity and ATIME diagnostics](#directory-cache-atime) find no detected improvement in the cumulative three-round seven-tool time; default capacity remains 256. An independent request-mask probe confirms that stat requesting ATIME adds GETATTR after the first host READ, while a page-cache hit on the same fd adds none.
 
-**Latest independent N30 paired comparison: Selected C3 (new-VM writeback off by default): Launch through normal exit changes by -1.73%, 95% CI [-5.70, -0.22]%; Write 256 files changes by -14.19%, 95% CI [-17.58, -9.82]%. Results apply to the measured combined code/default configuration; complete recovery of historical performance is not established.**
+Latest independent N30 paired comparison (the cohort cited in this section's opening sentence; [details](#filesystem-optimization-n30)): Selected C3 (new-VM writeback off by default): Launch through normal exit changes by -1.73%, 95% CI [-5.70, -0.22]%; Write 256 files changes by -14.19%, 95% CI [-17.58, -9.82]%. Results apply to the measured combined code/default configuration; complete recovery of historical performance is not established.
 
 Independent cohorts: [Linux: paired N30 comparison of filesystem optimizations with default-off writeback](#filesystem-optimization-n30). The existing overview retains each historical cohort's conclusions.
 
@@ -1618,13 +1622,13 @@ The latest batch randomizes native and both versions of staged and libkrun VM. H
 
 ## macOS
 
-These workloads were measured on Linux; macFUSE/FSKit overhead and capacity remain unmeasured. Existing macOS/HVF results are retained in [VM startup](../benchmarks/startup.md) and [VM memory](../benchmarks/vm-memory/index.md), and are not substituted for this workload.
+This round was measured on Linux only; for the platform coverage boundary and where existing macOS/HVF results live, see the [end-to-end task analysis](agent-task-performance-analysis.md).
 
 ## Linux: evaluation after the shared filesystem service refactor {#filesystem-service}
 
 The frozen new source retains host FUSE while local, staged and lazy VM views
 enter the shared service through virtio-fs. Lazy images no longer create an
-intermediate host FUSE mount. The [implementation](overlayfs.md#filesystem-service)
+intermediate host FUSE mount. The [implementation](../design/overlayfs.md#filesystem-service)
 still keeps protocol state in the two adapters; DAX, writeback and long attribute
 TTLs remain disabled.
 
@@ -2385,9 +2389,7 @@ Main VM jobs use host rootfs `/`, 2 vCPU/1 GiB and a host read view. This is a t
 
 ## Sources and reproduction {#run}
 
-Complete CSV/JSON, provenance summaries and raw records remain in each batch's local `.data/` or publication directory. Previously public data files are archived under `benchmark.new/.data/docs-assets-prune-20261018/`; the migration inventory retains original paths, byte hashes and archive locations.
-
-Run from the repository root with a new output directory. This dynamic firmware entry requires the GNU/Linux CLI; static musl builds use a different firmware entry. This host has Linux, KVM/FUSE/user namespaces, Python 3.14, Rust/GCC, Git/rg, Node 24/npm and Podman/crun. The agent suite also needs the Claude/Codex CLIs.
+Batch archival conventions are documented in the [lab-notes index](index.md).
 
 ```bash
 python3 benchmark/pvisor/product_v1.py \
@@ -2398,6 +2400,4 @@ python3 benchmark/pvisor/product_v1.py \
   --suites filesystem --samples 30 --warmups 3
 ```
 
-Start with `--samples 1 --warmups 0` to check prerequisites. Workloads and correctness assertions live in `benchmark/pvisor/v1/`. Reports pin binaries, firmware and harness source with hashes. Failed operations never enter performance distributions. Effective sample counts are stated per page; P95/P99 from small samples describe this batch rather than production tail probabilities.
-
-[Environment, artifacts and method](../benchmarks/index.md#product-v1) · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`. Reports retain dirty source status; executable SHA256 identifies the measured artifact. The archive excludes large rootfs/binaries and reproducible workspace payloads, while retaining input hashes and each batch's harness.
+Harness environment, preflight and failure-classification conventions match the [end-to-end task analysis reproduction section](agent-task-performance-analysis.md#run); the local raw-record cohort is likewise product-v1-20261004, and the executable SHA256 identifies the measured artifact.

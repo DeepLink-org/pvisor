@@ -40,7 +40,7 @@ Following the coroutine model, pVisor extends the scheduling unit to the Agent's
 
 ![The mechanism: coroutines adapt waits at call boundaries; pVisor takes over I/O at Linux virtual-device and protocol boundaries, preserving sequential application calls](assets/agent-vm-coroutine-bridge.svg)
 
-**Transparency to the Agent means running its existing code, using its existing Linux tools and making its existing calls.** File and network I/O crosses Linux and virtual devices into the host, where pVisor takes ownership on integrated device and protocol paths. Changes to the guest kernel, VMM and host services are concentrated at this layer. The Agent needs no asynchronous rewrite or explicit suspend, offload or resume interface. [VM execution path](../design/vm-runtime.md)
+**Transparency to the Agent means running its existing code, using its existing Linux tools and making its existing calls.** File and network I/O crosses Linux and virtual devices into the host, where pVisor takes ownership on integrated device and protocol paths. Changes to the guest kernel, VMM and host services are concentrated at this layer. The Agent needs no asynchronous rewrite or explicit suspend, offload or resume interface. [VM execution path](../vm-runtime.md)
 
 ## The Agent sees continuous execution; the host schedules events {#execution-path}
 
@@ -52,7 +52,7 @@ This places several Agent timelines under a shared execution engine: **each Agen
 
 Transparency is bounded by the original call's semantics: results, errors, file ordering and synchronization requirements must remain intact. The host must own independent requests and data before removing I/O's dependency on guest RAM. Model requests also require protocol integration; ordinary TCP forwarding cannot automatically take over a TLS session inside the guest. A guest with runnable background work continues executing.
 
-Bulk writes require the same ownership transfer. Once the host owns independent write data, it can queue, coalesce and persist it. While preserving ordering, errors and synchronization semantics, an entire guest waiting only for those operations may become eligible for offload. **A smaller host buffer can release a larger guest memory footprint, which makes asynchronous I/O at scale worth pursuing.** Queue backpressure, synchronization and runnable background tasks affect the eligible window, and the buffer itself counts toward resource cost. [Agent I/O completion](../design/experimental/agent-io-completion/index.md)
+Bulk writes require the same ownership transfer. Once the host owns independent write data, it can queue, coalesce and persist it. While preserving ordering, errors and synchronization semantics, an entire guest waiting only for those operations may become eligible for offload. **A smaller host buffer can release a larger guest memory footprint, which makes asynchronous I/O at scale worth pursuing.** Queue backpressure, synchronization and runnable background tasks affect the eligible window, and the buffer itself counts toward resource cost. [Agent I/O completion](../experimental/agent-io-completion/index.md)
 
 A blocked vCPU already lets the host schedule other work. The additional capacity opportunity here comes primarily from reclaiming physical memory still retained by a waiting guest.
 
@@ -100,7 +100,7 @@ The central scenario is `1 - 70% × 80% + 5% = 49%`. An Agent averaging 1 GiB be
 
 `f = 70%` already requires safely capturing most relevant waits; it is an assumption, rather than a measured parameter obtained by rounding the published 69.4%. `r = 80%` takes its scale from small-working-set offload, with actual results depending on working sets, sharing and caches. `h = 5%` is a budget awaiting implementation validation: with 1 GiB of baseline residency it allows about 51 MiB of average additional residency. Smaller guests or large response backlogs require recalculation.
 
-The same model evaluates buffer spending. Holding `f = 70%` and `r = 80%`, increasing `h` from 5% to 15% or 30% lowers the multiplier from 2.04 to 1.69 or 1.35. The experimental host write buffer currently caps payload at 64 MiB per connection. A cap differs from average occupancy; multiple connections, metadata and response spooling must share a resource budget. [Buffer budget and current limits](../design/experimental/agent-io-completion/index.md)
+The same model evaluates buffer spending. Holding `f = 70%` and `r = 80%`, increasing `h` from 5% to 15% or 30% lowers the multiplier from 2.04 to 1.69 or 1.35. The experimental host write buffer currently caps payload at 64 MiB per connection. A cap differs from average occupancy; multiple connections, metadata and response spooling must share a resource budget. [Buffer budget and current limits](../experimental/agent-io-completion/index.md)
 
 ### Include restoration and peaks in the cost {#capacity-limits}
 
@@ -146,6 +146,6 @@ The prototype should progressively replace the estimate's assumptions with obser
 | Simultaneous wakeups, read/write bytes, active/restore peaks and the latency distribution to first useful execution | Whether headroom, bandwidth and queueing support the estimated capacity; tail latency requires enough samples |
 | Original-call outputs, errors, ordering, synchronization, cancellation, task completions and end-to-end latency | Whether additional execution contexts preserve correctness and complete useful work |
 
-Existing foundations include controlled file and network paths, pause and RAM-offload primitives, and an experimental host write buffer. Automatic wait detection, I/O handoff, completion-driven wakeups and resumption scheduling still need end-to-end integration and validation. The two figures illustrate that target mechanism. [Wait and offload experiment](../design/experimental/vcpu-idle-offload/index.md), [Agent I/O completion](../design/experimental/agent-io-completion/index.md)
+Existing foundations include controlled file and network paths, pause and RAM-offload primitives, and an experimental host write buffer. Automatic wait detection, I/O handoff, completion-driven wakeups and resumption scheduling still need end-to-end integration and validation. The two figures illustrate that target mechanism. [Wait and offload experiment](../experimental/vcpu-idle-offload/index.md), [Agent I/O completion](../experimental/agent-io-completion/index.md)
 
 **pVisor aims to give Agents the familiar execution style of transparent coroutines, with a runtime that turns waits into opportunities to share resources. The VM provides the context and control boundary for that transition.**

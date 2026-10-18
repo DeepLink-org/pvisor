@@ -27,7 +27,7 @@
 
 ## 优化动机 {#motivation}
 
-目标是在 guest 等待 I/O 时，让 host 持有写入字节并继续处理文件，减少后台对 guest RAM 的依赖。host 接受 WRITE 后，队列持有复制出的字节和固定的原生文件 handle；对象存活与路径名分离，使后续 close、rename 或 unlink 能按既有排序边界处理。文件生命周期和错误语义由[Agent I/O 完成设计](experimental/agent-io-completion/index.md)定义。
+目标是在 guest 等待 I/O 时，让 host 持有写入字节并继续处理文件，减少后台对 guest RAM 的依赖。host 接受 WRITE 后，队列持有复制出的字节和固定的原生文件 handle；对象存活与路径名分离，使后续 close、rename 或 unlink 能按既有排序边界处理。文件生命周期和错误语义由[Agent I/O 完成设计](../design/experimental/agent-io-completion/index.md)定义。
 
 需要区分三个边界：accepted 表示字节已交给 host，completed 表示相关写入前缀已应用，durable 表示显式同步操作已成功完成。WRITE 返回不能代替文件或目录 fsync。队列容量解决的是吸收突发写入的能力；host 的页缓存已接受字节后，较大的队列不必然增加吞吐。完整 VM offload 还要求其他 guest RAM 引用和设备活动满足交接条件，当前曲线没有测量这个过程。
 
@@ -538,4 +538,4 @@ SDK upper 热读负对照与不可变 lower 重读是不同实验；SDK native �
 操作级尾延迟、开放到达负载、公平的多 VM 竞争、掉电或崩溃耐久、跨硬件和冷磁盘均未测量。队列持有 host 字节与固定 handle 的语义测试也不能证明完整 VM offload 期间的吞吐、释放的物理 RAM 或恢复成本。
 
 
-复现命令、完整实验矩阵和剩余论文强度验证见仓库 `benchmark.new/filesystem/CURVES.md`。完整 CSV/JSON、来源摘要与原始记录保存在对应批次的本地 `.data/` 或 publication 目录；此前公开的数据文件归档于 `benchmark.new/.data/docs-assets-prune-20261018/`，迁移清单保留原路径、字节摘要和归档位置。
+复现命令、完整实验矩阵和剩余论文强度验证见仓库 `benchmark.new/filesystem/CURVES.md`。批次归档约定见[实验记录索引](index.md)。

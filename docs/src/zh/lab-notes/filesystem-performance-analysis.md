@@ -4,6 +4,10 @@
 
 ## 当前结论与测量覆盖 {#filesystem-status}
 
+**最新独立 N30 配对对照下，当前默认配置相对同批基线：启动至正常退出 -1.73%（95% CI [-5.70, -0.22]），写入 256 文件 -14.19%（[-17.58, -9.82]）。历史文件系统退化尚未整体修复；新建 VM 写合并与 DAX 均默认关闭，下文各批次的百分比来自各自冻结基线，不能累加。**
+
+各批次的测量覆盖与结论如下。
+
 [文件系统 I/O 曲线](filesystem-io-performance-analysis.md)系统比较请求粒度、并发、同步、容量与复用工作集；独立 N30 和普通 CLI 对照未支持默认开启 host-owned 异步合批，请求计数解释了 backing 合并与 FUSE WRITE 数量的区别。
 
 2026-10-17 的[guest 内核写回后续](filesystem-io-performance-analysis.md#guest-writeback)修复了关闭后 unlink/rename 再 syncfs 的对象生命周期问题，并用真实延迟 backing 验证跨批流水推进。本页历史批次中“ENOENT 未修复”指各自当时的冻结版本，旧时间、失败与结论保持原状；后续 SDK 修复不构成新的普通 CLI WB=1 性能验收。
@@ -40,7 +44,7 @@
 
 [目录 FD 缓存扩容与 ATIME 诊断](#directory-cache-atime)未检出三轮七工具累计耗时的改善，默认容量保留 256。独立请求掩码探针确认：首次宿主 READ 后，请求 ATIME 的 stat 会补充 GETATTR；同 fd 页缓存命中后未出现该请求。
 
-**最新独立 N30 配对对照：所选 C3（新 VM 写合并默认关）：启动至正常退出变化 -1.73%，95% CI [-5.70, -0.22]%；写入 256 文件变化 -14.19%，95% CI [-17.58, -9.82]%。结果归因于该次代码与默认配置组合，未建立全面恢复历史性能的结论。**
+最新独立 N30 配对对照（即本节首句所引批次，[详情](#filesystem-optimization-n30)）：所选 C3（新 VM 写合并默认关）：启动至正常退出变化 -1.73%，95% CI [-5.70, -0.22]%；写入 256 文件变化 -14.19%，95% CI [-17.58, -9.82]%。结果归因于该次代码与默认配置组合，未建立全面恢复历史性能的结论。
 
 独立批次详见[Linux：文件系统优化与写合并默认关闭的 N30 配对对照](#filesystem-optimization-n30)。以下已有汇总保留各历史批次的结论。
 
@@ -1614,13 +1618,13 @@ Agent 经常反复读目录、搜索和修改文件。应同时看到任务本�
 
 ## macOS
 
-本轮在 Linux 实测，以下工作负载没有 macOS 样本；macFUSE/FSKit 开销与并发容量均未测。既有 macOS/HVF 数据继续保留在 [VM 启动时间](../benchmarks/startup.md)与[VM 内存报告](../benchmarks/vm-memory/index.md)，不移作本页结果。
+本轮只在 Linux 实测，平台覆盖边界与既有 macOS/HVF 数据的归属见[端到端任务分析](agent-task-performance-analysis.md)。
 
 ## Linux：统一文件服务重构后的评测 {#filesystem-service}
 
 本轮测试使用重构后的冻结源码，host 保留 FUSE，VM 的本地、staged 和
 lazy 文件视图由 virtio-fs 接入共享服务；lazy 镜像不再建立中间宿主 FUSE
-挂载。[实现结构](overlayfs.md#filesystem-service)中的协议状态仍
+挂载。[实现结构](../design/overlayfs.md#filesystem-service)中的协议状态仍
 分属两个入口，没有启用 DAX、writeback cache 或长期属性缓存。
 
 ### 对照与测量范围 {#service-protocol}
@@ -2301,9 +2305,7 @@ VM 主批次使用 host rootfs `/` 和 2 vCPU/1 GiB，并提供宿主只读视�
 
 ## 来源与复现 {#run}
 
-完整 CSV/JSON、来源摘要和原始记录保留在对应批次的本地 `.data/` 或 publication 目录。此前公开的数据文件归档于 `benchmark.new/.data/docs-assets-prune-20261018/`，迁移清单保留原路径、字节摘要和归档位置。
-
-从仓库根目录运行；输出目录必须是新目录。动态 firmware 入口需要 GNU/Linux 版 CLI；静态 musl 制品使用另一套 firmware 入口，不能混用。Linux、KVM/FUSE/user namespaces、Python 3.14、Rust/GCC、Git/rg、Node 24/npm、Podman/crun 是本机工具环境；Agent 套件另需 Claude/Codex CLI。
+批次归档约定见[实验记录索引](index.md)。
 
 ```bash
 python3 benchmark/pvisor/product_v1.py \
@@ -2314,6 +2316,4 @@ python3 benchmark/pvisor/product_v1.py \
   --suites filesystem --samples 30 --warmups 3
 ```
 
-先用 `--samples 1 --warmups 0` 检查环境。脚本、输入定义和正确性断言在 `benchmark/pvisor/v1/`；报告会复制二进制、firmware 和当轮脚本并记录摘要。失败不会进入性能分布；准备、策略拒绝和工作负载错误分别保留。每个页面写明有效样本数；小样本 P95/P99 只描述本批次，不估计长期尾延迟。
-
-[环境、制品与采样方法](../benchmarks/index.md#product-v1) · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`。报告保留源码的未提交状态；当轮可执行制品 SHA256 是身份依据。归档不含数 GB 的 rootfs、二进制和可重建工作区；输入摘要及每轮脚本保留。
+harness 环境、预检与失败分类约定同[端到端任务分析的复现节](agent-task-performance-analysis.md#run)；本地原始记录批次同为 product-v1-20261004，当轮制品 SHA256 是身份依据。

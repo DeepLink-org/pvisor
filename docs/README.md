@@ -248,7 +248,7 @@ it. The models are the uv, Ruff and Ray docs.
 - Prefer a concrete example over an abstract description; show the command and what it does.
 - State a guarantee once, on the page that owns it, and link from elsewhere. Never open a page with a disclaimer, and never repeat a caveat in every paragraph.
 - No meta text: no “本文/本节/本页”, no “继续阅读”, no first line that restates the heading.
-- Name the mechanism when it matters; keep terms consistent with the concept page that owns them.
+- Name the mechanism when it matters; keep terms consistent with the concept page that owns them. The execution-guarantee framework has exactly one naming: **有界 / 可逆 / 可查** (bounded / reversible / checkable) — do not coin variants (可恢复/可核查, 放手/把关/有据, auditable, ...).
 - Tables for options, matrices and comparisons; code fences for anything runnable.
 - Keep article directories in the sidebar. Omit tables that only map topics to
   documentation links, and do not replace them with equivalent link lists.
@@ -294,6 +294,14 @@ reintroduce them.
    by its own coinage. Benchmark pages follow the fixed pattern: absolute
    water level in the first sentence → scenario entries → shortcomings floated
    up.
+
+`scripts/check-docs.py` enforces the mechanical parts in CI (via
+`just docs-build`): bilingual pairing, navigation targets, link/anchor/image
+resolution — and a **duplicate-paragraph gate** that fails the build when the
+same substantive prose paragraph (≥150 chars) appears in two pages. Intentional
+shared boilerplate must use a recognized convention instead of raw repetition:
+blockquote notes, `measurement-status` marker regions, link/pointer lines, or
+an `ALLOWED_DUPLICATES` entry with a written reason.
 
 ### Design writing references
 

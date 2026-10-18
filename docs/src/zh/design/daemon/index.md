@@ -51,7 +51,7 @@ Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌
 
 ## 实际控制与物理内存 {#reservations}
 
-要求 Linux x86_64、可用 `/dev/kvm`、可信绝对路径，以及可写、已委派且启用 CPU/memory/PID controller 与 `cgroup.kill` 的 cgroup v2 层级。前置检查验证真实 controller 写入和 KVM API；没有 host、OCI 命令或 registry-pull 降级。
+平台前提（Linux x86_64、`/dev/kvm`、委派的 cgroup v2 层级）与检查方式见[运维指南的前提条件](../../guides/daemon/index.md#prerequisites)。
 
 原生 supervisor 在独立、脱离 daemon 生命周期的子进程中嵌入 `pvisor::PVisor`，只配置 `VmExecutor` 并持有 RunHandle。Sandbox cgroup 限制整个 supervisor/VMM/helper 树：总 CPU 速率 **10–8000 millicores**、硬内存、零 swap、`pids.max=512` 与 group OOM。vCPU 数按 quota 向上取整（最多 8），guest RAM 向下取整到 MiB；硬内存上限还包含宿主侧开销。完整限制／就绪检查保留在 create、Inspect 和 resume；端点解析认证 live Running 状态并检查删除屏障，不为每次数据请求重复完整 health/cgroup 检查。
 

@@ -414,7 +414,7 @@ QEMU q35 的 218 ms 不能代表 QEMU 的最低启动成本；关闭可选传统
 
 ## 5. 复现与原始数据
 
-完整 CSV/JSON、来源摘要和原始记录保留在对应批次的本地 `.data/` 或 publication 目录。此前公开的数据文件归档于 `benchmark.new/.data/docs-assets-prune-20261018/`，迁移清单保留原路径、字节摘要和归档位置。
+批次归档约定见[实验记录索引](index.md)。
 
 ### macOS / HVF
 

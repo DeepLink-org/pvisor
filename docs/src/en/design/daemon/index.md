@@ -51,7 +51,7 @@ Logical admission totals, installed limits on each supervisor/VM tree and node-w
 
 ## Actual controls and physical memory {#reservations}
 
-You need Linux x86_64, a usable `/dev/kvm`, trusted absolute paths, and a writable, delegated cgroup v2 hierarchy with the CPU/memory/PID controllers and `cgroup.kill` enabled. Preflight checks verify real controller writes and the KVM API; there is no host, OCI-command or registry-pull fallback.
+For platform prerequisites (Linux x86_64, `/dev/kvm`, a delegated cgroup v2 hierarchy) and their checks, see the [operations guide](../../guides/daemon/index.md#prerequisites).
 
 The native supervisor embeds `pvisor::PVisor` in a separate child process outside the daemon's lifecycle, configures only `VmExecutor`, and holds the RunHandle. The sandbox cgroup limits the whole supervisor/VMM/helper tree: total CPU rate **10–8000 millicores**, hard memory, zero swap, `pids.max=512` and group OOM. vCPU count rounds the quota up (at most 8); guest RAM rounds down to MiB; the hard memory limit also covers host-side overhead. Full limit/readiness checks remain at create, Inspect and resume; endpoint resolution authenticates the live Running state and checks deletion fences, without repeating full health/cgroup checks per data request.
 

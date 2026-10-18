@@ -4,7 +4,7 @@
 
 ## 部署 {#deployment}
 
-要求 Linux x86_64、可用 `/dev/kvm`、可信绝对路径，以及可写、已委派且启用 CPU/memory/PID controller 与 `cgroup.kill` 的 cgroup v2 层级。前置检查验证真实 controller 写入和 KVM API；没有 host、OCI 命令或 registry-pull 降级。
+平台前提（Linux x86_64、`/dev/kvm`、委派的 cgroup v2 层级）与检查方式见[运维指南的前提条件](../../guides/daemon/index.md#prerequisites)。
 
 将 `OPEN_SANDBOX_API_KEY` 设置为至少 32 字节的受保护随机秘密，不放入 argv。
 
@@ -24,13 +24,13 @@ pvisor-daemon serve \
 
 重启保持状态与运行时配置兼容。非 loopback 暴露前在可信反向代理终止 TLS。`--public-endpoint` 设置外部路由可达的 host:port authority；通配或临时端口监听必须提供它。自动端点发布未实现。
 
-运行时路径使用绝对路径，daemon 重启时保持不变。状态路径保持短，例如 `/run/user/1000/pvd`：逐 sandbox 的 `control.sock` 必须短于 104 字节，vsock Unix socket 也有路径长度限制。保留状态；此 `/run` 示例不保证跨注销／重启持久化，VM 不能跨宿主重启存活。`/sys/fs/cgroup/pvd` 必须是真实委派层级，不能是普通目录。
+运行时与状态路径的绝对路径、长度与持久性约束见[运维指南的安装与启动](../../guides/daemon/index.md#install)。
 
 已有记录的 v1 registry 或 v2 header 缺少原生 `owner.json` marker 时拒绝启动，即使 map 为空；它可能仍持有活动 Podman 容器。保留原始归属状态，使用全新原生状态或经旧 Podman daemon 清理后切换，不要删除记录／预留或伪造 marker。拒绝与迁移规则见[存储](storage.md#migration)。
 
 ## 预制镜像合同 {#image-contract}
 
-镜像是可信本机 `images_dir/<key>.json` manifest，不是 registry reference。字段包括绝对路径的独立 Linux `rootfs`（不能是宿主 `/` 或与 daemon 状态重叠）、绝对路径的 guest bootstrap `entrypoint` argv、可选 `cmd`、可选 `env` 与可选绝对路径 firmware `library_dir`。请求的工作负载 argv（为空则使用 `cmd`）追加到 `entrypoint`，请求 env 覆盖 manifest env，不继承宿主环境，也不经 shell 插值。
+镜像 manifest 的字段与环境语义见[运维指南的前提条件](../../guides/daemon/index.md#prerequisites)。
 
 长期运行的 guest bootstrap 必须监督工作负载、真实 OpenSandbox 1.1.0 execd 与 egress，自行初始化／鉴权服务、转发信号并回收子进程。它必须在 guest **CID 3** 的 **44772/18080** 端口提供字节透明的 AF_VSOCK listener，桥接真实服务。Supervisor 的 loopback TCP 发布经私有 Unix socket 与原生 vsock 转发连接 guest。普通 rootfs 或只运行 sleep 的进程不够。
 
