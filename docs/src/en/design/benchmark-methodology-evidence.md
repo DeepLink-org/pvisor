@@ -1,5 +1,7 @@
 # Benchmark measurement protocols and evidence
 
+> Note: "local original records" and paths such as `docs/src/assets/benchmarks/.data/` refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
+
 All benchmarks follow the same protocol:
 
 - State the hardware, operating system, kernel or macOS version, FUSE implementation, pVisor version, and commit.
@@ -154,7 +156,7 @@ uv run --no-project --with matplotlib python benchmark/pvisor/render_ubuntu_base
   --assets target/ubuntu-reference-new --output /tmp/full-ubuntu-report-new
 ```
 
-Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/methodology.md#full-ubuntu)
+Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/index.md#full-ubuntu)
 
 See the Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-packages.txt`. Formal tasks uniformly place compiler/client temporary files in private workspace `_tmp` to accommodate hostroot read-only `/tmp`. Failed diagnostics are retained outside the new formal distributions.
 

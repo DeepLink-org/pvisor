@@ -97,4 +97,4 @@ memfd 槽位经引用固定后，由 VM 以 `MAP_PRIVATE` 映射；它不注册 
 
 [内存证据](proof-of-concept.md#memory-evidence)尚未建立已知的生产净收益。
 比较宿主总占用、临时峰值、CPU 成本和业务尾延迟，不能只看编码大小。
-所有权选择见[概览](compression.md)与[池化方案](compression-pool.md)。
+所有权选择见[架构索引](index.md)与[池化方案](compression-pool.md)。

@@ -38,7 +38,9 @@ VM runtime 拥有地址映射和 CPU/设备一致性，Job 与 snapshot store �
 | local live compression | 实例内独特但可压缩的冷内容 | userfaultfd 权限、编码 CPU 与 refault 成本 |
 | whole-VM offload | 可停驻并保留恢复来源的闲置状态 | 写入与恢复成本、存储和峰值余量 |
 
-去重机制见[内存去重](deduplication.md)，编码与存储取舍见[内存压缩](compression.md)、[实例内压缩](compression-local.md)与[卸载文件格式](offload-format.md)。[池化服务器压缩](compression-pool.md)通过显式 Linux 模式共享 sealed 编码对象，默认 daemon physical pool 共享原文页，两种机制分别维护。
+去重机制见[内存去重](deduplication.md)，编码与恢复取舍见[实例内压缩](compression-local.md)，存储布局见[内存卸载](offload.md)与[字节布局附录](../offload/disk-layout-and-schema.md)。[池化服务器压缩](compression-pool.md)通过显式 Linux 模式共享 sealed 编码对象，默认 daemon physical pool 共享原文页，两种机制分别维护。
+
+默认路线是实例本地所有权：本地压缩避免服务协调，但不能跨实例共享编码结果。池化增加可选的去重、共享存储和宿主级预算，代价是 IPC、竞争和更广的故障风险；只在需要跨实例共享编码对象时才引入。两者都需要临时内存与恢复余量、CPU 预算，以及可接受的尾延迟。
 
 ## 所有权与发布顺序 {#ownership}
 
@@ -71,12 +73,12 @@ Linux 实例内冷压缩以 64 KiB 块工作。第一次短静止窗口捕获候
 
 ## 当前实现与组合限制 {#direction}
 
-Linux daemon 使用显式 `serve --memory-pool` 启用原文页共享；它不需要 userfaultfd。实例内 live compression 和 `--memory-pool-mode compressed` 使用 userfaultfd。sealed 池已有组件级服务退出测试，双 VM 探针也已验证服务终止后的回收/refault 与文件 I/O；生产密度和延迟仍待验收。Snapshot capture/restore、file backing、whole-VM offload、KSM advice与冷页路径存在明确互斥检查；调用方应按支持profile选择，组合不自动热切换。
+Linux daemon 使用显式 `serve --memory-pool` 启用原文页共享；它不需要 userfaultfd。实例内 live compression 和 `--memory-pool-mode compressed` 使用 userfaultfd。sealed 池已有组件级服务退出测试，双 VM 探针也已验证服务终止后的回收/refault 与文件 I/O；macOS 的等价 sealed 池化尚未交付，生产密度和延迟仍待验收。Snapshot capture/restore、file backing、whole-VM offload、KSM advice与冷页路径存在明确互斥检查；调用方应按支持profile选择，组合不自动热切换。
 
 新共享和offload证据按配置、样本和计费范围保留在[VM 内存基准](../../benchmarks/vm-memory/index.md)。Ready省内存不保证更低lifecycle peak，高写入会减少共享收益。[概念验证](proof-of-concept.md)保留历史机制和失败材料；完整状态合同见[环境快照](../environment-snapshot.md)。
 
 ## 回到整体架构与源码 {#integration}
 
-映射与块状态留在 VM 内，池或 store 只提供受引用保护的内容。虚拟设备经 RAM lease 加入同一静止边界；[完整快照](../environment-snapshot.md#consistent-cut)再把 CPU、RAM、设备和文件状态组合起来。[Daemon 准入](../daemon/admission.md)需要按整个节点预算容纳私有页、共享服务与恢复峰值，不能把某个局部压缩比直接换成并发上限。
+映射与块状态留在 VM 内，池或 store 只提供受引用保护的内容。虚拟设备经 RAM lease 加入同一静止边界；[完整快照](../environment-snapshot.md#consistent-cut)再把 CPU、RAM、设备和文件状态组合起来。[Daemon 准入](../daemon/index.md#admission)需要按整个节点预算容纳私有页、共享服务与恢复峰值，不能把某个局部压缩比直接换成并发上限。
 
 源码入口：`crates/pvisor-vm/src/memory.rs`、`handle.rs`、`cold_ram_linux.rs`、`ram_dedup.rs` 与 `devices/virtio/memory_gate.rs`。接口与生命周期由 `api.rs` 定义；daemon 的共享对象预算与进程归属见[共享工作集](../daemon/shared-working-set.md)。

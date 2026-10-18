@@ -125,9 +125,9 @@ subgroups into their parent group; do not add a third sidebar level.
 The canonical Chinese documentation uses these sections:
 
 - `why/`: the case for pVisor — vision, supervision-bandwidth argument, trust ladder, use cases, comparisons, when not to use.
-- `start/`: product scope, installation, the first reproducible Job, and where to go next.
+- `start/`: installation and the first reproducible Job, ending with where to go next.
 - `guides/`: tasks, commands and expected results, grouped by job (`agents/`, `policies/`, `executors/`).
-- `concepts/`: the user mental model — jobs, staging, evidence, policy, glossary.
+- `concepts/`: the user mental model — jobs, staging, evidence and policy layering.
 - `benchmarks/`: reproducible measurements and dated comparisons.
 - `security/`: what is protected, what is not, and how to report issues.
 - `reference/`: CLI, configuration, schemas and platform support matrices.
@@ -247,7 +247,7 @@ it. The models are the uv, Ruff and Ray docs.
 - Prefer a concrete example over an abstract description; show the command and what it does.
 - State a guarantee once, on the page that owns it, and link from elsewhere. Never open a page with a disclaimer, and never repeat a caveat in every paragraph.
 - No meta text: no “本文/本节/本页”, no “继续阅读”, no first line that restates the heading.
-- Name the mechanism when it matters; keep terms consistent with the glossary.
+- Name the mechanism when it matters; keep terms consistent with the concept page that owns them.
 - Tables for options, matrices and comparisons; code fences for anything runnable.
 - Keep article directories in the sidebar. Omit tables that only map topics to
   documentation links, and do not replace them with equivalent link lists.
@@ -260,6 +260,37 @@ it. The models are the uv, Ruff and Ray docs.
   pages own protocol fields, algorithms and platform constraints. Link to a topic
   where its detail becomes relevant instead of duplicating its sections.
 - A page with no data yet says “建设中” and links to its TODO page instead of making an empty claim.
+
+### Design writing references
+
+Model the explanation of one mechanism on this sequence: problem and constraints →
+minimal system model (who owns state) → the normal path of one real request →
+the failure path → tradeoffs → implementation and evidence entry points. The
+[design overview](src/zh/design/index.md) follows this order through one
+end-to-end task. Each figure answers one reader question: ownership (layered
+diagram), one operation (sequence), data placement (layout/map), crash residue
+(failure states), or cost (sourced measurement). Figure components must have
+corresponding entry points in source or contracts.
+
+Expression references worth studying, by local topic (accessed 2026-10-07; these
+evaluate documentation craft, not project quality):
+
+| Project and article | What to learn |
+| --- | --- |
+| [ByteHook · project overview](https://github.com/bytedance/bhook/blob/main/doc/overview.zh-CN.md) | Derive mechanisms from the necessary underlying model; connect objects and calls with figures |
+| [TigerBeetle · Architecture](https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/ARCHITECTURE.md) | Start from workload and constraints before persistence and design decisions |
+| [Firecracker · Design](https://github.com/firecracker-microvm/firecracker/blob/main/docs/design.md) | Host integration, threads and the device model in one architecture narrative |
+| [gVisor · Architecture guide](https://gvisor.dev/docs/architecture_guide/intro/) | Explain the boundary through one syscall example |
+| [Tokio · Runtime](https://docs.rs/tokio/latest/tokio/runtime/index.html) | Usage model first, then thread lifetimes and scheduling guarantees |
+| [etcd · Client design](https://etcd.io/docs/v3.6/learning/design-client/) | Error and retry semantics for lost ACKs and unknown outcomes |
+| [Ray · Architecture whitepapers](https://docs.ray.io/en/latest/ray-contribute/whitepaper.html) | Keep overview and internal topics in separate layers |
+| [Rust Compiler Development Guide](https://rustc-dev-guide.rust-lang.org/overview.html) | From pipeline to queries, data structures and source entry points |
+| [CockroachDB · Design](https://github.com/cockroachdb/cockroach/blob/master/docs/design.md) | Layered diagrams connecting data abstractions to physical layout |
+
+Diagrams use the site's dark-blue palette: background `#0d1b30`, cards
+`#142840`, accent `#a8cefa`, text `#e9eef8`; teal, amber and dark red mark
+sharing, change and conflict states with text labels. Keep SVG text searchable;
+split long diagrams into per-topic parts.
 
 The native TOML files own navigation. Maintain paired Chinese and English articles.
 Keep only current article paths; do not maintain historical redirect maps or
@@ -397,51 +428,15 @@ To validate a TOML file without launching an executor:
 cargo run --locked -p pvisor --example documentation_config -- run.toml
 ```
 
-### community/adopters.md
-
-Measurements, generated references, or formal decisions still need completion. The acceptance criteria below remain required; the page retains its planned status.
-
-**Acceptance criteria**
-
-- Publish users and scenarios with consent.
-- Distinguish production use from experiments.
-
-### community/code-of-conduct.md
-
-**Requirements**
-
-- Adopt [Contributor Covenant 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/) or an equivalent text;
-- Specify a reporting channel (dedicated email or maintainers), rather than public issues;
-- Describe handling procedures and possible consequences.
-
-**Acceptance criteria**
-
-- Add repository-root `CODE_OF_CONDUCT.md` and keep this page consistent;
-- Ensure that the reporting channel works and is listed on [Community](index.md).
-
 ### community/governance.md
 
-Measurements, generated references, or formal decisions still need completion. The acceptance criteria below remain required; the page retains its planned status.
+The page describes the current single-maintainer process; a formal maintainer list,
+charter and conduct reporting channel are not yet established.
 
 **Acceptance criteria**
 
-- Define the maintainer list, decision process and advancement path.
 - Describe the human role in semspec approval.
-
-### design/decisions/index.md
-
-**Requirements**
-
-- Create an ADR template (context, options, decision, consequences, status) and a numbering convention (`NNNN-short-title.md`).
-- Backfill the existing key decisions, for example:
-    - Admission plans stop at `Planned`; enforcement comes only from executor observations.
-    - Gateway and replay are separated from the core closure as optional features.
-    - `--safe` does not select an executor and refuses to start rather than degrading when it cannot enforce.
-    - The human approval process for semantic specifications.
-
-**Acceptance criteria**
-
-- At least four numbered ADRs with titles/status.
+- Announce the maintainer list, charter and conduct channel on this page once established.
 
 ### design/replay.md
 
@@ -455,46 +450,6 @@ Measurements, generated references, or formal decisions still need completion. T
 
 - Code/test references per adapter.
 - Link replay-fidelity results.
-
-### design/research/cluster-execution.md
-
-**Requirements**
-
-- Metrics: single-node useful-work density and execution/evidence overhead under fixed resource budgets.
-- Controls: native execution and external Kubernetes or Ray orchestration, with pinned versions.
-- Workload: independent sandboxes; cross-node placement, retries and workflows remain external.
-- Environment: one measured node first; any external multi-node experiment has a separately declared scope.
-
-**Acceptance criteria**
-
-- pVisor defines execution semantics without replacing schedulers.
-- Distinguish the daemon's implemented VM-only `NativeRuntime` from proposed integrations; require separate prepared-image and end-to-end SDK validation.
-- Align claims with measured density; Cluster/controller measurements are not evidence for the node-local daemon.
-
-### design/research/publications.md
-
-Measurements, generated references, or formal decisions still need completion. The acceptance criteria below remain required; the page retains its planned status.
-
-**Acceptance criteria**
-
-- Link papers/reports/talks.
-- State implementation revisions.
-- Mark outputs that do not establish product guarantees.
-
-### design/research/rl-execution-substrate.md
-
-**Requirements**
-
-- Metrics: throughput, isolation, reproducibility, fork cost.
-- Controls: RL framework sandboxes.
-- Workload: fixed rollouts, failure replay, checkpoint forks.
-- Environment: pinned model/tools.
-
-**Acceptance criteria**
-
-- Integration and scope.
-- Tested recording, fork, and prefix replay.
-- Separate design from the rollout guide.
 
 ### guides/ci.md
 

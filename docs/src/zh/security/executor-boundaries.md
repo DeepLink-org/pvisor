@@ -22,7 +22,7 @@
 
 上表描述原生 Job 请求的控制，不是 daemon API。VM-only NativeRuntime 在独立 supervisor 中嵌入 pVisor，使用独立不可变 guest rootfs 与私有写入；委派 cgroup v2 限制 supervisor/VM 树。Stage/apply 与 checkpoint/fork API 未实现，也不自动获取 node 共享。OpenSandbox 网络策略选项被拒绝；原生 OverlayNet 出口网络不构成 deny-all 声明。
 
-宿主账户、daemon/firmware 与预制镜像属于可信输入。私有状态与同 UID IPC 不防御敌对宿主 UID/root 代码。其他本机用户可能访问 loopback 发布：使用真实服务鉴权与宿主控制。不承诺敌对多用户隔离或安全审计。未提供／验证的 bootstrap 与真实服务检查见 [daemon 运行时边界](../guides/daemon/boundaries.md)。
+宿主账户、daemon/firmware 与预制镜像属于可信输入。私有状态与同 UID IPC 不防御敌对宿主 UID/root 代码。其他本机用户可能访问 loopback 发布：使用真实服务鉴权与宿主控制。不承诺敌对多用户隔离或安全审计。未提供／验证的 bootstrap 与真实服务检查见 [daemon 指南](../guides/daemon/index.md#prerequisites)。
 
 ## 读表时要注意
 

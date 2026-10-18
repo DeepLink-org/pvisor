@@ -45,7 +45,10 @@ tmpfs 文件或 memfd 仍由内存支撑：更换 backing 类型并不等于磁�
 原始 backing 让内核直接把 RAM 字节写入文件，并处理后续缺页。
 压缩路径通过 FUSE 暴露逻辑 RAM 文件：写回先暂存原始页，
 卸载再将变化块提交到 base/delta bundle；读取时解码已提交块。
-[卸载文件格式](offload-format.md)解释其存储与发布模型。
+当前 staging 使用 4 KiB 页、压缩使用 64 KiB 块：小粒度减少部分写入与
+冷读取放大，大粒度提高压缩率、减少 metadata，但一次小访问也可能解码
+整个块。[字节布局与 schema 附录](../offload/disk-layout-and-schema.md)
+定义存储格式、发布模型与解析限制。
 
 压缩可能减少存储字节，但增加编码、校验、staging I/O 和 FUSE 工作。
 恢复后的冷读取还需要块解码。不可压缩数据、频繁重写和合并

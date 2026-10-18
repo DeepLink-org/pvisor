@@ -70,7 +70,7 @@
         {
           "json": "benchmarks/measurement-coverage.render.json",
           "kind": "coverage",
-          "rows": 14,
+          "rows": 13,
           "columns": [
             "数据状态",
             "实测范围"
@@ -107,16 +107,6 @@
         "../../../overrides/assets/benchmarks/data/lazy/lazy-stage-summary.csv",
         "../../../overrides/assets/benchmarks/data/lazy/lazy-stage-comparisons.csv"
       ]
-    },
-    {
-      "locale": "zh",
-      "page": "benchmarks/methodology.md",
-      "benchmark_ids": [
-        "B-METHOD"
-      ],
-      "role": "user-facing",
-      "tables": [],
-      "source_csv": []
     },
     {
       "locale": "zh",
@@ -275,26 +265,6 @@
     },
     {
       "locale": "zh",
-      "page": "design/cluster-performance-analysis.md",
-      "benchmark_ids": [
-        "B-CLUSTER"
-      ],
-      "role": "engineering evidence",
-      "tables": [],
-      "source_csv": []
-    },
-    {
-      "locale": "zh",
-      "page": "design/cluster-benchmark-plan.md",
-      "benchmark_ids": [
-        "B-CLUSTER"
-      ],
-      "role": "engineering evidence",
-      "tables": [],
-      "source_csv": []
-    },
-    {
-      "locale": "zh",
       "page": "design/benchmark-methodology-evidence.md",
       "benchmark_ids": [
         "B-METHOD"
@@ -370,7 +340,7 @@
         {
           "json": "benchmarks/measurement-coverage.render.json",
           "kind": "coverage",
-          "rows": 14,
+          "rows": 13,
           "columns": [
             "Data status",
             "Measured scope"
@@ -407,16 +377,6 @@
         "../../../overrides/assets/benchmarks/data/lazy/lazy-stage-summary.csv",
         "../../../overrides/assets/benchmarks/data/lazy/lazy-stage-comparisons.csv"
       ]
-    },
-    {
-      "locale": "en",
-      "page": "benchmarks/methodology.md",
-      "benchmark_ids": [
-        "B-METHOD"
-      ],
-      "role": "user-facing",
-      "tables": [],
-      "source_csv": []
     },
     {
       "locale": "en",
@@ -568,26 +528,6 @@
       "page": "design/agent-task-performance-analysis.md",
       "benchmark_ids": [
         "B-AGENT-TASK"
-      ],
-      "role": "engineering evidence",
-      "tables": [],
-      "source_csv": []
-    },
-    {
-      "locale": "en",
-      "page": "design/cluster-performance-analysis.md",
-      "benchmark_ids": [
-        "B-CLUSTER"
-      ],
-      "role": "engineering evidence",
-      "tables": [],
-      "source_csv": []
-    },
-    {
-      "locale": "en",
-      "page": "design/cluster-benchmark-plan.md",
-      "benchmark_ids": [
-        "B-CLUSTER"
       ],
       "role": "engineering evidence",
       "tables": [],

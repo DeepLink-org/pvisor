@@ -85,7 +85,7 @@ pvisor-daemon memory-pool --help
 pvisor-cache --help
 ```
 
-为 `pvisor-daemon serve` 添加 `--memory-pool`，启用默认关闭的独立池组件。`pvisor-cache prepare/publish/serve/list/stat/read` 保持独立。Node 运行时协议供原生调用方使用，没有 daemon acquire/release 适配器。NativeRuntime 嵌入 VM 执行；checkpoint/fork 与 stage/apply API 未实现。所有权、安装与部署边界见 [daemon 与缓存入口](../guides/daemon/service.md)。
+为 `pvisor-daemon serve` 添加 `--memory-pool`，启用默认关闭的独立池组件。`pvisor-cache prepare/publish/serve/list/stat/read` 保持独立。Node 运行时协议供原生调用方使用，没有 daemon acquire/release 适配器。NativeRuntime 嵌入 VM 执行；checkpoint/fork 与 stage/apply API 未实现。所有权、安装与部署边界见 [daemon 指南](../guides/daemon/index.md)。
 
 其他未知名称按默认执行规则处理。已退役的 `ctrl` 是明确例外：
 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 在 Job 准入前
@@ -178,26 +178,28 @@ Session 决定写入当前 Job 目录的 `audit-policy.json`，workspace 和 use
 代理网络审计属于协作式边界：未经过代理的直接连接不会触发此弹窗。
 
 ```text
-Jobs:
+Execution:
   run         启动 Job
   status      查看 Job 状态
   kill        终止 Job
-  suspend     保存执行状态并暂停 Job
-  resume      继续暂停的 Job
-  fork        从暂存文件或 VM 执行状态创建分支
-  checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
 
-
-Filesystems:
-  inspect     只读查看 Job 文件系统
+Changes:
   review      审查暂存变化与执行证据
   apply       接受选定的暂存变化
   drop        丢弃暂存变化
+  inspect     只读查看 Job 文件系统
 
-Extensions:
-  service     原生服务生命周期与已安装的 daemon/cache/memory-pool companion
+Checkpoints:
+  checkpoint  create, list, show, delete, verify, import-base, verify-base, gc
+  suspend     保存执行状态并暂停 Job
+  resume      继续暂停的 Job
+  fork        从暂存文件或 VM 执行状态创建分支
+
+Tools:
   replay      回放 Agent 轨迹（安装后可见）
   tui         交互式 Job 终端（安装后可见）
+  feature     查询编译期特性
+  help        查看命令详细选项
 ```
 
 ## 安全的第一次运行 {#安全的第一次运行}
@@ -876,7 +878,7 @@ project/                         # reusable workspace / default base
     ├── lease.lock
     ├── control.sock             # while a live OverlayFS Run is available
     ├── .capture/                # when OverlayNet/Gateway is enabled
-    └── events.jsonl             # when --record-destination is set
+    └── events.trace.jsonl       # when --record-destination is set
 ```
 
 生命周期命令接受 Run id、Run 目录、项目工作区、`run.json`、upper 或 merged

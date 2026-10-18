@@ -91,7 +91,7 @@ pvisor-daemon memory-pool --help
 pvisor-cache --help
 ```
 
-Add `--memory-pool` to `pvisor-daemon serve` to enable its default-off detached pool component. `pvisor-cache prepare/publish/serve/list/stat/read` remain independent. Node runtime protocols serve native callers, without a daemon acquire/release adapter. NativeRuntime embeds VM execution; checkpoint/fork and stage/apply APIs are absent. See [daemon and cache entry points](../guides/daemon/service.md) for ownership, installation and deployment boundaries.
+Add `--memory-pool` to `pvisor-daemon serve` to enable its default-off detached pool component. `pvisor-cache prepare/publish/serve/list/stat/read` remain independent. Node runtime protocols serve native callers, without a daemon acquire/release adapter. NativeRuntime embeds VM execution; checkpoint/fork and stage/apply APIs are absent. See the [daemon guide](../guides/daemon/index.md) for ownership, installation and deployment boundaries.
 
 Other unknown names follow default execution rules. The `ctrl` name
 is an explicit exception: `pvisor ctrl`, `pvisor ctrl --help` and
@@ -234,26 +234,28 @@ Proxy network auditing is a cooperative boundary: direct connections that bypass
 the proxy do not trigger this prompt.
 
 ```text
-Jobs:
+Execution:
   run         Start a Job
   status      Show Job status
   kill        Terminate a Job
-  suspend     Save execution state and suspend a Job
-  resume      Continue a suspended Job
-  fork        Branch from staged files or VM execution state
-  checkpoint  Create, list, show, delete, verify, import-base, verify-base, gc
 
-
-Filesystems:
-  inspect     Open a read-only Job filesystem view
+Changes:
   review      Review staged changes and execution evidence
   apply       Accept selected staged changes
   drop        Discard staged changes
+  inspect     Open a read-only Job filesystem view
 
-Extensions:
-  service     Native service lifecycle and installed daemon/cache/memory-pool companions
+Checkpoints:
+  checkpoint  create, list, show, delete, verify, import-base, verify-base, gc
+  suspend     Save execution state and suspend a Job
+  resume      Continue a suspended Job
+  fork        Branch from staged files or VM execution state
+
+Tools:
   replay      Replay an Agent trajectory (when installed)
   tui         Interactive Job terminal (when installed)
+  feature     Query compile-time features
+  help        Show command details
 ```
 
 ## Safe first run {#安全的第一次运行}
@@ -1071,7 +1073,7 @@ project/                         # reusable workspace / default base
     ├── lease.lock
     ├── control.sock             # while a live OverlayFS Run is available
     ├── .capture/                # when OverlayNet/Gateway is enabled
-    └── events.jsonl             # when --record-destination is set
+    └── events.trace.jsonl       # when --record-destination is set
 ```
 
 Lifecycle commands accept a Run id, Run directory, project workspace,

@@ -291,7 +291,7 @@ Existing control owners continue to schedule quiescence, seal and snapshot. Thes
 
 The host trims invisible paths, protected aliases and object grants before metadata delivery. Mode/owner/ACL/xattr inputs must be complete. Preserve raw path bytes; symlinks cannot request arbitrary host paths. Content digests do not grant cross-tenant access.
 
-Guest Linux checks permissions locally; VMM still validates host-recognized authorization for data/mutations. Session tokens, guest uid and mutation lists cannot replace Host-control credentials or alter host permission ledgers. See [Host/Guest authority](../../decisions/0008-host-guest-control-authority.md).
+Guest Linux checks permissions locally; VMM still validates host-recognized authorization for data/mutations. Session tokens, guest uid and mutation lists cannot replace Host-control credentials or alter host permission ledgers (Host/Guest authority separation).
 
 Profiles requiring per-operation host policy/audit callbacks exclude local open. Policy changes revoke new cache admission and coordinate references; resume only after rebuilding permission/retention contracts.
 

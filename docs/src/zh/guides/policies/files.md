@@ -53,6 +53,6 @@ pvisor run --safe --mount /opt/tool:read -- agent-command
 
 ## 分层策略
 
-除了命令行，策略还可以写在工作区 `.pvisor/policy.toml` 和用户 `~/.config/pvisor/policy.toml` 中，跨层取最严格的决定。见[策略模型](../../concepts/policy-model.md)。
+除了命令行，策略还可以写在工作区 `.pvisor/policy.toml` 和用户 `~/.config/pvisor/policy.toml` 中，跨层取最严格的决定。见[策略叠加规则](../../concepts/capabilities-and-evidence.md#layering)。
 
 完整参数见 [文件访问规则](../../reference/cli.md)，TOML 写法见 [一套配置模型](../../reference/cli.md)。

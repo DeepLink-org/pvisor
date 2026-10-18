@@ -14,15 +14,28 @@ pvisor apply last --path src
 | --- | --- | --- | --- |
 | Claude Code | `claude` | `api.anthropic.com` | [Claude Code](claude-code.md) |
 | Codex CLI | `codex` | `api.openai.com`, `chatgpt.com`, `ab.chatgpt.com` | [Codex CLI](codex.md) |
-| Gemini CLI | `gemini` | `generativelanguage.googleapis.com` | [Gemini CLI](gemini-cli.md) |
+| Gemini CLI | `gemini` | `generativelanguage.googleapis.com` | See [`--safe` presets](../../reference/cli.md#safe-参数预设) |
 | ZCode | `zcode` | `api.z.ai`, `open.bigmodel.cn` | See [`--safe` presets](../../reference/cli.md#safe-参数预设) |
-| aider | — | No preset; needs `--overlaynet-allow` | [aider](aider.md) |
-| OpenCode | — | No preset; needs `--overlaynet-allow` | [OpenCode](opencode.md) |
+| aider | `aider` | No preset; needs `--overlaynet-allow` | See "Agents without presets" below |
+| OpenCode | `opencode` | No preset; needs `--overlaynet-allow` | See "Agents without presets" below |
 | Any script | Any | None; `bash`, `sh`, `zsh`, `fish` reuse the Codex destinations | [Any script](custom-scripts.md) |
 
 Unknown commands deny outbound access. `--overlaynet-allow HOST:PORT` grants it explicitly and replaces preset lists. Matching uses the **direct executable filename**; shell wrappers do not trigger agent-specific adaptation.
 
+## Agents without presets {#custom-agent}
+
+Take aider as the example: install it in the selected executor, pick the provider in the agent's own configuration, then explicitly allow its API destination and pass the credential variable (variable names come from the agent's own documentation, such as `OPENAI_API_KEY` or `GEMINI_API_KEY`):
+
+```bash
+pvisor run --safe --overlaynet-allow api.openai.com:443 \
+  --pass-env OPENAI_API_KEY -- aider
+pvisor status --review last
+pvisor apply last --path src
+```
+
+Logins, other providers and dependency downloads each need their own allowed destination.
+
 After a run, check the installed controls and observations in the Run Bundle. Supported agent version ranges are not systematically tested; see [end-to-end tasks](../../benchmarks/agent-tasks.md).
 
 !!! note "Experimental integrations"
-    The aider, Gemini CLI, and OpenCode guides use only existing pVisor options and stay experimental until a pinned-version regression exists. The Linux host selective proxy is cooperative; use a prepared VM when you need enforcement.
+    The aider, Gemini CLI, and OpenCode integrations use only existing pVisor options and stay experimental until a pinned-version regression exists. The Linux host selective proxy is cooperative; use a prepared VM when you need enforcement.

@@ -104,4 +104,4 @@ Claude uses `--bare` with only Bash allowed; Codex uses `--ephemeral` and `dange
 
 Complete CSV/JSON and raw records remain in their local cohorts or the documentation data archive.
 
-[Method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](index.md#interpretation) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

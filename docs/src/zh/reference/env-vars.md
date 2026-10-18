@@ -27,7 +27,7 @@ PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor run --safe \
 
 `OPEN_SANDBOX_API_KEY` 为独立 `pvisor-daemon serve` 提供生命周期 key。使用至少 32 字节的受保护随机秘密，不放在 argv 中，不投影给工作负载。客户端通过 `OPEN-SANDBOX-API-KEY` HTTP header 发送它；环境变量名称使用下划线，HTTP 名称使用连字符。
 
-默认 daemon 端点在返回的 headers 中提供沙箱范围的 `X-PVISOR-SANDBOX-TOKEN`，客户端必须保留。它不是宿主环境设置，也不是生命周期凭据。见[端点认证](../guides/daemon/operations.md#endpoints)。原生 cache/pool 凭据与 Job 环境投影独立保留；已退役的 Cluster token 不是 daemon 凭据。
+默认 daemon 端点在返回的 headers 中提供沙箱范围的 `X-PVISOR-SANDBOX-TOKEN`，客户端必须保留。它不是宿主环境设置，也不是生命周期凭据。见[端点认证](../guides/daemon/index.md#endpoints)。原生 cache/pool 凭据与 Job 环境投影独立保留；已退役的 Cluster token 不是 daemon 凭据。
 
 ## 运行时注入
 

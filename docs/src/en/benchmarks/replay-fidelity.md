@@ -62,4 +62,4 @@ These results support structure, argument and observation fidelity for pinned sh
 
 Complete CSV/JSON and raw records remain in their local cohorts or the documentation data archive.
 
-[Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](index.md#interpretation) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

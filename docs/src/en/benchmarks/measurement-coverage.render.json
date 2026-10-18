@@ -31,10 +31,6 @@
     "Data status": "Partially rerun",
     "Measured scope": "Same host staged executor, four-file lazy loading; N30 cold/warm including fetch and mount; VM application startup retains separate historical data"
   },
-  "[methodology](methodology.md)": {
-    "Data status": "Historical data",
-    "Measured scope": "Original metrics and sources retained; no matching new measurements"
-  },
   "[network](network.md)": {
     "Data status": "Historical data",
     "Measured scope": "Original metrics and sources retained; no matching new measurements"

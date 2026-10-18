@@ -93,5 +93,5 @@ just test pvisor-vm -- -E 'test(cold_ram_linux::)' --run-ignored all --test-thre
 
 [内存证据](proof-of-concept.md#memory-evidence)尚未建立已知的生产净收益，
 也未验证净物理内存节省。历史池测量不能验证 sealed backing。
-[架构索引](index.md)与[压缩概览](compression.md)区分实现、组件正确性，
+[架构索引](index.md)区分实现、组件正确性，
 真实 guest 正确性探针，以及仍需完成的业务负载验收。

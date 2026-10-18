@@ -26,4 +26,4 @@ Select paths according to the task and apply them in batches with `apply --path`
 
 Give parallel tasks separate workspaces, stages, and explicit Job selectors; do not apply concurrently into one target tree. In CI, retain the stage and execution evidence, handle the run exit code separately from artifact upload, and let a review step decide what to apply. For evaluation, check execution results before reading candidates for scoring, then discard changes that need no publication.
 
-To retry from file state, check workspace fork prerequisites in [next steps](../start/next-steps.md), then fork before applying or dropping all changes. The [CLI reference](../reference/cli.md) owns command syntax.
+To retry from file state, check workspace fork prerequisites in the last section of [first run](../start/first-run.md), then fork before applying or dropping all changes. The [CLI reference](../reference/cli.md) owns command syntax.

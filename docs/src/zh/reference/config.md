@@ -55,7 +55,7 @@ workload-aware-memory-offloading = true
 
 ## Daemon 配置 {#daemon}
 
-`pvisor-daemon serve` 使用命令行设置，不读取这里的原生 `RunConfig` TOML 或已解析 `RunSpec`。`OPEN_SANDBOX_API_KEY` 使用至少 32 字节的受保护秘密。见 [daemon 启动](../guides/daemon/index.md#start)与 [daemon 与缓存入口](../guides/daemon/service.md)。
+`pvisor-daemon serve` 使用命令行设置，不读取这里的原生 `RunConfig` TOML 或已解析 `RunSpec`。`OPEN_SANDBOX_API_KEY` 使用至少 32 字节的受保护秘密。见 [daemon 启动](../guides/daemon/index.md#install)。
 
 | 选项 | 默认值 / 含义 |
 | --- | --- |

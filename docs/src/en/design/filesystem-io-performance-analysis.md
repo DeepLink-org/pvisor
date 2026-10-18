@@ -1,5 +1,7 @@
 # Filesystem I/O: caching, asynchronous batching and completed throughput
 
+> Note: "local original records" and `.data/` paths refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
+
 ## Conclusions {#conclusions}
 
 ### 1. Overall verdict: two write-intensive tasks improve, with complete-task evidence

@@ -98,7 +98,7 @@ pvisor-daemon memory-pool --help
 
 Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存、replay 和 TUI 仍独立于 Job 命令；replay/TUI 伴随程序查找会明确报告工具缺失。Daemon CLI 构造原生 VM 运行时并派发 supervisor，同步内部 VM 派发先于 Tokio。Node 资源协议属于运行时，没有 daemon acquire/release 适配器。打包不暴露 staging/checkpoint API，也不自动获取 node 资源。
 
-工具来自静态表，只查可信安装目录，不搜索 PATH 或执行 discovery。安装目录与可执行文件归当前用户或 root 所有，不得 group/world 可写，拒绝符号链接。Unix `exec` 保留参数、stdio、信号和退出码；子命令自己的 `--help`/`--version` 原样转交，工具不能覆盖 Job 命令。Sandbox 部署见 [daemon 运维](daemon/operations.md)，独立原生资源预算见[职责收敛](daemon/responsibility-convergence.md)。
+工具来自静态表，只查可信安装目录，不搜索 PATH 或执行 discovery。安装目录与可执行文件归当前用户或 root 所有，不得 group/world 可写，拒绝符号链接。Unix `exec` 保留参数、stdio、信号和退出码；子命令自己的 `--help`/`--version` 原样转交，工具不能覆盖 Job 命令。Sandbox 部署与原生资源预算见 [daemon 架构](daemon/index.md)与[运维](daemon/operations.md)。
 
 核心默认构建不包含 Gateway。启用捕获使用 `--features gateway`；wheel 构建启用该 feature。
 无捕获时，普通显式代理仍由 OverlayNet 授权与转发。请求未编译的捕获或 Gateway debug 能力会报错。

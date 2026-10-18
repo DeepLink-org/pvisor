@@ -26,4 +26,4 @@ Job 停止后，依次检查结果与退出码、实际控制和警告、拒绝�
 
 并行任务各用独立 workspace、stage 和明确的 Job selector，不并发 apply 到同一目标树。CI 保留 stage 与运行证据，把运行退出码和上传产物分开处理；评审步骤决定合入。评测任务先检查执行结果，再读取候选文件评分，完成后丢弃不需发布的改动。
 
-需要从文件状态重新尝试时，先按[后续步骤](../start/next-steps.md)检查工作区 fork 的前提，再在全部 apply/drop 之前分叉。命令语法以 [CLI 参考](../reference/cli.md)为准。
+需要从文件状态重新尝试时，先按[第一次运行](../start/first-run.md)末节检查工作区 fork 的前提，再在全部 apply/drop 之前分叉。命令语法以 [CLI 参考](../reference/cli.md)为准。

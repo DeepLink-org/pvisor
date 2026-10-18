@@ -25,7 +25,7 @@
 
 独立 `pvisor-daemon` 的 `protocol` 成功或服务正常停止返回 0；clap 参数错误返回 2；启动/运行错误在 stderr 报告并返回 1。这些是服务进程状态，不是沙箱工作负载退出码。安装 companion 后，伴随派发保留其退出码。
 
-生命周期客户端应检查 HTTP status、`{code, message}` 与 `X-Request-ID`。创建返回 202 JSON；pause/resume 返回 202 空响应体；确认删除返回 204。这些都不证明工作负载命令成功。命令结果来自 prepared image 的真实 execd 数据面，不是原生 Job Run Bundle 或已退役 Cluster 的聚合结果。不支持的创建选项会被拒绝，不会静默生效。见 [daemon 运维](../guides/daemon/operations.md)。
+生命周期客户端应检查 HTTP status、`{code, message}` 与 `X-Request-ID`。创建返回 202 JSON；pause/resume 返回 202 空响应体；确认删除返回 204。这些都不证明工作负载命令成功。命令结果来自 prepared image 的真实 execd 数据面，不是原生 Job Run Bundle 或已退役 Cluster 的聚合结果。不支持的创建选项会被拒绝，不会静默生效。见 [daemon 运维](../guides/daemon/index.md#operations)。
 
 ## 在自动化里判断
 

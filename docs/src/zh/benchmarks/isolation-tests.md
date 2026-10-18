@@ -54,4 +54,4 @@
 
 完整 CSV/JSON 和原始记录保存在对应本地批次或文档数据归档。
 
-[比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[比较方法](index.md#interpretation) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

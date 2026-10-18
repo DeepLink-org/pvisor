@@ -165,4 +165,4 @@ Local provenance records binary, source, harness and raw-report digests. Timing 
 
 ### Sources and reproduction {#run}
 
-[Comparison method](methodology.md) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](index.md#interpretation) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

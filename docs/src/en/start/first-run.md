@@ -68,3 +68,19 @@ pvisor status --review ../agent-stage-001
 ```
 
 Installed Agent CLIs use the same entry point. With `--stage PATH`, pass that path or the printed Job ID (`run-*`) to later commands. `last` searches default storage only; do not rely on it when running projects in parallel.
+
+## 7. After switching to a real task
+
+Replace the demo with a narrowly scoped real task: retain the current repository baseline, confirm the agent is installed in the selected execution environment, and configure its model service and credentials—pVisor does not select the agent's provider. For an installed Codex with an explicitly delivered OpenAI key, set `OPENAI_API_KEY` in the host environment first:
+
+```bash
+pvisor run --safe --pass-env OPENAI_API_KEY --stage ../agent-task-001 -- codex
+pvisor status --review ../agent-task-001
+pvisor inspect ../agent-task-001 -- git --no-pager diff -- src
+```
+
+`--safe` matches network presets by the direct executable filename. Adding `--overlaynet-allow` replaces the preset list, so list model APIs alongside dependency downloads or other model services. HOME writes are discarded after exit; do not depend on this run to persist login state. See [Agent integration](../guides/agents/index.md) for other agents' credentials and prerequisites.
+
+After the Job stops, check its exit code, installed controls, warnings, and changes; a nonzero exit can still leave candidates. To retry from file state, workspace fork requires a stopped host Job with reconstructible launch policy, parent and child stages must share a filesystem, and you must fork before a full apply/drop cleans up staging data; VM/container Jobs or Jobs with Gateway routes do not support this path. See [review and apply](../guides/review-apply.md) for conflict handling.
+
+Before expanding the task scope, note two things: selective proxies on Linux host remain cooperative, so for mandatory selective egress prepare a VM with the agent installed (see [credentials and environment](../guides/policies/credentials.md) for delivery methods); when adding concurrency, give each task a separate worktree and stage, select results by explicit paths, review each separately, and never apply concurrently into the same target tree—the [parallel workspace workflow](../guides/parallel-agents.md#batch) verifies records and merging with two offline tasks before substituting real agents.

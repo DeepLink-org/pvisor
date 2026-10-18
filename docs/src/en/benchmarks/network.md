@@ -66,6 +66,6 @@ Podman host network supplies an ordinary OCI control. pVisor OCI additionally us
 
 ### Sources and reproduction {#run}
 
-[Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](index.md#interpretation) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
 Complete CSV/JSON, raw reports, response timings, command logs, input/build receipts and per-invocation output audits remain in their local cohorts or the documentation data archive.

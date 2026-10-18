@@ -1,5 +1,7 @@
 # VM 启动：技术分析与实验记录
 
+> 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
+
 ## Linux：启动与退出修复复测，2026-10-11 {#concurrency-retest}
 
 **退出清理优化有明确收益，但启动退化尚未全部解决。** 相对 `cf8bfa5` GNU 制品，host Ready 减少约 9.11 ms、Exit 减少约 75.00 ms；VM Exit 减少约 48.26 ms，Ready 未检出改善。新版 staged Ready 出现两个明显分布簇，不能宣称已恢复。
@@ -339,13 +341,13 @@ Linux / KVM，2 vCPU / 2 GiB、相同宿主两核预算，原批次前五行各 
 
 **QEMU 使用同一完整 Ubuntu，而不是历史裁剪内核。** q35 与 microvm 共用 Firecracker 的原厂内核、initrd、工具和已初始化磁盘模板。这个配置下，最小设备模型并没有消除发行版的秒级开机成本。各组是同机独立批次，QEMU N=10、宿主仍有后台负载，个别波动保留；相近的中位数不支持精细的 VMM 排名。QEMU 首次 cloud-init 尚未补测。
 
-本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/samples.csv` · [QEMU protocol](../benchmarks/methodology.md#full-ubuntu-qemu)
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/samples.csv` · [QEMU protocol](../benchmarks/index.md#full-ubuntu-qemu)
 
 **选择含义：** 频繁创建环境、执行一两条命令时，无镜像路径能减少秒级 OS 开机等待；需要完整 Ubuntu 系统服务和发行版环境时，这些秒数是获得该环境的成本。此表比较两种真实部署方式，包含不同内核、初始化路径和文件系统，不能据此声称 libkrun 本身比 Firecracker 快约 50 倍。长任务更应看[任务与工具内部时间](../benchmarks/agent-tasks.md#full-ubuntu)，启动差距会被摊薄。
 
 Exit 还包含正常关机：pVisor 中位数 174 ms，Firecracker/Ubuntu 约 9.23 / 12.86 秒。Firecracker/Ubuntu 使用默认 MMIO 设备和原厂 initrd，正常 guest reboot 后 VMM 零退出；每次记录完整 OS 证明且无失败 unit。工作区复制或私有磁盘克隆单列 `prepare_ms`，中位数约 37 / 29 ms，不含在 Ready 内。图采用对数轴，条形 P50、标记 P95；N=30 的 P99 接近最大值，只描述本批次。
 
-本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/methodology.md#full-ubuntu) · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-ready-mmio-20261004/evidence.tar.gz`
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/index.md#full-ubuntu) · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-ready-mmio-20261004/evidence.tar.gz`
 
 #### 新 VM 启动结果 {#linux-results}
 
@@ -389,7 +391,7 @@ QEMU q35 的 218 ms 不能代表 QEMU 的最低启动成本；关闭可选传统
 
 **首条输出不等于 Agent 已能完成任务。** 七种工具完成版本自检需要 pVisor VM 1.40 秒；实际修复测试任务与 CLI 兼容性见[完整工具环境](../benchmarks/agent-tasks.md#reference-env)。上一节 172.69 ms 的旧 GNU/libkrunfw 5.5.0 批次继续保留；本轮为新的固定静态制品，不能当作只改变一项配置的优化实验。
 
-[本轮配置与复现](../benchmarks/methodology.md#reference-env) · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
+[本轮配置与复现](../benchmarks/index.md#reference-env) · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
 
 #### 完整退出补测：不要把清理时间当作 Ready {#reference-exit}
 

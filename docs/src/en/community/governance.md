@@ -1,28 +1,19 @@
 # Governance and maintainers
 
-Choose an entry by change size: submit a PR for wording fixes and small issues, and discuss larger interface or behavior changes in an issue with clear acceptance criteria. Report security-boundary vulnerabilities through [private disclosure](../security/disclosure.md).
+pVisor is currently decided by a single maintainer: code merges, releases, semspec approvals, and the authoritative documentation all go through the same entry point. There is no formal committee or multi-maintainer voting mechanism. This page describes current practice, not a charter that has yet to be established.
 
-## Current contribution and decision workflow {#workflow}
+## How contributions land {#workflow}
 
-1. Describe the user problem, expected behavior, and reproduction.
-2. For design changes, explain options, costs, and compatibility effects, with clear acceptance requirements.
-3. Submit implementation, matching documentation, and validation, following [Contributing](contributing.md).
-4. Reviewers check behavior, evidence, and tests; maintainers with the relevant repository permissions merge and release changes.
+1. Describe the user problem, expected behavior, and how to reproduce it; align on the problem and acceptance criteria in an issue first for substantial interface or behavior changes.
+2. Submit the implementation, corresponding documentation, and verification results; run the relevant checks per [Contributing](contributing.md).
+3. The maintainer reviews behavior, evidence, and tests before merging. Vulnerabilities touching security boundaries use the [private disclosure process](../security/disclosure.md).
 
-Code review, merge permission, and semantic approval are separate responsibilities. Passing PR tests does not automatically approve a product commitment; new public boundaries need matching specifications and human review.
+Code review, merging, and semantic-spec approval are handled separately: a passing PR does not automatically approve a product commitment; new user-visible boundaries need corresponding specs and human review.
 
-## Human responsibility for semspec approval {#semspec}
+## semspec approval {#semspec}
 
-Contributors can draft cases, fix implementations, and maintain runner tests. Maintainers assess claim accuracy and coverage before approve/revoke actions and approval-record updates. AI does not approve cases, edit real `REVIEWED.toml` or `.approved/` snapshots, or weaken existing checks to obtain PASS.
+Contributors may draft cases, fix implementations, and maintain runner tests. semspec approve/revoke and the real `REVIEWED.toml` and `.approved/` snapshots are executed only by the maintainer; AI does not perform approvals and does not weaken existing checks to obtain PASS. See [Testing and semspec](testing.md) for the commands and rules.
 
-Provide source version, environment, results, and limitations with the review. See [Testing and semspec](testing.md) for commands and rules.
+## Not yet established {#records}
 
-## Becoming a sustained contributor {#contributors}
-
-Start with a reproducible problem and maintain a module's implementation, documentation, and regression cases over time. Propose broader responsibilities in a public issue, describing the intended scope and work already completed.
-
-Repository permissions determine who can merge and release; expanded responsibilities need confirmation from maintainers with that authority. When views differ, collect the disputed points, alternatives, and validation in one issue and request a maintainer decision linked to the resulting change.
-
-## What governance records should publish {#records}
-
-Maintainer entries should include accounts, responsibilities, and effective dates. Design decisions should link to issues, PRs, or ADRs; permission and release-responsibility changes should remain recorded. Sensitive security reports follow disclosure procedures, with public records referencing only publishable conclusions.
+A formal maintainer list, governance charter, and private conduct-reporting channel have not been established; they will be announced on this page once they are. Until then, design decisions are anchored by issue, PR, or ADR links, and discussion norms are in [Community](index.md).

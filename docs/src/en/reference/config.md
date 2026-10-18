@@ -55,7 +55,7 @@ workload-aware-memory-offloading = true
 
 ## Daemon configuration {#daemon}
 
-`pvisor-daemon serve` accepts command-line settings, not this native `RunConfig` TOML or resolved `RunSpec`. Set `OPEN_SANDBOX_API_KEY` to a protected secret of at least 32 bytes. See [daemon startup](../guides/daemon/index.md#start) and [daemon and cache entry points](../guides/daemon/service.md).
+`pvisor-daemon serve` accepts command-line settings, not this native `RunConfig` TOML or resolved `RunSpec`. Set `OPEN_SANDBOX_API_KEY` to a protected secret of at least 32 bytes. See [daemon startup](../guides/daemon/index.md#install).
 
 | Option | Default / meaning |
 | --- | --- |

@@ -64,6 +64,35 @@ N=3 个独立进程/规模，表内为 P50；括号是观察到的最小–最�
 
 退役 Controller 的百万记录批次观察到约 8 GiB 生命周期峰值、约 14.62 秒热日志恢复；两者都不是当前容量建议。恢复不包括 Worker 对账或冷磁盘读取。类型化内存查询的各规模的进程中位数汇总约 107–110 ns，仅代表合成状态计数调用，不是 HTTP/CLI 请求延迟；详情保存在本地完整统计中。
 
+### 历史就绪探针与 Controller 索引成本 {#archive-probes}
+
+2026-10-05 的 shell/sleep 探针同时增加 Worker 数和 CPU 预算，观察一到四个 guest 的并行就绪。它回答「增配预算时就绪是否跟上」，不是固定预算下的有效任务吞吐。
+
+| 存活 VM | 总内存 P50，MiB | 就绪 P50，s | 批量就绪速率，台/s |
+|---:|---:|---:|---:|
+| 1 | 92.93 | 3.807 | 0.261 |
+| 2 | 178.00 | 3.789 | 0.525 |
+| 4 | 342.96 | 4.383 | 0.901 |
+
+每档一次预热、五个测量批次；guest 为 128 MiB/一 vCPU。就绪包含提交 CLI/HTTP、持久化、调度与 VM 启动；内存是全部 guest 就绪时互不重叠服务 cgroup 之和，不是启动峰值。
+
+退役 Controller 的合成历史查询与保留记录回放（每档一个 release 进程、一个 CPU、NVMe，计数取二十个查询样本、每样本一百次索引调用；RSS 与回放每档只有一次观察）：
+
+| 保留记录 | 索引计数 P50，ns | 全扫描参考 P50，ms | 进程与 ID fixture RSS，MiB | 日志，MiB | 热回放，s |
+|---:|---:|---:|---:|---:|---:|
+| 1,000 | 202.83 | 0.068 | 12.13 | 1.93 | 0.079 |
+| 10,000 | 286.78 | 5.254 | 70.59 | 19.33 | 0.388 |
+| 100,000 | 129.40 | 20.789 | 658.82 | 193.25 | 1.744 |
+| 1,000,000 | 169.47 | 134.204 | 6,540.58 | 1,932.55 | 16.090 |
+
+RSS 含 ID fixture 和分配器留存；热回放不包含 Worker 对账或冷磁盘恢复；全扫描是算法参考，不是另一 Controller 制品的吞吐。这些数字不能与本页其他批次合并。
+
+### 退役提案与替代实验的条件 {#retired-proposals}
+
+下列旧提案随 Controller/Worker 一并退役，历史测量不能验证它们：启动归因（直接 VM 与旧分发的对照）、边际内存（共享基底/私有工作集/offload 的区分）、固定预算有效工作（空闲让核 A/B）、历史扩展（HTTP 调度吞吐）、恢复（端到端对账）、持续运行（长期资源有界）。其中内存与密度问题由独立的 B-DENSITY 和 B-VM-MEMORY 探针按各自 registry 继续保留。
+
+任何替代实验需要：独立登记的对象与用户问题、冻结源码/二进制/输入身份、核验全进程树 CPU/内存/零 swap 控制、相同负载、预先声明的样本数和停止规则，以及完整正确性、冲突与恢复检查；保留失败、未知和 OOM；A/B 结论报告配对不确定性。正式采样前冻结协议，不从探索数据事后批准假设。
+
 ### 与已有调度方案的比较边界 {#limits}
 
 Kubernetes、Ray 和云端沙箱的相同负载、共同预算对照未测，不提供数值排名。历史测量不能规划当前 daemon 的容量，也不能作为替换通用调度平台的依据。单任务的 Docker、Firecracker、QEMU 对照见[端到端任务](agent-tasks.md)。
@@ -72,6 +101,6 @@ Kubernetes、Ray 和云端沙箱的相同负载、共同预算对照未测，不
 
 原五份 CSV 已在本地文档数据归档中按原字节保留，仅作为退役 Controller/Worker 制品的历史证据。没有活动 Cluster 测量或发布入口；[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)记录退役范围，不提供新复现命令。
 
-[比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[比较方法](index.md#interpretation) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
-整理表关联同一原始报告及逐任务证据审计摘要。完整 CSV/JSON、原始报告、完成记录、服务日志、控制配置、源码与二进制保存在本地 `.data/` 或文档数据归档。实现分析见[Cluster 技术分析](../design/cluster-performance-analysis.md)。
+整理表关联同一原始报告及逐任务证据审计摘要。完整 CSV/JSON、原始报告、完成记录、服务日志、控制配置、源码与二进制保存在本地 `.data/` 或文档数据归档。历史图表输入（`vm.tsv`、`vm-summary.csv`、`controller-summary.csv`、`controller-provenance.tsv`、`manifest.tsv`、`setup-failure.tsv`）同样保留在本地归档，不是站点下载链接。

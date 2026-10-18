@@ -23,7 +23,7 @@ pVisor 是 Operation 的处理核心：接收操作请求，根据策略决定�
 | `pvisor-vm` | VM、设备、冻结、snapshot 与 RAM 映射；统一 api、私有平台实现 |
 | `pvisor-replay` | Agent 轨迹回放机制；消费 Core/Journal 合同，前端位于 CLI |
 
-[Daemon](daemon/index.md) 使用 VM-only NativeRuntime：独立 supervisor 嵌入 `PVisor::run`，跨 daemon 重启保留 RunHandle。可执行入口通过原生 CLI 设置构造 NativeRuntime；stage/apply、checkpoint/fork 和 Gateway API 未实现，也不自动获取 node 共享。见[职责收敛](daemon/responsibility-convergence.md)。主机选择和工作流属于外部编排。
+[Daemon](daemon/index.md) 使用 VM-only NativeRuntime：独立 supervisor 嵌入 `PVisor::run`，跨 daemon 重启保留 RunHandle。可执行入口通过原生 CLI 设置构造 NativeRuntime；stage/apply、checkpoint/fork 和 Gateway API 未实现，也不自动获取 node 共享。主机选择和工作流属于外部编排。
 
 core 不拥有执行循环，也不启动进程或打开控制 socket。pvisor 实现 AgentCtl 客户端／服务端和审批 socket；驱动实现各自的文件、网络与隔离边界。默认核心不依赖 Gateway、TUI 或 replay，捕获通过 `gateway` feature 启用。
 
@@ -44,7 +44,7 @@ crate 的逻辑职责和 Rust 可见性需要分别检查。当前只有 `pvisor
 
 迁移按 crate 进行：同时调整该 crate 的调用方、README、公开文档和边界检查，保留外部 API 合同覆盖。尚未迁移的 crate 不应临时套一层全量 re-export 或重复 DTO 来制造一致外观，也不能公开内部模块绕过编译边界。硬件/私有状态检查留在 crate 内；外部调用方只依据所有权、生命周期、失败后状态和同步合同。
 
-这套 Rust 边界不自动提供稳定线上协议或旧记录兼容性。CLI 的 `JobCommand`/ticket 仍要求精确构建匹配，磁盘格式也有独立 reader。版本对应关系见[记录与版本矩阵](records-and-versions.md)，VM 边界的背景见[ADR 0005](decisions/0005-rust-vm-api.md)。状态依据 `lib.rs`、VM 的 `runtime_modules.rs`、各 `api.rs` 与目录 README 静态核对；不代表本次重新运行了契约测试或平台验证。
+这套 Rust 边界不自动提供稳定线上协议或旧记录兼容性。CLI 的 `JobCommand`/ticket 仍要求精确构建匹配，磁盘格式也有独立 reader。版本对应关系见[记录与版本矩阵](records-and-versions.md)。状态依据 `lib.rs`、VM 的 `runtime_modules.rs`、各 `api.rs` 与目录 README 静态核对；不代表本次重新运行了契约测试或平台验证。
 
 ## Host 与 Guest AgentCtl {#host-agentctl}
 

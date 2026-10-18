@@ -1,5 +1,7 @@
 # VM startup: technical analysis and experiment records
 
+> Note: "local original records" and paths such as `docs/src/assets/benchmarks/.data/` refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
+
 ## Linux: startup and exit fixes retest, 2026-10-11 {#concurrency-retest}
 
 **Exit cleanup has a measured benefit, but startup regressions are not fully resolved.** Against the `cf8bfa5` GNU artifact, host Ready improves by about 9.11 ms and Exit by 75.00 ms. VM Exit improves by about 48.26 ms, with no detected Ready improvement. New staged Ready has two separated clusters and cannot be declared restored.
@@ -339,13 +341,13 @@ Linux / KVM, 2 vCPU / 2 GiB, the same two-core host budget, 30 samples for each 
 
 **QEMU boots the same complete Ubuntu, rather than the historical trimmed kernel.** q35 and microvm share Firecracker's stock kernel, initrd, tools and initialized disk template. A minimal device model does not remove seconds of distribution boot in this configuration. These are independent same-host cohorts; QEMU has N=10, background host load remains, and outliers are retained. Similar medians do not support a precise VMM ranking. QEMU first cloud-init boot is unmeasured.
 
-Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/samples.csv` · [QEMU protocol](../benchmarks/methodology.md#full-ubuntu-qemu)
+Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/samples.csv` · [QEMU protocol](../benchmarks/index.md#full-ubuntu-qemu)
 
 **Selection meaning:** Creating environments for one or two commands benefits from avoiding seconds of OS boot. Complete Ubuntu provides distribution services and an independent Ubuntu environment at that startup cost. These are deployment paths with different kernels, initialization and storage; the table does not establish a roughly 50-times VMM advantage for libkrun. For longer jobs, compare [task and internal tool time](../benchmarks/agent-tasks.md#full-ubuntu), where boot cost is amortized.
 
 Exit includes normal shutdown: pVisor P50 is 174 ms, Firecracker/Ubuntu about 9.23 / 12.86 seconds. Firecracker/Ubuntu uses default MMIO devices and the stock initrd, with zero VMM exit after guest reboot. Every trial retains full OS proof with no failed units. Workspace copying or private disk cloning is recorded as `prepare_ms`, with medians around 37 / 29 ms outside Ready. The chart uses a logarithmic axis, bars P50 and ticks P95. With N=30, P99 is near the maximum and describes this batch only.
 
-Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/methodology.md#full-ubuntu) · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-ready-mmio-20261004/evidence.tar.gz`
+Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/index.md#full-ubuntu) · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-ready-mmio-20261004/evidence.tar.gz`
 
 #### New VM startup results {#linux-results}
 
@@ -389,7 +391,7 @@ QEMU q35's 218 ms does not establish QEMU's minimum startup cost: microvm with o
 
 **First output does not establish that an Agent can complete a task.** Seven-tool version checking takes 1.40 seconds in pVisor VM. See the [complete tool environment](../benchmarks/agent-tasks.md#reference-env) for repair/test timing and CLI compatibility. The preceding 172.69 ms GNU/libkrunfw 5.5.0 batch remains historical evidence. This batch uses a new pinned static artifact; it is not a controlled single-configuration optimization experiment.
 
-[Configuration and reproduction](../benchmarks/methodology.md#reference-env) · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
+[Configuration and reproduction](../benchmarks/index.md#reference-env) · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
 
 #### Full-exit follow-up: cleanup is separate from Ready {#reference-exit}
 

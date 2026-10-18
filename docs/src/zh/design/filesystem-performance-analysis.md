@@ -1,5 +1,7 @@
 # 文件系统性能：技术分析与实验记录
 
+> 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/`、`benchmark/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
+
 ## 当前结论与测量覆盖 {#filesystem-status}
 
 [文件系统 I/O 曲线](filesystem-io-performance-analysis.md)系统比较请求粒度、并发、同步、容量与复用工作集；独立 N30 和普通 CLI 对照未支持默认开启 host-owned 异步合批，请求计数解释了 backing 合并与 FUSE WRITE 数量的区别。
@@ -2186,7 +2188,7 @@ cargo nextest run --locked --release -p pvisor-vm \
 
 可以据此定位遍历、搜索、编译和安装的实际等待；不能由某一个读取数字得出 block device 总是比 FUSE 快。数据同时改变了内核、工具版本、文件系统和暂存语义。长任务选型更应结合 worker 与[完整闭环](../benchmarks/agent-tasks.md#full-ubuntu)，而不是只比较开机时间。
 
-本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/methodology.md#full-ubuntu)
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/index.md#full-ubuntu)
 
 ### 完整工具环境的 Docker 基线 {#reference-fs}
 
@@ -2207,7 +2209,7 @@ cargo nextest run --locked --release -p pvisor-vm \
 
 任务核对文件数量/大小、SHA256、Git clean、搜索命中、编译结果与安装包数量。Docker 是 writable bind mount，pVisor 使用 staged 视图；Firecracker/QEMU 在私有 ext4 内执行。文件路径不同是实际部署成本的一部分；这不是相同文件系统只替换 VMM 的因果实验。其他运行时的各操作分布也在本轮汇总中。
 
-[配置与复现](../benchmarks/methodology.md#reference-env) · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
+[配置与复现](../benchmarks/index.md#reference-env) · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
 
 
 ### 首版 Linux 矩阵：独立批次
@@ -2314,4 +2316,4 @@ python3 benchmark/pvisor/product_v1.py \
 
 先用 `--samples 1 --warmups 0` 检查环境。脚本、输入定义和正确性断言在 `benchmark/pvisor/v1/`；报告会复制二进制、firmware 和当轮脚本并记录摘要。失败不会进入性能分布；准备、策略拒绝和工作负载错误分别保留。每个页面写明有效样本数；小样本 P95/P99 只描述本批次，不估计长期尾延迟。
 
-[环境、制品与采样方法](../benchmarks/methodology.md#product-v1) · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`。报告保留源码的未提交状态；当轮可执行制品 SHA256 是身份依据。归档不含数 GB 的 rootfs、二进制和可重建工作区；输入摘要及每轮脚本保留。
+[环境、制品与采样方法](../benchmarks/index.md#product-v1) · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`。报告保留源码的未提交状态；当轮可执行制品 SHA256 是身份依据。归档不含数 GB 的 rootfs、二进制和可重建工作区；输入摘要及每轮脚本保留。

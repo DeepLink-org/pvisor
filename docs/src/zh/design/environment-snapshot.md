@@ -51,7 +51,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 [单节点 daemon](daemon/index.md) 使用原生 VM 执行，但没有捕获／恢复 API。其 pause/resume 是同一 Attempt 上已确认的 live vCPU 控制，不是 cgroup freeze 或快照。Snapshot、checkpoint/fork、stage/apply 和 offload API 仍未实现。不要把已退役 Cluster 控制当作快照入口。
 
-原生 node backing 归属仍独立于 daemon 生命周期，见[职责收敛](daemon/responsibility-convergence.md)。
+原生 node backing 归属仍独立于 daemon 生命周期，见[daemon 架构](daemon/index.md)。
 
 ## 历史证据 {#historical-evidence}
 

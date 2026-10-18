@@ -112,5 +112,5 @@ physical-sharing path.
 
 [Memory evidence](proof-of-concept.md#memory-evidence) does not establish known
 production net gains. Compare total host occupancy, temporary peaks, CPU cost,
-and application tails, not encoded size alone. See the [overview](compression.md)
+and application tails, not encoded size alone. See the [architecture index](index.md)
 and [pooled alternative](compression-pool.md) for the ownership choice.

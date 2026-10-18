@@ -276,9 +276,12 @@ def check(strict=False):
                 if "md-path__link" in classes and dest_locale != locale:
                     issues.append(f"{rel}: breadcrumb leaves current language: {href}")
     for locale in ("en", "zh"):
-        product = (ROOT / locale / "start/what-is-pvisor/index.html").read_text()
-        if 'class="admonition tip"' not in product or "<pre" not in product:
-            issues.append(f"{locale}/start/what-is-pvisor: missing rendered callout or code block")
+        why = (ROOT / locale / "why/index.html").read_text()
+        if 'class="admonition' not in why:
+            issues.append(f"{locale}/why/index: missing rendered callout")
+        first_run = (ROOT / locale / "start/first-run/index.html").read_text()
+        if "<pre" not in first_run:
+            issues.append(f"{locale}/start/first-run: missing rendered code block")
     if issues:
         raise SystemExit("\n".join(sorted(set(issues))))
     print(

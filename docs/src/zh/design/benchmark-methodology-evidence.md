@@ -1,5 +1,7 @@
 # Benchmark 测量协议与证据
 
+> 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
+
 所有基准遵守同一套协议：
 
 - 写明硬件、操作系统、内核或 macOS 版本、FUSE 实现、pVisor 版本与提交号；
@@ -154,7 +156,7 @@ uv run --no-project --with matplotlib python benchmark/pvisor/render_ubuntu_base
   --assets target/ubuntu-reference-new --output /tmp/full-ubuntu-report-new
 ```
 
-本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/methodology.md#full-ubuntu)
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/index.md#full-ubuntu)
 
 Ubuntu 工具包清单另见本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-packages.txt`。正式任务统一将编译与客户端临时文件置于工作区私有 `_tmp`，避免 hostroot 的只读 `/tmp`；失败诊断保留，不计入新的正式分布。
 

@@ -1,5 +1,7 @@
 # Filesystem performance: technical analysis and experiment records
 
+> Note: "local original records" and paths such as `docs/src/assets/benchmarks/.data/` and `benchmark/.data/` refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
+
 ## Current conclusions and measurement coverage {#filesystem-status}
 
 The [filesystem I/O curves](filesystem-io-performance-analysis.md) compare request size, concurrency, synchronization, capacity and reuse working sets. Independent N30 and ordinary-CLI comparisons do not support enabling host-owned asynchronous batching by default; request counts distinguish backing coalescing from FUSE WRITE reduction.
@@ -2270,7 +2272,7 @@ The table excludes environment boot, measuring operations and grading. This new 
 
 These values locate waiting in traversal, search, compilation and installation. A single read does not establish that block devices always outperform FUSE: kernels, tool versions, storage and staging semantics differ together. For longer tasks, combine worker time with the [complete loop](../benchmarks/agent-tasks.md#full-ubuntu) rather than startup alone.
 
-Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/methodology.md#full-ubuntu)
+Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/index.md#full-ubuntu)
 
 ### Docker baseline in the complete tool environment {#reference-fs}
 
@@ -2291,7 +2293,7 @@ This establishes a concrete position: Docker metadata/read/write stay close to n
 
 Tasks verify file counts/sizes, SHA256, clean Git state, search matches, compiled output, and installed package counts. Docker uses a writable bind mount, pVisor a staged view, and Firecracker/QEMU private ext4. Different file paths are part of actual deployment cost; this is not a causal experiment changing only the VMM over an identical filesystem. The summary also contains each operation's distribution for other runtimes.
 
-[Configuration and reproduction](../benchmarks/methodology.md#reference-env) · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
+[Configuration and reproduction](../benchmarks/index.md#reference-env) · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
 
 
 ### First-edition Linux matrix: separate batch
@@ -2398,4 +2400,4 @@ python3 benchmark/pvisor/product_v1.py \
 
 Start with `--samples 1 --warmups 0` to check prerequisites. Workloads and correctness assertions live in `benchmark/pvisor/v1/`. Reports pin binaries, firmware and harness source with hashes. Failed operations never enter performance distributions. Effective sample counts are stated per page; P95/P99 from small samples describe this batch rather than production tail probabilities.
 
-[Environment, artifacts and method](../benchmarks/methodology.md#product-v1) · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`. Reports retain dirty source status; executable SHA256 identifies the measured artifact. The archive excludes large rootfs/binaries and reproducible workspace payloads, while retaining input hashes and each batch's harness.
+[Environment, artifacts and method](../benchmarks/index.md#product-v1) · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`. Reports retain dirty source status; executable SHA256 identifies the measured artifact. The archive excludes large rootfs/binaries and reproducible workspace payloads, while retaining input hashes and each batch's harness.

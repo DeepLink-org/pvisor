@@ -45,7 +45,11 @@ This offload path must not be applied indiscriminately to snapshot-restored priv
 Raw backing lets the kernel write RAM bytes directly to the file and satisfy later page faults.
 The compressed path exposes a logical RAM file through FUSE: writeback stages raw pages,
 then offload commits changed blocks into a base/delta bundle; reads decode committed blocks.
-[Offload file format](offload-format.md) explains the storage and publication model.
+Staging currently uses 4 KiB pages while compression uses 64 KiB blocks: a small granularity
+reduces partial-write and cold-read amplification; a large one improves compression and cuts
+metadata, but a small access may decode a whole block.
+[Offload file format](../offload/disk-layout-and-schema.md) defines the storage format,
+publication model and parsing limits.
 
 Compression can reduce stored bytes, but adds encoding, checksums, staging I/O and FUSE work.
 Resuming adds block decoding to cold reads. Incompressible data, frequent rewrites and compaction

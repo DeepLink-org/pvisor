@@ -78,6 +78,6 @@ Compressed parked snapshots versus container pause have not completed validation
 
 ### Sources and reproduction {#run}
 
-[Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](index.md#interpretation) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
 Complete CSV/JSON retains attempts, complete batches, failure reasons, unknowns, OOM, observed ranges and source digests for every condition. It remains with raw records in local cohorts or the documentation data archive; failed batches remain in capacity denominators.

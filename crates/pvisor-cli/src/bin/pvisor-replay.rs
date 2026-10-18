@@ -385,7 +385,7 @@ fn run_managed(config: &ReplayToml) -> Result<i32, ReplayError> {
             ReplayError::configuration(format!("resolve managed replay workspace: {error}"))
         })?;
     let mut command = Command::new(&executable);
-    command.args(["run", "--spec"]).arg(file.path());
+    command.args(["run", "--config"]).arg(file.path());
     command.current_dir(&working_dir);
     let status = command.status().map_err(|error| {
         ReplayError::configuration(format!("start managed pVisor replay: {error}"))

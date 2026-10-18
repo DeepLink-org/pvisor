@@ -228,4 +228,4 @@ workspace checkpoint 只保存文件分支；Agent trajectory 保存模型上下
 
 当前实现状态也需要保持清楚：daemon 已有 VM-only NativeRuntime 和显式启用的 Linux 物理池，其 API 尚未暴露原生 Job 的 stage/apply 或 execution checkpoint；外部编排与 RL 接入仍需要独立交接和端到端验证。实现机制并不自动建立生产密度或长期恢复结论。
 
-组织方式参考 [ByteHook 的项目介绍和原理概述](https://github.com/bytedance/bhook/blob/main/doc/overview.zh-CN.md)：把必要基础原理、请求路径与工程约束连续讲清楚。更多表达参考及使用方式见[开源设计文档参考](research/design-documents.md)。
+组织方式参考 [ByteHook 的项目介绍和原理概述](https://github.com/bytedance/bhook/blob/main/doc/overview.zh-CN.md)：把必要基础原理、请求路径与工程约束连续讲清楚。更多表达参考见仓库 [docs/README.md](https://github.com/DeepLink-org/pvisor/blob/main/docs/README.md) 的设计写作参考节。

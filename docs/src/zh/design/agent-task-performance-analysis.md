@@ -1,5 +1,7 @@
 # Agent 工具任务：技术记录
 
+> 注：文中「本地原始记录」及 `docs/src/assets/benchmarks/.data/` 等路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
+
 无镜像 pVisor VM 的完整修复测试任务约 **4.61 秒**，Firecracker / 完整 Ubuntu 约 **8.51 秒**；staged 约 **0.72 秒**。Ubuntu 的开机等待影响短任务，pVisor 的工具执行仍有明显成本；启动快不等于工具路径领先。Claude/VM：初始化超时 / N=0，Codex 的真实工具闭环结果见下表。
 
 ## Motivation
@@ -18,7 +20,7 @@
 
 ### 无镜像 pVisor 与完整 Ubuntu：完整 Agent Env {#full-ubuntu}
 
-pVisor 复用宿主已安装的 Python/Node/Rust/Git/rg/Claude/Codex，不制作系统镜像；Firecracker/QEMU 在完整官方 Ubuntu 26.04.1 LTS 中安装发行版工具及相同 Rust/Agent CLI。每次新建环境，再执行同一修复计划与测试。VM 2 vCPU / 16 GiB，所有组相同两核预算、热宿主缓存；每格计划 10 次、3 次预热，随机顺序；有效 N 不足 10 时在表内标明。Ubuntu 的 Python/Node/Git 版本与宿主不同，完整版本和内核差异见[方法](../benchmarks/methodology.md#full-ubuntu)。
+pVisor 复用宿主已安装的 Python/Node/Rust/Git/rg/Claude/Codex，不制作系统镜像；Firecracker/QEMU 在完整官方 Ubuntu 26.04.1 LTS 中安装发行版工具及相同 Rust/Agent CLI。每次新建环境，再执行同一修复计划与测试。VM 2 vCPU / 16 GiB，所有组相同两核预算、热宿主缓存；每格计划 10 次、3 次预热，随机顺序；有效 N 不足 10 时在表内标明。Ubuntu 的 Python/Node/Git 版本与宿主不同，完整版本和内核差异见[方法](../benchmarks/index.md#full-ubuntu)。
 
 ![Complete Ubuntu and image-free pVisor tool loops](../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-workflows.svg)
 
@@ -62,17 +64,17 @@ Claude/VM 预检仍在初始化超过 90 秒，正式 N=0；没有通过工具�
 
 Codex 使用统一内部 `danger-full-access`，外层运行时提供表明的边界，默认双层沙箱兼容性未测。每格 N=10 仅提供首版预算与重复性，P95/P99 接近最大值，不支持长期尾延迟或真实模型成功率保证。RSS 每 20 ms 求进程树之和，Firecracker 包含独立 DNS/NAT 辅助进程，QEMU 使用进程内用户态网络，可能重复统计共享页和漏掉短峰；配置 16 GiB 不等于驻留 16 GiB，也不能从短任务推算并发容量。
 
-本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/methodology.md#full-ubuntu) · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-workflows-private-tmp-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-clients-console-v2-20261004/evidence.tar.gz`
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [方法与复现](../benchmarks/index.md#full-ubuntu) · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-workflows-private-tmp-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-clients-console-v2-20261004/evidence.tar.gz`
 
 完整 Ubuntu 的 QEMU 修复任务为 q35 **8.12 秒**、microvm **10.33 秒**，内部工具分别 **2.75 / 2.81 秒**。无镜像 pVisor 降低新任务总等待，但其 4.02 秒工具时间仍高于这些完整 Ubuntu 路径；长期复用环境时，这个差距值得优先优化。更换为 microvm 没有在本配置下自动改善完整任务。网络、设备和 CPU 暴露方式仍有差别，不把全部差值归因于 block device 或 FUSE。
 
-本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/ubuntu-qemu-complete-20261004/evidence.tar.gz` · [QEMU method](../benchmarks/methodology.md#full-ubuntu-qemu)
+本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/ubuntu-qemu-complete-20261004/evidence.tar.gz` · [QEMU method](../benchmarks/index.md#full-ubuntu-qemu)
 
 ### 历史受控环境：同工具制品与裁剪参考 VM {#reference-env}
 
 以下批次用相同工具制品隔离部分版本差异；Firecracker/QEMU 使用裁剪 Linux 6.12.109 与静态 init，不启动完整发行版。pVisor 使用工具目录，经 virtio-fs 共享，不使用镜像。保留这些数据解释 Docker 与最小 VM 的性能水位；完整 Ubuntu 的实际部署成本和无镜像 hostroot 路径见[上节](#full-ubuntu)。
 
-这里部署完整环境，再运行真实客户端：Python 3.14.7、Node 24.18.0/npm、Rust/Cargo 1.98.1、Git、rg、Claude Code 2.1.128、Codex 0.160.0。环境约 3.58 GiB、7.6 万文件；原生、Docker 与 VM 使用相同工具制品、项目与校验。每格 30 次、3 次预热，共两核预算，VM 为 2 vCPU / 16 GiB。完整[参数与边界](../benchmarks/methodology.md#reference-env)单独列出。
+这里部署完整环境，再运行真实客户端：Python 3.14.7、Node 24.18.0/npm、Rust/Cargo 1.98.1、Git、rg、Claude Code 2.1.128、Codex 0.160.0。环境约 3.58 GiB、7.6 万文件；原生、Docker 与 VM 使用相同工具制品、项目与校验。每格 30 次、3 次预热，共两核预算，VM 为 2 vCPU / 16 GiB。完整[参数与边界](../benchmarks/index.md#reference-env)单独列出。
 
 任务从检查项目、搜索错误、修复 Python 开始，再执行 Python/Rust/Node 测试、安装 32 个本地依赖、生成 diff。模型响应固定为这一工具计划；CLI 必须把真实通过的测试结果传回服务并正常结束。它覆盖环境部署与工具执行，尚不能代表大型仓库、真实模型解题成功率或公网依赖安装。
 
@@ -111,7 +113,7 @@ VM 的 npm 阶段约 1.74 秒，是本任务中最大的耗时阶段；Rust 编�
 
 Claude 与 Codex 的绝对时间不宜互相排名。Codex 还存在约秒级的客户端等待路径，Docker 约 6.26 秒、pVisor VM 约 10.93 秒；这比裸启动数字更贴近本轮完整客户端体验。差异属于这些固定版本与受控任务，不能直接推广到模型速度。
 
-**部署成本另列。** 从已安装工具离线复制、导入镜像、制作 ext4 环境约 109 秒，之后增加 CPU affinity helper 约 5.3 秒；不含工具下载和内核编译。每次的工作区/私有磁盘准备时间记录在 `prepare_ms`，不计入表中任务耗时。这些是已准备环境的短任务预算，不是首次安装到结束的耗时。内存审计见[方法](../benchmarks/methodology.md#reference-resources)，不由配置的 16 GiB 推导每个 Agent 实占 16 GiB。
+**部署成本另列。** 从已安装工具离线复制、导入镜像、制作 ext4 环境约 109 秒，之后增加 CPU affinity helper 约 5.3 秒；不含工具下载和内核编译。每次的工作区/私有磁盘准备时间记录在 `prepare_ms`，不计入表中任务耗时。这些是已准备环境的短任务预算，不是首次安装到结束的耗时。内存审计见[方法](../benchmarks/index.md#reference-resources)，不由配置的 16 GiB 推导每个 Agent 实占 16 GiB。
 
 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · 本地原始记录 `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
 
@@ -150,4 +152,4 @@ python3 benchmark/pvisor/product_v1.py \
 
 先用 `--samples 1 --warmups 0` 检查环境。脚本、输入定义和正确性断言在 `benchmark/pvisor/v1/`；报告会复制二进制、firmware 和当轮脚本并记录摘要。失败不会进入性能分布；准备、策略拒绝和工作负载错误分别保留。每个页面写明有效样本数；小样本 P95/P99 只描述本批次，不估计长期尾延迟。
 
-[环境、制品与采样方法](../benchmarks/methodology.md#product-v1) · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`。报告保留源码的未提交状态；当轮可执行制品 SHA256 是身份依据。归档不含数 GB 的 rootfs、二进制和可重建工作区；输入摘要及每轮脚本保留。
+[环境、制品与采样方法](../benchmarks/index.md#product-v1) · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · 本地原始记录 `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`。报告保留源码的未提交状态；当轮可执行制品 SHA256 是身份依据。归档不含数 GB 的 rootfs、二进制和可重建工作区；输入摘要及每轮脚本保留。

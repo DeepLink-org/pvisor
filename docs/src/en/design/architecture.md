@@ -23,7 +23,7 @@ There are two responsibilities: **core provides definitions; pvisor provides imp
 | `pvisor-vm` | VMs, devices, freezing, snapshots and RAM mappings; uniform api and private platform implementations |
 | `pvisor-replay` | Agent trajectory replay mechanisms; consumes Core/Journal contracts, with frontends in CLI |
 
-The [daemon](daemon/index.md) uses VM-only NativeRuntime: detached supervisors embed `PVisor::run` and retain RunHandles across daemon restart. The executable constructs NativeRuntime with native CLI settings; stage/apply, checkpoint/fork and Gateway APIs are absent, and node sharing is not automatically acquired. See [responsibility convergence](daemon/responsibility-convergence.md). External orchestration owns host choice and workflows.
+The [daemon](daemon/index.md) uses VM-only NativeRuntime: detached supervisors embed `PVisor::run` and retain RunHandles across daemon restart. The executable constructs NativeRuntime with native CLI settings; stage/apply, checkpoint/fork and Gateway APIs are absent, and node sharing is not automatically acquired. External orchestration owns host choice and workflows.
 
 Core neither owns the execution loop nor starts processes or opens control sockets. pvisor implements AgentCtl clients/servers and approval sockets. Drivers implement file, network and isolation boundaries. The default core does not depend on Gateway, TUI or replay; the `gateway` feature enables capture.
 
@@ -44,7 +44,7 @@ Migrated `api` modules declare public data, fields and trait methods. Opaque own
 
 Migration proceeds one crate at a time, updating its consumers, README, public documentation and boundary checks together while preserving external contract coverage. Unmigrated crates should not gain blanket re-export layers or duplicate DTOs merely to appear uniform, nor expose internals to bypass compilation boundaries. Hardware/private-state checks remain inside the crate; callers rely on ownership, lifecycle, post-failure state and synchronization contracts.
 
-This Rust boundary does not automatically establish stable wire protocols or old-record compatibility. CLI `JobCommand`/tickets still require exact build matching, and stored formats have independent readers. See [Records and version matrix](records-and-versions.md) and the VM rationale in [ADR 0005](decisions/0005-rust-vm-api.md). Status follows static inspection of `lib.rs`, VM `runtime_modules.rs`, `api.rs` and directory READMEs; it does not claim fresh contract-test or platform validation.
+This Rust boundary does not automatically establish stable wire protocols or old-record compatibility. CLI `JobCommand`/tickets still require exact build matching, and stored formats have independent readers. See [Records and version matrix](records-and-versions.md). Status follows static inspection of `lib.rs`, VM `runtime_modules.rs`, `api.rs` and directory READMEs; it does not claim fresh contract-test or platform validation.
 
 ## Host and Guest AgentCtl {#host-agentctl}
 

@@ -102,7 +102,7 @@ correctness probe are separate from physical-page-sharing evidence; see
 - **Sharing versus isolation:** Restrict trust domains and assess content-presence side channels. KSM advice has no pVisor-defined domain parameter, so product labels alone cannot establish isolation.
 - **Simplicity versus coverage:** The current physical pool uses bounded resident scanning. Arbitrary instant hot-page merging and P2P remain outside its scope; active shared slots and durable machine recovery are designed separately.
 
-The first version does not combine KSM and userspace cold reclamation on the same region, avoiding redundant merging followed by copying and compression. See [Memory compression](compression.md) for unique but compressible cold content.
+The first version does not combine KSM and userspace cold reclamation on the same region, avoiding redundant merging followed by copying and compression. See [Per-instance compression](compression-local.md) for unique but compressible cold content.
 
 ## Current integration and evidence {#direction}
 

@@ -16,20 +16,13 @@ nav = [
   { "Home" = "index.md" },
   { "Quick start" = [
     { "Getting started" = [
-      { "Start here" = "start/index.md" },
-      { "What is PolicyVisor?" = "start/what-is-pvisor.md" },
       { "Installation" = "start/installation.md" },
       { "Your first run" = "start/first-run.md" },
-      { "After your first run" = "start/next-steps.md" },
     ] },
     { "About pVisor" = [
       { "Why pVisor" = "why/index.md" },
       { "Agent task lifecycle cost" = "why/agent-lifecycle-cost.md" },
-      { "Trust ladder and scale" = "why/trust-ladder.md" },
-      { "Use cases" = "why/use-cases.md" },
-      { "Comparing existing approaches" = "why/comparisons.md" },
-      { "When you do not need pVisor" = "why/when-not-to-use.md" },
-      { "FAQ" = "why/faq.md" },
+      { "Fit check and comparisons" = "why/comparisons.md" },
     ] },
   ] },
   { "User guide" = [
@@ -48,9 +41,6 @@ nav = [
       { "Connect your agent" = "guides/agents/index.md" },
       { "Claude Code" = "guides/agents/claude-code.md" },
       { "Codex CLI" = "guides/agents/codex.md" },
-      { "Gemini CLI" = "guides/agents/gemini-cli.md" },
-      { "aider" = "guides/agents/aider.md" },
-      { "OpenCode" = "guides/agents/opencode.md" },
       { "Scripts and automation commands" = "guides/agents/custom-scripts.md" },
     ] },
     { "Policies" = [
@@ -66,9 +56,6 @@ nav = [
     ] },
     { "Daemon quickstart" = [
       { "Run the single-node daemon" = "guides/daemon/index.md" },
-      { "Daemon and independent cache entry points" = "guides/daemon/service.md" },
-      { "Operate the single-node daemon" = "guides/daemon/operations.md" },
-      { "Daemon runtime and integration boundaries" = "guides/daemon/boundaries.md" },
     ] },
     { "Learning path" = [
       { "Learn pVisor through tasks" = "cases/index.md" },
@@ -96,12 +83,9 @@ nav = [
   ] },
   { "Core concepts" = [
     { "Execution concepts" = [
-      { "Concepts and boundaries" = "concepts/index.md" },
       { "Jobs and storage" = "concepts/jobs.md" },
       { "Staging and apply semantics" = "concepts/staging.md" },
       { "Capabilities, evidence, and guarantees" = "concepts/capabilities-and-evidence.md" },
-      { "Policy model" = "concepts/policy-model.md" },
-      { "Glossary" = "concepts/glossary.md" },
     ] },
     { "Security" = [
       { "Security overview" = "security/index.md" },
@@ -116,7 +100,6 @@ nav = [
   { "Benchmarks" = [
     { "Performance tests" = [
       { "Overview" = "benchmarks/index.md" },
-      { "Methodology" = "benchmarks/methodology.md" },
       { "Startup latency" = "benchmarks/startup.md" },
       { "Lazy image" = "benchmarks/lazy-image-startup.md" },
       { "Memory optimization" = "benchmarks/vm-memory/index.md" },
@@ -147,10 +130,8 @@ nav = [
       { "Memory architecture and mechanisms" = "design/memory-optimization/index.md" },
       { "Memory deduplication" = "design/memory-optimization/deduplication.md" },
       { "Shared working sets and lazy loading" = "design/daemon/shared-working-set.md" },
-      { "Memory compression" = "design/memory-optimization/compression.md" },
       { "Per-instance compression" = "design/memory-optimization/compression-local.md" },
       { "RAM offload" = "design/memory-optimization/offload.md" },
-      { "Offload file format" = "design/memory-optimization/offload-format.md" },
       { "Pooled-server compression" = "design/memory-optimization/compression-pool.md" },
       { "Experimental proof of concept" = "design/memory-optimization/proof-of-concept.md" },
     ] },
@@ -169,11 +150,7 @@ nav = [
     ] },
     { "Single-node daemon" = [
       { "Single-node daemon architecture" = "design/daemon/index.md" },
-      { "Local state and restart recovery" = "design/daemon/state-and-recovery.md" },
-      { "Local sandbox admission" = "design/daemon/admission.md" },
-      { "Sandbox lifecycle" = "design/daemon/lifecycle.md" },
-      { "Daemon storage and reclamation" = "design/daemon/storage.md" },
-      { "Service responsibility convergence" = "design/daemon/responsibility-convergence.md" },
+      { "Daemon storage, recovery and reclamation" = "design/daemon/storage.md" },
       { "Daemon operations" = "design/daemon/operations.md" },
     ] },
     { "Interfaces, extensions and decisions" = [
@@ -195,11 +172,7 @@ nav = [
       { "EXP-003 (design stage): Agent asynchronous I/O and completion queues" = "design/experimental/agent-io-completion/index.md" },
     ] },
     { "Research directions" = [
-      { "Research directions" = "design/research/index.md" },
-      { "External orchestration and single-node execution" = "design/research/cluster-execution.md" },
-      { "RL execution substrate" = "design/research/rl-execution-substrate.md" },
-      { "Publications and reports" = "design/research/publications.md" },
-      { "Open-source design references" = "design/research/design-documents.md" },
+      { "Research directions" = "design/research/index.md" }
     ] },
   ] },
   { "Contributing" = [
@@ -212,9 +185,7 @@ nav = [
       { "Release PolicyVisor" = "community/releasing.md" },
       { "Roadmap" = "community/roadmap.md" },
       { "Changelog" = "community/changelog.md" },
-      { "Code of conduct" = "community/code-of-conduct.md" },
       { "Governance" = "community/governance.md" },
-      { "Adopters" = "community/adopters.md" },
     ] },
   ] },
 ]

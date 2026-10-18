@@ -165,4 +165,4 @@ stage 的工具执行和合入仍有额外成本，但创建独立视图、按�
 
 ### 来源与复现 {#run}
 
-[比较方法](methodology.md) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[比较方法](index.md#interpretation) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)

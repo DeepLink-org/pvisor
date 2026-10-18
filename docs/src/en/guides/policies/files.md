@@ -53,6 +53,6 @@ When an `ask` rule matches, the prompt lets you choose the grant scope: this fil
 
 ## Layered policies
 
-Besides the command line, policies can live in the workspace's `.pvisor/policy.toml` and the user's `~/.config/pvisor/policy.toml`, combined by taking the strictest decision across layers. See [policy model](../../concepts/policy-model.md).
+Besides the command line, policies can live in the workspace's `.pvisor/policy.toml` and the user's `~/.config/pvisor/policy.toml`, combined by taking the strictest decision across layers. See [policy layering rules](../../concepts/capabilities-and-evidence.md#layering).
 
 For the full parameter set see [file access rules](../../reference/cli.md); for the TOML form see [the configuration model](../../reference/cli.md).

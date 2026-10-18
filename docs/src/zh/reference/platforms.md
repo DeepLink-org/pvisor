@@ -19,7 +19,7 @@
 
 ## 单机 daemon {#daemon}
 
-独立 daemon 原生运行时要求 Linux x86_64/KVM 和委派 cgroup v2，不支持 macOS HVF 或 Linux arm64。VM-only supervisor 嵌入 pVisor，使用可信独立 rootfs manifest 和 guest CID 3 vsock bridge 连接真实 execd/egress。可执行入口接入已实现；bootstrap／镜像未提供或端到端验证，也没有 SDK／密度证据。见 [daemon 安装](../guides/daemon/index.md)与[运行时边界](../guides/daemon/boundaries.md)；wheel／原生执行器支持不证明 daemon 就绪。
+独立 daemon 原生运行时要求 Linux x86_64/KVM 和委派 cgroup v2，不支持 macOS HVF 或 Linux arm64。VM-only supervisor 嵌入 pVisor，使用可信独立 rootfs manifest 和 guest CID 3 vsock bridge 连接真实 execd/egress。可执行入口接入已实现；bootstrap／镜像未提供或端到端验证，也没有 SDK／密度证据。见 [daemon 安装](../guides/daemon/index.md)与[运行时边界](../guides/daemon/index.md)；wheel／原生执行器支持不证明 daemon 就绪。
 
 ## 能力证据怎么验证
 

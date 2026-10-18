@@ -291,7 +291,7 @@ namespace 修改、普通数据写入和策略变化分别更新相关版本。�
 
 宿主在交付元数据时裁剪不可见路径、受保护别名和对象访问范围；必要的访问模式、ownership、ACL/xattr 输入要完整。原始路径字节保留，symlink 不能使 guest 请求任意宿主路径。对象摘要仅表达内容身份，不能作为跨租户读取权限。
 
-guest 做本地 Linux 权限检查；VMM 对数据和修改请求继续验证宿主认可的授权。会话 token、guest uid 或修改清单不能替代 Host 控制凭据，不能修改宿主权限账本。[Host/Guest 权限分离](../../decisions/0008-host-guest-control-authority.md)
+guest 做本地 Linux 权限检查；VMM 对数据和修改请求继续验证宿主认可的授权。会话 token、guest uid 或修改清单不能替代 Host 控制凭据，不能修改宿主权限账本（Host/Guest 权限分离）。
 
 需要每次宿主回调的动态策略或审计 profile 不进入本地 open 快速路径。策略变化先撤销新缓存准入并协调现存引用；恢复只在权限与引用合同重建后继续。
 

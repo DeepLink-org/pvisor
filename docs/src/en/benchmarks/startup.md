@@ -168,4 +168,4 @@ The local historical CSV includes an outer shell, taskset and timeout. Its origi
 
 Complete CSV/JSON for startup statistics, VM differences and 95% intervals, source and artifact provenance, and raw records remain in their local cohorts or the documentation data archive. See the [startup manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md) to reproduce the current Ready / Exit experiment.
 
-[Method](methodology.md) · [Historical reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls)
+[Comparison method](index.md#interpretation) · [Historical reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls)

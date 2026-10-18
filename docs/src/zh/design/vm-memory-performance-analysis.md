@@ -1,5 +1,7 @@
 # 内存去重曲线：Firecracker、Docker 与 pVisor
 
+> 注：文中本地 `.data/` 路径指向测量时的本地归档，未随仓库或站点发布，仅用于批次溯源。
+
 ## Linux：去重速度、压缩与共享库预检 {#linux-pool-curves}
 
 ### 观察到的收益与代价 {#pool-findings}

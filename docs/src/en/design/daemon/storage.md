@@ -1,6 +1,28 @@
-# Daemon storage and reclamation
+# Daemon storage, recovery and reclamation
 
 Keep durable sandbox intentions in a bounded local registry. The native runtime owns private per-sandbox run state; prepared services own workload files and streamed outputs. These stores are not a centralized pVisor evidence repository.
+
+Restart with the same private state directory and a compatible runtime configuration, preserving native ownership and unresolved reservations. Persisted state is the most recent durable observation; it does not prove a VM is still alive.
+
+## Authority and identity {#authority}
+
+| State | Authority | Restart behavior |
+| --- | --- | --- |
+| Registry version and owner UUID | Daemon's durable registry | Validate and retain the same owner |
+| Sandbox identity, image/argv/env/metadata, resources, TTL and endpoint tokens | Durable records | Retain intentions, access identity and conservative capacity |
+| Running/Paused/Terminated | Native runtime observation | Query registered objects and update changed observations |
+| `Stopping` | Durable delete intent | Retry deletion; queries cannot override it |
+| Actual VM and service readiness | Native supervisor, VM control, kernel cgroups and real services | The registry cannot rebuild them |
+
+## Startup reconciliation {#reconcile}
+
+1. Open and validate the private registry; reject corrupt, over-limit or incompatible content instead of continuing startup by forgetting native ownership.
+2. Construct the runtime with the persisted owner. Storage initializes/migrates only after the factory accepts that owner: commit records and metadata with the owner envelope, then activate the v2 header atomically. Before activation the complete v1 snapshot remains authoritative. Native preflight checks run after storage initialization and before binding the API.
+3. Retry `Stopping` records; query other registered sandboxes under their lifecycle locks.
+4. Map native Running/Paused/Stopped/Missing to `Running`/`Paused`/`Terminated`/`Failed`. Missing sandboxes stay visible and reserved until explicitly deleted.
+5. Report deferred reconciliation errors without fabricating cleanup success. Startup maintenance retries expired/delete-pending objects.
+
+A normal daemon shutdown preserves detached supervisors/VMs and records. Restart reconnects over private IPC without rebuilding VMs or minting new Attempts; IPC loss preserves an uncertain state. GET reconciles; list returns persisted observations. Startup neither adopts unknown VMs nor restarts missing/crashed workloads; a host reboot does not preserve live VMs.
 
 ## Private registry {#metadata}
 
@@ -24,7 +46,7 @@ Records retain image/argv, environment, metadata, CPU/memory reservation, creati
 
 Runtime state additionally retains private `owner.json`, per-sandbox `preparing.json`/`identity.json`, `run.json` (generation/Run/Attempt IDs), lifecycle markers, owner lock, `control.sock`, `ports/` bridges and `run/` native storage, including `live-ram` backing and `tmp/` scratch (set as supervisor `TMPDIR`). A completed cleanup retains only its minimal tombstone/lock/marker fence. These support reconciliation/cleanup, not a public stage/checkpoint/artifact API.
 
-Native runtime does not write `observation.json` caches or use them as liveness proof. Endpoint lookup authenticates the live supervisor and checks current Running state and deletion fences; full readiness checks remain at create, Inspect and resume. See [service access](lifecycle.md#endpoints).
+Native runtime does not write `observation.json` caches or use them as liveness proof. Endpoint lookup authenticates the live supervisor and checks current Running state and deletion fences; full readiness checks remain at create, Inspect and resume. See [service access](index.md#endpoints).
 
 ## Commit barrier {#commit}
 
@@ -50,6 +72,19 @@ Cleanup validates durable owner/ID/generation and boot/cgroup bindings independe
 
 Deleting a sandbox does not undo remote effects or provide a retained evidence bundle. Externally provisioned image manifests/rootfs/firmware are not deleted by sandbox cleanup. The daemon API has no stage review/apply, artifact retention/download or external object-GC protocol. Do not remove native resources or registry state independently as recovery.
 
-Native immutable cache/snapshot stores retain separate publication, integrity, pin and GC contracts; see [shared image storage](../shared-image-cache-storage.md) and [responsibility convergence](responsibility-convergence.md#authority). No daemon-to-node storage bridge is implemented.
+## Uncertainty and recovery {#failures}
 
-Implementation: `daemon/store.rs` owns per-record publication, budget accounting and v1 activation; `daemon/mod.rs` owns reservation and deletion ordering.
+| Failure | Retained boundary | Action |
+| --- | --- | --- |
+| Creation failed, cleanup confirmed | Record/reservation removed | Investigate the image/runtime before requesting again |
+| Create cleanup uncertain | Failed record, ID from the error, full reservation | Query/delete that ID; do not blindly resubmit |
+| Native query unavailable | No fabricated native state | Restore runtime access and query again |
+| Delete failed or absence unknown | `Stopping`, tokens/records and reservation retained | Restore runtime access and retry |
+| Registry commit uncertain | Storage-failed marker rejects further registry access | Retain state, repair storage, restart to reconcile |
+| Daemon down beyond TTL | No maintenance while down | Independent termination requirements belong to host supervision |
+
+The registry is an incrementally committed local inventory, not a complete execution history or business side-effect ledger. Version 2 rebuilds the inventory from the owner/header and validated per-sandbox records; a corrupt or incomplete activated record tree does not fall back to v1. Restart does not roll back external calls, restore lost RAM or provide cross-host failover. Automatic consistent backup/native-state restoration is unimplemented; copying a live directory or deleting state is not a recovery procedure.
+
+Native immutable cache/snapshot stores retain separate publication, integrity, pin and GC contracts; see [shared image storage](../shared-image-cache-storage.md). No daemon-to-node storage bridge is implemented.
+
+Implementation: `daemon/store.rs` owns per-record publication, budget accounting and v1 activation; `daemon/mod.rs` owns reservation, deletion ordering and the recovery path.

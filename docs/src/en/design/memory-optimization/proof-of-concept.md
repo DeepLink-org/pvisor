@@ -1,6 +1,6 @@
 # Experimental proof of concept
 
-Shared-baseline, COW, and cold-pool experiments provide foundations for memory optimization while exposing service availability, restoration contention, and physical-accounting limitations. [Memory optimization](index.md), [Memory deduplication](deduplication.md), and [Memory compression](compression.md) define the target architecture. The implementation, experiments, and failures below retain their version scope rather than establishing production guarantees for future approaches.
+Shared-baseline, COW, and cold-pool experiments provide foundations for memory optimization while exposing service availability, restoration contention, and physical-accounting limitations. [Memory optimization](index.md), [Memory deduplication](deduplication.md), and [Per-instance compression](compression-local.md) define the target architecture. The implementation, experiments, and failures below retain their version scope rather than establishing production guarantees for future approaches.
 
 
 The current Linux daemon pool uses physical shared pages with COW; reads do not restore private copies. See the [daemon guide](../../guides/daemon/index.md#memory-pool) for activation and budgets. This page retains the macOS cold-compression and historical Linux mechanism records.

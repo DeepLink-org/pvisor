@@ -60,7 +60,7 @@ just cases --suite use --output target/pvisor-learning-report.json
 
 规格和包含准备块的完整 Markdown 文档都参与 semspec 摘要。新规格保持 UNREVIEWED；执行成功与人工语义批准是两件事。人工完成引擎、词汇和规格审核后，可增加 `--require-reviewed`。测试执行不会批准规格或更新审核账本。
 
-[DOC cases](../reference/cases.md)、[VM 控制 cases](../reference/cases-vm.md)、STAGE 和 USE 场景统一由 `just cases` 执行，用 `--suite doc/stage/use/vm` 选择；`examples/pvisor` 由 `just examples` 执行。CI 同时运行原有隔离回归、网络/Gateway mock 场景和新学习路线。旧独立 snapshot 的硬件记录保留作历史证据；旧 Controller/Worker 验收记录不验证新 daemon。完整原生执行恢复按 [execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)单独验证；daemon 的[运行时边界](../guides/daemon/boundaries.md)不包含 VM 恢复；本学习路线没有把未运行的 VM/Gateway 能力算作成功。
+[DOC cases](../reference/cases.md)、[VM 控制 cases](../reference/cases-vm.md)、STAGE 和 USE 场景统一由 `just cases` 执行，用 `--suite doc/stage/use/vm` 选择；`examples/pvisor` 由 `just examples` 执行。CI 同时运行原有隔离回归、网络/Gateway mock 场景和新学习路线。旧独立 snapshot 的硬件记录保留作历史证据；旧 Controller/Worker 验收记录不验证新 daemon。完整原生执行恢复按 [execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)单独验证；daemon 的[运行时边界](../guides/daemon/index.md)不包含 VM 恢复；本学习路线没有把未运行的 VM/Gateway 能力算作成功。
 
 全量执行门禁当前以 Linux 为目标。macOS 可以选择适用的场景运行；本机 loopback 的网络策略与 Linux namespace 不同，S-USE-014 的宿主 loopback 拒绝检查不作为 macOS 承诺。
 

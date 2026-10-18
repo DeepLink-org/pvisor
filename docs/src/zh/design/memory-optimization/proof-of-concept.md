@@ -1,6 +1,6 @@
 # 实验性概念验证
 
-共享基线、COW 和冷页池实验提供了内存优化的机制基础，也暴露了服务可用性、恢复竞争和物理计量的限制。目标架构由[内存优化](index.md)、[内存去重](deduplication.md)及[内存压缩](compression.md)主导；以下保留对应版本的实现、实验与失败记录，不作为未来方案的生产保证。
+共享基线、COW 和冷页池实验提供了内存优化的机制基础，也暴露了服务可用性、恢复竞争和物理计量的限制。目标架构由[内存优化](index.md)、[内存去重](deduplication.md)及[实例内压缩](compression-local.md)主导；以下保留对应版本的实现、实验与失败记录，不作为未来方案的生产保证。
 
 
 当前 Linux daemon 池已改为物理共享页＋COW，读取不会恢复私有副本；开启与预算见 [daemon 指南](../../guides/daemon/index.md#memory-pool)。本文保留 macOS 冷压缩及历史 Linux 路径的机制记录。

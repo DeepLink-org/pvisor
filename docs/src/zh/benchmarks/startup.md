@@ -158,4 +158,4 @@ host 和 staged 的等待为十几到几十毫秒，适合频繁启动的短命�
 
 启动统计、VM 差异与 95% 区间、源码与制品来源的完整 CSV/JSON 和原始记录保存在对应本地批次或文档数据归档。当前 Ready / Exit 复现见[启动实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/startup/README.md)。
 
-[比较方法](methodology.md) · [历史复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls)
+[比较方法](index.md#interpretation) · [历史复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#explicit-firecracker-kernel-controls)

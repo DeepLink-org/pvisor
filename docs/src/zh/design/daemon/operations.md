@@ -26,9 +26,7 @@ pvisor-daemon serve \
 
 运行时路径使用绝对路径，daemon 重启时保持不变。状态路径保持短，例如 `/run/user/1000/pvd`：逐 sandbox 的 `control.sock` 必须短于 104 字节，vsock Unix socket 也有路径长度限制。保留状态；此 `/run` 示例不保证跨注销／重启持久化，VM 不能跨宿主重启存活。`/sys/fs/cgroup/pvd` 必须是真实委派层级，不能是普通目录。
 
-版本 1 中已有记录的 `sandboxes.json` 若缺少原生 `owner.json` marker，会在既有 store 独占锁内被拒绝：它可能仍持有活动 Podman 容器。使用全新原生状态并保留／清理旧部署，或通过旧 Podman daemon 删除全部 sandbox、确认清理后，再用已清空的 registry 切换后端。不要删除 registry 条目、预留或所有权状态，也不要伪造原生 marker 绕过检查。原生 daemon 不会把这些容器接管为 Missing 或静默释放其预留。
-
-v2 header 缺少 `owner.json` 时也会被拒绝，即使它按设计使用空 `sandboxes` map。原生 marker、header 与私有 `records/` 树须一同保留；见[存储迁移与激活](storage.md#migration)。
+已有记录的 v1 registry 或 v2 header 缺少原生 `owner.json` marker 时拒绝启动，即使 map 为空；它可能仍持有活动 Podman 容器。保留原始归属状态，使用全新原生状态或经旧 Podman daemon 清理后切换，不要删除记录／预留或伪造 marker。拒绝与迁移规则见[存储](storage.md#migration)。
 
 ## 预制镜像合同 {#image-contract}
 

@@ -1,5 +1,7 @@
 # Agent tool tasks: technical evidence
 
+> Note: "local original records" and paths such as `docs/src/assets/benchmarks/.data/` refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
+
 Complete repair/testing takes about **4.61 s** in image-free pVisor VM and **8.51 s** on Firecracker / complete Ubuntu; staging takes **0.72 s**. Ubuntu boot affects short jobs, while pVisor retains substantial tool-execution costs: fast startup does not establish leading tools. Claude/VM: initialization timeout / N=0; real Codex tool-loop results follow below.
 
 ## Motivation
@@ -18,7 +20,7 @@ These workloads were measured on Linux; macFUSE/FSKit overhead and capacity rema
 
 ### Image-free pVisor and complete Ubuntu: full Agent Env {#full-ubuntu}
 
-pVisor reuses installed host Python/Node/Rust/Git/rg/Claude/Codex without making an OS image. Firecracker/QEMU install distribution tools and the same Rust/Agent CLIs in complete official Ubuntu 26.04.1 LTS. Each trial creates a new environment, then runs the same repair plan and tests. VMs use 2 vCPU / 16 GiB; all groups share the two-core budget and warm host caches, with 10 planned samples, 3 warmups and randomized order; cells state effective N when below 10. Ubuntu Python/Node/Git versions differ from the host; full versions and kernel differences are in the [method](../benchmarks/methodology.md#full-ubuntu).
+pVisor reuses installed host Python/Node/Rust/Git/rg/Claude/Codex without making an OS image. Firecracker/QEMU install distribution tools and the same Rust/Agent CLIs in complete official Ubuntu 26.04.1 LTS. Each trial creates a new environment, then runs the same repair plan and tests. VMs use 2 vCPU / 16 GiB; all groups share the two-core budget and warm host caches, with 10 planned samples, 3 warmups and randomized order; cells state effective N when below 10. Ubuntu Python/Node/Git versions differ from the host; full versions and kernel differences are in the [method](../benchmarks/index.md#full-ubuntu).
 
 ![Complete Ubuntu and image-free pVisor tool loops](../assets/benchmarks/full-ubuntu-qemu-20261004/ubuntu-workflows.svg)
 
@@ -62,17 +64,17 @@ Claude/VM preflight still exceeds 90 seconds during initialization, with formal 
 
 Codex uses uniform inner `danger-full-access`, with the outer runtime supplying its stated boundary; default nested sandbox compatibility is unmeasured. N=10 gives first-version budgets and repeatability, not long-term tail or real-model success guarantees. RSS sums the launcher tree every 20 ms, including separate Firecracker DNS/NAT support; QEMU uses built-in user networking. Shared pages may be counted twice and short peaks missed. Configured 16 GiB is not 16 GiB resident, and short-task RSS does not establish concurrency capacity.
 
-Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/methodology.md#full-ubuntu) · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-workflows-private-tmp-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-clients-console-v2-20261004/evidence.tar.gz`
+Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/summary.tsv` · [Method and reproduction](../benchmarks/index.md#full-ubuntu) · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-workflows-private-tmp-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-20261004/ubuntu-clients-console-v2-20261004/evidence.tar.gz`
 
 Complete-Ubuntu repair/testing takes **8.12 s** on q35 and **10.33 s** on microvm, with internal tools taking **2.75 / 2.81 s**. Image-free pVisor reduces waiting for fresh jobs, while its 4.02 s worker time remains above these complete-Ubuntu paths, a priority when environments are reused. Selecting microvm does not automatically improve complete tasks in this configuration. Networking, devices and exposed CPU features differ; the entire difference cannot be assigned to block devices or FUSE.
 
-Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/ubuntu-qemu-complete-20261004/evidence.tar.gz` · [QEMU method](../benchmarks/methodology.md#full-ubuntu-qemu)
+Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/full-ubuntu-qemu-20261004/ubuntu-qemu-complete-20261004/evidence.tar.gz` · [QEMU method](../benchmarks/index.md#full-ubuntu-qemu)
 
 ### Historical controlled environment: shared tools and trimmed reference VMs {#reference-env}
 
 This batch shares tool artifacts to control some version differences. Firecracker/QEMU use trimmed Linux 6.12.109 and static init, without a complete distribution boot. pVisor shares a tool directory through virtio-fs without an image. These results retain Docker and minimal-VM context; see the [complete Ubuntu and image-free hostroot deployment](#full-ubuntu) above.
 
-The deployed environment contains Python 3.14.7, Node 24.18.0/npm, Rust/Cargo 1.98.1, Git, rg, Claude Code 2.1.128, and Codex 0.160.0: about 3.58 GiB and 76,000 files. Native, Docker and VMs use the same tool artifacts, projects and checks. Each case has 30 samples and 3 warmups, a two-core budget, and 2 vCPU / 16 GiB for complete VMs. Full [parameters and boundaries](../benchmarks/methodology.md#reference-env) are stated separately.
+The deployed environment contains Python 3.14.7, Node 24.18.0/npm, Rust/Cargo 1.98.1, Git, rg, Claude Code 2.1.128, and Codex 0.160.0: about 3.58 GiB and 76,000 files. Native, Docker and VMs use the same tool artifacts, projects and checks. Each case has 30 samples and 3 warmups, a two-core budget, and 2 vCPU / 16 GiB for complete VMs. Full [parameters and boundaries](../benchmarks/index.md#reference-env) are stated separately.
 
 The workflow inspects a project, searches for the bug, repairs Python, runs Python/Rust/Node tests, installs 32 local dependencies, and generates a diff. Fixed model responses request that plan. Real CLIs must return actual passing tool results and exit normally. This covers environment deployment and tool execution, not large repositories, real model success rates or Internet dependency installation.
 
@@ -111,7 +113,7 @@ VM npm installation takes about 1.74 s, its largest phase here; Rust compilation
 
 Do not rank Claude against Codex by absolute time. Codex also has seconds of client waiting in this path: roughly 6.26 s in Docker and 10.93 s in pVisor VM. These numbers describe the complete client experience more closely than bare startup, for these versions and controlled tasks, not model speed.
 
-**Deployment is separate.** Offline tool copying, image import and ext4 creation take about 109 s; adding the CPU affinity helper takes another 5.3 s. Downloads and kernel compilation are excluded. Per-run workspace/private-disk preparation is recorded as `prepare_ms`, outside the task table. These are prepared-environment task budgets, not first-install-to-completion costs. See the [memory audit](../benchmarks/methodology.md#reference-resources); 16 GiB configured RAM does not mean each Agent consumes 16 GiB resident memory.
+**Deployment is separate.** Offline tool copying, image import and ext4 creation take about 109 s; adding the CPU affinity helper takes another 5.3 s. Downloads and kernel compilation are excluded. Per-run workspace/private-disk preparation is recorded as `prepare_ms`, outside the task table. These are prepared-environment task budgets, not first-install-to-completion costs. See the [memory audit](../benchmarks/index.md#reference-resources); 16 GiB configured RAM does not mean each Agent consumes 16 GiB resident memory.
 
 Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/summary.tsv` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/evidence.tar.gz` · Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/compatibility.tsv`
 
@@ -150,4 +152,4 @@ python3 benchmark/pvisor/product_v1.py \
 
 Start with `--samples 1 --warmups 0` to check prerequisites. Workloads and correctness assertions live in `benchmark/pvisor/v1/`. Reports pin binaries, firmware and harness source with hashes. Failed operations never enter performance distributions. Effective sample counts are stated per page; P95/P99 from small samples describe this batch rather than production tail probabilities.
 
-[Environment, artifacts and method](../benchmarks/methodology.md#product-v1) · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`. Reports retain dirty source status; executable SHA256 identifies the measured artifact. The archive excludes large rootfs/binaries and reproducible workspace payloads, while retaining input hashes and each batch's harness.
+[Environment, artifacts and method](../benchmarks/index.md#product-v1) · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/manifest.tsv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/samples.csv` · Local raw record `docs/src/assets/benchmarks/.data/product-v1-20261004/evidence.tar.gz`. Reports retain dirty source status; executable SHA256 identifies the measured artifact. The archive excludes large rootfs/binaries and reproducible workspace payloads, while retaining input hashes and each batch's harness.

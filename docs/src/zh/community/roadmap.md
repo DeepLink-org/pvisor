@@ -1,6 +1,6 @@
 # 路线图
 
-主线的分级与规模轴见[信任阶梯](../why/trust-ladder.md)。下表列出 L1（本机逐个 Job）的持续工作与验收标准。
+主线的分级与规模轴见[为什么是 pVisor](../why/index.md#trust-ladder)。下表列出 L1（本机逐个 Job）的持续工作与验收标准。
 
 | 工作 | 验收标准 |
 | --- | --- |
@@ -36,7 +36,7 @@
 ## L2 与 L3 里程碑
 
 !!! note "建设中"
-    L2/L3 的进入条件与缺口清单尚未定稿，排期未确定。以下列出当前要求与验收标准。级别定义见[信任阶梯](../why/trust-ladder.md)，容量依据见[并发密度](../benchmarks/density.md)。
+    L2/L3 的进入条件与缺口清单尚未定稿，排期未确定。以下列出当前要求与验收标准。级别定义见[信任阶梯](../why/index.md#trust-ladder)，容量依据见[并发密度](../benchmarks/density.md)。
 
 ### L2：本机多个 Job／一条流水线
 
@@ -49,7 +49,7 @@
 
 ### L3：集群化执行、集中证据
 
-进入条件（待定稿）：明确与调度器的边界——pVisor 提供执行语义与证据，跨节点编排交给 Kubernetes、Ray，见[集群化执行](../design/research/cluster-execution.md)。
+进入条件（待定稿）：明确与调度器的边界——pVisor 提供执行语义与证据，跨节点编排交给 Kubernetes、Ray，见[集群化执行](../design/research/index.md)。
 
 验收标准：
 

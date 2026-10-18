@@ -6,7 +6,7 @@ Letting an agent complete a task unattended calls for limits on file and network
 
 How long an agent can run depends on how long you are willing to watch. Approve every command and human attention becomes the ceiling; go fully automatic and you must accept that it may corrupt files, read what it should not, and send requests where they should not go.
 
-More tasks take more attention when every command needs approval. Execution boundaries and post-run review can reduce intervention while tasks run.
+More tasks take more attention when every command needs approval. Execution boundaries and post-run review can reduce intervention while tasks run. The difference is amortization: process review adds one decision per step and needs a human present throughout; deferred review amortizes—results can be sampled, batched, and machine-checked, and once process facts are recorded completely they can be verified after the fact in one pass instead of being intercepted during execution.
 
 ## Decouple supervision from execution volume
 
@@ -28,11 +28,20 @@ pVisor is the **semantic layer for each execution**: it defines boundaries, inst
 
 Executors provide isolation through host namespaces/Seatbelt, containers, or VMs. pVisor manages execution policy, lifecycle, and records; external systems such as Kubernetes and Ray handle cross-node orchestration.
 
-## Today, and after
+## Today, and after {#trust-ladder}
 
-Today pVisor runs Job by Job on one machine: finish a task unattended, then afterward merge only the changes you want, as you would review a PR. This is L1, and it already has the three properties needed for higher levels of autonomy.
+By the timing and degree of human intervention, autonomous execution falls into four levels:
 
-For how the four levels split, where pVisor places its bet, and the status of L2/L3, see [trust ladder and scale](trust-ladder.md); for usage at different scales see [use cases](use-cases.md).
+| Level | How humans intervene (trust axis) | What carries it (scale axis) | Status |
+| --- | --- | --- | --- |
+| L0 | Approve each command before it runs | A single interactive session | Common in agents, now with model-assisted approval |
+| L1 | Review each change after the run | Local, individual Jobs | **pVisor today** |
+| L2 | Policy and evidence determine exemptions; humans spot-check | Multiple local Jobs / one pipeline | Next |
+| L3 | Audit afterward; humans handle exceptions only | Clustered: cross-node scheduling, centralized evidence | pVisor's scale target |
+
+The four levels are a reference; pVisor's choice is L1: enforce access boundaries at runtime, stage file changes, then inspect records and results—use the `--ask` runtime approval channel when individual operations need approval. The [single-node daemon](../guides/daemon/index.md) manages local sandbox lifecycle through an API separate from native Job review; external systems such as Kubernetes and Ray handle cross-node scheduling, with pVisor providing execution semantics and checkable records within them.
+
+The same capabilities solve different problems at different scales: a fully automated refactor with one person and one agent works today; parallel runs and batch review across many agents are next (see [parallel agents](../guides/parallel-agents.md)); teams and platforms can adopt the L1 workflow in CI today (see [running in CI](../guides/ci.md)); agentic RL and evaluation need a recorded, forkable, replayable batch execution substrate (see [RL rollouts](../guides/rl-rollouts.md) and [research directions](../design/research/index.md)).
 
 !!! note "Under construction"
-    "Human supervision cost per unit of agent work" has no measured data yet; requirements and acceptance criteria are in [supervision cost](../benchmarks/supervision-cost.md).
+    "Human supervision cost per unit of agent work" has no measured data yet—requirements and acceptance criteria are in [supervision cost](../benchmarks/supervision-cost.md). The entry criteria and gap list for L2/L3 are not final; see the [roadmap](../community/roadmap.md) for progress and [concurrency density](../benchmarks/density.md) for the capacity rationale.

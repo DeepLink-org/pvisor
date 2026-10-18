@@ -26,9 +26,7 @@ Keep state and runtime configuration compatible across restarts. Use TLS termina
 
 Keep runtime paths absolute and unchanged across daemon restarts. Use short state paths such as `/run/user/1000/pvd`: per-sandbox `control.sock` must be shorter than 104 bytes, and vsock Unix sockets also have path limits. Retain state; this `/run` example does not promise persistence across logout/reboot, and VMs cannot survive host reboot. `/sys/fs/cgroup/pvd` must be a real delegated hierarchy, not an ordinary directory.
 
-An occupied version-1 `sandboxes.json` without the native `owner.json` marker is rejected under the existing exclusive store lock: it may still own live Podman containers. Use fresh native state while preserving and cleaning up the old deployment, or delete every sandbox through the old Podman daemon and confirm cleanup before switching backends with the emptied registry. Never erase registry entries, reservations or ownership state, or fabricate a native marker to bypass this guard. The native daemon neither adopts those containers as Missing nor silently releases their reservations.
-
-A v2 header is also rejected without `owner.json`, even with its intentionally empty `sandboxes` map. Preserve the native marker, header and private `records/` tree together; see [storage migration and activation](storage.md#migration).
+An occupied v1 registry or a v2 header without the native `owner.json` marker is rejected, even with an intentionally empty map: it may still own live Podman containers. Preserve the original ownership state; use fresh native state or clean up through the old Podman daemon before switching, and never erase records/reservations or fabricate markers. Rejection and migration rules live in [storage](storage.md#migration).
 
 ## Prepared image contract {#image-contract}
 

@@ -1,5 +1,7 @@
 # Memory deduplication curves: Firecracker, Docker and pVisor
 
+> Note: local `.data/` paths refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
+
 ## Linux: preflight of deduplication speed, compression and shared libraries {#linux-pool-curves}
 
 ### Observed benefits and costs {#pool-findings}

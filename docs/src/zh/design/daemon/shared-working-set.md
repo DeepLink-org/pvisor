@@ -41,7 +41,7 @@
 
 物理共享页只计一次。共享成本随版本和访问模式改变，私有成本随执行数和写比例增长。分散访问与大量写入可以消除收益。文件 copy-up、传输块、read-ahead 与 COW 可能放大请求字节。
 
-逻辑预留、物理占用和可回收缓存分开。原生 node retained-payload 记账覆盖内容块、分页 metadata 和 decoded RAM，不含完整 metadata、scratch、外部引用或内核页。仍需内核上限和整组观察。这些机制不放宽 daemon 的[硬限制准入](admission.md)。
+逻辑预留、物理占用和可回收缓存分开。原生 node retained-payload 记账覆盖内容块、分页 metadata 和 decoded RAM，不含完整 metadata、scratch、外部引用或内核页。仍需内核上限和整组观察。这些机制不放宽 daemon 的[硬限制准入](index.md#admission)。
 
 ## 所有权与未来接入 {#integration}
 
@@ -67,4 +67,4 @@
 
 Daemon 池与 node backing 恢复分开。物理池丢失会使依赖 VM 失败；sealed 压缩客户端保留已交付句柄的本地恢复并停止新发布；API 重启保留独立组件，但不能恢复已失败的池内容。见[启用、所有权和限制](../../guides/daemon/index.md#memory-pool)。
 
-相关设计：[职责收敛](responsibility-convergence.md)、[共享镜像存储](../shared-image-cache-storage.md)、[内存优化](../memory-optimization/index.md)与[实验冷 RAM pool](../memory-optimization/proof-of-concept.md)。
+相关设计：[Daemon 架构](index.md)、[共享镜像存储](../shared-image-cache-storage.md)、[内存优化](../memory-optimization/index.md)与[实验冷 RAM pool](../memory-optimization/proof-of-concept.md)。

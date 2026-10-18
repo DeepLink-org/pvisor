@@ -116,5 +116,5 @@ configuration; drain old instances and use fresh state to change it.
 [Memory evidence](proof-of-concept.md#memory-evidence) establishes no known
 production net gains or verified net physical-memory savings. Historical pool
 measurements do not validate sealed backing. The [architecture index](index.md)
-and [compression overview](compression.md) distinguish implementation, component
+distinguishes implementation, component
 correctness, the scoped real-guest probe and remaining workload acceptance gates.

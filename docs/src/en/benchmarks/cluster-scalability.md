@@ -64,6 +64,35 @@ N=3 independent processes per size; table values are P50, with observed minimum�
 
 The retired Controller's million-record cohort observed about 8 GiB lifecycle peak and about 14.62 s warm-log replay; neither is a current sizing recommendation. Recovery excludes Worker reconciliation and cold-disk reads. The medians across processes for typed in-memory count calls are about 107–110 ns, describing synthetic state-count calls rather than HTTP/CLI latency; details remain in the complete local statistics.
 
+### Archived readiness probes and Controller index costs {#archive-probes}
+
+The 2026-10-05 shell/sleep probe grew Worker count and CPU budget together, observing parallel readiness of one to four guests. It answers whether readiness keeps up with added budget, not useful-task throughput under a fixed budget.
+
+| Live VMs | Total memory P50, MiB | Ready P50, s | Batch readiness rate, VMs/s |
+|---:|---:|---:|---:|
+| 1 | 92.93 | 3.807 | 0.261 |
+| 2 | 178.00 | 3.789 | 0.525 |
+| 4 | 342.96 | 4.383 | 0.901 |
+
+Each level ran one warmup and five measured batches; guests had 128 MiB / one vCPU. Readiness includes CLI/HTTP submission, persistence, scheduling and VM startup; memory is the sum of non-overlapping service cgroups once all guests are ready, not a startup peak.
+
+The retired Controller's synthetic history queries and retained-record replay (one release process, one CPU, NVMe per level; counts use twenty query samples of one hundred index calls each; RSS and replay have a single observation per level):
+
+| Retained records | Index count P50, ns | Full-scan reference P50, ms | Process + ID fixture RSS, MiB | Log, MiB | Warm replay, s |
+|---:|---:|---:|---:|---:|---:|
+| 1,000 | 202.83 | 0.068 | 12.13 | 1.93 | 0.079 |
+| 10,000 | 286.78 | 5.254 | 70.59 | 19.33 | 0.388 |
+| 100,000 | 129.40 | 20.789 | 658.82 | 193.25 | 1.744 |
+| 1,000,000 | 169.47 | 134.204 | 6,540.58 | 1,932.55 | 16.090 |
+
+RSS includes the ID fixture and allocator retention; warm replay excludes Worker reconciliation and cold-disk recovery; the full scan is an algorithmic reference, not throughput of another Controller build. These figures must not be merged with other cohorts on this page.
+
+### Retired proposals and the bar for replacements {#retired-proposals}
+
+These old proposals retired with Controller/Worker, and the archived measurements do not validate them: startup attribution (direct VM versus old dispatch), marginal memory (distinguishing shared base, private working set and offload), useful work under a fixed budget (idle-CPU-release A/B), history scaling (HTTP scheduling throughput), recovery (end-to-end reconciliation) and sustained operation (long-term resource bounds). The memory and density questions remain with the independent B-DENSITY and B-VM-MEMORY probes under their own registries.
+
+Any replacement experiment needs an independently registered subject and user question, frozen source/binary/input identities, verified whole-process-tree CPU/memory/zero-swap controls, identical workloads, predeclared sample counts and stopping rules, and complete correctness, conflict and recovery checks; failures, unknowns and OOMs are retained; A/B conclusions report paired uncertainty. The protocol is frozen before formal sampling; hypotheses are not approved from exploratory data after the fact.
+
 ### Comparison with existing schedulers {#limits}
 
 Matched workloads and common budgets for Kubernetes, Ray and cloud sandboxes are unmeasured, so no numeric ranking is provided. The archived measurements do not size the current daemon or justify replacing a general scheduler. Single-task Docker, Firecracker and QEMU measurements are in the [end-to-end tasks](agent-tasks.md).
@@ -72,6 +101,6 @@ Matched workloads and common budgets for Kubernetes, Ray and cloud sandboxes are
 
 The five CSVs remain unchanged in the local documentation data archive as historical evidence for retired Controller/Worker artifacts. There is no active Cluster measurement or publishing entry; the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md) records retirement, not a new reproduction command.
 
-[Comparison method](methodology.md) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](index.md#interpretation) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
 
-Derived tables link one raw report to the per-task evidence audit digest. Complete CSV/JSON, raw reports, completion records, service logs, controls, source and binaries stay in local `.data/` or the documentation data archive. Implementation analysis is in the [Cluster technical analysis](../design/cluster-performance-analysis.md).
+Derived tables link one raw report to the per-task evidence audit digest. Complete CSV/JSON, raw reports, completion records, service logs, controls, source and binaries stay in local `.data/` or the documentation data archive. Historical figure inputs (`vm.tsv`, `vm-summary.csv`, `controller-summary.csv`, `controller-provenance.tsv`, `manifest.tsv`, `setup-failure.tsv`) are likewise kept in the local archive and are not site downloads.

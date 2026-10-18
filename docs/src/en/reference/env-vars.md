@@ -27,7 +27,7 @@ See [shared cache](shared-image-cache.md) for endpoint grammar, security, and fa
 
 `OPEN_SANDBOX_API_KEY` supplies the standalone `pvisor-daemon serve` lifecycle key. Use a protected random secret of at least 32 bytes; do not pass it in argv or project it to workloads. Clients send it as the `OPEN-SANDBOX-API-KEY` HTTP header. The environment name uses underscores; the HTTP name uses hyphens.
 
-Default daemon endpoints return a sandbox-scoped `X-PVISOR-SANDBOX-TOKEN` in endpoint headers; clients must preserve it. It is not a host environment setting or a lifecycle credential. See [endpoint authentication](../guides/daemon/operations.md#endpoints). Native cache/pool credentials and Job environment projection remain separate. Retired Cluster tokens are not daemon credentials.
+Default daemon endpoints return a sandbox-scoped `X-PVISOR-SANDBOX-TOKEN` in endpoint headers; clients must preserve it. It is not a host environment setting or a lifecycle credential. See [endpoint authentication](../guides/daemon/index.md#endpoints). Native cache/pool credentials and Job environment projection remain separate. Retired Cluster tokens are not daemon credentials.
 
 ## Runtime injection
 

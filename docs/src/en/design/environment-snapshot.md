@@ -51,7 +51,7 @@ The former save maps to suspend; resume continues the current head, while fork -
 
 The [single-node daemon](daemon/index.md) uses native VM execution, but does not implement capture/restore APIs. Its pause/resume is acknowledged live vCPU control on the same Attempt, not cgroup freeze or a snapshot. Snapshot, checkpoint/fork, stage/apply and offload APIs remain absent. Do not use retired Cluster controls as snapshot entries.
 
-Native node backing ownership remains separate from daemon lifecycle; see [responsibility convergence](daemon/responsibility-convergence.md).
+Native node backing ownership remains separate from daemon lifecycle; see the [daemon architecture](daemon/index.md).
 
 ## Historical evidence {#historical-evidence}
 

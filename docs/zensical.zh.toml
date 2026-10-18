@@ -16,20 +16,13 @@ nav = [
   { "首页" = "index.md" },
   { "快速开始" = [
     { "快速上手" = [
-      { "从这里开始" = "start/index.md" },
-      { "PolicyVisor 是什么" = "start/what-is-pvisor.md" },
       { "安装指南" = "start/installation.md" },
       { "第一次运行" = "start/first-run.md" },
-      { "第一次运行之后" = "start/next-steps.md" },
     ] },
     { "了解 pVisor" = [
       { "为什么是 pVisor" = "why/index.md" },
       { "Agent 任务的生命周期成本" = "why/agent-lifecycle-cost.md" },
-      { "信任阶梯与规模轴" = "why/trust-ladder.md" },
-      { "用例" = "why/use-cases.md" },
-      { "与现成方案对比" = "why/comparisons.md" },
-      { "什么时候不需要 pVisor" = "why/when-not-to-use.md" },
-      { "常见问题" = "why/faq.md" },
+      { "适用判断与对比" = "why/comparisons.md" },
     ] },
   ] },
   { "用户指南" = [
@@ -48,9 +41,6 @@ nav = [
       { "接入你的 Agent" = "guides/agents/index.md" },
       { "Claude Code" = "guides/agents/claude-code.md" },
       { "Codex CLI" = "guides/agents/codex.md" },
-      { "Gemini CLI" = "guides/agents/gemini-cli.md" },
-      { "aider" = "guides/agents/aider.md" },
-      { "OpenCode" = "guides/agents/opencode.md" },
       { "任意脚本与自动化命令" = "guides/agents/custom-scripts.md" },
     ] },
     { "策略" = [
@@ -66,9 +56,6 @@ nav = [
     ] },
     { "Daemon 上手" = [
       { "运行单机 daemon" = "guides/daemon/index.md" },
-      { "Daemon 与独立缓存入口" = "guides/daemon/service.md" },
-      { "单机 daemon 运维" = "guides/daemon/operations.md" },
-      { "Daemon 运行时与集成边界" = "guides/daemon/boundaries.md" },
     ] },
     { "任务学习路线" = [
       { "按任务学习 pVisor" = "cases/index.md" },
@@ -96,12 +83,9 @@ nav = [
   ] },
   { "基础概念" = [
     { "执行概念" = [
-      { "概念与边界" = "concepts/index.md" },
       { "Job 与存储" = "concepts/jobs.md" },
       { "暂存与 apply 语义" = "concepts/staging.md" },
       { "能力、证据与保证边界" = "concepts/capabilities-and-evidence.md" },
-      { "策略模型" = "concepts/policy-model.md" },
-      { "术语表" = "concepts/glossary.md" },
     ] },
     { "安全" = [
       { "安全概览" = "security/index.md" },
@@ -116,7 +100,6 @@ nav = [
   { "基准测试" = [
     { "性能测试" = [
       { "基准概览" = "benchmarks/index.md" },
-      { "测试方法" = "benchmarks/methodology.md" },
       { "启动延迟" = "benchmarks/startup.md" },
       { "惰性镜像" = "benchmarks/lazy-image-startup.md" },
       { "内存优化" = "benchmarks/vm-memory/index.md" },
@@ -147,10 +130,8 @@ nav = [
       { "内存架构与机制" = "design/memory-optimization/index.md" },
       { "内存去重" = "design/memory-optimization/deduplication.md" },
       { "共享工作集与按需加载" = "design/daemon/shared-working-set.md" },
-      { "内存压缩" = "design/memory-optimization/compression.md" },
       { "实例内压缩" = "design/memory-optimization/compression-local.md" },
       { "内存卸载" = "design/memory-optimization/offload.md" },
-      { "卸载文件格式" = "design/memory-optimization/offload-format.md" },
       { "池化服务器压缩" = "design/memory-optimization/compression-pool.md" },
       { "实验性概念验证" = "design/memory-optimization/proof-of-concept.md" },
     ] },
@@ -169,11 +150,7 @@ nav = [
     ] },
     { "单节点 Daemon" = [
       { "单节点 Daemon 架构" = "design/daemon/index.md" },
-      { "本机状态与重启恢复" = "design/daemon/state-and-recovery.md" },
-      { "本机 Sandbox 准入" = "design/daemon/admission.md" },
-      { "Sandbox 生命周期" = "design/daemon/lifecycle.md" },
-      { "Daemon 存储与回收" = "design/daemon/storage.md" },
-      { "服务职责收敛" = "design/daemon/responsibility-convergence.md" },
+      { "Daemon 存储、恢复与回收" = "design/daemon/storage.md" },
       { "Daemon 运维" = "design/daemon/operations.md" },
     ] },
     { "接口、扩展与设计决策" = [
@@ -195,11 +172,7 @@ nav = [
       { "EXP-003（设计阶段）：Agent 异步 I/O 与完成队列" = "design/experimental/agent-io-completion/index.md" },
     ] },
     { "研究方向" = [
-      { "研究方向" = "design/research/index.md" },
-      { "外部编排与单机执行" = "design/research/cluster-execution.md" },
-      { "RL 执行基座" = "design/research/rl-execution-substrate.md" },
-      { "论文与报告" = "design/research/publications.md" },
-      { "开源设计文档参考" = "design/research/design-documents.md" },
+      { "研究方向" = "design/research/index.md" }
     ] },
   ] },
   { "参与开发" = [
@@ -212,9 +185,7 @@ nav = [
       { "发布 PolicyVisor" = "community/releasing.md" },
       { "路线图" = "community/roadmap.md" },
       { "变更日志" = "community/changelog.md" },
-      { "行为准则" = "community/code-of-conduct.md" },
       { "治理" = "community/governance.md" },
-      { "使用者" = "community/adopters.md" },
     ] },
   ] },
 ]

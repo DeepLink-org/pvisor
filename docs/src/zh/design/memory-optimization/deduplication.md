@@ -90,7 +90,7 @@ KSM 不合并文件 page cache；当前 `MAP_SHARED` live backing 不能只添�
 - **共享与隔离：** 限定信任域并评估内容存在性侧信道。KSM advice 没有 pVisor 自定义域参数，产品标签不能单独证明隔离。
 - **简单与覆盖面：** 当前 physical pool 采用有界 resident 扫描；任意热页即时合并与 P2P 不属于交付范围。主动共享槽位与完整机器持久恢复分别设计。
 
-同一区域首版不叠加 KSM 与用户态冷回收，避免先合并再复制压缩的重复工作。独特但可压缩的冷内容见[内存压缩](compression.md)。
+同一区域首版不叠加 KSM 与用户态冷回收，避免先合并再复制压缩的重复工作。独特但可压缩的冷内容见[实例内压缩](compression-local.md)。
 
 ## 当前接入与验证基础 {#direction}
 

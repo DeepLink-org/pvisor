@@ -1,6 +1,6 @@
 # Roadmap
 
-See [Trust ladder](../why/trust-ladder.md) for the levels and scale axes. The table below lists ongoing L1 work (individual local Jobs) and its acceptance criteria.
+See [Why pVisor](../why/index.md#trust-ladder) for the levels and scale axes. The table below lists ongoing L1 work (individual local Jobs) and its acceptance criteria.
 
 | Work | Acceptance criteria |
 | --- | --- |
@@ -36,7 +36,7 @@ The [daemon](../guides/daemon/index.md) has VM-only `NativeRuntime` embedding pV
 ## L2 and L3 milestones
 
 !!! note "Under construction"
-    The entry criteria and gap list for L2/L3 are not final, and no schedule is set. The requirements and acceptance criteria below describe the current work. For the level definitions see the [trust ladder](../why/trust-ladder.md); for the capacity rationale see [concurrency density](../benchmarks/density.md).
+    The entry criteria and gap list for L2/L3 are not final, and no schedule is set. The requirements and acceptance criteria below describe the current work. For the level definitions see the [trust ladder](../why/index.md#trust-ladder); for the capacity rationale see [concurrency density](../benchmarks/density.md).
 
 ### L2: multiple local Jobs / one pipeline
 
@@ -49,7 +49,7 @@ Acceptance criteria:
 
 ### L3: clustered execution, centralized evidence
 
-Entry criteria (TBD): the boundary with schedulers is defined—pVisor provides execution semantics and evidence, while cross-node orchestration goes to Kubernetes and Ray; see [cluster execution](../design/research/cluster-execution.md).
+Entry criteria (TBD): the boundary with schedulers is defined—pVisor provides execution semantics and evidence, while cross-node orchestration goes to Kubernetes and Ray; see [cluster execution](../design/research/index.md).
 
 Acceptance criteria:
 

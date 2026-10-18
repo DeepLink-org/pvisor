@@ -38,7 +38,9 @@ Pin a reliable backing or recovery source before unmapping or reclaiming origina
 | Local live compression | Unique compressible cold content within an instance | userfaultfd permissions, encoding CPU and refault costs |
 | Whole-VM offload | Idle state with a retained recovery source | Write/restore costs, storage and peak headroom |
 
-See [Memory deduplication](deduplication.md), [Memory compression](compression.md), [Per-instance compression](compression-local.md) and [Offload format](offload-format.md). [Pooled-server compression](compression-pool.md) shares sealed encoded objects in an explicit Linux mode; the default daemon physical pool shares raw pages. They remain separate mechanisms.
+See [Memory deduplication](deduplication.md), [Per-instance compression](compression-local.md), [RAM offload](offload.md) and the [byte-layout appendix](../offload/disk-layout-and-schema.md). [Pooled-server compression](compression-pool.md) shares sealed encoded objects in an explicit Linux mode; the default daemon physical pool shares raw pages. They remain separate mechanisms.
+
+The default route is instance-local ownership: local compression avoids service coordination but cannot share encoded results across instances. Pooling adds optional deduplication, shared storage and host-level budgets at the cost of IPC, contention and a wider failure radius; introduce it only when cross-instance sharing of encoded objects is needed. Both need scratch memory, restoration headroom, a CPU budget and acceptable tail latency.
 
 ## Ownership and publication order {#ownership}
 
@@ -71,12 +73,12 @@ Losing the physical/legacy pool fails dependent VMs. Linux sealed-compressed cli
 
 ## Implementation and combinations {#direction}
 
-The Linux daemon enables raw-page sharing explicitly with `serve --memory-pool`; it does not require userfaultfd. Per-instance live compression and `--memory-pool-mode compressed` use userfaultfd. The sealed pool has component-level service-loss tests and a passing two-VM probe covering eviction/refault and file I/O after service termination; production-density and latency acceptance remain open. Snapshot capture/restore, file backing, whole-VM offload, KSM advice and cold-page paths have explicit incompatibility checks. Callers select supported profiles; combinations do not switch automatically at runtime.
+The Linux daemon enables raw-page sharing explicitly with `serve --memory-pool`; it does not require userfaultfd. Per-instance live compression and `--memory-pool-mode compressed` use userfaultfd. The sealed pool has component-level service-loss tests and a passing two-VM probe covering eviction/refault and file I/O after service termination; the equivalent sealed pooling is not delivered on macOS, and production-density and latency acceptance remain open. Snapshot capture/restore, file backing, whole-VM offload, KSM advice and cold-page paths have explicit incompatibility checks. Callers select supported profiles; combinations do not switch automatically at runtime.
 
 [VM memory benchmarks](../../benchmarks/vm-memory/index.md) retain sharing and offload evidence by configuration, samples and accounting scope. Ready-stage savings do not guarantee lower lifecycle peaks, and writes reduce sharing. [Proofs of concept](proof-of-concept.md) retain historical mechanisms and failures; [Environment snapshots](../environment-snapshot.md) define complete-state contracts.
 
 ## System connections and source map {#integration}
 
-Mappings and block state stay inside the VM; pools and stores supply referenced content. Virtual devices join the same quiescence boundary through RAM leases. [Complete snapshots](../environment-snapshot.md#consistent-cut) additionally combine CPU, RAM, devices and files. [Daemon admission](../daemon/admission.md) must budget private pages, shared services and restore peaks across the node, rather than converting a local compression ratio directly into concurrency.
+Mappings and block state stay inside the VM; pools and stores supply referenced content. Virtual devices join the same quiescence boundary through RAM leases. [Complete snapshots](../environment-snapshot.md#consistent-cut) additionally combine CPU, RAM, devices and files. [Daemon admission](../daemon/index.md#admission) must budget private pages, shared services and restore peaks across the node, rather than converting a local compression ratio directly into concurrency.
 
 Source entries: `crates/pvisor-vm/src/memory.rs`, `handle.rs`, `cold_ram_linux.rs`, `ram_dedup.rs` and `devices/virtio/memory_gate.rs`. `api.rs` defines interfaces and lifecycles; [Shared working sets](../daemon/shared-working-set.md) covers daemon object budgets and process ownership.
