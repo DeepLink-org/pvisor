@@ -1354,6 +1354,8 @@ mod tests {
             .with_workspace_base(base, target.clone(), vm.clone())
             .unwrap()
             .build();
+        // Admission canonicalizes the target, including macOS's /var alias.
+        let target = target.canonicalize().unwrap();
         let mut spec = RunSpec::process("owned-workspace-stage", "sh", "/bin/true");
         spec.metadata
             .insert("pvisor.vm.overlay_target".into(), "/".into());
