@@ -1,10 +1,9 @@
 {
   "benchmarks/agent-tasks.md": "7c1e65dae9a3d3bf771a321625051164410718c31cfa451d28ae6af2f3240077",
-  "benchmarks/cluster-scalability.md": "608f48b42f7283f71ca9ff95e29e746b983e581ecef0588608fea56758e89c87",
   "benchmarks/compare-rl-infra.md": "804f6ea2f139f9923d6402f867638b1175096b5879bab949792ff015e8eff616",
   "benchmarks/density.md": "d95d40bed742ee9c50620eb2c85d3ca96f29b6d3a9cd73def60376a721aa441d",
   "benchmarks/filesystem.md": "5948079def394a2b317107bf8ab8b281c7d8b714cde7a0443873ffeb6a92c1b8",
-  "benchmarks/index.md": "7eed9b693308479071680ff1b8cbda6c1dca32ef71e2d6cbb79f5a8347cf30ad",
+  "benchmarks/index.md": "23552565b189d0b2cafb15c4247e1be72b74bc5fe0234a8432e848f85fc0c98e",
   "benchmarks/isolation-tests.md": "71588699652a0574c3f5b55ccc1f342558b2fc9081eba50d14c46913532eefd9",
   "benchmarks/lazy-image-startup.md": "7169a1e14031ba0e8ffd1c767d0182686cdbdb0de0e76319d133af809caead2e",
   "benchmarks/network.md": "5d88f9c3c628179d70d077c9a3f1a4e96cadff770c6ef510f6741004e956b137",

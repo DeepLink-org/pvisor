@@ -21,6 +21,74 @@ English article at the same relative path under `docs/src/en/`. Chinese defines
 the canonical information architecture; both languages describe the same
 behavior, examples, evidence and known limitations.
 
+## Benchmark pages {#benchmark-pages}
+
+Benchmark articles under `docs/src/{zh,en}/benchmarks/` are user decisions, not
+engineering reports: a reader must be able to choose a mode or size a deployment
+from them. Registration, data and publication rules live in
+[`benchmark/README.md`](../benchmark/README.md#structure). The rules below are the
+failure modes that have actually reached the site; treat them as hard rules.
+
+**Structure**
+
+- Exactly three H2 sections, in this order and with these anchors:
+  `Motivation {#motivation}`, `Experiment design {#interpretation}`,
+  `Data and analysis {#results}`. Never add `Conclusions`, `What is measured`,
+  `How it is measured` or `Limitations` sections.
+- `Motivation` is two paragraphs. The first is a judgement whose first sentence
+  answers the H1. The second is quantitative support only.
+- No tables, lists, batch history, dates or artifact hashes in `Motivation`.
+- Every number in `Motivation` must be traceable to a table, figure or data
+  paragraph on the same page. Rounding to the displayed precision is fine;
+  inventing a new number is not.
+
+**Experiment design**
+
+The first paragraph is a fixed form, never a procedure and never a defence of
+the metric:
+
+1. `Measure X as Y.` Name the quantity and the metric.
+2. `Y is the capability it represents.`
+3. `A lower or higher Y means the reader's outcome.`
+
+Example, from startup latency:
+
+> Measure the interval from launch to the first checked shell output as
+> environment Ready time. That interval is how quickly the system answers a
+> caller: a shorter Ready time means the system handles bursts of large-scale
+> requests better.
+
+- Do not write "this page", "本页", "we", "我们", "note that", or a list of
+  caveats before the metric.
+- The remaining paragraphs describe only the current cohort: environment,
+  controls, sampling, validation, exclusions and what the design cannot answer.
+  Historical cohorts and before/after narratives belong in the data section,
+  and only on a page that is explicitly historical.
+- If a metric does not change a decision, do not report it. Delete its table
+  instead of keeping it for completeness: `startup.md` reports Ready only,
+  because exit time does not change which executor a reader picks.
+
+**Data and analysis**
+
+- Lead with the table or figure that answers the conclusion, then interpret it.
+  Do not restate table cells as prose.
+- Keep historical cohorts in this section, label them, and never pool them with
+  the current cohort.
+- Keep the page within roughly three screens. Move engineering A/B and
+  diagnostic detail to `lab-notes/`.
+
+**Editing rules**
+
+- Change both languages in the same edit, then run
+  `python3 scripts/check-docs.py --record-translations` and
+  `python3 scripts/check-docs.py --require-recorded`.
+- Before removing or renaming an H3/H4, search the repository for its `#anchor`.
+  Anchor churn breaks lab-note links and is not a formatting cleanup.
+- Do not put a benchmark registry ID (`B-*`) or an internal switch name on a
+  user page; link to the topic page or the runner manual instead.
+- Run `python3 benchmark.new/docs.py check` after touching a `{{ table(...) }}`
+  macro, `benchmark.new/docs.json` or a `*.render.json` file.
+
 ```bash
 just docs-serve         # native Chinese preview on 127.0.0.1:3000
 just docs-serve en      # native English preview on 127.0.0.1:3001

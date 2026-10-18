@@ -43,9 +43,9 @@ pVisor 默认使用 `target/release/pvisor`，可用 `--binary PATH` 指定。
 - `hooks.py`：重置每次输入，校验输出、canary、Run Bundle 和只读 stage。
 - `timing.py`：共享事件时钟、采样和统计；各 `*_timing.py` 固定后端。
 - `audit.py`：复算当前批次的配对样本并校验逐次证据。
-- `publish.py`：将成功批次发布为双语 Ready / Exit 表。
+- `publish.py`：将成功批次发布为双语 Ready / Exit 结果 JSON。
 
-文档只保存 Ready / Exit 两张结果 JSON；来源摘要共用
+公开 CSV 同时保留 Ready 与 Exit 两列；用户页只引用 Ready 表，因为退出时间不改变读者的选型。来源摘要共用
 `docs/overrides/assets/benchmarks/startup-timing.provenance.json`，单行复测保留其他
 条件的批次和配置。完整 manifest、输入清单与内核收据留在试验 `.data/`。
 

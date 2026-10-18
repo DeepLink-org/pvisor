@@ -16,16 +16,6 @@
     },
     {
       "locale": "zh",
-      "page": "benchmarks/cluster-scalability.md",
-      "benchmark_ids": [
-        "B-CLUSTER"
-      ],
-      "role": "user-facing",
-      "tables": [],
-      "source_csv": []
-    },
-    {
-      "locale": "zh",
       "page": "benchmarks/compare-rl-infra.md",
       "benchmark_ids": [
         "B-COMPARE"
@@ -70,7 +60,7 @@
         {
           "json": "benchmarks/measurement-coverage.render.json",
           "kind": "coverage",
-          "rows": 13,
+          "rows": 12,
           "columns": [
             "数据状态",
             "实测范围"
@@ -272,16 +262,6 @@
     },
     {
       "locale": "en",
-      "page": "benchmarks/cluster-scalability.md",
-      "benchmark_ids": [
-        "B-CLUSTER"
-      ],
-      "role": "user-facing",
-      "tables": [],
-      "source_csv": []
-    },
-    {
-      "locale": "en",
       "page": "benchmarks/compare-rl-infra.md",
       "benchmark_ids": [
         "B-COMPARE"
@@ -326,7 +306,7 @@
         {
           "json": "benchmarks/measurement-coverage.render.json",
           "kind": "coverage",
-          "rows": 13,
+          "rows": 12,
           "columns": [
             "Data status",
             "Measured scope"

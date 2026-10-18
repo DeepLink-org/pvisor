@@ -3,10 +3,6 @@
     "Data status": "Historical data",
     "Measured scope": "Original metrics and sources retained; no matching new measurements"
   },
-  "[cluster-scalability](cluster-scalability.md)": {
-    "Data status": "Historical data",
-    "Measured scope": "Original metrics and sources retained; no matching new measurements"
-  },
   "[compare-rl-infra](compare-rl-infra.md)": {
     "Data status": "Historical data",
     "Measured scope": "Original metrics and sources retained; no matching new measurements"

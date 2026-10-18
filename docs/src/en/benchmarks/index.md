@@ -8,7 +8,7 @@ Changing twenty of 10,000 files and retaining ten takes 141 ms in stage, 248 ms 
 
 <!-- measurement-status:start -->
 
-Filesystem measurements cover nine configurations and 19 layered workloads, with three independent environments per cell and three resident rounds. Of 505 executed environments, 501 pass and 4 resource cells time out; the protocol explicitly skips 8 later observations. Historical N5/N30 and single-pass tasks remain separate, and other topics keep their own cohorts.
+Filesystem covers nine configurations and 19 layered workloads, with three independent environments per cell and three resident rounds; its [coverage note](filesystem.md) records executed, passed, failed and skipped environments. Historical N5/N30 and single-pass tasks remain separate, and other topics keep their own cohorts.
 
 <!-- measurement-status:end -->
 
@@ -16,7 +16,7 @@ Filesystem measurements cover nine configurations and 19 layered workloads, with
 
 Measure the startup, tool execution, apply and resource occupancy that produce one accepted result as the cost of that result. That cost decides which execution mode fits a workload; lower cost for the same verified result means the workload runs more cheaply.
 
-This page reuses separately registered experiments. Startup and repair use 60 samples per backend with three warmups; filesystem covers nine configurations and 19 workloads with three fresh environments per cell and three rounds each; review uses 30 samples and three warmups; network uses 30 independent batches with 256-request medians; capacity uses five rounds per concurrency under a shared two-core, 2 GiB, zero-swap budget. All runs share the host and CPUs 0–1, with cache states defined by each topic and randomized interleaving.
+The numbers come from separately registered experiments. Startup and repair use 60 samples per backend with three warmups; filesystem covers nine configurations and 19 workloads with three fresh environments per cell and three rounds each; review uses 30 samples and three warmups; network uses 30 independent batches with 256-request medians; capacity uses five rounds per concurrency under a shared two-core, 2 GiB, zero-swap budget. All runs share the host and CPUs 0–1, with cache states defined by each topic and randomized interleaving.
 
 Valid timings pass correctness checks; failures and skipped observations stay explicit, with no speed-based exclusions. Cohorts are not pooled. P95 is descriptive and omitted below 30 samples, public P99 is omitted, and separated clusters are reported with counts and per-cluster medians.
 
@@ -37,7 +37,7 @@ The 2026-10-06 startup/filesystem/repair cohorts have 1,440 valid samples and re
 | [Network](network.md) | Eight-thread small requests: native 0.69 ms; host proxy 10.09 ms; VM 2.10 ms |
 | [Active capacity](density.md) | 2 GiB: stage/Podman pass all five rounds at 32; VM at 16 |
 
-Network has 510 valid batches. Capacity retains all 320 batches, including 57 failures. These experiments remain separate and do not form one capacity or speed ranking. Retired Controller/Worker results are [historical evidence](cluster-scalability.md), excluded from current comparisons and daemon sizing; daemon throughput, density and history costs are unmeasured.
+Network has 510 valid batches. Capacity retains all 320 batches, including 57 failures. These experiments remain separate and do not form one capacity or speed ranking. Daemon throughput, density and history costs are unmeasured.
 
 Net physical-memory savings and useful-task density from compression, trimmed-kernel benefits, full Ubuntu and macOS comparisons are not yet validated on current artifacts; no advantage is claimed for them. Cloud services, gVisor/Kata and complete RL throughput have no matched ranking. Apply, network, isolation and replay require their own evidence and cannot be inferred from these short tasks.
 
