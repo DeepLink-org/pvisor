@@ -1,15 +1,15 @@
 """Offline guest-writeback followup contracts; no build, VM or systemd launch."""
 
 import copy
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import guest_writeback_curves as WB
+import guest_writeback_curves as WB  # noqa: E402 - import after module-loading setup
 
 
 class GuestWritebackContracts(unittest.TestCase):

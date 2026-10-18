@@ -4,9 +4,9 @@
 import argparse
 import json
 import math
-from pathlib import Path
 import random
 import statistics
+from pathlib import Path
 
 from plot_pool import audit, layout_figure, plot_post_write, plot_startup
 from pool_compare import ARMS, BOUNDARIES, PATTERNS, digest

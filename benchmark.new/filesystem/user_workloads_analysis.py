@@ -14,9 +14,9 @@ import csv
 import hashlib
 import json
 import math
-from pathlib import Path
 import statistics
 import sys
+from pathlib import Path
 
 MIB = 1 << 20
 TIMES = (

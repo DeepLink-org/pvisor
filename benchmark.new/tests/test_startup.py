@@ -19,8 +19,8 @@ SPEC = importlib.util.spec_from_file_location("startup_prepare", ROOT / "startup
 STARTUP = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(STARTUP)
 from hooks import archive, prepare, validate, validate_output  # noqa: E402
+from public_assets import csv_path as public_csv_path  # noqa: E402 - import after module-loading setup
 from publish import compact_configuration, publish_startup  # noqa: E402
-from public_assets import csv_path as public_csv_path
 
 OUTPUT = 'REFERENCE_READY\nREFERENCE_RESULT {"mode":"ready","correctness":"passed"}\n'
 SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug/semspec"))

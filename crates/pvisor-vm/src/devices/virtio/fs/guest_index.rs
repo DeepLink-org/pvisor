@@ -897,7 +897,7 @@ mod tests {
         assert_eq!(entry.nodeid, 10);
         let start = size_of::<EntryOut>() - size_of::<Attr>();
         let attr = Attr::read_bytes(&page.records[start..size_of::<EntryOut>()]).unwrap();
-        assert_eq!(attr.mode, u32::from(libc::S_IFREG) | 0o644);
+        assert_eq!(u64::from(attr.mode), u64::from(libc::S_IFREG) | 0o644);
     }
 
     #[test]

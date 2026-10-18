@@ -21,22 +21,20 @@ fsync/close semantics; they are not the microcurve accepted/applied boundaries.
 """
 
 import argparse
-from collections import Counter
-from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
 import math
 import os
-from pathlib import Path
 import random
 import shutil
 import statistics
 import subprocess
 import sys
 import threading
-import time
 import traceback
+from datetime import datetime, timezone
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 BASE = Path(__file__).resolve().parent

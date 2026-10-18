@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from public_assets import PUBLIC_CSV, check_public_assets, csv_path, is_public_csv
+from public_assets import PUBLIC_CSV, check_public_assets, csv_path, is_public_csv  # noqa: E402 - import after module-loading setup
 
 
 class PublicAssetTests(unittest.TestCase):

@@ -12,11 +12,10 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import shutil
 import stat
-
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 

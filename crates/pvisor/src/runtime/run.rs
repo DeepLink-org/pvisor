@@ -1397,7 +1397,10 @@ mod tests {
             record.overlay.as_ref().unwrap().baseline_lower.as_ref(),
             Some(&baseline)
         );
-        assert_eq!(record.overlay_lowers, [baseline.clone()]);
+        assert_eq!(
+            record.overlay_lowers.as_slice(),
+            std::slice::from_ref(&baseline)
+        );
         let metadata = &resolved.spec.metadata["pvisor.vm.workspace_overlay"];
         assert_eq!(
             metadata["lower_mutability"],
@@ -1412,7 +1415,7 @@ mod tests {
         owner
             .check_handoff(
                 &[vm.settings().rootfs.clone().unwrap()],
-                &[baseline.clone()],
+                std::slice::from_ref(&baseline),
                 Some(&baseline),
                 Some(&target),
                 &[pvisor_overlay_core::LayerMutability::Immutable],
@@ -1421,8 +1424,8 @@ mod tests {
         assert!(
             owner
                 .check_handoff(
-                    &[baseline.clone()],
-                    &[baseline.clone()],
+                    std::slice::from_ref(&baseline),
+                    std::slice::from_ref(&baseline),
                     Some(&baseline),
                     Some(&target),
                     &[pvisor_overlay_core::LayerMutability::Immutable]

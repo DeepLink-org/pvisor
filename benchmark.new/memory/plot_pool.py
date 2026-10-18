@@ -3,8 +3,8 @@
 
 import argparse
 import json
-from pathlib import Path
 import statistics
+from pathlib import Path
 
 from pool_compare import (
     ARMS,

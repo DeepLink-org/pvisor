@@ -2,9 +2,9 @@
 
 import copy
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 import analyze_pool as subject
 

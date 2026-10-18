@@ -7,25 +7,24 @@ without creating directories, figures, caches or receipts. No subject is run.
 """
 
 import argparse
-from contextlib import contextmanager
 import csv
 import hashlib
 import importlib.util
 import io
 import json
-from pathlib import Path
 import re
 import shlex
 import statistics
 import sys
-
+from contextlib import contextmanager
+from pathlib import Path
 
 # Importing frozen helpers must not alter the retained measurement artifacts.
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path.insert(0, str(HERE.parent))
-from publication_archive import archive_targets, preflight_archive, write_archive
+from publication_archive import archive_targets, preflight_archive, write_archive  # noqa: E402 - import after module-loading setup
 
 ARMS = {"off", "guest-wb", "old-wb", "native"}
 FAMILIES = {"block", "workers", "barrier", "pressure", "smallfiles"}
@@ -729,7 +728,6 @@ def diagnostic_tables(batch, protocol):
         "diagnostic per-round interval inventory differs",
     )
     counts, histogram = [], []
-    by_cell = {c["id"]: c for c in protocol["cells"]}
     for condition in ("off", "old-wb", "guest-wb"):
         for cell in protocol["cells"]:
             rows = sorted(

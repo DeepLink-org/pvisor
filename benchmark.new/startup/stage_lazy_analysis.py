@@ -11,15 +11,14 @@ import argparse
 import csv
 import hashlib
 import json
-from pathlib import Path
 import random
 import re
 import statistics
 import sys
+from pathlib import Path
 
 sys.dont_write_bytecode = True
-from image_compare_analysis import Evidence, distribution, percentile, positive_ns, require
-
+from image_compare_analysis import Evidence, distribution, percentile, positive_ns, require  # noqa: E402 - import after module-loading setup
 
 SCOPE = "same-host-staged-lower-readonly"
 GROUPS = ("pvisor", "turbo")

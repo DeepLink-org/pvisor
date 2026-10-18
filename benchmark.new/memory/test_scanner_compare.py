@@ -3,12 +3,12 @@
 import copy
 import importlib.util
 import json
-from pathlib import Path
 import shlex
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
     "scanner_compare", Path(__file__).with_name("scanner_compare.py")

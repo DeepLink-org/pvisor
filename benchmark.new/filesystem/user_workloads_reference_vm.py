@@ -11,13 +11,12 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import time
-
+from pathlib import Path
 
 BACKENDS = ("fc-system", "qemu", "qemu-microvm")
 HARNESS = ("user_workloads_reference_vm.py",)

@@ -13,9 +13,9 @@ import hashlib
 import importlib.util
 import json
 import math
-from pathlib import Path
 import re
 import sys
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 MIB = 1 << 20

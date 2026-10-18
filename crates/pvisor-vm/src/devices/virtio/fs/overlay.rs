@@ -3840,8 +3840,7 @@ mod tests {
             );
             assert_eq!(
                 fs.configure_negative_entry_cache(true, true, false, vec![])
-                    .err()
-                    .expect("operation must fail")
+                    .expect_err("operation must fail")
                     .kind(),
                 io::ErrorKind::InvalidInput
             );
@@ -4111,8 +4110,7 @@ mod tests {
                 c"failed",
                 0
             )
-            .err()
-            .expect("operation must fail")
+            .expect_err("operation must fail")
             .raw_os_error(),
             Some(libc::ENOENT)
         );
@@ -4147,15 +4145,13 @@ mod tests {
         .unwrap();
         assert_eq!(
             fs.capture_state()
-                .err()
-                .expect("operation must fail")
+                .expect_err("operation must fail")
                 .kind(),
             io::ErrorKind::Unsupported
         );
         assert_eq!(
             fs.restore_state(&before)
-                .err()
-                .expect("operation must fail")
+                .expect_err("operation must fail")
                 .kind(),
             io::ErrorKind::Unsupported
         );
@@ -4163,15 +4159,13 @@ mod tests {
         fs.init(FsOptions::empty()).unwrap();
         assert_eq!(
             fs.capture_state()
-                .err()
-                .expect("operation must fail")
+                .expect_err("operation must fail")
                 .kind(),
             io::ErrorKind::Unsupported
         );
         assert_eq!(
             fs.restore_state(&before)
-                .err()
-                .expect("operation must fail")
+                .expect_err("operation must fail")
                 .kind(),
             io::ErrorKind::Unsupported
         );
@@ -4299,8 +4293,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             fs.configure_negative_entry_cache(true, true, false, vec![])
-                .err()
-                .expect("operation must fail")
+                .expect_err("operation must fail")
                 .kind(),
             io::ErrorKind::InvalidInput
         );
@@ -4396,8 +4389,7 @@ mod tests {
                 assert_eq!(
                     restored
                         .restore_state(&saved)
-                        .err()
-                        .expect("WB1 must be refused")
+                        .expect_err("WB1 must be refused")
                         .kind(),
                     io::ErrorKind::Unsupported
                 );

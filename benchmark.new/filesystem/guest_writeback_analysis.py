@@ -10,11 +10,10 @@ import argparse
 import hashlib
 import importlib.util
 import json
-from pathlib import Path
 import random
 import statistics
 import sys
-
+from pathlib import Path
 
 CONTRASTS = (
     ("incremental_0048", "old-wb", "guest-wb"),

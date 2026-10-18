@@ -11,7 +11,12 @@ fn expected_multifd_redirty() -> Vec<u8> {
     // Four independent opens write disjoint 1-KiB slots of the same inode for
     // three passes. The first 256 bytes stay zero, and slots share/cross pages.
     let mut expected = vec![0; 256 + 2 * 1024 * 1024];
-    for (index, bytes) in expected[256..].chunks_exact_mut(1024).enumerate() {
+    for (index, bytes) in expected[256..]
+        .as_chunks_mut::<1024>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
         let worker = index % 4;
         let slot = index / 4;
         for (offset, byte) in bytes.iter_mut().enumerate() {

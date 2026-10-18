@@ -11,7 +11,6 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import random
 import shutil
@@ -20,6 +19,7 @@ import sys
 import threading
 import time
 import uuid
+from pathlib import Path
 
 from curves import cgroup_state, save, sha, verify_artifacts
 from curves_analysis import csv_file, describe, seed_for

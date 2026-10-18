@@ -12,13 +12,13 @@ import csv
 import hashlib
 import io
 import json
-from pathlib import Path
 import re
 import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from publication_archive import archive_targets, preflight_archive, write_archive
 from curves_analysis import describe, seed_for
+from publication_archive import archive_targets, preflight_archive, write_archive
 
 REPO = Path(__file__).resolve().parents[2]
 PRIVATE_PATH = re.compile(rb"/(?:home|tmp|sys|proc|run|root)(?:/|\\)")

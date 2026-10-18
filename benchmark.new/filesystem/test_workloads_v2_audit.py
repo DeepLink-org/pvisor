@@ -2,11 +2,10 @@
 
 import importlib.util
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
-
 
 HERE = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location(

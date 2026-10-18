@@ -14,13 +14,12 @@ import ctypes
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import time
-
+from pathlib import Path
 
 NAMESPACE_BACKENDS = ("native", "host", "staged", "vm", "vm-writeback")
 BACKENDS = NAMESPACE_BACKENDS + ("docker", "fc-system", "qemu", "qemu-microvm")
@@ -236,7 +235,7 @@ def build_command(batch, protocol, folder, case, backend):
         RUST_LOG="off",
     )
     if backend.startswith("vm"):
-        from user_workloads_vm import vm_payload_argv, vm_environment
+        from user_workloads_vm import vm_environment, vm_payload_argv
 
         vm_backend = "pvisor-vm-wb" if backend == "vm-writeback" else "pvisor-vm"
         inner = vm_payload_argv(case, vm_backend, rounds, ram)

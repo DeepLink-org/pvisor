@@ -6,8 +6,8 @@ one unique prepared payload page in full. Counts describe observed file sharing,
 not net saved memory. Run outside the product cgroup, after timed first readback.
 """
 
-import hashlib
 import ctypes
+import hashlib
 import mmap
 import os
 from pathlib import Path

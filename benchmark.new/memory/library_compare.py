@@ -11,11 +11,11 @@ Out-of-group page identity audit runs after timed first readback. No host sysfs 
 
 import argparse
 import json
-from pathlib import Path
 import random
 import shlex
 import shutil
 import sys
+from pathlib import Path
 
 from library_protocol import VARIANTS
 from pool_compare import (

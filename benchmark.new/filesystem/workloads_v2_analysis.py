@@ -14,10 +14,10 @@ import csv
 import hashlib
 import json
 import math
-from pathlib import Path
 import random
 import statistics
 import sys
+from pathlib import Path
 
 ARMS = ("baseline", "candidate")
 METRICS = ("work_ns", "completed_ns")

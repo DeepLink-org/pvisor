@@ -12,11 +12,9 @@ cache remain prepared. A failed reset is preserved for manual recovery.
 """
 
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import selectors
 import shlex
@@ -25,14 +23,16 @@ import sys
 import time
 import traceback
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 sys.dont_write_bytecode = True
-from overlaybd_lab import LABEL, host_inventory
-from overlaybd_smoke import (
+from overlaybd_lab import LABEL, host_inventory  # noqa: E402 - import after module-loading setup
+from overlaybd_smoke import (  # noqa: E402 - import after module-loading setup
     CTR,
-    SOCKET,
-    MARKER,
     LIVE_CHECK,
+    MARKER,
+    SOCKET,
     Evidence,
     audit_inventory,
     recovery_text,
@@ -40,7 +40,6 @@ from overlaybd_smoke import (
     save,
     validate_live,
 )
-
 
 SHELL = (
     r'. /etc/os-release; test "$ID" = ubuntu; test "$VERSION_ID" = 26.04; '

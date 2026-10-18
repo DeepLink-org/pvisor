@@ -13,16 +13,15 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import random
-import resource
 import shutil
 import subprocess
 import sys
 import threading
 import time
 import uuid
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]

@@ -3,12 +3,11 @@
 
 import argparse
 import json
-import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tarfile
+from pathlib import Path
 
 from docker_support import Engine, create_slice, verify_inputs
 from prepare_pool import tree_manifest

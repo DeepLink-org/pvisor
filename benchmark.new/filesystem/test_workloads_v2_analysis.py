@@ -2,14 +2,14 @@
 
 import copy
 import json
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import workloads_v2_analysis as A
+import workloads_v2_analysis as A  # noqa: E402 - import after module-loading setup
 
 
 def fixture(ids=("M06", "S01")):

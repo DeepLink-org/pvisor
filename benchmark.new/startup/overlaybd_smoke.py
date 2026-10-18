@@ -7,11 +7,9 @@ Timeouts stop the local Docker client; they do not imply remote task cleanup.
 """
 
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import http.client
 import json
-from pathlib import Path
 import re
 import selectors
 import shlex
@@ -20,10 +18,11 @@ import sys
 import time
 import traceback
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
 sys.dont_write_bytecode = True
-from overlaybd_lab import LABEL, host_inventory
-
+from overlaybd_lab import LABEL, host_inventory  # noqa: E402 - import after module-loading setup
 
 CTR = "/opt/overlaybd/snapshotter/ctr"
 SOCKET = "/lab/run/containerd.sock"
@@ -224,7 +223,10 @@ def validate_live(raw, snapshotter, reference):
             sections[current] = []
         elif current:
             sections[current].append(line)
-    text = lambda name: "\n".join(sections[name]).strip()
+
+    def text(name):
+        return "\n".join(sections[name]).strip()
+
     if text("memory.max") != "2147483648":
         raise ValueError("Live cgroup memory.max is not 2 GiB")
     quota, period = text("cpu.max").split()

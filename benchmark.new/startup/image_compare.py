@@ -15,16 +15,15 @@ import hashlib
 import itertools
 import json
 import os
-from pathlib import Path
 import platform
 import random
 import shlex
 import shutil
-import statistics
 import subprocess
 import sys
 import time
 import traceback
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 GROUPS = ["oci", "turbo", "pvisor"]

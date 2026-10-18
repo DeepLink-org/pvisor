@@ -13,9 +13,9 @@ import csv
 import hashlib
 import importlib.util
 import json
-from pathlib import Path
 import statistics
 import sys
+from pathlib import Path
 
 ARMS = ("baseline", "candidate")
 METRICS = ("foreground_read_ns", "completed_ns")

@@ -13,7 +13,6 @@ This is a new user cohort; engineering writeback A/B observations are not inputs
 import argparse
 import json
 import os
-from pathlib import Path
 import platform
 import random
 import shutil
@@ -23,14 +22,14 @@ import sys
 import threading
 import time
 import uuid
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path.insert(0, str(HERE))
-import workloads_v2 as DESIGN
-import workloads_v2_run as SHARED
-import user_workloads_backends as BACKENDS
-import user_workloads_vm as VM
+import user_workloads_backends as BACKENDS  # noqa: E402 - import after module-loading setup
+import user_workloads_vm as VM  # noqa: E402 - import after module-loading setup
+import workloads_v2_run as SHARED  # noqa: E402 - import after module-loading setup
 
 LABELS = {
     "native": "Native",

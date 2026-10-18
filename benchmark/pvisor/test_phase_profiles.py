@@ -1,8 +1,8 @@
 import copy
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 from phase_profiles import (
     COMPONENTS,

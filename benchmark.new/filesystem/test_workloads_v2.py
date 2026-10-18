@@ -3,14 +3,14 @@
 import contextlib
 import io
 import json
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import workloads_v2 as V2
+import workloads_v2 as V2  # noqa: E402 - import after module-loading setup
 
 
 class WorkloadPlanContracts(unittest.TestCase):

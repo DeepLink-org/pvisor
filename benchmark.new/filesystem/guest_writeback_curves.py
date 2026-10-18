@@ -16,17 +16,17 @@ import argparse
 import contextlib
 import io
 import json
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import uuid
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import curves as BASE
-import curves_diagnostics as DIAG
+import curves as BASE  # noqa: E402 - import after module-loading setup
+import curves_diagnostics as DIAG  # noqa: E402 - import after module-loading setup
 
 MIB = 1 << 20
 SUITE = "guest-writeback"

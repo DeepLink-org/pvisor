@@ -13,7 +13,6 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import platform
 import random
 import shutil
@@ -25,12 +24,13 @@ import tarfile
 import threading
 import time
 import uuid
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path.insert(0, str(HERE))
-import workloads_v2 as DESIGN
-import curves_diagnostics as DIAG
+import curves_diagnostics as DIAG  # noqa: E402 - import after module-loading setup
+import workloads_v2 as DESIGN  # noqa: E402 - import after module-loading setup
 
 MIB = 1 << 20
 HARNESS = (

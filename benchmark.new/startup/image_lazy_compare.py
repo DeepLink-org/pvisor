@@ -12,7 +12,6 @@ import argparse
 import itertools
 import json
 import os
-from pathlib import Path
 import platform
 import random
 import shlex
@@ -20,10 +19,10 @@ import shutil
 import sys
 import time
 import traceback
+from pathlib import Path
 
 sys.dont_write_bytecode = True
-import image_compare as common
-
+import image_compare as common  # noqa: E402 - import after module-loading setup
 
 HERE = Path(__file__).resolve().parent
 GROUPS = common.GROUPS

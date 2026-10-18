@@ -6,7 +6,6 @@ Only data needed by current publication contracts is exported to the site.
 
 from pathlib import Path
 
-
 PUBLIC_CSV = frozenset(
     {
         "startup-timing.csv",

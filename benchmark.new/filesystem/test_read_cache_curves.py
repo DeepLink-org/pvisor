@@ -5,11 +5,11 @@ import csv
 import importlib.util
 import io
 import json
-from contextlib import redirect_stdout
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 

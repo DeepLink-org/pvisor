@@ -2,14 +2,13 @@
 """Prepare frozen B-MEMORY-SCALE inputs; builds only, never runs measurements."""
 
 import argparse
-import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tarfile
+from pathlib import Path
 
 from scanner_compare import REPO, digest, save
 

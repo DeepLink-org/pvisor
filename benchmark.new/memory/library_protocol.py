@@ -2,10 +2,10 @@
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import time
 import traceback
+from pathlib import Path
 
 from library_evidence import file_mapping_stats, observe, pool_backing, process_start
 from scanner_compare import digest, save

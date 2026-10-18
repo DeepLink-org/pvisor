@@ -15,7 +15,6 @@ immutable-generation ownership declaration.
 
 from pathlib import Path
 
-
 VM_BACKENDS = {
     "vm": 0,
     "vm-writeback": 1,

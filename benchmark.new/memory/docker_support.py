@@ -6,12 +6,11 @@ slice. No command uses the user's default Docker socket, containers or images.
 
 import json
 import os
-from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import time
 import uuid
+from pathlib import Path
 
 from scanner_compare import digest, save
 

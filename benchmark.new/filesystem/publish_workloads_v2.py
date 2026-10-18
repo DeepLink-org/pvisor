@@ -14,17 +14,17 @@ import csv
 import hashlib
 import io
 import json
-from pathlib import Path
 import shlex
 import sys
+from pathlib import Path
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
-from publication_archive import archive_targets, preflight_archive, write_archive
-import workloads_v2_analysis as ANALYSIS
+import workloads_v2_analysis as ANALYSIS  # noqa: E402 - import after module-loading setup
+from publication_archive import archive_targets, preflight_archive, write_archive  # noqa: E402 - import after module-loading setup
 
 CASES = (
     [f"M{i:02}" for i in range(1, 13)] + [f"R{i:02}" for i in range(1, 5)] + ["S01", "S02", "S03"]

@@ -4,18 +4,17 @@ No compiler, VM, systemd service or benchmark workload is started by these tests
 The observer is exercised with synthetic process output and real temporary logs.
 """
 
-from contextlib import ExitStack
 import copy
 import importlib.util
 import io
 import json
-from pathlib import Path
 import sys
 import tempfile
-from types import SimpleNamespace
 import unittest
+from contextlib import ExitStack
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
-
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))

@@ -10,9 +10,9 @@ import argparse
 import copy
 import hashlib
 import json
-from pathlib import Path
 import random
 import sys
+from pathlib import Path
 
 MIB = 1 << 20
 COMPARISONS = ("guest-writeback", "host-writeback", "lower-read-cache")

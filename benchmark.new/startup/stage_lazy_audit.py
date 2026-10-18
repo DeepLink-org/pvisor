@@ -13,15 +13,14 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import shlex
 import signal
 import sys
+from pathlib import Path
 
 sys.dont_write_bytecode = True
-from image_compare_analysis import Evidence, clock, positive_ns, require
-
+from image_compare_analysis import Evidence, clock, positive_ns, require  # noqa: E402 - import after module-loading setup
 
 SCOPE = "same-host-staged-lower-readonly"
 GROUPS = ("pvisor", "turbo")

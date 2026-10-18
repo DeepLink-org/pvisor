@@ -2,9 +2,9 @@
 
 import importlib.util
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
     "guest_writeback_cli", Path(__file__).with_name("guest_writeback_cli.py")

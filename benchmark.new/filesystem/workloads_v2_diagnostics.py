@@ -5,12 +5,12 @@ import argparse
 import csv
 import hashlib
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-import curves_diagnostics as DIAG
+import curves_diagnostics as DIAG  # noqa: E402 - import after module-loading setup
 
 
 def sha(path):

@@ -4938,7 +4938,13 @@ sandbox = "required""#
         assert!(help.contains("ambient host Unix sockets"));
         assert!(help.contains("--mount"));
         assert!(help.contains("--rootfs"));
-        assert!(!help.contains("--workspace"));
+        assert!(help.contains("--workspace-base-store"));
+        assert!(help.contains("--workspace-base"));
+        assert!(
+            !help
+                .split_whitespace()
+                .any(|option| option == "--workspace")
+        );
         assert!(!help.contains("--overlaynet-policy"));
         assert!(!help.contains("--overlaynet-rule"));
     }

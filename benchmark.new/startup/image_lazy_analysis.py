@@ -7,17 +7,17 @@ traffic is a completion observation, not a Ready cutoff or network wire count.
 """
 
 import json
-from pathlib import Path
 import re
 import shlex
 import statistics
+from pathlib import Path
 
 from image_compare_analysis import (
     BOOTSTRAPS,
     CANARY,
-    Evidence,
     GROUPS,
     MARKER,
+    Evidence,
     artifacts,
     audit_adapter_teardown,
     audit_background,
@@ -30,7 +30,6 @@ from image_compare_analysis import (
     sha,
     write_csv,
 )
-
 
 STATES = ("cold", "warm")
 SEED = 20261018

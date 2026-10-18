@@ -8,22 +8,20 @@ inventory runs here; retained before/after source audits bind the build inputs.
 """
 
 import argparse
-from collections import Counter
 import csv
 import hashlib
 import importlib.util
 import io
 import json
-import math
-from pathlib import Path
 import random
 import re
 import statistics
 import sys
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from publication_archive import archive_targets, preflight_archive, write_archive
+from publication_archive import archive_targets, preflight_archive, write_archive  # noqa: E402 - import after module-loading setup
 
 PREFIX = "filesystem-guest-writeback-cli"
 PRIVATE = re.compile(rb"/(?:home|tmp|sys|proc|run|root)(?:/|\\)")
@@ -399,8 +397,8 @@ def project(batch):
     sys.path[:0] = [str(batch / "harness"), str(batch)]
     runner = module("frozen_guest_wb_cli", batch / "entry.py")
     inherited = module("inherited_guest_wb_cli", batch / "af_entry.py")
-    import reference_baselines as reference
     import filesystem_rounds as rounds
+    import reference_baselines as reference
     import workspace_sources as sources
 
     audits, reports, configs, raw = {}, {}, {}, []

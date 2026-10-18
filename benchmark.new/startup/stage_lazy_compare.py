@@ -16,7 +16,6 @@ import hashlib
 import itertools
 import json
 import os
-from pathlib import Path
 import platform
 import random
 import secrets
@@ -29,6 +28,7 @@ import sys
 import threading
 import time
 import traceback
+from pathlib import Path
 from types import SimpleNamespace
 
 sys.dont_write_bytecode = True
@@ -273,11 +273,11 @@ def prepare(args):
 
 
 def measure(batch, preflight_only=False):
-    import overlaybd_image_perf as obd
-    from overlaybd_lab import host_inventory
-    from overlaybd_smoke import Evidence, audit_inventory, CTR, SOCKET
-    from image_compare import process_snapshot, interference
     import lazy_image_v2 as legacy
+    import overlaybd_image_perf as obd
+    from image_compare import interference, process_snapshot
+    from overlaybd_lab import host_inventory
+    from overlaybd_smoke import CTR, SOCKET, Evidence, audit_inventory
 
     protocol = json.loads((batch / "protocol.json").read_text())
     lab = Path(protocol["lab"])
@@ -295,7 +295,6 @@ def measure(batch, preflight_only=False):
     os.sched_setaffinity(0, protocol["service_cpus"])
     docker = ["docker", "exec", protocol["container"]]
     ctr = docker + [CTR, "--address", SOCKET, "--namespace", "pvisor-obd-smoke"]
-    namespace = "pvisor-obd-smoke"
     manifest = json.loads((lab / "lab.json").read_text())
     if manifest["id"] != protocol["lab_id"]:
         raise ValueError("lab changed")

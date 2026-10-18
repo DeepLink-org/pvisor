@@ -8,10 +8,9 @@ Inclusive durations are retained as diagnostics, never performance samples.
 """
 
 import argparse
-from collections import Counter
 import json
+from collections import Counter
 from pathlib import Path
-
 
 START = "pvisor-fs-profile-start "
 REPORT = "pvisor-fs-profile "

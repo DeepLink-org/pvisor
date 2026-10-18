@@ -13,16 +13,16 @@ This is a Python phase-accounting experiment, not a hyperfine elapsed-time test.
 import argparse
 import json
 import os
-from pathlib import Path
 import random
 import shlex
 import shutil
 import statistics
 import sys
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "benchmark/pvisor"))
-from memory_savings import run, host_identity  # noqa: E402
+from memory_savings import host_identity, run  # noqa: E402
 from memory_scale import digest, inventory, numbers, raw_field, validate_report  # noqa: E402
 
 ARMS = ("off", "ksm", "adaptive")

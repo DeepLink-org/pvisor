@@ -11,10 +11,8 @@ randomized formal rounds. Every failure is retained and stops the campaign.
 """
 
 import argparse
-import hashlib
 import json
 import os
-from pathlib import Path
 import random
 import shlex
 import shutil
@@ -24,17 +22,20 @@ import threading
 import time
 import traceback
 import uuid
+from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "benchmark/pvisor"))
 from firecracker_ksm import Guest, expected, group_path  # noqa: E402
-from memory_savings import (
+from linux_cold_runtime import settle_unit  # noqa: E402
+from memory_savings import (  # noqa: E402 - import after module-loading setup
     host_identity,
     observer,
-    validate_observation as validate_legacy_observation,
     wait_for_quiet,
 )  # noqa: E402
-from linux_cold_runtime import settle_unit  # noqa: E402
+from memory_savings import (  # noqa: E402 - import after module-loading setup
+    validate_observation as validate_legacy_observation,
+)
 from scanner_compare import TUNABLES, digest, kernel_state, require_default_ksm, save  # noqa: E402
 
 ARMS = (
@@ -287,7 +288,8 @@ def internal(path):
             guest_environment = os.environ.copy()
             guest_environment.pop("PVISOR_MEMORY_FILE_HINTS", None)
             if "library_variant" in cfg:
-                from library_protocol import command as library_command, environment
+                from library_protocol import command as library_command
+                from library_protocol import environment
 
                 command = library_command(cfg, identity, socket)
                 guest_environment = environment(cfg)

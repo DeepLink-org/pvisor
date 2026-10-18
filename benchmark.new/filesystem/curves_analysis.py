@@ -10,17 +10,17 @@ Matplotlib is an analysis-only dependency; missing it does not erase CSV/JSON.
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 import csv
 import hashlib
 import itertools
 import json
 import math
-from pathlib import Path
 import random
 import re
 import statistics
 import sys
+from collections import Counter
+from pathlib import Path
 from typing import Any
 
 MIB = 1024 * 1024

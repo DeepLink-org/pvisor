@@ -13,8 +13,9 @@ import shlex
 from pathlib import Path
 
 from common import METRIC_SCOPE, READY_EXIT_SCOPE, REPO, ROOT, artifact_summary, digest, save
+from public_assets import check_public_assets, is_public_csv
+from public_assets import csv_path as public_csv_path
 from update import _publish_csv, display_table, validate_batch
-from public_assets import check_public_assets, csv_path as public_csv_path, is_public_csv
 
 INVENTORY = ROOT / "docs.json"
 MACRO = re.compile(r"\{\{ table\((.*?)\) \}\}")

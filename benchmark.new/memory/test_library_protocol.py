@@ -2,12 +2,13 @@
 
 import json
 import os
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from library_compare import verify_inputs
+from library_evidence import file_mapping_stats
 from library_protocol import (
     VARIANTS,
     command,
@@ -16,7 +17,6 @@ from library_protocol import (
     validate_docker_views,
     validate_library,
 )
-from library_evidence import file_mapping_stats
 from prepare_pool import tree_manifest
 from scanner_compare import digest, save
 

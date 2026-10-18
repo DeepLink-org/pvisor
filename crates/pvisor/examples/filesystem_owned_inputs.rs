@@ -294,8 +294,10 @@ async fn run(command: Command) -> anyhow::Result<i32> {
     );
     spec.metadata
         .insert("pvisor.vm.guest_cwd".into(), serde_json::json!("/work"));
-    let mut config = RunConfig::default();
-    config.vm = settings;
+    let mut config = RunConfig {
+        vm: settings,
+        ..RunConfig::default()
+    };
     config.run.executor = RunExecutorKind::Vm;
     config.run.command = payload;
     config.run.workspace = Some(workspace_target.clone());

@@ -1,8 +1,8 @@
 """Protect environment-level statistics and failure visibility in user tables."""
 
 import importlib.util
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
     "user_workloads_analysis", Path(__file__).with_name("user_workloads_analysis.py")

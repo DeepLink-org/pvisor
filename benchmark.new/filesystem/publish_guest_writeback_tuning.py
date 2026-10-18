@@ -13,15 +13,16 @@ import hashlib
 import importlib.util
 import io
 import json
-from pathlib import Path
 import re
 import statistics
 import sys
+from pathlib import Path
 
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 BASE_PATH = HERE / "publish_guest_writeback.py"
-BASE_SHA256 = "4635aae02a3eb1e080c295a91e5808169b88c2f01e5ad93ba9cbd6700e03539d"
+# Pin the reviewed helper after formatting and unused-local cleanup.
+BASE_SHA256 = "9d9c08b61c2e9a1ffcb4f94041407b811272f8e158b78d8c170dc14122d4b817"
 if hashlib.sha256(BASE_PATH.read_bytes()).hexdigest() != BASE_SHA256:
     raise ValueError("shared publication validator differs from the pinned layout revision")
 spec = importlib.util.spec_from_file_location("_guest_writeback_tuning_shared", BASE_PATH)

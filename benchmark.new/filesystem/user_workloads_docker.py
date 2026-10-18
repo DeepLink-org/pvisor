@@ -13,12 +13,12 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tarfile
 import time
 import uuid
+from pathlib import Path
 
 LABEL = "org.pvisor.benchmark.user-filesystem-trial"
 RUNTIME_MARKER = "USER_WORKLOADS_DOCKER_RUNTIME "
