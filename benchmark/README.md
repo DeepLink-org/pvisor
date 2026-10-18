@@ -69,14 +69,14 @@
 
 先写 pVisor 做了什么、带来什么收益，用具体动词和简短判断表达。对照项目的名称、版本和数据放在实验与数据节；适用条件集中说明。实测收益与预期分开，保留不利结果；多个条件同时变化时，只报告整体效果。
 
-篇幅：正文控制在一屏到三屏。超过时，把技术分析移到 `docs/src/*/design/*-performance-analysis.md`，用户页只保留结论和一句链接。
+篇幅：正文控制在一屏到三屏。超过时，把技术分析移到 `docs/src/*/lab-notes/*-performance-analysis.md`，用户页只保留结论和一句链接。
 
 ## 角色 {#roles}
 
 | 角色 | 回答谁的问题 | 结果放在哪里 | 能否进入用户文档正文 |
 |---|---|---|---|
 | **user-facing** | 用户：该不该用、选哪个模式、要预留多少资源 | `docs/src/*/benchmarks/` | 能，且必须遵守[结构](#structure) |
-| **engineering A/B** | 开发者：这个改动有没有让产品变好或变差 | `docs/src/*/design/*-performance-analysis.md`、PR 描述 | 不能；只有改变了用户结论时，才更新 user-facing 页的数字 |
+| **engineering A/B** | 开发者：这个改动有没有让产品变好或变差 | `docs/src/*/lab-notes/*-performance-analysis.md`、PR 描述 | 不能；只有改变了用户结论时，才更新 user-facing 页的数字 |
 | **diagnostic** | 开发者：时间花在哪里 | 相关目录的 `.data/`、设计文档的分析节 | 不能 |
 
 一个脚本可以同时被多个 benchmark 使用，但每次运行只服务一个 benchmark ID，报告中要记录该 ID。
@@ -226,8 +226,8 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-FS-ENG：文件系统改动的工程 A/B {#b-fs-eng}
 
-- **文档：** `docs/src/*/design/filesystem-performance-analysis.md`、
-  `docs/src/*/design/filesystem-io-performance-analysis.md`
+- **文档：** `docs/src/*/lab-notes/filesystem-performance-analysis.md`、
+  `docs/src/*/lab-notes/filesystem-io-performance-analysis.md`
 - **角色：** engineering A/B
 - **Motivation：** 开发者需要判断一次文件系统改动是否让 B-FS-TOOLS 的用户结论变好，并定位时间花在哪一层（传输、OverlayCore、持久化、内容指纹）。
 - **想要的结论：** "改动 X 让负载 Y 的中位数变化 Z%（95% 置信区间），其余负载未检出差异"；以及"staged 与 FUSE 直通之间的差距中，持久化占 A ms，内容指纹占 B ms，路径解析占 C ms"。
@@ -355,7 +355,7 @@ Design: 负载、对照、控制变量与有效样本判据。
   checkpoint 核对每轮每工具的 rootfs/workspace OPEN、READ、LOOKUP、READINDEX
   和物理查询；计数含该工具进程树启动/校验，与 worker 时钟范围分别说明。
   入口 `filesystem_cache_matrix.py`；原始入口/制品/准备/失败留在 `.data/`，
-  工程结论进入 `design/filesystem-performance-analysis.md`，不更新跨运行时用户表。
+  工程结论进入 `lab-notes/filesystem-performance-analysis.md`，不更新跨运行时用户表。
 - **普通 CLI 封存 rootfs 入口快速对照：** 同一冻结真实 CLI 与 0047 固件，
   比较同一封存物理 rootfs 的普通 `--rootfs PATH` 与公开认证的
   `--rootfs-base-store STORE --rootfs-base ID`；通过公开 SnapshotStore API
@@ -572,13 +572,13 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 - **读队列与 journal 锁对照：** `host_read_journal_ab.py` / `host_read_journal_driver.rs`；冻结同一源码，仅撤销/保留读调度与指纹锁改动。macOS FSKit 的实际部分 copy-up 窗口中并发测只读 OPEN、已打开描述符 READ、OPENDIR，关闭日志、legacy 与 compact strict 分条件；另以共享 Core 的真实 1 GiB 原生文件指纹计算测 unrelated journal 观测，legacy/compact 独立成批。原生文件访问时间变化证明首次读已发生，开始探测时哈希线程必须仍在运行，不人工延迟。每格 3 次预热、30 个 seeded 随机配对样本，空闲对照、完整内容/观察/卸载和干扰门禁、配对 bootstrap 95% CI；不合并复制与哈希条件，不宣称冷磁盘、Linux、VM、吞吐或端到端工具收益。报告/加工 CSV 在 `benchmark/pvisor/`，原始来源和失败在 `.data/`。
 
-- **Linux staged 空闲调度对照：** 使用 `reference_baselines.run_trial` 的原 task timer，以冻结的 coordinator/namespace helper 随机配对同源码基线与仅修改 host dispatch 的候选，API/README 和私有测试同步更新。CPU 0,1、整父组两核 quota / 16 GiB / swap 0，Btrfs 热宿主缓存、相同空工具缓存与 Python bytecode 策略；每样本独立 user/mount/PID namespace、owned pivot_root 和 Host listener，namespace/输入准备不计时。3 warmups、30 配对轮次、完整七工具输出/Run Bundle/宿主隔离/upper 字节校验、前后输入清单与外部 0.5 s 构建/测试干扰门禁。插桩关闭、保留有效慢样本，5,000 次配对 bootstrap，分离簇不作整体排名。raw helper、冻结源码、制品和失败/中间尝试保留 `.data/`；整理 CSV 与结论仅进入 `design/filesystem-performance-analysis.md#host-idle-dispatch`。不作为 hyperfine 数据，也不与跨运行时用户批次或 macOS/VM 结果合并。
+- **Linux staged 空闲调度对照：** 使用 `reference_baselines.run_trial` 的原 task timer，以冻结的 coordinator/namespace helper 随机配对同源码基线与仅修改 host dispatch 的候选，API/README 和私有测试同步更新。CPU 0,1、整父组两核 quota / 16 GiB / swap 0，Btrfs 热宿主缓存、相同空工具缓存与 Python bytecode 策略；每样本独立 user/mount/PID namespace、owned pivot_root 和 Host listener，namespace/输入准备不计时。3 warmups、30 配对轮次、完整七工具输出/Run Bundle/宿主隔离/upper 字节校验、前后输入清单与外部 0.5 s 构建/测试干扰门禁。插桩关闭、保留有效慢样本，5,000 次配对 bootstrap，分离簇不作整体排名。raw helper、冻结源码、制品和失败/中间尝试保留 `.data/`；整理 CSV 与结论仅进入 `lab-notes/filesystem-performance-analysis.md#host-idle-dispatch`。不作为 hyperfine 数据，也不与跨运行时用户批次或 macOS/VM 结果合并。
 
-- **Linux VM worker 调度对照：** 同一冻结源码的三版本配对：撤销 `65e65c93`/`09bd1d59` 的优化前版本、保留当前优化与 host 修复的基线、仅修改 VM worker 调度/私有测试及 README 的候选。每版本 3 warmups、30 个随机同轮样本；独立 namespace、owned pivot_root、fresh VM/Host listener，整父组 CPU 0,1 / quota 两核 / 16 GiB / swap 0，同 B-FS-TOOLS 七工具及输入、缓存、逐字节 upper、宿主隔离与干扰门禁。使用原 reference timer，profiling 关闭；与当前基线的差异用于候选归因，优化前版本只用于同批恢复程度对照。5,000 次配对 bootstrap，分离簇不报整体排名；各候选批次独立保留，只发布通过门禁的最终制品，不合并样本。原始 helper、冻结源码、构建和诊断在 `.data/`，加工 CSV 与结果仅进入 `design/filesystem-performance-analysis.md#vm-completion-dispatch`，不重算跨运行时用户表，不外推 macOS、冷磁盘或并发吞吐。
+- **Linux VM worker 调度对照：** 同一冻结源码的三版本配对：撤销 `65e65c93`/`09bd1d59` 的优化前版本、保留当前优化与 host 修复的基线、仅修改 VM worker 调度/私有测试及 README 的候选。每版本 3 warmups、30 个随机同轮样本；独立 namespace、owned pivot_root、fresh VM/Host listener，整父组 CPU 0,1 / quota 两核 / 16 GiB / swap 0，同 B-FS-TOOLS 七工具及输入、缓存、逐字节 upper、宿主隔离与干扰门禁。使用原 reference timer，profiling 关闭；与当前基线的差异用于候选归因，优化前版本只用于同批恢复程度对照。5,000 次配对 bootstrap，分离簇不报整体排名；各候选批次独立保留，只发布通过门禁的最终制品，不合并样本。原始 helper、冻结源码、构建和诊断在 `.data/`，加工 CSV 与结果仅进入 `lab-notes/filesystem-performance-analysis.md#vm-completion-dispatch`，不重算跨运行时用户表，不外推 macOS、冷磁盘或并发吞吐。
 
 - **不可变 share 的 DAX 开关对照：** `benchmark.new/filesystem/dax_ab.py` 准备同一优化制品、固件和物理不可变输入，生成 `in.json` 后通过 `semspec bench` 执行 Python 配对行；不使用 hyperfine。两组均通过公开 VM API 建立只读 DAX-capable share 和 128 MiB 窗口，仅 guest 挂载选项 `dax=never` / `dax=inode` 不同；statx 必须验证实际 DAX 属性。宿主热缓存、新 guest、独占 rootfs upper/work；完整 VM 组 CPU 0,1、两核 quota、2 GiB、swap 0，guest 2 vCPU/512 MiB。静态 C 探针测独立 64 MiB 文件的顺序读取、双线程读取和 mmap 页遍历，以及 128×64 KiB 小文件 open/read/close、2,048 路径 metadata；首次数据访问与 guest 内重复访问分列，全量内容验证在阶段计时之外。小文件组有超过窗口容量的映射，保留其正常回收成本。各组 3 次预热、30 个预先随机平衡配对，共 60 个正式 VM；5,000 次配对 bootstrap，先检查分布，保留有效慢样本，不报告 P99。校验错误、输入/制品变化、非零退出、预算不符、OOM 或外部构建/测试干扰使批次失败；报告失败和剔除数。冻结 harness、源码、制品、全部日志与样本在 `.data/`，加工表和 CSV 为工程报告；不将只读 share 的结果外推到 CLI 可写 workspace、启动退化或磁盘冷缓存。
 
-- **guest 写合并开关对照：** 同一冻结的直接队列 GNU release/gateway 制品，仅切换宿主 runner 的 `PVISOR_VM_FS_WRITEBACK=1` / `0`，由专用 worker 恢复并校验原环境。Linux VM 的 rootfs/workspace 均无 DAX 窗口；与 B-FS-TOOLS 相同的七项操作、完整任务和校验，整父组 CPU 0,1、两核 quota、16 GiB、swap 0，guest 2 vCPU/16 GiB。热宿主缓存、每次私有 namespace/pivot_root、独立工作区与工具缓存；每臂 3 warmups、30 个 seeded 随机配对，共 60 个正式任务。输入与制品摘要、完整 upper 字节、Run Bundle、正常退出、预算和外部构建/测试门禁通过后才能发布；保留慢有效样本，分离簇不给整体排名，5,000 次配对 bootstrap，不报告 P95/P99。原始及冻结执行入口保留 `.data/writeback-ab-*` 与 `.data/writeback-quick-*`；工程表和 CSV 进入 `design/filesystem-performance-analysis.md#writeback-ab`，生产默认值和跨运行时用户表不由该开关实验改写。
+- **guest 写合并开关对照：** 同一冻结的直接队列 GNU release/gateway 制品，仅切换宿主 runner 的 `PVISOR_VM_FS_WRITEBACK=1` / `0`，由专用 worker 恢复并校验原环境。Linux VM 的 rootfs/workspace 均无 DAX 窗口；与 B-FS-TOOLS 相同的七项操作、完整任务和校验，整父组 CPU 0,1、两核 quota、16 GiB、swap 0，guest 2 vCPU/16 GiB。热宿主缓存、每次私有 namespace/pivot_root、独立工作区与工具缓存；每臂 3 warmups、30 个 seeded 随机配对，共 60 个正式任务。输入与制品摘要、完整 upper 字节、Run Bundle、正常退出、预算和外部构建/测试门禁通过后才能发布；保留慢有效样本，分离簇不给整体排名，5,000 次配对 bootstrap，不报告 P95/P99。原始及冻结执行入口保留 `.data/writeback-ab-*` 与 `.data/writeback-quick-*`；工程表和 CSV 进入 `lab-notes/filesystem-performance-analysis.md#writeback-ab`，生产默认值和跨运行时用户表不由该开关实验改写。
 
 - **guest 目录镜像与惰性 OPEN：** `guest_cache.py`，同一冻结 release CLI/SDK 和固件切换 `PVISOR_VM_GUEST_CACHE=0/1`，writeback 固定关闭。普通 `--safe` CLI 工作区与 SDK 显式 Immutable lower 独立成批；2 vCPU/4096 MiB、热宿主输入、新 VM/upper、3 warmups/30 seeded 随机配对。分列 2048 路径首次/重复 stat、深目录 stat、目录枚举、64 MiB 读取、1000 次热 open/fstat 与 open/read、宽目录单文件访问及 1.3s 空闲后 stat。校验全部数据、退出/Bundle 和输入不变，保留全部有效慢样本，配对 bootstrap 95% CI、先检查分布，不报告 P99。独立 B-FS-DIAG 运行用 prime-only 差分核对 READINDEX/OPEN/GETATTR 等请求，不把 profiling 耗时混入正式样本；声明资格、TTL 和跨文件数据缓存策略差异，不将 SDK 不可变 share 外推到普通 CLI 或整个 Agent。报告、来源、失败和完整数据保留 `.data/guest-cache-*`。修复预取退化时，使用 `--baseline-firmware` 在同一 CLI/SDK/payload 下比较旧/新固件，两臂 guest cache 均为 1，仍采用相同的随机配对、分布与校验规则。自适应预取由 `guest_cache_adaptive.py` 同批比较原始预取、仅枚举加载和候选三种固件（均 cache=1），增加宽目录两文件、32 随机文件、32 跨步文件及全量连续 stat，检验利用率门槛和恢复程度；预算、30 配对轮次、独立计数和校验规则相同。
 
@@ -653,7 +653,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-KERNEL-ENG：裁剪固件是否缩短当前产品的启动 {#b-kernel-eng}
 
-- **角色：** engineering A/B；放入 `docs/src/*/design/vm-startup-performance-analysis.md`，不作为跨产品用户排名。
+- **角色：** engineering A/B；放入 `docs/src/*/lab-notes/vm-startup-performance-analysis.md`，不作为跨产品用户排名。
 - **Motivation：** 判断裁剪 guest 内核的收益，以及它是否仍支持工作区、开发工具和网络所需能力。
 - **想要的结论：** 相同 pVisor 二进制、相同 Linux 源码和补丁、相同打包方式，仅配置不同的两份新固件，其就绪/完整任务中位数差及 95% 配对 bootstrap 区间；列出减少的功能与未验证能力。
 - **实验设计：** 冻结固件源码、输入 tarball、补丁、配置与编译记录，分别重建通用配置和裁剪配置；不复用旧固件作为基线。先验证构建和同样负载的输出、暂存隔离与工作区内容；Linux KVM 上以相同两核/内存/工具输入，随机交替 shell-ready、七项文件工具和修复任务，每格 30 次、3 次预热。CPU 缓解、seccomp、namespaces、virtio-fs 等所需配置必须保留；网络/恢复能力需独立正确性检查，不能由 shell 启动通过推导。配置中 guest LSM/设备功能差异必须明确，不称为相同加固程度的排名。
@@ -905,4 +905,4 @@ Design: 负载、对照、控制变量与有效样本判据。
 - [`pvisor/`](pvisor/README.md)：测量脚本、运行方式与报告格式。
 - [`replay/`](replay/qwen3.6-results.md)：Qwen3.6 SandboxReplay 实验记录，保留历史样本，不作为产品保证。
 - 用户文档：[`docs/src/zh/benchmarks/`](../docs/src/zh/benchmarks/index.md)。
-- 技术分析：`docs/src/zh/design/*-performance-analysis.md`。
+- 技术分析：`docs/src/zh/lab-notes/*-performance-analysis.md`。

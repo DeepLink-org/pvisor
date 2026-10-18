@@ -4,6 +4,7 @@ Static tables and engineering details stay in Markdown or local evidence.
 Only data needed by current publication contracts is exported to the site.
 """
 
+import re
 from pathlib import Path
 
 PUBLIC_CSV = frozenset(
@@ -100,6 +101,24 @@ def csv_path(repository, filename, locale=None):
     return Path(repository) / "docs/overrides/assets/benchmarks/data" / group / filename
 
 
+def referenced_svg_paths(repository):
+    """Return benchmark SVG paths referenced by articles, tables or theme sources.
+
+    Paths are relative to the shared benchmark asset directory. Local evidence
+    and generated site files do not keep an unused public download alive.
+    """
+    docs = Path(repository) / "docs"
+    references = set()
+    for root in (docs / "src", docs / "overrides"):
+        for path in root.rglob("*"):
+            if ".data" in path.parts or path.suffix not in {".md", ".json", ".html", ".css", ".js"}:
+                continue
+            references.update(
+                re.findall(r"assets/benchmarks/([^\s\"'<>)]*\.svg)", path.read_text())
+            )
+    return references
+
+
 def check_public_assets(repository):
     """Reject accidental publication of intermediate or duplicate evidence.
 
@@ -108,6 +127,10 @@ def check_public_assets(repository):
     """
     repository = Path(repository)
     assets = repository / "docs/overrides/assets/benchmarks"
+    figures = referenced_svg_paths(repository)
+    for path in assets.rglob("*.svg"):
+        if path.relative_to(assets).as_posix() not in figures:
+            raise ValueError(f"unreferenced public SVG: {path}")
     for path in assets.rglob("*.csv"):
         if not is_public_csv(path.name) or path != csv_path(repository, path.name):
             raise ValueError(f"unneeded or duplicate public CSV: {path}")

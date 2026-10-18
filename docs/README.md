@@ -111,9 +111,9 @@ and user-facing protocol pages belong in the site's `reference/` tree, not at th
 ## Information architecture
 
 Value before mechanism, mechanism before implementation. Keep Home as the first
-top-level tab, followed by six sections: Quick start → User guide → Core concepts
-→ Benchmarks → Design and research → Contributing
-(首页 → 快速开始 → 用户指南 → 基础概念 → 基准测试 → 设计与研究 → 参与开发).
+top-level tab, followed by seven sections: Quick start → User guide → Core concepts
+→ Benchmarks → Design and research → Lab notes → Contributing
+(首页 → 快速开始 → 用户指南 → 基础概念 → 基准测试 → 设计与研究 → 实验记录 → 参与开发).
 Quick start includes the product introduction and `why/` articles; User guide
 includes the task learning path and reference pages; Core concepts includes
 Security as a subsection. The homepage remains accessible through its own tab
@@ -203,9 +203,10 @@ The native `exclude` plugin excludes `.data/` at every depth, and the generated
 site checker rejects leaked evidence. Zensical publishes the shared theme assets
 in each locale, including images and JSON downloads, so native previews need no
 extra server. JSON fixtures, recording tools and published figures use
-`docs/overrides/assets/` directly. Existing local evidence remains in the real
-`docs/src/assets/benchmarks/.data/` directory, outside the three projects' article
-roots. Do not replace the former tracked `docs/src/assets/` or
+`docs/overrides/assets/` directly. Historical evidence paths include
+`docs/src/assets/benchmarks/.data/`, outside the locale article roots. These local
+archives are not distributed with a checkout; preserve their recorded identities
+without presenting absent files as public downloads. Do not replace the former tracked `docs/src/assets/` or
 `docs/src/stylesheets/` directories with symlinks: Git cannot stage individual
 old-file deletions through a symlink during the migration.
 
@@ -228,7 +229,7 @@ matter or navigation label. Removing `status: todo` does not complete a missing
 field reference, schema, experiment, or policy decision. Keep outstanding items
 explicit and attach the implementation or verification that completes each one.
 Preserve page paths and bilingual parity. Keep both locale navigation trees in
-the Home-plus-six-section order defined above.
+the Home-plus-seven-section order defined above.
 
 ### Writing style
 

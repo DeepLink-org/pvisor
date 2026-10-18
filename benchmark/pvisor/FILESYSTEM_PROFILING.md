@@ -345,7 +345,7 @@ Explicit `--cases rg-2048,rg-deep-2048,git-status-2048,npm-offline-32` requires 
 
 The five-item optimization campaign is recorded under
 `target/optimization-five-20261005`, with reviewable reports, source patch and
-validation logs in [the evidence directory](../../docs/src/assets/benchmarks/filesystem-optimizations-20261005/).
+validation logs in the evidence directory (local archive: `docs/src/assets/benchmarks/.data/filesystem-optimizations-20261005/`).
 Its baseline was copied before these edits;
 the candidate applies only the seven relevant source/build files to that copy.
 Concurrent lazy-cache/backend work is excluded from the comparison. Source and
@@ -454,9 +454,9 @@ workload tails also varied. The executable grows from 14.87 MiB to 18.59 MiB
 These timings cover this fixed Linux/KVM fixture, not every workload or platform.
 
 Final raw samples and provenance are preserved in
-[the release comparison](../../docs/src/assets/benchmarks/filesystem-optimizations-20261005/code-v3-4g.tsv),
-[the build-profile comparison](../../docs/src/assets/benchmarks/filesystem-optimizations-20261005/profile-v3-4g.tsv)
-and [the manifest](../../docs/src/assets/benchmarks/filesystem-optimizations-20261005/manifest.tsv).
+the release comparison (local archive: `docs/src/assets/benchmarks/.data/filesystem-optimizations-20261005/code-v3-4g.tsv`),
+the build-profile comparison (local archive: `docs/src/assets/benchmarks/.data/filesystem-optimizations-20261005/profile-v3-4g.tsv`)
+and the manifest (local archive: `docs/src/assets/benchmarks/.data/filesystem-optimizations-20261005/manifest.tsv`).
 
 
 ## Shared filesystem service and direct lazy-image version evaluation
@@ -510,8 +510,8 @@ Lazy whole-job P50 rises 2.29% cold and 0.64% warm. Removing the extra mount doe
 not establish general acceleration. The experiment does not separately profile
 metadata projection, materialization, preimage and synchronization costs.
 
-Full results and historical context are in the [benchmark article](../../docs/src/en/design/filesystem-performance-analysis.md#filesystem-service).
-Public raw reports and provenance are preserved in [the evidence directory](../../docs/src/assets/benchmarks/filesystem-service-20261005/).
+Full results and historical context are in the [benchmark article](../../docs/src/en/lab-notes/filesystem-performance-analysis.md#filesystem-service).
+Historical raw reports and provenance were archived locally in the evidence directory (local archive: `docs/src/assets/benchmarks/.data/filesystem-service-20261005/`).
 `plot_filesystem_service.py` renders the standalone SVG figures from those reports.
 
 ## Host stage journal profiling and optimization (2026-10-05)

@@ -50,7 +50,7 @@ class PublicationLayoutTests(unittest.TestCase):
 
     def test_private_archive_rejects_a_symlinked_publication_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             batch, outside = root / "batch", root / "outside"
             batch.mkdir()
             outside.mkdir()
@@ -62,7 +62,7 @@ class PublicationLayoutTests(unittest.TestCase):
 
     def test_collected_provenance_omits_pdfs_but_still_requires_local_pdf_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             timing, diagnostic = root / "timing", root / "diagnostic"
             analysis, times = timing / "analysis", timing / "analysis-times"
             analysis.mkdir(parents=True)
@@ -194,7 +194,7 @@ class PublicationLayoutTests(unittest.TestCase):
             (TUNING.BASE, "filesystem-guest-writeback-tuning"),
         ):
             with self.subTest(namespace=namespace), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve()
                 name = namespace + "-levels.csv"
                 files = {
                     name: {"data": b"full_precision\n1.23456789\n"},
@@ -214,7 +214,7 @@ class PublicationLayoutTests(unittest.TestCase):
             (TUNING, TUNING.BASE, "filesystem-guest-writeback-tuning"),
         ):
             with self.subTest(namespace=namespace), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve()
                 batch = root / "input"
                 batch.mkdir()
                 files = {
@@ -258,7 +258,7 @@ class PublicationLayoutTests(unittest.TestCase):
 
     def test_cli_publication_archives_tables_without_public_downloads(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             files = {
                 CLI.PREFIX + suffix + ".csv": b"value\n1.23456789\n"
                 for suffix in ("-levels", "-comparisons", "-environments", "-counters")
@@ -284,11 +284,12 @@ class PublicationLayoutTests(unittest.TestCase):
 
     def test_io_publication_archives_csv_and_provenance_and_publishes_only_svg(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             table = "filesystem-io-shape.csv"
             files = {
                 table: {"data": b"value\n1.23456789\n", "sha256": ""},
                 "curve.svg": {"data": b"<svg></svg>", "sha256": ""},
+                "unused.svg": {"data": b"<svg>archived</svg>", "sha256": ""},
             }
             import hashlib
 
@@ -308,7 +309,21 @@ class PublicationLayoutTests(unittest.TestCase):
             ]
             with (
                 patch.object(IO, "REPO", root),
-                patch.object(IO, "collect", return_value=(files, {}, b"{}")),
+                patch.object(
+                    IO,
+                    "collect",
+                    return_value=(
+                        files,
+                        {
+                            "public_outputs": {
+                                "docs/overrides/assets/benchmarks/filesystem-io/curve.svg": files[
+                                    "curve.svg"
+                                ]["sha256"]
+                            }
+                        },
+                        b"{}",
+                    ),
+                ),
                 patch.object(sys, "argv", arguments),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
@@ -321,6 +336,10 @@ class PublicationLayoutTests(unittest.TestCase):
                 files[table]["data"],
             )
             self.assertEqual(len(list(root.rglob("*.csv"))), 1)
+            self.assertEqual(
+                (root / "shape/publication/filesystem-io/unused.svg").read_bytes(),
+                files["unused.svg"]["data"],
+            )
             self.assertFalse((root / "docs/src").exists())
             self.assertEqual(
                 [p.suffix for p in (root / "docs").rglob("*") if p.is_file()], [".svg"]
@@ -329,7 +348,7 @@ class PublicationLayoutTests(unittest.TestCase):
 
     def test_workload_publication_keeps_tables_pdfs_and_provenance_local(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             batch = root / ".data/synthetic"
             analysis = batch / "analysis"
             analysis.mkdir(parents=True)

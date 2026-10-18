@@ -55,10 +55,7 @@ New Firecracker uses the stock kernel, the same initrd and virtio-MMIO. Two PCI 
 
 {{ table("startup-timing.exit.render.json") }}
 
-The [paired-sample statistics CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv) and [provenance JSON](../assets/benchmarks/startup-timing.provenance.json)
-identify each condition’s latest successful independent batch. Standard deviation uses the formal samples and sample formula. These are
-Python event-clock data, independent of the hyperfine completion experiment. Historical results
-from different artifacts are not pooled. Rerun the entire table with `just benchmark startup/timing`,
+The [same-run Ready/Exit statistics CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv) retains both the 2026-10-10 and 2026-10-11 cohorts (eight rows each). The tables select the last CSV row for each `condition`; all eight selected rows currently belong to 2026-10-11 and match the [provenance JSON](../assets/benchmarks/startup-timing.provenance.json). Use `condition` and `batch` together to identify a result; do not average the two cohorts. Standard deviation uses the formal samples and sample formula. These Python event-clock data remain independent of the hyperfine completion experiment. Rerun the entire table with `just benchmark startup/timing`,
 or just VM with `just benchmark startup/timing "pvisor vm"`.
 The earlier VM-only cohort remains separate in local evidence.
 

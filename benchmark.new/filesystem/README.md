@@ -96,7 +96,7 @@ host只隐藏已验证的OverlayFS内部标记，不放过意外应用文件。
 逐case guest脏页峰值、队列占用与精确操作尾延迟仍未插桩。
 下述旧入口和来源保持独立，已有数据不重命名为新协议结果。
 
-首轮浅测结果见[分层工程分析](../../docs/src/zh/design/filesystem-io-performance-analysis.md#workload-v2-results)：
+首轮浅测结果见[分层工程分析](../../docs/src/zh/lab-notes/filesystem-io-performance-analysis.md#workload-v2-results)：
 19项、114个新VM、342条轮记录全部通过；独立N1计数另用16个VM。
 这批数据只比较同一固件的guest WB关/开，不代表0049相对0048的增量或跨后端排名。
 
@@ -134,6 +134,7 @@ guest 内连续五次 reopen、内部三轮，展示吞吐、READ 消除与容�
 主输入批次的`publication/<namespace>/`，PDF继续保留在原分析目录；CLI入口没有图时
 仅做本地归档。组合I/O曲线以`--shape`批次作为归档主目录。归档清单完整描述材料，
 `public_outputs`仅列实际公开的图；阶段计时、来源校验和SVG/PDF完整性检查均不减少。
+I/O 曲线发布器只复制当前文章或主题引用的 SVG；未引用的图仍保留在本地 publication。
 这些结果不写入下述原生工具表或跨运行时用户排名。
 
 ## 原生 metadata/read 表

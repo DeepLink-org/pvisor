@@ -303,7 +303,7 @@ frozen supporting harnesses and the hashes of monitor, PSS and guard observation
 
 ## Published curves and archived history
 
-The [bilingual technical analysis](../../docs/src/zh/design/vm-memory-performance-analysis.md)
+The [bilingual technical analysis](../../docs/src/zh/lab-notes/vm-memory-performance-analysis.md)
 uses only the complete `q8` and `l4` preflights. It publishes idle charged-memory
 and PSS curves, with readback and CPU observations; post-write curves remain
 local. The public SVG files are byte-identical copies of each cohort's

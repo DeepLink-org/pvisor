@@ -11,6 +11,25 @@ from public_assets import PUBLIC_CSV, check_public_assets, csv_path, is_public_c
 
 
 class PublicAssetTests(unittest.TestCase):
+    def test_svg_requires_a_current_page_reference_with_matching_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            figure = repo / "docs/overrides/assets/benchmarks/study/chart.svg"
+            figure.parent.mkdir(parents=True)
+            figure.write_text("<svg/>")
+            article = repo / "docs/src/en/lab-notes/result.md"
+            article.parent.mkdir(parents=True)
+            article.write_text("![Plot](../assets/benchmarks/other/chart.svg)")
+            with self.assertRaisesRegex(ValueError, "unreferenced public SVG"):
+                check_public_assets(repo)
+            article.write_text("![Plot](../assets/benchmarks/study/chart.svg)")
+            check_public_assets(repo)
+            archive = article.parent / ".data"
+            archive.mkdir()
+            article.rename(archive / article.name)
+            with self.assertRaisesRegex(ValueError, "unreferenced public SVG"):
+                check_public_assets(repo)
+
     def test_numeric_csv_has_one_location_across_languages(self):
         repo = Path("/repository")
         a = csv_path(repo, "filesystem-layered-references-levels.csv", "zh")

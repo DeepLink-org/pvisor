@@ -18,6 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from curves_analysis import describe, seed_for
+from public_assets import referenced_svg_paths
 from publication_archive import archive_targets, preflight_archive, write_archive
 
 REPO = Path(__file__).resolve().parents[2]
@@ -546,6 +547,7 @@ def collect(args):
                 "read-diagnostic",
             )
         cohorts.append(provenance)
+    referenced_figures = referenced_svg_paths(REPO)
     manifest = dict(
         schema=1,
         benchmark_ids=["B-FS-ENG", "B-FS-DIAG"],
@@ -560,7 +562,7 @@ def collect(args):
         public_outputs={
             str(Path("docs/overrides/assets/benchmarks/filesystem-io") / name): spec["sha256"]
             for name, spec in files.items()
-            if name.endswith(".svg")
+            if name.endswith(".svg") and f"filesystem-io/{name}" in referenced_figures
         },
         precision="CSV bytes archived unchanged; only SVGs public; local analysis PDFs retained and verified; no raw_rows.csv publication or numeric formatting",
         graph_methods="Frozen analysis source hashes and per-cohort statistical scope retained; N5 exploration and independent N30 confirmation remain separate",
@@ -593,7 +595,10 @@ def main():
     preflight_archive(archives)
     targets = []
     for name, spec in files.items():
-        if not name.endswith(".svg"):
+        if (
+            str(Path("docs/overrides/assets/benchmarks/filesystem-io") / name)
+            not in manifest["public_outputs"]
+        ):
             continue
         destinations = [REPO / "docs/overrides/assets/benchmarks/filesystem-io" / name]
         for target in destinations:

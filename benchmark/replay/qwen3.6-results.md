@@ -4,7 +4,7 @@
 模型服务配置、硬件及重复试验次数未完整登记；以下保留原始样本和当时的诊断，
 未在本次文档清理中重跑。结果只说明这些轨迹的观测，不能推广为回放确定性或当前兼容性保证。
 
-现行使用方法与适配版本见 [回放指南](../../docs/src/zh/guides/sandbox-replay.md)。
+现行使用方法与适配版本见 [回放指南](../../docs/src/zh/guides/replay.md)。
 后续结果应另外记录运行日期、提交、模型与 Agent 版本、环境、样本及失败记录。
 
 ## 5. Qwen3.6 实测结果
@@ -559,8 +559,8 @@ Bash:
 续跑的 `A′(N+1)` 可见文本为空白但命令同样逐字复现；两轮续跑 verifier Reward 均为 1。
 
 精确参数见
-[`pvisor replay` 命令参考](../reference/cli.md#replay-an-agent-trajectory)；执行边界见
-[执行指南](execution.md)。
+[`pvisor replay` 命令参考](../../docs/src/zh/reference/cli.md#replay-an-agent-trajectory)；执行边界见
+[执行指南](../../docs/src/zh/guides/executors/index.md)。
 
 ## OpenCode 实验诊断（历史记录）
 

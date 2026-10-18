@@ -182,3 +182,11 @@ python3 benchmark.new/docs.py publish "$batch"
 
 亲和性在准备与 semspec 外层设置，manifest 记录实际选择；被测命令没有 Python 或
 `taskset` 包裹。所有适配器按独立条件采样，不声称随机配对改善比例。
+
+## 公开图表清理
+
+`docs.py check` 拒绝未被文章、展示表或主题引用的公开 SVG。新增图表先在对应文章中引用；
+`filesystem/publish_io_curves.py` 只发布当前引用的图，完整图表仍在批次 publication 中归档。
+2026-10-18 撤下的无引用 SVG 原字节保存在 `.data/docs-assets-cleanup-20261018/`，
+可提交的路径、大小和 SHA-256 索引见 [清理清单](evidence/docs-assets-cleanup-20261018.json)。
+清单只覆盖这次公开图表清理，不表示其他历史原始批次已在当前 checkout 核验或完整保留。

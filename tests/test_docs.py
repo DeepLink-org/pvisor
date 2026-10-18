@@ -122,10 +122,9 @@ def _make_generated_site(tmp_path, resources):
     (tmp_path / "index.html").write_text(entry)
     (site / "index.html").write_text(entry)
     for locale in ("en", "zh"):
-        for route in ("", "start/what-is-pvisor/"):
-            source = (
-                tmp_path / "src" / locale / ("index.md" if not route else "start/what-is-pvisor.md")
-            )
+        for route in ("", "start/what-is-pvisor/", "why/", "start/first-run/"):
+            source_path = "why/index.md" if route == "why/" else route.rstrip("/") + ".md"
+            source = tmp_path / "src" / locale / (source_path if route else "index.md")
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text("# Example {#shared}\n")
             dest = site / locale / route / "index.html"
@@ -340,6 +339,7 @@ class DocsTests(unittest.TestCase):
                 "基础概念",
                 "基准测试",
                 "设计与研究",
+                "实验记录",
                 "参与开发",
             ],
             "en": [
@@ -349,6 +349,7 @@ class DocsTests(unittest.TestCase):
                 "Core concepts",
                 "Benchmarks",
                 "Design and research",
+                "Lab notes",
                 "Contributing",
             ],
         }
@@ -361,6 +362,9 @@ class DocsTests(unittest.TestCase):
                 for groups in section.values():
                     for group in groups:
                         for entries in group.values():
+                            if isinstance(entries, str):
+                                assert entries.endswith(".md")
+                                continue
                             assert isinstance(entries, list)
                             assert entries
                             assert all(
@@ -470,7 +474,8 @@ class DocsTests(unittest.TestCase):
             ("breadcrumb_locale", "breadcrumb leaves current language"),
             ("missing_link", "missing a missing/"),
             ("missing_anchor", "missing anchor #missing"),
-            ("callout", "missing rendered callout or code block"),
+            ("callout", "missing rendered callout"),
+            ("code_block", "missing rendered code block"),
         ]:
             with self.subTest(mutation=mutation, message=message):
                 with workspace() as (tmp_path, resources):
@@ -572,7 +577,17 @@ class DocsTests(unittest.TestCase):
                                 + '">Broken</a>'
                             )
                     elif mutation == "callout":
-                        replace(article, 'class="admonition tip"', 'class="admonition note"')
+                        replace(
+                            docs / "site/en/why/index.html",
+                            'class="admonition tip"',
+                            'class="plain"',
+                        )
+                    elif mutation == "code_block":
+                        replace(
+                            docs / "site/en/start/first-run/index.html",
+                            "<pre>example</pre>",
+                            "example",
+                        )
                     else:
                         raise AssertionError(mutation)
                     with self.assertRaisesRegex(SystemExit, message):

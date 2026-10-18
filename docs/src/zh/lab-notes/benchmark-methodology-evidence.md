@@ -5,8 +5,8 @@
 所有基准遵守同一套协议：
 
 - 写明硬件、操作系统、内核或 macOS 版本、FUSE 实现、pVisor 版本与提交号；
-- 给出 p50、p95、p99 与样本数；
-- 提供可一条命令复现的脚本（放在仓库 `benchmark/` 下），报告使用 `pvisor-benchmark/v1` schema；
+- 给出样本数与分布，尾部统计遵守注册表的样本量限制；30 个样本不报告 P99；
+- 使用注册的测量入口并保留其原生证据格式，历史报告保留原 schema；
 - 每个对照组写明配置，不与「未调优的对手」比较；
 - 结果按日期保留，不覆盖旧数据。
 
@@ -41,20 +41,19 @@ macOS/HVF 与 Linux/KVM 的数据融入对应主题的 benchmark 文档并同时
 ## 从现有测量入口开始
 
 ```bash
-just benchmark
-just benchmark nightly target/pvisor-benchmark/nightly
-just benchmark-compare target/pvisor-benchmark/candidate/raw-report.json target/pvisor-benchmark/main/raw-report.json
-# Linux：启动与资源占用矩阵
-just benchmark-startup --warmups 10 --samples 100
+just benchmark smoke --output benchmark.new/process/.data/candidate
+just benchmark nightly --output benchmark.new/process/.data/nightly-new
+just benchmark-compare benchmark.new/process/.data/candidate/in.bench.json benchmark.new/process/.data/main/in.bench.json
+just benchmark startup/timing --output benchmark.new/startup/.data/measurement
 ```
 
-`just benchmark` 测最小 host Run 与读取 Run Bundle 的进程级成本：smoke 为 2 次预热/10 个样本，nightly 为 10 次预热/50 个样本。两者使用 `pvisor-benchmark/v1`。`benchmark-startup` 使用独立的 `startup.json`/`startup.md`，不会伪装成同一个报告 schema；默认入口为 3 次预热/30 个样本，上例显式覆盖。
+进程回归门禁使用 semspec bench 与 hyperfine：smoke 为 2 次预热/10 个样本，nightly 为 10 次预热/50 个样本；分别测量原生启动、最小 host Run、status 和 review。`benchmark-compare` 接受配置与 harness 一致且通过校验的 `in.bench.json`；基线需使用同一套件另测到 `.data/main`。
 
-构建、镜像下载和 rootfs 准备不计入现有 startup 样本；报告必须标明这一边界。无法通过前置探测的 executor 单独列为 SKIP，并保留 stderr；成功测量要求命令成功且 Bundle 为 completed/零退出。不能把失败、跳过或控制降级算成更快的成功样本。
+启动事件时钟表每条件固定 3 次预热/60 个样本，同次启动记录 Ready 与正常 Exit。它不替代已退役的启动/资源矩阵，也不复现其历史采样设置。预构建二进制、rootfs、镜像和内核的准备要求见[当前 benchmark 手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md)。每个显式输出目录必须全新；失败保留证据并阻止发布。构建与输入准备不计入这些时钟。
 
 ## 解释与归档
 
-同机、同套件、同输入比较 candidate 与 baseline。`benchmark-compare` 默认以 15% 为回归阈值，除非显式启用 `--fail-on-regression`，结果只作报告。保存原始样本、摘要、完整参数、输入摘要与提交号；区分冷镜像、热磁盘缓存与热页缓存，记录后台负载和电源状态。
+同机、同套件、同输入比较 candidate 与 baseline。`benchmark-compare` 默认以 15% 为回归阈值，检测到回归时返回非零退出码。保存原始样本、摘要、完整参数、输入摘要与提交号；区分冷镜像、热磁盘缓存与热页缓存，记录后台负载和电源状态。
 
 2026-10-04 首版提供文件系统、网络、apply、并发密度、受控 Agent 工具闭环、机器审查流程、隔离和回放前缀数据。真实模型成功率、人工监督分钟数、云端延迟与 macOS 新工作负载仍未测；每页单独解释范围。
 

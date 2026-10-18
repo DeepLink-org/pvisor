@@ -53,9 +53,7 @@ Exit 从同一开始时刻计至观察到正常退出。全部样本还须通过
 
 {{ table("startup-timing.exit.render.json") }}
 
-[同次样本统计 CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv) 与 [来源 JSON](../assets/benchmarks/startup-timing.provenance.json)
-记录各条件最新成功的独立批次，标准差采用正式样本的样本标准差。这是 Python 事件时钟数据，独立于
-hyperfine 完整命令实验；历史不同制品的数字不与这组样本合并。整表复测使用
+[同次 Ready/Exit 样本统计 CSV](../../../overrides/assets/benchmarks/data/startup/startup-timing.csv) 保留 2026-10-10 与 2026-10-11 两批，每批八行。表格按每个 `condition` 选取 CSV 最后一行；当前八个选中行均来自 2026-10-11，与[来源 JSON](../assets/benchmarks/startup-timing.provenance.json) 一致。用 `condition` 与 `batch` 共同定位结果，不对两批求平均。标准差采用正式样本的样本标准差。这些 Python 事件时钟数据独立于 hyperfine 完整命令实验。整表复测使用
 `just benchmark startup/timing`；仅复测 VM 使用 `just benchmark startup/timing "pvisor vm"`。
 此前 VM 单条件批次独立保留在本地，不混入新样本。
 

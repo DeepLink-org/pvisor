@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "scope": "Unused published SVG copies only; raw experiment evidence unchanged",
+  "files": [
+    {
+      "path": "docs/overrides/assets/benchmarks/cluster-scalability-20261005/execution.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/cluster-scalability-20261005/execution.svg",
+      "bytes": 35789,
+      "sha256": "4437cef0333dc3857b5f92b5ffbfbd9da83039b313a2076bf99bd85bb38dec37",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-io/confirm-phase-means-selected-blocks.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-io/confirm-phase-means-selected-blocks.svg",
+      "bytes": 44992,
+      "sha256": "8aaa88a020272428fc2f555d0725b6d8d23d6558663a9f0f13d3235bc5701397",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-io/confirm-smallfiles-smallfiles.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-io/confirm-smallfiles-smallfiles.svg",
+      "bytes": 62062,
+      "sha256": "85c6598e1e8903c2f9f4a76762f05d86537155b06e6eb50b416cfd7e4ac56588",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-io/confirm-sync-stream.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-io/confirm-sync-stream.svg",
+      "bytes": 60141,
+      "sha256": "c5e8916f8cf2f7c3285de79df730cd15f777b02294caa498930268016521bab1",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-io/memory-batch_kib-sampled_memory_current_peak_bytes-4.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-io/memory-batch_kib-sampled_memory_current_peak_bytes-4.svg",
+      "bytes": 16336,
+      "sha256": "1d9424f871cc77b590e720bdf4c4f0036ceff1e978c218c9a7449b3c9ccbab48",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-io/memory-capacity_mib-sampled_memory_current_peak_bytes-1.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-io/memory-capacity_mib-sampled_memory_current_peak_bytes-1.svg",
+      "bytes": 17365,
+      "sha256": "25dfc693b265f8d9838ab3ab257755fb581ced847c1c88f8983abb23008c0e0a",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-io/memory-delay_us-sampled_memory_current_peak_bytes-3.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-io/memory-delay_us-sampled_memory_current_peak_bytes-3.svg",
+      "bytes": 18365,
+      "sha256": "3ac1250f3b96e06a9a77374d7aeec78c6e0fba3fd855f5df619ed2b73e5a9556",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-io/parameters-block-stream.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-io/parameters-block-stream.svg",
+      "bytes": 86357,
+      "sha256": "6bd800edb4bb2a12573ef957c8267b80d3bb8beb14a9fca560b092fbd925f38e",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-io/pressure-stream.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-io/pressure-stream.svg",
+      "bytes": 171834,
+      "sha256": "7d8c3b219df9914445dcd29a3b38efcf669e13f7326c3df398e1e54f21b8c6d3",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-io/readset-read.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-io/readset-read.svg",
+      "bytes": 108153,
+      "sha256": "e8f26ecea197b23320bc8f3663bfe48c1af6b909ae96d99b981c99d4e6401d5c",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-io/smallfiles-smallfiles.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-io/smallfiles-smallfiles.svg",
+      "bytes": 61036,
+      "sha256": "45874d52812750e6b1449634448915efaa335df705b521f4c857339a7c5f1b79",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-io/sync-stream.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-io/sync-stream.svg",
+      "bytes": 58496,
+      "sha256": "b1920126d9dd77348bac05cca86efa3ae2f5b75384340e30d1ab30dbe5d76bab",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/filesystem-service-20261005/lazy-vm.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/filesystem-service-20261005/lazy-vm.svg",
+      "bytes": 20323,
+      "sha256": "c07ed4132d6337b0c5f6365942053601ec0510b2e59e9716a3c2513bdf60b27c",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/full-ubuntu-20261004/ubuntu-startup.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/full-ubuntu-20261004/ubuntu-startup.svg",
+      "bytes": 66182,
+      "sha256": "5484de021520cda1db71c05c346d36eb9d53a698d66594eeab1fda0f33b824f3",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    },
+    {
+      "path": "docs/overrides/assets/benchmarks/full-ubuntu-20261004/ubuntu-workflows.svg",
+      "archive_path": "benchmark.new/.data/docs-assets-cleanup-20261018/full-ubuntu-20261004/ubuntu-workflows.svg",
+      "bytes": 92472,
+      "sha256": "29c83deb68d952c322e23b79d871d49654fbbb3b300d776d4dcedd65e7c8a7d8",
+      "retention": "local archive; original also retained in Git history",
+      "reason": "not referenced by tracked page, table, theme or configuration"
+    }
+  ]
+}
