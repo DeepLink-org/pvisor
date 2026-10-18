@@ -129,8 +129,8 @@ OverlayNet 接在 VM 设备后，由 Session 准备并在 Attempt 结束时收�
 
 源码入口：`crates/pvisor-overlaynet/src/vm.rs` 的 `ensure_listener`、`connect_vm_egress`、`drive_flows` 与 `SyntheticDns`；`egress.rs` 拥有共享出口连接路径，`interception.rs` 定义实际 driver 的观察。`crates/pvisor-vm/src/devices/virtio/net/` 只拥有虚拟网卡和帧传输，网络策略不由设备自行推断。
 
-!!! note "Host / OCI 透明拦截：后续设计"
-    下方“问题”、Design A、Design B 和交付计划第 1–5 项描述待实现的 host/container driver。它们不扩展上方当前 VM 与显式代理的支持面。
+!!! note "Host / OCI 透明拦截：提案（未实现）"
+    下方“问题”、Design A、Design B 和交付计划第 1–5 项描述待实现的 host/container driver，是已接受方向的设计提案，不代表当前实现。它们不扩展上方当前 VM 与显式代理的支持面。
 
 ## 问题
 

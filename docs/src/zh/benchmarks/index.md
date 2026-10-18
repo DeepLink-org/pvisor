@@ -100,7 +100,7 @@ q35 和 microvm 使用同一 Ubuntu 模板；样本和百分位数与其他批�
 
 ### 工程实验与数据保留 {#evidence-format}
 
-工程 A/B、带计数器的 profile 和诊断探针保存在[技术分析](../design/filesystem-performance-analysis.md)，不作为跨产品主表。
+工程 A/B、带计数器的 profile 和诊断探针保存在[技术分析](../lab-notes/filesystem-performance-analysis.md)，不作为跨产品主表。
 
 Markdown 保留面向用户的表格，仅为必要的用户统计提供共享 CSV 下载；正文已有的静态表、逐轮逐环境记录以及历史和工程中间表不默认另行导出。完整 CSV/JSON、原始报告、逐次样本、日志、制品清单和冻结 harness 保存在对应本地批次或 `benchmark.new/.data/docs-assets-prune-20261018/` 文档数据归档，不发布到站点。动态 JSON 只保留构建所需的展示表，公开工程图使用 SVG。复现与来源保留规则见[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)。
 

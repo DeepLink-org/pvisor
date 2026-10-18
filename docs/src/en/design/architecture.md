@@ -4,7 +4,7 @@ pVisor processes Operations: it accepts requests, decides how to handle and plac
 
 There are two responsibilities: **core provides definitions; pvisor provides implementation.** External callers submit execution requests, control execution through a run handle and observe progress and results through Events.
 
-![Technical architecture centered on pvisor-vm: CPUs, memory, devices, consistent freeze and KVM/HVF adapters](assets/pvisor-architecture.svg)
+For the overall diagram and an end-to-end task walkthrough see [Design and internals](index.md); this page maintains crate ownership, API boundaries and the host authority path.
 
 ## Definitions and implementation
 
@@ -20,6 +20,7 @@ There are two responsibilities: **core provides definitions; pvisor provides imp
 | `pvisor-gateway` | Optional model protocol routing, conversion and call observation |
 | `pvisor-daemon` | Separate single-node sandbox admission, durable ownership, native VM supervisor lifecycle and endpoint proxy |
 | `pvisor-cli` | CLI, TUI, cache/replay frontends and Host Job application adapters; consumes the runtime |
+| `pvisor-shim` | containerd Runtime v2 shim (`io.containerd.pvisor.v2`); task lifecycle, exec and FIFO/PTY IO for the host process path |
 | `pvisor-vm` | VMs, devices, freezing, snapshots and RAM mappings; uniform api and private platform implementations |
 | `pvisor-replay` | Agent trajectory replay mechanisms; consumes Core/Journal contracts, with frontends in CLI |
 
@@ -166,9 +167,7 @@ full platform behavior; see above for macOS identity and cleanup limits.
 
 ## A production execution path
 
-![Preparation, launch-fact commit, dispatch, cleanup and result ordering](assets/execution-sequence.svg)
-
-Driver preparation creates real file and network resources; executor dispatch starts the workload. Separating these steps lets a failed required launch-fact commit prevent dispatch while the Session reclaims prepared resources. Completion similarly converges resources and observations before terminal publication; cancelling a caller wait does not establish that those actions finished.
+For the full preparation, launch-fact commit, dispatch, cleanup and terminal-publication sequence see the walkthrough in [Design and internals](index.md#execution). This page keeps only the three ownership-level contracts.
 
 `RunSpec` is execution configuration supplied by the caller; `Operation` is the structured operation description. The only current production operation is `run.execute`, with program, arguments and working directory. Executors consume the effective RunSpec and prepared driver attachments. `PVisor::resolve_operation` uses the same admission path for pre-launch review; it cannot replace execution or evidence that controls were installed.
 
@@ -187,8 +186,6 @@ Process/VM executors clean up their managed process groups; containers use the r
 ## Event is the observation interface
 
 External callers observe Events without depending on Session's internal fields. See [Operation and Event](operations-events.md) for chains, identities, causal references and recording boundaries.
-
-The implementation prepares drivers, commits startup facts, then calls the executor. Failure to commit required startup facts prevents dispatch and triggers prepared-resource cleanup. Preparation can still have file or socket effects.
 
 ## Policy, controls and evidence
 

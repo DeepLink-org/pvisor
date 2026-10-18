@@ -1,6 +1,6 @@
 # Security overview
 
-pVisor aims for **bounded, reversible, and auditable** execution: cap the blast radius of mistakes, let you discard file changes before apply, and record truthfully which controls actually took effect.
+pVisor aims for **bounded, reversible, and checkable** execution: cap the blast radius of mistakes, let you discard file changes before apply, and record truthfully which controls actually took effect.
 
 ## At a glance
 

@@ -21,7 +21,6 @@ nav = [
     ] },
     { "About pVisor" = [
       { "Why pVisor" = "why/index.md" },
-      { "Agent task lifecycle cost" = "why/agent-lifecycle-cost.md" },
       { "Fit check and comparisons" = "why/comparisons.md" },
     ] },
   ] },
@@ -137,7 +136,6 @@ nav = [
     ] },
     { "Filesystem subsystem" = [
       { "File architecture, requests and staging" = "design/overlayfs.md" },
-      { "Cache and asynchronous-write performance curves" = "design/filesystem-io-performance-analysis.md" },
       { "Shared image cache v1: independent metadata and shared content" = "design/shared-image-cache-storage.md" },
       { "Lazy Image V2: Directory-Local Packing and On-Demand Indexes" = "design/lazy-image-v2.md" },
     ] },
@@ -172,8 +170,18 @@ nav = [
       { "EXP-003 (design stage): Agent asynchronous I/O and completion queues" = "design/experimental/agent-io-completion/index.md" },
     ] },
     { "Research directions" = [
-      { "Research directions" = "design/research/index.md" }
+      { "Research directions" = "design/research/index.md" },
+      { "Agent task lifecycle cost" = "design/research/agent-lifecycle-cost.md" }
     ] },
+  ] },
+  { "Lab notes" = [
+    { "Lab notes" = "lab-notes/index.md" },
+    { "VM startup performance analysis" = "lab-notes/vm-startup-performance-analysis.md" },
+    { "End-to-end task performance analysis" = "lab-notes/agent-task-performance-analysis.md" },
+    { "VM memory performance analysis" = "lab-notes/vm-memory-performance-analysis.md" },
+    { "Filesystem performance analysis" = "lab-notes/filesystem-performance-analysis.md" },
+    { "Cache and asynchronous-write performance curves" = "lab-notes/filesystem-io-performance-analysis.md" },
+    { "Benchmark methodology and evidence" = "lab-notes/benchmark-methodology-evidence.md" },
   ] },
   { "Contributing" = [
     { "Development guide" = [

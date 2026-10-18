@@ -1,6 +1,6 @@
 # Research directions
 
-OS and MLSys research concerns correct task completions under a fixed resource budget and the human cost of handling their results. pVisor supplies execution, state and evidence mechanisms; orchestrators and trainers compose workloads and evaluate benefits through controlled experiments.
+OS and MLSys research concerns correct task completions under a fixed resource budget and the human cost of handling their results. pVisor supplies execution, state and evidence mechanisms; orchestrators and trainers compose workloads and evaluate benefits through controlled experiments. For the full cost narrative across environment preparation, tool execution, model waiting and failure rework, see [Agent task lifecycle cost](agent-lifecycle-cost.md).
 
 ## From mechanisms to falsifiable conclusions {#research-loop}
 

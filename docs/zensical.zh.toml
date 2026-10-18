@@ -21,7 +21,6 @@ nav = [
     ] },
     { "了解 pVisor" = [
       { "为什么是 pVisor" = "why/index.md" },
-      { "Agent 任务的生命周期成本" = "why/agent-lifecycle-cost.md" },
       { "适用判断与对比" = "why/comparisons.md" },
     ] },
   ] },
@@ -137,7 +136,6 @@ nav = [
     ] },
     { "文件系统子系统" = [
       { "文件架构、请求与暂存" = "design/overlayfs.md" },
-      { "缓存与异步写入性能曲线" = "design/filesystem-io-performance-analysis.md" },
       { "共享镜像缓存 v1：独立元数据与共享内容" = "design/shared-image-cache-storage.md" },
       { "Lazy Image V2：目录局部化打包与按需索引" = "design/lazy-image-v2.md" },
     ] },
@@ -172,8 +170,18 @@ nav = [
       { "EXP-003（设计阶段）：Agent 异步 I/O 与完成队列" = "design/experimental/agent-io-completion/index.md" },
     ] },
     { "研究方向" = [
-      { "研究方向" = "design/research/index.md" }
+      { "研究方向" = "design/research/index.md" },
+      { "Agent 任务的生命周期成本" = "design/research/agent-lifecycle-cost.md" }
     ] },
+  ] },
+  { "实验记录" = [
+    { "实验记录" = "lab-notes/index.md" },
+    { "VM 启动性能分析" = "lab-notes/vm-startup-performance-analysis.md" },
+    { "端到端任务性能分析" = "lab-notes/agent-task-performance-analysis.md" },
+    { "VM 内存性能分析" = "lab-notes/vm-memory-performance-analysis.md" },
+    { "文件系统性能分析" = "lab-notes/filesystem-performance-analysis.md" },
+    { "缓存与异步写入性能曲线" = "lab-notes/filesystem-io-performance-analysis.md" },
+    { "Benchmark 方法与证据" = "lab-notes/benchmark-methodology-evidence.md" },
   ] },
   { "参与开发" = [
     { "开发指南" = [

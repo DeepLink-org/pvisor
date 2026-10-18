@@ -124,7 +124,7 @@ subgroups into their parent group; do not add a third sidebar level.
 
 The canonical Chinese documentation uses these sections:
 
-- `why/`: the case for pVisor — vision, supervision-bandwidth argument, trust ladder, use cases, comparisons, when not to use.
+- `why/`: the case for pVisor — the supervision-bandwidth argument, trust ladder with use cases, and fit check with comparisons.
 - `start/`: installation and the first reproducible Job, ending with where to go next.
 - `guides/`: tasks, commands and expected results, grouped by job (`agents/`, `policies/`, `executors/`).
 - `concepts/`: the user mental model — jobs, staging, evidence and policy layering.
@@ -132,6 +132,7 @@ The canonical Chinese documentation uses these sections:
 - `security/`: what is protected, what is not, and how to report issues.
 - `reference/`: CLI, configuration, schemas and platform support matrices.
 - `design/`: implementation ownership, mechanisms, ADRs and research directions.
+- `lab-notes/`: dated engineering experiment logs and historical evidence; conclusions are governed by `benchmarks/` and `design/`, not by these notes.
 - `community/`: contributing, development, testing, release, roadmap and policies.
 
 Experimental feature documents live under `design/experimental/` in both locale
@@ -260,6 +261,39 @@ it. The models are the uv, Ruff and Ray docs.
   pages own protocol fields, algorithms and platform constraints. Link to a topic
   where its detail becomes relevant instead of duplicating its sections.
 - A page with no data yet says “建设中” and links to its TODO page instead of making an empty claim.
+
+### Page count, placement and conclusions
+
+Five hard rules distilled from the October 2026 restructure (161 → 124 pages).
+They exist because the failure modes below already happened once; do not
+reintroduce them.
+
+1. **Page count follows information content (页数随信息量).** A page shorter
+   than ~30 substantive lines does not stand alone; fold it into its parent.
+   Navigation depth must not exceed content depth. Never split one topic into
+   several pages to make the sidebar look complete.
+2. **One fact, one home (一个事实一个家).** Each assertion lives on exactly
+   one page; every other page states it in one sentence and links. Before
+   adding a paragraph, grep for its key phrase — if it already exists, link,
+   do not restate. The 2026 review found the same three-command workflow on
+   ten pages and the same owner.json paragraph three times verbatim.
+3. **No pages for empty sets (空集合不建页).** No adopters page without
+   adopters, no governance page for a single-maintainer project, no
+   publications page without publications. If the set is empty, say so in one
+   sentence on the parent page. Status honesty beats maturity theater.
+4. **Status determines location (状态决定位置).** Implemented → `design/` or
+   `guides/`. Accepted but unimplemented → `design/experimental/` or an
+   explicit “proposal (not implemented)” banner, kept short. Retired → a
+   tombstone paragraph. Dated experiment batches and engineering logs →
+   `lab-notes/`, never `design/`. A page that describes a target state must
+   say so at the top and point to the current-implementation boundary.
+5. **The conclusion test (结论测试).** The first sentence of a page must
+   answer the question its title asks, with absolute numbers or a direct
+   judgment. Delete circular sentences (“adopt when benefits exceed costs”
+   without a threshold) and self-referential closures that define the product
+   by its own coinage. Benchmark pages follow the fixed pattern: absolute
+   water level in the first sentence → scenario entries → shortcomings floated
+   up.
 
 ### Design writing references
 

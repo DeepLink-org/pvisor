@@ -5,6 +5,8 @@
 
 > Status: native execution capture, suspension, continuation and branches are integrated with ordinary Jobs; section 10 defines support and acceptance.
 > Constraint: preserve ordinary run configuration and default execution behavior; actual executor/profile determines capability.
+>
+> How to read: sections 1–9 are the target-state design (the design contract) of the Job-centered command tree, not an availability promise; whether a capability is integrated is governed by the implementation boundary in [section 10](#10-当前实现与验收边界).
 
 ## 1. Objects and basic constraints
 

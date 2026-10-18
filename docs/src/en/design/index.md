@@ -12,12 +12,7 @@ The runtime organizes an execution as a Session: admission resolves effective co
 
 Files and networks have different publication behavior. File changes can remain in a private upper until someone accepts them; a request sent to a remote service may already have produced an effect. File apply is consequently a separate publication action, while execution controls must act before requests leave. Examining logs afterwards cannot replace runtime restrictions.
 
-| Layer | Main owner | Question it must answer |
-| --- | --- | --- |
-| User and service entry | `pvisor-cli`, embedded applications, `pvisor-daemon` | Who requests an operation, which execution is targeted, and how do cancellation and results travel? |
-| Execution lifecycle | `pvisor` Job service and Session | Who owns the Attempt and dispatches, cleans up, saves and publishes its terminal state? |
-| Execution and access paths | Host/OCI/VM executors, OverlayCore, OverlayNet | Which kernel or device processes a request, and where does authorization take effect? |
-| State and facts | Snapshot store, image cache, Journal, apply ledger | Which contents are immutable, who holds references, and how is failure reconciled? |
+Who requests an operation, who owns the Attempt, which component processes a request, and who holds state—the layer-to-crate mapping is maintained as the ownership tables in [Core architecture](architecture.md) and is not repeated here. The walkthrough below simply connects the layers through one task.
 
 The separate daemon embeds the runtime in a supervisor for each sandbox. After an API-process restart it can reconcile ownership of surviving supervisors; the VM does not automatically end with that API process. The daemon exposes sandbox lifecycle and service proxies, while native Jobs expose file review and supported checkpoint workflows. Their interfaces are described in [Core architecture](architecture.md) and [Daemon design](daemon/index.md). External orchestration owns cross-node placement, queues and application retries.
 

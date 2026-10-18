@@ -16,7 +16,7 @@ Agent 的读文件、搜索和小脚本调用可以很短。对于短命工具�
 
 评估去重应分别使用易压缩的重复内容、跨实例相同随机内容和各实例独有随机内容，在相同观察窗口下比较空闲占用、回收速度、CPU 和首次完整读回。共享库单独比较普通文件加载、文件读取提示和显式不可变 DAX，避免把不同负载混成一个排名。
 
-当前工程预检每组四实例，各有 64 MiB 数据；VM 为 256 MiB RAM／1 vCPU，Docker 每容器限制为 256 MiB／一核配额。完整组统一四核／2 GiB／零 swap，包含共享池或专用 rootless Docker 运行时。就绪后观察 60 秒，每条件 N=1，内容、私有写入、退出和资源校验均须通过；失败与不完整批次不参与汇总。具体环境和采样边界见[工程实验设计](../../design/vm-memory-performance-analysis.md#pool-design)。
+当前工程预检每组四实例，各有 64 MiB 数据；VM 为 256 MiB RAM／1 vCPU，Docker 每容器限制为 256 MiB／一核配额。完整组统一四核／2 GiB／零 swap，包含共享池或专用 rootless Docker 运行时。就绪后观察 60 秒，每条件 N=1，内容、私有写入、退出和资源校验均须通过；失败与不完整批次不参与汇总。具体环境和采样边界见[工程实验设计](../../lab-notes/vm-memory-performance-analysis.md#pool-design)。
 
 这是同预算、同负载的完整配置对照。Docker 使用专属 rootless daemon，运行时成本由四容器承担；共用 daemon 的部署可有不同的摊销结果。Firecracker 与 pVisor 的客户机内核、virtio-blk／virtio-fs 文件路径不同，Docker 共享宿主内核。全局 ksmd 在组 CPU 配额外单列，因此这些结果不能全部归因于扫描算法。
 
@@ -51,7 +51,7 @@ Agent 的读文件、搜索和小脚本调用可以很短。对于短命工具�
 
 ### 去重与共享库曲线 {#linux-lifecycle}
 
-[静态工作集曲线](../../design/vm-memory-performance-analysis.md#pool-static-results)包含原版 Firecracker、独立 rootless Docker，以及 pVisor off、KSM、physical、compressed 和 local。三种工作集分别绘制 0–60 秒的整组计费内存和 PSS，并保留首次读回与 CPU 读数。
+[静态工作集曲线](../../lab-notes/vm-memory-performance-analysis.md#pool-static-results)包含原版 Firecracker、独立 rootless Docker，以及 pVisor off、KSM、physical、compressed 和 local。三种工作集分别绘制 0–60 秒的整组计费内存和 PSS，并保留首次读回与 CPU 读数。
 
 ![三种工作集的 60 秒内存曲线：Firecracker、Docker 与 pVisor](../../assets/benchmarks/memory-pool-static-idle.svg)
 
@@ -92,13 +92,13 @@ KSM 另有 **0.41 CPU 秒**全局 ksmd 开销，位于组配额外，不能完�
 
 ### 共享库：文件提示与 DAX {#library-curves}
 
-[共享库曲线](../../design/vm-memory-performance-analysis.md#pool-library-results)比较相同 `.so` 的加载路径，包含文件提示开启／关闭及显式 DAX。曲线从全部就绪开始；启动期间已发生的共享体现在起始占用中。完整读回和私有写入校验保留，暂不展示 post-write 曲线。
+[共享库曲线](../../lab-notes/vm-memory-performance-analysis.md#pool-library-results)比较相同 `.so` 的加载路径，包含文件提示开启／关闭及显式 DAX。曲线从全部就绪开始；启动期间已发生的共享体现在起始占用中。完整读回和私有写入校验保留，暂不展示 post-write 曲线。
 
 ![共享库负载的 60 秒计费内存与 PSS 曲线](../../assets/benchmarks/memory-pool-library-idle.svg)
 
 ![共享库就绪后前 5 秒的内存曲线放大图](../../assets/benchmarks/memory-pool-library-early.svg)
 
-共享库两图来自同一组 N=1 预检，纵轴均为整组 MiB。前 5 秒放大图保留原始采样点，便于观察文件提示开启／关闭的早期差异；显式 DAX 的共享已体现在起始占用中。扫描 CPU 和读回代价见[详细分析](../../design/vm-memory-performance-analysis.md#pool-readback)。
+共享库两图来自同一组 N=1 预检，纵轴均为整组 MiB。前 5 秒放大图保留原始采样点，便于观察文件提示开启／关闭的早期差异；显式 DAX 的共享已体现在起始占用中。扫描 CPU 和读回代价见[详细分析](../../lab-notes/vm-memory-performance-analysis.md#pool-readback)。
 
 ### 来源与配置 {#run}
 

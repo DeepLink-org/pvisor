@@ -209,7 +209,7 @@
     },
     {
       "locale": "zh",
-      "page": "design/vm-startup-performance-analysis.md",
+      "page": "lab-notes/vm-startup-performance-analysis.md",
       "benchmark_ids": [
         "B-STARTUP-ENG",
         "B-KERNEL-ENG",
@@ -221,7 +221,7 @@
     },
     {
       "locale": "zh",
-      "page": "design/vm-memory-performance-analysis.md",
+      "page": "lab-notes/vm-memory-performance-analysis.md",
       "benchmark_ids": [
         "B-MEMORY-SCALE",
         "B-MEMORY-DIAG",
@@ -233,7 +233,7 @@
     },
     {
       "locale": "zh",
-      "page": "design/filesystem-performance-analysis.md",
+      "page": "lab-notes/filesystem-performance-analysis.md",
       "benchmark_ids": [
         "B-FS-ENG",
         "B-FS-DIAG"
@@ -244,7 +244,7 @@
     },
     {
       "locale": "zh",
-      "page": "design/filesystem-io-performance-analysis.md",
+      "page": "lab-notes/filesystem-io-performance-analysis.md",
       "benchmark_ids": [
         "B-FS-ENG",
         "B-FS-DIAG"
@@ -255,7 +255,7 @@
     },
     {
       "locale": "zh",
-      "page": "design/agent-task-performance-analysis.md",
+      "page": "lab-notes/agent-task-performance-analysis.md",
       "benchmark_ids": [
         "B-AGENT-TASK"
       ],
@@ -265,7 +265,7 @@
     },
     {
       "locale": "zh",
-      "page": "design/benchmark-methodology-evidence.md",
+      "page": "lab-notes/benchmark-methodology-evidence.md",
       "benchmark_ids": [
         "B-METHOD"
       ],
@@ -479,7 +479,7 @@
     },
     {
       "locale": "en",
-      "page": "design/vm-startup-performance-analysis.md",
+      "page": "lab-notes/vm-startup-performance-analysis.md",
       "benchmark_ids": [
         "B-STARTUP-ENG",
         "B-KERNEL-ENG",
@@ -491,7 +491,7 @@
     },
     {
       "locale": "en",
-      "page": "design/vm-memory-performance-analysis.md",
+      "page": "lab-notes/vm-memory-performance-analysis.md",
       "benchmark_ids": [
         "B-MEMORY-SCALE",
         "B-MEMORY-DIAG",
@@ -503,7 +503,7 @@
     },
     {
       "locale": "en",
-      "page": "design/filesystem-performance-analysis.md",
+      "page": "lab-notes/filesystem-performance-analysis.md",
       "benchmark_ids": [
         "B-FS-ENG",
         "B-FS-DIAG"
@@ -514,7 +514,7 @@
     },
     {
       "locale": "en",
-      "page": "design/filesystem-io-performance-analysis.md",
+      "page": "lab-notes/filesystem-io-performance-analysis.md",
       "benchmark_ids": [
         "B-FS-ENG",
         "B-FS-DIAG"
@@ -525,7 +525,7 @@
     },
     {
       "locale": "en",
-      "page": "design/agent-task-performance-analysis.md",
+      "page": "lab-notes/agent-task-performance-analysis.md",
       "benchmark_ids": [
         "B-AGENT-TASK"
       ],
@@ -535,7 +535,7 @@
     },
     {
       "locale": "en",
-      "page": "design/benchmark-methodology-evidence.md",
+      "page": "lab-notes/benchmark-methodology-evidence.md",
       "benchmark_ids": [
         "B-METHOD"
       ],

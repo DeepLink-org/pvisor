@@ -252,4 +252,4 @@ Native/host/容器使用父组内存，VM 另受 guest 内存边界限制；不�
 
 本地完整统计中的 write_ops/read_ops 是负载显式逻辑操作数，不是 guest→host 请求数，也不包含子工具内部全部 I/O。
 
-2026-10-17，独立用户配置批次；完整 CSV/JSON、原始记录、冻结入口、工具及固件收据保存在本地 `benchmark.new/filesystem/.data/user-layered-references-v2-20261017/`。[复现步骤](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md#user-workloads)。[缓存与异步写工程分析](../design/filesystem-io-performance-analysis.md)独立解释实现开关与请求计数，不用于补齐用户对照。
+2026-10-17，独立用户配置批次；完整 CSV/JSON、原始记录、冻结入口、工具及固件收据保存在本地 `benchmark.new/filesystem/.data/user-layered-references-v2-20261017/`。[复现步骤](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/filesystem/README.md#user-workloads)。[缓存与异步写工程分析](../lab-notes/filesystem-io-performance-analysis.md)独立解释实现开关与请求计数，不用于补齐用户对照。

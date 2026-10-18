@@ -101,8 +101,8 @@ OverlayNet sits behind the VM device, prepared by Session and reclaimed when the
 
 Source entries: `ensure_listener`, `connect_vm_egress`, `drive_flows` and `SyntheticDns` in `crates/pvisor-overlaynet/src/vm.rs`. `egress.rs` owns shared egress connection paths, and `interception.rs` defines observations of the attached driver. `crates/pvisor-vm/src/devices/virtio/net/` owns the virtual NIC and frame transport; it does not infer network policy.
 
-!!! note "Transparent host / OCI interception: future designs"
-    The Problem, Design A, Design B and delivery items 1–5 below describe unimplemented host/container drivers. They do not extend the current VM and explicit-proxy support described above.
+!!! note "Transparent host / OCI interception: proposal (not implemented)"
+    The Problem, Design A, Design B and delivery items 1–5 below describe unimplemented host/container drivers. They are an accepted-direction design proposal, not a description of the current implementation, and they do not extend the current VM and explicit-proxy support described above.
 
 ## Problem
 

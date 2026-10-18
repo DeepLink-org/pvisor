@@ -29,7 +29,7 @@ File traversal and tool initialization repeatedly resolve paths, query attribute
 
 Identify requests the guest kernel can complete from a stable view by supplying immutable-lower metadata and protocol-managed stage state, while preserving host mutation, authorization and durability ownership. Traversal, open/fstat/close and mixed stage views expose metadata delivery, open lifetime and cache coherence as separate problems.
 
-The existing [Writeback comparison](../../filesystem-performance-analysis.md#writeback-ab) supports improvement for that write workload with writeback disabled, without detected full-task acceleration. This proposal targets structural metadata/open costs and requires independent end-to-end evidence. Writeback, copy-up and durability costs still need separate diagnosis.
+The existing [Writeback comparison](../../../lab-notes/filesystem-performance-analysis.md#writeback-ab) supports improvement for that write workload with writeback disabled, without detected full-task acceleration. This proposal targets structural metadata/open costs and requires independent end-to-end evidence. Writeback, copy-up and durability costs still need separate diagnosis.
 
 ### 1.2 Foundations and design gaps
 

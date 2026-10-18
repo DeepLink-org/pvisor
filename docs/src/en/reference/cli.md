@@ -588,7 +588,10 @@ pvisor replay --agent pi-agent \
 Replay has three modes. The default replays the prefix and continues;
 `--replay-only` executes the prefix and stops before a model request; and
 `--prepare-only` constructs the prefix without executing tools or requiring a
-runtime. `--max-steps` is the total action budget, including replayed actions.
+runtime. `--max-steps` is the total action budget, including replayed actions:
+`--after-step 30 --max-steps 50` leaves at most 20 continuation actions;
+replay-only's budget must cover the prefix, and continuation must also leave at
+least one live action.
 `--allow-stale-observations` is an explicit Claude-only escape hatch that marks
 the v3 result `degraded`.
 
@@ -598,11 +601,18 @@ observation and before the first live model inference. The TOML spelling is
 replay-only modes, and an omitted option preserves the unmodified replay
 boundary. Structured results and replay journals store only injection state,
 length and a digest; Agent-native prepared or continued trajectories may
-contain the user message.
+contain the user message. With a prompt configured, the input condition in
+`next-action-comparison.json` is `boundary_user_prompt_appended`; text
+similarity and tool agreement are then observational only and cannot be read
+as replay fidelity under identical input.
 
-The result schema is `sandbox-playback.result/v3`, with typed `phase`, `quality`
-and `agent_status` fields plus state/output locations, artifacts and an optional
-structured failure. Non-Claude callers that used `replay_only = true` only to
+The result schema is `sandbox-playback.result/v3`: `phase` is `prepared`,
+`replayed` or `continued`; `quality` is `verified` or `degraded`;
+`agent_status` distinguishes `not_started`, `completed`, `max_steps` and
+`failed`, plus state/output locations, artifacts and an optional structured
+failure. Failed results keep the logs and native trajectory already produced;
+even when the OpenHands process exits 0, the result is still a failure if the
+controller reports a fatal status. Non-Claude callers that used `replay_only = true` only to
 construct a prefix must migrate to `prepare_only = true`.
 
 `disable_thinking` belongs to `[replay]` and is also exposed as
@@ -610,7 +620,8 @@ construct a prefix must migrate to `prepare_only = true`.
 request; OpenCode omits its `--thinking` flag when it is set. It does not turn
 on Gateway capture. Optional `[run]`, `[overlayfs]` and `[overlaynet]` sections
 create an outer managed `pvisor run`; they do not change the inner replay model
-path.
+path. Replay's filesystem parameters are governed by `pvisor replay --help`;
+do not copy `run`'s `--stage/--mount` grammar directly.
 
 By default, replay's internal state, WAL, manifest, fresh-observation
 comparisons and native working files remain under

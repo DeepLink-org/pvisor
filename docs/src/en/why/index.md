@@ -1,6 +1,6 @@
 # Why pVisor
 
-Letting an agent complete a task unattended calls for limits on file and network access, followed by a review of its changes and execution record.
+Because letting an agent finish a task unattended takes three execution-layer things, not a stronger model: limit the files and network it can touch, hold its changes short of the target until you decide, and leave a verifiable record of what ran. pVisor is the runtime that builds these three into every execution.
 
 ## Reduce intervention during execution
 
@@ -18,9 +18,9 @@ To let go, every execution needs three things at once:
 | Reversible | Changes can be selectively merged, discarded, or forked before they are applied | Failure is cheap, so you dare to let go |
 | Checkable | Execution leaves a record you can verify | Review can sample, or even be handed to a machine |
 
-pVisor is the execution layer that gives every execution these three properties.
+pVisor implements the three concretely: access boundaries installed at runtime ([file and network policies](../guides/policies/files.md)), file changes staged in a private upper until you merge them ([staging and apply](../concepts/staging.md)), and identity, event and result records written for every Job ([capabilities, evidence, and guarantee boundaries](../concepts/capabilities-and-evidence.md)).
 
-Scaling also calls for controlling environment preparation, tool execution, model waiting, and repeated work after failures. [Agent task lifecycle cost](agent-lifecycle-cost.md) connects these costs to pVisor's execution paths, choice of isolation mechanisms, and the core insight and engineering challenge of letting the host take over I/O while the guest is offloaded during waits.
+Scaling also calls for controlling environment preparation, tool execution, model waiting, and repeated work after failures. [Agent task lifecycle cost](../design/research/agent-lifecycle-cost.md) connects these costs to pVisor's execution paths, choice of isolation mechanisms, and the core insight and engineering challenge of letting the host take over I/O while the guest is offloaded during waits.
 
 ## Responsibilities of the execution layer
 

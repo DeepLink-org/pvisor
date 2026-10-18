@@ -91,7 +91,7 @@ miss locks only its content block. Tests cover cross-block and warm reads, hard-
 copy-up, guest attributes, open handles, complete tree exports and runner attachment.
 Protocol state is not fully shared between adapters; platform permissions and
 descriptor semantics remain adapter-specific.
-[Filesystem measurements](filesystem-performance-analysis.md#filesystem-service) cover
+[Filesystem measurements](../lab-notes/filesystem-performance-analysis.md#filesystem-service) cover
 local workloads and lazy cold/warm caches; version A/B shows localized read gains
 and metadata/copy-up regressions, without a general end-to-end speedup. Concurrent
 task capacity has not been validated in those measurements.

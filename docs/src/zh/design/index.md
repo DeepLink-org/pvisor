@@ -12,12 +12,7 @@ pVisor 将这些问题落实到执行、文件、网络和状态存储的具体�
 
 文件和网络从这里分开。文件修改可以先留在私有 upper，等运行结束后再决定是否合入；发给远程服务的请求通常已经产生了外部效果。因此，文件 apply 是一个独立的发布动作，而执行边界必须在请求发出之前生效。仅在结束后检查日志无法替代运行时限制。
 
-| 层次 | 主要所有者 | 必须解决的问题 |
-| --- | --- | --- |
-| 用户与服务入口 | `pvisor-cli`、嵌入应用、`pvisor-daemon` | 谁发起操作，目标是哪次运行，如何传递取消和结果？ |
-| 运行生命周期 | `pvisor` 的 Job 服务与 Session | 谁拥有 Attempt，何时派发、清理、保存与公布终态？ |
-| 执行与访问路径 | Host/OCI/VM executor、OverlayCore、OverlayNet | 哪个内核或设备处理请求，权限检查在哪里生效？ |
-| 状态与事实 | snapshot store、image cache、Journal、apply ledger | 哪些内容不可变，谁持有引用，失败后如何核对？ |
+谁发起操作、谁拥有 Attempt、哪个组件处理请求、谁持有状态——这些层次与 crate 的一一对应由[核心架构](architecture.md)的所有权表维护，本页不再重复；下面只用一次任务把各层串起来。
 
 独立 daemon 在每个 sandbox 的 supervisor 中嵌入 runtime。API 进程重启后可以重新核对存活 supervisor 的归属；VM 的生命周期不会因此自动结束。daemon 暴露 sandbox 生命周期与服务代理，原生 Job 提供文件审查和受支持的检查点流程；两者的接口范围见[核心架构](architecture.md)和[daemon 设计](daemon/index.md)。跨节点选机、队列和业务重试属于外部编排。
 

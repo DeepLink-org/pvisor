@@ -77,7 +77,7 @@ virtio-fs 文件服务入口分开，随 VM teardown 释放。
 内容读取不持有服务全局锁或元数据表锁，缓存 miss 仅锁住相应的内容块。
 测试覆盖跨块与热缓存读取、硬链接 copy-up、guest 属性、打开句柄、完整目录
 导出及 runner 接入。两套入口的协议状态尚未全部共享；平台权限和描述符
-语义仍由各自适配器处理。[文件系统测量](filesystem-performance-analysis.md#filesystem-service)
+语义仍由各自适配器处理。[文件系统测量](../lab-notes/filesystem-performance-analysis.md#filesystem-service)
 已覆盖本地完整负载和 lazy 冷/热缓存：读路径有局部收益，元数据和 copy-up
 出现回归，尚未显示普遍端到端加速；并发任务容量未在这批测量中验证。
 统一文件服务处理文件系统及 lazy image；[快照 RAM lazy 恢复](environment-snapshot.md)

@@ -4,7 +4,7 @@ pVisor 是 Operation 的处理核心：接收操作请求，根据策略决定�
 
 这条主线分成两个职责：**core 提供定义，pvisor 提供实现。** 外部调用方提交执行请求，通过运行句柄控制一次执行，通过 Event 观察它的过程和结果。
 
-![以 pvisor-vm 为中心的技术架构：CPU、内存、设备、一致性冻结与 KVM/HVF 适配](assets/pvisor-architecture.svg)
+总体框图与一次任务的端到端走读见[设计与底层原理](index.md)；本页维护 crate 所有权、API 边界与宿主权限路径。
 
 ## 定义与实现
 
@@ -20,6 +20,7 @@ pVisor 是 Operation 的处理核心：接收操作请求，根据策略决定�
 | `pvisor-gateway` | 可选的模型协议路由、转换和调用观察 |
 | `pvisor-daemon` | 独立的单节点 sandbox 准入、持久归属、原生 VM supervisor 生命周期与端点代理 |
 | `pvisor-cli` | CLI、TUI、cache/replay 前端与 Host Job 应用适配；消费 runtime |
+| `pvisor-shim` | containerd Runtime v2 shim（`io.containerd.pvisor.v2`）；宿主进程路径的任务生命周期、exec 与 FIFO/PTY IO |
 | `pvisor-vm` | VM、设备、冻结、snapshot 与 RAM 映射；统一 api、私有平台实现 |
 | `pvisor-replay` | Agent 轨迹回放机制；消费 Core/Journal 合同，前端位于 CLI |
 
@@ -145,9 +146,7 @@ Host AgentCtl 路径尚无真实 VM TUI 端到端验证。现有传输、进程�
 
 ## 一条生产执行路径
 
-![一次执行的准备、事实提交、派发、清理与结果时序](assets/execution-sequence.svg)
-
-准备驱动会建立真实的文件与网络资源，执行器派发才让工作负载开始运行。把这两个步骤分开，可以在必要启动事实提交失败时阻止派发，同时由 Session 收回已经准备的资源。结束时同样先收敛资源和观察，再公布终态；调用方取消等待不等于这些动作已经完成。
+准备、事实提交、派发、清理与终态的完整时序见[设计与底层原理](index.md#execution)的走读。本页只保留所有权视角的三条合同。
 
 `RunSpec` 是调用方的执行配置输入；`Operation` 是结构化的操作描述。目前唯一生产操作是 `run.execute`，包含程序、参数和工作目录。执行器实际消费有效 RunSpec 及准备好的驱动附件。`PVisor::resolve_operation` 使用同一准入路径，供启动前审查，不能代替实际执行及安装证据。
 
@@ -166,8 +165,6 @@ Process／VM 清理其受管理的进程组；容器使用 runtime 的终止接�
 ## Event 是观察接口
 
 外部观察的是 Event，不需要依赖 Session 的内部字段。事件链、身份、因果引用与记录边界见 [Operation 与 Event](operations-events.md)。
-
-当前实现先准备驱动，再提交启动事实，最后调用执行器。必要启动事实提交失败会阻止执行器派发并清理准备资源；准备阶段仍可能产生文件或 socket 副作用。
 
 ## 策略、控制与证据
 

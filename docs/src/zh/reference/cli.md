@@ -456,7 +456,9 @@ pvisor replay --agent pi-agent \
 
 Replay 有三种模式。默认回放前缀并继续；`--replay-only` 执行前缀并在模型
 请求前停止；`--prepare-only` 构造前缀，不执行工具、也不要求 runtime。
-`--max-steps` 是包含已回放动作的总动作预算。
+`--max-steps` 是包含已回放动作的总动作预算：`--after-step 30 --max-steps 50`
+最多留下 20 个续跑动作；replay-only 的预算必须覆盖前缀，续跑模式还必须
+至少留下一个实时动作。
 `--allow-stale-observations` 是显式的仅 Claude 逃生口，会把 v3 结果标为
 `degraded`。
 
@@ -464,17 +466,24 @@ Replay 有三种模式。默认回放前缀并继续；`--replay-only` 执行前
 模型推理之前追加一条用户消息。TOML 写法是 `replay.boundary_user_prompt`。
 prepare-only 和 replay-only 模式下它不参与推理；省略该选项则保持未修改的
 replay 边界。结构化结果和 replay journal 只存储注入状态、长度和 digest；
-Agent 原生的 prepared 或 continued 轨迹可以包含这条用户消息。
+Agent 原生的 prepared 或 continued 轨迹可以包含这条用户消息。配置提示词后
+`next-action-comparison.json` 的输入条件为 `boundary_user_prompt_appended`，
+此时文本相似度与工具一致性仅供观察，不能解释为相同输入下的回放一致性。
 
-结果 schema 是 `sandbox-playback.result/v3`，带类型化的 `phase`、`quality`
-和 `agent_status` 字段，以及 state/output 位置、artifacts 和可选结构化失败。
+结果 schema 是 `sandbox-playback.result/v3`：`phase` 为 `prepared`、
+`replayed` 或 `continued`；`quality` 为 `verified` 或 `degraded`；
+`agent_status` 区分 `not_started`、`completed`、`max_steps` 与 `failed`，
+另带 state/output 位置、artifacts 和可选结构化失败。失败结果保留已经生成的
+日志和原生轨迹；即使 OpenHands 进程返回 0，只要控制器报告 fatal 状态，
+结果仍为失败。
 原先只用 `replay_only = true` 来构造前缀的非 Claude 调用方必须迁移到
 `prepare_only = true`。
 
 `disable_thinking` 属于 `[replay]`，也暴露为 `--disable-thinking`。Claude Code
 由协议 bridge 将其应用到上游请求；OpenCode 设置后会省略 `--thinking`。该选项
 不会打开 Gateway capture。可选的 `[run]`、`[overlayfs]` 和 `[overlaynet]` 段会
-创建外层受管 `pvisor run`；它们不改变内部 replay 模型路径。
+创建外层受管 `pvisor run`；它们不改变内部 replay 模型路径。replay 的文件系统
+参数以 `pvisor replay --help` 为准，不能照搬 `run` 的 `--stage/--mount` 写法。
 
 默认情况下，replay 的内部状态、WAL、manifest、新鲜 observation 比较和原生
 工作文件留在 `/tmp/pvisor-sandbox-replay`，并随 sandbox 消失。Replay 不启用

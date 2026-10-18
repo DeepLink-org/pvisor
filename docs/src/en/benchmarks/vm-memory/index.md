@@ -16,7 +16,7 @@ Agent file reads, searches and small script calls can be brief. For short-lived 
 
 Evaluate deduplication with compressible repeated contents, identical random contents across instances and instance-unique random contents. Use the same observation window to compare idle usage, reclamation speed, CPU and first complete readback. Evaluate library loading, file-read hints and explicit immutable DAX separately to avoid combining different workloads into one ranking.
 
-The engineering preflights use four instances per group with 64 MiB of data each. VMs have 256 MiB RAM / 1 vCPU; each Docker container has a 256 MiB limit and one CPU quota. Complete groups have four CPUs / 2 GiB / zero swap and include the pool or dedicated rootless Docker runtime. Each condition has N=1 and a 60-second ready window. Content, private-write, exit and resource checks must pass; failed and incomplete cohorts are excluded. See the [engineering experiment design](../../design/vm-memory-performance-analysis.md#pool-design) for the environment and sampling boundaries.
+The engineering preflights use four instances per group with 64 MiB of data each. VMs have 256 MiB RAM / 1 vCPU; each Docker container has a 256 MiB limit and one CPU quota. Complete groups have four CPUs / 2 GiB / zero swap and include the pool or dedicated rootless Docker runtime. Each condition has N=1 and a 60-second ready window. Content, private-write, exit and resource checks must pass; failed and incomplete cohorts are excluded. See the [engineering experiment design](../../lab-notes/vm-memory-performance-analysis.md#pool-design) for the environment and sampling boundaries.
 
 This compares complete configurations under common budgets and workloads. Docker uses a dedicated rootless daemon whose runtime costs are borne by four containers; a shared-daemon deployment can amortize them differently. Firecracker and pVisor use different guest kernels and virtio-blk / virtio-fs file paths, while Docker shares the host kernel. Global ksmd runs outside the group's CPU quota and is reported separately, so the results cannot all be attributed to the scanning algorithm.
 
@@ -51,7 +51,7 @@ Immutable-file DAX sharing uses a separate path: VMs directly map the same offse
 
 ### Deduplication and shared-library curves {#linux-lifecycle}
 
-The [static working-set curves](../../design/vm-memory-performance-analysis.md#pool-static-results) include stock Firecracker, dedicated rootless Docker, and pVisor off, KSM, physical, compressed and local. Each of the three workloads has 0–60-second group-charged memory and PSS curves, with first-readback and CPU readings retained.
+The [static working-set curves](../../lab-notes/vm-memory-performance-analysis.md#pool-static-results) include stock Firecracker, dedicated rootless Docker, and pVisor off, KSM, physical, compressed and local. Each of the three workloads has 0–60-second group-charged memory and PSS curves, with first-readback and CPU readings retained.
 
 ![60-second memory curves for three working sets: Firecracker, Docker and pVisor](../../assets/benchmarks/memory-pool-static-idle.svg)
 
@@ -92,13 +92,13 @@ Physical sharing retains low usage after reads but still incurs access costs. Co
 
 ### Shared libraries: file hints and DAX {#library-curves}
 
-The [shared-library curves](../../design/vm-memory-performance-analysis.md#pool-library-results) compare loading paths for the same `.so`, including file hints off/on and explicit DAX. Time starts when all instances are ready; sharing during startup appears in the initial footprint. Complete readback and private-write validation remain intact; post-write curves are omitted.
+The [shared-library curves](../../lab-notes/vm-memory-performance-analysis.md#pool-library-results) compare loading paths for the same `.so`, including file hints off/on and explicit DAX. Time starts when all instances are ready; sharing during startup appears in the initial footprint. Complete readback and private-write validation remain intact; post-write curves are omitted.
 
 ![60-second charged-memory and PSS curves for the shared-library workload](../../assets/benchmarks/memory-pool-library-idle.svg)
 
 ![Shared-library memory curves zoomed into the first five seconds after readiness](../../assets/benchmarks/memory-pool-library-early.svg)
 
-Both library figures use the same N=1 preflight and whole-group MiB on the vertical axes. The first-five-second view retains original samples to show early differences with file hints off/on; explicit DAX sharing is already reflected in the initial footprint. See the [detailed analysis](../../design/vm-memory-performance-analysis.md#pool-readback) for scanning CPU and readback costs.
+Both library figures use the same N=1 preflight and whole-group MiB on the vertical axes. The first-five-second view retains original samples to show early differences with file hints off/on; explicit DAX sharing is already reflected in the initial footprint. See the [detailed analysis](../../lab-notes/vm-memory-performance-analysis.md#pool-readback) for scanning CPU and readback costs.
 
 ### Sources and configuration {#run}
 
