@@ -26,7 +26,7 @@ Compare native processes, pVisor stage, pVisor VM and Podman 5.8.7 on Linux/x86_
 
 Scan concurrency 1, 2, 4, 8, 16, 32, 64 and 128, with five fresh batches per cell and no warmups. Conditions are randomized within each round. All tasks wait at a stdin readiness barrier before release. Idle tasks use the same Python environment without private data or edits. Useful tasks touch and checksum all 32 MiB of private data, edit four files in a 64-file Git repository, run `git status` and verify all contents. Stage/VM preserve the original workspace and match results to independent Run records.
 
-The primary memory metric is whole-cgroup physical accounting, including charged page cache, kernel memory and private backing. Prepared shared tool/image caches may be charged to a parent cgroup, so this does not rank net whole-machine memory. Failed, unknown and OOM outcomes remain counted; only entirely verified, no-OOM batches enter memory/timing summaries. All slow valid samples remain. Five rounds do not establish long-term reliability or tail latency. This workload excludes inference, large builds and real Agent CLIs.
+The primary memory metric is whole-cgroup physical accounting, including charged page cache, kernel memory and private backing. Prepared shared tool/image caches may be charged to a parent cgroup, so this does not rank net whole-machine memory. Failed, unknown and OOM outcomes remain counted; only entirely verified, no-OOM batches enter memory/timing summaries, and slow valid samples remain. Five rounds cover this workload only: they do not establish long-term reliability or tail latency, and exclude inference, large builds and real Agent CLIs.
 
 ## Data and analysis {#results}
 
@@ -74,7 +74,7 @@ Stage and Podman each complete 160/160 tasks at concurrency 32. Both encounter O
 
 Stage passes five rounds at idle concurrency 128, but adding private data and Git work reduces its highest wholly successful tested level to 32. Plan the two workloads separately; discrete levels also do not establish an exact maximum.
 
-Compressed parked snapshots versus container pause have not completed validation. Snapshot file size or single-VM reclamation cannot establish capacity. Firecracker/QEMU density under this budget is unmeasured; their single-task latency is in the [end-to-end tasks](agent-tasks.md). Matching macOS capacity is unmeasured.
+Compressed parked snapshots versus container pause have not completed validation, and snapshot file size or single-VM reclamation does not establish capacity. Firecracker/QEMU density under this budget and matching macOS capacity are unmeasured; their single-task latency is in the [end-to-end tasks](agent-tasks.md).
 
 ### Sources and reproduction {#run}
 

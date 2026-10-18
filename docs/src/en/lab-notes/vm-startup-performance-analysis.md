@@ -414,8 +414,6 @@ Local raw record `docs/src/assets/benchmarks/.data/reference-env-20261004/follow
 
 ## 5. Reproduction and raw data
 
-Batch archival conventions are documented in the [lab-notes index](index.md).
-
 ### macOS / HVF
 
 Prepare the release CLI, Alpine rootfs and both firmware directories, then run:

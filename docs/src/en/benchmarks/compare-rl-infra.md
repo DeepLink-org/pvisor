@@ -1,4 +1,4 @@
-# Where can pVisor reduce reinforcement-learning rollout costs?
+# Where can pVisor cut rollout costs?
 
 ## Main conclusions {#conclusions}
 

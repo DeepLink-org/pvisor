@@ -1135,4 +1135,6 @@ and the native container executor keep their current behavior. See the
 limits and SSH remote access.
 
 
-Enable the daemon-owned experimental pool with `pvisor-daemon serve --memory-pool`; its detached `memory-pool --directory DIR` component uses daemon-provisioned private configuration. Native `pvisor run --vm-memory-pool SOCKET` remains an explicit runtime option with platform/protocol limits, not a service launcher. Physical/legacy pool loss fails dependent VMs; Linux sealed-compressed clients retain local recovery and stop new publication. Select it with daemon `--memory-pool-mode compressed`. See [daemon pool activation and budgets](../guides/daemon/index.md#memory-pool); historical macOS compressed-pool results retain their [version scope](../design/memory-optimization/proof-of-concept.md#v1-integration).
+Enable the daemon-owned experimental pool with `pvisor-daemon serve --memory-pool`; its detached `memory-pool --directory DIR` component uses daemon-provisioned private configuration. Native `pvisor run --vm-memory-pool SOCKET` remains an explicit runtime option with platform/protocol limits, not a service launcher.
+
+Physical/legacy pool loss fails dependent VMs; Linux sealed-compressed clients retain local recovery and stop new publication. Select it with daemon `--memory-pool-mode compressed`. See [daemon pool activation and budgets](../guides/daemon/index.md#memory-pool); historical macOS compressed-pool results retain their [version scope](../design/memory-optimization/proof-of-concept.md#v1-integration).

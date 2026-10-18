@@ -1,4 +1,4 @@
-# How long do filesystem tasks take in each execution mode?
+# How long do file-heavy tasks take?
 
 ## Main conclusions {#conclusions}
 

@@ -1,4 +1,4 @@
-# Lazy Image V2: Directory-Local Packing and On-Demand Indexes
+# Lazy image v2: directory-local packing and on-demand indexes
 
 Use directories as access-locality boundaries, combine small files at publication time, and load exact indexes and content blocks on demand at read time to reduce small-object requests and startup index residency for S3-backed images.
 

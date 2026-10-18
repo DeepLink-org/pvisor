@@ -1,13 +1,19 @@
 # Run the single-node daemon
 
-Install `pvisor-daemon` to manage image sandboxes on one Linux host through an API partially compatible with OpenSandbox 1.1.0. The daemon owns node-local admission, lifecycle, persistent state and expiration cleanup. Cross-node scheduling, global DAGs and distributed leases belong to Kubernetes, Ray or your application; the daemon contains no Controller or Worker. Choose `pvisor-daemon` for node-local native VM sandbox lifecycles; use `pvisor run` for the public Job/file-review workflow.
+Install `pvisor-daemon` to manage image sandboxes on one Linux host through an API partially compatible with OpenSandbox 1.1.0. The daemon owns node-local admission, lifecycle, persistent state and expiration cleanup.
+
+Cross-node scheduling, global DAGs and distributed leases belong to Kubernetes, Ray or your application. The daemon contains no Controller or Worker.
+
+Use `pvisor-daemon` for node-local native VM sandbox lifecycles; use `pvisor run` for the public Job and file-review workflow.
 
 !!! warning
     The project **has not supplied a guest bootstrap or image recipe and has not performed end-to-end validation**; SDK-conformance validation and density measurements are also unavailable. Every step below requires you to prepare images and vsock bridging yourself.
 
 ## Prerequisites {#prerequisites}
 
-You need Linux x86_64, a usable `/dev/kvm`, trusted absolute paths, and a writable, delegated cgroup v2 hierarchy with the CPU/memory/PID controllers and `cgroup.kill` enabled. Preflight checks verify real controller writes and the KVM API; there is no host, OCI-command or registry-pull fallback.
+You need Linux x86_64, a usable `/dev/kvm`, trusted absolute paths, and a writable, delegated cgroup v2 hierarchy with the CPU/memory/PID controllers and `cgroup.kill` enabled.
+
+Preflight checks perform real controller writes and KVM API calls. There is no host, OCI-command or registry-pull fallback.
 
 An image is a trusted local `images_dir/<key>.json` manifest, not a registry reference. Fields include an absolute-path standalone Linux `rootfs` (neither the host `/` nor overlapping daemon state), an absolute-path guest bootstrap `entrypoint` argv, optional `cmd`, optional `env`, and an optional absolute-path firmware `library_dir`. The requested workload argv (or `cmd` when empty) is appended to `entrypoint`; request env overrides manifest env, does not inherit the host environment, and receives no shell interpolation.
 

@@ -1,25 +1,18 @@
 # 安装指南
 
-装好 `pvisor` 后，你可以在策略边界内运行 Agent CLI、脚本和自动化命令，并拿到可检查的执行记录。
-Python 包、CLI 和核心 Rust crate 统一使用 `pvisor`；其他 crate 使用 `pvisor-*`，
-环境变量使用 `PVISOR_*`。
-
-升级时同步更新部署中的 `PVISOR_*`；本地状态默认写入 `.pvisor`，用户缓存写入 `pvisor/`，
-已有数据不会自动搬迁。
-
 ## 1. 安装工具
 
 ```bash
 pip install pvisor
 ```
 
-确认命令可用：
+确认安装：
 
 ```bash
 pvisor --version
 ```
 
-wheel 把 Python 版本标记与原生 CLI 脚本安装到当前 Python 环境的 bin 目录，不经过 Python 启动器。项目有其他
+wheel 把原生 CLI 装进当前 Python 环境的 bin 目录，不经过 Python 启动器。项目有其他
 Python 依赖时，建议使用虚拟环境：
 
 ```bash
@@ -30,6 +23,8 @@ pip install pvisor
 ```
 
 发布的 wheel 面向 Linux x86_64 和 macOS arm64。其他架构应先检查发布产物或准备源码构建。
+
+升级时同步更新部署中的 `PVISOR_*`。本地状态（`.pvisor`）和用户缓存（`pvisor/`）不会自动搬迁。
 
 ## 2. 检查平台要求
 

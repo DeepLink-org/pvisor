@@ -48,7 +48,9 @@ Run 与内嵌 Gateway 共用 Journal。story worker 先提交事实，再更新 
 
 启动时从已提交事实重建投影，不重放 HTTP 请求、不重复通知观察者，
 也不重写日志。有界输入队列仍是尽力而为的，只有 Journal 回执证明持久化。
-`spawn_apply` 采用非阻塞有界准入；直接 `apply` 等待进入同一 FIFO。接受不等于持久化，准入后取消等待不取消已持有的任务。flush 等待已接受任务及其等待的 backfill，报告拒绝或失败的工作，但不阻止生产者继续准入，也不是被拒事件诊断 writer 的屏障。子 Agent 链接 backfill 流向主 story；同 story 的 backfill 在所有者内直接执行，不等待自己的 mailbox。缺失 backfill 回执就是捕获缺口。shutdown 停止准入、排空已接受的尾部任务／backfill；即使另一个 story 报告缺口，也持久化最终投影／索引，随后消费者释放 Journal。
+`spawn_apply` 采用非阻塞有界准入；直接 `apply` 等待进入同一 FIFO。接受不等于持久化，准入后取消等待不取消已持有的任务。
+
+flush 等待已接受任务及其等待的 backfill，报告拒绝或失败的工作，但不阻止生产者继续准入，也不是被拒事件诊断 writer 的屏障。子 Agent 链接 backfill 流向主 story；同 story 的 backfill 在所有者内直接执行，不等待自己的 mailbox。缺失 backfill 回执就是捕获缺口。shutdown 停止准入、排空已接受的尾部任务／backfill；即使另一个 story 报告缺口，也持久化最终投影／索引，随后消费者释放 Journal。
 
 失败的已准备 backfill 保留 `prepared_story`（目标 StoryContext）与 `prepared_record_json`，包含已赋值的 event ID 和 timestamp。恢复将此保留记录提交给目标 story 的同一个有界所有者，绕过准备与 Run re-enrichment，避免已匹配的链接丢失或获得新身份。保留载荷仍受捕获级别过滤和敏感 body 脱敏约束。没有 `prepared_story` 的条目仍通过普通 `apply` 重试旧 source event；诊断是重试输入，不证明 Journal 已提交。
 

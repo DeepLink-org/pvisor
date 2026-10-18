@@ -1,4 +1,4 @@
-# SandboxReplay
+# Replay recorded trajectories
 
 SandboxReplay replays an agent trajectory inside a fresh sandbox you prepared: it reruns the tool calls before a recovery boundary, rebuilds the agent's native context from the observations that new sandbox produces, and then continues running from the boundary. It creates a derived Run in the [Run and Attempt model](../design/execution-model.md).
 

@@ -21,7 +21,7 @@ nav = [
     ] },
     { "了解 pVisor" = [
       { "为什么是 pVisor" = "why/index.md" },
-      { "适用判断与对比" = "why/comparisons.md" },
+      { "该不该用 pVisor？" = "why/comparisons.md" },
     ] },
   ] },
   { "用户指南" = [
@@ -30,7 +30,7 @@ nav = [
       { "审查并应用改动" = "guides/review-apply.md" },
       { "逻辑检查点与分叉" = "guides/fork-checkpoint.md" },
       { "捕获 Agent 轨迹" = "guides/capture.md" },
-      { "SandboxReplay" = "guides/replay.md" },
+      { "回放历史轨迹" = "guides/replay.md" },
       { "在 CI 中运行" = "guides/ci.md" },
       { "并行 Agent" = "guides/parallel-agents.md" },
       { "RL rollout" = "guides/rl-rollouts.md" },
@@ -116,7 +116,7 @@ nav = [
   ] },
   { "设计与研究" = [
     { "整体架构与执行" = [
-      { "设计与底层原理" = "design/index.md" },
+      { "pVisor 如何工作" = "design/index.md" },
       { "核心设计原则" = "design/principles.md" },
       { "核心架构" = "design/architecture.md" },
       { "Job、Operation、Attempt 与 Event" = "design/execution-model.md" },

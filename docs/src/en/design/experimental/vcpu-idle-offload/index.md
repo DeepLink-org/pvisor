@@ -1,4 +1,4 @@
-# EXP-001 (observation prototype): vCPU idle observation and automatic RAM offload
+# vCPU idle observation and automatic RAM offload (EXP-001)
 
 | Item | Current status |
 |---|---|

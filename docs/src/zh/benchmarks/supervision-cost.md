@@ -1,4 +1,4 @@
-# 审查、合入与丢弃要花多少时间？
+# 审查与合入要花多少时间？
 
 ## 主要结论 {#conclusions}
 
@@ -54,7 +54,7 @@ Linux/x86_64、AMD Ryzen 7 9700X、Fedora 内核 7.2.8-200.fc44.x86_64、btrfs�
 
 ### 完整任务成本 {#baseline-meaning}
 
-2026-10-06，同机同批；单位 ms，N=30/格。P95 仅为观察参考。各格没有按预定规则检出分离簇。
+2026-10-06，同机同批；单位 ms，N=30/格。各格没有按预定规则检出分离簇。
 
 | 工作区文件数 | pVisor stage P50 / P95 | Git worktree P50 / P95 | btrfs reflink P50 / P95 |
 |---|---:|---:|---:|
@@ -65,7 +65,7 @@ Linux/x86_64、AMD Ryzen 7 9700X、Fedora 内核 7.2.8-200.fc44.x86_64、btrfs�
 
 ### 预备视图的审查成本 {#prepared-review}
 
-2026-10-06 的独立同批对照；20 个小文本文件，合入 10 个、丢弃 10 个，N=30/格，失败 0。单位 ms，P95 仅作观察参考，各格未触发分簇规则。
+2026-10-06 的独立同批对照；20 个小文本文件，合入 10 个、丢弃 10 个，N=30/格，失败 0。单位 ms；各格未触发分簇规则。
 
 | 步骤 | pVisor stage P50 / P95 | Git worktree P50 / P95 |
 |---|---:|---:|
@@ -103,7 +103,7 @@ stage 的工具执行和合入仍有额外成本，但创建独立视图、按�
 
 ### 合入与丢弃的规模成本 {#apply-cost}
 
-2026-10-06 测量。单位：ms；每格为 **P50 / 参考 P95，N=30**，失败均为 0。30 个样本的 P95 仅描述观察结果，不作为稳定尾延迟承诺。
+2026-10-06 测量。单位：ms；每格为 **P50 / 参考 P95，N=30**，失败均为 0。
 
 | 文件数 | pVisor apply | Git apply | 原生复制 | drop | 合入前冲突拒绝 |
 |---:|---:|---:|---:|---:|---:|
@@ -163,6 +163,4 @@ stage 的工具执行和合入仍有额外成本，但创建独立视图、按�
 
 本地来源记录保留二进制、源码、harness 和原始报告的摘要。性能与并发检查使用同一二进制、分别采样；完整 CSV/JSON、原始命令、报告和审计记录保存在对应本地批次或文档数据归档。
 
-### 来源与复现 {#run}
-
-[比较方法](index.md#interpretation) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+复现步骤见[比较方法](index.md#interpretation)与[运行手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)。

@@ -232,7 +232,9 @@ Current source moves PUT, health checks after rejection, RELEASE and STATS outsi
 
 Each runner has one maintenance thread; it cannot create another Publishing batch before finishing the previous one, so the state check cannot confuse generations. RPCs still serialize through the same pool mutex, and cold restoration may wait behind publication. This does not promise to eliminate pool failures or all cold-restore tails. Release the pool lock before acquiring the pager lock or maintenance barrier.
 
-`pending_snapshot_bytes` is added to the RAM+pool proxy using the larger pre/post sampling count, conservatively accounting for staging. `pvisor-cold-transaction` sums both barrier-call durations per iteration and records publication_us separately: shorter individual barriers do not establish lower total overhead. Logs now include PID; invalidated_publications counts access-invalidated candidates, while total cancellations also include commit-budget exhaustion. All three matched three-round real dual-VM network pairs passed, with 238 access-invalidated candidates. Combined barrier-call P95 was 2.4–3.1 ms; maximum cold restoration was 41.4 ms. These are bounded-workload results, with connection-contention tails still unresolved.
+`pending_snapshot_bytes` is added to the RAM+pool proxy using the larger pre/post sampling count, conservatively accounting for staging. `pvisor-cold-transaction` sums both barrier-call durations per iteration and records publication_us separately: shorter individual barriers do not establish lower total overhead. Logs now include PID; invalidated_publications counts access-invalidated candidates, while total cancellations also include commit-budget exhaustion.
+
+All three matched three-round real dual-VM network pairs passed, with 238 access-invalidated candidates. Combined barrier-call P95 was 2.4–3.1 ms; maximum cold restoration was 41.4 ms. These are bounded-workload results, with connection-contention tails still unresolved.
 
 ### Memory accounting and unverified benefits {#memory-evidence}
 
@@ -266,7 +268,9 @@ pvisor-daemon serve --help
 pvisor-daemon memory-pool --help
 ```
 
-The recorded macOS v1 default pool budgets were 16 MiB encoded payload, 8192 objects, 16 connections and 32768 references per connection; the reference budget covers 2 GiB RAM in 64 KiB blocks. That version's service flags set these four budgets independently; encoded payload excludes some heap metadata. The service accepts only the current UID, uses socket permissions 0600 and refuses to overwrite an endpoint. SIGINT/SIGTERM closes connections, waits for reference cleanup and removes its own socket. Stopping the pool fails dependent live VMs. That version was an operator-managed foreground component, without automatic restart or content recovery; these are historical limits, not current daemon defaults.
+The recorded macOS v1 default pool budgets were 16 MiB encoded payload, 8192 objects, 16 connections and 32768 references per connection; the reference budget covers 2 GiB RAM in 64 KiB blocks. That version's service flags set these four budgets independently; encoded payload excludes some heap metadata. 
+
+The service accepts only the current UID, uses socket permissions 0600 and refuses to overwrite an endpoint. SIGINT/SIGTERM closes connections, waits for reference cleanup and removes its own socket. Stopping the pool fails dependent live VMs. That version was an operator-managed foreground component, without automatic restart or content recovery; these are historical limits, not current daemon defaults.
 
 The v1 integration check used the shipped pool and explicit SDK option without the old pool environment variable in the parent. Two real VMs passed shared-object, restoration, independent-write and exit checks; service exit and socket cleanup passed in about 36.6 s, without host-guard errors. Raw evidence is `v1-product-integration.json`. Targeted Rust regression, Clippy and installation/packaging results are recorded in the convergence report.
 

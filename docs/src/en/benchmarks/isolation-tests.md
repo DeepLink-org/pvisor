@@ -1,4 +1,4 @@
-# Which execution modes block host access outside the workspace?
+# Do executors block writes outside the workspace?
 
 ## Main conclusions {#conclusions}
 

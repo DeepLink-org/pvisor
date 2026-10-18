@@ -68,7 +68,9 @@ NativeRuntime 在迁移前拒绝缺少 `owner.json` 的非空 v1 状态；任何
 
 原生移除前先持久化删除意图。只有确认原生对象不存在，才能持久移除记录并释放 CPU/内存/数量记账。不能为腾容量而随意驱逐待删除、不确定创建或原生缺失的 Failed 记录。
 
-清理独立于启动资源，校验持久 owner/ID/generation 与 boot/cgroup 绑定：不要求原 rootfs 或 firmware 目录仍存在，也不要求 guest argv/env/资源设置通过启动校验。证明原生对象不存在并取得 owner 锁后，持久发布 `tombstone.json`，删除空的所属 cgroup，回收私有 run 存储、live RAM backing、临时 overlay/spec、socket 与含秘密的 identity 记录及可能遗留的 observation 缓存。最小目录保留 tombstone、owner 锁和生命周期 marker，阻止 ID 复用。中断的回收从 tombstone 继续，包含 cgroup 已移除的情况；报错保留预留。同一 boot 下没有此持久证据的 cgroup 丢失／被替换仍不授权不存在结论。
+清理独立于启动资源，校验持久 owner/ID/generation 与 boot/cgroup 绑定：不要求原 rootfs 或 firmware 目录仍存在，也不要求 guest argv/env/资源设置通过启动校验。证明原生对象不存在并取得 owner 锁后，持久发布 `tombstone.json`，删除空的所属 cgroup，回收私有 run 存储、live RAM backing、临时 overlay/spec、socket 与含秘密的 identity 记录及可能遗留的 observation 缓存。
+
+最小目录保留 tombstone、owner 锁和生命周期 marker，阻止 ID 复用。中断的回收从 tombstone 继续，包含 cgroup 已移除的情况；报错保留预留。同一 boot 下没有此持久证据的 cgroup 丢失／被替换仍不授权不存在结论。
 
 删除 sandbox 不撤销远端副作用，也不提供保留证据包。Sandbox 清理不删除外部预制的镜像 manifest/rootfs/firmware。Daemon API 没有 stage review/apply、产物保留／下载或外部对象 GC 协议。不要通过独立删除原生资源或 registry 状态进行恢复。
 

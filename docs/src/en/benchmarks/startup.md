@@ -14,7 +14,7 @@ The selection summary below retains the scope of its historical cohorts.
 
 <!-- measurement-status:start -->
 
-New experiments and historical data are published separately. Each table retains its timing scope and inputs from the design and provenance; distinct cohorts are not pooled.
+New experiments and historical data are published separately. Each table retains its timing scope and inputs from the design and provenance.
 
 <!-- measurement-status:end -->
 
@@ -78,7 +78,7 @@ gap requires controls with fixed artifacts.
 <a id="reference-exit"></a>
 <a id="legacy-startup"></a>
 
-Historical controls: unit ms, N=60 per backend, zero measured failures. Process/container and VM measurements were collected separately, with each row retaining its own statistics; all four VM controls were randomly interleaved within one group. P95 describes the distribution rather than guaranteeing stable tail latency.
+Historical controls: unit ms, N=60 per backend, zero measured failures. Process/container and VM measurements were collected separately, with each row retaining its own statistics; all four VM controls were randomly interleaved within one group.
 
 | Runtime | Valid / failed | Ready P50 ms | Ready P95 ms | Exit P50 ms | Exit P95 ms |
 | --- | --- | --- | --- | --- | --- |

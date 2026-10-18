@@ -1,4 +1,4 @@
-# pVisor 能降低强化学习 rollout 的哪些成本？
+# pVisor 能降低 rollout 的哪些成本？
 
 ## 主要结论 {#conclusions}
 

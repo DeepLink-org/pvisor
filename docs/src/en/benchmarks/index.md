@@ -1,14 +1,8 @@
-# Which workloads fit pVisor, and at what cost?
+# Which workloads fit pVisor?
 
 ## Conclusions {#conclusions}
 
 **Use pVisor stage for large workspaces with sparse changes, and native workflows for small workspaces or tool-only execution. Do not choose a VM from its startup time.** Changing twenty of 10,000 files and retaining ten takes 141 ms in stage, 248 ms with Git worktree and 343 ms with btrfs reflink. Native workflows are faster on small workspaces. A VM's tool waiting has to come from complete-task measurements, not from its startup number.
-
-| Scenario | Selection implication |
-|---|---|
-| Large workspace, sparse changes, disposable view | Stage has a measured complete-workflow advantage |
-| Small workspace or tool execution alone | Compare native workflows and container costs |
-| VM or concurrent capacity | Require complete tool and resource measurements |
 
 Compare configurations on the same workload, budget and timing boundary. Startup, tool execution, application and resource occupancy answer different questions and cannot substitute for one another.
 
@@ -60,9 +54,7 @@ RSS sums sampled process scopes and may double-count shared pages or miss short 
 
 ## Data and analysis {#results}
 
-The 2026-10-06 startup/filesystem/repair cohorts have 1,440 valid samples and review has 360; the separate 2026-10-07 stock-kernel startup cohort has 240 valid samples. All have zero measured failures. The full startup retest after the reboot on 2026-10-11 is the current cohort (numbers in [Startup](startup.md)); historical randomized-pair cohorts do not carry over. The selected-source filesystem comparison on 2026-10-12 adds 240 valid samples and zero failures, with task-local caches and a common parent resource budget. Cohorts are not pooled; topic pages provide median differences and paired-bootstrap 95% intervals.
-
-The separate layered filesystem cohort executes 505 environments: 501 pass, 4 resource cells time out, and 8 subsequent observations are explicitly skipped. Complete tasks and resource boundaries are reported separately.
+The 2026-10-06 startup/filesystem/repair cohorts have 1,440 valid samples and review has 360; the separate 2026-10-07 stock-kernel startup cohort has 240 valid samples. All have zero measured failures. The full startup retest after the reboot on 2026-10-11 is the current cohort (numbers in [Startup](startup.md)); historical randomized-pair cohorts do not carry over. The selected-source filesystem comparison on 2026-10-12 adds 240 valid samples and zero failures, with task-local caches and a common parent resource budget. Topic pages provide median differences and paired-bootstrap 95% intervals.
 
 | Question | Measured level (timing is P50) |
 |---|---|
@@ -73,18 +65,15 @@ The separate layered filesystem cohort executes 505 environments: 501 pass, 4 re
 | [Network](network.md) | Eight-thread small requests: native 0.69 ms; host proxy 10.09 ms; VM 2.10 ms |
 | [Active capacity](density.md) | 2 GiB: stage/Podman pass all five rounds at 32; VM at 16 |
 
-
 Network has 510 valid batches. Capacity retains all 320 batches, including 57 failures. These experiments remain separate and do not form one capacity or speed ranking. Retired Controller/Worker results are [historical evidence](cluster-scalability.md), excluded from current comparisons and daemon sizing; daemon throughput, density and history costs are unmeasured.
 
 Net physical-memory savings and useful-task density from compression, trimmed-kernel benefits, full Ubuntu and macOS comparisons are not yet validated on current artifacts; no advantage is claimed for them. Cloud services, gVisor/Kata and complete RL throughput have no matched ranking. Apply, network, isolation and replay require their own evidence and cannot be inferred from these short tasks.
-
-[Network](network.md) · [Apply](supervision-cost.md#apply-cost) · [Density](density.md) · [VM memory](vm-memory/index.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md)
 
 [End-to-end tasks](agent-tasks.md) combines tool waiting, workspace lifecycle and CLI compatibility to analyze Agent sandbox, container, VM and cloud tradeoffs. [Reinforcement learning](compare-rl-infra.md) maps tool costs, active capacity and historical-prefix preparation to rollouts; full training throughput and reward are unmeasured.
 
 ### Prepared environments {#reference-env}
 
-[Startup](startup.md) · [Files and tools](filesystem.md) · [Repair tasks and CLIs](agent-tasks.md). Tables retain cohort identities and counts, with pinned artifacts rather than claims about current third-party releases.
+Startup, filesystem and task cohorts share one prepared tool environment, and every table pins its artifacts by digest. A table describes that pinned release, not a current third-party release.
 
 ### Complete distributions {#full-ubuntu}
 
@@ -96,7 +85,7 @@ q35 and microvm use one Ubuntu template. Their samples and percentiles remain se
 
 ### Tasks and resources {#product-v1}
 
-[Application](supervision-cost.md#apply-cost) · [Network](network.md) · [Concurrency](density.md) · [Isolation](isolation-tests.md) · [Replay](replay-fidelity.md) · [Review](supervision-cost.md). Industry alternatives without measurements are marked as unmeasured.
+Apply, network, isolation and replay use their own task sets and cohorts; none of them inherits the numbers in the table above.
 
 ### Engineering experiments and data retention {#evidence-format}
 

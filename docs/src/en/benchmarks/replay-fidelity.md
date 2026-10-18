@@ -1,4 +1,4 @@
-# Can recorded trajectories prepare a faithful execution starting point?
+# Can a recorded trajectory start a new run?
 
 ## Main conclusions {#conclusions}
 
@@ -12,7 +12,7 @@
 
 <!-- measurement-status:start -->
 
-New experiments and historical data are published separately. Each table retains its timing scope and inputs from the design and provenance; distinct cohorts are not pooled.
+New experiments and historical data are published separately. Each table retains its timing scope and inputs from the design and provenance.
 
 <!-- measurement-status:end -->
 
@@ -32,7 +32,7 @@ Native Agent resume and RL pipeline prefix preparation are relevant alternatives
 
 ## Data and analysis {#results}
 
-Measured on 2026-10-06. N=60 per adapter, all passing; units are ms. Separated clusters have their own shares and medians. P95 describes the entire adapter distribution as an observation reference, with no stable tail-latency claim.
+Measured on 2026-10-06. N=60 per adapter, all passing; units are ms. Separated clusters have their own shares and medians.
 
 | Adapter | Pinned format profile | Passed / planned (failed) | Lower cluster: share; median ms | Higher cluster: share; median ms | Reference P95 ms |
 |---|---|---:|---|---|---:|

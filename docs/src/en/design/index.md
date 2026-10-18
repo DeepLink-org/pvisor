@@ -1,4 +1,4 @@
-# pVisor design and underlying mechanisms
+# How pVisor works
 
 Letting an Agent work continuously means entrusting a system with processes, file changes, network requests and memory state. Once the task starts, a developer needs to know what it can access, which state can survive an interruption, and which results to accept. Running many tasks adds another question: which contents can be stored once, and which costs necessarily grow with task count?
 
@@ -222,5 +222,3 @@ The example now forms a complete path. Admission fixes policy; the Session prepa
 Execution isolation constrains access, staging constrains file publication, snapshots constrain recoverable state, and Journal constrains committed facts. Each module has a state owner, publication point and failure result on which an external orchestrator can base retry, fork or acceptance decisions.
 
 Implementation scope remains explicit: the daemon has a VM-only NativeRuntime and an opt-in Linux physical pool, while its API does not expose native Job stage/apply or execution checkpoints. External orchestration and RL integration still need a separate handoff and end-to-end validation. Implemented mechanisms alone do not establish production density or long-term recovery conclusions.
-
-The organization follows [ByteHook's project introduction and principles](https://github.com/bytedance/bhook/blob/main/doc/overview.zh-CN.md): explain prerequisite mechanisms, request paths and engineering constraints continuously. See the design-writing references section of the repository's [docs/README.md](https://github.com/DeepLink-org/pvisor/blob/main/docs/README.md) for further writing references.

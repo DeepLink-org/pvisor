@@ -1,4 +1,4 @@
-# How much time do review, application and disposal take?
+# How long does review and apply take?
 
 ## Main conclusions {#conclusions}
 
@@ -54,7 +54,7 @@ Independent correctness checks include three actual SIGKILL hits at each of thre
 
 ### Complete task cost {#baseline-meaning}
 
-Same host and batch, 2026-10-06; milliseconds, N=30 per cell. P95 is descriptive only. No cell meets the predefined separated-cluster rule.
+Same host and batch, 2026-10-06; milliseconds, N=30 per cell. No cell meets the predefined separated-cluster rule.
 
 | Workspace files | pVisor stage P50 / P95 | Git worktree P50 / P95 | btrfs reflink P50 / P95 |
 |---|---:|---:|---:|
@@ -65,7 +65,7 @@ For 10,000 files, the stage-minus-Git median difference is **-107.27 ms, 95% CI 
 
 ### Review cost with a prepared view {#prepared-review}
 
-Separate matched controls measured on 2026-10-06: twenty small text files, ten applied and ten discarded, N=30 per cell, zero failures. Milliseconds; P95 is descriptive. No cell triggers the split rule.
+Separate matched controls measured on 2026-10-06: twenty small text files, ten applied and ten discarded, N=30 per cell, zero failures. Milliseconds. No cell triggers the split rule.
 
 | Step | pVisor stage P50 / P95 | Git worktree P50 / P95 |
 |---|---:|---:|
@@ -103,7 +103,7 @@ No participant study was conducted. Batch review and machine timing cannot be co
 
 ### Application and disposal by scale {#apply-cost}
 
-Measured on 2026-10-06. Units: ms; each cell is **P50 / reference P95, N=30**, with zero failures. P95 from 30 samples describes observations rather than a stable tail-latency commitment.
+Measured on 2026-10-06. Units: ms; each cell is **P50 / reference P95, N=30**, with zero failures.
 
 | Files | pVisor apply | Git apply | Native copy | drop | Pre-apply conflict rejection |
 |---:|---:|---:|---:|---:|---:|
@@ -163,6 +163,4 @@ The data covers warm caches and small text files in one directory. It does not c
 
 Local provenance records binary, source, harness and raw-report digests. Timing and concurrent checks use the same binary in separate cohorts. Complete CSV/JSON, raw commands, reports and audit records remain in their local cohorts or the documentation data archive.
 
-### Sources and reproduction {#run}
-
-[Comparison method](index.md#interpretation) · [Reproduction manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+Reproduction follows the [comparison method](index.md#interpretation) and the [runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md).

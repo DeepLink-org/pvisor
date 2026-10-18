@@ -1,4 +1,4 @@
-# SandboxReplay
+# 回放历史轨迹
 
 SandboxReplay 在用户已创建的新沙箱中回放 Agent 轨迹：重新执行恢复边界之前的工具调用，用新沙箱产生的 observation 重建 Agent 原生上下文，再从边界后继续运行。它在 [Run 与 Attempt 模型](../design/execution-model.md) 中创建派生 Run。
 

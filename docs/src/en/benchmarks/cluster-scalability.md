@@ -1,4 +1,4 @@
-# Which conclusions survive retirement of the Cluster measurements?
+# Can the retired cluster measurements still be used?
 
 ## Main conclusions {#conclusions}
 
@@ -47,7 +47,7 @@ A single Worker is capped at 0.5 cores. Additional execution slots increase avai
 | Two Workers | −15.81 | [−15.93, −15.03] |
 | Four Workers | −21.35 | [−21.36, −20.97] |
 
-Intervals use 30 paired rounds and 5,000 resamples; both exclude zero. P95 values in the complete local statistics are descriptive only, with no P99 or production-tail guarantee.
+Intervals use 30 paired rounds and 5,000 resamples; both exclude zero.
 
 ### Long-term retained history {#controller}
 

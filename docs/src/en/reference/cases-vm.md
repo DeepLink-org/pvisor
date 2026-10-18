@@ -130,7 +130,9 @@ assert_content "$CASE_ROOT/occupied.ram" keep
 ### S-DOC-062: N06 Seekable incremental backing reclaims and restores RAM
 
 
-**Semantics**: Compression selected at startup produces a valid PVZRAM v2 manifest and immutable base/delta bundle after offload. Logical RAM is complete, and allocated disk space for the entire bundle remains smaller than RAM for this workload after every offload. Writes after each resume produce a distinct generation whose chain reads original bytes. Ten offload/resume cycles exercise compaction from eight layers to one; unreachable generations are collected, and at most eight layers remain. The guest SHA-256 and continuously modified 1 MiB of page contents survive all cycles, with matching control observations and states. Linux requires FUSE; macOS requires the macFUSE kernel backend. A generation does not claim a device-consistent atomic VM snapshot.
+**Semantics**: Compression selected at startup produces a valid PVZRAM v2 manifest and immutable base/delta bundle after offload. Logical RAM is complete, and allocated disk space for the entire bundle remains smaller than RAM for this workload after every offload. Writes after each resume produce a distinct generation whose chain reads original bytes. Ten offload/resume cycles exercise compaction from eight layers to one; unreachable generations are collected, and at most eight layers remain. The guest SHA-256 and continuously modified 1 MiB of page contents survive all cycles, with matching control observations and states.
+
+Linux requires FUSE; macOS requires the macFUSE kernel backend. A generation does not claim a device-consistent atomic VM snapshot.
 
 **Violation example**: The file is raw RAM, a missing parent is read as zero, no new head is committed, the Seekable index is corrupt, page faults return compressed bytes, mutable guest pages are lost after reclamation, or old layers accumulate after compaction.
 

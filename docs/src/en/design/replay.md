@@ -57,7 +57,11 @@ Replaying tools repeats file/command and potentially remote effects. Filesystem 
 
 Historical Claude `Read` accepts only regular files within the workspace. Existing symlinks resolving inside the workspace remain supported. The actual open walks directory FDs without following replacement symlinks, uses nonblocking opens, and checks the opened inode to reject FIFOs, directories and devices. A FIFO returns a tool error without a writer or an outer Run timeout.
 
-Each `Read` scans at most 16 MiB, probing one additional byte to detect truncation, and returns at most 2,000 file-content lines, with the entire tool content bounded to 4 MiB. `offset` starts at 1; explicit `limit` keeps its meaning within these budgets. Reaching a scan, line or output-byte budget retains the available content, appends one `Read truncated by pvisor replay` notice line, and sets the observation's `truncated=true`. Including this notice, the result has at most 2,001 lines. An explicit range completed before the scan boundary is not marked truncated merely because the rest of the file is large. Offsets beyond the scan budget also receive the notice; this result does not establish EOF for the full file. Regular files can still change concurrently. These budgets provide neither a file snapshot nor an I/O deadline for remote or faulty filesystems.
+Each `Read` scans at most 16 MiB, probing one additional byte to detect truncation, and returns at most 2,000 file-content lines, with the entire tool content bounded to 4 MiB. `offset` starts at 1; explicit `limit` keeps its meaning within these budgets. Reaching a scan, line or output-byte budget retains the available content, appends one `Read truncated by pvisor replay` notice line, and sets the observation's `truncated=true`. Including this notice, the result has at most 2,001 lines. 
+
+An explicit range completed before the scan boundary is not marked truncated merely because the rest of the file is large. Offsets beyond the scan budget also receive the notice; this result does not establish EOF for the full file.
+
+Regular files can still change concurrently. These budgets provide neither a file snapshot nor an I/O deadline for remote or faulty filesystems.
 
 ## Code and validation
 

@@ -1,4 +1,4 @@
-# EXP-003 (restricted PoC): Agent asynchronous I/O and completion queues
+# Agent asynchronous I/O and completion queues (EXP-003)
 
 Let pVisor own the inputs, execution and results of downloads, model calls and bulk writes. After submitting work, the guest can compute further or offload memory when the whole guest is waiting. The host continues I/O, retains completion results, and lets the existing Attempt owner resume the guest and deliver them.
 

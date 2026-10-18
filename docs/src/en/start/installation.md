@@ -1,9 +1,5 @@
 # Installation
 
-Once `pvisor` is installed, you can run Agent CLIs, scripts, and automation inside a policy boundary and get checkable execution records. The Python package, CLI, and core Rust crate are all named `pvisor`; other crates use `pvisor-*` and environment variables use `PVISOR_*`.
-
-When upgrading, update deployed `PVISOR_*` settings as well. Local state defaults to `.pvisor` and user caches to `pvisor/`; existing data is not migrated automatically.
-
 ## 1. Install the tools
 
 ```bash
@@ -16,7 +12,7 @@ Check the command:
 pvisor --version
 ```
 
-The wheel installs a Python version marker and native CLI scripts into the current Python environment's bin directory. No Python launcher is involved. If your project has other Python dependencies, use a virtual environment:
+The wheel installs the native CLI into the current Python environment's bin directory; no Python launcher is involved. If your project has other Python dependencies, use a virtual environment:
 
 ```bash
 python3 -m venv .venv
@@ -26,6 +22,8 @@ pip install pvisor
 ```
 
 Published wheels target Linux x86_64 and macOS arm64. Check release artifacts or build from source for other architectures.
+
+Upgrading: update deployed `PVISOR_*` settings with the new release. Local state under `.pvisor` and user caches under `pvisor/` are not migrated automatically.
 
 ## 2. Check platform prerequisites
 

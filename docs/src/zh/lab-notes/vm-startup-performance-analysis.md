@@ -414,8 +414,6 @@ QEMU q35 的 218 ms 不能代表 QEMU 的最低启动成本；关闭可选传统
 
 ## 5. 复现与原始数据
 
-批次归档约定见[实验记录索引](index.md)。
-
 ### macOS / HVF
 
 先准备 release CLI、Alpine rootfs 和两个 firmware 目录，再运行：

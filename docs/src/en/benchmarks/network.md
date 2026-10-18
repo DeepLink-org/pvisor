@@ -1,4 +1,4 @@
-# What does network policy add compared with ordinary OCI?
+# How much latency does network control add?
 
 ## Main conclusions {#conclusions}
 
@@ -26,7 +26,7 @@ Linux/x86_64, one local HTTP origin on the same host, without Internet, TLS or D
 
 Small requests use 256 fresh TCP connections per batch, eight threads and 1 KiB responses. Take the median within each batch, then summarize 30 independent batches; 7,680 correlated requests are not independent samples. Bulk sends 32 MiB per batch in 1 KiB writes. Stream sends ten 13-byte events, 2 ms apart. First byte means the first HTTP body byte, not model TTFT. Transfer time includes connection and reading, excluding later digest validation; worker total time includes validation.
 
-Three warmups and 30 formal batches per condition; 17 conditions are randomized within each round. Full content length/SHA-256, CPU affinity, retained command output and Run boundaries must pass. Host/VM deny-all independently test direct-socket rejection and Bundle enforcement evidence. Failed batches cannot contribute latency; all slow valid samples remain without retrospective exclusions. P95 is descriptive only, with no P99.
+Three warmups and 30 formal batches per condition; 17 conditions are randomized within each round. Full content length/SHA-256, CPU affinity, retained command output and Run boundaries must pass. Host/VM deny-all independently test direct-socket rejection and Bundle enforcement evidence. Failed batches cannot contribute latency; all slow valid samples remain without retrospective exclusions.
 
 ## Data and analysis {#results}
 

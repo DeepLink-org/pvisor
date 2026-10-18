@@ -80,7 +80,11 @@ bridge 删除 transport nonce，再将请求转发到模型服务；续跑结束
 
 Claude 历史 `Read` 只接受 workspace 内的普通文件。它保留指向 workspace 内部的既有 symlink 解析，但实际打开时以目录 FD 逐段拒绝新的 symlink，并以非阻塞打开后的 inode 类型检查拒绝 FIFO、目录和设备；FIFO 不需要 writer 或外层 Run timeout 才能返回工具错误。
 
-每次 `Read` 最多扫描 16 MiB（另探测一个字节以确认截断），最多返回 2,000 行文件正文，整个工具正文不超过 4 MiB。`offset` 从 1 开始，显式 `limit` 在这些预算内保持原义；达到扫描、行数或输出字节预算时保留已读内容，追加一行 `Read truncated by pvisor replay` 提示，并设置 observation 的 `truncated=true`。因此含提示的结果最多 2,001 行。若显式请求的范围已在扫描边界前完整取得，不因文件其他部分很大而标记截断。高 offset 超出扫描范围也会显示截断，不能将该结果解释为完整文件的 EOF。普通文件仍可能被并发修改；这些预算不构成文件快照，也不保证远程或故障文件系统的 I/O 延迟。
+每次 `Read` 最多扫描 16 MiB（另探测一个字节以确认截断），最多返回 2,000 行文件正文，整个工具正文不超过 4 MiB。`offset` 从 1 开始，显式 `limit` 在这些预算内保持原义；达到扫描、行数或输出字节预算时保留已读内容，追加一行 `Read truncated by pvisor replay` 提示，并设置 observation 的 `truncated=true`。因此含提示的结果最多 2,001 行。
+
+若显式请求的范围已在扫描边界前完整取得，不因文件其他部分很大而标记截断。高 offset 超出扫描范围也会显示截断，不能将该结果解释为完整文件的 EOF。
+
+普通文件仍可能被并发修改；这些预算不构成文件快照，也不保证远程或故障文件系统的 I/O 延迟。
 
 ## 代码与验证
 

@@ -1,4 +1,4 @@
-# pVisor experimental features
+# Experimental features
 
 Register implementable, verifiable capabilities that support higher execution density and lower supervision cost. Designs, implementation plans and validation records live here. Feature code stays in existing crates, and measurements stay with the benchmark registry.
 

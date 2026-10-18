@@ -1,4 +1,4 @@
-# EXP-003（受限 PoC）：Agent 异步 I/O 与完成队列
+# Agent 异步 I/O 与完成队列（EXP-003）
 
 让 pVisor 接管下载、模型请求和批量写入的输入、执行与结果。guest 提交工作后可以继续计算，或者在整个 guest 进入等待时卸载内存；host 继续推进 I/O，保存完成结果，再由现有 Attempt 控制者恢复 guest 并交付。
 

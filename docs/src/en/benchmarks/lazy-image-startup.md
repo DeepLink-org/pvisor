@@ -1,4 +1,4 @@
-# How much waiting can lazy images save for startup and file loading?
+# How much startup time do lazy images save?
 
 ## Main conclusions {#conclusions}
 
@@ -61,7 +61,7 @@ Cold clients fetch files on demand, with smaller response payloads and shorter m
 
 #### Ubuntu shell client startup waiting {#startup}
 
-Measured 2026-10-10; n=30 per cell, 120 formal samples, zero formal failures or speed exclusions. Units ms. Unsplit distributions report P50; separated distributions report cluster medians and sample proportions. P95 is reference-only; cluster causes are undetermined.
+Measured 2026-10-10; n=30 per cell, 120 formal samples, zero formal failures or speed exclusions. Units ms. Unsplit distributions report P50; separated distributions report cluster medians and sample proportions. Cluster causes are undetermined.
 
 | Path / cache | Ready: P50 or cluster medians (proportions) | Ready P95 | Completion: P50 or cluster medians (proportions) | Completion P95 |
 |---|---:|---:|---:|---:|

@@ -232,7 +232,9 @@ RAM＋pool 代理为两 runner 的 `resident_bytes + pending_file_bytes` 之和�
 
 同一 runner 只有一个维护线程，上一批完成前不会重新创建 Publishing，故该状态检查不会将另一轮候选误当成当前候选。连接 RPC 仍由同一个 pool mutex 串行，冷恢复可能等待正在进行的发布请求；本修改不承诺消除全部池故障或冷恢复尾延迟。pool 锁必须在申请 pager 锁或维护屏障前释放。
 
-`pending_snapshot_bytes` 加入 RAM＋pool 代理，按每秒采样前后计数的较大值保守计入，避免遗漏暂存成本。`pvisor-cold-transaction` 汇总同轮两个屏障调用的耗时，publication_us 单独记录；单次屏障变短不等于整轮总开销一定下降。日志补充 PID；invalidated_publications 只统计访问使候选失效，总取消计数还包括提交预算耗尽。三对三轮真实双 VM 网络检查全部通过，238 个候选因实际访问失效。同轮两个屏障调用合计 P95 为 2.4–3.1 ms，冷恢复最大耗时 41.4 ms；这些是限定负载的实验结果，仍有连接竞争尾延迟。
+`pending_snapshot_bytes` 加入 RAM＋pool 代理，按每秒采样前后计数的较大值保守计入，避免遗漏暂存成本。`pvisor-cold-transaction` 汇总同轮两个屏障调用的耗时，publication_us 单独记录；单次屏障变短不等于整轮总开销一定下降。日志补充 PID；invalidated_publications 只统计访问使候选失效，总取消计数还包括提交预算耗尽。
+
+三对三轮真实双 VM 网络检查全部通过，238 个候选因实际访问失效。同轮两个屏障调用合计 P95 为 2.4–3.1 ms，冷恢复最大耗时 41.4 ms；这些是限定负载的实验结果，仍有连接竞争尾延迟。
 
 ### 内存计量与尚未证明的收益 {#memory-evidence}
 
@@ -266,7 +268,9 @@ pvisor-daemon serve --help
 pvisor-daemon memory-pool --help
 ```
 
-记录中的 macOS v1 池默认预算为 16 MiB 编码 payload、8192 对象、16 连接、每连接 32768 引用；最后一项覆盖 2 GiB RAM 的 64 KiB 分块。该版本的四项预算可通过服务参数分别设置，编码预算不包含全部堆元数据。服务仅接受当前 UID，socket 权限为 0600，拒绝覆盖已有端点。SIGINT/SIGTERM 关闭连接、等待引用回收并删除自己创建的 socket；停止池会使依赖的活 VM 失败。该版本是操作方管理的前台组件，不自动重启或恢复池内容；这些是历史限制，不是当前 daemon 默认值。
+记录中的 macOS v1 池默认预算为 16 MiB 编码 payload、8192 对象、16 连接、每连接 32768 引用；最后一项覆盖 2 GiB RAM 的 64 KiB 分块。该版本的四项预算可通过服务参数分别设置，编码预算不包含全部堆元数据。
+
+服务仅接受当前 UID，socket 权限为 0600，拒绝覆盖已有端点。SIGINT/SIGTERM 关闭连接、等待引用回收并删除自己创建的 socket；停止池会使依赖的活 VM 失败。该版本是操作方管理的前台组件，不自动重启或恢复池内容；这些是历史限制，不是当前 daemon 默认值。
 
 v1 接入验证使用产品池程序和显式 SDK 参数，父进程未设置旧池环境变量。两个真实 VM 的共享对象、内容恢复、独立写入和正常退出通过；池退出及 socket 清理通过，约 36.6 s，无宿主守卫错误。原始记录为 `v1-product-integration.json`。定向 Rust 回归、Clippy 与安装/打包检查见 review 的收敛报告。
 

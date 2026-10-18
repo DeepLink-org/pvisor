@@ -124,7 +124,7 @@ assert_content "$CASE_ROOT/occupied.ram" keep
 ### S-DOC-062：N06 Seekable 增量 backing 回收与恢复
 
 
-**语义**：启动时启用压缩，offload 返回合法 PVZRAM v2 manifest 与不可变 base/delta bundle；逻辑 RAM 大小完整，每次 offload 后整个 bundle 实际分配的磁盘空间均小于该测试负载的 RAM 范围。每次恢复后修改产生不同的 generation，其链可读取原文；十次回收、恢复覆盖从八层到一层的 compaction，不可达 generation 被回收，最多保留八层。guest 的固定数据 SHA-256 和持续更新的 1 MiB 页面内容在全部循环后均保持，暂停/恢复事件与状态一致。generation 不宣称跨设备的原子快照。
+**语义**：启动时启用压缩，offload 返回合法 PVZRAM v2 manifest 与不可变 base/delta bundle；逻辑 RAM 大小完整，每次 offload 后整个 bundle 实际分配的磁盘空间均小于该测试负载的 RAM 范围。每次恢复后修改产生不同的 generation，其链可读取原文；十次回收、恢复覆盖从八层到一层的 compaction，不可达 generation 被回收，最多保留八层。guest 的固定数据 SHA-256 和持续更新的 1 MiB 页面内容在全部循环后均保持，暂停/恢复事件与状态一致。Linux 需要 FUSE；macOS 需要 macFUSE 内核后端。generation 不宣称跨设备的原子快照。
 
 **违反示例**：写入的只是普通 RAM 文件、缺失父层被当作零、manifest 未生成新的 head、Seekable 索引损坏、guest 缺页读回压缩字节而不是原文、回收后可变页面丢失，或 compaction 后旧层持续累积。
 

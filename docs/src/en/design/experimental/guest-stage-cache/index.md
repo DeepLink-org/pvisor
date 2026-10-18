@@ -1,4 +1,4 @@
-# EXP-002 (design stage): guest kernel filesystem cache and deferred backend binding
+# Guest kernel filesystem cache and deferred backend binding (EXP-002)
 
 Let the guest kernel use a versioned filesystem view to complete cached path resolution, attribute queries and ordinary read-only open locally. Call the VMM for missing data, stage mutations and durability. The host retains authoritative stage, baseline observation, access policy, review/apply and restoration state.
 

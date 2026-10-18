@@ -1,4 +1,4 @@
-# pVisor 设计与底层原理
+# pVisor 如何工作
 
 让 Agent 连续执行一项任务，实际上是把一组进程、文件修改、网络请求和内存状态交给系统管理。任务启动以后，开发者关心三件事：它能触及哪些资源，执行到一半能否保留状态，最终哪些结果值得接受。大量任务同时运行时，还要回答第四件事：哪些内容可以只保存一份，哪些成本必然随任务数增长。
 
@@ -222,5 +222,3 @@ workspace checkpoint 只保存文件分支；Agent trajectory 保存模型上下
 执行隔离约束访问，暂存约束文件发布，快照约束可恢复状态，Journal 约束已提交事实。每个模块因此有明确的状态所有者、发布点和失败结果，外部编排才能在这些结果上决定重试、分叉或接受。
 
 当前实现状态也需要保持清楚：daemon 已有 VM-only NativeRuntime 和显式启用的 Linux 物理池，其 API 尚未暴露原生 Job 的 stage/apply 或 execution checkpoint；外部编排与 RL 接入仍需要独立交接和端到端验证。实现机制并不自动建立生产密度或长期恢复结论。
-
-组织方式参考 [ByteHook 的项目介绍和原理概述](https://github.com/bytedance/bhook/blob/main/doc/overview.zh-CN.md)：把必要基础原理、请求路径与工程约束连续讲清楚。更多表达参考见仓库 [docs/README.md](https://github.com/DeepLink-org/pvisor/blob/main/docs/README.md) 的设计写作参考节。

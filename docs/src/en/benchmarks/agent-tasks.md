@@ -1,4 +1,4 @@
-# End-to-end Agent tasks: when should you choose pVisor?
+# How long does a real Agent task take?
 
 ## Conclusions {#conclusions}
 
@@ -25,17 +25,19 @@ A task includes environment preparation, model/tool interaction, verification, r
 
 Linux x86_64, AMD Ryzen 7 9700X, Fedora 7.2.8-200.fc44.x86_64. Launched process trees and the private Docker daemon are pinned to CPUs 0,1. VMs use 2 vCPU, 128 MiB for the shell probe and 16 GiB for tools. Native/Docker memory is uncapped: this is a CPU-controlled task comparison, not a capacity comparison under identical memory limits. Host/staged use rootless_process.
 
-All backends share offline tools and fixed inputs, with a new workspace per trial. Warm caches, three warmups and 60 measured samples per fixed-plan cell; 30 for environment checks and real CLIs; backends alternate in seeded randomized order. Preparation, builds, image import and fixture resets are outside timing; complete tasks include launch and exit. Docker Engine 29.7.2 uses a private rootless **overlay2** daemon, the classic image store and writable bind mounts. Firecracker 1.13.1 PCI runs without jailer; QEMU 10.2.2 uses q35/microvm and private ext4. pVisor VM uses virtio-fs and its own firmware. Kernels, storage and staging semantics differ: these are task costs for the stated configurations, not pure VMM or security rankings.
+All backends share offline tools and fixed inputs, with a new workspace per trial. Warm caches, three warmups and 60 measured samples per fixed-plan cell; 30 for environment checks and real CLIs; backends alternate in seeded randomized order. Preparation, builds, image import and fixture resets are outside timing; complete tasks include launch and exit. 
+
+Docker Engine 29.7.2 uses a private rootless **overlay2** daemon, the classic image store and writable bind mounts. Firecracker 1.13.1 PCI runs without jailer; QEMU 10.2.2 uses q35/microvm and private ext4. pVisor VM uses virtio-fs and its own firmware. Kernels, storage and staging semantics differ: these are task costs for the stated configurations, not pure VMM or security rankings.
 
 The fixed plan inspects/searches the repository, fixes Python, runs Python/Rust/Node tests, installs 32 offline npm packages and generates a diff. Result ends at checked returned results; Completion includes exit. Tests and expected edits must pass. The tool plan does not measure model inference or establish compatibility of real Agent CLIs.
 
-These samples do not verify equal Node/npm compile-cache state across backends. A fresh workspace does not establish an empty tool cache. Complete-task differences include each configuration's cache behavior; they cannot all be attributed to staging or the VMM.
+These samples do not verify equal Node/npm compile-cache state across backends, and a fresh workspace does not mean an empty tool cache. Complete-task differences include each configuration's cache behavior and cannot all be attributed to staging or the VMM.
 
 Scenario analysis also reuses separately registered [filesystem](filesystem.md), [complete review workflow](supervision-cost.md), [startup](startup.md), [lazy-image](lazy-image-startup.md) and [isolation](isolation-tests.md) experiments. Review has thirty samples per cell and includes view creation, twenty edits, review, application of ten files and cleanup; Git/reflink do not supply the same isolation. Experiments remain separate: do not sum medians to estimate a real Agent task or reuse their differing budgets for one ranking.
 
 ## Data and analysis {#results}
 
-Measured on 2026-10-06: each fixed-plan backend has 60/60 valid samples and zero measured failures; environment/CLI counts and preflight failures are listed separately. Outputs, exit and execution records must pass validation; staging also requires unchanged host originals and complete retained changes. Every valid slow sample is kept, with no timing-based exclusions. Tables normally show P50; separated distributions show cluster medians and counts. P95 is descriptive only. Raw reports, binaries and input/source manifests stay in ignored `.data/`; complete local CSV/JSON retains workload, cohort and provenance associations.
+Measured on 2026-10-06: each fixed-plan backend has 60/60 valid samples and zero measured failures; environment/CLI counts and preflight failures are listed separately. Outputs, exit and execution records must pass validation; staging also requires unchanged host originals and complete retained changes. Every valid slow sample is kept, with no timing-based exclusions. Tables normally show P50; separated distributions show cluster medians and counts. Raw reports, binaries and input/source manifests stay in ignored `.data/`; complete local CSV/JSON retains workload, cohort and provenance associations.
 
 ### Fixed repair and tests {#reference-env}
 

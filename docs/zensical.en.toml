@@ -21,7 +21,7 @@ nav = [
     ] },
     { "About pVisor" = [
       { "Why pVisor" = "why/index.md" },
-      { "Fit check and comparisons" = "why/comparisons.md" },
+      { "Should you use pVisor?" = "why/comparisons.md" },
     ] },
   ] },
   { "User guide" = [
@@ -30,7 +30,7 @@ nav = [
       { "Review and apply changes" = "guides/review-apply.md" },
       { "Logical checkpoints and forks" = "guides/fork-checkpoint.md" },
       { "Capture agent trajectories" = "guides/capture.md" },
-      { "SandboxReplay" = "guides/replay.md" },
+      { "Replay recorded trajectories" = "guides/replay.md" },
       { "Run in CI" = "guides/ci.md" },
       { "Parallel agents" = "guides/parallel-agents.md" },
       { "RL rollouts" = "guides/rl-rollouts.md" },
@@ -116,7 +116,7 @@ nav = [
   ] },
   { "Design and research" = [
     { "Architecture and execution" = [
-      { "Design and underlying mechanisms" = "design/index.md" },
+      { "How pVisor works" = "design/index.md" },
       { "Core design principles" = "design/principles.md" },
       { "Core architecture" = "design/architecture.md" },
       { "Job, Operation, Attempt and Event" = "design/execution-model.md" },

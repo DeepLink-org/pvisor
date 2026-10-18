@@ -1,13 +1,19 @@
 # 运行单机 daemon
 
-安装 `pvisor-daemon`，通过部分兼容 OpenSandbox 1.1.0 的 API 管理一台 Linux 主机上的镜像沙箱。daemon 负责本机准入、生命周期、持久状态与过期清理。跨节点任务调度、全局 DAG 和分布式 lease 由 Kubernetes、Ray 或你的应用管理；daemon 不包含 Controller 或 Worker。管理本机原生 VM 沙箱生命周期时选择 `pvisor-daemon`；公开 Job／文件审查流程使用 `pvisor run`。
+安装 `pvisor-daemon`，通过部分兼容 OpenSandbox 1.1.0 的 API，在一台 Linux 主机上管理镜像沙箱。daemon 负责本机准入、生命周期、持久状态与过期清理。
+
+跨节点调度、全局 DAG 和分布式 lease 由 Kubernetes、Ray 或你的应用管理。daemon 不包含 Controller 或 Worker。
+
+需要本机原生 VM 沙箱生命周期时用 `pvisor-daemon`；公开 Job 与文件审查流程仍用 `pvisor run`。
 
 !!! warning
     项目**尚未提供 guest bootstrap 或镜像配方，也未做端到端验证**；目前没有 SDK 兼容性验证或密度测量结果。下列每一步都需要自行准备镜像与 vsock 桥接。
 
 ## 前提条件 {#prerequisites}
 
-要求 Linux x86_64、可用 `/dev/kvm`、可信绝对路径，以及可写、已委派且启用 CPU/memory/PID controller 与 `cgroup.kill` 的 cgroup v2 层级。前置检查验证真实 controller 写入和 KVM API；没有 host、OCI 命令或 registry-pull 降级。
+需要 Linux x86_64、可用的 `/dev/kvm`、可信的绝对路径，以及可写、已委派并启用 CPU/memory/PID controller 与 `cgroup.kill` 的 cgroup v2 层级。
+
+前置检查会实际写入 controller 并调用 KVM API。没有 host、OCI 命令或 registry-pull 降级。
 
 镜像是可信本机 `images_dir/<key>.json` manifest，不是 registry reference。字段包括绝对路径的独立 Linux `rootfs`（不能是宿主 `/` 或与 daemon 状态重叠）、绝对路径的 guest bootstrap `entrypoint` argv、可选 `cmd`、可选 `env` 与可选绝对路径 firmware `library_dir`。请求的工作负载 argv（为空则使用 `cmd`）追加到 `entrypoint`，请求 env 覆盖 manifest env，不继承宿主环境，也不经 shell 插值。
 
