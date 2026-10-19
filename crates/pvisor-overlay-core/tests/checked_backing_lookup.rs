@@ -102,6 +102,7 @@ fn excluded_denied_and_backend_enoent_remain_errors_instead_of_checked_absence()
     let temp = tempfile::tempdir().unwrap();
     let lower = temp.path().join("lower");
     fs::create_dir(&lower).unwrap();
+    let lower = lower.canonicalize().unwrap();
     let service = FilesystemService::new(
         OverlayCore::new_with_exclusions_and_preimages(
             vec![lower.clone()],
