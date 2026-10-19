@@ -666,9 +666,12 @@ impl<S: ColdRamStore> Pager<S> {
     }
 
     fn shared_candidates(&mut self) -> Vec<usize> {
+        self.shared_candidates_at(Instant::now())
+    }
+
+    fn shared_candidates_at(&mut self, now: Instant) -> Vec<usize> {
         self.shared_scan.as_mut().unwrap().begin_round();
         let mut visited = 0;
-        let now = Instant::now();
         let limit = BATCH_BYTES / 4 / 4096;
         // At most half the candidate budget comes from completed file READs.
         // Queue locks are gone before any CPU/device barrier is entered.
@@ -676,7 +679,11 @@ impl<S: ColdRamStore> Pager<S> {
         candidates.sort_unstable();
         candidates.dedup();
         let priority_len = candidates.len();
-        while candidates.len() < limit && visited < 4096 && now.elapsed() < Duration::from_millis(8)
+        // Preemption during hint selection must not consume every background
+        // slot. Always visit one bounded region before enforcing the soft budget.
+        while candidates.len() < limit
+            && visited < 4096
+            && (visited == 0 || now.elapsed() < Duration::from_millis(8))
         {
             let Some(visit) = self
                 .shared_scan
@@ -1670,6 +1677,29 @@ mod tests {
         assert_eq!(distinct.len(), selected.len());
         assert!(pager.file_hint_candidates > 0 && pager.file_hint_candidates <= 128);
     }
+    #[test]
+    fn expired_selection_budget_still_probes_background_pages() {
+        let mut pager = shared_pager_with_size(4 * 1024 * 1024);
+        let start = Instant::now() - Duration::from_secs(1);
+        for index in 0..pager.pages.len() {
+            pager.pages[index].eligible_at = deadline(start);
+        }
+        let hint = pager.pages.range(896);
+        pager
+            .read_hints
+            .as_ref()
+            .unwrap()
+            .submit(hint.start, 128 * 4096);
+        let selected = pager.shared_candidates_at(start);
+        assert!(
+            !selected.is_empty(),
+            "expired hint budget must not starve background"
+        );
+        assert!(selected.len() <= 256);
+        assert!(selected.iter().all(|&index| index < 512));
+        assert_eq!(pager.file_hint_candidates, 0);
+    }
+
     #[test]
     fn file_hints_defer_cooldown_and_skip_sparse_or_unowned_ranges() {
         let mut pager = shared_pager();
