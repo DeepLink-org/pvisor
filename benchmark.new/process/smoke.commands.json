@@ -1,0 +1,85 @@
+{
+  "runs": 10,
+  "warmup": 2,
+  "commands": {
+    "native": {
+      "argv": [
+        "/usr/bin/true"
+      ],
+      "timeout": 120,
+      "conclude": [
+        "true"
+      ],
+      "env": {
+        "PVISOR_RUN_HOME": "@BATCH@/runs",
+        "PVISOR_STARTUP_TIMING": "0",
+        "PVISOR_FS_PROFILE": "0"
+      }
+    },
+    "host-run": {
+      "argv": [
+        "@BINARY@",
+        "run",
+        "--no-agent-defaults",
+        "--overlaynet",
+        "off",
+        "--stdio",
+        "capture",
+        "--",
+        "/usr/bin/true"
+      ],
+      "timeout": 120,
+      "conclude": [
+        "python3",
+        "@REPO@/benchmark.new/process/check.py",
+        "new-bundle",
+        "@BATCH@/runs"
+      ],
+      "env": {
+        "PVISOR_RUN_HOME": "@BATCH@/runs",
+        "PVISOR_STARTUP_TIMING": "0",
+        "PVISOR_FS_PROFILE": "0"
+      }
+    },
+    "status": {
+      "argv": [
+        "@BINARY@",
+        "status",
+        "--json",
+        "@JOB@"
+      ],
+      "timeout": 120,
+      "conclude": [
+        "python3",
+        "@REPO@/benchmark.new/process/check.py",
+        "bundle",
+        "@JOB@/run-bundle.json"
+      ],
+      "env": {
+        "PVISOR_RUN_HOME": "@BATCH@/runs",
+        "PVISOR_STARTUP_TIMING": "0",
+        "PVISOR_FS_PROFILE": "0"
+      }
+    },
+    "review": {
+      "argv": [
+        "@BINARY@",
+        "review",
+        "--json",
+        "@JOB@"
+      ],
+      "timeout": 120,
+      "conclude": [
+        "python3",
+        "@REPO@/benchmark.new/process/check.py",
+        "bundle",
+        "@JOB@/run-bundle.json"
+      ],
+      "env": {
+        "PVISOR_RUN_HOME": "@BATCH@/runs",
+        "PVISOR_STARTUP_TIMING": "0",
+        "PVISOR_FS_PROFILE": "0"
+      }
+    }
+  }
+}

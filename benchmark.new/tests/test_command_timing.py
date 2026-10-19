@@ -6,7 +6,6 @@ import io
 import json
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,7 +20,7 @@ import common as COMMON  # noqa: E402
 from update import display_table, publish, validate_batch  # noqa: E402
 
 SEMSPEC = Path(os.environ.get("SEMSPEC_BIN", ROOT.parent / "target/semspec/debug/semspec"))
-LIVE = shutil.which("hyperfine") and SEMSPEC.is_file()
+LIVE = SEMSPEC.is_file()
 
 
 class RegistryTests(unittest.TestCase):
@@ -150,11 +149,10 @@ class RegistryTests(unittest.TestCase):
                 continue
             if isinstance(next(iter(table.values())), str):
                 for command in table.values():
-                    self.assertTrue(command.startswith("$ hyperfine "))
+                    self.assertTrue(command.startswith("$ python3 "))
                     argv = shlex.split(command[2:])
                     self.assertNotIn("|", argv)
-                    self.assertIn("--runs", argv)
-                    self.assertIn("--warmup", argv)
+                    self.assertIn("command_timing.py", command)
                 continue
             first = set(next(iter(table.values())))
             for cells in table.values():
@@ -162,7 +160,7 @@ class RegistryTests(unittest.TestCase):
                 for value in cells.values():
                     self.assertFalse(isinstance(value, (dict, list)))
                     if isinstance(value, str) and value.startswith("$ "):
-                        self.assertEqual(shlex.split(value[2:])[0], "hyperfine")
+                        self.assertEqual(shlex.split(value[2:])[0], "python3")
                     if row["status"] == "requires-single-condition-command":
                         self.assertIsNone(value)
 
@@ -186,31 +184,43 @@ class RegistryTests(unittest.TestCase):
                     entry["entry"],
                 )
 
-    def test_path_substitution_preserves_nested_subject_and_hook_quoting(self):
-        variables = {"BINARY": "/a path/it's-pvisor", "BATCH": "/data/a path"}
-        expression = "$ " + shlex.join(
-            [
-                "hyperfine",
-                "--runs",
-                "2",
-                "--warmup",
-                "0",
-                "--prepare",
-                "python3 @BINARY@ @BATCH@/input",
-                "--command-name",
-                "test",
-                "@BINARY@ run @BATCH@/input",
-            ]
-        )
-        argv = shlex.split(COMMON.expand(expression, variables)[2:])
-        self.assertEqual(
-            shlex.split(argv[argv.index("--prepare") + 1]),
-            ["python3", variables["BINARY"], variables["BATCH"] + "/input"],
-        )
-        self.assertEqual(
-            shlex.split(argv[-1]),
-            [variables["BINARY"], "run", variables["BATCH"] + "/input"],
-        )
+    def test_command_configuration_preserves_argv_paths_and_hook_quoting(self):
+        with tempfile.TemporaryDirectory(prefix="command path '") as directory:
+            root = Path(directory)
+            template = root / "fixture.json"
+            template.write_text(
+                json.dumps(
+                    {"checked": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ checked"}
+                )
+            )
+            argv = ["@BINARY@", "--literal", "@BATCH@/file with spaces"]
+            template.with_suffix(".commands.json").write_text(
+                json.dumps(
+                    dict(
+                        runs=2,
+                        warmup=0,
+                        commands={
+                            "checked": dict(argv=argv, prepare=["python3", "@BINARY@"], timeout=3)
+                        },
+                    )
+                )
+            )
+            batch = root / "batch"
+            batch.mkdir()
+            with patch.object(
+                COMMON,
+                "registered",
+                return_value=dict(
+                    benchmark_id="B-PROCESS", role="engineering A/B", entry="process/smoke.json"
+                ),
+            ):
+                COMMON.materialize_commands(template, batch, {"BINARY": "/a path/it's-pvisor"})
+            config = json.loads((batch / "commands.json").read_text())["checked"]
+            self.assertEqual(
+                config["argv"],
+                ["/a path/it's-pvisor", "--literal", str(batch / "file with spaces")],
+            )
+            self.assertEqual(config["prepare"], ["python3", "/a path/it's-pvisor"])
 
     def test_display_format_changes_only_presentation(self):
         table = {"native": {"N": 60, "Median ms": 1.234567, "note": "unchanged", "Min ms": None}}
@@ -220,109 +230,17 @@ class RegistryTests(unittest.TestCase):
         )
         self.assertEqual(table["native"]["Median ms"], 1.234567)
 
-    def test_preparation_rejects_legacy_cell_commands(self):
+    def test_preparation_requires_registered_row_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
             entry = Path(directory) / "fixture.json"
-            command = "$ hyperfine --runs 2 --warmup 0 --command-name checked /bin/true"
-            for table in (
-                {"checked": {"N": command}},
-                {"checked": command + " | json /results/0/count * 1"},
-            ):
-                entry.write_text(json.dumps(table))
-                with patch.object(COMMON, "registered", return_value={}):
-                    with self.assertRaisesRegex(ValueError, "per row|obsolete"):
-                        COMMON.materialize(entry, Path(directory) / "batch")
+            entry.write_text(json.dumps({"checked": {"N": "$ printf 2"}}))
+            with patch.object(COMMON, "registered", return_value={}):
+                with self.assertRaisesRegex(ValueError, "row configuration"):
+                    COMMON.materialize(entry, Path(directory) / "batch")
 
 
-class RowEvidenceTests(unittest.TestCase):
-    """Audit row data even on hosts without hyperfine installed."""
-
-    def test_valid_row_and_invalid_measurements_or_mapping(self):
-        from update import FIELDS
-
-        with tempfile.TemporaryDirectory() as directory:
-            batch = Path(directory).resolve()
-            command = "hyperfine --runs 2 --warmup 1 --command-name checked /bin/true"
-            summary = {field: 2 if field == "count" else 0.001 for field in FIELDS.values()}
-            summary["unit"] = "second"
-            resolved = {
-                "checked": {
-                    field: summary[key] * (1 if field == "N" else 1000)
-                    for field, key in FIELDS.items()
-                }
-            }
-            template = {"checked": "$ " + command}
-            COMMON.save(batch / "in.json", template)
-            manifest = dict(
-                status="prepared",
-                metric_scope=COMMON.METRIC_SCOPE,
-                benchmark_id="B-PROCESS",
-                entry="process/fixture.json",
-                input_sha256=COMMON.digest(batch / "in.json"),
-                artifacts={},
-                harness={},
-                cwd=str(batch),
-                runs=2,
-                warmup=1,
-                rows={"checked": "checked"},
-                conditions=["checked"],
-                hyperfine_version="hyperfine 2.0.0",
-            )
-            evidence = dict(
-                format=1,
-                cwd=str(batch),
-                template=str(batch / "in.json"),
-                cells=[],
-                commands=[
-                    dict(
-                        command=command,
-                        kind="hyperfine-row",
-                        value=resolved["checked"],
-                        raw=dict(
-                            schema_version=2,
-                            metadata={"hyperfine_version": "2.0.0"},
-                            results=[
-                                dict(
-                                    name="checked",
-                                    command="/bin/true",
-                                    measurements=[{"exit_code": 0}, {"exit_code": 0}],
-                                    summary={"time_wall_clock": summary},
-                                )
-                            ],
-                        ),
-                    )
-                ],
-                rows=[
-                    dict(row="checked", command=command, expression=command, columns=list(FIELDS))
-                ],
-            )
-            COMMON.save(batch / "in.render.json", resolved)
-            for damage in (None, "exit", "statistic", "mapping", "cell"):
-                with self.subTest(damage=damage):
-                    changed = json.loads(json.dumps(evidence))
-                    result = changed["commands"][0]["raw"]["results"][0]
-                    if damage == "exit":
-                        result["measurements"][0]["exit_code"] = 7
-                    elif damage == "statistic":
-                        result["summary"]["time_wall_clock"]["median"] = 9
-                    elif damage == "mapping":
-                        changed["rows"][0]["row"] = "other"
-                    elif damage == "cell":
-                        changed["cells"] = [{"row": "checked", "column": "N"}]
-                    COMMON.save(batch / "manifest.json", manifest)
-                    COMMON.save(batch / "in.bench.json", changed)
-                    if damage:
-                        with self.assertRaises(ValueError):
-                            validate_batch(batch)
-                    else:
-                        checked, table, results = validate_batch(batch)
-                        self.assertEqual(checked["status"], "passed")
-                        self.assertEqual(table, resolved)
-                        self.assertEqual(set(results), {"checked"})
-
-
-@unittest.skipUnless(LIVE, "real hyperfine 2.0+ and built semspec required")
-class HyperfineTests(unittest.TestCase):
+@unittest.skipUnless(LIVE, "built semspec required")
+class CommandTimingTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="semspec benchmark ")
         self.addCleanup(self.temp.cleanup)
@@ -332,24 +250,22 @@ class HyperfineTests(unittest.TestCase):
         self.csv = self.root / "results.csv"
         self.md = self.root / "results.md"
 
-    def measure(self, code="pass", extra=(), artifacts=(), names=("checked",)):
-        argv = [
-            "hyperfine",
-            "--shell=none",
-            "--runs",
-            "2",
-            "--warmup",
-            "1",
-            "--style",
-            "basic",
-            *extra,
-        ]
-        table = {
-            name: "$ "
-            + shlex.join([*argv, "--command-name", name, shlex.join([sys.executable, "-c", code])])
-            for name in names
-        }
-        self.entry.write_text(json.dumps(table))
+    def measure(self, code="pass", extra=(), artifacts=(), names=("checked",), timeout=30):
+        self.entry.write_text(
+            json.dumps(
+                {
+                    name: "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ " + name
+                    for name in names
+                }
+            )
+        )
+        config = dict(argv=[sys.executable, "-c", code], timeout=timeout)
+        for flag, key in (("--prepare", "prepare"), ("--conclude", "conclude")):
+            if flag in extra:
+                config[key] = ["bash", "-euo", "pipefail", "-c", extra[extra.index(flag) + 1]]
+        self.entry.with_suffix(".commands.json").write_text(
+            json.dumps(dict(runs=2, warmup=1, commands={name: config for name in names}))
+        )
         metadata = dict(
             benchmark_id="B-PROCESS",
             role="engineering A/B",
@@ -357,7 +273,7 @@ class HyperfineTests(unittest.TestCase):
         )
         with patch.object(COMMON, "registered", return_value=metadata):
             batch = COMMON.create_batch(self.entry, self.batch)
-            COMMON.materialize(self.entry, batch, artifacts=artifacts, cwd=self.root)
+            COMMON.materialize_commands(self.entry, batch, artifacts=artifacts, cwd=self.root)
         return subprocess.run(
             [str(SEMSPEC), "bench", "--cwd", str(self.root), str(batch / "in.json")],
             capture_output=True,
@@ -377,7 +293,7 @@ class HyperfineTests(unittest.TestCase):
         self.assertEqual(resolved["checked"]["N"], 2)
         self.assertEqual(
             resolved["checked"]["Median ms"],
-            results["checked"]["summary"]["time_wall_clock"]["median"] * 1000,
+            results["checked"]["statistics"]["Median ms"],
         )
         publish(self.batch, self.csv, self.md)
         exported = list(csv.DictReader(io.StringIO(self.csv.read_text())))
@@ -387,7 +303,7 @@ class HyperfineTests(unittest.TestCase):
         publish(self.batch, self.csv, self.md)
         self.assertEqual(original, (self.csv.read_bytes(), self.md.read_bytes()))
 
-    def test_one_hyperfine_row_runs_once_and_all_columns_share_the_raw_export(self):
+    def test_one_script_row_runs_once_and_all_columns_share_the_raw_export(self):
         calls = self.root / "calls"
         code = f'from pathlib import Path; p=Path({str(calls)!r}); p.write_text(p.read_text()+"run\\n" if p.exists() else "run\\n")'
         result = self.measure(code)
@@ -396,7 +312,7 @@ class HyperfineTests(unittest.TestCase):
         manifest, resolved, results = validate_batch(self.batch)
         evidence = json.loads((self.batch / "in.bench.json").read_text())
         self.assertEqual(len(evidence["commands"]), 1)
-        self.assertEqual(evidence["commands"][0]["kind"], "hyperfine-row")
+        self.assertEqual(evidence["commands"][0]["kind"], "script-row")
         self.assertEqual(evidence["cells"], [])
         self.assertEqual(len(evidence["rows"]), 1)
         self.assertEqual(list(resolved["checked"]), list(__import__("update").FIELDS))
@@ -428,7 +344,11 @@ class HyperfineTests(unittest.TestCase):
 
     def test_failed_payload_and_failed_correctness_hook_cannot_publish(self):
         for index, (code, extra) in enumerate(
-            [("raise SystemExit(7)", ()), ("pass", ("--conclude", "exit 1"))]
+            [
+                ("raise SystemExit(7)", ()),
+                ("pass", ("--prepare", "exit 1")),
+                ("pass", ("--conclude", "exit 1")),
+            ]
         ):
             self.batch = self.root / ".data" / f"failure-{index}"
             result = self.measure(code, extra)
@@ -438,6 +358,37 @@ class HyperfineTests(unittest.TestCase):
             with self.assertRaises((ValueError, OSError)):
                 publish(self.batch, self.csv, self.md)
             self.assertFalse(self.csv.exists())
+
+    def test_timeout_preserves_trial_and_prevents_publication(self):
+        result = self.measure("import time; time.sleep(2)", timeout=0.05)
+        self.assertNotEqual(result.returncode, 0)
+        trial = json.loads((self.batch / "command-trials/checked/warmup-0000.json").read_text())
+        self.assertIn("timed out", trial["error"])
+        self.assertIsNone(trial["exit_code"])
+        self.assertFalse((self.batch / "in.render.json").exists())
+        with self.assertRaises(ValueError):
+            validate_batch(self.batch)
+
+    def test_statistics_validate_counts_and_do_not_reuse_trials(self):
+        from command_timing import measure, summarize
+
+        self.assertEqual(
+            summarize([1_000_000, 3_000_000]),
+            {
+                "N": 2,
+                "Median ms": 2.0,
+                "Mean ms": 2.0,
+                "SD ms": 2**0.5,
+                "Min ms": 1.0,
+                "Max ms": 3.0,
+            },
+        )
+        for samples in ([1], [0, 1], [True, 2], [1.2, 2]):
+            with self.assertRaises(ValueError):
+                summarize(samples)
+        self.assertEqual(self.measure().returncode, 0)
+        with self.assertRaisesRegex(ValueError, "reuse"):
+            measure(self.batch, "checked")
 
     def test_prepare_and_conclude_cover_warmups_and_samples(self):
         evidence = self.root / "state"
@@ -477,7 +428,7 @@ class HyperfineTests(unittest.TestCase):
         table = json.loads(original)
         table["checked"]["Median ms"] = 0
         path.write_text(json.dumps(table))
-        with self.assertRaisesRegex(ValueError, "resolved row schema/value"):
+        with self.assertRaisesRegex(ValueError, "resolved row"):
             publish(self.batch, self.csv, self.md)
         path.write_bytes(original)
         publish(self.batch, self.csv, self.md)
@@ -501,6 +452,36 @@ class HyperfineTests(unittest.TestCase):
             patch.object(COMMON, "registered", return_value={}),
         ):
             COMMON.create_batch(self.entry, self.batch)
+
+    def test_tampered_trials_samples_and_mapping_are_rejected(self):
+        self.assertEqual(self.measure().returncode, 0)
+        original = {p: p.read_bytes() for p in self.batch.rglob("*.json")}
+        cases = [
+            (self.batch / "command-trials/checked/sample-0000.json", "exit_code", 7),
+            (self.batch / "command-trials/checked/sample-0000.json", "duration_ns", 1),
+            (self.batch / "command-trials/checked/warmup-0000.json", "index", 5),
+            (self.batch / "checked.samples.json", "unit", "second"),
+        ]
+        for path, key, value in cases:
+            with self.subTest(key=key):
+                data = json.loads(path.read_text())
+                data[key] = value
+                COMMON.save(path, data)
+                with self.assertRaises(ValueError):
+                    validate_batch(self.batch)
+                for p, content in original.items():
+                    p.write_bytes(content)
+        path = self.batch / "in.bench.json"
+        data = json.loads(path.read_text())
+        data["rows"][0]["row"] = "wrong"
+        COMMON.save(path, data)
+        with self.assertRaisesRegex(ValueError, "row matrix"):
+            validate_batch(self.batch)
+        for p, content in original.items():
+            p.write_bytes(content)
+        (self.batch / "command-trials/checked/sample-0000.json").unlink()
+        with self.assertRaisesRegex(ValueError, "trials"):
+            validate_batch(self.batch)
 
     def test_new_batch_appends_without_rewriting_previous_rows(self):
         self.assertEqual(self.measure().returncode, 0)

@@ -1,4 +1,4 @@
-"""B-REPLAY: freeze inputs and preflight; hyperfine measures the replay CLI.
+"""B-REPLAY: freeze inputs and preflight; the Python observer measures the replay CLI.
 
 One fixed synthetic task per pinned adapter, no tools/model, 60 runs, no
 warmups. Exact source, native prefix, arguments, historical observation and
@@ -7,14 +7,13 @@ unchanged workspace are verified outside timing for every execution.
 
 import argparse
 import json
-import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from common import ROOT, create_batch, digest, materialize, save
+from common import ROOT, create_batch, digest, materialize_commands, save
 from replay_fixtures import trajectory
 from replay_hooks import SENTINEL, conclude, prepare
 
@@ -44,7 +43,7 @@ def prepare_batch(template, binary, output=None):
         }
         inputs.append(path)
     save(batch / "protocol.json", protocol)
-    materialize(
+    materialize_commands(
         template,
         batch,
         {"BINARY": frozen},
@@ -62,14 +61,12 @@ def prepare_batch(template, binary, output=None):
         "one fixed synthetic task 0 per adapter; distinct from historical twenty-task cohort"
     )
     save(manifest_path, manifest)
-    table = json.loads((batch / "in.json").read_text())
-    for agent, row in table.items():
-        argv = shlex.split(row[2:] if isinstance(row, str) else row["Median ms"][2:])
-        end = argv.index("|") if "|" in argv else len(argv)
+    commands = json.loads((batch / "commands.json").read_text())
+    for agent, config in commands.items():
         prepare(batch, agent)
         with (batch / f"preflight-{agent}.log").open("w") as log:
             subprocess.run(
-                shlex.split(argv[end - 1]),
+                config["argv"],
                 cwd=batch,
                 check=True,
                 timeout=30,

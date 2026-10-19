@@ -1,0 +1,237 @@
+{
+  "runs": 60,
+  "warmup": 0,
+  "commands": {
+    "claude-code": {
+      "argv": [
+        "@BINARY@",
+        "--agent",
+        "claude-code",
+        "--trajectory",
+        "@BATCH@/fixtures/claude-code/trajectory.json",
+        "--after-step",
+        "1",
+        "--prepare-only",
+        "--workspace",
+        "@BATCH@/fixtures/claude-code/workspace",
+        "--state-dir",
+        "@BATCH@/fixtures/claude-code/state",
+        "--output-dir",
+        "@BATCH@/fixtures/claude-code/output"
+      ],
+      "timeout": 120,
+      "prepare": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "prepare",
+        "@BATCH@",
+        "claude-code"
+      ],
+      "conclude": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "conclude",
+        "@BATCH@",
+        "claude-code"
+      ]
+    },
+    "codex": {
+      "argv": [
+        "@BINARY@",
+        "--agent",
+        "codex",
+        "--trajectory",
+        "@BATCH@/fixtures/codex/trajectory.json",
+        "--after-step",
+        "1",
+        "--prepare-only",
+        "--workspace",
+        "@BATCH@/fixtures/codex/workspace",
+        "--state-dir",
+        "@BATCH@/fixtures/codex/state",
+        "--output-dir",
+        "@BATCH@/fixtures/codex/output"
+      ],
+      "timeout": 120,
+      "prepare": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "prepare",
+        "@BATCH@",
+        "codex"
+      ],
+      "conclude": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "conclude",
+        "@BATCH@",
+        "codex"
+      ]
+    },
+    "opencode": {
+      "argv": [
+        "@BINARY@",
+        "--agent",
+        "opencode",
+        "--trajectory",
+        "@BATCH@/fixtures/opencode/trajectory.json",
+        "--after-step",
+        "1",
+        "--prepare-only",
+        "--workspace",
+        "@BATCH@/fixtures/opencode/workspace",
+        "--state-dir",
+        "@BATCH@/fixtures/opencode/state",
+        "--output-dir",
+        "@BATCH@/fixtures/opencode/output"
+      ],
+      "timeout": 120,
+      "prepare": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "prepare",
+        "@BATCH@",
+        "opencode"
+      ],
+      "conclude": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "conclude",
+        "@BATCH@",
+        "opencode"
+      ]
+    },
+    "mini-swe-agent": {
+      "argv": [
+        "@BINARY@",
+        "--agent",
+        "mini-swe-agent",
+        "--trajectory",
+        "@BATCH@/fixtures/mini-swe-agent/trajectory.json",
+        "--after-step",
+        "1",
+        "--prepare-only",
+        "--workspace",
+        "@BATCH@/fixtures/mini-swe-agent/workspace",
+        "--state-dir",
+        "@BATCH@/fixtures/mini-swe-agent/state",
+        "--output-dir",
+        "@BATCH@/fixtures/mini-swe-agent/output"
+      ],
+      "timeout": 120,
+      "prepare": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "prepare",
+        "@BATCH@",
+        "mini-swe-agent"
+      ],
+      "conclude": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "conclude",
+        "@BATCH@",
+        "mini-swe-agent"
+      ]
+    },
+    "openhands": {
+      "argv": [
+        "@BINARY@",
+        "--agent",
+        "openhands",
+        "--trajectory",
+        "@BATCH@/fixtures/openhands/trajectory.json",
+        "--after-step",
+        "1",
+        "--prepare-only",
+        "--workspace",
+        "@BATCH@/fixtures/openhands/workspace",
+        "--state-dir",
+        "@BATCH@/fixtures/openhands/state",
+        "--output-dir",
+        "@BATCH@/fixtures/openhands/output"
+      ],
+      "timeout": 120,
+      "prepare": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "prepare",
+        "@BATCH@",
+        "openhands"
+      ],
+      "conclude": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "conclude",
+        "@BATCH@",
+        "openhands"
+      ]
+    },
+    "pi-agent": {
+      "argv": [
+        "@BINARY@",
+        "--agent",
+        "pi-agent",
+        "--trajectory",
+        "@BATCH@/fixtures/pi-agent/trajectory.json",
+        "--after-step",
+        "1",
+        "--prepare-only",
+        "--workspace",
+        "@BATCH@/fixtures/pi-agent/workspace",
+        "--state-dir",
+        "@BATCH@/fixtures/pi-agent/state",
+        "--output-dir",
+        "@BATCH@/fixtures/pi-agent/output"
+      ],
+      "timeout": 120,
+      "prepare": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "prepare",
+        "@BATCH@",
+        "pi-agent"
+      ],
+      "conclude": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "conclude",
+        "@BATCH@",
+        "pi-agent"
+      ]
+    },
+    "swe-agent": {
+      "argv": [
+        "@BINARY@",
+        "--agent",
+        "swe-agent",
+        "--trajectory",
+        "@BATCH@/fixtures/swe-agent/trajectory.json",
+        "--after-step",
+        "1",
+        "--prepare-only",
+        "--workspace",
+        "@BATCH@/fixtures/swe-agent/workspace",
+        "--state-dir",
+        "@BATCH@/fixtures/swe-agent/state",
+        "--output-dir",
+        "@BATCH@/fixtures/swe-agent/output"
+      ],
+      "timeout": 120,
+      "prepare": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "prepare",
+        "@BATCH@",
+        "swe-agent"
+      ],
+      "conclude": [
+        "python3",
+        "@REPO@/benchmark.new/replay/replay_hooks.py",
+        "conclude",
+        "@BATCH@",
+        "swe-agent"
+      ]
+    }
+  }
+}

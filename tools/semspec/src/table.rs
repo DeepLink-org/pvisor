@@ -13,25 +13,16 @@ use std::{
 
 use crate::project::atomic_write;
 
-/// Resolve a row-name → column-name → scalar JSON template. `$ ` cells execute
-/// once per distinct command in the template's directory. Direct hyperfine
-/// commands use a fresh export and select `pointer`, multiplied by `scale`;
-/// other trusted Bash cells must print one JSON scalar. A `$ ` row command
-/// prints a nonempty object of scalar columns and replaces that entire row.
-/// Returned command strings are rejected, never recursively executed. Results are published
-/// atomically only after all commands succeed; a failed run leaves no old result.
-/// Raw exports and cell-to-command mappings are preserved in INPUT.bench.json.
-pub fn bench(input: &Path, pointer: &str, scale: f64) -> Result<PathBuf> {
-    bench_at(input, pointer, scale, None)
+/// Execute trusted Bash command rows/cells once per distinct expression.
+/// Rows must print a nonempty JSON object of scalar columns; cells print a scalar.
+/// Results and raw JSON evidence are published only after every command succeeds.
+pub fn bench(input: &Path) -> Result<PathBuf> {
+    bench_at(input, None)
 }
 
-/// Resolve a template with an optional explicit command working directory.
-/// Hyperfine command cells may end in `| json POINTER [* SCALE]`; selections
-/// share one execution of the same command. Per-command logs are retained in
-/// INPUT.bench.logs and exposed to hooks as SEMSPEC_BENCH_LOG.
-pub fn bench_at(input: &Path, pointer: &str, scale: f64, cwd: Option<&Path>) -> Result<PathBuf> {
-    ensure!(scale.is_finite(), "scale must be finite");
-    validate_pointer(pointer)?;
+/// Execute a JSON table using an optional explicit working directory.
+/// Commands receive SEMSPEC_BENCH_LOG; stdout and stderr are retained per command.
+pub fn bench_at(input: &Path, cwd: Option<&Path>) -> Result<PathBuf> {
     let input = input.canonicalize().context("read benchmark template")?;
     ensure!(
         input.extension().is_some_and(|ext| ext == "json"),
@@ -46,45 +37,22 @@ pub fn bench_at(input: &Path, pointer: &str, scale: f64, cwd: Option<&Path>) -> 
         .canonicalize()
         .context("command cwd must exist")?;
     ensure!(cwd.is_dir(), "command cwd must be a directory");
-    let protected = [&input, &output, &evidence];
-    let mut plans = HashMap::new();
-    let mut row_shapes = HashMap::new();
-    let mut export_paths = Vec::new();
-    // Validate every command before clearing an existing result or running code.
+    let mut shapes = HashMap::new();
     for row in table.as_object().unwrap().values() {
-        let values = if let Some(row) = row.as_object() {
-            row.values().collect::<Vec<_>>()
-        } else {
-            vec![row]
-        };
+        let values = row
+            .as_object()
+            .map(|row| row.values().collect::<Vec<_>>())
+            .unwrap_or_else(|| vec![row]);
         for cell in values {
             if let Some(command) = cell.as_str().and_then(|s| s.strip_prefix("$ ")) {
-                let is_row = !row.is_object();
-                if let Some(previous) = row_shapes.insert(command.to_owned(), is_row) {
+                ensure!(!command.trim().is_empty(), "empty command cell");
+                shell_words::split(command).context("invalid command quoting")?;
+                if let Some(previous) = shapes.insert(command.to_owned(), !row.is_object()) {
                     ensure!(
-                        previous == is_row,
+                        previous == !row.is_object(),
                         "one script command cannot produce both a row object and a scalar cell"
                     );
                 }
-                if plans.contains_key(command) {
-                    continue;
-                }
-                let plan = plan(command, &cwd, &protected)?;
-                ensure!(
-                    row.is_object() || plan.pointer.is_none() && plan.scale.is_none(),
-                    "hyperfine row commands cannot select a scalar pointer or scale"
-                );
-                if let Some(path) = &plan.export {
-                    ensure!(
-                        !export_paths
-                            .iter()
-                            .any(|(existing, key)| existing == path && key != &plan.key),
-                        "different commands share export file {}",
-                        path.display()
-                    );
-                    export_paths.push((path.clone(), plan.key.clone()));
-                }
-                plans.insert(command.to_owned(), plan);
             }
         }
     }
@@ -93,9 +61,9 @@ pub fn bench_at(input: &Path, pointer: &str, scale: f64, cwd: Option<&Path>) -> 
             fs::remove_file(path)?;
         }
     }
-    let mut cache = HashMap::<String, Value>::new();
     let log_dir = input.with_extension("bench.logs");
     fs::create_dir_all(&log_dir)?;
+    let mut cache = HashMap::<String, Value>::new();
     let mut records = Vec::new();
     let mut cells = Vec::new();
     let mut rows = Vec::new();
@@ -105,380 +73,93 @@ pub fn bench_at(input: &Path, pointer: &str, scale: f64, cwd: Option<&Path>) -> 
             .and_then(|s| s.strip_prefix("$ "))
             .map(str::to_owned)
         {
-            let plan = &plans[&command];
-            let raw = if let Some(raw) = cache.get(&plan.key) {
-                raw.clone()
-            } else {
-                eprintln!("bench: {row_name}: {}", plan.key);
-                let log = log_dir.join(format!("{:04}.log", records.len() + 1));
-                let raw = execute(plan, &cwd, &log)
-                    .with_context(|| format!("benchmark row {row_name:?}"))?;
-                let value = row_value(&raw, plan)?;
-                records.push(json!({"command": plan.key, "kind": if plan.shell.is_some() {"script-row"} else {"hyperfine-row"}, "raw": raw, "value": value, "log": log}));
-                cache.insert(plan.key.clone(), raw.clone());
-                raw
-            };
-            let raw = row_value(&raw, plan)?;
-            // Validate as data before insertion; emitted commands are not plans.
+            let raw = cached_execute(
+                &command,
+                &cwd,
+                &log_dir,
+                "script-row",
+                &mut cache,
+                &mut records,
+            )
+            .with_context(|| format!("benchmark row {row_name:?}"))?;
             validate_table(&json!({row_name: raw}), false)
                 .with_context(|| format!("script output for row {row_name:?}"))?;
-            rows.push(
-                json!({"row": row_name, "command": plan.key, "expression": command,
-                "columns": raw.as_object().unwrap().keys().collect::<Vec<_>>()}),
-            );
+            rows.push(json!({"row": row_name, "command": command, "expression": command,
+                "columns": raw.as_object().context("row command must print a JSON object")?.keys().collect::<Vec<_>>()}));
             *row = raw;
-            continue;
-        }
-        for (column, cell) in row.as_object_mut().unwrap() {
-            let Some(command) = cell
-                .as_str()
-                .and_then(|s| s.strip_prefix("$ "))
-                .map(str::to_owned)
-            else {
-                continue;
-            };
-            let plan = &plans[&command];
-            let raw = if let Some(raw) = cache.get(&plan.key) {
-                raw.clone()
-            } else {
-                eprintln!("bench: {row_name}: {}", plan.key);
-                let log = log_dir.join(format!("{:04}.log", records.len() + 1));
-                let raw = execute(plan, &cwd, &log)
-                    .with_context(|| format!("benchmark cell {row_name:?} / {column:?}"))?;
-                let value = select(&raw, plan, pointer, scale)?;
-                records.push(json!({"command": plan.key, "kind": if plan.shell.is_some() {"script-cell"} else {"hyperfine"}, "raw": raw, "value": value, "log": log}));
-                cache.insert(plan.key.clone(), raw.clone());
-                raw
-            };
-            *cell = select(&raw, plan, pointer, scale)?;
-            cells.push(
-                json!({"row": row_name, "column": column, "command": plan.key,
-                "expression": command, "pointer": plan.pointer.as_deref().unwrap_or(pointer),
-                "scale": plan.scale.unwrap_or(scale)}),
-            );
+        } else {
+            for (column, cell) in row.as_object_mut().unwrap() {
+                let Some(command) = cell
+                    .as_str()
+                    .and_then(|s| s.strip_prefix("$ "))
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                let raw = cached_execute(
+                    &command,
+                    &cwd,
+                    &log_dir,
+                    "script-cell",
+                    &mut cache,
+                    &mut records,
+                )
+                .with_context(|| format!("benchmark cell {row_name:?} / {column:?}"))?;
+                ensure!(
+                    is_scalar(&raw) && !raw.as_str().is_some_and(|s| s.starts_with("$ ")),
+                    "cell command must produce a resolved JSON scalar"
+                );
+                *cell = raw;
+                cells.push(json!({"row": row_name, "column": column, "command": command, "expression": command}));
+            }
         }
     }
-    // Script rows may determine the schema only at runtime. Reject mismatches
-    // before either result or evidence is published.
     validate_table(&table, false)?;
     atomic_write(
         &evidence,
-        &json_bytes(&json!({
-            "format": 1, "template": input, "cwd": cwd, "pointer": pointer, "scale": scale,
-            "commands": records, "cells": cells, "rows": rows
-        }))?,
+        &json_bytes(
+            &json!({"format":1,"template":input,"cwd":cwd,"commands":records,"cells":cells,"rows":rows}),
+        )?,
     )?;
     atomic_write(&output, &json_bytes(&table)?)?;
     Ok(output)
 }
 
-fn row_value(raw: &Value, plan: &Plan) -> Result<Value> {
-    if plan.shell.is_some() {
+fn cached_execute(
+    command: &str,
+    cwd: &Path,
+    log_dir: &Path,
+    kind: &str,
+    cache: &mut HashMap<String, Value>,
+    records: &mut Vec<Value>,
+) -> Result<Value> {
+    if let Some(raw) = cache.get(command) {
         return Ok(raw.clone());
     }
-    validate_export(raw, "")?;
-    let result = &raw["results"][0];
-    let v2 = raw["schema_version"].as_u64() == Some(2);
-    let count = if v2 {
-        let summary = &result["summary"]["time_wall_clock"];
-        ensure!(
-            summary["unit"] == "second",
-            "hyperfine wall time must be in seconds"
-        );
-        let count = summary["count"].as_u64().context("missing sample count")?;
-        ensure!(
-            Some(count as usize) == result["measurements"].as_array().map(Vec::len),
-            "hyperfine summary count differs from samples"
-        );
-        count
-    } else {
-        result["times"].as_array().context("missing times")?.len() as u64
-    };
-    let mut columns = Map::new();
-    columns.insert("N".into(), json!(count));
-    for (column, field) in [
-        ("Median ms", "median"),
-        ("Mean ms", "mean"),
-        ("SD ms", "stddev"),
-        ("Min ms", "min"),
-        ("Max ms", "max"),
-    ] {
-        let value = if v2 {
-            &result["summary"]["time_wall_clock"][field]
-        } else {
-            &result[field]
-        };
-        let ms = value
-            .as_f64()
-            .with_context(|| format!("missing numeric hyperfine {field}"))?
-            * 1000.0;
-        ensure!(ms.is_finite() && ms >= 0.0, "invalid hyperfine statistic");
-        columns.insert(column.into(), json!(ms));
-    }
-    Ok(Value::Object(columns))
-}
-
-fn validate_pointer(pointer: &str) -> Result<()> {
-    ensure!(
-        pointer.is_empty() || pointer.starts_with('/'),
-        "pointer must be an RFC 6901 JSON Pointer"
-    );
-    for token in pointer.split('/').skip(1) {
-        let mut chars = token.chars();
-        while let Some(c) = chars.next() {
-            if c == '~' {
-                ensure!(
-                    matches!(chars.next(), Some('0' | '1')),
-                    "invalid JSON Pointer escape"
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-struct Plan {
-    key: String,
-    argv: Vec<String>,
-    shell: Option<String>,
-    export: Option<PathBuf>,
-    pointer: Option<String>,
-    scale: Option<f64>,
-}
-
-fn plan(command: &str, cwd: &Path, protected: &[&PathBuf]) -> Result<Plan> {
-    ensure!(!command.trim().is_empty(), "empty command cell");
-    let mut argv = shell_words::split(command).context("invalid command quoting")?;
-    let hyperfine = argv.first().is_some_and(|s| {
-        Path::new(s)
-            .file_name()
-            .is_some_and(|name| name == "hyperfine")
-    });
-    if !hyperfine {
-        return Ok(Plan {
-            key: command.to_owned(),
-            argv: Vec::new(),
-            shell: Some(command.to_owned()),
-            export: None,
-            pointer: None,
-            scale: None,
-        });
-    }
-    let mut pointer = None;
-    let mut scale = None;
-    if let Some(index) = argv.iter().position(|arg| arg == "|") {
-        let suffix = argv.split_off(index);
-        ensure!(
-            matches!(suffix.len(), 3 | 5) && suffix[1] == "json",
-            "expected | json POINTER [* SCALE]"
-        );
-        let selection = &suffix[2];
-        validate_pointer(selection)?;
-        pointer = Some(selection.clone());
-        if suffix.len() == 5 {
-            ensure!(suffix[3] == "*", "expected | json POINTER * SCALE");
-            let factor: f64 = suffix[4].parse().context("invalid cell scale")?;
-            ensure!(factor.is_finite(), "cell scale must be finite");
-            scale = Some(factor);
-        }
-    }
-    let key = shell_words::join(&argv);
-    // Shell operators outside the measured command are not argv parameters.
-    ensure!(
-        !argv
-            .iter()
-            .any(|a| matches!(a.as_str(), "|" | "&&" | ";" | ">" | "2>")),
-        "use a direct hyperfine command; shell pipelines can be placed inside an explicit Bash command cell"
-    );
-    ensure!(
-        !argv
-            .iter()
-            .any(|a| a == "--ignore-failure" || a.starts_with("--ignore-failure=") || a == "-i"),
-        "hyperfine --ignore-failure is not allowed"
-    );
-    let mut export = None;
-    let mut index = 1;
-    while index < argv.len() {
-        let path = if argv[index] == "--export-json" {
-            ensure!(index + 1 < argv.len(), "--export-json needs a path");
-            let path = argv.remove(index + 1);
-            argv.remove(index);
-            Some(path)
-        } else if let Some(path) = argv[index].strip_prefix("--export-json=") {
-            let path = path.to_owned();
-            argv.remove(index);
-            Some(path)
-        } else {
-            index += 1;
-            None
-        };
-        if let Some(path) = path {
-            ensure!(export.is_none(), "only one --export-json is allowed");
-            let path = cwd.join(path);
-            let parent = path
-                .parent()
-                .context("export file requires a parent directory")?
-                .canonicalize()
-                .context("export parent must exist")?;
-            let path = parent.join(path.file_name().context("export requires a filename")?);
-            ensure!(
-                !protected.iter().any(|p| path == **p),
-                "export must not overwrite template or generated results"
-            );
-            ensure!(
-                !path.is_symlink() && (!path.exists() || path.is_file()),
-                "export must be a regular file"
-            );
-            export = Some(path);
-        }
-    }
-    Ok(Plan {
-        key,
-        argv,
-        shell: None,
-        export,
-        pointer,
-        scale,
-    })
-}
-
-fn execute(plan: &Plan, cwd: &Path, log: &Path) -> Result<Value> {
-    let temporary = tempfile::tempdir()?;
-    let raw_path = temporary.path().join("hyperfine.json");
-    let mut process = if let Some(shell) = &plan.shell {
-        let mut command = Command::new("bash");
-        command.args(["-euo", "pipefail", "-c", shell]);
-        command
-    } else {
-        let mut command = Command::new(&plan.argv[0]);
-        command
-            .arg("--export-json")
-            .arg(&raw_path)
-            .args(&plan.argv[1..]);
-        command
-    };
-    process
+    let log = log_dir.join(format!("{:04}.log", records.len() + 1));
+    eprintln!("bench: {command}");
+    let output = Command::new("bash")
+        .args(["-euo", "pipefail", "-c", command])
         .current_dir(cwd)
         .stdin(Stdio::null())
-        .env("SEMSPEC_BENCH_LOG", log);
-    if plan.shell.is_some() {
-        let output = process.output().context("launch command")?;
-        fs::write(
-            log,
-            [output.stdout.as_slice(), output.stderr.as_slice()].concat(),
-        )?;
-        ensure!(
-            output.status.success(),
-            "command exited {}; see {}",
-            output.status,
-            log.display()
-        );
-        let value: Value = serde_json::from_slice(&output.stdout)
-            .context("command stdout must be one JSON value")?;
-        return Ok(value);
-    }
-    let stream = fs::File::create(log)?;
-    let status = process
-        .stdout(stream.try_clone()?)
-        .stderr(stream)
-        .status()
-        .context("launch hyperfine")?;
+        .env("SEMSPEC_BENCH_LOG", &log)
+        .output()
+        .context("launch command")?;
+    fs::write(
+        &log,
+        [output.stdout.as_slice(), output.stderr.as_slice()].concat(),
+    )?;
     ensure!(
-        status.success(),
-        "hyperfine exited {status}; see {}",
+        output.status.success(),
+        "command exited {}; see {}",
+        output.status,
         log.display()
     );
-    let raw: Value = serde_json::from_slice(
-        &fs::read(&raw_path).context("hyperfine did not write its JSON export")?,
-    )?;
-    let results = raw["results"]
-        .as_array()
-        .context("hyperfine export has no results")?;
-    ensure!(
-        results.len() == 1,
-        "one benchmark cell must measure exactly one hyperfine command"
-    );
-    validate_export(&raw, "")?;
-    if let Some(path) = &plan.export {
-        atomic_write(path, &json_bytes(&raw)?)?;
-    }
+    let raw: Value =
+        serde_json::from_slice(&output.stdout).context("command stdout must be one JSON value")?;
+    records.push(json!({"command":command,"kind":kind,"raw":raw,"value":raw,"log":log}));
+    cache.insert(command.to_owned(), raw.clone());
     Ok(raw)
-}
-
-fn select(raw: &Value, plan: &Plan, pointer: &str, scale: f64) -> Result<Value> {
-    if plan.shell.is_some() {
-        ensure!(
-            is_scalar(raw) && !raw.as_str().is_some_and(|s| s.starts_with("$ ")),
-            "cell command must produce a resolved JSON scalar"
-        );
-        return Ok(raw.clone());
-    }
-    let pointer = plan.pointer.as_deref().unwrap_or(pointer);
-    let scale = plan.scale.unwrap_or(scale);
-    let effective_pointer = validate_export(raw, pointer)?;
-    let selected = raw
-        .pointer(&effective_pointer)
-        .with_context(|| format!("missing hyperfine pointer {pointer}"))?;
-    let value = selected
-        .as_f64()
-        .context("selected hyperfine field must be numeric")?;
-    let value = value * scale;
-    ensure!(value.is_finite(), "scaled hyperfine result must be finite");
-    Ok(if scale == 1.0 {
-        selected.clone()
-    } else {
-        json!(value)
-    })
-}
-
-fn validate_export(raw: &Value, pointer: &str) -> Result<String> {
-    let result = &raw["results"][0];
-    if raw
-        .get("schema_version")
-        .is_some_and(|v| v.as_u64() == Some(2))
-    {
-        let measurements = result["measurements"]
-            .as_array()
-            .context("hyperfine v2 export has no measurements")?;
-        ensure!(!measurements.is_empty(), "hyperfine export has no samples");
-        ensure!(
-            measurements
-                .iter()
-                .all(|m| m["exit_code"].as_i64() == Some(0)),
-            "hyperfine contains failed or incomplete samples"
-        );
-        if let Some(field) = pointer.strip_prefix("/results/0/")
-            && matches!(field, "mean" | "median" | "stddev" | "min" | "max")
-        {
-            ensure!(
-                result["summary"]["time_wall_clock"]["unit"] == "second",
-                "hyperfine wall time must be in seconds"
-            );
-            return Ok(format!("/results/0/summary/time_wall_clock/{field}"));
-        }
-    } else {
-        ensure!(
-            raw.get("schema_version")
-                .is_none_or(|v| v.as_u64() == Some(1)),
-            "unsupported hyperfine JSON schema version"
-        );
-        let times = result["times"]
-            .as_array()
-            .context("hyperfine export has no times")?;
-        ensure!(!times.is_empty(), "hyperfine export has no samples");
-        // Hyperfine 1.x may omit exit_codes; successful hyperfine without
-        // --ignore-failure then establishes successful subjects.
-        if let Some(exits) = result.get("exit_codes") {
-            let exits = exits
-                .as_array()
-                .context("hyperfine exit_codes must be an array")?;
-            ensure!(
-                exits.len() == times.len() && exits.iter().all(|code| code.as_i64() == Some(0)),
-                "hyperfine contains failed or incomplete samples"
-            );
-        }
-    }
-    Ok(pointer.to_owned())
 }
 
 fn is_scalar(value: &Value) -> bool {

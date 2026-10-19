@@ -73,8 +73,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
-      - name: Install hyperfine for benchmark integration checks
-        run: cargo install hyperfine --version 2.0.0 --locked
       - run: just fmt-py --check
       - run: just lint-py
       - run: just test-scripts

@@ -230,7 +230,8 @@ def publish_docs(batch):
             "source_commit",
             "source_commit_scope",
             "fixture_scope",
-            "hyperfine_version",
+            "measurement_engine",
+            "python_version",
             "exports",
         )
     }

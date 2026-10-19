@@ -52,7 +52,7 @@ def prepare_template(template, binary, output=None):
         checker = Path(__file__).with_name("check.py")
         subprocess.run(["python3", str(checker), "bundle", str(bundles[0])], check=True)
         (batch / "runs/.checked.json").write_text(json.dumps([str(bundles[0])]))
-        COMMON.materialize(
+        COMMON.materialize_commands(
             template,
             batch,
             dict(BINARY=binary, JOB=bundles[0].parent),

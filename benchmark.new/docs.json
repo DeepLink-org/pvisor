@@ -502,7 +502,17 @@
       "page": "benchmarks/replay-fidelity.md",
       "table": "../../overrides/assets/benchmarks/replay-semspec.render.json",
       "csv": "replay-semspec.csv",
-      "show_batch": false
+      "show_batch": false,
+      "metric_scope": "direct subject command; hyperfine hooks and semspec excluded",
+      "conditions": {
+        "claude-code": "claude-code",
+        "codex": "codex",
+        "opencode": "opencode",
+        "mini-swe-agent": "mini-swe-agent",
+        "openhands": "openhands",
+        "pi-agent": "pi-agent",
+        "swe-agent": "swe-agent"
+      }
     },
     "startup/native_timing.json": {
       "kind": "startup",

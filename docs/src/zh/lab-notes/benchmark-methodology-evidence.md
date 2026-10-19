@@ -47,7 +47,7 @@ just benchmark-compare benchmark.new/process/.data/candidate/in.bench.json bench
 just benchmark startup/timing --output benchmark.new/startup/.data/measurement
 ```
 
-进程回归门禁使用 semspec bench 与 hyperfine：smoke 为 2 次预热/10 个样本，nightly 为 10 次预热/50 个样本；分别测量原生启动、最小 host Run、status 和 review。`benchmark-compare` 接受配置与 harness 一致且通过校验的 `in.bench.json`；基线需使用同一套件另测到 `.data/main`。
+进程回归门禁使用 semspec bench 与 Python `perf_counter_ns` 命令计时器，准备及正确性 hooks 位于计时区间之外：smoke 为 2 次预热/10 个样本，nightly 为 10 次预热/50 个样本；分别测量原生启动、最小 host Run、status 和 review。`benchmark-compare` 接受配置与 harness 一致且通过校验的 `in.bench.json`；基线需使用同一套件另测到 `.data/main`。
 
 启动事件时钟表每条件固定 3 次预热/60 个样本，同次启动记录 Ready 与正常 Exit。它不替代已退役的启动/资源矩阵，也不复现其历史采样设置。预构建二进制、rootfs、镜像和内核的准备要求见[当前 benchmark 手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md)。每个显式输出目录必须全新；失败保留证据并阻止发布。构建与输入准备不计入这些时钟。
 

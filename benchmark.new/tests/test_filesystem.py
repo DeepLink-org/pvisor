@@ -76,7 +76,7 @@ class FilesystemContracts(unittest.TestCase):
         for expression in (
             table["native-read"] + " --payload-mib 16",
             "$ python3 arbitrary.py @BATCH@",
-            "$ hyperfine --runs 30 true",
+            "$ printf 1",
         ):
             with self.subTest(expression=expression), workspace() as (root, resources):
                 path = root / "in.json"

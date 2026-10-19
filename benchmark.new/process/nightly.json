@@ -1,6 +1,6 @@
 {
-  "native": "$ hyperfine --shell=none --runs 50 --warmup 10 --style basic --env 'PVISOR_RUN_HOME=@BATCH@/runs PVISOR_STARTUP_TIMING=0 PVISOR_FS_PROFILE=0' --conclude true --command-name native /usr/bin/true",
-  "host-run": "$ hyperfine --shell=none --runs 50 --warmup 10 --style basic --env 'PVISOR_RUN_HOME=@BATCH@/runs PVISOR_STARTUP_TIMING=0 PVISOR_FS_PROFILE=0' --conclude 'python3 @REPO@/benchmark.new/process/check.py new-bundle @BATCH@/runs' --command-name host-run '@BINARY@ run --no-agent-defaults --overlaynet off --stdio capture -- /usr/bin/true'",
-  "status": "$ hyperfine --shell=none --runs 50 --warmup 10 --style basic --env 'PVISOR_RUN_HOME=@BATCH@/runs PVISOR_STARTUP_TIMING=0 PVISOR_FS_PROFILE=0' --conclude 'python3 @REPO@/benchmark.new/process/check.py bundle @JOB@/run-bundle.json' --command-name status '@BINARY@ status --json @JOB@'",
-  "review": "$ hyperfine --shell=none --runs 50 --warmup 10 --style basic --env 'PVISOR_RUN_HOME=@BATCH@/runs PVISOR_STARTUP_TIMING=0 PVISOR_FS_PROFILE=0' --conclude 'python3 @REPO@/benchmark.new/process/check.py bundle @JOB@/run-bundle.json' --command-name review '@BINARY@ review --json @JOB@'"
+  "native": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ native",
+  "host-run": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ host-run",
+  "status": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ status",
+  "review": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ review"
 }

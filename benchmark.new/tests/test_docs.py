@@ -67,7 +67,8 @@ class DocumentationTests(unittest.TestCase):
                 metric_scope=DOCS.METRIC_SCOPE,
                 runs=60,
                 warmup=0,
-                hyperfine_version="hyperfine 2.0.0",
+                measurement_engine="python-perf_counter_ns",
+                python_version="3.12",
                 rows={"codex": "codex"},
                 exports={"in.bench.json": "a" * 64},
                 artifacts={

@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
-METRIC_SCOPE = "direct subject command; hyperfine hooks and semspec excluded"
+METRIC_SCOPE = "direct argv process launch through normal zero exit; perf_counter_ns; hooks and semspec excluded"
 READY_SCOPE = "Popen launch to receipt of exact REFERENCE_READY line; perf_counter_ns; preparation and teardown excluded"
 
 READY_EXIT_SCOPE = "same Popen launch to exact Ready line receipt and normal process exit; perf_counter_ns; preparation excluded"
@@ -54,7 +54,7 @@ def artifact_summary(artifacts):
             or path.suffix == ".json"
             and "benchmark.new" in path.parts
             and ".data" not in path.parts
-            or path.name in ("semspec", "hyperfine")
+            or path.name == "semspec"
             or re.fullmatch(r"python3(?:\.\d+)?", path.name)
         ):
             continue
@@ -96,28 +96,6 @@ def create_batch(template, output=None):
     return batch
 
 
-def expand(expression, variables):
-    """Substitute explicit preparation paths while retaining argv quoting."""
-
-    def token(value):
-        for name, replacement in variables.items():
-            value = value.replace("@" + name + "@", str(replacement))
-        if re.search(r"@[A-Z_]+@", value):
-            raise ValueError("unresolved preparation placeholder: " + value)
-        return value
-
-    argv = shlex.split(expression.removeprefix("$ "))
-    for i in range(len(argv)):
-        nested = i == len(argv) - 1 or (
-            i and argv[i - 1] in ("--setup", "--prepare", "--conclude", "--cleanup", "--env")
-        )
-        if nested and "@" in argv[i]:
-            argv[i] = shlex.join([token(part) for part in shlex.split(argv[i])])
-        else:
-            argv[i] = token(argv[i])
-    return "$ " + shlex.join(argv)
-
-
 def materialize(
     template, batch, variables=None, artifacts=(), cwd=None, helpers=(), row_config=None
 ):
@@ -146,19 +124,7 @@ def materialize(
                 (name, row_config["rows"][name], row_config["runs"], row_config["warmup"])
             )
             continue
-        if not isinstance(row, str) or not row.startswith("$ hyperfine "):
-            raise ValueError("benchmark requires one hyperfine command per row")
-        expanded = expand(row, variables)
-        argv = shlex.split(expanded[2:])
-        if "|" in argv:
-            raise ValueError("cell selectors are obsolete; use a whole row command")
-        table[name] = expanded
-        runs = int(argv[argv.index("--runs") + 1])
-        warmup = int(argv[argv.index("--warmup") + 1])
-        if runs < 2 or warmup < 0:
-            raise ValueError("runs >= 2 and warmup >= 0 required")
-        condition = argv[argv.index("--command-name") + 1]
-        commands.append((name, condition, runs, warmup))
+        raise ValueError("registered scripts require an explicit row configuration")
     if not commands:
         raise ValueError("template has no prepared single-condition command")
     configurations = {(runs, warmup) for _, _, runs, warmup in commands}
@@ -182,18 +148,15 @@ def materialize(
             and row_config.get("metric_scope") == FILESYSTEM_SCOPE
             and 1 <= len(row_config["rows"]) <= 2
         )
-        if not (startup or filesystem):
-            raise ValueError(
-                "only registered startup/filesystem scripts have row publication support"
-            )
-        executable, version = sys.executable, None
+        command = (
+            metadata["benchmark_id"] in ("B-PROCESS", "B-REPLAY")
+            and row_config.get("metric_scope") == METRIC_SCOPE
+        )
+        if not (startup or filesystem or command):
+            raise ValueError("only registered timing scripts have row publication support")
+        executable = sys.executable
     else:
-        executable = shutil.which("hyperfine")
-        if not executable:
-            raise ValueError("hyperfine 2.0+ is required")
-        version = subprocess.check_output([executable, "--version"], text=True).strip()
-        if int(version.split()[1].split(".")[0]) < 2:
-            raise ValueError("benchmark.new requires hyperfine 2.0+")
+        raise ValueError("registered scripts require an explicit row configuration")
     sources = (template, ROOT / "common.py", ROOT / "update.py", *helpers)
     semspec = os.environ.get("SEMSPEC_BIN")
     inputs = {
@@ -217,18 +180,12 @@ def materialize(
         metric_scope=row_config.get("metric_scope", READY_EXIT_SCOPE)
         if row_config
         else METRIC_SCOPE,
-        order=(
-            "sequential independent script samples; no randomized paired improvement claim"
-            if row_config
-            else "separate hyperfine conditions; no randomized paired improvement claim"
-        ),
+        order="sequential independent script samples; no randomized paired improvement claim",
         runs=runs,
         warmup=warmup,
         conditions=list(dict.fromkeys(condition for _, condition, _, _ in commands)),
         rows={row: condition for row, condition, _, _ in commands},
         cwd=str(Path(cwd or template.parent).resolve()),
-        hyperfine_version=version,
-        hyperfine_sha256=None if row_config else digest(executable),
         source_commit=commit,
         source_commit_scope="harness worktree; binary digest does not prove source-build correspondence",
         platform=platform.platform(),
@@ -246,6 +203,61 @@ def materialize(
     manifest["input_sha256"] = digest(batch / "in.json")
     save(batch / "manifest.json", manifest)
     return batch / "in.json"
+
+
+def materialize_commands(template, batch, variables=None, artifacts=(), cwd=None, helpers=()):
+    """Freeze registered direct argv workloads and their untimed correctness hooks."""
+    template, batch = Path(template), Path(batch)
+    definition = template.with_suffix(".commands.json")
+    config = json.loads(definition.read_text())
+    if (
+        type(config["runs"]) is not int
+        or config["runs"] < 2
+        or type(config["warmup"]) is not int
+        or config["warmup"] < 0
+        or set(config["commands"]) != set(json.loads(template.read_text()))
+    ):
+        raise ValueError("invalid command runs/warmup/row configuration")
+    replacements = dict(variables or {}) | {"REPO": REPO, "BATCH": batch}
+
+    def substitute(value):
+        if isinstance(value, str):
+            for key, replacement in replacements.items():
+                value = value.replace("@" + key + "@", str(replacement))
+            if re.search(r"@[A-Z_]+@", value):
+                raise ValueError("unresolved command placeholder")
+        elif isinstance(value, list):
+            value = [substitute(item) for item in value]
+        elif isinstance(value, dict):
+            value = {key: substitute(item) for key, item in value.items()}
+        return value
+
+    commands = substitute(config["commands"])
+    for command in commands.values():
+        if (
+            not isinstance(command["argv"], list)
+            or not command["argv"]
+            or any(not isinstance(arg, str) for arg in command["argv"])
+            or type(command["timeout"]) not in (int, float)
+            or command["timeout"] <= 0
+        ):
+            raise ValueError("invalid direct command configuration")
+        command["cwd"] = str(Path(cwd or batch).resolve())
+    save(batch / "commands.json", commands)
+    return materialize(
+        template,
+        batch,
+        variables,
+        [*artifacts, batch / "commands.json"],
+        cwd,
+        [*helpers, definition, ROOT / "command_timing.py"],
+        row_config=dict(
+            rows={name: name for name in commands},
+            runs=config["runs"],
+            warmup=config["warmup"],
+            metric_scope=METRIC_SCOPE,
+        ),
+    )
 
 
 if __name__ == "__main__":

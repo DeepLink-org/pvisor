@@ -33,12 +33,6 @@ enum Commands {
         /// Working directory for commands; defaults to the template directory.
         #[arg(long)]
         cwd: Option<PathBuf>,
-        /// RFC 6901 pointer into each hyperfine export (default: first command's median).
-        #[arg(long, default_value = "/results/0/median")]
-        pointer: String,
-        /// Multiply the selected hyperfine value (seconds to milliseconds by default).
-        #[arg(long, default_value = "1000")]
-        scale: f64,
     },
     /// Replace standalone {{ table("file.render.json") }} placeholders; print Markdown.
     Render {
@@ -147,14 +141,9 @@ fn main() {
 }
 fn dispatch(cli: Cli) -> Result<i32> {
     match cli.command {
-        Commands::Bench {
-            input,
-            cwd,
-            pointer,
-            scale,
-        } => {
+        Commands::Bench { input, cwd } => {
             ensure!(cli.spec_dir.is_empty(), "bench does not accept --spec-dir");
-            let output = semspec::table::bench_at(&input, &pointer, scale, cwd.as_deref())?;
+            let output = semspec::table::bench_at(&input, cwd.as_deref())?;
             println!("{}", output.display());
             return Ok(0);
         }

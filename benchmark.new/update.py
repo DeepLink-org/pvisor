@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Validate semspec/hyperfine evidence, then append CSV and publish JSON tables."""
+"""Validate semspec/script evidence, then append CSV and publish JSON tables."""
 
 import argparse
 import csv
 import io
 import json
-import math
 import os
 import shlex
 import subprocess
@@ -71,6 +70,12 @@ def validate_batch(directory):
                 raise ValueError("unknown filesystem condition")
             name = condition.removeprefix("native-") + ".samples.json"
             exports[name] = digest(directory / name)
+    if manifest["metric_scope"] == METRIC_SCOPE:
+        exports["commands.json"] = digest(directory / "commands.json")
+        for condition in manifest["conditions"]:
+            exports[f"{condition}.samples.json"] = digest(directory / f"{condition}.samples.json")
+        for path in sorted((directory / "command-trials").glob("*/*.json")):
+            exports[str(path.relative_to(directory))] = digest(path)
     if manifest["status"] == "passed" and manifest["exports"] != exports:
         raise ValueError("export checksum mismatch")
     evidence = json.loads((directory / "in.bench.json").read_text())
@@ -103,6 +108,8 @@ def validate_batch(directory):
         manifest["exports"], manifest["status"] = exports, "passed"
         save(manifest_path, manifest)
         return manifest, resolved, results
+    if manifest.get("measurement_engine") != "python-perf_counter_ns":
+        raise ValueError("command measurement engine differs")
     records = {item["command"]: item for item in evidence["commands"]}
     if len(records) != len(evidence["commands"]):
         raise ValueError("duplicate command evidence")
@@ -118,10 +125,15 @@ def validate_batch(directory):
             item for key, item in records.items() if shlex.split(key) == shlex.split(command)
         ]
         record = matches[0] if len(matches) == 1 else None
-        if record is None or record.get("kind") != "hyperfine-row":
-            raise ValueError("missing raw hyperfine row evidence")
-        result = audit_hyperfine_row(record, manifest, row, resolved[row])
+        if record is None or record.get("kind") != "script-row":
+            raise ValueError("missing raw script row evidence")
+        from command_timing import audit_command_row
+
         condition = manifest["rows"][row]
+        expected = ["python3", str(ROOT / "command_timing.py"), str(directory), condition]
+        if shlex.split(command) != expected:
+            raise ValueError("command row differs from the fixed timer")
+        result = audit_command_row(directory, manifest, condition, record, resolved[row])
         if condition in results and results[condition] != result:
             raise ValueError("one row refers to different experiments")
         results[condition] = result
@@ -141,47 +153,6 @@ def validate_batch(directory):
     manifest["status"] = "passed"
     save(manifest_path, manifest)
     return manifest, resolved, results
-
-
-def audit_hyperfine_row(record, manifest, row, resolved):
-    """Audit one full row against one direct hyperfine export, preserving its scope."""
-    raw = record["raw"]
-    if raw.get("schema_version") != 2 or len(raw.get("results", [])) != 1:
-        raise ValueError("expected one raw hyperfine 2.x condition per command")
-    argv = shlex.split(record["command"])
-    if argv[0] != "hyperfine" or "|" in argv:
-        raise ValueError("row command must invoke hyperfine directly")
-    if (
-        int(argv[argv.index("--runs") + 1]) != manifest["runs"]
-        or int(argv[argv.index("--warmup") + 1]) != manifest["warmup"]
-        or argv[argv.index("--command-name") + 1] != manifest["rows"][row]
-    ):
-        raise ValueError("row command differs from prepared runs/warmup/condition")
-    if raw["metadata"]["hyperfine_version"] != manifest["hyperfine_version"].split()[-1]:
-        raise ValueError("hyperfine version differs from preparation")
-    result = raw["results"][0]
-    if result.get("name") != manifest["rows"][row] or result["command"] != argv[-1]:
-        raise ValueError("measured subject/name differs from template")
-    samples = result["measurements"]
-    summary = result["summary"]["time_wall_clock"]
-    if (
-        len(samples) != manifest["runs"]
-        or any(s["exit_code"] != 0 for s in samples)
-        or summary["count"] != manifest["runs"]
-        or summary["unit"] != "second"
-    ):
-        raise ValueError("failed or incomplete hyperfine samples")
-    expected = {
-        column: summary[field] * (1 if column == "N" else 1000) for column, field in FIELDS.items()
-    }
-    if list(resolved) != list(FIELDS) or record["value"] != resolved:
-        raise ValueError("resolved row schema/value differs from recorded hyperfine row")
-    for column, value in expected.items():
-        if type(resolved[column]) not in (int, float) or not math.isclose(
-            resolved[column], value, rel_tol=1e-12, abs_tol=0
-        ):
-            raise ValueError("resolved cell differs from the recorded hyperfine selection")
-    return result
 
 
 def display_table(table):
@@ -207,12 +178,11 @@ def _publish_csv(directory, csv_path, manifest, table, results, dry_run=False):
         role=manifest["role"],
         runs=manifest["runs"],
         warmup=manifest["warmup"],
-        hyperfine_version=manifest["hyperfine_version"],
         metric_scope=manifest["metric_scope"],
         evidence_sha256=manifest["exports"]["in.bench.json"],
         manifest_sha256=digest(directory / "manifest.json"),
     )
-    if manifest["metric_scope"] in (READY_EXIT_SCOPE, FILESYSTEM_SCOPE):
+    if manifest["metric_scope"] in (READY_EXIT_SCOPE, FILESYSTEM_SCOPE, METRIC_SCOPE):
         metadata.update(
             measurement_engine=manifest["measurement_engine"],
             python_version=manifest["python_version"],

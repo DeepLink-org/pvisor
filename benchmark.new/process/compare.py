@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CI threshold gate using validated semspec cells and hyperfine's median."""
+"""CI threshold gate using validated semspec cells and the Python timer median."""
 
 import argparse
 import importlib.util
@@ -27,7 +27,7 @@ def read(path):
     }:
         raise ValueError("expected a successful complete B-PROCESS semspec batch")
     return {
-        name: result["summary"]["time_wall_clock"]["median"] for name, result in results.items()
+        name: result["statistics"]["Median ms"] / 1000 for name, result in results.items()
     }, manifest
 
 
@@ -39,7 +39,8 @@ def compare(candidate, baseline, threshold):
         for key in (
             "runs",
             "warmup",
-            "hyperfine_version",
+            "measurement_engine",
+            "python_version",
             "platform",
             "cpu_affinity",
             "conditions",
@@ -53,7 +54,7 @@ def compare(candidate, baseline, threshold):
     lines = [
         "# Process benchmark threshold gate",
         "",
-        "Hyperfine median direct-command times in seconds. Separate cohorts; this threshold is not a paired improvement claim.",
+        "perf_counter_ns median direct-command times in seconds. Separate cohorts; this threshold is not a paired improvement claim.",
         "",
         "| Condition | Candidate (s) | Baseline (s) | Gate |",
         "| --- | ---: | ---: | --- |",

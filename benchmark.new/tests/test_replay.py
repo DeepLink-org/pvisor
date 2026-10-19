@@ -2,8 +2,6 @@
 
 import importlib.util
 import json
-import shlex
-import shutil
 import sys
 import tempfile
 import unittest
@@ -21,9 +19,7 @@ from replay_hooks import prepare, verify  # noqa: E402
 BINARY = ROOT.parent / "target/release/pvisor-replay"
 
 
-@unittest.skipUnless(
-    BINARY.exists() and shutil.which("hyperfine"), "built replay and hyperfine required"
-)
+@unittest.skipUnless(BINARY.exists(), "built replay required")
 class ReplayTests(unittest.TestCase):
     def test_all_native_prefixes_pass_and_tampering_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -54,12 +50,12 @@ class ReplayTests(unittest.TestCase):
             result.write_text(json.dumps(data))
             with self.assertRaisesRegex(ValueError, "executed tools"):
                 verify(result.parents[2], protocol["claude-code"], "claude-code")
-            template = json.loads((batch / "in.json").read_text())
-            for agent, row in template.items():
-                argv = shlex.split(row[2:] if isinstance(row, str) else row["Median ms"][2:])
-                end = argv.index("|") if "|" in argv else len(argv)
-                self.assertEqual(Path(shlex.split(argv[end - 1])[0]).name, "pvisor-replay")
-                self.assertIn("--shell=none", argv)
+            commands = json.loads((batch / "commands.json").read_text())
+            for config in commands.values():
+                self.assertEqual(Path(config["argv"][0]).name, "pvisor-replay")
+                self.assertEqual(config["argv"][1], "--agent")
+                self.assertIn("prepare", config)
+                self.assertIn("conclude", config)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 use serde_json::{Value, json};
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
     path::Path,
     process::{Command, Output},
 };
@@ -16,90 +15,6 @@ fn cli(root: &Path, args: &[&str]) -> Output {
 
 fn write(path: &Path, value: &Value) {
     fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
-}
-
-fn fake_hyperfine(root: &Path) -> String {
-    let path = root.join("hyperfine");
-    fs::write(&path, r#"#!/bin/bash
-set -euo pipefail
-test -f fixture
-printf 'run\n' >> calls
-test "$1" = --export-json
-export_file=$2
-shift 2
-if [[ -f fail ]]; then exit 9; fi
-if [[ -f schema.json ]]; then
-  cat schema.json > "$export_file"
-else
-  printf '%s' '{"results":[{"command":"/bin/true","median":0.002,"mean":0.003,"stddev":0.001,"min":0.001,"max":0.004,"times":[0.002,0.002],"exit_codes":[0,0]}]}' > "$export_file"
-fi
-printf 'hyperfine progress is not JSON\n'
-"#).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-    shell_words::quote(path.to_str().unwrap()).into_owned()
-}
-
-#[test]
-fn bench_maps_cells_to_one_fresh_hyperfine_export_and_keeps_order() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    fs::create_dir(root.join("data")).unwrap();
-    let data = root.join("data");
-    fs::write(data.join("fixture"), "ready").unwrap();
-    let command = format!(
-        "$ {} --shell=none --runs 2 --export-json raw.json '/bin/true'",
-        fake_hyperfine(&data)
-    );
-    fs::write(data.join("in.json"), format!(r#"{{"Z native":{{"median ms":{command:?},"N":2}},"A native":{{"median ms":{command:?},"N":2}}}}"#)).unwrap();
-    fs::write(data.join("raw.json"), "stale").unwrap();
-    let output = cli(root, &["bench", "data/in.json"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let rendered: Value =
-        serde_json::from_slice(&fs::read(data.join("in.render.json")).unwrap()).unwrap();
-    assert_eq!(rendered["Z native"]["median ms"], 2.0);
-    assert_eq!(rendered["A native"]["N"], 2);
-    assert_eq!(
-        rendered.as_object().unwrap().keys().collect::<Vec<_>>(),
-        ["Z native", "A native"]
-    );
-    assert_eq!(fs::read_to_string(data.join("calls")).unwrap(), "run\n");
-    let evidence: Value =
-        serde_json::from_slice(&fs::read(data.join("in.bench.json")).unwrap()).unwrap();
-    assert_eq!(evidence["commands"].as_array().unwrap().len(), 1);
-    assert_eq!(evidence["cells"].as_array().unwrap().len(), 2);
-    assert_eq!(
-        evidence["commands"][0]["raw"]["results"][0]["times"],
-        json!([0.002, 0.002])
-    );
-    assert!(
-        fs::read_to_string(data.join("raw.json"))
-            .unwrap()
-            .trim()
-            .starts_with('{')
-    );
-    let output = cli(
-        root,
-        &[
-            "bench",
-            "data/in.json",
-            "--pointer",
-            "/results/0/mean",
-            "--scale",
-            "1",
-        ],
-    );
-    assert!(output.status.success());
-    let rendered: Value =
-        serde_json::from_slice(&fs::read(data.join("in.render.json")).unwrap()).unwrap();
-    assert_eq!(rendered["Z native"]["median ms"], 0.003);
-    fs::write(data.join("fail"), "").unwrap();
-    assert_eq!(cli(root, &["bench", "data/in.json"]).status.code(), Some(2));
-    assert!(!data.join("in.render.json").exists());
-    assert!(!data.join("in.bench.json").exists());
 }
 
 #[test]
@@ -138,27 +53,6 @@ fn bench_supports_json_scalar_commands_and_rejects_invalid_templates_before_exec
             "{command}"
         );
         assert!(!root.join("in.render.json").exists());
-    }
-}
-
-#[test]
-fn hyperfine_cannot_overwrite_templates_or_ignore_subject_failure() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    for args in [
-        "--export-json in.json",
-        "--export-json in.render.json",
-        "--ignore-failure",
-        "--export-json",
-        "--export-json in.bench.json",
-    ] {
-        write(
-            &root.join("in.json"),
-            &json!({"native": {"value": format!("$ hyperfine {args} '/bin/true'")}}),
-        );
-        let source = fs::read(root.join("in.json")).unwrap();
-        assert_eq!(cli(root, &["bench", "in.json"]).status.code(), Some(2));
-        assert_eq!(fs::read(root.join("in.json")).unwrap(), source);
     }
 }
 
@@ -279,133 +173,6 @@ fn canonical_json_helper_keeps_sorted_nested_objects() {
 }
 
 #[test]
-fn per_cell_selections_share_execution_and_explicit_cwd_has_fresh_logs() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    let work = root.join("working directory");
-    fs::create_dir(&work).unwrap();
-    fs::write(work.join("fixture"), "ready").unwrap();
-    let modern = json!({"schema_version": 2, "results": [{
-        "measurements": [{"exit_code": 0}, {"exit_code": 0}],
-        "summary": {"time_wall_clock": {"unit": "second", "count": 2, "median": 0.002, "mean": 0.003}}
-    }]});
-    write(&work.join("schema.json"), &modern);
-    let command = format!("$ {} --shell=none /bin/true", fake_hyperfine(&work));
-    write(
-        &root.join("in.json"),
-        &json!({"native": {
-            "N": format!("{command} | json /results/0/summary/time_wall_clock/count * 1"),
-            "median": format!("{command} | json /results/0/median * 1000"),
-            "mean": format!("{command} | json /results/0/mean * 1000")
-        }}),
-    );
-    let output = cli(root, &["bench", "in.json", "--cwd", work.to_str().unwrap()]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let table: Value =
-        serde_json::from_slice(&fs::read(root.join("in.render.json")).unwrap()).unwrap();
-    assert_eq!(table["native"], json!({"N": 2, "median": 2.0, "mean": 3.0}));
-    assert_eq!(fs::read_to_string(work.join("calls")).unwrap(), "run\n");
-    let evidence: Value =
-        serde_json::from_slice(&fs::read(root.join("in.bench.json")).unwrap()).unwrap();
-    assert_eq!(evidence["commands"].as_array().unwrap().len(), 1);
-    assert_eq!(evidence["cells"].as_array().unwrap().len(), 3);
-    let log = Path::new(evidence["commands"][0]["log"].as_str().unwrap());
-    assert!(
-        fs::read_to_string(log)
-            .unwrap()
-            .contains("hyperfine progress")
-    );
-    assert!(
-        cli(root, &["bench", "in.json", "--cwd", work.to_str().unwrap()])
-            .status
-            .success()
-    );
-    assert_eq!(
-        fs::read_to_string(log)
-            .unwrap()
-            .matches("hyperfine progress")
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn hyperfine_schema_versions_and_failed_exports_are_checked() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    fs::write(root.join("fixture"), "ready").unwrap();
-    write(
-        &root.join("in.json"),
-        &json!({"native": {"ms": format!("$ {} --shell=none /bin/true", fake_hyperfine(root))}}),
-    );
-    let modern = json!({"schema_version": 2, "results": [{
-        "measurements": [{"exit_code": 0}],
-        "summary": {"time_wall_clock": {"unit": "second", "median": 0.0123}}
-    }]});
-    write(&root.join("schema.json"), &modern);
-    assert!(cli(root, &["bench", "in.json"]).status.success());
-    let rendered: Value =
-        serde_json::from_slice(&fs::read(root.join("in.render.json")).unwrap()).unwrap();
-    assert_eq!(rendered["native"]["ms"], 12.3);
-    assert!(
-        cli(
-            root,
-            &[
-                "bench",
-                "in.json",
-                "--pointer",
-                "/results/0/summary/time_wall_clock/median"
-            ]
-        )
-        .status
-        .success()
-    );
-    write(
-        &root.join("schema.json"),
-        &json!({"results": [{"median": 0.01, "times": [0.01]}]}),
-    );
-    assert!(cli(root, &["bench", "in.json"]).status.success());
-    for schema in [
-        json!({"schema_version": 9, "results": [{"median": 0.01, "times": [0.01]}]}),
-        json!({"results": [{"median": 0.01, "times": [0.01], "exit_codes": [1]}]}),
-        json!({"results": [{"median": 0.01, "times": []}]}),
-        json!({"results": [{"median": 0.01, "times": [0.01]}, {"median": 0.02, "times": [0.02]}]}),
-        json!({"schema_version": 2, "results": [{"measurements": [{"exit_code": 1}], "summary": {"time_wall_clock": {"unit": "second", "median": 0.01}}}]}),
-    ] {
-        write(&root.join("schema.json"), &schema);
-        assert_eq!(cli(root, &["bench", "in.json"]).status.code(), Some(2));
-        assert!(!root.join("in.render.json").exists());
-    }
-}
-
-#[test]
-fn invalid_cell_selection_preserves_previous_results_without_execution() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    fs::write(root.join("fixture"), "ready").unwrap();
-    let executable = fake_hyperfine(root);
-    for selection in ["/results/~2median", "results/0/median"] {
-        write(
-            &root.join("in.json"),
-            &json!({"Native": {"ms": format!(
-                "$ {executable} --shell=none /bin/true | json {selection} * 1000"
-            )}}),
-        );
-        fs::write(root.join("in.render.json"), "previous result").unwrap();
-        assert_eq!(cli(root, &["bench", "in.json"]).status.code(), Some(2));
-        assert!(!root.join("calls").exists());
-        assert_eq!(
-            fs::read_to_string(root.join("in.render.json")).unwrap(),
-            "previous result"
-        );
-    }
-}
-
-#[test]
 fn render_options_preserve_trusted_article_markup_and_duplicate_labels() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
@@ -453,10 +220,7 @@ fn script_expands_a_complete_row_once_and_preserves_result_and_provenance() {
         &root.join("data/in.json"),
         &json!({"native-read": "$ python3 measure.py", "same-script": "$ python3 measure.py", "literal": {"N": 30, "Median ms": 3, "Mean ms": 3, "SD ms": 0, "Min ms": 3, "Max ms": 3}}),
     );
-    let result = cli(
-        root,
-        &["bench", "data/in.json", "--cwd", "work", "--scale", "99"],
-    );
+    let result = cli(root, &["bench", "data/in.json", "--cwd", "work"]);
     assert!(
         result.status.success(),
         "{}",
@@ -568,7 +332,6 @@ fn invalid_static_columns_and_row_command_plans_preserve_previous_results() {
     let root = tmp.path();
     for table in [
         json!({"script": "$ touch executed; printf '{}'", "a": {"value": 1}, "b": {"wrong": 2}}),
-        json!({"script": "$ hyperfine --runs 2 '/bin/true' | json /results/0/median * 1000"}),
         json!({"script": "$ printf '{\"value\":1}'", "cell": {"value": "$ printf '{\"value\":1}'"}}),
         json!({"script": "$ 'unmatched"}),
     ] {
@@ -606,73 +369,4 @@ fn script_row_preserves_full_float_precision() {
     );
     let text = fs::read_to_string(root.join("in.render.json")).unwrap();
     assert!(text.contains("196.85512733333334"), "{text}");
-}
-
-#[test]
-fn hyperfine_row_generates_all_statistics_from_one_export() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    fs::write(root.join("fixture"), "ready").unwrap();
-    let command = format!("$ {} --shell=none --runs 2 /bin/true", fake_hyperfine(root));
-    write(
-        &root.join("in.json"),
-        &json!({"Native": command, "alias": command}),
-    );
-    let result = cli(root, &["bench", "in.json", "--scale", "99"]);
-    assert!(
-        result.status.success(),
-        "{}",
-        String::from_utf8_lossy(&result.stderr)
-    );
-    let table: Value =
-        serde_json::from_slice(&fs::read(root.join("in.render.json")).unwrap()).unwrap();
-    assert_eq!(
-        table["Native"],
-        json!({"N":2,"Median ms":2.0,"Mean ms":3.0,"SD ms":1.0,"Min ms":1.0,"Max ms":4.0})
-    );
-    assert_eq!(table["Native"], table["alias"]);
-    assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "run\n");
-    let evidence: Value =
-        serde_json::from_slice(&fs::read(root.join("in.bench.json")).unwrap()).unwrap();
-    assert_eq!(evidence["commands"].as_array().unwrap().len(), 1);
-    assert_eq!(evidence["commands"][0]["kind"], "hyperfine-row");
-    assert_eq!(evidence["commands"][0]["value"], table["Native"]);
-    assert_eq!(evidence["rows"].as_array().unwrap().len(), 2);
-    assert!(evidence["cells"].as_array().unwrap().is_empty());
-}
-
-#[test]
-fn hyperfine_rows_validate_v2_counts_units_and_failure_before_publication() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    fs::write(root.join("fixture"), "ready").unwrap();
-    let executable = fake_hyperfine(root);
-    let valid = json!({"schema_version":2,"results":[{"command":"/bin/true","measurements":[{"exit_code":0},{"exit_code":0}],"summary":{"time_wall_clock":{"unit":"second","count":2,"median":0.002,"mean":0.003,"stddev":0.001,"min":0.001,"max":0.004}}}]});
-    write(&root.join("schema.json"), &valid);
-    write(
-        &root.join("in.json"),
-        &json!({"VM":format!("$ {executable} --runs 2 /bin/true")}),
-    );
-    assert!(cli(root, &["bench", "in.json"]).status.success());
-    let result: Value =
-        serde_json::from_slice(&fs::read(root.join("in.render.json")).unwrap()).unwrap();
-    assert_eq!(result["VM"]["N"], 2);
-    assert_eq!(result["VM"]["Median ms"], 2.0);
-    for (pointer, value) in [
-        ("/results/0/summary/time_wall_clock/count", json!(3)),
-        (
-            "/results/0/summary/time_wall_clock/unit",
-            json!("millisecond"),
-        ),
-        ("/results/0/measurements/0/exit_code", json!(1)),
-        ("/results/0/summary/time_wall_clock/stddev", Value::Null),
-    ] {
-        let mut bad = valid.clone();
-        *bad.pointer_mut(pointer).unwrap() = value;
-        write(&root.join("schema.json"), &bad);
-        fs::write(root.join("in.render.json"), "stale").unwrap();
-        assert_eq!(cli(root, &["bench", "in.json"]).status.code(), Some(2));
-        assert!(!root.join("in.render.json").exists());
-        assert!(!root.join("in.bench.json").exists());
-    }
 }

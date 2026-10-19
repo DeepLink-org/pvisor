@@ -1,6 +1,6 @@
 # PolicyVisor benchmarks
 
-新的 hyperfine JSON 模板与 semspec 入口和逐批次 CSV / Markdown 更新方式见
+新的 Python 计时 JSON 模板与 semspec 入口和逐批次 CSV / Markdown 更新方式见
 [`benchmark.new/README.md`](../benchmark.new/README.md)。本文件继续维护 benchmark ID 的需求与角色；
 下述旧脚本及历史报告保留原始口径，不能作为 hyperfine 测量结果发布。
 `just benchmark` 的 B-PROCESS 已使用新入口；其余 ID 的新入口映射见
@@ -764,7 +764,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **Motivation：** 训练和复现需要把历史轨迹准确还原到同一个起点。用户需要知道支持哪些轨迹格式、准备是否有副作用、成本是多少。
 - **想要的结论：** "支持的格式全部通过一致性校验，准备阶段不执行工具也不修改工作区，每条轨迹的准备耗时为 X ms"。
 - **实验设计：** 对每个适配器使用固定的原生格式样本，校验前缀结构、工具参数和观测内容，同时校验工作区没有被修改。
-- **入口脚本：** `benchmark.new/replay/replay.json`（`prepare.py` 冻结和预检，semspec bench 直接测量，hooks 逐次验证，`docs.py publish` 更新 JSON 表格）。每个适配器一条固定轨迹的 hyperfine 数据为独立批次；历史二十条轨迹、三次重复的完整一致性证据保留 `v1/replay.py` 的原口径。
+- **入口脚本：** `benchmark.new/replay/replay.json`（`prepare.py` 冻结和预检，semspec bench 直接测量，hooks 逐次验证，`docs.py publish` 更新 JSON 表格）。每个适配器一条固定轨迹的 Python perf_counter_ns 数据为独立批次；历史二十条轨迹、三次重复的完整一致性证据保留 `v1/replay.py` 的原口径。
 
 ### B-VM-MEMORY：VM 闲置时能省多少内存，恢复要付出什么 {#b-vm-memory}
 

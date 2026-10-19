@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate complete Run Bundles outside hyperfine's measured command."""
+"""Validate complete Run Bundles outside the measured command."""
 
 import json
 import sys

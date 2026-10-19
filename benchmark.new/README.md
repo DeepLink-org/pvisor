@@ -6,19 +6,17 @@
 
 ## 模板与执行
 
-每个条件对应一个行命令。hyperfine 行命令固定
-样本数、预热、被测命令和 hooks，执行一次实验后直接展开为 N、Median ms、Mean ms、
-SD ms、Min ms、Max ms 六列。各列取同一份原始导出，不再重复声明命令：
+每个条件对应一个 Python 行命令，脚本返回 N、Median ms、Mean ms、SD ms、Min ms、Max ms。
+process/replay 的固定 argv、准备/校验命令、环境、样本数和预热数登记在同名
+`*.commands.json` 中，准备时展开为批次 `commands.json` 并冻结摘要：
 
 ```json
-{
-  "Native": "$ hyperfine --shell=none --runs 60 --warmup 3 --command-name native '/bin/true'"
-}
+{"native": "$ python3 @REPO@/benchmark.new/command_timing.py @BATCH@ native"}
 ```
 
-事件计时使用 Python 行命令，脚本一次返回全部指标。`startup/timing.json` 包含八个
-后端，每行同次测量 Ready / Exit；预热不进入统计，正确性失败不发布结果。
-旧 hyperfine 启动模板已删除，实际 argv 固定在 `startup/subjects.py`。
+计时器使用标准库 `perf_counter_ns` 与 `statistics`，只计时被测进程的创建至正常退出；
+准备和校验命令不计时，但每次（包括预热）必须成功。解释器启动、semspec 和统计处理不计时。
+启动的 Ready / Exit 与文件系统已有独立 Python 行计时器，保留各自指标口径。
 
 ```sh
 just benchmark startup/timing
@@ -50,7 +48,7 @@ just benchmark smoke --output benchmark.new/process/.data/measurement
 `PVISOR_BENCHMARK_OUTPUT` 仍按表名创建子目录，供 CI 保留 `smoke/in.bench.json`。
 可对保留批次单独执行 `update.py`；文档发布必须使用完整审计证据。
 
-安装 Python 3.10+ 并构建独立的 semspec CLI；process/replay 另需 hyperfine 2.0+。
+安装 Python 3.10+ 并构建独立的 semspec CLI；无需外部计时工具。
 准备脚本只冻结输入、展开私有路径和做预检；真正执行实验的入口是 **semspec bench**。
 例如 process smoke（2 次预热、10 次样本；nightly 为 10 / 50）：
 
@@ -64,7 +62,7 @@ python3 benchmark.new/update.py "$batch"
 ```
 
 独立 filesystem 原生负载使用 Python 行命令，见 [filesystem/README.md](filesystem/README.md)。
-两行共用一份输入，解释器与负载校验计入完整命令时间，默认无需 hyperfine。手动保留批次：
+两行共用一份输入，解释器与负载校验计入完整命令时间，无需外部计时工具。手动保留批次：
 
 ```sh
 batch=$(python3 benchmark.new/filesystem/prepare.py benchmark.new/filesystem/tools.json)
@@ -74,10 +72,11 @@ python3 benchmark.new/update.py "$batch"
 
 启动页八个固定条件见 [startup/README.md](startup/README.md)。`@REPO@`、`@BATCH@`、
 `@BINARY@` 等标记由准备脚本展开成实际路径，生成本批次的 `in.json`；原模板保持不变。
-`common.py` 共享制品摘要和准备逻辑，`update.py` 校验并发布。process/replay 的完整命令实验由 hyperfine 计时和统计。pVisor VM Ready / Exit 使用独立的 Python `perf_counter_ns` 脚本，
-固定参数写在脚本内，返回整行 JSON；它的采样和标准库统计单独标记，不作为 hyperfine 数据。
-启动条件的 Python 观察者直接创建被测进程。filesystem 的观察者也直接执行固定 Python 负载，
-用 perf_counter_ns 测量完整命令；输入准备、观察者与后续审计不计时。process/replay 继续使用 hyperfine。
+`common.py` 冻结配置、输入、代码及制品摘要，`command_timing.py` 执行 process/replay 的
+逐次采样并保留 command-trials 和各条件 samples.json。`update.py` 检查每次退出、hooks、
+精确 argv、完整样本数、单调时钟差值，并重新计算所有统计列；篡改或失败阻止发布。
+新 Python 计时口径不能与历史 hyperfine 批次合并，历史文件与 provenance 保持原样。
+历史 replay 文档绑定明确保留旧口径，拒绝把新计时结果直接覆盖成旧口径；新公开批次须登记新绑定。
 
 `run.py` 统一解析表名、行名和选项；Just 只负责按解析结果构建 process 二进制与 semspec。
 准备和发布只接受整行命令，旧的逐单元格命令与 `| json ... * ...` 提取分支已删除。
@@ -108,8 +107,8 @@ Markdown 单独一行写 `{{ table("../../tools.render.json") }}`；文档构建
 报告保存在本目录 `.data/generated-tables-prune-20261018/`；配置、实验入口、
 测试夹具、文档构建用表格和必要公开下载继续跟踪。
 
-`--prepare` / `--conclude` 重置并验证每次输入输出；失败不发布。构建、rootfs、镜像和服务
-预先准备，不能将旧多样本 campaign 当成单次被测命令。hyperfine 按条件顺序独立采样，
+配置中的 `prepare` / `conclude` 重置并验证每次输入输出；失败不发布。构建、rootfs、镜像和服务
+预先准备，不能将旧多样本 campaign 当成单次被测命令。计时器按条件顺序独立采样，
 不宣称随机配对、因果改善比例或置信区间。Ready、内部阶段、密度和整体 cgroup 内存等
 不同指标不能用完整命令时间替换。工程和诊断实验保持 registry 中各自的角色。
 
@@ -172,7 +171,6 @@ B-REPLAY 使用七个固定适配器，每个一条 task 0 合成轨迹，60 次
 未提供 source-build receipt 时，不能声称冻结二进制来自当前源码。
 
 ```sh
-export PATH="/path/to/hyperfine/bin:$PATH"
 export SEMSPEC_BIN="$PWD/target/semspec/debug/semspec"
 batch=$(taskset -c 0,1 python3 benchmark.new/replay/prepare.py benchmark.new/replay/replay.json --binary target/release/pvisor-replay)
 taskset -c 0,1 "$SEMSPEC_BIN" bench --cwd "$batch" "$batch/in.json"

@@ -237,7 +237,7 @@ test-rust *packages:
     cargo nextest run --locked "${args[@]}" "$@"
 
 # 标准库 unittest；支持文件、测试名、-k/-v，或 discover 参数
-# 无参数时覆盖 tests/、历史 benchmark 测试和 hyperfine 测试
+# 无参数时覆盖 tests/、历史 benchmark 测试和命令计时测试
 [group("06. 测试与冒烟")]
 test-py *args:
     #!/usr/bin/env bash
