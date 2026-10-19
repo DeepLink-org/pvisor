@@ -3560,6 +3560,7 @@ mod tests {
         let live = root.path().join("live");
         std::fs::create_dir(&source).unwrap();
         std::fs::create_dir(&live).unwrap();
+        let live = live.canonicalize().unwrap();
         std::fs::write(source.join("file"), b"fixed generation").unwrap();
         let root_store = SnapshotStore::new(&root.path().join("root-store")).unwrap();
         let root_base = root_store.prepare_rootfs(&source).unwrap();
