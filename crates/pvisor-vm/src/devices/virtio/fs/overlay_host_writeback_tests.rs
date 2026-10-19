@@ -429,9 +429,11 @@ fn host_buffer_flush_sync_and_release_wait_for_accepted_writes() {
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
             ));
             gate.release();
+            // syncfs also flushes unrelated dirty data on the shared CI filesystem.
+            let timeout = Duration::from_secs(if operation == 3 { 30 } else { 2 });
             received
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap()
+                .recv_timeout(timeout)
+                .unwrap_or_else(|error| panic!("operation {operation} did not finish: {error}"))
                 .unwrap();
         });
         assert_eq!(

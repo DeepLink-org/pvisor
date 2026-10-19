@@ -231,6 +231,37 @@ jobs:
           PVISOR_TEST_ALLOW_NO_USERNS: "1"
         run: just test-rust ${{ matrix.packages }}
 
+      # The next build changes the executable digest. The default-build listener
+      # must exit before clients negotiate with the Gateway-enabled executable.
+      - name: Stop the default-build Host listener
+        if: matrix.shard == 'cli' || runner.os == 'macOS'
+        shell: python
+        run: |
+          import json
+          import os
+          from pathlib import Path
+          import signal
+          import socket
+          import time
+
+          root = Path("/tmp").resolve() / f"pvisor-host-{os.getuid()}"
+          manifest = root / "generation"
+          if manifest.exists():
+              generation = json.loads(manifest.read_text())
+              try:
+                  os.kill(generation["pid"], signal.SIGTERM)
+              except ProcessLookupError:
+                  pass
+              for _ in range(100):
+                  with socket.socket(socket.AF_UNIX) as probe:
+                      try:
+                          probe.connect(str(root / f"{generation['generation']}.sock"))
+                      except (ConnectionRefusedError, FileNotFoundError):
+                          break
+                  time.sleep(0.1)
+              else:
+                  raise RuntimeError("default-build Host listener did not stop")
+
       - name: Test the Gateway-enabled runtime and CLI
         if: matrix.shard == 'cli' || runner.os == 'macOS'
         env:

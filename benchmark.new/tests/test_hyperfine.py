@@ -477,7 +477,7 @@ class HyperfineTests(unittest.TestCase):
         table = json.loads(original)
         table["checked"]["Median ms"] = 0
         path.write_text(json.dumps(table))
-        with self.assertRaisesRegex(ValueError, "resolved cell"):
+        with self.assertRaisesRegex(ValueError, "resolved row schema/value"):
             publish(self.batch, self.csv, self.md)
         path.write_bytes(original)
         publish(self.batch, self.csv, self.md)
