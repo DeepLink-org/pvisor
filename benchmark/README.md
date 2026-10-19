@@ -141,7 +141,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **角色：** user-facing。
 - **Motivation：** 频繁创建短任务环境时，用户需要判断客户端按需读取是否比完整拉取、解包更划算，以及镜像服务端准备成本如何摊销。
 - **想要的结论：** 同一固定 linux/amd64 digest、同一负载下（Ubuntu shell、Python/NumPy 脚本与可选 PyTorch CPU 导入分别成批，不合并），Docker 与 pVisor cache-service lazy VM 的客户端冷/热缓存 ready、completion 和传输量；明确服务端预准备成本，不解释为纯 VMM 差异。
-- **实验设计：** 开源 Distribution registry 提供固定 OCI 镜像，pvisor-cache serve 提供同镜像文件索引和内容。两服务均为本机 loopback，无人工延迟时只能解释为本机模拟远程协议，不是 WAN。按独立网络条件分批；配置两核/2 GiB（容器硬限制与 VM guest RAM 不等价，Docker daemon/containerd 未作整机两核约束，必须披露），随机交替每组至少 30 次，冷客户端缓存后紧接热缓存，新 guest/容器与工作区。Ubuntu 负载校验发行版身份和 shell 输出；Python 负载禁用 bytecode 写入，固定单线程，校验 Python/库版本和确定性 NumPy 数组与矩阵运算（可选 PyTorch 还须校验 CPU-only build 和张量运算），ready 为全部校验后的唯一输出。两组均要求成功退出；失败单列，不剔除慢有效样本。预热/预检不纳入正式样本；非分离分布 P50、分离分布各簇比例和中位数、参考 P95、配对 bootstrap 95% CI。镜像服务端拉取/解包/索引时间单独保留，原始日志、源码和制品摘要放 `.data/`。不回答完整 OS 引导、真实 WAN、并发或大型任务性能。
+- **实验设计：** 开源 Distribution registry 提供固定 OCI 镜像，pvisor-daemon serve --cache 提供同镜像文件索引和内容。两服务均为本机 loopback，无人工延迟时只能解释为本机模拟远程协议，不是 WAN。按独立网络条件分批；配置两核/2 GiB（容器硬限制与 VM guest RAM 不等价，Docker daemon/containerd 未作整机两核约束，必须披露），随机交替每组至少 30 次，冷客户端缓存后紧接热缓存，新 guest/容器与工作区。Ubuntu 负载校验发行版身份和 shell 输出；Python 负载禁用 bytecode 写入，固定单线程，校验 Python/库版本和确定性 NumPy 数组与矩阵运算（可选 PyTorch 还须校验 CPU-only build 和张量运算），ready 为全部校验后的唯一输出。两组均要求成功退出；失败单列，不剔除慢有效样本。预热/预检不纳入正式样本；非分离分布 P50、分离分布各簇比例和中位数、参考 P95、配对 bootstrap 95% CI。镜像服务端拉取/解包/索引时间单独保留，原始日志、源码和制品摘要放 `.data/`。不回答完整 OS 引导、真实 WAN、并发或大型任务性能。
 - **当前实现复测：** 新静态 release 的 Docker/lazy 对照按负载独立成批，显式启用客户端索引页、上游连接池及持久私有桥；私有 namespace 隔离已有 Host listener。可使用校验后的原始压缩 OCI blobs 发布新 registry，并复制支持的 cache store，此时仅报告缓存准备成本，不沿用历史首次拉取耗时；Read Data、Metadata Data 和总响应分别计数。旧批次保留且不与新批次合并或计算实现加速比。
 - **TurboOCI 对照协议：** [具体协议](../benchmark.new/startup/TURBO_OCI.md)回答“相同 OCI 来源与应用下，TurboOCI 和 pVisor 的按需路径分别缩短多少客户端等待，准备和传输成本是多少”。四组为相同 containerd/runc 的 eager OCI 与 TurboOCI，以及相同 pVisor VM 的 eager OCI 与文件索引 lazy；内部比较加载路径，跨运行时仅比较完整产品路径。原四项公开表缺少镜像身份和负载脚本，不称精确复现；先固定 shell 与 NumPy 同类负载。独立服务、namespace 和缓存，禁止调用上游全局清理脚本；Range 206 与 200 的实际字节、元数据与内容分别计数。先预检，再按轮随机交替冷客户端及紧随其后的热客户端，3 次预热、30 个正式样本，正确性与证据门禁同上。独立 OverlayBD/TCMU 后端已部署并通过 TurboOCI shell 功能验证，操作见[部署记录](../benchmark.new/startup/OVERLAYBD_LAB.md)；正式四组采样/审计尚未接通，不产生或发布新性能结果。
 - **入口脚本：** `lazy_startup.py`。
@@ -306,7 +306,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **普通 CLI guest writeback 落地对照：** 问题是“当前 host 与最终固件下，开启
   guest writeback 能否改善真实普通 CLI 七工具合计，而不仅是 SDK 小块写曲线？”
   独立入口 `benchmark.new/filesystem/guest_writeback_cli.py`，同一新构建的普通
-  `pvisor` / `pvisor-cache`、同一最终固件和两份已公开准备的 owned rootfs/workspace
+  `pvisor`、同一最终固件和两份已公开准备的 owned rootfs/workspace
   generation，仅切换 `PVISOR_VM_FS_WRITEBACK=0/1`；host writeback、DAX、DATA、
   readonly FLUSH、NE、SQ 与 Core 两种缺项缓存均固定关闭，guest cache=1、目录容量256。
   每样本 fresh 私有 Host+VM，五个 seeded 配对环境、内部三轮原九操作；三轮七工具
@@ -374,7 +374,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **普通 CLI 工作区快照入口快速对照：** 两组固定同一个已认证 prepared-rootfs
   selector 与物理 generation，仅比较 live Mutable 工作区和公开 CLI 认证的
   `--workspace-base-store STORE --workspace-base ID`。工作区快照由
-  `pvisor-cache prepare-workspace --workspace SOURCE --base-store STORE` 在计时外
+  `pvisor cache prepare-workspace --workspace SOURCE --base-store STORE` 在计时外
   准备并保留独立费用，rootfs/workspace 使用独立 store。快照组以所选固定
   generation 为唯一 Immutable lower 与 frozen baseline，apply target 保持
   独立 trial 工作区，fresh stage 在正常 RunLease 内创建，不冒充 execution restore。

@@ -15,7 +15,7 @@ from unittest import mock
 from tests.fixtures import workspace
 
 ROOT = Path(__file__).resolve().parents[1]
-APPLICATION_BINARIES = ("pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay")
+APPLICATION_BINARIES = ("pvisor", "pvisor-tui", "pvisor-replay")
 
 
 def _load_script(name: str):
@@ -300,7 +300,7 @@ class ReleasePackagingTests(unittest.TestCase):
                             names = (
                                 ("pvisor-daemon",)
                                 if "pvisor-daemon" in command
-                                else wheel_stage.NATIVE_BINARIES
+                                else wheel_stage.CLI_BINARIES
                             )
                             messages = []
                             for name in names:
@@ -333,7 +333,7 @@ class ReleasePackagingTests(unittest.TestCase):
                         staged = wheel_stage.stage_wheel_binaries(options)
                         resolver.assert_called_once()
                         assert build_firmware.call_count == (0 if selector else 1)
-                        assert len(environments) == (1 if macos else 2)
+                        assert len(environments) == 2
                         cargo_variable = (
                             "PVISOR_KRUNFW_KERNEL_BUNDLE"
                             if selector == "PVISOR_KRUNFW_KERNEL_BUNDLE"
@@ -477,11 +477,10 @@ class ReleasePackagingTests(unittest.TestCase):
             resources.enter_context(
                 mock.patch.object(wheel_stage.platform, "machine", lambda: "x86_64")
             )
-            command = wheel_stage._cargo_command(wheel_stage.BuildOptions(), daemon=True)
+            command = wheel_stage._cargo_command(wheel_stage.BuildOptions(), component="daemon")
             assert command[command.index("-p") + 1] == "pvisor-daemon"
             assert command[command.index("--bin") + 1] == "pvisor-daemon"
             assert command.count("-p") == 1
-            assert "--no-default-features" in command
             assert "--features" not in command
             assert "--bins" not in command
             assert "pvisor" not in command
@@ -489,17 +488,13 @@ class ReleasePackagingTests(unittest.TestCase):
             assert command[:2] == ["cargo", "zigbuild"]
             assert command[command.index("--target") + 1] == "x86_64-unknown-linux-musl"
 
-    def test_daemon_rejects_macos_builds(self):
-        for target in [None, "aarch64-apple-darwin"]:
-            with self.subTest(target=target):
-                with ExitStack() as resources:
-                    resources.enter_context(
-                        mock.patch.object(wheel_stage.sys, "platform", "darwin")
-                    )
-                    with self.assertRaisesRegex(RuntimeError, "supported only on Linux x86_64"):
-                        wheel_stage._cargo_command(
-                            wheel_stage.BuildOptions(target=target), daemon=True
-                        )
+    def test_daemon_builds_natively_on_macos(self):
+        command = wheel_stage._cargo_command(
+            wheel_stage.BuildOptions(target="aarch64-apple-darwin"), component="daemon"
+        )
+        assert command[:2] == ["cargo", "build"]
+        assert command[command.index("--bin") + 1] == "pvisor-daemon"
+        assert command[command.index("--target") + 1] == "aarch64-apple-darwin"
 
     def test_wheel_build_separates_daemon_from_native_components(self):
         with workspace() as (tmp_path, resources):
@@ -513,26 +508,26 @@ class ReleasePackagingTests(unittest.TestCase):
                 )
             )
 
-            def build_component(options, *, shim_vm=False, daemon=False, firmware=None):
-                calls.append((shim_vm, daemon))
-                names = ("pvisor-daemon",) if daemon else wheel_stage.NATIVE_BINARIES
+            def build_component(options, *, component="cli", firmware=None):
+                calls.append(component)
+                names = ("pvisor-daemon",) if component == "daemon" else wheel_stage.CLI_BINARIES
                 return {name: tmp_path / name for name in names}
 
             resources.enter_context(
                 mock.patch.object(wheel_stage, "_build_component", build_component)
             )
             artifacts = wheel_stage._build(wheel_stage.BuildOptions())
-            assert calls == [(False, False), (False, True)]
+            assert calls == ["cli", "daemon"]
             assert set(artifacts) == set(wheel_stage.EXPECTED_BINARIES)
             assert wheel_stage.EXPECTED_BINARIES == wheel_verify.EXPECTED_BINARIES
             assert "pvisor-daemon" not in wheel_verify.COMPANION_BINARIES
             assert "pvisor-cluster" not in artifacts
             assert "pvisor-worker" not in artifacts
 
-    def test_macos_wheel_signs_native_components_and_excludes_daemon(self):
+    def test_macos_wheel_signs_native_components_and_includes_daemon(self):
         with workspace() as (tmp_path, resources):
             artifacts = {}
-            for name in wheel_stage.NATIVE_BINARIES:
+            for name in wheel_stage.EXPECTED_BINARIES:
                 artifact = tmp_path / name
                 artifact.write_bytes(b"binary")
                 artifacts[name] = artifact
@@ -559,9 +554,9 @@ class ReleasePackagingTests(unittest.TestCase):
             scripts = wheel_stage.stage_wheel_binaries(
                 wheel_stage.BuildOptions(bundle_firmware=False)
             )
-            assert signed == list(wheel_stage.NATIVE_BINARIES)
-            assert "pvisor-daemon" not in signed
-            assert {path.name for path in scripts.iterdir()} == set(wheel_stage.NATIVE_BINARIES)
+            assert signed == list(wheel_stage.EXPECTED_BINARIES)
+            assert "pvisor-daemon" in signed
+            assert {path.name for path in scripts.iterdir()} == set(wheel_stage.EXPECTED_BINARIES)
 
     def test_cargo_command_selects_static_musl_on_linux(self):
         with ExitStack() as resources:
@@ -575,7 +570,7 @@ class ReleasePackagingTests(unittest.TestCase):
             ]
             assert [
                 command[index + 1] for index, arg in enumerate(command) if arg == "--bin"
-            ] == list(wheel_stage.NATIVE_BINARIES)
+            ] == list(wheel_stage.CLI_BINARIES)
             assert "pvisor-cli/gateway" in command
             assert "pvisor/gateway" not in command
             assert "--bins" not in command
@@ -679,11 +674,100 @@ class ReleasePackagingTests(unittest.TestCase):
 
     def test_shim_vm_build_uses_static_musl(self):
         command = wheel_stage._cargo_command(
-            wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl"), shim_vm=True
+            wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl"), component="shim-vm"
         )
         assert command[:2] == ["cargo", "zigbuild"]
         assert command[command.index("-p") + 1] == "pvisor-shim"
         assert command[command.index("--features") + 1] == "vm"
+
+    def test_all_build_selects_platform_binaries_and_reuses_firmware(self):
+        for target, linux in (("x86_64-unknown-linux-musl", True), ("aarch64-apple-darwin", False)):
+            with self.subTest(target=target), workspace() as (root, resources):
+                firmware = _resolved_fixture(root)
+                resolve = resources.enter_context(
+                    mock.patch.object(wheel_stage, "_resolve_firmware", return_value=firmware)
+                )
+                calls = []
+
+                def build_component(options, *, component="cli", firmware=None):
+                    calls.append((component, firmware))
+                    names = {
+                        "cli": APPLICATION_BINARIES,
+                        "daemon": ("pvisor-daemon",),
+                        "shim-vm": ("containerd-shim-pvisor-v2",),
+                        "guest": ("pvisor-guest",),
+                    }[component]
+                    return {name: root / name for name in names}
+
+                resources.enter_context(
+                    mock.patch.object(wheel_stage, "_build_component", build_component)
+                )
+                options = wheel_stage.BuildOptions(target=target)
+                artifacts = wheel_stage._build_all(options)
+                expected = set(wheel_stage.EXPECTED_BINARIES)
+                if linux:
+                    expected.update(("pvisor-daemon", "containerd-shim-pvisor-v2", "pvisor-guest"))
+                assert set(artifacts) == expected
+                resolve.assert_called_once_with(options)
+                assert [component for component, _ in calls] == (
+                    ["cli", "daemon", "shim-vm", "guest"] if linux else ["cli", "daemon"]
+                )
+                for component, resolved in calls:
+                    assert resolved is (None if component == "guest" else firmware)
+
+    def test_guest_build_selects_only_the_standalone_guest(self):
+        command = wheel_stage._cargo_command(
+            wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl"), component="guest"
+        )
+        assert command[command.index("-p") + 1] == "pvisor-guest"
+        assert command[command.index("--bin") + 1] == "pvisor-guest"
+        assert "--features" not in command
+
+    def test_host_shim_build_skips_firmware_and_requires_reported_binary(self):
+        import json
+        from types import SimpleNamespace
+
+        with workspace() as (root, resources):
+            firmware = resources.enter_context(mock.patch.object(wheel_stage, "_resolve_firmware"))
+            resources.enter_context(mock.patch.object(wheel_stage, "_prepare_zig_file_limit"))
+            binary = root / "containerd-shim-pvisor-v2"
+            options = wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl")
+            for outcome in ("success", "missing", "failed"):
+                with self.subTest(outcome=outcome):
+                    process = SimpleNamespace(
+                        stdout=[
+                            json.dumps(
+                                {
+                                    "reason": "compiler-artifact",
+                                    "executable": str(binary),
+                                    "target": {"name": binary.name, "kind": ["bin"]},
+                                }
+                            )
+                        ]
+                        if outcome != "missing"
+                        else [],
+                        wait=lambda: 1 if outcome == "failed" else 0,
+                    )
+                    with mock.patch.object(
+                        wheel_stage.subprocess, "Popen", return_value=process
+                    ) as popen:
+                        if outcome == "success":
+                            assert wheel_stage._build_component(options, component="shim") == {
+                                binary.name: binary
+                            }
+                        else:
+                            with self.assertRaises(
+                                subprocess.CalledProcessError
+                                if outcome == "failed"
+                                else RuntimeError
+                            ):
+                                wheel_stage._build_component(options, component="shim")
+                        command = popen.call_args.args[0]
+                        assert command[:2] == ["cargo", "zigbuild"]
+                        assert command[command.index("-p") + 1] == "pvisor-shim"
+                        assert "--no-default-features" in command
+                        assert "--features" not in command
+            firmware.assert_not_called()
 
     def test_linux_wheel_requires_no_firmware_shared_library(self):
         with workspace() as (tmp_path, resources):
@@ -736,7 +820,7 @@ class ReleasePackagingTests(unittest.TestCase):
             assert resolved.path == source
             assert resolved.library_name == source.name
 
-    def test_macos_build_never_invokes_daemon_pipeline(self):
+    def test_macos_build_invokes_daemon_pipeline(self):
         with workspace() as (tmp_path, resources):
             calls = []
             resources.enter_context(
@@ -748,16 +832,17 @@ class ReleasePackagingTests(unittest.TestCase):
                 mock.patch.object(wheel_stage, "_is_macos", lambda options: True)
             )
 
-            def build_component(options, *, shim_vm=False, daemon=False, firmware=None):
-                calls.append((shim_vm, daemon))
-                return {name: tmp_path / name for name in wheel_stage.NATIVE_BINARIES}
+            def build_component(options, *, component="cli", firmware=None):
+                calls.append(component)
+                names = ("pvisor-daemon",) if component == "daemon" else wheel_stage.CLI_BINARIES
+                return {name: tmp_path / name for name in names}
 
             resources.enter_context(
                 mock.patch.object(wheel_stage, "_build_component", build_component)
             )
             artifacts = wheel_stage._build(wheel_stage.BuildOptions())
-            assert calls == [(False, False)]
-            assert set(artifacts) == set(wheel_stage.NATIVE_BINARIES)
+            assert calls == ["cli", "daemon"]
+            assert set(artifacts) == set(wheel_stage.EXPECTED_BINARIES)
 
     def test_all_native_builds_prepare_firmware_before_cargo(self):
         for component in ["daemon", "native", "shim"]:
@@ -796,7 +881,7 @@ class ReleasePackagingTests(unittest.TestCase):
                             if component == "daemon"
                             else ("containerd-shim-pvisor-v2",)
                             if component == "shim"
-                            else wheel_stage.NATIVE_BINARIES
+                            else wheel_stage.CLI_BINARIES
                         )
                         events = []
                         resources.enter_context(
@@ -853,8 +938,9 @@ class ReleasePackagingTests(unittest.TestCase):
                         )
                         artifacts = wheel_stage._build_component(
                             wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl"),
-                            daemon=component == "daemon",
-                            shim_vm=component == "shim",
+                            component={"daemon": "daemon", "shim": "shim-vm", "native": "cli"}[
+                                component
+                            ],
                         )
                         assert set(artifacts) == set(names)
                         assert events == ["firmware", "limit", "cargo"]
@@ -892,7 +978,7 @@ class ReleasePackagingTests(unittest.TestCase):
                                 "target": {"name": name, "kind": ["bin"]},
                             }
                         )
-                        for name in wheel_stage.NATIVE_BINARIES
+                        for name in wheel_stage.CLI_BINARIES
                     ],
                     wait=lambda: 0,
                 )
@@ -931,25 +1017,25 @@ class ReleasePackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "missing firmware"):
                 wheel_stage._build_component(
                     wheel_stage.BuildOptions(target="x86_64-unknown-linux-musl"),
-                    daemon=True,
+                    component="daemon",
                 )
 
-    def test_macos_wheel_requires_native_set_and_rejects_daemon(self):
+    def test_macos_wheel_includes_daemon_and_rejects_retired_cache(self):
         with workspace() as (tmp_path, resources):
             wheel = tmp_path / "pvisor-1.2.3-py3-none-macosx_11_0_arm64.whl"
             _write_wheel(wheel, "1.2.3")
             with zipfile.ZipFile(wheel, "a") as archive:
-                for name in wheel_stage.NATIVE_BINARIES:
+                for name in wheel_stage.EXPECTED_BINARIES:
                     binary = zipfile.ZipInfo(f"pvisor-1.2.3.data/scripts/{name}")
                     binary.external_attr = 0o100755 << 16
                     archive.writestr(binary, b"Mach-O")
                 archive.writestr("pvisor-1.2.3.data/scripts/libkrunfw.5.dylib", b"firmware")
             _, scripts, firmware = wheel_verify._wheel_contents(wheel)
-            assert set(scripts) == set(wheel_stage.NATIVE_BINARIES)
+            assert set(scripts) == set(wheel_stage.EXPECTED_BINARIES)
             assert firmware is not None
             with zipfile.ZipFile(wheel, "a") as archive:
-                archive.writestr("pvisor-1.2.3.data/scripts/pvisor-daemon", b"unsupported")
-            with self.assertRaisesRegex(RuntimeError, "supported only in Linux x86_64"):
+                archive.writestr("pvisor-1.2.3.data/scripts/pvisor-cache", b"unsupported")
+            with self.assertRaisesRegex(RuntimeError, "retired executable pvisor-cache"):
                 wheel_verify._wheel_contents(wheel)
 
     def test_releases_publish_wheels_and_sources_without_standalone_daemon(self):
@@ -992,12 +1078,12 @@ class ReleasePackagingTests(unittest.TestCase):
                 "x86_64-unknown-linux-musl",
                 (*APPLICATION_BINARIES, "pvisor-daemon"),
             ),
-            ("macosx_11_0_arm64", "aarch64-apple-darwin", APPLICATION_BINARIES),
+            ("macosx_11_0_arm64", "aarch64-apple-darwin", (*APPLICATION_BINARIES, "pvisor-daemon")),
         ]:
             with self.subTest(platform=platform, target=target, expected=expected):
                 options = wheel_stage.BuildOptions(target=target)
-                assert wheel_stage.NATIVE_BINARIES == APPLICATION_BINARIES
-                assert wheel_stage.expected_binaries(options) == expected
+                assert wheel_stage.CLI_BINARIES == APPLICATION_BINARIES
+                assert wheel_stage.EXPECTED_BINARIES == expected
                 wheel = Path(f"pvisor-1.2.3-py3-none-{platform}.whl")
                 assert wheel_verify.expected_binaries(wheel) == expected
                 command = wheel_stage._cargo_command(options)
@@ -1027,7 +1113,7 @@ class ReleasePackagingTests(unittest.TestCase):
                     ):
                         wheel_verify._wheel_contents(wheel)
 
-    def test_install_smoke_uses_standalone_cache_and_daemon(self):
+    def test_install_smoke_uses_integrated_cache_and_daemon(self):
         for platform in ["manylinux_2_28_x86_64", "macosx_11_0_arm64"]:
             with self.subTest(platform=platform):
                 with ExitStack() as resources:
@@ -1058,14 +1144,11 @@ class ReleasePackagingTests(unittest.TestCase):
                         assert [name, "--version"] in commands
                         assert [name, "--help"] in commands
                     for command in ("prepare", "publish", "read"):
-                        assert ["pvisor-cache", command, "--help"] in commands
+                        assert ["pvisor", "cache", command, "--help"] in commands
                     for command in ("run", "tui", "replay"):
                         assert ["pvisor", command, "--help"] in commands
-                    if "pvisor-daemon" in expected:
-                        assert ["pvisor-daemon", "serve", "--help"] in commands
-                        assert ["pvisor-daemon", "protocol"] in commands
-                    else:
-                        assert not any(command[0] == "pvisor-daemon" for command in commands)
+                    assert ["pvisor-daemon", "serve", "--help"] in commands
+                    assert ["pvisor-daemon", "protocol"] in commands
                     assert not any(
                         "service" in command or "pvisor-memory-pool" in command
                         for command in commands
@@ -1094,7 +1177,7 @@ class ReleasePackagingTests(unittest.TestCase):
                 "libkrunfw.5.dylib",
                 "libkrunfw.SOURCE",
             }
-            for name in payloads | {"pvisor-memory-pool", "unrelated-binary"}:
+            for name in payloads | {"pvisor-memory-pool", "pvisor-cache", "unrelated-binary"}:
                 (scripts / name).write_bytes(b"payload")
             resources.enter_context(mock.patch.dict(os.environ))
             os.environ.pop("PVISOR_SETUP_SKIP_NATIVE_SCRIPTS", None)
@@ -1104,7 +1187,9 @@ class ReleasePackagingTests(unittest.TestCase):
     def test_native_build_cli_dispatch_and_profile_outputs(self):
         for selector, profile, binary in (
             (None, "dev", "pvisor"),
+            ("--all", "release", "pvisor"),
             ("--daemon", "performance", "pvisor-daemon"),
+            ("--shim", "dev", "containerd-shim-pvisor-v2"),
             ("--shim-vm", "release", "containerd-shim-pvisor-v2"),
         ):
             with self.subTest(component=selector), workspace() as (root, resources):
@@ -1123,6 +1208,8 @@ class ReleasePackagingTests(unittest.TestCase):
                 target = "x86_64-unknown-linux-musl"
                 if selector:
                     argv.append(selector)
+                    if selector in ("--all", "--daemon"):
+                        argv.extend(("--target", target))
                 else:
                     target = "aarch64-apple-darwin"
                     argv.extend(("--target", target))
@@ -1130,6 +1217,11 @@ class ReleasePackagingTests(unittest.TestCase):
                 resources.enter_context(mock.patch.object(sys, "argv", argv))
                 build = resources.enter_context(
                     mock.patch.object(wheel_stage, "_build", return_value={binary: source / binary})
+                )
+                all_build = resources.enter_context(
+                    mock.patch.object(
+                        wheel_stage, "_build_all", return_value={binary: source / binary}
+                    )
                 )
                 daemon = resources.enter_context(
                     mock.patch.object(
@@ -1140,11 +1232,15 @@ class ReleasePackagingTests(unittest.TestCase):
                 options = wheel_stage.BuildOptions(
                     target=target, profile=profile, target_dir=str(root / "output")
                 )
-                if selector == "--daemon":
-                    daemon.assert_called_once_with(options, daemon=True)
+                if selector == "--all":
+                    all_build.assert_called_once_with(options)
+                    build.assert_not_called()
+                    daemon.assert_not_called()
+                elif selector in ("--daemon", "--shim", "--shim-vm"):
+                    daemon.assert_called_once_with(options, component=selector[2:])
                     build.assert_not_called()
                 else:
-                    build.assert_called_once_with(options, shim_vm=selector == "--shim-vm")
+                    build.assert_called_once_with(options)
                     daemon.assert_not_called()
                 directory = root / "output" / ("debug" if profile == "dev" else profile)
                 expected = (
@@ -1157,7 +1253,9 @@ class ReleasePackagingTests(unittest.TestCase):
     def test_native_build_cli_rejects_conflicting_components(self):
         for args in (
             ["--daemon", "--shim-vm"],
-            ["--daemon", "--target", "aarch64-apple-darwin"],
+            ["--shim", "--shim-vm"],
+            ["--shim", "--target", "aarch64-apple-darwin"],
+            ["--shim-vm", "--target", "aarch64-apple-darwin"],
             ["--profile", "unknown"],
         ):
             with self.subTest(args=args), mock.patch.dict(os.environ, {}, clear=True):
@@ -1177,6 +1275,14 @@ class ReleasePackagingTests(unittest.TestCase):
             shutil.copy("/bin/sleep", destination)
             source = tmp_path / "replacement"
             shutil.copy("/usr/bin/true", source)
+            if sys.platform == "darwin":
+                # Copied Apple platform signatures are not valid for our owned paths.
+                for executable in (source, destination):
+                    subprocess.run(
+                        ["codesign", "--force", "--sign", "-", str(executable)],
+                        check=True,
+                        capture_output=True,
+                    )
             old_inode = destination.stat().st_ino
             process = subprocess.Popen([str(destination), "30"])
             try:

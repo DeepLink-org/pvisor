@@ -261,7 +261,7 @@ RAM＋pool 代理为两 runner 的 `resident_bytes + pending_file_bytes` 之和�
 
 记录中的首版收敛为显式启用的 macOS / Apple Silicon 实验 v1：不可变共享压缩池、宿主冷块观察、两阶段发布、私有页恢复。CLI 的 `--vm-memory-pool SOCKET` 会选择 VM executor；TOML 对应 `[vm].memory_pool`，Rust SDK 对应 `VmSettings.memory_pool`。省略它时默认关闭；旧实验环境变量仅作兼容入口。此内存路径不依赖 guest zram 或 macFUSE RAM adapter。
 
-当前服务所有权归 `pvisor-daemon`：通过 `serve --memory-pool` 启用池；它使用已持久化的私有配置启动或复用独立 `memory-pool --directory DIR` 组件。当前 Linux 物理共享池使用独立协议；记录中的 macOS 压缩池测量不验证该协议。见 [daemon 池启用](../../guides/daemon/index.md#memory-pool)。
+当前服务所有权归 `pvisor-daemon`：通过 `serve --sandbox --memory-pool` 启用池；它使用已持久化的私有配置启动或复用独立 `memory-pool --directory DIR` 组件。当前 Linux 物理共享池使用独立协议；记录中的 macOS 压缩池测量不验证该协议。见 [daemon 池启用](../../guides/daemon/index.md#memory-pool)。
 
 ```bash
 pvisor-daemon serve --help

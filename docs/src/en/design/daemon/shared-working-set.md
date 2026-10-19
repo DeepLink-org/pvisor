@@ -21,7 +21,7 @@ Anonymous-page scanning, cold-page compression and whole-VM offload remain separ
 | Native Linux RAM restore | Authorized sealed identity/compatibility and shared read-only inode, private COW guest mappings | Ordinary fresh boot bypasses RAM restore; compatible native profiles remain required |
 | Snapshot lazy reader | Validate/decode blocks on fault with bounded decoded cache | First-access costs remain; legacy raw formats can require full validation |
 | Historical macOS compressed pool | Session references and private cold-page restoration | Recorded-version mechanism; separate from the current Linux protocol |
-| Daemon-owned Linux pool | Resident duplicate 4 KiB pages shared through bounded memfd slots and private COW mappings | Explicit `serve --memory-pool`; separate budgets and failure scope, no unique-page compression |
+| Daemon-owned Linux pool | Resident duplicate 4 KiB pages shared through bounded memfd slots and private COW mappings | Explicit `serve --sandbox --memory-pool`; separate budgets and failure scope, no unique-page compression |
 | Daemon sealed compressed pool | Shared immutable encoded 64 KiB blocks; client-local decode and private restoration | Explicit compressed mode; userfaultfd required; component tests and scoped two-VM correctness probe passed |
 | NativeRuntime daemon | Independent immutable rootfs, private VM writes | Optional daemon-owned pool; no automatic node socket acquisition, RAM restore or lazy snapshot integration |
 

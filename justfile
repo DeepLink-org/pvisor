@@ -3,7 +3,8 @@ set positional-arguments
 
 repo := justfile_directory()
 target_dir := absolute_path(env("CARGO_TARGET_DIR", repo / "target"))
-python_paths := "pvisor tests examples benchmark/pvisor/test_*.py benchmark.new"
+semspec_target_dir := target_dir / "semspec"
+python_paths := "pvisor tests examples benchmark/pvisor/test_*.py benchmark.new scripts/packaging scripts/ci setup.py"
 zensical_version := "0.0.67"
 
 import "tests/justfile"
@@ -37,16 +38,16 @@ clean:
     cargo clean --target-dir "{{ target_dir }}" --profile dev
     cargo clean --target-dir "{{ target_dir }}" --profile release
     cargo clean --target-dir "{{ target_dir }}" --profile performance
-    cargo clean --manifest-path tools/semspec/Cargo.toml --profile dev
+    cargo clean --manifest-path tools/semspec/Cargo.toml --target-dir "{{ semspec_target_dir }}" --profile dev
     rm -rf build dist docs/site "{{ target_dir }}/fw"
 
 # ============================================================
 # 02. 构建与打包
 # ============================================================
 
-# 支持 debug / release / performance
+# profile: debug / release / performance；component: all / product / daemon / shim / shim-vm
 [group("02. 构建与打包")]
-build profile="debug":
+build profile="debug" component="all":
     #!/usr/bin/env bash
     set -euo pipefail
     case "$1" in
@@ -55,22 +56,36 @@ build profile="debug":
       performance) cargo_profile=performance ;;
       *) echo "expected debug, release or performance, got: $1" >&2; exit 2 ;;
     esac
-    python3 scripts/packaging/stage_wheel_binaries.py --profile "$cargo_profile" --target-dir "{{ target_dir }}"
-    names=(pvisor pvisor-cache pvisor-tui pvisor-replay)
-    if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then names+=(pvisor-daemon); fi
+    component_args=()
+    case "$2" in
+      all|product)
+        names=(pvisor pvisor-tui pvisor-replay pvisor-daemon)
+        if [[ "$2" == all ]]; then
+          component_args=(--all)
+          if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then names+=(containerd-shim-pvisor-v2 pvisor-guest); fi
+        fi
+        ;;
+      daemon) component_args=(--daemon); names=(pvisor-daemon) ;;
+      shim|shim-vm) component_args=("--$2"); names=(containerd-shim-pvisor-v2) ;;
+      *) echo "expected all, product, daemon, shim or shim-vm, got: $2" >&2; exit 2 ;;
+    esac
+    python3 scripts/packaging/stage_wheel_binaries.py --profile "$cargo_profile" --target-dir "{{ target_dir }}" ${component_args[@]+"${component_args[@]}"}
     for name in "${names[@]}"; do
       binary="{{ target_dir }}/$1/$name"
       test -x "$binary"
-      if [[ "$(uname -s)" == Darwin ]]; then
+      if [[ ( "$2" == all || "$2" == product || "$2" == daemon ) && "$(uname -s)" == Darwin ]]; then
         codesign --force --sign - --entitlements "{{ repo }}/crates/pvisor/macos-hypervisor.entitlements" "$binary"
         codesign --verify --strict "$binary"
       fi
     done
 
-# 产品编译检查
+# 默认检查 CLI；可传 -p PACKAGE、--target 等 Cargo 参数
 [group("02. 构建与打包")]
-check:
-    cargo check --locked -p pvisor-cli
+check *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ $# -eq 0 ]]; then set -- -p pvisor-cli; fi
+    cargo check --locked "$@"
 
 # 支持 release / debug；验证通过后输出 wheel
 [group("02. 构建与打包")]
@@ -146,8 +161,11 @@ lint: lint-rust lint-py lint-workflows
 
 # Rust 静态检查
 [group("05. 静态检查")]
-lint-rust:
-    cargo clippy --workspace --all-targets --locked -- -D warnings
+lint-rust *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ $# -eq 0 ]]; then set -- --workspace; fi
+    cargo clippy --all-targets --locked "$@" -- -D warnings
 
 # Python 静态检查
 [group("05. 静态检查")]
@@ -192,10 +210,30 @@ test-rust *packages:
       args+=(-p "$package")
     done
     if [[ ${#args[@]} -eq 0 ]]; then args+=(--workspace); needs_vm_signature=1; fi
-    if [[ "$needs_vm_signature" == 1 && "$(uname -s)" == Darwin ]]; then
-      just sign-vm-tests "${args[@]}"
-    fi
     if [[ "${1:-}" == -- ]]; then shift; fi
+    if [[ "$needs_vm_signature" == 1 && "$(uname -s)" == Darwin ]]; then
+      # Sign the same build selection as run; runner-only flags do not belong to list.
+      signature_args=("${args[@]}")
+      remaining=("$@")
+      index=0
+      while [[ "$index" -lt "$#" ]]; do
+        option="${remaining[$index]}"
+        case "$option" in
+          --) break ;;
+          -p|--package|--exclude|--bin|--example|--test|--bench|-F|--features|--build-jobs|--cargo-profile|--target|--target-dir|--manifest-path|--config|-Z)
+            signature_args+=("$option")
+            index=$((index + 1))
+            if [[ "$index" -ge "$#" ]]; then echo "missing value for $option" >&2; exit 2; fi
+            signature_args+=("${remaining[$index]}")
+            ;;
+          --package=*|--exclude=*|--bin=*|--example=*|--test=*|--bench=*|--features=*|--build-jobs=*|--cargo-profile=*|--target=*|--target-dir=*|--manifest-path=*|--config=*|-F?*|-p?*|-Z?*|--workspace|--all|--lib|--bins|--examples|--tests|--benches|--all-targets|--all-features|--no-default-features|-r|--release|--frozen|--locked|--offline|--ignore-rust-version)
+            signature_args+=("$option")
+            ;;
+        esac
+        index=$((index + 1))
+      done
+      just sign-vm-tests "${signature_args[@]}"
+    fi
     cargo nextest run --locked "${args[@]}" "$@"
 
 # 标准库 unittest；支持文件、测试名、-k/-v，或 discover 参数
@@ -349,8 +387,8 @@ benchmark *args:
       CARGO_TARGET_DIR="$benchmark_build" just --justfile "$benchmark_repo/justfile" --working-directory "$benchmark_repo" build release
       set -- --binary "$benchmark_build/release/pvisor" "$@"
     fi
-    cargo build --quiet --locked --manifest-path "{{ repo }}/tools/semspec/Cargo.toml" --target-dir "{{ target_dir }}/semspec"
-    export SEMSPEC_BIN="{{ target_dir }}/semspec/debug/semspec"
+    cargo build --quiet --locked --manifest-path "{{ repo }}/tools/semspec/Cargo.toml" --target-dir "{{ semspec_target_dir }}"
+    export SEMSPEC_BIN="{{ semspec_target_dir }}/debug/semspec"
     python3 "{{ repo }}/benchmark.new/run.py" "$@"
 
 # ============================================================
@@ -363,10 +401,10 @@ docs-build *check_args:
     python3 benchmark.new/docs.py check
     python3 scripts/check-reference.py
     python3 scripts/check-docs.py --preflight-build
-    cargo build --quiet --locked --manifest-path tools/semspec/Cargo.toml --target-dir "{{ target_dir }}/semspec"
+    cargo build --quiet --locked --manifest-path tools/semspec/Cargo.toml --target-dir "{{ semspec_target_dir }}"
     rm -rf docs/site
-    PVISOR_DOCS_LIVE=0 PYTHONPATH="{{ repo }}${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="{{ target_dir }}/semspec/debug/semspec" uv run --no-project --with zensical=={{ zensical_version }} zensical build --clean --strict -f docs/zensical.zh.toml
-    PVISOR_DOCS_LIVE=0 PYTHONPATH="{{ repo }}${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="{{ target_dir }}/semspec/debug/semspec" uv run --no-project --with zensical=={{ zensical_version }} zensical build --clean --strict -f docs/zensical.en.toml
+    PVISOR_DOCS_LIVE=0 PYTHONPATH="{{ repo }}${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="{{ semspec_target_dir }}/debug/semspec" uv run --no-project --with zensical=={{ zensical_version }} zensical build --clean --strict -f docs/zensical.zh.toml
+    PVISOR_DOCS_LIVE=0 PYTHONPATH="{{ repo }}${PYTHONPATH:+:$PYTHONPATH}" SEMSPEC_BIN="{{ semspec_target_dir }}/debug/semspec" uv run --no-project --with zensical=={{ zensical_version }} zensical build --clean --strict -f docs/zensical.en.toml
     cp docs/index.html docs/site/index.html
     python3 scripts/check-docs.py "$@"
 
@@ -383,12 +421,12 @@ docs-serve locale="zh" *args:
     if ! python3 scripts/check-docs.py --preflight-build; then
       echo "warning: documentation preflight failed; continuing live preview" >&2
     fi
-    if ! cargo build --quiet --locked --manifest-path tools/semspec/Cargo.toml --target-dir "{{ target_dir }}/semspec"; then
+    if ! cargo build --quiet --locked --manifest-path tools/semspec/Cargo.toml --target-dir "{{ semspec_target_dir }}"; then
       echo "warning: semspec build failed; continuing live preview with the existing renderer when available" >&2
     fi
     export PVISOR_DOCS_LIVE=1
     export PYTHONPATH="{{ repo }}${PYTHONPATH:+:$PYTHONPATH}"
-    export SEMSPEC_BIN="{{ target_dir }}/semspec/debug/semspec"
+    export SEMSPEC_BIN="{{ semspec_target_dir }}/debug/semspec"
     exec uv run --no-project --with zensical=={{ zensical_version }} zensical serve -f "$config" "$@"
 
 # ============================================================
@@ -488,8 +526,7 @@ install-cli: (build "release")
     set -euo pipefail
     install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
     mkdir -p "$install_root/bin"
-    binaries=(pvisor pvisor-cache pvisor-tui pvisor-replay)
-    if [[ "$(uname -s)-$(uname -m)" == Linux-x86_64 ]]; then binaries+=(pvisor-daemon); fi
+    binaries=(pvisor pvisor-tui pvisor-replay pvisor-daemon)
     for binary in "${binaries[@]}"; do
       install -m 755 "{{ target_dir }}/release/$binary" "$install_root/bin/$binary"
     done
@@ -497,41 +534,6 @@ install-cli: (build "release")
       install -m 755 "{{ target_dir }}/release/libkrunfw.5.dylib" "$install_root/bin/libkrunfw.5.dylib"
       install -m 644 "{{ target_dir }}/release/libkrunfw.SOURCE" "$install_root/bin/libkrunfw.SOURCE"
     fi
-
-[private]
-daemon-build profile="debug":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    case "$1" in
-      debug) cargo_profile=dev ;;
-      release|performance) cargo_profile="$1" ;;
-      *) echo "expected debug, release or performance, got: $1" >&2; exit 2 ;;
-    esac
-    python3 scripts/packaging/stage_wheel_binaries.py --daemon --profile "$cargo_profile" --target-dir "{{ target_dir }}"
-
-[private]
-daemon-install: (daemon-build "release")
-    #!/usr/bin/env bash
-    set -euo pipefail
-    install_root="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}"
-    mkdir -p "$install_root/bin"
-    install -m 755 "{{ target_dir }}/release/pvisor-daemon" "$install_root/bin/pvisor-daemon"
-
-[private]
-shim-check:
-    cargo check --locked -p pvisor-shim --target x86_64-unknown-linux-musl
-    cargo clippy --locked -p pvisor-shim --all-targets --target x86_64-unknown-linux-musl -- -D warnings
-
-[private]
-shim-vm-build profile="debug":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    case "$1" in
-      debug) cargo_profile=dev ;;
-      release|performance) cargo_profile="$1" ;;
-      *) echo "expected debug, release or performance, got: $1" >&2; exit 2 ;;
-    esac
-    python3 scripts/packaging/stage_wheel_binaries.py --shim-vm --profile "$cargo_profile" --target-dir "{{ target_dir }}"
 
 [private]
 sign-vm-tests *args:
@@ -559,11 +561,11 @@ vm-case-driver:
 
 [private]
 test-semspec *args:
-    cargo nextest run --manifest-path tools/semspec/Cargo.toml --locked "$@"
+    cargo nextest run --manifest-path tools/semspec/Cargo.toml --target-dir "{{ semspec_target_dir }}" --locked "$@"
 
 [private]
 semspec *args:
-    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- "$@"
+    cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "{{ semspec_target_dir }}" --locked -- "$@"
 
 [private]
 benchmark-compare candidate baseline="" output="benchmark.new/process/.data/comparison" threshold="15":
@@ -580,7 +582,7 @@ fmt-semspec:
 
 [private]
 lint-semspec:
-    cargo clippy --manifest-path tools/semspec/Cargo.toml --all-targets --locked -- -D warnings
+    cargo clippy --manifest-path tools/semspec/Cargo.toml --target-dir "{{ semspec_target_dir }}" --all-targets --locked -- -D warnings
 
 # cibuildwheel runs this inside its build environment, sharing the firmware receipt.
 [private]

@@ -7,7 +7,6 @@ import re
 import subprocess
 from pathlib import Path
 
-
 RUNTIME_FORBIDDEN = {
     "pvisor-cli",
     "pvisor-gateway",

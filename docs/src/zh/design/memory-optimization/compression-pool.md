@@ -6,7 +6,7 @@
 ## 目标与现状 {#status}
 
 Linux 已实现实验性 sealed 压缩池，通过
-`pvisor-daemon serve --memory-pool --memory-pool-mode compressed` 显式选择。
+`pvisor-daemon serve --sandbox --memory-pool --memory-pool-mode compressed` 显式选择。
 默认池模式仍为原文物理页共享。压缩对象交付、去重、预算、断连引用生命周期
 和服务退出后恢复已有进程级测试。2026-10-18 在获得内核缺页 userfaultfd
 授权后，Linux x86_64/KVM 双 VM 正确性探针通过，覆盖池终止后的 guest

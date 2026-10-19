@@ -45,15 +45,19 @@ pub use direct::DirectImage;
 pub(crate) use direct::{attach_runner_lowers, private_owner as direct_image_owner};
 pub(crate) use network::run_internal_if_requested as run_image_access_internal;
 
-/// Serve a cache using host-owned OCI staging and an optional transport token.
+/// Serve until process termination, notifying the owner after binding and worker startup.
+/// The callback runs once before accepting connections. Its failure stops startup.
+/// The caller owns process supervision; in-flight requests are not drained on termination.
 pub fn serve(
     location: String,
     image_store: Option<std::path::PathBuf>,
     token: Option<String>,
+    ready: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     server::serve(
         location,
         crate::image::oci::ImageStore::new(image_store)?,
         token,
+        ready,
     )
 }

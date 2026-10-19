@@ -13,7 +13,7 @@ are in
 Root help (`pvisor` or `pvisor --help`) groups commands under **Execution**
 (`run`, `status`, `kill`), **Changes** (`review`, `apply`, `drop`, `inspect`),
 **Checkpoints** (`checkpoint`, `suspend`, `resume`, `fork`) and **Tools**
-(installed `replay`/`tui` companions, `feature`, `help`). It shows a short
+(installed `replay`/`tui` companions, `cache`, `feature`, `help`). It shows a short
 run-review-apply example; use `pvisor help COMMAND` for detailed options.
 
 ```bash
@@ -83,15 +83,15 @@ Feature enables apply to `run` and feature queries. Other lifecycle commands rej
 
 ## Daemon and cache commands {#service}
 
-Top-level `pvisor` commands operate native Jobs. Invoke `pvisor-daemon` directly for sandbox lifecycle and optional pool ownership; use `pvisor-cache` independently for OCI caching.
+Top-level `pvisor` commands operate native Jobs. Invoke `pvisor-daemon` directly for sandbox lifecycle and optional pool ownership; use `pvisor cache` independently for OCI caching.
 
 ```bash
 pvisor-daemon serve --help
 pvisor-daemon memory-pool --help
-pvisor-cache --help
+pvisor cache --help
 ```
 
-Add `--memory-pool` to `pvisor-daemon serve` to enable its default-off detached pool component. `pvisor-cache prepare/publish/serve/list/stat/read` remain independent. Node runtime protocols serve native callers, without a daemon acquire/release adapter. NativeRuntime embeds VM execution; checkpoint/fork and stage/apply APIs are absent. See the [daemon guide](../guides/daemon/index.md) for ownership, installation and deployment boundaries.
+Add `--memory-pool` to `pvisor-daemon serve --sandbox` to enable its default-off detached pool component. `pvisor cache prepare/publish/list/stat/read` are client commands; cache serving is an optional daemon component. Node runtime protocols serve native callers, without a daemon acquire/release adapter. NativeRuntime embeds VM execution; checkpoint/fork and stage/apply APIs are absent. See the [daemon guide](../guides/daemon/index.md) for ownership, installation and deployment boundaries.
 
 Other unknown names follow default execution rules. The `ctrl` name
 is an explicit exception: `pvisor ctrl`, `pvisor ctrl --help` and
@@ -987,7 +987,7 @@ Prepare a quiescent, independent Linux rootfs into a private store, then replace
 stage, every guest-visible path and writable VM backing/control paths.
 
 ```bash
-pvisor-cache prepare-rootfs --rootfs /srv/linux-rootfs --base-store /srv/pvisor-bases
+pvisor cache prepare-rootfs --rootfs /srv/linux-rootfs --base-store /srv/pvisor-bases
 pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 
@@ -1028,7 +1028,7 @@ project directory. Use the rootfs preparation result for `ROOTFS_ID` and the
 workspace preparation result for `WORKSPACE_ID`.
 
 ```bash
-pvisor-cache prepare-workspace --workspace /srv/project --base-store /srv/pvisor-workspace-bases
+pvisor cache prepare-workspace --workspace /srv/project --base-store /srv/pvisor-workspace-bases
 cd /srv/project
 pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /srv/pvisor-workspace-bases --workspace-base WORKSPACE_ID \
@@ -1116,10 +1116,10 @@ retains compact Run/Overlay metadata, the apply ledger and capture artifacts.
 
 ### Shared image file cache
 
-`pvisor-cache serve` runs the independent OCI file service in the foreground;
-`pvisor-cache prepare IMAGE`, `pvisor-cache list DIGEST [PATH]`,
-`pvisor-cache stat DIGEST PATH` and `pvisor-cache read DIGEST PATH` reach it
-through `PVISOR_CACHE_SERVER`. `pvisor-cache publish IMAGE` explicitly publishes
+`pvisor-daemon serve --cache` runs the independent OCI file service in the foreground;
+`pvisor cache prepare IMAGE`, `pvisor cache list DIGEST [PATH]`,
+`pvisor cache stat DIGEST PATH` and `pvisor cache read DIGEST PATH` reach it
+through `PVISOR_CACHE_SERVER`. `pvisor cache publish IMAGE` explicitly publishes
 to a writable filesystem/S3 backend. The default is
 the `pvisor/cache.sock` Unix socket under the user cache directory. The server
 accepts `--image-store DIR` to name an existing OCI store. File reads support
@@ -1135,6 +1135,6 @@ and the native container executor keep their current behavior. See the
 limits and SSH remote access.
 
 
-Enable the daemon-owned experimental pool with `pvisor-daemon serve --memory-pool`; its detached `memory-pool --directory DIR` component uses daemon-provisioned private configuration. Native `pvisor run --vm-memory-pool SOCKET` remains an explicit runtime option with platform/protocol limits, not a service launcher.
+Enable the daemon-owned experimental pool with `pvisor-daemon serve --sandbox --memory-pool`; its detached `memory-pool --directory DIR` component uses daemon-provisioned private configuration. Native `pvisor run --vm-memory-pool SOCKET` remains an explicit runtime option with platform/protocol limits, not a service launcher.
 
 Physical/legacy pool loss fails dependent VMs; Linux sealed-compressed clients retain local recovery and stop new publication. Select it with daemon `--memory-pool-mode compressed`. See [daemon pool activation and budgets](../guides/daemon/index.md#memory-pool); historical macOS compressed-pool results retain their [version scope](../design/memory-optimization/proof-of-concept.md#v1-integration).

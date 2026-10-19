@@ -131,7 +131,7 @@ Run Bundle 中的实际 VM 执行模式、stage 与已安装控制。
   容器硬限制与 guest RAM 不是等价的整机内存限制。宿主服务、VMM、缓存及
   kernel 开销单独记录，结果不得称为完全等预算的隔离机制比较。
 - 冻结 containerd、runc、OverlayBD、snapshotter、convertor、pVisor、
-  `pvisor-cache` 和固件的版本、源码及二进制摘要。服务进程必须匹配被测制品。
+  `pvisor-daemon` 和固件的版本、源码及二进制摘要。服务进程必须匹配被测制品。
 - 当前部署官方包为 OverlayBD v1.0.18 的 azurelinux3 x86_64 RPM，以及
   accelerated-container-image 的 snapshotter/convertor v1.4.5 x86_64 RPM。
   前者只带 TCMU 程序，没有 UBLK 可执行文件；后者程序位于

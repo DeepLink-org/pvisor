@@ -156,7 +156,7 @@ def inspect(args):
         check("tool_" + name, tools[name]["ready"], tools[name])
 
     binary_dir = args.binary_dir.expanduser().absolute()
-    for name in ("pvisor", "pvisor-cache"):
+    for name in ("pvisor", "pvisor-daemon"):
         tools[name] = inspect_binary(binary_dir / name)
         check("tool_" + name, tools[name]["ready"], tools[name])
 
@@ -233,7 +233,7 @@ def main():
         "--binary-dir",
         type=Path,
         default=REPO / "target/release",
-        help="Exact directory containing executable pvisor and pvisor-cache (default: repo/target/release)",
+        help="Exact directory containing executable pvisor and pvisor-daemon (default: repo/target/release)",
     )
     parser.add_argument(
         "--frontend",

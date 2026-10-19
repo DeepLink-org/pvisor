@@ -21,7 +21,7 @@
 | 原生 Linux RAM 恢复 | 经授权的 sealed 身份／兼容性与共享只读 inode，guest 私有 COW 映射 | 普通新启动绕过 RAM restore；仍要求兼容原生 profile |
 | Snapshot lazy reader | 缺页时校验／解码块，decoded cache 有界 | 保留首次访问成本；旧 raw 格式可能要求完整校验 |
 | 历史 macOS 压缩池 | Session 引用与私有冷页恢复 | 记录版本的机制；与当前 Linux 协议分开 |
-| Daemon 自有 Linux 池 | 重复驻留 4 KiB 页，通过有界 memfd slot 和私有 COW 映射共享 | 显式 `serve --memory-pool`；独立预算和故障范围，不压缩唯一页 |
+| Daemon 自有 Linux 池 | 重复驻留 4 KiB 页，通过有界 memfd slot 和私有 COW 映射共享 | 显式 `serve --sandbox --memory-pool`；独立预算和故障范围，不压缩唯一页 |
 | Daemon sealed 压缩池 | 共享不可变编码 64 KiB 块，客户端本地解码并恢复私有 RAM | 显式压缩模式；要求 userfaultfd，组件测试与双 VM 正确性探针已通过 |
 | NativeRuntime daemon | 独立不可变 rootfs、VM 私有写入 | 可选 daemon 自有池；无自动 node socket 获取、RAM restore 或 lazy snapshot 集成 |
 

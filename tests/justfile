@@ -27,12 +27,20 @@ test-task-routing:
     fi
     if [[ "$name" == python3 && "$1" == scripts/check-docs.py && "${JUST_TEST_BAD_DOCS_PREFLIGHT:-0}" == 1 ]]; then exit 1; fi
     if [[ "$name" == python3 && "$1" == scripts/packaging/stage_wheel_binaries.py ]]; then
+      if [[ "${JUST_TEST_BAD_BUILD:-0}" == 1 ]]; then exit 1; fi
       profile=debug
       for ((i=0; i<$#; i++)); do
         if [[ "${args[$i]}" == --profile ]]; then profile=${args[$((i+1))]}; fi
       done
       if [[ "$profile" == dev ]]; then profile=debug; fi
-      names=(pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-daemon)
+      names=(pvisor pvisor-tui pvisor-replay pvisor-daemon)
+      for arg in "$@"; do
+        case "$arg" in
+          --all) names+=(pvisor-guest containerd-shim-pvisor-v2) ;;
+          --daemon) names=(pvisor-daemon) ;;
+          --shim|--shim-vm) names=(containerd-shim-pvisor-v2) ;;
+        esac
+      done
       mkdir -p "$CARGO_TARGET_DIR/$profile"
       for binary in "${names[@]}"; do
         printf '#!/bin/sh\nexit 0\n' > "$CARGO_TARGET_DIR/$profile/$binary"
@@ -121,6 +129,30 @@ test-task-routing:
     test "$(wc -l < "$JUST_TEST_LOG")" -eq 2
     run test-rust capture -- --test llm_fixtures
     check_line cargo nextest run --locked -p pvisor-gateway --test llm_fixtures
+    run test cli -- --features pvisor-cli/gateway --cargo-profile dev-debug --test run_config_cli --target-dir "$work/test artifacts" --no-capture --test-threads 1
+    if [[ "$(uname -s)" == Darwin ]]; then
+      signature_lines -p pvisor-cli --features pvisor-cli/gateway --cargo-profile dev-debug --test run_config_cli --target-dir "$work/test artifacts" > "$work/expected"
+    else
+      : > "$work/expected"
+    fi
+    command_line cargo nextest run --locked -p pvisor-cli --features pvisor-cli/gateway --cargo-profile dev-debug --test run_config_cli --target-dir "$work/test artifacts" --no-capture --test-threads 1 >> "$work/expected"
+    diff -u "$work/expected" "$JUST_TEST_LOG"
+    run test cli -- --features=pvisor-cli/gateway --release --no-default-features --offline
+    if [[ "$(uname -s)" == Darwin ]]; then
+      check_line cargo nextest list --locked --message-format json -p pvisor-cli --features=pvisor-cli/gateway --release --no-default-features --offline
+      JUST_TEST_BAD_LIST=1 expect_failure test cli -- --features pvisor-cli/gateway
+      test "$(wc -l < "$JUST_TEST_LOG")" -eq 1
+    fi
+    run test-semspec --test-threads 1
+    check_line cargo nextest run --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked --test-threads 1
+    run lint-semspec
+    check_line cargo clippy --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --all-targets --locked -- -D warnings
+    run test shim -- --features vm
+    check_line cargo nextest run --locked -p pvisor-shim --features vm
+    run check -p pvisor-shim --target x86_64-unknown-linux-musl
+    check_line cargo check --locked -p pvisor-shim --target x86_64-unknown-linux-musl
+    run lint-rust -p pvisor-shim --features vm
+    check_line cargo clippy --all-targets --locked -p pvisor-shim --features vm -- -D warnings
     run test-py
     check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s tests
     check_line uv run --no-project --with 'setuptools>=77' python -m unittest discover -s benchmark/pvisor
@@ -176,15 +208,36 @@ test-task-routing:
       run build "$profile"
       cargo_profile=$profile
       if [[ "$profile" == debug ]]; then cargo_profile=dev; fi
+      check_line python3 scripts/packaging/stage_wheel_binaries.py --profile "$cargo_profile" --target-dir "$CARGO_TARGET_DIR" --all
+      for binary in pvisor pvisor-tui pvisor-replay pvisor-daemon; do test -x "$CARGO_TARGET_DIR/$profile/$binary"; done
+      if [[ "$(uname -s)" == Linux ]]; then
+        for binary in pvisor-daemon pvisor-guest containerd-shim-pvisor-v2; do test -x "$CARGO_TARGET_DIR/$profile/$binary"; done
+      fi
+      run build "$profile" product
       check_line python3 scripts/packaging/stage_wheel_binaries.py --profile "$cargo_profile" --target-dir "$CARGO_TARGET_DIR"
-      for binary in pvisor pvisor-cache pvisor-tui pvisor-replay; do test -x "$CARGO_TARGET_DIR/$profile/$binary"; done
       test ! -e "$CARGO_TARGET_DIR/$profile/pvisor-memory-pool"
+      for component in daemon shim shim-vm; do
+        run build "$profile" "$component"
+        check_line python3 scripts/packaging/stage_wheel_binaries.py --profile "$cargo_profile" --target-dir "$CARGO_TARGET_DIR" "--$component"
+        expected_commands=1
+        if [[ "$component" == daemon && "$(uname -s)" == Darwin ]]; then expected_commands=3; fi
+        test "$(wc -l < "$JUST_TEST_LOG")" -eq "$expected_commands"
+        binary=containerd-shim-pvisor-v2
+        if [[ "$component" == daemon ]]; then binary=pvisor-daemon; fi
+        test -x "$CARGO_TARGET_DIR/$profile/$binary"
+      done
     done
+    expect_failure build release unknown
+    test ! -s "$JUST_TEST_LOG"
+    expect_failure build unknown shim
+    test ! -s "$JUST_TEST_LOG"
+    JUST_TEST_BAD_BUILD=1 expect_failure build debug shim-vm
+    test "$(wc -l < "$JUST_TEST_LOG")" -eq 1
     if [[ "$(uname -s)" == Linux ]]; then
       printf retained > "$CARGO_TARGET_DIR/release/pvisor-memory-pool"
       run install-cli
-      for binary in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-daemon; do test -x "$CARGO_INSTALL_ROOT/bin/$binary"; done
-      test "$(find "$CARGO_INSTALL_ROOT/bin" -type f | wc -l)" -eq 5
+      for binary in pvisor pvisor-tui pvisor-replay pvisor-daemon; do test -x "$CARGO_INSTALL_ROOT/bin/$binary"; done
+      test "$(find "$CARGO_INSTALL_ROOT/bin" -type f | wc -l)" -eq 4
       test ! -e "$CARGO_INSTALL_ROOT/bin/pvisor-memory-pool"
       test "$(cat "$CARGO_TARGET_DIR/release/pvisor-memory-pool")" == retained
     fi
@@ -227,7 +280,7 @@ test-task-routing:
     diff -u "$work/expected" "$JUST_TEST_LOG"
     run benchmark smoke
     check_line python3 "$work/benchmark.new/run.py" --binary "$CARGO_TARGET_DIR/pvisor-benchmark-build/release/pvisor" smoke
-    check_line python3 scripts/packaging/stage_wheel_binaries.py --profile release --target-dir "$CARGO_TARGET_DIR/pvisor-benchmark-build"
+    check_line python3 scripts/packaging/stage_wheel_binaries.py --profile release --target-dir "$CARGO_TARGET_DIR/pvisor-benchmark-build" --all
     JUST_TEST_BAD_DOCS_PREFLIGHT=1 JUST_TEST_BAD_BUILD=1 run docs-serve en -a 127.0.0.1:3002
     check_line uv run --no-project --with zensical==0.0.67 zensical serve -f docs/zensical.en.toml -a 127.0.0.1:3002
     grep -Fq 'continuing live preview' "$work/stderr"
@@ -240,18 +293,18 @@ test-task-routing:
     diff -u "$work/expected" "$JUST_TEST_LOG"
     selection="S-DOC-001,\$(touch $work/injected)"
     run cases --case "$selection" --keep --require-reviewed
-    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/reference --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-case-report.json" --case "$selection" --keep --require-reviewed
+    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/reference --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-case-report.json" --case "$selection" --keep --require-reviewed
     test ! -e "$work/injected"
     run cases --suite vm --case S-DOC-060 --keep
     check_line cargo build --locked -p pvisor --release --example vm_control_case --target-dir "$CARGO_TARGET_DIR"
-    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/reference/cases-vm.md --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-vm-case-report.json" --case S-DOC-060 --keep
+    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/reference/cases-vm.md --domain DOC --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-vm-case-report.json" --case S-DOC-060 --keep
     run cases --suite stage --case S-STAGE-001 --keep
-    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/cases/06-stage-apply.md --domain STAGE --subject-bin "$CARGO_TARGET_DIR/debug/pvisor" --case S-STAGE-001 --keep
+    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/cases/06-stage-apply.md --domain STAGE --subject-bin "$CARGO_TARGET_DIR/debug/pvisor" --case S-STAGE-001 --keep
     run cases --suite use
     run cases --suite use --case S-USE-001,S-USE-002 --case=S-USE-003 --output "$work/report with spaces.json" --keep --require-reviewed
-    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$work/report with spaces.json" --case S-USE-001,S-USE-002 --case S-USE-003 --keep --require-reviewed
+    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$work/report with spaces.json" --case S-USE-001,S-USE-002 --case S-USE-003 --keep --require-reviewed
     JUST_TEST_BAD_RUN=1 expect_failure cases --suite use --case S-USE-001 --require-reviewed
-    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-learning-report.json" --case S-USE-001 --require-reviewed
+    check_line cargo run --quiet --manifest-path tools/semspec/Cargo.toml --target-dir "$CARGO_TARGET_DIR/semspec" --locked -- run docs/src/zh/cases --domain USE --require-pass --subject-bin "$CARGO_TARGET_DIR/release/pvisor" --format json --output "$CARGO_TARGET_DIR/pvisor-learning-report.json" --case S-USE-001 --require-reviewed
     expect_failure cases --suite use --case
     if grep -Fq $'cargo\trun\t' "$JUST_TEST_LOG"; then echo 'invalid selection reached semspec' >&2; exit 1; fi
 
@@ -409,9 +462,9 @@ test-nightly-installer:
     PY
     chmod +x "$work/python"
     for included in 1 0; do
-      for missing in none pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-daemon; do
+      for missing in none pvisor pvisor-tui pvisor-replay pvisor-daemon; do
         rm -f "$work/pip.log"
-        for binary in pvisor pvisor-cache pvisor-tui pvisor-replay pvisor-daemon; do
+        for binary in pvisor pvisor-tui pvisor-replay pvisor-daemon; do
           printf '#!/bin/sh\necho "pvisor 0.3.0"\n' > "$work/$binary"
           chmod +x "$work/$binary"
         done
@@ -422,7 +475,7 @@ test-nightly-installer:
           test "$got" -ne 0
           grep -Fq 'no platform wheel' "$work/stderr"
           test ! -e "$work/pip.log"
-        elif [[ "$missing" != none && ( "$missing" != pvisor-daemon || "$(uname -s)" == Linux ) ]]; then
+        elif [[ "$missing" != none ]]; then
           test "$got" -ne 0
           grep -Fq "wheel did not install executable $work/$missing" "$work/stderr"
         else

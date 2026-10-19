@@ -70,7 +70,7 @@ workload-aware-memory-offloading = true
 | `--max-timeout-seconds N` | 86400；创建 TTL 上限，可配置范围 60 秒至一年 |
 | `--memory-pool` | 默认关闭；启用 daemon 自有独立池；在 sandbox 准入之外预留宿主内存 |
 
-旧 `[controller]`、`[[workers]]`、Worker profile 和 Cluster task JSON 不是 daemon 输入。`pvisor-cache` 保持独立；node 运行时协议没有 daemon acquire/release 适配器。NativeRuntime 仅支持 VM；checkpoint/fork、stage/apply、全局 DAG 与分布式 lease API 未实现。
+旧 `[controller]`、`[[workers]]`、Worker profile 和 Cluster task JSON 不是 daemon 输入。`pvisor cache` 保持独立；node 运行时协议没有 daemon acquire/release 适配器。NativeRuntime 仅支持 VM；checkpoint/fork、stage/apply、全局 DAG 与分布式 lease API 未实现。
 
 `serve` 使用必需的 `--images-dir` 与 `--cgroup-root` 构造 NativeRuntime。Cargo 链接 `pvisor`/`pvisor-core`，同步内部 VM 派发先于参数解析或 Tokio。隐藏 supervisor 命令已实现。Images/cgroup 路径会 canonicalize；相对 state 按启动工作目录解析，运行时状态会 canonicalize。部署使用短绝对路径，重启时保持不变。
 
@@ -229,7 +229,7 @@ VM executor 时启用实验性的 Linux x86_64 实例本地 live 压缩；
 
 ### 封存 rootfs {#prepared-rootfs}
 
-`vm.prepared_rootfs` 选择由 `pvisor-cache prepare-rootfs` 持久保留的物理基底。
+`vm.prepared_rootfs` 选择由 `pvisor cache prepare-rootfs` 持久保留的物理基底。
 设置 `[run] executor = "vm"`，并在 `[vm.prepared_rootfs]` 中提供 `store`，
 在 `[vm.prepared_rootfs.base]` 中提供准备结果的 `id`。CLI 的成对覆盖参数为
 `--rootfs-base-store STORE --rootfs-base ID`。完整命令见

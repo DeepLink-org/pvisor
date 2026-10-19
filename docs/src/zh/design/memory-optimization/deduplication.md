@@ -27,7 +27,7 @@
 
 ![两个 VM 读取同一槽位，写入时生成私有 COW 页](../assets/memory-cow.svg)
 
-显式 `serve --memory-pool` 启用 daemon 自有的原文页共享。候选只保留 hash；内容在不同 VM session 出现后才进入 bounded memfd slot。VM 在 CPU/device 排空后重新核对字节，使用只读 descriptor 和 `MAP_PRIVATE` 映射相同页。该路径不依赖 userfaultfd，不编码或压缩唯一页。
+显式 `serve --sandbox --memory-pool` 启用 daemon 自有的原文页共享。候选只保留 hash；内容在不同 VM session 出现后才进入 bounded memfd slot。VM 在 CPU/device 排空后重新核对字节，使用只读 descriptor 和 `MAP_PRIVATE` 映射相同页。该路径不依赖 userfaultfd，不编码或压缩唯一页。
 
 Reference pin 保护槽位到撤销映射之后，断联时等待 pidfd 确认 peer 退出再回收。Pool 是活跃共享页的 owner，丢失会使依赖 VM 失败；它不提供 durable snapshot 或进程重启恢复。预算和故障范围见[共享工作集](../daemon/shared-working-set.md)。
 

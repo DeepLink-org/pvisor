@@ -1,8 +1,7 @@
 //! Embeddable cross-platform FUSE overlay implementation.
 //!
 //! pVisor owns [`OverlaySession`] directly, so the pVisor process is also the
-//! FUSE userspace server. The `pvisor-overlayfs` binary is only a debugging
-//! and manual-mount CLI wrapper around this library.
+//! FUSE userspace server. Mount lifecycle is managed through the library API.
 
 use crate::api::{
     KernelCacheConfig, KernelCachePolicy, OverlayConfiguration, OverlayMountConfig,

@@ -111,11 +111,11 @@ Security issues: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTIN
 
 The Cargo workspace contains 13 crates. `pvisor` is the embeddable execution
 runtime and durable Job service; `pvisor-cli` is the default workspace member and
-owns four application executables: `pvisor`, `pvisor-cache`, `pvisor-tui` and
+owns three application executables: `pvisor`, `pvisor-tui` and
 `pvisor-replay`. The separately built `pvisor-daemon` owns its optional pool via
-`serve --memory-pool` and a detached `memory-pool` component.
-`pvisor-cache` is an independent tool for
-`prepare`, `publish`, `serve`, `list`, `stat` and `read`. The TUI implementation is integrated into
+`serve --sandbox --memory-pool` and a detached `memory-pool` component.
+`pvisor cache` builds, publishes and queries caches; `pvisor-daemon serve --cache` owns
+the cache service. The TUI implementation is integrated into
 `pvisor-cli`; there is no separate `pvisor-tui` crate. The runtime has no CLI or
 Clap normal dependency, and the `pvisor-replay` engine depends on shared Core and
 Journal contracts rather than the runtime or Clap.
@@ -131,6 +131,32 @@ Release builds optimize the virtio-fs adapter (`pvisor-vm`) and shared filesyste
 mechanics (`pvisor-overlay-core`) for execution speed. Other crates retain the
 distribution profile's size optimization; the `performance` profile optimizes
 the complete application for speed.
+
+`just build release` builds all supported workspace executables into
+`target/release` (or `CARGO_TARGET_DIR/release`). Linux x86_64 builds `pvisor`,
+`pvisor-tui`, `pvisor-replay`, `pvisor-daemon`,
+`containerd-shim-pvisor-v2` with VM support, and `pvisor-guest`.
+macOS ARM64 builds the three CLI executables and `pvisor-daemon`.
+The daemon cache service supports both platforms; sandbox
+serving, shim and the standalone guest executable require Linux. VM builds share one firmware
+resolution. Standalone tools outside the workspace, such as semspec, retain their
+own build/test entries.
+
+`just build PROFILE COMPONENT` supports `all` (default), `product` (the CLI/daemon
+wheel set), `daemon`, `shim`, and `shim-vm`. Profiles are `debug` (default),
+`release`, and `performance`. The host-only `shim` selection skips VM firmware.
+Use `just test shim` for targeted tests,
+or on Linux `just test shim -- --features vm` for VM-enabled tests. See the
+[shim guide](crates/pvisor-shim/README.md#developing) for prerequisites and
+containerd acceptance checks.
+
+Rust test options follow `--`, for example
+`just test pvisor pvisor-cli -- --features pvisor/gateway,pvisor-cli/gateway`.
+On macOS, VM test signing uses the same features, Cargo profile and build-target
+selection as the test run. Default and Gateway-enabled runtime/CLI tests both
+run in CI. All repository semspec recipes share `target/semspec` (beneath
+`CARGO_TARGET_DIR` when set), including documentation rendering, lint and tests.
+The Python format/lint entries also cover packaging and CI scripts plus `setup.py`.
 
 ## Guest firmware
 

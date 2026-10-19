@@ -56,13 +56,13 @@ class ApplicationBoundaryTests(unittest.TestCase):
         assert not {"pvisor", "pvisor-cli", "clap"} & replay["dependencies"].keys()
         assert {binary["name"] for binary in app["bin"]} == {
             "pvisor",
-            "pvisor-cache",
             "pvisor-tui",
             "pvisor-replay",
         }
         overlay = tomllib.loads((ROOT / "crates/pvisor-overlayfs/Cargo.toml").read_text())
-        assert overlay["dependencies"]["clap"]["optional"]
-        assert overlay["bin"][0]["required-features"] == ["cli"]
+        assert "clap" not in overlay["dependencies"]
+        assert not overlay.get("bin")
+        assert not (ROOT / "crates/pvisor-overlayfs/src/main.rs").exists()
 
     def test_budget_selects_isolated_normal_dependency_closures(self):
         with ExitStack() as resources:

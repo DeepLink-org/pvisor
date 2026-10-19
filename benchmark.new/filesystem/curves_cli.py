@@ -138,12 +138,11 @@ def prepare(args):
         and Path(build["source_root"]).is_dir(),
         "current build/source receipt is incomplete",
     )
-    for name in ("pvisor", "pvisor-cache"):
-        require(
-            name in build["artifacts"]
-            and sha(build["artifacts"][name]["path"]) == build["artifacts"][name]["sha256"],
-            f"current CLI build artifact differs: {name}",
-        )
+    require(
+        "pvisor" in build["artifacts"]
+        and sha(build["artifacts"]["pvisor"]["path"]) == build["artifacts"]["pvisor"]["sha256"],
+        "current CLI build artifact differs: pvisor",
+    )
     setup = load(args.setup)
     require(
         setup.get("state") == "ready"
@@ -170,7 +169,7 @@ def prepare(args):
         target = batch / "harness" / path.relative_to(template / "harness")
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-    artifacts = {name: build["artifacts"][name] for name in ("pvisor", "pvisor-cache")}
+    artifacts = {"pvisor": build["artifacts"]["pvisor"]}
     artifacts["firmware"] = original["artifacts"]["firmware"]
     references = dict(
         current_build=record(build_path),
@@ -290,10 +289,7 @@ def verify(config):
     for name, ref in config["artifacts"].items():
         require(sha(ref["path"]) == ref["sha256"], f"artifact changed: {name}")
     require(
-        all(
-            config["artifacts"][name] == build["artifacts"][name]
-            for name in ("pvisor", "pvisor-cache")
-        ),
+        config["artifacts"]["pvisor"] == build["artifacts"]["pvisor"],
         "CLI receipt/artifact join differs",
     )
     association = load(origins["prepared_input_association"]["path"])

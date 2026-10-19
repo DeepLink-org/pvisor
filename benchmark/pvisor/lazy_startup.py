@@ -3,7 +3,7 @@
 Motivation: quantify disposable shell or Python numerical environment startup with lazy client reads.
 Conclusion sought: cold/warm ready, completion and transferred response bytes;
 service preparation is separate, not a claim of registry-free cold startup.
-Design: pinned amd64 manifest, Distribution registry and real pvisor-cache TCP,
+Design: pinned amd64 manifest, Distribution registry and real pvisor-daemon TCP,
 loopback with no injected latency, 2 CPUs / 2 GiB, shuffled paired rounds.
 Failures are retained and invalidate the campaign; no slow-sample exclusion.
 
@@ -669,8 +669,8 @@ def main():
     parser.add_argument('--samples', type=int, default=30)
     parser.add_argument('--warmups', type=int, default=3)
     parser.add_argument('--firmware', type=Path, help='External bundle for dynamic GNU builds only; omit for embedded musl firmware')
-    parser.add_argument('--binary-dir', type=Path, default=ROOT / 'target/release', help='Directory containing frozen pvisor and pvisor-cache executables')
-    parser.add_argument('--cache-binary', type=Path, help='Override only cache executable; keep launcher compatible with existing Host listener')
+    parser.add_argument('--binary-dir', type=Path, default=ROOT / 'target/release', help='Directory containing frozen pvisor and pvisor-daemon executables')
+    parser.add_argument('--cache-binary', type=Path, help='Override the pvisor-daemon executable; keep launcher compatible with existing Host listener')
     parser.add_argument('--workload', choices=('ubuntu-shell', 'torch-import', 'numpy-script'), default='ubuntu-shell')
     parser.add_argument('--source', help='Pinned upstream image; default depends on workload')
     parser.add_argument('--registry-image', default='registry@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8')
@@ -706,10 +706,10 @@ def main():
     chroot = enter_campaign_namespace(output) if args.namespace_child else None
     firmware = args.firmware.resolve() if args.firmware else None
     binary = args.binary_dir.resolve() / 'pvisor'
-    cache_binary = args.cache_binary.resolve() if args.cache_binary else args.binary_dir.resolve() / 'pvisor-cache'
+    cache_binary = args.cache_binary.resolve() if args.cache_binary else args.binary_dir.resolve() / 'pvisor-daemon'
     if chroot:
         binary = Path(chroot['binaries']['pvisor']['launch_path'])
-        cache_binary = Path(chroot['binaries']['pvisor-cache']['launch_path'])
+        cache_binary = Path(chroot['binaries']['pvisor-daemon']['launch_path'])
     report = dict(benchmark='B-LAZY-STARTUP', seed=SEED, workload=args.workload, workload_argv=workload_argv, marker=marker.decode(), source=args.source, registry_image=args.registry_image, samples=args.samples, warmups=args.warmups, rows=[], failures=[], preparation={}, protocol=dict(network='local loopback HTTPS registry / authenticated unencrypted TCP cache; no latency or bandwidth injection; warm host page cache. Count HTTP bodies versus cache response frames, excluding TLS/TCP/IP overhead', budget='2 CPUs (0,1) and 2 GiB; Docker hard limit versus pVisor guest RAM, not equivalent enclosing VM limit', cache='Docker image removed before each cold pair; cold validity requires complete registry blob responses. Lazy fresh XDG cache per pair, reused warm; new guest/stage/workspace each launch', service_preparation='Registry mirror and cache preparation separate. Cache imports identical digest from upstream Docker Hub because OCI client requires public-trusted HTTPS; not from insecure local registry.', binary_source_relationship='pre-existing release artifacts; build-time source relationship unverified; current source identity recorded separately', invalidation='any failed correctness, missing cold transfer, warm content transfer or timeout invalidates campaign; configured resource controls are not independently audited; no performance outliers dropped'))
     if chroot:
         report['provenance'] = json.loads((output / 'campaign-provenance.json').read_text())
@@ -819,7 +819,7 @@ def main():
         cache_proxy.upstream, cache_proxy.counts = 15445, cache_counts
         serve(cache_proxy)
         service_log = (output / 'cache-service.log').open('wb')
-        cache_process = subprocess.Popen(['taskset', '-c', '2,3', str(cache_binary), 'serve', '--listen', 'tcp://127.0.0.1:15445', '--image-store', str(output / 'service-store')], env=env, stdout=service_log, stderr=subprocess.STDOUT, start_new_session=True)
+        cache_process = subprocess.Popen(['taskset', '-c', '2,3', str(cache_binary), 'serve', '--cache', '--cache-listen', 'tcp://127.0.0.1:15445', '--cache-image-store', str(output / 'service-store')], env=env, stdout=service_log, stderr=subprocess.STDOUT, start_new_session=True)
         for _ in range(100):
             if cache_process.poll() is not None:
                 raise RuntimeError('cache service exited')
@@ -832,7 +832,7 @@ def main():
             raise RuntimeError('cache service not ready')
         prepare_env = env | dict(XDG_CACHE_HOME=str(output / 'prepare-cache'))
         phase(output, 'cached-service-prepare' if args.prepared_store else 'upstream-cache-prepare', status='running')
-        prepared, elapsed = checked([str(cache_binary), 'prepare', args.source], output, 'cache-prepare', env=prepare_env, timeout=90 if args.prepared_store else 900)
+        prepared, elapsed = checked([str(binary), 'cache', 'prepare', args.source], output, 'cache-prepare', env=prepare_env, timeout=90 if args.prepared_store else 900)
         report['preparation']['cached_service_prepare_ms' if args.prepared_store else 'upstream_cache_prepare_ms'] = elapsed
         validate_prepared_record(prepared, digest)
         preparation_counts = cache_counts.snapshot()

@@ -1,9 +1,39 @@
 # pVisor daemon
 
-A **single-node sandbox manager**, not a distributed scheduler. The default
-`pvisor-daemon` executable owns sandbox admission, persistent intentions, native
-lifecycle, expiration and API access. It has no Controller/Worker registration,
-placement, business DAG, distributed lease or remote completion outbox.
+A **node-local service manager** for sandbox lifecycle, optional image caching
+and a shared memory pool. The `pvisor-daemon` executable owns component startup
+and shutdown, sandbox admission, persistent intentions, native lifecycle,
+expiration and API access. Distributed placement and scheduling belong to external
+orchestrators.
+
+## Composite service
+
+`pvisor-daemon serve` owns the selected service components. Cache is opt-in:
+
+```sh
+# Portable cache service only; no sandbox API key, KVM or cgroup required.
+pvisor-daemon serve --cache --cache-listen unix:///tmp/pvisor-cache.sock
+# Sandbox and cache together (OPEN_SANDBOX_API_KEY must be set).
+pvisor-daemon serve --sandbox --images-dir /srv/pvi --cgroup-root /sys/fs/cgroup/pvd --cache
+```
+
+`--cache-image-store` overrides OCI staging. Select sandbox serving explicitly
+with `--sandbox`; sandbox-specific options require that selection. With no component
+selected, startup fails. Cache-specific options require `--cache`. Cache and sandbox
+retain separate endpoints, storage and authentication; the sandbox API key does not
+authorize cache requests.
+
+The daemon prepares sandbox resources first, then waits up to ten seconds for the
+cache worker's post-bind readiness acknowledgement before serving sandbox requests.
+A cache startup failure aborts startup; an unexpected component exit fails the
+daemon. SIGINT/SIGTERM stops API admission, allows up to ten seconds for HTTP
+requests to drain, then terminates/reaps the owned cache worker. Cache requests
+in flight may fail; clients must reconcile uncertain preparation results. The
+worker is an internal implementation component, not a public service command.
+An owner pipe stops it even if the daemon crashes. A stale Unix socket can remain;
+the existing lock and socket checks allow safe restart without deleting cache data.
+Detached native VM supervisors and the optional shared pool retain their existing
+restart contracts; stopping the service manager does not delete live sandboxes.
 
 ## Protocol baseline
 
@@ -259,7 +289,7 @@ bootstrap/image or end-to-end SDK recipe. Supply a real delegated cgroup
 hierarchy, not an ordinary filesystem directory:
 
 ```sh
-pvisor-daemon serve \
+pvisor-daemon serve --sandbox \
   --images-dir /srv/pvi \
   --cgroup-root /sys/fs/cgroup/pvd \
   --listen 127.0.0.1:8080 \
@@ -283,14 +313,19 @@ correct public endpoint; automatic endpoint publication is not implemented.
 `pvisor-daemon protocol` prints the pinned baseline. Connect SDK version 1.1.0
 with the chosen domain and protocol, and use a prepared image satisfying the
 contract above. Invoke the separately built `pvisor-daemon` executable directly.
-The independent `pvisor-cache` tool retains `prepare`, `publish`, `serve`, `list`,
-`stat` and `read`; cache lifecycle is not absorbed by the daemon. Node runtime
+`pvisor cache` provides `prepare`, `publish`, `prepare-rootfs`,
+`prepare-workspace`, `list`, `stat` and `read`. The daemon owns cache serving
+through `pvisor-daemon serve --cache --cache-listen ENDPOINT --cache-image-store DIRECTORY`.
+Cache serving supports Linux and macOS and does not require KVM or cgroups.
+It preserves `PVISOR_CACHE_LOCATION` / `PVISOR_CACHE_SERVER`, `PVISOR_IMAGE_STORE`
+and `PVISOR_CACHE_TOKEN`; `--cache-listen` and `--cache-image-store` override their defaults.
+TCP requires a token. Filesystem/S3 clients need no cache daemon. Node runtime
 protocols belong to `pvisor`; the daemon has no automatic acquire/release
 adapter.
 
 ## Optional daemon-owned memory pool
 
-Add `--memory-pool` to `pvisor-daemon serve` to enable the daemon-owned pool.
+Add `--memory-pool` to `pvisor-daemon serve --sandbox` to enable the daemon-owned pool.
 It is off by default. On Linux, the VM scans resident 4 KiB pages and publishes
 immutable content-addressed pages into a bounded daemon memfd. Only candidates observed in different VM sessions enter the pool; candidates
 hold hashes without retaining page payloads. Equal bytes reuse one slot. After CPU/device quiescence and a live-byte recheck, the VM maps that

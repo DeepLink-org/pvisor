@@ -646,7 +646,7 @@ class ChrootTests(unittest.TestCase):
         (root / "tmp").chmod(0o1777)
         frozen = base / "frozen"
         frozen.mkdir()
-        for name in ("pvisor", "pvisor-cache"):
+        for name in ("pvisor", "pvisor-daemon"):
             (frozen / name).write_bytes(("frozen exact bytes: " + name).encode())
         return root, frozen
 
@@ -759,7 +759,7 @@ class ChrootTests(unittest.TestCase):
             cwd = host_home / "workspace"
             (output / "frozen/bin").mkdir(parents=True)
             cwd.mkdir()
-            for name in ("pvisor", "pvisor-cache"):
+            for name in ("pvisor", "pvisor-daemon"):
                 (output / "frozen/bin" / name).write_bytes(("same artifact: " + name).encode())
             private_root = base / "owned-root"
             private_root.mkdir(mode=0o700)
@@ -844,7 +844,7 @@ class ChrootTests(unittest.TestCase):
             self.assertEqual(len(receipt["binds"]), len(sources))
             self.assertTrue(all(bind["recursive"] for bind in receipt["binds"]))
             self.assertEqual(json.loads((output / "containment-chroot.json").read_text()), receipt)
-            for name in ("pvisor", "pvisor-cache"):
+            for name in ("pvisor", "pvisor-daemon"):
                 record = receipt["binaries"][name]
                 self.assertEqual(record["launch_path"], "/tmp/lazy-binaries/" + name)
                 self.assertEqual(record["launch_sha256"], record["frozen_sha256"])

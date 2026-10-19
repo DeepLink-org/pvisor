@@ -238,8 +238,6 @@ def build_cli(args):
         "pvisor-cli",
         "--bin",
         "pvisor",
-        "--bin",
-        "pvisor-cache",
         "--message-format=json-render-diagnostics",
     ]
     env = os.environ.copy()
@@ -279,27 +277,24 @@ def build_cli(args):
         if line.startswith("{")
     ]
     (output / "bin").mkdir()
-    artifacts, compiler_artifacts = {}, {}
-    for name in ("pvisor", "pvisor-cache"):
-        selected = [
-            row
-            for row in messages
-            if row.get("reason") == "compiler-artifact"
-            and row.get("target", {}).get("name") == name
-            and "bin" in row["target"]["kind"]
-            and "pvisor-cli" in row.get("package_id", "")
-            and row.get("executable")
-        ]
-        require(
-            len(selected) == 1, "exactly one actual frontend compiler artifact required: " + name
-        )
-        binary = Path(selected[0]["executable"])
-        require(
-            binary == REPO / "target/performance" / name and binary.read_bytes()[:4] == b"\x7fELF",
-            "GNU performance artifact path/ELF differs: " + name,
-        )
-        shutil.copy2(binary, output / "bin" / name)
-        artifacts[name], compiler_artifacts[name] = record(output / "bin" / name), selected[0]
+    selected = [
+        row
+        for row in messages
+        if row.get("reason") == "compiler-artifact"
+        and row.get("target", {}).get("name") == "pvisor"
+        and "bin" in row["target"]["kind"]
+        and "pvisor-cli" in row.get("package_id", "")
+        and row.get("executable")
+    ]
+    require(len(selected) == 1, "exactly one actual pvisor compiler artifact required")
+    binary = Path(selected[0]["executable"])
+    require(
+        binary == REPO / "target/performance/pvisor" and binary.read_bytes()[:4] == b"\x7fELF",
+        "GNU performance artifact path/ELF differs: pvisor",
+    )
+    shutil.copy2(binary, output / "bin/pvisor")
+    artifacts = {"pvisor": record(output / "bin/pvisor")}
+    compiler_artifacts = {"pvisor": selected[0]}
     scripts = [
         row
         for row in messages
@@ -368,7 +363,7 @@ def prepare(args):
         and Path(build["source_root"]).is_dir(),
         "current build/source receipt is incomplete",
     )
-    for name in ("pvisor", "pvisor-cache", "embedded-guest"):
+    for name in ("pvisor", "embedded-guest"):
         require(
             name in build["artifacts"]
             and sha(build["artifacts"][name]["path"]) == build["artifacts"][name]["sha256"],
@@ -412,9 +407,7 @@ def prepare(args):
         target = batch / "harness" / path.relative_to(template / "harness")
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
-    artifacts = {
-        name: build["artifacts"][name] for name in ("pvisor", "pvisor-cache", "embedded-guest")
-    }
+    artifacts = {name: build["artifacts"][name] for name in ("pvisor", "embedded-guest")}
     firmware_dir = batch / "firmware"
     firmware_dir.mkdir()
     shutil.copy2(firmware, firmware_dir / "libkrunfw.so.5.6.2")
@@ -574,7 +567,7 @@ def verify(config):
     require(
         all(
             config["artifacts"][name] == build["artifacts"][name]
-            for name in ("pvisor", "pvisor-cache", "embedded-guest")
+            for name in ("pvisor", "embedded-guest")
         ),
         "CLI receipt/artifact join differs",
     )

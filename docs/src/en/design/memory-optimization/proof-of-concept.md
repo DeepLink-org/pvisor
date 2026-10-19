@@ -261,7 +261,7 @@ Do not use this mode's backing file as a checkpoint or combine it with FUSE RAM 
 
 The recorded first version converged on an explicitly enabled experimental macOS / Apple Silicon v1: immutable shared compression, host cold-block observation, two-phase publication and private restoration. `--vm-memory-pool SOCKET` selects the VM executor; TOML uses `[vm].memory_pool`, and Rust SDK uses `VmSettings.memory_pool`. It is disabled when omitted; the old experimental environment variable remains a compatibility entry. This memory path requires neither guest zram nor the macFUSE RAM adapter.
 
-Current service ownership belongs to `pvisor-daemon`: enable its pool with `serve --memory-pool`; it starts or reuses a detached `memory-pool --directory DIR` component using persisted private configuration. The current Linux physical-sharing pool uses a separate protocol; the recorded macOS compressed-pool measurements do not validate it. See [daemon pool activation](../../guides/daemon/index.md#memory-pool).
+Current service ownership belongs to `pvisor-daemon`: enable its pool with `serve --sandbox --memory-pool`; it starts or reuses a detached `memory-pool --directory DIR` component using persisted private configuration. The current Linux physical-sharing pool uses a separate protocol; the recorded macOS compressed-pool measurements do not validate it. See [daemon pool activation](../../guides/daemon/index.md#memory-pool).
 
 ```bash
 pvisor-daemon serve --help

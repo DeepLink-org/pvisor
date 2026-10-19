@@ -13,11 +13,7 @@ fn command(binary: &str, root: &Path) -> Command {
     }
     #[cfg(target_os = "linux")]
     let binary = if std::env::var_os("PVISOR_PREPARED_HOST_CASE").is_some() {
-        if binary == env!("CARGO_BIN_EXE_pvisor") {
-            "/bin/pvisor"
-        } else {
-            "/bin/pvisor-cache"
-        }
+        "/bin/pvisor"
     } else {
         binary
     };
@@ -177,11 +173,6 @@ fn isolated_host_case(name: &str) -> bool {
         owned.path().join("bin/pvisor"),
     )
     .unwrap();
-    fs::copy(
-        env!("CARGO_BIN_EXE_pvisor-cache"),
-        owned.path().join("bin/pvisor-cache"),
-    )
-    .unwrap();
     let output = Command::new("unshare")
         .args([
             "--user",
@@ -221,7 +212,8 @@ fn isolated_host_case(name: &str) -> bool {
 fn prepare(root: &Path) -> pvisor::PreparedRootfs {
     fs::create_dir(root.join("source")).unwrap();
     fs::write(root.join("source/file"), b"owned").unwrap();
-    let output = command(env!("CARGO_BIN_EXE_pvisor-cache"), root)
+    let output = command(env!("CARGO_BIN_EXE_pvisor"), root)
+        .arg("cache")
         .args(["prepare-rootfs", "--rootfs"])
         .arg(root.join("source"))
         .arg("--base-store")
@@ -250,7 +242,8 @@ fn run(root: &Path, args: &[&str]) -> Output {
 fn prepare_workspace(root: &Path) -> pvisor::PreparedBase {
     fs::create_dir(root.join("workspace-source")).unwrap();
     fs::write(root.join("workspace-source/file"), b"fixed workspace").unwrap();
-    let output = command(env!("CARGO_BIN_EXE_pvisor-cache"), root)
+    let output = command(env!("CARGO_BIN_EXE_pvisor"), root)
+        .arg("cache")
         .args(["prepare-workspace", "--workspace"])
         .arg(root.join("workspace-source"))
         .arg("--base-store")
@@ -293,8 +286,8 @@ fn local_workspace_prepare_is_persistent_purpose_bound_and_rejects_overlap() {
     );
     assert!(store.open_prepared_rootfs(&selected.base).is_err());
     let nested = root.path().join("nested-workspace-store");
-    let output = command(env!("CARGO_BIN_EXE_pvisor-cache"), root.path())
-        .arg("prepare-workspace")
+    let output = command(env!("CARGO_BIN_EXE_pvisor"), root.path())
+        .args(["cache", "prepare-workspace"])
         .arg("--workspace")
         .arg(root.path())
         .arg("--base-store")
@@ -411,8 +404,8 @@ fn workspace_worker_rejects_wrong_purpose_and_json_spec_in_private_namespace() {
             authority.join("forbidden-workspace-store"),
         ),
     ] {
-        let output = command(env!("CARGO_BIN_EXE_pvisor-cache"), root.path())
-            .arg("prepare-workspace")
+        let output = command(env!("CARGO_BIN_EXE_pvisor"), root.path())
+            .args(["cache", "prepare-workspace"])
             .arg("--workspace")
             .arg(source)
             .arg("--base-store")
@@ -450,8 +443,8 @@ fn local_prepare_survives_cli_exit_and_refuses_source_store_overlap() {
         b"owned"
     );
     let nested = temp.path().join("nested-store");
-    let output = command(env!("CARGO_BIN_EXE_pvisor-cache"), temp.path())
-        .arg("prepare-rootfs")
+    let output = command(env!("CARGO_BIN_EXE_pvisor"), temp.path())
+        .args(["cache", "prepare-rootfs"])
         .arg("--rootfs")
         .arg(temp.path())
         .arg("--base-store")
@@ -647,8 +640,8 @@ fn normal_host_worker_authenticates_catalog_before_vm_start_and_rejects_exposure
             authority.join("forbidden-store"),
         ),
     ] {
-        let output = command(env!("CARGO_BIN_EXE_pvisor-cache"), &workspace)
-            .arg("prepare-rootfs")
+        let output = command(env!("CARGO_BIN_EXE_pvisor"), &workspace)
+            .args(["cache", "prepare-rootfs"])
             .arg("--rootfs")
             .arg(&source)
             .arg("--base-store")

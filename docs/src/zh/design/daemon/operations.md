@@ -1,6 +1,6 @@
 # Daemon 运维
 
-使用原生 VM 运行时、私有状态与显式资源容量运行单节点 sandbox 服务。直接调用 `pvisor-daemon`。它拥有 sandbox 服务及可选独立池组件；`pvisor-cache` 保持独立。
+使用原生 VM 运行时、私有状态与显式资源容量运行单节点 sandbox 服务。直接调用 `pvisor-daemon`。它拥有 sandbox 服务及可选独立池组件；`pvisor cache` 提供缓存客户端命令，`pvisor-daemon serve --cache` 提供缓存服务。
 
 ## 部署 {#deployment}
 
@@ -12,7 +12,7 @@
 
 ```sh
 pvisor-daemon protocol
-pvisor-daemon serve \
+pvisor-daemon serve --sandbox \
   --images-dir /srv/pvi \
   --cgroup-root /sys/fs/cgroup/pvd \
   --listen 127.0.0.1:8080 \

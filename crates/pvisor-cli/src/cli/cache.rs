@@ -1,5 +1,10 @@
-//! `pvisor-cache` command definitions and dispatch.
-use pvisor::cache::{CacheBackend, CacheClient, CacheConfig, MAX_READ, Request, serve};
+//! `pvisor cache` command definitions and dispatch.
+use clap::{Args, Subcommand};
+use pvisor::cache::{CacheBackend, CacheClient, CacheConfig, MAX_READ, Request};
+use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
+
 fn architecture() -> &'static str {
     match std::env::consts::ARCH {
         "aarch64" => "arm64",
@@ -7,10 +12,6 @@ fn architecture() -> &'static str {
         other => other,
     }
 }
-use clap::{Args, Subcommand};
-use std::io::Write;
-use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
 
 #[derive(Debug, Args)]
 pub struct CacheArgs {
@@ -23,7 +24,7 @@ pub struct CacheArgs {
     /// Read published images without registry access or cache writes.
     #[arg(long, global = true)]
     read_only: bool,
-    /// Local OCI staging used by the server or a daemonless cache publisher.
+    /// Local OCI staging used by a filesystem/S3 cache publisher.
     #[arg(long, global = true)]
     image_store: Option<PathBuf>,
     #[command(subcommand)]
@@ -49,12 +50,6 @@ enum CacheCommand {
         /// Private SnapshotStore, independent of the rootfs store and Run backing.
         #[arg(long)]
         base_store: PathBuf,
-    },
-    /// Serve immutable image revisions (foreground; Unix socket by default).
-    Serve {
-        /// unix:///absolute/path or tcp://127.0.0.1:PORT. Defaults to CACHE_SERVER.
-        #[arg(long)]
-        listen: Option<String>,
     },
     /// Resolve an image; print its manifest digest and immutable read handle.
     Prepare {
@@ -150,17 +145,6 @@ pub fn run(args: CacheArgs) -> anyhow::Result<()> {
         );
         anyhow::ensure!(!config.read_only, "read-only cache cannot publish images");
     }
-    if let CacheCommand::Serve { listen } = args.command {
-        anyhow::ensure!(
-            config.backend == CacheBackend::Server && !config.read_only,
-            "serve requires the server backend; filesystem/S3 backends do not need a daemon"
-        );
-        return serve(
-            listen.unwrap_or(config.location),
-            config.image_store,
-            std::env::var("PVISOR_CACHE_TOKEN").ok(),
-        );
-    }
     let client = CacheClient::from_config(config)?;
     let request = match args.command {
         CacheCommand::Publish {
@@ -209,9 +193,9 @@ pub fn run(args: CacheArgs) -> anyhow::Result<()> {
             }
             return Ok(());
         }
-        CacheCommand::Serve { .. }
-        | CacheCommand::PrepareRootfs { .. }
-        | CacheCommand::PrepareWorkspace { .. } => unreachable!(),
+        CacheCommand::PrepareRootfs { .. } | CacheCommand::PrepareWorkspace { .. } => {
+            unreachable!()
+        }
     };
     let (response, _) = client.request(request)?;
     println!("{}", serde_json::to_string_pretty(&response)?);

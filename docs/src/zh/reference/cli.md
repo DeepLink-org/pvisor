@@ -9,7 +9,7 @@ Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 根帮助（`pvisor` 或 `pvisor --help`）按 **Execution**（`run`、`status`、
 `kill`）、**Changes**（`review`、`apply`、`drop`、`inspect`）、
 **Checkpoints**（`checkpoint`、`suspend`、`resume`、`fork`）和 **Tools**
-（已安装的 `replay`/`tui` 伴随程序、`feature`、`help`）分组。帮助提供简短的
+（已安装的 `replay`/`tui` 伴随程序、`cache`、`feature`、`help`）分组。帮助提供简短的
 run-review-apply 示例；用 `pvisor help COMMAND` 查看详细选项。
 
 ```bash
@@ -77,15 +77,15 @@ pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/slee
 
 ## Daemon 与缓存命令 {#service}
 
-顶层 `pvisor` 命令操作原生 Job。直接调用 `pvisor-daemon` 管理 sandbox 生命周期及可选池；独立使用 `pvisor-cache` 管理 OCI 缓存。
+顶层 `pvisor` 命令操作原生 Job。直接调用 `pvisor-daemon` 管理 sandbox 生命周期及可选池；独立使用 `pvisor cache` 管理 OCI 缓存。
 
 ```bash
 pvisor-daemon serve --help
 pvisor-daemon memory-pool --help
-pvisor-cache --help
+pvisor cache --help
 ```
 
-为 `pvisor-daemon serve` 添加 `--memory-pool`，启用默认关闭的独立池组件。`pvisor-cache prepare/publish/serve/list/stat/read` 保持独立。Node 运行时协议供原生调用方使用，没有 daemon acquire/release 适配器。NativeRuntime 嵌入 VM 执行；checkpoint/fork 与 stage/apply API 未实现。所有权、安装与部署边界见 [daemon 指南](../guides/daemon/index.md)。
+为 `pvisor-daemon serve --sandbox` 添加 `--memory-pool`，启用默认关闭的独立池组件。`pvisor cache prepare/publish/list/stat/read` 是客户端命令，`pvisor-daemon serve --cache` 提供缓存服务。Node 运行时协议供原生调用方使用，没有 daemon acquire/release 适配器。NativeRuntime 嵌入 VM 执行；checkpoint/fork 与 stage/apply API 未实现。所有权、安装与部署边界见 [daemon 指南](../guides/daemon/index.md)。
 
 其他未知名称按默认执行规则处理。已退役的 `ctrl` 是明确例外：
 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 在 Job 准入前
@@ -807,7 +807,7 @@ deny-all 仍允许已配置的内部 Gateway 路由。各路径的范围见 [网
 backing/control 路径之外。
 
 ```bash
-pvisor-cache prepare-rootfs --rootfs /srv/linux-rootfs --base-store /srv/pvisor-bases
+pvisor cache prepare-rootfs --rootfs /srv/linux-rootfs --base-store /srv/pvisor-bases
 pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 
@@ -839,7 +839,7 @@ rootfs 的 SDK 调用（包括仅以 `with_rootfs_base` 提供 owner），以及
 上述 rootfs 准备命令，`WORKSPACE_ID` 来自工作区准备结果。
 
 ```bash
-pvisor-cache prepare-workspace --workspace /srv/project --base-store /srv/pvisor-workspace-bases
+pvisor cache prepare-workspace --workspace /srv/project --base-store /srv/pvisor-workspace-bases
 cd /srv/project
 pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /srv/pvisor-workspace-bases --workspace-base WORKSPACE_ID \
@@ -916,10 +916,10 @@ staging 数据，但保留紧凑的 Run/Overlay 元数据、apply ledger 和 cap
 
 ### 共享镜像文件缓存
 
-`pvisor-cache serve` 在前台提供独立 OCI 镜像文件服务；`pvisor-cache prepare IMAGE`、
-`pvisor-cache list DIGEST [PATH]`、`pvisor-cache stat DIGEST PATH` 和
-`pvisor-cache read DIGEST PATH` 通过 `PVISOR_CACHE_SERVER` 访问它。
-`pvisor-cache publish IMAGE` 显式发布到可写 filesystem/S3 后端。默认使用用户缓存目录下的
+`pvisor-daemon serve --cache` 在前台提供独立 OCI 镜像文件服务；`pvisor cache prepare IMAGE`、
+`pvisor cache list DIGEST [PATH]`、`pvisor cache stat DIGEST PATH` 和
+`pvisor cache read DIGEST PATH` 通过 `PVISOR_CACHE_SERVER` 访问它。
+`pvisor cache publish IMAGE` 显式发布到可写 filesystem/S3 后端。默认使用用户缓存目录下的
 `pvisor/cache.sock` Unix socket。服务端可用 `--image-store DIR`
 指定已有 OCI store。文件读取支持分段和 SHA-256 校验。
 
@@ -930,6 +930,6 @@ VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像�
 完整协议、限制和 SSH 远程访问方式见 [共享镜像缓存协议](shared-image-cache.md)。
 
 
-通过 `pvisor-daemon serve --memory-pool` 启用 daemon 自有实验池；独立 `memory-pool --directory DIR` 组件使用 daemon 准备的私有配置。原生 `pvisor run --vm-memory-pool SOCKET` 仍是带有平台／协议限制的显式运行时选项，不是服务启动器。
+通过 `pvisor-daemon serve --sandbox --memory-pool` 启用 daemon 自有实验池；独立 `memory-pool --directory DIR` 组件使用 daemon 准备的私有配置。原生 `pvisor run --vm-memory-pool SOCKET` 仍是带有平台／协议限制的显式运行时选项，不是服务启动器。
 
 物理/legacy 池丢失会使依赖 VM 失败；Linux sealed 压缩客户端保留本地恢复，停止新发布，通过 daemon `--memory-pool-mode compressed` 选择。启用与预算见 [daemon 池](../guides/daemon/index.md#memory-pool)；历史 macOS 压缩池结果保留其[版本范围](../design/memory-optimization/proof-of-concept.md#v1-integration)。

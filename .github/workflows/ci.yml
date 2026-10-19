@@ -57,7 +57,7 @@ jobs:
           install-nextest: "true"
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tools/semspec
+          workspaces: tools/semspec -> ../../target/semspec
       - run: just fmt-semspec
       - run: just lint-semspec
       - run: just test-semspec
@@ -75,6 +75,7 @@ jobs:
       - uses: ./.github/actions/setup-build-env
       - name: Install hyperfine for benchmark integration checks
         run: cargo install hyperfine --version 2.0.0 --locked
+      - run: just fmt-py --check
       - run: just lint-py
       - run: just test-scripts
       - run: just test-py
@@ -90,10 +91,23 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends build-essential
       - run: just fw test
 
-  daemon:
-    name: Native daemon / Linux x86_64
+  native-components:
+    name: Native ${{ matrix.component }} / Linux x86_64
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: daemon
+            package: pvisor-daemon
+            test_args: ""
+          - component: shim
+            package: pvisor-shim
+            test_args: ""
+          - component: shim-vm
+            package: pvisor-shim
+            test_args: --features vm
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
@@ -103,11 +117,11 @@ jobs:
           install-nextest: "true"
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: ci-daemon
-      # Shared native pipeline prepares the embedded kernel and Rust guest.
+          shared-key: ci-${{ matrix.component }}
+      # The shared pipeline prepares firmware/guest only for VM-bearing components.
       # Conventional tests are not an end-to-end KVM/prepared-image deployment gate.
-      - run: just daemon-build
-      - run: just test pvisor-daemon
+      - run: just build debug ${{ matrix.component }}
+      - run: just test ${{ matrix.package }} -- ${{ matrix.test_args }}
 
   rust-test:
     name: Rust Test / ${{ matrix.platform }} / ${{ matrix.shard }}
@@ -150,6 +164,7 @@ jobs:
             packages: >-
               pvisor-journal
               pvisor-guest
+              pvisor-shim
               pvisor-core
               pvisor-gateway
               pvisor-overlay-core
@@ -201,6 +216,10 @@ jobs:
         if: matrix.shard == 'core'
         run: just test pvisor-journal
 
+      - name: Test portable daemon cache service on macOS
+        if: runner.os == 'macOS'
+        run: just test pvisor-daemon -- --test cache
+
       - name: Report macOS Hypervisor availability
         if: runner.os == 'macOS'
         run: sysctl kern.hv_support
@@ -211,6 +230,12 @@ jobs:
           # namespaces. The dedicated isolation job remains strict.
           PVISOR_TEST_ALLOW_NO_USERNS: "1"
         run: just test-rust ${{ matrix.packages }}
+
+      - name: Test the Gateway-enabled runtime and CLI
+        if: matrix.shard == 'cli' || runner.os == 'macOS'
+        env:
+          PVISOR_TEST_ALLOW_NO_USERNS: "1"
+        run: just test pvisor pvisor-cli -- --features pvisor/gateway,pvisor-cli/gateway
 
   pvisor-isolation-regression:
     name: pVisor isolation and documented cases / Linux
@@ -332,7 +357,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [checks, python, firmware, daemon, rust-test, pvisor-isolation-regression, examples, semspec]
+    needs: [checks, python, firmware, native-components, rust-test, pvisor-isolation-regression, examples, semspec]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

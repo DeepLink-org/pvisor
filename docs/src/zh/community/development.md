@@ -10,7 +10,7 @@ wheel 将原生可执行脚本直接安装到环境的 bin 目录；旧 Python �
 | 目录 | 职责 |
 |---|---|
 | `crates/pvisor/` | 可嵌入运行时、Session/Attempt 编排、执行器、持久化 Job 服务、镜像准备和缓存机制 |
-| `crates/pvisor-cli/` | 四个应用二进制、CLI 命令、终端前端和 replay/TUI 伴随程序分派 |
+| `crates/pvisor-cli/` | 三个应用二进制、CLI 命令、终端前端和 replay/TUI 伴随程序分派 |
 | `crates/pvisor-vm/` | 原生 VM 运行时、跨平台 API、私有 VMM／平台实现、内嵌 guest 和内核／固件接入 |
 | `crates/pvisor-daemon/` | Linux x86_64 sandbox 生命周期 API、独立原生 VM supervisor 和可选 daemon 自有池 |
 | `crates/pvisor-core/` | Operation、Placement、策略、对外交互和 Event 契约 |
@@ -59,7 +59,7 @@ core, guest ──> 不依赖其他 workspace crate
 ```text
 crates/pvisor-cli/src/
 ├── lib.rs                 # 前端模块，不重导出运行时
-├── bin/                   # 四个：pvisor、pvisor-cache、pvisor-tui、pvisor-replay
+├── bin/                   # 三个：pvisor、pvisor-tui、pvisor-replay
 ├── cli/                   # 参数、命令和共享终端工具
 │   ├── cache.rs           # 缓存参数解析与展示
 │   └── features.rs        # 运行时功能列表前端
@@ -112,7 +112,7 @@ CLI 参数与展示、Host 监听器／worker 归 `pvisor-cli`；
 VM 执行器将 Run/Attempt 生命周期适配到 `pvisor_vm::api`；VMM、平台机制、内嵌 guest
 和内核／固件接入属于 `pvisor-vm`。OCI 准备属于 `image/`，供直接加载和缓存服务共用。
 缓存存储及带认证的服务端留在运行时，缓存命令解析／展示归 `pvisor-cli/src/cli/cache.rs`。
-Bundle 和检查点与运行记录放在一起，不归某个执行后端。`pvisor-daemon/src/memory_pool.rs` 拥有池启动／复用和独立 `memory-pool` 组件；通过 `serve --memory-pool` 启用。`pvisor/src/node.rs` 与 `node/` 中的 node 协议是运行时设施，没有 daemon acquire/release 适配器。`pvisor-cache` 保留独立准备、发布、服务和读取入口。
+Bundle 和检查点与运行记录放在一起，不归某个执行后端。`pvisor-daemon/src/memory_pool.rs` 拥有池启动／复用和独立 `memory-pool` 组件；通过 `serve --sandbox --memory-pool` 启用。`pvisor/src/node.rs` 与 `node/` 中的 node 协议是运行时设施，没有 daemon acquire/release 适配器。`pvisor cache` 负责准备、发布和读取；`pvisor-daemon serve --cache` 负责服务。
 
 既有公开运行时导入，包括 `PVisor`、`ProcessExecutor`、`cache` 以及内部 `sandbox` 入口，
 保留原有路径。显式前端／嵌入 API 导出文件访问类型、`GatewayProfile`、

@@ -1,5 +1,7 @@
 # Run the single-node daemon
 
+
+Cache is an optional component of the same daemon: add `--cache` to sandbox serving, or run `pvisor-daemon serve --cache` alone. `--cache-listen` and `--cache-image-store` configure its separate endpoint and store. Cache startup failure or unexpected exit fails the daemon; daemon shutdown/crash stops its cache worker. HTTP shutdown drains for at most ten seconds; in-flight cache requests may fail. Native VM supervisors and the shared pool retain their existing restart lifecycle.
 Install `pvisor-daemon` to manage image sandboxes on one Linux host through an API partially compatible with OpenSandbox 1.1.0. The daemon owns node-local admission, lifecycle, persistent state and expiration cleanup.
 
 Cross-node scheduling, global DAGs and distributed leases belong to Kubernetes, Ray or your application. The daemon contains no Controller or Worker.
@@ -21,7 +23,7 @@ The long-running guest bootstrap must supervise the workload, a real OpenSandbox
 
 ## Install and start {#install}
 
-Install the `pvisor` wheel on Linux x86_64 to get the standalone `pvisor-daemon` executable in the Python environment's bin directory. macOS wheels do not include the daemon:
+Linux x86_64 and macOS ARM64 wheels install `pvisor-daemon` alongside `pvisor`. Cache serving works on both platforms; the sandbox service below requires Linux x86_64:
 
 ```bash
 pip install pvisor
@@ -35,7 +37,7 @@ For the latest `main` build, use the [nightly wheel installer](../../start/insta
 
 ```bash
 export OPEN_SANDBOX_API_KEY="$(openssl rand -hex 32)"
-pvisor-daemon serve \
+pvisor-daemon serve --sandbox \
   --images-dir /srv/pvi \
   --cgroup-root /sys/fs/cgroup/pvd \
   --listen 127.0.0.1:8080 \
@@ -140,7 +142,7 @@ The host account, daemon/firmware and prepared images must be trusted. Private s
 
 A daemon sandbox ID is not a Job ID; do not pass it to `pvisor checkpoint`, `fork`, `apply` or `drop`. A daemon pause is a confirmed vCPU pause on the same live Attempt, not a sealed RAM/CPU/device/filesystem snapshot. Native Job file review, checkpoints and model capture continue through the `pvisor run` path: execution steps are in the [VM guide](../executors/vm.md), node-local Job file checkpoints in [checkpoints and forks](../fork-checkpoint.md), and model-request routing/capture in the [Gateway guide](../capture.md). A compatible standalone-rootfs, network-free VM Job can use execution checkpoints; check capability and blockers with `pvisor status --json`.
 
-`pvisor-cache prepare/publish/serve/list/stat/read` remain independent commands, not daemon subcommands; see the [shared image cache reference](../../reference/shared-image-cache.md) for publication, backends, authentication and access. Daemon state is stored separately from native Jobs and cache stores; the Daemon API key authorizes neither the standalone cache nor node-runtime IPC.
+`pvisor cache prepare/publish/list/stat/read` remain independent commands, not daemon subcommands; see the [shared image cache reference](../../reference/shared-image-cache.md) for publication, backends, authentication and access. Daemon state is stored separately from native Jobs and cache stores; the Daemon API key authorizes neither the standalone cache nor node-runtime IPC.
 
 The retired Cluster task/client SDK, Controller/Worker registration, placement, DAG, lease renewal, completion outbox and artifact retirement commands are not daemon interfaces. Do not feed old task JSON, `worker.toml`, Controller credentials or journals to the daemon; there is no automatic path from distributed task history to sandbox state. Retain old results before retiring a deployment, and use fresh state for the OpenSandbox profile.
 

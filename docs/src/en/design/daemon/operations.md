@@ -1,6 +1,6 @@
 # Daemon operations
 
-Run a single-node sandbox service with the native VM runtime, private state and explicit resource capacity. Invoke `pvisor-daemon` directly. It owns sandbox services and its optional detached pool; `pvisor-cache` remains independent.
+Run a single-node sandbox service with the native VM runtime, private state and explicit resource capacity. Invoke `pvisor-daemon` directly. It owns sandbox services and its optional detached pool; `pvisor cache` provides cache client commands, and `pvisor-daemon serve --cache` serves the cache.
 
 ## Deployment {#deployment}
 
@@ -12,7 +12,7 @@ Set `OPEN_SANDBOX_API_KEY` to a protected random secret of at least 32 bytes, no
 
 ```sh
 pvisor-daemon protocol
-pvisor-daemon serve \
+pvisor-daemon serve --sandbox \
   --images-dir /srv/pvi \
   --cgroup-root /sys/fs/cgroup/pvd \
   --listen 127.0.0.1:8080 \

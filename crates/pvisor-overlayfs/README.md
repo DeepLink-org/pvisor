@@ -3,8 +3,7 @@
 **Cross-platform FUSE overlay for pVisor staging (macFUSE / libfuse).**
 
 Owns the unprivileged, in-process FUSE overlay: ordered multi-`lowerdir` merge,
-directory upper, portable `.wh.*` whiteouts, and the optional
-standalone `pvisor-overlayfs` diagnostic CLI.
+directory upper, portable `.wh.*` whiteouts, and the embedded mounting API. This crate produces no standalone executable.
 
 Does not own review, apply, drop, or Run lifecycle.
 [`pvisor`](../pvisor/README.md) links this crate as a
@@ -425,16 +424,9 @@ just build release
 just test pvisor-overlayfs
 ```
 
-pVisor embeds the overlay library; it does not discover or launch an overlay
-binary. Library consumers use `default-features = false` to exclude the diagnostic
-CLI's argument parser and logger. The `cli` feature is enabled for standalone
-builds by default; the executable requires it and is intended for diagnostics or
-manual mounts:
-
-```bash
-cargo zigbuild -p pvisor-overlayfs --release --target x86_64-unknown-linux-musl
-# → target/x86_64-unknown-linux-musl/release/pvisor-overlayfs (Linux)
-```
+pVisor embeds the overlay library and owns its mount lifecycle. There is no
+standalone executable or manual-mount CLI command. The library has no CLI parser
+or logger dependencies.
 
 ## Directory enumeration and snapshot lifetime
 

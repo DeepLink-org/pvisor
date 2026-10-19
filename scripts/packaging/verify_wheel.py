@@ -15,7 +15,6 @@ from pathlib import Path
 
 EXPECTED_BINARIES = (
     "pvisor",
-    "pvisor-cache",
     "pvisor-tui",
     "pvisor-replay",
     "pvisor-daemon",
@@ -26,9 +25,7 @@ FIRMWARE_NAMES = ("libkrunfw.so.5", "libkrunfw.5.dylib")
 
 def expected_binaries(wheel: Path) -> tuple[str, ...]:
     name = wheel.name.lower()
-    if "macosx" in name and "arm64" in name:
-        return EXPECTED_BINARIES[:-1]
-    if "linux" in name and "x86_64" in name:
+    if ("macosx" in name and "arm64" in name) or ("linux" in name and "x86_64" in name):
         return EXPECTED_BINARIES
     raise RuntimeError(f"unsupported wheel platform: {wheel.name}")
 
@@ -62,10 +59,8 @@ def _wheel_contents(
         expected = expected_binaries(wheel)
         if any(name.endswith("/scripts/pvisor-memory-pool") for name in archive.namelist()):
             raise RuntimeError("wheel contains retired executable pvisor-memory-pool")
-        if "pvisor-daemon" not in expected and any(
-            name.endswith("/scripts/pvisor-daemon") for name in archive.namelist()
-        ):
-            raise RuntimeError("pvisor-daemon is supported only in Linux x86_64 wheels")
+        if any(name.endswith("/scripts/pvisor-cache") for name in archive.namelist()):
+            raise RuntimeError("wheel contains retired executable pvisor-cache")
         for name in expected:
             matches = [
                 info
@@ -197,13 +192,12 @@ def install_smoke(wheel: Path, version: str) -> None:
                 )
             _run([str(executable), "--help"], env=env)
 
-        if "pvisor-daemon" in expected_binaries(wheel):
-            _run([str(scripts / "pvisor-daemon"), "serve", "--help"], env=env)
-            _run([str(scripts / "pvisor-daemon"), "protocol"], env=env)
+        _run([str(scripts / "pvisor-daemon"), "serve", "--help"], env=env)
+        _run([str(scripts / "pvisor-daemon"), "protocol"], env=env)
 
         _run([str(scripts / "pvisor"), "run", "--help"], env=env)
         for command in ("prepare", "publish", "read"):
-            _run([str(scripts / "pvisor-cache"), command, "--help"], env=env)
+            _run([str(scripts / "pvisor"), "cache", command, "--help"], env=env)
         for command in ("tui", "replay"):
             _run([str(scripts / "pvisor"), command, "--help"], env=env)
 

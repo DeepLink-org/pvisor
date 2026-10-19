@@ -62,7 +62,7 @@ The public workflow is simple: start a Job, inspect evidence, then decide what t
 
 ## Core commands and service boundaries
 
-Top-level commands follow the object they operate on: flat Job/workspace operations. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI caching uses independent `pvisor-cache`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help stays concise, grouping commands under Execution (`run`, `status`, `kill`), Changes (`review`, `apply`, `drop`, `inspect`), Checkpoints (`checkpoint`, `suspend`, `resume`, `fork`) and Tools (installed `replay`/`tui` companions, `feature`, `help`). It includes run-review-apply examples and points to `pvisor help COMMAND` for details.
+Top-level commands follow the object they operate on: flat Job/workspace operations. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI cache commands use `pvisor cache`, with serving owned by `pvisor-daemon serve --cache`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help stays concise, grouping commands under Execution (`run`, `status`, `kill`), Changes (`review`, `apply`, `drop`, `inspect`), Checkpoints (`checkpoint`, `suspend`, `resume`, `fork`) and Tools (installed `replay`/`tui` companions, `cache`, `feature`, `help`). It includes run-review-apply examples and points to `pvisor help COMMAND` for details.
 
 | Responsibility | Entry |
 |---|---|
@@ -71,8 +71,8 @@ Top-level commands follow the object they operate on: flat Job/workspace operati
 | Immutable Job checkpoints | `checkpoint` |
 | Trajectory replay and interactive frontend | `replay`, `tui` |
 | Local sandbox lifecycle | Direct `pvisor-daemon serve` and OpenSandbox-profile HTTP API |
-| Immutable image cache | `pvisor-cache prepare/publish/serve/list/stat/read` |
-| Optional daemon-owned shared pages | `pvisor-daemon serve --memory-pool`; detached `memory-pool --directory DIR` component |
+| Immutable image cache | `pvisor cache prepare/publish/list/stat/read`; `pvisor-daemon serve --cache` |
+| Optional daemon-owned shared pages | `pvisor-daemon serve --sandbox --memory-pool`; detached `memory-pool --directory DIR` component |
 
 `status --review` is a shortcut; `review` is the detailed review entry. `run --tui` is the primary interactive path, with top-level `tui` for explicit frontend invocation. Job operations are top-level commands, without a `job` command layer.
 
@@ -81,7 +81,7 @@ Resource tools use their own executables. Native execution capture, restoration 
 ```bash
 pvisor-daemon serve --help
 pvisor-daemon protocol
-pvisor-cache --help
+pvisor cache --help
 pvisor-daemon memory-pool --help
 ```
 

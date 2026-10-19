@@ -7,7 +7,7 @@ encoding work save more than coordination and service overhead cost.
 ## Target and current status {#status}
 
 Linux has an experimental sealed compressed pool selected by
-`pvisor-daemon serve --memory-pool --memory-pool-mode compressed`. The default
+`pvisor-daemon serve --sandbox --memory-pool --memory-pool-mode compressed`. The default
 pool mode remains raw physical-page sharing. Compressed handoff, deduplication,
 budgets, disconnected-reference lifetime and recovery after service exit have
 process-level tests. A Linux x86_64/KVM two-VM correctness probe passed on

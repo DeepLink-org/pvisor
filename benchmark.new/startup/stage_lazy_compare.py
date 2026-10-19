@@ -93,7 +93,7 @@ def prepare(args):
             if not destination.exists():
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, destination)
-    for name in ("pvisor", "pvisor-cache"):
+    for name in ("pvisor", "pvisor-daemon"):
         shutil.copy2(args.binary_dir.resolve() / name, batch / "tools" / name)
     rlib = args.runtime_rlib.resolve(strict=True)
     command = [
@@ -345,11 +345,12 @@ def measure(batch, preflight_only=False):
     service_log = (batch / "cache-service.log").open("wb")
     service = subprocess.Popen(
         [
-            str(batch / "tools/pvisor-cache"),
+            str(batch / "tools/pvisor-daemon"),
             "serve",
-            "--listen",
+            "--cache",
+            "--cache-listen",
             f"tcp://127.0.0.1:{port}",
-            "--image-store",
+            "--cache-image-store",
             str(batch / "service-store"),
         ],
         env=service_env,
@@ -395,7 +396,7 @@ def measure(batch, preflight_only=False):
         os.chmod(batch / "proxy.sock", 0o666)
         threading.Thread(target=proxy.serve_forever, daemon=True).start()
         prepared = subprocess.run(
-            [str(batch / "tools/pvisor-cache"), "prepare", "docker.io/library/ubuntu@" + SOURCE],
+            [str(batch / "tools/pvisor"), "cache", "prepare", "docker.io/library/ubuntu@" + SOURCE],
             capture_output=True,
             timeout=60,
             env=service_env | dict(PVISOR_CACHE_SERVER=f"tcp://127.0.0.1:{port}"),

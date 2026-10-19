@@ -1,7 +1,6 @@
 //! Job lifecycle commands and dispatch to first-party companions.
 mod cache;
 mod checkpoint;
-mod commands;
 mod features;
 #[cfg(unix)]
 pub(crate) mod host;
@@ -26,7 +25,6 @@ mod trajectory;
 
 pub use checkpoint::ResumeArgs;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
-pub use commands::cache_main;
 pub use run::RunArgs;
 use std::ffi::OsString;
 
@@ -54,6 +52,8 @@ struct Cli {
 enum Command {
     /// List runtime experiments.
     Feature(crate::cli::features::FeatureArgs),
+    /// Build, publish and query image, rootfs and workspace caches.
+    Cache(cache::CacheArgs),
     #[command(about = run::RUN_COMMAND_ABOUT, long_about = run::RUN_COMMAND_LONG_ABOUT)]
     Run(Box<run::RunArgs>),
 
@@ -101,7 +101,7 @@ fn grouped_commands(command: &clap::Command) -> String {
         ("Execution", &["run", "status", "kill"]),
         ("Changes", &["review", "apply", "drop", "inspect"]),
         ("Checkpoints", &["checkpoint", "suspend", "resume", "fork"]),
-        ("Tools", &["replay", "tui", "feature", "help"]),
+        ("Tools", &["cache", "replay", "tui", "feature", "help"]),
     ];
     let width = command
         .get_subcommands()
@@ -208,7 +208,7 @@ pub fn main() -> anyhow::Result<()> {
         !args.get(offset).is_some_and(|arg| arg == "service")
             && !(args.get(offset).is_some_and(|arg| arg == "help")
                 && args.get(offset + 1).is_some_and(|arg| arg == "service")),
-        "`pvisor service` has been retired; invoke pvisor-daemon or pvisor-cache directly; the daemon manages shared services and the memory pool"
+        "`pvisor service` has been retired; invoke pvisor-daemon directly; the daemon manages shared services and the memory pool"
     );
     let mut routing_args = vec![args[0].clone()];
     routing_args.extend_from_slice(&args[offset..]);
@@ -294,6 +294,7 @@ pub fn main() -> anyhow::Result<()> {
     }
     match parsed.command {
         Command::Feature(_) => unreachable!("feature queries return without contacting Host"),
+        Command::Cache(args) => cache::run(args)?,
         Command::Run(run) => {
             if !terminal::is_child() {
                 let audit = run.audit_requested()?;

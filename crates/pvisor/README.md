@@ -20,8 +20,9 @@ owns Session lifecycle, scheduling, policy adaptation and execution. The
 `pvisor-cli` application owns Job lifecycle commands, the persistent Host Job
 listener/worker adapters, terminal/rendering code and companion discovery.
 Cache storage and node resource protocols remain runtime components; cache
-argument parsing and the independent `pvisor-cache` executable live in the app.
-Job commands use `pvisor`; `pvisor-daemon` owns sandbox services and its optional
+argument parsing lives under `pvisor cache` in the app; `pvisor-daemon serve --cache`
+owns the server entry point.
+Job commands use `pvisor`; `pvisor-daemon` owns cache and sandbox services and its optional
 pool. TUI and replay are
 Job frontends, not runtime dependencies. Cross-node placement and distributed scheduling
 belong to external orchestrators, not this crate.
@@ -190,7 +191,7 @@ All built-in Job CLI operations (`run`, `status`, `kill`, `suspend`, `resume`,
 listener in `pvisor-cli/src/cli/host_service.rs`. Ordinary persisted Jobs need no endpoint options or manual
 service startup. Bare `pvisor` displays help; default execution via
 `pvisor -- COMMAND` enters the same service. This listener is separate from
-daemon sandbox/pool ownership and the independent cache; embedded `PVisor`
+daemon sandbox/pool/cache service ownership; embedded `PVisor`
 remains a direct API.
 
 Host authority lives under canonical `/tmp/pvisor-host-<effective-UID>`
@@ -401,7 +402,7 @@ and [configuration example](../../docs/src/en/reference/config.md#vm-control-mem
 
 ## Resource ownership and local cold compression
 
-`pvisor-daemon serve --memory-pool` enables the daemon-owned experimental pool;
+`pvisor-daemon serve --sandbox --memory-pool` enables the daemon-owned experimental pool;
 the daemon starts or reuses its detached `pvisor-daemon memory-pool --directory DIR`
 component. Linux `--memory-pool-mode compressed` selects shared sealed compressed
 objects instead of default physical-page sharing. Compressed clients retain
@@ -440,8 +441,8 @@ Python script/rootfs, conflicts with `--libraries` and does not attach a DAX
 window. This exercises the physical pager's successful-file-READ hints through
 the normal rootfs path, with full payload and private-write validation.
 
-`pvisor-cache` remains independent, with `prepare`, `publish`, `serve`, `list`,
-`stat` and `read`. Node runtime protocols own immutable mounts and snapshot
+`pvisor cache` provides `prepare`, `publish`, `list`, `stat` and `read`;
+`pvisor-daemon serve --cache` serves the cache. Node runtime protocols own immutable mounts and snapshot
 RAM with same-user authorization, compatibility checks and connection pins.
 The daemon has no node acquire/release adapter. Embedded callers retain explicit
 resource ownership and must release consumers before backing owners.
@@ -495,7 +496,7 @@ barriers call `Persistence` through `DurableFiles` directly, while runtime JSON
 publication and Run persistence diagnostics retain their own helpers.
 
 Application sources live under `../pvisor-cli/`: `src/cli/`, `src/companions.rs`,
-`src/tui/`, and four entries in `src/bin/`: `pvisor`, `pvisor-cache`, `pvisor-tui`
+`src/tui/`, and three entries in `src/bin/`: `pvisor`, `pvisor-tui`
 and `pvisor-replay`. Daemon pool lifecycle belongs in
 `../pvisor-daemon/src/memory_pool.rs`; node protocols remain in `src/node.rs`
 and `src/node/`. Feature listing and cache argument
@@ -647,7 +648,7 @@ Ordinary VM CLI runs can select a durably prepared physical rootfs independently
 of the live workspace:
 
 ```bash
-pvisor-cache prepare-rootfs --rootfs /opt/rootfs-source --base-store /opt/pvisor-bases
+pvisor cache prepare-rootfs --rootfs /opt/rootfs-source --base-store /opt/pvisor-bases
 # Use the prepared_rootfs.base.id from the JSON result:
 pvisor run --vm --rootfs-base-store /opt/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```

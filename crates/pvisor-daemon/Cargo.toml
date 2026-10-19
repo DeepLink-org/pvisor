@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Node-local sandbox lifecycle and OpenSandbox API for pVisor"
+description = "Composite node-local sandbox, cache and memory-pool services for pVisor"
 autobins = false
 default-run = "pvisor-daemon"
 
@@ -20,7 +20,7 @@ async-trait.workspace = true
 axum = { workspace = true, features = ["http1", "json", "matched-path", "query", "tokio"] }
 
 chrono = { workspace = true, features = ["serde"] }
-clap = { workspace = true, features = ["derive", "env"] }
+clap = { workspace = true, features = ["derive"] }
 fs2.workspace = true
 libc.workspace = true
 pvisor = { path = "../pvisor" }

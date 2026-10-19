@@ -1,6 +1,6 @@
 # pVisor application frontends
 
-`pvisor-cli` owns four executables: `pvisor`, `pvisor-cache`, `pvisor-tui`, and
+`pvisor-cli` owns three executables: `pvisor`, `pvisor-tui`, and
 `pvisor-replay`, with their argument parsing, terminal adapters, rendering and
 companion lookup.
 The TUI frontend lives here, not in the embeddable runtime.
@@ -14,8 +14,9 @@ runtime APIs and retain request-local cancellation, admission fences and termina
 ownership. The persistent Host Job listener is not an implicit requirement of
 embedded execution.
 
-The separate `pvisor-daemon` owns shared services, including the memory pool.
-Invoke `pvisor-daemon` and `pvisor-cache` directly. Replay and TUI are root
+The separate `pvisor-daemon` owns shared services, including the cache server and memory pool.
+Use `pvisor cache` to build, publish and query caches; invoke `pvisor-daemon serve --cache`
+to serve them. Replay and TUI are root
 companions. Use `pvisor -- COMMAND` for explicit workload execution.
 
 Recording callers import `Journal` and `JournalStore` from `pvisor_journal::api`;
@@ -25,7 +26,7 @@ durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 
 Root help stays concise: **Execution** (`run`, `status`, `kill`), **Changes**
 (`review`, `apply`, `drop`, `inspect`), **Checkpoints** (`checkpoint`, `suspend`,
-`resume`, `fork`) and **Tools** (installed `replay`/`tui` companions, `feature`,
+`resume`, `fork`) and **Tools** (installed `replay`/`tui` companions, `cache`, `feature`,
 `help`). It includes the run-review-apply examples; use `pvisor help COMMAND`
 for command options.
 
@@ -70,7 +71,7 @@ retains its separate worker runtime.
 
 ## Prepared VM rootfs
 
-`pvisor-cache prepare-rootfs --rootfs DIR --base-store STORE` is a local operation,
+`pvisor cache prepare-rootfs --rootfs DIR --base-store STORE` is a local operation,
 independent of cache daemons, backends and registry access. The source must be
 quiescent; preparation copies/verifies it and commits a persistent store pin
 before printing `{schema_version, prepared_rootfs: {store, base: {id}}, rootfs}`.
@@ -116,7 +117,7 @@ An explicit prepared workspace reads one fixed, owned generation while retaining
 the live caller workspace as the apply destination. Prepare it outside the Run:
 
 ```bash
-pvisor-cache prepare-workspace --workspace /opt/workspace-source --base-store /opt/workspace-bases
+pvisor cache prepare-workspace --workspace /opt/workspace-source --base-store /opt/workspace-bases
 pvisor run --vm --rootfs-base-store /opt/rootfs-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /opt/workspace-bases --workspace-base WORKSPACE_ID -- /bin/sh
 ```

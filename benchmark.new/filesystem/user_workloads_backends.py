@@ -106,7 +106,7 @@ def prepare_rootfs(batch, rootfs, source_batch, artifacts):
             role="resolve product-selected cwd, then exec frozen workload",
         )
     )
-    for name in ("pvisor", "pvisor-guest", "pvisor-cache"):
+    for name in ("pvisor", "pvisor-guest"):
         if (binary_dir / name).is_file():
             installed.append(_install(binary_dir / name, launch / name, toolroot))
             (launch / name).chmod(0o700)
@@ -118,7 +118,7 @@ def prepare_rootfs(batch, rootfs, source_batch, artifacts):
     (launch / "libkrunfw.so.5").symlink_to("libkrunfw.so.5.6.2")
     dependencies = []
     for executable in sorted(launch.iterdir()):
-        if executable.name not in ("pvisor", "pvisor-guest", "pvisor-cache"):
+        if executable.name not in ("pvisor", "pvisor-guest"):
             continue
         linked = subprocess.run(["ldd", str(executable)], text=True, capture_output=True)
         # A static companion reports "not a dynamic executable" with status 1.

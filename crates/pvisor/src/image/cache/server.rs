@@ -322,6 +322,7 @@ pub(super) fn serve(
     address: String,
     store: ImageStore,
     token: Option<String>,
+    ready: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     let store = Arc::new(reader(&store)?);
     let token = Arc::new(token);
@@ -389,7 +390,8 @@ pub(super) fn serve(
         files,
         prepare,
     };
-    eprintln!("pvisor-cache listening on {address}");
+    ready()?;
+    eprintln!("pVisor cache component listening on {address}");
     match listener {
         Listener::Unix(listener, _lock) => {
             for stream in listener.incoming() {

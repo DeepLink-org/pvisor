@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and stage the native CLI component set for a pVisor wheel."""
+"""Build pVisor components and stage native product binaries for wheels."""
 
 from __future__ import annotations
 
@@ -21,13 +21,19 @@ import firmware as firmware_build
 
 ROOT = Path(__file__).resolve().parents[2]
 WHEEL_DATA = ROOT / "target" / "wheel-data"
-NATIVE_BINARIES = (
+CLI_BINARIES = (
     "pvisor",
-    "pvisor-cache",
     "pvisor-tui",
     "pvisor-replay",
 )
-EXPECTED_BINARIES = (*NATIVE_BINARIES, "pvisor-daemon")
+EXPECTED_BINARIES = (*CLI_BINARIES, "pvisor-daemon")
+BUILD_COMPONENTS = {
+    "cli": ("pvisor-cli", CLI_BINARIES),
+    "daemon": ("pvisor-daemon", ("pvisor-daemon",)),
+    "shim": ("pvisor-shim", ("containerd-shim-pvisor-v2",)),
+    "shim-vm": ("pvisor-shim", ("containerd-shim-pvisor-v2",)),
+    "guest": ("pvisor-guest", ("pvisor-guest",)),
+}
 SUPPORTED_TARGETS = {
     "x86_64-unknown-linux-musl",
     "aarch64-apple-darwin",
@@ -132,15 +138,20 @@ def options_from_build_backend(
 
 
 def _cargo_command(
-    options: BuildOptions, *, shim_vm: bool = False, daemon: bool = False
+    options: BuildOptions,
+    *,
+    component: str = "cli",
 ) -> list[str]:
     target = (
         _normalize_target(options.target)
         if options.target is not None or sys.platform == "linux"
         else None
     )
-    if daemon and target != "x86_64-unknown-linux-musl":
-        raise RuntimeError("pvisor-daemon is supported only on Linux x86_64 (static musl)")
+    if component not in BUILD_COMPONENTS:
+        raise ValueError(f"unknown build component: {component}")
+    if component in ("shim", "shim-vm") and target != "x86_64-unknown-linux-musl":
+        raise RuntimeError("shim builds require Linux x86_64 (static musl)")
+    package, binaries = BUILD_COMPONENTS[component]
     command = [
         "cargo",
         "zigbuild" if target == "x86_64-unknown-linux-musl" else "build",
@@ -148,16 +159,16 @@ def _cargo_command(
         options.profile,
         "--message-format=json-render-diagnostics",
         "-p",
-        "pvisor-daemon" if daemon else "pvisor-shim" if shim_vm else "pvisor-cli",
+        package,
     ]
-    if daemon:
-        command.extend(("--bin", "pvisor-daemon", "--no-default-features"))
-    elif shim_vm:
-        command.extend(("--bin", "containerd-shim-pvisor-v2", "--features", "vm"))
-    else:
+    for name in binaries:
+        command.extend(("--bin", name))
+    if component == "cli":
         command.extend(("--features", "pvisor-cli/gateway"))
-        for name in NATIVE_BINARIES:
-            command.extend(("--bin", name))
+    elif component == "shim-vm":
+        command.extend(("--features", "vm"))
+    elif component == "shim":
+        command.append("--no-default-features")
     if target is not None:
         command.extend(("--target", target))
     if options.target_dir is not None:
@@ -195,50 +206,37 @@ def _prepare_zig_file_limit() -> None:
     print(f"Zig build open-file limit: {soft} -> {available}", file=sys.stderr)
 
 
-def expected_binaries(options: BuildOptions) -> tuple[str, ...]:
-    return NATIVE_BINARIES if _is_macos(options) else EXPECTED_BINARIES
-
-
 def _build(
     options: BuildOptions,
     *,
-    shim_vm: bool = False,
     firmware: firmware_build.ResolvedFirmware | None = None,
 ) -> dict[str, Path]:
     firmware = firmware if firmware is not None else _resolve_firmware(options)
-    artifacts = _build_component(options, shim_vm=shim_vm, firmware=firmware)
-    if not shim_vm and not _is_macos(options):
-        # Keep package selection separate; the daemon embeds pvisor's VM library,
-        # while the CLI discovers the daemon executable without linking it back.
-        artifacts.update(_build_component(options, daemon=True, firmware=firmware))
+    artifacts = _build_component(options, firmware=firmware)
+    artifacts.update(_build_component(options, component="daemon", firmware=firmware))
     return artifacts
 
 
 def _build_component(
     options: BuildOptions,
     *,
-    shim_vm: bool = False,
-    daemon: bool = False,
+    component: str = "cli",
     firmware: firmware_build.ResolvedFirmware | None = None,
 ) -> dict[str, Path]:
-    command = _cargo_command(options, shim_vm=shim_vm, daemon=daemon)
-    expected = (
-        ("pvisor-daemon",)
-        if daemon
-        else ("containerd-shim-pvisor-v2",)
-        if shim_vm
-        else NATIVE_BINARIES
-    )
-    print(f"Building native CLI: {shlex.join(command)}", file=sys.stderr)
+    command = _cargo_command(options, component=component)
+    expected = BUILD_COMPONENTS[component][1]
+    print(f"Building pVisor {component}: {shlex.join(command)}", file=sys.stderr)
     build_env = os.environ.copy()
-    firmware = firmware if firmware is not None else _resolve_firmware(options)
+    if component in ("cli", "daemon", "shim-vm"):
+        firmware = firmware if firmware is not None else _resolve_firmware(options)
     for selector in (
         "PVISOR_LIBKRUNFW_PATH",
         "PVISOR_KRUNFW_PATH",
         "PVISOR_KRUNFW_KERNEL_BUNDLE",
     ):
         build_env.pop(selector, None)
-    build_env.update(firmware.cargo_env)
+    if firmware is not None:
+        build_env.update(firmware.cargo_env)
     if command[1] == "zigbuild":
         _prepare_zig_file_limit()
     process = subprocess.Popen(
@@ -273,14 +271,26 @@ def _build_component(
         raise subprocess.CalledProcessError(return_code, command)
     missing = sorted(set(expected) - artifacts.keys())
     if missing:
-        raise RuntimeError(f"Cargo did not report expected wheel binaries: {', '.join(missing)}")
-    if _is_macos(options):
+        raise RuntimeError(
+            f"Cargo did not report expected {component} binaries: {', '.join(missing)}"
+        )
+    if _is_macos(options) and firmware is not None:
         assert firmware.library_name is not None
         for directory in {path.parent for path in artifacts.values()}:
             destination = directory / firmware.library_name
             if firmware.path != destination.resolve():
                 copy_artifact(firmware.path, destination)
             (directory / "libkrunfw.SOURCE").write_text(firmware.source_record)
+    return artifacts
+
+
+def _build_all(options: BuildOptions) -> dict[str, Path]:
+    """Build supported workspace executables, sharing one firmware resolution."""
+    firmware = _resolve_firmware(options)
+    artifacts = _build(options, firmware=firmware)
+    if not _is_macos(options):
+        artifacts.update(_build_component(options, component="shim-vm", firmware=firmware))
+        artifacts.update(_build_component(options, component="guest"))
     return artifacts
 
 
@@ -334,7 +344,7 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
     staged.mkdir()
 
     try:
-        for name in expected_binaries(options):
+        for name in EXPECTED_BINARIES:
             source = artifacts[name]
             destination = staged / name
             shutil.copy2(source, destination)
@@ -354,7 +364,7 @@ def stage_wheel_binaries(options: BuildOptions) -> Path:
                 )
             (staged / "libkrunfw.SOURCE").write_text(firmware.source_record, encoding="utf-8")
         if _is_macos(options):
-            for name in NATIVE_BINARIES:
+            for name in EXPECTED_BINARIES:
                 _sign_macos_pvisor(staged / name)
 
         scripts = WHEEL_DATA / "scripts"
@@ -379,22 +389,30 @@ def main() -> None:
     parser.add_argument("--target-dir", default=os.getenv("CARGO_TARGET_DIR", str(ROOT / "target")))
     parser.add_argument("--target", default=os.getenv("CARGO_BUILD_TARGET"))
     component = parser.add_mutually_exclusive_group()
-    component.add_argument("--daemon", action="store_true")
-    component.add_argument("--shim-vm", action="store_true")
+    component.add_argument(
+        "--all",
+        action="store_const",
+        dest="component",
+        const="all",
+        help="build all supported workspace binaries",
+    )
+    for name in ("daemon", "shim", "shim-vm"):
+        component.add_argument(f"--{name}", action="store_const", dest="component", const=name)
     args = parser.parse_args()
     target = _normalize_target(args.target) if args.target else None
-    if args.daemon or args.shim_vm:
+    if args.component in ("shim", "shim-vm"):
         if target and target != "x86_64-unknown-linux-musl":
-            parser.error("daemon and VM shim builds require x86_64-unknown-linux-musl")
+            parser.error("shim builds require x86_64-unknown-linux-musl")
         target = "x86_64-unknown-linux-musl"
     options = BuildOptions(target=target, profile=args.profile, target_dir=args.target_dir)
-    artifacts = (
-        _build_component(options, daemon=True)
-        if args.daemon
-        else _build(options, shim_vm=args.shim_vm)
-    )
+    if args.component == "all":
+        artifacts = _build_all(options)
+    elif args.component:
+        artifacts = _build_component(options, component=args.component)
+    else:
+        artifacts = _build(options)
     if _is_macos(options):
-        directory = artifacts["pvisor"].parent
+        directory = next(iter(artifacts.values())).parent
         artifacts.update(
             {name: directory / name for name in ("libkrunfw.5.dylib", "libkrunfw.SOURCE")}
         )

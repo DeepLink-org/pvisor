@@ -14,8 +14,8 @@ Manage local sandboxes through `pvisor-daemon`: one process accepts resource-bou
 | Prepared image | Supervise argv, initialize and authenticate execd/egress | Replacing lifecycle API authorization |
 | Native pVisor | VM execution embedded by supervisors; public Job workflow remains separate | Automatic exposure of stage/checkpoint APIs |
 | Native node runtime | Separate immutable backing protocols | Automatic daemon acquisition/sharing |
-| Daemon pool component | Optional detached pool enabled by `serve --memory-pool` | Pool-process/host-reboot recovery; node acquire/release |
-| Independent `pvisor-cache` | OCI prepare/publish/serve/list/stat/read | Daemon lifecycle ownership |
+| Daemon pool component | Optional detached pool enabled by `serve --sandbox --memory-pool` | Pool-process/host-reboot recovery; node acquire/release |
+| `pvisor cache` / `pvisor-daemon serve --cache` | OCI preparation/publication/reads and cache serving | Sandbox lifecycle |
 
 The Runtime trait has one implementation: VM-only NativeRuntime. Detached supervisors embed `pvisor::PVisor` with only VmExecutor and retain RunHandles across daemon restart. No host/OCI/pull fallback exists. The executable's `serve` command constructs NativeRuntime using required `--images-dir`/`--cgroup-root`; synchronous internal VM dispatch runs before Tokio, and the hidden supervisor command is dispatched. See [operations](operations.md#deployment).
 

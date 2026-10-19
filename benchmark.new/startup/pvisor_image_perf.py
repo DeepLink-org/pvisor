@@ -97,7 +97,7 @@ def existing_pvisor():
             if not (
                 executable == "pvisor"
                 and b"--pvisor-internal-host" in argv
-                or executable == "pvisor-cache"
+                or executable == "pvisor-daemon"
                 and argv[1:2] == [b"serve"]
             ):
                 continue
@@ -247,7 +247,7 @@ def prepare(args):
         raise ValueError("source must be the pinned linux/amd64 manifest")
     artifacts = {}
     runtime_libraries = {}
-    for name in ("pvisor", "pvisor-cache"):
+    for name in ("pvisor", "pvisor-daemon"):
         source_binary = binary_dir / name
         destination = output / "frozen/bin" / name
         original = sha(source_binary)
@@ -688,11 +688,12 @@ def worker(output):
     service_log = (output / "cache-service.log").open("wb")
     service = subprocess.Popen(
         [
-            "/tmp/lazy-binaries/pvisor-cache",
+            "/tmp/lazy-binaries/pvisor-daemon",
             "serve",
-            "--listen",
+            "--cache",
+            "--cache-listen",
             f"tcp://127.0.0.1:{upstream_port}",
-            "--image-store",
+            "--cache-image-store",
             str(output / "service-store"),
         ],
         env=env,
@@ -726,7 +727,7 @@ def worker(output):
             PVISOR_CACHE_SERVER=f"tcp://127.0.0.1:{proxy.server_address[1]}"
         )
         prepared = subprocess.run(
-            ["/tmp/lazy-binaries/pvisor-cache", "prepare", protocol["source"]],
+            ["/tmp/lazy-binaries/pvisor", "cache", "prepare", protocol["source"]],
             env=preparation_env,
             capture_output=True,
             timeout=60,

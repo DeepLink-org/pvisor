@@ -61,11 +61,6 @@ name = "pvisor"
 path = "src/bin/pvisor.rs"
 
 [[bin]]
-name = "pvisor-cache"
-path = "src/bin/pvisor-cache.rs"
-
-
-[[bin]]
 name = "pvisor-tui"
 path = "src/bin/pvisor-tui.rs"
 

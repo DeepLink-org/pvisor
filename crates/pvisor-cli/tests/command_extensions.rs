@@ -100,7 +100,7 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
         }
         assert!(!section.contains("  tui "), "{section}");
     }
-    for name in ["service", "daemon", "cache", "memory-pool"] {
+    for name in ["service", "daemon", "memory-pool"] {
         assert!(!help.contains(&format!("\n  {name} ")), "{help}");
     }
     for heading in ["Jobs:", "Filesystems:", "Services:", "Trajectories:"] {
@@ -157,14 +157,7 @@ fn retired_services_have_no_aliases_or_help_forwarding() {
     let kernel = temporary.path().join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
     let marker = temporary.path().join("executed");
-    for name in [
-        "service",
-        "daemon",
-        "cache",
-        "memory-pool",
-        "cluster",
-        "worker",
-    ] {
+    for name in ["service", "daemon", "memory-pool", "cluster", "worker"] {
         let companion = temporary.path().join(format!("pvisor-{name}"));
         fs::write(
             &companion,
@@ -186,14 +179,7 @@ fn retired_services_have_no_aliases_or_help_forwarding() {
         assert!(output.status.success());
         let help = String::from_utf8_lossy(&output.stdout);
         assert!(!help.contains("Extensions:"), "{help}");
-        for name in [
-            "service",
-            "daemon",
-            "cache",
-            "memory-pool",
-            "cluster",
-            "worker",
-        ] {
+        for name in ["service", "daemon", "memory-pool", "cluster", "worker"] {
             assert!(!help.contains(&format!("\n  {name} ")), "{help}");
         }
     }
@@ -238,7 +224,7 @@ fn retired_services_have_no_aliases_or_help_forwarding() {
             assert!(output.stdout.is_empty(), "{args:?}");
         }
     }
-    for name in ["daemon", "cache", "memory-pool"] {
+    for name in ["daemon", "memory-pool"] {
         for args in [vec!["help", name], vec![name, "--help"]] {
             let output = Command::new(&kernel)
                 .args(&args)
@@ -275,7 +261,7 @@ fn explicit_default_execution_remains_available() {
 }
 
 #[test]
-fn cli_has_four_binaries_and_preserves_standalone_cache() {
+fn cli_has_three_binaries_and_integrates_cache() {
     let manifest: toml::Value = toml::from_str(include_str!("../Cargo.toml")).unwrap();
     let bins: Vec<_> = manifest["bin"]
         .as_array()
@@ -283,17 +269,16 @@ fn cli_has_four_binaries_and_preserves_standalone_cache() {
         .iter()
         .map(|bin| bin["name"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        bins,
-        ["pvisor", "pvisor-cache", "pvisor-tui", "pvisor-replay"]
-    );
-    let output = Command::new(env!("CARGO_BIN_EXE_pvisor-cache"))
+    assert_eq!(bins, ["pvisor", "pvisor-tui", "pvisor-replay"]);
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .arg("cache")
         .arg("--help")
         .output()
         .unwrap();
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
-    assert!(help.contains("Usage: pvisor-cache"), "{help}");
+    assert!(help.contains("Usage: pvisor cache"), "{help}");
+    assert!(!help.contains("  serve"), "{help}");
     assert!(!help.contains("pvisor service"), "{help}");
 }
 
@@ -309,19 +294,11 @@ fn isolated_core_keeps_job_commands_and_runs_without_extensions() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     for name in [
-        "run", "status", "kill", "inspect", "fork", "apply", "drop", "help",
+        "run", "status", "kill", "inspect", "fork", "apply", "drop", "cache", "help",
     ] {
         assert!(help.contains(&format!("\n  {name} ")), "{help}");
     }
-    for name in [
-        "env",
-        "service",
-        "daemon",
-        "cache",
-        "memory-pool",
-        "tui",
-        "replay",
-    ] {
+    for name in ["env", "service", "daemon", "memory-pool", "tui", "replay"] {
         assert!(!help.contains(&format!("\n  {name} ")), "{help}");
     }
     let output = Command::new(&kernel)
@@ -398,7 +375,6 @@ fn unregistered_names_follow_default_execution_without_command_aliases() {
         "extensions",
         "cluster",
         "worker",
-        "cache",
         "memory-pool",
         "env",
         "ir",

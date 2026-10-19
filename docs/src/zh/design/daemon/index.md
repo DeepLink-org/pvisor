@@ -14,8 +14,8 @@
 | 预制镜像 | 监督 argv，初始化并鉴权 execd/egress | 替代生命周期 API 授权 |
 | 原生 pVisor | Supervisor 嵌入 VM 执行；公开 Job 工作流仍独立 | 自动暴露 stage/checkpoint API |
 | 原生 node 运行时 | 独立不可变 backing 协议 | 自动 daemon 获取／共享 |
-| Daemon 池组件 | `serve --memory-pool` 启用的可选独立池 | 池进程／宿主重启恢复；node acquire/release |
-| 独立 `pvisor-cache` | OCI prepare/publish/serve/list/stat/read | Daemon 生命周期所有权 |
+| Daemon 池组件 | `serve --sandbox --memory-pool` 启用的可选独立池 | 池进程／宿主重启恢复；node acquire/release |
+| `pvisor cache` / `pvisor-daemon serve --cache` | OCI 准备／发布／读取与缓存服务 | Sandbox 生命周期 |
 
 Runtime trait 只有一个实现：VM-only NativeRuntime。独立 supervisor 嵌入 `pvisor::PVisor`，只配置 VmExecutor，跨 daemon 重启保留 RunHandle。没有 host/OCI/pull 降级。可执行程序的 `serve` 命令使用必需的 `--images-dir`/`--cgroup-root` 构造 NativeRuntime；同步内部 VM 派发先于 Tokio，隐藏 supervisor 命令负责 supervisor 派发。见[运维](operations.md#deployment)。
 

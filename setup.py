@@ -12,7 +12,6 @@ ROOT = Path(__file__).resolve().parent
 WHEEL_SCRIPTS = ROOT / "target" / "wheel-data" / "scripts"
 WHEEL_PAYLOADS = {
     "pvisor",
-    "pvisor-cache",
     "pvisor-tui",
     "pvisor-replay",
     "pvisor-daemon",

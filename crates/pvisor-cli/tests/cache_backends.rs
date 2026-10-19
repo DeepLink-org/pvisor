@@ -49,7 +49,8 @@ fn digest_bytes(bytes: &[u8]) -> String {
     digest(bytes)
 }
 fn cli(root: &Path, backend: &str, location: &str, s3: Option<&MockS3>, args: &[&str]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor-cache"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
+    command.arg("cache");
     command
         .env_clear()
         .env("HOME", root.join("home"))
@@ -360,7 +361,8 @@ fn filesystem_cli_and_explicit_options_use_the_same_daemonless_contract() {
         &["--read-only", "read", handle, "small-003"],
     ));
     assert_eq!(contents, b"value-3");
-    let output = Command::new(env!("CARGO_BIN_EXE_pvisor-cache"))
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .arg("cache")
         .env_clear()
         .env("PVISOR_CACHE_BACKEND", "s3")
         .env("PVISOR_CACHE_LOCATION", "s3://unused-bucket")

@@ -496,7 +496,7 @@ def freeze(output, binary_dir):
     frozen.mkdir()
     binaries = frozen / 'bin'
     binaries.mkdir()
-    for name in ('pvisor', 'pvisor-cache'):
+    for name in ('pvisor', 'pvisor-daemon'):
         source = binary_dir / name
         assert_static(source)
         shutil.copy2(source, binaries / name)
@@ -526,7 +526,7 @@ def freeze(output, binary_dir):
     save(output / 'frozen-manifest.json', hashes)
     return dict(hashes=hashes, kernel=os.uname().release,
                 binary_sha256=hashes['frozen/bin/pvisor'],
-                cache_binary_sha256=hashes['frozen/bin/pvisor-cache'],
+                cache_binary_sha256=hashes['frozen/bin/pvisor-daemon'],
                 harness_sha256=hashes['frozen/source/benchmark/pvisor/lazy_image_v2.py'],
                 source_manifest_sha256=hashes['frozen/source-manifest.json'],
                 dirty_patch_sha256=hashes['frozen/source-dirty.patch'],
@@ -595,7 +595,7 @@ def copy_launch_binaries(frozen_dir, private_root):
     directory = private_root / 'tmp/lazy-binaries'
     directory.mkdir(mode=0o700)
     receipt = {}
-    for name in ('pvisor', 'pvisor-cache'):
+    for name in ('pvisor', 'pvisor-daemon'):
         source = frozen_dir / name
         if not stat.S_ISREG(source.lstat().st_mode):
             raise RuntimeError(f'frozen binary is not a regular file: {source}')
@@ -618,7 +618,7 @@ def validate_launch_tree(root):
         if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid()
                 or stat.S_IMODE(metadata.st_mode) != mode):
             raise RuntimeError(f'unsafe private launch ancestor: {path}')
-    for name in ('pvisor', 'pvisor-cache'):
+    for name in ('pvisor', 'pvisor-daemon'):
         path = root / 'tmp/lazy-binaries' / name
         metadata = path.lstat()
         if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid()
@@ -777,7 +777,7 @@ def child(args):
             XDG_CACHE_HOME=str(output / 'service-client-cache'),
             XDG_CONFIG_HOME=str(output / 'service-config'), XDG_RUNTIME_DIR='/tmp', TMPDIR='/tmp')
         (output / 'private-home').mkdir()
-        cache_binary = Path(chroot_receipt['binaries']['pvisor-cache']['launch_path'])
+        cache_binary = Path(chroot_receipt['binaries']['pvisor-daemon']['launch_path'])
         binary = Path(chroot_receipt['binaries']['pvisor']['launch_path'])
         # Bind ephemeral loopback ports without touching any existing listener.
         reservation = socket.socket()
@@ -785,8 +785,8 @@ def child(args):
         upstream_port = reservation.getsockname()[1]
         reservation.close()
         service_log = (output / 'cache-service.log').open('wb')
-        service = subprocess.Popen(['taskset', '-c', '2,3', str(cache_binary), 'serve', '--listen',
-                                    f'tcp://127.0.0.1:{upstream_port}', '--image-store', str(output / 'service-store')],
+        service = subprocess.Popen(['taskset', '-c', '2,3', str(cache_binary), 'serve', '--cache', '--cache-listen',
+                                    f'tcp://127.0.0.1:{upstream_port}', '--cache-image-store', str(output / 'service-store')],
                                    env=env, stdout=service_log, stderr=subprocess.STDOUT)
         server = TCPServer(('127.0.0.1', 0), CacheProxy)
         server.counts, server.upstream = counts, upstream_port
@@ -803,7 +803,7 @@ def child(args):
         else:
             raise TimeoutError('cache service not ready')
         prepared, elapsed = lazy_startup.checked(
-            [str(cache_binary), 'prepare', lazy_startup.NUMPY_SOURCE], output, 'cached-service-prepare',
+            [str(binary), 'cache', 'prepare', lazy_startup.NUMPY_SOURCE], output, 'cached-service-prepare',
             env=env | dict(XDG_CACHE_HOME=str(output / 'prepare-cache')), timeout=90)
         report['preparation']['cached_service_prepare_ms'] = elapsed
         report['preparation']['prepared_stdout'] = prepared.decode()

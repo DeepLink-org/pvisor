@@ -295,12 +295,12 @@ class LazyStartupTests(unittest.TestCase):
                     main()
             self.assertEqual(
                 hashed.call_args_list,
-                [call(binary_dir / "pvisor"), call(binary_dir / "pvisor-cache")],
+                [call(binary_dir / "pvisor"), call(binary_dir / "pvisor-daemon")],
             )
 
     def test_numpy_cli_cache_binary_override_preserves_launcher(self):
         root = Path(__file__).resolve().parents[2]
-        cache_binary = Path("target/lazy-torch-build/release/pvisor-cache")
+        cache_binary = Path("target/lazy-torch-build/release/pvisor-daemon")
         for binary_dir in (None, Path("target/release")):
             with self.subTest(binary_dir=binary_dir), tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "new-cohort"

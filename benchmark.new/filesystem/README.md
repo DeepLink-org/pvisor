@@ -36,7 +36,7 @@ python3 benchmark.new/filesystem/publish_user_workloads.py --batch ABS_BATCH
 
 payload/fixture批次只需完成`workloads_v2_run.py --prepare`，不需要先运行工程A/B；
 其准备协议与固定工具环境见[WORKLOADS.md](WORKLOADS.md)。CLI目录须包含
-`build-receipt.json`和`bin/{pvisor,pvisor-guest,pvisor-cache}`。新批次冻结这些制品，
+`build-receipt.json`和`bin/{pvisor,pvisor-guest}`。新批次冻结这些制品，
 原始payload字节不变；共同静态包装器按执行器实际cwd解析workspace/input、output，
 避免绝对宿主路径绕过stage。fixture只读挂载在workspace内，读操作也经过对应文件系统。
 Native和pVisor每trial新建user/mount/PID namespace、pivot root、Host socket、Run Bundle和stage，

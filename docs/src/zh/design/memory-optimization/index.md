@@ -73,7 +73,7 @@ Linux 实例内冷压缩以 64 KiB 块工作。第一次短静止窗口捕获候
 
 ## 当前实现与组合限制 {#direction}
 
-Linux daemon 使用显式 `serve --memory-pool` 启用原文页共享；它不需要 userfaultfd。实例内 live compression 和 `--memory-pool-mode compressed` 使用 userfaultfd。sealed 池已有组件级服务退出测试，双 VM 探针也已验证服务终止后的回收/refault 与文件 I/O；macOS 的等价 sealed 池化尚未交付，生产密度和延迟仍待验收。Snapshot capture/restore、file backing、whole-VM offload、KSM advice与冷页路径存在明确互斥检查；调用方应按支持profile选择，组合不自动热切换。
+Linux daemon 使用显式 `serve --sandbox --memory-pool` 启用原文页共享；它不需要 userfaultfd。实例内 live compression 和 `--memory-pool-mode compressed` 使用 userfaultfd。sealed 池已有组件级服务退出测试，双 VM 探针也已验证服务终止后的回收/refault 与文件 I/O；macOS 的等价 sealed 池化尚未交付，生产密度和延迟仍待验收。Snapshot capture/restore、file backing、whole-VM offload、KSM advice与冷页路径存在明确互斥检查；调用方应按支持profile选择，组合不自动热切换。
 
 新共享和offload证据按配置、样本和计费范围保留在[VM 内存基准](../../benchmarks/vm-memory/index.md)。Ready省内存不保证更低lifecycle peak，高写入会减少共享收益。[概念验证](proof-of-concept.md)保留历史机制和失败材料；完整状态合同见[环境快照](../environment-snapshot.md)。
 

@@ -27,7 +27,7 @@ Content validation and immutability are prerequisites for reuse. Instances hold 
 
 ![Two VMs read the same slot; writes create private COW pages](../assets/memory-cow.svg)
 
-Explicit `serve --memory-pool` enables raw-page sharing in the daemon-owned pool. Candidates retain hashes only; content enters a bounded memfd slot after appearing in different VM sessions. With CPUs/devices quiesced, the VM rechecks bytes and maps equal pages using a read-only descriptor and `MAP_PRIVATE`. This path needs no userfaultfd and does not encode or compress unique pages.
+Explicit `serve --sandbox --memory-pool` enables raw-page sharing in the daemon-owned pool. Candidates retain hashes only; content enters a bounded memfd slot after appearing in different VM sessions. With CPUs/devices quiesced, the VM rechecks bytes and maps equal pages using a read-only descriptor and `MAP_PRIVATE`. This path needs no userfaultfd and does not encode or compress unique pages.
 
 References pin slots until mappings are removed; disconnects retain them until pidfd confirms peer exit. The pool owns live shared pages, so its loss fails dependent VMs. It does not supply durable snapshots or process-restart recovery. See [Shared working sets](../daemon/shared-working-set.md) for budgets and failure scope.
 
