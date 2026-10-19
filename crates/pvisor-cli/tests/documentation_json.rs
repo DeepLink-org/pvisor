@@ -18,8 +18,10 @@ fn documented_ci_failure_and_timeout_keep_reviewable_candidates() {
         ),
         (
             "timeout",
-            "printf 'candidate\\n' > candidate.txt; sleep 2",
-            Some("100ms"),
+            // The deadline includes sandbox startup. Leave CI time to attest the
+            // sandbox and create the candidate before testing workload expiry.
+            "printf 'candidate\\n' > candidate.txt; sleep 30",
+            Some("2s"),
             1,
             "deadline_exceeded",
         ),
@@ -64,7 +66,13 @@ fn documented_ci_failure_and_timeout_keep_reviewable_candidates() {
         );
         let bundle: Value = serde_json::from_slice(&review.stdout).unwrap();
         assert_eq!(bundle["run"]["state"], "failed");
-        assert_eq!(bundle["run"]["failure"]["kind"], expected_kind);
+        assert_eq!(
+            bundle["run"]["failure"]["kind"],
+            expected_kind,
+            "{name}: failure={}; stderr={}",
+            bundle["run"]["failure"],
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(
             bundle["filesystem"]["changes"]
                 .as_array()
