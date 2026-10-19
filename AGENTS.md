@@ -57,7 +57,7 @@ this boundary.
 Any work under `benchmark/`, `docs/src/*/benchmarks/` or
 `docs/src/assets/benchmarks/` must follow `benchmark/README.md`: find the
 benchmark's registry entry before measuring or writing, keep each user page in
-the order conclusions, motivation, experiment design, data and analysis, and
+the order Motivation, experiment design, data and analysis (three sections), and
 keep engineering A/B and diagnostic results out of user pages.
 
 ## Test command

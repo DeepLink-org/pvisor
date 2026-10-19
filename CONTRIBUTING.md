@@ -1,7 +1,7 @@
 # Contributing to PolicyVisor
 
 Thanks for helping. This page is the short version; the full guide is
-[community/contributing](https://deeplink-org.github.io/pvisor/zh/community/contributing/).
+[community/contributing](https://deeplink-org.github.io/pvisor/en/community/contributing/).
 
 ## Before you start
 
@@ -22,7 +22,7 @@ just lint             # clippy and ruff
 just docs-build       # build and check the documentation site
 ```
 
-See [development](https://deeplink-org.github.io/pvisor/zh/community/development/)
+See [development](https://deeplink-org.github.io/pvisor/en/community/development/)
 for platform setup (FUSE/macFUSE, KVM/HVF, OCI runtimes).
 
 ## Semantic specifications
@@ -37,7 +37,7 @@ an approval:
   snapshots are human-only maintainer actions.
 
 Run `just cases --suite stage` for the STAGE domain and `just semspec lint docs/src/zh/cases` for the
-specifications. Details: [testing](https://deeplink-org.github.io/pvisor/zh/community/testing/).
+specifications. Details: [testing](https://deeplink-org.github.io/pvisor/en/community/testing/).
 
 ## Pull requests
 

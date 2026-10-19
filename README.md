@@ -83,7 +83,7 @@ Cross-node placement, workflows and retries belong to external orchestrators
 such as Kubernetes or Ray, not a pVisor Cluster control plane.
 
 For the four levels, where pVisor places its bet, and the status of L2/L3, see the
-[trust ladder](https://deeplink-org.github.io/pvisor/en/why/trust-ladder/).
+[trust ladder](https://deeplink-org.github.io/pvisor/en/why/#trust-ladder).
 
 ## Scope
 
@@ -94,7 +94,7 @@ controls, with platform-dependent container/VM support. See [capabilities and ev
 
 ## Documentation
 
-- [Start here](https://deeplink-org.github.io/pvisor/en/start/) — the path from install to a reviewed run
+- [Start here](https://deeplink-org.github.io/pvisor/en/start/installation/) — platform requirements and installation
 - [Your first run](https://deeplink-org.github.io/pvisor/en/start/first-run/) — the run-review-apply loop
 - [Why pVisor](https://deeplink-org.github.io/pvisor/en/why/) — vision, trust ladder, use cases, and comparisons
 - [Capabilities and evidence](https://deeplink-org.github.io/pvisor/en/concepts/capabilities-and-evidence/) — how far a guarantee goes
@@ -103,7 +103,7 @@ controls, with platform-dependent container/VM support. See [capabilities and ev
 - [Design and research](https://deeplink-org.github.io/pvisor/en/design/) — architecture, isolation, and research directions
 - [Experimental features](docs/src/en/design/experimental/index.md) — proposed capabilities, implementation stages, and validation gates
 - [Community](https://deeplink-org.github.io/pvisor/en/community/) — contributing, testing, and roadmap
-- [中文文档](https://deeplink-org.github.io/pvisor/zh/start/)
+- [中文文档](https://deeplink-org.github.io/pvisor/zh/start/first-run/)
 
 Security issues: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
 

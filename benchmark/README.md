@@ -111,7 +111,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 
 ### B-OVERVIEW / B-METHOD：选型总览与比较方法 {#b-overview}
 
-- **文档：** `index.md`、`methodology.md`
+- **文档：** `index.md`（选型总览与比较方法）
 - **角色：** user-facing（综合页）
 - **Motivation：** 用户需要选择主题并判断哪些数字可比较。
 - **想要的结论：** 各主题的选型含义、证据范围与未测项目。
