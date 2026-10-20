@@ -41,7 +41,7 @@ pvisor-overlaynet.workspace = true
 flate2.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "test-util", "time"] }
 
 [[test]]
 name = "llm_fixtures"

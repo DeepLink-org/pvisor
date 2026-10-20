@@ -52,6 +52,7 @@ clap = { workspace = true, features = ["derive"] }
 
 proptest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tokio-stream.workspace = true
 
 
 [target.'cfg(target_os = "macos")'.dependencies]

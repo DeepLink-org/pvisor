@@ -39,7 +39,7 @@ pub use config::{
     RunSettings, RunStdio, VmSettings,
 };
 #[cfg(feature = "gateway")]
-pub use config::{GatewayDriverConfig, NativeModelWait};
+pub use config::{CooperativeModelWait, GatewayDriverConfig, ModelWaitRounds, NativeModelWait};
 pub use executor::container::ContainerExecutor;
 pub use executor::process::ProcessExecutor;
 #[cfg(target_os = "linux")]
@@ -72,6 +72,8 @@ pub use pvisor_core::{
     Event, Fact, Operation, OperationDecision, OperationKind, OperationObservation, Outcome,
     Placement,
 };
+#[cfg(feature = "gateway")]
+pub use pvisor_gateway::model_wait::ModelStreamBuffer;
 #[cfg(feature = "gateway")]
 pub use pvisor_gateway::sink::CaptureEventObserver as TrajectoryEventSink;
 pub use runtime::agentctl::{

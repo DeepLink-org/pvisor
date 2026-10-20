@@ -1354,6 +1354,7 @@ mod tests {
             };
             for wire in [
                 "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"all bytes arrived\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n",
                 "data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\ndata: {",
                 "data: {\"error\":{\"message\":\"failed\"}}\n\n",
             ] {

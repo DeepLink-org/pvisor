@@ -205,6 +205,7 @@ impl NetWorker {
     }
 
     pub(crate) fn process_backend_socket_readable(&mut self) {
+        crate::devices::virtio::memory_gate::external_wake(&self.mem, "network_rx");
         if let Err(e) = self.rx_q.queue.enable_notification(&self.mem) {
             error!("error disabling queue notifications: {e:?}");
         }

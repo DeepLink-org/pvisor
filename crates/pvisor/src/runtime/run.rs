@@ -9,7 +9,7 @@ use pvisor_journal::api::JournalStore;
 pub mod attempt_service;
 pub use attempt_service::AttemptService;
 #[cfg(feature = "gateway")]
-#[path = "model_wait.rs"]
+#[path = "legacy_model_wait.rs"]
 pub(crate) mod model_wait;
 
 #[cfg(feature = "gateway")]
@@ -126,6 +126,8 @@ pub struct RunHandle {
 pub struct RunControlHandle {
     #[cfg(feature = "gateway")]
     waits: Arc<model_wait::WaitRegistry>,
+    #[cfg(feature = "gateway")]
+    pub(crate) wait_coordinator: Option<Arc<super::wait_coordinator::WaitCoordinator>>,
     status: watch::Receiver<RunStatus>,
     vm_control: crate::executor::vm::control::VmControl,
     vm_status: watch::Sender<RunStatus>,
@@ -135,6 +137,46 @@ pub struct RunControlHandle {
 }
 
 impl RunControlHandle {
+    #[cfg(feature = "gateway")]
+    pub(crate) fn for_wait_coordinator(
+        vm_status: watch::Sender<RunStatus>,
+        vm_control: crate::executor::vm::control::VmControl,
+        control_operation: pvisor_core::operation::Operation,
+        events: RunEventPublisher,
+        cancellation: CancellationToken,
+    ) -> Self {
+        Self {
+            status: vm_status.subscribe(),
+            vm_status,
+            vm_control,
+            control_operation,
+            events,
+            cancellation,
+            wait_coordinator: None,
+            waits: Arc::new(model_wait::WaitRegistry::default()),
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) fn monitor_wait_termination(&self) {
+        let mut status = self.status.clone();
+        let cancellation = self.cancellation.clone();
+        tokio::spawn(async move {
+            loop {
+                if status.borrow().state.is_terminal() {
+                    cancellation.cancel();
+                    return;
+                }
+                tokio::select! {
+                    _ = cancellation.cancelled() => return,
+                    changed = status.changed() => {
+                        if changed.is_err() { cancellation.cancel(); return; }
+                    }
+                }
+            }
+        });
+    }
+
     #[cfg(test)]
     pub(crate) fn transition_for_test(&self) -> &tokio::sync::Mutex<()> {
         &self.vm_control.transition
@@ -153,6 +195,8 @@ impl RunControlHandle {
             events: session.events.clone(),
             #[cfg(feature = "gateway")]
             waits: Arc::new(model_wait::WaitRegistry::default()),
+            #[cfg(feature = "gateway")]
+            wait_coordinator: None,
         }
     }
 
@@ -269,6 +313,10 @@ impl RunControlHandle {
         &self,
         kind: pvisor_core::operation::OperationKind,
     ) -> anyhow::Result<pvisor_core::operation::Value> {
+        #[cfg(feature = "gateway")]
+        if let Some(coordinator) = &self.wait_coordinator {
+            return coordinator.control(kind).await;
+        }
         anyhow::ensure!(
             self.status.borrow().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
             "live VM controls require a VM executor"
@@ -316,6 +364,49 @@ impl RunControlHandle {
         kind: pvisor_core::operation::OperationKind,
         model_wait_epoch: Option<u64>,
     ) -> anyhow::Result<pvisor_core::operation::Value> {
+        Ok(self
+            .control_locked_with_idle(kind, model_wait_epoch, None)
+            .await?
+            .0)
+    }
+
+    #[cfg(feature = "gateway")]
+    async fn native_control(
+        &self,
+        kind: pvisor_core::operation::OperationKind,
+    ) -> anyhow::Result<pvisor_core::operation::Value> {
+        self.native_control_with_idle(kind, None).await
+    }
+    #[cfg(feature = "gateway")]
+    async fn native_control_with_idle(
+        &self,
+        kind: pvisor_core::operation::OperationKind,
+        idle_epoch: Option<u64>,
+    ) -> anyhow::Result<pvisor_core::operation::Value> {
+        Ok(self.native_control_with_idle_ack(kind, idle_epoch).await?.0)
+    }
+    #[cfg(feature = "gateway")]
+    async fn native_control_with_idle_ack(
+        &self,
+        kind: pvisor_core::operation::OperationKind,
+        idle_epoch: Option<u64>,
+    ) -> anyhow::Result<(pvisor_core::operation::Value, Option<u64>)> {
+        let controls = self.clone();
+        tokio::spawn(async move {
+            let _transition = controls.vm_control.transition.lock().await;
+            controls.ensure_live()?;
+            controls
+                .control_locked_with_idle(kind, None, idle_epoch)
+                .await
+        })
+        .await?
+    }
+    async fn control_locked_with_idle(
+        &self,
+        kind: pvisor_core::operation::OperationKind,
+        model_wait_epoch: Option<u64>,
+        idle_epoch: Option<u64>,
+    ) -> anyhow::Result<(pvisor_core::operation::Value, Option<u64>)> {
         use pvisor_core::operation::{OperationKind, Value, VmState};
         anyhow::ensure!(
             self.status.borrow().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine,
@@ -357,7 +448,11 @@ impl RunControlHandle {
             )
             .await?;
         self.ensure_live()?;
-        match self.vm_control.command(kind).await {
+        match if idle_epoch.is_some() {
+            self.vm_control.command_with_idle(kind, idle_epoch).await
+        } else {
+            self.vm_control.command(kind).await
+        } {
             Ok(reply) => {
                 let state = reply
                     .state
@@ -407,13 +502,13 @@ impl RunControlHandle {
                     .publish(
                         "vm.control_completed",
                         "runtime",
-                        serde_json::json!({"operation": operation, "value": value, "model_wait_epoch": model_wait_epoch}),
+                        serde_json::json!({"operation": operation, "value": value, "model_wait_epoch": model_wait_epoch, "guest_idle_epoch": idle_epoch, "next_guest_idle_epoch": reply.idle_epoch}),
                     )
                     .await
                     .map_err(|error| {
                         anyhow::anyhow!("VM control completed but observation failed: {error}")
                     })?;
-                Ok(value)
+                Ok((value, reply.idle_epoch))
             }
             Err(error) => {
                 let _ = events
@@ -426,6 +521,80 @@ impl RunControlHandle {
                 Err(error)
             }
         }
+    }
+}
+
+#[cfg(feature = "gateway")]
+#[async_trait::async_trait]
+impl super::wait_coordinator::WaitControl for RunControlHandle {
+    fn supports_resume_rearm(&self) -> bool {
+        true
+    }
+    async fn idle_settled(&self) -> anyhow::Result<()> {
+        self.vm_control.idle.settled().await
+    }
+    async fn idle_resume_rearm(
+        &self,
+        epoch: u64,
+        wake: CancellationToken,
+    ) -> anyhow::Result<tokio::sync::oneshot::Receiver<Option<u64>>> {
+        self.vm_control
+            .idle
+            .resume_prepare(wake, async {
+                let (_, next) = self
+                    .native_control_with_idle_ack(
+                        pvisor_core::operation::OperationKind::RunResume,
+                        Some(epoch),
+                    )
+                    .await?;
+                next.ok_or_else(|| anyhow::anyhow!("missing resume-rearm ACK"))
+            })
+            .await
+    }
+    fn pending_host_reads(&self) -> u64 {
+        self.vm_control.idle.pending_host_reads()
+    }
+    async fn idle_permit(&self, wake: CancellationToken) -> anyhow::Result<Option<u64>> {
+        self.vm_control.idle.prepare(wake).await
+    }
+    async fn idle_pause(&self, epoch: u64) -> anyhow::Result<bool> {
+        let value = self
+            .native_control_with_idle(pvisor_core::operation::OperationKind::RunPause, Some(epoch))
+            .await?;
+        Ok(matches!(
+            value,
+            pvisor_core::operation::Value::Vm {
+                state: pvisor_core::operation::VmState::Paused,
+                ..
+            }
+        ))
+    }
+    async fn idle_offload(&self, epoch: u64) -> anyhow::Result<bool> {
+        let value = self
+            .native_control_with_idle(
+                pvisor_core::operation::OperationKind::RunOffload { file: None },
+                Some(epoch),
+            )
+            .await?;
+        Ok(matches!(
+            value,
+            pvisor_core::operation::Value::Vm {
+                state: pvisor_core::operation::VmState::Offloaded,
+                memory: Some(_),
+            }
+        ))
+    }
+    fn state(&self) -> pvisor_core::RunState {
+        self.status.borrow().state
+    }
+    fn can_offload(&self) -> bool {
+        self.vm_control.automatic_offload_supported()
+    }
+    async fn execute(
+        &self,
+        operation: pvisor_core::operation::OperationKind,
+    ) -> anyhow::Result<pvisor_core::operation::Value> {
+        self.native_control(operation).await
     }
 }
 
@@ -1585,6 +1754,8 @@ mod tests {
         RunControlHandle {
             #[cfg(feature = "gateway")]
             waits: Arc::new(model_wait::WaitRegistry::default()),
+            #[cfg(feature = "gateway")]
+            wait_coordinator: None,
             status,
             vm_status,
             vm_control: crate::executor::vm::control::VmControl::new(cancellation.clone()),

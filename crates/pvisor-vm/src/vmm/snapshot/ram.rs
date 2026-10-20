@@ -380,6 +380,28 @@ mod tests {
                 GuestAddress(0x1000 + 5 * 64 * 1024 + page as u64),
             )
             .unwrap();
+        // A file fault can install neighboring clean PTEs without the capture
+        // reading those bytes. Isolate the two selected blocks into accessible
+        // VMAs so the residency bound does not depend on host fault-around.
+        // PROT_NONE also makes an accidental read of any unselected block fail,
+        // rather than merely relying on the final changed-block list.
+        let address = memory.get_host_address(GuestAddress(0x1000)).unwrap();
+        assert_eq!(
+            unsafe { libc::mprotect(address.cast(), size, libc::PROT_NONE) },
+            0
+        );
+        for block in [0, 5] {
+            assert_eq!(
+                unsafe {
+                    libc::mprotect(
+                        address.add(block * 64 * 1024).cast(),
+                        64 * 1024,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                    )
+                },
+                0
+            );
+        }
         let before = present_pages(&memory);
         let (mappings, delta) =
             capture_ram_with_delta(&memory, &output.1, Some(&baseline(&source.1))).unwrap();
@@ -405,6 +427,10 @@ mod tests {
                 )
                 .unwrap();
         }
+        assert_eq!(
+            unsafe { libc::mprotect(address.cast(), size, libc::PROT_READ | libc::PROT_WRITE) },
+            0
+        );
         let mut live = vec![0; size];
         memory.read_slice(&mut live, GuestAddress(0x1000)).unwrap();
         assert_eq!(reconstructed, live);

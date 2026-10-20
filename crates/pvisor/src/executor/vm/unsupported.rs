@@ -31,6 +31,20 @@ impl VmExecutor {
         anyhow::bail!(UNSUPPORTED_MESSAGE)
     }
 
+    /// Guest idle handoff requires Linux/KVM x86-64 with one vCPU.
+    pub fn with_guest_idle_handoff(self) -> anyhow::Result<Self> {
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
+
+    /// Host idle policy is unavailable on this platform.
+    pub fn with_guest_idle_handoff_policy(
+        self,
+        _disable_proactive_compaction: bool,
+        _offload_minimum: std::time::Duration,
+    ) -> anyhow::Result<Self> {
+        anyhow::bail!(UNSUPPORTED_MESSAGE)
+    }
+
     pub(crate) fn materialize_restore_ram(
         &mut self,
         _storage: &std::path::Path,

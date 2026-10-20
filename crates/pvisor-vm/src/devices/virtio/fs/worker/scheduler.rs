@@ -359,6 +359,14 @@ pub(super) fn serve(
             }
             break;
         }
+        // Rescue is optional polling, not new guest work. Inspecting an empty
+        // virtqueue every 2 ms would revoke every idle offer and fault RAM back
+        // in. Real kicks, pending work and completion keep their wake paths.
+        if crate::devices::virtio::memory_gate::idle_gate(&runtime.execution.mem)
+            .is_some_and(|idle| idle.defer_maintenance())
+        {
+            continue;
+        }
         let now = runtime.epoch.elapsed().as_micros() as u64 + 1;
         for (index, lane) in runtime.lanes.iter().enumerate().skip(REQ_INDEX) {
             let started = lane.started.load(Ordering::Acquire);

@@ -1088,3 +1088,157 @@ release 制品与正式配对批次，不由并发单测推导收益。
 及 [passthrough 的资源持有方式](https://gitlab.com/virtio-fs/virtiofsd/-/blob/main/src/passthrough/mod.rs)。
 并发调度使用 pVisor 内部实现，不复制上游代码；不提供 vhost-user 或
 上游的工作目录切换。只读 DAX 使用上文的独立权限、缓存和冻结契约。
+
+## Single-vCPU guest idle handoff and optional offload (experimental)
+
+`VmConfiguration::guest_idle_handoff` opts a fresh Linux/KVM x86-64 VM into the
+matching firmware's `pvisor_idle=1` protocol. It rejects SMP, snapshot profiles
+and optional unaudited device features. `GuestIdleControl` arms one bounded
+acquisition attempt, reads/waits for copied `GuestIdleStatus`, conditionally pauses by epoch,
+and retires that epoch. Arming alone never authorizes pause. A missing guest
+patch simply supplies no idle offer. Optional `offload_guest_idle(epoch)` reuses
+native writeback/reclaim after conditional pause; unconditional `offload_ram()`
+is still rejected in this profile. This revision requires matching ABI-v2 firmware.
+
+The guest's synchronous PIO probe/offer uses port `0x5050`, ABI magic
+`0x50564902` and a 32-bit millisecond delta rounded down. `U32_MAX` explicitly
+means no programmed timer; finite values saturate at `U32_MAX - 1`. The at-most-
+one-second arm timeout bounds acquisition only (`handoff_timeout`). Acceptance
+replaces it with the actual timer deadline (`guest_timer`), or no timer deadline.
+The Host probe time precedes the guest's clock sample; a 2 ms margin advances
+timer wake conservatively. VMM
+completes the PIO transaction with immediate-exit before checking pending CPU
+interrupts and LAPIC IRR. Offers with at most 2 ms remaining are rejected.
+
+An accepted offer keeps the vCPU at that idle handoff until revocation or an
+atomic pause claim. A claimed handoff stays parked even after revocation until
+normal serialized `VmControl::resume`; this prevents wake-before-pause-ACK from
+letting guest instructions execute in the wrong control state. Transition errors
+require terminating the runner. Device callbacks only revoke the lease; they
+never call pause/resume. The device RAM gate covers access start/completion, and
+MMIO virtio interrupt delivery plus network socket readability also revoke it.
+Existing device workers continue during ordinary pause. Pause alone reclaims no
+RAM. Conditional offload requires writable shared file-backed RAM, an acknowledged
+pause and an open device RAM gate; an already closed gate is an error so a repeated
+call cannot reopen a prior offload's barrier. It tries to close the gate without
+waiting for retained buffers, then rechecks the claimed epoch under the idle lock.
+A revoked/expired/previously admitted lease or insufficient timer budget skips reclaim.
+The gate is reopened on a lease denial; busy-device denial leaves it unchanged.
+A denial retains pause; the owner continues monitoring wakes and resumes before delivery. Admission is linearized against wake/retire;
+that short lock is released before backing I/O, keeping notifications serviceable.
+Once admitted, native writeback/reclaim and caller-owned backing publication must
+finish before resume opens the device gate. Wake does not interrupt that work or
+unpark a claimed vCPU. A timer is an admission/wake deadline, not a writeback-time
+bound. Errors require termination; this is not a crash-recovery protocol.
+
+A controller must independently service `wait_guest_idle`, wake on expiration or
+external activity, and resume its claimed pause. Waiting is bounded to 100 ms and
+shortens to the armed deadline. The pvisor runner uses a separate notification
+socket/thread for this; its control socket remains the only transition path.
+This is a cooperative, single-vCPU protocol, not a security proof about arbitrary
+kernels or a hard real-time timer guarantee. An accepted no-timer handoff remains
+valid until revocation. A revoked epoch is never renewed. The native runner
+exchanges independent 500 ms heartbeats; three seconds of controller silence,
+EOF or malformed control messages terminate the runner instead of leaving an
+unmanaged pause. Health checks do not resume a healthy VM.
+The offload regression cases passed the focused Linux tests on 2026-10-17.
+The pvisor `vm_reasoning_rounds` engineering probe exercised repeated offload,
+timer/network revocation and stream delivery with the matching single-vCPU
+Linux/KVM firmware. Actual reclaim was observed, together with timer delays
+when wake raced with admitted writeback; this does not establish hard-real-time
+wake behavior, production density or support for other platforms.
+
+Host-owned filesystem reads also expose `pending_host_reads`. READ (at most
+1 MiB per response) and read-only OPEN may detach their captured descriptor plan
+only after all RAM views are dropped. The backend continues into Host-owned
+buffers; completion revokes the handoff before reacquiring the RAM gate and
+publishing the response/used ring. Read-only OPEN includes baseline fingerprint
+fetches. Write/copy-up and kill-privilege OPEN retain their original path. This
+is not whole-device suspension or a bound on cache/process memory. Optional
+2 ms rescue scans defer while a handoff is probed/offered/claimed; real queue
+kicks, completions and external network events retain their normal wake paths.
+
+### Host-selected idle maintenance and reclaim budget
+
+`VmConfiguration::guest_idle_handoff_with_policy(disable_proactive_compaction,
+offload_minimum)` enables the same restricted profile. The existing no-argument
+method uses `false` and one second. A true flag adds the maintained Linux kernel's
+native `sysctl.vm.compaction_proactiveness=0` boot parameter before init starts.
+It disables proactive kcompactd polling, not demand-driven compaction. No Agent
+header, guest program change or new idle PIO ABI is required. Other/custom
+firmware must support the sysctl; this is configuration, not attestation or a
+restriction on privileged guest changes. High-order allocation latency may grow.
+
+The minimum must be strictly greater than 2 ms and at most 24 hours. Under the
+idle lock, after acquiring transition/VMM locks and closing the device RAM gate,
+reclaim requires strictly more remaining real timer budget than the minimum.
+No-timer offers bypass only this duration check. Short budgets reopen the gate,
+keep the same claimed pause/deadline and increment `offload_deadline_skips` in
+`GuestIdleStatus`; `offload_minimum_ns` records the configured threshold. Skips do
+not admit RAM writeback. Expiry and external events remain independently latched.
+This minimum is a conservative admission policy, not an I/O latency upper bound;
+slow writeback can still overrun a longer accepted deadline.
+
+`GuestIdleStatus.offer_sequence` identifies the accepted PIO OUT by its boot-local
+ordinal, including preceding rejected offers. It stays available after wake and
+retirement and is cleared on a new arm. This observation-only field correlates
+optional firmware timer diagnostics with the Host epoch. It grants no control
+permission and does not alter ABI-v2 payloads or interrupt checks. Old serialized
+statuses without the field deserialize with `None`; notification semantics are
+otherwise unchanged.
+
+### Optional offload decision diagnostics
+
+`PVISOR_DIAG_OFFLOAD=1` additionally emits `pvisor-memory-phase` stderr records
+for each backed RAM region's `msync`, `madvise` and file-cache advice. Offsets,
+lengths, completion flags, monotonic elapsed times and wall timestamps separate
+writeback from mapping/cache reclamation. The same syscall ordering, gate,
+publication and resume requirements apply; diagnostics neither cancel nor
+subdivide admitted reclaim. A failed phase records `complete=false` on unwind.
+
+Engineering runs may set Host-only `PVISOR_DIAG_OFFLOAD=1` before runner startup.
+Structured `pvisor-offload-diagnostic` stderr records contain the exact admission
+epoch, offer ordinal, remaining budget, minimum, rejection/admission reason and
+native reclaim duration. Device-gate rejection is separate. Disabled by default;
+stderr is diagnostic I/O and may perturb timing, so compare equally instrumented
+runs. No records authorize a transition. `PVISOR_DIAG_GUEST_PSI=0|1` explicitly
+adds `psi=0|1` only to a fresh idle-profile guest command line for engineering A/B.
+Unset preserves the normal kernel default; other values fail boot configuration.
+Disabling PSI removes pressure accounting/triggers and is not a default policy.
+
+The idle profile enables the maintained PSI quiescence and timestamped replay
+patches. Pressure accounting, registered triggers, real timers and external wakes
+remain active; unsupported or ambiguous cases keep normal aggregation. See
+[firmware contracts and regression tests](../../fw/README.md#psi-idle-restart-quiescence).
+
+### Atomic resume and next idle acquisition
+
+`GuestIdleControl::resume_and_arm_guest_idle(old_epoch, maximum)` requires a
+paused VM and its matching retired claim. Under the native transition lock it
+clears the old claim, creates a fresh bounded acquisition and resumes devices
+and vCPU without ordinary resume clearing the new arm. The ACK returns the new
+epoch; the caller must own notification/retirement before release. Validation
+failure has no effect; resume failure revokes acquisition, poisons control and
+requires termination. A fresh guest PIO offer and pending-interrupt check remain
+mandatory. Stale retirement cannot affect the next epoch. The acquisition timeout
+is still at most one second; accepted offers retain actual timer/event wake.
+Offload minimum, cooldown ownership, PSI firmware and Agent interfaces are unchanged.
+Optional `PVISOR_DIAG_IDLE=1` emits epoch/offer-linked transition/probe diagnostics;
+release-begin precedes native release but is not an exact KVM_RUN observation.
+
+### Proven-empty TX watchdog checks
+
+The restricted idle profile now passes `pvisor_watchdog_defer=1` to maintained
+firmware patch 0055. Host-only `PVISOR_DIAG_WATCHDOG_IDLE_DEFER=0|1` selects a
+same-firmware engineering A/B; invalid values fail configuration. No Agent,
+model protocol, PIO ABI, PSI setting, offload minimum or cooldown is changed.
+
+The guest can park a future watchdog check only at authenticated idle entry,
+with one possible CPU, no stopped/frozen TX queues, no qdisc work and an explicit
+virtio driver proof of zero outstanding descriptors. Unreclaimed completions
+still count as outstanding. The original timer is restored on all handoff return
+paths before interrupts/tasks run, including rejected offers; it is never renewed
+with a fresh timeout. All RX, TX completion, TCP, application and other device
+wakes retain their paths. Other devices/unknown states keep their watchdogs.
+This is conditional guest maintenance scheduling controlled by Host policy,
+not Host execution of the guest network stack. See [firmware contracts and tests](../../fw/README.md#conditional-watchdog-deferral-at-idle-handoff).

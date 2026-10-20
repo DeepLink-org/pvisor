@@ -28,15 +28,17 @@ const CONTROL_CHILD_FD: RawFd = 199;
 const RAM_FD_ENV: &str = "PVISOR_KRUN_RAM_FD";
 const RAM_CHILD_FD: RawFd = 200;
 const READONLY_FLUSH_ENV: &str = "PVISOR_VM_FS_READONLY_FLUSH_ELISION";
+const IDLE_CHILD_FD: RawFd = 202;
+const IDLE_FD_ENV: &str = "PVISOR_KRUN_IDLE_FD";
 
 fn runner_fd(fd: RawFd) -> std::io::Result<OwnedFd> {
-    // Keep both source descriptors above the fixed destinations, avoiding dup2
+    // Keep every source descriptor above all fixed destinations, avoiding dup2
     // clobbering one socket when the parent's fd table happens to be crowded.
     let duplicate = unsafe {
         libc::fcntl(
             fd,
             libc::F_DUPFD_CLOEXEC,
-            crate::diagnostics::INHERITED_LOG_FD + 1,
+            IDLE_CHILD_FD.max(crate::diagnostics::INHERITED_LOG_FD) + 1,
         )
     };
     if duplicate < 0 {
@@ -69,6 +71,10 @@ fn kernel_release_needs_krun_workaround(release: &str) -> bool {
 #[cfg(all(target_os = "linux", target_env = "musl", not(target_arch = "x86_64")))]
 compile_error!("static musl VM support currently targets x86_64 only");
 
+fn default_idle_offload_minimum() -> std::time::Duration {
+    std::time::Duration::from_secs(1)
+}
+
 #[derive(Debug, Clone)]
 pub struct VmExecutor {
     settings: VmSettings,
@@ -76,6 +82,9 @@ pub struct VmExecutor {
     firmware_path: Option<PathBuf>,
     features: crate::features::FeatureSettings,
     private_ram: bool,
+    guest_idle: bool,
+    disable_proactive_compaction: bool,
+    idle_offload_minimum: std::time::Duration,
     vsock_ports: BTreeMap<u32, PathBuf>,
     #[cfg(target_os = "linux")]
     cpu_group: Option<std::sync::Arc<super::cpu_qos::CpuQosGroup>>,
@@ -101,6 +110,12 @@ impl std::fmt::Debug for OwnedRootfsBase {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct RunnerSpec {
+    #[serde(default)]
+    guest_idle: bool,
+    #[serde(default)]
+    disable_proactive_compaction: bool,
+    #[serde(default = "default_idle_offload_minimum")]
+    idle_offload_minimum: std::time::Duration,
     #[serde(default)]
     pub(super) features: crate::features::FeatureSettings,
     #[serde(default)]
@@ -560,6 +575,9 @@ impl VmExecutor {
             firmware_path,
             features: Default::default(),
             private_ram: false,
+            guest_idle: false,
+            disable_proactive_compaction: false,
+            idle_offload_minimum: default_idle_offload_minimum(),
             vsock_ports: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             cpu_group: None,
@@ -706,6 +724,48 @@ impl VmExecutor {
         }
     }
 
+    /// Opt in to M1 guest idle handoff: fresh Linux/KVM, one vCPU, no paging,
+    /// restore or auxiliary vsock ports. Matching patched firmware is required;
+    /// missing guest support never permits automatic pause. Optional automatic
+    /// offload requires writable shared RAM and a still-valid claimed idle lease.
+    pub fn with_guest_idle_handoff(self) -> anyhow::Result<Self> {
+        self.with_guest_idle_handoff_policy(false, default_idle_offload_minimum())
+    }
+    /// Enable the single-vCPU Linux/KVM idle profile with Host-selected policy.
+    /// Optionally disable guest proactive compaction at boot, retaining demand
+    /// compaction. The offload minimum must be >2 ms and <=24 hours (default 1 s).
+    /// Short timer budgets remain paused without reclaim; real timers, external
+    /// events and controller health still wake/terminate normally. This is an
+    /// admission threshold, not a writeback completion guarantee. No Agent changes.
+    /// Unsupported profiles or invalid inputs fail before changing this executor.
+    pub fn with_guest_idle_handoff_policy(
+        mut self,
+        disable_proactive_compaction: bool,
+        offload_minimum: std::time::Duration,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            offload_minimum > std::time::Duration::from_millis(2)
+                && offload_minimum <= std::time::Duration::from_secs(86400),
+            "idle offload minimum must be >2 ms and <=24 hours"
+        );
+        anyhow::ensure!(
+            cfg!(all(target_os = "linux", target_arch = "x86_64"))
+                && self.settings.cpus == 1
+                && !self.settings.cold_pager_requested()
+                && !self.settings.ram_dedup
+                && self.vsock_ports.is_empty(),
+            "guest idle M1 requires single-vCPU Linux/KVM without paging/dedup/vsock ports"
+        );
+        #[cfg(any(
+            all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "macos", target_arch = "aarch64")
+        ))]
+        anyhow::ensure!(self.restore.is_none(), "guest idle M1 cannot restore");
+        self.guest_idle = true;
+        self.disable_proactive_compaction = disable_proactive_compaction;
+        self.idle_offload_minimum = offload_minimum;
+        Ok(self)
+    }
     pub fn settings(&self) -> &VmSettings {
         &self.settings
     }
@@ -920,6 +980,13 @@ impl RunExecutor for VmExecutor {
     async fn execute(&self, context: &Session) -> ExecutorOutput {
         crate::util::startup_mark_run("vm.prepare_begin", context.spec().run_id.as_str());
         let mut spec = context.spec().clone();
+        if self.guest_idle
+            && (!self.vsock_ports.is_empty()
+                || self.settings.cold_pager_requested()
+                || std::env::var_os("PVISOR_EXPERIMENTAL_MEMORY_POOL").is_some())
+        {
+            return failed_to_start("guest idle M1 has incompatible devices/pager".into());
+        }
         #[cfg(any(
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "macos", target_arch = "aarch64")
@@ -1407,6 +1474,9 @@ impl RunExecutor for VmExecutor {
             }
         }
         let mut runner = RunnerSpec {
+            guest_idle: self.guest_idle,
+            disable_proactive_compaction: self.disable_proactive_compaction,
+            idle_offload_minimum: self.idle_offload_minimum,
             features: self.features.clone(),
             vsock_ports: self.vsock_ports.clone(),
             cpu_qos: spec.runtime.cpu_qos,
@@ -1522,6 +1592,21 @@ impl RunExecutor for VmExecutor {
             Ok(pair) => pair,
             Err(error) => return failed_to_start(format!("create VM control socket: {error}")),
         };
+        let idle_pair = if self.guest_idle {
+            match std::os::unix::net::UnixStream::pair().and_then(|(host, runner)| {
+                host.set_nonblocking(true)?;
+                Ok((
+                    tokio::net::UnixStream::from_std(host)?,
+                    runner_fd(runner.as_raw_fd())?,
+                ))
+            }) {
+                Ok(pair) => Some(pair),
+                Err(error) => return failed_to_start(format!("create idle channel: {error}")),
+            }
+        } else {
+            None
+        };
+        let idle_source_fd = idle_pair.as_ref().map(|(_, fd)| fd.as_raw_fd());
         let network_runner = match vm_network
             .as_ref()
             .map(|network| runner_fd(network.guest_stream().as_raw_fd()))
@@ -1557,6 +1642,11 @@ impl RunExecutor for VmExecutor {
         } else {
             command.env_remove(crate::diagnostics::INHERITED_LOG_ENV);
         }
+        if idle_source_fd.is_some() {
+            command.env(IDLE_FD_ENV, IDLE_CHILD_FD.to_string());
+        } else {
+            command.env_remove(IDLE_FD_ENV);
+        }
         let control_source_fd = control_runner.as_raw_fd();
         let ram_source_fd = ram_runner.as_raw_fd();
         unsafe {
@@ -1567,6 +1657,11 @@ impl RunExecutor for VmExecutor {
                     // Logging cannot prevent execution. Ensure the child cannot
                     // mistake an unrelated descriptor for diagnostic output.
                     libc::close(crate::diagnostics::INHERITED_LOG_FD);
+                }
+                if let Some(fd) = idle_source_fd
+                    && libc::dup2(fd, IDLE_CHILD_FD) < 0
+                {
+                    return Err(std::io::Error::last_os_error());
                 }
                 if libc::dup2(control_source_fd, CONTROL_CHILD_FD) < 0 {
                     return Err(std::io::Error::last_os_error());
@@ -1650,10 +1745,25 @@ impl RunExecutor for VmExecutor {
                 .then_some(&ram_backing.file),
             );
         }
+        #[cfg(feature = "gateway")]
+        context.vm_control.set_automatic_offload_supported(
+            !runner.private_ram
+                && !runner.cold_ram_compression
+                && runner.restore.is_none()
+                && self.settings.memory_pool.is_none()
+                && std::env::var_os(super::pager::POOL_ENV).is_none(),
+        );
         context
             .vm_control
             .attach_with_checkpoint(control_host, ram_backing, runner.checkpoint.clone())
             .await;
+        if let Some((host, _)) = idle_pair {
+            context
+                .vm_control
+                .idle
+                .attach(host, context.cancellation().clone(), context.events.clone())
+                .await;
+        }
         context.transition(RunState::Running, None).await;
 
         crate::util::startup_mark_run("vm.wait_begin", spec.run_id.as_str());
@@ -2006,6 +2116,7 @@ fn capture_checkpoint(
     let suspend = matches!(operation, OperationKind::RunSuspend { .. });
     if !suspend && handle.is_paused().ok() == Some(true) {
         return super::control::ControlReply {
+            idle_epoch: None,
             state: Some(VmState::Paused),
             memory: None,
             error: Some("checkpoint requires a running source VM".into()),
@@ -2052,6 +2163,7 @@ fn capture_checkpoint(
             write_control_reply(
                 control,
                 &super::control::ControlReply {
+                    idle_epoch: None,
                     state: Some(VmState::Paused),
                     memory: None,
                     error: None,
@@ -2097,6 +2209,7 @@ fn capture_checkpoint(
                         write_control_reply(
                             control,
                             &super::control::ControlReply {
+                                idle_epoch: None,
                                 state: Some(VmState::Paused),
                                 memory: None,
                                 error: None,
@@ -2128,6 +2241,7 @@ fn capture_checkpoint(
     })();
     match result {
         Ok(checkpoint) => super::control::ControlReply {
+            idle_epoch: None,
             state: Some(VmState::Running),
             memory: None,
             error: None,
@@ -2135,6 +2249,7 @@ fn capture_checkpoint(
             capture: None,
         },
         Err(error) => super::control::ControlReply {
+            idle_epoch: None,
             // Only a healthy resumed source is a recoverable rejection. A
             // partial freeze/resume failure stays parked and terminates it.
             state: (!suspend)
@@ -2416,6 +2531,12 @@ fn run_linked_krun(
     let mut vm = pvisor_vm::api::VmBuilder::new(spec.cpus, spec.memory_mib)?;
 
     configure_runner_firmware(&mut vm, spec.firmware_path.as_deref())?;
+    if spec.guest_idle {
+        vm.guest_idle_handoff_with_policy(
+            spec.disable_proactive_compaction,
+            spec.idle_offload_minimum,
+        )?;
+    }
     crate::util::startup_mark_run("runner.context_ready", &spec.run_id);
     let ram = std::env::var(RAM_FD_ENV)?.parse::<RawFd>()?;
     anyhow::ensure!(ram == RAM_CHILD_FD, "invalid RAM backing descriptor");
@@ -2513,6 +2634,12 @@ fn run_linked_krun(
     let started = vm.run( move |handle| {
         crate::util::startup_mark_run("runner.vmm_built", &spec.run_id);
         enable_vcpu_observation(&handle, &spec.features)?;
+        if spec.guest_idle {
+            let fd = std::env::var(IDLE_FD_ENV).map_err(std::io::Error::other)?.parse::<RawFd>().map_err(std::io::Error::other)?;
+            if fd != IDLE_CHILD_FD { return Err(std::io::Error::other("invalid idle descriptor")); }
+            if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 { return Err(std::io::Error::last_os_error()); }
+            super::idle::serve(unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) }, handle.clone()).map_err(std::io::Error::other)?;
+        }
         if spec.ram_dedup {
             match handle.advise_ram_dedup() {
                 Ok(report) => eprintln!(
@@ -2556,6 +2683,49 @@ fn run_linked_krun(
                         continue;
                     }
                     use pvisor_core::operation::{OperationKind, VmMemory, VmState};
+                    if let Ok(request) = serde_json::from_slice::<super::idle::IdlePause>(&request) {
+                        use pvisor_vm::api::GuestIdleControl;
+                        let result = handle.pause_guest_idle(request.idle_pause_epoch);
+                        let reply = match result {
+                            Ok(paused) => super::control::ControlReply { idle_epoch: None, state: Some(if paused { VmState::Paused } else { VmState::Running }), memory: None, error: None, checkpoint: None, capture: None },
+                            Err(error) => super::control::ControlReply { idle_epoch: None, state: None, memory: None, error: Some(error), checkpoint: None, capture: None },
+                        };
+                        if write_control_reply(&mut control, &reply).is_err() { std::process::exit(1); }
+                        continue;
+                    }
+                    if let Ok(request) = serde_json::from_slice::<super::idle::IdleResume>(&request) {
+                        use pvisor_vm::api::GuestIdleControl;
+                        let result = handle.resume_and_arm_guest_idle(request.idle_resume_epoch, std::time::Duration::from_secs(1));
+                        let reply = match result {
+                            Ok(epoch) => super::control::ControlReply { idle_epoch: Some(epoch), state: Some(VmState::Running), memory: None, error: None, checkpoint: None, capture: None },
+                            Err(error) => super::control::ControlReply { idle_epoch: None, state: None, memory: None, error: Some(error), checkpoint: None, capture: None },
+                        };
+                        if write_control_reply(&mut control, &reply).is_err() { std::process::exit(1); }
+                        continue;
+                    }
+                    if let Ok(request) = serde_json::from_slice::<super::idle::IdleOffload>(&request) {
+                        use pvisor_vm::api::GuestIdleControl;
+                        let result = if cold_pager || spec.private_ram {
+                            Err("whole-VM offload requires writable shared RAM backing".into())
+                        } else {
+                            handle.offload_guest_idle(request.idle_offload_epoch)
+                        };
+                        let reply = match result {
+                            Ok(memory) => super::control::ControlReply {
+                                idle_epoch: None, state: Some(if memory.is_some() { VmState::Offloaded } else { VmState::Paused }),
+                                memory: memory.map(|memory| VmMemory {
+                                    backing_file: PathBuf::new(),
+                                    backed_bytes: memory.backed_bytes,
+                                    resident_before_bytes: memory.resident_before_bytes,
+                                    resident_after_bytes: memory.resident_after_bytes,
+                                }),
+                                error: None, checkpoint: None, capture: None,
+                            },
+                            Err(error) => super::control::ControlReply { idle_epoch: None, state: None, memory: None, error: Some(error), checkpoint: None, capture: None },
+                        };
+                        if write_control_reply(&mut control, &reply).is_err() { std::process::exit(1); }
+                        continue;
+                    }
                     let mut rejection_state = None;
                     let result = match serde_json::from_slice::<OperationKind>(&request) {
                         Ok(OperationKind::RunPause) => {
@@ -2590,7 +2760,7 @@ fn run_linked_krun(
                     };
                     let reply = match result {
                         Ok((state, memory)) => super::control::ControlReply {
-                            checkpoint: None,
+                            idle_epoch: None, checkpoint: None,
                             capture: None,
                             state: Some(state),
                             memory,
@@ -2599,7 +2769,7 @@ fn run_linked_krun(
                         Err(error) => {
                             eprintln!("VM control failed: {error}");
                             super::control::ControlReply {
-                                checkpoint: None,
+                                idle_epoch: None, checkpoint: None,
                                 capture: None,
                                 state: rejection_state,
                                 memory: None,
@@ -2966,6 +3136,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn runner_sources_do_not_overlap_idle_or_other_child_descriptors() {
+        use std::os::fd::AsRawFd;
+        let file = tempfile::tempfile().unwrap();
+        let sources = (0..5)
+            .map(|_| super::runner_fd(file.as_raw_fd()).unwrap())
+            .collect::<Vec<_>>();
+        for source in sources {
+            assert!(source.as_raw_fd() > super::IDLE_CHILD_FD);
+            assert!(source.as_raw_fd() > crate::diagnostics::INHERITED_LOG_FD);
+        }
+    }
     #[test]
     fn runner_lower_mutability_is_ordered_and_legacy_metadata_defaults_mutable() {
         use super::OverlayDeviceSpec;

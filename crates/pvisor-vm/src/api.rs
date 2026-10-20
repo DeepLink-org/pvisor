@@ -129,6 +129,32 @@ pub trait VmConfiguration: Sized {
     fn ram_backing(&mut self, file: File) -> io::Result<()>;
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
     -> io::Result<()>;
+    /// Opt in to the versioned guest idle handoff. Requires a fresh Linux/KVM
+    /// x86-64 VM with one vCPU and matching patched firmware. Other targets,
+    /// snapshots and unguarded devices are rejected. Optional RAM offload uses
+    /// `GuestIdleControl::offload_guest_idle` after conditional pause. Disabled by
+    /// default; configuration alone does not authorize a pause or offload.
+    /// The maintained firmware also enables conservative single-CPU system PSI
+    /// idle quiescence: no restart solely for idle sleep without pending pressure
+    /// or registered triggers. Accounting, real timers and external wakes remain.
+    fn guest_idle_handoff(&mut self) -> io::Result<()>;
+    /// Enable the same idle profile with Host-selected maintenance/admission policy.
+    /// `disable_proactive_compaction` adds the Linux boot sysctl
+    /// `vm.compaction_proactiveness=0`; demand-driven compaction remains enabled.
+    /// Requires firmware supporting this sysctl; the maintained Linux kernel does.
+    /// It can increase high-order allocation latency and is not a security boundary.
+    /// `offload_minimum` must be >2 ms and <=24 hours. Reclaim requires strictly
+    /// more than this budget at admission, after device-gate closure. A shorter
+    /// budget retains pause-only operation, without extending the guest deadline.
+    /// No-timer offers bypass this duration check, but still require a live epoch.
+    /// A threshold is not a hard completion bound for non-interruptible writeback.
+    /// Defaults via `guest_idle_handoff`: false and one second. Same platform and
+    /// lifecycle restrictions apply. Failure leaves the previous policy unchanged.
+    fn guest_idle_handoff_with_policy(
+        &mut self,
+        disable_proactive_compaction: bool,
+        offload_minimum: Duration,
+    ) -> io::Result<()>;
     fn disable_implicit_init(&mut self) -> io::Result<()>;
     /// Configure a custom init's command; requires implicit init to be disabled.
     /// Validate atomically before replacing the previous command.
@@ -212,6 +238,8 @@ pub trait VmControl: Send + Sync {
     fn is_paused(&self) -> Result<bool, String>;
     fn pause(&self) -> Result<(), String>;
     fn resume(&self) -> Result<(), String>;
+    /// Unconditional whole-VM offload. Guest-idle profiles reject this method;
+    /// use `GuestIdleControl::offload_guest_idle` with a claimed epoch instead.
     fn offload_ram(&self) -> Result<RamReclaim, String>;
 }
 
@@ -487,6 +515,7 @@ pub struct VmBuilder {
 /// Weak live control reference; transitions are serialized internally.
 #[derive(Clone)]
 pub struct VmmHandle {
+    pub(crate) idle: Arc<crate::guest_idle::IdleGate>,
     pub(crate) vmm: std::sync::Weak<std::sync::Mutex<crate::vmm::Vmm>>,
     pub(crate) transition: Arc<std::sync::Mutex<()>>,
     pub(crate) cold_pager_started: Arc<std::sync::atomic::AtomicBool>,
@@ -783,4 +812,89 @@ pub trait RamFileMapping: Sized {
         store: Arc<std::sync::Mutex<dyn RamFileStore>>,
         directory: &Path,
     ) -> io::Result<(Self, File)>;
+}
+
+/// Versioned single-vCPU idle lease state, copied without acquiring VMM/device locks.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuestIdleStatus {
+    /// Boot-local ordinal of the accepted PIO offer, counting rejected offers too.
+    /// None before acceptance in this epoch; retained after wake/retirement until
+    /// the next arm. Correlates optional guest timer diagnostics without changing
+    /// ABI v2. It is observation only, never permission to pause or skip a timer.
+    #[serde(default)]
+    pub offer_sequence: Option<u64>,
+    /// Monotonically increasing lease identity; zero means never armed.
+    pub epoch: u64,
+    /// Changes on arm, offer, claim, wake or retirement. Notifications coalesce.
+    pub sequence: u64,
+    /// Whether guest handoff was explicitly configured at boot.
+    pub enabled: bool,
+    /// Whether the matching guest has completed a synchronous idle offer.
+    pub offered: bool,
+    /// Whether an atomic conditional pause has claimed the offer.
+    pub claimed: bool,
+    /// Remaining conservative host-clock budget. Zero invalidates the offer.
+    /// u64::MAX explicitly denotes an accepted ABI-v2 offer with no guest timer;
+    /// before offer this is the acquisition budget, afterwards the real timer.
+    pub remaining_ns: u64,
+    /// Latched terminal reason: guest_timer, handoff_timeout, device events or cancel.
+    pub wake_reason: Option<String>,
+    /// Candidate Host-owned filesystem READ/read-only OPEN work, including staging.
+    /// Detached backend work retains no guest RAM views; the device RAM gate
+    /// independently checks staging/completion accesses. A hint never permits pause.
+    pub pending_host_reads: u64,
+    /// Configured minimum remaining timer budget for reclaim admission, in ns.
+    pub offload_minimum_ns: u64,
+    /// Lifetime count of reclaim attempts skipped solely for insufficient budget.
+    /// A skip keeps the claimed pause and its original wake deadline intact.
+    pub offload_deadline_skips: u64,
+}
+/// Host ownership of a guest idle handoff. Linux/KVM x86-64, single vCPU.
+/// No callbacks call lifecycle controls. All notifications are latched independently
+/// of guest RAM. Poll/wait is bounded; cancellation retires a lease but never
+/// overrides an explicit pause. Unsupported calls return errors without effects.
+pub trait GuestIdleControl {
+    /// Arm acquisition for >2 ms and at most one second; a new arm requires
+    /// retirement of the previous lease. A successful ABI-v2 offer replaces
+    /// this timeout with the guest timer (or explicit no timer). Returns its
+    /// epoch. Does not pause the VM. The owner must independently detect
+    /// controller failure and service external wake notifications.
+    fn arm_guest_idle(&self, maximum: Duration) -> Result<u64, String>;
+    /// Replace a retired, claimed idle epoch with a fresh acquisition, then resume.
+    /// Requires the matching paused VM, revoked offer and >2 ms..=1 s budget.
+    /// Serialized with native controls; the new arm precedes device/vCPU release.
+    /// Returns the new authoritative epoch. This grants no pause permission:
+    /// a fresh guest offer and pending-interrupt check are still required.
+    /// The caller must retire the old listener before calling and own a new wake
+    /// listener before release. Validation errors have no effect; native resume
+    /// errors revoke the new arm and require runner termination. Unsupported
+    /// profiles cannot own a claimed epoch. Ordinary resume never rearms.
+    fn resume_and_arm_guest_idle(&self, epoch: u64, maximum: Duration) -> Result<u64, String>;
+    /// Read latest status and expire any elapsed deadline.
+    fn guest_idle_status(&self) -> GuestIdleStatus;
+    /// Wait for a sequence change or timeout (at most 100 ms), also servicing
+    /// the timer deadline. Must run independently of the control-command thread.
+    fn wait_guest_idle(&self, sequence: u64, timeout: Duration) -> GuestIdleStatus;
+    /// Atomically claim the matching, unrevoked offer, then complete native pause.
+    /// False is a normal stale/expired denial with no pause. True requires explicit
+    /// resume even if a wake raced the pause. Transition errors require termination.
+    fn pause_guest_idle(&self, epoch: u64) -> Result<bool, String>;
+    /// Optionally offload writable shared file-backed RAM after conditional pause.
+    /// Requires the matching claimed lease, more than the configured minimum
+    /// timer budget remaining (or explicit no timer), no previous
+    /// offload admission in that lease and an immediately idle device RAM gate.
+    /// Serialized with pause/resume; rechecks the lease after closing the gate.
+    /// None means admission was skipped without reclaim; the VM stays paused and
+    /// its owner must continue monitoring wakes and resume before delivery. Some reports best-effort residency, not guaranteed
+    /// capacity release. Once admitted, writeback cannot be interrupted: wakes
+    /// remain latched independently, and the owner must await host backing
+    /// publication before resume. The timer deadline is not a completion bound.
+    /// Calling before pause or with a gate already closed by offload/maintenance
+    /// is an error, not a skip. Errors require runner termination. Unsupported
+    /// profiles cannot obtain a claimed lease. Never resumes or renews the lease.
+    fn offload_guest_idle(&self, epoch: u64) -> Result<Option<RamReclaim>, String>;
+    /// Retire only the matching epoch, wake its handoff and prevent stale reuse.
+    /// This does not resume an already paused VM; the owner must call resume.
+    fn retire_guest_idle(&self, epoch: u64);
 }

@@ -16,6 +16,20 @@ use tokio_util::sync::CancellationToken;
 
 pub(super) const MAX_FRAME: usize = 16 * 1024;
 
+fn offload_phase(stage: &str, started: std::time::Instant, complete: bool) {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ENABLED.get_or_init(|| std::env::var("PVISOR_DIAG_OFFLOAD").as_deref() == Ok("1")) {
+        let elapsed_ns = started.elapsed().as_nanos() as u64;
+        eprintln!(
+            "pvisor-memory-phase {}",
+            serde_json::json!({
+                "pid": std::process::id(), "stage": stage, "elapsed_ns": elapsed_ns, "complete": complete,
+                "unix_ns": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
+            })
+        );
+    }
+}
+
 /// Same inode throughout the attempt: path selection never copies or remaps RAM.
 pub(super) struct RamBacking {
     pub file: Arc<File>,
@@ -140,6 +154,7 @@ impl RamBacking {
     // The connection remains exclusively held: no resume can reopen RAM writers
     // until the host has committed staging and finished its own cache advice.
     async fn finish_offload(&self) -> anyhow::Result<()> {
+        let started = std::time::Instant::now();
         let logical = self.file.clone();
         let physical = self.storage.clone();
         let layers = self.layers.clone();
@@ -148,27 +163,34 @@ impl RamBacking {
             // Runner acknowledgement fixes the CPU/device RAM epoch, but is not
             // compressed publication. Drain logical writeback before committing
             // staging, outside the FUSE thread to avoid reentrant store locking.
-            logical
+            let phase = std::time::Instant::now();
+            let result = logical
                 .sync_all()
-                .context("offload host RAM writeback failed")?;
+                .context("offload host RAM writeback failed");
+            offload_phase("host_backing_sync", phase, result.is_ok());
+            result?;
             if let Some(store) = commit_store {
+                let phase = std::time::Instant::now();
                 store
                     .lock()
                     .map_err(|_| std::io::Error::other("RAM store lock poisoned"))?
                     .sync_all()
                     .context("offload compressed RAM commit failed")?;
+                offload_phase("host_compressed_commit", phase, true);
             }
             // Encoding can repopulate file caches after the runner's resident
             // sample. This is host cache advice, not a new VM reclaim measurement.
             #[cfg(target_os = "linux")]
             {
                 use std::os::fd::AsRawFd;
+                let phase = std::time::Instant::now();
                 let error = unsafe {
                     libc::posix_fadvise(physical.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED)
                 };
                 if error != 0 {
                     return Err(std::io::Error::from_raw_os_error(error).into());
                 }
+                offload_phase("host_backing_fadvise", phase, true);
                 if let Some(directory) = layers {
                     for entry in std::fs::read_dir(directory)? {
                         let entry = entry?;
@@ -200,6 +222,7 @@ impl RamBacking {
         })
         .await
         .context("offload host commit task failed")??;
+        offload_phase("host_publication", started, true);
         Ok(())
     }
 
@@ -260,6 +283,8 @@ fn destination(path: &Path) -> anyhow::Result<PathBuf> {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ControlReply {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_epoch: Option<u64>,
     pub state: Option<VmState>,
     pub memory: Option<VmMemory>,
     pub error: Option<String>,
@@ -286,6 +311,9 @@ struct SealedCapture {
 
 #[derive(Clone)]
 pub(crate) struct VmControl {
+    pub(crate) idle: super::idle::IdleClient,
+    #[cfg(feature = "gateway")]
+    automatic_offload: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) transition: Arc<Mutex<()>>,
     connection: Arc<Mutex<Option<Connection>>>,
     cancellation: CancellationToken,
@@ -296,12 +324,27 @@ pub(crate) struct VmControl {
 impl VmControl {
     pub(crate) fn new(cancellation: CancellationToken) -> Self {
         Self {
+            #[cfg(feature = "gateway")]
+            automatic_offload: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            idle: super::idle::IdleClient::default(),
             transition: Arc::new(Mutex::new(())),
             connection: Arc::new(Mutex::new(None)),
             cancellation,
             #[cfg(target_os = "linux")]
             memory_target: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(super) fn set_automatic_offload_supported(&self, supported: bool) {
+        self.automatic_offload
+            .store(supported, std::sync::atomic::Ordering::Release);
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) fn automatic_offload_supported(&self) -> bool {
+        self.automatic_offload
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     #[cfg(test)]
@@ -410,6 +453,13 @@ impl VmControl {
     }
 
     pub(crate) async fn command(&self, operation: OperationKind) -> anyhow::Result<ControlReply> {
+        self.command_with_idle(operation, None).await
+    }
+    pub(crate) async fn command_with_idle(
+        &self,
+        operation: OperationKind,
+        idle_epoch: Option<u64>,
+    ) -> anyhow::Result<ControlReply> {
         anyhow::ensure!(
             matches!(
                 operation,
@@ -421,8 +471,18 @@ impl VmControl {
             ),
             "unsupported live VM control primitive"
         );
+        anyhow::ensure!(
+            idle_epoch.is_none()
+                || matches!(
+                    operation,
+                    OperationKind::RunPause
+                        | OperationKind::RunResume
+                        | OperationKind::RunOffload { file: None }
+                ),
+            "idle permit only supports pause or current-backing offload"
+        );
         let control = self.clone();
-        match tokio::spawn(async move { control.exchange(operation).await }).await {
+        match tokio::spawn(async move { control.exchange(operation, idle_epoch).await }).await {
             Ok(result) => result,
             Err(error) => {
                 self.cancellation.cancel();
@@ -433,7 +493,11 @@ impl VmControl {
 
     // One exchange survives caller cancellation so the next request never
     // consumes an acknowledgement belonging to a dropped future.
-    async fn exchange(&self, operation: OperationKind) -> anyhow::Result<ControlReply> {
+    async fn exchange(
+        &self,
+        operation: OperationKind,
+        idle_epoch: Option<u64>,
+    ) -> anyhow::Result<ControlReply> {
         operation.validate()?;
         let mut guard = self.connection.lock().await;
         let connection = guard.as_mut().ok_or_else(|| {
@@ -473,6 +537,7 @@ impl VmControl {
                     "suspend cannot reuse a previously sealed capture; await terminal completion"
                 );
                 return Ok(ControlReply {
+                    idle_epoch: None,
                     state: Some(VmState::Running),
                     memory: None,
                     error: None,
@@ -554,7 +619,26 @@ impl VmControl {
                     .map_err(anyhow::Error::from)?,
             })?
         } else {
-            serde_json::to_vec(&operation)?
+            if let Some(epoch) = idle_epoch {
+                match operation {
+                    OperationKind::RunResume => serde_json::to_vec(&super::idle::IdleResume {
+                        idle_resume_epoch: epoch,
+                    })?,
+                    OperationKind::RunPause => serde_json::to_vec(&super::idle::IdlePause {
+                        idle_pause_epoch: epoch,
+                    })?,
+                    OperationKind::RunOffload { file: None } => {
+                        serde_json::to_vec(&super::idle::IdleOffload {
+                            idle_offload_epoch: epoch,
+                        })?
+                    }
+                    _ => {
+                        anyhow::bail!("idle permit only supports pause or current-backing offload")
+                    }
+                }
+            } else {
+                serde_json::to_vec(&operation)?
+            }
         };
         anyhow::ensure!(request.len() <= MAX_FRAME, "VM control request too large");
         let budget = if matches!(
@@ -701,6 +785,17 @@ impl VmControl {
                 "VMM rejected control: {}",
                 reply.error.as_deref().unwrap_or_default()
             );
+            if matches!(operation, OperationKind::RunResume) && idle_epoch.is_some() {
+                anyhow::ensure!(
+                    reply.idle_epoch == idle_epoch.and_then(|e| e.checked_add(1)),
+                    "missing or mismatched resume-rearm epoch acknowledgement"
+                );
+            } else {
+                anyhow::ensure!(
+                    reply.idle_epoch.is_none(),
+                    "unsolicited idle epoch acknowledgement"
+                );
+            }
             let expected = match operation {
                 OperationKind::RunPause => VmState::Paused,
                 OperationKind::RunResume => VmState::Running,
@@ -709,6 +804,21 @@ impl VmControl {
                 OperationKind::RunSuspend { .. } => VmState::Paused,
                 _ => anyhow::bail!("not a VM control primitive"),
             };
+            let idle_denied = match operation {
+                OperationKind::RunPause => reply.state == Some(VmState::Running),
+                OperationKind::RunOffload { file: None } => reply.state == Some(VmState::Paused),
+                _ => false,
+            };
+            if idle_epoch.is_some()
+                && idle_denied
+                && reply.memory.is_none()
+                && reply.checkpoint.is_none()
+                && reply.capture.is_none()
+            {
+                // Conditional denial is not an offload report and must not run
+                // host backing publication. The coordinator resumes the pause.
+                return Ok(Ok(reply));
+            }
             anyhow::ensure!(reply.state == Some(expected), "unexpected VM control state");
             if expected == VmState::Offloaded {
                 let memory = reply
@@ -865,6 +975,7 @@ mod tests {
             send_reply(
                 &mut runner,
                 ControlReply {
+                    idle_epoch: None,
                     state: Some(VmState::Paused),
                     memory: None,
                     error: None,
@@ -916,6 +1027,7 @@ mod tests {
             send_reply(
                 &mut runner,
                 ControlReply {
+                    idle_epoch: None,
                     state: Some(VmState::Paused),
                     memory: None,
                     error: None,
@@ -938,6 +1050,7 @@ mod tests {
             send_reply(
                 &mut runner,
                 ControlReply {
+                    idle_epoch: None,
                     state: Some(VmState::Running),
                     memory: None,
                     error: Some("host publication failed".into()),
@@ -950,6 +1063,7 @@ mod tests {
             send_reply(
                 &mut runner,
                 ControlReply {
+                    idle_epoch: None,
                     state: Some(VmState::Paused),
                     memory: None,
                     error: None,
@@ -999,6 +1113,7 @@ mod tests {
             let peer = tokio::spawn(async move {
                 let request = read_capture(&mut runner).await;
                 let mut reply = ControlReply {
+                    idle_epoch: None,
                     state: Some(VmState::Paused),
                     memory: None,
                     error: None,
@@ -1204,6 +1319,7 @@ mod tests {
 
     fn offload_ack() -> ControlReply {
         ControlReply {
+            idle_epoch: None,
             state: Some(VmState::Offloaded),
             memory: Some(VmMemory {
                 backing_file: "/untrusted/runner-path".into(),
@@ -1214,6 +1330,96 @@ mod tests {
             error: None,
             checkpoint: None,
             capture: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_rearm_requires_matching_authoritative_ack() {
+        for ack in [Some(8), Some(7), None] {
+            let directory = tempfile::tempdir().unwrap();
+            let backing = staged_compressed_backing(directory.path());
+            let cancellation = CancellationToken::new();
+            let control = VmControl::new(cancellation.clone());
+            let (host, mut runner) = UnixStream::pair().unwrap();
+            control.attach(host, backing).await;
+            let peer = tokio::spawn(async move {
+                let size = runner.read_u32().await.unwrap() as usize;
+                let mut bytes = vec![0; size];
+                runner.read_exact(&mut bytes).await.unwrap();
+                let request: super::super::idle::IdleResume =
+                    serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(request.idle_resume_epoch, 7);
+                send_reply(
+                    &mut runner,
+                    ControlReply {
+                        idle_epoch: ack,
+                        state: Some(VmState::Running),
+                        memory: None,
+                        error: None,
+                        checkpoint: None,
+                        capture: None,
+                    },
+                )
+                .await;
+            });
+            let result = control
+                .command_with_idle(OperationKind::RunResume, Some(7))
+                .await;
+            peer.await.unwrap();
+            assert_eq!(result.is_ok(), ack == Some(8));
+            assert_eq!(cancellation.is_cancelled(), ack != Some(8));
+            if let Ok(reply) = result {
+                assert_eq!(reply.idle_epoch, Some(8));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_offload_only_publishes_backing_after_an_accepted_report() {
+        for accepted in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let backing = staged_compressed_backing(directory.path());
+            let store = backing.compression_store.clone().unwrap();
+            let cancellation = CancellationToken::new();
+            let control = VmControl::new(cancellation.clone());
+            let (host, mut runner) = UnixStream::pair().unwrap();
+            control.attach(host, backing).await;
+            let peer = tokio::spawn(async move {
+                let size = runner.read_u32().await.unwrap() as usize;
+                let mut bytes = vec![0; size];
+                runner.read_exact(&mut bytes).await.unwrap();
+                let request: super::super::idle::IdleOffload =
+                    serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(request.idle_offload_epoch, 7);
+                let reply = if accepted {
+                    offload_ack()
+                } else {
+                    ControlReply {
+                        idle_epoch: None,
+                        state: Some(VmState::Paused),
+                        memory: None,
+                        error: None,
+                        checkpoint: None,
+                        capture: None,
+                    }
+                };
+                send_reply(&mut runner, reply).await;
+            });
+            let reply = control
+                .command_with_idle(OperationKind::RunOffload { file: None }, Some(7))
+                .await
+                .unwrap();
+            peer.await.unwrap();
+            assert_eq!(
+                reply.state,
+                Some(if accepted {
+                    VmState::Offloaded
+                } else {
+                    VmState::Paused
+                })
+            );
+            assert_eq!(store.lock().unwrap().head_id().is_some(), accepted);
+            assert!(!cancellation.is_cancelled());
         }
     }
 
@@ -1363,6 +1569,7 @@ mod tests {
         send_reply(
             &mut runner,
             ControlReply {
+                idle_epoch: None,
                 state: Some(VmState::Running),
                 memory: None,
                 error: None,
@@ -1409,6 +1616,7 @@ mod tests {
             send_reply(
                 &mut runner,
                 ControlReply {
+                    idle_epoch: None,
                     checkpoint: None,
                     capture: None,
                     state: Some(VmState::Running),
@@ -1421,6 +1629,7 @@ mod tests {
             send_reply(
                 &mut runner,
                 ControlReply {
+                    idle_epoch: None,
                     checkpoint: None,
                     capture: None,
                     state: Some(VmState::Paused),
@@ -1480,6 +1689,7 @@ mod tests {
             send_reply(
                 &mut runner,
                 ControlReply {
+                    idle_epoch: None,
                     checkpoint: None,
                     capture: None,
                     state: Some(VmState::Offloaded),
@@ -1539,6 +1749,7 @@ mod tests {
             send_reply(
                 &mut runner,
                 ControlReply {
+                    idle_epoch: None,
                     checkpoint: None,
                     capture: None,
                     state: None,
@@ -1590,6 +1801,7 @@ mod tests {
                         send_reply(
                             &mut runner,
                             ControlReply {
+                                idle_epoch: None,
                                 checkpoint: None,
                                 capture: None,
                                 state: Some(if fault == "state" {
@@ -1665,6 +1877,7 @@ mod tests {
         request.abort();
         assert!(request.await.unwrap_err().is_cancelled());
         let ack = serde_json::to_vec(&ControlReply {
+            idle_epoch: None,
             checkpoint: None,
             capture: None,
             state: Some(VmState::Paused),
@@ -1686,6 +1899,7 @@ mod tests {
             OperationKind::RunResume
         );
         let ack = serde_json::to_vec(&ControlReply {
+            idle_epoch: None,
             checkpoint: None,
             capture: None,
             state: None,

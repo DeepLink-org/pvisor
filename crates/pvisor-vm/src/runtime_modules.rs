@@ -49,6 +49,8 @@ mod backend;
 mod builder;
 #[path = "firmware.rs"]
 mod firmware;
+#[path = "guest_idle.rs"]
+mod guest_idle;
 #[path = "handle.rs"]
 mod handle;
 #[path = "memory.rs"]

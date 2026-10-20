@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
@@ -14,11 +14,28 @@ use super::common::attach_capture_headers;
 use super::state::GatewayState;
 use crate::conversion::{MAX_STREAM_CAPTURE_BYTES, ProtocolBridge, StreamTranslator};
 use crate::engine::{CallContext, CancelEvent, CompleteEvent, Event, headers_to_vec};
+use crate::model_wait::ModelStreamEvent;
 use crate::runtime::debug;
 use pvisor_overlaynet::headers::skip_response_header_after_reframing;
 
 /// Bounded queue between upstream reader and client SSE writer (backpressure).
 const STREAM_CLIENT_QUEUE: usize = 256;
+
+#[derive(Debug)]
+enum StreamOutput {
+    Data(Result<Bytes, String>),
+    Drained(tokio::sync::oneshot::Sender<()>),
+}
+
+fn body_item(item: StreamOutput) -> Option<Result<Bytes, std::io::Error>> {
+    match item {
+        StreamOutput::Data(data) => Some(data.map_err(std::io::Error::other)),
+        StreamOutput::Drained(ack) => {
+            let _ = ack.send(());
+            None
+        }
+    }
+}
 
 pub(super) fn request_wants_stream(body: &Bytes) -> bool {
     serde_json::from_slice::<Value>(body)
@@ -39,14 +56,13 @@ pub(super) fn should_stream_to_client(headers: &HeaderMap, request_body: &Bytes)
 }
 
 pub(super) async fn streaming_llm_response(
-    upstream_resp: reqwest::Response,
+    status: StatusCode,
+    resp_headers: HeaderMap,
+    byte_stream: crate::model_wait::ModelResponseStream,
     state: GatewayState,
     ctx: CallContext,
     bridge: ProtocolBridge,
-    first_chunk: Option<Bytes>,
 ) -> anyhow::Result<Response> {
-    let status = upstream_resp.status();
-    let resp_headers = upstream_resp.headers().clone();
     let recorded_resp_headers = headers_to_vec(&resp_headers);
     let translate = bridge.needs_response_translation();
     let session_id = ctx.route().session_id.clone();
@@ -64,10 +80,7 @@ pub(super) async fn streaming_llm_response(
         );
     }
 
-    let byte_stream =
-        futures_util::stream::iter(first_chunk.into_iter().map(Ok::<Bytes, reqwest::Error>))
-            .chain(upstream_resp.bytes_stream());
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, String>>(STREAM_CLIENT_QUEUE);
+    let (tx, rx) = tokio::sync::mpsc::channel::<StreamOutput>(STREAM_CLIENT_QUEUE);
 
     let capture_engine = state.capture_engine.clone();
 
@@ -91,6 +104,20 @@ pub(super) async fn streaming_llm_response(
             };
             let Some(item) = item else {
                 break;
+            };
+            let item = match item {
+                ModelStreamEvent::Chunk(item) => item,
+                ModelStreamEvent::Flush(ack) => {
+                    let result = tokio::select! {
+                        _ = stop.changed() => Err(()),
+                        result = tx.send(StreamOutput::Drained(ack)) => result.map_err(|_| ()),
+                    };
+                    if result.is_err() {
+                        client_disconnected = true;
+                        break;
+                    }
+                    continue;
+                }
             };
             match item {
                 Ok(chunk) => {
@@ -261,7 +288,10 @@ pub(super) async fn streaming_llm_response(
         );
     });
 
-    let body_stream = ReceiverStream::new(rx).map(|item| item.map_err(std::io::Error::other));
+    // Queue order establishes the batch boundary. This acknowledges body
+    // consumption by the HTTP writer, not a TCP ACK or guest application read.
+    let body_stream =
+        ReceiverStream::new(rx).filter_map(|item| std::future::ready(body_item(item)));
 
     let mut builder = Response::builder().status(status);
     // The client-facing SSE body is a new stream. Upstream hop-by-hop framing and
@@ -303,13 +333,13 @@ mod tests {
 }
 
 async fn send_stream_chunk(
-    tx: &tokio::sync::mpsc::Sender<Result<Bytes, String>>,
+    tx: &tokio::sync::mpsc::Sender<StreamOutput>,
     stop: &mut tokio::sync::watch::Receiver<()>,
     chunk: Result<Bytes, String>,
 ) -> Result<(), ()> {
     tokio::select! {
         _ = stop.changed() => Err(()),
-        result = tx.send(chunk) => result.map_err(|_| ()),
+        result = tx.send(StreamOutput::Data(chunk)) => result.map_err(|_| ()),
     }
 }
 
@@ -318,9 +348,32 @@ mod lifecycle_tests {
     use super::*;
     use std::time::Duration;
     #[tokio::test]
+    async fn batch_ack_is_emitted_by_body_consumption_in_queue_order() {
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        let (ack, mut drained) = tokio::sync::oneshot::channel();
+        tx.send(StreamOutput::Data(Ok(Bytes::from_static(b"first"))))
+            .await
+            .unwrap();
+        tx.send(StreamOutput::Drained(ack)).await.unwrap();
+        drop(tx);
+        let mut body =
+            ReceiverStream::new(rx).filter_map(|item| std::future::ready(body_item(item)));
+        assert_eq!(
+            body.next().await.unwrap().unwrap(),
+            Bytes::from_static(b"first")
+        );
+        assert!(matches!(
+            drained.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(body.next().await.is_none());
+        drained.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn shutdown_interrupts_a_backpressured_sender() {
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        tx.send(Ok(Bytes::new())).await.unwrap();
+        tx.send(StreamOutput::Data(Ok(Bytes::new()))).await.unwrap();
         let (stop_tx, mut stop) = tokio::sync::watch::channel(());
         stop_tx.send(()).unwrap();
         let result = tokio::time::timeout(

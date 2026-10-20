@@ -44,6 +44,9 @@ impl VmmHandle {
         resume_source: bool,
         action: impl FnOnce(&mut vmm::Vmm) -> Result<T, String>,
     ) -> Result<T, String> {
+        if self.idle.status().enabled {
+            return Err("guest idle M1 cannot snapshot".into());
+        }
         let _transition = self
             .transition
             .lock()
@@ -240,30 +243,15 @@ impl VmmHandle {
         result.map_err(|e| e.to_string())
     }
 
-    fn control(&self, paused: bool) -> Result<(), String> {
-        let _transition = self
-            .transition
-            .lock()
-            .map_err(|_| "VM transition lock poisoned")?;
-        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
-        let mut vmm = vmm.lock().map_err(|_| "VMM lock poisoned")?;
-        let result = if paused { vmm.pause() } else { vmm.resume() };
-        result.map_err(|error| error.to_string())
-    }
-}
-
-impl VmControl for VmmHandle {
-    fn is_paused(&self) -> Result<bool, String> {
-        let _transition = self
-            .transition
-            .lock()
-            .map_err(|_| "VM transition lock poisoned")?;
-        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
-        let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
-        Ok(locked.is_paused())
-    }
-
-    fn offload_ram(&self) -> Result<RamReclaim, String> {
+    pub(crate) fn offload_ram_with_idle(
+        &self,
+        idle_epoch: Option<u64>,
+    ) -> Result<Option<RamReclaim>, String> {
+        // In this profile automatic reclaim must carry its original idle epoch.
+        // Manual offload remains unsupported; a manual pause/resume is unchanged.
+        if idle_epoch.is_none() && self.idle.status().enabled {
+            return Err("guest idle offload requires a claimed idle epoch".into());
+        }
         let _transition = self
             .transition
             .lock()
@@ -282,20 +270,91 @@ impl VmControl for VmmHandle {
                     "whole-VM offload is incompatible with experimental RAM preparation".into(),
                 );
             }
-            locked.pause().map_err(|error| error.to_string())?;
+            if idle_epoch.is_some() {
+                if !locked.is_paused() {
+                    return Err("guest idle offload requires an acknowledged pause".into());
+                }
+                if locked.device_memory_gate().is_idle_closed() {
+                    // Never reopen a gate owned by a prior offload/maintenance.
+                    return Err("guest idle offload requires an open device RAM gate".into());
+                }
+            } else {
+                locked.pause().map_err(|error| error.to_string())?;
+            }
             locked.device_memory_gate()
         };
         // Device I/O may need the VMM worker to finish; never drain under its lock.
-        if let Err(error) = gate.close(std::time::Duration::from_secs(5)) {
+        if let Some(epoch) = idle_epoch {
+            // A device lease retained across a slow host request is a reason to
+            // resume, not to spend the entire guest timer window draining it.
+            if !gate.try_close()? {
+                self.idle
+                    .trace_offload(epoch, "device_gate_busy", None);
+                return Ok(None);
+            }
+        } else if let Err(error) = gate.close(std::time::Duration::from_secs(5)) {
             vmm.lock().map_err(|_| "VMM lock poisoned")?.fail_control();
             return Err(error.to_owned());
         }
         let mut locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+        if let Some(epoch) = idle_epoch {
+            if !self.idle.begin_offload(epoch) {
+                gate.open();
+                return Ok(None);
+            }
+        }
+        // A wake after admission is latched; never interrupt writeback or reopen
+        // RAM writers until native reclaim and host publication have completed.
+        let reclaim_started = std::time::Instant::now();
         let result = locked.offload_ram();
+        if let Some(epoch) = idle_epoch {
+            self.idle.trace_offload(
+                epoch,
+                if result.is_ok() {
+                    "reclaim_completed"
+                } else {
+                    "reclaim_failed"
+                },
+                Some(reclaim_started.elapsed().as_nanos()),
+            );
+        }
         if result.is_err() {
             locked.fail_control();
         }
+        result.map(Some).map_err(|error| error.to_string())
+    }
+
+    fn control(&self, paused: bool) -> Result<(), String> {
+        let _transition = self
+            .transition
+            .lock()
+            .map_err(|_| "VM transition lock poisoned")?;
+        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
+        let mut vmm = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+        let result = if paused {
+            vmm.pause()
+        } else {
+            self.idle.resumed();
+            vmm.resume()
+        };
         result.map_err(|error| error.to_string())
+    }
+}
+
+impl VmControl for VmmHandle {
+    fn is_paused(&self) -> Result<bool, String> {
+        let _transition = self
+            .transition
+            .lock()
+            .map_err(|_| "VM transition lock poisoned")?;
+        let vmm = self.vmm.upgrade().ok_or("VMM has stopped")?;
+        let locked = vmm.lock().map_err(|_| "VMM lock poisoned")?;
+        Ok(locked.is_paused())
+    }
+
+    fn offload_ram(&self) -> Result<RamReclaim, String> {
+        self.offload_ram_with_idle(None)?
+            .ok_or_else(|| "unconditional offload was not admitted".into())
     }
     fn pause(&self) -> Result<(), String> {
         self.control(true)

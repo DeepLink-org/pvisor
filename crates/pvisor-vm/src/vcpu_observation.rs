@@ -3,8 +3,8 @@ use crate::api::{
     VcpuObservationSnapshot, VcpuObservedState as State, VmmHandle,
 };
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -383,6 +383,7 @@ mod tests {
     #[test]
     fn dead_handle_fails_without_control_changes() {
         let handle = VmmHandle {
+            idle: std::sync::Arc::new(crate::guest_idle::IdleGate::default()),
             vmm: std::sync::Weak::new(),
             transition: std::sync::Arc::new(Mutex::new(())),
             cold_pager_started: std::sync::Arc::new(AtomicBool::new(false)),

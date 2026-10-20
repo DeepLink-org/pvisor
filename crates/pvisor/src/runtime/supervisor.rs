@@ -123,6 +123,8 @@ pub struct RuntimeSupervisorBuilder {
     model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
     #[cfg(feature = "gateway")]
     native_model_wait: Option<crate::NativeModelWait>,
+    #[cfg(feature = "gateway")]
+    cooperative_model_wait: Option<crate::CooperativeModelWait>,
     storage: Option<PathBuf>,
     #[cfg(feature = "gateway")]
     #[cfg(feature = "gateway")]
@@ -229,6 +231,7 @@ impl RuntimeSupervisorBuilder {
         self.gateway_enabled = gateway.gateway_enabled;
         self.model_wait = gateway.model_wait;
         self.native_model_wait = gateway.native_model_wait;
+        self.cooperative_model_wait = gateway.cooperative_model_wait;
         self
     }
 
@@ -270,6 +273,8 @@ impl RuntimeSupervisorBuilder {
             model_wait: self.model_wait,
             #[cfg(feature = "gateway")]
             native_model_wait: self.native_model_wait,
+            #[cfg(feature = "gateway")]
+            cooperative_model_wait: self.cooperative_model_wait,
             storage: self.storage,
             #[cfg(feature = "gateway")]
             #[cfg(feature = "gateway")]
@@ -296,6 +301,8 @@ pub struct RuntimeSupervisor {
     model_wait: Option<Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>>,
     #[cfg(feature = "gateway")]
     native_model_wait: Option<crate::NativeModelWait>,
+    #[cfg(feature = "gateway")]
+    cooperative_model_wait: Option<crate::CooperativeModelWait>,
     storage: Option<PathBuf>,
     #[cfg(feature = "gateway")]
     #[cfg(feature = "gateway")]
@@ -351,6 +358,57 @@ impl RuntimeSupervisor {
         #[cfg(feature = "gateway")]
         let paths = paths.chain(self.gateway_output_dir.iter().map(PathBuf::as_path));
         paths.collect()
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) fn validate_model_wait(
+        &self,
+        executor: pvisor_core::ExecutorKind,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.native_model_wait.is_none() || self.cooperative_model_wait.is_none(),
+            "legacy and Host-observed model waits are mutually exclusive"
+        );
+        if let Some(policy) = self.cooperative_model_wait {
+            policy.validate()?;
+            anyhow::ensure!(
+                self.proxy.is_some() && self.gateway_enabled,
+                "cooperative model wait requires enabled Gateway"
+            );
+            anyhow::ensure!(
+                self.model_wait.is_none(),
+                "custom and built-in model waits are mutually exclusive"
+            );
+            anyhow::ensure!(
+                executor == pvisor_core::ExecutorKind::VirtualMachine,
+                "cooperative model wait requires a VM executor"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) fn bind_host_model_wait(
+        &self,
+        controls: super::run::RunControlHandle,
+        cancellation: tokio_util::sync::CancellationToken,
+    ) -> (Self, Option<Arc<super::wait_coordinator::WaitCoordinator>>) {
+        let mut runtime = self.clone();
+        let coordinator = self.cooperative_model_wait.map(|policy| {
+            let attempt_id = controls.status().attempt.attempt_id;
+            let coordinator = super::wait_coordinator::WaitCoordinator::new(
+                Arc::new(controls),
+                cancellation,
+                policy,
+            );
+            coordinator.start_host_reads();
+            runtime.model_wait = Some(Arc::new(super::model_wait::NativeModelWait {
+                coordinator: coordinator.clone(),
+                attempt_id,
+            }));
+            coordinator
+        });
+        (runtime, coordinator)
     }
     pub(crate) fn overlay_hint(&self) -> &OverlayHint {
         &self.overlay
@@ -771,6 +829,83 @@ models = []
 "#,
         )
         .unwrap()
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn cooperative_model_wait_admission_is_explicit_and_validated() {
+        use pvisor_core::ExecutorKind;
+        use std::time::Duration;
+        let default = GatewayDriverConfig::new(test_proxy());
+        assert!(default.cooperative_model_wait.is_none());
+        let configured = default.cooperative_model_wait(crate::CooperativeModelWait::default());
+        let runtime = RuntimeSupervisorBuilder::new()
+            .gateway(configured.clone())
+            .build();
+        assert!(
+            runtime
+                .validate_model_wait(ExecutorKind::VirtualMachine)
+                .is_ok()
+        );
+        assert!(runtime.validate_model_wait(ExecutorKind::Process).is_err());
+        let mixed = RuntimeSupervisorBuilder::new()
+            .gateway(
+                configured
+                    .clone()
+                    .native_model_wait(crate::NativeModelWait::Pause),
+            )
+            .build();
+        assert!(
+            mixed
+                .validate_model_wait(ExecutorKind::VirtualMachine)
+                .is_err()
+        );
+        let disabled = RuntimeSupervisorBuilder::new()
+            .gateway(configured.gateway_enabled(false))
+            .build();
+        assert!(
+            disabled
+                .validate_model_wait(ExecutorKind::VirtualMachine)
+                .is_err()
+        );
+        for policy in [
+            crate::CooperativeModelWait {
+                require_guest_idle: false,
+                downloads: false,
+                filesystem_reads: false,
+                stream_buffer: None,
+                rounds: None,
+                pause_after: Duration::from_millis(20),
+                offload_after: Some(Duration::from_secs(1)),
+            },
+            crate::CooperativeModelWait {
+                require_guest_idle: false,
+                downloads: false,
+                filesystem_reads: false,
+                stream_buffer: None,
+                rounds: None,
+                pause_after: Duration::ZERO,
+                offload_after: None,
+            },
+            crate::CooperativeModelWait {
+                require_guest_idle: false,
+                downloads: false,
+                filesystem_reads: false,
+                stream_buffer: None,
+                rounds: None,
+                pause_after: Duration::from_secs(2),
+                offload_after: Some(Duration::from_secs(1)),
+            },
+        ] {
+            let runtime = RuntimeSupervisorBuilder::new()
+                .gateway(GatewayDriverConfig::new(test_proxy()).cooperative_model_wait(policy))
+                .build();
+            assert!(
+                runtime
+                    .validate_model_wait(ExecutorKind::VirtualMachine)
+                    .is_err()
+            );
+        }
     }
 
     #[test]
