@@ -10,7 +10,7 @@ from agent_runner import model_key, model_kwargs, model_settings
 
 def check(output):
     settings = model_settings()
-    key = model_key(settings['profile'])
+    key = model_key()
     os.environ['OPENAI_API_KEY'] = key
     os.environ.setdefault('LITELLM_LOCAL_MODEL_COST_MAP', 'True')
     import litellm

@@ -25,44 +25,38 @@ def api_base(value):
 
 
 def model_settings(environ=None):
-    """Non-secret configuration; Qwen is the default, GLM is opt-in."""
+    """Explicit OpenAI-compatible endpoint and model; no provider defaults."""
     env = os.environ if environ is None else environ
-    profile = env.get('SWE_MODEL_PROFILE', 'qwen')
-    if profile not in ('qwen', 'glm'):
-        raise ValueError('SWE_MODEL_PROFILE must be qwen or glm')
-    if profile == 'qwen':
-        base = env.get('OPENAI_BASE_URL', 'https://token.pjlab.org.cn/v1')
-        model = env.get('OPENAI_MODEL', 'agents-a1')
-    else:
-        base = env.get('OPENAI_BASE_URL') or env.get('GLM_BASE_URL', '')
-        model = env.get('OPENAI_MODEL') or env.get('GLM_MODEL', 'glm-5.3-flash')
-    if not model or model.startswith('openai/'):
+    base, model = env.get('OPENAI_BASE_URL', ''), env.get('OPENAI_MODEL', '')
+    if not base or not model:
+        raise ValueError('OPENAI_BASE_URL and OPENAI_MODEL must be set')
+    if model.startswith('openai/'):
         raise ValueError('supply the service model ID without the internal openai/ prefix')
-    return dict(profile=profile, base_url=api_base(base), model=model)
+    settings = dict(base_url=api_base(base), model=model,
+                    model_kwargs=json.loads(env.get('SWE_MODEL_KWARGS', '{}')))
+    model_kwargs(settings)  # Validate before writing settings or starting a VM.
+    return settings
 
 
-def model_key(profile):
+def model_key():
     key = os.environ.get('OPENAI_API_KEY', '')
-    if not key and profile == 'glm':
-        key = os.environ.get('GLM_API_KEY', '')
     if not key:
         raise ValueError('OPENAI_API_KEY must be set in the host environment')
     return key
 
 
 def model_kwargs(config):
-    profile = config.get('profile', 'qwen')
-    if profile not in ('qwen', 'glm'):
-        raise ValueError('unknown model profile')
-    kwargs = dict(api_base=api_base(config['base_url']),
-                  timeout=config.get('request_timeout', 120), num_retries=0,
-                  max_tokens=config.get('max_tokens', 16384))
-    if profile == 'glm':
-        kwargs.update(temperature=1, top_p=.95,
-                      extra_body={'thinking': {'type': 'enabled', 'clear_thinking': False},
-                                  'reasoning_effort': config.get('reasoning_effort', 'max')})
-    # Qwen uses the lab service's defaults: do not guess thinking/template flags.
-    return kwargs
+    options = config.get('model_kwargs', {})
+    allowed = {'temperature', 'top_p', 'max_tokens', 'timeout', 'reasoning_effort', 'extra_body'}
+    if not isinstance(options, dict) or options.keys() - allowed:
+        raise ValueError('SWE_MODEL_KWARGS contains unsupported request options')
+    body = options.get('extra_body', {})
+    reserved = {'model', 'messages', 'tools', 'stream', 'api_key', 'api_base', 'base_url',
+                'headers', 'extra_headers', 'authorization'}
+    if not isinstance(body, dict) or body.keys() & reserved:
+        raise ValueError('extra_body must not override routing, credentials or tool protocol')
+    return dict(api_base=api_base(config['base_url']), timeout=120, num_retries=0,
+                max_tokens=16384) | options
 
 
 def run(config):
@@ -138,6 +132,6 @@ if __name__ == '__main__':
     # The key is inherited only by this host process, never in the config file,
     # native trajectory model kwargs or guest environment.
     config = json.loads(Path(sys.argv[1]).read_text())
-    os.environ['OPENAI_API_KEY'] = model_key(config.get('profile', 'qwen'))
+    os.environ['OPENAI_API_KEY'] = model_key()
     os.environ.setdefault('MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT', '2')
     run(config)

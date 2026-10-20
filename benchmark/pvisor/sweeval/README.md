@@ -90,51 +90,50 @@ and oracle timing separate from Agent measurements.
 
 ## Configure the model on the host
 
-The default profile is Qwen through the lab's OpenAI-compatible endpoint.
-Use the service alias `agents-a1` in requests. The user identifies its deployment
-as Qwen3.6-35B-A3B-FP8; the alias alone does not verify the backend weights/version.
-In the host Bash shell:
+Set an explicit OpenAI-compatible API base and the provider's model ID. There
+is no default provider, model, or provider-specific reasoning/sampling policy:
 
 ```bash
-source benchmark/pvisor/sweeval/qwen.env.example
-read -rs -p 'Lab API key: ' OPENAI_API_KEY; echo
+source benchmark/pvisor/sweeval/model.env.example
+# Replace OPENAI_BASE_URL and OPENAI_MODEL placeholders before running.
+read -rs -p 'Model API key: ' OPENAI_API_KEY; echo
 export OPENAI_API_KEY
 ```
 
-The template sets `SWE_MODEL_PROFILE=qwen`,
-`OPENAI_BASE_URL=https://token.pjlab.org.cn/v1`, `OPENAI_MODEL=agents-a1`.
-Do not append `/chat/completions`: the client adds it once. Keys remain on the
-host and are not serialized into model configs or guest environments.
-Qwen requests omit GLM-specific `thinking`, `clear_thinking`, `reasoning_effort`,
-and sampling overrides. Thinking behavior follows the service defaults;
-returned `reasoning_content` is retained by the existing mini client.
-The adapter requests at most 16384 output tokens and a 120-second request timeout;
-these limits and native tool calling still need a real service preflight.
-A text-only hello response does not establish tool-call compatibility.
+The API base must not end in `/chat/completions`; the client adds it once.
+Credentials stay in the host environment and are not serialized into model
+configs or guest environments. Only `OPENAI_API_KEY` is read; legacy
+`GLM_*` and `SWE_MODEL_PROFILE` settings are no longer used.
 
-Run the small API-only preflight after setting the key (two potentially billable
-requests, no VM or dataset needed):
+`SWE_MODEL_KWARGS` is an optional JSON object for non-secret request options:
+`temperature`, `top_p`, `max_tokens`, `timeout`, `reasoning_effort`, and
+`extra_body` for provider-specific fields. For example:
+
+```bash
+export SWE_MODEL_KWARGS='{"max_tokens":8192,"temperature":0.5}'
+```
+
+Do not put credentials into these options: they are retained as experiment
+metadata. Endpoint, model, messages, tools, and credentials cannot be overridden
+through request options. Defaults are 16384 output tokens, a 120-second request
+timeout and zero client retries; upstream Agent retries are bounded by
+`MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT=2`. Reasoning extras are sent only when
+explicitly configured. The upstream mini `litellm` client adds its internal
+`openai/` prefix; the service receives the model ID without that prefix.
+
+Run the explicit API-only preflight after setting the key. It makes two
+potentially billable requests, validates a native tool call using a fixed tool
+result, and never executes the generated command:
 
 ```bash
 "$SWE_ROOT/venv/bin/python" benchmark/pvisor/sweeval/preflight.py \
-  --output "$SWE_ROOT/api-preflight/qwen-NEW"
+  --output "$SWE_ROOT/api-preflight/model-NEW"
 ```
 
-It requests a harmless tool call, validates its name/arguments, returns a fixed
-tool result without executing the command, then checks the model's final reply.
-Both responses, usage and failure status are retained without request credentials.
-If it fails, inspect the retained response before launching the three tasks.
-It does not prove SWE solving ability or the identity of the deployed weights.
-
-The optional `SWE_MODEL_PROFILE=glm` enables the previous GLM-specific extras.
-For that profile only, legacy `GLM_BASE_URL`, `GLM_MODEL`, `GLM_API_KEY` are
-fallbacks when the corresponding `OPENAI_*` setting is absent. Qwen never uses
-a leftover GLM key. Unset old `OPENAI_*` values when switching endpoints.
-Both profiles use the upstream mini `litellm` class with the internal `openai/`
-prefix; the service receives the plain model ID. The model selection is retained
-in each run's `model-settings.json`. `MSWEA_MODEL_RETRY_STOP_AFTER_ATTEMPT=2`
-bounds upstream mini retries. No external service compatibility is claimed until
-a credentialed preflight passes.
+Inspect retained responses and failures before starting tasks. This checks the
+configured endpoint's tool-call exchange, not SWE solving ability or backend
+model identity. Preflight and real runs use the same request options; model
+settings are retained in each run's `model-settings.json`.
 
 ```bash
 umask 077
@@ -241,3 +240,11 @@ reasoning time; command text alone is insufficient evidence for those claims.
 Keep different cohorts, binaries and settings separate in any result table.
 
 Shutdown allows up to 300 seconds for the driver to complete runtime teardown and retain the overlay/run bundle after the guest stop acknowledgment. This is teardown, excluded from Agent resource statistics. A stop acknowledgment alone is not a completed VM result; `vm_stop` records whether the driver retained its terminal result.
+
+## Recorded trajectory data
+
+The 30 recorded tool trajectories and detailed historical validation records
+are a separate data package, not embedded benchmark source. See
+[the data-package manifest and usage notes](traces/README.md) for its checksum,
+contents, publication status and validation limits. Full private logs remain
+in the experiment archive. This adapter does not add a second replay engine.

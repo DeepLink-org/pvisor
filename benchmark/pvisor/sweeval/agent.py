@@ -14,10 +14,10 @@ class HostMiniAgent(BaseAgent):
     SUPPORTS_ATIF = True
     SUPPORTS_ACCOUNTING = True
 
-    def __init__(self, *args, max_steps=200, profile='qwen', **kwargs):
+    def __init__(self, *args, max_steps=200, model_kwargs=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.max_steps = max_steps
-        self.profile = profile
+        self.model_kwargs = model_kwargs or {}
 
     @staticmethod
     def name():
@@ -35,7 +35,7 @@ class HostMiniAgent(BaseAgent):
         uname = await environment.exec('uname -r')
         config = dict(control=str(environment.client.root), token=environment.token,
                       events=str(environment.events), instruction=instruction,
-                      profile=self.profile, model=self.model_name, base_url=self.model_base_url,
+                      model_kwargs=self.model_kwargs, model=self.model_name, base_url=self.model_base_url,
                       cwd=environment.workdir, guest_release=uname.stdout.strip(),
                       tool_env=environment._merged_env(None), tool_user=environment.default_user,
                       max_steps=self.max_steps,
@@ -67,7 +67,7 @@ class HostMiniAgent(BaseAgent):
                     await asyncio.sleep(.1)
                 else:
                     await environment.stop()
-            keys = {os.environ.get(name, '') for name in ('OPENAI_API_KEY', 'GLM_API_KEY')} - {''}
+            keys = {os.environ.get('OPENAI_API_KEY', '')} - {''}
             if keys:
                 for output in root.glob('*'):
                     if output.is_file() and output.suffix in ('.json', '.txt'):

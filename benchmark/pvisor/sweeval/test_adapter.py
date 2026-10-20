@@ -107,8 +107,9 @@ def test_unsafe_or_wrong_endpoint_rejected(url):
         api_base(url)
 
 
-@pytest.mark.parametrize('profile', ['qwen', 'glm'])
-def test_native_agent_records_real_request_and_tool_events(worker, tmp_path, monkeypatch, profile):
+@pytest.mark.parametrize('options', [{}, {'temperature': 0.5, 'reasoning_effort': 'high',
+    'extra_body': {'thinking': {'type': 'enabled', 'clear_thinking': False}}}])
+def test_native_agent_records_real_request_and_tool_events(worker, tmp_path, monkeypatch, options):
     litellm = optional_package('litellm')
     monkeypatch.setenv('MSWEA_GLOBAL_CONFIG_DIR', str(tmp_path / 'mini-config'))
     optional_package('minisweagent')
@@ -129,17 +130,17 @@ def test_native_agent_records_real_request_and_tool_events(worker, tmp_path, mon
     monkeypatch.setattr(litellm, 'completion', completion)
     monkeypatch.setenv('OPENAI_API_KEY', 'not-a-real-key')
     run(dict(control=str(worker.root), token=worker.token, events=str(worker.events),
-             profile=profile, model='agents-a1' if profile == 'qwen' else 'glm-5.3-flash',
-             base_url='https://example.invalid/v1' if profile == 'qwen' else 'https://example.invalid/api/paas/v4',
+             model_kwargs=options, model='fixture-model',
+             base_url='https://example.invalid/api/paas/v4' if options else 'https://example.invalid/v1',
              cwd=str(tmp_path), guest_release='test', instruction='test task',
              trajectory=str(tmp_path / 'native.json'), outcome=str(tmp_path / 'outcome.json')))
     assert len(requests) == 2
-    if profile == 'glm':
+    assert requests[0]['model'] == 'openai/fixture-model'
+    if options:
         assert requests[0]['api_base'].endswith('/api/paas/v4')
-        assert requests[0]['extra_body']['thinking']['clear_thinking'] is False
+        assert all(requests[0][key] == value for key, value in options.items())
     else:
         assert requests[0]['api_base'].endswith('/v1')
-        assert requests[0]['model'] == 'openai/agents-a1'
         assert 'extra_body' not in requests[0]
         assert 'reasoning_effort' not in requests[0]
     assert 'tools' in requests[0] and 'responses' not in requests[0]
@@ -199,17 +200,35 @@ def test_resource_phase_assignment_and_cpu_accounting(tmp_path):
     assert 'trial_stage' in (tmp_path / 'timeline.csv').read_text()
 
 
-def test_qwen_defaults_and_legacy_glm_key_isolation(monkeypatch):
+def test_model_requires_explicit_endpoint_and_id_and_uses_only_host_key(monkeypatch):
     from agent_runner import model_key, model_settings
 
-    assert model_settings({}) == dict(profile='qwen', model='agents-a1',
-                                      base_url='https://token.pjlab.org.cn/v1')
+    for env in ({}, {'OPENAI_MODEL': 'fixture'}, {'OPENAI_BASE_URL': 'https://example.invalid/v1'}):
+        with pytest.raises(ValueError, match='OPENAI_BASE_URL and OPENAI_MODEL'):
+            model_settings(env)
     monkeypatch.delenv('OPENAI_API_KEY', raising=False)
-    monkeypatch.setenv('GLM_API_KEY', 'glm-only-test-key')
+    monkeypatch.setenv('GLM_API_KEY', 'ignored-legacy-key')
     with pytest.raises(ValueError, match='OPENAI_API_KEY'):
-        model_key('qwen')
-    assert model_key('glm') == 'glm-only-test-key'
-    assert model_settings({'SWE_MODEL_PROFILE': 'glm', 'GLM_BASE_URL': 'https://example.invalid/v4'})['model'] == 'glm-5.3-flash'
+        model_key()
+    monkeypatch.setenv('OPENAI_API_KEY', 'host-only-test-key')
+    assert model_key() == 'host-only-test-key'
+    settings = model_settings({'OPENAI_BASE_URL': 'https://example.invalid/v1/',
+                               'OPENAI_MODEL': 'custom-model',
+                               'SWE_MODEL_KWARGS': '{"max_tokens": 4096, "timeout": 30}'})
+    assert settings == dict(model='custom-model', base_url='https://example.invalid/v1',
+                            model_kwargs={'max_tokens': 4096, 'timeout': 30})
+    assert 'host-only-test-key' not in json.dumps(settings)
+
+
+@pytest.mark.parametrize('options', ['not-json', '[]', '{"api_key":"forbidden"}',
+    '{"model":"other"}', '{"extra_body":{"messages":[]}}',
+    '{"extra_body":{"api_key":"forbidden"}}', '{"extra_body":[]}'])
+def test_model_options_cannot_replace_credentials_routing_or_tool_protocol(options):
+    from agent_runner import model_settings
+
+    with pytest.raises(ValueError):
+        model_settings({'OPENAI_BASE_URL': 'https://example.invalid/v1',
+                        'OPENAI_MODEL': 'fixture', 'SWE_MODEL_KWARGS': options})
 
 
 @pytest.mark.parametrize('valid', [True, False])
@@ -217,10 +236,10 @@ def test_api_preflight_retains_success_and_failure(tmp_path, monkeypatch, valid)
     litellm = optional_package('litellm')
     from preflight import check
 
-    monkeypatch.setenv('SWE_MODEL_PROFILE', 'qwen')
+    monkeypatch.setenv('SWE_MODEL_KWARGS', '{}')
     monkeypatch.setenv('OPENAI_API_KEY', 'fake-preflight-key')
     monkeypatch.setenv('OPENAI_BASE_URL', 'https://example.invalid/v1')
-    monkeypatch.setenv('OPENAI_MODEL', 'agents-a1')
+    monkeypatch.setenv('OPENAI_MODEL', 'fixture-model')
     requests = []
 
     def completion(**kwargs):

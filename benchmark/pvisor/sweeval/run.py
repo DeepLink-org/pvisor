@@ -48,7 +48,7 @@ async def evaluate(config, output, *, oracle=False):
         raise ValueError('task images not prepared; run prepare.py first')
     model = dict(profile='oracle') if oracle else model_settings()
     if not oracle:
-        model_key(model['profile'])
+        model_key()
         validate_oracle(config, plan)
     AGENT_REGISTRY[HostMiniAgent.name()] = HostMiniAgent
     output.mkdir(parents=True, mode=0o700, exist_ok=False)
@@ -76,7 +76,7 @@ async def evaluate(config, output, *, oracle=False):
                                    model_name=model['model'],
                                    model_base_url=model['base_url'],
                                    kwargs={'max_steps': config.get('max_steps', 200),
-                                           'profile': model['profile']}),
+                                           'model_kwargs': model['model_kwargs']}),
             environment=EnvironmentTrialConfig(backend='pvisor', mount_logs=False),
             environment_start_timeout_sec=900,
         )

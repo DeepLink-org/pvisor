@@ -18,7 +18,8 @@ from run import evaluate
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--profile', choices=['qwen', 'glm'], default='qwen')
+    parser.add_argument('--api-prefix', default='/v1')
+    parser.add_argument('--model-kwargs', default='{}', help='Non-secret JSON request options')
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--rootfs', required=True)
     parser.add_argument('--python', required=True)
@@ -55,8 +56,8 @@ echo '{"reward":1}' > /logs/verifier/reward.json
     asyncio.run(evaluate(config, oracle_output, oracle=True))
     config['require_oracle'] = str(oracle_output / 'oracle-gate.json')
     received = []
-    model_id = 'agents-a1' if args.profile == 'qwen' else 'glm-5.3-flash'
-    prefix = '/v1' if args.profile == 'qwen' else '/api/paas/v4'
+    model_id, prefix = 'fixture-model', args.api_prefix
+    options = json.loads(args.model_kwargs)
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -86,8 +87,8 @@ echo '{"reward":1}' > /logs/verifier/reward.json
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     previous = {key: os.environ.get(key) for key in (
-        'SWE_MODEL_PROFILE', 'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_MODEL')}
-    os.environ.update(SWE_MODEL_PROFILE=args.profile,
+        'SWE_MODEL_KWARGS', 'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_MODEL')}
+    os.environ.update(SWE_MODEL_KWARGS=args.model_kwargs,
                       OPENAI_BASE_URL=f'http://127.0.0.1:{server.server_port}{prefix}',
                       OPENAI_API_KEY='local-fixture-only', OPENAI_MODEL=model_id)
     try:
@@ -104,17 +105,17 @@ echo '{"reward":1}' > /logs/verifier/reward.json
     assert len(received) == 2, results
     assert all(r['path'] == prefix + '/chat/completions' for r in received)
     assert all(r['body']['model'] == model_id for r in received)
-    if args.profile == 'glm':
-        assert received[0]['body']['thinking']['clear_thinking'] is False
-    else:
-        assert all('thinking' not in r['body'] and 'reasoning_effort' not in r['body']
-                   for r in received)
+    expected = {key: value for key, value in options.items() if key not in ('timeout', 'extra_body')}
+    expected.update(options.get('extra_body', {}))
+    assert all(all(r['body'][key] == value for key, value in expected.items()) for r in received)
+    if not options:
+        assert all('thinking' not in r['body'] and 'reasoning_effort' not in r['body'] for r in received)
     assert any(m.get('reasoning_content') == 'fixture reasoning'
                for m in received[1]['body']['messages']), 'reasoning missing from second request'
     assert results[0]['verifier_result']['rewards']['reward'] == 1, results
     assert results[0]['exception_info'] is None, results
     (args.output / 'passed.json').write_text(json.dumps(dict(
-        status='passed', profile=args.profile, external_model_calls=0, fixture_model_calls=len(received),
+        status='passed', model_kwargs=options, external_model_calls=0, fixture_model_calls=len(received),
         real_kvm=True, verifier_reward=1)))
 
 
