@@ -1,0 +1,30 @@
+From: pVisor contributors
+Subject: [PATCH] sched/deadline: avoid rearming an idle server inside its callback
+
+GPL-2.0-only. Apply after 0042. Preserve accounting, replenishment and
+non-idle rearming; the in-flight callback owns idle stop. No Host policy,
+PSI, handoff timing or application timer change.
+
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -1551,8 +1551,19 @@
+ 
+ 		replenish_dl_new_period(dl_se, dl_se->rq);
+ 
+-		if (idle)
++		if (idle) {
+ 			dl_se->dl_defer_idle = 1;
++			/*
++			 * The running server callback will observe idle and stop.
++			 * Do not enqueue a second expiration here: stop's
++			 * hrtimer_try_to_cancel() cannot remove it while this
++			 * callback is running, even with HRTIMER_NORESTART.
++			 * Runtime accounting and period replenishment above
++			 * still apply; a non-idle server keeps its normal rearm.
++			 */
++			if (hrtimer_callback_running(&dl_se->dl_timer))
++				return;
++		}
+ 
+ 		/*
+ 		 * Not being able to start the timer seems problematic. If it could not

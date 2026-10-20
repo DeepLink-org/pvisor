@@ -1,0 +1,251 @@
+From: pVisor contributors
+Subject: [PATCH] net: defer proven-empty watchdog checks across pVisor idle handoff
+
+GPL-2.0-only. Opt-in, single possible CPU, IRQ-off authenticated handoff.
+Preserve pending/stopped TX, original timer expiration and netdev reference.
+
+--- a/include/linux/netdevice.h
++++ b/include/linux/netdevice.h
+@@ -1399,6 +1399,12 @@
+ 						  int new_mtu);
+ 	int			(*ndo_neigh_setup)(struct net_device *dev,
+ 						   struct neigh_parms *);
++	/* pVisor single-CPU IRQ-off snapshot: outstanding TX descriptors,
++	 * or a negative error if this driver cannot prove the queue state.
++	 * Must not sleep, consume descriptors, or change queue state.
++	 */
++	int			(*ndo_pvisor_tx_pending)(struct net_device *dev,
++					 unsigned int queue);
+ 	void			(*ndo_tx_timeout) (struct net_device *dev,
+ 						   unsigned int txqueue);
+ 
+@@ -2284,6 +2290,10 @@
+ #endif
+ 	/* These may be needed for future network-power-down code. */
+ 	struct timer_list	watchdog_timer;
++	/* Owned only across a single-CPU IRQ-off pVisor idle handoff.
++	 * The original timer netdev reference stays held until restoration. */
++	bool			pvisor_watchdog_parked;
++	unsigned long		pvisor_watchdog_expires;
+ 	int			watchdog_timeo;
+ 
+ 	u32                     proto_down_reason;
+--- /dev/null
++++ b/include/linux/pvisor_net_idle.h
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _LINUX_PVISOR_NET_IDLE_H
++#define _LINUX_PVISOR_NET_IDLE_H
++#ifdef CONFIG_NET
++void pvisor_net_idle_enter(void);
++void pvisor_net_idle_exit(void);
++#else
++static inline void pvisor_net_idle_enter(void) {}
++static inline void pvisor_net_idle_exit(void) {}
++#endif
++#endif
+--- a/drivers/net/virtio_net.c
++++ b/drivers/net/virtio_net.c
+@@ -5935,6 +5935,28 @@
+ 	return 0;
+ }
+ 
++/* Snapshot only: unreclaimed completions remain conservatively outstanding.
++ * Caller is the idle task, IRQs off, one possible CPU, under tx_global_lock.
++ * Host completion may advance used entries but cannot allocate guest descriptors.
++ */
++static int virtnet_pvisor_tx_pending(struct net_device *dev, unsigned int queue)
++{
++	struct virtnet_info *vi = netdev_priv(dev);
++	struct virtqueue *vq;
++	unsigned int size, free;
++
++	if (num_possible_cpus() != 1 || queue >= vi->max_queue_pairs)
++		return -EOPNOTSUPP;
++	vq = vi->sq[queue].vq;
++	if (!vq || virtqueue_is_broken(vq))
++		return -EIO;
++	size = virtqueue_get_vring_size(vq);
++	free = READ_ONCE(vq->num_free);
++	if (!size || free > size)
++		return -EIO;
++	return size - free;
++}
++
+ static void virtnet_tx_timeout(struct net_device *dev, unsigned int txqueue)
+ {
+ 	struct virtnet_info *priv = netdev_priv(dev);
+@@ -5997,6 +6019,7 @@
+ 	.ndo_get_phys_port_name	= virtnet_get_phys_port_name,
+ 	.ndo_set_features	= virtnet_set_features,
+ 	.ndo_tx_timeout		= virtnet_tx_timeout,
++	.ndo_pvisor_tx_pending	= virtnet_pvisor_tx_pending,
+ };
+ 
+ static void virtnet_config_changed_work(struct work_struct *work)
+--- a/net/sched/sch_generic.c
++++ b/net/sched/sch_generic.c
+@@ -496,6 +496,132 @@
+ }
+ EXPORT_SYMBOL(netif_tx_unlock);
+ 
++/* pVisor opt-in: cancel only a proven empty check across the authenticated
++ * idle handoff. No guest task or softirq runs between enter/exit on one CPU.
++ * Other drivers, namespaces, stopped queues and outstanding TX keep watchdogs.
++ */
++#include <linux/pvisor_net_idle.h>
++static bool pvisor_watchdog_defer __read_mostly;
++static int __init setup_pvisor_watchdog_defer(char *str)
++{
++	return kstrtobool(str, &pvisor_watchdog_defer) == 0;
++}
++__setup("pvisor_watchdog_defer=", setup_pvisor_watchdog_defer);
++
++/* Replaced only by the optional bounded diagnostic patch. */
++static inline void pvisor_watchdog_trace(unsigned int kind, struct net_device *dev,
++		unsigned long b, unsigned long c, unsigned long d,
++		unsigned long e, unsigned long f) {}
++
++enum pvisor_watchdog_reason {
++	PV_WD_SAFE, PV_WD_DISABLED, PV_WD_DEVICE, PV_WD_NO_TIMER,
++	PV_WD_EXPIRED, PV_WD_LOCKED, PV_WD_STOPPED, PV_WD_QDISC,
++	PV_WD_UNKNOWN, PV_WD_PENDING, PV_WD_CANCEL_FAILED,
++};
++
++static unsigned int pvisor_watchdog_queue_reason(unsigned long state,
++		bool qdisc_busy, int pending)
++{
++	if (state & QUEUE_STATE_ANY_XOFF_OR_FROZEN)
++		return PV_WD_STOPPED;
++	if (qdisc_busy)
++		return PV_WD_QDISC;
++	if (pending < 0)
++		return PV_WD_UNKNOWN;
++	if (pending)
++		return PV_WD_PENDING;
++	return PV_WD_SAFE;
++}
++
++static unsigned int pvisor_watchdog_check(struct net_device *dev)
++{
++	unsigned int i, reason = PV_WD_SAFE;
++
++	if (!netif_device_present(dev) || !netif_running(dev) ||
++	    !netif_carrier_ok(dev) || qdisc_tx_is_noop(dev))
++		return PV_WD_DEVICE;
++	if (!timer_pending(&dev->watchdog_timer))
++		return PV_WD_NO_TIMER;
++	if (!time_after(dev->watchdog_timer.expires, jiffies))
++		return PV_WD_EXPIRED;
++	for (i = 0; i < dev->num_tx_queues; i++) {
++		struct netdev_queue *txq = netdev_get_tx_queue(dev, i);
++		struct Qdisc *q = rcu_dereference(txq->qdisc);
++		unsigned long state = READ_ONCE(txq->state);
++		bool busy = !qdisc_is_empty(q) || qdisc_is_running(q) ||
++			READ_ONCE(q->gso_skb.qlen) || READ_ONCE(q->skb_bad_txq.qlen) ||
++			(READ_ONCE(q->state) & (BIT(__QDISC_STATE_SCHED) |
++				QDISC_STATE_MISSED | QDISC_STATE_DRAINING));
++		int pending = dev->netdev_ops->ndo_pvisor_tx_pending(dev, i);
++		unsigned int why = pvisor_watchdog_queue_reason(state, busy, pending);
++
++		pvisor_watchdog_trace(70, dev, i, state, (long)pending,
++				     busy, dev->watchdog_timer.expires);
++		if (why && !reason)
++			reason = why;
++	}
++	return reason;
++}
++
++void pvisor_net_idle_enter(void)
++{
++	struct net_device *dev;
++
++	if (num_possible_cpus() != 1)
++		return;
++	lockdep_assert_irqs_disabled();
++	rcu_read_lock();
++	for_each_netdev_rcu(&init_net, dev) {
++		unsigned int reason;
++		int cancelled = 0;
++
++		if (!dev->netdev_ops->ndo_pvisor_tx_pending)
++			continue;
++		if (!spin_trylock(&dev->tx_global_lock)) {
++			pvisor_watchdog_trace(71, dev, PV_WD_LOCKED, 0, jiffies, 0, 0);
++			continue;
++		}
++		reason = pvisor_watchdog_check(dev);
++		if (!reason && !pvisor_watchdog_defer)
++			reason = PV_WD_DISABLED;
++		if (!reason) {
++			dev->pvisor_watchdog_expires = dev->watchdog_timer.expires;
++			cancelled = timer_delete(&dev->watchdog_timer);
++			if (cancelled)
++				dev->pvisor_watchdog_parked = true;
++			else
++				reason = PV_WD_CANCEL_FAILED;
++		}
++		pvisor_watchdog_trace(71, dev, reason, dev->watchdog_timer.expires,
++				     jiffies, cancelled, dev->watchdog_timeo);
++		spin_unlock(&dev->tx_global_lock);
++	}
++	rcu_read_unlock();
++}
++
++void pvisor_net_idle_exit(void)
++{
++	struct net_device *dev;
++
++	if (num_possible_cpus() != 1)
++		return;
++	lockdep_assert_irqs_disabled();
++	rcu_read_lock();
++	for_each_netdev_rcu(&init_net, dev) {
++		if (!dev->pvisor_watchdog_parked)
++			continue;
++		/* Single CPU/IRQs off: no xmit, callback, close or hotplug can
++		 * run across the handoff. Keep the timer's existing netdev ref.
++		 * Restore even on rejected handoff; never reset the timeout age.
++		 */
++		dev->pvisor_watchdog_parked = false;
++		mod_timer(&dev->watchdog_timer, dev->pvisor_watchdog_expires);
++		pvisor_watchdog_trace(72, dev, dev->pvisor_watchdog_expires,
++				     jiffies, timer_pending(&dev->watchdog_timer), 0, 0);
++	}
++	rcu_read_unlock();
++}
++
+ static void dev_watchdog(struct timer_list *t)
+ {
+ 	struct net_device *dev = from_timer(dev, t, watchdog_timer);
+--- a/kernel/sched/idle.c
++++ b/kernel/sched/idle.c
+@@ -167,6 +167,7 @@
+ #if defined(CONFIG_X86_64) && defined(CONFIG_NO_HZ_COMMON)
+ #include <asm/io.h>
+ #include <linux/psi.h>
++#include <linux/pvisor_net_idle.h>
+ /* Experimental ABI v2, only enabled by the matching pVisor VMM. */
+ static bool pvisor_idle_enabled;
+ static int __init pvisor_idle_setup(char *value)
+@@ -190,10 +191,12 @@
+ 	 * never use a governor prediction or discard the periodic tick.
+ 	 */
+ 	psi_pvisor_idle_defer();
++	pvisor_net_idle_enter();
+ 	tick_nohz_idle_stop_tick();
+ 	next = tick_nohz_get_next_hrtimer();
+ 	delta = ktime_to_ns(ktime_sub(next, ktime_get()));
+ 	if (delta <= 2000000 || current_clr_polling_and_test()) {
++		pvisor_net_idle_exit();
+ 		__current_set_polling();
+ 		return false;
+ 	}
+@@ -204,6 +207,7 @@
+ 	outl(next == KTIME_MAX ? U32_MAX :
+ 	     (u32)min_t(s64, delta / 1000000, U32_MAX - 1), 0x5050);
+ 	ct_cpuidle_exit();
++	pvisor_net_idle_exit();
+ 	start_critical_timings();
+ 	local_irq_enable();
+ 	return true;
