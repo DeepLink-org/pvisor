@@ -114,7 +114,10 @@ fn construction_retains_paths_and_defaults_without_io() {
         mountpoint.clone(),
     );
     assert_eq!(config.lower_dirs, lowers);
-    assert!(config.lower_mutability.is_empty());
+    assert_eq!(
+        config.lower_mutability,
+        vec![pvisor_overlay_core::LayerMutability::Immutable; lowers.len()]
+    );
     assert_eq!(config.apply_target, lowers.last().cloned());
     assert_eq!(config.upper_dir, upper);
     assert_eq!(config.work_dir, Some(work));

@@ -625,12 +625,13 @@ impl OverlaySnapshot {
             config.baseline_lower.as_deref().map(Path::new),
         )?
         .with_lower_mutability(config.lower_mutability.clone())?;
+        // Topology validation does not take over the frozen workload's journal.
         let core = OverlayCore::open_existing_for_layout(
             layout,
             PathBuf::from(&config.upper_dir),
             config.work_dir.as_ref().map(PathBuf::from),
             config.excluded_paths.iter().map(PathBuf::from).collect(),
-            config.preimage_dir.as_ref().map(PathBuf::from),
+            None,
         )?;
         let core = if let Some(index) = &config.baseline_content_index {
             core.with_immutable_content_index(&index.root, index.file.clone(), &index.sha256)?
@@ -1126,16 +1127,14 @@ impl OverlayFs {
 
     /// Opt in before serving requests or restoring state. The separate flag
     /// promises stable physical upper roots/ancestors/mounts, in addition to
-    /// the guest-directory contract's exclusively owned upper namespace.
+    /// an exclusively owned upper namespace. Independent of lower mutability
+    /// and guest cache negotiation; mutations still use the operation lock.
     pub(super) fn configure_exclusive_upper_absence_cache(
         &mut self,
         requested: bool,
-        guest_cache: bool,
     ) -> io::Result<()> {
         let enabled = requested
-            && guest_cache
-            && self.snapshot_config.semantics == passthrough::PermissionSemantics::LinuxComplete
-            && self.supports_directory_image();
+            && self.snapshot_config.semantics == passthrough::PermissionSemantics::LinuxComplete;
         self.core.configure_exclusive_upper_absence_cache(enabled)?;
         self.profile.add(
             "exclusive_upper_absence_cache_requested",
@@ -1610,20 +1609,7 @@ impl OverlayFs {
     }
 
     fn layer(&self, path: &Path) -> io::Result<Layer> {
-        let resolved = self
-            .core
-            .resolve(path)
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
-        if resolved.is_upper {
-            return Ok(Layer(0));
-        }
-        self.roots
-            .iter()
-            .enumerate()
-            .skip(1)
-            .find(|(_, root)| resolved.path == **root || resolved.path.starts_with(root))
-            .map(|(index, _)| Layer(index))
-            .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))
+        Ok(Layer(self.core.metadata_resolved(path).map_err(linux_error)?.layer))
     }
 
     fn inner_entry(&self, layer: Layer, path: &Path, ctx: Context) -> io::Result<Entry> {
@@ -6421,6 +6407,22 @@ mod tests {
         fs
     }
 
+    #[test]
+    fn layer_selection_uses_the_resolved_index_and_preserves_policy_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let nested = lower.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("file"), b"nested layer").unwrap();
+        let mut config = parent_cache_fixture(temp.path()).snapshot_config.clone();
+        config.lower_dirs.push(nested.to_string_lossy().into_owned());
+        let fs = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
+        assert_eq!(fs.layer(Path::new("file")).unwrap().0, 2);
+        assert_eq!(fs.layer(Path::new("nested/file")).unwrap().0, 1);
+        assert_eq!(fs.layer(Path::new("private/secret")).unwrap_err().raw_os_error(), Some(libc::EACCES));
+        assert_eq!(fs.layer(Path::new("missing")).unwrap_err().raw_os_error(), Some(libc::ENOENT));
+    }
+
     #[cfg(target_os = "linux")]
     fn local_flush_fixture(root: &Path, immutable: bool, writeback: bool) -> OverlayFs {
         let mut config = parent_cache_fixture(root).snapshot_config.clone();
@@ -8117,7 +8119,7 @@ mod tests {
         config
     }
 
-    fn exclusive_upper_owner(config: Config, preference: Option<(bool, bool)>) -> OverlayFs {
+    fn exclusive_upper_owner(config: Config, preference: Option<bool>) -> OverlayFs {
         let mut fs = OverlayFs::build_with_writeback(
             config,
             Arc::new(InodeAllocator::new()),
@@ -8130,8 +8132,8 @@ mod tests {
             .with_profile(pvisor_overlay_core::profile::Profile::enabled(
                 "upper-epoch",
             ));
-        if let Some((requested, guest_cache)) = preference {
-            fs.configure_exclusive_upper_absence_cache(requested, guest_cache)
+        if let Some(requested) = preference {
+            fs.configure_exclusive_upper_absence_cache(requested)
                 .unwrap();
         }
         fs.init(FsOptions::empty()).unwrap();
@@ -8148,7 +8150,7 @@ mod tests {
     }
 
     #[test]
-    fn exclusive_upper_absence_requires_vm_ownership_and_complete_permissions() {
+    fn exclusive_upper_absence_is_independent_of_lower_mutability_and_guest_features() {
         use pvisor_overlay_core::LayerMutability::{Immutable, Mutable};
         for (mutability, semantics, preference, expected) in [
             (
@@ -8160,43 +8162,37 @@ mod tests {
             (
                 vec![Immutable],
                 passthrough::PermissionSemantics::LinuxComplete,
-                Some((false, true)),
-                false,
-            ),
-            (
-                vec![Immutable],
-                passthrough::PermissionSemantics::LinuxComplete,
-                Some((true, false)),
+                Some(false),
                 false,
             ),
             (
                 vec![],
                 passthrough::PermissionSemantics::LinuxComplete,
-                Some((true, true)),
-                false,
+                Some(true),
+                true,
             ),
             (
                 vec![Mutable],
                 passthrough::PermissionSemantics::LinuxComplete,
-                Some((true, true)),
-                false,
+                Some(true),
+                true,
             ),
             (
                 vec![Mutable, Immutable],
                 passthrough::PermissionSemantics::LinuxComplete,
-                Some((true, true)),
-                false,
+                Some(true),
+                true,
             ),
             (
                 vec![Immutable],
                 passthrough::PermissionSemantics::LinuxSimplified,
-                Some((true, true)),
+                Some(true),
                 false,
             ),
             (
                 vec![Immutable],
                 passthrough::PermissionSemantics::LinuxComplete,
-                Some((true, true)),
+                Some(true),
                 true,
             ),
         ] {
@@ -8234,7 +8230,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temp.path().join("lower/directory")).unwrap();
         std::fs::write(temp.path().join("lower/directory/file"), b"lower").unwrap();
-        let fs = exclusive_upper_owner(exclusive_upper_config(temp.path()), Some((true, true)));
+        let fs = exclusive_upper_owner(exclusive_upper_config(temp.path()), Some(true));
         let ctx = Context {
             uid: 0,
             gid: 0,
@@ -8293,7 +8289,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let fs = exclusive_upper_owner(config, Some((true, true)));
+        let fs = exclusive_upper_owner(config, Some(true));
         let ctx = Context {
             uid: 0,
             gid: 0,
@@ -8324,7 +8320,7 @@ mod tests {
         let lower = temp.path().join("lower");
         std::fs::create_dir(&lower).unwrap();
         std::fs::write(lower.join("file"), b"lower").unwrap();
-        let fs = exclusive_upper_owner(exclusive_upper_config(temp.path()), Some((true, true)));
+        let fs = exclusive_upper_owner(exclusive_upper_config(temp.path()), Some(true));
         let ctx = Context {
             uid: 0,
             gid: 0,
@@ -8435,7 +8431,7 @@ mod tests {
         std::fs::create_dir(temp.path().join("lower")).unwrap();
         std::fs::write(temp.path().join("lower/file"), b"lower").unwrap();
         let config = exclusive_upper_config(temp.path());
-        let fs = exclusive_upper_owner(config.clone(), Some((true, true)));
+        let fs = exclusive_upper_owner(config.clone(), Some(true));
         let ctx = Context {
             uid: 0,
             gid: 0,
@@ -8464,7 +8460,7 @@ mod tests {
             )
             .unwrap();
             restored
-                .configure_exclusive_upper_absence_cache(enabled, true)
+                .configure_exclusive_upper_absence_cache(enabled)
                 .unwrap();
             restored.restore_state(&saved).unwrap();
             assert_eq!(

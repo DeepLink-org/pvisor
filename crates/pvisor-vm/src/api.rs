@@ -632,22 +632,24 @@ pub struct BaselineContentIndex {
 pub struct OverlayConfig {
     pub lower_dirs: Vec<PathBuf>,
     /// Stability promises in physical lower order (highest priority first).
-    /// Empty defaults to all mutable; a nonempty length mismatch is InvalidInput
+    /// New attachments default an empty list to all Immutable. Transparent/live
+    /// sources must explicitly declare Mutable. A nonempty mismatch is InvalidInput
     /// before configuration replacement. Caller guarantees contents, metadata,
     /// namespace, ancestors and mount identities until device teardown, including
     /// restore lifetimes. Read-only mounts and frozen baselines are not proof.
-    /// This never describes upper or merged-view stability.
+    /// This never describes upper or merged-view stability. Legacy saved device
+    /// records with no declarations retain mutable semantics when restored.
     /// On the root device, read-only regular-file OPENs from an explicitly
     /// immutable lower retain guest data pages across opens by default. OPEN
     /// authorization and baseline observations still run. When every physical
     /// lower is explicitly immutable, the guest may also import directory images
-    /// with long metadata validity. Mutable or unspecified lowers use ordinary
+    /// with long metadata validity. Mutable lowers use ordinary
     /// FUSE metadata timeouts and lookup. Upper files do not use the data-cache
     /// optimization.
     pub lower_mutability: Vec<pvisor_overlay_core::LayerMutability>,
-    /// Writable stage. When directory images are enabled, callers must keep its
-    /// namespace mutations within this VM's filesystem connection; external
-    /// writers require mutable lower declarations and ordinary FUSE lookup.
+    /// Writable stage, exclusively owned by this VM's filesystem connection.
+    /// Read-only observers may coexist without a freshness guarantee; concurrent
+    /// external writers are unsupported regardless of lower declarations.
     pub upper_dir: PathBuf,
     pub work_dir: Option<PathBuf>,
     pub preimage_dir: Option<PathBuf>,

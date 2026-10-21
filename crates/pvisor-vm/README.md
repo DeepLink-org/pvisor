@@ -244,8 +244,10 @@ clock conversion 或 wake latch，不能自动卸载，也不证明 Linux runque
 ## Physical lower stability contract
 
 `api::OverlayConfig::lower_mutability` uses the shared
-`pvisor_overlay_core::LayerMutability`, ordered like `lower_dirs`. Empty means all
-mutable (including older serialized private adapter configurations). A nonempty
+`pvisor_overlay_core::LayerMutability`, ordered like `lower_dirs`. New public API
+attachments expand empty declarations to all Immutable; transparent/live sources
+must explicitly declare Mutable. Older serialized private adapter configurations
+with empty declarations retain mutable behavior on restore. A nonempty
 length mismatch is `InvalidInput` before builder configuration replacement and
 is also checked during private adapter construction/restore. API shape remains
 unconditional and no API method bodies are added. The private adapter passes the
@@ -539,11 +541,11 @@ profile-off timing remain required before a performance claim.
 
 宿主 runner 可显式设置 `PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE=1`；
 `0` 或未设置默认关闭。worker 在创建任何文件系统前严格校验 `0|1`，
-非法值（含非 UTF-8）拒绝启动。仅全部 lower 显式 `Immutable`、
-`LinuxComplete` 且 guest cache 开启的 Overlay 才有资格；普通 passthrough、
-Mutable/未声明 lower 和关闭 guest cache 的设备不启用。
+非法值（含非 UTF-8）拒绝启动。Overlay 仍要求 `LinuxComplete`；物理 upper
+缓存不依赖 lower 不可变或 guest cache 协商，透明 rootfs 也可以使用。
+普通 passthrough 不启用。
 
-启用者除目录镜像的 upper 命名空间独占契约外，还承诺 upper 根目录、物理祖先
+启用者承诺 upper 命名空间独占，以及 upper 根目录、物理祖先
 及 mount 身份在整个设备生命周期内保持稳定；宿主不得绕过 VM 改动 upper
 命名空间或目录权限等会改变路径检查结果的元数据。该显式承诺不能从只读挂载、
 frozen baseline 或某个 lower 的稳定性推导。Core 校验 preimage journal 与
@@ -749,8 +751,15 @@ upper/work/preimage copies while retaining explicitly leased immutable lowers.
 The host coordinator imports and pins bases, validates stage inventories, and
 holds leases until VM exit. The runtime validates overlay topology and saved
 inodes/handles; writable stage roots cannot be retained as immutable lowers.
+Topology validation does not open a journal writer or repair its log. Snapshot
+capture syncs the current owner's journal; actual restore acquires a new writer
+and replays it. Restoring the same private stage requires dropping the old owner
+first; independently copied stages can coexist.
 Legacy full-tree/layer rebinding remains separate. The trait is available with
 the same signature on every platform; unsupported backends return an error.
+Layer selection uses Core's checked metadata layer index, including nested lower
+roots, rather than inferring it from physical path prefixes. Selection retains
+policy/I/O errors and the ordinary metadata resolver's absence observations.
 Restore can add the new Attempt's private authority paths through
 `rebind_filesystem_exclusions`. It preserves every existing exclusion, rejects
 absolute/escaping paths and additions that hide saved inode paths, and leaves

@@ -14,7 +14,9 @@ use anyhow::{Context, Result, bail};
 use fuser::{BackgroundSession, MountOption, Session};
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+#[cfg(not(target_os = "macos"))]
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -40,8 +42,11 @@ impl OverlayConfiguration for OverlayMountConfig {
         Self {
             apply_target: lower_dirs.last().cloned(),
             baseline_lower: None,
+            lower_mutability: vec![
+                pvisor_overlay_core::LayerMutability::Immutable;
+                lower_dirs.len()
+            ],
             lower_dirs,
-            lower_mutability: Vec::new(),
             kernel_cache: KernelCacheConfig::default(),
             upper_dir,
             work_dir,
@@ -427,11 +432,17 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
     {
         bail!("lower mutability length mismatch");
     }
-    std::fs::create_dir_all(&config.upper_dir)
-        .with_context(|| format!("create upperdir {}", config.upper_dir.display()))?;
-    if let Some(work) = &config.work_dir {
-        std::fs::create_dir_all(work)
-            .with_context(|| format!("create workdir {}", work.display()))?;
+    if config.read_only {
+        // Observers do not participate in the writer's recovery or journal.
+        config.work_dir = None;
+        config.preimage_dir = None;
+    } else {
+        std::fs::create_dir_all(&config.upper_dir)
+            .with_context(|| format!("create upperdir {}", config.upper_dir.display()))?;
+        if let Some(work) = &config.work_dir {
+            std::fs::create_dir_all(work)
+                .with_context(|| format!("create workdir {}", work.display()))?;
+        }
     }
     let fskit = config.backend.as_deref() == Some("fskit");
     if let Some(backend) = &config.backend
@@ -488,49 +499,20 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
         })
     };
     for lower in &config.lower_dirs {
-        if !lower.is_dir() {
-            bail!("lowerdir is not a directory: {}", lower.display());
-        }
-        let upper_dir = &config.upper_dir;
-        let upper_overlaps = (upper_dir.starts_with(lower) && !hidden_from_lower(lower, upper_dir))
-            || lower.starts_with(upper_dir);
         let mount_overlaps = (mountpoint.starts_with(lower)
             && !hidden_from_lower(lower, &mountpoint))
             || lower.starts_with(&mountpoint);
-        if upper_overlaps || mount_overlaps {
-            bail!(
-                "lowerdir must not overlap upperdir or mountpoint: {}",
-                lower.display()
-            );
+        if mount_overlaps {
+            bail!("lowerdir must not overlap mountpoint: {}", lower.display());
         }
     }
+    if mountpoint.starts_with(&config.upper_dir) || config.upper_dir.starts_with(&mountpoint) {
+        bail!("upperdir and mountpoint must not overlap");
+    }
+    if let Some(work) = &config.work_dir
+        && (mountpoint.starts_with(work) || work.starts_with(&mountpoint))
     {
-        let upper_dir = &config.upper_dir;
-        let work_dir = &config.work_dir;
-        if mountpoint.starts_with(upper_dir) || upper_dir.starts_with(&mountpoint) {
-            bail!("upperdir and mountpoint must not overlap");
-        }
-        if let Some(work) = work_dir {
-            if std::fs::metadata(upper_dir)?.dev() != std::fs::metadata(work)?.dev() {
-                bail!(
-                    "upperdir and workdir must be on the same filesystem: {} and {}",
-                    upper_dir.display(),
-                    work.display()
-                );
-            }
-            if upper_dir == work {
-                bail!("upperdir and workdir must be different directories");
-            }
-            if mountpoint.starts_with(work)
-                || work.starts_with(&mountpoint)
-                || config.lower_dirs.iter().any(|lower| {
-                    (work.starts_with(lower) && !hidden_from_lower(lower, work))
-                        || lower.starts_with(work)
-                })
-            {
-                bail!("workdir must not overlap lowerdir or mountpoint");
-            }
-        }
+        bail!("workdir must not overlap mountpoint");
     }
 
     // Lock directory objects, not replaceable lockfiles. Acquire in canonical
@@ -549,12 +531,14 @@ fn prepare(mut config: OverlayMountConfig) -> Result<(OverlayFs, PathBuf, Vec<Mo
         .clone()
         .or_else(|| config.lower_dirs.last().cloned())
         .ok_or_else(|| anyhow::anyhow!("overlay has no apply target"))?;
-    let initialize = if config.compact_preimages && !config.read_only {
+    let open = if config.read_only {
+        pvisor_overlay_core::OverlayCore::open_existing_for_layout
+    } else if config.compact_preimages {
         pvisor_overlay_core::OverlayCore::new_for_layout_with_compact_preimages
     } else {
         pvisor_overlay_core::OverlayCore::new_for_layout
     };
-    let filesystem = OverlayFs::from_core(initialize(
+    let filesystem = OverlayFs::from_core(open(
         pvisor_overlay_core::OverlayLayout::with_baseline(
             config.lower_dirs,
             target,
@@ -653,6 +637,7 @@ mod mount_config_tests {
             None,
             temp.path().join("merged"),
         );
+        std::fs::create_dir(&config.upper_dir).unwrap();
         config.read_only = true;
         config.lower_mutability = vec![pvisor_overlay_core::LayerMutability::Immutable];
         config.kernel_cache.policy = KernelCachePolicy::Metadata;
@@ -823,22 +808,17 @@ mod mount_config_tests {
 
     #[test]
     fn compact_observations_require_explicit_writable_initialization() {
-        for (compact, read_only, expected) in [
-            (false, false, false),
-            (true, false, true),
-            (true, true, false),
-        ] {
+        for compact in [false, true] {
             let temp = tempfile::tempdir().unwrap();
             let mut config = journal_config(temp.path());
             config.compact_preimages = compact;
-            config.read_only = read_only;
             let (filesystem, _, _) = prepare(config).unwrap();
             drop(filesystem);
             assert_eq!(
                 temp.path()
                     .join("preimages/entries/format-v2.json")
                     .exists(),
-                expected,
+                compact,
             );
             assert!(
                 pvisor_overlay_core::load_preimages(&temp.path().join("preimages"))
@@ -849,6 +829,103 @@ mod mount_config_tests {
                 std::fs::read(temp.path().join("lower/value")).unwrap(),
                 b"original"
             );
+        }
+    }
+
+    #[test]
+    fn read_only_observers_leave_the_live_writer_and_journal_untouched() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        for compact in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut config = journal_config(temp.path());
+            config.compact_preimages = compact;
+            let (writer, _, _) = prepare(config.clone()).unwrap();
+            let pending = config
+                .work_dir
+                .as_ref()
+                .unwrap()
+                .join(".wh..pvisor-copyup-pending");
+            std::fs::write(&pending, b"writer work").unwrap();
+            std::fs::set_permissions(&config.upper_dir, std::fs::Permissions::from_mode(0o711))
+                .unwrap();
+            let journal = config.preimage_dir.as_ref().unwrap().clone();
+            let log = journal.join("log-v2");
+            let before = compact.then(|| std::fs::read(&log).unwrap());
+            config.read_only = true;
+            let (first, _, options) = prepare(config.clone()).unwrap();
+            let (second, _, _) = prepare(config.clone()).unwrap();
+            assert!(options.contains(&MountOption::RO));
+            for observer in [&first, &second] {
+                let (service, _) = observer
+                    .copy_plan(&crate::dispatch::CopyRequest::None)
+                    .unwrap();
+                service.observe_read(Path::new("value")).unwrap();
+                assert_eq!(service.metadata(Path::new("value")).unwrap().len(), 8);
+                assert_eq!(
+                    service.metadata(Path::new("missing")).unwrap_err().kind(),
+                    std::io::ErrorKind::NotFound
+                );
+            }
+            assert!(
+                pvisor_overlay_core::load_preimages(&journal)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(before, compact.then(|| std::fs::read(&log).unwrap()));
+            assert_eq!(std::fs::read(&pending).unwrap(), b"writer work");
+            assert_eq!(
+                std::fs::metadata(&config.upper_dir).unwrap().mode() & 0o777,
+                0o711
+            );
+            let (service, _) = writer
+                .copy_plan(&crate::dispatch::CopyRequest::None)
+                .unwrap();
+            service.copy_up(Path::new("value")).unwrap();
+            assert_eq!(
+                pvisor_overlay_core::load_preimages(&journal).unwrap().len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_observers_require_upper_but_ignore_work_and_journal() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = journal_config(temp.path());
+        config.read_only = true;
+        config.compact_preimages = true;
+        assert!(prepare(config.clone()).is_err());
+        assert!(!config.upper_dir.exists());
+        assert!(!config.work_dir.as_ref().unwrap().exists());
+        assert!(!config.preimage_dir.as_ref().unwrap().exists());
+        std::fs::create_dir(&config.upper_dir).unwrap();
+        // Neither path is even a directory; an observer must not open them.
+        for path in [
+            config.work_dir.as_ref().unwrap(),
+            config.preimage_dir.as_ref().unwrap(),
+        ] {
+            std::fs::write(path, b"not observer state").unwrap();
+        }
+        let (observer, _, _) = prepare(config.clone()).unwrap();
+        drop(observer);
+        assert_eq!(std::fs::read_dir(&config.upper_dir).unwrap().count(), 0);
+        for path in [config.work_dir.unwrap(), config.preimage_dir.unwrap()] {
+            assert_eq!(std::fs::read(path).unwrap(), b"not observer state");
+        }
+    }
+
+    #[test]
+    fn backing_overlap_is_rejected_by_shared_core_admission() {
+        for (upper, work) in [
+            ("lower", None),
+            ("upper", Some("upper")),
+            ("upper", Some("lower/work")),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut config = journal_config(temp.path());
+            config.upper_dir = temp.path().join(upper);
+            config.work_dir = work.map(|path| temp.path().join(path));
+            assert!(prepare(config).is_err());
         }
     }
 

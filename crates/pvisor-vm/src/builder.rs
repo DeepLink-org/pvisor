@@ -660,6 +660,39 @@ mod contract_tests {
         }
     }
 
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    #[test]
+    fn public_overlay_defaults_to_immutable_and_preserves_explicit_mutable() {
+        use crate::api::{OverlayConfig, PermissionSemantics, VmBuilder, VmConfiguration};
+        use pvisor_overlay_core::LayerMutability::{Immutable, Mutable};
+        let root = tempfile::tempdir().unwrap();
+        for (declarations, expected) in [(vec![], Immutable), (vec![Mutable], Mutable)] {
+            let mut vm = VmBuilder::new(1, 128).unwrap();
+            vm.overlay(
+                "root",
+                OverlayConfig {
+                    lower_dirs: vec![root.path().to_owned()],
+                    lower_mutability: declarations,
+                    upper_dir: root.path().join("upper"),
+                    work_dir: None,
+                    preimage_dir: None,
+                    apply_target: None,
+                    baseline_lower: None,
+                    baseline_content_index: None,
+                    excluded_paths: vec![],
+                    access_policy: Default::default(),
+                    semantics: PermissionSemantics::LinuxComplete,
+                },
+                0,
+            )
+            .unwrap();
+            assert_eq!(
+                vm.inner.resources.fs[0].overlay.as_ref().unwrap().lower_mutability,
+                [expected]
+            );
+        }
+    }
+
     #[test]
     fn custom_init_preserves_the_explicit_empty_legacy_command_contract() {
         let result = command_line::<<NativeBackend as Backend>::Arch>(&command()).unwrap();

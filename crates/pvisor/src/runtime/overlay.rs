@@ -369,7 +369,11 @@ pub(crate) fn mount_overlay_record_observed(
     config.apply_target = Some(record.target.clone());
     config.baseline_lower = record.baseline_lower.clone();
     config.observation = observation;
-    config.lower_mutability = lower_mutability.to_vec();
+    config.lower_mutability = if lower_mutability.is_empty() {
+        vec![pvisor_overlay_core::LayerMutability::Mutable; lower_dirs.len()]
+    } else {
+        lower_mutability.to_vec()
+    };
     config.preimage_dir = Some(record.stage_dir.join("preimages"));
     // Match the mountless/VM initializer: the owned stage can publish one
     // compact log, retaining first observations under the stage's policy.

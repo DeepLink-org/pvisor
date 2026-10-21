@@ -614,6 +614,10 @@ alongside `lowers`, retains it in `OverlayDeviceSpec`, and projects it into
 `pvisor_vm::api::OverlayConfig`. Legacy runner metadata omitting the field defaults
 to mutable. Restored/rebound copies are not automatically promoted. The enum
 lives only in overlay-core; no duplicate runtime contract is introduced.
+New low-level host/VM mount APIs default their lowers to Immutable. The runtime
+expands unspecified transparent rootfs/live workspace declarations to explicit
+Mutable at handoff, preserving external-edit visibility and legacy restoration.
+Authenticated prepared bases retain their explicit Immutable declarations.
 When VM networking prepends the attempt-owned synthetic resolver lower, it prepends
 an immutable declaration to an explicit mutability vector as well. Existing
 declarations keep their original physical-layer association. Legacy empty vectors stay empty.
