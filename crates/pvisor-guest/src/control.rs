@@ -23,26 +23,52 @@ pub enum Request {
         /// Linux signal number, from 1 through 64.
         signal: i32,
     },
-    /// Start another process in this guest. Environment overrides the launch environment.
-    Exec {
-        /// Executable and arguments; the program must be nonempty.
-        argv: Vec<String>,
-        /// Overrides merged with the workload launch environment.
-        env: BTreeMap<String, String>,
-        /// Environment names to remove before applying overrides.
-        unset_env: Vec<String>,
-        /// Absolute working-directory override; omission inherits launch cwd.
-        cwd: Option<PathBuf>,
-        /// Guest user/group override; omission inherits the launch identity.
-        user: Option<String>,
-        /// Optional terminal dimensions, rows followed by columns.
-        tty: Option<[u16; 2]>,
-    },
+    /// Start a process using the shared launcher. Acceptance returns Started.
+    Exec(ExecRequest),
     /// Connect to guest loopback TCP, then exchange framed data and EOF.
     Connect {
         /// Nonzero guest TCP port.
         port: u16,
     },
+}
+
+/// An exec request shared by native CLI and containerd adapters.
+/// Defaults inherit launch environment, identity and limits. Adapters supplying
+/// a complete OCI process must set replace_env and limits explicitly.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ExecRequest {
+    /// Nonempty executable followed by literal arguments.
+    pub argv: Vec<String>,
+    /// Overrides, or the complete environment when replace_env is true.
+    pub env: BTreeMap<String, String>,
+    /// Remove these names before applying env.
+    pub unset_env: Vec<String>,
+    /// Replace rather than inherit the workload environment.
+    pub replace_env: bool,
+    /// Absolute cwd; omission inherits the workload cwd. It must already exist.
+    pub cwd: Option<PathBuf>,
+    /// Guest name/UID and optional group; omission inherits launch identity.
+    pub user: Option<String>,
+    /// Optional initial PTY size [rows, columns], both nonzero.
+    pub tty: Option<[u16; 2]>,
+    /// Replace launch limits; Some(empty) requests no explicit rlimits.
+    pub limits: Option<BTreeMap<String, (u64, u64)>>,
+    /// Optional output write and post-exit drain timeout, in milliseconds (1..=60000).
+    /// None waits for output without a deadline. The shim supplies 2000.
+    pub output_timeout_ms: Option<u64>,
+}
+
+/// Observed exec termination, before frontend-specific status mapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecOutcome {
+    /// Normal exit code, or 128 + signal when terminated by a signal.
+    pub code: i32,
+    /// Terminating signal; None distinguishes a normal exit even for code >= 128.
+    pub signal: Option<i32>,
+    /// False when output failed or the requested drain deadline expired.
+    pub output_complete: bool,
 }
 
 /// Explicit stdin framing avoids interpreting a transport half-close as a VM reset.
@@ -64,6 +90,11 @@ pub enum StdinFrame {
 pub enum Reply {
     /// The operation was accepted; subsequent frames depend on the request.
     Ready,
+    /// Exec is running. PID belongs to the guest and must never be signalled on the host.
+    Started {
+        /// Guest PID associated with this connection's exec.
+        pid: u32,
+    },
     /// A chunk from descriptor 1 or 2.
     Output {
         /// Descriptor 1 for stdout/TCP or 2 for stderr.
@@ -71,7 +102,9 @@ pub enum Reply {
         /// Output bytes, no larger than 16 KiB before encoding.
         bytes: Vec<u8>,
     },
-    /// Exec terminated; contains the process exit code or 128 + signal.
+    /// Accepted exec terminated; preserves signal and output completion facts.
+    ExecExit(ExecOutcome),
+    /// Startup rejection status or TCP tunnel EOF.
     Exit {
         /// Workload exit code, 128 + signal, or zero for TCP EOF.
         code: i32,
@@ -115,6 +148,82 @@ pub fn read_frame<T: serde::de::DeserializeOwned>(reader: &mut impl Read) -> io:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn shared_frames_preserve_binary_output_and_started_identity() {
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, &Reply::Started { pid: 42 }).unwrap();
+        write_frame(
+            &mut bytes,
+            &Reply::Output {
+                stream: 2,
+                bytes: vec![0, 255, 254],
+            },
+        )
+        .unwrap();
+        let mut reader = &bytes[..];
+        assert!(matches!(
+            read_frame::<Reply>(&mut reader).unwrap(),
+            Reply::Started { pid: 42 }
+        ));
+        assert!(
+            matches!(read_frame::<Reply>(&mut reader).unwrap(), Reply::Output {stream:2, bytes} if bytes == [0,255,254])
+        );
+    }
+
+    #[test]
+    fn frame_bounds_and_truncation_are_checked_before_payload_allocation() {
+        struct HeaderOnly(std::io::Cursor<Vec<u8>>);
+        impl Read for HeaderOnly {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                assert!(self.0.position() < 4, "must reject before reading payload");
+                self.0.read(out)
+            }
+        }
+        for size in [MAX_FRAME as u32 + 1, u32::MAX] {
+            let mut reader = HeaderOnly(std::io::Cursor::new(size.to_be_bytes().to_vec()));
+            assert_eq!(
+                read_frame::<Reply>(&mut reader).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        for bytes in [&[0][..], &[0, 0, 0][..], &[0, 0, 0, 5, b'{'][..]] {
+            assert_eq!(
+                read_frame::<Reply>(&mut &bytes[..]).unwrap_err().kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+        }
+        let value = "x".repeat(MAX_FRAME - 2); // JSON quotes count toward the frame bound.
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, &value).unwrap();
+        assert_eq!(read_frame::<String>(&mut &bytes[..]).unwrap(), value);
+        let mut bytes = Vec::new();
+        assert!(write_frame(&mut bytes, &"x".repeat(MAX_FRAME)).is_err());
+        assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn exec_request_retains_complete_oci_options_and_rejects_unknown_fields() {
+        let request = Request::Exec(ExecRequest {
+            argv: vec!["sh".into(), "-c".into(), "echo 'spaces'".into()],
+            replace_env: true,
+            limits: Some(BTreeMap::from([("RLIMIT_NOFILE".into(), (32, 64))])),
+            ..Default::default()
+        });
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, &request).unwrap();
+        let Request::Exec(decoded) = read_frame::<Request>(&mut &bytes[..]).unwrap() else {
+            panic!()
+        };
+        assert!(decoded.replace_env);
+        assert_eq!(decoded.limits.unwrap()["RLIMIT_NOFILE"], (32, 64));
+        assert!(
+            serde_json::from_str::<Request>(
+                r#"{"operation":"Exec","argv":["true"],"privileged":true}"#
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn frames_reject_oversize_and_unknown_operations() {
         assert!(read_frame::<Request>(&mut &((MAX_FRAME + 1) as u32).to_be_bytes()[..]).is_err());

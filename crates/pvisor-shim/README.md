@@ -142,28 +142,16 @@ semantics.
 
 ## Guest agent and exec-in-VM (feature `vm`)
 
-VM tasks boot the shim binary itself as a guest agent: at boot the
-(statically linked) binary is copied into the rootfs and the Rust
-`pvisor-guest` supervisor starts it from `/.pvisor-guest.json`, without
-a shell helper (`io.pvisor.vm.agent=off` disables it). The agent listens
-on vsock port 0x7076; libkrun proxies host connections from
-`/run/pvisor-agent-<task-id-hash>.sock` into the guest (so `docker exec` /
-`kubectl exec` work on VM tasks; the socket cannot live in the bundle
-because Unix socket paths are capped at 108 bytes and containerd bundle
-paths exceed that; without `/run`, e.g. rootless, it falls back to the temp
-directory):
+VM tasks use `pvisor-guest`'s control adapter on vsock port 1025; no standalone
+agent is injected. `io.pvisor.vm.agent=off` still disables exec. Libkrun proxies
+`/run/pvisor-agent-<task-id-hash>.sock` (temporary-directory fallback), keeping
+socket paths short enough for containerd bundles.
 
-- one agent connection per exec; frames are `[channel][length][payload]`
-  with JSON control messages (`exec_start`/`started`/`exited`)
-- the guest process starts at `Exec` time (containerd's `Start` reports
-  the pid; there is no two-phase gate across the VM boundary)
-- killing an exec drops the connection; the agent SIGKILLs the process
-- exec rlimits travel in the `exec_start` control message and are applied
-  in the guest before the process runs (same `prlimit64` contract as init)
-- agent boot/session failures are recorded in `/.pvisor-agent.log` inside
-  the rootfs (visible on the host through virtio-fs); spawn errors are
-  returned to the caller as `Error` control messages
-- tty exec in VMs is not supported yet
+The shim maps OCI input to the shared [`pvisor-container`](../pvisor-container/README.md)
+client. `pvisor-guest` owns spawning and reaping; `service.rs` retains containerd
+state, events and FIFOs. The process still starts at `Exec`; `Start(exec_id)`
+reports its PID. TTY exec remains unsupported. See the shared client's
+compatibility table for preserved policies and the VM recreation requirement.
 
 
 ## Host pod-level sandboxes
@@ -214,17 +202,15 @@ VM init and exec accept OCI process identity fields (uid/gid, supplementary
 groups, umask), capability sets and `noNewPrivileges`: they describe host
 processes, which the VM boundary subsumes (the same treatment kata and
 firecracker apply). They are not installed inside the guest. Init and exec
-rlimits travel to the guest supervisor/agent and are applied with
+rlimits travel to the guest supervisor and are applied with
 `prlimit64` before the workload runs. Neither the VM boundary nor VM shape
 substitutes for a requested OCI process security policy.
 
-Agent frame readers and writers limit each payload to **1 MiB**, including
-control JSON, and reject larger lengths before payload allocation or reading.
-Only EOF before a header is a clean close; truncated headers/payloads are errors.
-This prevents the guest-selected near-4-GiB allocation, but does not bound
-aggregate connections/threads, total output, JSON object overhead, or time spent
-waiting for a peer. The vsock agent has no protocol authentication and can launch
-root processes inside the guest. Those risks are not fixed by a frame cap.
+Shared control frames cap encoded JSON at **1 MiB**, rejecting oversized lengths
+before allocation and rejecting truncated frames. Host-CID filtering is not
+protocol authentication. Connections remain uncapped; the frame limit does not
+bound total output, JSON overhead or arbitrary host output sinks. Exec can launch
+root processes inside the guest.
 
 Admission inspects fields retained by `oci-spec`'s typed deserializer, not raw
 JSON schema validation. Unknown fields discarded by that library are not covered

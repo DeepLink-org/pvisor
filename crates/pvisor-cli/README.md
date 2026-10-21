@@ -278,3 +278,7 @@ It checks startup failure, exit codes, stdout/stderr, stdin EOF, PTY allocation,
 detached lifetime, stop/start persistence, foreground signal forwarding, orphan
 reaping and concurrent exec exit routing. A separate ordinary Job VM case checks
 the default launch configuration's orphan reaping and exit status.
+
+Docker exec translates CLI options and delegates transport to
+[`pvisor-container`](../pvisor-container/README.md), shared with the shim.
+See its compatibility table for environment, exit, timeout and upgrade behavior.

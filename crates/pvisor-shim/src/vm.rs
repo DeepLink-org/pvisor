@@ -10,11 +10,10 @@
 //! from the host. `VmRuntime::run` enters the VMM and terminates the runner
 //! with the workload exit code reported by the guest.
 
-use crate::agent::{AGENT_GUEST_PATH, AGENT_VSOCK_PORT};
 use crate::plan::{ContainerPlan, guest_config, vm_agent_enabled};
 use anyhow::{Context, Result};
+use pvisor_guest::control::CONTROL_PORT;
 use pvisor_vm::api::{VmConfiguration, VmRuntime};
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 /// Configure the Rust guest supervisor and boot the VM.
@@ -47,23 +46,6 @@ pub fn boot_vm(
         });
     }
     let guest_config = serde_json::to_vec(&guest)?;
-    if agent {
-        // The static musl shim binary doubles as the guest agent: copy it
-        // into the rootfs so exec works without image requirements.
-        let mut agent_file = pvisor_overlay_core::sys::prepare_rooted_path(
-            &plan.rootfs,
-            Path::new(AGENT_GUEST_PATH.trim_start_matches('/')),
-            false,
-            true,
-        )
-        .context("prepare guest agent without following image symlinks")?;
-        agent_file.set_len(0)?;
-        std::io::copy(
-            &mut std::fs::File::open(std::env::current_exe().context("current exe")?)?,
-            &mut agent_file,
-        )?;
-        agent_file.set_permissions(std::fs::Permissions::from_mode(0o755))?;
-    }
     if network.is_some() {
         // The smoltcp backend answers DNS on the synthetic router; without
         // this file the guest keeps resolving through whatever resolver the
@@ -96,11 +78,13 @@ pub fn boot_vm(
         0o400,
         true,
     )?;
-    vm.vsock_port(
-        AGENT_VSOCK_PORT,
-        crate::agent::agent_socket_path(&plan.id),
-        true,
-    )?;
+    if agent {
+        vm.vsock_port(
+            CONTROL_PORT,
+            crate::endpoint::agent_socket_path(&plan.id),
+            true,
+        )?;
+    }
     if let Some(stream) = network {
         vm.network(stream, pvisor_overlaynet::vm::VM_MAC)?;
     }

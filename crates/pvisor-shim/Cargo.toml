@@ -27,6 +27,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+pvisor-container = { workspace = true, optional = true }
 async-trait = { workspace = true }
 containerd-shim = { workspace = true, features = ["async"] }
 containerd-shim-protos = { workspace = true, features = ["sandbox"] }
@@ -40,7 +41,7 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 # VM toolchain and a libkrunfw kernel (embedded in static builds). Networking
 # rides the virtio-net device (pvisor-vm "net") driven by pvisor-overlaynet's
 # policy-enforcing smoltcp backend.
-vm = ["pvisor-vm", "pvisor-vm/net", "pvisor-overlaynet", "pvisor-core"]
+vm = ["pvisor-container", "pvisor-vm", "pvisor-vm/net", "pvisor-overlaynet", "pvisor-core"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

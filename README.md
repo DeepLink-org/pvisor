@@ -117,7 +117,7 @@ Security issues: see [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTIN
 
 ## Crate layout
 
-The Cargo workspace contains 13 crates. `pvisor` is the embeddable execution
+The Cargo workspace contains 14 crates. `pvisor` is the embeddable execution
 runtime and durable Job service; `pvisor-cli` is the default workspace member and
 owns three application executables: `pvisor`, `pvisor-tui` and
 `pvisor-replay`. The separately built `pvisor-daemon` owns its optional pool via
@@ -130,7 +130,8 @@ Journal contracts rather than the runtime or Clap.
 
 The remaining crates are `pvisor-core`, `pvisor-journal`, `pvisor-gateway`,
 `pvisor-vm`, `pvisor-daemon`, `pvisor-guest`, `pvisor-shim`, `pvisor-overlay-core`,
-`pvisor-overlayfs` and `pvisor-overlaynet`. See the
+`pvisor-overlayfs`, `pvisor-overlaynet` and `pvisor-container`. The latter owns
+the shared host exec client used by the Docker CLI and containerd shim. See the
 [engineering guide](docs/src/en/community/development.md) for source ownership,
 dependencies and targeted tests (`just test pvisor` for the runtime,
 `just test cli` for application frontends).

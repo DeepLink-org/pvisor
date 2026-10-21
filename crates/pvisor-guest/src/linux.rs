@@ -277,7 +277,7 @@ fn workload(config: &GuestConfig) -> io::Result<i32> {
             listener,
             config.clone(),
             processes.clone(),
-            process.id(),
+            process.target(),
             input,
         );
     }

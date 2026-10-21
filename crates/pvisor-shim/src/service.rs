@@ -48,12 +48,9 @@ use containerd_shim_protos::topics::{
 use containerd_shim_protos::ttrpc::{self, Code, context::Context, get_status};
 use log::{info, warn};
 #[cfg(feature = "vm")]
-#[cfg(feature = "vm")]
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 
-#[cfg(feature = "vm")]
-use crate::agent::{Channel, Control, FrameReader, FrameWriter};
 use crate::child::{self, InternalChild, StdioFds};
 use crate::fifo::ContainerIo;
 #[cfg(feature = "vm")]
@@ -61,6 +58,10 @@ use crate::plan::ExecPlan;
 use crate::plan::{IoPlan, MountPlan, build_exec_plan, build_plan, build_sandbox_plan};
 use crate::spec::load_bundle_spec;
 use crate::state::{ExecEntry, ExitInfo, ExitTarget, TaskEntry, TaskStatus};
+#[cfg(feature = "vm")]
+use pvisor_container::api::{
+    CancelExec, ExecCancellation, ExecRelayError, ExecRuntime, ExecSession,
+};
 
 fn notify_exit(sender: &watch::Sender<Option<ExitInfo>>, exit: ExitInfo) {
     sender.send_replace(Some(exit));
@@ -78,7 +79,8 @@ struct LiveExec {
     exit_tx: watch::Sender<Option<ExitInfo>>,
     internal: Option<InternalChild>,
     /// VM execs own a duplicate of the agent socket until exit; shutdown is the kill.
-    vm_sock: Option<std::os::unix::net::UnixStream>,
+    #[cfg(feature = "vm")]
+    vm_sock: Option<ExecCancellation>,
     io: ContainerIo,
 }
 
@@ -201,6 +203,7 @@ impl PvisorTask {
         if let Some(mut internal) = live_exec.internal.take() {
             internal.close_start();
         }
+        #[cfg(feature = "vm")]
         drop(live_exec.vm_sock.take());
         let _ = std::fs::remove_file(bundle.join(format!("pvisor-exec-{exec_id}.json")));
 
@@ -261,8 +264,8 @@ impl PvisorTask {
             return Err(rpc_error(Code::INTERNAL, "exec io without child fds"));
         };
 
-        let socket_path = crate::agent::agent_socket_path(&plan.container_id);
-        let (pid, stream) = tokio::task::spawn_blocking({
+        let socket_path = crate::endpoint::agent_socket_path(&plan.container_id);
+        let session = tokio::task::spawn_blocking({
             let plan = plan.clone();
             let socket_path = socket_path.clone();
             move || vm_exec_connect_and_start(&socket_path, &plan)
@@ -270,8 +273,9 @@ impl PvisorTask {
         .await
         .map_err(|error| rpc_error(Code::INTERNAL, format!("vm exec join: {error}")))?
         .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
-        let owned_socket = stream
-            .try_clone()
+        let pid = session.pid();
+        let owned_socket = session
+            .cancellation()
             .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
 
         // The guest process starts immediately (containerd's Start call for
@@ -329,7 +333,14 @@ impl PvisorTask {
                 }
             });
         }
-        spawn_vm_exec_relay(stream, stdin, stdout, stderr, events_tx);
+        std::thread::spawn(move || {
+            let status = match session.relay(Some(stdin), &mut { stdout }, &mut { stderr }) {
+                Ok(outcome) => crate::plan::guest_exec_status(outcome),
+                Err(ExecRelayError::Output(_)) => 255,
+                Err(ExecRelayError::Transport(_)) => 137,
+            };
+            let _ = events_tx.send(status);
+        });
 
         Ok(Empty::new())
     }
@@ -341,8 +352,8 @@ impl PvisorTask {
 fn vm_exec_connect_and_start(
     socket_path: &std::path::Path,
     plan: &ExecPlan,
-) -> Result<(u32, std::os::unix::net::UnixStream)> {
-    crate::plan::guest_config(&plan.process, false)?;
+) -> Result<ExecSession> {
+    let request = crate::plan::guest_exec_request(&plan.process)?;
     let mut stream = None;
     for _ in 0..300 {
         match std::os::unix::net::UnixStream::connect(socket_path) {
@@ -353,98 +364,8 @@ fn vm_exec_connect_and_start(
             Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
         }
     }
-    let mut stream = stream.context("agent socket never came up")?;
-
-    let mut writer = FrameWriter::new(stream.try_clone()?);
-    writer.write_control(&Control::ExecStart {
-        argv: plan.process.argv.clone(),
-        env: plan.process.env.clone(),
-        cwd: plan.process.cwd.to_string_lossy().to_string(),
-        limits: plan
-            .process
-            .rlimits
-            .iter()
-            .map(|limit| (limit.typ.clone(), (limit.soft, limit.hard)))
-            .collect(),
-    })?;
-    let message = FrameReader::new(&mut stream)
-        .read_control()?
-        .context("agent closed before starting the process")?;
-    match message {
-        Control::Started { pid } => Ok((pid, stream)),
-        Control::Error { message } => anyhow::bail!("guest agent: {message}"),
-        other => anyhow::bail!("unexpected agent reply: {other:?}"),
-    }
-}
-
-/// Pump the exec IO between the task FIFOs and the agent connection; the
-/// exit status (or 137 for a dropped connection, i.e. a kill) flows back
-/// through `events`.
-#[cfg(feature = "vm")]
-fn spawn_vm_exec_relay(
-    stream: std::os::unix::net::UnixStream,
-    stdin: std::fs::File,
-    stdout: std::fs::File,
-    stderr: std::fs::File,
-    events: mpsc::UnboundedSender<u32>,
-) {
-    use std::io::{Read, Write};
-
-    let writer = stream.try_clone().expect("clone agent stream");
-    std::thread::spawn(move || {
-        let mut stdin = stdin;
-        let mut writer = FrameWriter::new(writer);
-        let mut buffer = [0u8; 8192];
-        loop {
-            match stdin.read(&mut buffer) {
-                Ok(0) | Err(_) => {
-                    let _ = writer.write_frame(Channel::Stdin, b"");
-                    break;
-                }
-                Ok(n) => {
-                    if writer.write_frame(Channel::Stdin, &buffer[..n]).is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
-
-    std::thread::spawn(move || {
-        let mut stdout = stdout;
-        let mut stderr = stderr;
-        let mut reader = FrameReader::new(stream);
-        let status = loop {
-            match reader.read_frame() {
-                Ok(Some(frame)) => match frame.channel {
-                    Channel::Stdout => {
-                        if stdout.write_all(&frame.payload).is_err() {
-                            break 255;
-                        }
-                    }
-                    Channel::Stderr => {
-                        if stderr.write_all(&frame.payload).is_err() {
-                            break 255;
-                        }
-                    }
-                    Channel::Stdin => {}
-                    Channel::Control => {
-                        if let Control::Exited { status } = serde_json::from_slice(&frame.payload)
-                            .unwrap_or(Control::Error {
-                                message: "bad exit frame".to_string(),
-                            })
-                        {
-                            break status;
-                        }
-                    }
-                },
-                // Socket dropped without an exit frame: killed or crashed.
-                Ok(None) => break 137,
-                Err(_) => break 137,
-            }
-        };
-        let _ = events.send(status);
-    });
+    let stream = stream.context("guest control socket never came up")?;
+    Ok(ExecSession::start(stream, request)?)
 }
 
 /// Record a VM exec exit (guest pid, never matched against host pids) and
@@ -470,7 +391,7 @@ async fn vm_exec_exited(
         }
         live.execs.get_mut(exec_id).map(|exec| {
             if let Some(socket) = exec.vm_sock.take() {
-                let _ = socket.shutdown(std::net::Shutdown::Both);
+                let _ = socket.cancel();
             }
             notify_exit(
                 &exec.exit_tx,
@@ -1053,6 +974,7 @@ impl Task for PvisorTask {
                 LiveExec {
                     exit_tx,
                     internal: Some(internal),
+                    #[cfg(feature = "vm")]
                     vm_sock: None,
                     io: owned_io,
                 },
@@ -1075,11 +997,11 @@ impl Task for PvisorTask {
                 format!("invalid signal {}", req.signal),
             ));
         }
-        let (pid, vm_sock) = {
+        let pid = {
             let tasks = self.inner.tasks.lock().expect("tasks mutex");
             let live = tasks.get(&req.id).ok_or_else(|| not_found(&req.id))?;
             if req.exec_id.is_empty() {
-                (live.entry.pid, None)
+                live.entry.pid
             } else {
                 let exec = live
                     .entry
@@ -1089,38 +1011,30 @@ impl Task for PvisorTask {
                 if exec.status == TaskStatus::Stopped {
                     return Ok(Empty::new());
                 }
-                if live.vm
-                    && live
-                        .execs
-                        .get(&req.exec_id)
-                        .and_then(|exec| exec.vm_sock.as_ref())
-                        .is_none()
-                {
-                    return Err(rpc_error(
-                        Code::FAILED_PRECONDITION,
-                        "VM exec has no agent socket",
-                    ));
+                if live.vm {
+                    #[cfg(feature = "vm")]
+                    {
+                        let control = live
+                            .execs
+                            .get(&req.exec_id)
+                            .and_then(|exec| exec.vm_sock.as_ref())
+                            .ok_or_else(|| {
+                                rpc_error(
+                                    Code::FAILED_PRECONDITION,
+                                    "VM exec has no control session",
+                                )
+                            })?;
+                        control
+                            .cancel()
+                            .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
+                        return Ok(Empty::new());
+                    }
+                    #[cfg(not(feature = "vm"))]
+                    return Err(rpc_error(Code::UNIMPLEMENTED, "VM support is disabled"));
                 }
-                (
-                    exec.pid,
-                    live.execs
-                        .get(&req.exec_id)
-                        .and_then(|exec| exec.vm_sock.as_ref())
-                        .map(|socket| socket.try_clone())
-                        .transpose()
-                        .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?,
-                )
+                exec.pid
             }
         };
-        if let Some(socket) = vm_sock {
-            // VM exec kill: dropping the agent connection makes the guest
-            // agent SIGKILL the process (guest pids must never be signaled
-            // on the host).
-            socket
-                .shutdown(std::net::Shutdown::Both)
-                .map_err(|error| rpc_error(Code::INTERNAL, error.to_string()))?;
-            return Ok(Empty::new());
-        }
         let Some(pid) = pid else {
             return Ok(Empty::new());
         };
@@ -1175,7 +1089,7 @@ impl Task for PvisorTask {
         }
         let _ = std::fs::remove_file(live.entry.bundle.join("pvisor-plan.json"));
         if live.vm {
-            let _ = std::fs::remove_file(crate::agent::agent_socket_path(&req.id));
+            let _ = std::fs::remove_file(crate::endpoint::agent_socket_path(&req.id));
         }
         #[cfg(feature = "vm")]
         if let Some(attachment) = live.vm_network {

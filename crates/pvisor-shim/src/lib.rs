@@ -6,9 +6,9 @@
 //! on development hosts; everything that touches Linux container primitives
 //! is gated to `target_os = "linux"`.
 
-pub mod agent;
 pub mod caps;
 pub mod cgroup;
+pub mod endpoint;
 pub mod plan;
 pub mod spec;
 pub mod state;

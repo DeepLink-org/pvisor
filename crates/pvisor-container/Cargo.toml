@@ -1,0 +1,15 @@
+[package]
+name = "pvisor-container"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared host client for pVisor guest processes"
+
+[dependencies]
+pvisor-guest.workspace = true
+libc.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+syn = { version = "2", features = ["full", "visit"] }

@@ -16,6 +16,7 @@ members = [
     "crates/pvisor",
     "crates/pvisor-cli",
     "crates/pvisor-guest",
+    "crates/pvisor-container",
     "crates/pvisor-replay",
     "crates/pvisor-shim",
     "crates/pvisor-overlayfs",
@@ -58,6 +59,7 @@ libloading = "0.8"
 pvisor-vm = { path = "crates/pvisor-vm" }
 log = "0.4"
 pvisor-guest = { path = "crates/pvisor-guest" }
+pvisor-container = { path = "crates/pvisor-container" }
 pvisor-journal = { path = "crates/pvisor-journal" }
 pvisor-core = { path = "crates/pvisor-core" }
 pvisor-cli = { path = "crates/pvisor-cli" }

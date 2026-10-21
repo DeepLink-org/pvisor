@@ -500,6 +500,8 @@ PID-1 reaper shared by Jobs, the initial workload and exec. An optional host-CID
 vsock adapter adds same-VM exec, stdin, signal delivery and TCP publication;
 it owns no separate process lifecycle or host filesystem/lifecycle authority.
 Ordinary Job configurations retain inherited identity/session/stdio defaults.
+The CLI and shim share [`pvisor-container`](../pvisor-container/README.md) for
+exec transport; catalog, VM ownership and network policy remain here.
 
 The supported CLI profile and its explicit differences from Docker are in the
 [application README](../pvisor-cli/README.md#docker-command-profile-experimental).

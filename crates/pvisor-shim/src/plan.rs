@@ -617,8 +617,8 @@ pub enum VmNetworkMode {
     Allowlist,
 }
 
-/// True unless `io.pvisor.vm.agent=off`: VMs boot the guest agent so exec
-/// works (the shim binary is copied into the rootfs at boot).
+/// True unless `io.pvisor.vm.agent=off`: enable the shared guest control
+/// adapter for exec. The legacy annotation name is retained.
 pub fn vm_agent_enabled(annotations: &HashMap<String, String>) -> bool {
     annotations
         .get(format!("{ANNOTATION_PREFIX}vm.agent").as_str())
@@ -637,7 +637,7 @@ pub fn validate_vm_process(
     // subsumes; accepting them matches how every VM runtime (kata,
     // firecracker) treats OCI process-level security. Rlimits (init and
     // exec alike) travel to the guest: init through the launch config,
-    // exec through the agent's ExecStart message.
+    // exec through the shared ExecRequest.
     let _ = process.no_new_privileges();
     let _ = process.capabilities();
     let _ = process.rlimits();
@@ -670,16 +670,40 @@ pub fn guest_config(
             .iter()
             .map(|limit| (limit.typ.clone(), (limit.soft, limit.hard)))
             .collect(),
-        agent: agent.then(|| {
-            vec![
-                crate::agent::AGENT_GUEST_PATH.into(),
-                crate::agent::AGENT_ARG.into(),
-            ]
-        }),
+        control: agent,
+        control_unlimited: true,
         ..Default::default()
     };
     config.command()?;
     Ok(config)
+}
+
+/// Translate a complete OCI exec process to the shared guest request.
+/// Environment and limits replace init defaults. VM identity/capability handling
+/// retains the existing shim profile; no Docker defaults are introduced.
+pub fn guest_exec_request(
+    process: &ProcessPlan,
+) -> anyhow::Result<pvisor_guest::control::ExecRequest> {
+    let config = guest_config(process, false)?;
+    Ok(pvisor_guest::control::ExecRequest {
+        argv: config.argv,
+        env: config.env,
+        replace_env: true,
+        cwd: Some(config.cwd),
+        limits: Some(config.limits),
+        output_timeout_ms: Some(2000),
+        ..Default::default()
+    })
+}
+
+/// Preserve the shim agent's status convention: signalled or incomplete output
+/// is 255, while an ordinary exit (including 128..255) keeps its exact value.
+pub fn guest_exec_status(outcome: pvisor_guest::control::ExecOutcome) -> u32 {
+    if outcome.signal.is_some() || !outcome.output_complete {
+        255
+    } else {
+        outcome.code as u32
+    }
 }
 
 /// Plan for one exec process inside a running container.
@@ -1005,6 +1029,30 @@ pub fn build_plan(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn guest_exec_status_preserves_normal_signal_and_truncated_output_results() {
+        use pvisor_guest::control::ExecOutcome;
+        for (code, signal, output_complete, expected) in [
+            (0, None, true, 0),
+            (23, None, true, 23),
+            (127, None, true, 127),
+            (137, None, true, 137),
+            (143, None, true, 143),
+            (255, None, true, 255),
+            (143, Some(15), true, 255),
+            (0, None, false, 255),
+        ] {
+            assert_eq!(
+                guest_exec_status(ExecOutcome {
+                    code,
+                    signal,
+                    output_complete
+                }),
+                expected,
+            );
+        }
+    }
 
     #[test]
     fn vm_constraints_fail_before_unsupported_security_is_discarded() {
@@ -1506,11 +1554,21 @@ mod tests {
         assert_eq!(config.argv, process.argv);
         assert_eq!(config.env["GREETING"], "hello world");
         assert_eq!(config.limits["RLIMIT_NOFILE"], (32, 64));
-        assert_eq!(
-            config.agent.unwrap(),
-            [crate::agent::AGENT_GUEST_PATH, crate::agent::AGENT_ARG]
+        assert!(config.control);
+        assert!(config.control_unlimited);
+        assert!(config.agent.is_none());
+        assert!(
+            config.process.is_none(),
+            "preserve init console and identity"
         );
-        assert!(guest_config(&process, false).unwrap().agent.is_none());
+        assert!(!guest_config(&process, false).unwrap().control);
+        let exec = guest_exec_request(&process).unwrap();
+        assert!(exec.replace_env);
+        assert_eq!(exec.output_timeout_ms, Some(2000));
+        assert_eq!(exec.env, config.env);
+        assert_eq!(exec.limits.unwrap(), config.limits);
+        assert!(exec.user.is_none());
+        assert!(exec.tty.is_none());
     }
 
     #[test]

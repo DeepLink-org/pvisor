@@ -52,6 +52,10 @@ pub struct GuestConfig {
     /// Enable the host-only vsock command adapter; false starts no listener.
     #[serde(default)]
     pub control: bool,
+    /// Preserve an adapter's uncapped control concurrency. False retains the
+    /// default 32-connection cap; the shim selects true for its legacy exec service.
+    #[serde(default)]
+    pub control_unlimited: bool,
 }
 
 /// Process setup shared by the initial workload and subsequent exec requests.
@@ -64,7 +68,7 @@ pub struct ProcessConfig {
     /// Linux capability bounding set to retain. None leaves it unchanged.
     /// Values must be in 0..64; dropping capabilities precedes changing identity.
     pub capabilities: Option<Vec<u32>>,
-    /// Start a separate session/process group, required for PTYs and control.
+    /// Start a separate session/process group, required for PTYs.
     pub new_session: bool,
     /// Initial stdin ownership; omission retains the bootstrap descriptor.
     pub stdin: StdinMode,
@@ -167,16 +171,6 @@ impl GuestConfig {
                 return Err(invalid("guest PTY requires dimensions and a new session"));
             }
         }
-        if self.control
-            && !self
-                .process
-                .as_ref()
-                .is_some_and(|process| process.new_session)
-        {
-            return Err(invalid(
-                "guest control requires a separate workload session",
-            ));
-        }
         for mount in &self.mounts {
             if !mount.target.is_absolute()
                 || mount.target.parent().is_none()
@@ -236,7 +230,7 @@ mod tests {
         assert!(config.mounts.is_empty());
         assert!(config.command().is_ok());
         config.control = true;
-        assert!(config.command().is_err());
+        assert!(config.command().is_ok());
         config.process = Some(ProcessConfig {
             new_session: true,
             ..Default::default()

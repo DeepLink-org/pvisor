@@ -1,6 +1,6 @@
 //! One process launcher and PID-1 reaper for every guest workload and exec.
 use super::{check, resource};
-use pvisor_guest::{GuestConfig, StdinMode};
+use pvisor_guest::{GuestConfig, StdinMode, control::ExecOutcome};
 use std::{
     collections::BTreeMap,
     fs::{self, File},
@@ -15,7 +15,7 @@ use std::{
 
 #[derive(Default)]
 struct State {
-    children: BTreeMap<u32, (mpsc::Sender<i32>, bool)>,
+    children: BTreeMap<u32, (mpsc::Sender<ExecOutcome>, bool, Arc<()>)>,
     stopping: bool,
 }
 
@@ -24,13 +24,26 @@ pub(super) struct Processes(Arc<Mutex<State>>);
 
 pub(super) struct Process {
     pid: u32,
-    exit: mpsc::Receiver<i32>,
+    exit: mpsc::Receiver<ExecOutcome>,
+    identity: Arc<()>,
 }
+#[derive(Clone)]
+pub(super) struct ProcessTarget {
+    pid: u32,
+    identity: Arc<()>,
+}
+
 impl Process {
     pub(super) fn id(&self) -> u32 {
         self.pid
     }
-    pub(super) fn wait(self) -> io::Result<i32> {
+    pub(super) fn target(&self) -> ProcessTarget {
+        ProcessTarget {
+            pid: self.pid,
+            identity: self.identity.clone(),
+        }
+    }
+    pub(super) fn wait(self) -> io::Result<ExecOutcome> {
         self.exit
             .recv()
             .map_err(|_| io::Error::other("guest reaper stopped"))
@@ -68,11 +81,18 @@ impl Processes {
     fn register(&self, child: std::process::Child, state: &mut State, group: bool) -> Process {
         let pid = child.id();
         let (sender, exit) = mpsc::channel();
-        state.children.insert(pid, (sender, group));
+        let identity = Arc::new(());
+        state
+            .children
+            .insert(pid, (sender, group, identity.clone()));
         // Only supervise() consumes wait statuses; dropping Child never waits.
-        Process { pid, exit }
+        Process {
+            pid,
+            exit,
+            identity,
+        }
     }
-    pub(super) fn signal(&self, pid: u32, signal: i32) -> io::Result<()> {
+    pub(super) fn signal(&self, target: &ProcessTarget, signal: i32) -> io::Result<()> {
         if !(1..=64).contains(&signal) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -80,11 +100,21 @@ impl Processes {
             ));
         }
         let state = self.0.lock().unwrap();
-        let (_, group) = state
+        let (_, group, _) = state
             .children
-            .get(&pid)
+            .get(&target.pid)
+            .filter(|(_, _, identity)| Arc::ptr_eq(identity, &target.identity))
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "guest process exited"))?;
-        check(unsafe { libc::kill(if *group { -(pid as i32) } else { pid as i32 }, signal) })
+        check(unsafe {
+            libc::kill(
+                if *group {
+                    -(target.pid as i32)
+                } else {
+                    target.pid as i32
+                },
+                signal,
+            )
+        })
     }
     pub(super) fn supervise(&self, main: Process) -> io::Result<i32> {
         let mut main_exit = None;
@@ -103,7 +133,7 @@ impl Processes {
             if state
                 .children
                 .get(&(pid as u32))
-                .is_some_and(|(_, group)| *group)
+                .is_some_and(|(_, group, _)| *group)
             {
                 // The leader is still a zombie, so its group ID cannot be reused.
                 unsafe {
@@ -117,8 +147,12 @@ impl Processes {
             } else {
                 128 + libc::WTERMSIG(status)
             };
-            if let Some((sender, _)) = state.children.remove(&(pid as u32)) {
-                let _ = sender.send(code);
+            if let Some((sender, _, _)) = state.children.remove(&(pid as u32)) {
+                let _ = sender.send(ExecOutcome {
+                    code,
+                    signal: libc::WIFSIGNALED(status).then(|| libc::WTERMSIG(status)),
+                    output_complete: true,
+                });
             }
             if pid as u32 == main.pid {
                 main_exit = Some(code);
@@ -130,7 +164,7 @@ impl Processes {
                         libc::kill(-1, libc::SIGKILL);
                     }
                 } else {
-                    for (pid, (_, group)) in &state.children {
+                    for (pid, (_, group, _)) in &state.children {
                         unsafe {
                             libc::kill(
                                 if *group { -(*pid as i32) } else { *pid as i32 },
@@ -273,10 +307,14 @@ fn command(config: &GuestConfig) -> io::Result<Command> {
     Ok(command)
 }
 
-pub(super) type ProcessOutput = Vec<(Box<dyn Read + Send>, u8)>;
+pub(super) trait ProcessReader: Read + AsRawFd + Send {}
+impl<T: Read + AsRawFd + Send> ProcessReader for T {}
+pub(super) trait ProcessWriter: Write + AsRawFd + Send {}
+impl<T: Write + AsRawFd + Send> ProcessWriter for T {}
+pub(super) type ProcessOutput = Vec<(Box<dyn ProcessReader>, u8)>;
 pub(super) struct Spawned {
     pub(super) process: Process,
-    pub(super) input: Option<Box<dyn Write + Send>>,
+    pub(super) input: Option<Box<dyn ProcessWriter>>,
     pub(super) outputs: ProcessOutput,
 }
 
@@ -320,7 +358,7 @@ impl Processes {
                 .stderr(slave);
             let child = command.spawn()?;
             let input = if interactive {
-                Some(Box::new(master.try_clone()?) as Box<dyn Write + Send>)
+                Some(Box::new(master.try_clone()?) as Box<dyn ProcessWriter>)
             } else {
                 None
             };
@@ -342,15 +380,15 @@ impl Processes {
             let input = child
                 .stdin
                 .take()
-                .map(|s| Box::new(s) as Box<dyn Write + Send>);
+                .map(|s| Box::new(s) as Box<dyn ProcessWriter>);
             let output = if capture {
                 vec![
                     (
-                        Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>,
+                        Box::new(child.stdout.take().unwrap()) as Box<dyn ProcessReader>,
                         1,
                     ),
                     (
-                        Box::new(child.stderr.take().unwrap()) as Box<dyn Read + Send>,
+                        Box::new(child.stderr.take().unwrap()) as Box<dyn ProcessReader>,
                         2,
                     ),
                 ]
@@ -369,6 +407,27 @@ impl Processes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_handle_cannot_signal_a_reused_pid() {
+        let processes = Processes::default();
+        let pid = unsafe { libc::getpid() } as u32;
+        let (sender, _) = mpsc::channel();
+        processes
+            .0
+            .lock()
+            .unwrap()
+            .children
+            .insert(pid, (sender, false, Arc::new(())));
+        let stale = ProcessTarget {
+            pid,
+            identity: Arc::new(()),
+        };
+        assert_eq!(
+            processes.signal(&stale, libc::SIGKILL).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
 
     #[test]
     fn one_reaper_routes_exec_exits_and_reaps_orphans_while_main_is_alive() {
@@ -412,10 +471,10 @@ mod tests {
                     ..Default::default()
                 };
                 let process = control.spawn(&config, false).unwrap().process;
-                let pid = process.id();
-                assert_eq!(process.wait().unwrap(), code);
+                let target = process.target();
+                assert_eq!(process.wait().unwrap().code, code);
                 assert_eq!(
-                    control.signal(pid, 9).unwrap_err().kind(),
+                    control.signal(&target, 9).unwrap_err().kind(),
                     io::ErrorKind::NotFound
                 );
             }
@@ -425,9 +484,9 @@ mod tests {
                 ..Default::default()
             };
             let process = control.spawn(&config, false).unwrap().process;
-            assert!(control.signal(process.id(), 0).is_err());
-            control.signal(process.id(), libc::SIGTERM).unwrap();
-            assert_eq!(process.wait().unwrap(), 143);
+            assert!(control.signal(&process.target(), 0).is_err());
+            control.signal(&process.target(), libc::SIGTERM).unwrap();
+            assert_eq!(process.wait().unwrap().code, 143);
             fs::write(done, b"done").unwrap();
         });
         assert_eq!(processes.supervise(main).unwrap(), 0);

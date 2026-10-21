@@ -13,6 +13,7 @@ default = []
 gateway = ["pvisor/gateway", "dep:pvisor-gateway"]
 
 [dependencies]
+pvisor-container.workspace = true
 pvisor = { path = "../pvisor", default-features = false }
 anyhow.workspace = true
 async-trait.workspace = true

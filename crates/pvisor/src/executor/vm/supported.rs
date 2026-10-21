@@ -2813,6 +2813,7 @@ fn guest_config(
         process: None,
         mounts: Vec::new(),
         control: false,
+        control_unlimited: false,
     }
 }
 

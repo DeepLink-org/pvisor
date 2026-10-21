@@ -2925,6 +2925,7 @@ dependencies = [
  "libc",
  "proptest",
  "pvisor",
+ "pvisor-container",
  "pvisor-core",
  "pvisor-gateway",
  "pvisor-journal",
@@ -2945,6 +2946,17 @@ dependencies = [
  "uuid",
  "vm-memory",
  "vt100",
+]
+
+[[package]]
+name = "pvisor-container"
+version = "0.3.0"
+dependencies = [
+ "libc",
+ "pvisor-guest",
+ "syn 2.0.117",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3134,6 +3146,7 @@ dependencies = [
  "libc",
  "log",
  "oci-spec 0.10.0",
+ "pvisor-container",
  "pvisor-core",
  "pvisor-guest",
  "pvisor-overlay-core",

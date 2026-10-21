@@ -52,7 +52,7 @@ are cleaned up when their leader exits, including exec groups.
 
 `GuestConfig.control` enables a vsock listener on port 1025; omission starts no
 listener. The adapter accepts only host-CID peers. Bounded
-frames support ping, main stdin attachment, process-group signals, exec and
+frames support ping, main stdin attachment, main-process/group signals, exec and
 TCP tunnels to guest loopback services. Exec inherits launch environment and
 working directory unless overridden, keeps stdout/stderr separate without a
 PTY, and reports 126/127 for execution errors. TTY mode combines output on the
@@ -65,3 +65,11 @@ necessary for terminal, mount, networking and process-lifecycle behavior.
 Architecture guards keep spawning/signalling/reaping out of the transport
 adapter. Linux supervisor tests cover limits, exit statuses, orphan reaping and
 concurrent exec routing; native CLI acceptance exercises the same behavior in a VM.
+
+Docker and shim exec share this launcher/reaper and the
+[`pvisor-container`](../pvisor-container/README.md) host client. The control
+protocol sends Started/PID, Output and ExecExit (code, signal, output completion).
+Stdin EOF leaves output and cancellation available, including with a full input
+pipe. Cancellation checks process identity to avoid signalling reused PIDs.
+Frontend environment, session, timeout and admission policies are listed in the
+shared client's compatibility table.

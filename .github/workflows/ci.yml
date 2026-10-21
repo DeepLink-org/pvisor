@@ -135,6 +135,7 @@ jobs:
             packages: >-
               pvisor-journal
               pvisor-guest
+              pvisor-container
               pvisor-core
               pvisor-overlay-core
               pvisor-overlayfs
@@ -162,6 +163,7 @@ jobs:
             packages: >-
               pvisor-journal
               pvisor-guest
+              pvisor-container
               pvisor-shim
               pvisor-core
               pvisor-gateway

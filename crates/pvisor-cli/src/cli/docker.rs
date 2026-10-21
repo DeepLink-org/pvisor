@@ -5,7 +5,7 @@ use pvisor::docker::{
     self, GuestReply, GuestRequest, GuestStdin, Store, read_guest_frame, write_guest_frame,
 };
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -463,56 +463,37 @@ pub(super) fn run(args: DockerArgs) -> anyhow::Result<i32> {
         DockerCommand::Exec(args) => {
             let _terminal = Terminal::new(args.tty, args.interactive)?;
             let instance = store.resolve(&args.invocation[0])?;
-            let mut stream = store.connect(&instance)?;
+            use pvisor_container::api::{ExecRequest, ExecRuntime, ExecSession, ExecStartError};
+            let stream = store.connect(&instance)?;
             let (env, unset_env) = environment(&args.env, &[])?;
-            write_guest_frame(
-                &mut stream,
-                &GuestRequest::Exec {
-                    argv: args.invocation[1..].to_vec(),
-                    env,
-                    unset_env,
-                    cwd: args.cwd,
-                    user: args.user,
-                    tty: args.tty.then(terminal_size),
-                },
-            )?;
-            let first: GuestReply = read_guest_frame(&mut stream)?;
-            match first {
-                GuestReply::Ready => {}
-                GuestReply::Error { message } => {
+            let request = ExecRequest {
+                argv: args.invocation[1..].to_vec(),
+                env,
+                unset_env,
+                cwd: args.cwd,
+                user: args.user,
+                tty: args.tty.then(terminal_size),
+                ..Default::default()
+            };
+            let session = match ExecSession::start(stream, request) {
+                Ok(session) => session,
+                Err(ExecStartError::Rejected { message, code }) => {
                     eprintln!("{message}");
-                    if let Ok(GuestReply::Exit { code }) = read_guest_frame(&mut stream) {
-                        return Ok(code);
-                    }
-                    return Ok(125);
+                    return Ok(code);
                 }
-                _ => bail!("unexpected guest response"),
-            }
-            stream.set_read_timeout(None)?;
-            stream.set_write_timeout(None)?;
-            if args.interactive {
-                let mut input = stream.try_clone()?;
-                std::thread::spawn(move || {
-                    let _ = send_stdin(&mut input);
-                });
+                Err(error) => return Err(error.into()),
+            };
+            let input = if args.interactive {
+                use std::os::fd::AsFd;
+                Some(std::fs::File::from(
+                    io::stdin().as_fd().try_clone_to_owned()?,
+                ))
             } else {
-                write_guest_frame(&mut stream, &GuestStdin::Eof {})?;
-            }
-            loop {
-                match read_guest_frame(&mut stream)? {
-                    GuestReply::Output { stream: 1, bytes } => {
-                        io::stdout().write_all(&bytes)?;
-                        io::stdout().flush()?;
-                    }
-                    GuestReply::Output { stream: 2, bytes } => {
-                        io::stderr().write_all(&bytes)?;
-                        io::stderr().flush()?;
-                    }
-                    GuestReply::Exit { code } => return Ok(code),
-                    GuestReply::Error { message } => bail!("{message}"),
-                    _ => bail!("invalid guest output channel"),
-                }
-            }
+                None
+            };
+            let outcome = session.relay(input, &mut io::stdout(), &mut io::stderr())?;
+            ensure!(outcome.output_complete, "guest exec output was incomplete");
+            return Ok(outcome.code);
         }
     }
     Ok(0)

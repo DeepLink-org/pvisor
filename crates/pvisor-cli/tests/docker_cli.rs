@@ -50,6 +50,160 @@ fn docker_help_and_empty_queries_are_inert_and_reject_unsupported_commands() {
     assert_eq!(fs::read_dir(home.join("instances")).unwrap().count(), 0);
 }
 
+/// A real CLI process with a fake guest, so descriptor and adapter behavior is
+/// exercised without a VM. In particular, Linux cannot reopen a socket via /dev/stdin.
+#[test]
+fn docker_exec_preserves_socket_stdin_options_output_and_status() {
+    use fs2::FileExt;
+    use pvisor::docker::{
+        GuestReply, GuestRequest, GuestStdin, read_guest_frame, write_guest_frame,
+    };
+    use pvisor_container::api::ExecOutcome;
+    use std::{
+        io::Write,
+        os::{
+            fd::OwnedFd,
+            unix::{
+                fs::DirBuilderExt,
+                net::{UnixListener, UnixStream},
+            },
+        },
+        time::{Duration, Instant},
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("store");
+    pvisor::docker::Store::open(home.clone()).unwrap();
+    let id = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let generation = uuid::Uuid::new_v4().simple().to_string();
+    let instance = home.join("instances").join(&id);
+    fs::create_dir(&instance).unwrap();
+    let owner = fs::File::create(instance.join("owner.lock")).unwrap();
+    owner.lock_exclusive().unwrap();
+    fs::write(instance.join("instance.json"), serde_json::to_vec(&serde_json::json!({
+        "schema":1, "id":id, "name":"exec-fixture", "state":"running", "generation":generation,
+        "started_ms":0, "exit_code":null, "created_ms":0,
+        "argv":["sleep", "30"], "env":{"BASE":"inherited"}, "cwd":"/", "user":"",
+        "image":{"reference":"fixture:latest", "id":"fixture", "digest":"fixture", "rootfs":"/",
+            "env":{}, "entrypoint":[], "cmd":[], "cwd":"/", "user":"", "stop_signal":15, "volumes":[], "created_ms":0},
+        "config":{"name":null,"image":"fixture:latest","command":[],"entrypoint":null,"env":{},
+            "cwd":null,"user":null,"mounts":[],"ports":[],"cpus":1,"memory_mib":128,"auto_remove":false,
+            "interactive":false,"tty":null,"network":false}
+    })).unwrap()).unwrap();
+    let socket_dir = PathBuf::from(format!("/tmp/pvisor-docker-{}", unsafe { libc::geteuid() }));
+    match fs::DirBuilder::new().mode(0o700).create(&socket_dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => panic!("socket directory: {error}"),
+    }
+    let socket_path = socket_dir.join(format!("{}-{}.sock", &id[..12], &generation[..8]));
+    struct SocketPath(PathBuf);
+    impl Drop for SocketPath {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let _socket_path = SocketPath(socket_path.clone());
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let worker = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(error) => panic!("CLI did not connect: {error}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let GuestRequest::Exec(request) = read_guest_frame(&mut stream).unwrap() else {
+            panic!("expected exec");
+        };
+        assert_eq!(request.argv, ["cat", "literal argument"]);
+        assert_eq!(request.env["VALUE"], "with spaces");
+        assert!(!request.replace_env);
+        assert!(request.limits.is_none());
+        assert!(request.output_timeout_ms.is_none());
+        assert!(request.tty.is_none());
+        assert_eq!(request.user.as_deref(), Some("123:456"));
+        assert_eq!(request.cwd, Some(PathBuf::from("/work")));
+        write_guest_frame(&mut stream, &GuestReply::Started { pid: 42 }).unwrap();
+        let mut input = Vec::new();
+        while let GuestStdin::Data { bytes } = read_guest_frame(&mut stream)
+            .unwrap_or_else(|error| panic!("stdin failed after {} bytes: {error}", input.len()))
+        {
+            input.extend(bytes);
+        }
+        assert_eq!(input, b"socket-input\0\xff");
+        write_guest_frame(
+            &mut stream,
+            &GuestReply::Output {
+                stream: 1,
+                bytes: input,
+            },
+        )
+        .unwrap();
+        write_guest_frame(
+            &mut stream,
+            &GuestReply::Output {
+                stream: 2,
+                bytes: b"diagnostic".to_vec(),
+            },
+        )
+        .unwrap();
+        write_guest_frame(
+            &mut stream,
+            &GuestReply::ExecExit(ExecOutcome {
+                code: 23,
+                signal: None,
+                output_complete: true,
+            }),
+        )
+        .unwrap();
+    });
+    let (stdin, mut input) = UnixStream::pair().unwrap();
+    input.write_all(b"socket-input\0\xff").unwrap();
+    input.shutdown(std::net::Shutdown::Write).unwrap();
+    let output = command(&home)
+        .args([
+            "exec",
+            "-i",
+            "-e",
+            "VALUE=with spaces",
+            "-w",
+            "/work",
+            "-u",
+            "123:456",
+            "exec-fixture",
+            "cat",
+            "literal argument",
+        ])
+        .stdin(Stdio::from(OwnedFd::from(stdin)))
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(23),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    worker.join().unwrap();
+    assert_eq!(output.stdout, b"socket-input\0\xff");
+    assert_eq!(output.stderr, b"diagnostic");
+}
+
 struct Native {
     _temporary: tempfile::TempDir,
     home: PathBuf,
