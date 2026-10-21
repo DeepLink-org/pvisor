@@ -317,6 +317,11 @@ pub struct Context {
     pub pid: libc::pid_t,
 }
 
+#[cfg(test)]
+pub(super) fn root_context() -> Context {
+    Context { uid: 0, gid: 0, pid: 1 }
+}
+
 impl From<fuse::InHeader> for Context {
     fn from(source: fuse::InHeader) -> Self {
         Context {

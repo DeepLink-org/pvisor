@@ -78,9 +78,13 @@ pub(super) fn capture_ram_with_delta(
     };
     baseline.validate()?;
     #[cfg(target_os = "linux")]
-    if let Ok(Some((ram, changed))) = cow_blocks(memory, baseline) {
+    if let Ok(Some((ram, private, page))) = cow_pages(memory, baseline) {
         let mut buffer = vec![0; baseline.block_bytes as usize];
-        for mapping in &ram {
+        let changed: Vec<_> = private
+            .chunks((u64::from(baseline.block_bytes) / page) as usize)
+            .map(|pages| pages.iter().any(|changed| *changed))
+            .collect();
+        for (region, mapping) in memory.iter().zip(&ram) {
             let mut offset = 0;
             while offset < mapping.len {
                 let position = mapping.file_offset + offset;
@@ -88,10 +92,27 @@ pub(super) fn capture_ram_with_delta(
                 let count = (mapping.len - offset).min(
                     u64::from(baseline.block_bytes) - position % u64::from(baseline.block_bytes),
                 ) as usize;
+                let first = (position / page) as usize;
+                let pages = &private[first..first + count / page as usize];
                 if changed[index] {
-                    memory
-                        .read_slice(&mut buffer[..count], GuestAddress(mapping.base + offset))
+                    // Read clean bytes from the baseline, avoiding file fault-around
+                    // in the live mapping when only part of this block is COW.
+                    let backing = region.file_offset().unwrap();
+                    backing
+                        .file()
+                        .read_exact_at(&mut buffer[..count], backing.start() + offset)
                         .map_err(|e| e.to_string())?;
+                    for (index, changed) in pages.iter().enumerate() {
+                        if *changed {
+                            let start = index * page as usize;
+                            memory
+                                .read_slice(
+                                    &mut buffer[start..start + page as usize],
+                                    GuestAddress(mapping.base + offset + start as u64),
+                                )
+                                .map_err(|e| e.to_string())?;
+                        }
+                    }
                     if buffer[..count].iter().any(|byte| *byte != 0) {
                         file.write_all_at(&buffer[..count], position)
                             .map_err(|e| e.to_string())?;
@@ -119,10 +140,13 @@ pub(super) fn capture_ram_with_delta(
 }
 
 #[cfg(target_os = "linux")]
-fn cow_blocks(
+type PrivatePages = (Vec<RamMappingSnapshot>, Vec<bool>, u64);
+
+#[cfg(target_os = "linux")]
+fn cow_pages(
     memory: &GuestMemoryMmap,
     baseline: &RamDeltaSpec,
-) -> std::io::Result<Option<(Vec<RamMappingSnapshot>, Vec<bool>)>> {
+) -> std::io::Result<Option<PrivatePages>> {
     use std::{io, os::unix::fs::MetadataExt};
     use vm_memory::MemoryRegionAddress;
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
@@ -165,8 +189,7 @@ fn cow_blocks(
         return Ok(None);
     }
     let pagemap = File::open("/proc/self/pagemap")?;
-    let mut changed =
-        vec![false; baseline.length.div_ceil(u64::from(baseline.block_bytes)) as usize];
+    let mut private = vec![false; (baseline.length / page) as usize];
     let mut entries = vec![0; 4096 * 8];
     for (region, mapping) in memory.iter().zip(&ram) {
         let address = region
@@ -192,13 +215,13 @@ fn cow_blocks(
                 }
                 if entry & (1 << 62) != 0 || entry & (1 << 63) != 0 && entry & (1 << 61) == 0 {
                     let position = mapping.file_offset + offset + index as u64 * page;
-                    changed[(position / u64::from(baseline.block_bytes)) as usize] = true;
+                    private[(position / page) as usize] = true;
                 }
             }
             offset += count as u64 * page;
         }
     }
-    Ok(Some((ram, changed)))
+    Ok(Some((ram, private, page)))
 }
 
 #[cfg(test)]
@@ -329,10 +352,14 @@ mod tests {
         let pointer = result
             .get_host_address(vm_memory::MemoryRegionAddress(0))
             .unwrap();
-        assert_eq!(
-            unsafe { libc::madvise(pointer.cast(), length, libc::MADV_NOHUGEPAGE) },
-            0
-        );
+        // Kernels built without THP already have base-page granularity and
+        // reject MADV_NOHUGEPAGE with EINVAL.
+        if std::path::Path::new("/sys/kernel/mm/transparent_hugepage").exists() {
+            assert_eq!(
+                unsafe { libc::madvise(pointer.cast(), length, libc::MADV_NOHUGEPAGE) },
+                0
+            );
+        }
         result
     }
 
@@ -381,8 +408,30 @@ mod tests {
             )
             .unwrap();
         let before = present_pages(&memory);
+        let pointer = memory.get_host_address(GuestAddress(0x1000)).unwrap();
+        // Clean baseline pages need no live access, even within a changed block.
+        assert_eq!(
+            unsafe { libc::mprotect(pointer.cast(), size, libc::PROT_NONE) },
+            0
+        );
+        for (offset, length) in [(0, 64 * 1024), (5 * 64 * 1024 + page, page)] {
+            assert_eq!(
+                unsafe {
+                    libc::mprotect(
+                        pointer.add(offset).cast(),
+                        length,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                    )
+                },
+                0
+            );
+        }
         let (mappings, delta) =
             capture_ram_with_delta(&memory, &output.1, Some(&baseline(&source.1))).unwrap();
+        assert_eq!(
+            unsafe { libc::mprotect(pointer.cast(), size, libc::PROT_READ | libc::PROT_WRITE) },
+            0
+        );
         let delta = delta.expect("Linux private file mappings must support COW capture");
         assert_eq!(delta.changed_blocks, [0, 5]);
         assert_eq!(mappings[0].file_offset, 0);

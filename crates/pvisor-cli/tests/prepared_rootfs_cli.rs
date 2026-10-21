@@ -1,4 +1,4 @@
-//! Local physical-rootfs preparation and normal Host-worker admission boundaries.
+//! Local physical-rootfs preparation and normal Job-owner admission boundaries.
 #![cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 use pvisor::environment_snapshot::SnapshotStore;
 use std::{
@@ -35,8 +35,8 @@ fn command(binary: &str, root: &Path) -> Command {
 
 // HOME/XDG/RUN_HOME do not isolate the fixed /tmp/pvisor-host-UID endpoint.
 // Re-enter only these real Host cases with private user/mount/PID namespaces.
-// The test is PID 1: its exit also destroys its own listener, without signalling
-// any process or modifying any generation in the caller's /tmp namespace.
+// The test is PID 1: its exit destroys its own children without signalling
+// any process or modifying authority in the caller's /tmp namespace.
 #[cfg(target_os = "linux")]
 fn isolated_host_case(name: &str) -> bool {
     const ROLE: &str = "PVISOR_PREPARED_HOST_CASE";
@@ -571,9 +571,9 @@ fn prepared_selector_rejects_host_container_and_json_spec_in_private_namespace()
 
 #[test]
 #[cfg(target_os = "linux")]
-fn normal_host_worker_authenticates_catalog_before_vm_start_and_rejects_exposure() {
+fn normal_owner_authenticates_catalog_before_vm_start_and_rejects_exposure() {
     if !isolated_host_case(
-        "normal_host_worker_authenticates_catalog_before_vm_start_and_rejects_exposure",
+        "normal_owner_authenticates_catalog_before_vm_start_and_rejects_exposure",
     ) {
         return;
     }
@@ -622,10 +622,9 @@ fn normal_host_worker_authenticates_catalog_before_vm_start_and_rejects_exposure
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("base reference mismatch"));
 
-    // Local cache preparation does not enter a Host worker. Its source/store
+    // Local cache preparation does not enter a Job owner. Its source/store
     // checks must still protect the canonical authority before any copy/init.
     let authority = pvisor::host_transport::host_authority_root().unwrap();
-    let generation_before = fs::read(authority.join("generation")).unwrap();
     let secret_source = authority.join("private-rootfs-input");
     fs::create_dir(&secret_source).unwrap();
     fs::write(
@@ -633,8 +632,12 @@ fn normal_host_worker_authenticates_catalog_before_vm_start_and_rejects_exposure
         b"test-only private record",
     )
     .unwrap();
+    let before: Vec<_> = fs::read_dir(&authority)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
     for (source, destination) in [
-        (secret_source, temp.path().join("exfiltrated-store")),
+        (secret_source.clone(), temp.path().join("exfiltrated-store")),
         (
             temp.path().join("source"),
             authority.join("forbidden-store"),
@@ -659,8 +662,18 @@ fn normal_host_worker_authenticates_catalog_before_vm_start_and_rejects_exposure
             "authority is rejected before initializing the destination"
         );
     }
+    let after: Vec<_> = fs::read_dir(&authority)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
     assert_eq!(
-        fs::read(authority.join("generation")).unwrap(),
-        generation_before
+        before
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        after.into_iter().collect::<std::collections::BTreeSet<_>>()
+    );
+    assert_eq!(
+        fs::read(secret_source.join("private-record")).unwrap(),
+        b"test-only private record"
     );
 }

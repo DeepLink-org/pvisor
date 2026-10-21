@@ -71,6 +71,14 @@ CLI 执行器、containerd shim、暂停/恢复、快照、checkpoint、RAM page
 
 RAM 文件的 FUSE 挂载、readiness、mmap 缓存 I/O 和卸载顺序由私有 `ram_file` 模块管理。`RamFileStore` 接收宿主的暂存存储实现；`RamFileMount` 只公开所有权与挂载契约。压缩代际提交和持久化发布由宿主存储层负责。
 
+Linux 增量 RAM 捕获在完整冻结期间按 pagemap 区分 COW/换出页。
+变化块的干净字节直接从固定的不可变基底文件读取，只有私有页通过 live
+映射读取，避免文件 fault-around 把未修改基底带入 live 页表。跨 region 的
+同一变化块仍完整补齐，清零页也必须列入增量。临时页标记每宿主页一字节，
+64 GiB RAM、4 KiB 页时最多 16 MiB；块缓冲至多 1 MiB。无法证明基底和
+页面归属时，保留完整捕获回退。测试在支持 THP 的内核上禁用大页，未编译
+THP 的内核直接保持基页；驻留页、完整字节与稀疏输出断言相同。
+
 冷 RAM pager 的状态机、采样/发布窗口、回收线程及 CPU/设备缺页恢复也在本 crate 内。`ColdRamStore` 是宿主存储适配契约：pVisor 负责实例本地 store 或受支持平台的 pool 授权、传输和诊断目录，VM 指针与映射状态不越过边界。`ColdRamOptions`、`ColdRamControl` 在所有平台都存在；不支持的后端返回明确错误，重复启动同一 VM 的 pager 会被拒绝。
 
 Linux x86_64 支持实验性的 runtime-owned userfaultfd pager，由默认关闭的 `VmSettings.cold_ram_compression` / `--vm-cold-ram-compression` 自动启动，使用 pVisor 的 `LocalColdRamStore`，不是 FUSE `vm.ram_compression`。`ColdRamControl::start_cold_pager` 使用相同 API；Linux 的缺页与静止窗口由 runtime 内部持有，外部 `install_ram_fault_handler`、`with_ram_quiesced`、`experimental_ram_residency` 及 `FrozenMemory::experimental_ram_blocks` 返回不支持。编译能力不代表权限：必须具备 syscall 或 `/dev/userfaultfd` 的内核缺页授权，缺少授权时启动失败，不回退或修改全局 sysctl。

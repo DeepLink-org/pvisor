@@ -33,11 +33,7 @@ fn linux_append_open_preserves_lower_bytes_and_only_truncate_skips_copying() {
         std::fs::create_dir(&lower).unwrap();
         std::fs::write(lower.join("file"), b"original").unwrap();
         let fs = correctness_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         fs.init(FsOptions::empty()).unwrap();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let flags = (1 | extra) as u32; // Linux O_WRONLY plus the wire flag.
@@ -82,11 +78,7 @@ fn lower_hardlinks_keep_one_inode_and_current_bytes_after_copyup_and_unlink() {
     std::fs::write(lower.join("file"), b"original").unwrap();
     std::fs::hard_link(lower.join("file"), lower.join("alias")).unwrap();
     let fs = correctness_fixture(temp.path());
-    let ctx = Context {
-        uid: 0,
-        gid: 0,
-        pid: 1,
-    };
+    let ctx = root_context();
     let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
     assert_eq!(
         fs.lookup(ctx, fuse::ROOT_ID, c"alias").unwrap().inode,
@@ -134,11 +126,7 @@ fn rename_keeps_a_looked_up_victim_openable_until_forget_without_writeback() {
         let fs = correctness_fixture(temp.path());
         std::fs::write(temp.path().join("upper/source"), b"new").unwrap();
         std::fs::write(temp.path().join(victim_layer).join("victim"), b"old").unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let victim = fs.lookup(ctx, fuse::ROOT_ID, c"victim").unwrap().inode;
         fs.rename(ctx, fuse::ROOT_ID, c"source", fuse::ROOT_ID, c"victim", 0)
             .unwrap();
@@ -167,11 +155,7 @@ fn hardlink_aliases_and_future_lower_identity_survive_snapshot_roundtrip() {
         std::fs::hard_link(lower.join("file"), lower.join(name)).unwrap();
     }
     let fs = correctness_fixture(temp.path());
-    let ctx = Context {
-        uid: 0,
-        gid: 0,
-        pid: 1,
-    };
+    let ctx = root_context();
     let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
     assert_eq!(
         fs.lookup(ctx, fuse::ROOT_ID, c"alias").unwrap().inode,
@@ -206,11 +190,7 @@ fn failed_rename_pin_preserves_later_append_and_truncate_flags() {
     std::fs::create_dir(temp.path().join("lower")).unwrap();
     let fs = correctness_fixture(temp.path());
     std::fs::write(temp.path().join("upper/victim"), b"old").unwrap();
-    let ctx = Context {
-        uid: 0,
-        gid: 0,
-        pid: 1,
-    };
+    let ctx = root_context();
     let inode = fs.lookup(ctx, fuse::ROOT_ID, c"victim").unwrap().inode;
     assert!(fs
         .rename(ctx, fuse::ROOT_ID, c"missing", fuse::ROOT_ID, c"victim", 0)

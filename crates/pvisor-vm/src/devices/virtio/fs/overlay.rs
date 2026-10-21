@@ -4059,6 +4059,7 @@ impl FileSystem for OverlayFs {
 
 #[cfg(test)]
 mod tests {
+    use super::super::filesystem::root_context;
     include!("overlay_correctness_tests.rs");
     #[cfg(target_os = "linux")]
     mod mutation_regressions {
@@ -4083,11 +4084,7 @@ mod tests {
             (
                 temp,
                 fs,
-                Context {
-                    uid: 0,
-                    gid: 0,
-                    pid: 1,
-                },
+                root_context(),
             )
         }
 
@@ -4553,11 +4550,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn negative_entry_exclusions_protect_ancestors_and_subtrees_without_disabling_siblings() {
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         for enabled in [false, true] {
             let temp = tempfile::tempdir_in("/dev/shm").unwrap();
             std::fs::create_dir_all(temp.path().join("lower/tmp/pvisor-host-0")).unwrap();
@@ -4677,11 +4670,7 @@ mod tests {
         fs.snapshot_config.access_policy = fs.snapshot_config.access_policy.for_view("rootfs");
         fs.configure_negative_entry_cache(true, true, false, vec![PathBuf::from("once")])
             .unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let count = fs.nodes.lock().unwrap().by_inode.len();
         let missing = fs.lookup(ctx, fuse::ROOT_ID, c"missing").unwrap();
         assert_eq!(
@@ -4741,11 +4730,7 @@ mod tests {
         let mut fs = negative_entry_fixture(temp.path());
         fs.configure_negative_entry_cache(true, true, false, vec![])
             .unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         for name in [c"created", c"renamed", c"linked", c"directory", c"symlink"] {
             assert_eq!(fs.lookup(ctx, fuse::ROOT_ID, name).unwrap().inode, 0);
         }
@@ -4837,11 +4822,7 @@ mod tests {
             .contains("negative_entry_cache"));
         fs.restore_state(&before).unwrap();
         fs.lookup(
-            Context {
-                uid: 0,
-                gid: 0,
-                pid: 1,
-            },
+            root_context(),
             fuse::ROOT_ID,
             c"missing",
         )
@@ -5029,11 +5010,7 @@ mod tests {
                 options.contains(FsOptions::WRITEBACK_CACHE),
                 saved_writeback
             );
-            let ctx = Context {
-                uid: 0,
-                gid: 0,
-                pid: 1,
-            };
+            let ctx = root_context();
             let existing = source.lookup(ctx, fuse::ROOT_ID, c"existing").unwrap();
             let saved = source.capture_state().unwrap();
             drop(source);
@@ -5343,11 +5320,7 @@ mod tests {
         let fs = writeback_test_overlay(temp.path(), false, Some("1"));
         let server = super::super::server::Server::new(WritebackTestFs(fs.clone()), true);
         let options = negotiate_writeback_test_session(&server, FsOptions::WRITEBACK_CACHE);
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let flags = (libc::O_WRONLY | libc::O_APPEND) as u32;
         let handle = fs.open(ctx, inode, false, flags).unwrap().0.unwrap();
@@ -5559,11 +5532,7 @@ mod tests {
             .init(FsOptions::WRITEBACK_CACHE)
             .unwrap()
             .contains(FsOptions::WRITEBACK_CACHE));
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let flags = (libc::O_WRONLY | libc::O_APPEND) as u32;
         let handle = fs.open(ctx, inode, false, flags).unwrap().0.unwrap();
@@ -5631,11 +5600,7 @@ mod tests {
         std::fs::create_dir(temp.path().join("lower")).unwrap();
         std::fs::write(temp.path().join("lower/file"), b"original").unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let handle = fs
             .open(ctx, inode, false, libc::O_RDWR as u32)
@@ -5724,11 +5689,7 @@ mod tests {
             temp.path().join("upper/alias"),
         )
         .unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         assert_eq!(fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode, inode);
         let mut attrs = fs.getattr(ctx, inode, None).unwrap().0;
@@ -5804,11 +5765,7 @@ mod tests {
         let fs = writeback_test_overlay(temp.path(), false, Some("1"));
         fs.init(FsOptions::WRITEBACK_CACHE | FsOptions::PVISOR_WRITEBACK)
             .unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let mut attrs = fs.getattr(ctx, inode, None).unwrap().0;
         fs.unlink(ctx, fuse::ROOT_ID, c"file").unwrap();
@@ -5865,11 +5822,7 @@ mod tests {
             .unwrap();
         std::fs::write(temp.path().join("upper/victim"), b"victim").unwrap();
         std::fs::write(temp.path().join("upper/source"), b"source").unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"victim").unwrap().inode;
         let mut attrs = fs.getattr(ctx, inode, None).unwrap().0;
         assert!(fs
@@ -5906,11 +5859,7 @@ mod tests {
         let fs = writeback_test_overlay(temp.path(), false, Some("1"));
         fs.init(FsOptions::WRITEBACK_CACHE | FsOptions::PVISOR_WRITEBACK)
             .unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs
             .mkdir(ctx, fuse::ROOT_ID, c"dir", 0o755, 0, Extensions::default())
             .unwrap()
@@ -5933,11 +5882,7 @@ mod tests {
         let fs = writeback_test_overlay(temp.path(), false, Some("1"));
         fs.init(FsOptions::WRITEBACK_CACHE | FsOptions::PVISOR_WRITEBACK)
             .unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         let snapshot = fs.capture_state().unwrap();
@@ -5995,11 +5940,7 @@ mod tests {
             .init(FsOptions::WRITEBACK_CACHE | FsOptions::PVISOR_WRITEBACK)
             .unwrap()
             .contains(FsOptions::PVISOR_WRITEBACK));
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let (handle, flags) = fs.open(ctx, inode, false, libc::O_RDWR as u32).unwrap();
         assert!(flags.contains(OpenOptions::KEEP_CACHE));
@@ -6027,11 +5968,7 @@ mod tests {
         std::fs::create_dir(temp.path().join("lower")).unwrap();
         std::fs::write(temp.path().join("lower/file"), b"before").unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let handle = fs
             .open(ctx, inode, false, libc::O_RDWR as u32)
@@ -6102,11 +6039,7 @@ mod tests {
         std::fs::write(temp.path().join("lower/b"), b"second").unwrap();
         let fs = parent_cache_fixture(temp.path());
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let a = fs.lookup(ctx, fuse::ROOT_ID, c"a").unwrap().inode;
         let b = fs.lookup(ctx, fuse::ROOT_ID, c"b").unwrap().inode;
         let ah = fs
@@ -6187,11 +6120,7 @@ mod tests {
         std::fs::write(temp.path().join("lower/a"), b"first").unwrap();
         let fs = parent_cache_fixture(temp.path());
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"a").unwrap().inode;
         let handle = fs
             .open(ctx, inode, false, libc::O_RDONLY as u32)
@@ -6234,11 +6163,7 @@ mod tests {
         std::fs::write(temp.path().join("lower/a"), b"first").unwrap();
         let fs = parent_cache_fixture(temp.path());
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"a").unwrap().inode;
         let handle = fs
             .open(ctx, inode, false, libc::O_RDONLY as u32)
@@ -6281,11 +6206,7 @@ mod tests {
         std::fs::create_dir_all(temp.path().join("lower/parent")).unwrap();
         std::fs::write(temp.path().join("lower/parent/file"), b"content").unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let backing = fs
             .core
             .metadata_for_backing_lookup(Path::new("parent/file"))
@@ -6331,11 +6252,7 @@ mod tests {
                 let barrier = &barrier;
                 let results = &results;
                 scope.spawn(move || {
-                    let ctx = Context {
-                        uid: 0,
-                        gid: 0,
-                        pid: 1,
-                    };
+                    let ctx = root_context();
                     for index in 0..32 {
                         let name = CString::new(format!("d{index}")).unwrap();
                         barrier.wait();
@@ -6376,11 +6293,7 @@ mod tests {
         std::fs::write(temp.path().join("lower/b"), b"second").unwrap();
         let fs = parent_cache_fixture(temp.path());
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let a = fs.lookup(ctx, fuse::ROOT_ID, c"a").unwrap().inode;
         let b = fs.lookup(ctx, fuse::ROOT_ID, c"b").unwrap().inode;
         let ah = fs
@@ -6471,11 +6384,7 @@ mod tests {
         std::fs::write(temp.path().join("lower/c"), b"third").unwrap();
         let fs = parent_cache_fixture(temp.path());
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let a = fs.lookup(ctx, fuse::ROOT_ID, c"a").unwrap().inode;
         let b = fs.lookup(ctx, fuse::ROOT_ID, c"b").unwrap().inode;
         let ah = fs
@@ -6775,11 +6684,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn shared_open_qualification_preserves_ids_fixed_eof_copyup_and_fresh_fd_checks() {
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         for shared in [false, true] {
             let temp = tempfile::tempdir_in("/dev/shm").unwrap();
             let fs = shared_qualification_fixture(temp.path(), shared, true, true);
@@ -6876,11 +6781,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn shared_open_qualification_preserves_feature_independence_and_snapshot_schema() {
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         for (data, flush) in [(false, false), (false, true), (true, false), (true, true)] {
             let temp = tempfile::tempdir_in("/dev/shm").unwrap();
             std::fs::create_dir(temp.path().join("lower")).unwrap();
@@ -7011,11 +6912,7 @@ mod tests {
         assert!(
             !negotiated.intersects(FsOptions::PVISOR_DATA_OBJECT | FsOptions::PVISOR_LOCAL_FLUSH)
         );
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let denied = fs.allocate_inode(PathBuf::from("private/key"));
         assert_eq!(
             fs.open_for_reply(ctx, denied, false, libc::O_RDONLY as u32, true)
@@ -7080,11 +6977,7 @@ mod tests {
         }
         let temp = tempfile::tempdir_in("/dev/shm").unwrap();
         let fs = shared_qualification_fixture(temp.path(), true, true, true);
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"existing").unwrap().inode;
         let opened = fs
             .open_native_for_reply(ctx, inode, false, libc::O_RDONLY as u32, true)
@@ -7136,11 +7029,7 @@ mod tests {
                 },
             }],
         );
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let ordinary = fs.lookup(ctx, fuse::ROOT_ID, c"existing").unwrap().inode;
         let ordinary_reply = fs
             .open_for_reply(ctx, ordinary, false, libc::O_RDONLY as u32, true)
@@ -7237,11 +7126,7 @@ mod tests {
             .init(FsOptions::PVISOR_DATA_OBJECT)
             .unwrap()
             .contains(FsOptions::PVISOR_DATA_OBJECT));
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let (h1, opts) = fs.open(ctx, inode, false, libc::O_RDONLY as u32).unwrap();
         assert!(opts.contains(OpenOptions::PVISOR_DATA_OBJECT));
@@ -7431,11 +7316,7 @@ mod tests {
         fs.configure_readonly_flush_elision(true, true, false)
             .unwrap();
         fs.init(FsOptions::PVISOR_LOCAL_FLUSH).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         let (handle, options) = fs
             .open(ctx, entry.inode, false, libc::O_RDONLY as u32)
@@ -7506,11 +7387,7 @@ mod tests {
         std::fs::create_dir(&lower).unwrap();
         std::fs::write(lower.join("file"), b"old root").unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         std::fs::rename(&lower, &original).unwrap();
         std::fs::create_dir(&lower).unwrap();
         std::fs::write(lower.join("file"), b"different root contents").unwrap();
@@ -7551,11 +7428,7 @@ mod tests {
         std::fs::create_dir_all(lower.join("directory")).unwrap();
         std::fs::write(lower.join("directory/file"), b"old").unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let directory = fs.lookup(ctx, fuse::ROOT_ID, c"directory").unwrap().inode;
         let original = fs.lookup(ctx, directory, c"file").unwrap();
         assert_eq!(original.attr.st_size, 3);
@@ -7607,11 +7480,7 @@ mod tests {
         std::fs::create_dir(&lower).unwrap();
         std::fs::write(lower.join("file"), b"original").unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let path = Path::new("file");
         let inode = fs.allocate_inode(path.to_path_buf());
         let backing = fs.core.metadata_for_backing_lookup(path).unwrap();
@@ -7648,11 +7517,7 @@ mod tests {
         pvisor_overlay_core::sys::set_xattr(&upper.join("file"), marker, b"1234:2345:751", 0)
             .unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         assert_eq!((entry.attr.st_uid, entry.attr.st_gid), (1234, 2345));
         assert_eq!(entry.attr.st_mode & libc::S_IFMT, libc::S_IFREG);
@@ -7821,11 +7686,7 @@ mod tests {
             std::fs::write(lower.join(name), name).unwrap();
         }
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
         assert_eq!(
             fs.nodes.lock().unwrap().by_inode.len(),
@@ -7879,11 +7740,7 @@ mod tests {
         std::os::unix::fs::symlink("a", lower.join("link")).unwrap();
         let fs = parent_cache_fixture(temp.path());
         std::fs::create_dir(fs.core.upper().join("a")).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
         assert_eq!(fs.nodes.lock().unwrap().by_inode.len(), 1);
         // Plain READDIR retains the type snapshot. READDIRPLUS must still
@@ -7960,11 +7817,7 @@ mod tests {
         let mut fs = parent_cache_fixture(temp.path());
         let profile = pvisor_overlay_core::profile::Profile::enabled("creation-reuse");
         fs.core = fs.core.with_profile(profile.clone());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let entries = [
             (
                 c"link",
@@ -8041,11 +7894,7 @@ mod tests {
         let fs = parent_cache_fixture(temp.path());
         fs.init(FsOptions::DO_READDIRPLUS | FsOptions::READDIRPLUS_AUTO)
             .unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
         std::fs::write(lower.join("a"), b"changed").unwrap();
         let mut accepted = Vec::new();
@@ -8087,11 +7936,7 @@ mod tests {
         std::fs::write(lower.join("private/secret"), b"secret").unwrap();
         std::os::unix::fs::symlink("old", lower.join("allowed/link")).unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let parent = fs.lookup(ctx, fuse::ROOT_ID, c"allowed").unwrap();
         let link = fs.lookup(ctx, parent.inode, c"link").unwrap();
         assert_eq!(fs.readlink(ctx, link.inode).unwrap(), b"old");
@@ -8126,11 +7971,7 @@ mod tests {
         std::fs::write(lower.join("allowed/a/b/file"), b"old").unwrap();
         let mut fs = parent_cache_fixture(temp.path());
         fs.profile = pvisor_overlay_core::profile::Profile::enabled("deep-cache-test");
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let path = Path::new("allowed/a/b/file");
         let inode = fs.allocate_inode(path.to_path_buf());
         assert_eq!(fs.entry(ctx, path, inode).unwrap().attr.st_size, 3);
@@ -8163,11 +8004,7 @@ mod tests {
         std::fs::write(lower.join("allowed/file"), b"old").unwrap();
         std::fs::write(lower.join("private/secret"), b"secret").unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let parent = fs.lookup(ctx, fuse::ROOT_ID, c"allowed").unwrap();
         assert_eq!(
             fs.lookup(ctx, parent.inode, c"file").unwrap().attr.st_size,
@@ -8212,11 +8049,7 @@ mod tests {
             let mut fs = parent_cache_fixture(temp.path());
             fs.profile = pvisor_overlay_core::profile::Profile::enabled("directory-capacity");
             fs.configure_directory_cache_capacity(capacity).unwrap();
-            let ctx = Context {
-                uid: 0,
-                gid: 0,
-                pid: 1,
-            };
+            let ctx = root_context();
             let visit = |fs: &OverlayFs| {
                 for index in 0..working_set {
                     let path = PathBuf::from(format!("d{index}/file"));
@@ -8297,11 +8130,7 @@ mod tests {
         let lower = temp.path().join("lower");
         std::fs::create_dir(&lower).unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         for i in 0..DEFAULT_DIRECTORY_CACHE_CAPACITY + 4 {
             let name = format!("d{i}");
             std::fs::create_dir(lower.join(&name)).unwrap();
@@ -8338,11 +8167,7 @@ mod tests {
         std::fs::create_dir_all(temp.path().join("lower/dir")).unwrap();
         std::fs::write(temp.path().join("lower/dir/file"), b"data").unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let entry = fs.lookup(ctx, fuse::ROOT_ID, c"dir").unwrap();
         for _ in 0..16 {
             assert!(fs
@@ -8465,11 +8290,7 @@ mod tests {
         )
         .unwrap();
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         assert!(fs
             .lookup(ctx, fuse::ROOT_ID, &CString::new("private.key").unwrap())
             .is_err());
@@ -8588,11 +8409,7 @@ mod tests {
             config.semantics = semantics;
             let fs = exclusive_upper_owner(config, preference);
             assert_eq!(fs.core.exclusive_upper_absence_cache_enabled(), expected);
-            let ctx = Context {
-                uid: 0,
-                gid: 0,
-                pid: 1,
-            };
+            let ctx = root_context();
             let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
             assert_eq!(entry.attr.st_size, 5);
             assert_eq!(entry.entry_timeout, TTL);
@@ -8608,11 +8425,7 @@ mod tests {
         std::fs::create_dir_all(temp.path().join("lower/directory")).unwrap();
         std::fs::write(temp.path().join("lower/directory/file"), b"lower").unwrap();
         let fs = exclusive_upper_owner(exclusive_upper_config(temp.path()), Some(true));
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let directory = fs.lookup(ctx, fuse::ROOT_ID, c"directory").unwrap();
         for _ in 0..2 {
             assert_eq!(
@@ -8667,11 +8480,7 @@ mod tests {
         )
         .unwrap();
         let fs = exclusive_upper_owner(config, Some(true));
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         for _ in 0..2 {
             let allowed = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
             assert_eq!((allowed.attr.st_size, allowed.attr_timeout), (7, TTL));
@@ -8698,11 +8507,7 @@ mod tests {
         std::fs::create_dir(&lower).unwrap();
         std::fs::write(lower.join("file"), b"lower").unwrap();
         let fs = exclusive_upper_owner(exclusive_upper_config(temp.path()), Some(true));
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let file = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         assert_eq!(fs.getattr(ctx, file.inode, None).unwrap().0.st_size, 5);
         let old = fs
@@ -8809,11 +8614,7 @@ mod tests {
         std::fs::write(temp.path().join("lower/file"), b"lower").unwrap();
         let config = exclusive_upper_config(temp.path());
         let fs = exclusive_upper_owner(config.clone(), Some(true));
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let file = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         let hits = upper_absence_units(&fs, "exclusive_upper_absence_cache_hits");
@@ -8881,11 +8682,7 @@ mod tests {
         let mut fs = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
         fs.configure_immutable_data_cache(true);
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         assert_eq!(entry.entry_timeout, TTL);
         assert_eq!(entry.attr_timeout, TTL);
@@ -8970,11 +8767,7 @@ mod tests {
         let mut fs = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
         fs.configure_immutable_data_cache(true);
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         for (name, cached) in [(c"live", false), (c"stable", true)] {
             let entry = fs.lookup(ctx, fuse::ROOT_ID, name).unwrap();
             let (handle, options) = fs
@@ -9026,11 +8819,7 @@ mod tests {
         let mut fs = OverlayFs::new(config.clone(), Arc::new(InodeAllocator::new())).unwrap();
         fs.configure_immutable_data_cache(true);
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         let (handle, options) = fs
             .open(ctx, entry.inode, false, libc::O_RDONLY as u32)
@@ -9090,11 +8879,7 @@ mod tests {
         let profile = pvisor_overlay_core::profile::Profile::enabled("immutable-adapter");
         fs.core = fs.core.with_profile(profile.clone());
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         assert!(profile.report().unwrap().measurements["immutable_lower_cache_hits"].units > 0);
@@ -9130,11 +8915,7 @@ mod tests {
         )
         .unwrap();
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         // Linux ENOTEMPTY is 39; macOS 66 would become EREMOTE in the guest,
         // preventing dpkg from falling back to recursive directory cleanup.
         std::fs::create_dir(lower.join("directory")).unwrap();
@@ -9216,11 +8997,7 @@ mod tests {
             )
             .unwrap();
             fs.init(FsOptions::empty()).unwrap();
-            let ctx = Context {
-                uid: 0,
-                gid: 0,
-                pid: 1,
-            };
+            let ctx = root_context();
             // mode_t is u16 on macOS and u32 on Linux.
             #[allow(clippy::unnecessary_cast)]
             let regular_file_mode = libc::S_IFREG as u32;
@@ -9319,11 +9096,7 @@ mod tests {
         let virtual_inode = inode_alloc.next();
         let entry = fs
             .lookup(
-                Context {
-                    uid: 0,
-                    gid: 0,
-                    pid: 1,
-                },
+                root_context(),
                 fuse::ROOT_ID,
                 c"real",
             )
@@ -9400,11 +9173,7 @@ mod tests {
         )
         .unwrap();
         let fs = parent_cache_fixture(temp.path());
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
         assert_eq!(entry.attr.st_uid, 1234);
         assert_eq!(entry.attr.st_gid, 2345);
@@ -9519,11 +9288,7 @@ fn small_file_adapter_benchmark() {
                 fs.profile = Profile::enabled("virtio-fs-overlay");
                 fs.core = fs.core.with_profile(Profile::enabled("overlay-core"));
             }
-            let ctx = Context {
-                uid: 0,
-                gid: 0,
-                pid: 1,
-            };
+            let ctx = super::filesystem::root_context();
             let started = Instant::now();
             let mut count = 0;
             for directory in 0..32 {
