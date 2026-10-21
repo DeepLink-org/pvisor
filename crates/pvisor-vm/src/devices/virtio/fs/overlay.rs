@@ -1509,7 +1509,7 @@ impl OverlayFs {
     fn bind_upper(&self, path: &Path, inode: u64, attr: &bindings::stat64) {
         let mut nodes = self.nodes.lock().unwrap();
         if attr.st_nlink > 1 || nodes.objects_by_inode.contains_key(&inode) {
-            nodes.bind_object(inode, (0, attr.st_dev as u64, attr.st_ino));
+            nodes.bind_object(inode, (0, attr.st_dev as _, attr.st_ino));
         }
         nodes.by_inode.insert(inode, path.to_path_buf());
     }
