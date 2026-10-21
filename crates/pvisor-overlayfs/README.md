@@ -78,6 +78,8 @@ kernel cache policies below retain their stronger ownership requirements.
 
 Shared backing isolation and same-filesystem checks belong to overlay-core;
 this adapter additionally validates mountpoint overlap and backend constraints.
+ACCESS and FSYNCDIR use checked Core resolution, preserving policy and I/O
+errors instead of reporting every failed probe as ENOENT.
 
 ## Host request scheduling
 

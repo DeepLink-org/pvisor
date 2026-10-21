@@ -829,8 +829,16 @@ overlay inode；lower 文件句柄不能通过这条路径写入。截断前排�
 跨句柄 I/O 排空和 inode/handle 不匹配，以及无效、只读 upper 和 lower 句柄拒绝。
 rootless OCI 的 virtual metadata 模式下，新建目录记录 guest 创建者的
 UID/GID，并从虚拟父目录继承 setgid；不把宿主 UID 当成 guest 所有者返回。
+SYMLINK、MKNOD 和 MKDIR 在同一 namespace 写锁内复用原生创建属性组装
+回复，仍合并 virtual metadata、分配 overlay inode 并取得 guest lookup 引用，
+不再为刚创建的 upper 对象重走 Core 与原生查找。重命名目标探测保留 Core
+的策略及 I/O 错误，不把失败当成目标不存在。
 Linux 回归通过临时目录检查这些行为及普通 metadata、排除路径，不依赖
 OCI 镜像、外部模型或 guest 启动。
+新目录句柄的普通 READDIR 仅返回名称、类型和稳定 cookie，inode 编号为未知
+值 0，不登记子 inode，也不随后续 LOOKUP 改变回复。LOOKUP、READDIRPLUS
+和 READINDEX 继续分配真实 overlay 编号并保留引用；旧快照的已物化目录句柄
+仍使用保存的编号。分页、名称校验、类型快照与恢复验证保持原有规则。
 Linux regular-file LOOKUP 和无 FH GETATTR 保留 Core 的 namespace、
 父目录、hardlink 与策略检查，再通过原生父目录的强引用 FD 对最终名称
 执行 no-follow fstatat。每次查询重新读取属性，省去仅用于 metadata 回复

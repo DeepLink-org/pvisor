@@ -12,9 +12,9 @@ const DEFAULT_MAX_ELAPSED: Duration = Duration::from_secs(10);
 /// End-to-end guard against making lower-file payload I/O part of readdir/getattr.
 ///
 /// Run manually with:
-/// `cargo test --release -p pvisor --test overlayfs_performance -- --ignored --nocapture`
+/// `just test pvisor-cli -- --release --test overlayfs_performance --run-ignored ignored-only --no-capture`
 #[test]
-#[ignore = "requires an enabled macFUSE kernel extension and measures wall-clock performance"]
+#[ignore = "requires a working macFUSE mount and measures wall-clock performance"]
 fn recursive_lower_walk_does_not_materialize_file_payloads() {
     let temporary = tempfile::tempdir().expect("create performance fixture root");
     let lower = temporary.path().join("lower");
@@ -39,9 +39,10 @@ fn recursive_lower_walk_does_not_materialize_file_payloads() {
 
     let ambient_started = Instant::now();
     let ambient_output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--", "/usr/bin/find"])
-        .arg(&lower)
-        .args(["-type", "f", "-print"])
+        .args(["run", "--executor", "host", "--no-agent-defaults"])
+        .args(["--", "/usr/bin/find", ".", "-type", "f", "-print"])
+        .current_dir(&lower)
+        .env("PVISOR_RUN_HOME", temporary.path().join("runs"))
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
@@ -56,11 +57,11 @@ fn recursive_lower_walk_does_not_materialize_file_payloads() {
 
     let started = Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--overlayfs-compose"])
-        .arg(&lower)
+        .args(["run", "--executor", "host", "--no-agent-defaults"])
         .arg("--stage")
         .arg(&stage)
         .args(["--", "/usr/bin/find", ".", "-type", "f", "-print"])
+        .current_dir(&lower)
         .env("PVISOR_RUN_HOME", temporary.path().join("runs"))
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

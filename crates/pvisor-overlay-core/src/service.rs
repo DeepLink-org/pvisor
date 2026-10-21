@@ -322,8 +322,10 @@ impl FilesystemService {
         self.core
             .prepare_rename_copy_up(old, new, no_replace, exchange)
     }
-    pub fn resolve(&self, rel: &Path) -> Option<Resolved> {
-        self.core.resolve(rel)
+    /// Resolve checked namespace selection without recording an absence.
+    /// Policy, traversal and I/O errors propagate; only checked absence is `None`.
+    pub fn resolve_checked(&self, rel: &Path) -> io::Result<Option<Resolved>> {
+        self.core.resolve_checked(rel)
     }
     pub fn restore_hard_link_sources(&self, sources: &[(u64, u64, PathBuf)]) -> io::Result<()> {
         self.core.restore_hard_link_sources(sources)

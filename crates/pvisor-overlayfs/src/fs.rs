@@ -1926,7 +1926,7 @@ impl OverlayFs {
             self.core.sync_preimages()?;
             let resolved = self
                 .core
-                .resolve(&path)
+                .resolve_checked(&path)?
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
             let directory = File::open(resolved.path)?;
             sys::fsync(&directory, datasync)
@@ -2068,7 +2068,7 @@ impl OverlayFs {
         let result = self.node_path(ino).and_then(|path| {
             let real = self
                 .core
-                .resolve(&path)
+                .resolve_checked(&path)?
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
             sys::access(&real.path, mask)
         });

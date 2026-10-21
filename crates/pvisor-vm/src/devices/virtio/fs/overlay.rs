@@ -1899,6 +1899,17 @@ impl OverlayFs {
         self.entry_on_backing(ctx, path, inode, &backing)
     }
 
+    // prepare_create already authorized this fresh object under the write guard.
+    // Preserve virtual ownership while reusing its native creation attributes.
+    fn created_entry(&self, path: PathBuf, mut entry: Entry) -> io::Result<Entry> {
+        self.backing_attributes(&self.core.upper_path(&path), &mut entry.attr)?;
+        let inode = self.allocate_inode(path);
+        entry.inode = inode;
+        entry.attr.st_ino = inode as _;
+        self.acquire_guest_lookup(inode);
+        Ok(entry)
+    }
+
     fn backing_attributes(&self, path: &Path, attr: &mut bindings::stat64) -> io::Result<()> {
         let remote = backend::attributes(path).map_err(linux_error)?;
         if let Some(remote) = &remote {
@@ -3015,10 +3026,7 @@ impl FileSystem for OverlayFs {
         }
         let created = created?;
         self.layers[0].forget(ctx, created.inode, 1);
-        let inode = self.allocate_inode(path.clone());
-        let entry = self.entry(ctx, &path, inode)?;
-        self.acquire_guest_lookup(inode);
-        Ok(entry)
+        self.created_entry(path, created)
     }
 
     fn mknod(
@@ -3048,10 +3056,7 @@ impl FileSystem for OverlayFs {
         }
         let created = created?;
         self.layers[0].forget(ctx, created.inode, 1);
-        let inode = self.allocate_inode(path.clone());
-        let entry = self.entry(ctx, &path, inode)?;
-        self.acquire_guest_lookup(inode);
-        Ok(entry)
+        self.created_entry(path, created)
     }
 
     fn mkdir(
@@ -3100,10 +3105,7 @@ impl FileSystem for OverlayFs {
             )
             .map_err(linux_error)?;
         }
-        let inode = self.allocate_inode(path.clone());
-        let entry = self.entry(ctx, &path, inode)?;
-        self.acquire_guest_lookup(inode);
-        Ok(entry)
+        self.created_entry(path, created)
     }
 
     fn unlink(&self, _ctx: Context, parent: u64, name: &CStr) -> io::Result<()> {
@@ -3139,7 +3141,10 @@ impl FileSystem for OverlayFs {
         let old = self.child(olddir, oldname)?;
         let new = self.child(newdir, newname)?;
         let _io = self.fence_paths(&[&old, &new]);
-        let retired = if flags == 0 && old != new && self.core.resolve(&new).is_some() {
+        let retired = if flags == 0
+            && old != new
+            && self.core.resolve_checked(&new).map_err(linux_error)?.is_some()
+        {
             self.prepare_detached_writeback(_ctx, &new)?
         } else {
             None
@@ -3577,9 +3582,9 @@ impl FileSystem for OverlayFs {
         }) = directory
         {
             let directory = self.path(parent)?;
+            OverlayCore::validate_rel(&directory).map_err(linux_error)?;
             for (index, name) in names.iter().enumerate().skip(offset as usize) {
-                let path =
-                    OverlayCore::child(&directory, OsStr::from_bytes(name)).map_err(linux_error)?;
+                OverlayCore::validate_name(OsStr::from_bytes(name)).map_err(linux_error)?;
                 let type_ = if let Some(type_) = types.get(index) {
                     *type_
                 } else {
@@ -3593,9 +3598,10 @@ impl FileSystem for OverlayFs {
                     };
                     Self::dtype(entry.backing.metadata.mode())
                 };
-                let ino = self.allocate_inode(path);
                 if add_entry(DirEntry {
-                    ino,
+                    // Keep this name/type snapshot unchanged by later LOOKUPs.
+                    // Only LOOKUP/READDIRPLUS allocate overlay identities.
+                    ino: 0,
                     offset: (index + 1) as u64,
                     type_,
                     name,
@@ -7559,6 +7565,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(first, vec![(b"a".to_vec(), 1)]);
+        assert_eq!(fs.nodes.lock().unwrap().by_inode.len(), 1);
         fs.unlink(ctx, fuse::ROOT_ID, c"b").unwrap();
         std::fs::write(lower.join("d"), b"new entry after OPENDIR").unwrap();
         let snapshot = fs.capture_state().unwrap();
@@ -7607,6 +7614,10 @@ mod tests {
         std::fs::remove_dir(fs.core.upper().join("a")).unwrap();
         let mut plain = Vec::new();
         fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry| {
+            assert_eq!(
+                entry.ino, 0,
+                "plain READDIR must not register unknown children"
+            );
             plain.push((entry.name.to_vec(), entry.type_));
             Ok(1)
         })
@@ -7618,6 +7629,17 @@ mod tests {
                 (b"link".to_vec(), libc::DT_LNK as u32)
             ]
         );
+        assert_eq!(fs.nodes.lock().unwrap().by_inode.len(), 1);
+        assert_ne!(fs.lookup(ctx, fuse::ROOT_ID, c"a").unwrap().inode, 0);
+        fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry| {
+            assert_eq!(
+                entry.ino, 0,
+                "later LOOKUP must not change the saved directory reply"
+            );
+            Ok(1)
+        })
+        .unwrap();
+        assert_eq!(fs.nodes.lock().unwrap().by_inode.len(), 2);
         let mut plus = Vec::new();
         fs.readdirplus(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry, attr| {
             plus.push((
@@ -7651,6 +7673,83 @@ mod tests {
         assert!(
             fs.restore_state(&snapshot).is_err(),
             "reject misaligned type snapshots"
+        );
+    }
+
+    #[test]
+    fn creation_replies_reuse_native_attributes_and_keep_overlay_identities() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("lower")).unwrap();
+        let mut fs = parent_cache_fixture(temp.path());
+        let profile = pvisor_overlay_core::profile::Profile::enabled("creation-reuse");
+        fs.core = fs.core.with_profile(profile.clone());
+        let ctx = Context {
+            uid: 0,
+            gid: 0,
+            pid: 1,
+        };
+        let entries = [
+            (
+                c"link",
+                fs.symlink(
+                    ctx,
+                    c"target",
+                    fuse::ROOT_ID,
+                    c"link",
+                    Extensions::default(),
+                )
+                .unwrap(),
+            ),
+            (
+                c"fifo",
+                fs.mknod(
+                    ctx,
+                    fuse::ROOT_ID,
+                    c"fifo",
+                    backend::FileType::NamedPipe.mode() | 0o644,
+                    0,
+                    0,
+                    Extensions::default(),
+                )
+                .unwrap(),
+            ),
+            (
+                c"dir",
+                fs.mkdir(ctx, fuse::ROOT_ID, c"dir", 0o755, 0, Extensions::default())
+                    .unwrap(),
+            ),
+        ];
+        assert!(
+            !profile
+                .report()
+                .unwrap()
+                .measurements
+                .contains_key("resolve"),
+            "fresh creation replies must not rewalk the merged namespace"
+        );
+        for (name, created) in entries {
+            assert_ne!(created.inode, 0);
+            assert_eq!(created.attr.st_ino, created.inode);
+            let looked_up = fs.lookup(ctx, fuse::ROOT_ID, name).unwrap();
+            assert_eq!(created.inode, looked_up.inode);
+            assert_eq!(
+                (
+                    created.attr.st_mode,
+                    created.attr.st_size,
+                    created.attr.st_uid,
+                    created.attr.st_gid
+                ),
+                (
+                    looked_up.attr.st_mode,
+                    looked_up.attr.st_size,
+                    looked_up.attr.st_uid,
+                    looked_up.attr.st_gid
+                )
+            );
+        }
+        assert_eq!(
+            std::fs::read_link(temp.path().join("upper/link")).unwrap(),
+            Path::new("target")
         );
     }
 

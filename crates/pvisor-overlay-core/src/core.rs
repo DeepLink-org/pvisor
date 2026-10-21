@@ -340,10 +340,6 @@ impl Drop for CopyDirectory {
 }
 
 impl PreparedCopyUp {
-    fn content(&self) -> PathBuf {
-        self.temporary.clone()
-    }
-
     fn verify_source(
         &self,
         file: Option<&File>,
@@ -394,7 +390,7 @@ impl PreparedCopyUp {
 impl Drop for PreparedCopyUp {
     fn drop(&mut self) {
         if self.directory.owned() {
-            let _ = fs::remove_file(self.content());
+            let _ = fs::remove_file(&self.temporary);
         }
     }
 }
@@ -470,7 +466,7 @@ enum UpperAbsence {
     UnavailableParent,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct CachedUpperAbsence {
     observation: UpperAbsence,
     // Every successfully checked physical parent up to the absent leaf or
@@ -1990,16 +1986,38 @@ impl OverlayCore {
         let eligible = self.exclusive_upper_absence_cache_enabled
             && self.upper.as_os_str().len() + rel.as_os_str().len() <= 4096
             && rel.components().count() <= 256;
-        let state = eligible
-            .then(|| {
-                let cache = self
-                    .exclusive_upper_absence_cache
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                (!cache.mutating).then(|| (cache.epoch, cache.entries.get(rel).cloned()))
-            })
-            .flatten();
-        let Some((epoch, cached)) = state else {
+        let epoch = if eligible {
+            let cache = self
+                .exclusive_upper_absence_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if cache.mutating {
+                None
+            } else {
+                if let Some(cached) = cache.entries.get(rel) {
+                    self.profile.add("exclusive_upper_absence_cache_hits", 1);
+                    if let Some(parents) = parents {
+                        parents.clone_from(&cached.parents);
+                    }
+                    return Ok(match cached.observation {
+                        UpperAbsence::MissingLeaf => {
+                            self.profile
+                                .add("exclusive_upper_absence_cache_hits_missing_leaf", 1);
+                            LayerMetadata::MissingLeaf
+                        }
+                        UpperAbsence::UnavailableParent => {
+                            self.profile
+                                .add("exclusive_upper_absence_cache_hits_unavailable_parent", 1);
+                            LayerMetadata::UnavailableParent
+                        }
+                    });
+                }
+                Some(cache.epoch)
+            }
+        } else {
+            None
+        };
+        let Some(epoch) = epoch else {
             return layer_metadata_with_parents(
                 &self.upper,
                 rel,
@@ -2008,24 +2026,6 @@ impl OverlayCore {
                 checked_directories,
             );
         };
-        if let Some(cached) = cached {
-            self.profile.add("exclusive_upper_absence_cache_hits", 1);
-            if let Some(parents) = parents {
-                *parents = cached.parents;
-            }
-            return Ok(match cached.observation {
-                UpperAbsence::MissingLeaf => {
-                    self.profile
-                        .add("exclusive_upper_absence_cache_hits_missing_leaf", 1);
-                    LayerMetadata::MissingLeaf
-                }
-                UpperAbsence::UnavailableParent => {
-                    self.profile
-                        .add("exclusive_upper_absence_cache_hits_unavailable_parent", 1);
-                    LayerMetadata::UnavailableParent
-                }
-            });
-        }
         self.profile.add("exclusive_upper_absence_cache_misses", 1);
         let mut identities = Vec::new();
         // The cache must retain every successful parent proof, even when a
@@ -2076,7 +2076,11 @@ impl OverlayCore {
                     rel.to_path_buf(),
                     CachedUpperAbsence {
                         observation,
-                        parents: identities.clone(),
+                        parents: if parents.is_some() {
+                            identities.clone()
+                        } else {
+                            std::mem::take(&mut identities)
+                        },
                     },
                 );
             }
@@ -2149,10 +2153,6 @@ impl OverlayCore {
             }
         }
         Ok(None)
-    }
-
-    pub fn resolve(&self, rel: &Path) -> Option<Resolved> {
-        self.resolve_checked(rel).ok().flatten()
     }
 
     /// Resolve while preserving permission and I/O failures. `None` means
@@ -2276,7 +2276,7 @@ impl OverlayCore {
     /// reads need only one resolution. This is request-local evidence, not an
     /// authorization capability for a future open or a content snapshot.
     pub fn prepare_file_read(&self, rel: &Path) -> io::Result<ResolvedMetadata> {
-        self.prepare_file_read_with_parents(rel, None)
+        self.prepare_read_with_parents(rel, None, true)
     }
 
     /// Like `prepare_file_read`, also return physical parent identity evidence
@@ -2286,7 +2286,7 @@ impl OverlayCore {
         rel: &Path,
     ) -> io::Result<BackingResolution> {
         let mut parents = Vec::with_capacity(rel.components().count().saturating_sub(1));
-        let entry = self.prepare_file_read_with_parents(rel, Some(&mut parents))?;
+        let entry = self.prepare_read_with_parents(rel, Some(&mut parents), true)?;
         Ok(BackingResolution { entry, parents })
     }
 
@@ -2309,14 +2309,6 @@ impl OverlayCore {
         let mut parents = Vec::with_capacity(rel.components().count().saturating_sub(1));
         let entry = self.prepare_read_with_parents(rel, Some(&mut parents), false)?;
         Ok(BackingResolution { entry, parents })
-    }
-
-    fn prepare_file_read_with_parents(
-        &self,
-        rel: &Path,
-        parents: Option<&mut Vec<BackingIdentity>>,
-    ) -> io::Result<ResolvedMetadata> {
-        self.prepare_read_with_parents(rel, parents, true)
     }
 
     fn prepare_read_with_parents(
@@ -2630,7 +2622,7 @@ impl OverlayCore {
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(prepared.content())?;
+            .open(&prepared.temporary)?;
         if skip_contents {
             self.profile
                 .add("copy_up_truncate_skipped_bytes", prepared.metadata.len());
@@ -2644,7 +2636,7 @@ impl OverlayCore {
             self.profile.add("copy_up_bytes", copied);
             prepared.verify_source(Some(&source), &self.profile)?;
         }
-        self.copy_metadata(&prepared.source, &prepared.content(), &prepared.metadata)?;
+        self.copy_metadata(&prepared.source, &prepared.temporary, &prepared.metadata)?;
         prepared.verify_source(None, &self.profile)?;
         Ok(Some(prepared))
     }
@@ -2790,7 +2782,7 @@ impl OverlayCore {
                     fs::hard_link(existing, &temporary)?;
                     reused_upper_inode = true;
                 } else if let Some(prepared) = &prepared {
-                    fs::rename(prepared.content(), &temporary)?;
+                    fs::rename(&prepared.temporary, &temporary)?;
                 } else {
                     let mut options = OpenOptions::new();
                     options
@@ -3076,8 +3068,7 @@ impl OverlayCore {
 
     pub fn create_file(&self, rel: &Path, mode: u32, flags: i32) -> io::Result<File> {
         self.require_visible(rel)?;
-        Self::validate_rel(rel)?;
-        if self.resolve(rel).is_some() {
+        if self.resolve_checked(rel)?.is_some() {
             return Err(error(libc::EEXIST));
         }
         self.record_preimage(rel)?;
@@ -3098,7 +3089,7 @@ impl OverlayCore {
 
     pub fn create_dir(&self, rel: &Path, mode: u32) -> io::Result<()> {
         self.require_visible(rel)?;
-        if self.resolve(rel).is_some() {
+        if self.resolve_checked(rel)?.is_some() {
             return Err(error(libc::EEXIST));
         }
         self.record_preimage(rel)?;
@@ -3116,7 +3107,7 @@ impl OverlayCore {
 
     pub fn create_symlink(&self, rel: &Path, target: &Path) -> io::Result<()> {
         self.require_visible(rel)?;
-        if self.resolve(rel).is_some() {
+        if self.resolve_checked(rel)?.is_some() {
             return Err(error(libc::EEXIST));
         }
         self.record_preimage(rel)?;
@@ -3127,7 +3118,7 @@ impl OverlayCore {
 
     pub fn create_node(&self, rel: &Path, mode: u32, rdev: u32) -> io::Result<()> {
         self.require_visible(rel)?;
-        if self.resolve(rel).is_some() {
+        if self.resolve_checked(rel)?.is_some() {
             return Err(error(libc::EEXIST));
         }
         self.record_preimage(rel)?;
@@ -3141,8 +3132,11 @@ impl OverlayCore {
         if directory {
             self.require_tree_access(rel, rel)?;
         }
-        let resolved = self.resolve(rel).ok_or_else(|| error(libc::ENOENT))?;
-        let metadata = crate::backend::symlink_metadata(&resolved.path)?;
+        let ResolvedMetadata {
+            resolved, metadata, ..
+        } = self
+            .resolve_metadata_checked(rel)?
+            .ok_or_else(|| error(libc::ENOENT))?;
         if directory {
             if !metadata.is_dir() {
                 return Err(error(libc::ENOTDIR));
@@ -3199,15 +3193,14 @@ impl OverlayCore {
         new: &Path,
         no_replace: bool,
     ) -> io::Result<Option<PathBuf>> {
-        let Some(destination) = self.resolve(new) else {
+        let Some(destination) = self.resolve_metadata_checked(new)? else {
             return Ok(None);
         };
         if no_replace {
             return Err(error(libc::EEXIST));
         }
         let source_meta = self.metadata(old)?;
-        let destination_meta = crate::backend::symlink_metadata(&destination.path)?;
-        match (source_meta.is_dir(), destination_meta.is_dir()) {
+        match (source_meta.is_dir(), destination.metadata.is_dir()) {
             (true, false) => return Err(error(libc::ENOTDIR)),
             (false, true) => return Err(error(libc::EISDIR)),
             (true, true) if !self.list_names(new)?.is_empty() => {
@@ -3215,7 +3208,10 @@ impl OverlayCore {
             }
             _ => {}
         }
-        Ok(destination.is_upper.then_some(destination.path))
+        Ok(destination
+            .resolved
+            .is_upper
+            .then_some(destination.resolved.path))
     }
 
     fn remove_physical(path: &Path) -> io::Result<()> {
@@ -3284,8 +3280,6 @@ impl OverlayCore {
     pub fn rename(&self, old: &Path, new: &Path, no_replace: bool) -> io::Result<()> {
         self.require_visible(old)?;
         self.require_visible(new)?;
-        Self::validate_rel(old)?;
-        Self::validate_rel(new)?;
         if old == new {
             return Ok(());
         }
@@ -3295,7 +3289,7 @@ impl OverlayCore {
         }
         let replaced_upper = self.validate_replacement(old, new, no_replace)?;
         self.require_tree_access(old, new)?;
-        if self.resolve(new).is_some() {
+        if self.resolve_checked(new)?.is_some() {
             self.require_tree_access(new, new)?;
         }
         self.record_logical_tree_mapping(old, old)?;
@@ -3357,8 +3351,6 @@ impl OverlayCore {
     ) -> io::Result<Vec<PathBuf>> {
         self.require_visible(old)?;
         self.require_visible(new)?;
-        Self::validate_rel(old)?;
-        Self::validate_rel(new)?;
         if old == new {
             return Ok(Vec::new());
         }
@@ -3381,7 +3373,7 @@ impl OverlayCore {
             }
             self.validate_replacement(old, new, no_replace)?;
             self.require_tree_access(old, new)?;
-            if self.resolve(new).is_some() {
+            if self.resolve_checked(new)?.is_some() {
                 self.require_tree_access(new, new)?;
             }
             self.record_logical_tree_mapping(old, old)?;
@@ -3400,7 +3392,7 @@ impl OverlayCore {
         if metadata.is_dir() {
             return Err(error(libc::EPERM));
         }
-        if self.resolve(destination).is_some() {
+        if self.resolve_checked(destination)?.is_some() {
             return Err(error(libc::EEXIST));
         }
         self.record_preimage(destination)?;
@@ -3420,8 +3412,6 @@ impl OverlayCore {
     pub fn exchange(&self, first: &Path, second: &Path) -> io::Result<()> {
         self.require_visible(first)?;
         self.require_visible(second)?;
-        Self::validate_rel(first)?;
-        Self::validate_rel(second)?;
         if first == second {
             return Ok(());
         }
@@ -3525,6 +3515,16 @@ mod tests {
                 "exclusive_upper_absence_cache_hits_unavailable_parent"
             ),
             1
+        );
+        let path = Path::new("a/b/another-missing");
+        core.upper_metadata_cached(path, None, None).unwrap();
+        let mut parents = Vec::new();
+        core.upper_metadata_cached(path, Some(&mut parents), None)
+            .unwrap();
+        assert_eq!(
+            parents.len(),
+            2,
+            "a cache-only miss must retain the complete parent evidence"
         );
     }
 
@@ -4765,7 +4765,11 @@ mod tests {
         std::os::unix::fs::symlink(&outside, base.join("masked")).unwrap();
         let core =
             OverlayCore::new(vec![top, base.clone()], dir.path().join("upper"), None).unwrap();
-        assert!(core.resolve(Path::new("masked/secret")).is_none());
+        assert!(
+            core.resolve_checked(Path::new("masked/secret"))
+                .unwrap()
+                .is_none()
+        );
         assert!(core.list_names(Path::new("masked")).unwrap().is_empty());
         assert_eq!(
             fingerprint_at(&base, Path::new("masked/secret")).unwrap(),
@@ -4933,7 +4937,12 @@ mod tests {
             .unwrap(),
         );
         let core = &fixture.core;
-        assert!(core.resolve(Path::new("project/.ssh/id_ed25519")).is_none());
+        assert_eq!(
+            core.resolve_checked(Path::new("project/.ssh/id_ed25519"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EACCES)
+        );
         assert_eq!(
             core.list_names(Path::new("project")).unwrap(),
             [OsString::from(".env")]
@@ -4966,7 +4975,12 @@ mod tests {
             &crate::FileAccessPolicy::new(vec!["**/id_rsa".into()], vec![]).unwrap(),
         );
         let core = &fixture.core;
-        assert!(core.resolve(Path::new("alias")).is_none());
+        assert_eq!(
+            core.resolve_checked(Path::new("alias"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EACCES)
+        );
         assert!(core.copy_up(Path::new("alias")).is_err());
         assert!(
             core.hard_link(Path::new("id_rsa"), Path::new("new-alias"))
@@ -4974,7 +4988,12 @@ mod tests {
         );
         core.create_symlink(Path::new("link"), Path::new("id_rsa"))
             .unwrap();
-        assert!(core.resolve(Path::new("link/child")).is_none());
+        assert_eq!(
+            core.resolve_checked(Path::new("link/child"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOTDIR)
+        );
         assert!(core.metadata(Path::new("../id_rsa")).is_err());
         assert!(core.metadata(Path::new("/id_rsa")).is_err());
     }
@@ -5026,7 +5045,8 @@ mod tests {
         );
         let resolved = fixture
             .core
-            .resolve(Path::new("dir/shared"))
+            .resolve_checked(Path::new("dir/shared"))
+            .unwrap()
             .expect("resolved");
         assert_eq!(fs::read(resolved.path).expect("read"), b"top");
     }
@@ -5067,9 +5087,22 @@ mod tests {
             .rename(Path::new("tree"), Path::new("moved"), false)
             .expect("rename");
 
-        assert!(fixture.core.resolve(Path::new("tree")).is_none());
+        assert!(
+            fixture
+                .core
+                .resolve_checked(Path::new("tree"))
+                .unwrap()
+                .is_none()
+        );
         for path in ["moved/a", "moved/b", "moved/nested/c"] {
-            assert!(fixture.core.resolve(Path::new(path)).is_some(), "{path}");
+            assert!(
+                fixture
+                    .core
+                    .resolve_checked(Path::new(path))
+                    .unwrap()
+                    .is_some(),
+                "{path}"
+            );
         }
         assert!(fixture.upper.join("moved").join(OPAQUE_NAME).is_file());
     }
@@ -5081,7 +5114,11 @@ mod tests {
         fs::write(&source, b"payload").expect("write");
         fs::set_permissions(&source, fs::Permissions::from_mode(0o751)).expect("chmod");
         let xattr_supported =
-            sys::set_xattr(&source, OsStr::new("user.pvisor.test"), b"value", 0).is_ok();
+            match sys::set_xattr(&source, OsStr::new("user.pvisor.test"), b"value", 0) {
+                Ok(()) => true,
+                Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => false,
+                Err(error) => panic!("xattr setup failed: {error}"),
+            };
 
         let copied = fixture.core.copy_up(Path::new("file")).expect("copy up");
         let mut contents = Vec::new();
@@ -5235,14 +5272,23 @@ mod tests {
             .expect("exchange");
 
         assert_eq!(
-            fs::read(fixture.core.resolve(Path::new("b")).expect("b").path).expect("read"),
+            fs::read(
+                fixture
+                    .core
+                    .resolve_checked(Path::new("b"))
+                    .unwrap()
+                    .expect("b")
+                    .path
+            )
+            .expect("read"),
             b"a"
         );
         assert_eq!(
             fs::read(
                 fixture
                     .core
-                    .resolve(Path::new("a/child"))
+                    .resolve_checked(Path::new("a/child"))
+                    .unwrap()
                     .expect("child")
                     .path
             )
@@ -5268,8 +5314,18 @@ mod tests {
         )
         .unwrap();
 
-        assert!(core.resolve(Path::new("internal")).is_none());
-        assert!(core.resolve(Path::new("internal/nested/control")).is_none());
+        assert_eq!(
+            core.resolve_checked(Path::new("internal"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        assert_eq!(
+            core.resolve_checked(Path::new("internal/nested/control"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOENT)
+        );
         assert!(
             !core
                 .list_names(Path::new(""))
@@ -5309,12 +5365,19 @@ mod tests {
             .rename(Path::new("source"), Path::new("destination"), false)
             .expect("rename");
 
-        assert!(fixture.core.resolve(Path::new("source")).is_none());
+        assert!(
+            fixture
+                .core
+                .resolve_checked(Path::new("source"))
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             fs::read(
                 fixture
                     .core
-                    .resolve(Path::new("destination/child/file"))
+                    .resolve_checked(Path::new("destination/child/file"))
+                    .unwrap()
                     .expect("file")
                     .path
             )

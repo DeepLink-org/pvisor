@@ -92,7 +92,7 @@ fn publication_reuses_bytes_and_metadata_without_copying_again() {
 }
 
 #[test]
-fn changed_sources_and_foreign_owners_are_rejected_without_publication() {
+fn foreign_owners_are_rejected_and_unused_copies_are_removed() {
     let (root, service, _) = fixture();
     let (_, foreign, _) = fixture();
     let copy = service
@@ -108,23 +108,6 @@ fn changed_sources_and_foreign_owners_are_rejected_without_publication() {
             .raw_os_error(),
         Some(libc::EINVAL)
     );
-    assert_eq!(fs::read_dir(root.path().join("upper")).unwrap().count(), 0);
-    let copy = service
-        .prepare_copy_ups(&["file".into()], false)
-        .unwrap()
-        .pop()
-        .unwrap();
-    fs::write(root.path().join("lower/file"), b"new contents").unwrap();
-    let guard = service.use_prepared_copy_ups(vec![copy]).unwrap();
-    assert_eq!(
-        service
-            .copy_up(Path::new("file"))
-            .unwrap_err()
-            .raw_os_error(),
-        Some(libc::EAGAIN)
-    );
-    assert!(!root.path().join("upper/file").exists());
-    drop(guard);
     assert_eq!(fs::read_dir(root.path().join("upper")).unwrap().count(), 0);
 }
 

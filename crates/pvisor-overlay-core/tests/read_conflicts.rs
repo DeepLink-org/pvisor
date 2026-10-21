@@ -106,7 +106,7 @@ fn first_content_read_protects_before_and_after_copy_up_for_live_and_frozen_layo
                 let core = stage.core(false);
                 let path = Path::new("value");
                 core.observe_read(path).unwrap();
-                let visible = fs::read(core.resolve(path).unwrap().path).unwrap();
+                let visible = fs::read(core.resolve_checked(path).unwrap().unwrap().path).unwrap();
                 assert_eq!(
                     visible,
                     if composed {
@@ -268,7 +268,13 @@ fn composed_visible_file_keeps_an_absent_target_baseline() {
         let core = stage.core(false);
         core.observe_read(Path::new("value")).unwrap();
         assert_eq!(
-            fs::read(core.resolve(Path::new("value")).unwrap().path).unwrap(),
+            fs::read(
+                core.resolve_checked(Path::new("value"))
+                    .unwrap()
+                    .unwrap()
+                    .path
+            )
+            .unwrap(),
             b"visible extra layer"
         );
         fs::write(stage.record.target.join("value"), b"host edit").unwrap();
@@ -352,7 +358,13 @@ fn frozen_partial_apply_then_reopen_rejects_rewriting_from_the_old_view() {
     // Pruning upper does not update the frozen lower. Keep this conservative
     // rejection: rebasing only the fingerprint would accept a stale rewrite.
     assert_eq!(
-        fs::read(core.resolve(Path::new("value")).unwrap().path).unwrap(),
+        fs::read(
+            core.resolve_checked(Path::new("value"))
+                .unwrap()
+                .unwrap()
+                .path
+        )
+        .unwrap(),
         b"original"
     );
     fs::write(
@@ -383,7 +395,6 @@ fn denied_hardlink_alias_is_not_a_negative_lookup_or_content_observation() {
     let core = stage.core(false).with_access_policy(
         &pvisor_overlay_core::FileAccessPolicy::new(vec!["value".into()], vec![]).unwrap(),
     );
-    assert!(core.resolve(Path::new("alias")).is_none());
     assert_eq!(
         core.resolve_checked(Path::new("alias"))
             .unwrap_err()

@@ -18,6 +18,12 @@ they must reject view mutations themselves and do not promise fresh observations
 just test pvisor-overlay-core
 ```
 
+`resolve_checked` is the optional namespace-selection query; it preserves policy,
+traversal and I/O errors and does not record an absence. The lossy `resolve`
+shortcut has been removed. Namespace mutations must propagate failed probes
+before publishing upper entries, rather than treating failures as missing names.
+Remove/replacement checks reuse metadata from their checked resolution.
+
 ## Physical lower immutability (conservative first version)
 
 `LayerMutability::{Mutable, Immutable}` is the shared contract. Build a layout
@@ -156,6 +162,8 @@ markers and later lowers. Mutex-protected entries are bounded to 4096, clear on
 capacity, and bypass root-plus-relative paths above 4096 bytes or relative depth
 above 256 components. Epoch checks reject insertion across any mutation boundary.
 Guest metadata TTLs and data caching are unchanged.
+Cache hits copy parent identities only when the request asks for them. Misses
+retain a second vector only when both cache publication and evidence output need it.
 
 Profiles retain explicit `exclusive_upper_absence_cache_enabled` units `0`/`1`.
 `exclusive_upper_absence_cache_hits` partitions into `_hits_missing_leaf` and
