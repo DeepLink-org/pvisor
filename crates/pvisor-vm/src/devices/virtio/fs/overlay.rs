@@ -36,6 +36,18 @@ pub(super) const MAX_DIRECTORY_CACHE_CAPACITY: usize = 4096;
 const RENAME_NOREPLACE: u32 = 1;
 const RENAME_EXCHANGE: u32 = 2;
 
+fn core_open_flags(flags: u32) -> i32 {
+    // Linux O_APPEND equals native O_TRUNC on macOS.
+    let mut native = (flags & 3) as i32;
+    if flags & bindings::LINUX_O_APPEND as u32 != 0 {
+        native |= libc::O_APPEND;
+    }
+    if flags & bindings::LINUX_O_TRUNC as u32 != 0 {
+        native |= libc::O_TRUNC;
+    }
+    native
+}
+
 fn buffered_request_flags(flags: u32) -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -336,6 +348,50 @@ struct Nodes {
     // index makes namespace updates visit only the affected subtree.
     by_path: HashMap<PathBuf, u64>,
     ordered_paths: BTreeSet<PathBuf>,
+    aliases: HashMap<u64, BTreeSet<PathBuf>>,
+    by_object: HashMap<(usize, u64, u64), u64>,
+    objects_by_inode: HashMap<u64, Vec<(usize, u64, u64)>>,
+}
+
+impl Nodes {
+    fn insert_path(&mut self, path: PathBuf, inode: u64) {
+        self.ordered_paths.insert(path.clone());
+        self.by_path.insert(path.clone(), inode);
+        self.by_inode.entry(inode).or_insert_with(|| path.clone());
+        self.aliases.entry(inode).or_default().insert(path);
+    }
+
+    fn bind_object(&mut self, inode: u64, object: (usize, u64, u64)) {
+        if self.by_object.insert(object, inode) != Some(inode) {
+            self.objects_by_inode.entry(inode).or_default().push(object);
+        }
+    }
+
+    fn remove_path(&mut self, path: &Path) {
+        self.ordered_paths.remove(path);
+        let Some(inode) = self.by_path.remove(path) else {
+            return;
+        };
+        let aliases = self.aliases.get_mut(&inode).unwrap();
+        aliases.remove(path);
+        if let Some(survivor) = aliases.first() {
+            if self
+                .by_inode
+                .get(&inode)
+                .is_some_and(|canonical| canonical == path)
+            {
+                self.by_inode.insert(inode, survivor.clone());
+            }
+        } else {
+            self.aliases.remove(&inode);
+            self.by_inode.remove(&inode);
+            for object in self.objects_by_inode.remove(&inode).unwrap_or_default() {
+                if self.by_object.get(&object) == Some(&inode) {
+                    self.by_object.remove(&object);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -349,6 +405,8 @@ pub struct OverlaySnapshot {
     hard_link_origins: Vec<(u64, u64, usize, Vec<u8>)>,
     layers: Vec<super::snapshot::FsSnapshot>,
     nodes: Vec<(u64, Vec<u8>)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    node_aliases: Vec<(u64, Vec<u8>)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     lookup_refs: Option<Vec<(u64, u64)>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -681,6 +739,7 @@ impl OverlaySnapshot {
                 && self
                     .nodes
                     .iter()
+                    .chain(self.node_aliases.iter())
                     .any(|(_, node)| Path::new(OsStr::from_bytes(node)).starts_with(path))
             {
                 return Err(invalid("restored exclusion would hide a saved inode"));
@@ -735,7 +794,12 @@ enum DetachedWritebackInode {
         projected: bindings::stat64,
         virtual_mode: bool,
     },
-    Lower(Mutex<bindings::stat64>),
+    Lower {
+        reference: DirectoryReference,
+        layer: Layer,
+        path: PathBuf,
+        attr: Mutex<bindings::stat64>,
+    },
 }
 impl Drop for DirectoryReference {
     fn drop(&mut self) {
@@ -1327,9 +1391,7 @@ impl OverlayFs {
             })
             .collect::<io::Result<Vec<_>>>()?;
         let mut nodes = Nodes::default();
-        nodes.by_inode.insert(fuse::ROOT_ID, PathBuf::new());
-        nodes.by_path.insert(PathBuf::new(), fuse::ROOT_ID);
-        nodes.ordered_paths.insert(PathBuf::new());
+        nodes.insert_path(PathBuf::new(), fuse::ROOT_ID);
         let virtual_metadata = roots.iter().try_fold(false, |found, root| {
             backend::attributes(root).map(|attr| {
                 found
@@ -1422,14 +1484,65 @@ impl OverlayFs {
             return *inode;
         }
         let inode = self.inode_alloc.next();
-        nodes.ordered_paths.insert(path.clone());
-        nodes.by_path.insert(path.clone(), inode);
-        nodes.by_inode.insert(inode, path);
+        nodes.insert_path(path, inode);
         inode
     }
 
+    fn inode_for_backing(&self, path: PathBuf, backing: &BackingResolution) -> u64 {
+        let metadata = &backing.entry.metadata;
+        if !metadata.is_file() || metadata.nlink() < 2 {
+            return self.allocate_inode(path);
+        }
+        let object = (backing.entry.layer, metadata.dev(), metadata.ino());
+        let mut nodes = self.nodes.lock().unwrap();
+        let inode = nodes
+            .by_path
+            .get(&path)
+            .or_else(|| nodes.by_object.get(&object))
+            .copied()
+            .unwrap_or_else(|| self.inode_alloc.next());
+        nodes.insert_path(path, inode);
+        nodes.bind_object(inode, object);
+        inode
+    }
+
+    fn bind_upper(&self, path: &Path, inode: u64, attr: &bindings::stat64) {
+        let mut nodes = self.nodes.lock().unwrap();
+        if attr.st_nlink > 1 || nodes.objects_by_inode.contains_key(&inode) {
+            nodes.bind_object(inode, (0, attr.st_dev as u64, attr.st_ino));
+        }
+        nodes.by_inode.insert(inode, path.to_path_buf());
+    }
+
+    fn preserve_other_aliases(&self, path: &Path) -> io::Result<()> {
+        let aliases = {
+            let nodes = self.nodes.lock().unwrap();
+            let Some(inode) = nodes.by_path.get(path) else {
+                return Ok(());
+            };
+            nodes.aliases[inode]
+                .iter()
+                .filter(|alias| alias.as_path() != path)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if !aliases.is_empty()
+            && self
+                .core
+                .metadata_resolved(path)
+                .map_err(linux_error)?
+                .resolved
+                .is_upper
+        {
+            for alias in aliases {
+                self.core.copy_up(&alias).map_err(linux_error)?;
+            }
+        }
+        Ok(())
+    }
+
     fn acquire_guest_lookup(&self, inode: u64) {
-        if !self.writeback_active.load(Ordering::Relaxed) || inode == fuse::ROOT_ID {
+        if inode == fuse::ROOT_ID {
             return;
         }
         let mut nodes = self.nodes.lock().unwrap();
@@ -1472,9 +1585,6 @@ impl OverlayFs {
         ctx: Context,
         path: &Path,
     ) -> io::Result<Option<(u64, Arc<DetachedWritebackInode>)>> {
-        if !self.writeback_active.load(Ordering::Relaxed) {
-            return Ok(None);
-        }
         let inode = {
             let nodes = self.nodes.lock().unwrap();
             let Some(&inode) = nodes.by_path.get(path) else {
@@ -1499,6 +1609,7 @@ impl OverlayFs {
         let mut projected = entry.attr;
         self.backing_attributes(&self.roots[layer.0].join(path), &mut projected)?;
         let object = if layer.0 == 0 {
+            self.layers[0].preserve_inode(entry.inode)?;
             DetachedWritebackInode::Upper {
                 reference,
                 projected,
@@ -1508,8 +1619,12 @@ impl OverlayFs {
             let mut attr = projected;
             attr.st_ino = inode as _;
             attr.st_nlink = attr.st_nlink.saturating_sub(1);
-            drop(reference);
-            DetachedWritebackInode::Lower(Mutex::new(attr))
+            DetachedWritebackInode::Lower {
+                reference,
+                layer,
+                path: path.to_path_buf(),
+                attr: Mutex::new(attr),
+            }
         };
         Ok(Some((inode, Arc::new(object))))
     }
@@ -1521,8 +1636,9 @@ impl OverlayFs {
         // FORGET can run while the namespace mutation is in progress. Check
         // its final count atomically with publishing the retained identity.
         let nodes = self.nodes.lock().unwrap();
-        if nodes.legacy_lookup_refs.contains(&inode)
-            || nodes.lookup_refs.get(&inode).copied().unwrap_or(0) != 0
+        if !nodes.by_inode.contains_key(&inode)
+            && (nodes.legacy_lookup_refs.contains(&inode)
+                || nodes.lookup_refs.get(&inode).copied().unwrap_or(0) != 0)
         {
             self.detached_writeback
                 .lock()
@@ -1556,7 +1672,7 @@ impl OverlayFs {
                 attr.st_rdev = projected.st_rdev;
                 (attr, timeout)
             }
-            DetachedWritebackInode::Lower(attr) => (*attr.lock().unwrap(), TTL),
+            DetachedWritebackInode::Lower { attr, .. } => (*attr.lock().unwrap(), TTL),
         };
         attr.st_ino = inode as _;
         Ok(Some((attr, timeout)))
@@ -1572,10 +1688,7 @@ impl OverlayFs {
             .collect::<Vec<_>>();
         self.profile.add("nodes_removed", paths.len() as u64);
         for path in paths {
-            nodes.ordered_paths.remove(&path);
-            if let Some(inode) = nodes.by_path.remove(&path) {
-                nodes.by_inode.remove(&inode);
-            }
+            nodes.remove_path(&path);
         }
     }
 
@@ -1597,13 +1710,13 @@ impl OverlayFs {
             })
             .collect::<Vec<_>>();
         self.profile.add("nodes_remapped", changes.len() as u64);
-        for (old_path, _, _) in &changes {
+        for (old_path, _, inode) in &changes {
             nodes.ordered_paths.remove(old_path);
             nodes.by_path.remove(old_path);
+            nodes.aliases.get_mut(inode).unwrap().remove(old_path);
         }
         for (_, new_path, inode) in changes {
-            nodes.ordered_paths.insert(new_path.clone());
-            nodes.by_path.insert(new_path.clone(), inode);
+            nodes.insert_path(new_path.clone(), inode);
             nodes.by_inode.insert(inode, new_path);
         }
     }
@@ -1854,6 +1967,10 @@ impl OverlayFs {
         backing: &BackingResolution,
     ) -> io::Result<Entry> {
         let _span = self.profile.span("entry");
+        let canonical = self.path(inode)?;
+        if canonical != path {
+            return self.entry(ctx, &canonical, inode);
+        }
         let layer = Layer(backing.entry.layer);
         // Core still performs every namespace, alias and policy check. Its
         // path metadata is only a type hint: attributes must come from the
@@ -1903,7 +2020,10 @@ impl OverlayFs {
     // Preserve virtual ownership while reusing its native creation attributes.
     fn created_entry(&self, path: PathBuf, mut entry: Entry) -> io::Result<Entry> {
         self.backing_attributes(&self.core.upper_path(&path), &mut entry.attr)?;
-        let inode = self.allocate_inode(path);
+        let inode = self.allocate_inode(path.clone());
+        if entry.attr.st_mode & libc::S_IFMT == libc::S_IFREG {
+            self.bind_upper(&path, inode, &entry.attr);
+        }
         entry.inode = inode;
         entry.attr.st_ino = inode as _;
         self.acquire_guest_lookup(inode);
@@ -1963,7 +2083,14 @@ impl OverlayFs {
         // OverlayCore reports host errno; passthrough already reports Linux
         // errno. Convert only at the core boundary, never the whole request.
         self.core.copy_up(path).map_err(linux_error)?;
-        self.inner_inode(Layer(0), path, ctx)
+        let entry = self.inner_entry(Layer(0), path, ctx)?;
+        if entry.attr.st_mode & libc::S_IFMT == libc::S_IFREG {
+            let inode = self.nodes.lock().unwrap().by_path.get(path).copied();
+            if let Some(inode) = inode {
+                self.bind_upper(path, inode, &entry.attr);
+            }
+        }
+        Ok(entry.inode)
     }
 
     fn upper_parent(&self, ctx: Context, path: &Path) -> io::Result<(u64, CString)> {
@@ -2043,7 +2170,8 @@ impl OverlayFs {
         share_data: bool,
     ) -> io::Result<NativeOpenReply> {
         let _span = self.profile.span("open");
-        let writing = FilesystemService::is_write_open(flags as i32);
+        let native_flags = core_open_flags(flags);
+        let writing = FilesystemService::is_write_open(native_flags);
         // Read-only opens observe a stable namespace and insert handles under
         // their own mutex; they need not exclude independent backing reads.
         // Privilege changes, copy-up and every writable open remain exclusive.
@@ -2058,14 +2186,69 @@ impl OverlayFs {
         } else {
             Some(self.write_operation()?)
         };
-        let path = self.path(inode)?;
+        let path = match self.path(inode) {
+            Ok(path) => path,
+            Err(error) => {
+                let retained = self.detached_writeback.lock().unwrap().get(&inode).cloned();
+                let Some(object) = retained else {
+                    return Err(error);
+                };
+                let (reference, layer, path) = match &*object {
+                    DetachedWritebackInode::Upper { reference, .. } => {
+                        (reference, Layer(0), Path::new(""))
+                    }
+                    DetachedWritebackInode::Lower {
+                        reference,
+                        layer,
+                        path,
+                        ..
+                    } if readonly => (reference, *layer, path.as_path()),
+                    _ => return Err(error),
+                };
+                reference.fs.retain_inode(reference.inode)?;
+                let opened = reference.fs.open(ctx, reference.inode, kill_priv, flags);
+                let (native_handle, mut options) = match opened {
+                    Ok((Some(handle), options)) => (handle, options),
+                    result => {
+                        reference.fs.forget(ctx, reference.inode, 1);
+                        return Err(result
+                            .err()
+                            .unwrap_or_else(|| io::Error::from_raw_os_error(libc::EIO)));
+                    }
+                };
+                if self.writeback_active.load(Ordering::Relaxed) {
+                    options |= if layer.0 == 0 {
+                        OpenOptions::KEEP_CACHE
+                    } else {
+                        OpenOptions::PVISOR_LOWER
+                    };
+                }
+                let handle = self.allocate_handle(Handle::File(Arc::new(FileHandle {
+                    overlay_inode: inode,
+                    layer,
+                    inode: reference.inode,
+                    handle: native_handle,
+                    relative_path: path.as_os_str().as_bytes().to_vec(),
+                })));
+                return Ok(NativeOpenReply {
+                    reply: OpenReply::new(Some(handle), options),
+                    #[cfg(target_os = "linux")]
+                    data_identity: None,
+                });
+            }
+        };
         let _io = (!readonly).then(|| self.fence_paths(&[&path]));
         let (layer, inner, immutable_regular) = match self
             .core
-            .prepare_open_for_backing_lookup(&path, flags as i32)
+            .prepare_open_for_backing_lookup(&path, native_flags)
             .map_err(linux_error)?
         {
-            OpenBacking::Writable(_) => (Layer(0), self.inner_inode(Layer(0), &path, ctx)?, false),
+            OpenBacking::Writable(_) => {
+                self.preserve_other_aliases(&path)?;
+                let entry = self.inner_entry(Layer(0), &path, ctx)?;
+                self.bind_upper(&path, inode, &entry.attr);
+                (Layer(0), entry.inode, false)
+            }
             OpenBacking::ReadOnly(backing) => {
                 let layer = Layer(backing.entry.layer);
                 let immutable_regular = backing.entry.metadata.is_file()
@@ -2385,7 +2568,7 @@ impl FileSystem for OverlayFs {
                 "overlay hard-link source is no longer owned",
             ));
         }
-        let (saved_nodes, lookup_refs, legacy_lookup_refs) = {
+        let (saved_nodes, node_aliases, lookup_refs, legacy_lookup_refs) = {
             let nodes = self.nodes.lock().unwrap();
             if nodes
                 .lookup_refs
@@ -2403,7 +2586,13 @@ impl FileSystem for OverlayFs {
                     .iter()
                     .map(|(inode, path)| (*inode, path.as_os_str().as_bytes().to_vec()))
                     .collect(),
-                self.writeback_active.load(Ordering::Relaxed).then(|| {
+                nodes
+                    .by_path
+                    .iter()
+                    .filter(|(path, inode)| nodes.by_inode.get(inode) != Some(path))
+                    .map(|(path, inode)| (*inode, path.as_os_str().as_bytes().to_vec()))
+                    .collect(),
+                Some({
                     nodes
                         .lookup_refs
                         .iter()
@@ -2424,6 +2613,7 @@ impl FileSystem for OverlayFs {
                     .map(|layer| layer.capture_state())
                     .collect::<io::Result<_>>()?,
                 nodes: saved_nodes,
+                node_aliases,
                 lookup_refs,
                 legacy_lookup_refs,
                 handles: self
@@ -2502,16 +2692,27 @@ impl FileSystem for OverlayFs {
         let mut nodes = Nodes::default();
         for (inode, path) in &state.nodes {
             let path = PathBuf::from(OsStr::from_bytes(path));
-            nodes.ordered_paths.insert(path.clone());
             if *inode == 0
                 || path
                     .components()
                     .any(|c| !matches!(c, std::path::Component::Normal(_)))
-                || nodes.by_inode.insert(*inode, path.clone()).is_some()
-                || nodes.by_path.insert(path, *inode).is_some()
+                || nodes.by_inode.contains_key(inode)
+                || nodes.by_path.contains_key(&path)
             {
                 return Err(invalid("invalid overlay inode paths"));
             }
+            nodes.insert_path(path, *inode);
+        }
+        for (inode, path) in &state.node_aliases {
+            let path = PathBuf::from(OsStr::from_bytes(path));
+            if path.as_os_str().is_empty()
+                || OverlayCore::validate_rel(&path).is_err()
+                || !nodes.by_inode.contains_key(inode)
+                || nodes.by_path.contains_key(&path)
+            {
+                return Err(invalid("invalid overlay inode aliases"));
+            }
+            nodes.insert_path(path, *inode);
         }
         if let Some(refs) = &state.lookup_refs {
             for &(inode, count) in refs {
@@ -2530,8 +2731,7 @@ impl FileSystem for OverlayFs {
                     return Err(invalid("invalid legacy guest lookup references"));
                 }
             }
-        } else if matches!(state.layers.first(), Some(FsSnapshot::Passthrough(layer)) if layer.writeback)
-        {
+        } else {
             // Legacy snapshots did not save guest nlookup. Their finite inode
             // set remains conservative; newly created nodes are counted exactly.
             nodes
@@ -2614,6 +2814,55 @@ impl FileSystem for OverlayFs {
             })
             .collect::<io::Result<Vec<_>>>()?;
         self.core.restore_hard_link_sources(&sources)?;
+        for (inode, aliases) in nodes.aliases.clone() {
+            let mut identity = None;
+            for path in aliases {
+                let Some(backing) = self
+                    .core
+                    .metadata_for_backing_lookup_optional(&path)
+                    .map_err(linux_error)?
+                else {
+                    if state.node_aliases.iter().any(|(saved, _)| *saved == inode) {
+                        return Err(invalid("missing overlay inode alias"));
+                    }
+                    continue;
+                };
+                let meta = &backing.entry.metadata;
+                if meta.is_file() {
+                    let (_, copied) = self
+                        .core
+                        .metadata_with_copied_hard_link(&path)
+                        .map_err(linux_error)?;
+                    let current = copied.as_ref().unwrap_or(meta);
+                    let current = (current.dev(), current.ino());
+                    if identity.is_some_and(|previous| previous != current) {
+                        return Err(invalid("overlay inode aliases identify different files"));
+                    }
+                    identity = Some(current);
+                    nodes.bind_object(inode, (backing.entry.layer, meta.dev(), meta.ino()));
+                } else if state.node_aliases.iter().any(|(saved, _)| *saved == inode) {
+                    return Err(invalid("non-file overlay inode alias"));
+                }
+            }
+        }
+        for (dev, ino, paths) in &state.hard_links {
+            for path in paths {
+                let metadata = std::fs::symlink_metadata(self.roots[0].join(path))?;
+                if let Some(&inode) = nodes.by_object.get(&(0, metadata.dev(), metadata.ino())) {
+                    for (_, _, layer, _) in
+                        state
+                            .hard_link_origins
+                            .iter()
+                            .filter(|(origin_dev, origin_ino, _, _)| {
+                                origin_dev == dev && origin_ino == ino
+                            })
+                    {
+                        nodes.bind_object(inode, (*layer, *dev, *ino));
+                    }
+                    break;
+                }
+            }
+        }
         *self.nodes.lock().unwrap() = nodes;
         *self.handles.lock().unwrap() = handles;
         self.next_handle.store(state.next_handle, Ordering::Relaxed);
@@ -2779,7 +3028,7 @@ impl FileSystem for OverlayFs {
                 .metadata_for_backing_lookup(&path)
                 .map_err(linux_error)?
         };
-        let inode = self.allocate_inode(path.clone());
+        let inode = self.inode_for_backing(path.clone(), &backing);
         let entry = self.entry_on_backing(ctx, &path, inode, &backing)?;
         self.acquire_guest_lookup(inode);
         Ok(entry)
@@ -2831,7 +3080,7 @@ impl FileSystem for OverlayFs {
                     || std::fs::symlink_metadata(&path).is_ok_and(|metadata| {
                         metadata.ino() == attr.st_ino as u64 && metadata.dev() == attr.st_dev as u64
                     });
-                if same_object {
+                if same_object && !h.relative_path.is_empty() {
                     self.backing_attributes(&path, &mut attr)?;
                 }
                 attr.st_ino = inode as _;
@@ -2912,7 +3161,7 @@ impl FileSystem for OverlayFs {
                                 updated.st_rdev = projected.st_rdev;
                                 (updated, timeout)
                             }
-                            DetachedWritebackInode::Lower(view) => {
+                            DetachedWritebackInode::Lower { attr: view, .. } => {
                                 let mut view = view.lock().unwrap();
                                 if valid.contains(SetattrValid::MTIME) {
                                     view.st_mtime = attr.st_mtime;
@@ -3112,10 +3361,11 @@ impl FileSystem for OverlayFs {
         let _operation = self.write_operation()?;
         let path = self.child(parent, name)?;
         let _io = self.fence_paths(&[&path]);
+        self.preserve_other_aliases(&path)?;
         let retired = self.prepare_detached_writeback(_ctx, &path)?;
         self.core.remove(&path, false).map_err(linux_error)?;
-        self.commit_detached_writeback(retired);
         self.remove_path(&path);
+        self.commit_detached_writeback(retired);
         Ok(())
     }
 
@@ -3143,8 +3393,13 @@ impl FileSystem for OverlayFs {
         let _io = self.fence_paths(&[&old, &new]);
         let retired = if flags == 0
             && old != new
-            && self.core.resolve_checked(&new).map_err(linux_error)?.is_some()
+            && self
+                .core
+                .resolve_checked(&new)
+                .map_err(linux_error)?
+                .is_some()
         {
+            self.preserve_other_aliases(&new)?;
             self.prepare_detached_writeback(_ctx, &new)?
         } else {
             None
@@ -3155,7 +3410,16 @@ impl FileSystem for OverlayFs {
             RENAME_EXCHANGE => self.core.exchange(&old, &new).map_err(linux_error)?,
             _ => return Err(linux_error(io::Error::from_raw_os_error(libc::ENOTSUP))),
         }
-        self.commit_detached_writeback(retired);
+        if old == new
+            || (flags != RENAME_EXCHANGE
+                && self
+                    .core
+                    .resolve_checked(&old)
+                    .map_err(linux_error)?
+                    .is_some())
+        {
+            return Ok(());
+        }
         if flags == RENAME_EXCHANGE {
             let marker = PathBuf::from(format!(".pvisor-exchange-{}", self.inode_alloc.next()));
             self.remap_path(&old, &marker);
@@ -3165,6 +3429,7 @@ impl FileSystem for OverlayFs {
             self.remove_path(&new);
             self.remap_path(&old, &new);
         }
+        self.commit_detached_writeback(retired);
         Ok(())
     }
 
@@ -3176,9 +3441,19 @@ impl FileSystem for OverlayFs {
         self.core
             .hard_link(&source, &destination)
             .map_err(linux_error)?;
-        let new_inode = self.allocate_inode(destination.clone());
-        let entry = self.entry(ctx, &destination, new_inode)?;
-        self.acquire_guest_lookup(new_inode);
+        self.nodes
+            .lock()
+            .unwrap()
+            .insert_path(destination.clone(), inode);
+        let backing = self
+            .core
+            .metadata_for_backing_lookup(&destination)
+            .map_err(linux_error)?;
+        let native = self.inner_entry(Layer(0), &destination, ctx)?;
+        self.bind_upper(&destination, inode, &native.attr);
+        self.layers[0].forget(ctx, native.inode, 1);
+        let entry = self.entry_on_backing(ctx, &destination, inode, &backing)?;
+        self.acquire_guest_lookup(inode);
         Ok(entry)
     }
 
@@ -3266,6 +3541,7 @@ impl FileSystem for OverlayFs {
             self.layers[0].forget(ctx, upper_parent, 1);
         }
         let inner_inode = entry.inode;
+        self.bind_upper(&path, inode, &entry.attr);
         entry.inode = inode;
         entry.attr.st_ino = inode as _;
         let handle = handle.ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))?;
@@ -3391,7 +3667,7 @@ impl FileSystem for OverlayFs {
         // Legacy sessions retain their existing ENOSYS behavior. For the new
         // cache this is also the supervisor's final asynchronous-error fence.
         if !self.host_writeback {
-            return Err(io::Error::from_raw_os_error(libc::ENOSYS));
+            return Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS));
         }
         let _operation = self.write_operation()?;
         let _io = self.io_activity.fence(Vec::new(), true);
@@ -3410,7 +3686,7 @@ impl FileSystem for OverlayFs {
             Ok(())
         }
         #[cfg(not(target_os = "linux"))]
-        Err(io::Error::from_raw_os_error(libc::ENOSYS))
+        Err(io::Error::from_raw_os_error(bindings::LINUX_ENOSYS))
     }
 
     fn fsyncdir(&self, _ctx: Context, inode: u64, _datasync: bool, _handle: u64) -> io::Result<()> {
@@ -3657,7 +3933,7 @@ impl FileSystem for OverlayFs {
                 else {
                     continue;
                 };
-                let inode = self.allocate_inode(path.clone());
+                let inode = self.inode_for_backing(path.clone(), &backing);
                 let entry = self.entry_on_backing(ctx, &path, inode, &backing)?;
                 self.acquire_guest_lookup(inode);
                 let added = add_entry(
@@ -3783,6 +4059,7 @@ impl FileSystem for OverlayFs {
 
 #[cfg(test)]
 mod tests {
+    include!("overlay_correctness_tests.rs");
     #[cfg(target_os = "linux")]
     mod mutation_regressions {
         use super::*;
@@ -8109,6 +8386,7 @@ mod tests {
             hard_link_origins: vec![],
             layers: vec![],
             nodes: vec![(1, b"/".to_vec())],
+            node_aliases: vec![],
             lookup_refs: None,
             legacy_lookup_refs: vec![],
             handles: vec![(

@@ -241,6 +241,24 @@ clock conversion 或 wake latch，不能自动卸载，也不证明 Linux runque
 当前源码尚无对应的真实 KVM 实测通过记录；macOS/HVF 尚未实际编译或运行
 验证。后续实测须使用独立制品和收据，不覆盖已有 binary、receipt 或实验数据。
 
+## Overlay protocol correctness
+
+Guest OPEN flags are Linux wire values. The adapter translates access mode,
+APPEND and TRUNC before passing them to the native-flag Core service; native
+passthrough adapters still receive the original wire flags. In particular, Linux
+APPEND must never activate macOS TRUNC copy-up. Unsupported SYNCFS replies use
+Linux ENOSYS (38) on every host, so the guest can apply its ordinary fallback.
+This fallback does not establish host-media durability.
+
+Regular-file hardlink aliases share a guest nodeid and follow the current upper
+object after copy-up. Writable opens materialize known aliases, and removing or
+replacing an upper name preserves surviving known aliases before publication.
+Already-open read-only lower descriptions keep their original lower binding.
+Snapshots save additional names in optional `node_aliases`, validate their shared
+identity, and rebuild native identity indexes, including not-yet-looked-up lower
+aliases from existing copy-up origins. Older records without the field remain
+readable.
+
 ## Physical lower stability contract
 
 `api::OverlayConfig::lower_mutability` uses the shared
@@ -1027,13 +1045,14 @@ virtio-fs 挂载，任一失败以125退出。宿主读取 stage 前须经过该
 后台 WRITE 的短写仍为错误，不能以成功回复丢弃尾部。DAX、direct I/O 与远程锁
 保留原路径；共享 mmap 脏页继续使用 Linux 原有的回写与同步，没有新增 fault 等待。
 
-宿主在 WB 会话成功 unlink 或 rename-overwrite 后，按原 guest nodeid 保留已退休的
-普通文件身份：upper 保留一个 native O_PATH lookup 引用；lower 只保留逻辑属性
-墓碑，时间戳回写不修改物理 lower。关闭所有 fd 后，纯 MTIME/CTIME SETATTR
+宿主在所有会话成功 unlink 或 rename-overwrite 后，按原 guest nodeid 保留已退休的
+普通文件身份，直到最后一个 guest FORGET。upper 保留 native lookup 引用，
+macOS 另外固定可读取的文件描述符；尚未完成的 OPEN 仍能读取被覆盖的原对象。
+lower 保留原只读对象和逻辑属性墓碑，时间戳回写不修改物理 lower。关闭所有 fd 后，纯 MTIME/CTIME SETATTR
 仍能绑定原对象，不重新打开旧名字，也不吞未知 ENOENT。guest LOOKUP 引用精确
 跟踪到 FORGET，未发布的 READDIRPLUS/READINDEX 引用须回滚，最后一个引用释放
 退休对象。仍有 detached/orphan 引用时 snapshot 返回 Unsupported，不能序列化为
-失效路径。新 snapshot 保存已知引用；旧 WB snapshot 缺少计数时，仅其有限旧节点
+失效路径。新 snapshot 保存已知引用；旧 snapshot 缺少计数时，仅其有限旧节点
 集合保守保留到 DESTROY，新节点仍正常计数，不能推断它们已收到 FORGET。
 
 真实 guest 回归（固件和输入路径使用绝对路径）：

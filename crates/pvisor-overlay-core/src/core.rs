@@ -3280,10 +3280,14 @@ impl OverlayCore {
     pub fn rename(&self, old: &Path, new: &Path, no_replace: bool) -> io::Result<()> {
         self.require_visible(old)?;
         self.require_visible(new)?;
-        if old == new {
-            return Ok(());
-        }
         let source_meta = self.metadata(old)?;
+        if old == new {
+            return if no_replace {
+                Err(error(libc::EEXIST))
+            } else {
+                Ok(())
+            };
+        }
         if source_meta.is_dir() && new.starts_with(old) {
             return Err(error(libc::EINVAL));
         }
@@ -3291,6 +3295,15 @@ impl OverlayCore {
         self.require_tree_access(old, new)?;
         if self.resolve_checked(new)?.is_some() {
             self.require_tree_access(new, new)?;
+            if source_meta.is_file() {
+                let (source, copied_source) = self.metadata_with_copied_hard_link(old)?;
+                let (destination, copied_destination) = self.metadata_with_copied_hard_link(new)?;
+                let source = copied_source.as_ref().unwrap_or(&source);
+                let destination = copied_destination.as_ref().unwrap_or(&destination);
+                if (source.dev(), source.ino()) == (destination.dev(), destination.ino()) {
+                    return Ok(());
+                }
+            }
         }
         self.record_logical_tree_mapping(old, old)?;
         self.record_logical_tree_mapping(old, new)?;
@@ -5241,6 +5254,47 @@ mod tests {
                 }
                 assert_eq!(fs::read(core.upper_path(replaced)).unwrap(), b"replacement");
             }
+        }
+    }
+
+    #[test]
+    fn rename_between_hardlink_aliases_preserves_both_names() {
+        for copied in [false, true] {
+            let fixture = Fixture::new();
+            fs::write(fixture.lower2.join("one"), b"original").unwrap();
+            fs::hard_link(fixture.lower2.join("one"), fixture.lower2.join("two")).unwrap();
+            if copied {
+                fixture.core.copy_up(Path::new("one")).unwrap();
+            }
+            fixture
+                .core
+                .rename(Path::new("one"), Path::new("two"), false)
+                .unwrap();
+            for name in ["one", "two"] {
+                assert!(
+                    fixture
+                        .core
+                        .resolve_checked(Path::new(name))
+                        .unwrap()
+                        .is_some()
+                );
+            }
+            assert_eq!(
+                fixture
+                    .core
+                    .rename(Path::new("one"), Path::new("two"), true)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EEXIST)
+            );
+            assert_eq!(
+                fixture
+                    .core
+                    .rename(Path::new("missing"), Path::new("missing"), false)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::ENOENT)
+            );
         }
     }
 

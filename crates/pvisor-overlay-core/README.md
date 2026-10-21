@@ -24,6 +24,10 @@ shortcut has been removed. Namespace mutations must propagate failed probes
 before publishing upper entries, rather than treating failures as missing names.
 Remove/replacement checks reuse metadata from their checked resolution.
 
+Ordinary rename between two names of the same regular-file hardlink is a no-op,
+including a lower alias whose sibling has already copied up. NOREPLACE still
+returns EEXIST, and a missing source returns ENOENT even when both names match.
+
 ## Physical lower immutability (conservative first version)
 
 `LayerMutability::{Mutable, Immutable}` is the shared contract. Build a layout

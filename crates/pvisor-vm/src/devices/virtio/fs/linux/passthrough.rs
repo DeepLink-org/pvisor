@@ -610,6 +610,23 @@ enum FileOrLink {
 }
 
 impl PassthroughFs {
+    pub(in crate::devices::virtio::fs) fn retain_inode(&self, inode: Inode) -> io::Result<()> {
+        let inodes = self.inodes.read().unwrap();
+        let data = inodes.get(&inode).ok_or_else(ebadf)?;
+        data.refcount.fetch_add(1, Ordering::Acquire);
+        Ok(())
+    }
+
+    pub(in crate::devices::virtio::fs) fn preserve_inode(&self, inode: Inode) -> io::Result<()> {
+        // Native Linux inodes already own an O_PATH descriptor.
+        self.inodes
+            .read()
+            .unwrap()
+            .get(&inode)
+            .map(|_| ())
+            .ok_or_else(ebadf)
+    }
+
     /// Read one regular-file child's attributes from its retained native parent.
     /// This reply-only path does not allocate an inode or a leaf descriptor.
     /// Non-regular children retain the ordinary lookup/submount path.
