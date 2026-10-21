@@ -502,7 +502,10 @@ applications using `docker::Store::start` must dispatch
 parsing. Lifecycle mutations use the catalog lock, and both owner and VMM hold
 independent lifetime leases. A private inherited pipe terminates the VMM when
 its owner dies. Stop escalation goes through the current owner and generation;
-no command signals a host PID saved in metadata. VM setup errors and workload
+lookup and force-stop publication share the removal lock, with no lock held
+while waiting for termination. This prevents `--rm` teardown from racing a
+force-stop record into a deleted instance. No command signals a host PID saved
+in metadata. VM setup errors and workload
 exit codes remain visible in completion records and instance output.
 
 The host translates Docker defaults into generic guest process/mount options,

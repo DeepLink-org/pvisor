@@ -681,7 +681,10 @@ impl FsWorker {
                 if shm_region.is_some() {
                     cfg.entry_timeout = std::time::Duration::from_secs(60);
                     // LinuxSimplified attributes depend on the requesting uid.
-                    if !cfg.attr_timeout.is_zero() {
+                    if !matches!(
+                        cfg.semantics,
+                        crate::api::PermissionSemantics::LinuxSimplified
+                    ) {
                         cfg.attr_timeout = std::time::Duration::from_secs(60);
                     }
                 }

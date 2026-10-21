@@ -50,7 +50,7 @@ bounded process execution; Go uses `context` deadlines.
 
 ## Coverage and limits
 
-The active profile has 23 Bats cases and 30 Go cases. Each test first pulls its
+The active profile has 29 Bats cases and 47 Go cases. Each test first pulls its
 image; none is skipped based on engine failure.
 
 | Suite | Active contracts |
@@ -58,8 +58,10 @@ image; none is skipped based on engine failure.
 | Bats `030-run.bats` | Workload exit, missing executable, stdin/EOF, env/workdir, bind read/write, read-only creation rejection |
 | Bats `031-run-options.bats` | Explicit env vs env-file, successive env-files, host env import, literal entrypoint args, numeric/named user, missing workdir creation, workdir within bind mount, read-only deletion rejection |
 | Bats `032-run-boundaries.bats` | Exit 126 for directories/non-executable files, failed-run name cleanup, host environment isolation, empty values, option-like workload arguments, relative-workdir rejection, no non-loopback interfaces with `--network none` |
+| Bats `033-run-validation.bats` | Repeated/literal environment values, missing host variable removal, CRLF env-files, missing bind source rejection, conflicting mount destinations and paths containing spaces |
 | Go `cli_test.go` | Streams/exit, exec stdin/error, stop/start persistence, auto-removal, duplicate name, exec env/workdir isolation, exec user/streams, 1.7 MB stdin round trip, ps/ID lifecycle, retained logs, images/rmi, named-volume persistence across rm -v, volume image initialization/read-only reuse, running-container rm rejection/force |
 | Go `compatibility_test.go` | Closed stdin, 1 MiB stdout, run/exec TTY and TERM precedence, concurrent exec exit routing after failed spawns, repeated stop, custom stop signal and zero-timeout escalation, multiple-container isolation, partial batch failures, live/stopped `logs -f`, ephemeral IPv4 TCP publication with half-close, in-use image protection, short image IDs and repeated pull identity |
+| Go `lifecycle_test.go` | Anonymous volume restart/isolation, live named-volume sharing including read-only readers and namespace changes, copy-up preservation, volume aliases/order, bind restart and symlinks, read-only mutation families, exact binary/partial logs, log accumulation across starts, running-start idempotence, automatic/forced removal races, TCP port restart/release/conflict and multiple endpoints |
 
 Together these exercise all ten registered subcommands: `pull`, `images`, `rmi`,
 `run`, `exec`, `ps`, `start`, `stop`, `rm`, `logs`. They do not cover every option.
@@ -74,7 +76,7 @@ discovery; they produce no PASS or SKIP results. Complete upstream sources stay
 unchanged. Build/Compose/API, create/inspect/wait/restart/attach/cp, registry login,
 Podman pods/Kube/Quadlet, management CLIs, extra logs/list flags and host-specific
 namespace/security controls are disabled. Anonymous-volume deletion, controlling-terminal
-input, broader published-port lifecycle cases and other supported-but-unported scenarios
+input, publication on non-loopback host addresses and other supported-but-unported scenarios
 remain coverage gaps, not unsupported features.
 
 The TTY cases require default `TERM=xterm`, explicit TERM precedence and no
@@ -82,7 +84,17 @@ mutation of container defaults by `exec -t`. These defaults are applied on the
 host; the generic guest launcher is unchanged. TCP uses the pinned Alpine's
 BusyBox netcat, explicitly bound to guest IPv4 loopback, and verifies the full
 echo after the client closes its write half. No additional image package is
-installed. Go invocations must include both active `*_test.go` files as above.
+installed. Go invocations must include all active `*_test.go` files as above.
+
+Shared-volume regressions require reopened files to see completed writes from
+another VM or mount, including changes in file length and directory entries.
+Ordinary passthrough mounts now use zero metadata validity with existing
+close-to-open data caching. This does not establish coherence for already-open
+mappings or unsynchronized concurrent writes. Missing bind sources are rejected
+under pVisor's documented stricter profile; Docker's automatic host-directory
+creation is not claimed. Anonymous-volume storage deletion remains unobserved
+without a public volume listing API; the active cases prove restart persistence
+and isolation, not garbage collection.
 
 A pass means the selected behavior contract held for pVisor. Dynamic IDs and
 human-readable list formatting are not compared with another engine. Unsupported
@@ -131,3 +143,19 @@ checks passed; Clippy, rustdoc and formatting checks passed too. The new TTY
 cases exposed missing default TERM in run/exec; the host-side fix preserves
 explicit values and leaves guest supervision unchanged. No active cases were
 skipped, no assertions were weakened, and upstream file hashes remain unchanged.
+
+A second expansion on 2026-10-21 brought the profile to 76 cases (29 Bats,
+47 Go), adding 23 cases to the 53-case profile. All 76 passed on macOS ARM64
+with the same immutable Alpine mirror manifest, Go/Bats versions and a rebuilt,
+Hypervisor-signed private binary. The new volume cases exposed stale metadata
+across shared mounts/VMs; zero passthrough metadata validity fixes reopened-file
+contents/lengths without changing data-cache policy. A complete run also exposed
+force-stop publication racing automatic removal; catalog locking now protects
+lookup/publication while termination waits remain outside the lock. The new
+eight-iteration removal regression passed without retries or relaxed assertions.
+
+All 31 selected Rust Docker/VM contract and boundary tests, both native HVF
+container/Job acceptance cases and all four Python adapter/source-integrity
+checks passed. Clippy, rustdoc with warnings denied, formatting and CI budgets
+passed. Guest code and upstream sources were unchanged. Linux/KVM execution,
+cross-VM open-mapping coherence and performance effects remain unvalidated.

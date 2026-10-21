@@ -597,6 +597,11 @@ guest 属性与 entry TTL 保持原值；本实验不修改内核、KEEP_CACHE�
 
 ## 普通只读目录
 
+普通 passthrough（可写或只读）的 entry/attribute TTL 为零，避免同一宿主
+目录经多个挂载或 VM 共享时，重新打开文件仍读取旧内容或旧长度。数据保留
+close-to-open 策略与 mmap 支持；这不提供跨 VM 已打开映射的一致性协议，
+并发写与映射仍由调用方同步。Overlay 的缓存策略不受此修复影响。
+
 `VmConfiguration::read_only_filesystem(tag, path)` 在宿主适配器拒绝所有
 文件系统修改请求，供容器只读 bind mount 使用。所有平台使用同一声明；
 TEE/Nitro 返回 `Unsupported`。目录必须存在、绝对且可表达为 UTF-8，tag
@@ -623,7 +628,7 @@ DAX 默认关闭。普通 `filesystem(..., 0)` 与 `overlay(..., 0)` 不创建 D
 配置 DAX 窗口。
 
 显式不可变 share 的目录项及 LinuxComplete 属性 TTL 为 60 秒，guest 使用
-`dax=never` 时同样生效。普通只读 share 和可写 Overlay 保留原 TTL；
+`dax=never` 时同样生效。普通只读 share 的 metadata TTL 为零，可写 Overlay 保留原 TTL；
 LinuxSimplified 的属性仍不缓存，以保持请求 uid/gid 的语义。
 数据缓存策略保持原配置。
 

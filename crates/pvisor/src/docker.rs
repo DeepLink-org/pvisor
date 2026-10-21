@@ -778,7 +778,10 @@ impl Store {
         timeout: Duration,
         requested_signal: Option<&str>,
     ) -> anyhow::Result<()> {
-        let instance = self.resolve(selector)?;
+        let instance = {
+            let _guard = self.lock()?;
+            self.resolve(selector)?
+        };
         if !self.active(&instance)? {
             return Ok(());
         }
@@ -796,19 +799,24 @@ impl Store {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        if self.active(&instance)? {
+        {
+            // Auto-removal uses the same lock; never publish into a removed instance.
+            let _guard = self.lock()?;
+            if !self.active(&instance)? {
+                return Ok(());
+            }
             crate::util::write_private_json(
                 &self.directory(&instance.id).join("force-stop.json"),
                 &instance.generation,
             )?;
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while self.directory(&instance.id).exists() && self.active(&instance)? {
-                ensure!(
-                    Instant::now() < deadline,
-                    "owner did not confirm VM termination"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.directory(&instance.id).exists() && self.active(&instance)? {
+            ensure!(
+                Instant::now() < deadline,
+                "owner did not confirm VM termination"
+            );
+            std::thread::sleep(Duration::from_millis(20));
         }
         Ok(())
     }

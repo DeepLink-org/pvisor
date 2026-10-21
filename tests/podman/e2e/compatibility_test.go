@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -243,31 +242,8 @@ func TestLogsFollowStreamsBeforeExitAndFinishes(t *testing.T) {
 func TestTCPPublicationPreservesHalfClose(t *testing.T) {
 	e := newEngine(t)
 	e.want(0, "", "run", "-d", "--name", e.name, "-p", "127.0.0.1:0:8080", e.image, "busybox", "nc", "-lk", "-s", "127.0.0.1", "-p", "8080", "-e", "cat")
-	e.want(0, "", "exec", e.name, "sh", "-c", `for i in $(seq 1 80); do grep -q ':1F90 ' /proc/net/tcp && exit 0; sleep 0.05; done; exit 1`)
-	out, _ := e.want(0, "", "ps")
-	match := regexp.MustCompile(`127\.0\.0\.1:([1-9][0-9]*)->8080/tcp`).FindStringSubmatch(out)
-	if match == nil {
-		t.Fatalf("published address: %q", out)
-	}
-	client, err := net.DialTimeout("tcp4", "127.0.0.1:"+match[1], time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	if err := client.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	payload := strings.Repeat("published\n", 256)
-	if _, err := io.WriteString(client, payload); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.(*net.TCPConn).CloseWrite(); err != nil {
-		t.Fatal(err)
-	}
-	actual, err := io.ReadAll(client)
-	if err != nil || string(actual) != payload {
-		t.Fatalf("half-close lost response: received %d of %d bytes; err=%v", len(actual), len(payload), err)
-	}
+	e.echoReady()
+	e.echo(e.publishedAddress(), strings.Repeat("published\n", 256))
 }
 
 // Source: e2e/images_test.go and rmi_test.go (identity, used images, repulls).
