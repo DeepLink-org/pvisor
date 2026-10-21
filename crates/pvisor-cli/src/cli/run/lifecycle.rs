@@ -2,7 +2,7 @@
 #[cfg(feature = "gateway")]
 use super::resolve_proxy;
 use super::{
-    announce_control_socket, execute_config, paths_overlap, report_terminal, resolve_workspace,
+    announce_job_started, execute_config, paths_overlap, report_terminal, resolve_workspace,
     select_run_storage, wait_cli_job,
 };
 use crate::cli::trajectory::JournalRecording;
@@ -354,8 +354,8 @@ async fn execute_restored(attempt: pvisor::job_service::RestoredAttempt) -> anyh
             Ok(builder.build())
         })
         .await?;
-    announce_control_socket(managed.handle());
-    let result = wait_cli_job(managed, Some(&stage)).await?;
+    announce_job_started(managed.handle());
+    let result = wait_cli_job(managed).await?;
     if let Some(writer) = recording {
         writer.finish()?;
     }

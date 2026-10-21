@@ -106,15 +106,13 @@ macro_rules! run_log {
     }};
 }
 
-fn announce_control_socket(handle: &pvisor::RunHandle) {
-    #[cfg(unix)]
-    if let Ok(path) = handle.control_socket() {
-        let status = handle.status();
+fn announce_job_started(handle: &pvisor::RunHandle) {
+    super::host_service::observe_run(handle);
+    super::host_service::release_source_lock();
+    if handle.status().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine {
+        let job = handle.run_id();
         eprintln!(
-            "pVisor live VM options: --vm-socket {} --vm-job-id {} --vm-attempt-id {} (status; suspend JOB --vm-pause/--vm-offload; resume JOB --vm-load)",
-            path.display(),
-            status.run_id,
-            status.attempt.attempt_id
+            "VM controls: pvisor status {job}; pvisor suspend {job} --vm-pause; pvisor resume {job}"
         );
     }
 }
@@ -180,7 +178,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
 
-    /// Skip personal Agent defaults from $XDG_CONFIG_HOME/pvisor/agents/<program>.toml.
+    /// Skip personal Agent defaults from `$XDG_CONFIG_HOME/pvisor/agents/<program>.toml`.
     #[arg(long)]
     no_agent_defaults: bool,
 
@@ -956,7 +954,6 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     )
     .context("decode delegated RunSpec")?;
     let mut stage_guard = None;
-    let registration_stage = stage_spec.clone();
     let (pvisor, config) = if let Some(stage_path) = stage_spec {
         let cleanup = args.stage.is_none();
         if cleanup {
@@ -1058,9 +1055,9 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     };
     let managed =
         pvisor::job_service::RuntimeJobService::start_managed(&pvisor, spec, config).await?;
-    announce_control_socket(managed.handle());
+    announce_job_started(managed.handle());
     let agentctl = managed.handle().agentctl();
-    let result = wait_cli_job(managed, registration_stage.as_deref()).await?;
+    let result = wait_cli_job(managed).await?;
     let output = pvisor::DelegatedRunOutput {
         agentctl: agentctl.snapshot(),
         result,
@@ -1204,16 +1201,12 @@ pub(super) fn report_terminal(executor: Arc<dyn RunExecutor>) -> Arc<dyn RunExec
 
 pub(super) async fn wait_cli_job(
     managed: pvisor::job_service::ManagedJobRun,
-    stage: Option<&Path>,
 ) -> anyhow::Result<pvisor_core::RunResult> {
-    managed
-        .wait_with(|handle| async move {
-            if let Some(stage) = stage {
-                super::host_cancel::register(&handle, stage)?;
-            }
-            wait_cli_run(handle).await
-        })
-        .await
+    let result = managed.wait_with(wait_cli_run).await?;
+    if result.state == pvisor_core::RunState::Cancelled {
+        super::host_service::notify_cancel(libc::SIGTERM);
+    }
+    Ok(result)
 }
 
 pub(super) async fn wait_cli_run(
@@ -1225,6 +1218,7 @@ pub(super) async fn wait_cli_run(
     tokio::select! {
         result = &mut wait => Ok(result?),
         _ = cancellation.cancelled() => {
+            super::host_service::notify_cancel(libc::SIGTERM);
             super::host_service::notify_cleanup();
             Ok(wait.await?)
         }
@@ -1238,7 +1232,7 @@ pub(super) async fn wait_cli_run(
 
 async fn delegated_shutdown_signal() {
     #[cfg(unix)]
-    if let Some(token) = super::host_service::worker_cancellation() {
+    if let Some(token) = super::host_service::request_cancellation() {
         token.cancelled().await;
         return;
     }
@@ -1835,9 +1829,9 @@ async fn execute_config(
     let managed =
         pvisor::job_service::RuntimeJobService::start_managed(&pvisor, spec, config.clone())
             .await?;
-    announce_control_socket(managed.handle());
+    announce_job_started(managed.handle());
     pvisor::startup_mark_run("cli.session_started", &run_id);
-    let result = wait_cli_job(managed, Some(&storage)).await?;
+    let result = wait_cli_job(managed).await?;
     pvisor::startup_mark_run("cli.run_finished", &run_id);
     drop(pvisor);
     if let Some(writer) = json_writer {

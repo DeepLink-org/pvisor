@@ -103,16 +103,12 @@ Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存�
 核心默认构建不包含 Gateway。启用捕获使用 `--features gateway`；wheel 构建启用该 feature。
 无捕获时，普通显式代理仍由 OverlayNet 授权与转发。请求未编译的捕获或 Gateway debug 能力会报错。
 
-内置 Job CLI 操作以类型化请求经过按需启动的持久 Host AgentCtl listener；
-前端启动授权请求 worker，listener 不重建 shell 命令。普通持久 Job 不需
-端点参数。Live VM flags 是子命令局部选项：`status` 接受 `--vm-socket`、
-`--vm-job-id`、`--vm-attempt-id`；`suspend` 接受这三个身份选项及
-`--vm-pause`、`--vm-offload`、`--vm-ram-file`；`resume` 接受三个身份选项及
-`--vm-load`。根命令前置 live VM flags，以及在其他命令上使用 live VM flags，
-均被拒绝。三个身份选项必须一起提供，suspend/resume 的 Job 位置参数必须
-与 `--vm-job-id` 相同。pause 与 offload 互斥，`--vm-ram-file` 要求 offload。
-Live resume 继续同一个 Attempt；持久 Job 的 suspend/resume 保留执行检查点
-捕获／恢复行为。见 [CLI 参考](../reference/cli.md#vm-instance-control)。
+`run` 启动终端前端和一个 Job owner。活控制通过记录中的私有 socket 在 owner
+内执行；已停止 Job 的操作在调用方持有 `job.lock` 时执行。普通命令从 Job
+发现端点。`--vm-socket` 是调试覆盖，要求同时提供两个显式身份参数。
+Live VM flags 仍是子命令局部选项；pause/offload 互斥，`--vm-ram-file`
+要求 offload。活 resume 继续同一 Attempt；已停止 Job 的 resume 恢复封存
+检查点。见 [CLI 参考](../reference/cli.md#vm-instance-control)。
 
 嵌入调用方通过 `RunHandle` 查询状态、请求取消、创建 checkpoint 和订阅 Event。
 Attempt 生命周期由 Session 管理；Guest AgentCtl 保留工作负载协作职责，
@@ -129,16 +125,14 @@ Attempt 生命周期由 Session 管理；Guest AgentCtl 保留工作负载协作
 
 ## 实现职责 {#implementation-ownership}
 
-`cli/host.rs` 负责类型化 Job 派发及 live VM 选项校验；`cli/host_service.rs`
-负责 listener 准入、兼容与 worker 授权。`cli/host_fds.rs`、`cli/host_cancel.rs`
-和 `cli/host_process.rs` 实现描述符传递、取消及进程所有权；
-`cli/host_image.rs` 在求摘要之前验证 macOS 已加载／磁盘 Mach-O UUID。
-`runtime/host_transport.rs` 负责共享宿主权限路径、相同的有界 async/sync
-换行 JSON framing 与 peer 检查，包含 Job 服务／内部 worker 的 frame；
-FD marker 字节仍是独立的非 JSON 传输记录。内部 version-1 握手检查
-Job ticket schema 及精确包版本／内容构建匹配。`JobCommand` 嵌入内部
-CLI DTO，不是稳定公共 API；Core 拥有纯共享 Host envelope／supervisor
-契约和校验，不包含 CLI DTO 或传输。
+`cli/host.rs` 负责类型化 owner 启动与 live VM 选项校验；
+`cli/host_service.rs` 负责前端/owner 生命周期、按记录路由和协议兼容。
+`cli/host_process.rs` 管理进程树与终端交接；`cli/host_image.rs` 保留 macOS
+已加载/磁盘 Mach-O UUID 校验。`runtime/host_transport.rs` 共享私有路径、
+有界换行 JSON 与 peer 校验。实例控制使用 `pvisor-instance-control-1`，
+独立于调用方二进制摘要。内部 `JobCommand` DTO 只启动同一二进制的子进程。
+Core 拥有共享 Host envelope 和 supervisor 定义，daemon 准入不变。
+参见 [owner 生命周期](architecture.md#host-job-service)。
 
 `cli/run.rs` 负责新 Job 的配置与启动；`cli/run/lifecycle.rs` 负责工作区分支与原生执行状态恢复；`runtime/job_execution.rs` 负责持久化 Job 状态、请求回执和原生终态确认，不会仅凭已保存的文件系统推断暂停成功。
 

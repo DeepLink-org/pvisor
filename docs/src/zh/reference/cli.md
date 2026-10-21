@@ -25,28 +25,19 @@ pvisor help suspend
 
 ## Host Job 服务 {#host-agentctl}
 
-内置 Job 命令（`run`、`status`、`kill`、`suspend`、`resume`、`fork`、
-`checkpoint`、`inspect`、`review`、`apply`、`drop`）通过 Host AgentCtl
-提交类型化请求。首次请求在 `/tmp/pvisor-host-<有效 UID>` 下启动持久的
-同用户 listener；使用规范化 `/tmp`，macOS 通常为 `/private/tmp`。
-后续请求复用 listener。普通持久 Job 无需手动启动服务或传入端点参数。
-不带参数的 `pvisor` 仍显示帮助；`pvisor -- COMMAND` 按默认执行规则
-通过同一 Job 服务运行。
+`pvisor run` 启动前端和私有 Job owner。活 status、kill、VM 控制与执行捕获
+连接 Job 记录中的 owner；普通命令不需要 socket 参数。已停止 Job 的 status、
+review、apply、drop 和 inspect 在调用方持有 `job.lock` 时直接执行。
+有效 owner 仍持有 stage 时，apply/drop 拒绝执行。交互执行沿用原终端，允许
+Ctrl-C 到达工作负载，并在退出后恢复前台进程组。
 
-前端保留终端并启动经 listener 授权的 worker；stdio 与私有 worker 通道
-使用 Unix `SCM_RIGHTS` 传递描述符。Job 服务／内部 worker 的 JSON
-统一使用 `runtime/host_transport.rs` 的 async/sync 换行 framing；JSON
-上限 1 MiB，不含分隔符。FD marker 字节是独立传输记录，不是 JSON。
-listener 检查内核提供的同 UID 身份，在接纳 stdio／命令之前核对 Host
-版本 1、内部 Job ticket schema、包版本和可执行文件内容摘要。
-类型化 `JobCommand` payload 包含绑定精确 schema／构建的内部 CLI DTO，
-不是稳定公共 API。
-它与 daemon sandbox/pool 所有权及独立镜像缓存分开。Guest AgentCtl
-`Hello`/`Sync` 仍是独立协作通道，其 token 不能授权宿主 Job 或 VM 操作。
+实例协议为 `pvisor-instance-control-1`；兼容的调用方二进制不要求摘要与 owner
+相同。同 UID 私有 socket 使用有界换行 JSON，不接收终端描述符或 Guest
+AgentCtl token。响应丢失、超时和取消之后，副作用仍可能已经发生，命令不自动重试。
 
-升级前先排空活动请求，并使用旧二进制停止旧 listener。新客户端拒绝不兼容
-的 live listener，不提供 legacy fallback。响应丢失和取消可能留下已发生
-但结果不确定的副作用；请求不会自动重试。所有权、协议与验证限制见
+升级前使用旧二进制等旧 Job 结束，并停止旧 `--pvisor-internal-host`。新 CLI
+忽略旧 generation socket；没有 live control 的旧记录只提供磁盘状态。
+daemon supervisor 保持不变。所有权、记录校验和平台限制见
 [Host 与 Guest AgentCtl](../design/architecture.md#host-agentctl)。
 
 ## 实验性特性 {#features}
@@ -655,77 +646,32 @@ executor 时会被拒绝。路径选项只替换对应字段，省略的路径�
 
 ### Live VM Attempt 控制 {#vm-instance-control}
 
-每个原生 VM Attempt 都自动获得仅宿主可用的控制端点，包括不保留 Job
-存储的嵌入式运行。CLI 端点直接位于私有 Host 服务根目录下。
-`pvisor run` 向 **stderr** 打印准确身份：
-
-```text
-pVisor live VM options: --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE (status; suspend JOB --vm-pause/--vm-offload; resume JOB --vm-load)
-```
-
-将该行的 socket、Job ID（内部 Run ID）和 Attempt ID 复制到另一宿主终端；
-以下示例值必须替换为该 live 身份：
+普通控制直接从 Job 记录读取规范的私有 owner 地址：
 
 ```bash
-pvisor status --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE
-pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-pause
-pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
-pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-offload --vm-ram-file /private/vm-ram/offloaded.ram
-pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
+pvisor status last --json
+pvisor suspend last --vm-pause
+pvisor resume last
+pvisor suspend last --vm-offload --vm-ram-file /private/vm-ram/offloaded.ram
+pvisor resume last --vm-load
 ```
 
-七个 live VM flags 是子命令局部选项，在子命令帮助的 **Live VM** 下显示：
+`status` 显示 Job 状态。`suspend --vm-pause` 暂停 vCPU；`--vm-offload`
+使用更强的 CPU/设备静默边界，可选写入同文件系统的宿主私有 RAM 文件。
+pause 与 offload 冲突，`--vm-ram-file` 要求 offload。活 `resume`（包括
+`--vm-load`）继续同一 Attempt，不恢复快照。普通 suspend 捕获执行检查点并
+停止 Attempt；已停止 Job 的 resume 恢复封存检查点。活状态转换返回包含
+`status` 与 `value` 的 JSON。
 
-| 命令 | 接受的 live VM flags |
-| --- | --- |
-| `status` | `--vm-socket PATH`、`--vm-job-id ID`、`--vm-attempt-id ID` |
-| `suspend` | 三个身份选项，加上 `--vm-pause`、`--vm-offload`、`--vm-ram-file PATH` |
-| `resume` | 三个身份选项，加上 `--vm-load` |
-
-将它们放在支持的子命令之后。根命令前置 live VM flags，以及在其他命令上
-使用 live VM flags，均被拒绝；`status` 不接受 live 动作选项。
-身份选项 `--vm-socket PATH`、`--vm-job-id ID` 与 `--vm-attempt-id ID`
-必须一起提供，即使 live `status` 也不例外；
-过期或不匹配身份被拒绝。`suspend` 和 `resume` 必须提供与
-`--vm-job-id` 相同的 Job 位置参数，不能用 `last` 或 stage 路径。
-仅 `status`、`suspend --vm-pause` / `--vm-offload` 和
-`resume --vm-load` 接受该 live 控制模式。pause 与 offload 互斥。
-这些参数不改变普通持久 Job 的 suspend/resume：不带它们时仍使用
-执行检查点捕获／恢复。
-
-`--vm-offload` 接受可选的 `--vm-ram-file PATH`：省略时使用已有 backing，
-或指定同一文件系统上 guest 不可访问的新路径。成功后才能使用发布的文件。
-`--vm-load` 选择 `HostVmCommand::Resume`，映射为 `RunResume`，不存在
-`Load` 线上操作。它重新加载／解除暂停同一个 live Attempt，不主动预触
-全部 RAM 页；既不重启进程，也不恢复持久快照。
-`--vm-pause` 停止 vCPU，不等同于 offload 的 CPU/设备静默边界。
-
-成功的 live 控制响应以 JSON 写入 stdout，包含 `HostVmResult` 的
-`status` 与 `value` 字段。Core 的 `host_protocol` 拥有 `HostVmCommand`
-和 `HostVmResult`；嵌入调用方通过 `pvisor::host_vm_exchange` 交换
-`AgentCtlHostRequest<HostVmCommand>` / `AgentCtlHostResponse<HostVmResult>`。
-端点线上协议用 version-1 Host envelope
-包装结果并关联 `request_id`；类型化 Host 错误使 CLI 非零退出，不一定在
-stdout 产生 JSON。
-传输／连接及解析失败也非零退出。非 VM 控制明确不受支持，不回退为
-进程信号。Attempt 结束时移除端点；它与暂存 Job 的控制发现链接不同。
-
-需要稳定的 CLI 路径时，使用私有服务根目录。以下 Linux 示例假设有效 UID
-为 `1000`；替换为自己的有效 UID 和规范临时目录（macOS 通常是
-`/private/tmp`）：
-
-```bash
-install -d -m 0700 /tmp/pvisor-host-1000
-pvisor run --executor vm --vm-control-socket /tmp/pvisor-host-1000/ctrl.sock -- /bin/sleep 600
-```
-
-CLI 自定义 socket 必须直接位于规范化私有 Host 服务根目录下；其他私有
-父目录也会被拒绝。根目录必须不是符号链接、属于有效 UID，且权限恰为
-`0700`；已有 socket 路径绝不覆盖。socket 权限为 `0600`，仅接受同 UID。
-`--vm-control-socket` 在创建 VM 时选路径，`--vm-socket` 寻址已有 live VM。
-嵌入调用方另有验证私有父目录的自定义路径 API。宿主权限端点被排除在
-guest 访问范围之外，包括 host-rootfs VM；不要通过 guest 挂载或可写根
-暴露服务根目录。它们不是 guest 发现文件。
+`--vm-socket PATH` 是调试覆盖，要求同时提供 `--vm-job-id ID` 和
+`--vm-attempt-id ID`；位置 selector 必须匹配显式 Job ID。这些参数只在
+status/suspend/resume 内有效。`--vm-control-socket` 在创建 VM 时选择路径。
+CLI 与嵌入式自定义端点都必须位于规范的 `/tmp/pvisor-host-<UID>` 内
+（macOS 通常为 `/private/tmp`），各级目录属于同 UID、不是符号链接、权限
+`0700`，socket 为 `0600`。不覆盖已有 socket。默认路径为
+`jobs/<job-id>/<attempt-id>/control.sock`，Attempt 结束时清除发现记录。
+执行器将整个权限根目录排除在 Guest 访问范围外；这些是宿主记录，不是
+Guest 发现文件。参见 [owner 协议](../design/architecture.md#host-wire)。
 
 ### VM 本地 live 冷压缩 {#vm-cold-ram-compression}
 

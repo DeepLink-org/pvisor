@@ -144,14 +144,14 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
         assert_eq!(output.stdout, b"WORKLOAD_READY\n");
     }
     let log = std::fs::read_to_string(temp.path().join("frontend.log")).unwrap();
-    // Parsing and execution have separate PIDs. Correlate each request worker
+    // Parsing and execution have separate PIDs. Correlate each Job owner
     // with its originating frontend.
     let bindings: Vec<_> = log
         .lines()
-        .filter(|line| line.starts_with("pvisor-host-request "))
+        .filter(|line| line.starts_with("pvisor-owner-request "))
         .collect();
     assert_eq!(bindings.len(), 4);
-    let mut worker_pids = std::collections::HashSet::new();
+    let mut owner_pids = std::collections::HashSet::new();
     let mut request_ids = std::collections::HashSet::new();
     let mut frontend_pids = std::collections::HashSet::new();
     for line in bindings {
@@ -166,7 +166,7 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
             "foreign frontend: {line}"
         );
         assert!(frontend_pids.insert(frontend.to_owned()));
-        assert!(worker_pids.insert(field("worker_pid=").to_owned()));
+        assert!(owner_pids.insert(field("owner_pid=").to_owned()));
         let request: String = serde_json::from_str(field("request_id=")).unwrap();
         uuid::Uuid::parse_str(&request).unwrap();
         assert!(request_ids.insert(request));
@@ -195,7 +195,7 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
             .find_map(|field| field.strip_prefix("pid="))
             .unwrap();
         assert!(
-            pids.iter().any(|expected| expected == pid) || worker_pids.contains(pid),
+            pids.iter().any(|expected| expected == pid) || owner_pids.contains(pid),
             "interleaved record: {line}"
         );
         for key in ["stage=", "monotonic_us=", "process_elapsed_us="] {

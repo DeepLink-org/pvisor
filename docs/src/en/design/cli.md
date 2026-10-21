@@ -91,7 +91,13 @@ Tools come from a static table and only a trusted installation directory; discov
 
 The default core build excludes Gateway. Use `--features gateway` for capture; wheel builds enable it. Without capture, OverlayNet still authorizes and forwards ordinary explicit proxy traffic. Requesting uncompiled capture or Gateway debug capabilities returns an error.
 
-Built-in Job CLI operations cross the on-demand persistent Host AgentCtl listener as typed requests; the frontend launches authorized request workers rather than reconstructing shell commands in the listener. Ordinary persisted Jobs need no endpoint arguments. Live VM flags are command-local: `status` accepts `--vm-socket`, `--vm-job-id` and `--vm-attempt-id`; `suspend` accepts these identity flags plus `--vm-pause`, `--vm-offload` and `--vm-ram-file`; `resume` accepts the identity flags plus `--vm-load`. Root-prefixed live VM flags and live VM flags on other commands are rejected. All three identities are required together; suspend/resume's positional Job must match `--vm-job-id`. Pause and offload are mutually exclusive, and `--vm-ram-file` requires offload. Live resume continues the same Attempt; persisted-Job suspend/resume retain execution checkpoint capture/restoration. See the [CLI reference](../reference/cli.md#vm-instance-control).
+`run` starts a terminal frontend and one Job owner. Live controls execute in that
+owner through its recorded private socket; stopped operations execute in the
+caller under `job.lock`. Ordinary commands discover endpoints from the Job.
+`--vm-socket` is a debug override and requires the two explicit identity flags.
+Live VM flags remain command-local; pause/offload conflict and `--vm-ram-file`
+requires offload. Live resume continues the same Attempt, while stopped resume
+restores a sealed checkpoint. See the [CLI reference](../reference/cli.md#vm-instance-control).
 
 Embedded callers use `RunHandle` for status, cancellation, checkpoints and Event subscriptions. Session owns Attempt lifecycle; Guest AgentCtl retains workload cooperation duties, isolated from Host authority. See [Host and Guest AgentCtl](architecture.md#host-agentctl) for protocol compatibility, cancellation and upgrade limits. See [Core architecture](architecture.md) for execution/terminal handling and [Operation and Event](operations-events.md) for records/failures.
 
@@ -102,7 +108,15 @@ process-entry or argument-parsing overhead.
 
 ## Implementation ownership {#implementation-ownership}
 
-`cli/host.rs` owns typed Job dispatch and live VM option validation; `cli/host_service.rs` owns listener admission, compatibility and worker authorization. `cli/host_fds.rs`, `cli/host_cancel.rs` and `cli/host_process.rs` implement descriptor transfer, cancellation and process ownership; `cli/host_image.rs` implements macOS loaded/disk Mach-O UUID verification before hashing. `runtime/host_transport.rs` owns shared host-authority paths, identical bounded async/sync newline JSON framing and peer checks, including Job service/internal-worker frames; FD marker bytes remain separate, non-JSON transport records. The internal version-1 handshake checks the Job ticket schema and exact package/content-build compatibility. `JobCommand` embeds internal CLI DTOs and is not a stable public API; Core owns pure shared Host envelope/supervisor contracts and validation, not CLI DTOs or transport.
+`cli/host.rs` owns typed owner bootstrap and live VM option validation;
+`cli/host_service.rs` owns frontend/owner lifecycle, record-based routing and
+protocol compatibility. `cli/host_process.rs` owns process trees and terminal
+handoff; `cli/host_image.rs` retains macOS loaded/disk Mach-O UUID checks.
+`runtime/host_transport.rs` shares private paths, bounded newline JSON and peer
+checks. Instance control uses `pvisor-instance-control-1`, independently of caller
+binary digest. Internal `JobCommand` DTOs bootstrap the same-binary child only.
+Core owns shared Host envelopes and supervisor definitions; daemon admission is
+unchanged. See [owner lifecycle](architecture.md#host-job-service).
 
 `cli/run.rs` owns new Job configuration and startup. `cli/run/lifecycle.rs` owns workspace branches and native execution restoration. `runtime/job_execution.rs` owns durable Job state, request receipts and native terminal acknowledgement; it does not infer suspension from a saved filesystem.
 

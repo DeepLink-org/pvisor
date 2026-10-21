@@ -27,26 +27,34 @@ try:
     assert child.stdout.readline() == b'READY\n'
     escaped = int(open(marker).read())
     started = time.monotonic()
-    if kind in ('kill', 'pidfd-fallback'):
+    if kind in ('kill', 'missing-endpoint'):
         record = json.load(open(glob.glob(os.path.join(root, 'runs', 'run-*', 'run.json'))[0]))
-        endpoint = '/tmp/pvisor-host-%s/cancel-%s.sock' % (os.geteuid(), record['pid'])
+        endpoint = record['live_control']['path']
         assert os.path.exists(endpoint), 'CLI Run must have a cooperative endpoint'
         if kind == 'kill':
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
-                peer.settimeout(3); peer.connect(endpoint)
+                peer.settimeout(3)
+                directory = os.open(os.path.dirname(endpoint), os.O_RDONLY | os.O_DIRECTORY)
+                try: peer.connect('/proc/self/fd/%s/%s' % (directory, os.path.basename(endpoint)))
+                finally: os.close(directory)
                 peer.sendall((json.dumps({'version': 1, 'request_id': 'x' * 256,
                     'target': {'job_id': record['run_id'], 'attempt_id': 'stale-attempt', 'generation': None},
-                    'command': {}}) + '\n').encode())
+                    'command': {'operation': 'terminate'}}) + '\n').encode())
                 response = json.loads(peer.makefile('rb').readline(4097))
                 assert response['request_id'] == 'x' * 256, response
                 assert response['result']['Err']['code'] == 'conflict', response
             assert child.poll() is None, 'stale cancellation must not terminate the Job'
-        if kind == 'pidfd-fallback': os.unlink(endpoint)  # only this test-owned worker's socket
+        if kind == 'missing-endpoint': os.unlink(endpoint)  # only this test-owned owner's socket
         killed = subprocess.run([binary, 'kill', 'last', '--json'], cwd=root,
             env=dict(os.environ, PVISOR_RUN_HOME=os.path.join(root, 'runs'), PVISOR_STARTUP_TIMING='0'),
             capture_output=True, timeout=6)
-        assert killed.returncode == 0, killed.stderr
-        assert json.loads(killed.stdout)['cooperative'] == (kind == 'kill'), killed.stdout
+        if kind == 'missing-endpoint':
+            assert killed.returncode != 0, killed.stderr
+            assert child.poll() is None, 'missing endpoint must never fall back to numeric PID signalling'
+            child.send_signal(signal.SIGTERM)
+        else:
+            assert killed.returncode == 0, killed.stderr
+            assert json.loads(killed.stdout)['cooperative'], killed.stdout
     else:
         child.send_signal(signal.SIGINT if kind == 'cancel' else signal.SIGKILL)
     out, err = child.communicate(timeout=10)
@@ -66,7 +74,7 @@ finally:
 "#;
 #[test]
 fn ignored_signals_and_double_fork_sessions_are_bounded_on_cancel_and_disconnect() {
-    for kind in ["cancel", "disconnect", "kill", "pidfd-fallback"] {
+    for kind in ["cancel", "disconnect", "kill", "missing-endpoint"] {
         let root = tempfile::tempdir().unwrap();
         let output = Command::new("python3")
             .args(["-c", CANCEL, env!("CARGO_BIN_EXE_pvisor")])

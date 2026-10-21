@@ -1,5 +1,5 @@
 //! Real controlling-terminal regressions, not isatty-only socket/pipe tests.
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 use std::process::Command;
 
 const PTY: &str = r#"
@@ -65,7 +65,7 @@ if pid == 0:
     os.chdir(root)
     original = os.tcgetpgrp(0)
     env = dict(os.environ, PVISOR_RUN_HOME=os.path.join(root, 'runs'), PVISOR_STARTUP_TIMING='0')
-    run = [binary, 'run', '--no-agent-defaults', '--overlaynet', 'off', '--', '/bin/true']
+    run = [binary, 'run', '--no-agent-defaults', '--overlaynet', 'off', '--', '/bin/sh', '-c', 'exit 0']
     try:
         seed = subprocess.run(run, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=20)
         assert seed.returncode == 0, seed.stderr
@@ -144,6 +144,7 @@ fn host_run_reads_controlling_terminal_ctrl_c_and_restores_foreground() {
     let root = tempfile::tempdir().unwrap();
     run_pty(root.path(), "run");
 }
+#[cfg(target_os = "linux")]
 #[test]
 fn inspect_reads_controlling_terminal_ctrl_c_and_restores_foreground() {
     let root = tempfile::tempdir().unwrap();

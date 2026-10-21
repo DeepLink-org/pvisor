@@ -419,6 +419,7 @@ impl AttemptTeardown {
     }
 
     pub(crate) fn commit_state(&mut self, state: RunState) -> anyhow::Result<()> {
+        self.run_record.live_control = None;
         self.run_record.state = match state {
             RunState::Completed => RunRecordState::Completed,
             RunState::Cancelled => RunRecordState::Cancelled,
@@ -526,6 +527,7 @@ fn initial_run_record(
     Ok(RunRecord {
         attempt_id: Some(attempt_id),
         schema_version: 1,
+        live_control: preparation.live_control.clone(),
         run_id: spec.run_id.as_str().to_string(),
         parent_run_id: spec.parent_run_id.as_ref().map(ToString::to_string),
         task_id: spec.task_id.clone(),
@@ -1281,6 +1283,7 @@ fn prepare_overlay(
             if let Some(owner) = workspace_base {
                 owner.write_receipt(&record.stage_dir)?;
             }
+            super::overlay::save_lower_mutability(&record.stage_dir, &lowers, &lower_mutability)?;
             let mut hint = hint_from_record(&record, lowers.clone());
             hint.lower_mutability = lower_mutability;
             if mountless {

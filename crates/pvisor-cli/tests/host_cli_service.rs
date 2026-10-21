@@ -14,13 +14,13 @@ fn command(root: &std::path::Path) -> Command {
 }
 
 #[test]
-fn hidden_host_mode_requires_private_inherited_capability() {
+fn hidden_owner_mode_requires_private_inherited_socketpair() {
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .arg("--pvisor-internal-host")
+        .arg("--pvisor-internal-owner")
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("capability"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("private inherited socketpair"));
 }
 
 #[test]
@@ -202,4 +202,166 @@ fn simultaneous_requests_isolate_cwd_and_environment_and_leave_stopped_jobs_addr
         assert_eq!(value["live"], false);
         assert_eq!(value["run"]["state"], "completed");
     }
+}
+
+#[test]
+fn recorded_owner_routes_live_commands_and_legacy_records_stay_disk_only() {
+    use std::{
+        io::{BufRead, BufReader},
+        time::{Duration, Instant},
+    };
+    struct Running(std::process::Child);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            if self.0.try_wait().ok().flatten().is_none() {
+                unsafe {
+                    libc::kill(self.0.id() as i32, libc::SIGTERM);
+                }
+                let until = Instant::now() + Duration::from_secs(6);
+                while self.0.try_wait().ok().flatten().is_none() && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let mut running = Running(
+        command(root.path())
+            .args([
+                "run",
+                "--no-agent-defaults",
+                "--overlaynet",
+                "off",
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf 'READY:%s\\n' \"$PPID\"; exec /bin/sleep 60",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut line = String::new();
+    BufReader::new(running.0.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let owner: u32 = line.trim().strip_prefix("READY:").unwrap().parse().unwrap();
+    let stage = std::fs::read_dir(root.path().join("runs"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.join("run.json").exists())
+        .unwrap();
+    let record = pvisor::RunRecord::read(&stage).unwrap();
+    let endpoint = record.live_control.as_ref().unwrap();
+    assert_eq!(endpoint.pid, owner);
+    assert_ne!(endpoint.pid, running.0.id());
+    assert_eq!(unsafe { libc::getpgid(owner as i32) }, owner as i32);
+    assert_eq!(unsafe { libc::getsid(owner as i32) }, unsafe {
+        libc::getsid(running.0.id() as i32)
+    });
+    assert!(
+        endpoint.path.ends_with(
+            std::path::Path::new(&record.run_id)
+                .join(record.attempt_id.as_ref().unwrap())
+                .join("control.sock")
+        )
+    );
+    let status = command(root.path())
+        .args(["status", "last", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&status.stdout).unwrap()["live"],
+        true
+    );
+    for operation in ["apply", "drop"] {
+        let refused = command(root.path())
+            .args([operation, "last"])
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("owner still holds stage"));
+    }
+    let mut incompatible = record.clone();
+    incompatible.live_control.as_mut().unwrap().protocol = "future-instance-2".into();
+    incompatible.write().unwrap();
+    let refused = command(root.path())
+        .args(["status", "last", "--json"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        error.contains("future-instance-2")
+            && error.contains(&endpoint.binary.display().to_string()),
+        "{error}"
+    );
+    let mut legacy = record.clone();
+    legacy.live_control = None;
+    legacy.write().unwrap();
+    let disk = command(root.path())
+        .args(["status", "last", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        disk.status.success(),
+        "{}",
+        String::from_utf8_lossy(&disk.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&disk.stdout).unwrap()["live"],
+        false
+    );
+    assert!(
+        !command(root.path())
+            .args(["kill", "last"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(running.0.try_wait().unwrap().is_none());
+    record.write().unwrap();
+    let killed = command(root.path())
+        .args(["kill", "last", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        killed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&killed.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&killed.stdout).unwrap()["cooperative"],
+        true
+    );
+    let until = Instant::now() + Duration::from_secs(8);
+    while running.0.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < until, "owner failed to finish after kill");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        pvisor::RunRecord::read(&stage)
+            .unwrap()
+            .live_control
+            .is_none()
+    );
+    assert!(!endpoint.path.exists());
+    assert!(
+        command(root.path())
+            .args(["status", "last", "--json"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
 }

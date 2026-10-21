@@ -17,8 +17,8 @@ It is not an Agent framework, an OCI runtime, or an operating system.
 OverlayFS, OverlayNet, Gateway, and AgentCtl are pVisor runtime drivers.
 `pvisor-core` defines Operations, Events and cross-component contracts. This crate
 owns Session lifecycle, scheduling, policy adaptation and execution. The
-`pvisor-cli` application owns Job lifecycle commands, the persistent Host Job
-listener/worker adapters, terminal/rendering code and companion discovery.
+`pvisor-cli` application owns Job lifecycle commands, the per-Job owner
+bootstrap, terminal/rendering code and companion discovery.
 Cache storage and node resource protocols remain runtime components; cache
 argument parsing lives under `pvisor cache` in the app; `pvisor-daemon serve --cache`
 owns the server entry point.
@@ -183,75 +183,74 @@ and a fresh output directory. Dynamic builds require
 Each run writes `result.json` with final status and control observations. These
 are correctness checks, not memory-saving, throughput or density measurements.
 
-## Host Job service and AgentCtl
+## Job owners and AgentCtl
 
-All built-in Job CLI operations (`run`, `status`, `kill`, `suspend`, `resume`,
-`fork`, `checkpoint`, `inspect`, `review`, `apply`, `drop`) submit typed
-`pvisor-cli/src/cli/host.rs::JobCommand` requests through the on-demand persistent
-listener in `pvisor-cli/src/cli/host_service.rs`. Ordinary persisted Jobs need no endpoint options or manual
-service startup. Bare `pvisor` displays help; default execution via
-`pvisor -- COMMAND` enters the same service. This listener is separate from
-daemon sandbox/pool/cache service ownership; embedded `PVisor`
-remains a direct API.
+`pvisor run` starts a terminal frontend and one owner over an inherited private
+socketpair. The owner stays in the original session, in its own process group;
+Linux makes it the subreaper and retains pidfd-based descendant cleanup. For an
+interactive Job the frontend gives the original controlling terminal to the
+owner/workload, so terminal Ctrl-C can reach the workload, and restores the
+foreground group at exit. Pipes inherit their descriptors directly. The owner
+installs signal handlers before unblocking SIGINT/SIGTERM/SIGHUP. Frontend
+cancellation and disconnection are handled by the owner. No user-wide Job
+listener or per-command worker is required. Once the Attempt has published
+terminal status, owner escalation allows the runtime's bounded RAM/macFUSE
+resource teardown to finish before forced exit and Job completion publication.
 
-Host authority lives under canonical `/tmp/pvisor-host-<effective-UID>`
-(usually `/private/tmp` on macOS): a same-user, non-symlink `0700` root with
-`0600` sockets and generation/capability state. Kernel same-UID credentials,
-frontend PID, generation and worker registration are checked before admission.
-The frontend retains the terminal and spawns a listener-authorized request
-worker; `SCM_RIGHTS` transfers stdio and its private channel. Cwd, environment,
-stdio, cancellation and exit status remain request-local. Executors exclude the
-shared authority root from guest exposure; Guest AgentCtl `Hello`/`Sync` tokens
-cannot authorize Host Job, VM or daemon-supervisor operations.
+Each running Job publishes `live_control` in its host-only Run record before
+executor entry. It contains the canonical path, device/inode, protocol
+`pvisor-instance-control-1`, owner PID, executable path and BLAKE3 digest:
 
-Core's version-1 Host envelopes carry `request_id`, optional Job/Attempt/generation
-`target`, typed commands and correlated results/errors. Core's envelope and
-supervisor contracts are pure shared definitions/validation. `JobCommand`
-embeds internal CLI DTOs tied to an exact schema/build, not a stable public API.
-The Job listener, internal workers and daemon native supervisors use shared
-`runtime/host_transport.rs` async/sync newline JSON framing and same-effective-UID
-peer authentication: 1 MiB of JSON excluding the newline, consuming
-only through the delimiter. `SCM_RIGHTS` FD markers are separate transport
-records, not JSON. The internal version-1 handshake checks the Job ticket schema,
-Cargo package version and BLAKE3 executable content digest before descriptor/
-command transfer; package version alone is insufficient. Worker executable
-ownership, permissions, device/inode and content are checked.
+```text
+/tmp/pvisor-host-<UID>/jobs/<job-id>/<attempt-id>/control.sock
+```
 
-Linux hashes `/proc/self/exe`. On macOS, `pvisor-cli/src/cli/host_image.rs` compares dyld's loaded
-main-image UUID with on-disk Mach-O `LC_UUID` for the matching CPU slice before
-hashing the same open file. Admission requires a matching source Mach-O UUID;
-missing, malformed, ambiguous or mismatched metadata fails closed. UUID
-matching detects pathname replacement but does not attest loaded memory
-byte-for-byte or provide kernel-pinned exec authority. The macOS platform path
-remains uncompiled and untested; parser checks do not validate dyld access,
-platform linking or real replacement behavior.
+The root and every directory are owned by the effective UID, non-symlink and
+`0700`; sockets are `0600`. Long Job/Attempt paths are accessed through a checked
+directory descriptor rather than truncating the canonical address. Clients check
+socket identity before and after connecting and authenticate the peer UID.
+Executors exclude the entire private authority root from guest projections.
+Guest AgentCtl tokens do not authorize Host operations. Terminal publication
+clears the record and the owner removes its own socket. Embedded runs with
+retained storage publish the same discovery record; runs without it are visible
+to the CLI only through durable state.
 
-SIGINT/SIGTERM/SIGHUP are latched before admission; frontend and listener retain
-worker/cleanup ownership and terminal restoration. Linux implements subreaper,
-`/proc` descendant tracking and pidfd signalling, excluding the listener from
-cleanup. macOS tracks birth-identified descendants and known workload groups
-across ordinary process-group changes, freezes the root and discovered forkers,
-and rescans before individually birth-checked cleanup signals. It is not limited
-to the worker process group, but it cannot guarantee ownership of already-
-reparented orphans missed by discovery. libproc checks followed by numeric-PID
-signals are not atomic pidfd operations or Linux-equivalent containment. The
-macOS cleanup path remains uncompiled and untested.
+Live status, kill, VM pause/resume/offload, execution checkpoint/suspend and live
+inspect connect to the recorded owner. Operations execute in the binary that
+started the Job. Compatible protocol versions allow a different caller binary;
+an incompatible Job protocol reports that owner's binary without blocking other
+Jobs. The socket accepts no terminal descriptors. It uses the existing correlated
+Host envelopes and newline JSON codec, with a 1 MiB frame limit and at most eight
+accepted connections. Existing native operation locks serialize transitions.
+The process-local endpoint table is only an owner cache.
 
-Host transport and process checks do not establish guest correctness or full
-platform validation. Real-VM TUI end-to-end validation remains unavailable;
-macOS identity and cleanup paths retain the platform-specific limits above.
+Stopped status, review, apply, drop and inspect execute in the calling process.
+Checkpoint restoration/fork starts a new owner directly. Durable operations take
+exclusive `flock` on the Job root's `job.lock`: same UID, `0600`, one hard link,
+no symlink. Its diagnostic record names the lock protocol, PID and operation;
+unknown disk schemas refuse mutation. Different compatible binaries share this
+lock. Residual lock metadata is cleared only after its process has died and no
+valid live owner remains. Apply/drop refuse a valid owner that still holds stage;
+the Attempt lease remains an additional fence. Read-only inspect uses the stage's
+ordered lower-mutability declaration; absent or rebound declarations use Mutable.
+Read-only sharing does not guarantee freshness.
 
-The listener is persistent, not a durable request queue. Request IDs correlate
-responses and cancellation; they do not deduplicate every operation or promise
-exactly-once execution. Some durable Job operations have scoped receipts only.
-Lost responses, timeouts and cancellation can follow effects; the CLI reports
-ambiguity and does not automatically retry. Reconcile state before resubmitting.
-Drain active requests and stop old listeners with the old binary before upgrade.
-Daemon native supervisors use newline-delimited version-1 Host envelopes;
-the wire is incompatible with old supervisors, so drain their sandboxes using
-the old binary before upgrade too. There is no legacy fallback. See
-[Host and Guest AgentCtl](../../docs/src/en/design/architecture.md#host-agentctl)
-for contract bounds, ownership and limitations.
+The frontend verifies its loaded image before self-executing the owner. Linux
+hashes `/proc/self/exe`; macOS checks the loaded Mach-O UUID against the opened
+executable before hashing. This is not byte-for-byte loaded-memory attestation.
+macOS retains its existing birth-identity/polling limitations: numeric signals
+are not atomic pidfd operations, and already-reparented orphans missed by
+discovery are not guaranteed contained. Moving the listener does not establish
+new macOS isolation guarantees.
+
+Lost responses, timeouts and cancellation may follow accepted effects. The CLI
+reports uncertainty and does not automatically retry. Reconcile state before
+resubmitting; scoped checkpoint receipts are not universal exactly-once delivery.
+
+For upgrade, drain Jobs and stop the old `--pvisor-internal-host` with the old
+binary. New CLIs never connect to `<generation>.sock`. Old records without
+`live_control` expose disk state only; old running VMs are not automatically
+discovered. The daemon supervisor listener, framing and admission are unchanged.
 
 ### Shared runtime implementation
 
@@ -322,19 +321,16 @@ By default every native VM Attempt gets a host-only Unix control endpoint, even
 for embedded runs without retained Job storage. Embedded owners with their own
 authenticated control endpoint may use `PVisorBuilder::instance_control(false)`;
 a custom `control_socket` combined with this setting is rejected at admission.
-Native control authority remains available through the handle/service. The daemon
-uses this setting to avoid publishing a second control endpoint for the same VM. `pvisor run` prints `--vm-socket PATH
---vm-job-id ID --vm-attempt-id ID` to stderr; copy those exact values into normal
-commands in another host terminal. The example root assumes Linux effective UID
-`1000`; replace it and the identities with the printed values:
+Native control authority remains available through the handle/service. The daemon disables the extra instance endpoint because it already owns a
+supervisor endpoint. Ordinary CLI controls discover the owner from the Job:
 
 ```bash
 pvisor run --executor vm -- /bin/sleep 600
-pvisor status --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE
-pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-pause
-pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
-pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-offload --vm-ram-file /private/vm-ram/offloaded.ram
-pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
+pvisor status last --json
+pvisor suspend last --vm-pause
+pvisor resume last
+pvisor suspend last --vm-offload --vm-ram-file /private/vm-ram/offloaded.ram
+pvisor resume last --vm-load
 ```
 
 The live VM flags are command-local: `status` accepts only `--vm-socket`,
@@ -343,16 +339,15 @@ The live VM flags are command-local: `status` accepts only `--vm-socket`,
 flags plus `--vm-load`. Place them after the command. Root-prefixed live VM
 flags and live VM flags on other commands are rejected.
 
-All three addressing options are required together, including
-for live `status`; suspend/resume's positional selector must match `--vm-job-id`.
-Only `status`, `suspend --vm-pause` / `--vm-offload` and `resume --vm-load` support
-live mode. Pause and offload are mutually exclusive. `--vm-ram-file` requires
-`--vm-offload`; omit it to use the current backing, or provide a new
-guest-inaccessible path on the same filesystem. `--vm-load` selects
-`HostVmCommand::Resume`, mapped to `RunResume` of the same live Attempt; there is
-no `Load` wire operation. It is not a persistent snapshot restart or eager RAM
-prefault. Without live options, persisted-Job suspend/resume retain their
-checkpoint capture/restoration behavior. Pause stops vCPUs; offload uses the
+`--vm-socket` is a debugging override and requires explicit `--vm-job-id` and
+`--vm-attempt-id`; a positional selector must match that explicit Job ID. Its
+path must remain inside the private authority root. Normal commands need none
+of these addressing options. Pause/offload are mutually exclusive;
+`--vm-ram-file` requires offload. Live resume continues the same Attempt. When
+there is no valid live owner, ordinary resume restores a sealed execution
+checkpoint. Ordinary suspend captures an execution checkpoint and stops the
+Attempt; `--vm-pause` pauses without capturing.
+Pause stops vCPUs; offload uses the
 stronger CPU/device quiescence boundary. Successful live replies are JSON;
 typed Host errors and transport/parsing failures exit nonzero but need not
 produce JSON. Non-VM controls are unsupported, not signal emulation.
@@ -377,17 +372,12 @@ The exchange takes an `AgentCtlHostRequest<HostVmCommand>` and returns an
 Boolean flags accept bare=true or `=true` / `=false`; omission preserves config.
 True flags and explicit path options infer VM when `--executor` is omitted;
 `=false` alone does not. Explicit executors are not silently replaced. Path
-options override only their corresponding field. A custom CLI control path must
-be directly under the canonical private Host service root. The root must be
-non-symlink, same-effective-UID and exactly `0700`; arbitrary private parents
-are rejected by CLI workers. Embedded callers retain private custom-parent validation and
-automatic private `vm-*` directories under the authority root. Existing paths
-are never overwritten. The `0600` socket accepts same-UID peers and is removed
-at Attempt termination. It must never be guest-accessible, including in
-host-rootfs VMs; the host parent provides executor exclusions. It is separate
-from staged Job control and is not exported as a guest discovery file.
-`--vm-control-socket` selects the creation path; `--vm-socket` addresses a live
-endpoint. The command-local live addressing/action options are not `[vm]` fields.
+options override only their corresponding field. Custom CLI and embedded control
+paths must remain under the canonical private Host authority root, with checked
+`0700` ancestors. Existing sockets are never overwritten. The socket is removed
+at termination and is never exported as guest discovery metadata.
+`--vm-control-socket` selects the creation path; `--vm-socket` overrides discovery.
+The command-local live addressing/action options are not `[vm]` fields.
 
 The local cold pager has one combined reclaim/compression toggle; it conflicts
 with dedup, file/FUSE backing, external pools, snapshot capture/restore, snapshot
@@ -668,7 +658,7 @@ deletion mechanism. A saved JSON path/id alone does not retain an ordinary base.
 
 `open_prepared_rootfs` checks the bounded record, pin identity and small seal,
 then acquires a lease without a full tree audit. External store mutation is
-unsupported; use `SnapshotBase::verify` for an explicit audit. CLI Host workers
+unsupported; use `SnapshotBase::verify` for an explicit audit. CLI Job owners
 open before resolving their layout; `VmExecutor::new` also consumes the typed
 `VmSettings::prepared_rootfs` selector for SDK callers and retains the owner.
 Its optional resolved `rootfs` must match exactly; `image` conflicts. A restored
@@ -710,7 +700,7 @@ unrelated page-mapping or writeback behavior. Launch-environment contract tests
 do not establish additional platform or workload performance coverage.
 Local CLI preparation rejects both source and destination paths that overlap
 the canonical Host authority before any store initialization or copying, even
-without an active Host worker. It never copies Host credentials into a base.
+without an active Job owner. It never copies Host credentials into a base.
 
 The runtime also exposes `SnapshotStore::prepare_workspace`,
 `retain_prepared_workspace` and `open_prepared_workspace`, returning the existing

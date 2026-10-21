@@ -29,31 +29,23 @@ not measure the complete process-entry or argument-parsing overhead.
 
 ## Host Job service {#host-agentctl}
 
-Built-in Job commands (`run`, `status`, `kill`, `suspend`, `resume`, `fork`,
-`checkpoint`, `inspect`, `review`, `apply`, `drop`) submit typed requests through
-Host AgentCtl. The first request starts a persistent same-user listener under
-`/tmp/pvisor-host-<effective-UID>` (using canonical `/tmp`, usually `/private/tmp`
-on macOS); later requests reuse it. You do not need to start a service or pass
-endpoint options for ordinary persisted Jobs. Bare `pvisor` still displays help;
-`pvisor -- COMMAND` follows default execution through the same Job service.
+`pvisor run` starts a frontend and a private Job owner. Live status, kill, VM
+controls and execution capture connect to the owner recorded in the Job;
+ordinary commands need no socket arguments. Stopped status, review, apply, drop
+and inspect run directly in the caller under `job.lock`. Apply/drop refuse a live
+owner still holding stage. Interactive execution keeps the original terminal,
+allows Ctrl-C to reach the workload, and restores foreground ownership at exit.
 
-The frontend retains its terminal and launches a listener-authorized worker;
-stdio and the private worker channel use Unix `SCM_RIGHTS` descriptor transfer.
-Job service/internal-worker JSON uses shared `runtime/host_transport.rs`
-async/sync newline framing with a 1 MiB JSON limit excluding the delimiter;
-FD marker bytes are separate transport records, not JSON. The listener checks
-same-UID kernel credentials and agrees on Host version 1, the internal Job
-ticket schema, package version and executable content digest before
-admitting stdio/commands. The typed `JobCommand` payload contains internal CLI
-DTOs tied to that exact schema/build, not a stable public API. It is separate from daemon sandbox/pool ownership and the independent image cache.
-Guest AgentCtl `Hello`/`Sync` remains a separate cooperative channel: its token
-cannot authorize host Job or VM operations.
+The instance protocol is `pvisor-instance-control-1`; compatible caller binaries
+need not match the owner's digest. Same-UID private sockets use bounded newline
+JSON and never accept terminal descriptors or Guest AgentCtl tokens. Lost replies,
+timeouts and cancellation can follow effects and are never automatically retried.
 
-Drain active requests and stop an old listener with its old binary before
-upgrading. A new client refuses an incompatible live listener; there is no
-legacy fallback. Lost responses and cancellation can leave effects ambiguous;
-requests are not automatically retried. See [Host and Guest AgentCtl](../design/architecture.md#host-agentctl)
-for ownership, protocol and validation limits.
+Before upgrade, drain old Jobs and stop the old `--pvisor-internal-host` with the
+old binary. New CLIs ignore old generation sockets and read records lacking live
+control as disk state only. The daemon supervisor is unchanged. See
+[Host and Guest AgentCtl](../design/architecture.md#host-agentctl) for ownership,
+record validation and platform limitations.
 
 ## Experimental features {#features}
 
@@ -815,83 +807,34 @@ recovery if the service fails.
 
 ### Live VM Attempt controls {#vm-instance-control}
 
-Every native VM Attempt gets a host-only control endpoint automatically,
-including embedded runs without retained Job storage. CLI endpoints live directly
-under the private Host service root. `pvisor run` prints its exact identity to
-**stderr**:
-
-```text
-pVisor live VM options: --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE (status; suspend JOB --vm-pause/--vm-offload; resume JOB --vm-load)
-```
-
-Copy the socket, Job ID (the internal Run ID) and Attempt ID from that line into another host terminal;
-the following example values must be replaced with that live identity:
+Normal controls read the canonical private owner address from the Job record:
 
 ```bash
-pvisor status --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE
-pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-pause
-pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
-pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-offload --vm-ram-file /private/vm-ram/offloaded.ram
-pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
+pvisor status last --json
+pvisor suspend last --vm-pause
+pvisor resume last
+pvisor suspend last --vm-offload --vm-ram-file /private/vm-ram/offloaded.ram
+pvisor resume last --vm-load
 ```
 
-The seven live VM flags are command-local and appear under **Live VM** in
-command help:
+`status` reports Job state. `suspend --vm-pause` pauses vCPUs;
+`--vm-offload` uses stronger CPU/device quiescence and optionally writes a
+host-only RAM file on the same filesystem. Pause and offload conflict;
+`--vm-ram-file` requires offload. Live `resume`, including `--vm-load`, continues
+the same Attempt without restoring a snapshot. Ordinary suspend captures an
+execution checkpoint and stops the Attempt. Stopped resume restores that sealed
+checkpoint. Live transition replies contain JSON `status` and `value`.
 
-| Command | Accepted live VM flags |
-| --- | --- |
-| `status` | `--vm-socket PATH`, `--vm-job-id ID`, `--vm-attempt-id ID` |
-| `suspend` | The three identity flags plus `--vm-pause`, `--vm-offload`, `--vm-ram-file PATH` |
-| `resume` | The three identity flags plus `--vm-load` |
-
-Place them after the supported command. Root-prefixed live VM flags and live VM
-flags on other commands are rejected; `status` accepts no live action flags.
-The identity options `--vm-socket PATH`, `--vm-job-id ID` and
-`--vm-attempt-id ID` are required together, even for
-live `status`; stale or mismatched identities are rejected. `suspend` and
-`resume` require a positional Job selector matching `--vm-job-id`, not `last`
-or a stage path. Only `status`, `suspend --vm-pause` / `--vm-offload`, and
-`resume --vm-load` accept this live control mode. Pause and offload are mutually
-exclusive. These flags do not change ordinary persisted-Job suspend/resume:
-without them, those commands use execution checkpoint capture/restoration.
-
-`--vm-offload` accepts optional `--vm-ram-file PATH`: omit it to use the existing
-backing, or choose a new, guest-inaccessible path on the same filesystem. Wait
-for success before using the published file. `--vm-load` selects
-`HostVmCommand::Resume`, mapped to `RunResume`; there is no `Load` wire operation.
-It reloads/unpauses the same live Attempt without eager RAM prefaulting. It
-neither restarts a process nor restores a persistent snapshot. `--vm-pause`
-stops vCPUs, not the stronger CPU/device quiescence used by offload.
-
-Successful live control replies are JSON on stdout containing `HostVmResult`
-fields `status` and `value`. Core's `host_protocol` owns `HostVmCommand` and
-`HostVmResult`; `pvisor::host_vm_exchange` exchanges
-`AgentCtlHostRequest<HostVmCommand>` / `AgentCtlHostResponse<HostVmResult>` for
-embedded callers. The endpoint
-wire wraps results in version-1 Host envelopes with a correlated `request_id`;
-typed Host errors are nonzero CLI failures, not necessarily JSON on stdout. Transport/connect and parsing failures also exit
-nonzero. Non-VM controls are explicitly unsupported, not a process-signal
-fallback. The endpoint is removed when the Attempt ends and is separate from
-the staged Job's control discovery link.
-
-To choose a stable CLI path, use the private service root. This Linux example
-assumes effective UID `1000`; replace the root with your effective UID and
-canonical temporary path (usually `/private/tmp` on macOS):
-
-```bash
-install -d -m 0700 /tmp/pvisor-host-1000
-pvisor run --executor vm --vm-control-socket /tmp/pvisor-host-1000/ctrl.sock -- /bin/sleep 600
-```
-
-CLI custom sockets must be directly in the canonical private Host service
-root; arbitrary private parents are rejected. The root must be a non-symlink
-directory owned by the effective UID with mode exactly `0700`; existing socket
-paths are never overwritten. The socket has mode `0600` and accepts only
-same-UID peers. `--vm-control-socket` chooses a path when creating a VM;
-`--vm-socket` addresses an existing live VM. Embedded callers have a separate
-custom-parent API with private-parent validation. Host authority endpoints are
-excluded from guest access, including host-rootfs VMs; do not expose the service
-root through guest mounts or writable roots. These are not guest discovery files.
+`--vm-socket PATH` is a debug override, requiring `--vm-job-id ID` and
+`--vm-attempt-id ID`; any positional selector must match the explicit Job ID.
+These flags are command-local on status/suspend/resume. `--vm-control-socket`
+chooses the path at VM creation. Both CLI and embedded custom endpoints must be
+inside canonical `/tmp/pvisor-host-<UID>` (usually `/private/tmp` on macOS), with
+same-UID non-symlink `0700` ancestors and a `0600` socket. Existing sockets are
+never overwritten. Default paths use `jobs/<job-id>/<attempt-id>/control.sock`;
+the terminal owner removes discovery when the Attempt ends. Executors exclude
+the whole authority root from Guest access. These are host records, not guest
+discovery files. See [owner protocol](../design/architecture.md#host-wire).
 
 ### VM local live cold compression {#vm-cold-ram-compression}
 

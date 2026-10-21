@@ -1,5 +1,5 @@
 //! Typed Job requests. CLI syntax is never reconstructed in the service.
-//! These DTOs are an internal exact-build/schema protocol, not a stable public
+//! These DTOs bootstrap a self-executed owner, not a stable public
 //! Job API. The shared core envelopes and host framing are separate contracts.
 use super::{checkpoint, product, run, runtime};
 use anyhow::Context;
@@ -63,7 +63,7 @@ pub(super) struct VmOptions {
     /// Explicit Job identity served by the live VM endpoint.
     #[arg(long, requires = "vm_socket")]
     pub vm_job_id: Option<String>,
-    /// Explicit live Attempt identity; never inferred from the Job.
+    /// Explicit Attempt identity for the debug socket override.
     #[arg(long, requires = "vm_socket")]
     pub vm_attempt_id: Option<String>,
 }
@@ -74,10 +74,10 @@ pub(super) struct SuspendVmOptions {
     #[command(flatten)]
     pub identity: VmOptions,
     /// Pause vCPUs rather than creating an execution checkpoint (suspend only).
-    #[arg(long, requires = "vm_socket", conflicts_with = "vm_offload")]
+    #[arg(long, conflicts_with = "vm_offload")]
     pub vm_pause: bool,
     /// Quiesce and offload live VM RAM (suspend only).
-    #[arg(long, requires = "vm_socket")]
+    #[arg(long)]
     pub vm_offload: bool,
     /// Write offloaded RAM to this host file (requires --vm-offload).
     #[arg(long, requires = "vm_offload")]
@@ -90,14 +90,15 @@ pub(super) struct ResumeVmOptions {
     #[command(flatten)]
     pub identity: VmOptions,
     /// Reload/unpause the same live Attempt, not snapshot restoration (resume only).
-    #[arg(long, requires = "vm_socket")]
+    #[arg(long)]
     pub vm_load: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct VmRequest {
-    pub socket: PathBuf,
+    pub socket: Option<PathBuf>,
+    pub endpoint: Option<pvisor::host_transport::LiveControlRecord>,
     pub job_id: String,
     pub attempt_id: String,
     pub command: HostVmCommand,
@@ -129,12 +130,38 @@ impl VmOptions {
             "VM identities must not be empty"
         );
         Ok(Some(JobCommand::Vm(VmRequest {
-            socket: socket.clone(),
+            socket: Some(socket.clone()),
+            endpoint: None,
             job_id: job_id.clone(),
             attempt_id: attempt_id.clone(),
             command,
         })))
     }
+}
+
+fn recorded_vm(
+    command: HostVmCommand,
+    selector: &Path,
+    storage: &Path,
+) -> anyhow::Result<Option<JobCommand>> {
+    let record = pvisor::resolve_run(Some(selector), storage)?;
+    anyhow::ensure!(
+        record
+            .live_control
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.is_available()),
+        "Job has no valid recorded owner"
+    );
+    Ok(Some(JobCommand::Vm(VmRequest {
+        socket: None,
+        job_id: record.run_id.clone(),
+        attempt_id: record
+            .attempt_id
+            .clone()
+            .context("Job has no Attempt identity")?,
+        endpoint: record.live_control,
+        command,
+    })))
 }
 
 pub(super) fn vm_request(command: &super::Command) -> anyhow::Result<Option<JobCommand>> {
@@ -143,7 +170,7 @@ pub(super) fn vm_request(command: &super::Command) -> anyhow::Result<Option<JobC
             .vm
             .request(HostVmCommand::Status, args.args.selector.as_deref()),
         super::Command::Suspend(args) => {
-            if args.vm.identity.vm_socket.is_none() {
+            if args.vm.identity.vm_socket.is_none() && !args.vm.vm_pause && !args.vm.vm_offload {
                 return Ok(None);
             }
             let command = if args.vm.vm_pause {
@@ -155,12 +182,26 @@ pub(super) fn vm_request(command: &super::Command) -> anyhow::Result<Option<JobC
             } else {
                 anyhow::bail!("live VM suspend requires --vm-pause or --vm-offload");
             };
+            if args.vm.identity.vm_socket.is_none() {
+                return recorded_vm(
+                    command,
+                    args.args.job_selector(),
+                    &args.args.selection().output_dir,
+                );
+            }
             args.vm
                 .identity
                 .request(command, Some(args.args.job_selector()))
         }
         super::Command::Resume(args) => {
             if args.vm.identity.vm_socket.is_none() {
+                if args.vm.vm_load {
+                    return recorded_vm(
+                        HostVmCommand::Resume,
+                        args.args.job_selector(),
+                        &args.args.selection().output_dir,
+                    );
+                }
                 return Ok(None);
             }
             anyhow::ensure!(args.vm.vm_load, "live VM resume requires --vm-load");
@@ -173,6 +214,34 @@ pub(super) fn vm_request(command: &super::Command) -> anyhow::Result<Option<JobC
 }
 
 impl JobCommand {
+    pub(super) fn operation(&self) -> &'static str {
+        match self {
+            Self::Run(_) => "run",
+            Self::Status(_) => "status",
+            Self::Kill(_) => "kill",
+            Self::Suspend(_) => "suspend",
+            Self::Resume(_) => "resume",
+            Self::Fork(_) => "fork",
+            Self::Checkpoint(_) => "checkpoint",
+            Self::Inspect(_) => "inspect",
+            Self::Review(_) => "review",
+            Self::Apply(_) => "apply",
+            Self::Drop(_) => "drop",
+            Self::Vm(_) => "vm",
+        }
+    }
+    pub(super) fn preflight(&self, record: &pvisor::RunRecord) -> anyhow::Result<()> {
+        match self {
+            Self::Resume(_) | Self::Suspend(_) => checkpoint::check_execution(record)?,
+            Self::Fork(args) if args.restores_execution() => checkpoint::check_execution(record)?,
+            Self::Fork(_) => {
+                pvisor::job_service::policy::workspace_config(record)?;
+            }
+            Self::Checkpoint(args) => args.preflight(record)?,
+            _ => {}
+        }
+        Ok(())
+    }
     fn selection(&self) -> Option<(Option<&Path>, &Path)> {
         match self {
             Self::Run(_) | Self::Vm(_) => None,
@@ -315,8 +384,27 @@ pub(crate) fn execute(rt: &tokio::runtime::Runtime, command: JobCommand) -> anyh
         JobCommand::Suspend(args) => rt.block_on(checkpoint::suspend(args))?,
         JobCommand::Checkpoint(args) => rt.block_on(checkpoint::run(args))?,
         JobCommand::Vm(args) => rt.block_on(async {
+            if let Some(endpoint) = &args.endpoint {
+                use pvisor::host_transport::InstanceCommand;
+                let command = match args.command {
+                    HostVmCommand::Status => InstanceCommand::Status {},
+                    HostVmCommand::Pause => InstanceCommand::Pause {},
+                    HostVmCommand::Resume => InstanceCommand::Resume {},
+                    HostVmCommand::Offload { file } => InstanceCommand::Offload { file },
+                };
+                let result = endpoint.exchange_checked(
+                    &args.job_id,
+                    &args.attempt_id,
+                    command,
+                    Some(&super::host_service::check_cancelled),
+                )?;
+                println!("{}", serde_json::to_string(&result)?);
+                return Ok(());
+            }
             let response = pvisor::host_vm_exchange(
-                &args.socket,
+                args.socket
+                    .as_deref()
+                    .context("missing debug control socket")?,
                 &AgentCtlHostRequest {
                     version: AGENTCTL_HOST_VERSION,
                     request_id: uuid::Uuid::new_v4().to_string(),

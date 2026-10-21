@@ -4,10 +4,6 @@ mod checkpoint;
 mod features;
 #[cfg(unix)]
 pub(crate) mod host;
-#[cfg(unix)]
-mod host_cancel;
-#[cfg(unix)]
-mod host_fds;
 #[cfg(any(target_os = "macos", test))]
 mod host_image;
 #[cfg(unix)]
@@ -199,7 +195,7 @@ pub fn main() -> anyhow::Result<()> {
         !args.get(1).is_some_and(|arg| arg == "ctrl")
             && !(args.get(1).is_some_and(|arg| arg == "help")
                 && args.get(2).is_some_and(|arg| arg == "ctrl")),
-        "`pvisor ctrl` has been retired; use status, suspend --vm-pause/--vm-offload, or resume --vm-load with --vm-socket, --vm-job-id and --vm-attempt-id"
+        "`pvisor ctrl` has been retired; use status JOB, suspend JOB --vm-pause/--vm-offload, or resume JOB"
     );
     let mut core_command = Cli::command();
     core_command.build();

@@ -1,7 +1,7 @@
 //! pVisor — foreground Agent Run manager and portable execution runtime.
 //!
 //! Embedded callers configure a [`PVisor`] and invoke [`PVisor::run`]. CLI Job
-//! requests reach this runtime through the Host listener and authorized workers.
+//! execution enters directly through a per-Job owner.
 
 #[cfg(test)]
 use pvisor_journal::api::JournalStore;
@@ -118,6 +118,7 @@ pub struct RunHandle {
     pub(crate) record: Option<crate::runtime::RunRecord>,
     pub(crate) checkpoint_record: Option<crate::runtime::RunRecord>,
     pub(crate) join: JoinHandle<RunResult>,
+    pub(crate) instance_control: Option<JoinHandle<()>>,
 }
 
 /// Cloneable VM controls bound to one live Run attempt. Native controls still
@@ -584,7 +585,11 @@ impl RunHandle {
     }
 
     pub async fn wait(self) -> Result<RunResult, PVisorError> {
-        Ok(self.join.await?)
+        let result = self.join.await?;
+        if let Some(server) = self.instance_control {
+            server.await?;
+        }
+        Ok(result)
     }
 }
 
@@ -811,6 +816,7 @@ pub struct PVisor {
 /// Legacy caller metadata is decoded once at admission, never reinterpreted by drivers.
 #[derive(Clone)]
 pub(crate) struct PreparedRun {
+    pub live_control: Option<super::host_transport::LiveControlRecord>,
     pub executor: ExecutorPlan,
     pub operation: pvisor_core::operation::Operation,
     pub lineage: Option<crate::runtime::RunLineage>,
@@ -857,6 +863,7 @@ impl PreparedRun {
             workspace,
             guest_workspace_overlay,
             network,
+            live_control: None,
             workspace_base: None,
             output_observer: None,
         })
@@ -1127,14 +1134,22 @@ impl PVisor {
             .spec
             .metadata
             .remove(super::instance_control::INSTANCE_CONTROL_DIRECTORY_METADATA);
-        // Bind before starting any attempt task: setup errors cannot orphan a VM.
+        let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
+        // Bind and persist before starting any attempt task.
         #[cfg(unix)]
-        let control_server = if self.instance_control
-            && resolved.descriptor.kind == pvisor_core::ExecutorKind::VirtualMachine
-        {
+        let control_server = if self.instance_control {
+            if self.control_socket.is_some()
+                && resolved.descriptor.kind != pvisor_core::ExecutorKind::VirtualMachine
+            {
+                return Err(PVisorError::InvalidSpec(
+                    "control socket requires a VM executor".into(),
+                ));
+            }
             Some(
                 super::instance_control::InstanceControlServer::bind(
                     self.control_socket.as_deref(),
+                    resolved.spec.run_id.as_str(),
+                    attempt_id.as_str(),
                 )
                 .map_err(PVisorError::Prepare)?,
             )
@@ -1148,17 +1163,24 @@ impl PVisor {
         };
         #[cfg(unix)]
         if let Some(server) = &control_server {
+            resolved.preparation.live_control =
+                Some(server.record().map_err(PVisorError::Prepare)?);
             resolved.spec.metadata.insert(
                 super::instance_control::INSTANCE_CONTROL_DIRECTORY_METADATA.into(),
                 serde_json::to_value(server.directory())
                     .map_err(|error| PVisorError::Prepare(error.into()))?,
             );
         }
-        let handle =
-            crate::Session::start(&self.runtime, Arc::clone(&self.event_sink), resolved).await?;
+        let mut handle = crate::Session::start(
+            &self.runtime,
+            Arc::clone(&self.event_sink),
+            resolved,
+            attempt_id,
+        )
+        .await?;
         #[cfg(unix)]
         if let Some(server) = control_server {
-            server.start(&handle);
+            handle.instance_control = Some(server.start(&handle));
         }
         Ok(handle)
     }

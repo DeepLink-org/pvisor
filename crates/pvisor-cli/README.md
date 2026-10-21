@@ -11,8 +11,8 @@ Embed [`pvisor`](../pvisor/README.md) for `PVisor`, Session/Attempt execution an
 `job_service::RuntimeJobService`. This application library exposes frontend
 modules, not a compatibility re-export of the runtime. Frontends call explicit
 runtime APIs and retain request-local cancellation, admission fences and terminal
-ownership. The persistent Host Job listener is not an implicit requirement of
-embedded execution.
+ownership. Each running Job owns its recorded private control socket; stopped Job operations
+run directly in the caller. Embedded execution publishes the same discovery record.
 
 The separate `pvisor-daemon` owns shared services, including the cache server and memory pool.
 Use `pvisor cache` to build, publish and query caches; invoke `pvisor-daemon serve --cache`
@@ -44,30 +44,29 @@ The seven live VM flags are command-local, under **Live VM** in command help:
 | `suspend` | The three identity flags plus `--vm-pause`, `--vm-offload`, `--vm-ram-file` |
 | `resume` | The three identity flags plus `--vm-load` |
 
-Place these flags after the supported command. Root-prefixed live VM flags and
-live VM flags on other commands are rejected. All three identity flags are
-required together; suspend/resume's positional Job must match `--vm-job-id`.
-Pause and offload are mutually exclusive; `--vm-ram-file` requires offload.
-Live resume continues the same Attempt. Ordinary persisted-Job suspend/resume
-retain execution checkpoint capture/restoration. See the runtime README and
-[CLI reference](../../docs/src/en/reference/cli.md#vm-instance-control) for
-examples and endpoint/lifecycle limits.
+Place these flags after the supported command. Normal status/suspend/resume
+resolve the owner from the Job record. `--vm-socket` is a debug override under
+`/tmp/pvisor-host-<UID>` and requires the two explicit identity flags; positional
+selectors must then match `--vm-job-id`. Pause and offload are mutually exclusive;
+`--vm-ram-file` requires offload. Resume with a live owner continues the same
+Attempt; stopped resume restores a sealed checkpoint.
 
-Help, version and feature queries emit no startup logs. For execution commands,
-`process.entry` and `cli.parsed` are emitted only after command parsing; these
-markers do not measure the complete process-entry or argument-parsing overhead.
+The frontend self-executes one owner over an inherited private socketpair. The
+owner remains in the original session, owns descendant cleanup, and installs
+signal handlers before unblocking signals. Interactive Jobs use the original
+controlling terminal and may receive Ctrl-C directly; foreground ownership is
+restored at exit. Other commands never start a worker. Live commands execute
+inside the starting owner binary through `pvisor-instance-control-1`; compatible
+caller binaries need not have matching digests. Stopped operations take the Job
+root's `job.lock`. Apply/drop refuse an owner still holding stage. See the runtime
+README for socket validation, lost-response ambiguity and platform limitations.
 
-Host execution verifies the loaded executable once per process and pins that
-inode. Request validation and the check immediately before worker spawn reuse
-its digest only when the opened file's device, inode, size, nanosecond mtime and
-ctime, mode and ownership match the verified image. Changes trigger a full hash;
-metadata must remain stable across verification. Ancestor permissions, path
-identity, peer credentials and listener compatibility remain checked. A warm
-listener therefore normally needs no new content hash, while each new frontend
-and worker still independently hash their loaded images; no caller-supplied hash
-or persistent cross-process cache substitutes for that attestation.
-The frontend's signal-only Tokio runtime uses one worker thread; execution
-retains its separate worker runtime.
+Help, version and feature queries emit no startup logs. Execution startup markers
+are emitted after command parsing and do not measure complete process entry.
+The frontend verifies and pins its own executable before launching its owner;
+there is no user-wide digest admission or generation socket. For upgrade, drain
+old Jobs and stop the old `--pvisor-internal-host` with the old binary first.
+New CLIs read old records without live control as disk state only.
 
 ## Prepared VM rootfs
 
@@ -83,12 +82,12 @@ Both local source and destination are checked against canonical Host authority
 before initializing/copying, without contacting or changing a listener.
 
 `pvisor run --vm --rootfs-base-store STORE --rootfs-base ID -- COMMAND` opens that
-catalog entry in the ordinary Host request worker, before default host rootfs or
+catalog entry in the ordinary Job owner, before default host rootfs or
 OCI preparation. Both options are required together and conflict with `--rootfs`,
 configured image sources, host/container execution and JSON `--spec`. TOML can
 use `[vm.prepared_rootfs]` with `store` and `base = { id = "..." }`; old configs
 retain their defaults. Jobs persist the canonical selector and exact root path;
-future workers must authenticate both rather than trust the path alone.
+future owners must authenticate both rather than trust the path alone.
 
 Warm opens verify the small record/seal and marker, then retain a GC lease in the
 executor and native child; they do not reimport or fully hash the tree. Durable
@@ -100,16 +99,13 @@ that limit before capture, and no capture binding is installed. Workspace logica
 checkpoints retain their independent behavior. See the runtime README for the
 ownership and platform limits.
 
-Successful final process-tree cleanup is idempotent; failed cleanup remains
-retryable and descendant-only cleanup does not finalize ownership. Linux
-observes the stop state of every discovered live process and thread before
-rescanning descendants, instead of assuming a fixed delay quiesces forkers.
-Pidfds wake descendant/root exit waits, and worker response events wake the
-service immediately. The frontend still owns Child reaping and adopted orphan
-cleanup; the service's Finish handshake and bounded escalation remain in place.
-macOS retains birth-identity checks and polling during tree quiescence. These
-changes remove redundant work in the source path; runtime latency improvements
-require a new paired measurement.
+Successful owner process-tree cleanup is idempotent. Linux uses subreaper
+adoption and pidfds, observes stopped forkers before rescanning, and reaps escaped
+descendants inside the owner. The frontend reaps its own owner child. After
+Attempt terminal publication, the owner allows the existing bounded RAM/macFUSE
+cleanup window before escalating. macOS keeps
+birth-identity checks, polling and its existing limitations for missed reparented
+orphans. These paths require platform-specific integration coverage.
 
 ## Prepared VM workspace
 
@@ -135,7 +131,7 @@ Run options require the workspace pair together. TOML uses
 `PreparedBase` is the common selector DTO; the existing `PreparedRootfs` Rust name
 and `vm.prepared_rootfs` JSON/TOML representation remain compatible. A conflicting
 CLI/config workspace selector fails. Jobs persist its canonical store/id for
-independent later workers; serialized fields do not carry leases or ownership.
+independent later owners; serialized fields do not carry leases or ownership.
 
 The first supported path requires a native VM, an authenticated prepared rootfs,
 independent rootfs/workspace stores, one lower and fresh stage backing. It rejects
@@ -147,7 +143,7 @@ live target, stage, root share, mutable VM backing, recording output and any
 guest-visible sources, including canonical symlink aliases. Existing stage or
 Run metadata is not permission to reopen or overwrite a previous Job.
 
-The Host request worker reopens the workspace-purpose catalog and passes its
+The Job owner reopens the workspace-purpose catalog and passes its
 typed lease with the exact prepared-rootfs `Arc<VmExecutor>` to the runtime. Fresh
 upper/compact-journal creation occurs under the Run lease. The native child
 independently authenticates the physical seal and holds its own lease; it does
@@ -163,7 +159,7 @@ semantics. These interface changes do not establish a performance result.
 
 ## Source layout
 
-- `src/cli/`: Job commands, typed internal Host requests/listener/workers,
+- `src/cli/`: Job commands, typed owner bootstrap, per-Job discovery,
   safe Agent presets, terminal adapters and output rendering.
 - `src/cli/features.rs`: runtime feature listing frontend; registry/settings
   remain in `pvisor::features`.

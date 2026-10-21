@@ -105,7 +105,7 @@ pub use runtime::{
 pub use util::unix_now_ms;
 
 #[doc(hidden)]
-pub use runtime::{RunRecord, RunRecordState, control_observations};
+pub use runtime::{JobDirectoryLock, RunRecord, RunRecordState, control_observations};
 
 // Explicit frontend/embedding APIs; runtime implementation stays private.
 pub use config::{FilesystemAccessLevel, FilesystemAccessRule, FilesystemMount, GatewayProfile};
