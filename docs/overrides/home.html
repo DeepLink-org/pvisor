@@ -33,30 +33,30 @@
       <article>
         <h3>{% if zh %}执行隔离与访问控制{% else %}Execution isolation and access controls{% endif %}</h3>
         <p>{% if zh %}为 Agent 配置文件、网络与资源访问边界，通过所选执行器落实控制，让本地任务与并发工作负载在明确的权限范围内运行。{% else %}Configure file, network, and resource access boundaries for agents. Apply controls through the selected executor so local tasks and concurrent workloads run within defined permissions.{% endif %}</p>
-        <a href="security/executor-boundaries/">{% if zh %}执行器边界 →{% else %}Executor boundaries →{% endif %}</a>
+        <a href="security/executor-boundaries/">{% if zh %}执行器边界{% else %}Executor boundaries{% endif %}</a>
       </article>
       <article>
         <h3>{% if zh %}文件审查与运行记录{% else %}File review and execution records{% endif %}</h3>
         <p>{% if zh %}启用暂存后，审查候选文件并选择接受或丢弃改动；结合运行记录追踪执行过程、访问控制与任务结果。{% else %}With staging enabled, review candidate files and choose which changes to accept or discard. Use execution records to trace execution, access controls, and task outcomes.{% endif %}</p>
-        <a href="guides/review-apply/">{% if zh %}审查并应用改动 →{% else %}Review and apply changes →{% endif %}</a>
+        <a href="guides/review-apply/">{% if zh %}审查并应用改动{% else %}Review and apply changes{% endif %}</a>
       </article>
       <article>
         <h3>{% if zh %}状态保存与复用{% else %}State preservation and reuse{% endif %}</h3>
         <p>{% if zh %}通过工作区检查点、受支持的执行快照与分叉机制保存和复用任务状态，为多次尝试、分支探索与 rollout 提供起点。{% else %}Preserve and reuse task state through workspace checkpoints, supported execution snapshots, and forks, providing starting points for repeated attempts, branch exploration, and rollouts.{% endif %}</p>
-        <a href="guides/fork-checkpoint/">{% if zh %}工作区检查点 →{% else %}Workspace checkpoints →{% endif %}</a> · <a href="reference/cli/#full-vm-execution-checkpoints">{% if zh %}执行快照 →{% else %}Execution snapshots →{% endif %}</a>
+        <a href="guides/fork-checkpoint/">{% if zh %}工作区检查点{% else %}Workspace checkpoints{% endif %}</a> · <a href="reference/cli/#full-vm-execution-checkpoints">{% if zh %}执行快照{% else %}Execution snapshots{% endif %}</a>
       </article>
       <article>
         <h3>{% if zh %}资源管理与执行效率{% else %}Resource management and execution efficiency{% endif %}</h3>
         <p>{% if zh %}通过镜像缓存、内存共享及空闲内存回收机制，减少重复准备与资源占用，为并发推理、评测和训练任务提供执行支持。{% else %}Use image caching, memory sharing, and idle-memory reclamation to reduce repeated setup and resource use, supporting concurrent inference, evaluation, and training tasks.{% endif %}</p>
-        <a href="reference/shared-image-cache/">{% if zh %}镜像缓存 →{% else %}Image caching →{% endif %}</a> · <a href="design/memory-optimization/">{% if zh %}内存共享与回收 →{% else %}Memory sharing and reclamation →{% endif %}</a>
+        <a href="reference/shared-image-cache/">{% if zh %}镜像缓存{% else %}Image caching{% endif %}</a> · <a href="design/memory-optimization/">{% if zh %}内存共享与回收{% else %}Memory sharing and reclamation{% endif %}</a>
       </article>
     </div>
-    <p>{% if zh %}具体能力与支持范围取决于接入方式、执行器和平台。{% else %}Capabilities and support depend on the integration interface, executor, and platform.{% endif %} <a href="why/">{% if zh %}了解 pVisor 的能力与职责边界 →{% else %}Explore pVisor’s capabilities and responsibilities →{% endif %}</a></p>
+    <p>{% if zh %}具体能力与支持范围取决于接入方式、执行器和平台。{% else %}Capabilities and support depend on the integration interface, executor, and platform.{% endif %} <a href="why/">{% if zh %}了解 pVisor 的能力与职责边界{% else %}Explore pVisor’s capabilities and responsibilities{% endif %}</a></p>
   </section>
   <section class="pc-home-modes">
     <h2>{% if zh %}性能与验证{% else %}Performance and validation{% endif %}</h2>
     <p class="pc-home-lede">{% if zh %}通过基准测试与验证实验，展示 pVisor 的启动延迟、内存占用、并发密度，以及执行隔离与轨迹回放的表现。{% else %}Benchmarks and validation experiments show pVisor’s startup latency, memory use, concurrency density, and behavior in execution isolation and trajectory replay.{% endif %}</p>
-    <p><a href="benchmarks/">{% if zh %}查看基准测试与验证结果 →{% else %}View benchmarks and validation results →{% endif %}</a></p>
+    <p><a href="benchmarks/">{% if zh %}查看基准测试与验证结果{% else %}View benchmarks and validation results{% endif %}</a></p>
   </section>
   <footer class="pc-home-footer"><p>{% if zh %}开源 · Apache-2.0 · PolicyVisor{% else %}Open source · Apache-2.0 · PolicyVisor{% endif %}</p><p><a href="https://github.com/DeepLink-org/pvisor">GitHub</a> · <a href="community/">{% if zh %}参与开发{% else %}Contribute{% endif %}</a></p></footer>
 </div>

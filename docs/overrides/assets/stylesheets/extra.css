@@ -360,7 +360,16 @@ body::before {
 .md-select__link:hover { background: rgba(255,255,255,.1); }
 .md-main__inner:has(.pc-home-container) { display: block; width: 100%; max-width: none; margin-top: 0; }
 .pc-home-container { width: 100%; }
-.pc-home-article a.pc-home-btn, .pc-home-article a.pc-home-mode { text-decoration: none; }
+.pc-home-article.md-typeset a {
+  text-decoration: none;
+  transition: color 160ms ease;
+}
+.pc-home-article.md-typeset a:hover { color: #fff; }
+.pc-home-article.md-typeset a:focus-visible {
+  outline: 2px solid var(--md-accent-fg-color);
+  outline-offset: 4px;
+  border-radius: 3px;
+}
 .pc-home-article a.pc-home-btn.primary { color: #0b1220; }
 .pc-home-article .pc-home-terminal-body { color: #e8eef8; }
 /* Keep the original dark brand marks readable on the blue canvas. */
