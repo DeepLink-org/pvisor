@@ -50,7 +50,7 @@ bounded process execution; Go uses `context` deadlines.
 
 ## Coverage and limits
 
-The active profile has 29 Bats cases and 72 Go cases. Each test first pulls its
+The active profile has 29 Bats cases and 73 Go cases. Each test first pulls its
 image; none is skipped based on engine failure.
 
 | Suite | Active contracts |
@@ -67,6 +67,12 @@ image; none is skipped based on engine failure.
 The continuing source audit, outstanding supported scenarios and proposed
 cost-based deferrals are in [REVIEW.md](REVIEW.md). The audit remains open;
 these counts do not mean the entire imported corpus has been covered.
+
+An independent, opt-in macOS [lightweight chaos runner](CHAOS.md) mixes these
+operations with client disconnects and concurrent starts under fixed resource
+limits. Chaos rounds are not counted as additional Podman contracts. The normal
+Go suite includes its concurrent-start regression, which verifies one entrypoint
+execution for each pair of simultaneous starts.
 
 Together these exercise all ten registered subcommands: `pull`, `images`, `rmi`,
 `run`, `exec`, `ps`, `start`, `stop`, `rm`, `logs`. They do not cover every option.

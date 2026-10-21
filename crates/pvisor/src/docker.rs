@@ -683,6 +683,8 @@ impl Store {
         Ok(path)
     }
     /// Launch a new generation; `start` never changes the pinned image or upper.
+    /// Concurrent callers join an already-starting generation and observe its
+    /// bounded readiness/completion result, without holding the catalog lock.
     pub fn start(&self, selector: &str) -> anyhow::Result<Instance> {
         let mut instance;
         {
@@ -692,37 +694,39 @@ impl Store {
             if self.active(&instance)? && instance.state == "running" {
                 return Ok(instance);
             }
-            ensure!(
-                !self.active(&instance)? && instance.state != "starting",
-                "container is already running or starting"
-            );
-            instance.generation = uuid();
-            instance.started_ms = crate::unix_now_ms();
-            instance.state = "starting".into();
-            instance.exit_code = None;
-            self.save(&instance)?;
-            let mut command = Command::new(std::env::current_exe()?);
-            command
-                .arg("--pvisor-internal-docker-owner")
-                .arg(&self.root)
-                .arg(&instance.id)
-                .arg(&instance.generation)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::from(self.diagnostic(&instance)?));
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::setsid() < 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-            if let Err(error) = command.spawn() {
-                instance.state = "exited".into();
-                instance.exit_code = Some(125);
+            if instance.state != "starting" {
+                ensure!(
+                    !self.active(&instance)?,
+                    "container is already running or starting"
+                );
+                instance.generation = uuid();
+                instance.started_ms = crate::unix_now_ms();
+                instance.state = "starting".into();
+                instance.exit_code = None;
                 self.save(&instance)?;
-                return Err(error.into());
+                let mut command = Command::new(std::env::current_exe()?);
+                command
+                    .arg("--pvisor-internal-docker-owner")
+                    .arg(&self.root)
+                    .arg(&instance.id)
+                    .arg(&instance.generation)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::from(self.diagnostic(&instance)?));
+                unsafe {
+                    command.pre_exec(|| {
+                        if libc::setsid() < 0 {
+                            return Err(io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+                if let Err(error) = command.spawn() {
+                    instance.state = "exited".into();
+                    instance.exit_code = Some(125);
+                    self.save(&instance)?;
+                    return Err(error.into());
+                }
             }
         }
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -1656,6 +1660,32 @@ mod tests {
         config.name = Some("unset".into());
         config.unset_env = vec!["IMAGE_ENV".into()];
         assert!(!store.create(config).unwrap().env.contains_key("IMAGE_ENV"));
+    }
+    #[test]
+    fn docker_start_joins_starting_generation_and_reports_its_failure() {
+        let (_temporary, store, _) = fixture();
+        let mut instance = store.create(request()).unwrap();
+        instance.state = "starting".into();
+        instance.started_ms = crate::unix_now_ms();
+        store.save(&instance).unwrap();
+        crate::util::write_private_json(
+            &store
+                .root
+                .join("results")
+                .join(format!("{}.json", instance.id)),
+            &Completion {
+                generation: instance.generation.clone(),
+                code: 125,
+                error: Some("original launch failed".into()),
+            },
+        )
+        .unwrap();
+        let error = store.start(&instance.id).unwrap_err();
+        assert!(error.to_string().contains("original launch failed"));
+        assert_eq!(
+            store.resolve(&instance.id).unwrap().generation,
+            instance.generation
+        );
     }
     #[test]
     fn docker_remove_refuses_live_owners_and_retains_named_volumes() {

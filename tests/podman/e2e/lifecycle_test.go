@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -258,6 +259,33 @@ func TestStartRunningContainerDoesNotRerunEntrypoint(t *testing.T) {
 	if out != "started\n" {
 		t.Fatalf("start reran a running entrypoint: %q", out)
 	}
+}
+
+// Regression from lightweight chaos: simultaneous starts must share one launch.
+func TestConcurrentStartSharesOneGeneration(t *testing.T) {
+	e := newEngine(t)
+	e.want(0, "", "run", "-d", "--name", e.name, "--cpus", "1", "-m", "256m", e.image,
+		"sh", "-c", `n=$(cat /count 2>/dev/null || echo 0); echo $((n+1)) > /count; exec sleep 600`)
+	for generation := 1; generation <= 4; generation++ {
+		e.want(0, "", "exec", e.name, "sh", "-c", fmt.Sprintf(`for i in $(seq 1 80); do test "$(cat /count)" = %d && exit 0; sleep .05; done; exit 1`, generation))
+		e.want(0, "", "stop", "-t", "0", e.name)
+		var pending sync.WaitGroup
+		barrier := make(chan struct{})
+		for i := 0; i < 2; i++ {
+			pending.Add(1)
+			go func() {
+				defer pending.Done()
+				<-barrier
+				code, out, stderr := e.call("", "start", e.name)
+				if code != 0 || out != e.name+"\n" || stderr != "" {
+					t.Errorf("concurrent start: exit=%d out=%q err=%q", code, out, stderr)
+				}
+			}()
+		}
+		close(barrier)
+		pending.Wait()
+	}
+	e.want(0, "", "exec", e.name, "sh", "-c", `for i in $(seq 1 80); do test "$(cat /count)" = 5 && exit 0; sleep .05; done; exit 1`)
 }
 
 // Source: e2e/rm_test.go and run_test.go (--rm), extended to cleanup races.

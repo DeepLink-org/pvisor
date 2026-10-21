@@ -507,6 +507,9 @@ while waiting for termination. This prevents `--rm` teardown from racing a
 force-stop record into a deleted instance. No command signals a host PID saved
 in metadata. VM setup errors and workload
 exit codes remain visible in completion records and instance output.
+Concurrent starts join the same starting generation and wait for its bounded
+readiness or failure; they do not spawn a second owner or reject a healthy
+in-progress launch. Waiting never retains the catalog lock.
 
 The host translates Docker defaults into generic guest process/mount options,
 including the Docker capability bounding set and `TERM=xterm` for TTYs unless
