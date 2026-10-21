@@ -153,6 +153,9 @@ the upper, `rm -v` also drops anonymous volumes, and named volumes survive.
 There is not yet a volume-management CLI or image-blob garbage collector;
 `rmi` removes local references while retaining the internal OCI cache.
 
+TTY allocation defaults `TERM` to `xterm` when no image/container or explicit
+value is present; explicit values, empty values and unsets retain precedence.
+Exec terminal defaults do not change the container environment.
 TTY allocation supports initial terminal dimensions; live resizing and detach
 key sequences are not implemented. stdout/stderr retain separate log streams
 without a merged timestamp ordering or `--since`/`--tail` filtering. Current

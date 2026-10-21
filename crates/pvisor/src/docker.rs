@@ -142,6 +142,7 @@ pub struct Create {
     /// Keep guest stdin open for input attachment.
     pub interactive: bool,
     /// Optional initial guest terminal dimensions, rows then columns.
+    /// A terminal defaults TERM to xterm; image/explicit values and unsets win.
     pub tty: Option<[u16; 2]>,
     /// Install the current public IPv4 TCP/DNS egress profile.
     pub network: bool,
@@ -644,6 +645,9 @@ impl Store {
             "duplicate mount destination"
         );
         let mut env = image.env.clone();
+        if config.tty.is_some() {
+            env.entry("TERM".into()).or_insert_with(|| "xterm".into());
+        }
         for key in &config.unset_env {
             env.remove(key);
         }
@@ -1584,6 +1588,39 @@ mod tests {
         let unchanged = store.resolve(&instance.id).unwrap();
         assert_eq!(unchanged.generation, instance.generation);
         assert_eq!(unchanged.state, instance.state);
+    }
+    #[test]
+    fn docker_tty_defaults_preserve_image_explicit_and_unset_environment() {
+        for (tty, base, explicit, unset, expected) in [
+            (true, None, None, false, Some("xterm")),
+            (true, Some("image-term"), None, false, Some("image-term")),
+            (true, Some("image-term"), Some(""), false, Some("")),
+            (true, Some("image-term"), None, true, None),
+            (false, None, None, false, None),
+        ] {
+            let (_temporary, store, mut image) = fixture();
+            if let Some(value) = base {
+                image.env.insert("TERM".into(), value.into());
+                store.save_catalog(&[image]).unwrap();
+            }
+            let mut config = request();
+            config.tty = tty.then_some([24, 80]);
+            if let Some(value) = explicit {
+                config.env.insert("TERM".into(), value.into());
+            }
+            if unset {
+                config.unset_env.push("TERM".into());
+            }
+            assert_eq!(
+                store
+                    .create(config)
+                    .unwrap()
+                    .env
+                    .get("TERM")
+                    .map(String::as_str),
+                expected
+            );
+        }
     }
     #[test]
     fn docker_creation_pins_defaults_and_command_overrides() {

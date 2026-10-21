@@ -506,7 +506,8 @@ no command signals a host PID saved in metadata. VM setup errors and workload
 exit codes remain visible in completion records and instance output.
 
 The host translates Docker defaults into generic guest process/mount options,
-including the Docker capability bounding set. The guest has one launcher and
+including the Docker capability bounding set and `TERM=xterm` for TTYs unless
+an image or explicit value/unset wins. The guest has one launcher and
 PID-1 reaper shared by Jobs, the initial workload and exec. An optional host-CID
 vsock adapter adds same-VM exec, stdin, signal delivery and TCP publication;
 it owns no separate process lifecycle or host filesystem/lifecycle authority.

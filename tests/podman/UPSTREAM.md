@@ -28,6 +28,15 @@ Local adaptations (Apache-2.0, pVisor contributors):
 | `system/031-run-options.bats`: env-file/host env | `test/e2e/run_env_test.go` | Use explicit values and file precedence without Podman host-env options |
 | `system/031-run-options.bats`: entrypoint/user/workdir | `test/system/030-run.bats`, `test/e2e/run_test.go` | Single executable entrypoint, literal argv, Alpine numeric/named users and filesystem observation |
 | `system/031-run-options.bats`: bind workdir/read-only delete | `test/system/160-volumes.bats` | Portable directory binds; retain host-file content assertion |
+| `system/032-run-boundaries.bats`: exit 126, failed-run cleanup | `test/system/030-run.bats`, `test/e2e/start_test.go` | Direct directory/non-executable invocation and name reuse after failed `run --rm`; no create/inspect dependency |
+| `system/032-run-boundaries.bats`: env, literal args, relative cwd, no network | `test/e2e/run_env_test.go`, `run_working_dir_test.go`, `test/system/030-run.bats`, `500-networking.bats` | Public CLI boundary regressions extending those scenarios; VM `--network none` must expose only loopback |
+| `e2e/compatibility_test.go`: closed stdin and large run output | `test/system/030-run.bats`, `075-exec.bats` | Assert no stdin without `-i`; compare all 1 MiB bytes directly instead of reading a private log file |
+| `e2e/compatibility_test.go`: run/exec TTY and TERM | `test/system/030-run.bats` defaultenv, `075-exec.bats` --tty | Assert all three terminal descriptors, default/explicit TERM and per-exec isolation; unsupported unsetenv flags and Podman-specific markers are not ported |
+| `e2e/compatibility_test.go`: concurrent exec after invalid commands | `test/system/075-exec.bats` invalid-session cleanup, `test/e2e/exec_test.go` | Extend to eight concurrent commands with distinct exact output/exit codes; retain all failed-spawn assertions |
+| `e2e/compatibility_test.go`: stop and multi-container lifecycle | `test/e2e/stop_test.go`, `start_test.go`, `run_signal_test.go`, `rm_test.go` | Verify idempotence, signal handler output, SIGKILL 137, independent uppers and valid batch arguments after an error; batch failure uses Docker-style exit 1 rather than Podman's 125 |
+| `e2e/compatibility_test.go`: follow live/stopped logs | `test/e2e/logs_test.go` | Bind-mounted gate proves output arrives before exit; compare separate streams and require follow to finish successfully even after workload exit 7 |
+| `e2e/compatibility_test.go`: IPv4 TCP publication | `test/system/500-networking.bats` localhost/netcat cases | Host port zero avoids reservation races; public `ps` reports the assigned endpoint; full echo survives TCP write-half closure; no network-management/inspect API |
+| `e2e/compatibility_test.go`: image protection/IDs/repull | `test/e2e/images_test.go`, `rmi_test.go`, `pull_test.go` | Private catalog, exact ID/reference observations, refusal must retain a used image and leave its running container usable |
 | `e2e/cli_test.go`: `TestExecEnvironmentAndWorkdir`, `TestExecUserAndStreams` | `test/e2e/exec_test.go` | Per-exec overrides must not change subsequent exec defaults; separate stream assertions |
 | `e2e/cli_test.go`: `TestExecLargeStdin` | `test/system/075-exec.bats` | Compare all 1.7 MB byte-for-byte instead of running host checksum tools |
 | `e2e/cli_test.go`: `TestPsLifecycleAndIDSelection` | `test/system/040-ps.bats`, `test/e2e/ps_test.go` | Observe exact own ID membership via quiet listing and short-ID selection; no formatting/filters |
@@ -40,7 +49,7 @@ Local adaptations (Apache-2.0, pVisor contributors):
 
 The active files are ports of selected scenarios, not verbatim copies or a
 claim that the entire upstream suites run on pVisor. The active cases run only
-`pvisor docker` and check expected behavior, without a Docker comparison.
+the top-level pVisor container commands and check expected behavior, without a Docker comparison.
 Explicitly disabled commands/options and Docker-daemon interoperation cases
 are commented in the two
 `.disabled` files; they do not produce skips or passes. Every other upstream case

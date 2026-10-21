@@ -21,7 +21,7 @@ From the repository root:
 
 ```sh
 PVISOR_BINARY="$PWD/target/debug/pvisor" bats tests/podman/system
-PVISOR_BINARY="$PWD/target/debug/pvisor" go test -v tests/podman/e2e/cli_test.go
+PVISOR_BINARY="$PWD/target/debug/pvisor" go test -v tests/podman/e2e/*.go
 ```
 
 On Apple Silicon, the executable needs the Hypervisor entitlement and its
@@ -50,14 +50,16 @@ bounded process execution; Go uses `context` deadlines.
 
 ## Coverage and limits
 
-The active profile has 15 Bats cases and 14 Go cases. Each test first pulls its
+The active profile has 23 Bats cases and 30 Go cases. Each test first pulls its
 image; none is skipped based on engine failure.
 
 | Suite | Active contracts |
 | --- | --- |
 | Bats `030-run.bats` | Workload exit, missing executable, stdin/EOF, env/workdir, bind read/write, read-only creation rejection |
 | Bats `031-run-options.bats` | Explicit env vs env-file, successive env-files, host env import, literal entrypoint args, numeric/named user, missing workdir creation, workdir within bind mount, read-only deletion rejection |
+| Bats `032-run-boundaries.bats` | Exit 126 for directories/non-executable files, failed-run name cleanup, host environment isolation, empty values, option-like workload arguments, relative-workdir rejection, no non-loopback interfaces with `--network none` |
 | Go `cli_test.go` | Streams/exit, exec stdin/error, stop/start persistence, auto-removal, duplicate name, exec env/workdir isolation, exec user/streams, 1.7 MB stdin round trip, ps/ID lifecycle, retained logs, images/rmi, named-volume persistence across rm -v, volume image initialization/read-only reuse, running-container rm rejection/force |
+| Go `compatibility_test.go` | Closed stdin, 1 MiB stdout, run/exec TTY and TERM precedence, concurrent exec exit routing after failed spawns, repeated stop, custom stop signal and zero-timeout escalation, multiple-container isolation, partial batch failures, live/stopped `logs -f`, ephemeral IPv4 TCP publication with half-close, in-use image protection, short image IDs and repeated pull identity |
 
 Together these exercise all ten registered subcommands: `pull`, `images`, `rmi`,
 `run`, `exec`, `ps`, `start`, `stop`, `rm`, `logs`. They do not cover every option.
@@ -71,9 +73,16 @@ with source files and reasons. Their `.disabled` suffix excludes them from test
 discovery; they produce no PASS or SKIP results. Complete upstream sources stay
 unchanged. Build/Compose/API, create/inspect/wait/restart/attach/cp, registry login,
 Podman pods/Kube/Quadlet, management CLIs, extra logs/list flags and host-specific
-namespace/security controls are disabled. TCP publication, basic TTY allocation,
-`logs -f`, anonymous-volume deletion and other supported-but-unported scenarios
+namespace/security controls are disabled. Anonymous-volume deletion, controlling-terminal
+input, broader published-port lifecycle cases and other supported-but-unported scenarios
 remain coverage gaps, not unsupported features.
+
+The TTY cases require default `TERM=xterm`, explicit TERM precedence and no
+mutation of container defaults by `exec -t`. These defaults are applied on the
+host; the generic guest launcher is unchanged. TCP uses the pinned Alpine's
+BusyBox netcat, explicitly bound to guest IPv4 loopback, and verifies the full
+echo after the client closes its write half. No additional image package is
+installed. Go invocations must include both active `*_test.go` files as above.
 
 A pass means the selected behavior contract held for pVisor. Dynamic IDs and
 human-readable list formatting are not compared with another engine. Unsupported
@@ -113,3 +122,12 @@ ARM64 manifest digest
 
 Linux/KVM execution remains unverified by the local macOS ARM64 VM run. Docker
 comparison is not part of this suite or an acceptance prerequisite.
+
+The expanded profile was validated on 2026-10-21 with Go 1.23.12 and Bats 1.11.0:
+all 53 runtime cases passed (23 Bats, 30 Go), using the pinned ARM64 mirror
+manifest above and a private copy of the rebuilt, Hypervisor-signed executable.
+All 20 selected Rust Docker regressions and four Python adapter/source-integrity
+checks passed; Clippy, rustdoc and formatting checks passed too. The new TTY
+cases exposed missing default TERM in run/exec; the host-side fix preserves
+explicit values and leaves guest supervision unchanged. No active cases were
+skipped, no assertions were weakened, and upstream file hashes remain unchanged.

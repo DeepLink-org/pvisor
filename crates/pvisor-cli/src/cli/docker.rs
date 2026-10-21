@@ -487,7 +487,13 @@ pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
             let _terminal = Terminal::new(args.tty, args.interactive)?;
             let instance = store.resolve(&args.invocation[0])?;
             let mut stream = store.connect(&instance)?;
-            let (env, unset_env) = environment(&args.env, &[])?;
+            let (mut env, unset_env) = environment(&args.env, &[])?;
+            if args.tty
+                && !instance.env.contains_key("TERM")
+                && !unset_env.iter().any(|key| key == "TERM")
+            {
+                env.entry("TERM".into()).or_insert_with(|| "xterm".into());
+            }
             write_guest_frame(
                 &mut stream,
                 &GuestRequest::Exec {
