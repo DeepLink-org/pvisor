@@ -164,8 +164,17 @@
   padding: 64px 28px;
 }
 
+.pc-home-value,
+.pc-home-modes {
+  text-align: left;
+}
+
 .pc-home-value {
-  text-align: center;
+  padding-bottom: 32px;
+}
+
+.pc-home-value + .pc-home-modes {
+  padding-top: 32px;
 }
 
 .pc-home-badge {
@@ -198,6 +207,11 @@
   color: #c1cfe2;
   font-size: 16px;
   line-height: 1.65;
+}
+
+.pc-home-modes .pc-home-lede {
+  margin-left: 0;
+  margin-right: 0;
 }
 
 .pc-home-cards {

@@ -1,9 +1,11 @@
 # PolicyVisor Documentation
 
 Use **PolicyVisor** for the product name, **pVisor** for its short name, and
-`pvisor` for the CLI. The positioning is **scaling autonomous agent execution**;
-in Chinese, **让自主 Agent 的执行可以规模化**, with the subtitle
-**提升执行密度，降低监督成本。** / **Higher execution density. Lower supervision cost.**
+`pvisor` for the CLI. The homepage positioning is **an agent-native sandbox framework**;
+in Chinese, **Agent 原生沙箱框架**. Introduce local isolation, access controls,
+task management and file review in one paragraph, and execution environments for
+large-scale agentic inference, evaluation and RL post-training in a second.
+Do not use execution density or supervision-cost goals as the homepage subtitle.
 Describe the two supporting paths: resource sharing and idle-memory reclamation
 for machine capacity; staged file changes, execution records and review for
 supervision efficiency. Quantified gains require workload-specific evidence.
@@ -147,11 +149,22 @@ locale directly into `site/zh` and `site/en`. `docs/index.html` is a small stati
 language selector copied unchanged to the published root; it needs no third
 Zensical project. Builds start with a clean `docs/site/` to remove stale outputs.
 Both locale configurations own their translated navigation and native search.
-The language selector keeps the current article. Preview one locale at a time
-with the native server; alternate-language links use absolute published-site URLs, preserving the article
-path. A local preview serves one locale, so switching language opens the published
-translation. To inspect unpublished translations, preview the other locale
-separately (`just docs-serve en` or `just docs-serve zh`).
+The language selector keeps the current article. Published pages retain absolute
+published-site language links. On loopback hosts (`127.0.0.1`, `localhost`, or
+`[::1]`), the theme's `alternate.js` points the menu to the local preview and
+preserves the current section anchor. Run both native servers in separate
+terminals to preview unpublished translations. Use adjacent ports: Chinese on N,
+English on N + 1. The defaults are 3000 and 3001; for example:
+
+```bash
+just docs-serve zh -a 127.0.0.1:3040
+# In another terminal:
+just docs-serve en -a 127.0.0.1:3041
+```
+
+Both processes must remain running for language switching to work. A single
+locale server does not serve the other language. Stop both previews before
+`just docs-build`, which clears their shared output directory, then restart them.
 `check-docs.py` checks translation coverage, paired revisions, examples, links,
 navigation, HTML language attributes and that every article was generated.
 
