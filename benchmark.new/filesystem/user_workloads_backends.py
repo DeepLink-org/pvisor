@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 NAMESPACE_BACKENDS = ("native", "host", "staged", "vm", "vm-writeback")
-BACKENDS = NAMESPACE_BACKENDS + ("docker", "fc-system", "qemu", "qemu-microvm")
+BACKENDS = NAMESPACE_BACKENDS + ("docker", "fc-system", "qemu", "qemu-microvm", "agentenv")
 MOUNT_BIND = 4096
 MOUNT_REC = 16384
 MOUNT_RDONLY = 1
@@ -38,6 +38,19 @@ def sha(path):
 
 def save(path, value):
     Path(path).write_text(json.dumps(value, indent=2) + "\n")
+
+
+def tool_paths(root):
+    """Record the selected distribution's compiler helpers, without Fedora paths."""
+    root = Path(root)
+    helpers = sorted(
+        set(root.glob("usr/libexec/gcc/*/*/cc1")) | set(root.glob("usr/lib/gcc/*/*/cc1"))
+    )
+    if not helpers:
+        raise ValueError("prepared C compiler helper cc1 missing")
+    return ["usr/bin/cc", "usr/bin/git", "usr/bin/python3"] + [
+        str(p.relative_to(root)) for p in helpers
+    ]
 
 
 def _install(source, destination, root):
@@ -196,6 +209,10 @@ def build_command(batch, protocol, folder, case, backend):
     """
     if backend not in BACKENDS:
         raise ValueError("unknown user workload backend")
+    if backend == "agentenv":
+        from user_workloads_agentenv import build_command as reference_command
+
+        return reference_command(batch, protocol, folder, case)
     if backend == "docker":
         from user_workloads_docker import build_command as reference_command
 
@@ -209,6 +226,10 @@ def build_command(batch, protocol, folder, case, backend):
     root.mkdir(mode=0o700)
     for name in ("work", "stage", "runs", "config"):
         (folder / name).mkdir(mode=0o700)
+    stage_storage = None
+    if protocol.get("stage_storage") and backend in ("staged", "vm", "vm-writeback"):
+        stage_storage = Path(protocol["stage_storage"]).resolve(strict=True) / folder.name
+        stage_storage.mkdir(mode=0o700, exist_ok=False)
     for name in ("input", "output"):
         (folder / "work" / name).mkdir(mode=0o700)
     rounds = int(protocol.get("resident_rounds", 3))
@@ -240,6 +261,42 @@ def build_command(batch, protocol, folder, case, backend):
         vm_backend = "pvisor-vm-wb" if backend == "vm-writeback" else "pvisor-vm"
         inner = vm_payload_argv(case, vm_backend, rounds, ram)
         environment.update(vm_environment(vm_backend))
+        workaround = protocol.get("krun_enomem_workaround", "auto")
+        if workaround not in ("auto", "0", "1"):
+            raise ValueError("invalid frozen KVM ENOMEM workaround selection")
+        if workaround != "auto":
+            environment["PVISOR_KRUN_ENOMEM_WORKAROUND"] = workaround
+        if protocol.get("prepared_inputs"):
+            selected = protocol["prepared_inputs"]
+            if set(selected) != {"rootfs", "workspace"}:
+                raise ValueError("both authenticated prepared input selectors are required")
+            index = inner.index("--rootfs")
+            del inner[index : index + 2]
+            for kind in ("rootfs", "workspace"):
+                selector = selected[kind]
+                Path(selector["store"]).resolve(strict=True)
+                if not isinstance(selector["base"]["id"], str) or not selector["base"]["id"]:
+                    raise ValueError("prepared base id missing")
+                index = inner.index("--")
+                inner[index:index] = [
+                    f"--{kind}-base-store",
+                    f"/bench-prepared/{kind}",
+                    f"--{kind}-base",
+                    selector["base"]["id"],
+                ]
+            environment["PVISOR_VM_GUEST_CACHE"] = "1"
+            environment["PVISOR_VM_CACHE_EXPERIMENT"] = "root-data"
+        if protocol.get("immutable_input_cache", False):
+            if not protocol.get("prepared_inputs"):
+                raise ValueError("immutable input caches require authenticated prepared inputs")
+            # Keep upper/namespace checks. The DATA+WB combination additionally
+            # requires matching firmware capability; old peers fall back.
+            environment["PVISOR_IMMUTABLE_LOWER_NEGATIVE_CACHE"] = "1"
+            environment["PVISOR_VM_FS_LOWER_DATA_CACHE"] = "1"
+        if protocol.get("diagnostic_profile"):
+            if protocol.get("role") != "diagnostic":
+                raise ValueError("profiles require a separate diagnostic protocol")
+            environment["PVISOR_FS_PROFILE"] = "1"
     else:
         inner = _host_argv(case, backend, rounds, ram)
     config = dict(
@@ -248,8 +305,12 @@ def build_command(batch, protocol, folder, case, backend):
         case_id=case,
         toolroot=str(Path(protocol.get("toolroot", Path(batch) / "toolroot")).resolve(strict=True)),
         folder=str(folder),
+        stage_storage=str(stage_storage) if stage_storage else None,
+        prepared_inputs=protocol.get("prepared_inputs") if backend.startswith("vm") else None,
+        runtime_artifacts=protocol.get("runtime_artifacts") if backend.startswith("vm") else None,
         namespace_root=str(root),
         argv=inner,
+        vm_environment={k: v for k, v in environment.items() if k.startswith(("PVISOR_", "KRUN_"))},
         parent_namespaces={
             name: os.readlink("/proc/self/ns/" + name) for name in ("user", "mnt", "pid")
         },
@@ -271,23 +332,48 @@ def build_command(batch, protocol, folder, case, backend):
         "--namespace-child",
         str(config_path),
     ]
+    if protocol.get("apparmor_profile"):
+        command = ["aa-exec", "-p", protocol["apparmor_profile"], "--", *command]
+    if protocol.get("diagnostic_sync_trace"):
+        if protocol.get("role") != "diagnostic" or not protocol.get("diagnostic_profile"):
+            raise ValueError("sync tracing requires an independent diagnostic")
+        command = [
+            "strace",
+            "-f",
+            "-qq",
+            "-ttt",
+            "-T",
+            "-y",
+            "-e",
+            "trace=fsync,fdatasync",
+            "-o",
+            str(folder / "sync.trace"),
+            *command,
+        ]
     return command, environment
 
 
 def output_root(folder, backend):
     """Return the retained logical output source and whether it is an upper."""
     folder = Path(folder)
+    stage = folder / "stage"
+    if (folder / "launch.json").is_file():
+        config = json.loads((folder / "launch.json").read_text())
+        if config.get("stage_storage"):
+            stage = Path(config["stage_storage"])
     if backend.startswith("vm"):
-        return folder / "stage/upper/output", True
+        return stage / "upper/output", True
     return (
-        (folder / "stage/upper/output", True)
-        if backend == "staged"
-        else (folder / "work/output", False)
+        (stage / "upper/output", True) if backend == "staged" else (folder / "work/output", False)
     )
 
 
 def finalize_output(batch, protocol, folder, case, backend):
     """Export reference output after exit; callers still verify all bytes."""
+    if backend == "agentenv":
+        from user_workloads_agentenv import finalize_trial
+
+        return finalize_trial(batch, protocol, folder, case, backend), False
     if backend == "docker":
         from user_workloads_docker import finalize_trial
 
@@ -301,7 +387,11 @@ def finalize_output(batch, protocol, folder, case, backend):
 
 def cleanup_trial(batch, protocol, folder, case, backend):
     """Reap only reference resources owned by this trial, including failures."""
-    if backend == "docker":
+    if backend == "agentenv":
+        from user_workloads_agentenv import cleanup_trial as cleanup
+
+        cleanup(batch, protocol, folder, case, backend)
+    elif backend == "docker":
         from user_workloads_docker import cleanup_trial as cleanup
 
         cleanup(batch, protocol, folder, case, backend)
@@ -309,6 +399,18 @@ def cleanup_trial(batch, protocol, folder, case, backend):
         from user_workloads_reference_vm import cleanup_trial as cleanup
 
         cleanup(batch, protocol, folder, case, backend)
+
+
+def runtime_artifact_source(frozen):
+    """Validate a private, frozen host runtime without modifying guest stores."""
+    source = Path(frozen["path"]).resolve(strict=True)
+    if not {"pvisor", "payload", "workload", "libkrunfw.so.5"}.issubset(frozen["sha256"]):
+        raise ValueError("incomplete runtime artifact receipt")
+    for name, digest in frozen["sha256"].items():
+        member = (source / name).resolve(strict=True)
+        if not member.is_relative_to(source) or sha(member) != digest:
+            raise ValueError("runtime artifact identity mismatch: " + name)
+    return source
 
 
 def _namespace_child(config_path):
@@ -343,7 +445,7 @@ def _namespace_child(config_path):
             raise OSError(code, os.strerror(code), str(target))
 
     mount(None, "/", flags=MOUNT_PRIVATE | MOUNT_REC)
-    reserved = {"tmp", "run", "proc", "dev", "sys", "bench-trial", ".old-root"}
+    reserved = {"tmp", "run", "proc", "dev", "sys", "bench-trial", "bench-prepared", ".old-root"}
     for path in toolroot.iterdir():
         if path.name in reserved:
             continue
@@ -363,14 +465,25 @@ def _namespace_child(config_path):
         if path.name in reserved or path.is_symlink():
             continue
         target = root / path.name
-        mount(path, target, flags=MOUNT_BIND)
+        source = path
+        if path.name == "bench-artifacts" and config.get("runtime_artifacts"):
+            source = runtime_artifact_source(config["runtime_artifacts"])
+        mount(source, target, flags=MOUNT_BIND)
         mount(None, target, flags=MOUNT_REMOUNT | MOUNT_BIND | MOUNT_RDONLY)
-        mounts.append(dict(source=str(path), target="/" + path.name, readonly=True))
+        mounts.append(dict(source=str(source), target="/" + path.name, readonly=True))
     mount(folder, root / "bench-trial", flags=MOUNT_BIND)
+    if config.get("stage_storage"):
+        mount(config["stage_storage"], root / "bench-trial/stage", flags=MOUNT_BIND)
+    for kind, selector in (config.get("prepared_inputs") or {}).items():
+        target = root / "bench-prepared" / kind
+        target.mkdir(mode=0o700)
+        # Store owners need writable lease/catalog access. Only the selected
+        # generation is exported to the guest, never this control-plane mount.
+        mount(selector["store"], target, flags=MOUNT_BIND)
     fixture_target = root / "bench-trial/work/input"
     mount(toolroot / "fs-v2-fixture", fixture_target, flags=MOUNT_BIND)
     mount(None, fixture_target, flags=MOUNT_REMOUNT | MOUNT_BIND | MOUNT_RDONLY)
-    mount("tmpfs", root / "tmp", "tmpfs", options="mode=1777,size=256m")
+    mount("tmpfs", root / "tmp", "tmpfs", options="mode=1777,size=1024m")
     mount("tmpfs", root / "run", "tmpfs", options="mode=0755,size=16m")
     mount("proc", root / "proc", "proc")
     mount("/dev", root / "dev", flags=MOUNT_BIND | MOUNT_REC)
@@ -383,10 +496,11 @@ def _namespace_child(config_path):
         toolroot=str(toolroot),
         readonly_prepared_mounts=mounts,
         trial_mount="/bench-trial",
+        stage_storage=config.get("stage_storage"),
         workspace_input=dict(
             source=str(toolroot / "fs-v2-fixture"), target="/bench-trial/work/input", readonly=True
         ),
-        private_tmp="256 MiB tmpfs",
+        private_tmp="1024 MiB tmpfs",
         root_switch="pivot_root",
         old_root_detached=False,
     )

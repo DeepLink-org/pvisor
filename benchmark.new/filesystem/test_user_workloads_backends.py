@@ -19,9 +19,117 @@ SPEC.loader.exec_module(B)
 
 
 class LaunchContracts(unittest.TestCase):
+    def test_runtime_override_rejects_corruption_incomplete_receipts_and_escape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            for name in ("pvisor", "payload", "workload", "libkrunfw.so.5.6.2"):
+                (runtime / name).write_bytes(name.encode())
+            (runtime / "libkrunfw.so.5").symlink_to("libkrunfw.so.5.6.2")
+            frozen = {"path": str(runtime), "sha256": {p.name: B.sha(p) for p in runtime.iterdir()}}
+            self.assertEqual(B.runtime_artifact_source(frozen), runtime)
+            with self.assertRaisesRegex(ValueError, "incomplete"):
+                B.runtime_artifact_source({"path": str(runtime), "sha256": {}})
+            (runtime / "pvisor").write_bytes(b"changed")
+            with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                B.runtime_artifact_source(frozen)
+            (runtime / "pvisor").unlink()
+            outside = root / "outside"
+            outside.write_bytes(b"pvisor")
+            (runtime / "pvisor").symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, "identity mismatch"):
+                B.runtime_artifact_source(frozen)
+
+    def test_authenticated_inputs_replace_root_and_keep_existing_limits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            batch = Path(temporary)
+            (batch / "toolroot").mkdir()
+            inputs = {}
+            for kind in ("rootfs", "workspace"):
+                store = batch / kind
+                store.mkdir()
+                inputs[kind] = {"store": str(store), "base": {"id": kind + "-base"}}
+            for diagnostic in (False, True):
+                folder = batch / str(diagnostic)
+                folder.mkdir()
+                _, env = B.build_command(
+                    batch,
+                    {
+                        "prepared_inputs": inputs,
+                        "krun_enomem_workaround": "0",
+                        "diagnostic_profile": diagnostic,
+                        "role": "diagnostic",
+                    },
+                    folder,
+                    "S03",
+                    "vm-writeback",
+                )
+                launch = json.loads((folder / "launch.json").read_text())
+                argv = launch["argv"]
+                self.assertNotIn("--rootfs", argv)
+                for kind in inputs:
+                    self.assertEqual(
+                        argv[argv.index(f"--{kind}-base-store") + 1], f"/bench-prepared/{kind}"
+                    )
+                    self.assertLess(argv.index(f"--{kind}-base"), argv.index("--"))
+                self.assertEqual(env["PVISOR_FS_PROFILE"], str(int(diagnostic)))
+                self.assertEqual(env["PVISOR_VM_GUEST_CACHE"], "1")
+                self.assertEqual(env["PVISOR_VM_FS_WRITEBACK"], "1")
+                self.assertEqual(argv[-2:], ["3", "512"])
+                self.assertEqual(launch["prepared_inputs"], inputs)
+
+    def test_external_stage_keeps_guest_path_and_host_oracle_location(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            batch = Path(temporary).resolve()
+            (batch / "toolroot").mkdir()
+            external = batch / "ssd"
+            external.mkdir()
+            folder = batch / "trial"
+            folder.mkdir()
+            B.build_command(batch, {"stage_storage": str(external)}, folder, "S03", "vm-writeback")
+            config = json.loads((folder / "launch.json").read_text())
+            self.assertEqual(config["stage_storage"], str(external / "trial"))
+            self.assertTrue((external / "trial").is_dir())
+            self.assertEqual(
+                config["argv"][config["argv"].index("--stage") + 1], "/bench-trial/stage"
+            )
+            self.assertEqual(
+                B.output_root(folder, "vm-writeback"), (external / "trial/upper/output", True)
+            )
+            self.assertEqual(config["folder"], str(folder))
+
+    def test_frozen_kvm_selection_survives_ambient_environment_scrub(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            batch = Path(temporary)
+            (batch / "toolroot").mkdir()
+            for selection in ("auto", "0", "1"):
+                folder = batch / selection
+                folder.mkdir()
+                with patch.dict(os.environ, {"PVISOR_KRUN_ENOMEM_WORKAROUND": "1"}):
+                    _, env = B.build_command(
+                        batch,
+                        {"krun_enomem_workaround": selection},
+                        folder,
+                        "S02",
+                        "vm-writeback",
+                    )
+                key = "PVISOR_KRUN_ENOMEM_WORKAROUND"
+                if selection == "auto":
+                    self.assertNotIn(key, env)
+                else:
+                    self.assertEqual(env[key], selection)
+                    self.assertEqual(
+                        json.loads((folder / "launch.json").read_text())["vm_environment"][key],
+                        selection,
+                    )
+                self.assertEqual(env["PVISOR_VM_FS_WRITEBACK"], "1")
+                self.assertEqual(env["PVISOR_VM_FS_HOST_WRITEBACK"], "0")
+
     def test_reference_adapters_own_launch_export_and_cleanup(self):
         expected = (["private-reference"], {"LC_ALL": "C"})
         for backend, module in (
+            ("agentenv", "user_workloads_agentenv"),
             ("docker", "user_workloads_docker"),
             ("fc-system", "user_workloads_reference_vm"),
             ("qemu", "user_workloads_reference_vm"),
