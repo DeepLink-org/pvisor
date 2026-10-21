@@ -60,6 +60,9 @@ inside the starting owner binary through `pvisor-instance-control-1`; compatible
 caller binaries need not have matching digests. Stopped operations take the Job
 root's `job.lock`. Apply/drop refuse an owner still holding stage. See the runtime
 README for socket validation, lost-response ambiguity and platform limitations.
+The explicit `--vm-socket` debug override still uses the older SDK exchange;
+its response wait currently ignores CLI cancellation. Runtime Overlay and native
+capture sockets also remain in use. See [internal channels and cleanup order](../../docs/src/en/design/architecture.md#owner-internal-control).
 
 Help, version and feature queries emit no startup logs. Execution startup markers
 are emitted after command parsing and do not measure complete process entry.

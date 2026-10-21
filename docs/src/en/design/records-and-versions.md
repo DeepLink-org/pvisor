@@ -26,7 +26,7 @@ The matrix follows current source declarations and reader branches. Format chang
 | Event | `version = 5` | Exact `VERSION` check; Observation `domain/name/version` separately identifies its payload | `pvisor-core/src/event.rs` |
 | Journal Header / Record | `pvisor.trace/5` | Header and Event validation work together; complete old formats are rejected rather than truncated as incomplete tails | `pvisor-journal/src/journal.rs` |
 | Run Bundle | `schema_version = 4` | Requires current schema and observation contracts; default zeroes cannot stand in for missing observations | `pvisor/src/runtime/bundle.rs` |
-| RunRecord (`run.json`) | `schema_version = 1` | Reader checks schema 1; optional/default fields follow current serde definitions | `pvisor/src/runtime/registry.rs` |
+| RunRecord (`run.json`) | `schema_version = 1` | Reader checks schema 1; optional `live_control` records owner discovery and identity, cleared at terminal state; CLI reads disk state when absent | `pvisor/src/runtime/registry.rs` |
 | Execution Job (`execution-job.json`) | `version = 2` | Exact version and Job/root/stage binding checks; no automatic old-record conversion | `pvisor/src/runtime/job_execution.rs` |
 
 Event version 5 and Journal format 5 currently share the Event version constant. Other versions have no such relationship. An Observation payload change also cannot be judged compatible solely from outer Event version 5. Successful JSON parsing establishes syntax; each record still needs its own validation.
@@ -55,16 +55,18 @@ Environment manifest versions describe different RAM/filesystem combinations. A 
 | --- | --- | --- |
 | Host AgentCtl envelope | `AGENTCTL_HOST_VERSION = 1` | Endpoint owners validate Job/Attempt/generation targets; Guest tokens grant no Host authority |
 | Guest AgentCtl | `AGENTCTL_VERSION = 1` | Workload `Hello`/`Sync`, state and cooperation; a separate protocol from Host |
-| CLI Job listener / worker ticket | `pvisor-job-ticket-4`, plus Cargo package version and executable BLAKE3 | Internal exact schema/build match; rebuilding the same package version may be incompatible |
-| Daemon native supervisor | Version-1 Host envelope, owner/token and exact target | Uses neither Guest protocol nor CLI worker tickets; no transparent legacy-supervisor adoption |
+| Job owner instance control | `pvisor-instance-control-1`, version-1 Host envelope, exact Job/Attempt and recorded socket device/inode | Same UID; different caller binaries are accepted by instance-protocol compatibility; mismatch rejects only that Job |
+| CLI owner bootstrap | Inherited private socketpair, internal DTO and same-binary BLAKE3 check | Only the frontend launches its own owner; subsequent commands do not use this DTO |
+| Durable Job operation lock | `job.lock` diagnostic protocol `pvisor-job-lock-1`, PID and operation | Exclusive flock, 0600 and one hard link; different binaries with compatible disk readers share the lock; unknown formats reject mutation |
+| Daemon native supervisor | Version-1 Host envelope, owner/token and exact target | Credentials and admission remain independent of the Job owner protocol; no transparent legacy-supervisor adoption |
 
-Source entries are `pvisor-core/src/host_protocol.rs`, `protocol.rs`, `pvisor-cli/src/cli/host_service.rs` and `pvisor/src/runtime/supervisor.rs`. [Host AgentCtl](architecture.md#host-wire) owns wire framing, same-UID boundaries and upgrade order. Rust `api` organization and wire compatibility are separate concerns; see [API boundaries and migration status](architecture.md#api-boundaries).
+Source entries are `pvisor-core/src/host_protocol.rs`, `protocol.rs`, `pvisor-cli/src/cli/host_service.rs` and `host_transport.rs`, `registry.rs` and `supervisor.rs` under `pvisor/src/runtime/`. [Host AgentCtl](architecture.md#host-wire) owns wire framing, same-UID boundaries and upgrade order. Rust `api` organization and wire compatibility are separate concerns; see [API boundaries and migration status](architecture.md#api-boundaries).
 
 ## Relationships to check during version changes {#evolution}
 
 1. Identify whether the change affects an input DTO, stored object, domain payload or live protocol, and locate its actual reader.
 2. Explicitly choose old-format acceptance, conversion or rejection. Changing a version number cannot bypass structural or binding checks.
-3. For stored objects, check digests, dependency references, stage/Attempt ownership and restore profile. For live protocols, also check authority, generation, tickets and build identity.
+3. For stored objects, check digests, dependency references, stage/Attempt ownership and restore profile. For live protocols, check authority, endpoint-supported target fields, instance-protocol name and socket identity. Same-binary verification applies only when the frontend launches its own owner.
 4. Handle active requests and instances belonging to old listeners/supervisors before upgrades. File compatibility does not establish live-process takeover.
 5. After timeout, disconnect or publication failure, locate the original request's commit boundary and reconcile it using [Failure semantics and retries](failure-semantics.md) before retrying.
 

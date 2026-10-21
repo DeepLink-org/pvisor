@@ -45,7 +45,7 @@ crate 的逻辑职责和 Rust 可见性需要分别检查。当前只有 `pvisor
 
 迁移按 crate 进行：同时调整该 crate 的调用方、README、公开文档和边界检查，保留外部 API 合同覆盖。尚未迁移的 crate 不应临时套一层全量 re-export 或重复 DTO 来制造一致外观，也不能公开内部模块绕过编译边界。硬件/私有状态检查留在 crate 内；外部调用方只依据所有权、生命周期、失败后状态和同步合同。
 
-这套 Rust 边界不自动提供稳定线上协议或旧记录兼容性。CLI 的 `JobCommand`/ticket 仍要求精确构建匹配，磁盘格式也有独立 reader。版本对应关系见[记录与版本矩阵](records-and-versions.md)。状态依据 `lib.rs`、VM 的 `runtime_modules.rs`、各 `api.rs` 与目录 README 静态核对；不代表本次重新运行了契约测试或平台验证。
+这套 Rust 边界不自动提供稳定线上协议或旧记录兼容性。前端 self-exec owner 时校验同一二进制身份；后续 CLI 按实例协议兼容，不要求二进制摘要相同。磁盘格式由各自 reader 检查。版本对应关系见[记录与版本矩阵](records-and-versions.md)。状态依据 `lib.rs`、VM 的 `runtime_modules.rs`、各 `api.rs` 与目录 README 静态核对；不代表本次重新运行了契约测试或平台验证。
 
 ## Host 与 Guest AgentCtl {#host-agentctl}
 
@@ -55,7 +55,7 @@ Host AgentCtl 是内置 Job CLI 操作的权限路径。Guest AgentCtl 是每个
 宿主 Job、VM、暂存文件或 daemon supervisor 控制。Bundle 的 `agentctl`
 快照仍描述 Guest 协作，不是 Host 授权回执。
 
-### Listener 与请求所有权 {#host-job-service}
+### Job owner 与请求所有权 {#host-job-service}
 
 `pvisor run` 保留终端前端和一个 self-exec owner。两者直接继承 stdio，
 通过私有 socketpair 传递取消与退出信息。owner 留在原 session，使用独立
@@ -85,6 +85,23 @@ owner 二进制执行。已停止 Job 的 status、review、apply、drop 和 ins
 stage 声明的 lower 可变性；声明缺失或 lower 已重绑定时使用 Mutable，读取
 不保证时效性。
 
+### 现存内部通道与清理顺序 {#owner-internal-control}
+
+运行时仍保留以下内部通道；它们属于 Job 所在进程，没有新增用户级常驻进程。
+
+| 通道 | 当前调用方与实现 | 后续收敛 |
+| --- | --- | --- |
+| Overlay 控制 | `registry.rs::RunControlServer` 使用 stage 中的 `control.sock` 链接发现私有端点；owner status 通过它查询自己，TUI 仍读取 observations，旧 inspect 挂载表与新 owner inspect 重复 | 先迁移 TUI 观测与 SDK 调用，再删除旧 inspect 分支、监听和链接发现 |
+| 原生 execution capture | `job_execution.rs::Server` 保留 `execution.sock`；owner 接到 capture 后，runtime 仍通过此端点调用自己 | 改为 owner 内直接调用，保留请求回执、操作锁、冻结和 suspended head 的终态确认 |
+| 显式 VM 调试路径 | `--vm-socket` 与嵌入式 `host_vm_exchange` 使用另一套异步交换；记录发现路径使用 `LiveControlRecord::exchange_checked` | 共用有界、可取消的传输，保留 SDK 对外接口适配 |
+
+清理先统一调试传输，再把 owner 启动消息收窄到 run、fork、resume。
+当前 `JobCommand` 仍序列化全部命令，只有这三个命令实际经 socketpair 启动；
+其他命令的序列化、owner 终端分支和对应往返测试可以随之移除。
+`OwnedTree.excluded` 的生产调用均为零，`Completion.signal` 没有读取方，
+恢复路径的 `vm_control_socket(None)` 恒为空，也属于可删除的遗留。
+这些清理尚未实现；内部通道合并必须同步迁移调用方和合同测试。
+
 ### 线上契约与升级 {#host-wire}
 
 实例契约名为 `pvisor-instance-control-1`。Core 的 version-1 Host envelope
@@ -107,8 +124,10 @@ owner 子进程；owner 负责取消、断线和后代清理。Linux 使用 subr
 已重挂父进程孤儿，数字 PID 信号也不是原子的 pidfd 操作。已加载 Mach-O UUID
 校验不等于逐字节内存认证。收回监听并未建立新的 macOS 隔离保证。
 
-响应丢失、超时或取消之后，副作用仍可能已经发生。命令报告不确定，不自动
-重试。检查点的局部回执不提供通用 exactly-once 交付；再次提交前先核对状态。
+响应丢失、超时或取消之后，副作用仍可能已经发生。记录发现路径报告不确定，
+不自动重试。当前 `--vm-socket` 调试路径仍等待旧异步交换，Ctrl-C 不会中断
+响应等待，底层断线错误也可能缺少不确定性提示；这属于待统一的实现缺口。
+任一路径断线后都应先核对状态。检查点的局部回执不提供通用 exactly-once 交付。
 传输和进程测试不能证明 Guest 正确性或真实 VM TUI 已得到验证。
 
 ## 一条生产执行路径

@@ -23,7 +23,7 @@ pvisor help suspend
 打出 `process.entry` 和 `cli.parsed`；这些标记不测量完整的进程入口或参数
 解析开销。
 
-## Host Job 服务 {#host-agentctl}
+## Job owner 与持久操作 {#host-agentctl}
 
 `pvisor run` 启动前端和私有 Job owner。活 status、kill、VM 控制与执行捕获
 连接 Job 记录中的 owner；普通命令不需要 socket 参数。已停止 Job 的 status、
@@ -42,7 +42,7 @@ daemon supervisor 保持不变。所有权、记录校验和平台限制见
 
 ## 实验性特性 {#features}
 
-查询运行时特性，无需启动或联系 Host Job 服务：
+在调用方查询运行时特性，无需启动 Job 或连接 owner：
 
 ```bash
 pvisor feature
@@ -615,7 +615,7 @@ live VM。offload 的新目标路径限于当前 backing 的同一文件系统�
 
 | Run 选项 | `[vm]` 下的 TOML 字段 | 默认值 / 用途 |
 | --- | --- | --- |
-| `--vm-control-socket PATH` | `control_socket` | 未设置：CLI 在规范化 `/tmp` 下创建 `/tmp/pvisor-host-<有效 UID>/vm-<UUID>.sock` |
+| `--vm-control-socket PATH` | `control_socket` | 未设置：owner 使用 `/tmp/pvisor-host-<有效 UID>/jobs/<job-id>/<attempt-id>/control.sock`（规范化 `/tmp`） |
 | `--vm-ram-backing FILE` | `ram_backing` | 未设置：普通文件 backing 模式使用 attempt 本地文件；只允许新文件 |
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`；FUSE/macFUSE Seekable backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`；Linux x86_64 本地 live 冷 pager |
@@ -671,7 +671,9 @@ CLI 与嵌入式自定义端点都必须位于规范的 `/tmp/pvisor-host-<UID>`
 `0700`，socket 为 `0600`。不覆盖已有 socket。默认路径为
 `jobs/<job-id>/<attempt-id>/control.sock`，Attempt 结束时清除发现记录。
 执行器将整个权限根目录排除在 Guest 访问范围外；这些是宿主记录，不是
-Guest 发现文件。参见 [owner 协议](../design/architecture.md#host-wire)。
+Guest 发现文件。当前调试覆盖仍使用旧交换路径，其取消限制见
+[owner 控制边界](../design/architecture.md#host-limits)；协议见
+[owner 协议](../design/architecture.md#host-wire)。
 
 ### VM 本地 live 冷压缩 {#vm-cold-ram-compression}
 
@@ -759,7 +761,7 @@ pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /
 
 本地准备不使用缓存服务；成功输出包含 `schema_version`、`prepared_rootfs`
 （canonical `store` 与 `base.id`）及独立 `rootfs` 路径。首次准备包含复制、
-完整内容/元数据校验和持久 pin。后续普通 CLI 由 Host worker 认证该对象，
+完整内容/元数据校验和持久 pin。后续普通 CLI 由 Job owner 认证该对象，
 取得运行期 lease 并接通 Immutable 物理 lower；不会每次重新封存。
 默认工作区保持 live；可显式选择[封存工作区](#prepared-workspace)。
 
@@ -794,7 +796,7 @@ pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
 
 准备结果包含 `schema_version`、`prepared_workspace`（canonical `store` 与
 `base.id`）和独立 `workspace` 路径。首次准备复制并校验内容与元数据，持久 pin
-跨命令退出和 GC 保留；后续 Host worker 重新认证 workspace catalog 并取得
+跨命令退出和 GC 保留；后续 Job owner 重新认证 workspace catalog 并取得
 运行期 lease，无需重新封存。
 
 读取使用所选固定 generation，宿主项目的后续修改不会进入当前 Run 的快照读视图。

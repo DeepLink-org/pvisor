@@ -45,7 +45,7 @@ Migrated `api` modules declare public data, fields and trait methods. Opaque own
 
 Migration proceeds one crate at a time, updating its consumers, README, public documentation and boundary checks together while preserving external contract coverage. Unmigrated crates should not gain blanket re-export layers or duplicate DTOs merely to appear uniform, nor expose internals to bypass compilation boundaries. Hardware/private-state checks remain inside the crate; callers rely on ownership, lifecycle, post-failure state and synchronization contracts.
 
-This Rust boundary does not automatically establish stable wire protocols or old-record compatibility. CLI `JobCommand`/tickets still require exact build matching, and stored formats have independent readers. See [Records and version matrix](records-and-versions.md). Status follows static inspection of `lib.rs`, VM `runtime_modules.rs`, `api.rs` and directory READMEs; it does not claim fresh contract-test or platform validation.
+This Rust boundary does not automatically establish stable wire protocols or old-record compatibility. The frontend verifies the same binary when self-executing its owner; later CLIs use instance-protocol compatibility without requiring matching binary digests. Stored formats have independent readers. See [Records and version matrix](records-and-versions.md). Status follows static inspection of `lib.rs`, VM `runtime_modules.rs`, `api.rs` and directory READMEs; it does not claim fresh contract-test or platform validation.
 
 ## Host and Guest AgentCtl {#host-agentctl}
 
@@ -56,7 +56,7 @@ credentials and endpoints: a guest cooperation token never authorizes host Job,
 VM, staged-file or daemon-supervisor controls. The Bundle's `agentctl` snapshot
 still describes Guest cooperation, not a Host authorization receipt.
 
-### Listener and request ownership {#host-job-service}
+### Job owner and request ownership {#host-job-service}
 
 `pvisor run` keeps a terminal frontend and one self-executed owner. They inherit
 stdio and exchange cancellation/exit information over a private socketpair. The
@@ -90,6 +90,26 @@ metadata can be cleared only after its process dies and no valid control endpoin
 remains. Read-only inspect uses stage-declared lower mutability, defaulting to
 Mutable for missing or rebound declarations; freshness is not guaranteed.
 
+### Existing internal channels and cleanup order {#owner-internal-control}
+
+The runtime still retains these internal channels inside the Job's process. They
+add no user-wide persistent process.
+
+| Channel | Current callers and implementation | Planned consolidation |
+| --- | --- | --- |
+| Overlay control | `registry.rs::RunControlServer` discovers its private endpoint through the stage's `control.sock` link; owner status queries itself, the TUI still reads observations, and the old inspect mount table duplicates owner inspect | Migrate TUI observations and SDK callers before removing old inspect branches, the listener and link discovery |
+| Native execution capture | `job_execution.rs::Server` retains `execution.sock`; after receiving capture, the owner still calls itself through this runtime endpoint | Call directly inside the owner while preserving request receipts, operation locks, freezing and suspended-head terminal confirmation |
+| Explicit VM debugging | `--vm-socket` and embedded `host_vm_exchange` use a separate asynchronous exchange; record discovery uses `LiveControlRecord::exchange_checked` | Share bounded, cancellable transport while retaining the public SDK adapter |
+
+Cleanup first unifies debug transport, then narrows owner bootstrap messages to
+run, fork and resume. `JobCommand` currently serializes all commands although
+only those three cross the socketpair; other commands' serialization, owner
+terminal branches and round-trip tests can then be removed. Production callers
+always pass zero for `OwnedTree.excluded`; `Completion.signal` has no reader,
+and restoration's `vm_control_socket(None)` always returns None. These cleanups
+are pending. Channel consolidation must migrate callers and contract tests
+together.
+
 ### Wire contract and upgrades {#host-wire}
 
 The instance contract is named `pvisor-instance-control-1`. Core's version-1 Host
@@ -117,9 +137,13 @@ guaranteed contained, and numeric signals are not atomic pidfd operations. Loade
 Mach-O UUID verification is not byte-for-byte memory attestation. Moving the
 listener does not establish additional macOS isolation guarantees.
 
-Lost responses, timeouts and cancellation can follow accepted effects. Commands
-report uncertainty and never retry automatically. Scoped checkpoint receipts do
-not provide universal exactly-once delivery. Reconcile state before resubmitting.
+Lost responses, timeouts and cancellation can follow accepted effects. The
+record-discovery path reports uncertainty and never retries automatically.
+The current `--vm-socket` debug path still awaits the old asynchronous exchange:
+Ctrl-C does not interrupt its response wait, and underlying disconnect errors
+may omit the uncertainty warning. This implementation gap awaits consolidation.
+Reconcile state after a disconnect on either path. Scoped checkpoint receipts
+do not provide universal exactly-once delivery.
 Transport/process tests do not establish guest correctness or real-VM TUI coverage.
 
 ## A production execution path

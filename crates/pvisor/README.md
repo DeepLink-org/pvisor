@@ -88,8 +88,8 @@ pvisor --feature workload-aware-memory-offloading --executor vm -- /bin/sleep 10
 
 `--feature NAME` is global, repeatable, accepts comma-separated names and rejects
 unknown names. Arguments after `--` belong to the guest and are never feature
-options. Feature queries run locally without starting/contacting the Host Job
-service. Their `enabled` column means registry defaults plus this invocation's
+options. Feature queries run locally without starting a Job or contacting its
+owner. Their `enabled` column means registry defaults plus this invocation's
 CLI enables, not a live VM status or a scan of personal/project config files.
 Global enables are supported by `run` and feature queries, not other Job actions
 or extensions; extension arguments and help requests are forwarded to
@@ -224,6 +224,12 @@ Host envelopes and newline JSON codec, with a 1 MiB frame limit and at most eigh
 accepted connections. Existing native operation locks serialize transitions.
 The process-local endpoint table is only an owner cache.
 
+The runtime still retains `RunControlServer` for Overlay status/observations and
+legacy inspect, plus `execution.sock` for native capture. Owner requests can still
+call these internal sockets in their own process; the TUI uses Overlay
+observations. Consolidating them requires migrating callers and preserving
+capture receipts/locks. See [existing channels and cleanup order](../../docs/src/en/design/architecture.md#owner-internal-control).
+
 Stopped status, review, apply, drop and inspect execute in the calling process.
 Checkpoint restoration/fork starts a new owner directly. Durable operations take
 exclusive `flock` on the Job root's `job.lock`: same UID, `0600`, one hard link,
@@ -243,8 +249,11 @@ are not atomic pidfd operations, and already-reparented orphans missed by
 discovery are not guaranteed contained. Moving the listener does not establish
 new macOS isolation guarantees.
 
-Lost responses, timeouts and cancellation may follow accepted effects. The CLI
-reports uncertainty and does not automatically retry. Reconcile state before
+Lost responses, timeouts and cancellation may follow accepted effects.
+Record-based CLI control reports uncertainty and does not automatically retry.
+The explicit `--vm-socket` debug path still uses the older asynchronous exchange:
+Ctrl-C does not interrupt its response wait, and disconnect errors may omit that
+warning. Unifying this path is pending. Reconcile state before
 resubmitting; scoped checkpoint receipts are not universal exactly-once delivery.
 
 For upgrade, drain Jobs and stop the old `--pvisor-internal-host` with the old
@@ -360,7 +369,7 @@ The exchange takes an `AgentCtlHostRequest<HostVmCommand>` and returns an
 
 | Run CLI | `[vm]` field | Default |
 | --- | --- | --- |
-| `--vm-control-socket PATH` | `control_socket` | Unset: CLI automatic `/tmp/pvisor-host-<effective-UID>/vm-<UUID>.sock` (canonical `/tmp`) |
+| `--vm-control-socket PATH` | `control_socket` | Unset: owner uses `/tmp/pvisor-host-<effective-UID>/jobs/<job-id>/<attempt-id>/control.sock` (canonical `/tmp`) |
 | `--vm-ram-backing FILE` | `ram_backing` | Unset: attempt-local file in ordinary file-backed mode |
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`; FUSE/macFUSE backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`; Linux x86_64 local cold pager |
@@ -785,8 +794,8 @@ disabled. The optional
 uses `stage/owned-inputs-receipt.json`. The receipt records actual generation
 identities, condition and manifest digest after teardown. This entry preserves
 PVisor, managed Job completion, compact journals, Bundle generation and self-exec
-VM isolation, but omits the CLI Host service. Its Ready timings are comparable
-within this four-condition cohort, not to previous CLI Ready measurements.
+VM isolation, but omits CLI frontend/owner orchestration. Its Ready timings are
+comparable within this four-condition cohort, not to previous CLI Ready measurements.
 
 For same-artifact/same-input A/B keep declarations unchanged and set
 `PVISOR_DISABLE_IMMUTABLE_LOWER_CACHE=1` before constructing the serving host

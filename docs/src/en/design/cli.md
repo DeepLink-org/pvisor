@@ -114,9 +114,12 @@ protocol compatibility. `cli/host_process.rs` owns process trees and terminal
 handoff; `cli/host_image.rs` retains macOS loaded/disk Mach-O UUID checks.
 `runtime/host_transport.rs` shares private paths, bounded newline JSON and peer
 checks. Instance control uses `pvisor-instance-control-1`, independently of caller
-binary digest. Internal `JobCommand` DTOs bootstrap the same-binary child only.
+binary digest. Internal `JobCommand` DTOs currently cover all commands, but only
+run, fork and resume bootstrap the same-binary owner; other commands execute directly or send
+instance-protocol commands to it.
 Core owns shared Host envelopes and supervisor definitions; daemon admission is
-unchanged. See [owner lifecycle](architecture.md#host-job-service).
+unchanged. See [owner lifecycle](architecture.md#host-job-service) and
+[existing internal channels and cleanup order](architecture.md#owner-internal-control).
 
 `cli/run.rs` owns new Job configuration and startup. `cli/run/lifecycle.rs` owns workspace branches and native execution restoration. `runtime/job_execution.rs` owns durable Job state, request receipts and native terminal acknowledgement; it does not infer suspension from a saved filesystem.
 

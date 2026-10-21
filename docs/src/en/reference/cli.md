@@ -27,7 +27,7 @@ Help, version and feature queries emit no startup logs. Execution commands emit
 `process.entry` and `cli.parsed` only after command parsing. These markers do
 not measure the complete process-entry or argument-parsing overhead.
 
-## Host Job service {#host-agentctl}
+## Job owners and durable operations {#host-agentctl}
 
 `pvisor run` starts a frontend and a private Job owner. Live status, kill, VM
 controls and execution capture connect to the owner recorded in the Job;
@@ -49,7 +49,7 @@ record validation and platform limitations.
 
 ## Experimental features {#features}
 
-List runtime features without starting or contacting the Host Job service:
+Query runtime features in the caller without starting a Job or connecting to an owner:
 
 ```bash
 pvisor feature
@@ -771,7 +771,7 @@ writes after the last resume may be discarded, leaving only the last committed h
 
 | Run option | TOML field under `[vm]` | Default / purpose |
 | --- | --- | --- |
-| `--vm-control-socket PATH` | `control_socket` | Unset: CLI creates `/tmp/pvisor-host-<effective-UID>/vm-<UUID>.sock` under canonical `/tmp` |
+| `--vm-control-socket PATH` | `control_socket` | Unset: owner uses `/tmp/pvisor-host-<effective-UID>/jobs/<job-id>/<attempt-id>/control.sock` (canonical `/tmp`) |
 | `--vm-ram-backing FILE` | `ram_backing` | Unset: attempt-local backing in ordinary file-backed mode; new files only |
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`; FUSE/macFUSE Seekable backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`; Linux x86_64 local live cold pager |
@@ -834,7 +834,9 @@ same-UID non-symlink `0700` ancestors and a `0600` socket. Existing sockets are
 never overwritten. Default paths use `jobs/<job-id>/<attempt-id>/control.sock`;
 the terminal owner removes discovery when the Attempt ends. Executors exclude
 the whole authority root from Guest access. These are host records, not guest
-discovery files. See [owner protocol](../design/architecture.md#host-wire).
+discovery files. The debug override still uses the older exchange path; see
+[owner control limits](../design/architecture.md#host-limits) for its cancellation
+limitation and the [owner protocol](../design/architecture.md#host-wire) for framing.
 
 ### VM local live cold compression {#vm-cold-ram-compression}
 
@@ -938,7 +940,7 @@ Local preparation does not use a cache service. Successful output contains
 `schema_version`, `prepared_rootfs` (canonical `store` and `base.id`) and the
 independent `rootfs` path. Initial preparation includes copying, full content
 and metadata verification, and a persistent pin. Later ordinary CLI runs have
-the Host worker authenticate the object, acquire a lifetime lease and attach
+the Job owner authenticate the object, acquire a lifetime lease and attach
 the Immutable physical lower without sealing it again. The workspace remains
 live by default; an explicit [sealed workspace](#prepared-workspace) can select
 a fixed generation.
@@ -981,7 +983,7 @@ pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
 Preparation returns `schema_version`, `prepared_workspace` (canonical `store`
 and `base.id`) and an independent `workspace` path. Initial preparation copies
 and verifies contents and metadata. A persistent pin survives command exit and
-GC; later Host workers authenticate the workspace catalog again and acquire a
+GC; later Job owners authenticate the workspace catalog again and acquire a
 lifetime lease without sealing the source again.
 
 Reads use the selected fixed generation; subsequent host project edits do not

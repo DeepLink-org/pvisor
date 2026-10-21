@@ -130,9 +130,12 @@ Attempt 生命周期由 Session 管理；Guest AgentCtl 保留工作负载协作
 `cli/host_process.rs` 管理进程树与终端交接；`cli/host_image.rs` 保留 macOS
 已加载/磁盘 Mach-O UUID 校验。`runtime/host_transport.rs` 共享私有路径、
 有界换行 JSON 与 peer 校验。实例控制使用 `pvisor-instance-control-1`，
-独立于调用方二进制摘要。内部 `JobCommand` DTO 只启动同一二进制的子进程。
+独立于调用方二进制摘要。内部 `JobCommand` DTO 目前覆盖全部命令，只有
+run、fork、resume 用于启动同一二进制的 owner；其他命令直接执行或向 owner
+发送实例协议命令。
 Core 拥有共享 Host envelope 和 supervisor 定义，daemon 准入不变。
-参见 [owner 生命周期](architecture.md#host-job-service)。
+参见 [owner 生命周期](architecture.md#host-job-service)及
+[现存内部通道与清理顺序](architecture.md#owner-internal-control)。
 
 `cli/run.rs` 负责新 Job 的配置与启动；`cli/run/lifecycle.rs` 负责工作区分支与原生执行状态恢复；`runtime/job_execution.rs` 负责持久化 Job 状态、请求回执和原生终态确认，不会仅凭已保存的文件系统推断暂停成功。
 

@@ -160,7 +160,7 @@ when relying on TOML memory settings; a `[vm]` table alone is not an executor
 selection. A configured `control_socket` also selects VM through the CLI, but
 never overrides an explicit non-VM executor, which is rejected for this setting.
 
-For a live VM with dedup enabled and a fixed control path:
+For debugging a live VM with dedup enabled and a fixed control path:
 
 ```toml
 [run]
@@ -180,27 +180,29 @@ pvisor run --config vm-control.toml
 pvisor run --config vm-control.toml --vm-ram-dedup=false
 ```
 
-Save the TOML as `vm-control.toml`; run the commands sequentially, after the
-previous Attempt has ended and released its socket. This Linux example assumes
-effective UID `1000`; substitute your effective UID and canonical `/tmp`
-(usually `/private/tmp` on macOS). `vm.control_socket` is an optional host-only
-creation path, unset by default. The Host Job service creates a private
-`vm-<UUID>.sock` directly under `/tmp/pvisor-host-<effective-UID>` when omitted;
-a custom CLI path must also be directly under that canonical root. Arbitrary
-private parents accepted by the embedded API are not accepted by the CLI worker.
-The root must be non-symlink, owned by the effective UID and exactly `0700`;
-the socket is `0600`, same-UID only, and existing paths are never overwritten.
-Host authority is excluded from guest access, including host-rootfs VMs.
+Save the TOML as `vm-control.toml`; run the commands sequentially after the
+previous Attempt releases its socket. This Linux example assumes effective UID
+`1000`; substitute your effective UID and canonical `/tmp` (usually
+`/private/tmp` on macOS). `vm.control_socket` is an optional host-only debug
+creation path, unset by default. When omitted, the owner binds
+`/tmp/pvisor-host-<effective-UID>/jobs/<job-id>/<attempt-id>/control.sock`
+and publishes its address and identity in the Job's `live_control` record before
+executor startup, clearing it at terminal state. Both CLI and embedded custom
+paths must stay inside that canonical authority root. Existing parent directories
+are checked individually for the same UID, no symlinks and exactly `0700`.
+Sockets are `0600`; existing paths are never overwritten. Executors exclude the
+whole authority root from guests, including host-rootfs VMs.
 
-CLI stderr prints `--vm-socket`, `--vm-job-id` and `--vm-attempt-id` for
-[normal live VM commands](cli.md#vm-instance-control): `status`,
+[Normal live VM commands](cli.md#vm-instance-control) discover the owner from the
+Job record without copying an address from startup output: `status JOB`,
 `suspend JOB --vm-pause` / `--vm-offload` (optional `--vm-ram-file PATH`), and
-`resume JOB --vm-load`. These command-local addressing/action options must follow the supported
-command; they are rejected before the command or on other commands. They are
-not `[vm]` configuration fields and do not change persisted-Job defaults. `ctrl` is not
-a compatibility alias for live VM control. `--vm-load` continues the same live
-Attempt, not a persistent snapshot restart or eager RAM prefaulting; non-VM
-controls are explicitly unsupported.
+`resume JOB`. `--vm-socket PATH` is a debug override requiring `--vm-job-id`
+and `--vm-attempt-id`; see [owner control limits](../design/architecture.md#host-limits)
+for its current cancellation limitation. These command-local options follow the
+supported command and are not `[vm]` fields. `ctrl` is not a compatibility alias.
+Live `resume` (including `--vm-load`) continues the same Attempt, without snapshot
+restart or eager RAM prefaulting. Ordinary stopped-Job resume restores a sealed
+checkpoint. Non-VM controls are unsupported.
 
 `--vm-node-socket SOCKET` overrides `vm.node_socket`;
 `--vm-snapshot-filesystem-pool DIR` overrides `vm.snapshot_filesystem_pool`.
@@ -245,7 +247,7 @@ or a read-access heat detector, and does not promise production density.
 [sealed-rootfs commands](cli.md#prepared-rootfs).
 
 Initial preparation copies and fully verifies a quiescent, independent Linux
-rootfs. On reuse, the Host worker and `VmExecutor::new` authenticate small
+rootfs. On reuse, the Job owner and `VmExecutor::new` authenticate small
 records, the seal and persistent pin, retaining a GC lease throughout execution
 without copying or auditing the whole tree. If `rootfs` is also present, it must
 exactly match the authenticated base. `image` and non-VM executors are rejected.

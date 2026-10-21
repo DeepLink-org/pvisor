@@ -159,7 +159,7 @@ workload-aware-memory-offloading = true
 不会选择 executor。配置 `control_socket` 也会通过 CLI 选择 VM，但
 不会覆盖显式非 VM executor；此组合被拒绝。
 
-启用去重并使用固定控制路径的 live VM：
+调试时启用去重并指定固定控制路径的 live VM：
 
 ```toml
 [run]
@@ -182,21 +182,23 @@ pvisor run --config vm-control.toml --vm-ram-dedup=false
 将 TOML 保存为 `vm-control.toml`；前一个 Attempt 结束并释放 socket 后再
 依次执行命令。该 Linux 示例假设有效 UID 为 `1000`；替换为自己的有效 UID
 和规范化 `/tmp`（macOS 通常是 `/private/tmp`）。`vm.control_socket`
-是可选的仅宿主创建路径，默认未设置。省略时，Host Job 服务直接在
-`/tmp/pvisor-host-<有效 UID>` 下创建私有 `vm-<UUID>.sock`；自定义 CLI
-路径也必须直接位于该规范根目录下。嵌入 API 接受的其他私有父目录不适用于
-CLI worker。根目录必须不是符号链接、属于有效 UID，且权限恰为 `0700`；
-socket 权限为 `0600`，仅限同 UID，已有路径绝不覆盖。宿主权限被排除在
-guest 访问范围之外，包括 host-rootfs VM。
+是可选的仅宿主调试创建路径，默认未设置。省略时，owner 在
+`/tmp/pvisor-host-<有效 UID>/jobs/<job-id>/<attempt-id>/control.sock`
+绑定端点，并在执行器启动前将地址与身份写入 Job 的 `live_control` 记录，
+终态时清除。CLI 与嵌入 API 的自定义路径都必须位于该规范权限根目录内；
+已有父目录逐级检查为同 UID、非符号链接、权限恰为 `0700`。
+socket 为 `0600`，不覆盖已有路径。执行器将整个权限根目录排除在 guest
+访问范围之外，包括 host-rootfs VM。
 
-CLI stderr 打印 `--vm-socket`、`--vm-job-id` 和 `--vm-attempt-id`，供
-[普通 live VM 命令](cli.md#vm-instance-control) 使用：`status`、
-`suspend JOB --vm-pause` / `--vm-offload`（可选 `--vm-ram-file PATH`），
-以及 `resume JOB --vm-load`。这些子命令局部寻址／动作选项必须放在支持的命令之后；
-前置于命令或用于其他命令时被拒绝。它们不是 `[vm]` 配置字段，
-不改变持久 Job 的默认行为。`ctrl` 不是 live VM 控制的兼容别名。
-`--vm-load` 继续同一个 live Attempt，不是持久快照重启，也不主动预触
-全部 RAM 页；非 VM 控制明确不受支持。
+[普通 live VM 命令](cli.md#vm-instance-control) 从 Job 记录发现 owner，
+无需复制启动输出中的地址：`status JOB`、`suspend JOB --vm-pause` /
+`--vm-offload`（可选 `--vm-ram-file PATH`）和 `resume JOB`。
+`--vm-socket PATH` 仅作调试覆盖，同时要求 `--vm-job-id` 和
+`--vm-attempt-id`；当前调试路径的取消限制见
+[owner 控制边界](../design/architecture.md#host-limits)。这些子命令局部选项
+必须放在支持的命令之后，不是 `[vm]` 配置字段。`ctrl` 不是兼容别名。
+活 `resume`（包括 `--vm-load`）继续同一 Attempt，不是快照重启，也不预触
+全部 RAM 页；已停止 Job 的普通 resume 恢复封存检查点。非 VM 控制不受支持。
 
 `--vm-node-socket SOCKET` 覆盖 `vm.node_socket`；
 `--vm-snapshot-filesystem-pool DIR` 覆盖 `vm.snapshot_filesystem_pool`。
@@ -235,7 +237,7 @@ VM executor 时启用实验性的 Linux x86_64 实例本地 live 压缩；
 `--rootfs-base-store STORE --rootfs-base ID`。完整命令见
 [封存 rootfs 入口](cli.md#prepared-rootfs)。
 
-首次准备复制并完整校验静止的独立 Linux rootfs。复用时，Host worker 与
+首次准备复制并完整校验静止的独立 Linux rootfs。复用时，Job owner 与
 `VmExecutor::new` 认证小记录、seal 与持久 pin，并取得贯穿运行的 GC lease；
 不重新复制或全树校验。`rootfs` 若同时存在，必须与认证后的基底精确一致；
 `image` 和非 VM executor 会被拒绝；该来源当前不支持 execution checkpoint
