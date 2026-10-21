@@ -18,12 +18,12 @@ mod progress;
 )]
 pub(super) struct DockerArgs {
     #[command(subcommand)]
-    command: DockerCommand,
+    pub(super) command: DockerCommand,
 }
 
-impl DockerArgs {
+impl DockerCommand {
     pub(super) fn failure_exit_code(&self) -> i32 {
-        if matches!(self.command, DockerCommand::Run(_)) {
+        if matches!(self, DockerCommand::Run(_)) {
             125
         } else {
             1
@@ -32,7 +32,7 @@ impl DockerArgs {
 }
 
 #[derive(Debug, Subcommand)]
-enum DockerCommand {
+pub(super) enum DockerCommand {
     /// Create and run a new container in its own VM.
     Run(Box<Run>),
     /// Download an image from an OCI registry.
@@ -61,7 +61,7 @@ enum DockerCommand {
 }
 
 #[derive(Debug, Args)]
-struct Run {
+pub(super) struct Run {
     /// Select the image platform. Execution currently requires the native platform.
     #[arg(long, value_parser = ["linux/amd64", "linux/arm64", "linux/arm64/v8"])]
     platform: Option<String>,
@@ -103,12 +103,12 @@ struct Run {
 }
 
 #[derive(Debug, Args)]
-struct Select {
+pub(super) struct Select {
     #[arg(required = true, num_args = 1..)]
     containers: Vec<String>,
 }
 #[derive(Debug, Args)]
-struct Stop {
+pub(super) struct Stop {
     #[arg(short = 't', long, default_value_t = 10)]
     timeout: u64,
     #[arg(short = 's', long)]
@@ -117,7 +117,7 @@ struct Stop {
     containers: Vec<String>,
 }
 #[derive(Debug, Args)]
-struct Remove {
+pub(super) struct Remove {
     #[arg(short, long)]
     force: bool,
     #[arg(short, long)]
@@ -126,14 +126,14 @@ struct Remove {
     containers: Vec<String>,
 }
 #[derive(Debug, Args)]
-struct RemoveImages {
+pub(super) struct RemoveImages {
     #[arg(short, long)]
     force: bool,
     #[arg(required = true, num_args = 1..)]
     images: Vec<String>,
 }
 #[derive(Debug, Args)]
-struct List {
+pub(super) struct List {
     #[arg(short, long)]
     all: bool,
     #[arg(short, long)]
@@ -142,7 +142,7 @@ struct List {
     no_trunc: bool,
 }
 #[derive(Debug, Args)]
-struct ListImages {
+pub(super) struct ListImages {
     #[arg(short, long)]
     quiet: bool,
     #[arg(long)]
@@ -150,13 +150,13 @@ struct ListImages {
     repository: Option<String>,
 }
 #[derive(Debug, Args)]
-struct Logs {
+pub(super) struct Logs {
     #[arg(short, long)]
     follow: bool,
     container: String,
 }
 #[derive(Debug, Args)]
-struct Exec {
+pub(super) struct Exec {
     #[arg(short, long)]
     interactive: bool,
     #[arg(short = 't', long)]
@@ -291,9 +291,9 @@ fn port(value: &str) -> anyhow::Result<docker::Port> {
     })
 }
 
-pub(super) fn run(args: DockerArgs) -> anyhow::Result<i32> {
+pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
     let store = Store::discover()?;
-    match args.command {
+    match command {
         DockerCommand::Pull { image, platform } => {
             let image = {
                 let mut display = progress::PullDisplay::new(&image);

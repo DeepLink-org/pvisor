@@ -14,7 +14,7 @@ Agent 会修改代码时，先加 `--stage`，再用 `review` 和 `inspect` 看�
 ```bash
 journey_setup
 printf original > report.txt
-pvisor run --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf proposed > report.txt'
+pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf proposed > report.txt'
 assert_content report.txt original
 pvisor inspect "$CASE_ROOT/draft" -- /bin/cat report.txt > "$CASE_ROOT/view.txt"
 assert_content "$CASE_ROOT/view.txt" proposed
@@ -35,7 +35,7 @@ Agent 同时修改正文和实验文件时，可以只接受正文，再丢弃�
 <!-- semspec: case id=S-USE-006 -->
 ```bash
 journey_setup
-pvisor run --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf accepted > report.txt; printf scratch > scratch.txt'
+pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf accepted > report.txt; printf scratch > scratch.txt'
 pvisor apply "$CASE_ROOT/draft" --path report.txt
 assert_content report.txt accepted
 assert_absent scratch.txt
@@ -59,7 +59,7 @@ json_paths "$CASE_ROOT/review.json"
 ```bash
 journey_setup
 printf base > report.txt
-pvisor run --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf agent > report.txt'
+pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf agent > report.txt'
 printf human > report.txt
 expect_refused pvisor apply "$CASE_ROOT/draft" --all
 assert_content report.txt human
@@ -78,7 +78,7 @@ assert_content "$CASE_ROOT/view.txt" agent
 <!-- semspec: case id=S-USE-008 -->
 ```bash
 journey_setup
-pvisor run --stage "$CASE_ROOT/live" -- /bin/sh -c 'printf ready > ready.txt; exec /bin/sleep 30' > "$CASE_ROOT/live.log" 2>&1 &
+pvisor spawn --stage "$CASE_ROOT/live" -- /bin/sh -c 'printf ready > ready.txt; exec /bin/sleep 30' > "$CASE_ROOT/live.log" 2>&1 &
 runner=$!
 trap 'kill "$runner" 2>/dev/null || true; wait "$runner" 2>/dev/null || true' EXIT
 journey_wait_file "$CASE_ROOT/live/upper/ready.txt" "$runner"

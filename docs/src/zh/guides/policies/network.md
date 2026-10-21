@@ -24,7 +24,7 @@ HTTP proxy；libkrun VM Run 使用进程内 smoltcp 数据面处理 IPv4 TCP 和
 在 Agent 命令之前传入一个或多个 `--overlaynet-allow`：
 
 ```bash
-pvisor run \
+pvisor spawn \
   --overlaynet-allow api.openai.com:443 \
   --overlaynet-allow pypi.org:443 \
   -- agent-command
@@ -62,7 +62,7 @@ allow、deny 和 limit 参数都可以重复。显式 deny 的优先级高于 al
 目标可以是精确 hostname、通配后缀、IP 或 CIDR，并可附带端口：
 
 ```bash
-pvisor run \
+pvisor spawn \
   --overlaynet-allow '*.example.com:443' \
   --overlaynet-allow 203.0.113.10:443 \
   --overlaynet-deny 169.254.0.0/16 \
@@ -72,7 +72,7 @@ pvisor run \
 ### 拒绝普通出口
 
 ```bash
-pvisor run --overlaynet-deny-all -- agent-command
+pvisor spawn --overlaynet-deny-all -- agent-command
 ```
 
 Host Run 会安装上表中的 namespace／Seatbelt 网络边界；容器应使用
@@ -88,7 +88,7 @@ deny-all 不阻止已配置的内部 Gateway 路由；需要完全离线时关�
 同时设置全局限制和更严格的目标限制：
 
 ```bash
-pvisor run \
+pvisor spawn \
   --overlaynet-limit 10mbps \
   --overlaynet-limit api.openai.com:443=2mbps \
   -- agent-command
@@ -127,7 +127,7 @@ bytes_per_second = 250000
 运行：
 
 ```bash
-pvisor run --config run.toml
+pvisor spawn --config run.toml
 ```
 
 transport 支持 `http`、`https` 和 `tcp_tunnel`。`ports` 或 `transports` 为空时，表示该
@@ -157,7 +157,7 @@ IP/CIDR 策略时，应使用能返回具体地址的 resolver。
 
 因此 host/container cooperative-proxy Run 会报告
 `safety.network_non_bypassable = false`。如果必须
-阻止直接出口，使用 `pvisor run --overlaynet-deny-all -- COMMAND`：Linux 会创建私有
+阻止直接出口，使用 `pvisor spawn --overlaynet-deny-all -- COMMAND`：Linux 会创建私有
 network namespace；macOS 会用 Seatbelt 阻断非 loopback IP 与宿主 ambient Unix socket，同时保留
 loopback proxy、精确的 AgentCtl 和 Run 私有目录内 IPC。Container Run 也可以使用 `--container-network none`。
 VM executor 默认使用 `[overlaynet] mode = "auto"`，guest 使用静态 IPv4 地址，由 smoltcp
@@ -217,7 +217,7 @@ OverlayFS 视图和网络驱动；缺少驱动时拒绝启动。
 一条独立 Run：
 
 ```bash
-pvisor run \
+pvisor spawn \
   --overlaynet-deny 169.254.0.0/16 \
   -- agent-command
 

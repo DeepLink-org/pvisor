@@ -1,7 +1,7 @@
 # Codex CLI
 
 ```bash
-pvisor run --safe -- codex
+pvisor spawn --safe -- codex
 pvisor status --review last
 pvisor apply last --path src   # 或：pvisor drop last
 ```
@@ -26,7 +26,7 @@ Under `--safe`, deliver credentials explicitly with `--pass-env OPENAI_API_KEY`,
 For mandatory networking or fixed Linux userspace:
 
 ```bash
-pvisor run --safe --vm --rootfs image=my-agent-image:latest -- codex
+pvisor spawn --safe --vm --rootfs image=my-agent-image:latest -- codex
 ```
 
 The image must contain Codex. See [libkrun VM](../executors/vm.md) for prerequisites and limits.

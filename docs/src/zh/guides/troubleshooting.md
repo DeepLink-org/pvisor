@@ -22,7 +22,7 @@ pvisor status --review last
 先检查启动命令是否使用 stage：
 
 ```bash
-pvisor run --stage ../stage-task-001 -- AGENT_COMMAND
+pvisor spawn --stage ../stage-task-001 -- AGENT_COMMAND
 ```
 
 不使用 stage 时，host executor 不会产生可以审查和选择性 apply 的 staged filesystem Effect；

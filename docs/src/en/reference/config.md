@@ -29,7 +29,7 @@ policy = "deny"
 ```
 
 ```bash
-pvisor run --config run.toml
+pvisor spawn --config run.toml
 pvisor status --review ../stage-config-001
 pvisor inspect ../stage-config-001 -- cat result.txt
 ```
@@ -176,8 +176,8 @@ ram_dedup = true
 
 ```bash
 install -d -m 0700 /tmp/pvisor-host-1000
-pvisor run --config vm-control.toml
-pvisor run --config vm-control.toml --vm-ram-dedup=false
+pvisor spawn --config vm-control.toml
+pvisor spawn --config vm-control.toml --vm-ram-dedup=false
 ```
 
 Save the TOML as `vm-control.toml`; run the commands sequentially after the

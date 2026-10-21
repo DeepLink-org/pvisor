@@ -3,7 +3,7 @@
 通常只需要设置任务存储位置，以及明确传给 Agent 的凭据。宿主上的变量影响 pVisor 自身；任务实际收到的变量由环境投影规则决定。
 
 ```bash
-PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor run --safe \
+PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor spawn --safe \
   --stage ../stage-env-001 --overlaynet-deny-all -- /bin/sh -c 'printf "%s\n" "$PVISOR_RUN_ID"'
 ```
 

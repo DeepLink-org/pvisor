@@ -1,7 +1,7 @@
 # Codex CLI
 
 ```bash
-pvisor run --safe -- codex
+pvisor spawn --safe -- codex
 pvisor status --review last
 pvisor apply last --path src   # 或：pvisor drop last
 ```
@@ -26,7 +26,7 @@ pvisor apply last --path src   # 或：pvisor drop last
 需要不可绕过的网络边界或固定的 Linux 用户空间时：
 
 ```bash
-pvisor run --safe --vm --rootfs image=my-agent-image:latest -- codex
+pvisor spawn --safe --vm --rootfs image=my-agent-image:latest -- codex
 ```
 
 镜像中必须安装 Codex。VM 的准备与限制见 [libkrun VM](../executors/vm.md)。

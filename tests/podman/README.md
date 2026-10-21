@@ -6,7 +6,7 @@ in `system/` (Bats) and `e2e/` (Go). See `UPSTREAM.md` for the exact revision,
 license and adaptation map. The upstream copies are reference material: they
 are not executable pVisor gates and must not be included in normal discovery.
 
-The adapted suites drive `pvisor docker` as a black box and check expected
+The adapted suites drive the top-level pVisor container commands as a black box and check expected
 outputs, exit codes and lifecycle effects, following Podman's system/e2e model.
 They require no Docker executable, daemon, socket or comparison run. Cases that
 specifically interoperate with a real Docker daemon are excluded with reasons.
@@ -38,8 +38,7 @@ export PVISOR_BINARY="$runtime_dir/pvisor"
 
 These are special external-runtime runners, separate from `just test`.
 `PVISOR_BINARY` selects a single executable path (default: `pvisor` in PATH),
-not a shell command string. Every invocation prepends the `docker` subcommand;
-there is no engine selector. Missing pVisor, image pull failures or unavailable
+not a shell command string. Arguments are passed directly to the top-level CLI; there is no engine selector. Missing pVisor, image pull failures or unavailable
 virtualization fail active cases rather than skip them.
 
 Each test owns a private `PVISOR_DOCKER_HOME`, a unique container name and bounded

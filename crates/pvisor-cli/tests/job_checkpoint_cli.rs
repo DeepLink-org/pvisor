@@ -41,7 +41,7 @@ fn managed_fixture(root: &Path) -> pvisor::RunRecord {
     drop(listener);
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .args([
-            "run",
+            "spawn",
             "--filesystem",
             "host",
             "--overlaynet-deny-all",

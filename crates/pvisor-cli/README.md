@@ -24,14 +24,15 @@ durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 
 ## Command help and live VM controls
 
-Root help stays concise: **Execution** (`run`, `status`, `kill`), **Changes**
+Root help starts with **Commands** (container `run`, `pull`, `images`, `rmi`,
+`exec`, `ps`, `start`, `stop`, `rm`, `logs`, plus Job `spawn`, `status`, `kill`), **Changes**
 (`review`, `apply`, `drop`, `inspect`), **Checkpoints** (`checkpoint`, `suspend`,
 `resume`, `fork`) and **Tools** (installed `replay`/`tui` companions, `cache`, `feature`,
 `help`). It includes the run-review-apply examples; use `pvisor help COMMAND`
 for command options.
 
 ```bash
-pvisor run --safe -- claude
+pvisor spawn --safe -- claude
 pvisor review last
 pvisor apply last --path src
 ```
@@ -73,8 +74,11 @@ New CLIs read old records without live control as disk state only.
 
 ## Docker command profile (experimental)
 
-`pvisor docker` adds a separate container workflow. Existing top-level Job
-commands and their stage/review/apply semantics are unchanged. Each container
+`pvisor run` creates a container; `spawn` creates a Job with stage/review/apply
+semantics. Unknown command names and leading Job options default to `spawn`;
+`pvisor -- COMMAND` explicitly selects default Job execution. The former Job
+`run` syntax must now use `spawn`. The old `pvisor docker COMMAND` spelling
+remains a hidden compatibility entry point with the same container dispatcher. Each container
 uses its own Linux VM and supervisor, started as the current host user. No
 central Docker daemon, privileged helper or shared Linux VM is required.
 Guest root is independent of host root; the image's `User` is respected.
@@ -83,16 +87,16 @@ Jobs, container workloads and exec share one guest launcher and PID-1 reaper;
 the optional control transport does not implement a separate supervisor.
 
 ```bash
-pvisor docker pull alpine:3.20
-pvisor docker run --rm alpine:3.20 echo hello
-pvisor docker run -d --name redis -p 127.0.0.1:6379:6379 redis:7
-pvisor docker exec -it redis redis-cli
-pvisor docker logs -f redis
-pvisor docker stop redis
-pvisor docker start redis
-pvisor docker rm -f redis
-pvisor docker images
-pvisor docker rmi redis:7
+pvisor pull alpine:3.20
+pvisor run --rm alpine:3.20 echo hello
+pvisor run -d --name redis -p 127.0.0.1:6379:6379 redis:7
+pvisor exec -it redis redis-cli
+pvisor logs -f redis
+pvisor stop redis
+pvisor start redis
+pvisor rm -f redis
+pvisor images
+pvisor rmi redis:7
 ```
 
 Pulls report metadata resolution, per-layer downloaded bytes and transfer rate,
@@ -111,7 +115,7 @@ while existing containers keep their pinned images.
 
 The registered commands are exactly `run`, `pull`, `images`, `rmi`, `exec`,
 `ps`, `start`, `stop`, `rm` and `logs`. Compatibility is limited to the options
-listed in `pvisor docker COMMAND --help`; unsupported commands/options fail
+listed in `pvisor COMMAND --help`; unsupported commands/options fail
 rather than being silently ignored. This is not complete Docker CLI or
 Docker Engine API compatibility. There is no `build`, Compose, Docker socket,
 Docker credential-helper integration or cross-architecture emulation.
@@ -175,7 +179,7 @@ modified manually. No prepared-entry removal command is provided.
 Both local source and destination are checked against canonical Host authority
 before initializing/copying, without contacting or changing a listener.
 
-`pvisor run --vm --rootfs-base-store STORE --rootfs-base ID -- COMMAND` opens that
+`pvisor spawn --vm --rootfs-base-store STORE --rootfs-base ID -- COMMAND` opens that
 catalog entry in the ordinary Job owner, before default host rootfs or
 OCI preparation. Both options are required together and conflict with `--rootfs`,
 configured image sources, host/container execution and JSON `--spec`. TOML can
@@ -208,7 +212,7 @@ the live caller workspace as the apply destination. Prepare it outside the Run:
 
 ```bash
 pvisor cache prepare-workspace --workspace /opt/workspace-source --base-store /opt/workspace-bases
-pvisor run --vm --rootfs-base-store /opt/rootfs-bases --rootfs-base ROOTFS_ID \
+pvisor spawn --vm --rootfs-base-store /opt/rootfs-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /opt/workspace-bases --workspace-base WORKSPACE_ID -- /bin/sh
 ```
 

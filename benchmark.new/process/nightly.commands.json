@@ -19,7 +19,7 @@
     "host-run": {
       "argv": [
         "@BINARY@",
-        "run",
+        "spawn",
         "--no-agent-defaults",
         "--overlaynet",
         "off",

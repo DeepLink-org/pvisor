@@ -1452,7 +1452,7 @@ async fn execute_config(
 
     #[cfg(feature = "gateway")]
     if config.gateway.debug {
-        // `pvisor run` is a foreground CLI: mirror opted-in gateway/network
+        // `pvisor spawn` is a foreground CLI: mirror opted-in gateway/network
         // diagnostics to stderr as well as the Run log, so proxy failures can
         // be diagnosed without locating storage after the child exits.
         pvisor_gateway::runtime::debug::enable_debug_stderr();
@@ -2058,8 +2058,8 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
         apply_cli(&mut requested, args.clone())?;
         use clap::Parser;
         let patch = safe::patch(&requested, args.audit);
-        let super::Command::Run(patch) = super::Cli::try_parse_from(
-            ["pvisor".to_owned(), "run".to_owned()]
+        let super::Command::Spawn(patch) = super::Cli::try_parse_from(
+            ["pvisor".to_owned(), "spawn".to_owned()]
                 .into_iter()
                 .chain(patch),
         )?
@@ -3310,11 +3310,11 @@ mod tests {
         }
         #[derive(clap::Subcommand)]
         enum Action {
-            Run(Box<RunArgs>),
+            Spawn(Box<RunArgs>),
         }
         let parsed = Companion::try_parse_from([
             "pvisor-tui",
-            "run",
+            "spawn",
             "--feature",
             "workload-aware-memory-offloading,workload-aware-memory-offloading",
             "--feature=workload-aware-memory-offloading",
@@ -3324,7 +3324,7 @@ mod tests {
             "guest-only",
         ])
         .unwrap();
-        let Action::Run(args) = parsed.action;
+        let Action::Spawn(args) = parsed.action;
         assert_eq!(args.features.len(), 3);
         assert_eq!(args.command, ["echo", "--feature", "guest-only"]);
     }
@@ -3882,10 +3882,13 @@ mod tests {
     use pvisor::FilesystemMount;
 
     fn preset_args(values: &[&str]) -> RunArgs {
-        let crate::cli::Command::Run(args) =
-            Cli::try_parse_from(["pvisor", "run"].into_iter().chain(values.iter().copied()))
-                .unwrap()
-                .command
+        let crate::cli::Command::Spawn(args) = Cli::try_parse_from(
+            ["pvisor", "spawn"]
+                .into_iter()
+                .chain(values.iter().copied()),
+        )
+        .unwrap()
+        .command
         else {
             unreachable!("expected run command")
         };
@@ -4302,7 +4305,7 @@ level = "warn"
         use clap::CommandFactory;
         assert!(
             !Cli::command()
-                .find_subcommand("run")
+                .find_subcommand("spawn")
                 .unwrap()
                 .get_arguments()
                 .any(|arg| arg.get_long() == Some("sandbox"))
@@ -4495,7 +4498,7 @@ sandbox = "required""#
                 "HVF on macOS"
             }));
         }
-        let help = Cli::try_parse_from(["pvisor", "run", "--help"])
+        let help = Cli::try_parse_from(["pvisor", "spawn", "--help"])
             .unwrap_err()
             .to_string();
         let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -4640,7 +4643,7 @@ sandbox = "required""#
         for rootfs_value in ["image=/tmp/rootfs-image", "/tmp/rootfs"] {
             let error = Cli::try_parse_from([
                 "pvisor",
-                "run",
+                "spawn",
                 "--rootfs",
                 "host",
                 "--rootfs",
@@ -4917,7 +4920,7 @@ sandbox = "required""#
 
     #[test]
     fn help_exposes_driver_selection_and_the_simple_network_policy_surface() {
-        let error = Cli::try_parse_from(["pvisor", "run", "--help"]).unwrap_err();
+        let error = Cli::try_parse_from(["pvisor", "spawn", "--help"]).unwrap_err();
         let help = error.to_string();
         assert!(help.contains("--overlaynet-allow"));
         assert!(help.contains("--overlaynet-deny"));
@@ -4949,9 +4952,9 @@ sandbox = "required""#
         use clap::CommandFactory;
 
         let mut command = Cli::command()
-            .mut_subcommand("run", |run| run.long_about(MACOS_RUN_COMMAND_LONG_ABOUT));
+            .mut_subcommand("spawn", |run| run.long_about(MACOS_RUN_COMMAND_LONG_ABOUT));
         let help = command
-            .find_subcommand_mut("run")
+            .find_subcommand_mut("spawn")
             .expect("run subcommand")
             .render_long_help()
             .to_string();
@@ -4978,7 +4981,7 @@ sandbox = "required""#
 
     #[test]
     fn safe_help_describes_the_effective_platform_boundary() {
-        let help = Cli::try_parse_from(["pvisor", "run", "--help"])
+        let help = Cli::try_parse_from(["pvisor", "spawn", "--help"])
             .unwrap_err()
             .to_string();
 
@@ -4998,7 +5001,7 @@ sandbox = "required""#
 
     #[test]
     fn help_exposes_compositional_overlayfs_without_a_mode_switch() {
-        let error = Cli::try_parse_from(["pvisor", "run", "--help"]).unwrap_err();
+        let error = Cli::try_parse_from(["pvisor", "spawn", "--help"]).unwrap_err();
         let help = error.to_string();
         for option in ["--mount", "--access", "--stage", "--overlayfs-max-size"] {
             assert!(help.contains(option), "missing {option}");

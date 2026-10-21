@@ -2,11 +2,11 @@
 
 Gateway capture 是 pVisor 的 Run 驱动，由 Run 启停，没有独立的 Gateway 命令或守护进程。[能力与证据](../concepts/capabilities-and-evidence.md)说明 Capture 能证明什么、不负责 enforce 什么。
 
-先按[安装指南](../start/installation.md)安装 `pvisor`。真实 Agent 可直接通过 `pvisor run` 配置：
+先按[安装指南](../start/installation.md)安装 `pvisor`。真实 Agent 可直接通过 `pvisor spawn` 配置：
 
 ```bash
 export DEEPSEEK_API_KEY=sk-...
-pvisor run \
+pvisor spawn \
   --name deepseek \
   --gateway-mode capture \
   --gateway-route 'name="deepseek", upstream="https://api.deepseek.com/v1", api_key_env="DEEPSEEK_API_KEY"' \

@@ -196,6 +196,7 @@ def install_smoke(wheel: Path, version: str) -> None:
         _run([str(scripts / "pvisor-daemon"), "protocol"], env=env)
 
         _run([str(scripts / "pvisor"), "run", "--help"], env=env)
+        _run([str(scripts / "pvisor"), "spawn", "--help"], env=env)
         for command in ("prepare", "publish", "read"):
             _run([str(scripts / "pvisor"), "cache", command, "--help"], env=env)
         for command in ("tui", "replay"):

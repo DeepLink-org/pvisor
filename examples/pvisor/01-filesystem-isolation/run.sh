@@ -14,7 +14,7 @@ base="$work_dir/base"
 # The project workspace is reusable; pVisor creates an independent stage for this Run.
 (
   cd "$base"
-  "$pvisor_bin" run --filesystem sandbox --stage "$PVISOR_RUN_HOME/run-isolation" --stdio capture -- \
+  "$pvisor_bin" spawn --filesystem sandbox --stage "$PVISOR_RUN_HOME/run-isolation" --stdio capture -- \
     /bin/sh -c 'printf "changed\n" > existing.txt; printf "new\n" > new.txt'
 )
 run_dir="$(find "$PVISOR_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print -quit)"

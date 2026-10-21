@@ -434,7 +434,7 @@ mod tests {
     fn nested_run_args_roundtrip_as_typed_data() {
         let parsed = super::super::Cli::try_parse_from([
             "pvisor",
-            "run",
+            "spawn",
             "--executor",
             "vm",
             "--memory",
@@ -451,7 +451,7 @@ mod tests {
             "literal ; not a shell request",
         ])
         .unwrap();
-        let super::super::Command::Run(args) = parsed.command else {
+        let super::super::Command::Spawn(args) = parsed.command else {
             panic!("expected run");
         };
         let request = JobCommand::Run(args);
@@ -466,7 +466,7 @@ mod tests {
     fn workspace_selectors_roundtrip_in_the_existing_typed_run_request() {
         let parsed = super::super::Cli::try_parse_from([
             "pvisor",
-            "run",
+            "spawn",
             "--vm",
             "--rootfs-base-store",
             "/private/root-store",
@@ -480,7 +480,7 @@ mod tests {
             "true",
         ])
         .unwrap();
-        let super::super::Command::Run(args) = parsed.command else {
+        let super::super::Command::Spawn(args) = parsed.command else {
             panic!("expected Run");
         };
         let value = serde_json::to_value(JobCommand::Run(args)).unwrap();
@@ -509,14 +509,14 @@ mod tests {
             std::fs::write(&path, serde_json::to_vec(&spec).unwrap()).unwrap();
             let parsed = super::super::Cli::try_parse_from([
                 "pvisor",
-                "run",
+                "spawn",
                 "--spec",
                 path.to_str().unwrap(),
                 "--result-file",
                 "result.json",
             ])
             .unwrap();
-            let super::super::Command::Run(args) = parsed.command else {
+            let super::super::Command::Spawn(args) = parsed.command else {
                 panic!("expected run");
             };
             assert_eq!(
@@ -563,7 +563,7 @@ mod tests {
         ];
         for (flag, value) in vm_flags {
             for command in [
-                "run",
+                "spawn",
                 "kill",
                 "inspect",
                 "apply",
@@ -591,7 +591,7 @@ mod tests {
             );
             let mut command = super::super::Cli::command();
             command.build();
-            let args = super::super::normalize_default_run(
+            let args = super::super::normalize_default_spawn(
                 args.into_iter().map(Into::into).collect(),
                 &command,
             );
@@ -739,7 +739,7 @@ mod tests {
             assert_eq!(help.contains("--vm-load"), command == "resume", "{help}");
         }
         for command in [
-            "run",
+            "spawn",
             "kill",
             "inspect",
             "apply",

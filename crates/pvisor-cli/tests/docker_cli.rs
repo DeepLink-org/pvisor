@@ -8,7 +8,7 @@ use std::{
 
 fn command(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
-    command.env("PVISOR_DOCKER_HOME", home).arg("docker");
+    command.env("PVISOR_DOCKER_HOME", home);
     command
 }
 
@@ -211,7 +211,6 @@ impl Native {
     fn call(&self, args: &[&str], stdin: Option<&[u8]>, expected: i32) -> Output {
         let mut child = Command::new(&self.binary)
             .env("PVISOR_DOCKER_HOME", &self.home)
-            .arg("docker")
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -253,7 +252,7 @@ impl Native {
             .current_dir(workspace)
             .env("PVISOR_RUN_HOME", root.join("jobs"))
             .env("PVISOR_STARTUP_TIMING", "0")
-            .args(["run", "--executor", "vm", "--rootfs"])
+            .args(["spawn", "--executor", "vm", "--rootfs"])
             .arg(std::env::var_os("PVISOR_DOCKER_TEST_ROOTFS").unwrap())
             .args(["--stdio", "capture", "--", "/bin/sh", "-c", script])
             .output()
@@ -270,7 +269,7 @@ impl Drop for Native {
     fn drop(&mut self) {
         let _ = Command::new(&self.binary)
             .env("PVISOR_DOCKER_HOME", &self.home)
-            .args(["docker", "rm", "-f", "native-test"])
+            .args(["rm", "-f", "native-test"])
             .output();
     }
 }

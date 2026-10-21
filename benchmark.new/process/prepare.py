@@ -30,7 +30,7 @@ def prepare_template(template, binary, output=None):
         )
         command = [
             str(binary),
-            "run",
+            "spawn",
             "--no-agent-defaults",
             "--overlaynet",
             "off",

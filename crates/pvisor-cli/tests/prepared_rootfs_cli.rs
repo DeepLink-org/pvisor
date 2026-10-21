@@ -233,7 +233,7 @@ fn prepare(root: &Path) -> pvisor::PreparedRootfs {
 
 fn run(root: &Path, args: &[&str]) -> Output {
     command(env!("CARGO_BIN_EXE_pvisor"), root)
-        .args(["run", "--no-agent-defaults"])
+        .args(["spawn", "--no-agent-defaults"])
         .args(args)
         .output()
         .unwrap()

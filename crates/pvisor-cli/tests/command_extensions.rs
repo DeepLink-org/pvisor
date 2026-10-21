@@ -2,6 +2,42 @@
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 #[test]
+fn container_run_and_job_spawn_have_distinct_help_and_argument_contracts() {
+    let temporary = tempfile::tempdir().unwrap();
+    for (name, expected, absent) in [
+        ("run", "--platform", "--safe"),
+        ("spawn", "--safe", "--platform"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+            .args([name, "--help"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let help = String::from_utf8_lossy(&output.stdout);
+        assert!(help.contains(expected), "{help}");
+        assert!(!help.contains(absent), "{help}");
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["run", "--safe", "--", "/bin/true"])
+        .env("PVISOR_RUN_HOME", temporary.path().join("jobs"))
+        .env("PVISOR_DOCKER_HOME", temporary.path().join("containers"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(125));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
+    assert!(!temporary.path().join("jobs").exists());
+    assert!(!temporary.path().join("containers").exists());
+    let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
+        .args(["docker", "images", "-q"])
+        .env("PVISOR_DOCKER_HOME", temporary.path().join("containers"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn discovery_is_inert_and_dispatch_preserves_arguments_and_exit() {
     let temporary = tempfile::tempdir().unwrap();
     let kernel = temporary.path().join("pvisor");
@@ -52,7 +88,7 @@ fn discovery_is_inert_and_dispatch_preserves_arguments_and_exit() {
 }
 
 #[test]
-fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
+fn kernel_help_discovers_commands_and_default_execution_dispatches_spawn() {
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .env("PATH", "")
         .output()
@@ -60,11 +96,11 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(!help.contains("\n  env "));
-    assert!(help.contains("Run agents, review changes, and manage Jobs"));
+    assert!(help.contains("Run containers and agents in independent environments"));
     assert!(output.stderr.is_empty());
     assert!(!help.contains("--vm-"), "{help}");
     let headings = [
-        "Execution:",
+        "Commands:",
         "Changes:",
         "Checkpoints:",
         "Tools:",
@@ -79,10 +115,17 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
         })
         .collect();
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]), "{help}");
-    assert!(!help.contains("\nCommands:"));
+    assert!(help.contains("\nCommands:"));
     assert!(!help.contains("\n  extensions "));
     for (start, end, names) in [
-        ("Execution:\n", "Changes:\n", &["run", "status", "kill"][..]),
+        (
+            "Commands:\n",
+            "Changes:\n",
+            &[
+                "run", "spawn", "status", "kill", "pull", "images", "rmi", "exec", "ps", "start",
+                "stop", "rm", "logs",
+            ][..],
+        ),
         (
             "Changes:\n",
             "Checkpoints:\n",
@@ -122,7 +165,7 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
 
     for option in ["--gateway-stream-markdown", "--unknown-pvisor-option"] {
         let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-            .args(["run", option, "--", "/bin/true"])
+            .args(["spawn", option, "--", "/bin/true"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
@@ -136,7 +179,9 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_run() {
     assert!(help_command.status.success());
     assert!(String::from_utf8_lossy(&help_command.stdout).contains("Usage: pvisor help"));
 
-    for name in ["run", "apply", "drop", "status", "kill", "fork", "inspect"] {
+    for name in [
+        "run", "spawn", "apply", "drop", "status", "kill", "fork", "inspect",
+    ] {
         assert!(help.contains(&format!("  {name} ")), "{help}");
     }
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
@@ -294,7 +339,8 @@ fn isolated_core_keeps_job_commands_and_runs_without_extensions() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     for name in [
-        "run", "status", "kill", "inspect", "fork", "apply", "drop", "cache", "help",
+        "run", "spawn", "status", "kill", "pull", "images", "rmi", "exec", "ps", "start", "stop",
+        "rm", "logs", "inspect", "fork", "apply", "drop", "cache", "help",
     ] {
         assert!(help.contains(&format!("\n  {name} ")), "{help}");
     }

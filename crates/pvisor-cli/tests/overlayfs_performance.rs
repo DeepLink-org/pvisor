@@ -39,7 +39,7 @@ fn recursive_lower_walk_does_not_materialize_file_payloads() {
 
     let ambient_started = Instant::now();
     let ambient_output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--executor", "host", "--no-agent-defaults"])
+        .args(["spawn", "--executor", "host", "--no-agent-defaults"])
         .args(["--", "/usr/bin/find", ".", "-type", "f", "-print"])
         .current_dir(&lower)
         .env("PVISOR_RUN_HOME", temporary.path().join("runs"))
@@ -57,7 +57,7 @@ fn recursive_lower_walk_does_not_materialize_file_payloads() {
 
     let started = Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--executor", "host", "--no-agent-defaults"])
+        .args(["spawn", "--executor", "host", "--no-agent-defaults"])
         .arg("--stage")
         .arg(&stage)
         .args(["--", "/usr/bin/find", ".", "-type", "f", "-print"])

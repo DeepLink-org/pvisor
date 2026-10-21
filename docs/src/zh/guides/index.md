@@ -9,7 +9,7 @@
 完全离线的脚本可以从下面的命令开始；项目中的 `task.sh` 应已有执行权限：
 
 ```bash
-pvisor run --safe --overlaynet-deny-all --stage ../task-stage-001 -- ./task.sh
+pvisor spawn --safe --overlaynet-deny-all --stage ../task-stage-001 -- ./task.sh
 pvisor status --review --diff ../task-stage-001
 pvisor inspect ../task-stage-001 -- git status --short
 ```

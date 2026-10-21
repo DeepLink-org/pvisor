@@ -2,7 +2,7 @@
 
 在 CI 中让 Agent 完成任务，把改动作为产物交给评审者。任务结束后上传 Stage 和运行证据；合入工作区由评审步骤决定。
 
-先准备一个能运行 `pvisor run --safe` 的 Linux 自托管 runner，并安装 pVisor。下面先用不需要模型凭据的脚本验证整条流程，再把命令换成你的 Agent。所需宿主能力见[平台支持](../reference/platforms.md)。
+先准备一个能运行 `pvisor spawn --safe` 的 Linux 自托管 runner，并安装 pVisor。下面先用不需要模型凭据的脚本验证整条流程，再把命令换成你的 Agent。所需宿主能力见[平台支持](../reference/platforms.md)。
 
 ```bash
 cat > ci-agent.sh <<'SH'
@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          pvisor run --safe --overlaynet-deny-all \
+          pvisor spawn --safe --overlaynet-deny-all \
             --stage "$RUNNER_TEMP/pvisor-stage-${GITHUB_RUN_ID}" \
             --timeout 5m --stdio capture -- ./ci-agent.sh
           code=$?
@@ -63,12 +63,12 @@ jobs:
 
 ```bash
 set +e
-pvisor run --safe --overlaynet-deny-all --stdio capture \
+pvisor spawn --safe --overlaynet-deny-all --stdio capture \
   --stage ../ci-failure-001 -- /bin/sh -c 'printf "candidate\n" > failed.txt; exit 7'
 failure_code=$?
 pvisor status --review --json ../ci-failure-001 > ../ci-failure-001.json
 failure_review_code=$?
-pvisor run --safe --overlaynet-deny-all --stdio capture --timeout 100ms \
+pvisor spawn --safe --overlaynet-deny-all --stdio capture --timeout 100ms \
   --stage ../ci-timeout-001 -- /bin/sh -c 'printf "candidate\n" > timed.txt; sleep 2'
 timeout_code=$?
 pvisor status --review --json ../ci-timeout-001 > ../ci-timeout-001.json

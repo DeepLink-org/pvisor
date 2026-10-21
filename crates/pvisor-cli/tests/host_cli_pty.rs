@@ -15,7 +15,7 @@ if pid == 0:
     if mode == 'inspect':
         args = [binary, 'inspect', os.path.join(root, 'stage'), '--', '/bin/sh', '-c', script]
     else:
-        args = [binary, 'run', '--no-agent-defaults', '--overlaynet', 'off', '--', '/bin/sh', '-c', script]
+        args = [binary, 'spawn', '--no-agent-defaults', '--overlaynet', 'off', '--', '/bin/sh', '-c', script]
     child = subprocess.Popen(args, env=env)
     try:
         code = child.wait(timeout=30)
@@ -65,7 +65,7 @@ if pid == 0:
     os.chdir(root)
     original = os.tcgetpgrp(0)
     env = dict(os.environ, PVISOR_RUN_HOME=os.path.join(root, 'runs'), PVISOR_STARTUP_TIMING='0')
-    run = [binary, 'run', '--no-agent-defaults', '--overlaynet', 'off', '--', '/bin/sh', '-c', 'exit 0']
+    run = [binary, 'spawn', '--no-agent-defaults', '--overlaynet', 'off', '--', '/bin/sh', '-c', 'exit 0']
     try:
         seed = subprocess.run(run, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=20)
         assert seed.returncode == 0, seed.stderr
@@ -142,7 +142,7 @@ fn run_pty(root: &std::path::Path, mode: &str) {
 #[test]
 fn host_run_reads_controlling_terminal_ctrl_c_and_restores_foreground() {
     let root = tempfile::tempdir().unwrap();
-    run_pty(root.path(), "run");
+    run_pty(root.path(), "spawn");
 }
 #[cfg(target_os = "linux")]
 #[test]

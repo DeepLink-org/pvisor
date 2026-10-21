@@ -22,7 +22,7 @@ Check observations for the specific Run. File staging does not change networking
 Pass one or more allow flags before the agent command:
 
 ```bash
-pvisor run \
+pvisor spawn \
   --overlaynet-allow api.openai.com:443 \
   --overlaynet-allow pypi.org:443 \
   -- agent-command
@@ -58,7 +58,7 @@ Allow, deny, and limit flags are all repeatable. An explicit deny takes preceden
 Targets accept exact hostnames, wildcard suffixes, IP/CIDR, and optional ports:
 
 ```bash
-pvisor run \
+pvisor spawn \
   --overlaynet-allow '*.example.com:443' \
   --overlaynet-allow 203.0.113.10:443 \
   --overlaynet-deny 169.254.0.0/16 \
@@ -68,7 +68,7 @@ pvisor run \
 ### Reject ordinary egress
 
 ```bash
-pvisor run --overlaynet-deny-all -- agent-command
+pvisor spawn --overlaynet-deny-all -- agent-command
 ```
 
 Host Runs install the namespace/Seatbelt network boundary from the table above; containers should use `--container-network none` to block connections outside the proxy. VM `auto` rejects ordinary guest TCP egress. Deny-all does not block a configured internal Gateway route; for complete offline execution, disable the Gateway and use `off` on the VM.
@@ -80,7 +80,7 @@ Host Runs install the namespace/Seatbelt network boundary from the table above; 
 Set a global limit and a stricter per-target limit:
 
 ```bash
-pvisor run \
+pvisor spawn \
   --overlaynet-limit 10mbps \
   --overlaynet-limit api.openai.com:443=2mbps \
   -- agent-command
@@ -118,7 +118,7 @@ bytes_per_second = 250000
 Run:
 
 ```bash
-pvisor run --config run.toml
+pvisor spawn --config run.toml
 ```
 
 Transports: http, https, tcp_tunnel. Empty ports/transports mean unrestricted in that dimension.
@@ -138,7 +138,7 @@ The following paths are outside the boundary of an ordinary cooperative host/con
 - A program that creates sockets directly.
 - DNS and UDP traffic that does not go through the HTTP proxy.
 
-A host/container cooperative-proxy Run therefore reports `safety.network_non_bypassable = false`. When you must block direct egress, use `pvisor run --overlaynet-deny-all -- COMMAND`. Linux creates a private network namespace. macOS uses Seatbelt to block non-loopback IPs and host ambient Unix sockets, while keeping the loopback proxy, exact AgentCtl and IPC inside private Run directories. Container Runs can also use `--container-network none`. The VM executor defaults to `[overlaynet] mode = "auto"`, where the guest uses a static IPv4 address and smoltcp provides synthetic DNS and policy-controlled IPv4 TCP; `mode = "off"` takes the VM offline. Gateway capture is exposed through the guest's virtual router; the container executor still requires `--container-network host` when it uses the in-process proxy.
+A host/container cooperative-proxy Run therefore reports `safety.network_non_bypassable = false`. When you must block direct egress, use `pvisor spawn --overlaynet-deny-all -- COMMAND`. Linux creates a private network namespace. macOS uses Seatbelt to block non-loopback IPs and host ambient Unix sockets, while keeping the loopback proxy, exact AgentCtl and IPC inside private Run directories. Container Runs can also use `--container-network none`. The VM executor defaults to `[overlaynet] mode = "auto"`, where the guest uses a static IPv4 address and smoltcp provides synthetic DNS and policy-controlled IPv4 TCP; `mode = "off"` takes the VM offline. Gateway capture is exposed through the guest's virtual router; the container executor still requires `--container-network host` when it uses the in-process proxy.
 
 ## Session, workspace, and user policy
 
@@ -177,7 +177,7 @@ Embedding uses RunSpec.policies and must configure corresponding file/network dr
 The current directory is a reusable workspace by default; each invocation preserves a separate Run under pVisor's default record root:
 
 ```bash
-pvisor run \
+pvisor spawn \
   --overlaynet-deny 169.254.0.0/16 \
   -- agent-command
 

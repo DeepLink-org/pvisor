@@ -6,7 +6,7 @@ Install `pvisor-daemon` to manage image sandboxes on one Linux host through an A
 
 Cross-node scheduling, global DAGs and distributed leases belong to Kubernetes, Ray or your application. The daemon contains no Controller or Worker.
 
-Use `pvisor-daemon` for node-local native VM sandbox lifecycles; use `pvisor run` for the public Job and file-review workflow.
+Use `pvisor-daemon` for node-local native VM sandbox lifecycles; use `pvisor spawn` for the public Job and file-review workflow.
 
 !!! warning
     The project **has not supplied a guest bootstrap or image recipe and has not performed end-to-end validation**; SDK-conformance validation and density measurements are also unavailable. Every step below requires you to prepare images and vsock bridging yourself.
@@ -140,7 +140,7 @@ The host account, daemon/firmware and prepared images must be trusted. Private s
 
 ## Relationship to native Jobs, the cache and the retired Cluster {#native}
 
-A daemon sandbox ID is not a Job ID; do not pass it to `pvisor checkpoint`, `fork`, `apply` or `drop`. A daemon pause is a confirmed vCPU pause on the same live Attempt, not a sealed RAM/CPU/device/filesystem snapshot. Native Job file review, checkpoints and model capture continue through the `pvisor run` path: execution steps are in the [VM guide](../executors/vm.md), node-local Job file checkpoints in [checkpoints and forks](../fork-checkpoint.md), and model-request routing/capture in the [Gateway guide](../capture.md). A compatible standalone-rootfs, network-free VM Job can use execution checkpoints; check capability and blockers with `pvisor status --json`.
+A daemon sandbox ID is not a Job ID; do not pass it to `pvisor checkpoint`, `fork`, `apply` or `drop`. A daemon pause is a confirmed vCPU pause on the same live Attempt, not a sealed RAM/CPU/device/filesystem snapshot. Native Job file review, checkpoints and model capture continue through the `pvisor spawn` path: execution steps are in the [VM guide](../executors/vm.md), node-local Job file checkpoints in [checkpoints and forks](../fork-checkpoint.md), and model-request routing/capture in the [Gateway guide](../capture.md). A compatible standalone-rootfs, network-free VM Job can use execution checkpoints; check capability and blockers with `pvisor status --json`.
 
 `pvisor cache prepare/publish/list/stat/read` remain independent commands, not daemon subcommands; see the [shared image cache reference](../../reference/shared-image-cache.md) for publication, backends, authentication and access. Daemon state is stored separately from native Jobs and cache stores; the Daemon API key authorizes neither the standalone cache nor node-runtime IPC.
 

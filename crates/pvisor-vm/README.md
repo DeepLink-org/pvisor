@@ -674,8 +674,8 @@ FUSE 查询和打开路径。1 MiB 请求窗口与预读、宿主 root-data 策�
 已有快照恢复保留保存的协商状态；A/B 应分别启动新 VM。
 
 ```bash
-PVISOR_VM_GUEST_CACHE=0 pvisor run --executor vm --safe -- YOUR_COMMAND
-PVISOR_VM_GUEST_CACHE=1 pvisor run --executor vm --safe -- YOUR_COMMAND
+PVISOR_VM_GUEST_CACHE=0 pvisor spawn --executor vm --safe -- YOUR_COMMAND
+PVISOR_VM_GUEST_CACHE=1 pvisor spawn --executor vm --safe -- YOUR_COMMAND
 ```
 
 协商 `FUSE_PVISOR_META`（init flag bit 41）后，guest 可以把宿主合并后的目录

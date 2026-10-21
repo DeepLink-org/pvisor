@@ -75,7 +75,7 @@ fn stdin_and_large_output_use_descriptors_and_preserve_exit_code() {
     let root = tempfile::tempdir().unwrap();
     let mut child = command(root.path())
         .args([
-            "run",
+            "spawn",
             "--no-agent-defaults",
             "--overlaynet",
             "off",
@@ -112,7 +112,7 @@ fn cancellation_is_acknowledged_with_signal_exit_status() {
     let root = tempfile::tempdir().unwrap();
     let mut child = command(root.path())
         .args([
-            "run",
+            "spawn",
             "--no-agent-defaults",
             "--overlaynet",
             "off",
@@ -160,7 +160,7 @@ fn simultaneous_requests_isolate_cwd_and_environment_and_leave_stopped_jobs_addr
         command(root)
             .env("HOST_SERVICE_TEST_MARKER", marker)
             .args([
-                "run",
+                "spawn",
                 "--no-agent-defaults",
                 "--overlaynet",
                 "off",
@@ -230,7 +230,7 @@ fn recorded_owner_routes_live_commands_and_legacy_records_stay_disk_only() {
     let mut running = Running(
         command(root.path())
             .args([
-                "run",
+                "spawn",
                 "--no-agent-defaults",
                 "--overlaynet",
                 "off",

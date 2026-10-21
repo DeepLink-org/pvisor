@@ -57,7 +57,7 @@ Host AgentCtl 是内置 Job CLI 操作的权限路径。Guest AgentCtl 是每个
 
 ### Job owner 与请求所有权 {#host-job-service}
 
-`pvisor run` 保留终端前端和一个 self-exec owner。两者直接继承 stdio，
+`pvisor spawn` 保留终端前端和一个 self-exec owner。两者直接继承 stdio，
 通过私有 socketpair 传递取消与退出信息。owner 留在原 session，使用独立
 进程组。交互执行沿用原控制终端，退出后恢复前台进程组；终端 Ctrl-C 可以
 直接到达工作负载。Linux 将 owner 设为 subreaper，保留 pidfd 后代回收。

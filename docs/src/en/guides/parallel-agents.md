@@ -17,9 +17,9 @@ Run one Job in each of two independent checkouts/worktrees, with a separate stag
 
 ```bash
 # Terminal A / workspace A
-pvisor run --safe --stage ../stage-a -- codex
+pvisor spawn --safe --stage ../stage-a -- codex
 # Terminal B / workspace B
-pvisor run --safe --stage ../stage-b -- claude
+pvisor spawn --safe --stage ../stage-b -- claude
 
 pvisor status --review ../stage-a
 pvisor status --review ../stage-b
@@ -42,13 +42,13 @@ Start with shell tasks to verify independent workspaces and records. Run this Ba
 ```bash
 (
   cd ../pvisor-task-a
-  pvisor run --safe --overlaynet-deny-all --stdio capture \
+  pvisor spawn --safe --overlaynet-deny-all --stdio capture \
     --stage ../stage-batch-a -- /bin/sh -c 'printf "A\n" > result-a.txt'
 ) &
 pid_a=$!
 (
   cd ../pvisor-task-b
-  pvisor run --safe --overlaynet-deny-all --stdio capture \
+  pvisor spawn --safe --overlaynet-deny-all --stdio capture \
     --stage ../stage-batch-b -- /bin/sh -c 'printf "B\n" > result-b.txt'
 ) &
 pid_b=$!

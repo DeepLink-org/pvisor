@@ -79,7 +79,7 @@ just install-cli
 默认本地工作流不要求安装 Docker 或 Podman。使用 VM executor 运行 OCI 镜像时，可以显式指定：
 
 ```bash
-pvisor run --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
+pvisor spawn --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 ```
 
 未指定 rootfs 或镜像时，Linux 上 VM 默认通过 virtiofs 和 OverlayFS 使用宿主 `/`，

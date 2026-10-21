@@ -16,10 +16,10 @@ just examples 03-network-isolation  # 从仓库根执行并验证
 核心命令就是普通的 pVisor CLI：
 
 ```bash
-pvisor run --overlaynet-allow 127.0.0.1:<ephemeral-port> -- \
+pvisor spawn --overlaynet-allow 127.0.0.1:<ephemeral-port> -- \
   agent-command
 
-pvisor run --overlaynet-deny-all -- \
+pvisor spawn --overlaynet-deny-all -- \
   agent-command
 ```
 

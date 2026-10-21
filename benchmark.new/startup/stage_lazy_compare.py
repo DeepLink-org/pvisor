@@ -453,7 +453,7 @@ def measure(batch, preflight_only=False):
             # Identical staged command and source-byte probe. The program is the host /bin/sh.
             common = [
                 EXECUTABLE,
-                "run",
+                "spawn",
                 "--executor",
                 "host",
                 "--no-agent-defaults",
@@ -681,7 +681,7 @@ exit "$code"
                             "-c",
                             ",".join(map(str, protocol["cpus"])),
                             EXECUTABLE,
-                            "run",
+                            "spawn",
                             "--executor",
                             "host",
                             "--no-agent-defaults",

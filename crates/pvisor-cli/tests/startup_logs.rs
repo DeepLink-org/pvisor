@@ -9,7 +9,7 @@ fn informational_commands_do_not_emit_execution_diagnostics() {
         vec!["-h"],
         vec!["help"],
         vec!["help", "status"],
-        vec!["run", "--help"],
+        vec!["spawn", "--help"],
         vec!["--version"],
         vec!["feature", "--json"],
     ] {
@@ -31,7 +31,7 @@ fn startup_logs_are_default_correlated_and_route_to_frontend() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_pvisor"));
     command
         .args([
-            "run",
+            "spawn",
             "--no-agent-defaults",
             "--overlaynet",
             "off",

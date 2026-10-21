@@ -518,7 +518,7 @@ def run_trial(output, protocol, request, proxy, counts):
         "-c",
         ",".join(map(str, protocol["cpus"])),
         "/tmp/lazy-binaries/pvisor",
-        "run",
+        "spawn",
         "--vm",
         "--rootfs",
         rootfs,

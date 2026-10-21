@@ -5,7 +5,7 @@ Treat each rollout as an independent task: prepare a workspace, run the agent, c
 First validate result collection with an offline task:
 
 ```bash
-pvisor run --safe --overlaynet-deny-all --stdio capture \
+pvisor spawn --safe --overlaynet-deny-all --stdio capture \
   --stage ../rollout-001 -- /bin/sh -c 'printf "candidate\n" > answer.txt'
 pvisor status --review --json ../rollout-001 > rollout-001.bundle.json
 pvisor inspect ../rollout-001 -- cat answer.txt

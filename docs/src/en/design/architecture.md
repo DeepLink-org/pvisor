@@ -58,7 +58,7 @@ still describes Guest cooperation, not a Host authorization receipt.
 
 ### Job owner and request ownership {#host-job-service}
 
-`pvisor run` keeps a terminal frontend and one self-executed owner. They inherit
+`pvisor spawn` keeps a terminal frontend and one self-executed owner. They inherit
 stdio and exchange cancellation/exit information over a private socketpair. The
 owner stays in the original session in a separate process group. Interactive
 execution uses the original controlling terminal, with foreground ownership

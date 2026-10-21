@@ -1,6 +1,6 @@
 //! Canonical pVisor Run configuration.
 //!
-//! TOML and the `pvisor run` command line both resolve into [`RunConfig`].
+//! TOML and the `pvisor spawn` command line both resolve into [`RunConfig`].
 //! Runtime drivers only consume the resolved value and do not read config
 //! files themselves.
 

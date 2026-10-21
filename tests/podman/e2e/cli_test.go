@@ -76,7 +76,7 @@ func (e *engine) call(input string, args ...string) (int, string, string) {
 	e.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, e.binary, append([]string{"docker"}, args...)...)
+	cmd := exec.CommandContext(ctx, e.binary, args...)
 	cmd.Env = e.env
 	cmd.Stdin = strings.NewReader(input)
 	var out, stderr bytes.Buffer
