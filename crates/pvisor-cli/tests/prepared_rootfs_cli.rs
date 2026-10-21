@@ -321,9 +321,9 @@ fn workspace_selector_requires_pair_before_host_admission() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn workspace_worker_rejects_wrong_purpose_and_json_spec_in_private_namespace() {
+fn workspace_owner_rejects_wrong_purpose_and_json_spec_in_private_namespace() {
     if !isolated_host_case(
-        "workspace_worker_rejects_wrong_purpose_and_json_spec_in_private_namespace",
+        "workspace_owner_rejects_wrong_purpose_and_json_spec_in_private_namespace",
     ) {
         return;
     }
@@ -390,13 +390,13 @@ fn workspace_worker_rejects_wrong_purpose_and_json_spec_in_private_namespace() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("JSON --spec supports only host"));
     let authority = pvisor::host_transport::host_authority_root().unwrap();
-    let generation_before = fs::read(authority.join("generation")).unwrap();
     let private_source = authority.join("private-workspace-input");
     fs::create_dir(&private_source).unwrap();
     fs::write(private_source.join("secret"), b"fixture authority secret").unwrap();
+    let before = authority_entries(&authority);
     for (source, destination) in [
         (
-            private_source,
+            private_source.clone(),
             root.path().join("exfiltrated-workspace-store"),
         ),
         (
@@ -413,15 +413,14 @@ fn workspace_worker_rejects_wrong_purpose_and_json_spec_in_private_namespace() {
             .output()
             .unwrap();
         assert!(!output.status.success());
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("exposes private host service state")
-        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("exposes private host authority"));
         assert!(!destination.exists());
     }
     assert_eq!(
-        fs::read(authority.join("generation")).unwrap(),
-        generation_before
+        fs::read(private_source.join("secret")).unwrap(),
+        b"fixture authority secret"
     );
+    assert_eq!(authority_entries(&authority), before);
 }
 
 #[test]
@@ -632,10 +631,7 @@ fn normal_owner_authenticates_catalog_before_vm_start_and_rejects_exposure() {
         b"test-only private record",
     )
     .unwrap();
-    let before: Vec<_> = fs::read_dir(&authority)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .collect();
+    let before = authority_entries(&authority);
     for (source, destination) in [
         (secret_source.clone(), temp.path().join("exfiltrated-store")),
         (
@@ -654,7 +650,7 @@ fn normal_owner_authenticates_catalog_before_vm_start_and_rejects_exposure() {
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("exposes private host service state"),
+            stderr.contains("exposes private host authority"),
             "{stderr}"
         );
         assert!(
@@ -662,18 +658,17 @@ fn normal_owner_authenticates_catalog_before_vm_start_and_rejects_exposure() {
             "authority is rejected before initializing the destination"
         );
     }
-    let after: Vec<_> = fs::read_dir(&authority)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .collect();
-    assert_eq!(
-        before
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>(),
-        after.into_iter().collect::<std::collections::BTreeSet<_>>()
-    );
+    assert_eq!(authority_entries(&authority), before);
     assert_eq!(
         fs::read(secret_source.join("private-record")).unwrap(),
         b"test-only private record"
     );
+}
+
+#[cfg(target_os = "linux")]
+fn authority_entries(root: &Path) -> std::collections::BTreeSet<std::ffi::OsString> {
+    fs::read_dir(root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect()
 }
