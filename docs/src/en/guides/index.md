@@ -1,29 +1,44 @@
-# Guides
+# Local agent workflows
 
-Separate a task into execution, review, and publication: the command finishes in the selected environment, candidate files stay in the stage, and review precedes writing them back to the workspace. Prepare a host that supports staged Jobs using [first run](../start/first-run.md), and confirm the script or agent is installed.
+With file staging enabled, let an agent complete a project task, then review candidate changes and choose the paths to apply. A refactor, fix, or scripted task follows “prepare → execute → review → accept or discard.”
 
-## Pin inputs and access scope
+## Prepare a task you can check {#prepare}
 
-Start from the task's project directory and use a fresh stage outside it for every Run. Pin the repository baseline and image digest when using an image. Choose host, container, or VM for the command's needs, and configure file access, network destinations, and credentials separately. Staging alone restricts neither reads nor networking.
+Complete [installation and platform setup](../start/installation.md), then validate staging and review with the offline task in [your first run](../start/first-run.md). The demonstration needs no model account; afterward, you should be able to distinguish the host workspace from candidate files in the Job.
 
-For a fully offline script, start with these commands; the project's `task.sh` must already be executable:
+For a real agent, use the [agent integration guides](agents/index.md) to check its installation location, credentials, and required network destinations. Once these are ready, replace the offline command with the agent or your script.
 
-```bash
-pvisor run --safe --overlaynet-deny-all --stage ../task-stage-001 -- ./task.sh
-pvisor status --review --diff ../task-stage-001
-pvisor inspect ../task-stage-001 -- git status --short
-```
+Give the task an explicit goal and acceptance criteria, such as “fix this test; allow source and test changes; preserve other files.” Record the starting repository state so review has a baseline to compare against.
 
-When substituting a networked agent, choose an egress boundary and declare destinations using [network policies](policies/network.md), and deliver credentials using [credentials and environment](policies/credentials.md).
+## Choose execution boundaries {#boundaries}
 
-## Review before publication
+Select an [executor](executors/index.md) for the tools you need, and configure [file access](policies/files.md), [network egress](policies/network.md), and [credentials](policies/credentials.md) separately. Inspect installed controls; staged files alone do not establish network or read isolation.
 
-After the Job stops, check outcome and exit code, installed controls and warnings, denied or failed accesses, and net file changes. `inspect` requires an OverlayFS workspace and uses host tools in a read-only view. Inspect content separately when text diffs are truncated or files are binary.
+Explicitly select staging when file changes need acceptance afterward: `--safe` requests preset controls and stages the workspace; `--stage PATH` selects its storage location. Ordinary host execution writes through by default. See [CLI staging and storage](../reference/cli.md#暂存与存储) for writes and cleanup at each location.
 
-Select paths according to the task and apply them in batches with `apply --path`; unselected candidates remain staged. A full apply or drop cleans up disposable staging data. Stop other writers during apply, and follow [review and apply](review-apply.md) for conflicts and recovery after interruption. Drop discards only unapplied file changes, not applied batches or external service calls.
+For a custom stage, choose a fresh directory outside the project for each task. Address subsequent commands through that path or an explicit Job identity. [Jobs and storage](../concepts/jobs.md) defines the lookup scope of `last`.
 
-## Integrate the loop into automation
+## Decide after execution {#review}
 
-Give parallel tasks separate workspaces, stages, and explicit Job selectors; do not apply concurrently into one target tree. In CI, retain the stage and execution evidence, handle the run exit code separately from artifact upload, and let a review step decide what to apply. For evaluation, check execution results before reading candidates for scoring, then discard changes that need no publication.
+After the task ends, check the outcome, exit code, and installed controls before reviewing net file changes. Command success does not establish that the changes satisfy the task; a nonzero exit can still leave useful candidates.
 
-To retry from file state, check workspace fork prerequisites in the last section of [first run](../start/first-run.md), then fork before applying or dropping all changes. The [CLI reference](../reference/cli.md) owns command syntax.
+| Outcome | Next action | What to retain |
+| --- | --- | --- |
+| Changes meet the requirements | Apply selected paths; handle any remaining candidates | Execution evidence and the final accepted result |
+| Some changes are useful | Accept in batches, or save a file branch before cleanup | Unapplied candidates and conflict baselines |
+| Execution failed or changes are unsuitable | Diagnose the failure, then discard candidates or rerun | Failure diagnostics and inputs needed to reproduce it |
+| Another operation changed host files | Inspect and explicitly resolve the conflict | Current host files and the original stage |
+
+[Review and apply changes](review-apply.md) covers commands, read-only inspection, and conflict recovery. `drop` handles unaccepted file candidates; [staging semantics](../concepts/staging.md) defines the scope of external calls and already-applied batches.
+
+To keep a file proposal while trying another approach, check [workspace fork](fork-checkpoint.md) prerequisites first. To continue CPU, RAM, and device state, choose an [execution-checkpoint interface](infrastructure/integration.md#capabilities).
+
+## Extend to parallel tasks and CI {#automation}
+
+Give parallel tasks separate workspaces, stages, and Job identities. Collect results with the [parallel-agent workflow](parallel-agents.md#batch), then coordinate applying them to one target tree. You or your review process still determine acceptance as task volume increases.
+
+[CI workflows](ci.md) separate execution outcomes, artifact upload, and accepting changes. Retain failure and timeout evidence so review can decide whether to rerun, repair, or discard.
+
+Use [trajectory capture](capture.md) to track model interactions and [replay](replay.md) to restore supported agent histories. Diagnose failures with [troubleshoot a Run](troubleshooting.md).
+
+When an inference service, evaluator, or trainer starts the tasks, use [agent execution infrastructure](infrastructure/index.md) to assign state and resource ownership. Both workflows share executor and capability documentation.

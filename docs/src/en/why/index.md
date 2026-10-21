@@ -1,50 +1,52 @@
-# Why pVisor
+# What is PolicyVisor?
 
-Use pVisor when you want an agent to finish a task without watching every command. It limits what the agent can touch, holds its file changes until you decide what to merge, and records what ran. A mistake stays bounded, a failed attempt is cheap to drop, and a result can be checked after the run.
+**PolicyVisor (pVisor) provides execution environments, policy controls, and records for agent CLIs, scripts, and tool calls.** Use it to review a local agent's file changes, or integrate it into inference, evaluation, and agentic RL post-training systems to manage task execution and state.
+
+## Two workflows {#workflows}
+
+| Scenario | Your task | pVisor's role | Who decides the result |
+| --- | --- | --- | --- |
+| [Local agent workflows](../guides/index.md) | Let an agent modify a project, then choose which changes to accept | With staging enabled, retain candidate files for review, selective apply, and execution evidence | You or a CI review step |
+| [Agent execution infrastructure](../guides/infrastructure/index.md) | Prepare environments, run tools, and deliver results for inference requests, evaluation tasks, or rollouts | Provide executors, lifecycle management, and the state and resource mechanisms exposed by the selected interface | The agent service, evaluator, or trainer |
+
+Both workflows can start on one machine. An individual can run several agents in parallel; a platform developer can validate a rollout with one Job. Task volume and human involvement are separate choices.
 
 ## Reduce intervention during execution
 
-An agent can run only as long as you are willing to watch it. Approve every command and your attention becomes the ceiling. Switch to full auto and you accept that it may corrupt files, read what it should not, or send requests to the wrong host.
+For local development, define the task's access scope, let the agent execute, then inspect the outcome and candidate changes. Enable staging with `--safe`, `--ask`, or an explicit `--stage`; ordinary host Jobs write directly to the workspace by default. Follow [your first run](../start/first-run.md) for a complete demonstration.
 
-Approval cost scales with steps; review cost scales with results. Deferring review lets you sample results, batch them, and machine-check them. A complete record can be verified in one pass after the run instead of intercepted during it.
+During review, apply selected paths or discard candidates that have not been applied. [Staging and apply semantics](../concepts/staging.md) define file acceptance and conflict handling; file staging does not undo remote API calls, database writes, or messages already sent.
 
 ## Decouple supervision from execution volume
 
-Unattended execution needs three properties at once:
+The execution layer provides three properties you can inspect:
 
-| Property | Meaning | What it means for you |
+| Property | Mechanism | What to check |
 | --- | --- | --- |
-| Bounded | The blast radius of a mistake is known in advance | No need to approve every command |
-| Reversible | Changes can be selectively merged, discarded, or forked before they are applied | Failure is cheap, so you dare to let go |
-| Checkable | Execution leaves a record you can verify | Review can sample, or even be handed to a machine |
+| Bounded | Executors install file, network, and resource controls | Controls actually installed on the current platform, and their gaps |
+| Reversible | Unaccepted staged files can be discarded or kept as a branch | Staging scope, applied state, and fork prerequisites |
+| Checkable | Jobs retain identity, outcomes, and execution observations | Exit results, installed controls, and file changes |
 
-Each property has a mechanism: [file and network policies](../guides/policies/files.md) installed at runtime, [staging](../concepts/staging.md) that holds changes until you merge them, and [records](../concepts/capabilities-and-evidence.md) written for every Job.
+[Capabilities, evidence, and guarantee boundaries](../concepts/capabilities-and-evidence.md) distinguish requested policy from installed controls. Records support human or programmatic decisions; applications still define their own acceptance criteria.
 
-At scale, environment preparation, tool execution, model waiting and failure rework enter the bill too. [Agent task lifecycle cost](../design/research/agent-lifecycle-cost.md) accounts for them across pVisor's execution paths and isolation choices, including host-side I/O takeover while a guest is offloaded during a wait.
+Platforms also manage environment preparation, tool execution, model waiting, and failure rework. Image-content reuse, supported execution checkpoints, and memory-sharing or reclamation mechanisms address those stages. See the [infrastructure overview](../guides/infrastructure/index.md) for choices and current evidence.
 
 ## Responsibilities of the execution layer
 
-pVisor is the **semantic layer for each execution**: it defines boundaries, installs controls, and leaves evidence.
+The agent or application chooses which tools to call. pVisor manages execution lifecycle and access boundaries through the selected interface. Model sampling, reward computation, task queues, and cross-node placement belong to the caller or external orchestration system.
 
-Executors provide isolation through host namespaces/Seatbelt, containers, or VMs. pVisor manages execution policy, lifecycle, and records; external systems such as Kubernetes and Ray handle cross-node orchestration.
+Native Jobs, the Rust Runtime, the daemon Sandbox API, and the containerd shim have distinct identities and interface scopes. Use the [integration matrix](../guides/infrastructure/integration.md) to choose an entry point; check each capability's exposure even when implementations share underlying mechanisms.
 
 ## Today, and after {#trust-ladder}
 
-Autonomous execution falls into four levels, by when and by how much a human intervenes:
+Human involvement and execution volume are independent axes:
 
-| Level | How humans intervene (trust axis) | What carries it (scale axis) | Status |
-| --- | --- | --- | --- |
-| L0 | Approve each command before it runs | A single interactive session | Common in agents, now with model-assisted approval |
-| L1 | Review each change after the run | Local, individual Jobs | **pVisor today** |
-| L2 | Policy and evidence determine exemptions; humans spot-check | Multiple local Jobs / one pipeline | Next |
-| L3 | Audit afterward; humans handle exceptions only | Clustered: cross-node scheduling, centralized evidence | pVisor's scale target |
+- **Involvement:** approve individual commands, review after a task, spot-check after automated checks, or audit afterward.
+- **Volume:** one task, local concurrency, or multiple machines scheduled by an external system.
 
-pVisor targets L1 today: enforce access boundaries at runtime, stage file changes, then inspect records and results. Use the `--ask` approval channel when an individual operation needs a human decision. The [single-node daemon](../guides/daemon/index.md) manages local sandbox lifecycle through an API separate from native Job review; Kubernetes, Ray and similar systems own cross-node scheduling, with pVisor supplying execution semantics and checkable records.
+The original L0–L3 labels remain a reference for supervision: L0 approves commands, L1 reviews individual results, L2 spot-checks using policy and evidence, and L3 focuses on audits and exceptions. Increasing concurrency does not establish L2/L3 acceptance rules; those rules and acceptance criteria remain in the [roadmap](../community/roadmap.md).
 
-- **One person, one agent.** An unattended refactor with the changes reviewed before merge: available today.
-- **One person, many agents.** Parallel runs with batch review: next ([parallel agents](../guides/parallel-agents.md)).
-- **Teams and platforms.** The L1 workflow in CI: available today ([running in CI](../guides/ci.md)).
-- **Agentic RL and evaluation.** A recorded, forkable, replayable batch substrate: direction ([RL rollouts](../guides/rl-rollouts.md), [research directions](../design/research/index.md)).
+!!! note "Validate capabilities and benefits separately"
+    Native Job review has an operational workflow; daemon delivery and validation gaps are listed in the [interface matrix](../guides/infrastructure/integration.md#capabilities). Benefits to human supervision time, full RL training throughput, and training quality have not been established. Existing [benchmarks](../benchmarks/index.md) support conclusions only within their own workloads and measurement scopes.
 
-!!! note "Under construction"
-    Supervision cost per unit of agent work has no measurements yet; requirements and acceptance criteria are in [supervision cost](../benchmarks/supervision-cost.md). L2/L3 entry criteria are not final: see the [roadmap](../community/roadmap.md) for progress and [concurrency density](../benchmarks/density.md) for the capacity rationale.
+Complete a review through [local workflows](../guides/index.md), or choose an entry point through [execution infrastructure](../guides/infrastructure/index.md). For deciding whether your existing tools suffice, see [fit and comparisons](comparisons.md).

@@ -14,27 +14,11 @@ extra_css = ["assets/stylesheets/extra.css"]
 
 nav = [
   { "Home" = "index.md" },
-  { "Quick start" = [
+  { "Local workflows" = [
     { "Getting started" = [
+      { "Local workflow overview" = "guides/index.md" },
       { "Installation" = "start/installation.md" },
       { "Your first run" = "start/first-run.md" },
-    ] },
-    { "About pVisor" = [
-      { "Why pVisor" = "why/index.md" },
-      { "Should you use pVisor?" = "why/comparisons.md" },
-    ] },
-  ] },
-  { "User guide" = [
-    { "Tasks" = [
-      { "Guides" = "guides/index.md" },
-      { "Review and apply changes" = "guides/review-apply.md" },
-      { "Logical checkpoints and forks" = "guides/fork-checkpoint.md" },
-      { "Capture agent trajectories" = "guides/capture.md" },
-      { "Replay recorded trajectories" = "guides/replay.md" },
-      { "Run in CI" = "guides/ci.md" },
-      { "Parallel agents" = "guides/parallel-agents.md" },
-      { "RL rollouts" = "guides/rl-rollouts.md" },
-      { "Troubleshoot a Run" = "guides/troubleshooting.md" },
     ] },
     { "Connect your agent" = [
       { "Connect your agent" = "guides/agents/index.md" },
@@ -42,19 +26,12 @@ nav = [
       { "Codex CLI" = "guides/agents/codex.md" },
       { "Scripts and automation commands" = "guides/agents/custom-scripts.md" },
     ] },
-    { "Policies" = [
-      { "File policies" = "guides/policies/files.md" },
-      { "Control network access with OverlayNet" = "guides/policies/network.md" },
-      { "Credentials and environment" = "guides/policies/credentials.md" },
-    ] },
-    { "Executors" = [
-      { "Choose an executor" = "guides/executors/index.md" },
-      { "Host executor" = "guides/executors/host.md" },
-      { "Native OCI containers" = "guides/executors/container.md" },
-      { "pVisor VM" = "guides/executors/vm.md" },
-    ] },
-    { "Daemon quickstart" = [
-      { "Run the single-node daemon" = "guides/daemon/index.md" },
+    { "Tasks" = [
+      { "Review and apply changes" = "guides/review-apply.md" },
+      { "Logical checkpoints and forks" = "guides/fork-checkpoint.md" },
+      { "Run in CI" = "guides/ci.md" },
+      { "Parallel agents" = "guides/parallel-agents.md" },
+      { "Troubleshoot a Run" = "guides/troubleshooting.md" },
     ] },
     { "Learning path" = [
       { "Learn pVisor through tasks" = "cases/index.md" },
@@ -64,6 +41,42 @@ nav = [
       { "4. Set boundaries for untrusted work" = "cases/04-boundaries.md" },
       { "5. Replay trajectories and choose restoration tools" = "cases/05-tools-and-restoration.md" },
       { "6. Check staging, apply and drop contracts" = "cases/06-stage-apply.md" },
+    ] },
+  ] },
+  { "Execution infrastructure" = [
+    { "Overview and integration" = [
+      { "Agent execution infrastructure" = "guides/infrastructure/index.md" },
+      { "Integration and capability matrix" = "guides/infrastructure/integration.md" },
+    ] },
+    { "Daemon quickstart" = [
+      { "Run the single-node daemon" = "guides/daemon/index.md" },
+    ] },
+    { "Trajectories and RL rollouts" = [
+      { "Capture agent trajectories" = "guides/capture.md" },
+      { "Replay recorded trajectories" = "guides/replay.md" },
+      { "RL rollouts" = "guides/rl-rollouts.md" },
+    ] },
+  ] },
+  { "Foundations and reference" = [
+    { "About pVisor" = [
+      { "What is PolicyVisor?" = "why/index.md" },
+      { "Should you use pVisor?" = "why/comparisons.md" },
+    ] },
+    { "Execution concepts" = [
+      { "Jobs and storage" = "concepts/jobs.md" },
+      { "Staging and apply semantics" = "concepts/staging.md" },
+      { "Capabilities, evidence, and guarantees" = "concepts/capabilities-and-evidence.md" },
+    ] },
+    { "Executors" = [
+      { "Choose an executor" = "guides/executors/index.md" },
+      { "Host executor" = "guides/executors/host.md" },
+      { "Native OCI containers" = "guides/executors/container.md" },
+      { "pVisor VM" = "guides/executors/vm.md" },
+    ] },
+    { "Policies" = [
+      { "File policies" = "guides/policies/files.md" },
+      { "Control network access with OverlayNet" = "guides/policies/network.md" },
+      { "Credentials and environment" = "guides/policies/credentials.md" },
     ] },
     { "Command and configuration reference" = [
       { "Commands and scenarios" = "reference/index.md" },
@@ -78,13 +91,6 @@ nav = [
       { "Stability and compatibility" = "reference/stability.md" },
       { "pVisor Job scenarios and regression examples" = "reference/cases.md" },
       { "Shared image cache and storage backends" = "reference/shared-image-cache.md" },
-    ] },
-  ] },
-  { "Core concepts" = [
-    { "Execution concepts" = [
-      { "Jobs and storage" = "concepts/jobs.md" },
-      { "Staging and apply semantics" = "concepts/staging.md" },
-      { "Capabilities, evidence, and guarantees" = "concepts/capabilities-and-evidence.md" },
     ] },
     { "Security" = [
       { "Security overview" = "security/index.md" },
@@ -171,7 +177,7 @@ nav = [
     ] },
     { "Research directions" = [
       { "Research directions" = "design/research/index.md" },
-      { "Agent task lifecycle cost" = "design/research/agent-lifecycle-cost.md" }
+      { "Agent task lifecycle cost" = "design/research/agent-lifecycle-cost.md" },
     ] },
   ] },
   { "Lab notes" = [

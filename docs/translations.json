@@ -81,7 +81,9 @@
   "guides/executors/index.md": "6dccca6d0ebc4a000cfe8f0a65eac4f451df16552195fb56b9cf677e649f075c",
   "guides/executors/vm.md": "09376c3b7754a6fc9de4d44519b53c964ad6be02802fc0c840b98cba4eaad2e3",
   "guides/fork-checkpoint.md": "4098f19475e3a2bfaa192975fc6dcd4859d64dafa427d706df652479dfc42746",
-  "guides/index.md": "91fa8133ac6a9b103bd55793161fe785f5a22c2ca6961119b23a6bdda73ae6b4",
+  "guides/index.md": "09e982b47c7b0bd348d2a34776de7b5181653921d444593ce0e8e077be7fbeda",
+  "guides/infrastructure/index.md": "27b7af25357966f9e9c03f2cee4fc0a357b362a8bc33b4d277f95df319baca87",
+  "guides/infrastructure/integration.md": "258a115af7e3ef6119c1c39e082abe3f65a85bfda17d5b8468c8ab362010423e",
   "guides/parallel-agents.md": "8b883e6e3046b990db33cbdab8d1acc4eea82fc1c24ded6ff6483ebdf792d5b2",
   "guides/policies/credentials.md": "7ece2ae469736462672a58cb6b403c5a25a6ef0f1b0456754a36c7cbd5b7642f",
   "guides/policies/files.md": "4f7fd73c9895797bd9d29883fa9626b12cff79861afa661ba3f1e80f8d237eb9",
@@ -90,7 +92,7 @@
   "guides/review-apply.md": "1e286283f74d3a0e02b6f3af4af07ff578cf019b38b6d24eb3d10771d2f77ca3",
   "guides/rl-rollouts.md": "acdab96daab71a0e5345134f013a6ba2be68d9d943af18a4c934f56b880f0781",
   "guides/troubleshooting.md": "c696452ff26c9e46b1a8ad0a4b93266efab22277c28d33ec70686f133a549c69",
-  "index.md": "95eb7d1529227e2a5bc1873c7771b2952debfbd08865e158acb060a90abf6dec",
+  "index.md": "c5deb643ac9ef7a6597f24778720b85fd7d8a45d05f79cd6690fc304943ee65b",
   "lab-notes/agent-task-performance-analysis.md": "e4a0e4b27a0436487a51975764179fa35c75dcb7509e5b60289138931b3c928a",
   "lab-notes/benchmark-methodology-evidence.md": "781e384425bd9a2248ced5344af5a7cd8c739e30f042b5c31c020997b5f7eaac",
   "lab-notes/filesystem-io-performance-analysis.md": "68e6676f593699ab3b19e30521b764e207aa48827dd3dcfcdcac881264357d4b",
@@ -121,5 +123,5 @@
   "start/first-run.md": "bb4cc250fa5e86139adf2ced0a8e0fe274d1bbf375c33ef6c85687a546bfe1ba",
   "start/installation.md": "68b61474df8f178fd7d3bc5b5da452c9959104e1a543c97e75372f2db5adb923",
   "why/comparisons.md": "31d7a4aa35aedfc5c9dde35de6f693d17f112a8985e2dd66fa0392990e6326a9",
-  "why/index.md": "7bd43a500051aebe5c77f3b6eae82c65d2f7469269951899c170a900ae334f8a"
+  "why/index.md": "591cb5cc8c4f7f47de0526685e1c045600b63b540ec5a888cd65d8272b304be8"
 }
