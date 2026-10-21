@@ -50,7 +50,7 @@ bounded process execution; Go uses `context` deadlines.
 
 ## Coverage and limits
 
-The active profile has 29 Bats cases and 47 Go cases. Each test first pulls its
+The active profile has 29 Bats cases and 72 Go cases. Each test first pulls its
 image; none is skipped based on engine failure.
 
 | Suite | Active contracts |
@@ -62,12 +62,20 @@ image; none is skipped based on engine failure.
 | Go `cli_test.go` | Streams/exit, exec stdin/error, stop/start persistence, auto-removal, duplicate name, exec env/workdir isolation, exec user/streams, 1.7 MB stdin round trip, ps/ID lifecycle, retained logs, images/rmi, named-volume persistence across rm -v, volume image initialization/read-only reuse, running-container rm rejection/force |
 | Go `compatibility_test.go` | Closed stdin, 1 MiB stdout, run/exec TTY and TERM precedence, concurrent exec exit routing after failed spawns, repeated stop, custom stop signal and zero-timeout escalation, multiple-container isolation, partial batch failures, live/stopped `logs -f`, ephemeral IPv4 TCP publication with half-close, in-use image protection, short image IDs and repeated pull identity |
 | Go `lifecycle_test.go` | Anonymous volume restart/isolation, live named-volume sharing including read-only readers and namespace changes, copy-up preservation, volume aliases/order, bind restart and symlinks, read-only mutation families, exact binary/partial logs, log accumulation across starts, running-start idempotence, automatic/forced removal races, TCP port restart/release/conflict and multiple endpoints |
+| Go `process_test.go` | Large exec output, binary stdin, env unsets/literal argv, non-executable/directory/missing-workdir errors, live passwd lookup, inherited run identity, empty TERM, in-flight exec termination, workload exit 125 and signals, umask isolation, full/short image-ID execution, unknown filter, batch/forced rmi, named/numeric primary groups, symlinked workdir, default CMD/empty entrypoint and invalid names |
+
+The continuing source audit, outstanding supported scenarios and proposed
+cost-based deferrals are in [REVIEW.md](REVIEW.md). The audit remains open;
+these counts do not mean the entire imported corpus has been covered.
 
 Together these exercise all ten registered subcommands: `pull`, `images`, `rmi`,
 `run`, `exec`, `ps`, `start`, `stop`, `rm`, `logs`. They do not cover every option.
 The volume-image-content fixture requires an Alpine image containing
 `/etc/alpine-release`, `nobody`, `sh`, `printenv`, `id`, `cat`, `sleep` and `true`.
 Use `PVISOR_TEST_IMAGE` for a pinned Alpine digest, not an arbitrary image.
+The default-command cases expect Alpine's `/bin/sh` CMD and empty entrypoint;
+identity/workdir cases also use its `bin`, `nobody`, `nogroup` entries and
+`/var/run -> /run` symlink. `nogroup` is GID 65533, while `nobody` is 65534.
 
 Explicitly unsupported commands/options are preserved as commented examples in
 `system/900-unsupported.bats.disabled` and `e2e/unsupported_test.go.disabled`,
@@ -159,3 +167,14 @@ container/Job acceptance cases and all four Python adapter/source-integrity
 checks passed. Clippy, rustdoc with warnings denied, formatting and CI budgets
 passed. Guest code and upstream sources were unchanged. Linux/KVM execution,
 cross-VM open-mapping coherence and performance effects remain unvalidated.
+
+The next batch was validated on 2026-10-22: all 101 runtime contracts passed
+(29 Bats, 72 Go), including 25 added process/identity/image contracts. The same
+signed executable and immutable ARM64 Alpine mirror manifest were used; this
+batch changes tests and audit documentation only. Go vet, gofmt, diff checks
+and all four Python adapter/source-integrity tests passed. Initial fixture
+assumptions were corrected against the image: use BusyBox printf rather than
+an absent `/bin/printf`, and assert Alpine's actual nogroup GID 65533. No
+runtime failure was converted to a skip. The source audit in `REVIEW.md`
+remains open, with further supported cases still to port and deferred areas
+listed separately for human review.
