@@ -69,6 +69,8 @@ including with a prepared rootfs or custom injected pVisor. It does not enable
 cross-platform emulation or artifact auto-discovery. A configured platform also
 requires the container executor rather than being ignored by host/VM execution.
 Without the option, image preparation and container execution use the native platform.
+The OCI executor injects the `pvisor` executable and delegates the Job through
+`spawn --executor host --spec ... --result-file ...` inside the container.
 
 ## Explicit runtime experiments
 
