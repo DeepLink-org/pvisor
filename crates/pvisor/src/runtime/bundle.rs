@@ -618,6 +618,7 @@ mod tests {
         let mut record = RunRecord {
             attempt_id: None,
             schema_version: 1,
+            live_control: None,
             run_id: "run-1".into(),
             parent_run_id: Some("job-1".into()),
             task_id: Some("task-1".into()),

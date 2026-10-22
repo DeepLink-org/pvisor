@@ -40,6 +40,86 @@ impl ReadOnlyBackend for MissingBackend {
 }
 
 #[test]
+fn namespace_operations_preserve_lower_errors_without_publishing_upper_changes() {
+    use pvisor_overlay_core::{LayerMutability, OverlayLayout};
+    type Operation = fn(&OverlayCore) -> io::Result<()>;
+    let operations: &[(&str, Operation)] = &[
+        ("create", |core| {
+            core.create_file(Path::new("target"), 0o600, libc::O_WRONLY)
+                .map(drop)
+        }),
+        ("mkdir", |core| core.create_dir(Path::new("target"), 0o700)),
+        ("symlink", |core| {
+            core.create_symlink(Path::new("target"), Path::new("source"))
+        }),
+        ("mknod", |core| {
+            core.create_node(
+                Path::new("target"),
+                backend::FileType::NamedPipe.mode() | 0o600,
+                0,
+            )
+        }),
+        ("remove", |core| core.remove(Path::new("target"), false)),
+        ("rename", |core| {
+            core.rename(Path::new("source"), Path::new("target"), false)
+        }),
+        ("prepare rename", |core| {
+            core.prepare_rename_copy_up(Path::new("source"), Path::new("target"), false, false)
+                .map(drop)
+        }),
+        ("link", |core| {
+            core.hard_link(Path::new("source"), Path::new("target"))
+        }),
+    ];
+    for declaration in [LayerMutability::Mutable, LayerMutability::Immutable] {
+        for errno in [libc::EIO, libc::EACCES] {
+            for (name, operation) in operations {
+                let temp = tempfile::tempdir().unwrap();
+                let lower = temp.path().join("lower");
+                fs::create_dir(&lower).unwrap();
+                let lower = lower.canonicalize().unwrap();
+                fs::write(lower.join("target"), b"original lower").unwrap();
+                let upper = temp.path().join("upper");
+                let core = OverlayCore::new_for_layout(
+                    OverlayLayout::new(vec![lower.clone()], lower.clone())
+                        .unwrap()
+                        .with_lower_mutability(vec![declaration])
+                        .unwrap(),
+                    upper.clone(),
+                    None,
+                    vec![],
+                    None,
+                )
+                .unwrap();
+                fs::write(upper.join("source"), b"source").unwrap();
+                let names = || {
+                    let mut names: Vec<_> = fs::read_dir(&upper)
+                        .unwrap()
+                        .map(|entry| entry.unwrap().file_name())
+                        .collect();
+                    names.sort();
+                    names
+                };
+                let before = names();
+                let _attachment = BackendAttachment::new(
+                    &lower,
+                    Arc::new(MissingBackend(Arc::new(AtomicUsize::new(0)), errno)),
+                )
+                .unwrap();
+                assert_eq!(
+                    operation(&core).unwrap_err().raw_os_error(),
+                    Some(errno),
+                    "{name}: {declaration:?}"
+                );
+                assert_eq!(names(), before, "{name} published upper changes");
+                assert_eq!(fs::read(upper.join("source")).unwrap(), b"source");
+                assert_eq!(fs::read(lower.join("target")).unwrap(), b"original lower");
+            }
+        }
+    }
+}
+
+#[test]
 fn checked_missing_result_publishes_absence_and_keeps_the_old_error_contract() {
     let temp = tempfile::tempdir().unwrap();
     let lower = temp.path().join("lower");

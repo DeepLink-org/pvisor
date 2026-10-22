@@ -124,22 +124,50 @@ impl ResumeArgs {
     }
 }
 
+fn capture(
+    record: &RunRecord,
+    suspend: bool,
+    ram_storage: SnapshotRamStorage,
+    request_id: String,
+    timeout_ms: u64,
+) -> anyhow::Result<pvisor::job_service::CaptureResponse> {
+    let endpoint = record
+        .live_control
+        .as_ref()
+        .filter(|endpoint| endpoint.is_available())
+        .context("Job has no valid recorded owner; execution capture is unavailable")?;
+    Ok(serde_json::from_value(
+        endpoint.exchange_checked(
+            &record.run_id,
+            record
+                .attempt_id
+                .as_deref()
+                .context("Job has no Attempt identity")?,
+            pvisor::host_transport::InstanceCommand::Capture {
+                suspend,
+                ram_storage,
+                request_id,
+                timeout_ms,
+            },
+            Some(&super::host_service::check_cancelled),
+        )?,
+    )?)
+}
+
 pub(super) async fn suspend(args: SuspendArgs) -> anyhow::Result<()> {
     let record = args.selection.resolve()?;
     let request_id = args
         .request_id
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let response = pvisor::job_service::RuntimeJobService::capture_selected_execution(
-        &super::host::service_context(),
+    let response = capture(
         &record,
         true,
         args.ram_storage
             .map(Into::into)
             .unwrap_or(SnapshotRamStorage::Compressed),
-        Some(request_id.clone()),
-        std::time::Duration::from_millis(args.timeout.0),
-    )
-    .await?;
+        request_id.clone(),
+        args.timeout.0,
+    )?;
     let checkpoint = response.checkpoint;
     emit(
         args.json,
@@ -246,6 +274,33 @@ impl CheckpointArgs {
             | CheckpointCommand::VerifyBase { selection, .. } => selection,
         }
     }
+    pub(super) fn preflight(&self, record: &RunRecord) -> anyhow::Result<()> {
+        if matches!(
+            &self.command,
+            CheckpointCommand::Create {
+                kind: Kind::Workspace,
+                ..
+            } | CheckpointCommand::Delete { .. }
+                | CheckpointCommand::Gc { .. }
+                | CheckpointCommand::ImportBase { .. }
+        ) && record
+            .live_control
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.is_available())
+        {
+            anyhow::bail!("Job owner still holds stage; persistent checkpoint mutation refused");
+        }
+        if matches!(
+            &self.command,
+            CheckpointCommand::Create {
+                kind: Kind::Execution,
+                ..
+            }
+        ) {
+            check_execution(record)?;
+        }
+        Ok(())
+    }
     pub(super) fn selection_mut(&mut self) -> &mut Selection {
         match &mut self.command {
             CheckpointCommand::Create { selection, .. }
@@ -286,17 +341,15 @@ pub(super) async fn run(args: CheckpointArgs) -> anyhow::Result<()> {
             let selected = selection.resolve()?;
             if kind == Kind::Execution {
                 let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                let response = pvisor::job_service::RuntimeJobService::capture_selected_execution(
-                    &super::host::service_context(),
+                let response = capture(
                     &selected,
                     false,
                     ram_storage
                         .map(Into::into)
                         .unwrap_or(SnapshotRamStorage::Compressed),
-                    Some(request_id.clone()),
-                    std::time::Duration::from_millis(timeout.0),
-                )
-                .await?;
+                    request_id.clone(),
+                    timeout.0,
+                )?;
                 let checkpoint = response.checkpoint;
                 return emit(
                     json,

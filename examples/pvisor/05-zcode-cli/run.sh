@@ -50,7 +50,7 @@ set +e
   export ZCODE_LOG_DIR="$work_dir/state/logs"
   export ZCODE_PERSONAL_PROVIDER_CONFIG_FILE="$work_dir/state/provider.json"
   export ZCODE_MODEL_TELEMETRY_ENABLED=false
-  "$pvisor_bin" run --name zcode-cli --stage "$work_dir/stage" --stdio capture --timeout "${PVISOR_TIMEOUT:-60s}" \
+  "$pvisor_bin" spawn --name zcode-cli --stage "$work_dir/stage" --stdio capture --timeout "${PVISOR_TIMEOUT:-60s}" \
     --pass-env ZCODE_DATA_BASE_DIR --pass-env ZCODE_STORAGE_DIR --pass-env ZCODE_SESSION_DB_PATH \
     --pass-env ZCODE_LOG_DIR --pass-env ZCODE_PERSONAL_PROVIDER_CONFIG_FILE \
     --pass-env ZCODE_BUILTIN_PROVIDER_CONFIG_FILE --pass-env ZCODE_MODEL_TELEMETRY_ENABLED \

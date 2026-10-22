@@ -1,9 +1,9 @@
-//! Framed, multi-writer storage for compact first observations.
+//! Framed, single-writer storage for compact first observations.
 //!
 //! OverlayCore explicitly registers this format for a fresh, exclusively owned
-//! stage. Callers must retain
-//! the existing stage/target transaction contract. File locks arbitrate writers;
-//! a digest covers small serialized records, never a second scan of file data.
+//! stage. One handle holds the writer lock until drop; apply/recovery acquire
+//! ownership only after it closes. Read-only observers do not acquire that lock.
+//! A digest covers small serialized records, never a second scan of file data.
 //! A failed append or sync poisons this handle: reopen to resolve its outcome.
 //! Published log files must not be replaced or compacted while handles are live.
 
@@ -12,11 +12,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs::{self, File, OpenOptions},
+    fs::{File, OpenOptions},
     io,
     os::unix::{
         ffi::OsStrExt,
-        fs::{FileExt, MetadataExt, OpenOptionsExt},
+        fs::{FileExt, OpenOptionsExt},
     },
     path::{Path, PathBuf},
 };
@@ -55,29 +55,12 @@ struct State {
     durability_directory: Option<File>,
 }
 
-/// An incremental view of one immutable log inode. Multiple handles/processes
-/// may share it; every operation refreshes the newly appended suffix under flock.
+/// Exclusive writer with an authoritative in-memory observation index.
 #[derive(Debug)]
 pub struct PreimageLog {
-    path: PathBuf,
+    // Closing the descriptor releases the lifetime writer lock.
     file: File,
-    // A live regular-file descriptor cannot change its physical identity. Only
-    // the named binding/length must be observed again under the writer lock.
-    identity: (u64, u64),
     state: State,
-}
-
-struct Lock<'a>(&'a File);
-impl<'a> Lock<'a> {
-    fn new(file: &'a File) -> io::Result<Self> {
-        fs2::FileExt::lock_exclusive(file)?;
-        Ok(Self(file))
-    }
-}
-impl Drop for Lock<'_> {
-    fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(self.0);
-    }
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -256,12 +239,14 @@ fn append(file: &File, state: &mut State, record: Record, durable: bool) -> io::
 }
 
 impl PreimageLog {
-    /// Drain the complete prefix under the same lock used by all writers.
+    /// Drain the owner's complete prefix before acknowledging durability.
     pub fn sync_all(&mut self) -> io::Result<()> {
-        self.locked(sync)
+        self.transaction(sync)
     }
     /// Create/open, replay once, repair only an incomplete tail, and sync the
     /// recovered prefix before retrying an operation whose acknowledgement was lost.
+    /// Another writer returns WouldBlock. The lock is retained until drop;
+    /// the caller must preserve the log binding and stage's exclusive ownership.
     pub fn open(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
@@ -271,6 +256,7 @@ impl PreimageLog {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
+        fs2::FileExt::try_lock_exclusive(&file)?;
         let mut state = State {
             profile: crate::profile::Profile::from_env("preimage-log"),
             cursor: MAGIC.len() as u64,
@@ -284,48 +270,36 @@ impl PreimageLog {
                     .unwrap_or(Path::new(".")),
             )?),
         };
-        let identity;
-        {
-            let _lock = Lock::new(&file)?;
-            let metadata = file.metadata()?;
-            identity = (metadata.dev(), metadata.ino());
-            if !metadata.is_file() {
-                return Err(invalid("preimage log must be a regular file"));
-            }
-            let length = if metadata.len() == 0 {
-                file.write_all_at(MAGIC, 0)?;
-                MAGIC.len() as u64
-            } else {
-                let mut magic = vec![0; MAGIC.len()];
-                file.read_exact_at(&mut magic, 0)?;
-                if magic != MAGIC {
-                    return Err(invalid("unsupported preimage log format"));
-                }
-                metadata.len()
-            };
-            refresh(&file, &mut state, true, length)?;
-            sync(&file, &mut state)?;
-            // sync orders the complete prefix, including a newly written magic.
-            // On macOS it also drains the parent directory; repeating that full
-            // sync here adds no durability. Linux file fsync needs a separate
-            // directory fsync, including recovery of an interrupted creator.
-            #[cfg(not(target_os = "macos"))]
-            File::open(
-                path.parent()
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .unwrap_or(Path::new(".")),
-            )?
-            .sync_all()?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(invalid("preimage log must be a regular file"));
         }
-        Ok(Self {
-            path: path.to_path_buf(),
-            file,
-            identity,
-            state,
-        })
+        let length = if metadata.len() == 0 {
+            file.write_all_at(MAGIC, 0)?;
+            MAGIC.len() as u64
+        } else {
+            let mut magic = vec![0; MAGIC.len()];
+            file.read_exact_at(&mut magic, 0)?;
+            if magic != MAGIC {
+                return Err(invalid("unsupported preimage log format"));
+            }
+            metadata.len()
+        };
+        refresh(&file, &mut state, true, length)?;
+        sync(&file, &mut state)?;
+        // macOS sync also drains the parent; Linux needs a separate directory
+        // fsync, including recovery of an interrupted creator.
+        #[cfg(not(target_os = "macos"))]
+        File::open(
+            path.parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )?
+        .sync_all()?;
+        Ok(Self { file, state })
     }
 
-    fn locked<T>(
+    fn transaction<T>(
         &mut self,
         operation: impl FnOnce(&File, &mut State) -> io::Result<T>,
     ) -> io::Result<T> {
@@ -336,25 +310,12 @@ impl PreimageLog {
                 "preimage append outcome unknown; reopen log",
             ));
         }
-        let lock_wait = profile.span("lock_wait");
-        let _lock = Lock::new(&self.file)?;
-        drop(lock_wait);
-        let binding = profile.span("binding_check");
-        let named = fs::symlink_metadata(&self.path)?;
-        drop(binding);
-        if !named.is_file() || (named.dev(), named.ino()) != self.identity {
-            return Err(invalid("preimage log inode was replaced"));
-        }
-        if let Err(error) = refresh(&self.file, &mut self.state, true, named.len()) {
-            self.state.poisoned = true;
-            return Err(error);
-        }
         operation(&self.file, &mut self.state)
     }
 
-    /// Capture outside flock, then arbitrate again: another writer's earlier
-    /// observation wins. Durable promotion syncs the actual winner, not a loser.
-    pub fn observe(
+    // Test convenience; production captures outside the journal mutex.
+    #[cfg(test)]
+    fn observe(
         &mut self,
         path: &Path,
         durable: bool,
@@ -366,20 +327,10 @@ impl PreimageLog {
         self.publish_observation(path, durable, capture()?)
     }
 
-    // Split the transaction so OverlayCore can also release its handle mutex
-    // while capturing bytes; both halves still refresh under flock.
-    // This is only a hint. A positive result must be checked by a refreshed,
-    // binding-verified transaction: another owner may have consumed the entry.
-    pub(crate) fn may_contain(&self, path: &Path) -> bool {
-        self.state
-            .observations
-            .contains_key(path.as_os_str().as_bytes())
-    }
-
     pub(crate) fn contains_or_promote(&mut self, path: &Path, durable: bool) -> io::Result<bool> {
         validate_path(path)?;
         let key = path.as_os_str().as_bytes();
-        self.locked(|file, state| {
+        self.transaction(|file, state| {
             if let Some(existing) = state.observations.get(key) {
                 if durable && existing.end > state.synced {
                     sync(file, state)?;
@@ -403,7 +354,7 @@ impl PreimageLog {
             path: key.to_vec(),
             state: fingerprint,
         };
-        self.locked(|file, state| {
+        self.transaction(|file, state| {
             if let Some(existing) = state.observations.get(key) {
                 if durable && existing.end > state.synced {
                     sync(file, state)?;
@@ -422,14 +373,14 @@ impl PreimageLog {
         })
     }
 
-    /// Consume only after corresponding target mutations commit. Other live
-    /// handles replay the tombstone before deciding whether to capture again.
+    /// Consume only after corresponding target mutations commit. The next
+    /// workload owner replays these tombstones when it acquires the log.
     pub fn consume(&mut self, paths: &[PathBuf]) -> io::Result<()> {
         use std::os::unix::ffi::OsStrExt;
         for path in paths {
             validate_path(path)?;
         }
-        self.locked(|file, state| {
+        self.transaction(|file, state| {
             let paths = paths
                 .iter()
                 .map(|path| path.as_os_str().as_bytes().to_vec())
@@ -475,10 +426,9 @@ impl PreimageLog {
         })
     }
 
-    /// Current logical observations in byte-path order. This method repairs an
-    /// incomplete tail under the writer lock; it is not a read-only audit API.
+    /// Owner's logical observations in byte-path order, without disk replay.
     pub fn observations(&mut self) -> io::Result<Vec<PathPreimage>> {
-        self.locked(|_, state| {
+        self.transaction(|_, state| {
             Ok(state
                 .observations
                 .values()
@@ -493,7 +443,7 @@ impl PreimageLog {
     pub fn applied_directory(&mut self, preimage: PathPreimage) -> io::Result<()> {
         let record = Record::DirectoryBaseline { preimage };
         validate(&record)?;
-        self.locked(|file, state| append(file, state, record, true))
+        self.transaction(|file, state| append(file, state, record, true))
     }
 
     /// Read complete frames without repairs, creation, syncing or truncation.
@@ -513,7 +463,6 @@ impl PreimageLog {
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
             .open(path)?;
-        let _lock = Lock::new(&file)?;
         let metadata = file.metadata()?;
         if !metadata.is_file() {
             return Err(invalid("preimage log must be a regular file"));
@@ -547,11 +496,13 @@ impl PreimageLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn checkpoint_observations_wait_for_explicit_sync_and_keep_the_first_value() {
         let temp = tempfile::tempdir().unwrap();
-        let mut log = PreimageLog::open(&temp.path().join("log")).unwrap();
+        let path = temp.path().join("log");
+        let mut log = PreimageLog::open(&path).unwrap();
         let initial = log.state.synced;
         for index in 0..256 {
             log.observe(Path::new(&format!("new-{index}")), false, || {
@@ -567,33 +518,37 @@ mod tests {
         .unwrap();
         log.sync_all().unwrap();
         assert_eq!(log.state.synced, log.state.cursor);
-        assert_eq!(PreimageLog::read_complete(&log.path).unwrap().len(), 256);
+        assert_eq!(PreimageLog::read_complete(&path).unwrap().len(), 256);
     }
 
     #[test]
-    fn winner_promotion_and_external_consumption_refresh_live_handles() {
+    fn first_observation_promotion_and_consumption_survive_writer_handoff() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("log");
         fs::write(temp.path().join("value"), b"original").unwrap();
         let original = crate::fingerprint_at(temp.path(), Path::new("value")).unwrap();
-        let mut loser = PreimageLog::open(&path).unwrap();
         let mut winner = PreimageLog::open(&path).unwrap();
-        loser
+        winner
+            .observe(Path::new("value"), false, || Ok(original.clone()))
+            .unwrap();
+        fs::write(temp.path().join("value"), b"host edit").unwrap();
+        winner
             .observe(Path::new("value"), true, || {
-                winner.observe(Path::new("value"), false, || Ok(original.clone()))?;
-                fs::write(temp.path().join("value"), b"host edit")?;
-                crate::fingerprint_at(temp.path(), Path::new("value"))
+                panic!("first observation must win")
             })
             .unwrap();
-        assert_eq!(loser.observations().unwrap()[0].state, original);
-        assert_eq!(winner.observations().unwrap().len(), 1);
+        assert_eq!(winner.observations().unwrap()[0].state, original);
+        assert_eq!(winner.state.synced, winner.state.cursor);
+        drop(winner);
+        let mut winner = PreimageLog::open(&path).unwrap();
         winner.consume(&[PathBuf::from("value")]).unwrap();
-        assert!(loser.observations().unwrap().is_empty());
+        drop(winner);
+        let mut next = PreimageLog::open(&path).unwrap();
+        assert!(next.observations().unwrap().is_empty());
         let changed = crate::fingerprint_at(temp.path(), Path::new("value")).unwrap();
-        loser
-            .observe(Path::new("value"), true, || Ok(changed.clone()))
+        next.observe(Path::new("value"), true, || Ok(changed.clone()))
             .unwrap();
-        assert_eq!(winner.observations().unwrap()[0].state, changed);
+        assert_eq!(PreimageLog::read(&path).unwrap()[0].state, changed);
     }
 
     #[test]
@@ -663,11 +618,10 @@ mod tests {
     }
 
     #[test]
-    fn large_consumption_is_framed_and_visible_to_an_existing_reader() {
+    fn large_consumption_is_framed_and_visible_to_read_only_observers() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("log");
         let mut writer = PreimageLog::open(&path).unwrap();
-        let mut reader = PreimageLog::open(&path).unwrap();
         let paths = (0..300)
             .map(|index| PathBuf::from(format!("{}{index:04}", "p/".repeat(2000))))
             .collect::<Vec<_>>();
@@ -676,9 +630,9 @@ mod tests {
                 .observe(path, false, || Ok(PathFingerprint::Absent))
                 .unwrap();
         }
-        assert_eq!(reader.observations().unwrap().len(), paths.len());
+        assert_eq!(PreimageLog::read(&path).unwrap().len(), paths.len());
         writer.consume(&paths).unwrap();
-        assert!(reader.observations().unwrap().is_empty());
+        assert!(writer.observations().unwrap().is_empty());
         assert!(PreimageLog::read(&path).unwrap().is_empty());
     }
 
@@ -728,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_paths_size_limits_and_replaced_inodes_are_rejected() {
+    fn invalid_paths_size_limits_and_symlink_logs_are_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("log");
         let mut log = PreimageLog::open(&path).unwrap();
@@ -741,10 +695,13 @@ mod tests {
         );
         assert!(log.consume(&[PathBuf::from("/absolute")]).is_err());
         assert_eq!(fs::read(&path).unwrap(), before);
-        fs::rename(&path, temp.path().join("old")).unwrap();
-        fs::write(&path, &before).unwrap();
-        assert!(log.observations().is_err());
         drop(log);
+        fs::rename(&path, temp.path().join("old")).unwrap();
+        std::os::unix::fs::symlink(temp.path().join("old"), &path).unwrap();
+        assert!(PreimageLog::open(&path).is_err());
+        assert!(PreimageLog::read(&path).is_err());
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, &before).unwrap();
         OpenOptions::new()
             .write(true)
             .open(&path)
@@ -795,48 +752,44 @@ mod tests {
     }
 
     #[test]
-    fn independent_processes_preserve_first_observation_and_all_appends() {
+    fn competing_writers_are_rejected_while_readers_and_later_owners_can_open() {
         const ROLE: &str = "PVISOR_PREIMAGE_LOG_CHILD";
-        if let Some(index) = std::env::var_os(ROLE) {
+        if std::env::var_os(ROLE).is_some() {
             let root = PathBuf::from(std::env::var_os("PVISOR_PREIMAGE_LOG_ROOT").unwrap());
-            let mut log = PreimageLog::open(&root.join("log")).unwrap();
-            let source = PathBuf::from(index);
-            let state = crate::fingerprint_at(&root, &source).unwrap();
-            log.observe(Path::new("shared"), true, || Ok(state.clone()))
-                .unwrap();
-            log.observe(&source, true, || Ok(state)).unwrap();
+            assert_eq!(
+                PreimageLog::open(&root.join("log")).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert_eq!(PreimageLog::read(&root.join("log")).unwrap().len(), 1);
             return;
         }
         let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("log");
+        let mut log = PreimageLog::open(&path).unwrap();
+        log.observe(Path::new("shared"), true, || Ok(PathFingerprint::Absent))
+            .unwrap();
+        let alias = temp.path().join("alias");
+        fs::hard_link(&path, &alias).unwrap();
+        assert_eq!(
+            PreimageLog::open(&alias).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
         let mut children = Vec::new();
-        let mut candidates = Vec::new();
-        for index in 0..4 {
-            let name = format!("source-{index}");
-            fs::write(temp.path().join(&name), name.as_bytes()).unwrap();
-            candidates.push(crate::fingerprint_at(temp.path(), Path::new(&name)).unwrap());
+        for _ in 0..4 {
             children.push(std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "preimage_log::tests::independent_processes_preserve_first_observation_and_all_appends"])
-                .env(ROLE, name).env("PVISOR_PREIMAGE_LOG_ROOT", temp.path())
+                .args(["--exact", "preimage_log::tests::competing_writers_are_rejected_while_readers_and_later_owners_can_open"])
+                .env(ROLE, "reader").env("PVISOR_PREIMAGE_LOG_ROOT", temp.path())
                 .stdout(std::process::Stdio::null()).spawn().unwrap());
         }
         for mut child in children {
             assert!(child.wait().unwrap().success());
         }
-        let mut log = PreimageLog::open(&temp.path().join("log")).unwrap();
-        let observations = log.observations().unwrap();
-        assert_eq!(observations.len(), 5);
-        let shared = observations
-            .iter()
-            .find(|record| record.path == b"shared")
+        drop(log);
+        let mut next = PreimageLog::open(&alias).unwrap();
+        assert_eq!(next.observations().unwrap().len(), 1);
+        next.observe(Path::new("next"), true, || Ok(PathFingerprint::Absent))
             .unwrap();
-        assert!(candidates.contains(&shared.state));
-        for index in 0..4 {
-            assert!(
-                observations
-                    .iter()
-                    .any(|record| record.path == format!("source-{index}").as_bytes())
-            );
-        }
+        assert_eq!(PreimageLog::read(&path).unwrap().len(), 2);
     }
     #[test]
     #[ignore = "manual repeated known-observation journal overhead measurement"]

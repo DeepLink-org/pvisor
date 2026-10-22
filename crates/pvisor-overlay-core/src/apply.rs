@@ -2759,6 +2759,7 @@ mod tests {
         fs::write(core.copy_up(Path::new("src/a.txt")).unwrap(), b"new-a").unwrap();
         fs::write(core.copy_up(Path::new("src/b.txt")).unwrap(), b"new-b").unwrap();
         core.remove(Path::new("gone.txt"), false).unwrap();
+        drop(core);
         let mut record = OverlayRecord {
             generation: 0,
             id: "selective".into(),
@@ -2916,6 +2917,7 @@ mod tests {
                 protect_target: false,
                 state: OverlayState::Staged,
             };
+            drop(core);
             fs::write(target.join("dir/nested/file"), b"concurrent").unwrap();
             let error = apply_overlay(&mut record).unwrap_err();
             assert!(
@@ -3090,6 +3092,7 @@ mod tests {
                 core
             };
             fs::write(core.copy_up(Path::new("value")).unwrap(), b"new").unwrap();
+            drop(core);
             let selection = ApplySelection::default();
             let plan =
                 plan_overlay_apply(&record, std::slice::from_ref(&target), &selection).unwrap();

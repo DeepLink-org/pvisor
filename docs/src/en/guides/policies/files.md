@@ -16,7 +16,7 @@ The preset recognizes only common filenames and cannot guarantee it detects ever
 ## Add rules
 
 ```bash
-pvisor run --safe \
+pvisor spawn --safe \
   --access 'config/secrets/**:deny' \
   --access '**/.env*:warn' \
   -- agent-command
@@ -42,7 +42,7 @@ When multiple rules match, the strictest wins: deny > ask > warn. `--access` app
 To let the agent read a directory outside the workspace, use an explicit share rather than a warn rule:
 
 ```bash
-pvisor run --safe --mount /opt/tool:read -- agent-command
+pvisor spawn --safe --mount /opt/tool:read -- agent-command
 ```
 
 `--mount SOURCE:read` grants read-only access to the original absolute path and requires a host executor plus `--safe` or `--ask`; `SOURCE:write` writes host paths directly, bypassing staging and apply. Explicit shares do not pass through the workspace's ask rules, so do not share directories that contain secrets.

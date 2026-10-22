@@ -25,6 +25,12 @@ pub fn control_files(plan: &CgroupPlan) -> Vec<(&'static str, String)> {
     if let Some(value) = plan.cpu_weight.as_deref() {
         files.push(("cpu.weight", value.to_string()));
     }
+    if let Some(value) = plan.memory_swap_max.as_deref() {
+        files.push(("memory.swap.max", value.to_string()));
+    }
+    if let Some(value) = plan.memory_oom_group.as_deref() {
+        files.push(("memory.oom.group", value.to_string()));
+    }
     files
 }
 
@@ -50,6 +56,8 @@ mod tests {
             memory_max: Some("max".to_string()),
             cpu_max: Some("500000 100000".to_string()),
             cpu_weight: None,
+            memory_swap_max: Some("0".to_string()),
+            memory_oom_group: Some("1".to_string()),
         };
         let files = control_files(&plan);
         assert_eq!(
@@ -58,6 +66,8 @@ mod tests {
                 ("pids.max", "128".to_string()),
                 ("memory.max", "max".to_string()),
                 ("cpu.max", "500000 100000".to_string()),
+                ("memory.swap.max", "0".to_string()),
+                ("memory.oom.group", "1".to_string()),
             ]
         );
         assert_eq!(
@@ -203,10 +213,15 @@ pub mod device_bpf {
         for rule in rules {
             let block_start = program.len();
             let _ = block_start;
-            // r2 = ctx->access_type
-            program.push(insn(LDX_W, (R1 << 4) | R2, 0, 0));
-            if let Some(typ) = rule.typ.as_deref() {
+            // access_type layout (bpf_cgroup_dev_ctx, kernel fills
+            // `(access << 16) | type`): the HIGH 16 bits carry the access
+            // mode (mknod=1<<0, read=1<<1, write=1<<2), the LOW 16 bits the
+            // device type (block=1<<0, char=1<<1). Type "a" (any) matches
+            // both: skip the type comparison.
+            if let Some(typ) = rule.typ.as_deref().filter(|typ| typ != &"a") {
                 let bit = if typ == "c" { DEV_CHAR } else { DEV_BLOCK };
+                // r2 = the device-type half (low 16 bits)
+                program.push(insn(LDX_W, (R1 << 4) | R2, 0, 0));
                 program.push(insn(ALU_AND_K, R2, 0, 0xFFFF_i32));
                 fixups.push(program.len());
                 program.push(insn(JMP_JNE_K, R2, 0, bit as i32));
@@ -220,8 +235,8 @@ pub mod device_bpf {
                     _ => 0,
                 };
             }
-            // r2 = access bits; reject when any requested bit is outside
-            // the rule mask.
+            // r2 = the access half (high 16 bits); reject when any
+            // requested bit is outside the rule mask.
             program.push(insn(LDX_W, (R1 << 4) | R2, 0, 0));
             program.push(insn(ALU_RSH_K, R2, 0, 16));
             program.push(insn(ALU_AND_K, R2, 0, (!access_mask & 0xFFFF) as i32));

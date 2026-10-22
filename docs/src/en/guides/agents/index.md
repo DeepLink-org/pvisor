@@ -3,7 +3,7 @@
 Run existing Agent CLIs, scripts, and automation through one entry point, without changing the agent. Install the command in the selected executor and configure the provider in the agent itself first. An agent installed on the host does not automatically appear in an image. Replace `<agent-command>` below with the actual command:
 
 ```bash
-pvisor run --safe -- <agent-command>
+pvisor spawn --safe -- <agent-command>
 pvisor status --review last
 pvisor apply last --path src
 ```
@@ -27,7 +27,7 @@ Unknown commands deny outbound access. `--overlaynet-allow HOST:PORT` grants it 
 Take aider as the example: install it in the selected executor, pick the provider in the agent's own configuration, then explicitly allow its API destination and pass the credential variable (variable names come from the agent's own documentation, such as `OPENAI_API_KEY` or `GEMINI_API_KEY`):
 
 ```bash
-pvisor run --safe --overlaynet-allow api.openai.com:443 \
+pvisor spawn --safe --overlaynet-allow api.openai.com:443 \
   --pass-env OPENAI_API_KEY -- aider
 pvisor status --review last
 pvisor apply last --path src

@@ -20,7 +20,7 @@ After installation, run these commands in a test directory. Use an absolute stag
 sandbox=$(mktemp -d)
 mkdir "$sandbox/workspace"
 cd "$sandbox/workspace"
-pvisor run --stage "$sandbox/draft" -- /bin/sh -c 'printf proposal > report.txt'
+pvisor spawn --stage "$sandbox/draft" -- /bin/sh -c 'printf proposal > report.txt'
 pvisor review "$sandbox/draft" --diff
 pvisor inspect "$sandbox/draft" -- /bin/cat report.txt
 pvisor apply "$sandbox/draft" --path report.txt
@@ -33,10 +33,10 @@ This stages workspace files while host file access remains ambient. Before runni
 
 | Need | Tool and entry point | Next step |
 |---|---|---|
-| Review and approve access interactively | `pvisor run --tui` / `--ask`, dispatched to adjacent `pvisor-tui` | [CLI reference](../reference/cli.md) |
-| Route real model requests and capture trajectories | `pvisor run --gateway-mode capture --gateway-route ...` | [Capture guide](../guides/capture.md) and the local mock-request test in `just examples 04-gateway-llm-control` |
+| Review and approve access interactively | `pvisor spawn --tui` / `--ask`, dispatched to adjacent `pvisor-tui` | [CLI reference](../reference/cli.md) |
+| Route real model requests and capture trajectories | `pvisor spawn --gateway-mode capture --gateway-route ...` | [Capture guide](../guides/capture.md) and the local mock-request test in `just examples 04-gateway-llm-control` |
 | Prepare restoration from native Agent history | `pvisor replay`, dispatched to adjacent `pvisor-replay` | [Chapter 5](05-tools-and-restoration.md), [replay guide](../guides/replay.md) |
-| Select an OCI container or VM executor | `pvisor run --executor container` / `--executor vm` | [Containers](../guides/executors/container.md), [VMs](../guides/executors/vm.md); requires a runtime/rootfs |
+| Select an OCI container or VM executor | `pvisor spawn --executor container` / `--executor vm` | [Containers](../guides/executors/container.md), [VMs](../guides/executors/vm.md); requires a runtime/rootfs |
 | Save CPU, RAM, devices, and the complete file tree | Native VM execution checkpoints / snapshot storage SDK | [Execution-checkpoint contract](../reference/cli.md#full-vm-execution-checkpoints); requires a compatible owned-rootfs, no-network Job; not a daemon capability |
 | Manage OCI file caching or a shared cold-page pool | `pvisor cache` / `pvisor-daemon serve --sandbox --memory-pool` | [Shared image cache](../reference/shared-image-cache.md), [daemon pool](../guides/daemon/index.md#memory-pool) |
 

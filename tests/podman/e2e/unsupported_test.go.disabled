@@ -1,0 +1,50 @@
+// Explicitly disabled pVisor profile cases; Apache-2.0. See ../UPSTREAM.md.
+// This file is entirely commented and excluded from Go test discovery.
+// Original Ginkgo assertions are preserved under upstream/test/e2e/.
+//
+// Source: build_test.go, buildx_inspect_test.go
+// podmanTest.Podman([]string{"build", "-t", "test", "."})
+// Disabled: pVisor has no build/buildx frontend.
+//
+// Source: create_test.go, inspect_test.go, wait_test.go, restart_test.go,
+// attach_test.go, cp_test.go, commit_test.go, load_test.go, import_test.go
+// podmanTest.Podman([]string{"create", "alpine", "true"})
+// podmanTest.Podman([]string{"inspect", "container"})
+// podmanTest.Podman([]string{"wait", "container"})
+// Disabled: those subcommands are unimplemented; active tests use run/exec/ps
+// to observe lifecycle and files instead of silently omitting assertions.
+//
+// Source: network_create_test.go, volume_create_test.go
+// podmanTest.Podman([]string{"network", "create", "test"})
+// podmanTest.Podman([]string{"volume", "create", "test"})
+// Disabled: no management CLI. Named/anonymous mounts via run -v are supported.
+// Test-owned volumes are removed with the private pVisor store.
+//
+// Source: logs_test.go, ps_test.go, exec_test.go
+// podmanTest.Podman([]string{"logs", "--tail", "1", "container"})
+// podmanTest.Podman([]string{"ps", "--format", "json"})
+// podmanTest.Podman([]string{"exec", "-d", "container", "true"})
+// Disabled: those flags are absent; ordinary logs/ps/exec tests remain active.
+//
+// Source: healthcheck_run_test.go, checkpoint_test.go, pod_create_test.go,
+// play_kube_test.go, generate_systemd_test.go, login_logout_test.go
+// podmanTest.Podman([]string{"healthcheck", "run", "container"})
+// podmanTest.Podman([]string{"pod", "create"})
+// podmanTest.Podman([]string{"login", "registry.example"})
+// Disabled: no healthcheck, pod, kube, systemd-generator or registry-login CLI.
+//
+// Source: run_cpu_test.go, run_memory_test.go, run_security_labels_test.go,
+// run_userns_test.go
+// podmanTest.Podman([]string{"run", "--cpus", "0.5", "alpine", "true"})
+// podmanTest.Podman([]string{"run", "--privileged", "alpine", "true"})
+// Disabled: fractional CPU/cgroup semantics, privilege flags, SELinux and host
+// user namespaces are not the VM profile. Guest RAM/integer vCPUs differ by design.
+// Other original cases without an explicit port are unported, not assumed unsupported.
+
+// Source: push_test.go, case "podman push to docker daemon"
+// podmanTest.Podman([]string{"push", "-q", ALPINE, "docker-daemon:alpine:podmantest"})
+// SystemExec("docker", []string{"images", "--format", "{{.Repository}}:{{.Tag}}"})
+// SystemExec("docker", []string{"rmi", "alpine:podmantest"})
+// Disabled: this interoperation case requires a real Docker daemon and docker
+// executable, and push/docker-daemon transport is outside the pVisor profile.
+// It is excluded regardless of whether Docker happens to be installed.

@@ -1,6 +1,6 @@
 # Job、Operation、Attempt 与 Event
 
-**Job** 是 CLI 中持久的一项工作。`pvisor run` 创建 Job；`status`、`kill`、
+**Job** 是 CLI 中持久的一项工作。`pvisor spawn` 创建 Job；`status`、`kill`、
 `inspect`、`fork`、`apply`、`drop` 无需额外命令层级即可操作它。当前每个 Job
 对应一条内部 Run 记录。为保持兼容，磁盘上的 `run-*` ID、`run.json` 和 Run Bundle
 名称保持不变。

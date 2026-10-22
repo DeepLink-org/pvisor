@@ -251,17 +251,18 @@ impl FilesystemService {
     pub fn hard_link(&self, source: &Path, destination: &Path) -> io::Result<()> {
         self.core.hard_link(source, destination)
     }
-    pub fn list_entries(&self, rel: &Path) -> io::Result<Vec<DirectoryEntry>> {
-        self.core.list_entries(rel)
-    }
     pub fn metadata(&self, rel: &Path) -> io::Result<Metadata> {
         self.core.metadata(rel)
     }
-    /// Checked, non-mutating query of a lower hardlink's surviving copied-up
-    /// metadata. Group ownership is Core-scoped, not tied to protocol inodes;
-    /// see `OverlayCore::copied_hard_link_metadata` for errors and ordering.
-    pub fn copied_hard_link_metadata(&self, rel: &Path) -> io::Result<Option<Metadata>> {
-        self.core.copied_hard_link_metadata(rel)
+    /// Checked physical metadata and optional surviving upper hardlink metadata
+    /// from one merged resolution. Same errors, absence observations and
+    /// request-local lifetime as Core's `metadata_with_copied_hard_link`;
+    /// adapters retain namespace serialization and alias publication ordering.
+    pub fn metadata_with_copied_hard_link(
+        &self,
+        rel: &Path,
+    ) -> io::Result<(Metadata, Option<Metadata>)> {
+        self.core.metadata_with_copied_hard_link(rel)
     }
     pub fn metadata_for_backing_lookup(&self, rel: &Path) -> io::Result<BackingResolution> {
         self.core.metadata_for_backing_lookup(rel)
@@ -321,8 +322,10 @@ impl FilesystemService {
         self.core
             .prepare_rename_copy_up(old, new, no_replace, exchange)
     }
-    pub fn resolve(&self, rel: &Path) -> Option<Resolved> {
-        self.core.resolve(rel)
+    /// Resolve checked namespace selection without recording an absence.
+    /// Policy, traversal and I/O errors propagate; only checked absence is `None`.
+    pub fn resolve_checked(&self, rel: &Path) -> io::Result<Option<Resolved>> {
+        self.core.resolve_checked(rel)
     }
     pub fn restore_hard_link_sources(&self, sources: &[(u64, u64, PathBuf)]) -> io::Result<()> {
         self.core.restore_hard_link_sources(sources)

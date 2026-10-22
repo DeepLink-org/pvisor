@@ -71,6 +71,14 @@ CLI 执行器、containerd shim、暂停/恢复、快照、checkpoint、RAM page
 
 RAM 文件的 FUSE 挂载、readiness、mmap 缓存 I/O 和卸载顺序由私有 `ram_file` 模块管理。`RamFileStore` 接收宿主的暂存存储实现；`RamFileMount` 只公开所有权与挂载契约。压缩代际提交和持久化发布由宿主存储层负责。
 
+Linux 增量 RAM 捕获在完整冻结期间按 pagemap 区分 COW/换出页。
+变化块的干净字节直接从固定的不可变基底文件读取，只有私有页通过 live
+映射读取，避免文件 fault-around 把未修改基底带入 live 页表。跨 region 的
+同一变化块仍完整补齐，清零页也必须列入增量。临时页标记每宿主页一字节，
+64 GiB RAM、4 KiB 页时最多 16 MiB；块缓冲至多 1 MiB。无法证明基底和
+页面归属时，保留完整捕获回退。测试在支持 THP 的内核上禁用大页，未编译
+THP 的内核直接保持基页；驻留页、完整字节与稀疏输出断言相同。
+
 冷 RAM pager 的状态机、采样/发布窗口、回收线程及 CPU/设备缺页恢复也在本 crate 内。`ColdRamStore` 是宿主存储适配契约：pVisor 负责实例本地 store 或受支持平台的 pool 授权、传输和诊断目录，VM 指针与映射状态不越过边界。`ColdRamOptions`、`ColdRamControl` 在所有平台都存在；不支持的后端返回明确错误，重复启动同一 VM 的 pager 会被拒绝。
 
 Linux x86_64 支持实验性的 runtime-owned userfaultfd pager，由默认关闭的 `VmSettings.cold_ram_compression` / `--vm-cold-ram-compression` 自动启动，使用 pVisor 的 `LocalColdRamStore`，不是 FUSE `vm.ram_compression`。`ColdRamControl::start_cold_pager` 使用相同 API；Linux 的缺页与静止窗口由 runtime 内部持有，外部 `install_ram_fault_handler`、`with_ram_quiesced`、`experimental_ram_residency` 及 `FrozenMemory::experimental_ram_blocks` 返回不支持。编译能力不代表权限：必须具备 syscall 或 `/dev/userfaultfd` 的内核缺页授权，缺少授权时启动失败，不回退或修改全局 sysctl。
@@ -241,11 +249,31 @@ clock conversion 或 wake latch，不能自动卸载，也不证明 Linux runque
 当前源码尚无对应的真实 KVM 实测通过记录；macOS/HVF 尚未实际编译或运行
 验证。后续实测须使用独立制品和收据，不覆盖已有 binary、receipt 或实验数据。
 
+## Overlay protocol correctness
+
+Guest OPEN flags are Linux wire values. The adapter translates access mode,
+APPEND and TRUNC before passing them to the native-flag Core service; native
+passthrough adapters still receive the original wire flags. In particular, Linux
+APPEND must never activate macOS TRUNC copy-up. Unsupported SYNCFS replies use
+Linux ENOSYS (38) on every host, so the guest can apply its ordinary fallback.
+This fallback does not establish host-media durability.
+
+Regular-file hardlink aliases share a guest nodeid and follow the current upper
+object after copy-up. Writable opens materialize known aliases, and removing or
+replacing an upper name preserves surviving known aliases before publication.
+Already-open read-only lower descriptions keep their original lower binding.
+Snapshots save additional names in optional `node_aliases`, validate their shared
+identity, and rebuild native identity indexes, including not-yet-looked-up lower
+aliases from existing copy-up origins. Older records without the field remain
+readable.
+
 ## Physical lower stability contract
 
 `api::OverlayConfig::lower_mutability` uses the shared
-`pvisor_overlay_core::LayerMutability`, ordered like `lower_dirs`. Empty means all
-mutable (including older serialized private adapter configurations). A nonempty
+`pvisor_overlay_core::LayerMutability`, ordered like `lower_dirs`. New public API
+attachments expand empty declarations to all Immutable; transparent/live sources
+must explicitly declare Mutable. Older serialized private adapter configurations
+with empty declarations retain mutable behavior on restore. A nonempty
 length mismatch is `InvalidInput` before builder configuration replacement and
 is also checked during private adapter construction/restore. API shape remains
 unconditional and no API method bodies are added. The private adapter passes the
@@ -539,11 +567,11 @@ profile-off timing remain required before a performance claim.
 
 宿主 runner 可显式设置 `PVISOR_VM_FS_EXCLUSIVE_UPPER_ABSENCE_CACHE=1`；
 `0` 或未设置默认关闭。worker 在创建任何文件系统前严格校验 `0|1`，
-非法值（含非 UTF-8）拒绝启动。仅全部 lower 显式 `Immutable`、
-`LinuxComplete` 且 guest cache 开启的 Overlay 才有资格；普通 passthrough、
-Mutable/未声明 lower 和关闭 guest cache 的设备不启用。
+非法值（含非 UTF-8）拒绝启动。Overlay 仍要求 `LinuxComplete`；物理 upper
+缓存不依赖 lower 不可变或 guest cache 协商，透明 rootfs 也可以使用。
+普通 passthrough 不启用。
 
-启用者除目录镜像的 upper 命名空间独占契约外，还承诺 upper 根目录、物理祖先
+启用者承诺 upper 命名空间独占，以及 upper 根目录、物理祖先
 及 mount 身份在整个设备生命周期内保持稳定；宿主不得绕过 VM 改动 upper
 命名空间或目录权限等会改变路径检查结果的元数据。该显式承诺不能从只读挂载、
 frozen baseline 或某个 lower 的稳定性推导。Core 校验 preimage journal 与
@@ -567,6 +595,25 @@ Core mutation guard；整个修改期间禁用命中与填充。guard 在锁释�
 guest 属性与 entry TTL 保持原值；本实验不修改内核、KEEP_CACHE、WB 或 DAX，
 也不把未测候选作为默认优化。
 
+## 普通只读目录
+
+普通 passthrough（可写或只读）的 entry/attribute TTL 为零，避免同一宿主
+目录经多个挂载或 VM 共享时，重新打开文件仍读取旧内容或旧长度。数据保留
+close-to-open 策略与 mmap 支持；这不提供跨 VM 已打开映射的一致性协议，
+并发写与映射仍由调用方同步。Overlay 的缓存策略不受此修复影响。
+
+`VmConfiguration::read_only_filesystem(tag, path)` 在宿主适配器拒绝所有
+文件系统修改请求，供容器只读 bind mount 使用。所有平台使用同一声明；
+TEE/Nitro 返回 `Unsupported`。目录必须存在、绝对且可表达为 UTF-8，tag
+须非空且唯一；校验失败不改变已有 attachment。调用方保持目录根及挂载
+身份到 VM 退出；宿主内容可以变化，按普通 passthrough 可见性处理。
+
+该接口不创建 DAX 窗口、不承诺物理不可变、不启用不可变目录缓存，也不
+引入 DAX 的快照限制。guest remount 不会解除宿主只读限制。只读 OPEN
+检查始终使用 Linux wire 的 TRUNC/APPEND/TMPFILE 标志，不能使用 macOS
+本地标志解释 guest 请求。外部 API 测试验证输入、重复 tag 和快照兼容；
+私有协议测试覆盖读写打开标志。
+
 ## 不可变只读文件的 DAX
 
 `VmConfiguration::immutable_filesystem(tag, path, window_size)` 为独立的、
@@ -581,7 +628,7 @@ DAX 默认关闭。普通 `filesystem(..., 0)` 与 `overlay(..., 0)` 不创建 D
 配置 DAX 窗口。
 
 显式不可变 share 的目录项及 LinuxComplete 属性 TTL 为 60 秒，guest 使用
-`dax=never` 时同样生效。普通只读 share 和可写 Overlay 保留原 TTL；
+`dax=never` 时同样生效。普通只读 share 的 metadata TTL 为零，可写 Overlay 保留原 TTL；
 LinuxSimplified 的属性仍不缓存，以保持请求 uid/gid 的语义。
 数据缓存策略保持原配置。
 
@@ -632,8 +679,8 @@ FUSE 查询和打开路径。1 MiB 请求窗口与预读、宿主 root-data 策�
 已有快照恢复保留保存的协商状态；A/B 应分别启动新 VM。
 
 ```bash
-PVISOR_VM_GUEST_CACHE=0 pvisor run --executor vm --safe -- YOUR_COMMAND
-PVISOR_VM_GUEST_CACHE=1 pvisor run --executor vm --safe -- YOUR_COMMAND
+PVISOR_VM_GUEST_CACHE=0 pvisor spawn --executor vm --safe -- YOUR_COMMAND
+PVISOR_VM_GUEST_CACHE=1 pvisor spawn --executor vm --safe -- YOUR_COMMAND
 ```
 
 协商 `FUSE_PVISOR_META`（init flag bit 41）后，guest 可以把宿主合并后的目录
@@ -749,8 +796,15 @@ upper/work/preimage copies while retaining explicitly leased immutable lowers.
 The host coordinator imports and pins bases, validates stage inventories, and
 holds leases until VM exit. The runtime validates overlay topology and saved
 inodes/handles; writable stage roots cannot be retained as immutable lowers.
+Topology validation does not open a journal writer or repair its log. Snapshot
+capture syncs the current owner's journal; actual restore acquires a new writer
+and replays it. Restoring the same private stage requires dropping the old owner
+first; independently copied stages can coexist.
 Legacy full-tree/layer rebinding remains separate. The trait is available with
 the same signature on every platform; unsupported backends return an error.
+Layer selection uses Core's checked metadata layer index, including nested lower
+roots, rather than inferring it from physical path prefixes. Selection retains
+policy/I/O errors and the ordinary metadata resolver's absence observations.
 Restore can add the new Attempt's private authority paths through
 `rebind_filesystem_exclusions`. It preserves every existing exclusion, rejects
 absolute/escaping paths and additions that hide saved inode paths, and leaves
@@ -820,8 +874,16 @@ overlay inode；lower 文件句柄不能通过这条路径写入。截断前排�
 跨句柄 I/O 排空和 inode/handle 不匹配，以及无效、只读 upper 和 lower 句柄拒绝。
 rootless OCI 的 virtual metadata 模式下，新建目录记录 guest 创建者的
 UID/GID，并从虚拟父目录继承 setgid；不把宿主 UID 当成 guest 所有者返回。
+SYMLINK、MKNOD 和 MKDIR 在同一 namespace 写锁内复用原生创建属性组装
+回复，仍合并 virtual metadata、分配 overlay inode 并取得 guest lookup 引用，
+不再为刚创建的 upper 对象重走 Core 与原生查找。重命名目标探测保留 Core
+的策略及 I/O 错误，不把失败当成目标不存在。
 Linux 回归通过临时目录检查这些行为及普通 metadata、排除路径，不依赖
 OCI 镜像、外部模型或 guest 启动。
+新目录句柄的普通 READDIR 仅返回名称、类型和稳定 cookie，inode 编号为未知
+值 0，不登记子 inode，也不随后续 LOOKUP 改变回复。LOOKUP、READDIRPLUS
+和 READINDEX 继续分配真实 overlay 编号并保留引用；旧快照的已物化目录句柄
+仍使用保存的编号。分页、名称校验、类型快照与恢复验证保持原有规则。
 Linux regular-file LOOKUP 和无 FH GETATTR 保留 Core 的 namespace、
 父目录、hardlink 与策略检查，再通过原生父目录的强引用 FD 对最终名称
 执行 no-follow fstatat。每次查询重新读取属性，省去仅用于 metadata 回复
@@ -1010,13 +1072,14 @@ virtio-fs 挂载，任一失败以125退出。宿主读取 stage 前须经过该
 后台 WRITE 的短写仍为错误，不能以成功回复丢弃尾部。DAX、direct I/O 与远程锁
 保留原路径；共享 mmap 脏页继续使用 Linux 原有的回写与同步，没有新增 fault 等待。
 
-宿主在 WB 会话成功 unlink 或 rename-overwrite 后，按原 guest nodeid 保留已退休的
-普通文件身份：upper 保留一个 native O_PATH lookup 引用；lower 只保留逻辑属性
-墓碑，时间戳回写不修改物理 lower。关闭所有 fd 后，纯 MTIME/CTIME SETATTR
+宿主在所有会话成功 unlink 或 rename-overwrite 后，按原 guest nodeid 保留已退休的
+普通文件身份，直到最后一个 guest FORGET。upper 保留 native lookup 引用，
+macOS 另外固定可读取的文件描述符；尚未完成的 OPEN 仍能读取被覆盖的原对象。
+lower 保留原只读对象和逻辑属性墓碑，时间戳回写不修改物理 lower。关闭所有 fd 后，纯 MTIME/CTIME SETATTR
 仍能绑定原对象，不重新打开旧名字，也不吞未知 ENOENT。guest LOOKUP 引用精确
 跟踪到 FORGET，未发布的 READDIRPLUS/READINDEX 引用须回滚，最后一个引用释放
 退休对象。仍有 detached/orphan 引用时 snapshot 返回 Unsupported，不能序列化为
-失效路径。新 snapshot 保存已知引用；旧 WB snapshot 缺少计数时，仅其有限旧节点
+失效路径。新 snapshot 保存已知引用；旧 snapshot 缺少计数时，仅其有限旧节点
 集合保守保留到 DESTROY，新节点仍正常计数，不能推断它们已收到 FORGET。
 
 真实 guest 回归（固件和输入路径使用绝对路径）：

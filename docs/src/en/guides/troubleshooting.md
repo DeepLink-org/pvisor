@@ -19,7 +19,7 @@ pvisor status --review last
 First check whether the launch command used staging:
 
 ```bash
-pvisor run --stage ../stage-task-001 -- AGENT_COMMAND
+pvisor spawn --stage ../stage-task-001 -- AGENT_COMMAND
 ```
 
 Without staging, the host executor produces no staged filesystem Effect that you can review and apply selectively, and it also preserves the host filesystem view by default. Use `--filesystem sandbox` when you need filesystem access restrictions, and add `--stage` when you need to review changes. If you did intend to stage, inspect the recorded stage path and executor warning, then run again.

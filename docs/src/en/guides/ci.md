@@ -2,7 +2,7 @@
 
 Let an agent complete a CI task and hand its changes to a reviewer as an artifact. Upload the Stage and execution evidence after the task; the review step decides whether to apply the changes.
 
-Prepare a Linux self-hosted runner that can run `pvisor run --safe`, with pVisor installed. First verify the workflow with a script that needs no model credentials, then replace it with your agent. See [Platform support](../reference/platforms.md) for host prerequisites.
+Prepare a Linux self-hosted runner that can run `pvisor spawn --safe`, with pVisor installed. First verify the workflow with a script that needs no model credentials, then replace it with your agent. See [Platform support](../reference/platforms.md) for host prerequisites.
 
 ```bash
 cat > ci-agent.sh <<'SH'
@@ -32,7 +32,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          pvisor run --safe --overlaynet-deny-all \
+          pvisor spawn --safe --overlaynet-deny-all \
             --stage "$RUNNER_TEMP/pvisor-stage-${GITHUB_RUN_ID}" \
             --timeout 5m --stdio capture -- ./ci-agent.sh
           code=$?
@@ -63,12 +63,12 @@ Run the following from a disposable workspace on the prepared runner. Use fresh 
 
 ```bash
 set +e
-pvisor run --safe --overlaynet-deny-all --stdio capture \
+pvisor spawn --safe --overlaynet-deny-all --stdio capture \
   --stage ../ci-failure-001 -- /bin/sh -c 'printf "candidate\n" > failed.txt; exit 7'
 failure_code=$?
 pvisor status --review --json ../ci-failure-001 > ../ci-failure-001.json
 failure_review_code=$?
-pvisor run --safe --overlaynet-deny-all --stdio capture --timeout 100ms \
+pvisor spawn --safe --overlaynet-deny-all --stdio capture --timeout 100ms \
   --stage ../ci-timeout-001 -- /bin/sh -c 'printf "candidate\n" > timed.txt; sleep 2'
 timeout_code=$?
 pvisor status --review --json ../ci-timeout-001 > ../ci-timeout-001.json

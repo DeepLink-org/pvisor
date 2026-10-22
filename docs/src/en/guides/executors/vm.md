@@ -3,7 +3,7 @@
 The VM executor boots a minimal Linux guest through `pvisor-vm`, giving it an independent guest kernel, a workspace served over virtio-fs, and networking handled by the pVisor smoltcp data plane. Linux uses KVM; Apple Silicon macOS uses HVF.
 
 ```bash
-pvisor run --executor vm --rootfs image=ubuntu:24.04 \
+pvisor spawn --executor vm --rootfs image=ubuntu:24.04 \
   --stage ../stage-vm --mount "$PWD:stage" -- /bin/sh
 ```
 

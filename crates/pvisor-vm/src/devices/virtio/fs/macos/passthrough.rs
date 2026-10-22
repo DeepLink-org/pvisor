@@ -669,6 +669,41 @@ struct NodeCreation {
 }
 
 impl PassthroughFs {
+    pub(in crate::devices::virtio::fs) fn retain_inode(&self, inode: Inode) -> io::Result<()> {
+        let inodes = self.inodes.read().unwrap();
+        let data = inodes.get(&inode).ok_or_else(ebadf)?;
+        data.refcount.fetch_add(1, Ordering::Acquire);
+        Ok(())
+    }
+
+    pub(in crate::devices::virtio::fs) fn preserve_inode(&self, inode: Inode) -> io::Result<()> {
+        let data = self
+            .inodes
+            .read()
+            .unwrap()
+            .get(&inode)
+            .cloned()
+            .ok_or_else(ebadf)?;
+        if data.unlinked_fd.load(Ordering::Acquire) < 0 {
+            let file = self
+                .open_inode(inode, libc::O_RDWR)
+                .or_else(|_| self.open_inode(inode, libc::O_RDONLY))?;
+            use std::os::fd::IntoRawFd;
+            let fd = file.into_raw_fd();
+            if data
+                .unlinked_fd
+                .compare_exchange(-1, i64::from(fd), Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                // Another owner already pinned this same object.
+                unsafe {
+                    libc::close(fd);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(in crate::devices::virtio::fs) fn lease_handle(
         &self,
         inode: Inode,
@@ -851,6 +886,17 @@ impl PassthroughFs {
         if supports_fd {
             let unlinked_fd = data.unlinked_fd.load(Ordering::Acquire);
             if unlinked_fd >= 0 {
+                // A prepared unlink/rename can fail, or leave another hardlink.
+                // Keep ordinary open flags while a matching live name exists.
+                if let Ok(InodeHandle::Path(path)) = self.inode_to_handle(inode, false) {
+                    let path_buf = Path::new(std::ffi::OsStr::from_bytes(path.to_bytes()));
+                    if std::fs::symlink_metadata(path_buf).is_ok_and(|metadata| {
+                        use std::os::unix::fs::MetadataExt;
+                        metadata.ino() == data.ino && metadata.dev() == data.dev as u64
+                    }) {
+                        return Ok(InodeHandle::Path(path));
+                    }
+                }
                 return Ok(InodeHandle::Fd(unlinked_fd as RawFd));
             }
         }
@@ -912,6 +958,7 @@ impl PassthroughFs {
         }
 
         let ihandle = self.inode_to_handle(inode, true)?;
+        let detached = matches!(&ihandle, InodeHandle::Fd(_));
         let fd = match ihandle {
             InodeHandle::Path(c_path) => unsafe {
                 libc::open(
@@ -927,7 +974,11 @@ impl PassthroughFs {
         }
 
         // Safe because we just opened this fd.
-        Ok(unsafe { File::from_raw_fd(fd) })
+        let file = unsafe { File::from_raw_fd(fd) };
+        if detached && flags & libc::O_TRUNC != 0 {
+            file.set_len(0).map_err(linux_error)?;
+        }
+        Ok(file)
     }
 
     fn do_readdir<F>(

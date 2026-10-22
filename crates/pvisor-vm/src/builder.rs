@@ -542,6 +542,20 @@ impl<B: Backend> Builder<B> {
             virtual_entries: Vec::new(),
         })
     }
+    pub(crate) fn read_only_filesystem(&mut self, tag: &str, path: &std::path::Path) -> io::Result<()> {
+        if !path.is_absolute() || !path.is_dir() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "read-only share requires an absolute existing directory"));
+        }
+        self.attach_fs(FsDeviceConfig {
+            fs_id: tag.into(),
+            shared_dir: Some(path.to_str().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "filesystem path is not UTF-8"))?.into()),
+            semantics: PermissionSemantics::LinuxComplete,
+            shm_size: None,
+            read_only: true,
+            overlay: None,
+            virtual_entries: Vec::new(),
+        })
+    }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     pub(crate) fn immutable_filesystem(
         &mut self,
@@ -798,6 +812,39 @@ mod contract_tests {
             arguments: vec![],
             environment: Default::default(),
             working_directory: "/".into(),
+        }
+    }
+
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    #[test]
+    fn public_overlay_defaults_to_immutable_and_preserves_explicit_mutable() {
+        use crate::api::{OverlayConfig, PermissionSemantics, VmBuilder, VmConfiguration};
+        use pvisor_overlay_core::LayerMutability::{Immutable, Mutable};
+        let root = tempfile::tempdir().unwrap();
+        for (declarations, expected) in [(vec![], Immutable), (vec![Mutable], Mutable)] {
+            let mut vm = VmBuilder::new(1, 128).unwrap();
+            vm.overlay(
+                "root",
+                OverlayConfig {
+                    lower_dirs: vec![root.path().to_owned()],
+                    lower_mutability: declarations,
+                    upper_dir: root.path().join("upper"),
+                    work_dir: None,
+                    preimage_dir: None,
+                    apply_target: None,
+                    baseline_lower: None,
+                    baseline_content_index: None,
+                    excluded_paths: vec![],
+                    access_policy: Default::default(),
+                    semantics: PermissionSemantics::LinuxComplete,
+                },
+                0,
+            )
+            .unwrap();
+            assert_eq!(
+                vm.inner.resources.fs[0].overlay.as_ref().unwrap().lower_mutability,
+                [expected]
+            );
         }
     }
 

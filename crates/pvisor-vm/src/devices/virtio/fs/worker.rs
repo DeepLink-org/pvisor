@@ -719,10 +719,7 @@ impl FsWorker {
                 )?;
                 inner.configure_immutable_data_cache(root_data_cache);
                 inner.configure_directory_cache_capacity(directory_cache_capacity)?;
-                inner.configure_exclusive_upper_absence_cache(
-                    exclusive_upper_absence_cache,
-                    guest_cache,
-                )?;
+                inner.configure_exclusive_upper_absence_cache(exclusive_upper_absence_cache)?;
                 inner.configure_readonly_flush_elision(
                     readonly_flush_elision,
                     guest_cache,
@@ -760,7 +757,10 @@ impl FsWorker {
                 if shm_region.is_some() {
                     cfg.entry_timeout = std::time::Duration::from_secs(60);
                     // LinuxSimplified attributes depend on the requesting uid.
-                    if !cfg.attr_timeout.is_zero() {
+                    if !matches!(
+                        cfg.semantics,
+                        crate::api::PermissionSemantics::LinuxSimplified
+                    ) {
                         cfg.attr_timeout = std::time::Duration::from_secs(60);
                     }
                 }

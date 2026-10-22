@@ -434,7 +434,7 @@ def run_trial(args, metadata, backend, mode, trial):
     elif backend.startswith("pvisor"):
         argv = [
             str(args.output / "bin/pvisor"),
-            "run",
+            "spawn",
             "--no-agent-defaults",
             "--pass-env",
             "PYTHONDONTWRITEBYTECODE",

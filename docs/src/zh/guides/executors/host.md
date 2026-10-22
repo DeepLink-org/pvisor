@@ -3,7 +3,7 @@
 host 是默认执行器：命令直接使用宿主内核和已安装的工具链。它最适合"在本机放手运行 Agent、事后审查改动"的场景。
 
 ```bash
-pvisor run --executor host --stage ../stage-host -- /bin/sh
+pvisor spawn --executor host --stage ../stage-host -- /bin/sh
 ```
 
 ## 三个相互独立的开关

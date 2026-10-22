@@ -103,6 +103,7 @@ impl Session {
         runtime: &RuntimeSupervisor,
         event_sink: Arc<dyn EventSink>,
         resolved: ResolvedRun,
+        attempt_id: AttemptId,
     ) -> Result<RunHandle, PVisorError> {
         let ResolvedRun {
             preparation,
@@ -119,7 +120,6 @@ impl Session {
             .validate_model_wait(descriptor.kind)
             .map_err(PVisorError::Prepare)?;
         crate::util::startup_mark_run("session.begin", spec.run_id.as_str());
-        let attempt_id = AttemptId::new(format!("attempt-{}", uuid::Uuid::new_v4()));
         let cancellation = CancellationToken::new();
         let vm_control = crate::executor::vm::control::VmControl::new(cancellation.clone());
         let agentctl_server = {
@@ -279,6 +279,7 @@ impl Session {
             record,
             checkpoint_record,
             join,
+            instance_control: None,
         })
     }
     /// All backends use the same exit/cancel/deadline ordering and cancellation transition.

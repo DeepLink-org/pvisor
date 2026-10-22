@@ -1,11 +1,11 @@
 //! Host-only, attempt-scoped live VM control. One JSON line per connection.
 //!
 //! This is not snapshot restart: `resume` resumes the same live Attempt. Endpoint
-//! discovery is process-local so no management socket is projected into a guest.
+//! discovery lives in the host Job record; no endpoint is projected into a guest.
 
 use super::host_transport::{
-    allocate_host_directory, authorize_host_peer, host_authority_root, read_host_frame,
-    validate_host_target, write_host_frame,
+    authorize_host_peer, host_authority_root, read_host_frame, validate_host_target,
+    write_host_frame,
 };
 use super::run::{AttemptService, RunControlHandle, RunHandle};
 #[cfg(test)]
@@ -22,7 +22,10 @@ use pvisor_core::operation::OperationKind;
 use std::collections::HashMap;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 #[cfg(test)]
 use tokio::io::AsyncWriteExt;
@@ -43,6 +46,18 @@ type Endpoints = HashMap<(String, String), PathBuf>;
 fn endpoints() -> &'static Mutex<Endpoints> {
     static ENDPOINTS: OnceLock<Mutex<Endpoints>> = OnceLock::new();
     ENDPOINTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn owns_record(record: &super::RunRecord) -> bool {
+    let (Some(endpoint), Some(attempt)) = (&record.live_control, &record.attempt_id) else {
+        return false;
+    };
+    endpoint.pid == std::process::id()
+        && endpoints()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&(record.run_id.clone(), attempt.clone()))
+            .is_some_and(|path| path == &endpoint.path)
 }
 
 pub(crate) fn socket(handle: &RunHandle) -> anyhow::Result<PathBuf> {
@@ -66,7 +81,7 @@ struct OwnedSocket {
     path: PathBuf,
     device: u64,
     inode: u64,
-    temporary: Option<tempfile::TempDir>,
+    prune: bool,
 }
 
 impl Drop for OwnedSocket {
@@ -78,10 +93,13 @@ impl Drop for OwnedSocket {
         }) {
             let _ = std::fs::remove_file(&self.path);
         }
-        // Do not recursively delete a replacement socket or any new contents.
-        if let Some(directory) = self.temporary.take() {
-            let path = directory.keep();
-            let _ = std::fs::remove_dir(path);
+        if self.prune
+            && let Some(parent) = self.path.parent()
+        {
+            let _ = std::fs::remove_dir(parent);
+            if let Some(job) = parent.parent() {
+                let _ = std::fs::remove_dir(job);
+            }
         }
     }
 }
@@ -94,63 +112,26 @@ pub(crate) struct InstanceControlServer {
 }
 
 impl InstanceControlServer {
-    pub(crate) fn bind(path: Option<&Path>) -> anyhow::Result<Self> {
-        // Fixed short default path also fits macOS sockaddr_un. Custom parents
+    pub(crate) fn bind(path: Option<&Path>, job: &str, attempt: &str) -> anyhow::Result<Self> {
+        // Directory-fd addressing keeps canonical UUID paths usable. Custom parents
         // must already exist; never create them, follow a parent symlink, or
         // unlink an existing entry to make binding succeed.
         let authority_root = host_authority_root()?;
-        let temporary = if path.is_none() {
-            Some(allocate_host_directory("vm-")?)
-        } else {
-            None
-        };
+        let prune = path.is_none();
         let path = match path {
-            Some(path) => {
-                anyhow::ensure!(
-                    path.file_name().is_some(),
-                    "control socket needs a file name"
-                );
-                let absolute = std::path::absolute(path)?;
-                let parent = absolute
-                    .parent()
-                    .ok_or_else(|| anyhow::anyhow!("control socket needs a parent directory"))?;
-                let metadata = std::fs::symlink_metadata(parent)?;
-                anyhow::ensure!(
-                    metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
-                    "control socket parent must be a non-symlink directory"
-                );
-                anyhow::ensure!(
-                    metadata.uid() == unsafe { libc::geteuid() },
-                    "control socket parent must belong to the effective user"
-                );
-                anyhow::ensure!(
-                    metadata.mode() & 0o777 == 0o700,
-                    "control socket parent must have mode 0700"
-                );
-                let canonical = parent.canonicalize()?;
-                let checked = std::fs::symlink_metadata(&canonical)?;
-                anyhow::ensure!(
-                    metadata.dev() == checked.dev() && metadata.ino() == checked.ino(),
-                    "control socket parent changed during validation"
-                );
-                canonical.join(absolute.file_name().unwrap())
-            }
-            None => temporary.as_ref().unwrap().path().join("ctrl.sock"),
+            Some(path) => super::host_transport::instance_socket_override(path)?,
+            None => super::host_transport::instance_control_path(job, attempt)?,
         };
-        // Exclude all authority siblings when this endpoint is in the common
-        // root. External custom sockets retain their checked parent exclusion.
-        let exclusion_directory = if path.starts_with(&authority_root) {
-            authority_root
-        } else {
-            path.parent().unwrap().to_owned()
-        };
-        let listener = UnixListener::bind(&path)?;
+        let exclusion_directory = authority_root;
+        let native = super::host_transport::bind_instance_socket(&path)?;
+        native.set_nonblocking(true)?;
+        let listener = UnixListener::from_std(native)?;
         let metadata = std::fs::symlink_metadata(&path)?;
         let socket = OwnedSocket {
             path,
             device: metadata.dev(),
             inode: metadata.ino(),
-            temporary,
+            prune,
         };
         // Install cleanup before the fallible permission operation.
         std::fs::set_permissions(&socket.path, std::fs::Permissions::from_mode(0o600))?;
@@ -162,11 +143,38 @@ impl InstanceControlServer {
         })
     }
 
+    pub(crate) fn record(&self) -> anyhow::Result<super::host_transport::LiveControlRecord> {
+        use std::io::Read;
+        let binary = std::env::current_exe()?;
+        #[cfg(target_os = "linux")]
+        let mut file = std::fs::File::open("/proc/self/exe")?;
+        #[cfg(not(target_os = "linux"))]
+        let mut file = std::fs::File::open(&binary)?;
+        let mut hash = blake3::Hasher::new();
+        let mut bytes = [0; 64 * 1024];
+        loop {
+            let count = file.read(&mut bytes)?;
+            if count == 0 {
+                break;
+            }
+            hash.update(&bytes[..count]);
+        }
+        Ok(super::host_transport::LiveControlRecord {
+            path: self.socket.path.clone(),
+            device: self.socket.device,
+            inode: self.socket.inode,
+            protocol: super::host_transport::INSTANCE_CONTROL_PROTOCOL.into(),
+            binary,
+            binary_digest: hash.finalize().to_hex().to_string(),
+            pid: std::process::id(),
+        })
+    }
+
     pub(crate) fn directory(&self) -> &Path {
         &self.exclusion_directory
     }
 
-    pub(crate) fn start(mut self, handle: &RunHandle) {
+    pub(crate) fn start(mut self, handle: &RunHandle) -> tokio::task::JoinHandle<()> {
         let identity = (handle.run_id().to_string(), handle.attempt_id().to_string());
         endpoints()
             .lock()
@@ -176,8 +184,11 @@ impl InstanceControlServer {
         let controls = handle.controls();
         let mut status = handle.status.clone();
         let attempt_task = handle.join.abort_handle();
+        let record = handle.record.clone();
         tokio::spawn(async move {
             let mut clients = JoinSet::new();
+            let mut replies: Vec<(tokio::task::AbortHandle, Arc<AtomicBool>)> = Vec::new();
+            let mounts = Arc::new(Mutex::new(HashMap::new()));
             // A panic can finish the attempt without publishing terminal status.
             // Our control authority holds a status sender, so channel closure
             // cannot detect that path. Observe task completion without joining
@@ -196,21 +207,36 @@ impl InstanceControlServer {
                     _ = completion_check.tick() => {
                         if attempt_task.is_finished() { break; }
                     }
-                    _ = clients.join_next(), if !clients.is_empty() => {}
+                    _ = clients.join_next(), if !clients.is_empty() => { replies.retain(|(handle, _)| !handle.is_finished()); }
                     accepted = self.listener.accept() => {
                         let Ok((stream, _)) = accepted else { break; };
                         if clients.len() >= MAX_CONNECTIONS { continue; }
                         let controls = controls.clone();
                         let status = status.clone();
-                        clients.spawn(async move { serve(stream, controls, status, OPERATION_TIMEOUT).await; });
+                        let record = record.clone();
+                        let mounts = mounts.clone();
+                        let retain = Arc::new(AtomicBool::new(false));
+                        let pending = retain.clone();
+                        let task = clients.spawn(async move {
+                            serve(stream, controls, status, record, mounts, pending, OPERATION_TIMEOUT).await;
+                        });
+                        replies.push((task, retain));
                     }
                 }
             }
-            // Drop aborts client waiters without waiting for I/O or controls.
-            // RunControlHandle owns accepted transitions independently.
-            drop(clients);
+            // A suspend reply requires durable Job completion after terminal
+            // publication. Keep accepted capture/kill replies; abort idle clients.
+            for (task, retain) in replies {
+                if !retain.load(Ordering::Acquire) {
+                    task.abort();
+                }
+            }
             drop(self);
-        });
+            let _ = tokio::time::timeout(OPERATION_TIMEOUT + IO_TIMEOUT, async {
+                while clients.join_next().await.is_some() {}
+            })
+            .await;
+        })
     }
 }
 
@@ -248,6 +274,9 @@ async fn serve(
     mut stream: UnixStream,
     controls: RunControlHandle,
     status: tokio::sync::watch::Receiver<RunStatus>,
+    record: Option<super::RunRecord>,
+    mounts: Arc<Mutex<HashMap<String, super::ReadOnlyOverlayMount>>>,
+    retain_reply: Arc<AtomicBool>,
     operation_timeout: Duration,
 ) {
     if authorize_host_peer(&stream).is_err() {
@@ -256,49 +285,188 @@ async fn serve(
     // A malformed frame has no trustworthy correlation ID; close without a reply.
     let Ok(Ok(request)) = tokio::time::timeout(
         IO_TIMEOUT,
-        read_host_frame::<AgentCtlHostRequest<HostVmCommand>>(&mut stream),
+        read_host_frame::<AgentCtlHostRequest<super::host_transport::InstanceCommand>>(&mut stream),
     )
     .await
     else {
         return;
     };
+    retain_reply.store(
+        matches!(
+            request.command,
+            super::host_transport::InstanceCommand::Capture { .. }
+                | super::host_transport::InstanceCommand::Terminate {}
+        ),
+        Ordering::Release,
+    );
     let request_id = request.request_id.clone();
-    let result = host_operation(&request, &status.borrow().clone());
-    let result = match result {
-        Ok(command) => {
-            let service = AttemptService::new(controls);
-            let operation = service.dispatch(command);
-            tokio::pin!(operation);
-            match tokio::time::timeout(operation_timeout, &mut operation).await {
-                Ok(result) => result.map(HostVmResult::from),
-                Err(_) => {
-                    respond(
-                        &mut stream,
-                        &request_id,
-                        Err(AgentCtlHostError::new(
-                            AgentCtlHostErrorCode::Unavailable,
-                            "control response timed out; accepted operation may still complete",
-                        )),
-                    )
-                    .await;
-                    // Keep this JoinSet slot until the existing control returns.
-                    // A timed-out/disconnected client cannot free admission and
-                    // accumulate unbounded detached transition waiters.
-                    drop(stream);
-                    let _ = operation.await;
-                    return;
-                }
-            }
+    let operation = dispatch(request, controls, status.borrow().clone(), record, mounts);
+    tokio::pin!(operation);
+    let result = match tokio::time::timeout(operation_timeout, &mut operation).await {
+        Ok(result) => result,
+        Err(_) => {
+            respond(
+                &mut stream,
+                &request_id,
+                Err(AgentCtlHostError::new(
+                    AgentCtlHostErrorCode::Unavailable,
+                    "control response timed out; accepted operation may still complete",
+                )),
+            )
+            .await;
+            drop(stream);
+            let _ = operation.await;
+            return;
         }
-        Err(error) => Err(error),
     };
     respond(&mut stream, &request_id, result).await;
+}
+
+async fn dispatch(
+    request: AgentCtlHostRequest<super::host_transport::InstanceCommand>,
+    controls: RunControlHandle,
+    status: RunStatus,
+    record: Option<super::RunRecord>,
+    mounts: Arc<Mutex<HashMap<String, super::ReadOnlyOverlayMount>>>,
+) -> Result<serde_json::Value, AgentCtlHostError> {
+    use super::host_transport::InstanceCommand;
+    request.validate()?;
+    validate_host_target(
+        request.target.as_ref(),
+        status.run_id.as_str(),
+        status.attempt.attempt_id.as_str(),
+    )?;
+    let error = |error: anyhow::Error| {
+        error
+            .downcast_ref::<AgentCtlHostError>()
+            .cloned()
+            .unwrap_or_else(|| {
+                AgentCtlHostError::new(AgentCtlHostErrorCode::Internal, format!("{error:#}"))
+            })
+    };
+    let record = || -> anyhow::Result<super::RunRecord> {
+        let saved = record
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Job has no durable storage"))?;
+        let current = super::RunRecord::read(&saved.stage_dir())?;
+        anyhow::ensure!(
+            current.run_id == status.run_id.as_str()
+                && current.attempt_id.as_deref() == Some(status.attempt.attempt_id.as_str()),
+            "stale Job/Attempt control record"
+        );
+        Ok(current)
+    };
+    let value = match request.command {
+        InstanceCommand::JobStatus {} => {
+            let record = record().map_err(error)?;
+            let mut result = super::job_service::RuntimeJobService::status(
+                &Default::default(),
+                super::job_service::StatusRequest {
+                    job: super::job_service::JobSelection {
+                        selector: Some(record.stage_dir()),
+                        storage: record.storage.clone(),
+                    },
+                },
+            )
+            .map_err(error)?;
+            result.live_attempt = Some(controls.status());
+            serde_json::to_value(result)
+        }
+        InstanceCommand::Capture {
+            suspend,
+            ram_storage,
+            timeout_ms,
+            request_id,
+        } => {
+            let record = record().map_err(error)?;
+            let result = super::job_service::RuntimeJobService::capture_selected_execution(
+                &Default::default(),
+                &record,
+                suspend,
+                ram_storage,
+                Some(request_id),
+                Duration::from_millis(timeout_ms),
+            )
+            .await
+            .map_err(error)?;
+            serde_json::to_value(result)
+        }
+        InstanceCommand::Inspect { checkpoint } => {
+            let mut record = record().map_err(error)?;
+            if let Some(id) = checkpoint {
+                let checkpoint =
+                    super::checkpoint::resolve_checkpoint(&record, &id).map_err(error)?;
+                record = super::checkpoint::workspace_view(&record, &checkpoint).map_err(error)?;
+            }
+            let overlay = record
+                .overlay
+                .as_ref()
+                .ok_or_else(|| error(anyhow::anyhow!("Job has no OverlayFS workspace")))?;
+            let lowers = if record.overlay_lowers.is_empty() {
+                vec![overlay.target.clone()]
+            } else {
+                record.overlay_lowers.clone()
+            };
+            let mut mounts = mounts.lock().unwrap_or_else(|error| error.into_inner());
+            if mounts.len() >= MAX_CONNECTIONS {
+                return Err(AgentCtlHostError::new(
+                    AgentCtlHostErrorCode::Unavailable,
+                    "inspect session limit reached",
+                ));
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            let mount = super::mount_overlay_record_read_only(
+                overlay,
+                &lowers,
+                &overlay.stage_dir.join("inspect").join(&id).join("merged"),
+            )
+            .map_err(|failure| error(failure.into()))?;
+            let mountpoint = mount.mountpoint().to_owned();
+            mounts.insert(id.clone(), mount);
+            Ok(serde_json::json!({ "id": id, "mountpoint": mountpoint }))
+        }
+        InstanceCommand::UnmountInspect { id } => {
+            let mount = mounts
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .remove(&id)
+                .ok_or_else(|| error(anyhow::anyhow!("unknown inspect session {id}")))?;
+            mount.unmount().map_err(error)?;
+            Ok(serde_json::Value::Null)
+        }
+        InstanceCommand::Terminate {} => {
+            let result = AttemptService::new(controls)
+                .dispatch(HostAttemptCommand::Terminate)
+                .await?;
+            serde_json::to_value(result)
+        }
+        command => {
+            let command = match command {
+                InstanceCommand::Status {} => HostVmCommand::Status,
+                InstanceCommand::Pause {} => HostVmCommand::Pause,
+                InstanceCommand::Resume {} => HostVmCommand::Resume,
+                InstanceCommand::Offload { file } => HostVmCommand::Offload { file },
+                _ => unreachable!(),
+            };
+            let request = AgentCtlHostRequest {
+                version: request.version,
+                request_id: request.request_id,
+                target: request.target,
+                command,
+            };
+            let command = host_operation(&request, &status)?;
+            let result = AttemptService::new(controls).dispatch(command).await?;
+            serde_json::to_value(HostVmResult::from(result))
+        }
+    };
+    value
+        .map_err(|error| AgentCtlHostError::new(AgentCtlHostErrorCode::Internal, error.to_string()))
 }
 
 async fn respond(
     stream: &mut UnixStream,
     request_id: &str,
-    result: Result<HostVmResult, AgentCtlHostError>,
+    result: Result<serde_json::Value, AgentCtlHostError>,
 ) {
     let response = AgentCtlHostResponse {
         version: AGENTCTL_HOST_VERSION,
@@ -324,9 +492,21 @@ pub async fn exchange(
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("explicit VM attempt is required"))?;
     validate_host_target(Some(target), &target.job_id, attempt_id)?;
-    let mut stream = tokio::time::timeout(IO_TIMEOUT, UnixStream::connect(path))
-        .await
-        .map_err(|_| anyhow::anyhow!("control connection timed out"))??;
+    let path = super::host_transport::instance_socket_override(path)?;
+    let path = path.as_path();
+    let metadata = std::fs::symlink_metadata(path)?;
+    let endpoint = super::host_transport::LiveControlRecord {
+        path: path.to_owned(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        protocol: super::host_transport::INSTANCE_CONTROL_PROTOCOL.into(),
+        binary: std::env::current_exe()?,
+        binary_digest: String::new(),
+        pid: std::process::id(),
+    };
+    let native = endpoint.connect()?;
+    native.set_nonblocking(true)?;
+    let mut stream = UnixStream::from_std(native)?;
     authorize_host_peer(&stream)?;
     tokio::time::timeout(IO_TIMEOUT, write_host_frame(&mut stream, request))
         .await
@@ -352,11 +532,159 @@ pub async fn exchange(
 mod tests {
     use super::*;
     use crate::executor::process::ProcessExecutor;
+    use crate::host_transport::allocate_host_directory;
     use crate::{PVisor, RunExecutor, Session};
     use pvisor_core::{
         ExecutorKind, ExecutorPlan, IsolationKind, RunInvocation, RunSpec, RunState,
     };
     use std::sync::Arc;
+
+    async fn connect(path: &Path) -> anyhow::Result<UnixStream> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        let record = super::super::host_transport::LiveControlRecord {
+            path: path.to_owned(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            protocol: super::super::host_transport::INSTANCE_CONTROL_PROTOCOL.into(),
+            binary: std::env::current_exe()?,
+            binary_digest: String::new(),
+            pid: std::process::id(),
+        };
+        let native = record.connect()?;
+        native.set_nonblocking(true)?;
+        Ok(UnixStream::from_std(native)?)
+    }
+
+    struct PublishedVm;
+    #[async_trait::async_trait]
+    impl RunExecutor for PublishedVm {
+        fn descriptor(&self) -> ExecutorPlan {
+            MockVm.descriptor()
+        }
+        fn supports(&self, _: &RunInvocation) -> bool {
+            true
+        }
+        async fn execute(&self, session: &Session) -> crate::ExecutorOutput {
+            let record =
+                crate::RunRecord::read(&session.drivers.as_ref().unwrap().record().stage_dir())
+                    .unwrap();
+            let control = record
+                .live_control
+                .as_ref()
+                .expect("published before executor entry");
+            assert_eq!(
+                control.path,
+                super::super::host_transport::instance_control_path(
+                    &record.run_id,
+                    record.attempt_id.as_deref().unwrap()
+                )
+                .unwrap()
+            );
+            assert_eq!(
+                control.protocol,
+                super::super::host_transport::INSTANCE_CONTROL_PROTOCOL
+            );
+            assert_eq!(control.pid, std::process::id());
+            assert!(!control.binary_digest.is_empty());
+            assert!(control.connect().is_ok());
+            ProcessExecutor::default().execute(session).await
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_control_is_published_before_execution_and_cleared_at_terminal() {
+        let temp = tempfile::tempdir().unwrap();
+        let handle = PVisor::builder()
+            .storage(temp.path())
+            .executors(vec![Arc::new(PublishedVm)])
+            .network(crate::NetworkDriverConfig {
+                mode: crate::OverlayNetMode::Off,
+                ..Default::default()
+            })
+            .build();
+        let mut spec = RunSpec::process(
+            format!("publish-{}", uuid::Uuid::new_v4()),
+            "test",
+            "/bin/sh",
+        );
+        let RunInvocation::Process(process) = &mut spec.invocation;
+        process.args = vec!["-c".into(), "exit 0".into()];
+        let handle = handle.run(spec).await.unwrap();
+        let path = handle.control_socket().unwrap();
+        let result = handle.wait().await.unwrap();
+        assert_eq!(result.exit_code, Some(0), "{result:?}");
+        assert!(
+            crate::RunRecord::read(temp.path())
+                .unwrap()
+                .live_control
+                .is_none()
+        );
+        removed(&path).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protocol_admission_ignores_caller_binary_but_names_incompatible_owner() {
+        let handle = mock().await;
+        let path = handle.control_socket().unwrap();
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        let mut endpoint = super::super::host_transport::LiveControlRecord {
+            path,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            protocol: super::super::host_transport::INSTANCE_CONTROL_PROTOCOL.into(),
+            binary: PathBuf::from("/previous/pvisor"),
+            binary_digest: "different-binary-digest".into(),
+            pid: std::process::id(),
+        };
+        let job = handle.run_id().to_string();
+        let attempt = handle.attempt_id().to_string();
+        let cwd = std::env::current_dir().unwrap();
+        let copied = endpoint.clone();
+        tokio::task::spawn_blocking(move || {
+            copied.exchange(
+                &job,
+                &attempt,
+                super::super::host_transport::InstanceCommand::Status {},
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
+        endpoint.protocol = "future-owner-2".into();
+        let error = endpoint.connect().unwrap_err().to_string();
+        assert!(
+            error.contains("/previous/pvisor") && error.contains("future-owner-2"),
+            "{error}"
+        );
+        handle.cancel();
+        handle.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recorded_socket_replacement_is_never_connected() {
+        let server = InstanceControlServer::bind(
+            None,
+            "replacement-test",
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .unwrap();
+        let record = server.record().unwrap();
+        assert!(record.connect().is_ok());
+        std::fs::remove_file(&record.path).unwrap();
+        let replacement = super::super::host_transport::bind_instance_socket(&record.path).unwrap();
+        assert!(
+            record
+                .connect()
+                .unwrap_err()
+                .to_string()
+                .contains("changed")
+        );
+        drop(server);
+        assert!(record.path.exists());
+        drop(replacement);
+        std::fs::remove_file(&record.path).unwrap();
+    }
 
     struct MockVm;
     #[async_trait::async_trait]
@@ -498,15 +826,28 @@ mod tests {
     #[tokio::test]
     async fn automatic_and_nested_custom_endpoints_exclude_the_whole_authority_root() {
         let root = host_authority_root().unwrap();
-        let automatic = InstanceControlServer::bind(None).unwrap();
+        let automatic =
+            InstanceControlServer::bind(None, "bind-test", &uuid::Uuid::new_v4().to_string())
+                .unwrap();
         assert_eq!(automatic.directory(), root);
         assert_eq!(
-            automatic.socket.path.parent().unwrap().parent(),
-            Some(root.as_path())
+            automatic
+                .socket
+                .path
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent(),
+            Some(root.join("jobs").as_path())
         );
         let sibling = allocate_host_directory("exec-").unwrap();
-        let nested =
-            InstanceControlServer::bind(Some(&sibling.path().join("custom.sock"))).unwrap();
+        let nested = InstanceControlServer::bind(
+            Some(&sibling.path().join("custom.sock")),
+            "bind-test",
+            "attempt-test",
+        )
+        .unwrap();
         assert_eq!(nested.directory(), root);
         let path = automatic.socket.path.clone();
         drop(automatic);
@@ -517,23 +858,20 @@ mod tests {
 
     #[tokio::test]
     async fn custom_path_permissions_create_only_and_inode_safe_cleanup() {
-        let directory = tempfile::Builder::new()
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()
-            .unwrap();
+        let directory = allocate_host_directory("control-test-").unwrap();
         let path = directory.path().join("custom.sock");
-        let server = InstanceControlServer::bind(Some(&path)).unwrap();
-        assert_eq!(server.directory(), directory.path().canonicalize().unwrap());
+        let server = InstanceControlServer::bind(Some(&path), "bind-test", "attempt-test").unwrap();
+        assert_eq!(server.directory(), host_authority_root().unwrap());
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        assert!(InstanceControlServer::bind(Some(&path)).is_err());
+        assert!(InstanceControlServer::bind(Some(&path), "bind-test", "attempt-test").is_err());
         drop(server);
         assert!(!path.exists());
         assert!(directory.path().is_dir());
 
-        let server = InstanceControlServer::bind(Some(&path)).unwrap();
+        let server = InstanceControlServer::bind(Some(&path), "bind-test", "attempt-test").unwrap();
         std::fs::remove_file(&path).unwrap();
         let replacement = UnixListener::bind(&path).unwrap();
         let replacement_inode = std::fs::symlink_metadata(&path).unwrap().ino();
@@ -545,7 +883,7 @@ mod tests {
         drop(replacement);
         std::fs::remove_file(&path).unwrap();
 
-        let server = InstanceControlServer::bind(Some(&path)).unwrap();
+        let server = InstanceControlServer::bind(Some(&path), "bind-test", "attempt-test").unwrap();
         std::fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink("missing-target", &path).unwrap();
         drop(server);
@@ -559,27 +897,35 @@ mod tests {
 
     #[tokio::test]
     async fn custom_path_rejects_missing_public_and_symlink_parents_and_existing_files() {
-        let directory = tempfile::Builder::new()
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()
-            .unwrap();
+        let directory = allocate_host_directory("control-test-").unwrap();
         assert!(
-            InstanceControlServer::bind(Some(&directory.path().join("missing/socket"))).is_err()
+            InstanceControlServer::bind(
+                Some(&directory.path().join("missing/socket")),
+                "bind-test",
+                "attempt-test"
+            )
+            .is_err()
         );
         let public = directory.path().join("public");
         std::fs::create_dir(&public).unwrap();
         std::fs::set_permissions(&public, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(InstanceControlServer::bind(Some(&public.join("socket"))).is_err());
+        assert!(
+            InstanceControlServer::bind(Some(&public.join("socket")), "bind-test", "attempt-test")
+                .is_err()
+        );
         let alias = directory.path().join("alias");
         std::os::unix::fs::symlink(directory.path(), &alias).unwrap();
-        assert!(InstanceControlServer::bind(Some(&alias.join("socket"))).is_err());
+        assert!(
+            InstanceControlServer::bind(Some(&alias.join("socket")), "bind-test", "attempt-test")
+                .is_err()
+        );
         let path = directory.path().join("existing");
         std::fs::write(&path, b"keep-me").unwrap();
-        assert!(InstanceControlServer::bind(Some(&path)).is_err());
+        assert!(InstanceControlServer::bind(Some(&path), "bind-test", "attempt-test").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"keep-me");
         let link = directory.path().join("existing-link");
         std::os::unix::fs::symlink(&path, &link).unwrap();
-        assert!(InstanceControlServer::bind(Some(&link)).is_err());
+        assert!(InstanceControlServer::bind(Some(&link), "bind-test", "attempt-test").is_err());
         assert!(
             std::fs::symlink_metadata(&link)
                 .unwrap()
@@ -590,10 +936,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_sdk_path_client_exchange_and_terminal_cleanup() {
-        let directory = tempfile::Builder::new()
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()
-            .unwrap();
+        let directory = allocate_host_directory("control-test-").unwrap();
         let path = directory
             .path()
             .canonicalize()
@@ -639,6 +982,9 @@ mod tests {
             server,
             handle.controls(),
             handle.status.clone(),
+            None,
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(AtomicBool::new(false)),
             Duration::from_millis(1),
         ));
         let response: AgentCtlHostResponse<HostVmResult> =
@@ -670,13 +1016,13 @@ mod tests {
         let mut bytes = serde_json::to_vec(&request(&handle, HostVmCommand::Pause)).unwrap();
         bytes.push(b'\n');
         for _ in 0..MAX_CONNECTIONS {
-            let mut client = UnixStream::connect(&path).await.unwrap();
+            let mut client = connect(&path).await.unwrap();
             client.write_all(&bytes).await.unwrap();
             drop(client);
         }
         // All preceding accepted operations are blocked on the transition lock.
         // Closing their clients must not permit this ninth connection to enter.
-        let mut ninth = UnixStream::connect(&path).await.unwrap();
+        let mut ninth = connect(&path).await.unwrap();
         let rejected = tokio::time::timeout(
             Duration::from_secs(1),
             read_host_frame::<serde_json::Value>(&mut ninth),
@@ -871,7 +1217,7 @@ mod tests {
         assert!(kinds.iter().any(|kind| kind == "vm.control_requested"));
         assert!(kinds.iter().any(|kind| kind == "vm.control_failed"));
         // Closing the client after submission does not cancel accepted control.
-        let mut stream = UnixStream::connect(&path).await.unwrap();
+        let mut stream = connect(&path).await.unwrap();
         let mut bytes = serde_json::to_vec(&request(&handle, HostVmCommand::Resume)).unwrap();
         bytes.push(b'\n');
         stream.write_all(&bytes).await.unwrap();
@@ -901,7 +1247,7 @@ mod tests {
     async fn malformed_frames_and_connection_bounds_do_not_block_termination() {
         let handle = mock().await;
         let path = handle.control_socket().unwrap();
-        let mut stream = UnixStream::connect(&path).await.unwrap();
+        let mut stream = connect(&path).await.unwrap();
         stream.write_all(b"not-json\n").await.unwrap();
         // No envelope/correlation ID can be recovered from malformed JSON.
         assert!(
@@ -911,7 +1257,7 @@ mod tests {
         );
         let mut idle = Vec::new();
         for _ in 0..MAX_CONNECTIONS + 2 {
-            idle.push(UnixStream::connect(&path).await.unwrap());
+            idle.push(connect(&path).await.unwrap());
         }
         handle.cancel();
         tokio::time::timeout(IO_TIMEOUT, handle.wait())
@@ -942,7 +1288,7 @@ mod tests {
                 3 => request.target.as_mut().unwrap().generation = Some("stale-generation".into()),
                 _ => request.request_id = "invalid\nidentity".into(),
             }
-            let mut stream = UnixStream::connect(&path).await.unwrap();
+            let mut stream = connect(&path).await.unwrap();
             write_host_frame(&mut stream, &request).await.unwrap();
             let response: AgentCtlHostResponse<HostVmResult> =
                 read_host_frame(&mut stream).await.unwrap();
@@ -952,7 +1298,7 @@ mod tests {
         let mut guest_request =
             serde_json::to_value(request(&handle, HostVmCommand::Status)).unwrap();
         guest_request["token"] = "cooperative-guest-token".into();
-        let mut stream = UnixStream::connect(&path).await.unwrap();
+        let mut stream = connect(&path).await.unwrap();
         write_host_frame(&mut stream, &guest_request).await.unwrap();
         assert!(
             read_host_frame::<serde_json::Value>(&mut stream)
@@ -985,7 +1331,7 @@ mod tests {
             load,
             misplaced_file,
         ] {
-            let mut stream = UnixStream::connect(&path).await.unwrap();
+            let mut stream = connect(&path).await.unwrap();
             write_host_frame(&mut stream, &wire).await.unwrap();
             assert!(
                 tokio::time::timeout(
@@ -1023,9 +1369,10 @@ mod tests {
         let handle = mock().await;
         let request = request(&handle, HostVmCommand::Status);
         for variant in 0..4 {
-            let directory = tempfile::tempdir().unwrap();
+            let directory = allocate_host_directory("fake-control-").unwrap();
             let path = directory.path().join("fake.sock");
             let listener = UnixListener::bind(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
             let mut status = handle.status();
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
@@ -1174,28 +1521,15 @@ mod tests {
                         }),
                         command: HostVmCommand::Status,
                     };
-                    // Test-only discovery: production discovery is the SDK
-                    // getter/CLI stderr, with no guest-visible stage locator.
-                    for entry in std::fs::read_dir(host_authority_root().unwrap())
-                        .unwrap()
-                        .flatten()
-                    {
-                        if !entry.file_name().to_string_lossy().starts_with("vm-") {
-                            continue;
-                        }
-                        let path = entry.path().join("ctrl.sock");
-                        let probe = async {
-                            let response =
-                                super::exchange(&path, &request).await.ok()?.result.ok()?;
-                            (response.status.state == RunState::Running).then_some(())
-                        };
-                        if tokio::time::timeout(Duration::from_millis(200), probe)
+                    if let Some(endpoint) = record.live_control {
+                        let response = super::exchange(&endpoint.path, &request)
                             .await
                             .ok()
-                            .flatten()
-                            .is_some()
+                            .and_then(|reply| reply.result.ok());
+                        if response
+                            .is_some_and(|response| response.status.state == RunState::Running)
                         {
-                            return (path, request);
+                            return (endpoint.path, request);
                         }
                     }
                 }

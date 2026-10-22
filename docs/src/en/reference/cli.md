@@ -1,7 +1,8 @@
 # `pvisor` command reference
 
-Job is pVisor's primary user-facing object. `pvisor run` creates a Job; the other
-flat commands operate on it directly, without adding a `job` subcommand, and
+`pvisor run` creates a container in its own rootless Linux VM. `pvisor spawn`
+creates a Job; omitting the subcommand also selects `spawn`. Job lifecycle and
+change-review commands operate directly on Jobs without a `job` subcommand, and
 `replay` creates a Job from a trajectory. See the
 [execution model](../design/execution-model.md) for how Job, Run and Attempt
 relate; existing Job IDs and on-disk records keep their `run-*`
@@ -10,14 +11,14 @@ Full command examples for Host, OCI VM and transparent host-rootfs VM
 are in
 [Run workloads with pVisor](../guides/executors/index.md).
 
-Root help (`pvisor` or `pvisor --help`) groups commands under **Execution**
-(`run`, `status`, `kill`), **Changes** (`review`, `apply`, `drop`, `inspect`),
+Root help (`pvisor` or `pvisor --help`) groups commands under **Commands**
+(container commands plus `spawn`, `status`, `kill`), **Changes** (`review`, `apply`, `drop`, `inspect`),
 **Checkpoints** (`checkpoint`, `suspend`, `resume`, `fork`) and **Tools**
 (installed `replay`/`tui` companions, `cache`, `feature`, `help`). It shows a short
 run-review-apply example; use `pvisor help COMMAND` for detailed options.
 
 ```bash
-pvisor run --safe -- claude
+pvisor spawn --safe -- claude
 pvisor review last
 pvisor apply last --path src
 pvisor help suspend
@@ -27,37 +28,53 @@ Help, version and feature queries emit no startup logs. Execution commands emit
 `process.entry` and `cli.parsed` only after command parsing. These markers do
 not measure the complete process-entry or argument-parsing overhead.
 
-## Host Job service {#host-agentctl}
+## Container commands {#container-commands}
 
-Built-in Job commands (`run`, `status`, `kill`, `suspend`, `resume`, `fork`,
-`checkpoint`, `inspect`, `review`, `apply`, `drop`) submit typed requests through
-Host AgentCtl. The first request starts a persistent same-user listener under
-`/tmp/pvisor-host-<effective-UID>` (using canonical `/tmp`, usually `/private/tmp`
-on macOS); later requests reuse it. You do not need to start a service or pass
-endpoint options for ordinary persisted Jobs. Bare `pvisor` still displays help;
-`pvisor -- COMMAND` follows default execution through the same Job service.
+`run`, `pull`, `images`, `rmi`, `exec`, `ps`, `start`, `stop`, `rm` and `logs`
+use a Docker-style option subset with one VM per container and no central daemon.
+Use `pvisor COMMAND --help` for supported options. The former `pvisor docker
+COMMAND` spelling remains a hidden compatibility entry point. Job options such
+as `--safe`, `--stage` and `--executor` belong to `spawn`, not container `run`.
 
-The frontend retains its terminal and launches a listener-authorized worker;
-stdio and the private worker channel use Unix `SCM_RIGHTS` descriptor transfer.
-Job service/internal-worker JSON uses shared `runtime/host_transport.rs`
-async/sync newline framing with a 1 MiB JSON limit excluding the delimiter;
-FD marker bytes are separate transport records, not JSON. The listener checks
-same-UID kernel credentials and agrees on Host version 1, the internal Job
-ticket schema, package version and executable content digest before
-admitting stdio/commands. The typed `JobCommand` payload contains internal CLI
-DTOs tied to that exact schema/build, not a stable public API. It is separate from daemon sandbox/pool ownership and the independent image cache.
-Guest AgentCtl `Hello`/`Sync` remains a separate cooperative channel: its token
-cannot authorize host Job or VM operations.
+```bash
+pvisor pull alpine:3.20
+pvisor run --rm alpine:3.20 echo hello
+pvisor run -d --name redis redis:7
+pvisor exec redis redis-cli ping
+pvisor stop redis
+pvisor rm redis
+```
 
-Drain active requests and stop an old listener with its old binary before
-upgrading. A new client refuses an incompatible live listener; there is no
-legacy fallback. Lost responses and cancellation can leave effects ambiguous;
-requests are not automatically retried. See [Host and Guest AgentCtl](../design/architecture.md#host-agentctl)
-for ownership, protocol and validation limits.
+`pull --platform linux/amd64` or `linux/arm64` selects the image architecture;
+`linux/arm64/v8` is an alias. Omission uses the native platform. Foreign-image
+downloads are supported, but `run` and `start` require native images because CPU
+emulation is not implemented. This profile does not implement Docker Engine API,
+Build, Compose or credential helpers. Containers use their own image store;
+Job review/apply/drop and checkpoints continue to address Jobs.
+
+## Job owners and durable operations {#host-agentctl}
+
+`pvisor spawn` starts a frontend and a private Job owner. Live status, kill, VM
+controls and execution capture connect to the owner recorded in the Job;
+ordinary commands need no socket arguments. Stopped status, review, apply, drop
+and inspect run directly in the caller under `job.lock`. Apply/drop refuse a live
+owner still holding stage. Interactive execution keeps the original terminal,
+allows Ctrl-C to reach the workload, and restores foreground ownership at exit.
+
+The instance protocol is `pvisor-instance-control-1`; compatible caller binaries
+need not match the owner's digest. Same-UID private sockets use bounded newline
+JSON and never accept terminal descriptors or Guest AgentCtl tokens. Lost replies,
+timeouts and cancellation can follow effects and are never automatically retried.
+
+Before upgrade, drain old Jobs and stop the old `--pvisor-internal-host` with the
+old binary. New CLIs ignore old generation sockets and read records lacking live
+control as disk state only. The daemon supervisor is unchanged. See
+[Host and Guest AgentCtl](../design/architecture.md#host-agentctl) for ownership,
+record validation and platform limitations.
 
 ## Experimental features {#features}
 
-List runtime features without starting or contacting the Host Job service:
+Query runtime features in the caller without starting a Job or connecting to an owner:
 
 ```bash
 pvisor feature
@@ -67,10 +84,10 @@ pvisor --feature workload-aware-memory-offloading feature --json
 
 Each entry includes `name`, `stage`, `default`, `enabled` and `description`. `default` is the registered default; `enabled` reflects that default plus this query's `--feature` options. The query does not load a Run configuration or inspect a live Job. An enabled flag does not certify platform availability or runtime success.
 
-Use the repeatable global `--feature NAME` option before or after `run`; comma-separated names are also accepted. Unknown names reject. Arguments after `--` belong to the workload.
+Use the repeatable global `--feature NAME` option before or after `spawn`; comma-separated names are also accepted. Unknown names reject. Arguments after `--` belong to the workload.
 
 ```bash
-pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
+pvisor spawn --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
 ```
 
 | Feature | Stage | Default | Scope |
@@ -79,7 +96,7 @@ pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/slee
 
 `workload-aware-memory-offloading` requires the final executor to be VM and a Linux x86_64/KVM or Apple Silicon macOS/HVF build. It does not replace an executor selection. HVF runtime validation remains outstanding. Observation is enabled through the native runner; no live Host observation query is exposed yet.
 
-Feature enables apply to `run` and feature queries. Other lifecycle commands reject them; execution resume/fork retain the saved configuration. `[features]` in an explicit Run configuration can also enable features; CLI enables override `false`, omission preserves the configuration. There is no CLI disable option or persistent `feature enable` action. See [feature configuration](config.md#features). Runtime features are separate from Cargo build features and do not change existing VM memory flags.
+Feature enables apply to `spawn` and feature queries. Other lifecycle commands reject them; execution resume/fork retain the saved configuration. `[features]` in an explicit Run configuration can also enable features; CLI enables override `false`, omission preserves the configuration. There is no CLI disable option or persistent `feature enable` action. See [feature configuration](config.md#features). Runtime features are separate from Cargo build features and do not change existing VM memory flags.
 
 ## Daemon and cache commands {#service}
 
@@ -97,13 +114,13 @@ Other unknown names follow default execution rules. The `ctrl` name
 is an explicit exception: `pvisor ctrl`, `pvisor ctrl --help` and
 `pvisor help ctrl` reject with migration guidance before Job admission, rather
 than default-running a program named `ctrl`. Use the live VM commands below.
-`pvisor run -- ctrl` still expresses explicit workload intent; it does not
+`pvisor spawn -- ctrl` still expresses explicit workload intent; it does not
 invoke a control API. Use `pvisor -- COMMAND` for explicit default
 execution.
 
 ## Find the command you need
 
-- **Run a command:** start with [`pvisor run`](../start/first-run.md), then use
+- **Run a command:** start with [`pvisor spawn`](../start/first-run.md), then use
   `status --review`, `inspect` and `apply` to decide which changes reach the project.
 - **Understand the execution boundary:** use `status` and `inspect`, then read the
   [executor guides](../guides/executors/index.md).
@@ -113,7 +130,7 @@ execution.
 For your first run, copy the smallest loop:
 
 ```bash
-pvisor run --safe -- codex
+pvisor spawn --safe -- codex
 pvisor status --review last
 pvisor apply last --path src
 ```
@@ -126,7 +143,7 @@ Add `--tui` for a Zellij-style terminal frame, bottom status bar and floating
 review panel:
 
 ```bash
-pvisor run --tui -- bash
+pvisor spawn --tui -- bash
 ```
 
 Keyboard input goes to the shell or Agent by default, and the terminal always
@@ -175,10 +192,10 @@ chooses the storage location and is not a prerequisite for retaining
 changes.
 
 ```bash
-pvisor run --stage ../run-stage -- codex
-pvisor run --safe --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
-pvisor run --access '**/.ssh:deny' -- zcode
-pvisor run --access '.env:ask' -- codex
+pvisor spawn --stage ../run-stage -- codex
+pvisor spawn --safe --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
+pvisor spawn --access '**/.ssh:deny' -- zcode
+pvisor spawn --access '.env:ask' -- codex
 ```
 
 `--mount SOURCE:read` grants a host executor read-only access at the original
@@ -234,8 +251,18 @@ Proxy network auditing is a cooperative boundary: direct connections that bypass
 the proxy do not trigger this prompt.
 
 ```text
-Execution:
-  run         Start a Job
+Commands:
+  run         Create and run a container in its own VM
+  spawn       Start a Job
+  pull        Download an OCI image
+  images      List local images
+  rmi         Remove image references
+  exec        Execute a command in a container VM
+  ps          List containers
+  start       Start stopped containers
+  stop        Stop containers
+  rm          Remove containers
+  logs        Fetch container output
   status      Show Job status
   kill        Terminate a Job
 
@@ -254,14 +281,14 @@ Checkpoints:
 Tools:
   replay      Replay an Agent trajectory (when installed)
   tui         Interactive Job terminal (when installed)
-  feature     Query compile-time features
+  feature     List runtime experiments
   help        Show command details
 ```
 
 ## Safe first run {#安全的第一次运行}
 
 ```bash
-pvisor run --safe -- codex
+pvisor spawn --safe -- codex
 pvisor status --review last
 ```
 
@@ -313,7 +340,7 @@ stopped Job can still be reviewed and applied or dropped.
 
 ## Job checkpoint management
 
-`run` retains its existing options and defaults. These interfaces support workspace checkpoints for stopped Jobs:
+`spawn` retains its existing options and defaults. These interfaces support workspace checkpoints for stopped Jobs:
 
 ```bash
 pvisor checkpoint create ./stage/task --request-id before-refactor --json
@@ -346,7 +373,7 @@ Reading or forking historical workspace checkpoints still requires the source Jo
 For VMs with native capture support, these commands seal CPU, RAM, devices and filesystem state:
 
 ```bash
-pvisor run --executor vm --rootfs /path/to/rootfs --overlaynet off --stage ./stage/task -- /bin/agent
+pvisor spawn --executor vm --rootfs /path/to/rootfs --overlaynet off --stage ./stage/task -- /bin/agent
 pvisor checkpoint create ./stage/task --kind execution --ram-storage compressed --request-id save-1 --json
 pvisor suspend ./stage/task --ram-storage raw --request-id pause-1 --timeout 2m --json
 pvisor resume ./stage/task --request-id resume-1
@@ -359,21 +386,21 @@ pvisor checkpoint gc ./stage/task --kind execution --json
 
 Execution forks reject replacement commands. Selecting a historical checkpoint can leave the parent running; without one, a running parent is captured and continued, while a suspended parent supplies its head. The child owns private RAM and filesystem upper layers. `--ram-storage raw|compressed` applies only to new capture and defaults to compressed. `resume` and execution `fork` accept `--eager-ram` to read all RAM before startup; omission keeps lazy loading.
 
-The current native profile supports Linux x86_64 and macOS ARM64 with no network devices and private RAM. Host root `/`, networking devices, shared memory pools, writable RAM backing and cold-page compression are outside this restore contract. `run` does not disable networking or DAX or change rootfs to enable capture; `status JOB --json` reports capability and blockers. Restore requires the same host boot, pVisor binary and firmware; cross-host and cross-version restore are unsupported.
+The current native profile supports Linux x86_64 and macOS ARM64 with no network devices and private RAM. Host root `/`, networking devices, shared memory pools, writable RAM backing and cold-page compression are outside this restore contract. `spawn` does not disable networking or DAX or change rootfs to enable capture; `status JOB --json` reports capability and blockers. Restore requires the same host boot, pVisor binary and firmware; cross-host and cross-version restore are unsupported.
 
 When the stage is inside the workspace, capture storage is placed outside guest backing roots and recorded as Job-owned. When necessary, restored file copies also use an independent directory, with their paths retained in the Attempt record for review/apply. Capture retains the guest-visible projection, excluding stage management directories already hidden from the guest. Visible content, metadata and hard-link audits remain complete.
 
 Suspended Jobs refuse apply/drop and workspace capture. `kill JOB` withdraws continuation rights while retaining checkpoint history, allowing subsequent workspace decisions. Execution checkpoints share list/show/delete entries with workspace checkpoints; deletion checks the suspended head, branch references and storage leases. Branch references are retained conservatively; Job deletion/archiving has no release interface yet. GC collects unpublished transactions, tombstones and unreferenced RAM content in this Job's stores, never published checkpoints. It is not cross-Job store-wide collection and does not clean daemon sandbox state.
 
-Immutable base management uses `checkpoint import-base JOB ROOTFS --json` and `checkpoint verify-base JOB BASE_ID --json`. Import returns an owned rootfs path usable by subsequent ordinary `run --rootfs`. The CLI exposes snapshots through Job commands, not a standalone snapshot frontend; old stores are not automatically converted into Job checkpoints. See [Job checkpoint design](../design/job-checkpoint-cli.md#10-当前实现与验收边界) for implementation and acceptance.
+Immutable base management uses `checkpoint import-base JOB ROOTFS --json` and `checkpoint verify-base JOB BASE_ID --json`. Import returns an owned rootfs path usable by subsequent ordinary `spawn --rootfs`. The CLI exposes snapshots through Job commands, not a standalone snapshot frontend; old stores are not automatically converted into Job checkpoints. See [Job checkpoint design](../design/job-checkpoint-cli.md#10-当前实现与验收边界) for implementation and acceptance.
 
 ## `--safe` parameter preset {#safe-参数预设}
 
 ```bash
-pvisor run --safe -- claude
-pvisor run --safe --vm --rootfs image=my-agent-image:latest -- codex
-pvisor run --safe -- zcode
-pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
+pvisor spawn --safe -- claude
+pvisor spawn --safe --vm --rootfs image=my-agent-image:latest -- codex
+pvisor spawn --safe -- zcode
+pvisor spawn --safe --overlaynet-allow inference.example.com:443 -- zcode
 ```
 
 `--safe` generates a command-line argument patch, applies it through the same
@@ -469,7 +496,7 @@ Startup prints the effective policy and override notices:
 ## File access rules
 
 ```bash
-pvisor run --safe --mount /opt/tool:read --access '**/.ssh:deny' --access '**/.env*:warn' -- my-agent
+pvisor spawn --safe --mount /opt/tool:read --access '**/.ssh:deny' --access '**/.env*:warn' -- my-agent
 ```
 
 `--mount SOURCE:read|write` is a host executor's explicit share, granting
@@ -619,9 +646,9 @@ construct a prefix must migrate to `prepare_only = true`.
 `--disable-thinking`. Claude Code's protocol bridge applies it to the upstream
 request; OpenCode omits its `--thinking` flag when it is set. It does not turn
 on Gateway capture. Optional `[run]`, `[overlayfs]` and `[overlaynet]` sections
-create an outer managed `pvisor run`; they do not change the inner replay model
+create an outer managed `pvisor spawn`; they do not change the inner replay model
 path. Replay's filesystem parameters are governed by `pvisor replay --help`;
-do not copy `run`'s `--stage/--mount` grammar directly.
+do not copy `spawn`'s `--stage/--mount` grammar directly.
 
 By default, replay's internal state, WAL, manifest, fresh-observation
 comparisons and native working files remain under
@@ -634,7 +661,7 @@ execution.
 
 ## One configuration model
 
-`pvisor run` has one canonical `RunConfig`. The CLI covers its common fields,
+`pvisor spawn` has one canonical `RunConfig`. The CLI covers its common fields,
 but `run.inherit_env` currently has no direct CLI switch. Moreover,
 `apply_safe_defaults` currently clears environment inheritance for non-Codex
 CLI commands even without `--safe`; the ZCode host adapter re-enables it for
@@ -644,7 +671,7 @@ JSON `RunSpec` for delegated execution and cannot be combined with other Run
 overrides. pVisor does not discover a hidden project configuration file.
 
 ```bash
-pvisor run \
+pvisor spawn \
   --name my-agent \
   --stage ../stage-001 \
   --mount /opt/tool:stage \
@@ -709,7 +736,7 @@ api_key_env = "OPENAI_API_KEY"
 destination = "./capture"
 ```
 
-Run it with `pvisor run --config run.toml`. Explicit CLI scalars replace TOML
+Run it with `pvisor spawn --config run.toml`. Explicit CLI scalars replace TOML
 scalars. Network and Gateway list options replace their complete configured
 lists; filesystem `--mount` and `--access` entries are appended to configured
 entries. The serialized `[overlayfs]` fields `stage`, `mount`, `access` and
@@ -722,7 +749,7 @@ while the Agent is running.
 automatically; `--executor container` makes the choice explicit. The transport
 generates a standard OCI bundle, uses the current or explicitly supplied
 compatible Linux pVisor, mounts it into the rootfs, sets the process
-args, and takes the normal `pvisor run --executor host --spec ...` path. The
+args, and takes the normal `pvisor spawn --executor host --spec ...` path. The
 Agent command is carried inside the RunSpec rather than exposed in OCI runner
 argv. The injected pVisor creates its own AgentCtl and returns a typed
 RunResult. The final OverlayFS cwd and session Gateway configuration are mounted
@@ -733,7 +760,7 @@ be `runc` or `crun`; pVisor does not invoke Docker/Podman. User mounts are
 repeatable TOML inline tables, for example:
 
 ```bash
-pvisor run \
+pvisor spawn \
   --container-image example/codex-agent:latest \
   --container-pvisor-binary ./dist/pvisor-linux-amd64 \
   --container-platform linux/amd64 \
@@ -779,7 +806,7 @@ writes after the last resume may be discarded, leaving only the last committed h
 
 | Run option | TOML field under `[vm]` | Default / purpose |
 | --- | --- | --- |
-| `--vm-control-socket PATH` | `control_socket` | Unset: CLI creates `/tmp/pvisor-host-<effective-UID>/vm-<UUID>.sock` under canonical `/tmp` |
+| `--vm-control-socket PATH` | `control_socket` | Unset: owner uses `/tmp/pvisor-host-<effective-UID>/jobs/<job-id>/<attempt-id>/control.sock` (canonical `/tmp`) |
 | `--vm-ram-backing FILE` | `ram_backing` | Unset: attempt-local backing in ordinary file-backed mode; new files only |
 | `--vm-ram-compression[=BOOL]` | `ram_compression` | `false`; FUSE/macFUSE Seekable backing |
 | `--vm-cold-ram-compression[=BOOL]` | `cold_ram_compression` | `false`; Linux x86_64 local live cold pager |
@@ -794,7 +821,7 @@ preserves the configured value, including `true`. For example, override dedup
 without clearing other settings:
 
 ```bash
-pvisor run --config run.toml --executor vm --vm-ram-dedup=false -- /bin/sleep 600
+pvisor spawn --config run.toml --executor vm --vm-ram-dedup=false -- /bin/sleep 600
 ```
 
 A true boolean or one of these explicit path options selects VM execution when
@@ -815,83 +842,36 @@ recovery if the service fails.
 
 ### Live VM Attempt controls {#vm-instance-control}
 
-Every native VM Attempt gets a host-only control endpoint automatically,
-including embedded runs without retained Job storage. CLI endpoints live directly
-under the private Host service root. `pvisor run` prints its exact identity to
-**stderr**:
-
-```text
-pVisor live VM options: --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE (status; suspend JOB --vm-pause/--vm-offload; resume JOB --vm-load)
-```
-
-Copy the socket, Job ID (the internal Run ID) and Attempt ID from that line into another host terminal;
-the following example values must be replaced with that live identity:
+Normal controls read the canonical private owner address from the Job record:
 
 ```bash
-pvisor status --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE
-pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-pause
-pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
-pvisor suspend run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-offload --vm-ram-file /private/vm-ram/offloaded.ram
-pvisor resume run-EXAMPLE --vm-socket /tmp/pvisor-host-1000/vm-EXAMPLE.sock --vm-job-id run-EXAMPLE --vm-attempt-id attempt-EXAMPLE --vm-load
+pvisor status last --json
+pvisor suspend last --vm-pause
+pvisor resume last
+pvisor suspend last --vm-offload --vm-ram-file /private/vm-ram/offloaded.ram
+pvisor resume last --vm-load
 ```
 
-The seven live VM flags are command-local and appear under **Live VM** in
-command help:
+`status` reports Job state. `suspend --vm-pause` pauses vCPUs;
+`--vm-offload` uses stronger CPU/device quiescence and optionally writes a
+host-only RAM file on the same filesystem. Pause and offload conflict;
+`--vm-ram-file` requires offload. Live `resume`, including `--vm-load`, continues
+the same Attempt without restoring a snapshot. Ordinary suspend captures an
+execution checkpoint and stops the Attempt. Stopped resume restores that sealed
+checkpoint. Live transition replies contain JSON `status` and `value`.
 
-| Command | Accepted live VM flags |
-| --- | --- |
-| `status` | `--vm-socket PATH`, `--vm-job-id ID`, `--vm-attempt-id ID` |
-| `suspend` | The three identity flags plus `--vm-pause`, `--vm-offload`, `--vm-ram-file PATH` |
-| `resume` | The three identity flags plus `--vm-load` |
-
-Place them after the supported command. Root-prefixed live VM flags and live VM
-flags on other commands are rejected; `status` accepts no live action flags.
-The identity options `--vm-socket PATH`, `--vm-job-id ID` and
-`--vm-attempt-id ID` are required together, even for
-live `status`; stale or mismatched identities are rejected. `suspend` and
-`resume` require a positional Job selector matching `--vm-job-id`, not `last`
-or a stage path. Only `status`, `suspend --vm-pause` / `--vm-offload`, and
-`resume --vm-load` accept this live control mode. Pause and offload are mutually
-exclusive. These flags do not change ordinary persisted-Job suspend/resume:
-without them, those commands use execution checkpoint capture/restoration.
-
-`--vm-offload` accepts optional `--vm-ram-file PATH`: omit it to use the existing
-backing, or choose a new, guest-inaccessible path on the same filesystem. Wait
-for success before using the published file. `--vm-load` selects
-`HostVmCommand::Resume`, mapped to `RunResume`; there is no `Load` wire operation.
-It reloads/unpauses the same live Attempt without eager RAM prefaulting. It
-neither restarts a process nor restores a persistent snapshot. `--vm-pause`
-stops vCPUs, not the stronger CPU/device quiescence used by offload.
-
-Successful live control replies are JSON on stdout containing `HostVmResult`
-fields `status` and `value`. Core's `host_protocol` owns `HostVmCommand` and
-`HostVmResult`; `pvisor::host_vm_exchange` exchanges
-`AgentCtlHostRequest<HostVmCommand>` / `AgentCtlHostResponse<HostVmResult>` for
-embedded callers. The endpoint
-wire wraps results in version-1 Host envelopes with a correlated `request_id`;
-typed Host errors are nonzero CLI failures, not necessarily JSON on stdout. Transport/connect and parsing failures also exit
-nonzero. Non-VM controls are explicitly unsupported, not a process-signal
-fallback. The endpoint is removed when the Attempt ends and is separate from
-the staged Job's control discovery link.
-
-To choose a stable CLI path, use the private service root. This Linux example
-assumes effective UID `1000`; replace the root with your effective UID and
-canonical temporary path (usually `/private/tmp` on macOS):
-
-```bash
-install -d -m 0700 /tmp/pvisor-host-1000
-pvisor run --executor vm --vm-control-socket /tmp/pvisor-host-1000/ctrl.sock -- /bin/sleep 600
-```
-
-CLI custom sockets must be directly in the canonical private Host service
-root; arbitrary private parents are rejected. The root must be a non-symlink
-directory owned by the effective UID with mode exactly `0700`; existing socket
-paths are never overwritten. The socket has mode `0600` and accepts only
-same-UID peers. `--vm-control-socket` chooses a path when creating a VM;
-`--vm-socket` addresses an existing live VM. Embedded callers have a separate
-custom-parent API with private-parent validation. Host authority endpoints are
-excluded from guest access, including host-rootfs VMs; do not expose the service
-root through guest mounts or writable roots. These are not guest discovery files.
+`--vm-socket PATH` is a debug override, requiring `--vm-job-id ID` and
+`--vm-attempt-id ID`; any positional selector must match the explicit Job ID.
+These flags are command-local on status/suspend/resume. `--vm-control-socket`
+chooses the path at VM creation. Both CLI and embedded custom endpoints must be
+inside canonical `/tmp/pvisor-host-<UID>` (usually `/private/tmp` on macOS), with
+same-UID non-symlink `0700` ancestors and a `0600` socket. Existing sockets are
+never overwritten. Default paths use `jobs/<job-id>/<attempt-id>/control.sock`;
+the terminal owner removes discovery when the Attempt ends. Executors exclude
+the whole authority root from Guest access. These are host records, not guest
+discovery files. The debug override still uses the older exchange path; see
+[owner control limits](../design/architecture.md#host-limits) for its cancellation
+limitation and the [owner protocol](../design/architecture.md#host-wire) for framing.
 
 ### VM local live cold compression {#vm-cold-ram-compression}
 
@@ -988,14 +968,14 @@ stage, every guest-visible path and writable VM backing/control paths.
 
 ```bash
 pvisor cache prepare-rootfs --rootfs /srv/linux-rootfs --base-store /srv/pvisor-bases
-pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
+pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 
 Local preparation does not use a cache service. Successful output contains
 `schema_version`, `prepared_rootfs` (canonical `store` and `base.id`) and the
 independent `rootfs` path. Initial preparation includes copying, full content
 and metadata verification, and a persistent pin. Later ordinary CLI runs have
-the Host worker authenticate the object, acquire a lifetime lease and attach
+the Job owner authenticate the object, acquire a lifetime lease and attach
 the Immutable physical lower without sealing it again. The workspace remains
 live by default; an explicit [sealed workspace](#prepared-workspace) can select
 a fixed generation.
@@ -1030,7 +1010,7 @@ workspace preparation result for `WORKSPACE_ID`.
 ```bash
 pvisor cache prepare-workspace --workspace /srv/project --base-store /srv/pvisor-workspace-bases
 cd /srv/project
-pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
+pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /srv/pvisor-workspace-bases --workspace-base WORKSPACE_ID \
   --stage /srv/pvisor-stages/review-1 -- /bin/sh
 ```
@@ -1038,7 +1018,7 @@ pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
 Preparation returns `schema_version`, `prepared_workspace` (canonical `store`
 and `base.id`) and an independent `workspace` path. Initial preparation copies
 and verifies contents and metadata. A persistent pin survives command exit and
-GC; later Host workers authenticate the workspace catalog again and acquire a
+GC; later Job owners authenticate the workspace catalog again and acquire a
 lifetime lease without sealing the source again.
 
 Reads use the selected fixed generation; subsequent host project edits do not
@@ -1135,6 +1115,6 @@ and the native container executor keep their current behavior. See the
 limits and SSH remote access.
 
 
-Enable the daemon-owned experimental pool with `pvisor-daemon serve --sandbox --memory-pool`; its detached `memory-pool --directory DIR` component uses daemon-provisioned private configuration. Native `pvisor run --vm-memory-pool SOCKET` remains an explicit runtime option with platform/protocol limits, not a service launcher.
+Enable the daemon-owned experimental pool with `pvisor-daemon serve --sandbox --memory-pool`; its detached `memory-pool --directory DIR` component uses daemon-provisioned private configuration. Native `pvisor spawn --vm-memory-pool SOCKET` remains an explicit runtime option with platform/protocol limits, not a service launcher.
 
 Physical/legacy pool loss fails dependent VMs; Linux sealed-compressed clients retain local recovery and stop new publication. Select it with daemon `--memory-pool-mode compressed`. See [daemon pool activation and budgets](../guides/daemon/index.md#memory-pool); historical macOS compressed-pool results retain their [version scope](../design/memory-optimization/proof-of-concept.md#v1-integration).

@@ -66,3 +66,16 @@ dldb
 The standalone Python package named `dldb` is distributed under
 its existing MIT license declaration and is excluded from the main pVisor
 Python wheel. Its package metadata identifies its original author.
+
+Podman test suites
+------------------
+
+`tests/podman/upstream/` contains copies of Podman's system and CLI integration
+tests at revision 3279be7b55b1b91741e61147b84f8ce3971c1c3d:
+
+https://github.com/podman-container-tools/podman
+
+Copyright the upstream Podman authors and contributors. Distributed under the
+Apache License, Version 2.0; see `tests/podman/upstream/LICENSE`. Selected scenarios
+are adapted for `pvisor docker` under `tests/podman/system/` and
+`tests/podman/e2e/`. See `tests/podman/UPSTREAM.md` for provenance and changes.

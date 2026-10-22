@@ -13,7 +13,7 @@ workspace checkpoint 保存文件提案与冲突 preimage。它适合重构方�
 <!-- semspec: case id=S-USE-009 -->
 ```bash
 journey_setup
-pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'
+pvisor spawn --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'
 pvisor checkpoint create "$CASE_ROOT/source" --request-id before-refactor --json > "$CASE_ROOT/first.json"
 pvisor checkpoint create "$CASE_ROOT/source" --request-id before-refactor --json > "$CASE_ROOT/retry.json"
 checkpoint=$(journey_json "$CASE_ROOT/first.json" /checkpoint_id)
@@ -37,7 +37,7 @@ json_expect "$CASE_ROOT/show.json" /branch_references 0
 <!-- semspec: case id=S-USE-010 -->
 ```bash
 journey_setup
-pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'
+pvisor spawn --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'
 pvisor checkpoint create "$CASE_ROOT/source" --json > "$CASE_ROOT/checkpoint.json"
 checkpoint=$(journey_json "$CASE_ROOT/checkpoint.json" /checkpoint_id)
 pvisor apply "$CASE_ROOT/source" --all
@@ -62,7 +62,7 @@ pvisor checkpoint show "$CASE_ROOT/source" "$checkpoint" --json > "$CASE_ROOT/sh
 <!-- semspec: case id=S-USE-011 -->
 ```bash
 journey_setup
-pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf seed > report.txt'
+pvisor spawn --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf seed > report.txt'
 pvisor checkpoint create "$CASE_ROOT/source" --json > "$CASE_ROOT/checkpoint.json"
 checkpoint=$(journey_json "$CASE_ROOT/checkpoint.json" /checkpoint_id)
 pvisor fork "$CASE_ROOT/source" --checkpoint "$checkpoint" --stage "$CASE_ROOT/branch-a" -- /bin/sh -c 'test "$(cat report.txt)" = seed; printf branch-a > report.txt'

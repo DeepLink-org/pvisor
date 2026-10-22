@@ -1,4 +1,6 @@
-use pvisor_overlay_core::{OverlayCore, profile::Profile, service::FilesystemService};
+use pvisor_overlay_core::{
+    LayerMutability, OverlayCore, OverlayLayout, profile::Profile, service::FilesystemService,
+};
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -6,13 +8,23 @@ use std::{
 };
 
 fn fixture() -> (tempfile::TempDir, FilesystemService, Profile) {
+    fixture_with_mutability(LayerMutability::Mutable)
+}
+
+fn fixture_with_mutability(
+    mutability: LayerMutability,
+) -> (tempfile::TempDir, FilesystemService, Profile) {
     let root = tempfile::tempdir().unwrap();
     let lower = root.path().join("lower");
     fs::create_dir(&lower).unwrap();
     fs::write(lower.join("file"), b"original").unwrap();
     fs::set_permissions(lower.join("file"), fs::Permissions::from_mode(0o640)).unwrap();
     let profile = Profile::enabled("prepared-copy");
-    let core = OverlayCore::new(vec![lower], root.path().join("upper"), None)
+    let layout = OverlayLayout::new(vec![lower.clone()], lower)
+        .unwrap()
+        .with_lower_mutability(vec![mutability])
+        .unwrap();
+    let core = OverlayCore::new_for_layout(layout, root.path().join("upper"), None, vec![], None)
         .unwrap()
         .with_profile(profile.clone());
     (root, FilesystemService::new(core), profile)
@@ -48,26 +60,39 @@ fn preparation_is_invisible_and_unused_copies_are_removed() {
 
 #[test]
 fn publication_reuses_bytes_and_metadata_without_copying_again() {
-    let (root, service, profile) = fixture();
-    let copy = service
-        .prepare_copy_ups(&["file".into()], false)
-        .unwrap()
-        .pop()
-        .unwrap();
-    let guard = service.use_prepared_copy_ups(vec![copy]).unwrap();
-    let upper = service.copy_up(Path::new("file")).unwrap();
-    assert_eq!(fs::read(&upper).unwrap(), b"original");
-    assert_eq!(fs::metadata(&upper).unwrap().mode() & 0o777, 0o640);
-    assert_eq!(
-        profile.report().unwrap().measurements["copy_up_bytes"].units,
-        8
-    );
-    drop(guard);
-    assert_eq!(fs::read_dir(root.path().join("upper")).unwrap().count(), 1);
+    for mutability in [LayerMutability::Mutable, LayerMutability::Immutable] {
+        let (root, service, profile) = fixture_with_mutability(mutability);
+        let copy = service
+            .prepare_copy_ups(&["file".into()], false)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(profile.report().unwrap().measurements["resolve"].calls, 1);
+        let guard = service.use_prepared_copy_ups(vec![copy]).unwrap();
+        let upper = service.copy_up(Path::new("file")).unwrap();
+        assert_eq!(fs::read(&upper).unwrap(), b"original");
+        assert_eq!(fs::metadata(&upper).unwrap().mode() & 0o777, 0o640);
+        let report = profile.report().unwrap();
+        assert_eq!(report.measurements["copy_up_bytes"].units, 8);
+        let checks = report
+            .measurements
+            .get("copy_source_revalidations")
+            .map_or(0, |m| m.units);
+        assert_eq!(
+            checks,
+            if mutability == LayerMutability::Immutable {
+                0
+            } else {
+                6
+            }
+        );
+        drop(guard);
+        assert_eq!(fs::read_dir(root.path().join("upper")).unwrap().count(), 1);
+    }
 }
 
 #[test]
-fn changed_sources_and_foreign_owners_are_rejected_without_publication() {
+fn foreign_owners_are_rejected_and_unused_copies_are_removed() {
     let (root, service, _) = fixture();
     let (_, foreign, _) = fixture();
     let copy = service
@@ -84,21 +109,27 @@ fn changed_sources_and_foreign_owners_are_rejected_without_publication() {
         Some(libc::EINVAL)
     );
     assert_eq!(fs::read_dir(root.path().join("upper")).unwrap().count(), 0);
-    let copy = service
-        .prepare_copy_ups(&["file".into()], false)
-        .unwrap()
-        .pop()
+}
+
+#[test]
+fn mutable_source_change_is_rejected_before_publishing_upper_parents() {
+    let (root, service, _) = fixture();
+    let lower = root.path().join("lower");
+    fs::create_dir(lower.join("nested")).unwrap();
+    fs::rename(lower.join("file"), lower.join("nested/file")).unwrap();
+    let copies = service
+        .prepare_copy_ups(&["nested/file".into()], false)
         .unwrap();
-    fs::write(root.path().join("lower/file"), b"new contents").unwrap();
-    let guard = service.use_prepared_copy_ups(vec![copy]).unwrap();
+    fs::write(lower.join("nested/file"), b"changed source").unwrap();
+    let guard = service.use_prepared_copy_ups(copies).unwrap();
     assert_eq!(
         service
-            .copy_up(Path::new("file"))
+            .copy_up(Path::new("nested/file"))
             .unwrap_err()
             .raw_os_error(),
         Some(libc::EAGAIN)
     );
-    assert!(!root.path().join("upper/file").exists());
+    assert!(!root.path().join("upper/nested").exists());
     drop(guard);
     assert_eq!(fs::read_dir(root.path().join("upper")).unwrap().count(), 0);
 }

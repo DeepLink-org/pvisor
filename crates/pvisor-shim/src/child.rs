@@ -65,6 +65,20 @@ pub const ENV_FORK_REPORT_FD: &str = "PVISOR_SHIM_INIT_FORK_REPORT_FD";
 pub const ENV_FORK_REPORT_READ_FD: &str = "PVISOR_SHIM_FORK_REPORT_READ_FD";
 /// CLI argument that turns the shim binary into the pod sandbox holder.
 pub const INTERNAL_SANDBOX_ARG: &str = "--pvisor-shim-internal-sandbox";
+/// CLI argument that turns the shim binary into a VM port-bridge proxy:
+/// join the pod network namespace, listen on the bridged port, and forward
+/// every connection to the VM's vsock-backed unix socket (VM tier only).
+#[cfg(feature = "vm")]
+pub const INTERNAL_BRIDGE_ARG: &str = "--pvisor-shim-internal-bridge";
+/// Bridge proxy: namespace path to join (pod netns).
+#[cfg(feature = "vm")]
+pub const ENV_BRIDGE_NETNS: &str = "PVISOR_SHIM_BRIDGE_NETNS";
+/// Bridge proxy: unix socket tunneled into the guest by libkrun.
+#[cfg(feature = "vm")]
+pub const ENV_BRIDGE_SOCKET: &str = "PVISOR_SHIM_BRIDGE_SOCKET";
+/// Bridge proxy: TCP port to listen on inside the pod netns.
+#[cfg(feature = "vm")]
+pub const ENV_BRIDGE_PORT: &str = "PVISOR_SHIM_BRIDGE_PORT";
 /// Path of the serialized [`crate::plan::SandboxPlan`].
 pub const ENV_SANDBOX_PLAN: &str = "PVISOR_SHIM_SANDBOX_PLAN";
 /// Pid of the pod sandbox holder; container runners join its namespaces.
@@ -77,6 +91,9 @@ pub const ENV_STDIO_TERMINAL: &str = "PVISOR_SHIM_STDIO_TERMINAL";
 /// VM runner only: descriptor of the guest-side egress stream owned by the
 /// shim's `VmNetworkAttachment`. Absent when the task runs without egress.
 pub const ENV_VM_NET_FD: &str = "PVISOR_SHIM_VM_NET_FD";
+/// Injected-sibling descriptors handed to the internal init parent (see
+/// [`SpawnExtras`]).
+pub const ENV_INJECT_FDS: &str = "PVISOR_SHIM_INJECT_FDS";
 
 /// Message exchanged over the ready/fork-report pipes, one JSON line.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -103,6 +120,9 @@ pub struct InternalChild {
     pub pid: Option<u32>,
     /// Write end of the start pipe; held until Start (or cleanup).
     start_fd: RawFd,
+    /// Processes blocking on the start pipe (init child plus one sibling
+    /// per injected payload). `Start` writes exactly one byte per waiter.
+    start_waiters: usize,
 }
 
 impl InternalChild {
@@ -112,18 +132,25 @@ impl InternalChild {
         InternalChild {
             pid: None,
             start_fd: -1,
+            start_waiters: 1,
         }
     }
 
-    /// Signal the child to exec; consumes the start pipe write end.
+    /// Signal the children to exec; consumes the start pipe write end.
     pub fn start(&mut self) -> Result<()> {
-        let byte = b"s";
-        let written = unsafe { libc::write(self.start_fd, byte.as_ptr().cast(), byte.len()) };
+        let bytes = vec![b's'; self.start_waiters.max(1)];
+        let written = unsafe { libc::write(self.start_fd, bytes.as_ptr().cast(), bytes.len()) };
         self.close_start();
         if written < 0 {
             return Err(std::io::Error::last_os_error())
                 .context("write start pipe (process may have exited)");
         }
+        anyhow::ensure!(
+            written as usize == bytes.len(),
+            "short write on start pipe: {} of {}",
+            written,
+            bytes.len()
+        );
         Ok(())
     }
 
@@ -187,6 +214,23 @@ impl StdioFds {
     }
 }
 
+/// Optional descriptors handed to an internal parent beyond the plan file
+/// and the workload stdio. Field presence has meaning beyond the
+/// descriptors themselves: injection descriptors also set the number of
+/// processes waiting on the start pipe.
+#[derive(Default)]
+pub struct SpawnExtras {
+    /// VM runner only: descriptor of the guest-side egress stream owned by
+    /// the shim's `VmNetworkAttachment`. Absent when the task runs without
+    /// egress.
+    pub vm_net_fd: Option<i32>,
+    /// Injected-sibling descriptors (`[null, log_0, log_1, ...]`), one per
+    /// payload plus the leading null descriptor. The list length is also
+    /// the number of start-gate waiters (init child plus siblings), so
+    /// `Start` writes one byte per entry and every waiter wakes.
+    pub inject_fds: Option<Vec<RawFd>>,
+}
+
 /// Re-exec the shim binary as an internal parent and wait for its relay.
 ///
 /// `stdio` are the shim-opened workload descriptors (passed through env);
@@ -198,8 +242,20 @@ pub fn spawn_internal(
     plan_bytes: &[u8],
     stdio: Option<StdioFds>,
     sandbox_pid: Option<u32>,
+    inject_fds: Option<Vec<RawFd>>,
 ) -> Result<InternalChild> {
-    spawn_internal_opts(arg, plan_path, plan_bytes, stdio, sandbox_pid, true, None)
+    spawn_internal_opts(
+        arg,
+        plan_path,
+        plan_bytes,
+        stdio,
+        sandbox_pid,
+        true,
+        SpawnExtras {
+            vm_net_fd: None,
+            inject_fds,
+        },
+    )
 }
 
 /// [`spawn_internal`] with control over waiting for the internal parent to
@@ -212,13 +268,16 @@ pub fn spawn_internal_opts(
     stdio: Option<StdioFds>,
     sandbox_pid: Option<u32>,
     wait_parent_exit: bool,
-    vm_net_fd: Option<i32>,
+    extras: SpawnExtras,
 ) -> Result<InternalChild> {
     fs::write(plan_path, plan_bytes).with_context(|| format!("write {}", plan_path.display()))?;
 
     let (ready_r, ready_w) = make_pipe()?;
     let (start_r, start_w) = make_pipe()?;
     let (fork_r, fork_w) = make_pipe()?;
+    // One start byte per blocked process: the init child plus one injected
+    // sibling per descriptor handed over (null descriptor included).
+    let start_waiters = extras.inject_fds.as_ref().map_or(1, Vec::len);
     // Parent-only ends. The exec'd internal parent must inherit exactly the
     // env-documented descriptors (ready_w, start_r, fork_w, fork_r); keeping
     // the start write end would silence the shim-exit EOF for VM runners,
@@ -252,8 +311,16 @@ pub fn spawn_internal_opts(
             .env(ENV_STDIO_ERR, stdio.stderr.to_string())
             .env(ENV_STDIO_TERMINAL, if stdio.terminal { "1" } else { "0" });
     }
-    if let Some(fd) = vm_net_fd {
+    if let Some(fd) = extras.vm_net_fd {
         command.env(ENV_VM_NET_FD, fd.to_string());
+    }
+    if let Some(fds) = &extras.inject_fds {
+        let rendered = fds
+            .iter()
+            .map(|fd| fd.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        command.env(ENV_INJECT_FDS, rendered);
     }
     let mut child = command
         .stdin(Stdio::null())
@@ -284,6 +351,7 @@ pub fn spawn_internal_opts(
         InitReport::Ok { pid } => Ok(InternalChild {
             pid: Some(pid),
             start_fd: start_w,
+            start_waiters,
         }),
         InitReport::Error { context, errno } => {
             unsafe { libc::close(start_w) };
@@ -299,6 +367,10 @@ pub fn run_internal_if_requested() -> Result<bool> {
     #[cfg(feature = "vm")]
     if args.iter().any(|arg| arg == INTERNAL_VM_ARG) {
         return run_vm_runner_requested();
+    }
+    #[cfg(feature = "vm")]
+    if args.iter().any(|arg| arg == INTERNAL_BRIDGE_ARG) {
+        return bridge_proxy_main().map(|()| true);
     }
     if args.iter().any(|arg| arg == INTERNAL_SANDBOX_ARG) {
         return run_sandbox_holder_requested();
@@ -383,6 +455,14 @@ fn init_parent_main() -> Result<()> {
         return Err(std::io::Error::last_os_error()).context(format!("sethostname {hostname}"));
     }
 
+    // The init child forks FIRST: A unshared the pid namespace, so its first
+    // child is PID 1 of the container — that must be the workload (native
+    // PID 1 contract; a PID 1 sibling exit would zap the whole namespace).
+    // Injected payload siblings fork afterwards as PID 2+: each repeats the
+    // namespace and pivot setup in its own mount-namespace copy and blocks
+    // on the shared start pipe. A fork failure kills the earlier children
+    // and fails Create: an explicitly requested payload must never be
+    // silently skipped.
     let g_pid = unsafe { libc::fork() };
     if g_pid < 0 {
         return Err(std::io::Error::last_os_error()).context("fork init process");
@@ -392,20 +472,55 @@ fn init_parent_main() -> Result<()> {
     }
     let g_pid = g_pid as u32;
 
-    // A no longer needs the start pipe or the report write end (G holds
-    // the only copy, so its exit closes the pipe).
+    let sibling_pids = match fork_injection_siblings(&plan, start_fd) {
+        Ok(pids) => pids,
+        Err(error) => {
+            unsafe {
+                libc::kill(g_pid as i32, libc::SIGKILL);
+                libc::waitpid(g_pid as i32, std::ptr::null_mut(), 0);
+            }
+            return Err(error);
+        }
+    };
+
+    // A no longer needs the start pipe or the report write end (G and the
+    // siblings hold the only remaining copies).
     unsafe { libc::close(start_fd) };
     unsafe { libc::close(fork_report_fd) };
 
     // Cgroup bookkeeping with host paths still visible.
-    if let Some(cgroup_plan) = plan.cgroup.as_ref()
-        && let Err(error) = attach_cgroup(cgroup_plan, g_pid)
-    {
-        unsafe {
-            libc::kill(g_pid as i32, libc::SIGKILL);
-            libc::waitpid(g_pid as i32, std::ptr::null_mut(), 0);
+    if let Some(cgroup_plan) = plan.cgroup.as_ref() {
+        if let Err(error) = attach_cgroup(cgroup_plan, g_pid) {
+            kill_children(&sibling_pids);
+            unsafe {
+                libc::kill(g_pid as i32, libc::SIGKILL);
+                libc::waitpid(g_pid as i32, std::ptr::null_mut(), 0);
+            }
+            return Err(error).context("install requested cgroup limits");
         }
-        return Err(error).context("install requested cgroup limits");
+        for pid in &sibling_pids {
+            if let Err(error) = attach_cgroup(cgroup_plan, *pid) {
+                // ESRCH: the sibling failed its own setup and exited; its
+                // failure is on its log descriptor (advisory, never fatal).
+                // Any other cgroup error is a real enforcement problem.
+                let gone = error
+                    .chain()
+                    .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+                    .any(|io_error| io_error.raw_os_error() == Some(libc::ESRCH));
+                if gone {
+                    eprintln!(
+                        "pvisor shim: injected sibling {pid} exited before cgroup attach: {error:#}"
+                    );
+                } else {
+                    kill_children(&sibling_pids);
+                    unsafe {
+                        libc::kill(g_pid as i32, libc::SIGKILL);
+                        libc::waitpid(g_pid as i32, std::ptr::null_mut(), 0);
+                    }
+                    return Err(error).context("attach injected sibling to cgroup");
+                }
+            }
+        }
     }
 
     // Device rules need a cgroup for the BPF filter; without one runc
@@ -413,8 +528,12 @@ fn init_parent_main() -> Result<()> {
     if !plan.devices.is_empty()
         && let Some(cgroup_plan) = plan.cgroup.as_ref()
         && let Some(dir) = crate::cgroup::cgroup_dir(cgroup_plan)
-        && let Err(error) = crate::cgroup::device_bpf::attach_device_filter(&dir, &plan.devices)
+        && let Err(error) = crate::cgroup::device_bpf::attach_device_filter(
+            &dir,
+            &crate::plan::with_default_devices(&plan.devices),
+        )
     {
+        kill_children(&sibling_pids);
         unsafe {
             libc::kill(g_pid as i32, libc::SIGKILL);
             libc::waitpid(g_pid as i32, std::ptr::null_mut(), 0);
@@ -423,6 +542,204 @@ fn init_parent_main() -> Result<()> {
     }
 
     relay_fork_report(fork_report_fd, g_pid)
+}
+
+/// Kill and reap the injected sibling processes (Create-time failure path).
+fn kill_children(pids: &[u32]) {
+    for pid in pids {
+        unsafe {
+            libc::kill(*pid as i32, libc::SIGKILL);
+            libc::waitpid(*pid as i32, std::ptr::null_mut(), 0);
+        }
+    }
+}
+
+/// Parse the injection descriptor list from the environment. The descriptor
+/// order matches the plan's injection order after the leading null entry.
+fn inject_fds_from_env(count: usize) -> Result<Vec<RawFd>> {
+    let raw =
+        std::env::var(ENV_INJECT_FDS).context("injections without handed-over descriptors")?;
+    let fds = raw
+        .split(',')
+        .map(|entry| entry.trim().parse::<RawFd>())
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("parse injection descriptors")?;
+    anyhow::ensure!(
+        fds.len() == count + 1,
+        "expected {} injection descriptors (null plus one per payload), got {}",
+        count + 1,
+        fds.len()
+    );
+    Ok(fds)
+}
+
+/// Fork one sibling per RUNNING payload (stage-only payloads never spawn);
+/// child processes never return.
+fn fork_injection_siblings(plan: &ContainerPlan, start_fd: RawFd) -> Result<Vec<u32>> {
+    let mut pids = Vec::new();
+    let running: Vec<usize> = plan
+        .injections
+        .iter()
+        .enumerate()
+        .filter(|(_, injection)| injection.run)
+        .map(|(index, _)| index)
+        .collect();
+    if running.is_empty() {
+        return Ok(pids);
+    }
+    let fds = inject_fds_from_env(running.len())?;
+    for (log_index, index) in running.into_iter().enumerate() {
+        let pid = unsafe { libc::fork() };
+        if pid < 0 {
+            let error = std::io::Error::last_os_error();
+            kill_children(&pids);
+            return Err(error).context("fork injected sibling");
+        }
+        if pid == 0 {
+            injected_sibling_main(plan, index, start_fd, &fds, log_index);
+        }
+        pids.push(pid as u32);
+    }
+    // A keeps no descriptor ends; the children hold the surviving copies.
+    for fd in &fds {
+        unsafe { libc::close(*fd) };
+    }
+    Ok(pids)
+}
+
+/// One injected payload process: repeat the init child's namespace/pivot
+/// dance in a private mount-namespace copy, wire stdio to the null and log
+/// descriptors (the workload's FIFOs stay untouched), wait for Start on the
+/// shared pipe, then apply the workload identity and exec the payload argv.
+///
+/// Advisory by contract: after the start gate this process is never fatal
+/// to the task. The task exit status is always the init child's. Failures
+/// before stdio is rewired reach the shim journal (inherited stderr) and
+/// the payload's log file; later ones only the log file.
+fn injected_sibling_main(
+    plan: &ContainerPlan,
+    index: usize,
+    start_fd: RawFd,
+    fds: &[RawFd],
+    log_index: usize,
+) -> ! {
+    let injection = &plan.injections[index];
+    let null_fd = fds[0];
+    let log_fd = fds[1 + log_index];
+    let note = |message: &str| {
+        let line = format!("pvisor injected sibling {}: {message}\n", injection.name);
+        eprint!("{line}");
+        unsafe {
+            libc::write(log_fd, line.as_ptr().cast(), line.len());
+        }
+    };
+    let fail = |message: String| -> ! {
+        note(&message);
+        std::process::exit(125);
+    };
+
+    close_inherited_fds(&[start_fd, null_fd, log_fd]);
+
+    if unsafe { libc::unshare(libc::CLONE_NEWNS) } != 0 {
+        fail(format!(
+            "unshare mount namespace: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if let Err(error) = mount::make_mounts_private() {
+        fail(format!("{error:#}"));
+    }
+    if plan
+        .namespaces
+        .iter()
+        .any(|ns| ns.kind == NamespaceKind::Cgroup && ns.path.is_none())
+        && unsafe { libc::unshare(libc::CLONE_NEWCGROUP) } != 0
+    {
+        fail(format!(
+            "unshare cgroup namespace: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    if let Err(error) = mount::mount_proc(&plan.rootfs) {
+        fail(format!("{error:#}"));
+    }
+    if let Err(error) = mount::pivot_root(&plan.rootfs) {
+        fail(format!("{error:#}"));
+    }
+    // CRI mounts a fresh empty tmpfs over /dev; runc always provisions the
+    // minimal device nodes there, and workload supervisors (OpenSandbox's
+    // egress among them) open /dev/null during startup. Provisioning is a
+    // no-op when the image already provides the nodes.
+    if let Err(error) = mount::ensure_minimal_dev_nodes() {
+        fail(format!("provision /dev nodes failed: {error:#}"));
+    }
+    if let Err(error) = mount::apply_masked_paths(&plan.masked_paths) {
+        fail(format!("masked paths failed: {error:#}"));
+    }
+    if let Err(error) = mount::apply_readonly_paths(&plan.readonly_paths) {
+        fail(format!("read-only paths failed: {error:#}"));
+    }
+    if let Err(error) = mount::apply_sysctls(&plan.sysctls) {
+        fail(format!("sysctls failed: {error:#}"));
+    }
+    if plan.root_readonly
+        && let Err(error) = mount::remount_root_readonly()
+    {
+        fail(format!("root read-only remount failed: {error:#}"));
+    }
+
+    // stdin/stdout detach to /dev/null, stderr to the host-side log file;
+    // the workload's task IO is never shared with an injected process.
+    unsafe {
+        libc::dup2(null_fd, libc::STDIN_FILENO);
+        libc::dup2(null_fd, libc::STDOUT_FILENO);
+        libc::dup2(log_fd, libc::STDERR_FILENO);
+    }
+    if let Err(error) = std::env::set_current_dir("/") {
+        fail(format!("chdir /: {error}"));
+    }
+
+    // Same gate and EOF semantics as the init child: one byte per waiter
+    // arrives with Start; EOF means the shim gave up on this task.
+    let mut byte = [0u8; 1];
+    let read = unsafe { libc::read(start_fd, byte.as_mut_ptr().cast(), 1) };
+    unsafe { libc::close(start_fd) };
+    if read <= 0 {
+        std::process::exit(255);
+    }
+
+    // The payload runs with the workload's identity (uid/gid, groups,
+    // capabilities, rlimits): the shim knows nothing about payload needs,
+    // and "same as the workload" is the one consistent choice.
+    if let Err(error) = apply_process_identity(&plan.process) {
+        fail(format!("identity failed: {error:#}"));
+    }
+
+    let argv: Vec<std::ffi::CString> = injection
+        .argv
+        .iter()
+        .map(|arg| std::ffi::CString::new(arg.as_str()))
+        .collect::<std::result::Result<_, _>>()
+        .unwrap_or_else(|_| fail("payload argv contains NUL".into()));
+    let env = crate::inject::merged_env(&plan.process.env, &injection.env);
+    let envp: Vec<std::ffi::CString> = env
+        .iter()
+        .map(|entry| std::ffi::CString::new(entry.as_str()))
+        .collect::<std::result::Result<_, _>>()
+        .unwrap_or_else(|_| fail("payload environment contains NUL".into()));
+    let program = resolve_program(&argv[0], &env);
+    let mut argv_ptrs: Vec<*const libc::c_char> = argv.iter().map(|arg| arg.as_ptr()).collect();
+    argv_ptrs.push(std::ptr::null());
+    let mut envp_ptrs: Vec<*const libc::c_char> = envp.iter().map(|entry| entry.as_ptr()).collect();
+    envp_ptrs.push(std::ptr::null());
+    if unsafe { libc::execve(program.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr()) } < 0 {
+        fail(format!(
+            "execve {}: {}",
+            program.to_string_lossy(),
+            std::io::Error::last_os_error()
+        ));
+    }
+    unreachable!("exec never returns on success")
 }
 
 /// VM runner: wait for Start, then boot the VM and exit with its code.
@@ -491,6 +808,12 @@ fn vm_runner_main() -> Result<i32> {
         return Ok(255);
     }
 
+    // VM port bridges come up before the VM boots: the pod-network listener
+    // must answer readiness probes the moment the guest service does.
+    // A missing network namespace (plain ctr runs) rejects the bridge
+    // instead of silently listening on the host network.
+    spawn_bridge_proxies(&plan)?;
+
     // Task stdio travels the named console ports bound to the task's own
     // descriptors (passed to boot_vm explicitly), so this process's stderr
     // is free for VMM diagnostics: the `io.pvisor.vm.log` annotation (a
@@ -525,9 +848,44 @@ fn vm_runner_main() -> Result<i32> {
         }
     }
 
-    // Egress tasks inherit the smoltcp guest stream from the shim; the
-    // descriptor is only meaningful together with the plan's network mode.
-    let network = if plan.vm_network_plan().map_err(anyhow::Error::msg)?.mode
+    // Egress: gated tasks wait for the OpenSandbox sidecar's policy and
+    // compile the overlaynet attachment here (the shim cannot — the sidecar
+    // container is created only after the workload starts, and blocking
+    // Create would deadlock kubelet). Everything else uses the
+    // shim-started attachment inherited via ENV_VM_NET_FD.
+    #[cfg(feature = "vm")]
+    let gated_attachment = match plan.egress_gate.as_ref() {
+        Some(gate) => match wait_for_egress_rules(gate, std::time::Duration::from_secs(3)) {
+            Ok(Some(rules)) => {
+                match crate::network::VmNetworkAttachment::from_egress_rules(&rules, &plan.id) {
+                    Ok(attachment) => Some(attachment),
+                    Err(error) => {
+                        eprintln!(
+                            "pvisor shim: egress policy compile failed; \
+                             booting without network (deny all): {error:#}"
+                        );
+                        None
+                    }
+                }
+            }
+            Ok(None) => {
+                eprintln!(
+                    "pvisor shim: egress policy did not arrive before the deadline; \
+                     booting without network (deny all)"
+                );
+                None
+            }
+            Err(error) => {
+                eprintln!("pvisor shim: egress gate unreadable: {error:#}");
+                None
+            }
+        },
+        None => None,
+    };
+    #[cfg(feature = "vm")]
+    let network = if let Some(attachment) = gated_attachment.as_ref() {
+        attachment.guest_stream().ok()
+    } else if plan.vm_network_plan().map_err(anyhow::Error::msg)?.mode
         != crate::plan::VmNetworkMode::Off
     {
         let fd = fd_from_env(ENV_VM_NET_FD)?;
@@ -543,7 +901,45 @@ fn vm_runner_main() -> Result<i32> {
         .ok()
         .map(|fds| (fds.stdin, fds.stdout, fds.stderr));
 
-    crate::vm::boot_vm(&plan, network, stdio)
+    let result = crate::vm::boot_vm(&plan, network, stdio);
+    // Belt and braces next to the delete-path unlink: a task whose delete
+    // never arrives (shim crash, force teardown) still leaves no bridge
+    // sockets behind once its runner exits.
+    for injection in &plan.injections {
+        if let Some(port) = injection.bridge {
+            let _ = std::fs::remove_file(crate::agent::bridge_socket_path(&plan.id, port));
+        }
+    }
+    if let Some(gate) = &plan.egress_gate {
+        let _ = std::fs::remove_file(gate);
+    }
+    result
+}
+
+/// Poll the egress gate file until the sidecar's policy arrives.
+/// `Ok(None)` on timeout — callers boot deny-all in that case.
+#[cfg(feature = "vm")]
+fn wait_for_egress_rules(
+    gate: &Path,
+    timeout: std::time::Duration,
+) -> Result<Option<crate::network::EgressRules>> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match std::fs::read_to_string(gate) {
+            Ok(contents) => {
+                let rules: crate::network::EgressRules =
+                    serde_json::from_str(&contents).context("parse egress rules")?;
+                return Ok(Some(rules));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if std::time::Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(error) => return Err(error).with_context(|| format!("read {}", gate.display())),
+        }
+    }
 }
 
 /// Sandbox holder entry; never returns when invoked in holder mode.
@@ -766,6 +1162,10 @@ fn join_namespace_paths(plan: &ContainerPlan) -> Result<()> {
 /// Join every namespace of the init process we can address, in the order
 /// the kernel expects (user namespace first, pid last — pid membership only
 /// applies to children, which is why the exec process forks afterwards).
+///
+/// Every descriptor is opened while still in the host mount namespace:
+/// after joining the container's mounts, `/proc` is the container's own
+/// procfs and host-pid (and non-member `/proc/self`) paths stop resolving.
 fn join_init_namespaces(init_pid: u32) -> Result<()> {
     let order = [
         NamespaceKind::User,
@@ -775,11 +1175,76 @@ fn join_init_namespaces(init_pid: u32) -> Result<()> {
         NamespaceKind::Mount,
         NamespaceKind::Pid,
     ];
+    struct OpenNs {
+        kind: NamespaceKind,
+        target_fd: RawFd,
+        self_fd: RawFd,
+    }
+    let mut opened = Vec::new();
     for kind in order {
-        let path = format!("/proc/{init_pid}/ns/{}", kind.proc_ns_name());
-        setns_by_path(&path, kind)?;
+        let name = kind.proc_ns_name();
+        let path = format!("/proc/{init_pid}/ns/{name}");
+        let target_fd = open_namespace(&path, name)?;
+        let self_fd = open_namespace(&format!("/proc/self/ns/{name}"), name)?;
+        opened.push(OpenNs {
+            kind,
+            target_fd,
+            self_fd,
+        });
+    }
+    let mut result = Ok(());
+    for ns in &opened {
+        if let Err(error) = setns_opened(ns.target_fd, ns.self_fd, ns.kind) {
+            result = Err(error);
+            break;
+        }
+    }
+    for ns in &opened {
+        unsafe {
+            libc::close(ns.target_fd);
+            libc::close(ns.self_fd);
+        }
+    }
+    result
+}
+
+/// Open a namespace symlink as a descriptor for a later `setns`.
+fn open_namespace(path: &str, name: &str) -> Result<RawFd> {
+    let cpath =
+        std::ffi::CString::new(path).with_context(|| format!("namespace path {path} has NUL"))?;
+    let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("open {name} namespace at {path}"));
+    }
+    Ok(fd)
+}
+
+/// `setns` on an already-opened descriptor, comparing identity against the
+/// process's own namespace first: joining the current user namespace is
+/// rejected by Linux and must not hide failures for other kinds.
+fn setns_opened(target_fd: RawFd, self_fd: RawFd, kind: NamespaceKind) -> Result<()> {
+    let name = kind.proc_ns_name();
+    if ns_identity(target_fd).is_some_and(|target| ns_identity(self_fd) == Some(target)) {
+        return Ok(());
+    }
+    let ret = unsafe { libc::setns(target_fd, kind.clone_flag()) };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("setns {name} namespace"));
     }
     Ok(())
+}
+
+/// Namespace inode identity of an open descriptor (`(st_dev, st_ino)`),
+/// compared without touching `/proc`: after joining foreign mounts the
+/// procfs of the process's own pid namespace no longer resolves.
+fn ns_identity(fd: RawFd) -> Option<(u64, u64)> {
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::fstat(fd, &mut stat) } != 0 {
+        return None;
+    }
+    Some((stat.st_dev, stat.st_ino))
 }
 
 fn setns_by_path(path: &str, kind: NamespaceKind) -> Result<()> {
@@ -861,6 +1326,28 @@ fn attach_cgroup(plan: &CgroupPlan, pid: u32) -> Result<()> {
         "invalid cgroup path"
     );
     fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    // Controller files only exist in a child once the parent enables the
+    // controllers (runc does this through the systemd driver; standalone we
+    // write the parent's subtree_control directly). Without it, writes to
+    // cpu.max and friends fail: the files are absent.
+    let controllers: Vec<&str> = cgroup::control_files(plan)
+        .iter()
+        .map(|(file, _)| file.split('.').next().unwrap_or(file))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    if !controllers.is_empty() {
+        let parent = dir.parent().context("cgroup path has no parent")?;
+        fs::write(
+            parent.join("cgroup.subtree_control"),
+            controllers
+                .iter()
+                .map(|name| format!("+{name}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+        .with_context(|| format!("enable controllers on {}", parent.display()))?;
+    }
     for (file, value) in cgroup::control_files(plan) {
         fs::write(dir.join(file), value)
             .with_context(|| format!("write {file} in {}", dir.display()))?;
@@ -874,6 +1361,9 @@ fn attach_cgroup(plan: &CgroupPlan, pid: u32) -> Result<()> {
 ///
 /// Runs in the forked child of A; never returns.
 fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawFd) -> ! {
+    if plan.synthetic {
+        synthetic_init_main(start_fd, fork_report_fd);
+    }
     let fail = |context: String| -> ! {
         let report = InitReport::Error { context, errno: 1 };
         let mut file = unsafe { fs::File::from_raw_fd(fork_report_fd) };
@@ -929,6 +1419,13 @@ fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawF
     if let Err(error) = mount::pivot_root(&plan.rootfs) {
         fail(format!("{error:#}"));
     }
+    // CRI mounts a fresh empty tmpfs over /dev; runc always provisions the
+    // minimal device nodes there, and workload supervisors (OpenSandbox's
+    // egress among them) open /dev/null during startup. Provisioning is a
+    // no-op when the image already provides the nodes.
+    if let Err(error) = mount::ensure_minimal_dev_nodes() {
+        fail(format!("provision /dev nodes failed: {error:#}"));
+    }
     if let Err(error) = mount::apply_masked_paths(&plan.masked_paths) {
         fail(format!("masked paths failed: {error:#}"));
     }
@@ -945,6 +1442,28 @@ fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawF
     }
 
     finish_process(&plan.process, stdio, start_fd, fork_report_fd)
+}
+
+/// Synthetic task: report readiness, wait for Start, exit 0 — nothing
+/// executes. The task's purpose (the execd-installer's emptyDir copy) is
+/// already served by injection, so this only satisfies the container
+/// lifecycle the orchestrator watches. Never returns.
+fn synthetic_init_main(start_fd: RawFd, fork_report_fd: RawFd) -> ! {
+    {
+        let message = InitReport::Ok {
+            pid: std::process::id(),
+        };
+        let mut file = unsafe { fs::File::from_raw_fd(fork_report_fd) };
+        let _ = file.write_all(&message.line().unwrap_or_default());
+        let _ = file.flush();
+    }
+    // Same gate semantics as any task: one byte arrives with Start, EOF
+    // means the shim gave up. Either way this task exits 0 — there is
+    // nothing to interrupt.
+    let mut byte = [0u8; 1];
+    let _ = unsafe { libc::read(start_fd, byte.as_mut_ptr().cast(), 1) };
+    unsafe { libc::close(start_fd) };
+    std::process::exit(0);
 }
 
 /// F: wire the inherited IO, report readiness, wait for start, exec.
@@ -1052,6 +1571,13 @@ fn apply_process_identity(process: &ProcessPlan) -> Result<()> {
 
     for rlimit in &process.rlimits {
         apply_rlimit(rlimit.typ.as_str(), rlimit.soft, rlimit.hard)?;
+    }
+
+    // Applied while still root: lowering the score (negative values)
+    // needs CAP_SYS_RESOURCE, which a uid switch would drop.
+    if let Some(adj) = process.oom_score_adj {
+        fs::write("/proc/self/oom_score_adj", adj.to_string())
+            .with_context(|| format!("write oom_score_adj {adj}"))?;
     }
 
     // Rootless user namespaces explicitly disable setgroups before writing
@@ -1292,10 +1818,152 @@ fn exec_process(process: &ProcessPlan) -> Result<()> {
     Ok(())
 }
 
+/// Spawn one detached bridge proxy per VM payload bridge. The proxies are
+/// re-execs of this binary (see [`INTERNAL_BRIDGE_ARG`]) that join the task's
+/// network namespace; they die with the runner via `PR_SET_PDEATHSIG`.
+#[cfg(feature = "vm")]
+fn spawn_bridge_proxies(plan: &ContainerPlan) -> Result<()> {
+    let bridges: Vec<u16> = plan
+        .injections
+        .iter()
+        .filter_map(|injection| injection.bridge)
+        .collect();
+    if bridges.is_empty() {
+        return Ok(());
+    }
+    let netns = plan
+        .namespaces
+        .iter()
+        .find(|ns| ns.kind == NamespaceKind::Network)
+        .and_then(|ns| ns.path.clone())
+        .context("VM port bridges need a network namespace to join (CRI pods provide one)")?;
+    for port in bridges {
+        let socket = crate::agent::bridge_socket_path(&plan.id, port);
+        let exe = std::env::current_exe().context("current exe")?;
+        let mut command = Command::new(exe);
+        command
+            .arg(INTERNAL_BRIDGE_ARG)
+            .env(ENV_BRIDGE_NETNS, &netns)
+            .env(ENV_BRIDGE_SOCKET, &socket)
+            .env(ENV_BRIDGE_PORT, port.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        command
+            .spawn()
+            .with_context(|| format!("spawn bridge proxy for port {port}"))?;
+    }
+    Ok(())
+}
+
+/// Bridge proxy entry: join the pod netns, listen on the bridged port, and
+/// pump every TCP connection to the vsock-backed unix socket. Never returns
+/// while the parent (VM runner) lives; `PR_SET_PDEATHSIG` reaps it after.
+#[cfg(feature = "vm")]
+fn bridge_proxy_main() -> Result<()> {
+    let netns = std::env::var(ENV_BRIDGE_NETNS).context("bridge netns")?;
+    let socket = std::env::var(ENV_BRIDGE_SOCKET).context("bridge socket")?;
+    let port: u16 = std::env::var(ENV_BRIDGE_PORT)
+        .context("bridge port")?
+        .parse()
+        .context("parse bridge port")?;
+
+    unsafe {
+        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
+            return Err(std::io::Error::last_os_error()).context("PR_SET_PDEATHSIG");
+        }
+    }
+    setns_by_path(&netns, NamespaceKind::Network).context("join pod network namespace")?;
+
+    // Init-container tasks in the same pod bridge the same port before the
+    // main container starts; retry until their proxy exits instead of dying
+    // on the transient EADDRINUSE.
+    let listener = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match std::net::TcpListener::bind(("0.0.0.0", port)) {
+                Ok(listener) => break listener,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::AddrInUse
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("bridge listen 0.0.0.0:{port}"));
+                }
+            }
+        }
+    };
+    for stream in listener.incoming() {
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error).context("bridge accept"),
+        };
+        let socket = socket.clone();
+        std::thread::spawn(move || {
+            if let Err(error) = pump_bridge(stream, &socket) {
+                log::debug!("bridge connection ended: {error:#}");
+            }
+        });
+    }
+    Ok(())
+}
+
+/// Copy bytes both ways between one accepted TCP connection and the
+/// vsock-backed unix socket: a single unix connection is a single guest
+/// vsock connection, so both directions must share it.
+#[cfg(feature = "vm")]
+fn pump_bridge(stream: std::net::TcpStream, socket: &str) -> Result<()> {
+    use std::net::Shutdown;
+
+    let mut unix = std::os::unix::net::UnixStream::connect(socket)
+        .with_context(|| format!("bridge connect {socket}"))?;
+    let mut unix_write = unix.try_clone().context("clone bridge unix stream")?;
+    let mut tcp_write = stream.try_clone().context("clone bridge tcp stream")?;
+    let _ = stream.set_nodelay(true);
+    let up = std::thread::spawn(move || {
+        // tcp → unix (request direction); half-close afterwards so guest
+        // protocols that rely on EOF terminate promptly.
+        let mut stream = stream;
+        let _ = std::io::copy(&mut stream, &mut unix_write);
+        let _ = unix_write.shutdown(Shutdown::Write);
+    });
+    // unix → tcp (response direction).
+    let _ = std::io::copy(&mut unix, &mut tcp_write);
+    let _ = up.join();
+    let _ = tcp_write.shutdown(Shutdown::Both);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::plan::{IoPlan, NamespacePlan};
+
+    #[test]
+    fn start_writes_one_byte_per_waiter() {
+        // Injected siblings share the init child's start pipe; every waiter
+        // consumes exactly one byte, so Start must write one per waiter and
+        // closing the write end must still deliver EOF to the rest.
+        let mut fds = [0 as libc::c_int; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let mut child = InternalChild {
+            pid: None,
+            start_fd: fds[1],
+            start_waiters: 3,
+        };
+        child.start().unwrap();
+        let mut buf = [0u8; 8];
+        let read = unsafe { libc::read(fds[0], buf.as_mut_ptr().cast(), 8) };
+        assert_eq!(read, 3, "one byte per waiter");
+        assert!(buf[..3].iter().all(|byte| *byte == b's'));
+        // The write end is consumed; a second read reports EOF.
+        let read = unsafe { libc::read(fds[0], buf.as_mut_ptr().cast(), 8) };
+        assert_eq!(read, 0);
+        unsafe { libc::close(fds[0]) };
+    }
 
     #[test]
     fn requested_limits_cannot_succeed_without_a_cgroup_path() {

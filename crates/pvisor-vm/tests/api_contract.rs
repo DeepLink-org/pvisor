@@ -6,6 +6,34 @@ use pvisor_vm::api::{
 use syn::visit::{self, Visit};
 
 #[test]
+fn read_only_filesystem_configuration_is_atomic_without_dax() {
+    let root = tempfile::tempdir().unwrap();
+    let mut builder = VmBuilder::new(1, 128).unwrap();
+    #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+    {
+        assert_eq!(
+            builder
+                .read_only_filesystem("data", std::path::Path::new("relative"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        builder.read_only_filesystem("data", root.path()).unwrap();
+        assert!(builder.read_only_filesystem("data", root.path()).is_err());
+        // An ordinary read-only share does not acquire DAX's snapshot exclusion.
+        builder.snapshot_profile().unwrap();
+    }
+    #[cfg(any(feature = "tee", feature = "aws-nitro"))]
+    assert_eq!(
+        builder
+            .read_only_filesystem("data", root.path())
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::Unsupported
+    );
+}
+
+#[test]
 fn immutable_dax_configuration_validates_before_attachment_and_rejects_snapshots() {
     let root = tempfile::tempdir().unwrap();
     let mut builder = VmBuilder::new(1, 128).unwrap();

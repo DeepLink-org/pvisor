@@ -50,7 +50,7 @@ pvisor
 │   └── gc                 回收所在内容库的无引用对象与遗留暂存
 ```
 
-`tui/replay/cache/memory-pool` 保持其工具定位，不产生与 Job 并行的产品实例身份。默认执行短写 `pvisor -- COMMAND` 继续等价于 `pvisor run -- COMMAND`。
+`tui/replay/cache/memory-pool` 保持其工具定位，不产生与 Job 并行的产品实例身份。默认执行短写 `pvisor -- COMMAND` 继续等价于 `pvisor spawn -- COMMAND`。
 
 不新增 `job run`、`vm run` 或 `snapshot run` 作为目标公共工作流。
 
@@ -90,7 +90,7 @@ checkpoint manifest、归属和引用位于 stage 内，共享内容可以位于
 ### 4.1 run：唯一启动入口
 
 ```sh
-pvisor run [现有运行、策略、记录与资源选项] \
+pvisor spawn [现有运行、策略、记录与资源选项] \
   [--stage PATH] [--name NAME] -- COMMAND...
 ```
 
@@ -277,7 +277,7 @@ CLI语法错误退出2，管理操作失败退出1；前台工作负载退出码
 ### 工作区结果接受：保持原工作流
 
 ```sh
-pvisor run --safe --stage ./stage/task -- codex
+pvisor spawn --safe --stage ./stage/task -- codex
 pvisor review ./stage/task --diff
 pvisor fork ./stage/task --stage ./stage/alternative -- codex
 pvisor apply ./stage/task --path src
@@ -288,7 +288,7 @@ pvisor apply ./stage/task --path src
 
 ```sh
 # 终端 A；沿用正常 Job启动路径
-pvisor run --vm --stage ./stage/task \
+pvisor spawn --vm --stage ./stage/task \
   --rootfs /path/to/rootfs -- bash
 
 # 终端 B；保存并释放源 runner

@@ -9,7 +9,7 @@ Start from the task's project directory and use a fresh stage outside it for eve
 For a fully offline script, start with these commands; the project's `task.sh` must already be executable:
 
 ```bash
-pvisor run --safe --overlaynet-deny-all --stage ../task-stage-001 -- ./task.sh
+pvisor spawn --safe --overlaynet-deny-all --stage ../task-stage-001 -- ./task.sh
 pvisor status --review --diff ../task-stage-001
 pvisor inspect ../task-stage-001 -- git status --short
 ```

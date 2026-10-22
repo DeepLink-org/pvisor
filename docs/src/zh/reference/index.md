@@ -5,7 +5,7 @@
 ## 从运行到接受文件
 
 ```bash
-pvisor run --safe --overlaynet-deny-all --stage ../stage-reference-001 -- /bin/sh -c 'printf proposal > report.txt'
+pvisor spawn --safe --overlaynet-deny-all --stage ../stage-reference-001 -- /bin/sh -c 'printf proposal > report.txt'
 pvisor status --review --json ../stage-reference-001 > ../review-reference-001.json
 pvisor inspect ../stage-reference-001 -- /bin/cat report.txt
 pvisor apply ../stage-reference-001 --path report.txt
@@ -226,7 +226,7 @@ assert_absent() { if [ -e "$1" ] || [ -L "$1" ]; then fail "path exists: $1"; fi
 
 # Public CLI only; all personal settings and Job records stay in CASE_ROOT.
 pvisor() { XDG_DATA_HOME="$CASE_ROOT/data" XDG_CONFIG_HOME="$CASE_ROOT/config" "$SUBJECT_BIN" "$@"; }
-stage() { pvisor run --no-agent-defaults --executor host --gateway-mode off --stage "$1" -- /bin/sh -eu -c "$2"; }
+stage() { pvisor spawn --no-agent-defaults --executor host --gateway-mode off --stage "$1" -- /bin/sh -eu -c "$2"; }
 review_changes() {
   pvisor status --review --json "$1" > "$CASE_ROOT/review.json"
   python3 - "$CASE_ROOT/review.json" <<'PY'

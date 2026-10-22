@@ -8,6 +8,7 @@
 //! interception profile).
 
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
+use std::path::PathBuf;
 
 use crate::plan::{ContainerPlan, VmNetworkMode};
 
@@ -17,6 +18,38 @@ use crate::plan::{ContainerPlan, VmNetworkMode};
 pub struct VmNetworkAttachment {
     backend: pvisor_overlaynet::vm::VmNetwork,
     guest_stream: std::os::unix::net::UnixStream,
+}
+
+/// Where the egress sidecar container's Create publishes the OpenSandbox
+/// network policy for this pod, keyed by the sandbox id. The VM runner
+/// waits for it and compiles the overlaynet attachment from its contents.
+pub fn egress_gate_path(sandbox_id: &str) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    sandbox_id.hash(&mut hasher);
+    let name = format!("pvisor-egress-{:016x}.json", hasher.finish());
+    let directory = if std::path::Path::new("/run").is_dir() {
+        std::path::PathBuf::from("/run")
+    } else {
+        std::env::temp_dir()
+    };
+    directory.join(name)
+}
+
+/// The OpenSandbox egress policy as the server hands it to the sidecar:
+/// `{"defaultAction": "allow"|"deny", "egress": [{"action", "target"}]}`.
+#[derive(serde::Deserialize)]
+pub struct EgressRules {
+    #[serde(rename = "defaultAction", default)]
+    pub default_action: String,
+    #[serde(default)]
+    pub egress: Vec<EgressRule>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct EgressRule {
+    pub action: String,
+    pub target: String,
 }
 
 impl VmNetworkAttachment {
@@ -43,6 +76,44 @@ impl VmNetworkAttachment {
                 allow_private_ips: network.allow_private,
             });
         }
+        Self::from_config(config, &plan.id).map(Some)
+    }
+
+    /// Compile an attachment from the OpenSandbox sidecar policy. Deny by
+    /// default turns the egress rules into an allowlist (targets may be
+    /// wildcard domains; empty target ports mean every port); allow by
+    /// default keeps the network public with explicit deny rules, which
+    /// take precedence over every allow.
+    pub fn from_egress_rules(rules: &EgressRules, run_id: &str) -> anyhow::Result<Self> {
+        let default_deny = rules.default_action != "allow";
+        let mut config = pvisor_core::NetworkConfig {
+            mode: if default_deny {
+                pvisor_core::NetworkMode::Allowlist
+            } else {
+                pvisor_core::NetworkMode::Public
+            },
+            ..Default::default()
+        };
+        for rule in &rules.egress {
+            let access = pvisor_core::NetworkAccessRule {
+                host: rule.target.clone(),
+                ports: Vec::new(),
+                transports: Vec::new(),
+                allow_private_ips: false,
+            };
+            match rule.action.as_str() {
+                "allow" => config.rules.push(access),
+                "deny" => config.deny_rules.push(access),
+                other => anyhow::bail!("unsupported egress rule action {other:?}"),
+            }
+        }
+        if default_deny && config.rules.is_empty() {
+            anyhow::bail!("deny-by-default policy without allow rules denies everything");
+        }
+        Self::from_config(config, run_id)
+    }
+
+    fn from_config(config: pvisor_core::NetworkConfig, run_id: &str) -> anyhow::Result<Self> {
         let policy = pvisor_core::NetworkPolicy::compile(&config)?;
         let controller = std::sync::Arc::new(pvisor_core::PolicyControlController);
         let egress = pvisor_overlaynet::EgressRuntime::with_bandwidth_registry(
@@ -53,15 +124,21 @@ impl VmNetworkAttachment {
         let vm_config = pvisor_overlaynet::vm::VmNetworkConfig::new(
             egress,
             pvisor_overlaynet::EgressContext {
-                run_id: Some(plan.id.clone()),
+                run_id: Some(run_id.to_string()),
                 attempt_id: Some("containerd-shim".to_string()),
             },
         );
         let (backend, guest_stream) = pvisor_overlaynet::vm::VmNetwork::start(vm_config)?;
-        Ok(Some(Self {
+        Ok(Self {
             backend,
             guest_stream,
-        }))
+        })
+    }
+
+    /// Guest-side stream for the VM runner. The attachment keeps its own
+    /// end alive; dropping the returned clone only drops this handle.
+    pub fn guest_stream(&self) -> std::io::Result<std::os::unix::net::UnixStream> {
+        self.guest_stream.try_clone()
     }
 
     /// Duplicate the guest-side descriptor without `FD_CLOEXEC` so the VM

@@ -15,7 +15,7 @@ Register implementable, verifiable capabilities that support higher execution de
 ```bash
 pvisor feature
 pvisor feature list --json
-pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
+pvisor spawn --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
 ```
 
 The runtime registry in `crates/pvisor/src/features.rs` defines stable names, stages, defaults and descriptions. `--feature NAME` accepts repeated or comma-separated values. Features are disabled by default; unknown names are rejected. Arguments after `--` belong to the workload. Query output `enabled` reflects registry defaults plus CLI selections; it does not load Run configuration or validate execution.

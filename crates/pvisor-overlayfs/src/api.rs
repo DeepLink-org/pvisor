@@ -103,8 +103,9 @@ pub struct OverlayMountConfig {
     pub baseline_lower: Option<PathBuf>,
     /// Nonempty ordered lower directories, highest priority first (below upper).
     pub lower_dirs: Vec<PathBuf>,
-    /// Per-physical-lower stability promises, in `lower_dirs` order. Empty means
-    /// all mutable; any other length mismatch is rejected during mounting.
+    /// Per-physical-lower stability promises, in `lower_dirs` order. Construction
+    /// declares all Immutable; transparent/live sources must explicitly use Mutable.
+    /// Empty retains the legacy all-mutable behavior; other length mismatches fail.
     /// Caller must preserve contents, metadata, namespace and mount identities
     /// until session teardown. Read-only mounts and frozen baselines do not prove
     /// this promise. Upper and merged views are never covered by it.
@@ -113,10 +114,14 @@ pub struct OverlayMountConfig {
     /// disabled. Enabled policies reject unsupported configurations before any
     /// preparation I/O; they never silently fall back or skip journals.
     pub kernel_cache: KernelCacheConfig,
-    /// Writable stage directory; created if absent, even for inspection mounts.
+    /// Stage upper directory. Writable mounts create it if absent; read-only
+    /// observers require an existing directory and never initialize its metadata.
+    /// The writable caller owns upper/work/journal exclusively until teardown;
+    /// concurrent read-only observers are allowed under their stale-read contract.
     pub upper_dir: PathBuf,
     /// Optional copy-up work directory, created if absent. Must differ from upper
     /// and be on the same filesystem; lower/mountpoint overlap is rejected.
+    /// Ignored by read-only observers, which never prepare or recover work files.
     pub work_dir: Option<PathBuf>,
     /// Merged-view path. Non-FSKit mounts create it if absent; FSKit requires a
     /// canonical existing parent and a path under `/Volumes`.
@@ -131,8 +136,11 @@ pub struct OverlayMountConfig {
     /// Request OS permission checks. Required with FSKit; disabling this on
     /// other backends does not replace checks with a host security boundary.
     pub default_permissions: bool,
-    /// Reject mounted-view mutations and request a read-only FUSE mount.
-    /// Preparation may still create paths and open/initialize journal state.
+    /// Open an existing upper for observation and request a read-only FUSE mount.
+    /// Work and preimage inputs are ignored; preparation may create the mountpoint
+    /// but never initializes or recovers stage backing. May coexist with the
+    /// stage writer; reads have no freshness or cross-file snapshot guarantee.
+    /// Explicit owned-view kernel cache policies retain their stronger contract.
     pub read_only: bool,
     /// Filesystem name passed to FUSE for diagnostics.
     pub fsname: String,
@@ -144,6 +152,7 @@ pub struct OverlayMountConfig {
     /// Forward the FUSE debug mount option; does not initialize logging.
     pub debug: bool,
     /// Optional durable first-touch journal for later apply conflict detection.
+    /// Ignored by read-only observers; their reads never publish observations.
     pub preimage_dir: Option<PathBuf>,
     /// Select compact first observations only when exclusively initializing a
     /// fresh writable stage. Existing journals/nonempty uppers retain their
@@ -163,8 +172,9 @@ pub struct OverlayMountConfig {
 /// Construction of mount configuration without I/O or validation.
 pub trait OverlayConfiguration: Sized {
     /// Retain supplied paths; choose the last lower as apply target. Defaults:
-    /// writable, OS permission checks enabled, no expanded user access, standard
-    /// filesystem name, platform backend, no journal, exclusions or metrics,
+    /// writable, immutable physical lowers (caller guarantees lifetime stability),
+    /// OS permission checks enabled, no expanded user access, standard filesystem
+    /// name, platform backend, no journal, exclusions or metrics,
     /// and the shared overlay-core default access policy.
     fn new(
         lower_dirs: Vec<PathBuf>,

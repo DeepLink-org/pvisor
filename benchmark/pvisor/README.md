@@ -1216,6 +1216,66 @@ Build only after unrelated timing ends. After all shell/tool preflight condition
 
 ## Engineering and diagnostics
 
+### Host request result reuse
+
+`host_hotpath_ab.py` freezes the current tree and restores exactly the three
+production files from a saved pre-change directory for B-FS-ENG. It preserves
+all earlier stage/copy-up changes. `host_hotpath_phase_ab.py` builds a separate
+release unit-test subject with an identical test-only probe in both variants;
+product files and public APIs are unchanged. This probe calls the actual private
+lookup/getattr/open and creation handlers, with an assertion-only reply sender.
+It excludes kernel/FSKit transport, queueing, initialization and final validation.
+Do not label phase measurements as real-mounted or whole-task performance.
+
+```sh
+python3 benchmark/pvisor/host_hotpath_ab.py --prepare benchmark/pvisor/.data/hotpath-build-new \
+  --before /absolute/saved-pre-change-tree
+python3 benchmark/pvisor/host_hotpath_phase_ab.py --prepare benchmark/pvisor/.data/hotpath-phase-build-new \
+  --build benchmark/pvisor/.data/hotpath-build-new
+just test-py benchmark/pvisor/test_host_hotpath_ab.py
+```
+
+The retained batch's `preflight.json`, `formal.json` and `profiles.json` contain
+one fixed Python paired command each; execute them through `semspec bench`.
+Formal sampling uses fresh owners, 3 warmup pairs and 30 paired rounds, with
+Immutable/no-journal and Mutable/compact kept separate. Timing has profiling off;
+profile trials are independent. Seven metrics retain their own denominators:
+512 lookup/getattr operations and 128 operations for each write/create phase.
+Lower byte/identity inventories, complete upper bytes/types/links, required
+compact observations and reply success must pass; valid slow values stay in.
+Any failure or detected build/test at trial boundaries invalidates the cohort.
+macOS has no enforced affinity/memory cap; boundary checks do not exclude all
+background activity. Frozen source/binary/harness receipts and failed mount
+preflight remain in `.data/`. See [the engineering report](HOST_HOTPATH_REPORT.md).
+
+For the separate single-writer cleanup comparison, pass `--before` directly to
+the phase builder. It restores only `core.rs`, `service.rs`, `preimage_log.rs`
+and host `fs.rs` from the saved pre-cleanup tree; all other sources match.
+The identical cleanup probe adds 4096 warm getattr calls and, at 128/2048
+directory entries with one-quarter whiteouts, directory snapshots and close
+with either lazy or materialized child inodes with zero lookup references.
+The latter represents forgotten children still pinned by a directory handle;
+it does not measure close with surviving kernel lookup references. Child
+materialization is outside the close timer. Name lists, pinned directories,
+unrelated existing nodes, and reclaimed child
+maps are checked. VM layer selection is outside this comparison.
+
+```sh
+python3 benchmark/pvisor/host_hotpath_phase_ab.py \
+  --prepare benchmark/pvisor/.data/cleanup-build-new --before /absolute/pre-cleanup-tree
+python3 benchmark/pvisor/.data/cleanup-build-new/harness/host_hotpath_phase_ab.py \
+  --build benchmark/pvisor/.data/cleanup-build-new \
+  --measure benchmark/pvisor/.data/cleanup-preflight-new --samples 1 --warmups 0
+```
+
+Use a fixed semspec paired command for each independent preflight, formal
+(`--samples 30 --warmups 3`) and profile (`--samples 1 --warmups 0 --profiles`)
+output. Keep all fourteen metrics and valid slow samples; profiles never enter
+formal timings. Retain the cleanup report separately from request-reuse data.
+The retained [cleanup report](HOST_CLEANUP_REPORT.md) includes both independent
+30-pair cohorts, the initial mkdir regression, split distributions and exact
+source/binary receipts.
+
 ### Host copy-up scheduling A/B on macOS
 
 The [retained engineering report](HOST_COPY_UP_REPORT.md) and

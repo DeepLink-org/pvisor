@@ -14,7 +14,7 @@
 ```bash
 journey_setup
 printf sentinel > "$CASE_ROOT/outside.txt"
-pvisor run --safe --no-agent-defaults --overlaynet-deny-all --stage "$CASE_ROOT/safe" -- /bin/sh -c 'printf staged > report.txt; test ! -e "$1"; printf private-temp > "$1"' sh "$CASE_ROOT/outside.txt"
+pvisor spawn --safe --no-agent-defaults --overlaynet-deny-all --stage "$CASE_ROOT/safe" -- /bin/sh -c 'printf staged > report.txt; test ! -e "$1"; printf private-temp > "$1"' sh "$CASE_ROOT/outside.txt"
 assert_content "$CASE_ROOT/outside.txt" sentinel
 assert_absent report.txt
 pvisor review "$CASE_ROOT/safe" --json > "$CASE_ROOT/review.json"
@@ -34,7 +34,7 @@ json_paths "$CASE_ROOT/review.json" report.txt
 ```bash
 journey_setup
 printf sentinel > secret.txt
-pvisor run --safe --no-agent-defaults --overlaynet-deny-all --stage "$CASE_ROOT/policy" --access 'secret.txt:deny' -- /bin/sh -c 'if cat secret.txt > leaked.txt; then exit 9; fi; printf public > public.txt'
+pvisor spawn --safe --no-agent-defaults --overlaynet-deny-all --stage "$CASE_ROOT/policy" --access 'secret.txt:deny' -- /bin/sh -c 'if cat secret.txt > leaked.txt; then exit 9; fi; printf public > public.txt'
 assert_content secret.txt sentinel
 assert_absent public.txt
 pvisor inspect "$CASE_ROOT/policy" -- /bin/cat public.txt > "$CASE_ROOT/public.txt"
@@ -58,7 +58,7 @@ trap 'kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true' EX
 journey_wait_file "$CASE_ROOT/port" "$server"
 port=$(cat "$CASE_ROOT/port")
 python3 -c 'import socket, sys; socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=1).close()' "$port"
-pvisor run --overlaynet-deny-all --stdio capture -- /usr/bin/python3 -c '
+pvisor spawn --overlaynet-deny-all --stdio capture -- /usr/bin/python3 -c '
 import socket, sys
 try:
     socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=1).close()

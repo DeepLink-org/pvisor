@@ -495,7 +495,7 @@ fn main() {
             .env("PVISOR_CACHE_LOCATION", location)
             .env("PVISOR_CACHE_READ_ONLY", "true")
             .current_dir(&workspace)
-            .args(["run", "--stage"])
+            .args(["spawn", "--stage"])
             .arg(&job)
             .args(["--config"])
             .arg(&config)

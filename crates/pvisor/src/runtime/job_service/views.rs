@@ -4,23 +4,27 @@ use super::{
 use crate::RunBundle;
 
 use crate::runtime::{
-    RunRecord, control_observations, control_overlay_status, control_ping, is_live,
-    load_apply_records, overlay_status,
+    RunRecord, control_observations, control_overlay_status, control_ping, load_apply_records,
+    overlay_status,
 };
 use anyhow::Context;
 
 pub struct StatusRequest {
     pub job: JobSelection,
 }
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct FilesystemSummary {
     pub changed_files: usize,
     pub whiteouts: usize,
     pub sample_paths: Vec<String>,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct StatusResponse {
     pub record: RunRecord,
     pub live: bool,
+    /// Current Attempt observation supplied by its owner; absent for disk-only reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_attempt: Option<pvisor_core::RunStatus>,
     pub execution_blocker: Option<String>,
     pub checkpoints: Vec<crate::LogicalCheckpoint>,
     pub apply_history: Vec<pvisor_core::overlay::ApplyRecord>,
@@ -62,7 +66,34 @@ impl RuntimeJobService {
         request: StatusRequest,
     ) -> anyhow::Result<StatusResponse> {
         let record = Self::resolve(context, &request.job)?;
-        let live = control_ping(&record.stage_dir()) || is_live(&record.stage_dir())?;
+        let endpoint = record
+            .live_control
+            .as_ref()
+            .filter(|endpoint| endpoint.is_available());
+        if let Some(endpoint) = endpoint
+            && endpoint.pid != std::process::id()
+        {
+            match endpoint.exchange_checked(
+                &record.run_id,
+                record
+                    .attempt_id
+                    .as_deref()
+                    .context("live Job has no Attempt identity")?,
+                crate::host_transport::InstanceCommand::JobStatus {},
+                context.check_cancelled,
+            ) {
+                Ok(value) => return Ok(serde_json::from_value(value)?),
+                Err(error)
+                    if error.downcast_ref::<std::io::Error>().is_some_and(|error| {
+                        matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                        )
+                    }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let live = endpoint.is_some() && super::super::instance_control::owns_record(&record);
         let checkpoints = crate::runtime::checkpoint::list_checkpoints(&record)?;
         let blocker = execution_blocker(&record);
         let apply_history = load_apply_records(&record.stage_dir())?;
@@ -70,7 +101,7 @@ impl RuntimeJobService {
             .overlay
             .as_ref()
             .map(|overlay| {
-                if control_ping(&record.stage_dir()) {
+                if live && control_ping(&record.stage_dir()) {
                     control_overlay_status(&record.stage_dir()).map(|status| FilesystemSummary {
                         changed_files: status.changed_files,
                         whiteouts: status.whiteouts,
@@ -114,6 +145,7 @@ impl RuntimeJobService {
         Ok(StatusResponse {
             record,
             live,
+            live_attempt: None,
             execution_blocker: blocker,
             checkpoints,
             apply_history,

@@ -3,11 +3,11 @@
 Job 是 pVisor 里一项持久的工作：一次受管理的命令、它的执行证据和暂存改动。
 
 ```bash
-pvisor run --safe --stage ../stage-001 -- codex
+pvisor spawn --safe --stage ../stage-001 -- codex
 pvisor status --review ../stage-001
 ```
 
-`pvisor run` 创建 Job；`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 都直接操作它，没有 `job` 子命令。磁盘上的目录与 Run Bundle 沿用 `run-*` 名称。
+`pvisor spawn` 创建 Job；`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 都直接操作它，没有 `job` 子命令。磁盘上的目录与 Run Bundle 沿用 `run-*` 名称。
 
 ## 之后怎么再找到它
 

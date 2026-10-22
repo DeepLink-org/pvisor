@@ -1,0 +1,69 @@
+# Explicitly disabled pVisor profile cases. Apache-2.0; see ../UPSTREAM.md.
+# These are commented commands, not skipped or passing tests. The complete
+# original assertions remain unchanged in upstream/test/system/.
+# Enable a case only after its commands/options are implemented, then port the
+# original assertions and run them against the pVisor container commands.
+
+# Source: 070-build.bats, 850-compose.bats.
+# run_cli 0 build -t "$NAME" .
+# run_cli 0 compose up -d
+# Disabled: no image build or Compose frontend.
+
+# Source: 035-logs.bats, 045-start.bats, 065-cp.bats, 120-load.bats,
+# 125-import.bats, 126-commit.bats, 130-kill.bats.
+# run_cli 0 create --name "$NAME" "$IMAGE" true
+# run_cli 0 inspect "$NAME"
+# run_cli 0 wait "$NAME"
+# run_cli 0 restart "$NAME"
+# run_cli 0 attach "$NAME"
+# run_cli 0 cp "$NAME:/file" "$BATS_TEST_TMPDIR/file"
+# run_cli 0 load -i image.tar
+# run_cli 0 import rootfs.tar
+# run_cli 0 commit "$NAME" result
+# run_cli 0 kill "$NAME"
+# Disabled: these subcommands are not registered in the pVisor Docker profile.
+# Supported stop/start and exec assertions remain active in e2e/cli_test.go.
+
+# Source: 010-images.bats, 020-tag.bats, 110-history.bats, 150-login.bats.
+# run_cli 0 images --format json
+# run_cli 0 tag "$IMAGE" "$NAME"
+# run_cli 0 history "$IMAGE"
+# run_cli 0 login registry.example
+# Disabled: formatting, tagging, history and authenticated registry CLI absent.
+# Quiet image listing and rmi remain active using a private pVisor store.
+
+# Source: 160-volumes.bats, 500-networking.bats, 505-networking-pasta.bats.
+# run_cli 0 volume create "$NAME"
+# run_cli 0 network create "$NAME"
+# run_cli 0 run --network host "$IMAGE" true
+# run_cli 0 run --network pasta "$IMAGE" true
+# Disabled: no volume/network management CLI, host networking or pasta backend.
+# Named volumes through run -v and bind mounts remain covered by active cases.
+# IPv4 TCP publication and half-close are active in e2e/compatibility_test.go.
+
+# Source: 035-logs.bats, 040-ps.bats, 075-exec.bats, 450-interactive.bats.
+# run_cli 0 logs --tail 1 --since 1000 --timestamps "$NAME"
+# run_cli 0 ps --filter name="$NAME" --format '{{.ID}}'
+# run_cli 0 exec -d "$NAME" true
+# Disabled: these options are absent. TTY allocation itself is supported;
+# live resize and detach key sequences are not. Basic run/exec TTY and TERM
+# contracts are active in e2e/compatibility_test.go.
+
+# Source: 170-run-userns.bats, 180-blkio.bats, 190-run-ipcns.bats,
+# 195-run-namespaces.bats, 410-selinux.bats, 420-cgroups.bats.
+# run_cli 0 run --privileged --userns keep-id --cap-add SYS_ADMIN "$IMAGE" true
+# run_cli 0 run --cpus 0.5 "$IMAGE" true
+# run_cli 0 run -v "$BATS_TEST_TMPDIR:/share:Z" "$IMAGE" true
+# Disabled: host namespaces/capabilities, SELinux relabel and fractional CPU quota
+# semantics are outside the VM profile. Integer vCPUs and guest RAM are supported
+# with documented semantics; matching Docker cgroup quota behavior is not claimed.
+
+# Source: 200-pod.bats, 220-healthcheck.bats, 250-systemd.bats,
+# 251-system-service.bats, 252-quadlet.bats, 520-checkpoint.bats, 710-kube.bats.
+# run_cli 0 pod create
+# run_cli 0 healthcheck run "$NAME"
+# run_cli 0 system service
+# run_cli 0 container checkpoint "$NAME"
+# run_cli 0 kube play workload.yaml
+# Disabled: Podman pods/Kubernetes/Quadlet/system service, healthchecks and
+# container checkpoint CLI are outside this Docker subset. No Engine API/socket.

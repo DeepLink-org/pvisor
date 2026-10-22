@@ -65,6 +65,7 @@ impl FileSystem for NullFs {
 
 #[cfg(test)]
 mod tests {
+    use super::super::filesystem::root_context;
     use super::*;
     use crate::devices::virtio::fs::augment_fs::AugmentFs;
     use crate::devices::virtio::fs::inode_alloc::InodeAllocator;
@@ -74,11 +75,7 @@ mod tests {
     #[test]
     fn unsupported_ioctl_is_enotty_without_breaking_guest_exit_reporting() {
         let fs = AugmentFs::new(NullFs, &InodeAllocator::new(), vec![]);
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let exit = Arc::new(AtomicI32::new(-1));
         // FS_IOC_GETFLAGS: Linux OverlayFS can probe lower file attributes.
         let err = fs
@@ -120,11 +117,7 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].0, b"init.krun");
         assert_eq!(listed[0].1.attr.st_size, 4);
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let found = fs.lookup(ctx, fuse::ROOT_ID, c"init.krun").unwrap();
         assert_eq!(found.inode, listed[0].1.inode);
         match fs.lookup(ctx, fuse::ROOT_ID, c"init.krun") {
@@ -139,11 +132,7 @@ mod tests {
         let fs = injected_init();
         let listed = fs.synthetic_entries(fuse::ROOT_ID);
         let inode = listed[0].1.inode;
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         // Directory import may instantiate an inode without a host LOOKUP.
         let (handle, _) = fs.open(ctx, inode, false, libc::O_RDONLY as u32).unwrap();
         fs.release(ctx, inode, 0, handle.unwrap(), false, false, None)
@@ -168,11 +157,7 @@ mod tests {
                     scope.spawn(|| {
                         barrier.wait();
                         fs.lookup(
-                            Context {
-                                uid: 0,
-                                gid: 0,
-                                pid: 1,
-                            },
+                            root_context(),
                             fuse::ROOT_ID,
                             c"init.krun",
                         )

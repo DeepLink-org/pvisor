@@ -369,7 +369,11 @@ pub(crate) fn mount_overlay_record_observed(
     config.apply_target = Some(record.target.clone());
     config.baseline_lower = record.baseline_lower.clone();
     config.observation = observation;
-    config.lower_mutability = lower_mutability.to_vec();
+    config.lower_mutability = if lower_mutability.is_empty() {
+        vec![pvisor_overlay_core::LayerMutability::Mutable; lower_dirs.len()]
+    } else {
+        lower_mutability.to_vec()
+    };
     config.preimage_dir = Some(record.stage_dir.join("preimages"));
     // Match the mountless/VM initializer: the owned stage can publish one
     // compact log, retaining first observations under the stage's policy.
@@ -472,6 +476,51 @@ fn seal_overlay_record(record: &OverlayRecord) -> anyhow::Result<()> {
     Ok(())
 }
 
+const LOWER_DECLARATION: &str = "lower-mutability.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LowerDeclaration {
+    lowers: Vec<PathBuf>,
+    mutability: Vec<pvisor_overlay_core::LayerMutability>,
+}
+
+pub(crate) fn save_lower_mutability(
+    stage: &Path,
+    lowers: &[PathBuf],
+    mutability: &[pvisor_overlay_core::LayerMutability],
+) -> anyhow::Result<()> {
+    Persistence::atomic_write(
+        &stage.join(LOWER_DECLARATION),
+        &serde_json::to_vec(&LowerDeclaration {
+            lowers: lowers.to_vec(),
+            mutability: mutability.to_vec(),
+        })?,
+        0o600,
+    )?;
+    Ok(())
+}
+
+fn inspect_lower_mutability(
+    stage: &Path,
+    lowers: &[PathBuf],
+) -> Result<Vec<pvisor_overlay_core::LayerMutability>, OverlayError> {
+    match fs::read(stage.join(LOWER_DECLARATION)) {
+        Ok(bytes) => {
+            let saved: LowerDeclaration = serde_json::from_slice(&bytes)
+                .map_err(|error| OverlayError::Prepare(io::Error::other(error)))?;
+            if saved.lowers == lowers && saved.mutability.len() == lowers.len() {
+                return Ok(saved.mutability);
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(OverlayError::Prepare(error)),
+    }
+    Ok(vec![
+        pvisor_overlay_core::LayerMutability::Mutable;
+        lowers.len()
+    ])
+}
+
 /// Mount the same lower/upper projection without permitting any mutation.
 /// The kernel's read-only FUSE mount rejects writes before they reach the
 /// writable overlay implementation.
@@ -490,6 +539,7 @@ pub fn mount_overlay_record_read_only(
         Some(record.upper.work_dir.clone()),
         mountpoint.to_path_buf(),
     );
+    config.lower_mutability = inspect_lower_mutability(&record.stage_dir, lower_dirs)?;
     config.fsname = format!("pvisor-inspect-{}", record.id);
     config.excluded_paths = record.excluded_paths.clone();
     for lower in lower_dirs {
@@ -628,6 +678,31 @@ mod tests {
     #[cfg(target_os = "macos")]
     use std::os::unix::fs::MetadataExt;
     use tempfile::tempdir;
+
+    #[test]
+    fn readonly_inspect_uses_ordered_declarations_and_mutable_legacy_fallback() {
+        use pvisor_overlay_core::LayerMutability::{Immutable, Mutable};
+        let stage = tempdir().unwrap();
+        let lowers = vec![stage.path().join("a"), stage.path().join("b")];
+        assert_eq!(
+            inspect_lower_mutability(stage.path(), &lowers).unwrap(),
+            [Mutable, Mutable]
+        );
+        save_lower_mutability(stage.path(), &lowers, &[Immutable, Mutable]).unwrap();
+        assert_eq!(
+            inspect_lower_mutability(stage.path(), &lowers).unwrap(),
+            [Immutable, Mutable]
+        );
+        assert_eq!(
+            inspect_lower_mutability(stage.path(), &[lowers[1].clone(), lowers[0].clone()])
+                .unwrap(),
+            [Mutable, Mutable]
+        );
+        assert_eq!(
+            inspect_lower_mutability(stage.path(), &lowers[..1]).unwrap(),
+            [Mutable]
+        );
+    }
 
     #[test]
     fn resolve_uses_target_and_default_stage() {

@@ -301,9 +301,9 @@ jobs:
       - name: Record isolated core budget
         run: |
           just build release
-          # Host wait coordination, guest idle handoff, diagnostics and regression
-          # tests bring the runtime closure to about 220k lines; retain ~4k headroom.
-          just check-core-budget target/release/pvisor --max-dependencies 235 --max-workspace-lines 224000 --max-core-items 301 > target/pvisor-core-budget.json
+          # Main plus idle-wait/control fixes: 225,011 runtime source lines.
+          # Keep about 1,000 lines of headroom; dependency/API limits are unchanged.
+          just check-core-budget target/release/pvisor --max-dependencies 235 --max-workspace-lines 226000 --max-core-items 301 > target/pvisor-core-budget.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

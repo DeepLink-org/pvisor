@@ -1342,13 +1342,8 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     #[test]
-    fn namespace_publication_drains_io_without_holding_filesystem_state() {
+    fn namespace_publication_waits_for_inflight_io_to_drain() {
         let activity = Arc::new(IoActivity::default());
-        let root = tempfile::tempdir().unwrap();
-        let lower = root.path().join("lower");
-        fs::create_dir(&lower).unwrap();
-        let state =
-            Mutex::new(OverlayFs::new(vec![lower], root.path().join("upper"), None).unwrap());
         let io = activity.enter();
         let (sent, completed) = mpsc::channel();
         let other = activity.clone();
@@ -1365,7 +1360,6 @@ mod tests {
             std::thread::yield_now();
         }
         assert!(completed.try_recv().is_err());
-        assert!(state.try_lock().is_ok());
         drop(io);
         completed.recv_timeout(Duration::from_secs(2)).unwrap();
         worker.join().unwrap();

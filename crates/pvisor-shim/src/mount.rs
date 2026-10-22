@@ -179,10 +179,18 @@ mod linux {
                 .with_context(|| format!("overlay mount at {}", target.display()))?;
             }
             "proc" | "sysfs" | "cgroup" | "cgroup2" | "mqueue" | "tmpfs" | "devpts" => {
+                // Kubelet/containerd still label the pod cgroup mount "cgroup"
+                // (the v1 name) on cgroup-v2-only kernels; runc maps it to the
+                // unified hierarchy, so the literal v1 mount fails EBUSY.
+                let fs_type = if mount_plan.fs_type == "cgroup" {
+                    "cgroup2"
+                } else {
+                    mount_plan.fs_type.as_str()
+                };
                 mount(
-                    source.or(Some(Path::new(&mount_plan.fs_type))),
+                    source.or(Some(Path::new(fs_type))),
                     &target,
-                    Some(&mount_plan.fs_type),
+                    Some(fs_type),
                     parsed.flags,
                     if parsed.data.is_empty() {
                         None
@@ -334,7 +342,7 @@ mod linux {
     /// Create the minimal device set inside a fresh tmpfs /dev (only when the
     /// root did not bring its own nodes): null, zero, full, random, urandom,
     /// tty and the fd/std{in,out,err} indirections runc provides.
-    fn ensure_minimal_dev_nodes() -> Result<()> {
+    pub fn ensure_minimal_dev_nodes() -> Result<()> {
         let dev = Path::new("/dev");
         if dev.join("null").exists() {
             return Ok(());
@@ -352,19 +360,23 @@ mod linux {
             if path.exists() {
                 continue;
             }
-            let c_name = std::ffi::CString::new(name).expect("device name");
+            let full = cstr(&path);
             let ret = unsafe {
                 libc::mknod(
-                    c_name.as_ptr(),
+                    full.as_ptr(),
                     libc::S_IFCHR | 0o666,
                     libc::makedev(major, minor),
                 )
             };
-            let _ = path; // silence unused when ret checked below
             if ret != 0 {
                 let error = std::io::Error::last_os_error();
-                // Missing CAP_MKNOD or a read-only /dev must not mask paths
-                // silently differently — surface the failure.
+                // Image layers can leave a non-stat-able entry (e.g. a
+                // dangling symlink) where a device belongs: EEXIST means the
+                // path is occupied, matching runc's tolerance. Anything else
+                // (missing CAP_MKNOD, read-only /dev) still surfaces.
+                if error.raw_os_error() == Some(libc::EEXIST) {
+                    continue;
+                }
                 return Err(error).with_context(|| format!("mknod /dev/{name}"));
             }
         }
@@ -410,8 +422,9 @@ mod linux {
 
 #[cfg(target_os = "linux")]
 pub use linux::{
-    apply_masked_paths, apply_mounts, apply_readonly_paths, apply_sysctls, make_mounts_private,
-    mount, mount_proc, pivot_root, remount_root_readonly,
+    apply_masked_paths, apply_mounts, apply_readonly_paths, apply_sysctls,
+    ensure_minimal_dev_nodes, make_mounts_private, mount, mount_proc, pivot_root,
+    remount_root_readonly,
 };
 
 #[cfg(test)]

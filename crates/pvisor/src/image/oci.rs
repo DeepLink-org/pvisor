@@ -48,6 +48,42 @@ pub struct ImageStore {
     client: Client,
 }
 
+/// Synchronous observations of OCI image preparation. Byte counts represent
+/// compressed blob bytes actually received, not extracted filesystem size.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PullProgress {
+    /// Waiting for another preparation to release its image lock.
+    Waiting,
+    /// Resolving manifests, authentication and image configuration.
+    Resolving,
+    /// Downloading one layer; completion still requires verification/extraction.
+    Downloading {
+        /// Content digest identifying the layer.
+        digest: String,
+        /// Bytes received so far; zero is emitted before contacting the registry.
+        downloaded: u64,
+        /// Expected compressed size, if known from the manifest or HTTP response.
+        total: Option<u64>,
+    },
+    /// Checking downloaded or already cached bytes against their digest.
+    Verifying {
+        /// Content digest being checked.
+        digest: String,
+    },
+    /// Applying a verified layer, including its whiteouts, in manifest order.
+    Extracting {
+        /// Content digest being applied.
+        digest: String,
+    },
+    /// A layer has been applied, or belongs to an already prepared rootfs.
+    LayerReady {
+        /// Content digest of the completed layer.
+        digest: String,
+        /// True when the existing prepared rootfs made extraction unnecessary.
+        cached: bool,
+    },
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct Descriptor {
     #[serde(rename = "mediaType", default)]
@@ -158,13 +194,24 @@ impl ImageStore {
         architecture: &str,
         refresh: bool,
     ) -> anyhow::Result<PreparedImage> {
+        self.prepare_with_progress(image, architecture, refresh, &mut |_| {})
+    }
+
+    pub(crate) fn prepare_with_progress(
+        &self,
+        image: &str,
+        architecture: &str,
+        refresh: bool,
+        progress: &mut dyn FnMut(PullProgress),
+    ) -> anyhow::Result<PreparedImage> {
         anyhow::ensure!(
             matches!(architecture, "arm64" | "amd64"),
             "unsupported image architecture {architecture}"
         );
         let image_ref = ImageReference::parse(image)?;
+        progress(PullProgress::Waiting);
         self.with_prepared_cache(image_ref.clone(), architecture, refresh, || {
-            self.resolve_and_prepare(image, architecture, image_ref)
+            self.resolve_and_prepare(image, architecture, image_ref, progress)
         })
     }
 
@@ -260,7 +307,9 @@ impl ImageStore {
         image: &str,
         architecture: &str,
         image_ref: ImageReference,
+        progress: &mut dyn FnMut(PullProgress),
     ) -> anyhow::Result<PreparedImage> {
+        progress(PullProgress::Resolving);
         let mut registry = RegistryClient::new(&self.client, image_ref.clone());
         let (mut body, mut manifest_digest) = registry.fetch_manifest(&image_ref.reference)?;
         let value: serde_json::Value = serde_json::from_slice(&body)
@@ -282,7 +331,7 @@ impl ImageStore {
             &body,
             0o600,
         )?;
-        let config_path = self.fetch_blob(&mut registry, &manifest.config)?;
+        let config_path = self.fetch_blob(&mut registry, &manifest.config, &mut |_| {})?;
         let config: ImageConfiguration = serde_json::from_reader(File::open(config_path)?)
             .with_context(|| format!("decode image configuration for {image}"))?;
 
@@ -301,6 +350,7 @@ impl ImageStore {
             .read(true)
             .write(true)
             .open(&lock_path)?;
+        progress(PullProgress::Waiting);
         lock.lock_exclusive()?;
         if !rootfs.is_dir() {
             let partial = self
@@ -310,8 +360,15 @@ impl ImageStore {
             fs::create_dir(&partial)?;
             let extraction = (|| -> anyhow::Result<()> {
                 for layer in &manifest.layers {
-                    let blob = self.fetch_blob(&mut registry, layer)?;
+                    let blob = self.fetch_blob(&mut registry, layer, progress)?;
+                    progress(PullProgress::Extracting {
+                        digest: layer.digest.clone(),
+                    });
                     apply_layer(&blob, &layer.media_type, &partial)?;
+                    progress(PullProgress::LayerReady {
+                        digest: layer.digest.clone(),
+                        cached: false,
+                    });
                 }
                 fs::rename(&partial, &rootfs)?;
                 Ok(())
@@ -330,6 +387,13 @@ impl ImageStore {
                     .join(format!("{digest_hex}.json")),
                 serde_json::to_vec_pretty(&metadata)?,
             )?;
+        } else {
+            for layer in &manifest.layers {
+                progress(PullProgress::LayerReady {
+                    digest: layer.digest.clone(),
+                    cached: true,
+                });
+            }
         }
         lock.unlock()?;
 
@@ -346,13 +410,22 @@ impl ImageStore {
         &self,
         registry: &mut RegistryClient<'_>,
         descriptor: &Descriptor,
+        progress: &mut dyn FnMut(PullProgress),
     ) -> anyhow::Result<PathBuf> {
         let digest_hex = digest_hex(&descriptor.digest)?;
         let destination = self.root.join("blobs/sha256").join(digest_hex);
         if destination.is_file() {
+            progress(PullProgress::Verifying {
+                digest: descriptor.digest.clone(),
+            });
             verify_file_digest(&descriptor.digest, &destination)?;
             return Ok(destination);
         }
+        progress(PullProgress::Downloading {
+            digest: descriptor.digest.clone(),
+            downloaded: 0,
+            total: descriptor.size,
+        });
         let mut response = registry.get(
             &format!(
                 "/v2/{}/blobs/{}",
@@ -360,19 +433,42 @@ impl ImageStore {
             ),
             None,
         )?;
+        let total = descriptor.size.or(response.content_length());
+        self.save_blob(&mut response, descriptor, total, progress)
+    }
+
+    fn save_blob(
+        &self,
+        reader: &mut impl Read,
+        descriptor: &Descriptor,
+        total: Option<u64>,
+        progress: &mut dyn FnMut(PullProgress),
+    ) -> anyhow::Result<PathBuf> {
+        let destination = self
+            .root
+            .join("blobs/sha256")
+            .join(digest_hex(&descriptor.digest)?);
         let mut temporary = tempfile::NamedTempFile::new_in(self.root.join("blobs/sha256"))?;
         let mut hasher = Sha256::new();
         let mut size = 0_u64;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
-            let read = response.read(&mut buffer)?;
+            let read = reader.read(&mut buffer)?;
             if read == 0 {
                 break;
             }
             hasher.update(&buffer[..read]);
             temporary.write_all(&buffer[..read])?;
             size += read as u64;
+            progress(PullProgress::Downloading {
+                digest: descriptor.digest.clone(),
+                downloaded: size,
+                total,
+            });
         }
+        progress(PullProgress::Verifying {
+            digest: descriptor.digest.clone(),
+        });
         let actual = format!("sha256:{}", crate::util::encode_hex(&hasher.finalize()));
         anyhow::ensure!(
             actual == descriptor.digest,
@@ -950,6 +1046,125 @@ fn clear_relative_directory(root: &Path, relative: &Path) -> anyhow::Result<()> 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn blob_progress_counts_received_bytes_and_cached_reads_transfer_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(Some(temp.path().into())).unwrap();
+        let payload = vec![7; 150_000];
+        let descriptor = Descriptor {
+            media_type: String::new(),
+            digest: format!(
+                "sha256:{}",
+                crate::util::encode_hex(&Sha256::digest(&payload))
+            ),
+            size: Some(payload.len() as u64),
+            platform: None,
+        };
+        let mut events = Vec::new();
+        let path = store
+            .save_blob(
+                &mut std::io::Cursor::new(&payload),
+                &descriptor,
+                descriptor.size,
+                &mut |event| events.push(event),
+            )
+            .unwrap();
+        let counts: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                PullProgress::Downloading {
+                    downloaded, total, ..
+                } => {
+                    assert_eq!(*total, descriptor.size);
+                    Some(*downloaded)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(counts.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(counts.last(), Some(&(payload.len() as u64)));
+        assert_eq!(fs::read(&path).unwrap(), payload);
+        let mut registry = RegistryClient::new(
+            &store.client,
+            ImageReference::parse("example.invalid/repo:tag").unwrap(),
+        );
+        events.clear();
+        assert_eq!(
+            store
+                .fetch_blob(&mut registry, &descriptor, &mut |event| events.push(event))
+                .unwrap(),
+            path
+        );
+        assert_eq!(
+            events,
+            [PullProgress::Verifying {
+                digest: descriptor.digest.clone()
+            }]
+        );
+        fs::write(path, b"corrupt").unwrap();
+        assert!(
+            store
+                .fetch_blob(&mut registry, &descriptor, &mut |_| {})
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn progress_never_publishes_bad_or_incomplete_blobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(Some(temp.path().into())).unwrap();
+        let payload = b"layer";
+        let descriptor = Descriptor {
+            media_type: String::new(),
+            digest: format!(
+                "sha256:{}",
+                crate::util::encode_hex(&Sha256::digest(payload))
+            ),
+            size: Some(payload.len() as u64 + 1),
+            platform: None,
+        };
+        let mut events = Vec::new();
+        assert!(
+            store
+                .save_blob(
+                    &mut &payload[..],
+                    &descriptor,
+                    descriptor.size,
+                    &mut |event| events.push(event)
+                )
+                .is_err()
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, PullProgress::LayerReady { .. }))
+        );
+        let mut valid_size = descriptor.clone();
+        valid_size.size = Some(3);
+        assert!(
+            store
+                .save_blob(&mut &b"bad"[..], &valid_size, valid_size.size, &mut |_| {})
+                .is_err()
+        );
+        struct Interrupted;
+        impl Read for Interrupted {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::ConnectionReset.into())
+            }
+        }
+        assert!(
+            store
+                .save_blob(&mut Interrupted, &descriptor, descriptor.size, &mut |_| {})
+                .is_err()
+        );
+        assert_eq!(
+            fs::read_dir(temp.path().join("blobs/sha256"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
 
     #[test]
     fn whiteout_navigation_is_rejected_at_parse_and_delete_boundaries() {

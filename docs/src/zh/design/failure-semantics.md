@@ -16,7 +16,7 @@ Session 准备文件和网络资源，提交必要启动事实，再派发执行
 | --- | --- | --- | --- |
 | 准入 / 驱动准备 / 启动事实提交 | 工作负载尚未派发；准备可能已创建目录、挂载或 socket | Session 清理结果与准备错误 | 先处理资源与能力问题；启动事实失败时不能绕过该门直接派发 |
 | 执行后记录或清理失败 | 工作负载已经运行；upper、网络请求等效果可能存在 | Attempt、实际退出、Bundle/日志和 stage 完整性 | 不为补齐记录自动重跑命令 |
-| Host CLI 超时、断连或取消 | listener/worker 可能已接纳并产生效果，清理仍可能进行 | 固定目标的 Job 状态、产物与原 request 关联 | Host envelope 不提供通用去重；前端不自动重试 |
+| Host CLI 超时、断连或取消 | Job owner 或调用方的持久操作可能已产生效果，清理仍可能进行 | 固定目标的 Job 状态、产物与原 request 关联 | Host envelope 不提供通用去重；前端不自动重试 |
 | Journal append 返回 Unknown | 无字节、部分尾部或完整记录均可能存在；句柄 poisoned | 释放 clone 和活跃写任务后，reopen 恢复并查原 Event ID | 用同一 Event ID 和完整内容重试 append；不重做外部操作 |
 | execution capture / suspend / resume / fork 回执不明 | 持久请求、对象、分支或继任 Attempt 可能已建立 | 原 request ID、Job head、当前 Attempt、终止或启动回执 | 在对应操作范围内重用原 ID 和原参数；状态不明时可继续返回 Unknown |
 | apply 中断 | 部分 target 已更新，upper 可能尚未裁剪 | 目标锁下的 Prepared / TargetApplied / Committed 账本及原像 | 沿已有批次恢复；不删除 ledger 后重做整批 |
@@ -32,7 +32,7 @@ Session 准备文件和网络资源，提交必要启动事实，再派发执行
 | --- | --- | --- |
 | Event ID | Journal 内的事件去重，返回原 position/receipt | 同 ID 必须有相同序列化内容；时间戳或 payload 变化也冲突 |
 | execution 生命周期 request ID | 相应 Job 操作的持久请求和结果关联 | capture/suspend/resume/execution fork 校验各自绑定参数；不扩展成所有命令的 exactly-once |
-| Host envelope `request_id` | 关联请求、响应、ticket、错误和取消 | 传输层不因此拥有持久队列或通用去重 |
+| Host envelope `request_id` | 关联请求、响应、错误和取消 | 传输层不因此拥有持久队列或通用去重 |
 | checkpoint ID / manifest digest | 标识已保存的状态或内容 | 对象存在不证明 source 已终止、Job head 已提交或恢复已启动 |
 
 Journal 重试要保留原 Event 对象。再次调用 `Trace::event()` 会生成新 UUID，即使文字相同也成为另一条事件。Job 重试同样应保留原请求参数；新 request ID 表达新请求，不能用它“探测”上次是否成功。
@@ -57,7 +57,9 @@ Journal 恢复只修复合法完整前缀后的未完成尾部。已完成但损
 | --- | --- |
 | `pvisor/src/session.rs`、`session/lifecycle.rs` | 准备、派发、清理和事实发布 |
 | `pvisor/src/runtime/job_service/managed.rs` | 已接受 Attempt 的 join、前端取消与终态发布 |
-| `pvisor-cli/src/cli/host_service.rs` | listener、worker ticket、取消与请求清理 |
+| `pvisor-cli/src/cli/host_service.rs` | 前端/owner 启动、私有取消通道、直接持久操作路由与进程清理 |
+| `pvisor/src/runtime/host_transport.rs`、`instance_control.rs` | 按记录校验端点、owner 命令与响应不确定性 |
+| `pvisor/src/runtime/registry.rs` | `job.lock`、Run 记录与仍在使用的 Overlay 内部控制 |
 | `pvisor-journal/src/journal.rs` | Rejected/Unknown、poisoned、去重和 reopen |
 | `pvisor/src/runtime/job_execution.rs`、`runtime/job_service/lifecycle.rs`、`fork.rs` | 持久请求、恢复与分支核对 |
 | `pvisor-overlay-core/src/apply.rs`、`stage.rs` | apply 前向恢复与 stage 完整性 |

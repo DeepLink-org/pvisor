@@ -1068,7 +1068,7 @@ impl RunExecutor for VmExecutor {
         let root_mutability = if self.rootfs_base.is_some() {
             vec![pvisor_overlay_core::LayerMutability::Immutable]
         } else {
-            Vec::new()
+            vec![pvisor_overlay_core::LayerMutability::Mutable]
         };
         let (root_overlay, mut workspace) = if overlay_target.is_none() {
             (
@@ -2918,7 +2918,11 @@ fn add_vm_overlay(
         tag,
         OverlayConfig {
             lower_dirs: overlay.lowers.clone(),
-            lower_mutability: overlay.lower_mutability.clone(),
+            lower_mutability: if overlay.lower_mutability.is_empty() {
+                vec![pvisor_overlay_core::LayerMutability::Mutable; overlay.lowers.len()]
+            } else {
+                overlay.lower_mutability.clone()
+            },
             upper_dir: overlay.upper.clone(),
             work_dir: overlay.work.clone(),
             preimage_dir: overlay.preimages.clone(),
@@ -2974,8 +2978,15 @@ fn guest_config(
             gateway: pvisor_overlaynet::vm::ROUTER_IPV4.octets(),
         }),
         agent: None,
+        sidecars: Vec::new(),
+        bridges: Vec::new(),
+        payloads_dir: None,
+        shares: Vec::new(),
         stdio_ports: None,
         temporary_filesystem: None,
+        process: None,
+        mounts: Vec::new(),
+        control: false,
     }
 }
 

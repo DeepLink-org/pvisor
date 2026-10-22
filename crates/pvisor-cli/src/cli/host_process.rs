@@ -302,33 +302,11 @@ fn mac_signal(pid: i32, identity: (u64, u64), signal: i32) -> anyhow::Result<()>
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-pub(super) struct StableProcess(OwnedFd);
-#[cfg(target_os = "linux")]
-impl StableProcess {
-    pub(super) fn open(pid: i32) -> anyhow::Result<Self> {
-        let before = stat(pid)?;
-        let fd = pidfd(pid)?;
-        ensure!(
-            !exited(&fd) && stat(pid)?.2 == before.2,
-            "process identity changed during pinning"
-        );
-        Ok(Self(fd))
-    }
-    pub(super) fn signal(&self, sig: i32) -> anyhow::Result<()> {
-        signal(&self.0, sig)
-    }
-    pub(super) fn is_alive(&self) -> bool {
-        !exited(&self.0)
-    }
-}
-
 pub(super) struct OwnedTree {
     root: i32,
     /// Set only after successful final cleanup. Partial cleanup remains retryable.
     cleaned: bool,
-    /// Only the originating frontend adopts request orphans; its independently
-    /// started service must never become part of the request cleanup.
+    /// The owner adopts request orphans; foreign-child test trees opt in explicitly.
     #[cfg(target_os = "linux")]
     adopt: Option<i32>,
     excluded: i32,
@@ -347,7 +325,7 @@ impl OwnedTree {
         {
             let before = stat(root)?;
             ensure!(
-                before.0 == parent && before.1 == root,
+                (root == std::process::id() as i32 || before.0 == parent) && before.1 == root,
                 "worker is not an owned frontend process group"
             );
             let fd = pidfd(root)?;
@@ -367,7 +345,8 @@ impl OwnedTree {
         {
             let info = mac_identity(root)?;
             ensure!(
-                info.pbi_ppid == parent as u32 && info.pbi_pgid == root as u32,
+                (root == std::process::id() as i32 || info.pbi_ppid == parent as u32)
+                    && info.pbi_pgid == root as u32,
                 "worker is not an owned frontend process group"
             );
             Ok(Self {
@@ -382,6 +361,16 @@ impl OwnedTree {
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         anyhow::bail!("request process ownership is unsupported on this platform")
     }
+    pub(super) fn owner(parent: i32) -> anyhow::Result<Self> {
+        #[allow(unused_mut)]
+        let mut tree = Self::new(std::process::id() as i32, parent, false, 0)?;
+        #[cfg(target_os = "linux")]
+        {
+            tree.adopt = Some(std::process::id() as i32);
+        }
+        Ok(tree)
+    }
+
     pub(super) fn refresh(&mut self) -> anyhow::Result<()> {
         #[cfg(target_os = "linux")]
         {
@@ -392,7 +381,7 @@ impl OwnedTree {
                 }
             }
             for pid in dead {
-                if self.adopt.is_some() {
+                if self.adopt.is_some() && self.root != std::process::id() as i32 {
                     unsafe {
                         libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG);
                     }
@@ -520,7 +509,10 @@ impl OwnedTree {
             let result = (|| -> anyhow::Result<()> {
                 loop {
                     self.refresh()?;
-                    for fd in self.processes.values() {
+                    for (&pid, fd) in &self.processes {
+                        if pid == self.root && self.root == std::process::id() as i32 {
+                            continue;
+                        }
                         if !exited(fd) {
                             signal(fd, libc::SIGSTOP)?;
                         }
@@ -530,6 +522,9 @@ impl OwnedTree {
                     loop {
                         let mut quiescent = true;
                         for (&pid, fd) in &self.processes {
+                            if pid == self.root && self.root == std::process::id() as i32 {
+                                continue;
+                            }
                             quiescent &= process_stopped(pid, fd)?;
                         }
                         if quiescent {
@@ -544,6 +539,9 @@ impl OwnedTree {
                     self.refresh()?;
                     let mut quiescent = true;
                     for (&pid, fd) in &self.processes {
+                        if pid == self.root && self.root == std::process::id() as i32 {
+                            continue;
+                        }
                         quiescent &= process_stopped(pid, fd)?;
                     }
                     if quiescent {
@@ -596,6 +594,10 @@ impl OwnedTree {
                         }
                     }
                 }
+                if self.root == std::process::id() as i32 {
+                    // Managed Child waiters have finished before normal owner cleanup.
+                    while unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) } > 0 {}
+                }
                 Ok(())
             })();
             if result.is_err() {
@@ -604,7 +606,7 @@ impl OwnedTree {
                 for fd in self.processes.values() {
                     let _ = signal(fd, libc::SIGCONT);
                 }
-            } else if kill_root {
+            } else if kill_root || self.root == std::process::id() as i32 {
                 self.cleaned = true;
             }
             result
@@ -616,11 +618,16 @@ impl OwnedTree {
             // Stop the root BEFORE enumerating/killing children. This prevents
             // normal executor workload groups escaping merely because the
             // worker died first. Each discovered forker is stopped in turn.
-            mac_signal(self.root, self.identity, libc::SIGSTOP)?;
+            if self.root != std::process::id() as i32 {
+                mac_signal(self.root, self.identity, libc::SIGSTOP)?;
+            }
             let result = (|| -> anyhow::Result<()> {
                 loop {
                     self.refresh()?;
                     for (&pid, &identity) in &self.processes {
+                        if pid == self.root && self.root == std::process::id() as i32 {
+                            continue;
+                        }
                         if stopped.insert((pid, identity)) {
                             mac_signal(pid, identity, libc::SIGSTOP)?;
                         }
@@ -666,7 +673,7 @@ impl OwnedTree {
             if !kill_root || result.is_err() {
                 let _ = mac_signal(self.root, self.identity, libc::SIGCONT);
             }
-            if kill_root && result.is_ok() {
+            if (kill_root || self.root == std::process::id() as i32) && result.is_ok() {
                 self.cleaned = true;
             }
             result
@@ -677,7 +684,7 @@ impl OwnedTree {
 }
 impl Drop for OwnedTree {
     fn drop(&mut self) {
-        let _ = self.cleanup(true);
+        let _ = self.cleanup(self.root != std::process::id() as i32);
     }
 }
 
@@ -719,6 +726,42 @@ impl Drop for TerminalOwner {
 }
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    #[test]
+    fn owner_observation_preserves_managed_child_wait_and_finalizes_only_at_cleanup() {
+        const NAME: &str =
+            "owner_observation_preserves_managed_child_wait_and_finalizes_only_at_cleanup";
+        if std::env::var("PVISOR_TREE_TEST_CHILD").as_deref() != Ok(NAME) {
+            let module = module_path!().split_once("::").unwrap().1;
+            assert!(
+                Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", &format!("{module}::{NAME}"), "--test-threads=1"])
+                    .env("PVISOR_TREE_TEST_CHILD", NAME)
+                    .process_group(0)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            return;
+        }
+        become_subreaper().unwrap();
+        let mut owner = OwnedTree::owner(unsafe { libc::getppid() }).unwrap();
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exit 23"])
+            .spawn()
+            .unwrap();
+        let process = pidfd(child.id() as i32).unwrap();
+        let until = Instant::now() + Duration::from_secs(2);
+        while !exited(&process) {
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        owner.refresh().unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(23));
+        assert!(!owner.cleaned);
+        owner.cleanup(false).unwrap();
+        assert!(owner.cleaned);
+    }
+
     #[test]
     fn mac_discovery_owns_normal_workload_groups_without_recycled_ancestry() {
         use super::*;

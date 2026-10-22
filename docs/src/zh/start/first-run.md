@@ -33,7 +33,7 @@ chmod +x ../agent.sh
 ## 3. 让它在边界内全自动执行
 
 ```bash
-pvisor run --safe --overlaynet-deny-all --stage ../stage-001 -- ../agent.sh
+pvisor spawn --safe --overlaynet-deny-all --stage ../stage-001 -- ../agent.sh
 ```
 
 `--safe` 要求落实文件与网络隔离，并按预设拒绝 `.ssh`、`.gnupg` 与私钥文件等敏感路径；它不选择执行器，也不会静默回退到无隔离的 host 进程。`--overlaynet-deny-all` 独立安装强制网络边界。暂存目录放在项目外，每次运行使用新目录。
@@ -63,7 +63,7 @@ git status --short
 ## 6. 换成你的命令
 
 ```bash
-pvisor run --safe --stage ../agent-stage-001 -- codex
+pvisor spawn --safe --stage ../agent-stage-001 -- codex
 pvisor status --review ../agent-stage-001
 ```
 
@@ -74,7 +74,7 @@ pvisor status --review ../agent-stage-001
 把演示替换成一个范围明确的真实任务：保留当前仓库基线，确认 Agent 已安装在所选执行环境中，并配置它需要的模型服务与凭据——pVisor 不替 Agent 选择 provider。以显式交付 OpenAI Key 的 Codex 为例，先在宿主环境设置 `OPENAI_API_KEY`：
 
 ```bash
-pvisor run --safe --pass-env OPENAI_API_KEY --stage ../agent-task-001 -- codex
+pvisor spawn --safe --pass-env OPENAI_API_KEY --stage ../agent-task-001 -- codex
 pvisor status --review ../agent-task-001
 pvisor inspect ../agent-task-001 -- git --no-pager diff -- src
 ```

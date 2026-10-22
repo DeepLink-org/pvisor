@@ -41,11 +41,12 @@ fn read_only_open_flags(flags: u32) -> io::Result<u32> {
     if f & libc::O_ACCMODE != libc::O_RDONLY {
         return Err(erofs());
     }
-    if f & libc::O_TRUNC != 0 {
+    if f & bindings::LINUX_O_TRUNC != 0 {
         return Err(erofs());
     }
-    #[cfg(target_os = "linux")]
-    if f & libc::O_TMPFILE != 0 {
+    // OPEN flags are Linux wire values, including on macOS.
+    const LINUX_O_TMPFILE: i32 = 0x410000;
+    if f & LINUX_O_TMPFILE == LINUX_O_TMPFILE {
         return Err(erofs());
     }
 
@@ -573,11 +574,11 @@ mod tests {
 
     #[test]
     fn read_only_open_flags_allow_append() {
-        let flags = (libc::O_RDONLY | libc::O_APPEND) as u32;
+        let flags = (libc::O_RDONLY | crate::devices::virtio::bindings::LINUX_O_APPEND) as u32;
         let ro_flags = read_only_open_flags(flags).unwrap();
 
         assert_eq!((ro_flags as i32) & libc::O_ACCMODE, libc::O_RDONLY);
-        assert_ne!((ro_flags as i32) & libc::O_APPEND, 0);
+        assert_ne!((ro_flags as i32) & crate::devices::virtio::bindings::LINUX_O_APPEND, 0);
     }
 
     #[test]
@@ -589,7 +590,7 @@ mod tests {
 
     #[test]
     fn read_only_open_flags_reject_truncate() {
-        let err = read_only_open_flags((libc::O_RDONLY | libc::O_TRUNC) as u32).unwrap_err();
+        let err = read_only_open_flags((libc::O_RDONLY | crate::devices::virtio::bindings::LINUX_O_TRUNC) as u32).unwrap_err();
 
         assert_eq!(err.raw_os_error(), Some(libc::EROFS));
     }

@@ -11,7 +11,7 @@ projections.
 Does not own the proxy data plane. [`pvisor-overlaynet`](../pvisor-overlaynet/README.md)
 owns proxy transport, access enforcement, and generic sink dispatch.
 
-Capture remains the user-facing capability. It runs through `pvisor run`.
+Capture remains the user-facing capability. It runs through `pvisor spawn`.
 Gateway is an internal pVisor driver and a reusable crate, not a peer product
 or standalone service.
 

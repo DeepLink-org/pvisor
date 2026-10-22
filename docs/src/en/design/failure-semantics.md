@@ -16,7 +16,7 @@ Session prepares file/network resources, commits required startup facts, then di
 | --- | --- | --- | --- |
 | Admission / driver preparation / startup fact commit | Workload not dispatched; preparation may have created directories, mounts or sockets | Session cleanup and preparation errors | Resolve resources/capabilities first; do not bypass failed startup-fact commit to dispatch |
 | Post-execution recording or cleanup | Workload ran; upper changes or network effects may exist | Attempt, actual exit, Bundle/log and stage completeness | Do not rerun commands automatically to repair records |
-| Host CLI timeout, disconnect or cancellation | Listener/worker may have accepted work and produced effects; cleanup may continue | Pinned Job state, artifacts and original request correlation | Host envelopes supply no generic deduplication; frontend does not automatically retry |
+| Host CLI timeout, disconnect or cancellation | The Job owner or a caller-side durable operation may have produced effects; cleanup may continue | Pinned Job state, artifacts and original request correlation | Host envelopes supply no generic deduplication; frontend does not automatically retry |
 | Journal append returns Unknown | No bytes, a partial tail or a complete record may exist; handle is poisoned | Release clones/active writes, reopen and inspect the original Event ID | Retry append with identical Event ID and contents, without repeating external work |
 | Uncertain execution capture / suspend / resume / fork receipt | Durable requests, objects, branches or successor Attempts may exist | Original request ID, Job head, current Attempt and exit/startup receipts | Reuse ID and parameters within that operation's scope; ambiguity may still return Unknown |
 | Interrupted apply | Some target files changed; upper may not yet be pruned | Prepared / TargetApplied / Committed ledger and preimages under target lock | Recover the existing batch; do not delete the ledger and repeat everything |
@@ -32,7 +32,7 @@ These describe failure semantics rather than a new shared error enum. Journal `R
 | --- | --- | --- |
 | Event ID | Deduplication inside a Journal, returning the original position/receipt | Same ID requires identical serialized contents; changed timestamps or payloads conflict |
 | Execution lifecycle request ID | Durable request/result correlation for the corresponding Job operation | Capture/suspend/resume/execution fork validate their bound parameters; no exactly-once claim for every command |
-| Host envelope `request_id` | Correlates request, response, ticket, errors and cancellation | Does not give the transport a durable queue or generic deduplication |
+| Host envelope `request_id` | Correlates request, response, errors and cancellation | Does not give the transport a durable queue or generic deduplication |
 | Checkpoint ID / manifest digest | Identifies saved state or content | Object existence does not prove source termination, Job-head commit or restore startup |
 
 Journal retries retain the original Event object. Calling `Trace::event()` again generates a new UUID and therefore another event, even with identical prose. Job retries also retain original parameters. A new request ID denotes a new request and cannot safely probe whether the last one succeeded.
@@ -57,7 +57,9 @@ Callers reconcile terminal state and cleanup before releasing stages, snapshot l
 | --- | --- |
 | `pvisor/src/session.rs`, `session/lifecycle.rs` | Preparation, dispatch, cleanup and fact publication |
 | `pvisor/src/runtime/job_service/managed.rs` | Accepted Attempt join, frontend cancellation and terminal publication |
-| `pvisor-cli/src/cli/host_service.rs` | Listener, worker tickets, cancellation and request cleanup |
+| `pvisor-cli/src/cli/host_service.rs` | Frontend/owner bootstrap, private cancellation channel, direct durable-operation routing and process cleanup |
+| `pvisor/src/runtime/host_transport.rs`, `instance_control.rs` | Recorded endpoint validation, owner commands and response uncertainty |
+| `pvisor/src/runtime/registry.rs` | `job.lock`, Run records and the retained internal Overlay control |
 | `pvisor-journal/src/journal.rs` | Rejected/Unknown, poisoning, deduplication and reopen |
 | `pvisor/src/runtime/job_execution.rs`, `runtime/job_service/lifecycle.rs`, `fork.rs` | Durable requests, restore and branch reconciliation |
 | `pvisor-overlay-core/src/apply.rs`, `stage.rs` | Forward apply recovery and stage completeness |
