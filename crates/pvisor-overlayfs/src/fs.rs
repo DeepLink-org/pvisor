@@ -683,18 +683,18 @@ impl OverlayFs {
         } else {
             flags
         };
-        let writing = flags & libc::O_ACCMODE != libc::O_RDONLY
-            || flags & (libc::O_APPEND | libc::O_TRUNC) != 0;
-        let path = if writing {
-            self.copy_up_inode_for_open(ino, flags)?
+        let writing = FilesystemService::is_write_open(flags);
+        let real = if writing {
+            let path = self.copy_up_inode_for_open(ino, flags)?;
+            self.core.upper_path(&path)
         } else {
             let path = self.node_path(ino)?;
             if !self.read_only {
                 self.inode_for_path_with_metadata(path.clone())?;
             }
-            path
+            self.core.prepare_open(&path, flags)?
         };
-        self.open_path_with_backing(&path, flags)
+        Self::open_backing(real, flags)
     }
 
     #[cfg(test)]
@@ -799,30 +799,46 @@ impl OverlayFs {
     }
 
     fn reclaim_inode(&mut self, ino: u64) {
+        self.reclaim_inodes([ino]);
+    }
+
+    fn reclaim_inodes(&mut self, inodes: impl IntoIterator<Item = u64>) {
         let profile = self.profile.clone();
         let _span = profile.span("reclaim_inode");
-        if self.pending_inodes.contains_key(&ino) {
-            return;
-        }
-        if ino == FUSE_ROOT_ID || self.nodes.get(&ino).is_some_and(|node| node.lookups != 0) {
+        let mut retired: BTreeSet<_> = inodes
+            .into_iter()
+            .filter(|ino| {
+                *ino != FUSE_ROOT_ID
+                    && !self.pending_inodes.contains_key(ino)
+                    && self.nodes.get(ino).is_some_and(|node| node.lookups == 0)
+            })
+            .collect();
+        if retired.is_empty() {
             return;
         }
         // Active file and directory handles pin their inodes.
-        if self.open_files.values().any(|file| file.ino == ino)
-            || self
-                .open_directories
-                .values()
-                .any(|entries| entries.iter().any(|entry| entry.ino == ino))
-        {
+        for file in self.open_files.values() {
+            retired.remove(&file.ino);
+        }
+        for entry in self.open_directories.values().flatten() {
+            retired.remove(&entry.ino);
+        }
+        if retired.is_empty() {
             return;
         }
-        self.profile
-            .add("reclaim_paths_scanned", self.by_path.len() as u64);
+        for ino in &retired {
+            let node = self.nodes.remove(ino).unwrap();
+            self.profile
+                .add("reclaim_paths_scanned", node.paths.len() as u64);
+            for path in node.paths {
+                if self.by_path.get(&path) == Some(ino) {
+                    self.by_path.remove(&path);
+                }
+            }
+        }
         self.profile
             .add("reclaim_objects_scanned", self.by_object.len() as u64);
-        self.nodes.remove(&ino);
-        self.by_path.retain(|_, value| *value != ino);
-        self.by_object.retain(|_, value| *value != ino);
+        self.by_object.retain(|_, ino| !retired.contains(ino));
     }
 
     pub(super) fn is_directory_inode(&self, ino: u64) -> bool {
@@ -842,10 +858,8 @@ impl OverlayFs {
         if let Ok(path) = self.node_path(ino) {
             // Recursive materialization need not have copied every known alias.
             // The lexicographically first node path can still be a lower alias.
-            return match self.core.copied_hard_link_metadata(&path)? {
-                Some(metadata) => Ok(metadata),
-                None => self.core.metadata(&path),
-            };
+            let (metadata, copied) = self.core.metadata_with_copied_hard_link(&path)?;
+            return Ok(copied.unwrap_or(metadata));
         }
         self.open_files
             .values()
@@ -855,12 +869,12 @@ impl OverlayFs {
     }
 
     fn inode_for_path_with_metadata(&mut self, path: PathBuf) -> io::Result<(u64, fs::Metadata)> {
-        let mut metadata = self.core.metadata(&path)?;
+        let (mut metadata, copied) = self.core.metadata_with_copied_hard_link(&path)?;
         let key = ObjectKey {
             device: metadata.dev(),
             inode: metadata.ino(),
         };
-        if let Some(current) = self.core.copied_hard_link_metadata(&path)? {
+        if let Some(current) = copied {
             // Core's session-owned mapping outlives FORGET/reclaim. Neither the
             // presence of an adapter inode nor its canonical path is authority
             // for deciding whether this lower alias already has upper contents.
@@ -1243,12 +1257,10 @@ impl OverlayFs {
 
     #[cfg(test)]
     fn open_path(&self, path: &Path, flags: i32) -> io::Result<File> {
-        self.open_path_with_backing(path, flags)
-            .map(|(file, _)| file)
+        Self::open_backing(self.core.prepare_open(path, flags)?, flags).map(|(file, _)| file)
     }
 
-    fn open_path_with_backing(&self, path: &Path, flags: i32) -> io::Result<(File, PathBuf)> {
-        let real = self.core.prepare_open(path, flags)?;
+    fn open_backing(real: PathBuf, flags: i32) -> io::Result<(File, PathBuf)> {
         let access_mode = flags & libc::O_ACCMODE;
         let mut options = OpenOptions::new();
         options
@@ -1495,8 +1507,8 @@ impl OverlayFs {
             let path = self.child_path(parent, name)?;
             self.core.create_node(&path, mode & !umask, rdev)?;
             let metadata = self.core.metadata(&path)?;
-            let ino = self.allocate_inode(path.clone(), &metadata);
-            self.attr(ino, &path)
+            let ino = self.allocate_inode(path, &metadata);
+            Ok(self.attr_from_metadata(ino, &metadata))
         })();
         self.observe_result(observed_path.as_deref(), "mknod", &result, 0, true);
         if let Ok(attr) = &result {
@@ -1534,8 +1546,8 @@ impl OverlayFs {
             let path = self.child_path(parent, name)?;
             self.core.create_dir(&path, mode & !umask)?;
             let metadata = self.core.metadata(&path)?;
-            let ino = self.allocate_inode(path.clone(), &metadata);
-            self.attr(ino, &path)
+            let ino = self.allocate_inode(path, &metadata);
+            Ok(self.attr_from_metadata(ino, &metadata))
         })();
         self.observe_result(observed_path.as_deref(), "mkdir", &result, 0, true);
         if let Ok(attr) = &result {
@@ -1629,8 +1641,8 @@ impl OverlayFs {
             let path = self.child_path(parent, name)?;
             self.core.create_symlink(&path, target)?;
             let metadata = self.core.metadata(&path)?;
-            let ino = self.allocate_inode(path.clone(), &metadata);
-            self.attr(ino, &path)
+            let ino = self.allocate_inode(path, &metadata);
+            Ok(self.attr_from_metadata(ino, &metadata))
         })();
         self.observe_result(observed_path.as_deref(), "symlink", &result, 0, true);
         if let Ok(attr) = &result {
@@ -1900,9 +1912,7 @@ impl OverlayFs {
         let profile = self.profile.clone();
         let _span = profile.span("releasedir");
         if let Some(entries) = self.open_directories.remove(&fh) {
-            for entry in entries {
-                self.reclaim_inode(entry.ino);
-            }
+            self.reclaim_inodes(entries.into_iter().map(|entry| entry.ino));
             reply.ok();
         } else {
             reply.error(libc::EBADF);
@@ -1916,7 +1926,7 @@ impl OverlayFs {
             self.core.sync_preimages()?;
             let resolved = self
                 .core
-                .resolve(&path)
+                .resolve_checked(&path)?
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
             let directory = File::open(resolved.path)?;
             sys::fsync(&directory, datasync)
@@ -2058,7 +2068,7 @@ impl OverlayFs {
         let result = self.node_path(ino).and_then(|path| {
             let real = self
                 .core
-                .resolve(&path)
+                .resolve_checked(&path)?
                 .ok_or_else(|| io::Error::from_raw_os_error(libc::ENOENT))?;
             sys::access(&real.path, mask)
         });
@@ -2334,6 +2344,69 @@ mod tests {
     }
 
     #[test]
+    fn batch_reclaim_visits_only_retired_paths_and_scans_objects_once() {
+        let root = tempfile::tempdir().unwrap();
+        let lower = root.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        for i in 0..32 {
+            fs::write(lower.join(format!("f{i:04}")), b"file").unwrap();
+        }
+        fs::hard_link(lower.join("f0003"), lower.join("alias")).unwrap();
+        let mut overlay = OverlayFs::new(vec![lower], root.path().join("upper"), None).unwrap();
+        let inodes: Vec<_> = (0..32)
+            .map(|i| {
+                overlay
+                    .inode_for_path_with_metadata(format!("f{i:04}").into())
+                    .unwrap()
+                    .0
+            })
+            .collect();
+        assert_eq!(
+            overlay
+                .inode_for_path_with_metadata("alias".into())
+                .unwrap()
+                .0,
+            inodes[3]
+        );
+        overlay.retain_lookup(inodes[0]);
+        overlay.pending_inodes.insert(inodes[1], 1);
+        overlay.open_directories.insert(
+            1,
+            vec![DirectoryEntry {
+                ino: inodes[2],
+                kind: FileType::RegularFile,
+                name: "f0002".into(),
+                attr: None,
+            }],
+        );
+        let profile = pvisor_overlay_core::profile::Profile::enabled("batch-reclaim");
+        overlay.profile = profile.clone();
+        overlay.reclaim_inodes([0, u64::MAX]);
+        assert!(
+            !profile
+                .report()
+                .unwrap()
+                .measurements
+                .contains_key("reclaim_objects_scanned")
+        );
+        overlay.reclaim_inodes(inodes.iter().copied().chain([0, inodes[3]]));
+        for (index, ino) in inodes.iter().enumerate() {
+            assert_eq!(overlay.nodes.contains_key(ino), index < 3);
+        }
+        assert!(!overlay.by_path.contains_key(Path::new("alias")));
+        let measured = profile.report().unwrap();
+        assert_eq!(measured.measurements["reclaim_paths_scanned"].units, 30);
+        assert_eq!(measured.measurements["reclaim_objects_scanned"].units, 32);
+        overlay.nodes.get_mut(&inodes[0]).unwrap().lookups = 0;
+        overlay.pending_inodes.clear();
+        overlay.open_directories.clear();
+        overlay.reclaim_inodes(inodes[..3].iter().copied());
+        assert_eq!(overlay.nodes.len(), 1);
+        assert_eq!(overlay.by_path.len(), 1);
+        assert!(overlay.by_object.is_empty());
+    }
+
+    #[test]
     fn queued_requests_pin_only_their_referenced_inodes() {
         let root = tempfile::tempdir().unwrap();
         let lower = root.path().join("lower");
@@ -2404,12 +2477,13 @@ mod tests {
             ino
         );
         let guard = core.use_prepared_copy_ups(copies).unwrap();
-        overlay.copy_up_inode(ino).unwrap();
+        let (writer, backing) = overlay.open_inode_with_backing(ino, libc::O_RDWR).unwrap();
+        assert_eq!(backing, root.path().join("upper/alias"));
         assert_eq!(
             sys::seek(&overlay.open_files[&1], 0, libc::SEEK_CUR).unwrap(),
             3
         );
-        fs::write(root.path().join("upper/file"), b"updated").unwrap();
+        writer.write_at(b"updated", 0).unwrap();
         let mut bytes = [0; 7];
         overlay.open_files[&1].read_at(&mut bytes, 0).unwrap();
         assert_eq!(&bytes, b"updated");
@@ -3232,6 +3306,36 @@ mod tests {
             profile.report().unwrap().measurements["copy_up_truncate_skipped_bytes"].units,
             8
         );
+        assert_eq!(profile.report().unwrap().measurements["copy_up"].calls, 1);
+    }
+
+    #[test]
+    fn lookup_getattr_and_write_open_do_not_repeat_resolution_or_copy_up() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("file"), b"original").unwrap();
+        let profile = pvisor_overlay_core::profile::Profile::enabled("host-hotpath");
+        let core = OverlayCore::new(vec![lower.clone()], temp.path().join("upper"), None)
+            .unwrap()
+            .with_profile(profile.clone());
+        let mut overlay = OverlayFs::from_core(core).unwrap();
+        let (ino, metadata) = overlay.inode_for_path_with_metadata("file".into()).unwrap();
+        assert_eq!(metadata.len(), 8);
+        assert_eq!(profile.report().unwrap().measurements["resolve"].calls, 1);
+        assert_eq!(
+            overlay.inode_metadata(ino, None).unwrap().ino(),
+            metadata.ino()
+        );
+        assert_eq!(profile.report().unwrap().measurements["resolve"].calls, 2);
+        let (writer, backing) = overlay
+            .open_inode_with_backing(ino, libc::O_WRONLY | libc::O_APPEND)
+            .unwrap();
+        assert_eq!(backing, temp.path().join("upper/file"));
+        assert_eq!(profile.report().unwrap().measurements["copy_up"].calls, 1);
+        write_request(&writer, b"!", 8, libc::O_APPEND).unwrap();
+        assert_eq!(fs::read(backing).unwrap(), b"original!");
+        assert_eq!(fs::read(lower.join("file")).unwrap(), b"original");
     }
 
     #[test]
@@ -3376,7 +3480,7 @@ mod tests {
         fs::write(lower.join(".ssh/id_rsa"), b"dummy-private").unwrap();
         fs::write(lower.join(".env"), b"warn-only").unwrap();
         std::os::unix::fs::symlink(".ssh/id_rsa", lower.join("alias")).unwrap();
-        let overlay = OverlayFs::new(vec![lower], dir.path().join("upper"), None)
+        let mut overlay = OverlayFs::new(vec![lower.clone()], dir.path().join("upper"), None)
             .unwrap()
             .with_access_policy(
                 &pvisor_overlay_core::FileAccessPolicy::new(
@@ -3394,6 +3498,19 @@ mod tests {
             overlay
                 .open_path(Path::new("alias"), libc::O_RDONLY)
                 .is_err()
+        );
+        let (ino, _) = overlay
+            .inode_for_path_with_metadata("alias".into())
+            .unwrap();
+        for flags in [libc::O_WRONLY, libc::O_WRONLY | libc::O_TRUNC] {
+            assert_eq!(
+                overlay.open_inode(ino, flags).unwrap_err().raw_os_error(),
+                Some(libc::ELOOP)
+            );
+        }
+        assert_eq!(
+            fs::read(lower.join(".ssh/id_rsa")).unwrap(),
+            b"dummy-private"
         );
         assert!(
             overlay

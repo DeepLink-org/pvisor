@@ -30,7 +30,7 @@ pVisor 还会注入运行时变量，例如 `PVISOR_RUN_ID`、`PVISOR_AGENTCTL_*
 | Gateway 持有 | 配置 Gateway 路由，`api_key_env` 指向可信侧的变量 | 不能；Agent 只连接 Gateway |
 
 ```bash
-pvisor run --safe \
+pvisor spawn --safe \
   --gateway-mode capture \
   --gateway-route \
     'name="openai", provider="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \

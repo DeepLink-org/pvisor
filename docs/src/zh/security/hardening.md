@@ -5,7 +5,7 @@
 ## 第一级：保护工作区
 
 ```bash
-pvisor run --safe -- codex
+pvisor spawn --safe -- codex
 ```
 
 - 工作区改动进入暂存区，审查后再 apply，冲突时拒绝覆盖你的修改；
@@ -18,11 +18,11 @@ pvisor run --safe -- codex
 
 ```bash
 # 只允许必要的目标（VM 上不可绕过）
-pvisor run --safe --vm --rootfs image=my-agent-image:latest \
+pvisor spawn --safe --vm --rootfs image=my-agent-image:latest \
   --overlaynet-allow api.openai.com:443 -- codex
 
 # 或者在 host 上拒绝所有普通出口
-pvisor run --safe --overlaynet-deny-all -- ./agent.sh
+pvisor spawn --safe --overlaynet-deny-all -- ./agent.sh
 ```
 
 macOS host 的 `--safe` 本身已阻断直接外部连接；Linux host 的选择性规则仍是协作式的。各路径的差别见[网络边界](../guides/policies/network.md#网络边界)。

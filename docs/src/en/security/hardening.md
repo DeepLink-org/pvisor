@@ -5,7 +5,7 @@ Tighten progressively, from low to high risk. Verify the controls actually insta
 ## Level 1: Protect the workspace
 
 ```bash
-pvisor run --safe -- codex
+pvisor spawn --safe -- codex
 ```
 
 - Workspace changes go to the staging area and reach the project only after review and apply; conflicts refuse to overwrite your edits.
@@ -18,11 +18,11 @@ A cooperative proxy constrains only clients that respect proxy settings. When yo
 
 ```bash
 # 只允许必要的目标（VM 上不可绕过）
-pvisor run --safe --vm --rootfs image=my-agent-image:latest \
+pvisor spawn --safe --vm --rootfs image=my-agent-image:latest \
   --overlaynet-allow api.openai.com:443 -- codex
 
 # 或者在 host 上拒绝所有普通出口
-pvisor run --safe --overlaynet-deny-all -- ./agent.sh
+pvisor spawn --safe --overlaynet-deny-all -- ./agent.sh
 ```
 
 macOS host `--safe` already blocks direct external connections; selective rules on Linux host remain cooperative. See [network boundaries](../guides/policies/network.md#网络边界) for how the paths differ.

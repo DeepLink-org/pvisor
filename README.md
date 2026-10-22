@@ -49,7 +49,7 @@ for platform requirements and executor setup.
 ## Run it
 
 ```bash
-pvisor run --safe -- claude
+pvisor spawn --safe -- claude
 pvisor status --review last
 pvisor apply last --path src   # or: pvisor drop last
 ```
@@ -59,6 +59,14 @@ keeps workspace changes in Job storage for review, and `last` addresses the most
 recent Job in the default storage. To put the stage elsewhere, use `--stage PATH`
 and address later commands with that path or the printed Job ID (`run-*`) instead
 of `last`.
+
+## Independent container VMs (experimental)
+
+`pvisor run`, `pull`, `exec` and the other container commands provide a Docker-style command subset with one Linux VM per
+container, launched by the current host user without a central daemon. Existing
+Jobs are created with `pvisor spawn`; default execution also uses `spawn`. See the [supported commands, options and
+limitations](crates/pvisor-cli/README.md#docker-command-profile-experimental)
+before using this profile; it does not implement the Docker Engine API.
 
 ## Bounded, recoverable, checkable
 

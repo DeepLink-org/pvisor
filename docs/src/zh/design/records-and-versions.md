@@ -26,7 +26,7 @@ Event 的 ID 与 Journal position、Host `request_id`、Job 生命周期请求 I
 | Event | `version = 5` | `VERSION` 精确检查；Observation 的 `domain/name/version` 是独立载荷身份 | `pvisor-core/src/event.rs` |
 | Journal Header / Record | `pvisor.trace/5` | Header 与 Event 校验相互配合；完整旧格式拒绝，不当作坏尾部截掉 | `pvisor-journal/src/journal.rs` |
 | Run Bundle | `schema_version = 4` | 要求当前 schema 和观察合同；不能用默认零值伪造缺失观察 | `pvisor/src/runtime/bundle.rs` |
-| RunRecord（`run.json`） | `schema_version = 1` | reader 检查 schema 1；可选/default 字段按当前 serde 定义读取 | `pvisor/src/runtime/registry.rs` |
+| RunRecord（`run.json`） | `schema_version = 1` | reader 检查 schema 1；可选 `live_control` 记录 owner 地址与身份，终态清除；缺少该字段时 CLI 只读磁盘状态 | `pvisor/src/runtime/registry.rs` |
 | execution Job（`execution-job.json`） | `version = 2` | 精确版本与 Job/root/stage 绑定检查；旧记录不自动转换 | `pvisor/src/runtime/job_execution.rs` |
 
 Event version 5 与 Journal format 5 在当前实现中共用 Event 的版本常量；其他版本没有这种关系。一个领域 Observation 的载荷版本变化，也不能仅靠外层 Event version 5 判断业务兼容性。JSON 可被解析，只说明语法可读；还要经过具体记录的校验。
@@ -55,16 +55,18 @@ Job 的检查点入口与兼容 profile 见[Job 检查点设计](job-checkpoint-
 | --- | --- | --- |
 | Host AgentCtl envelope | `AGENTCTL_HOST_VERSION = 1` | Job/Attempt/generation 目标由端点 owner 检查；Guest token 不授予 Host 权限 |
 | Guest AgentCtl | `AGENTCTL_VERSION = 1` | 工作负载 `Hello`/`Sync`、状态与协作；和 Host 是两套协议 |
-| CLI Job listener / worker ticket | `pvisor-job-ticket-4`，再绑定 Cargo 包版本与可执行文件 BLAKE3 | 内部精确 schema/build 匹配；同包版本重新构建也可能不兼容 |
-| daemon native supervisor | version-1 Host envelope，加 owner/token 与精确目标 | 不使用 Guest 协议或 CLI worker ticket；旧 supervisor 无透明接管兼容 |
+| Job owner 实例控制 | `pvisor-instance-control-1`，version-1 Host envelope，精确 Job/Attempt 与记录的 socket device/inode | 同 UID；调用方二进制可不同，按实例协议兼容；不兼容只拒绝该 Job |
+| CLI owner 启动 | 继承的私有 socketpair、内部 DTO 与同一二进制 BLAKE3 校验 | 仅前端启动自己的 owner；后续命令不使用该 DTO |
+| 持久 Job 操作锁 | `job.lock` 诊断协议 `pvisor-job-lock-1`，PID 与操作名 | 独占 flock、0600、单硬链接；兼容磁盘格式的不同二进制共享该锁，未知格式拒绝修改 |
+| daemon native supervisor | version-1 Host envelope，加 owner/token 与精确目标 | 凭据与准入独立于 Job owner 协议；旧 supervisor 无透明接管兼容 |
 
-源码入口是 `pvisor-core/src/host_protocol.rs`、`protocol.rs`、`pvisor-cli/src/cli/host_service.rs` 和 `pvisor/src/runtime/supervisor.rs`。线上 framing、同 UID 边界和升级顺序由[Host AgentCtl](architecture.md#host-wire)维护。Rust `api` 的组织方式与线上兼容性分别管理，见[API 边界与迁移状态](architecture.md#api-boundaries)。
+源码入口是 `pvisor-core/src/host_protocol.rs`、`protocol.rs`、`pvisor-cli/src/cli/host_service.rs` 及 `pvisor/src/runtime/` 下的 `host_transport.rs`、`registry.rs` 和 `supervisor.rs`。线上 framing、同 UID 边界和升级顺序由[Host AgentCtl](architecture.md#host-wire)维护。Rust `api` 的组织方式与线上兼容性分别管理，见[API 边界与迁移状态](architecture.md#api-boundaries)。
 
 ## 版本变化时沿哪些关系核对 {#evolution}
 
 1. 确认变化属于输入 DTO、磁盘对象、领域载荷还是 live 协议，找到实际 reader。
 2. 明确接受旧格式、提供显式转换，或拒绝旧格式；禁止只改版本数字绕过结构与绑定检查。
-3. 对存储对象同时核对摘要、依赖引用、stage/Attempt 归属和恢复 profile；对 live 协议同时核对权限、generation、ticket 与构建身份。
+3. 对存储对象同时核对摘要、依赖引用、stage/Attempt 归属和恢复 profile；对 live 协议核对权限、端点支持的目标字段、实例协议名与 socket 身份。同一二进制校验只适用于前端启动自己的 owner。
 4. 在升级前处理旧 listener/supervisor 的活动请求和实例；文件格式兼容不等于运行中进程可接管。
 5. 发生超时、断连或发布失败时，先判断原请求在哪个提交点，按[失败语义与重试](failure-semantics.md)核对，再决定是否重试。
 

@@ -50,6 +50,22 @@ pub fn agent_socket_path(task_id: &str) -> std::path::PathBuf {
     directory.join(name)
 }
 
+/// Host end of a VM port bridge: the unix socket libkrun listens on and
+/// tunnels into the guest's AF_VSOCK listener for `port` (same numbering
+/// scheme as the agent socket; callers own its lifecycle).
+pub fn bridge_socket_path(task_id: &str, port: u16) -> std::path::PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    task_id.hash(&mut hasher);
+    let name = format!("pvisor-bridge-{:016x}-{port}.sock", hasher.finish());
+    let directory = if std::path::Path::new("/run").is_dir() {
+        std::path::PathBuf::from("/run")
+    } else {
+        std::env::temp_dir()
+    };
+    directory.join(name)
+}
+
 /// Maximum payload in either direction, including JSON control messages.
 /// Stream pumps use small chunks; no peer may request an unbounded allocation.
 pub const MAX_FRAME_PAYLOAD: usize = 1024 * 1024;

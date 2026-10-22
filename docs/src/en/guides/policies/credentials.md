@@ -30,7 +30,7 @@ pVisor also injects runtime variables such as `PVISOR_RUN_ID` and `PVISOR_AGENTC
 | Gateway-held | Configure a Gateway route with `api_key_env` pointing at a trusted-side variable | No; the agent only connects to the Gateway |
 
 ```bash
-pvisor run --safe \
+pvisor spawn --safe \
   --gateway-mode capture \
   --gateway-route \
     'name="openai", provider="openai", upstream="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY"' \

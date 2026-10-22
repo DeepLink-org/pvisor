@@ -3,7 +3,7 @@
 pVisor 不要求 Agent：任何命令都可以在边界内运行，使用同样的暂存、审查和证据。
 
 ```bash
-pvisor run --safe --overlaynet-deny-all -- ./agent.sh
+pvisor spawn --safe --overlaynet-deny-all -- ./agent.sh
 pvisor status --review last
 pvisor apply last --path src
 ```
@@ -11,7 +11,7 @@ pvisor apply last --path src
 ## 行为
 
 - **工作目录**：命令的工作目录是暂存视图，看到项目当前的文件，写入进入暂存区；
-- **退出码**：命令的退出码原样作为 `pvisor run` 的退出码返回，便于在脚本和 CI 中判断成败；
+- **退出码**：命令的退出码原样作为 `pvisor spawn` 的退出码返回，便于在脚本和 CI 中判断成败；
 - **失败也可审查**：命令非零退出时，它产生的文件改动仍保留在暂存区，可以审查后决定 apply 或 drop；
 - **参数**：`--` 之后的内容原样作为命令和参数传递。
 

@@ -1,4 +1,4 @@
-//! Validate documentation TOML with the same deserializer used by `pvisor run`.
+//! Validate documentation TOML with the same deserializer used by `pvisor spawn`.
 //! No executor, filesystem mount, network listener, or VM is started.
 use std::path::Path;
 

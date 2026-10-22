@@ -6,10 +6,12 @@ Choose the CLI for native Jobs and file review, the Runtime when a Rust applicat
 
 | Entry point | Intended caller | Identity and lifecycle managed | Prerequisites |
 | --- | --- | --- | --- |
-| `pvisor` CLI | Developers, scripts, CI, and evaluators integrating through subprocesses | Native Job/Attempt; commands manage execution, review, and state operations | Prepare the selected host, OCI, or VM executor; associate tasks through machine-readable output |
+| `pvisor spawn` CLI | Developers, scripts, CI, and evaluators integrating through subprocesses | Native Job/Attempt; commands manage execution, review, and state operations | Prepare the selected host, OCI, or VM executor; associate tasks through machine-readable output |
 | Rust `pvisor` Runtime | Rust applications requiring direct execution and cleanup control | `PVisor`, `RunHandle`, and Job service; the application owns the runtime and completes waiting and cleanup | Pin crate versions, configure executors/drivers, and follow lifecycle and persistence contracts |
 | `pvisor-daemon serve --sandbox` | Platform services using an HTTP lifecycle API | Daemon sandbox ID; local admission, TTL, supervisors, and persistent state | Linux x86_64, KVM, delegated cgroup v2, trusted prepared images, and guest service bridges |
 | `containerd-shim-pvisor-v2` | containerd / CRI call chains | containerd task / exec identity and the corresponding task lifecycle | Linux and containerd configuration; VM execution also needs the `vm` build feature and KVM |
+
+The CLI column describes native Jobs created with `pvisor spawn`. Standalone containers use `pvisor run` and the other container commands, with distinct identities and interface scopes; see the [CLI reference](../../reference/cli.md).
 
 The CLI is a calling interface; an executor is an execution environment. Choosing the CLI does not limit execution to host processes. API identities are not interchangeable: daemon sandbox IDs cannot be passed to native Job commands, and containerd task IDs do not automatically become Job selectors.
 
@@ -38,7 +40,7 @@ Rust applications directly manage executors, drivers, waiting, and cleanup. Canc
 
 ## containerd integration {#containerd}
 
-The shim connects containerd task/exec operations to host execution or an explicitly selected VM path. It is a separate entry point from the native CLI's OCI executor, which invokes `runc`/`crun` through `pvisor run --executor container` and retains the Job workflow.
+The shim connects containerd task/exec operations to host execution or an explicitly selected VM path. It is a separate entry point from the native CLI's OCI executor, which invokes `runc`/`crun` through `pvisor spawn --executor container` and retains the Job workflow.
 
 VM shim CPU/RAM annotations configure VM shape. Some host OCI constraints are accepted as no-ops, so their presence does not establish enforcement inside the guest. See the [shim README](https://github.com/DeepLink-org/pvisor/blob/main/crates/pvisor-shim/README.md) for registration, guest exec, mounts, and support scope. After registration, validate the controls and data paths required by the workload before deployment.
 

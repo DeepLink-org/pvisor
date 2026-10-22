@@ -22,8 +22,8 @@ Both modes retain staging isolation and content-based conflict detection. Frozen
 Filesystem access, network isolation and staging are independent settings. Host defaults preserve the host filesystem view. Use `--filesystem sandbox` to restrict paths and explicitly enable staging to review changes:
 
 ```bash
-pvisor run --stage ../stage-001 -- codex
-pvisor run --filesystem sandbox --overlaynet-deny-all -- codex
+pvisor spawn --stage ../stage-001 -- codex
+pvisor spawn --filesystem sandbox --overlaynet-deny-all -- codex
 ```
 
 See [Staging and storage](../reference/cli.md#暂存与存储) for default writes/cleanup and [Capabilities and evidence](../concepts/capabilities-and-evidence.md) for staging coverage. ZCode's Linux host adapter grants persistent write access to application state directories; see [CLI reference](../reference/cli.md).

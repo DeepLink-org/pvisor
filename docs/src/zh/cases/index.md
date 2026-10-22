@@ -20,7 +20,7 @@
 sandbox=$(mktemp -d)
 mkdir "$sandbox/workspace"
 cd "$sandbox/workspace"
-pvisor run --stage "$sandbox/draft" -- /bin/sh -c 'printf proposal > report.txt'
+pvisor spawn --stage "$sandbox/draft" -- /bin/sh -c 'printf proposal > report.txt'
 pvisor review "$sandbox/draft" --diff
 pvisor inspect "$sandbox/draft" -- /bin/cat report.txt
 pvisor apply "$sandbox/draft" --path report.txt
@@ -33,10 +33,10 @@ cat report.txt
 
 | 需求 | 工具与入口 | 下一步 |
 |---|---|---|
-| 在终端中审查、审批路径访问 | `pvisor run --tui` / `--ask`，派发到同目录的 `pvisor-tui` | [CLI 参考](../reference/cli.md) |
-| 为真实模型请求路由、捕获轨迹 | `pvisor run --gateway-mode capture --gateway-route ...` | [捕获指南](../guides/capture.md)，以及 `just examples 04-gateway-llm-control` 的本地 mock 请求测试 |
+| 在终端中审查、审批路径访问 | `pvisor spawn --tui` / `--ask`，派发到同目录的 `pvisor-tui` | [CLI 参考](../reference/cli.md) |
+| 为真实模型请求路由、捕获轨迹 | `pvisor spawn --gateway-mode capture --gateway-route ...` | [捕获指南](../guides/capture.md)，以及 `just examples 04-gateway-llm-control` 的本地 mock 请求测试 |
 | 从原生 Agent 轨迹准备恢复 | `pvisor replay`，派发到同目录的 `pvisor-replay` | [第五章](05-tools-and-restoration.md)、[回放指南](../guides/replay.md) |
-| 选择 OCI 容器或 VM 执行 | `pvisor run --executor container` / `--executor vm` | [容器](../guides/executors/container.md)、[VM](../guides/executors/vm.md)；需要对应 runtime/rootfs |
+| 选择 OCI 容器或 VM 执行 | `pvisor spawn --executor container` / `--executor vm` | [容器](../guides/executors/container.md)、[VM](../guides/executors/vm.md)；需要对应 runtime/rootfs |
 | 保存 CPU、RAM、设备和完整文件树 | 原生 VM execution checkpoint / 快照存储 SDK | [Execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)；要求兼容的独立 rootfs、无网络 Job，不是 daemon 能力 |
 | 管理 OCI 文件缓存或共享冷页池 | `pvisor cache` / `pvisor-daemon serve --sandbox --memory-pool` | [共享镜像缓存](../reference/shared-image-cache.md)、[daemon 池](../guides/daemon/index.md#memory-pool) |
 

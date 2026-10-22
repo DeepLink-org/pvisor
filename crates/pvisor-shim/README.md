@@ -5,7 +5,7 @@ registered under the runtime type `io.containerd.pvisor.v2` (the binary name
 follows containerd's discovery rule: dots become dashes, last two
 components, `containerd-shim` prefix).
 
-The host process path provides full task IO. The shim
+The container-tier path (the default) provides full task IO. The shim
 implements the lifecycle every caller needs (`create`/`start`/`kill`/
 `wait`/`delete`/`state`/`pids`/`connect`/`shutdown`), exec into running
 tasks (`Exec` -> `Start(exec_id)` with `TaskExecAdded`/`TaskExecStarted`
@@ -84,9 +84,30 @@ containerd ──ttrpc── PvisorTask (Task service)
   `TaskCreate/TaskStart/TaskExit/TaskDelete` events through the containerd
   event publisher.
 
+## Executor tiers
+
+The `io.pvisor.executor` annotation names the isolation tier a task gets.
+The vocabulary names what the caller receives, not which code path runs:
+
+| Annotation value | Tier | Implementation |
+| --- | --- | --- |
+| *(absent, default)* / `container` | **container**: the task runs on the host kernel inside the OCI namespaces and cgroups (container-grade isolation) | self-exec pipeline (no runc) |
+| `vm` | **microVM**: one libkrun microVM per task on its own guest kernel | VM runner (feature `vm`) |
+
+Any other value is rejected at task creation (fail-closed): a misspelled
+tier never silently downgrades the task.
+
+There is deliberately no tier weaker than `container`: the shim is a
+containerd runtime, its input is always an OCI task (image rootfs, at
+least a private mount namespace, a cgroup), so a "bare host process"
+cannot be expressed. Standalone pVisor's three executors map as follows:
+`host` (host process) has no shim equivalent and its annotation value is
+rejected here, `container` and `vm` map to the tiers above.
+
 ## VM executor (feature `vm`)
 
-Bundles annotated with `"io.pvisor.executor": "vm"` run in a libkrun
+Bundles annotated with `"io.pvisor.executor": "vm"` (see
+[Executor tiers](#executor-tiers)) run in a libkrun
 microVM instead of host namespaces: one VM per task, rootfs shared
 read-write over virtio-fs (`/dev/root`), stdio over the virtio-console, VM
 shape via `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib` (default 2 vCPU /
@@ -131,6 +152,18 @@ synthetically from the in-VM router (`/etc/resolv.conf` points at
 when policy authorizes it, and per-task counters are logged at task delete
 (`vm network snapshot ...`).
 
+VM RAM dedup (feature `vm`): `io.pvisor.vm.ram-dedup: "true"` (default off,
+only the literal `true` opts in) registers the task's guest RAM as KSM
+mergeable via pvisor-vm's `advise_ram_dedup`. The advice is registration
+only — it never merges anything by itself, never touches global sysfs, and
+merging additionally requires the host KSM scanner
+(`/sys/kernel/mm/ksm/run`), which the shim never configures; the operator
+enables and tunes that. Enabling authorizes cross-workload page sharing and
+its side-channel/trust-domain implications: use it for homogeneous fleets
+inside one trust domain, not for mutually untrusted tenants. Advice
+failures are logged (to the runner diagnostics, i.e.
+`io.pvisor.vm.log`) and never fatal to the task.
+
 VM task lifecycle: the runner is spawned detached at `Create` (it hosts the
 VMM for the whole task), waits on a start pipe for `Start`, and exits with
 the guest workload's exit code. The runner holds no end of the start pipe,
@@ -166,9 +199,116 @@ directory):
 - tty exec in VMs is not supported yet
 
 
-## Host pod-level sandboxes
+## Payload injection
 
-The host path implements pod-level sandboxes: Create/Start/Wait/Stop/Shutdown/
+`io.pvisor.inject` selects named payloads from a node-side catalogue to run
+alongside the workload — e.g. a data-plane daemon (OpenSandbox `execd`)
+without touching the image. The catalogue lives at
+`/etc/pvisor-shim/injection.json` (`PVISOR_SHIM_INJECTION_CONFIG`
+overrides) and is pure operator data, distributed like any node asset:
+
+```json
+{"payloads": {
+  "opensandbox-execd": {
+    "source": "/opt/pvisor/payloads/execd",
+    "target": "/opt/opensandbox/execd",
+    "argv": ["/opt/opensandbox/execd"],
+    "env": {"EXECD_PORT": "44772"}
+  }
+}}
+```
+
+`source` is an absolute host file, `target` the absolute path it occupies
+inside the container, `argv` defaults to `[target]`, and `env` overlays the
+workload environment. A bundle annotation selects payloads by name (comma
+separated): `"io.pvisor.inject": "opensandbox-execd"`. The shim knows
+nothing about payload internals — no ports, protocols or versions — so
+adding, updating or removing a payload is a catalogue change, never a shim
+change. No annotation: no injection, no code-path difference.
+
+Semantics by design:
+
+- **Native PID 1.** The user command stays PID 1 with native signal and
+  exit-code semantics; injected processes are advisory siblings spawned
+  through the same namespace/pivot dance as the init child. They run with
+  the workload identity (uid/gid, capabilities, rlimits) and the workload
+  environment overlaid by their own.
+- **Fail-closed admission.** An unknown payload name, duplicate name or
+  target, a target already occupied in the image (file, directory or
+  symlink), a target claimed by a spec/request mount, or a missing or
+  non-regular source rejects the task at Create — an explicitly requested
+  payload is never silently skipped.
+- **Advisory lifecycle.** A sibling's death is logged and never fatal: the
+  task exit status is always the init child's, Start never waits for
+  injected processes, and nothing restarts them. Siblings live in the
+  task's PID namespace and cgroup, so namespace teardown and
+  `cgroup.kill` reap them with the workload.
+- **Tier parity.** The container tier bind-mounts each payload read-only
+  (`ro,nosuid,nodev` — deliberately not `noexec`) and forks one sibling per
+  payload. The VM tier stages the binary into the rootfs (same
+  materialization as the guest agent) and the guest supervisor starts it
+  from the launch config (`pvisor-guest` `GuestConfig.sidecars`). Payloads
+  marked `"share": true` (with the catalogue's `share_dir`) never copy in
+  the VM tier: the directory is attached as one read-only DAX virtio-fs
+  share (`ro,dax=inode` in the guest) and staged targets become symlinks
+  into it — one host copy serves every sandbox on the node, and guest
+  reads map it directly instead of duplicating page cache.
+- **Logging.** Sibling stderr appends to
+  `/var/log/pvisor-shim/<task-id>/inject-<name>.log`
+  (`PVISOR_SHIM_INJECTION_LOG_DIR` overrides; a file that cannot open
+  degrades to `/dev/null` with a shim warning). Files are per task and
+  unbounded — collection and rotation belong to the node agent that
+  distributes the catalogue. In the VM tier the log is
+  `/.pvisor-inject-<name>.log` inside the guest root, host-visible through
+  the virtio-fs tree. The workload's task IO (FIFOs/console) is never
+  shared with an injected process, so `kubectl logs` stays byte-clean
+  workload output.
+- **Port bridges and exposure.** A payload `"bridge": <port>` (VM tier
+  only) relays the guest service `127.0.0.1:<port>` to a listener on the
+  same port inside the pod's network namespace — the chain is pod-netns
+  proxy → vsock tunnel → guest relay. The bridge adds no authentication
+  or encryption of its own: everyone who can reach `podIP:<port>` reaches
+  the guest service, exactly the exposure a container-tier sibling has.
+  Protect the port with the bridged service's own authentication and
+  Kubernetes NetworkPolicy; the bridge only moves bytes. Stage-only
+  payloads (`"run": false`) exist because VM guests cannot see volumes:
+  an entrypoint wrapper the task command already names is staged, not
+  spawned.
+
+Injection applies to the init task only; exec processes and pod sandbox
+holders never inject.
+
+## Upstream OpenSandbox contract exceptions
+
+Two OpenSandbox-generated pod containers are special-cased by upstream
+contract markers in the OCI spec. Both are deliberate couplings: a missed
+or renamed marker degrades to the normal path (never breaks a task), and
+both are recorded here so an upstream rename surfaces as a behavior
+regression, not a mystery.
+
+- **Egress sidecar** (env `OPENSANDBOX_EGRESS_RULES`): always runs on the
+  container tier even under a pod-wide `executor=vm` annotation — as a
+  microVM it would police an empty namespace of its own and the pod would
+  never become ready. Its Create publishes the pod's policy at a
+  sandbox-scoped gate file; a VM workload that sees the egress-auth pod
+  annotation boots its overlaynet attachment from that policy instead of
+  the `io.pvisor.vm.network` annotation (deny-by-default rules become an
+  allowlist, allow-by-default keeps the network public with deny rules).
+  The 3-second gate window only spans the sidecar's Create, which kubelet
+  issues milliseconds after the workload's Start.
+- **execd-installer init container** (CRI annotations: container name
+  `execd-installer` plus an `/execd` image): under `io.pvisor.executor=vm`
+  pods it becomes a **synthetic success** — the task reports readiness,
+  waits for Start and exits 0 without executing anything. Its emptyDir
+  output is invisible to VM guests (mounts are no-ops there and the shim's
+  injection already staged execd/bootstrap into the rootfs), so the
+  throwaway microVM it would otherwise boot — sequentially, on every
+  sandbox creation — buys nothing. Container-tier pods run it normally:
+  there the emptyDir copy is the execd delivery mechanism.
+
+## Pod-level sandboxes
+
+The container-tier path implements pod-level sandboxes: Create/Start/Wait/Stop/Shutdown/
 Platform/Ping/Status on the Sandbox service, a holder process that owns the
 pod namespaces (pause replacement, including shareProcessNamespace pods),
 and containers that join the shared namespaces unless their spec overrides
@@ -185,18 +325,32 @@ per-container VMs use `io.pvisor.executor=vm`.
   nodes/device cgroups, sysctls, SELinux mount labels, rootfs propagation,
   time namespaces/offsets and other unimplemented typed Linux fields are
   rejected. Empty optional collections request no restriction and are accepted.
-- Nonempty AppArmor/SELinux process labels, user names, OOM score adjustment,
-  scheduler, I/O priority and CPU affinity settings are rejected for both
-  init and exec processes.
-- Host cgroup handling implements only `pids.limit`, `memory.limit`, and
-  `cpu.quota`/`cpu.period` on cgroup v2. Other nonempty resource fields
-  (including swap/reservation, CPU shares/cpuset, block IO, huge pages,
-  network, RDMA and unified controls) are rejected. A usable cgroup path and
-  write permissions are required; setup errors fail task creation.
-  Systemd-style paths are translated to filesystem paths, **not** delegated
-  through systemd.
+- Nonempty AppArmor/SELinux process labels, user names, scheduler, I/O
+  priority and CPU affinity settings are rejected for both init and exec
+  processes. `oomScoreAdj` is enforced (written before the uid switch);
+  kubelet sets it on every pod container.
+- Host cgroup handling implements `pids.limit`, `memory.limit`,
+  `cpu.quota`/`cpu.period`, `cpu.shares` (as v2 weight), `memory.swap`
+  (runc's v2 mapping: the excess over the memory limit becomes
+  `memory.swap.max`) and the kubelet cgroup-v2 `unified` keys
+  `memory.swap.max`/`memory.oom.group` — every other `unified` control is
+  rejected, and so are swap reservations, cpuset, block IO, huge pages,
+  network and RDMA. A usable cgroup path and write permissions are
+  required; setup errors fail task creation. Creating a leaf cgroup
+  enables the needed controllers on its parent's `cgroup.subtree_control`
+  (what runc's systemd driver otherwise does). Systemd-style
+  `slice:prefix:id` paths translate to the slice's parent chain plus one
+  `<prefix>-<id>.scope` entry — the layout kubelet's systemd cgroup driver
+  produces — **not** delegated through systemd.
 - Stats, pause/resume, and checkpointing are unimplemented.
 - VM exec: no tty, and the process starts at `Exec` time (see above).
+- Kubelet's cgroup mount arrives typed `cgroup` even on cgroup-v2-only
+  kernels; it is mounted as the unified hierarchy (runc's mapping).
+  Mountpoint preparation does not follow image-provided symlinks, so a
+  volume destination under an image symlink directory (Debian-style
+  `/var/run` → `/run` with the serviceaccount token) fails task creation
+  until runc-securejoin-style resolution is implemented; pods can set
+  `automountServiceAccountToken: false` to avoid that path.
 
 ## Security admission and remaining risks
 

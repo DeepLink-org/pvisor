@@ -1,6 +1,6 @@
 # Job, Operation, Attempt and Event
 
-A **Job** is a persistent CLI unit of work. `pvisor run` creates it; `status`, `kill`, `inspect`, `fork`, `apply` and `drop` operate on it directly. Each current Job has one internal Run record. Disk `run-*` IDs, `run.json` and Run Bundle names remain unchanged for compatibility.
+A **Job** is a persistent CLI unit of work. `pvisor spawn` creates it; `status`, `kill`, `inspect`, `fork`, `apply` and `drop` operate on it directly. Each current Job has one internal Run record. Disk `run-*` IDs, `run.json` and Run Bundle names remain unchanged for compatibility.
 
 The [single-node daemon](daemon/index.md) manages OpenSandbox-profile `sb-*` sandboxes through VM-only NativeRuntime. Private supervisor records bind each generation to native Run/Attempt IDs; sandbox IDs are not public Job IDs. The API does not implement stage/apply, checkpoints or Run Bundle export. Native execution is embedded, but the Job workflow below is not automatically exposed; external orchestration owns cross-host identities.
 

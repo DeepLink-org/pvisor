@@ -109,7 +109,7 @@ require_python3
 case_setup
 case_run success <<'CASE_COMMAND'
 pvisor -- /bin/pwd > implicit.txt
-pvisor run -- /bin/pwd > explicit.txt
+pvisor spawn -- /bin/pwd > explicit.txt
 CASE_COMMAND
 
 diff implicit.txt explicit.txt

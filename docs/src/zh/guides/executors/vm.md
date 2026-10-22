@@ -3,7 +3,7 @@
 VM 执行器用 `pvisor-vm` 启动最小的 Linux 客户机，提供独立的 guest 内核、通过 virtio-fs 服务的工作区，以及由 pVisor smoltcp 数据面处理的网络。Linux 使用 KVM，Apple Silicon macOS 使用 HVF。
 
 ```bash
-pvisor run --executor vm --rootfs image=ubuntu:24.04 \
+pvisor spawn --executor vm --rootfs image=ubuntu:24.04 \
   --stage ../stage-vm --mount "$PWD:stage" -- /bin/sh
 ```
 

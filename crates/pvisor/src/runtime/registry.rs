@@ -137,6 +137,8 @@ impl RunRecordState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunRecord {
     pub schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_control: Option<super::host_transport::LiveControlRecord>,
     pub run_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_id: Option<String>,
@@ -185,6 +187,111 @@ pub struct RunRecord {
     pub orchestration: std::collections::BTreeMap<String, serde_json::Value>,
     #[serde(skip)]
     pub operation: Option<pvisor_core::operation::Operation>,
+}
+
+/// Exclusive caller-side ownership of a durable Job operation. The root's
+/// `job.lock` is never unlinked, so concurrent binaries lock the same inode.
+/// Drop clears the diagnostic owner while still holding flock, then releases it.
+pub struct JobDirectoryLock {
+    file: File,
+}
+
+#[derive(Serialize, Deserialize)]
+struct JobLockOwner {
+    protocol: String,
+    pid: u32,
+    operation: String,
+}
+
+impl JobDirectoryLock {
+    /// Lock a recognized Job without following a lock symlink or accepting hard
+    /// links/foreign ownership. Refuses a live owner, busy lock, unknown schema,
+    /// or residual diagnostic owner whose process has not died. No retries.
+    pub fn acquire(record: &RunRecord, operation: &str) -> anyhow::Result<Self> {
+        use std::io::{Read, Seek, Write};
+        use std::os::unix::fs::OpenOptionsExt;
+        const PROTOCOL: &str = "pvisor-job-lock-1";
+        let current = RunRecord::read(&record.stage_dir())?;
+        super::job_service::check_selected_record(record, &current)?;
+        anyhow::ensure!(
+            !current
+                .live_control
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.is_available()),
+            "Job owner still holds stage; operation {operation} refused"
+        );
+        let root = super::job_execution::Job::read(&current)?
+            .map(|job| job.root)
+            .unwrap_or_else(|| current.stage_dir());
+        let path = root.join("job.lock");
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&path)?;
+        let metadata = file.metadata()?;
+        anyhow::ensure!(
+            metadata.is_file()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o7777 == 0o600
+                && metadata.nlink() == 1,
+            "job.lock must be an owned 0600 file with one link"
+        );
+        anyhow::ensure!(
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+            "Job operation already in progress: {}",
+            std::io::Error::last_os_error()
+        );
+        let checked = fs::symlink_metadata(&path)?;
+        anyhow::ensure!(
+            checked.dev() == metadata.dev() && checked.ino() == metadata.ino(),
+            "job.lock changed while locking"
+        );
+        let mut bytes = Vec::new();
+        std::io::Read::by_ref(&mut file)
+            .take(4097)
+            .read_to_end(&mut bytes)?;
+        anyhow::ensure!(bytes.len() <= 4096, "invalid job.lock owner record");
+        if !bytes.is_empty() {
+            let owner: JobLockOwner = serde_json::from_slice(&bytes)?;
+            anyhow::ensure!(owner.protocol == PROTOCOL, "unknown job.lock protocol");
+            anyhow::ensure!(
+                owner.pid > 0
+                    && owner.pid <= i32::MAX as u32
+                    && unsafe { libc::kill(owner.pid as i32, 0) } < 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH),
+                "residual Job lock owner {} may still be alive",
+                owner.pid
+            );
+        }
+        let latest = RunRecord::read(&record.stage_dir())?;
+        super::job_service::check_selected_record(record, &latest)?;
+        anyhow::ensure!(
+            !latest
+                .live_control
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.is_available()),
+            "Job owner still holds stage"
+        );
+        file.rewind()?;
+        file.set_len(0)?;
+        file.write_all(&serde_json::to_vec(&JobLockOwner {
+            protocol: PROTOCOL.into(),
+            pid: std::process::id(),
+            operation: operation.into(),
+        })?)?;
+        file.sync_all()?;
+        Ok(Self { file })
+    }
+}
+impl Drop for JobDirectoryLock {
+    fn drop(&mut self) {
+        let _ = self.file.set_len(0);
+        let _ = self.file.sync_all();
+    }
 }
 
 impl RunRecord {
@@ -954,6 +1061,7 @@ mod tests {
         RunRecord {
             attempt_id: None,
             schema_version: 1,
+            live_control: None,
             run_id: "run-test".into(),
             parent_run_id: None,
             task_id: None,
@@ -1000,6 +1108,109 @@ mod tests {
             orchestration: Default::default(),
             operation: None,
         }
+    }
+
+    #[test]
+    fn stale_control_with_a_reused_live_pid_reports_disk_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        fs::create_dir_all(stage.join("upper")).unwrap();
+        fs::create_dir_all(temp.path().join("target")).unwrap();
+        let private = allocate_host_directory("stale-control-").unwrap();
+        let path = private.path().join("control.sock");
+        let listener = super::super::host_transport::bind_instance_socket(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        drop(listener);
+        for pid in [std::process::id(), unsafe { libc::getppid() } as u32] {
+            let mut run = record(temp.path(), &stage, &stage.join("upper"));
+            run.state = RunRecordState::Running;
+            run.finished_at_unix_ms = None;
+            run.pid = pid;
+            run.attempt_id = Some("old-attempt".into());
+            run.live_control = Some(super::super::host_transport::LiveControlRecord {
+                path: path.clone(),
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                pid,
+                protocol: super::super::host_transport::INSTANCE_CONTROL_PROTOCOL.into(),
+                binary: PathBuf::from("/old/pvisor"),
+                binary_digest: "old-owner".into(),
+            });
+            run.write().unwrap();
+            let status = super::super::job_service::RuntimeJobService::status(
+                &Default::default(),
+                super::super::job_service::StatusRequest {
+                    job: super::super::job_service::JobSelection {
+                        selector: Some(stage.clone()),
+                        storage: temp.path().to_owned(),
+                    },
+                },
+            )
+            .unwrap();
+            assert!(!status.live);
+            assert!(status.live_attempt.is_none());
+            assert_eq!(status.record.state, RunRecordState::Running);
+        }
+    }
+
+    #[test]
+    fn job_directory_lock_serializes_and_rejects_unsafe_or_unknown_records() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        let run = record(temp.path(), &stage, &stage.join("upper"));
+        run.write().unwrap();
+        let path = stage.join("job.lock");
+        let held = JobDirectoryLock::acquire(&run, "apply").unwrap();
+        let owner: JobLockOwner = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(owner.operation, "apply");
+        assert!(JobDirectoryLock::acquire(&run, "drop").is_err());
+        drop(held);
+        assert!(fs::read(&path).unwrap().is_empty());
+        drop(JobDirectoryLock::acquire(&run, "review").unwrap());
+        fs::hard_link(&path, stage.join("alias.lock")).unwrap();
+        assert!(JobDirectoryLock::acquire(&run, "apply").is_err());
+        fs::remove_file(stage.join("alias.lock")).unwrap();
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(stage.join("run.json"), &path).unwrap();
+        assert!(JobDirectoryLock::acquire(&run, "drop").is_err());
+        fs::remove_file(&path).unwrap();
+        let mut unknown = run.clone();
+        unknown.schema_version = 99;
+        fs::write(
+            stage.join(RUN_META_FILENAME),
+            serde_json::to_vec(&unknown).unwrap(),
+        )
+        .unwrap();
+        assert!(JobDirectoryLock::acquire(&run, "apply").is_err());
+    }
+
+    #[test]
+    fn residual_job_lock_is_cleared_only_after_its_process_dies() {
+        let temp = tempfile::tempdir().unwrap();
+        let stage = temp.path().join("stage");
+        let run = record(temp.path(), &stage, &stage.join("upper"));
+        run.write().unwrap();
+        let path = stage.join("job.lock");
+        drop(JobDirectoryLock::acquire(&run, "seed").unwrap());
+        let mut owner = JobLockOwner {
+            protocol: "pvisor-job-lock-1".into(),
+            pid: std::process::id(),
+            operation: "apply".into(),
+        };
+        fs::write(&path, serde_json::to_vec(&owner).unwrap()).unwrap();
+        assert!(JobDirectoryLock::acquire(&run, "drop").is_err());
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .unwrap();
+        owner.pid = child.id();
+        child.wait().unwrap();
+        fs::write(&path, serde_json::to_vec(&owner).unwrap()).unwrap();
+        drop(JobDirectoryLock::acquire(&run, "drop").unwrap());
+        owner.protocol = "future-lock".into();
+        fs::write(&path, serde_json::to_vec(&owner).unwrap()).unwrap();
+        assert!(JobDirectoryLock::acquire(&run, "drop").is_err());
     }
 
     #[test]

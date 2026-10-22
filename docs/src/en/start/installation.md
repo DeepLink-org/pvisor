@@ -70,7 +70,7 @@ A working sandbox needs a trusted local manifest/rootfs and genuine execd/egress
 The default local workflow needs neither Docker nor Podman. To run an OCI image with the VM executor:
 
 ```bash
-pvisor run --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
+pvisor spawn --executor vm --rootfs image=ubuntu:24.04 -- /bin/echo hello
 ```
 
 Without an explicit rootfs or image, Linux VM uses host `/` through virtio-fs and OverlayFS without pulling an image. macOS requires a Linux rootfs or image. `--image-store DIR` changes the content-addressed cache, `--mount SOURCE[:TARGET]:ACCESS` exposes host paths, and `--rootfs DIR` selects a prepared rootfs. Linux uses KVM; Apple Silicon uses HVF. The guest supervisor is a static musl Rust ELF built with Rust's linker; macOS does not require a C cross compiler. See [development](../community/development.md) for build prerequisites.

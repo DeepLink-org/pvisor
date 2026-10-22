@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod caps;
 pub mod cgroup;
+pub mod inject;
 pub mod plan;
 pub mod spec;
 pub mod state;

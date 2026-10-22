@@ -62,6 +62,7 @@ The schema number belongs to the output format, not the CLI as a whole. `status 
 | --- | --- |
 | `run` | Stored RunRecord; includes its lifecycle and storage references |
 | `live` | Boolean liveness observation |
+| `live_attempt` | Current owner-supplied Attempt observation, including live VM pause state; null for disk-only reads |
 | `checkpoint_capability` | `workspace`, `workspace_capture_requires`, `execution`, `execution_blocker` |
 | `checkpoints` | Array of workspace checkpoint records |
 | `execution` | Native Job state, suspended head, current Attempt, checkpoints, requests and store ownership; null without native handoff |

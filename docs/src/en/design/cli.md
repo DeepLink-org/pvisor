@@ -1,14 +1,14 @@
 # pVisor command model
 
-Job is the CLI's central object. Commands stay flat: `pvisor run` creates a Job; `status`, `kill`, `inspect`, `fork`, `apply` and `drop` operate on it directly; `replay` creates a Job from a trajectory. See [Execution model](execution-model.md) for Job, Run and Attempt. Internal records still use Run and configuration still uses `RunConfig`. Configuration files must be passed explicitly; they are not implicit project policies.
+The CLI has two execution entries: `pvisor run` creates an independent container VM, while `pvisor spawn` creates a Job. Omitting the subcommand selects `spawn`. `status`, `kill`, `inspect`, `fork`, `apply` and `drop` operate on Jobs directly; `replay` creates a Job from a trajectory. See [Execution model](execution-model.md) for Job, Run and Attempt. Internal records still use Run and configuration still uses `RunConfig`. Configuration files must be passed explicitly; they are not implicit project policies.
 
-## Start with run
+## Start with spawn
 
 Short and full forms are equivalent:
 
 ```bash
 pvisor -- codex
-pvisor run -- codex
+pvisor spawn -- codex
 ```
 
 `--stage PATH` retains the changeset in that directory. An ordinary host Job without staging writes directly to the workspace. `--safe` and `--ask` retain staged workspace changes by default; see [Staging and storage](../reference/cli.md#暂存与存储). The selected host, container or VM provider records actual capabilities and limits in the Run Bundle.
@@ -62,11 +62,11 @@ The public workflow is simple: start a Job, inspect evidence, then decide what t
 
 ## Core commands and service boundaries
 
-Top-level commands follow the object they operate on: flat Job/workspace operations. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI cache commands use `pvisor cache`, with serving owned by `pvisor-daemon serve --cache`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help stays concise, grouping commands under Execution (`run`, `status`, `kill`), Changes (`review`, `apply`, `drop`, `inspect`), Checkpoints (`checkpoint`, `suspend`, `resume`, `fork`) and Tools (installed `replay`/`tui` companions, `cache`, `feature`, `help`). It includes run-review-apply examples and points to `pvisor help COMMAND` for details.
+Top-level commands follow the object they operate on: flat Job/workspace operations. Sandbox lifecycle and optional pool ownership use the separate `pvisor-daemon` executable; OCI cache commands use `pvisor cache`, with serving owned by `pvisor-daemon serve --cache`. `replay` creates Jobs from trajectories, and `tui` is an optional interactive frontend. Root help stays concise, grouping commands under Commands (containers plus `spawn`, `status`, `kill`), Changes (`review`, `apply`, `drop`, `inspect`), Checkpoints (`checkpoint`, `suspend`, `resume`, `fork`) and Tools (installed `replay`/`tui` companions, `cache`, `feature`, `help`). It includes run-review-apply examples and points to `pvisor help COMMAND` for details.
 
 | Responsibility | Entry |
 |---|---|
-| Job lifecycle and branches | `run`, `status`, `kill`, `suspend`, `resume`, `fork` |
+| Job lifecycle and branches | `spawn`, `status`, `kill`, `suspend`, `resume`, `fork` |
 | Inspect, review and accept file changes | `inspect`, `review`, `apply`, `drop` |
 | Immutable Job checkpoints | `checkpoint` |
 | Trajectory replay and interactive frontend | `replay`, `tui` |
@@ -74,9 +74,9 @@ Top-level commands follow the object they operate on: flat Job/workspace operati
 | Immutable image cache | `pvisor cache prepare/publish/list/stat/read`; `pvisor-daemon serve --cache` |
 | Optional daemon-owned shared pages | `pvisor-daemon serve --sandbox --memory-pool`; detached `memory-pool --directory DIR` component |
 
-`status --review` is a shortcut; `review` is the detailed review entry. `run --tui` is the primary interactive path, with top-level `tui` for explicit frontend invocation. Job operations are top-level commands, without a `job` command layer.
+`status --review` is a shortcut; `review` is the detailed review entry. `spawn --tui` is the primary interactive path, with top-level `tui` for explicit frontend invocation. Job operations are top-level commands, without a `job` command layer.
 
-Resource tools use their own executables. Native execution capture, restoration and storage management use Job commands, with support determined by the VM profile. Other unknown names follow ordinary default execution rules. Direct `pvisor ctrl`, `pvisor ctrl --help` and `pvisor help ctrl` explicitly reject with migration guidance instead of default-running a workload; `pvisor run -- ctrl` remains explicit workload intent, not a control API alias.
+Resource tools use their own executables. Native execution capture, restoration and storage management use Job commands, with support determined by the VM profile. Other unknown names follow ordinary default execution rules. Direct `pvisor ctrl`, `pvisor ctrl --help` and `pvisor help ctrl` explicitly reject with migration guidance instead of default-running a workload; `pvisor spawn -- ctrl` remains explicit workload intent, not a control API alias.
 
 ```bash
 pvisor-daemon serve --help
@@ -91,7 +91,13 @@ Tools come from a static table and only a trusted installation directory; discov
 
 The default core build excludes Gateway. Use `--features gateway` for capture; wheel builds enable it. Without capture, OverlayNet still authorizes and forwards ordinary explicit proxy traffic. Requesting uncompiled capture or Gateway debug capabilities returns an error.
 
-Built-in Job CLI operations cross the on-demand persistent Host AgentCtl listener as typed requests; the frontend launches authorized request workers rather than reconstructing shell commands in the listener. Ordinary persisted Jobs need no endpoint arguments. Live VM flags are command-local: `status` accepts `--vm-socket`, `--vm-job-id` and `--vm-attempt-id`; `suspend` accepts these identity flags plus `--vm-pause`, `--vm-offload` and `--vm-ram-file`; `resume` accepts the identity flags plus `--vm-load`. Root-prefixed live VM flags and live VM flags on other commands are rejected. All three identities are required together; suspend/resume's positional Job must match `--vm-job-id`. Pause and offload are mutually exclusive, and `--vm-ram-file` requires offload. Live resume continues the same Attempt; persisted-Job suspend/resume retain execution checkpoint capture/restoration. See the [CLI reference](../reference/cli.md#vm-instance-control).
+`spawn` starts a terminal frontend and one Job owner. Live controls execute in that
+owner through its recorded private socket; stopped operations execute in the
+caller under `job.lock`. Ordinary commands discover endpoints from the Job.
+`--vm-socket` is a debug override and requires the two explicit identity flags.
+Live VM flags remain command-local; pause/offload conflict and `--vm-ram-file`
+requires offload. Live resume continues the same Attempt, while stopped resume
+restores a sealed checkpoint. See the [CLI reference](../reference/cli.md#vm-instance-control).
 
 Embedded callers use `RunHandle` for status, cancellation, checkpoints and Event subscriptions. Session owns Attempt lifecycle; Guest AgentCtl retains workload cooperation duties, isolated from Host authority. See [Host and Guest AgentCtl](architecture.md#host-agentctl) for protocol compatibility, cancellation and upgrade limits. See [Core architecture](architecture.md) for execution/terminal handling and [Operation and Event](operations-events.md) for records/failures.
 
@@ -102,7 +108,18 @@ process-entry or argument-parsing overhead.
 
 ## Implementation ownership {#implementation-ownership}
 
-`cli/host.rs` owns typed Job dispatch and live VM option validation; `cli/host_service.rs` owns listener admission, compatibility and worker authorization. `cli/host_fds.rs`, `cli/host_cancel.rs` and `cli/host_process.rs` implement descriptor transfer, cancellation and process ownership; `cli/host_image.rs` implements macOS loaded/disk Mach-O UUID verification before hashing. `runtime/host_transport.rs` owns shared host-authority paths, identical bounded async/sync newline JSON framing and peer checks, including Job service/internal-worker frames; FD marker bytes remain separate, non-JSON transport records. The internal version-1 handshake checks the Job ticket schema and exact package/content-build compatibility. `JobCommand` embeds internal CLI DTOs and is not a stable public API; Core owns pure shared Host envelope/supervisor contracts and validation, not CLI DTOs or transport.
+`cli/host.rs` owns typed owner bootstrap and live VM option validation;
+`cli/host_service.rs` owns frontend/owner lifecycle, record-based routing and
+protocol compatibility. `cli/host_process.rs` owns process trees and terminal
+handoff; `cli/host_image.rs` retains macOS loaded/disk Mach-O UUID checks.
+`runtime/host_transport.rs` shares private paths, bounded newline JSON and peer
+checks. Instance control uses `pvisor-instance-control-1`, independently of caller
+binary digest. Internal `JobCommand` DTOs currently cover all commands, but only
+spawn, fork and resume bootstrap the same-binary owner; other commands execute directly or send
+instance-protocol commands to it.
+Core owns shared Host envelopes and supervisor definitions; daemon admission is
+unchanged. See [owner lifecycle](architecture.md#host-job-service) and
+[existing internal channels and cleanup order](architecture.md#owner-internal-control).
 
 `cli/run.rs` owns new Job configuration and startup. `cli/run/lifecycle.rs` owns workspace branches and native execution restoration. `runtime/job_execution.rs` owns durable Job state, request receipts and native terminal acknowledgement; it does not infer suspension from a saved filesystem.
 

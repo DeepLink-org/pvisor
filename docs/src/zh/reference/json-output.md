@@ -62,6 +62,7 @@ schema 数字属于输出格式，而非整个 CLI。`status --json` 没有顶�
 | --- | --- |
 | `run` | 已存储的 RunRecord，包含生命周期与存储引用 |
 | `live` | 布尔值，存活观察 |
+| `live_attempt` | owner 提供的当前 Attempt 观察，包括 VM 暂停状态；只读磁盘状态时为 null |
 | `checkpoint_capability` | `workspace`、`workspace_capture_requires`、`execution`、`execution_blocker` |
 | `checkpoints` | workspace checkpoint 记录数组 |
 | `execution` | 原生 Job 状态、suspended head、当前 Attempt、检查点、请求与存储归属；没有原生交接时为 null |

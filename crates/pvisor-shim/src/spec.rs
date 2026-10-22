@@ -28,6 +28,41 @@ pub fn pvisor_annotation<'a>(spec: &'a Spec, key: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
+/// Isolation tier a bundle asks for through the `io.pvisor.executor`
+/// annotation. The tier names what the caller gets, not which code path
+/// runs: `container` executes the task on the host kernel inside the OCI
+/// namespaces and cgroups (container-grade isolation); `vm` executes it in
+/// a per-task libkrun microVM on the guest kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutorTier {
+    /// Default tier: host-kernel execution of the OCI namespaces/cgroups.
+    Container,
+    /// Per-task libkrun microVM execution.
+    Vm,
+}
+
+impl ExecutorTier {
+    /// Parse an `io.pvisor.executor` value. `None` and `"container"` select
+    /// the container tier; `"vm"` selects the microVM tier. Every other
+    /// value — including `"host"`, the standalone pVisor executor name,
+    /// which has no shim equivalent — is rejected so a misspelled tier
+    /// never silently downgrades the task to the default tier.
+    pub fn from_annotation(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("container") => Ok(ExecutorTier::Container),
+            Some("vm") => Ok(ExecutorTier::Vm),
+            Some(other) => Err(format!(
+                "io.pvisor.executor must be \"container\" or \"vm\", got {other:?}"
+            )),
+        }
+    }
+
+    /// True for the microVM tier.
+    pub fn is_vm(self) -> bool {
+        matches!(self, ExecutorTier::Vm)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

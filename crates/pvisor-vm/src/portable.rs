@@ -307,6 +307,17 @@ impl VmConfiguration for VmBuilder {
             Err(unsupported("virtio-fs"))
         }
     }
+    fn read_only_filesystem(&mut self, tag: &str, path: &Path) -> io::Result<()> {
+        #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+        {
+            self.inner.read_only_filesystem(tag, path)
+        }
+        #[cfg(any(feature = "tee", feature = "aws-nitro"))]
+        {
+            let _ = (tag, path);
+            Err(unsupported("read-only virtio-fs"))
+        }
+    }
     fn immutable_filesystem(
         &mut self,
         tag: &str,
@@ -358,7 +369,11 @@ impl VmConfiguration for VmBuilder {
                         .iter()
                         .map(|p| path(p))
                         .collect::<io::Result<_>>()?,
-                    lower_mutability: overlay.lower_mutability,
+                    lower_mutability: if overlay.lower_mutability.is_empty() {
+                        vec![pvisor_overlay_core::LayerMutability::Immutable; overlay.lower_dirs.len()]
+                    } else {
+                        overlay.lower_mutability
+                    },
                     upper_dir: path(&overlay.upper_dir)?,
                     work_dir: overlay.work_dir.as_deref().map(path).transpose()?,
                     preimage_dir: overlay.preimage_dir.as_deref().map(path).transpose()?,

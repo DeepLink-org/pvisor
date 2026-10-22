@@ -15,7 +15,7 @@
 ```bash
 pvisor feature
 pvisor feature list --json
-pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
+pvisor spawn --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
 ```
 
 运行时 registry 在 `crates/pvisor/src/features.rs`，集中定义稳定名称、阶段、默认值与描述。`--feature NAME` 可重复或逗号分隔，默认不启用，未知名称明确拒绝；`--` 后保留给工作负载。查询中的 `enabled` 只表示注册默认值叠加本次 CLI 启用，不加载 Run 配置或验证实际运行。

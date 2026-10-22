@@ -11,6 +11,7 @@ import argparse
 import importlib.util
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -18,6 +19,17 @@ ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("benchmark_common", ROOT / "common.py")
 COMMON = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(COMMON)
+
+
+def job_command(binary):
+    # CI baselines can predate the Job run -> spawn rename.
+    help_text = subprocess.run(
+        [str(binary), "--help"], check=True, capture_output=True, text=True
+    ).stdout
+    for name in ("spawn", "run"):
+        if re.search(r"^  " + name + r"\s+", help_text, re.MULTILINE):
+            return name
+    raise ValueError("binary help does not list a supported Job entry")
 
 
 def prepare_template(template, binary, output=None):
@@ -28,9 +40,10 @@ def prepare_template(template, binary, output=None):
         env = os.environ.copy() | dict(
             PVISOR_RUN_HOME=str(batch / "runs"), PVISOR_STARTUP_TIMING="0", PVISOR_FS_PROFILE="0"
         )
+        entry = job_command(binary)
         command = [
             str(binary),
-            "run",
+            entry,
             "--no-agent-defaults",
             "--overlaynet",
             "off",
@@ -55,7 +68,7 @@ def prepare_template(template, binary, output=None):
         COMMON.materialize_commands(
             template,
             batch,
-            dict(BINARY=binary, JOB=bundles[0].parent),
+            dict(BINARY=binary, JOB=bundles[0].parent, JOB_COMMAND=entry),
             [binary, checker],
             batch / "workspace",
             [Path(__file__), checker, Path(__file__).with_name("compare.py")],

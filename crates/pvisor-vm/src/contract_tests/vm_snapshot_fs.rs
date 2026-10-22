@@ -809,6 +809,8 @@ fn shared_lower_restores_keep_handles_cookies_and_hard_link_copy_up_private() {
     let original_upper_inode = std::fs::metadata(original.join("upper/a")).unwrap().ino();
     let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x40000)]).unwrap();
     mem.write_slice(&memory, GuestAddress(0)).unwrap();
+    // Restoring against the same private stage transfers its writer ownership.
+    drop(source);
     let mut partially_rebound =
         GuestFs::from_device(make(&original, &lower), Some((mem, partial, next)));
     assert_eq!(partially_rebound.read(inode, handle), b"3456");
@@ -836,7 +838,6 @@ fn shared_lower_restores_keep_handles_cookies_and_hard_link_copy_up_private() {
             root
         })
         .collect();
-    drop(source);
     std::fs::remove_dir_all(&original).unwrap();
     for (root, contents) in branches.iter().zip([b"one", b"two"]) {
         let mut state = state.clone();

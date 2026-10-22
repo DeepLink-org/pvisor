@@ -35,7 +35,7 @@ class VmTerminalTests(unittest.TestCase):
                     child = subprocess.Popen(
                         [
                             vm_bin,
-                            "run",
+                            "spawn",
                             "--vm",
                             *(["--tui"] if tui else []),
                             "--rootfs",

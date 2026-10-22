@@ -73,7 +73,7 @@ fn listing_synonyms_json_and_explicit_enable_are_local() {
 fn unknown_features_and_help_never_need_a_job_service() {
     for args in [
         vec!["--feature", "unknown", "feature"],
-        vec!["run", "--feature", "unknown", "--", "true"],
+        vec!["spawn", "--feature", "unknown", "--", "true"],
     ] {
         let output = cli(&args);
         assert!(!output.status.success());
@@ -84,12 +84,12 @@ fn unknown_features_and_help_never_need_a_job_service() {
             "--feature",
             "workload-aware-memory-offloading",
             "help",
-            "run",
+            "spawn",
         ],
         vec![
             "--feature",
             "workload-aware-memory-offloading",
-            "run",
+            "spawn",
             "--help",
         ],
         vec!["--feature", "workload-aware-memory-offloading", "--help"],
@@ -110,7 +110,7 @@ fn old_feature_name_is_rejected_without_an_alias() {
     for args in [
         vec!["--feature", "vm-vcpu-observe", "feature"],
         vec!["feature", "list", "--feature=vm-vcpu-observe"],
-        vec!["run", "--feature", "vm-vcpu-observe", "--", "true"],
+        vec!["spawn", "--feature", "vm-vcpu-observe", "--", "true"],
         vec!["--feature=vm-vcpu-observe", "--", "true"],
     ] {
         let output = cli(&args);

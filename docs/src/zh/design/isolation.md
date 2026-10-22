@@ -22,8 +22,8 @@
 文件系统访问、网络隔离和改动暂存是独立设置。Host 默认保留宿主文件系统视图。需要限制路径访问时使用 `--filesystem sandbox`，需要审查改动时显式启用暂存：
 
 ```bash
-pvisor run --stage ../stage-001 -- codex
-pvisor run --filesystem sandbox --overlaynet-deny-all -- codex
+pvisor spawn --stage ../stage-001 -- codex
+pvisor spawn --filesystem sandbox --overlaynet-deny-all -- codex
 ```
 
 默认写入和清理规则见 [暂存与存储](../reference/cli.md#暂存与存储)。暂存的覆盖范围见[能力与证据](../concepts/capabilities-and-evidence.md)。ZCode 的 Linux host 适配会向应用状态目录授予持久写权限；详见 [CLI 参考](../reference/cli.md)。

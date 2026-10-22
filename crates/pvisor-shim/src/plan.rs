@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::inject::InjectionPlan;
 use crate::spec::ANNOTATION_PREFIX;
 use oci_spec::runtime::{LinuxNamespaceType, Spec};
 use serde::{Deserialize, Serialize};
@@ -25,10 +26,67 @@ pub enum PlanError {
     InspectConstraint(#[from] serde_json::Error),
     #[error("VM process constraint is not supported: {0}")]
     UnsupportedVmProcess(&'static str),
+    #[error("unknown io.pvisor.executor tier: {0}")]
+    InvalidExecutor(String),
     #[error("namespace type {0} is not supported (M1 limitation)")]
     UnsupportedNamespaceType(String),
     #[error("unsupported mount type {0} at {1}")]
     UnsupportedMountType(String, String),
+}
+
+/// One upstream-contract exception: a container whose environment carries
+/// `OPENSANDBOX_EGRESS_RULES` is the OpenSandbox egress sidecar. It polices
+/// the pod network namespace with nftables; as a microVM it would police an
+/// empty namespace of its own and the pod would never become ready. The
+/// sidecar therefore always runs on the container tier, regardless of the
+/// pod-wide executor annotation.
+fn is_egress_sidecar(spec: &Spec) -> bool {
+    spec.process().as_ref().is_some_and(|process| {
+        process
+            .env()
+            .iter()
+            .flatten()
+            .any(|entry| entry.starts_with("OPENSANDBOX_EGRESS_RULES="))
+    })
+}
+
+/// True for the OpenSandbox `execd-installer` init container, detected by
+/// its CRI annotations (container name, plus the `/execd` image as extra
+/// confirmation when present). Under a VM pod this task becomes a synthetic
+/// success; container-tier pods run it normally because there the
+/// emptyDir copy it produces IS the execd delivery mechanism.
+fn is_execd_installer(spec: &Spec) -> bool {
+    let Some(annotations) = spec.annotations().as_ref() else {
+        return false;
+    };
+    let name = annotations
+        .get("io.kubernetes.cri.container-name")
+        .is_some_and(|name| name == "execd-installer");
+    let image_confirms = annotations
+        .get("io.kubernetes.cri.image-name")
+        .is_some_and(|image| image.contains("/execd"));
+    name && image_confirms
+}
+
+/// Resolve the bundle's `io.pvisor.executor` tier, rejecting values outside
+/// the accepted vocabulary (see [`crate::spec::ExecutorTier`]).
+fn executor_is_vm(spec: &Spec) -> Result<bool, PlanError> {
+    if is_egress_sidecar(spec) {
+        return Ok(false);
+    }
+    crate::spec::ExecutorTier::from_annotation(crate::spec::pvisor_annotation(spec, "executor"))
+        .map(crate::spec::ExecutorTier::is_vm)
+        .map_err(PlanError::InvalidExecutor)
+}
+
+/// True when host-kernel constraints (LSM labels, seccomp, device nodes)
+/// are subsumed rather than installed: VM tasks cross the machine boundary,
+/// and the privileged OpenSandbox sidecar and execd-installer are pod
+/// infrastructure whose host constraints the cluster already admitted —
+/// validating them strictly would reject `privileged: true` materialization
+/// (`linux.devices`, apparmor) that the container tier does not model.
+fn host_constraints_subsumed(spec: &Spec) -> Result<bool, PlanError> {
+    Ok(executor_is_vm(spec)? || is_egress_sidecar(spec) || is_execd_installer(spec))
 }
 
 /// Namespace kinds the init child knows how to create or join.
@@ -135,6 +193,9 @@ pub struct ProcessPlan {
     pub capabilities: CapabilityPlan,
     pub rlimits: Vec<RlimitPlan>,
     pub no_new_privileges: bool,
+    /// `process.oomScoreAdj`, applied by the init/exec child before exec
+    /// (kubelet sets it per QoS class on every container).
+    pub oom_score_adj: Option<i32>,
 }
 
 /// One mount to apply inside the container's mount namespace.
@@ -174,6 +235,40 @@ pub struct DeviceRulePlan {
     pub access: String,
 }
 
+/// The standard devices every runc container may use. CRI specs carry only
+/// the catch-all deny rule; runc prepends these allow rules before the
+/// spec's list, and the shim does the same when attaching the device
+/// filter — otherwise /dev/null, /dev/urandom and friends are denied and
+/// workload supervisors (OpenSandbox's egress among them) fail at startup.
+pub const RUNC_DEFAULT_DEVICES: &[(&str, i64, i64)] = &[
+    ("c", 1, 3), // /dev/null
+    ("c", 1, 5), // /dev/zero
+    ("c", 1, 7), // /dev/full
+    ("c", 1, 8), // /dev/random
+    ("c", 1, 9), // /dev/urandom
+    ("c", 5, 0), // /dev/tty
+    ("c", 5, 1), // /dev/console
+    ("c", 5, 2), // /dev/ptmx
+];
+
+/// Prepend the runc default allow rules to the spec's device rules. The
+/// spec list (including its catch-all deny) keeps first-match-wins
+/// semantics for everything else.
+pub fn with_default_devices(rules: &[DeviceRulePlan]) -> Vec<DeviceRulePlan> {
+    let mut out: Vec<DeviceRulePlan> = RUNC_DEFAULT_DEVICES
+        .iter()
+        .map(|(typ, major, minor)| DeviceRulePlan {
+            allow: true,
+            typ: Some(typ.to_string()),
+            major: Some(*major),
+            minor: Some(*minor),
+            access: "rwm".to_string(),
+        })
+        .collect();
+    out.extend_from_slice(rules);
+    out
+}
+
 /// Pre-rendered cgroup v2 file contents for the limits the shim enforces.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CgroupPlan {
@@ -185,7 +280,19 @@ pub struct CgroupPlan {
     pub cpu_max: Option<String>,
     /// cpu.weight rendered from `resources.cpu.shares` (v2 semantics).
     pub cpu_weight: Option<String>,
+    /// memory.swap.max: derived from `resources.memory.swap` (runc v2
+    /// mapping: excess over the memory limit), overridable by kubelet's
+    /// cgroup-v2 `unified` entry.
+    pub memory_swap_max: Option<String>,
+    /// memory.oom.group: group-OOM semantics kubelet requests on cgroup v2.
+    pub memory_oom_group: Option<String>,
 }
+
+/// `linux.resources.unified` keys the container tier understands and maps
+/// onto real cgroup v2 files. Everything else stays rejected: an unknown
+/// unified control is a constraint the shim does not enforce. Kubelet on
+/// cgroup v2 sends exactly these two for every pod container.
+const SUPPORTED_UNIFIED_KEYS: &[&str] = &["memory.swap.max", "memory.oom.group"];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContainerPlan {
@@ -215,6 +322,25 @@ pub struct ContainerPlan {
     pub sysctls: Vec<(String, String)>,
     pub io: IoPlan,
     pub annotations: HashMap<String, String>,
+    /// Payload injections resolved at Create (see [`crate::inject`]); the
+    /// container tier extends `mounts` with their bind entries, the VM tier
+    /// stages them into the rootfs. Empty for uninjected tasks, exec plans
+    /// and sandbox holders.
+    #[serde(default)]
+    pub injections: Vec<InjectionPlan>,
+    /// VM tier: wait for the OpenSandbox egress policy at this gate file
+    /// (the sidecar container's Create writes it) and enforce it through
+    /// the overlaynet attachment instead of booting with the annotation
+    /// policy. Absent for ungated tasks.
+    #[serde(default)]
+    pub egress_gate: Option<PathBuf>,
+    /// Synthetic success: the task reports readiness, waits for Start and
+    /// exits 0 without executing anything. Set for the execd-installer init
+    /// container of VM pods — its emptyDir output is invisible to guests
+    /// (injection already staged execd/bootstrap into the rootfs), so the
+    /// throwaway microVM it would boot buys nothing.
+    #[serde(default)]
+    pub synthetic: bool,
     /// Non-fatal gaps recorded while planning (surfaced in shim logs).
     pub warnings: Vec<String>,
 }
@@ -252,7 +378,7 @@ impl ContainerPlan {
 }
 
 /// Lexically clean an absolute path without touching the filesystem.
-fn normalize_absolute(path: &Path) -> PathBuf {
+pub(crate) fn normalize_absolute(path: &Path) -> PathBuf {
     let mut out = PathBuf::from("/");
     for component in path.components() {
         use std::path::Component;
@@ -268,9 +394,38 @@ fn normalize_absolute(path: &Path) -> PathBuf {
     out
 }
 
-/// Convert `slice:prefix:id` systemd notation into a relative cgroup path.
+/// Ancestors of a systemd slice, outermost first: `a-b-c.slice` lives in
+/// `a-b.slice`, which lives in `a.slice`.
+fn slice_chain(slice: &str) -> Vec<String> {
+    let mut chain = vec![slice.to_string()];
+    let mut current = slice.trim_end_matches(".slice").to_string();
+    while let Some(index) = current.rfind('-') {
+        current.truncate(index);
+        chain.push(format!("{current}.slice"));
+    }
+    chain.reverse();
+    chain
+}
+
+/// Convert a cgroup path to the unified-hierarchy-relative form.
+///
+/// Systemd notation `slice:prefix:id` becomes the file-system layout the
+/// systemd cgroup driver produces: the slice's full parent chain plus a
+/// single `<prefix>-<id>.scope` entry (nesting `prefix/id` directories
+/// instead leaves the leaf without enabled controllers, and controller
+/// writes fail). Plain slash-separated paths pass through unchanged.
 pub fn normalize_cgroup_path(path: &str) -> String {
     let trimmed = path.trim_start_matches('/');
+    let parts: Vec<&str> = trimmed.splitn(3, ':').collect();
+    if parts.len() == 3
+        && parts[0].ends_with(".slice")
+        && !parts[1].is_empty()
+        && !parts[2].is_empty()
+    {
+        let mut segments = slice_chain(parts[0]);
+        segments.push(format!("{}-{}.scope", parts[1], parts[2]));
+        return segments.join("/");
+    }
     trimmed.replace(':', "/")
 }
 
@@ -309,6 +464,8 @@ fn plan_cgroup(spec: &Spec) -> Option<CgroupPlan> {
         memory_max: None,
         cpu_max: None,
         cpu_weight: None,
+        memory_swap_max: None,
+        memory_oom_group: None,
     };
     if let Some(resources) = resources {
         if let Some(pids) = resources.pids().as_ref() {
@@ -316,6 +473,27 @@ fn plan_cgroup(spec: &Spec) -> Option<CgroupPlan> {
         }
         if let Some(memory) = resources.memory().as_ref() {
             plan.memory_max = render_limit(memory.limit());
+            // runc's cgroup v2 mapping: the swap budget is the excess of the
+            // v1-style total over the memory limit (kubelet with swap off
+            // sends swap == limit, which correctly renders 0).
+            let swap = memory.swap();
+            let limit = memory.limit().filter(|limit| *limit > 0);
+            if let Some(swap) = swap.filter(|swap| *swap > 0) {
+                let excess = limit
+                    .filter(|limit| swap > *limit)
+                    .map(|limit| swap - limit);
+                plan.memory_swap_max = Some(excess.unwrap_or(swap).to_string());
+            }
+        }
+        if let Some(unified) = resources.unified().as_ref() {
+            for (key, value) in unified {
+                match key.as_str() {
+                    "memory.swap.max" => plan.memory_swap_max = Some(value.clone()),
+                    "memory.oom.group" => plan.memory_oom_group = Some(value.clone()),
+                    // Validation rejects other keys; unreachable in practice.
+                    _ => {}
+                }
+            }
         }
         if let Some(cpu) = resources.cpu().as_ref() {
             let period = cpu.period().unwrap_or(100_000);
@@ -435,6 +613,7 @@ pub fn process_plan_from(
         capabilities,
         rlimits,
         no_new_privileges: process.no_new_privileges().unwrap_or(false),
+        oom_score_adj: process.oom_score_adj(),
     })
 }
 
@@ -499,12 +678,16 @@ impl ContainerPlan {
             .any(|namespace| namespace.kind == kind)
     }
 
-    /// True when the bundle asks for the libkrun VM executor via the
-    /// `io.pvisor.executor` annotation (`host` keeps the default).
+    /// True when the bundle asks for the libkrun VM tier via the
+    /// `io.pvisor.executor` annotation. Plans are only built from specs whose
+    /// executor annotation already passed `ExecutorTier` validation, so an
+    /// unparseable value here (impossible in practice) reads as the default
+    /// container tier.
     pub fn wants_vm(&self) -> bool {
         self.annotations
             .get(format!("{ANNOTATION_PREFIX}executor").as_str())
-            .is_some_and(|value| value == "vm")
+            .and_then(|value| crate::spec::ExecutorTier::from_annotation(Some(value)).ok())
+            .is_some_and(crate::spec::ExecutorTier::is_vm)
     }
 
     /// VM shape from `io.pvisor.vm.cpus` / `io.pvisor.vm.memory-mib`.
@@ -624,6 +807,20 @@ pub fn vm_agent_enabled(annotations: &HashMap<String, String>) -> bool {
         .get(format!("{ANNOTATION_PREFIX}vm.agent").as_str())
         .map(|value| value != "off")
         .unwrap_or(true)
+}
+
+/// True only for `io.pvisor.vm.ram-dedup=true`: the task explicitly opts
+/// into host RAM dedup (KSM) for the VM's guest memory. Default off, like
+/// every trust-relevant opt-in: advising registers the mappings as
+/// mergeable and authorizes cross-workload page sharing with its
+/// side-channel/trust-domain implications; merging additionally requires
+/// the host KSM scanner, which the shim never touches (registration alone
+/// changes nothing). Any other value keeps the default, matching the other
+/// boolean annotations (`vm.agent`, `vm.network.allow-private`).
+pub fn vm_ram_dedup_enabled(annotations: &HashMap<String, String>) -> bool {
+    annotations
+        .get(format!("{ANNOTATION_PREFIX}vm.ram-dedup").as_str())
+        .is_some_and(|value| value == "true")
 }
 
 /// Build the same launch contract used by pVisor's VM executor.
@@ -760,6 +957,7 @@ fn validate_process_constraints(
         "noNewPrivileges",
         "terminal",
         "consoleSize",
+        "oomScoreAdj",
     ];
     if vm {
         allowed.extend_from_slice(&["apparmorProfile", "selinuxLabel", "oomScoreAdj"]);
@@ -787,7 +985,7 @@ fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
             "annotations",
         ],
     )?;
-    let vm = crate::spec::pvisor_annotation(spec, "executor") == Some("vm");
+    let vm = host_constraints_subsumed(spec)?;
     let linux = &value["linux"];
     if vm {
         // Guest boot does not install OCI mounts or security constraints;
@@ -796,6 +994,9 @@ fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
         // filters and SELinux mount labels are host-LSM/kernel concepts the
         // guest cannot execute; refusing them would block every
         // PodSecurity-restricted or SELinux cluster pod from VM tasks.
+        // `linux.devices` (device nodes) is the same class: kubelet
+        // materializes the host device set for privileged containers, and
+        // the machine boundary subsumes host device configuration.
         reject_other_fields(
             linux,
             "linux.",
@@ -810,6 +1011,7 @@ fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
                 "sysctl",
                 "seccomp",
                 "mountLabel",
+                "devices",
             ],
         )?;
         // The whole resources subtree describes host-cgroup enforcement the
@@ -847,8 +1049,23 @@ fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
         reject_other_fields(
             resources,
             "linux.resources.",
-            &["pids", "memory", "cpu", "devices"],
+            &["pids", "memory", "cpu", "devices", "unified"],
         )?;
+        // Kubelet on cgroup v2 populates `unified` for every pod container;
+        // only the controls the cgroup writer actually enforces are
+        // accepted, everything else keeps failing closed.
+        for key in linux["resources"]["unified"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(key, _)| key.as_str())
+        {
+            if !SUPPORTED_UNIFIED_KEYS.contains(&key) {
+                return Err(PlanError::UnsupportedConstraint(format!(
+                    "linux.resources.unified.{key}"
+                )));
+            }
+        }
         for device in linux["resources"]["devices"].as_array().unwrap_or(&vec![]) {
             let access = device["access"].as_str().unwrap_or("");
             if access.is_empty()
@@ -871,7 +1088,11 @@ fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
                 ));
             }
         }
-        reject_other_fields(&resources["memory"], "linux.resources.memory.", &["limit"])?;
+        reject_other_fields(
+            &resources["memory"],
+            "linux.resources.memory.",
+            &["limit", "swap"],
+        )?;
         reject_other_fields(
             &resources["cpu"],
             "linux.resources.cpu.",
@@ -890,15 +1111,15 @@ pub fn build_plan(
 ) -> Result<ContainerPlan, PlanError> {
     validate_spec_constraints(spec)?;
     let process = spec.process().as_ref().ok_or(PlanError::MissingProcess)?;
-    let vm = spec
-        .annotations()
-        .as_ref()
-        .and_then(|annotations| annotations.get("io.pvisor.executor"))
-        .is_some_and(|executor| executor == "vm");
-    if vm {
+    // The plan records the EXECUTION tier; process validation widens per
+    // host_constraints_subsumed (the egress sidecar runs on the container
+    // tier but validates with the subsumed allowlist — `privileged: true`
+    // materializes host LSM labels it cannot install).
+    let execution_vm = executor_is_vm(spec)?;
+    if execution_vm {
         validate_vm_process(process, false)?;
     }
-    let process_plan = process_plan_from(process, vm)?;
+    let process_plan = process_plan_from(process, host_constraints_subsumed(spec)?)?;
 
     let warnings = Vec::new();
     let namespaces = plan_namespaces(spec)?;
@@ -949,6 +1170,21 @@ pub fn build_plan(
         .unwrap_or_else(|| bundle.join("rootfs"));
 
     let annotations = spec.annotations().clone().unwrap_or_default();
+    // Two upstream-contract reroutings strip the executor annotation from
+    // the stored plan so wants_vm()-based routing agrees with the
+    // validation tier:
+    // - the egress sidecar (see executor_is_vm) would police an empty
+    //   namespace as a microVM;
+    // - the execd-installer of a VM pod becomes a synthetic success that
+    //   executes nothing. It keeps the inject annotation (admission still
+    //   validates the payloads) but the workload's Create delivers them
+    //   through the pod volume's host source — upstream's emptyDir mounts
+    //   shadow rootfs staging in VM guests.
+    let synthetic = is_execd_installer(spec) && execution_vm;
+    let mut annotations = annotations;
+    if is_egress_sidecar(spec) || synthetic {
+        annotations.remove(format!("{ANNOTATION_PREFIX}executor").as_str());
+    }
 
     Ok(ContainerPlan {
         id: id.to_string(),
@@ -999,12 +1235,95 @@ pub fn build_plan(
             .unwrap_or_default(),
         io,
         annotations,
+        injections: Vec::new(),
+        egress_gate: None,
+        synthetic,
         warnings,
     })
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn execd_installer_is_synthetic_only_for_vm_pods() {
+        let installer = |annotations: serde_json::Value| {
+            let mut value = serde_json::to_value(minimal_spec()).unwrap();
+            value["annotations"] = annotations;
+            serde_json::from_value::<Spec>(value).unwrap()
+        };
+        // Name + image markers under executor=vm: synthetic, routed to the
+        // container tier, no payload staging, no egress gate.
+        let vm_pod = installer(serde_json::json!({
+            "io.pvisor.executor": "vm",
+            "io.pvisor.inject": "opensandbox-execd,opensandbox-bootstrap",
+            "opensandbox.io/egress-auth-token": "t",
+            "io.kubernetes.cri.container-name": "execd-installer",
+            "io.kubernetes.cri.image-name": "registry.example.com/ccr-sandbox/execd:v1.1.0"
+        }));
+        let plan = build_plan(&vm_pod, "c", Path::new("/b"), vec![], IoPlan::default()).unwrap();
+        assert!(plan.synthetic);
+        assert!(!plan.wants_vm(), "routing must stay on the container tier");
+        // The inject annotation stays: admission still validates the
+        // payloads even though this task executes nothing.
+        assert!(plan.annotations.contains_key("io.pvisor.inject"));
+
+        // Container-tier pods run the installer normally: annotations kept.
+        let container_pod = installer(serde_json::json!({
+            "io.kubernetes.cri.container-name": "execd-installer",
+            "io.kubernetes.cri.image-name": "registry.example.com/ccr-sandbox/execd:v1.1.0"
+        }));
+        let plan = build_plan(
+            &container_pod,
+            "c",
+            Path::new("/b"),
+            vec![],
+            IoPlan::default(),
+        )
+        .unwrap();
+        assert!(!plan.synthetic);
+        assert!(!plan.wants_vm());
+
+        // Name without the /execd image is not the installer: a user
+        // container that happens to share the name keeps normal handling.
+        let name_only = installer(serde_json::json!({
+            "io.pvisor.executor": "vm",
+            "io.kubernetes.cri.container-name": "execd-installer",
+            "io.kubernetes.cri.image-name": "registry.example.com/ccr-sandbox/other:v2"
+        }));
+        let plan = build_plan(&name_only, "c", Path::new("/b"), vec![], IoPlan::default()).unwrap();
+        assert!(!plan.synthetic);
+        assert!(plan.wants_vm(), "a real VM task keeps its tier");
+    }
+
+    #[test]
+    fn default_devices_precede_the_cri_catch_all_deny() {
+        // CRI sends a lone catch-all deny; the runtime must allow the
+        // standard devices before it, exactly like runc.
+        let rules = with_default_devices(&[DeviceRulePlan {
+            allow: false,
+            typ: None,
+            major: None,
+            minor: None,
+            access: "rwm".to_string(),
+        }]);
+        assert_eq!(rules.len(), RUNC_DEFAULT_DEVICES.len() + 1);
+        assert!(rules.iter().take(RUNC_DEFAULT_DEVICES.len()).all(|rule| {
+            rule.allow && rule.typ.as_deref() == Some("c") && rule.access == "rwm"
+        }));
+        assert!(!rules.last().unwrap().allow, "spec rules keep their place");
+        // A rule the spec explicitly denies still matches before nothing:
+        // defaults first, spec verdicts after — first match wins.
+        let explicit = with_default_devices(&[DeviceRulePlan {
+            allow: true,
+            typ: Some("b".into()),
+            major: Some(8),
+            minor: None,
+            access: "r".into(),
+        }]);
+        assert_eq!(explicit.len(), RUNC_DEFAULT_DEVICES.len() + 1);
+        assert_eq!(explicit.last().unwrap().major, Some(8));
+    }
 
     #[test]
     fn vm_constraints_fail_before_unsupported_security_is_discarded() {
@@ -1075,8 +1394,8 @@ mod tests {
                 serde_json::json!({"linux":{"resources":{"unified":{"memory.high":"1024"}}}}),
             ),
             (
-                "linux.resources.memory.swap",
-                serde_json::json!({"linux":{"resources":{"memory":{"swap":1024}}}}),
+                "linux.resources.memory.reservation",
+                serde_json::json!({"linux":{"resources":{"memory":{"reservation":1024}}}}),
             ),
         ];
         for (field, patch) in host_only_rejected {
@@ -1155,16 +1474,17 @@ mod tests {
 
     #[test]
     fn host_lsm_process_fields_are_no_ops_for_vm_only() {
-        // AppArmor profiles, SELinux labels and the OOM score constrain host
-        // processes; a VM task cannot honor them, so they are no-ops there
-        // while the host path keeps failing closed on them.
+        // AppArmor profiles and SELinux labels constrain host processes; a
+        // VM task cannot honor them, so they are no-ops there while the
+        // container tier keeps failing closed on them. (oomScoreAdj is
+        // enforced on the container tier and accepted as a no-op on VMs —
+        // see the carry-through test.)
         for (field, value) in [
             ("apparmorProfile", serde_json::json!("restricted")),
             (
                 "selinuxLabel",
                 serde_json::json!("system_u:system_r:container_t:s0"),
             ),
-            ("oomScoreAdj", serde_json::json!(500)),
         ] {
             let mut spec = serde_json::to_value(minimal_spec()).unwrap();
             spec["process"][field] = value;
@@ -1295,9 +1615,17 @@ mod tests {
 
     #[test]
     fn systemd_cgroup_paths_become_slash_separated() {
+        // Kubelet (systemd driver) sends `qos-pod.slice:cri-containerd:id`;
+        // the enforced layout matches what runc's systemd driver builds:
+        // the slice parent chain plus one dash-joined scope.
         assert_eq!(
-            normalize_cgroup_path("kubepods.slice:cri-containerd:test-id"),
-            "kubepods.slice/cri-containerd/test-id"
+            normalize_cgroup_path("kubepods-besteffort-podabc.slice:cri-containerd:c1"),
+            "kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-podabc.slice/\
+             cri-containerd-c1.scope"
+        );
+        assert_eq!(
+            normalize_cgroup_path("burstable.slice:pod123:abc"),
+            "burstable.slice/pod123-abc.scope"
         );
         assert_eq!(
             normalize_cgroup_path("/system.slice/foo.service"),
@@ -1395,7 +1723,10 @@ mod tests {
         let plan =
             build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
         let cgroup = plan.cgroup.expect("cgroup planned");
-        assert_eq!(cgroup.path.as_deref(), Some("burstable.slice/pod123/abc"));
+        assert_eq!(
+            cgroup.path.as_deref(),
+            Some("burstable.slice/pod123-abc.scope")
+        );
         assert_eq!(cgroup.pids_max.as_deref(), Some("128"));
         assert_eq!(cgroup.memory_max.as_deref(), Some("536870912"));
         assert_eq!(cgroup.cpu_max.as_deref(), Some("500000 100000"));
@@ -1411,6 +1742,49 @@ mod tests {
         assert_eq!(
             plan.cgroup.and_then(|c| c.cpu_max),
             Some("max 100000".to_string())
+        );
+    }
+
+    #[test]
+    fn kubelet_cgroupv2_resources_are_accepted_and_translated() {
+        // Every k8s pod container on cgroup v2 carries this exact shape:
+        // swap budget as the v1-style total, plus the two unified controls.
+        // The tier must enforce them, not reject them.
+        let spec = spec_from_json(
+            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"cgroupsPath":"kubepods-burstable-podx.slice:cri-containerd:c1","resources":{"pids":{"limit":512},"memory":{"limit":134217728,"swap":134217728},"cpu":{"quota":500000,"period":100000,"shares":1024},"unified":{"memory.oom.group":"1","memory.swap.max":"0"},"devices":[{"allow":true,"type":"a","access":"rwm"}]}}}"#,
+        );
+        let plan =
+            build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
+        let cgroup = plan.cgroup.expect("cgroup");
+        assert_eq!(
+            cgroup.memory_swap_max.as_deref(),
+            Some("0"),
+            "swap == limit renders as a zero swap budget, unified wins"
+        );
+        assert_eq!(cgroup.memory_oom_group.as_deref(), Some("1"));
+
+        // A swap total above the memory limit renders the excess.
+        let spec = spec_from_json(
+            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"resources":{"memory":{"limit":1000,"swap":3000}}}}"#,
+        );
+        let plan =
+            build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
+        assert_eq!(
+            plan.cgroup.and_then(|c| c.memory_swap_max),
+            Some("2000".to_string())
+        );
+
+        // Unknown unified controls still fail closed.
+        let spec = spec_from_json(
+            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/","user":{"uid":0,"gid":0}},"linux":{"resources":{"unified":{"memory.high":"1024"}}}}"#,
+        );
+        let error =
+            build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("linux.resources.unified.memory.high"),
+            "{error}"
         );
     }
 
@@ -1488,6 +1862,60 @@ mod tests {
     }
 
     #[test]
+    fn ram_dedup_requires_explicit_opt_in() {
+        // KSM dedup is a trust-relevant opt-in: only the literal "true"
+        // enables it; absent and every other value (including typos) keep
+        // the VM unregistered, which is the safe default.
+        let mut annotations = HashMap::new();
+        assert!(!vm_ram_dedup_enabled(&annotations));
+        annotations.insert("io.pvisor.vm.ram-dedup".to_string(), "true".to_string());
+        assert!(vm_ram_dedup_enabled(&annotations));
+        for value in ["false", "1", "yes", "on", ""] {
+            annotations.insert("io.pvisor.vm.ram-dedup".to_string(), value.to_string());
+            assert!(
+                !vm_ram_dedup_enabled(&annotations),
+                "{value:?} must not opt in to RAM dedup"
+            );
+        }
+    }
+
+    #[test]
+    fn executor_tier_vocabulary_is_validated() {
+        // The tier vocabulary: absent and "container" select the host-kernel
+        // (container) tier; only "vm" selects the microVM tier; anything
+        // else — including "host", which is standalone pVisor vocabulary
+        // with no shim equivalent — fails closed instead of silently
+        // downgrading the task.
+        for value in [None, Some("container")] {
+            let mut spec = minimal_spec();
+            if let Some(value) = value {
+                spec.annotations_mut()
+                    .get_or_insert_with(Default::default)
+                    .insert("io.pvisor.executor".to_string(), value.to_string());
+            }
+            let plan =
+                build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
+            assert!(
+                !plan.wants_vm(),
+                "{value:?} must stay on the container tier"
+            );
+        }
+
+        for bogus in ["VM", "Container", "host", "microvm", ""] {
+            let mut spec = minimal_spec();
+            spec.annotations_mut()
+                .get_or_insert_with(Default::default)
+                .insert("io.pvisor.executor".to_string(), bogus.to_string());
+            let error =
+                build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).unwrap_err();
+            assert!(
+                error.to_string().contains("io.pvisor.executor"),
+                "{bogus:?} must be rejected with an executor error, got: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn guest_config_preserves_arguments_environment_and_agent() {
         let process = ProcessPlan {
             argv: vec!["/bin/sh".into(), "-c".into(), "echo 'hi there'".into()],
@@ -1501,6 +1929,7 @@ mod tests {
                 hard: 64,
             }],
             no_new_privileges: false,
+            oom_score_adj: None,
         };
         let config = guest_config(&process, true).unwrap();
         assert_eq!(config.argv, process.argv);
@@ -1585,7 +2014,7 @@ mod tests {
     #[test]
     fn user_and_capabilities_carry_through() {
         let spec = spec_from_json(
-            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/w","user":{"uid":1000,"gid":2000,"additionalGids":[2000,999]},"capabilities":{"bounding":["CAP_CHOWN","CAP_NET_BIND_SERVICE"],"effective":["CAP_CHOWN"]},"rlimits":[{"type":"RLIMIT_NOFILE","soft":1024,"hard":2048}],"noNewPrivileges":true},"root":{"path":"rootfs","readonly":true}}"#,
+            r#"{"ociVersion":"1.0.2","process":{"args":["/bin/sh"],"cwd":"/w","user":{"uid":1000,"gid":2000,"additionalGids":[2000,999]},"capabilities":{"bounding":["CAP_CHOWN","CAP_NET_BIND_SERVICE"],"effective":["CAP_CHOWN"]},"rlimits":[{"type":"RLIMIT_NOFILE","soft":1024,"hard":2048}],"noNewPrivileges":true,"oomScoreAdj":500},"root":{"path":"rootfs","readonly":true}}"#,
         );
         let plan =
             build_plan(&spec, "c1", Path::new("/b"), vec![], IoPlan::default()).expect("plan");
@@ -1594,6 +2023,15 @@ mod tests {
         assert_eq!(plan.process.cwd, PathBuf::from("/w"));
         assert!(plan.process.no_new_privileges);
         assert!(plan.root_readonly);
+        // kubelet sets the OOM score per QoS class on every container; the
+        // container tier carries it into the identity application, the VM
+        // tier accepts it as a subsumed no-op.
+        assert_eq!(plan.process.oom_score_adj, Some(500));
+        let mut vm_value = serde_json::to_value(&spec).unwrap();
+        vm_value["annotations"] = serde_json::json!({"io.pvisor.executor":"vm"});
+        vm_value["root"]["readonly"] = serde_json::json!(false);
+        let vm_spec: Spec = serde_json::from_value(vm_value).unwrap();
+        assert!(build_plan(&vm_spec, "c1", Path::new("/b"), vec![], IoPlan::default()).is_ok());
         // Capability names arrive via Display ("CAP_" prefix is stripped by
         // oci-spec); caps::from_names re-normalizes them.
         assert_eq!(plan.process.capabilities.bounding.len(), 2);

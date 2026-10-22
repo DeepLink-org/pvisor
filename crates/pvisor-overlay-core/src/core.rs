@@ -311,6 +311,7 @@ pub struct PreparedCopyUp {
     source: PathBuf,
     metadata: Metadata,
     attributes: Option<crate::backend::FileAttr>,
+    source_immutable: bool,
     truncate: bool,
     directory: Arc<CopyDirectory>,
     temporary: PathBuf,
@@ -339,11 +340,30 @@ impl Drop for CopyDirectory {
 }
 
 impl PreparedCopyUp {
-    fn content(&self) -> PathBuf {
-        self.temporary.clone()
+    fn verify_source(
+        &self,
+        file: Option<&File>,
+        profile: &crate::profile::Profile,
+    ) -> io::Result<()> {
+        if !self.source_immutable {
+            profile.add("copy_source_revalidations", 1);
+            let metadata = match file {
+                Some(file) => file.metadata()?,
+                None => crate::backend::symlink_metadata(&self.source)?,
+            };
+            if !self.matches(&self.source, &metadata)? {
+                return Err(error(libc::EAGAIN));
+            }
+        }
+        Ok(())
     }
 
     fn matches(&self, path: &Path, metadata: &Metadata) -> io::Result<bool> {
+        if self.source_immutable {
+            return Ok(
+                self.metadata.dev() == metadata.dev() && self.metadata.ino() == metadata.ino()
+            );
+        }
         let Some(attributes) = &self.attributes else {
             return Ok(same_copy_source(&self.metadata, metadata));
         };
@@ -370,7 +390,7 @@ impl PreparedCopyUp {
 impl Drop for PreparedCopyUp {
     fn drop(&mut self) {
         if self.directory.owned() {
-            let _ = fs::remove_file(self.content());
+            let _ = fs::remove_file(&self.temporary);
         }
     }
 }
@@ -446,7 +466,7 @@ enum UpperAbsence {
     UnavailableParent,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct CachedUpperAbsence {
     observation: UpperAbsence,
     // Every successfully checked physical parent up to the absent leaf or
@@ -454,7 +474,7 @@ struct CachedUpperAbsence {
     parents: Vec<BackingIdentity>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct CachedLower {
     // None is only a successfully checked physical MissingLeaf, never an
     // unavailable parent, error, or merged-namespace absence.
@@ -654,15 +674,7 @@ pub(crate) fn hex_digest(digest: &[u8]) -> String {
 
 /// Fingerprint one path without following its final symlink.
 pub fn fingerprint_at(root: &Path, rel: &Path) -> io::Result<PathFingerprint> {
-    fingerprint_profiled(root, rel, &crate::profile::Profile::default())
-}
-
-fn fingerprint_profiled(
-    root: &Path,
-    rel: &Path,
-    profile: &crate::profile::Profile,
-) -> io::Result<PathFingerprint> {
-    fingerprint_with_index(root, rel, profile, None)
+    fingerprint_with_index(root, rel, &crate::profile::Profile::default(), None)
 }
 
 fn fingerprint_with_index(
@@ -798,7 +810,8 @@ fn fingerprint_xattrs(
     Ok((XattrFingerprint::Values { entries }, identity))
 }
 
-/// Load first observations. Entries for mutated paths are synced before mutation.
+/// Read first observations without writes or repairs. A live stage's complete
+/// prefix may be stale; authoritative apply/seal callers must first stop writers.
 pub fn load_preimages(directory: &Path) -> io::Result<Vec<PathPreimage>> {
     if compact_preimages(directory)? {
         return crate::preimage_log::PreimageLog::read(&directory.join(PREIMAGE_LOG_NAME));
@@ -829,6 +842,7 @@ pub fn preimage_journal_is_complete(directory: &Path) -> bool {
 }
 
 /// Consume journal entries after their corresponding target paths commit.
+/// The workload owner must have released its journal before apply takes ownership.
 pub fn remove_preimages(directory: &Path, paths: &[PathBuf]) -> io::Result<()> {
     if compact_preimages(directory)? {
         return crate::preimage_log::PreimageLog::open(&directory.join(PREIMAGE_LOG_NAME))?
@@ -984,7 +998,12 @@ impl OverlayCore {
         let initialize = !matches!(mode, BuildMode::Existing);
         if initialize {
             fs::create_dir_all(&upper)?;
+            if let Some(work) = &work {
+                fs::create_dir_all(work)?;
+            }
         }
+        let actual_upper = fs::canonicalize(&upper)?;
+        let actual_work = work.as_ref().map(fs::canonicalize).transpose()?;
         let upper_was_empty = crate::backend::read_dir(&upper)?.next().is_none();
         let compact = if matches!(mode, BuildMode::Compact) && upper_was_empty {
             match preimage_dir.as_ref() {
@@ -1000,16 +1019,15 @@ impl OverlayCore {
         } else {
             false
         };
-        if let Some(work) = &work {
-            if initialize {
-                fs::create_dir_all(work)?;
-            }
-            let actual_work = fs::canonicalize(work)?;
-            let actual_upper = fs::canonicalize(&upper)?;
-            if actual_work.starts_with(&actual_upper) || actual_upper.starts_with(&actual_work) {
+        if let Some(actual_work) = &actual_work {
+            if actual_work.starts_with(&actual_upper) || actual_upper.starts_with(actual_work) {
                 return Err(error(libc::EINVAL));
             }
-            if fs::metadata(work)?.dev() != fs::metadata(&upper)?.dev() {
+            let metadata = fs::metadata(actual_work)?;
+            if !metadata.is_dir() {
+                return Err(error(libc::ENOTDIR));
+            }
+            if metadata.dev() != fs::metadata(&actual_upper)?.dev() {
                 return Err(error(libc::EXDEV));
             }
         }
@@ -1024,40 +1042,24 @@ impl OverlayCore {
             })
             .collect::<io::Result<BTreeSet<_>>>()?;
         // Compare physical paths, so symlink aliases cannot bypass backing isolation.
-        let backing = std::iter::once(&upper)
-            .chain(work.iter())
-            .map(fs::canonicalize)
-            .collect::<io::Result<Vec<_>>>()?;
         for root in layout.lowers.iter().chain(std::iter::once(&layout.target)) {
             let root = fs::canonicalize(root)?;
-            for path in &backing {
+            for path in std::iter::once(&actual_upper).chain(actual_work.iter()) {
                 if root.starts_with(path) {
-                    return Err(error(libc::EINVAL));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "lowerdir must not overlap upperdir or workdir",
+                    ));
                 }
                 if let Ok(relative) = path.strip_prefix(&root)
                     && !excluded
                         .iter()
                         .any(|excluded| relative.starts_with(excluded))
                 {
-                    return Err(error(libc::EINVAL));
-                }
-            }
-        }
-        if let Some(work) = &work {
-            for entry in crate::backend::read_dir(work)? {
-                let entry = entry?;
-                if initialize
-                    && entry
-                        .file_name()
-                        .as_bytes()
-                        .starts_with(TEMP_PREFIX.as_bytes())
-                {
-                    let path = entry.path();
-                    if crate::backend::symlink_metadata(&path)?.is_dir() {
-                        fs::remove_dir_all(path)?;
-                    } else {
-                        fs::remove_file(path)?;
-                    }
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "lowerdir must not overlap upperdir or workdir without an exclusion",
+                    ));
                 }
             }
         }
@@ -1100,6 +1102,23 @@ impl OverlayCore {
             })
             .transpose()?
             .flatten();
+        if initialize && let Some(work) = &work {
+            for entry in crate::backend::read_dir(work)? {
+                let entry = entry?;
+                if entry
+                    .file_name()
+                    .as_bytes()
+                    .starts_with(TEMP_PREFIX.as_bytes())
+                {
+                    let path = entry.path();
+                    if crate::backend::symlink_metadata(&path)?.is_dir() {
+                        fs::remove_dir_all(path)?;
+                    } else {
+                        fs::remove_file(path)?;
+                    }
+                }
+            }
+        }
         let durability = preimage_dir
             .as_deref()
             .map(crate::stage::policy)
@@ -1175,7 +1194,7 @@ impl OverlayCore {
     /// migrate an existing journal. Reopening automatically preserves its format.
     /// Legacy readers reject the format marker instead of losing observations.
     pub fn with_compact_preimages(mut self) -> io::Result<Self> {
-        if self.preimage_log.is_some() || self.preimage_dir.is_none() {
+        if self.preimage_log.is_some() {
             return Ok(self);
         }
         let Some(directory) = self.preimage_dir.as_ref() else {
@@ -1195,8 +1214,8 @@ impl OverlayCore {
                 "compact preimages require a fresh stage",
             ));
         }
-        let log = crate::preimage_log::PreimageLog::open(&directory.join(PREIMAGE_LOG_NAME))?;
-        if !crate::preimage_log::PreimageLog::read(&directory.join(PREIMAGE_LOG_NAME))?.is_empty() {
+        let mut log = crate::preimage_log::PreimageLog::open(&directory.join(PREIMAGE_LOG_NAME))?;
+        if !log.observations()?.is_empty() {
             return Err(error(libc::EINVAL));
         }
         // The log open above has already persisted entries' parent binding.
@@ -1417,11 +1436,8 @@ impl OverlayCore {
                 let mut published = log
                     .lock()
                     .map_err(|_| io::Error::other("preimage log lock poisoned"))?;
-                // A same-Core predecessor may have published after our first
-                // check. The cheap hint avoids another flock on an uncontended
-                // first observation; a hit still refreshes/validates membership
-                // and promotes the actual winner, including external consume.
-                if published.may_contain(rel) && published.contains_or_promote(rel, durable)? {
+                // A same-Core predecessor may have published while we waited.
+                if published.contains_or_promote(rel, durable)? {
                     self.profile.add("coalesced_fingerprints", 1);
                     return Ok(());
                 }
@@ -1494,9 +1510,6 @@ impl OverlayCore {
             .preimage_lock
             .lock()
             .map_err(|_| io::Error::other("preimage journal lock poisoned"))?;
-        // Apply may consume an entry while this Core stays open. Publication
-        // arbitrates again; never reuse a previous generation's sync cache.
-        synced.remove(rel);
         let serialize = self.profile.span("journal_serialize");
         let body = serde_json::to_vec_pretty(&preimage)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
@@ -1522,8 +1535,7 @@ impl OverlayCore {
             if durable {
                 self.order_preimage(&file)?;
             }
-            // Publish without replacement even if another core instance uses
-            // the same stage. A race must never replace its first observation.
+            // Concurrent requests on this owner must preserve the first observation.
             let publish = self.profile.span("journal_publish");
             // Rename reduces the bulk first-read cost on APFS. Keep absence
             // and direct mutation publication on the established link path:
@@ -1539,7 +1551,7 @@ impl OverlayCore {
             match publication {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                    // Another core won after our initial check. Adopt its
+                    // Another request won after our initial check. Adopt its
                     // immutable first observation, and sync the actual winner
                     // before mutation rather than just syncing our loser.
                     let winner = Self::verified_preimage_file(&destination, rel)?;
@@ -1889,24 +1901,24 @@ impl OverlayCore {
             );
         }
         let key = (index, rel.to_path_buf());
-        let cached = self
-            .immutable_lower_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&key)
-            .cloned();
-        if let Some(cached) = cached {
-            self.profile.add("immutable_lower_cache_hits", 1);
-            if let Some(parents) = parents {
-                *parents = cached.parents;
-            }
-            return Ok(match cached.entry {
-                Some((path, metadata)) => LayerMetadata::Entry(path, metadata),
-                None => {
-                    self.profile.add("immutable_lower_negative_cache_hits", 1);
-                    LayerMetadata::MissingLeaf
+        {
+            let cache = self
+                .immutable_lower_cache
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if let Some(cached) = cache.get(&key) {
+                self.profile.add("immutable_lower_cache_hits", 1);
+                if let Some(parents) = parents {
+                    parents.clone_from(&cached.parents);
                 }
-            });
+                return Ok(match &cached.entry {
+                    Some((path, metadata)) => LayerMetadata::Entry(path.clone(), metadata.clone()),
+                    None => {
+                        self.profile.add("immutable_lower_negative_cache_hits", 1);
+                        LayerMetadata::MissingLeaf
+                    }
+                });
+            }
         }
         self.profile.add("immutable_lower_cache_misses", 1);
         let mut identities = Vec::new();
@@ -1925,6 +1937,9 @@ impl OverlayCore {
             1,
         );
         let result = result?;
+        if let Some(parents) = parents {
+            parents.clone_from(&identities);
+        }
         let entry = match &result {
             LayerMetadata::Entry(path, metadata) => Some(Some((path.clone(), metadata.clone()))),
             LayerMetadata::MissingLeaf if self.immutable_lower_negative_cache_enabled => Some(None),
@@ -1944,12 +1959,9 @@ impl OverlayCore {
                 key,
                 CachedLower {
                     entry,
-                    parents: identities.clone(),
+                    parents: identities,
                 },
             );
-        }
-        if let Some(parents) = parents {
-            *parents = identities;
         }
         Ok(result)
     }
@@ -1974,16 +1986,38 @@ impl OverlayCore {
         let eligible = self.exclusive_upper_absence_cache_enabled
             && self.upper.as_os_str().len() + rel.as_os_str().len() <= 4096
             && rel.components().count() <= 256;
-        let state = eligible
-            .then(|| {
-                let cache = self
-                    .exclusive_upper_absence_cache
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                (!cache.mutating).then(|| (cache.epoch, cache.entries.get(rel).cloned()))
-            })
-            .flatten();
-        let Some((epoch, cached)) = state else {
+        let epoch = if eligible {
+            let cache = self
+                .exclusive_upper_absence_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if cache.mutating {
+                None
+            } else {
+                if let Some(cached) = cache.entries.get(rel) {
+                    self.profile.add("exclusive_upper_absence_cache_hits", 1);
+                    if let Some(parents) = parents {
+                        parents.clone_from(&cached.parents);
+                    }
+                    return Ok(match cached.observation {
+                        UpperAbsence::MissingLeaf => {
+                            self.profile
+                                .add("exclusive_upper_absence_cache_hits_missing_leaf", 1);
+                            LayerMetadata::MissingLeaf
+                        }
+                        UpperAbsence::UnavailableParent => {
+                            self.profile
+                                .add("exclusive_upper_absence_cache_hits_unavailable_parent", 1);
+                            LayerMetadata::UnavailableParent
+                        }
+                    });
+                }
+                Some(cache.epoch)
+            }
+        } else {
+            None
+        };
+        let Some(epoch) = epoch else {
             return layer_metadata_with_parents(
                 &self.upper,
                 rel,
@@ -1992,24 +2026,6 @@ impl OverlayCore {
                 checked_directories,
             );
         };
-        if let Some(cached) = cached {
-            self.profile.add("exclusive_upper_absence_cache_hits", 1);
-            if let Some(parents) = parents {
-                *parents = cached.parents;
-            }
-            return Ok(match cached.observation {
-                UpperAbsence::MissingLeaf => {
-                    self.profile
-                        .add("exclusive_upper_absence_cache_hits_missing_leaf", 1);
-                    LayerMetadata::MissingLeaf
-                }
-                UpperAbsence::UnavailableParent => {
-                    self.profile
-                        .add("exclusive_upper_absence_cache_hits_unavailable_parent", 1);
-                    LayerMetadata::UnavailableParent
-                }
-            });
-        }
         self.profile.add("exclusive_upper_absence_cache_misses", 1);
         let mut identities = Vec::new();
         // The cache must retain every successful parent proof, even when a
@@ -2060,7 +2076,11 @@ impl OverlayCore {
                     rel.to_path_buf(),
                     CachedUpperAbsence {
                         observation,
-                        parents: identities.clone(),
+                        parents: if parents.is_some() {
+                            identities.clone()
+                        } else {
+                            std::mem::take(&mut identities)
+                        },
                     },
                 );
             }
@@ -2133,10 +2153,6 @@ impl OverlayCore {
             }
         }
         Ok(None)
-    }
-
-    pub fn resolve(&self, rel: &Path) -> Option<Resolved> {
-        self.resolve_checked(rel).ok().flatten()
     }
 
     /// Resolve while preserving permission and I/O failures. `None` means
@@ -2260,7 +2276,7 @@ impl OverlayCore {
     /// reads need only one resolution. This is request-local evidence, not an
     /// authorization capability for a future open or a content snapshot.
     pub fn prepare_file_read(&self, rel: &Path) -> io::Result<ResolvedMetadata> {
-        self.prepare_file_read_with_parents(rel, None)
+        self.prepare_read_with_parents(rel, None, true)
     }
 
     /// Like `prepare_file_read`, also return physical parent identity evidence
@@ -2270,7 +2286,7 @@ impl OverlayCore {
         rel: &Path,
     ) -> io::Result<BackingResolution> {
         let mut parents = Vec::with_capacity(rel.components().count().saturating_sub(1));
-        let entry = self.prepare_file_read_with_parents(rel, Some(&mut parents))?;
+        let entry = self.prepare_read_with_parents(rel, Some(&mut parents), true)?;
         Ok(BackingResolution { entry, parents })
     }
 
@@ -2293,14 +2309,6 @@ impl OverlayCore {
         let mut parents = Vec::with_capacity(rel.components().count().saturating_sub(1));
         let entry = self.prepare_read_with_parents(rel, Some(&mut parents), false)?;
         Ok(BackingResolution { entry, parents })
-    }
-
-    fn prepare_file_read_with_parents(
-        &self,
-        rel: &Path,
-        parents: Option<&mut Vec<BackingIdentity>>,
-    ) -> io::Result<ResolvedMetadata> {
-        self.prepare_read_with_parents(rel, parents, true)
     }
 
     fn prepare_read_with_parents(
@@ -2328,10 +2336,8 @@ impl OverlayCore {
     }
 
     // An already published observation needs no new capture or pre-publication
-    // resolution. Always resolve the live merged path afterward. The local map
-    // is only a miss hint; a hit must refresh consumption and verify the log's
-    // named binding under its file lock. Errors take the original checked path
-    // so policy and journal failure precedence are preserved.
+    // resolution. The single writer owns journal membership; the live merged
+    // path and policy still need resolution on every request.
     fn read_observation_is_recorded(&self, rel: &Path) -> bool {
         if !self.stage_writable || self.require_visible(rel).is_err() {
             return false;
@@ -2339,9 +2345,7 @@ impl OverlayCore {
         self.preimage_log
             .as_ref()
             .and_then(|log| log.lock().ok())
-            .is_some_and(|mut log| {
-                log.may_contain(rel) && log.contains_or_promote(rel, false).unwrap_or(false)
-            })
+            .is_some_and(|mut log| log.contains_or_promote(rel, false).unwrap_or(false))
     }
 
     fn metadata_resolved_with_parents(
@@ -2370,16 +2374,31 @@ impl OverlayCore {
         Ok(self.metadata_resolved(rel)?.metadata)
     }
 
-    /// Query the current upper object for a still-lower regular-file hardlink.
+    /// Resolve physical metadata and its optional surviving copied-up hardlink.
     /// The copy-up group belongs to this Core owner, independent of adapter inode
     /// lookup/handle lifetimes. Performs checked merged resolution and hardlink
     /// authorization, then reads fresh no-follow upper metadata under the group
-    /// lock. Returns `None` for upper winners or no surviving copied-up alias.
+    /// lock. The optional metadata is `None` for upper winners or no surviving alias.
     /// Does not materialize an alias, capture content or change namespace; callers
     /// that need a physical upper alias must use `copy_up` and observe its effects.
     /// Namespace, policy and I/O errors propagate; a poisoned group lock is EIO.
-    pub fn copied_hard_link_metadata(&self, rel: &Path) -> io::Result<Option<Metadata>> {
+    /// Returns physical winner metadata first, then optional current upper
+    /// hardlink metadata from the same checked resolution. Missing paths retain
+    /// ordinary metadata's absence observation behavior. Results are request-local, not
+    /// authority for a later operation; adapters serialize namespace mutations.
+    pub fn metadata_with_copied_hard_link(
+        &self,
+        rel: &Path,
+    ) -> io::Result<(Metadata, Option<Metadata>)> {
         let entry = self.metadata_resolved(rel)?;
+        let copied = self.copied_hard_link_metadata_for_entry(&entry)?;
+        Ok((entry.metadata, copied))
+    }
+
+    fn copied_hard_link_metadata_for_entry(
+        &self,
+        entry: &ResolvedMetadata,
+    ) -> io::Result<Option<Metadata>> {
         if entry.resolved.is_upper || !entry.metadata.is_file() {
             return Ok(None);
         }
@@ -2459,7 +2478,6 @@ impl OverlayCore {
 
     pub fn ensure_upper_parents(&self, rel: &Path) -> io::Result<()> {
         self.require_visible(rel)?;
-        Self::validate_rel(rel)?;
         let Some(parent) = rel.parent() else {
             return Ok(());
         };
@@ -2473,8 +2491,9 @@ impl OverlayCore {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
-            let resolved = self.resolve(&current).ok_or_else(|| error(libc::ENOENT))?;
-            let metadata = crate::backend::symlink_metadata(&resolved.path)?;
+            let ResolvedMetadata {
+                resolved, metadata, ..
+            } = self.metadata_resolved(&current)?;
             if !metadata.is_dir() {
                 return Err(error(libc::ENOTDIR));
             }
@@ -2513,22 +2532,17 @@ impl OverlayCore {
         let mut directory = None;
         let mut copies = Vec::new();
         for path in paths {
-            self.require_visible(path)?;
-            Self::validate_rel(path)?;
-            let Some(resolved) = self.resolve(path) else {
+            let Some(entry) = self.resolve_metadata_checked(path)? else {
                 continue;
             };
-            let metadata = self.metadata(path)?;
             self.record_preimage(path)?;
-            if resolved.is_upper
-                || !metadata.is_file()
-                || !identities.insert((metadata.dev(), metadata.ino()))
+            if entry.resolved.is_upper
+                || !entry.metadata.is_file()
+                || !identities.insert((entry.metadata.dev(), entry.metadata.ino()))
             {
                 continue;
             }
-            if let Some(copy) =
-                self.prepare_copy_up(path, resolved, metadata, truncate, &mut directory)?
-            {
+            if let Some(copy) = self.prepare_copy_up(path, entry, truncate, &mut directory)? {
                 copies.push(copy);
             }
         }
@@ -2538,34 +2552,40 @@ impl OverlayCore {
     fn prepare_copy_up(
         &self,
         rel: &Path,
-        resolved: Resolved,
-        metadata: Metadata,
+        entry: ResolvedMetadata,
         truncate: bool,
         directory: &mut Option<Arc<CopyDirectory>>,
     ) -> io::Result<Option<PreparedCopyUp>> {
         let _span = self.profile.span("copy_up_prepare");
-        // The caller already validated/resolved this path and recorded its
-        // baseline. Reuse that request-local work; source identity is still
-        // checked after materialization, copying and before publication.
-        if self.copied_hard_link_metadata(rel)?.is_some() {
+        if self.copied_hard_link_metadata_for_entry(&entry)?.is_some() {
             return Ok(None);
         }
+        let source_immutable =
+            self.layout.lower_mutability[entry.layer - 1] == LayerMutability::Immutable;
+        let ResolvedMetadata {
+            resolved,
+            mut metadata,
+            ..
+        } = entry;
         let links = crate::backend::link_count(&resolved.path, metadata.nlink())?;
         let attributes = crate::backend::attributes(&resolved.path)?;
         let skip_contents = truncate && links == 1;
         if !skip_contents {
             crate::backend::materialize_file(&resolved.path)?;
         }
-        let current = crate::backend::symlink_metadata(&resolved.path)?;
-        if !current.is_file()
-            || metadata.dev() != current.dev()
-            || metadata.ino() != current.ino()
-            || crate::backend::link_count(&resolved.path, current.nlink())? != links
-            || (attributes.is_none() && !same_copy_source(&metadata, &current))
-        {
-            return Err(error(libc::EAGAIN));
+        if !source_immutable {
+            self.profile.add("copy_source_revalidations", 1);
+            let current = crate::backend::symlink_metadata(&resolved.path)?;
+            if !current.is_file()
+                || metadata.dev() != current.dev()
+                || metadata.ino() != current.ino()
+                || crate::backend::link_count(&resolved.path, current.nlink())? != links
+                || (attributes.is_none() && !same_copy_source(&metadata, &current))
+            {
+                return Err(error(libc::EAGAIN));
+            }
+            metadata = current;
         }
-        let metadata = current;
         if directory.is_none() {
             let path = self
                 .work
@@ -2593,6 +2613,7 @@ impl OverlayCore {
             source: resolved.path,
             metadata,
             attributes,
+            source_immutable,
             truncate,
             directory,
             temporary,
@@ -2601,7 +2622,7 @@ impl OverlayCore {
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(prepared.content())?;
+            .open(&prepared.temporary)?;
         if skip_contents {
             self.profile
                 .add("copy_up_truncate_skipped_bytes", prepared.metadata.len());
@@ -2610,22 +2631,13 @@ impl OverlayCore {
                 .read(true)
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(&prepared.source)?;
-            if !prepared.matches(&prepared.source, &source.metadata()?)? {
-                return Err(error(libc::EAGAIN));
-            }
+            prepared.verify_source(Some(&source), &self.profile)?;
             let copied = io::copy(&mut source, &mut destination)?;
             self.profile.add("copy_up_bytes", copied);
-            if !prepared.matches(&prepared.source, &source.metadata()?)? {
-                return Err(error(libc::EAGAIN));
-            }
+            prepared.verify_source(Some(&source), &self.profile)?;
         }
-        self.copy_metadata(&prepared.source, &prepared.content(), &prepared.metadata)?;
-        if !prepared.matches(
-            &prepared.source,
-            &crate::backend::symlink_metadata(&prepared.source)?,
-        )? {
-            return Err(error(libc::EAGAIN));
-        }
+        self.copy_metadata(&prepared.source, &prepared.temporary, &prepared.metadata)?;
+        prepared.verify_source(None, &self.profile)?;
         Ok(Some(prepared))
     }
 
@@ -2633,7 +2645,8 @@ impl OverlayCore {
     /// Normal operations retain their validation, journal ordering and atomic
     /// publication; only their byte copying is replaced. Foreign receipts are
     /// `EINVAL`, overlapping installations are `EBUSY`. Drop cancels unused
-    /// receipts. Source changes before consumption fail with `EAGAIN`.
+    /// receipts. Mutable source changes before consumption fail with `EAGAIN`;
+    /// Immutable sources rely on their lower's lifetime stability promise.
     pub fn use_prepared_copy_ups(
         &self,
         copies: Vec<PreparedCopyUp>,
@@ -2667,18 +2680,26 @@ impl OverlayCore {
     pub(crate) fn copy_up_for_open(&self, rel: &Path, truncate: bool) -> io::Result<PathBuf> {
         let _span = self.profile.span("copy_up");
         self.require_visible(rel)?;
-        Self::validate_rel(rel)?;
         let upper = self.upper_path(rel);
         if exists(&upper) {
             self.require_unaliased(&upper)?;
             self.record_preimage(rel)?;
             return Ok(upper);
         }
-        let resolved = self.resolve(rel).ok_or_else(|| error(libc::ENOENT))?;
+        let entry = self
+            .resolve_metadata_checked(rel)?
+            .ok_or_else(|| error(libc::ENOENT))?;
         self.record_preimage(rel)?;
-        if resolved.is_upper {
-            return Ok(resolved.path);
+        if entry.resolved.is_upper {
+            return Ok(entry.resolved.path);
         }
+        let source_immutable =
+            self.layout.lower_mutability[entry.layer - 1] == LayerMutability::Immutable;
+        let ResolvedMetadata {
+            resolved,
+            mut metadata,
+            ..
+        } = entry;
         let prepared = {
             let mut installed = self
                 .prepared_copy_ups
@@ -2690,13 +2711,12 @@ impl OverlayCore {
                 } else if !copies.is_empty() {
                     // LOOKUP can add a lower alias before publication. Reuse
                     // that inode's prepared bytes even through the new alias.
-                    let source_metadata = crate::backend::symlink_metadata(&resolved.path)?;
                     copies
                         .iter()
                         .find(|(_, copy)| {
-                            source_metadata.nlink() > 1
-                                && copy.metadata.dev() == source_metadata.dev()
-                                && copy.metadata.ino() == source_metadata.ino()
+                            metadata.nlink() > 1
+                                && copy.metadata.dev() == metadata.dev()
+                                && copy.metadata.ino() == metadata.ino()
                         })
                         .map(|(path, _)| path.clone())
                 } else {
@@ -2707,19 +2727,27 @@ impl OverlayCore {
                 None
             }
         };
-        if let Some(prepared) = &prepared
-            && (prepared.truncate != truncate
+        if let Some(prepared) = &prepared {
+            if prepared.truncate != truncate
                 || (prepared.rel == rel && prepared.source != resolved.path)
-                || !prepared.matches(
-                    &resolved.path,
-                    &crate::backend::symlink_metadata(&resolved.path)?,
-                )?)
-        {
-            return Err(error(libc::EAGAIN));
+            {
+                return Err(error(libc::EAGAIN));
+            }
+            if !source_immutable {
+                self.profile.add("copy_source_revalidations", 1);
+                metadata = crate::backend::symlink_metadata(&resolved.path)?;
+            }
+            if !prepared.matches(&resolved.path, &metadata)? {
+                return Err(error(libc::EAGAIN));
+            }
         }
         self.ensure_upper_parents(rel)?;
-        let metadata = crate::backend::symlink_metadata(&resolved.path)?;
-        if let Some(prepared) = &prepared
+        if !source_immutable {
+            self.profile.add("copy_source_revalidations", 1);
+            metadata = crate::backend::symlink_metadata(&resolved.path)?;
+        }
+        if !source_immutable
+            && let Some(prepared) = &prepared
             && !prepared.matches(&resolved.path, &metadata)?
         {
             return Err(error(libc::EAGAIN));
@@ -2754,7 +2782,7 @@ impl OverlayCore {
                     fs::hard_link(existing, &temporary)?;
                     reused_upper_inode = true;
                 } else if let Some(prepared) = &prepared {
-                    fs::rename(prepared.content(), &temporary)?;
+                    fs::rename(&prepared.temporary, &temporary)?;
                 } else {
                     let mut options = OpenOptions::new();
                     options
@@ -2827,10 +2855,10 @@ impl OverlayCore {
         let mut names = BTreeMap::new();
         if !self.is_opaque(rel) {
             for lower in &self.layout.lowers {
-                let Some(directory) = layer_path(lower, rel)? else {
+                let Some((directory, metadata)) = layer_metadata(lower, rel)? else {
                     continue;
                 };
-                if !crate::backend::symlink_metadata(&directory)?.is_dir() {
+                if !metadata.is_dir() {
                     continue;
                 }
                 for entry in crate::backend::read_dir(directory)? {
@@ -2844,24 +2872,20 @@ impl OverlayCore {
                 }
             }
         }
+        let mut whiteouts = BTreeSet::new();
         if let Some(directory) = layer_path(&self.upper, rel)? {
             for entry in crate::backend::read_dir(directory)? {
                 let entry = entry?;
                 let name = entry.file_name();
-                if !Self::is_whiteout_name(&name) {
+                if let Some(hidden) = name.as_bytes().strip_prefix(WHITEOUT_PREFIX.as_bytes()) {
+                    whiteouts.insert(OsString::from_vec(hidden.to_vec()));
+                } else {
                     names.insert(name, item(entry)?);
                 }
             }
         }
+        names.retain(|name, _| !whiteouts.contains(name));
         Ok(names.into_iter().collect())
-    }
-
-    fn collect_directory_names(&self, rel: &Path) -> io::Result<Vec<OsString>> {
-        Ok(self
-            .collect_directory_items(rel, |_| Ok(()))?
-            .into_iter()
-            .map(|(name, ())| name)
-            .collect())
     }
 
     /// Snapshot names and directory types without allocating child inodes or
@@ -2891,7 +2915,7 @@ impl OverlayCore {
         let mut visible = Vec::with_capacity(candidates.len());
         for (name, type_) in candidates {
             let child = Self::child(rel, &name)?;
-            if self.is_whiteouted(rel, &name) || self.is_excluded(&child) {
+            if self.is_excluded(&child) {
                 continue;
             }
             // Protected views still filter denied hard links at OPENDIR.
@@ -2948,17 +2972,13 @@ impl OverlayCore {
         }
     }
 
-    fn directory_entries(
-        &self,
-        rel: &Path,
-        check_children: bool,
-    ) -> io::Result<Vec<DirectoryEntry>> {
-        let names = self.collect_directory_names(rel)?;
+    /// Snapshot visible names for tree operations, retaining ask names without
+    /// authorizing their attributes. Whiteouts, exclusions and denied aliases
+    /// are filtered; callers serving attributes must resolve the child separately.
+    pub fn list_names(&self, rel: &Path) -> io::Result<Vec<OsString>> {
+        let names = self.collect_directory_items(rel, |_| Ok(()))?;
         let mut entries = Vec::with_capacity(names.len());
-        for name in names {
-            if self.is_whiteouted(rel, &name) {
-                continue;
-            }
+        for (name, ()) in names {
             let child = Self::child(rel, &name)?;
             if self.is_excluded(&child) {
                 continue;
@@ -2970,25 +2990,10 @@ impl OverlayCore {
                     .require_unaliased_metadata(&backing.resolved.path, &backing.metadata)
                     .is_ok()
             {
-                if check_children {
-                    self.require_visible(&child)?;
-                }
-                entries.push(DirectoryEntry { name, backing });
+                entries.push(name);
             }
         }
         Ok(entries)
-    }
-
-    pub fn list_entries(&self, rel: &Path) -> io::Result<Vec<DirectoryEntry>> {
-        self.directory_entries(rel, true)
-    }
-
-    pub fn list_names(&self, rel: &Path) -> io::Result<Vec<OsString>> {
-        Ok(self
-            .directory_entries(rel, false)?
-            .into_iter()
-            .map(|item| item.name)
-            .collect())
     }
 
     /// Record an explicit metadata mutation separately from incidental root mtime.
@@ -3063,8 +3068,7 @@ impl OverlayCore {
 
     pub fn create_file(&self, rel: &Path, mode: u32, flags: i32) -> io::Result<File> {
         self.require_visible(rel)?;
-        Self::validate_rel(rel)?;
-        if self.resolve(rel).is_some() {
+        if self.resolve_checked(rel)?.is_some() {
             return Err(error(libc::EEXIST));
         }
         self.record_preimage(rel)?;
@@ -3085,7 +3089,7 @@ impl OverlayCore {
 
     pub fn create_dir(&self, rel: &Path, mode: u32) -> io::Result<()> {
         self.require_visible(rel)?;
-        if self.resolve(rel).is_some() {
+        if self.resolve_checked(rel)?.is_some() {
             return Err(error(libc::EEXIST));
         }
         self.record_preimage(rel)?;
@@ -3103,7 +3107,7 @@ impl OverlayCore {
 
     pub fn create_symlink(&self, rel: &Path, target: &Path) -> io::Result<()> {
         self.require_visible(rel)?;
-        if self.resolve(rel).is_some() {
+        if self.resolve_checked(rel)?.is_some() {
             return Err(error(libc::EEXIST));
         }
         self.record_preimage(rel)?;
@@ -3114,7 +3118,7 @@ impl OverlayCore {
 
     pub fn create_node(&self, rel: &Path, mode: u32, rdev: u32) -> io::Result<()> {
         self.require_visible(rel)?;
-        if self.resolve(rel).is_some() {
+        if self.resolve_checked(rel)?.is_some() {
             return Err(error(libc::EEXIST));
         }
         self.record_preimage(rel)?;
@@ -3128,8 +3132,11 @@ impl OverlayCore {
         if directory {
             self.require_tree_access(rel, rel)?;
         }
-        let resolved = self.resolve(rel).ok_or_else(|| error(libc::ENOENT))?;
-        let metadata = crate::backend::symlink_metadata(&resolved.path)?;
+        let ResolvedMetadata {
+            resolved, metadata, ..
+        } = self
+            .resolve_metadata_checked(rel)?
+            .ok_or_else(|| error(libc::ENOENT))?;
         if directory {
             if !metadata.is_dir() {
                 return Err(error(libc::ENOTDIR));
@@ -3186,15 +3193,14 @@ impl OverlayCore {
         new: &Path,
         no_replace: bool,
     ) -> io::Result<Option<PathBuf>> {
-        let Some(destination) = self.resolve(new) else {
+        let Some(destination) = self.resolve_metadata_checked(new)? else {
             return Ok(None);
         };
         if no_replace {
             return Err(error(libc::EEXIST));
         }
         let source_meta = self.metadata(old)?;
-        let destination_meta = crate::backend::symlink_metadata(&destination.path)?;
-        match (source_meta.is_dir(), destination_meta.is_dir()) {
+        match (source_meta.is_dir(), destination.metadata.is_dir()) {
             (true, false) => return Err(error(libc::ENOTDIR)),
             (false, true) => return Err(error(libc::EISDIR)),
             (true, true) if !self.list_names(new)?.is_empty() => {
@@ -3202,7 +3208,10 @@ impl OverlayCore {
             }
             _ => {}
         }
-        Ok(destination.is_upper.then_some(destination.path))
+        Ok(destination
+            .resolved
+            .is_upper
+            .then_some(destination.resolved.path))
     }
 
     fn remove_physical(path: &Path) -> io::Result<()> {
@@ -3271,19 +3280,30 @@ impl OverlayCore {
     pub fn rename(&self, old: &Path, new: &Path, no_replace: bool) -> io::Result<()> {
         self.require_visible(old)?;
         self.require_visible(new)?;
-        Self::validate_rel(old)?;
-        Self::validate_rel(new)?;
-        if old == new {
-            return Ok(());
-        }
         let source_meta = self.metadata(old)?;
+        if old == new {
+            return if no_replace {
+                Err(error(libc::EEXIST))
+            } else {
+                Ok(())
+            };
+        }
         if source_meta.is_dir() && new.starts_with(old) {
             return Err(error(libc::EINVAL));
         }
         let replaced_upper = self.validate_replacement(old, new, no_replace)?;
         self.require_tree_access(old, new)?;
-        if self.resolve(new).is_some() {
+        if self.resolve_checked(new)?.is_some() {
             self.require_tree_access(new, new)?;
+            if source_meta.is_file() {
+                let (source, copied_source) = self.metadata_with_copied_hard_link(old)?;
+                let (destination, copied_destination) = self.metadata_with_copied_hard_link(new)?;
+                let source = copied_source.as_ref().unwrap_or(&source);
+                let destination = copied_destination.as_ref().unwrap_or(&destination);
+                if (source.dev(), source.ino()) == (destination.dev(), destination.ino()) {
+                    return Ok(());
+                }
+            }
         }
         self.record_logical_tree_mapping(old, old)?;
         self.record_logical_tree_mapping(old, new)?;
@@ -3344,8 +3364,6 @@ impl OverlayCore {
     ) -> io::Result<Vec<PathBuf>> {
         self.require_visible(old)?;
         self.require_visible(new)?;
-        Self::validate_rel(old)?;
-        Self::validate_rel(new)?;
         if old == new {
             return Ok(Vec::new());
         }
@@ -3368,7 +3386,7 @@ impl OverlayCore {
             }
             self.validate_replacement(old, new, no_replace)?;
             self.require_tree_access(old, new)?;
-            if self.resolve(new).is_some() {
+            if self.resolve_checked(new)?.is_some() {
                 self.require_tree_access(new, new)?;
             }
             self.record_logical_tree_mapping(old, old)?;
@@ -3387,7 +3405,7 @@ impl OverlayCore {
         if metadata.is_dir() {
             return Err(error(libc::EPERM));
         }
-        if self.resolve(destination).is_some() {
+        if self.resolve_checked(destination)?.is_some() {
             return Err(error(libc::EEXIST));
         }
         self.record_preimage(destination)?;
@@ -3407,8 +3425,6 @@ impl OverlayCore {
     pub fn exchange(&self, first: &Path, second: &Path) -> io::Result<()> {
         self.require_visible(first)?;
         self.require_visible(second)?;
-        Self::validate_rel(first)?;
-        Self::validate_rel(second)?;
         if first == second {
             return Ok(());
         }
@@ -3512,6 +3528,16 @@ mod tests {
                 "exclusive_upper_absence_cache_hits_unavailable_parent"
             ),
             1
+        );
+        let path = Path::new("a/b/another-missing");
+        core.upper_metadata_cached(path, None, None).unwrap();
+        let mut parents = Vec::new();
+        core.upper_metadata_cached(path, Some(&mut parents), None)
+            .unwrap();
+        assert_eq!(
+            parents.len(),
+            2,
+            "a cache-only miss must retain the complete parent evidence"
         );
     }
 
@@ -4203,8 +4229,23 @@ mod tests {
             )
             .is_err()
         );
+        assert_eq!(
+            remove_preimages(&journal, &[PathBuf::from("file")])
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(core);
         remove_preimages(&journal, &[PathBuf::from("file")]).unwrap();
         fs::write(target.join("file"), b"changed").unwrap();
+        let core = OverlayCore::open_existing(
+            vec![target.clone()],
+            upper.clone(),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
         core.observe_read(Path::new("file")).unwrap();
         assert!(
             !load_preimages(&journal).unwrap()[0]
@@ -4222,6 +4263,7 @@ mod tests {
         .unwrap();
         assert!(core.preimage_log.is_some());
         core.record_preimage(Path::new("file")).unwrap();
+        drop(core);
         persist_directory_preimage(
             &journal,
             PathPreimage {
@@ -4274,7 +4316,7 @@ mod tests {
         }
     }
     #[test]
-    fn two_cores_never_replace_the_first_observation_when_publication_races() {
+    fn one_core_never_replaces_the_first_observation_when_publication_races() {
         use super::*;
         use crate::apply::{OverlayRecord, OverlayState, OverlayUpper, apply_overlay};
         for (durable_loser, compact) in [(false, false), (true, false), (false, true), (true, true)]
@@ -4299,21 +4341,13 @@ mod tests {
             } else {
                 loser
             };
-            let winner = OverlayCore::new_with_exclusions_and_preimages(
-                vec![target.clone()],
-                temp.path().join("other-upper"),
-                None,
-                vec![],
-                Some(journal.clone()),
-            )
-            .unwrap();
-            // Both instances can see a missing journal destination. Schedule
+            // Both requests can see a missing journal destination. Schedule
             // the winner and host edit after the loser's missing-entry check,
             // before its fingerprint/publication; a replacing rename would
             // adopt "host edit" and permit the stale candidate to overwrite it.
             loser
                 .capture_preimage_after_check(Path::new("value"), durable_loser, false, || {
-                    winner.observe_read(Path::new("value"))?;
+                    loser.observe_read(Path::new("value"))?;
                     fs::write(target.join("value"), b"host edit")
                 })
                 .unwrap();
@@ -4332,9 +4366,8 @@ mod tests {
             )
             .unwrap();
             drop(loser);
-            drop(winner);
             let mut record = OverlayRecord {
-                id: "shared-journal".into(),
+                id: "single-writer-journal".into(),
                 generation: 0,
                 target: target.clone(),
                 baseline_lower: None,
@@ -4357,7 +4390,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_concurrent_first_observations_hash_once_and_consumption_recaptures() {
+    fn compact_concurrent_first_observations_hash_once_and_handoff_recaptures() {
         use std::sync::Barrier;
         let temp = tempfile::tempdir().unwrap();
         let lower = temp.path().join("lower");
@@ -4404,8 +4437,18 @@ mod tests {
                 .paths
                 .is_empty()
         );
+        drop(core);
         remove_preimages(&journal, &[PathBuf::from("file")]).unwrap();
         fs::write(lower.join("file"), b"new generation").unwrap();
+        let core = OverlayCore::open_existing(
+            vec![lower.clone()],
+            temp.path().join("upper"),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap()
+        .with_profile(profile.clone());
         core.observe_read(Path::new("file")).unwrap();
         let expected = fingerprint_at(&lower, Path::new("file")).unwrap();
         assert_eq!(load_preimages(&journal).unwrap()[0].state, expected);
@@ -4689,6 +4732,39 @@ mod tests {
     }
 
     #[test]
+    fn reopening_validates_work_without_recovering_its_contents() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let lower = dir.path().join("lower");
+        let upper = dir.path().join("upper");
+        let work = dir.path().join("work");
+        fs::create_dir(&lower).unwrap();
+        drop(OverlayCore::new(vec![lower.clone()], upper.clone(), Some(work.clone())).unwrap());
+        let pending = work.join(format!("{TEMP_PREFIX}pending"));
+        fs::write(&pending, b"unfinished copy").unwrap();
+        drop(
+            OverlayCore::open_existing(
+                vec![lower.clone()],
+                upper.clone(),
+                Some(work.clone()),
+                vec![],
+                None,
+            )
+            .unwrap(),
+        );
+        assert_eq!(fs::read(&pending).unwrap(), b"unfinished copy");
+        fs::remove_file(&pending).unwrap();
+        fs::remove_dir(&work).unwrap();
+        fs::write(&work, b"not a directory").unwrap();
+        assert_eq!(
+            OverlayCore::open_existing(vec![lower], upper, Some(work), vec![], None)
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOTDIR)
+        );
+    }
+
+    #[test]
     fn masked_lower_symlink_cannot_supply_children_outside_its_layer() {
         use super::*;
         let dir = tempfile::tempdir().unwrap();
@@ -4702,7 +4778,11 @@ mod tests {
         std::os::unix::fs::symlink(&outside, base.join("masked")).unwrap();
         let core =
             OverlayCore::new(vec![top, base.clone()], dir.path().join("upper"), None).unwrap();
-        assert!(core.resolve(Path::new("masked/secret")).is_none());
+        assert!(
+            core.resolve_checked(Path::new("masked/secret"))
+                .unwrap()
+                .is_none()
+        );
         assert!(core.list_names(Path::new("masked")).unwrap().is_empty());
         assert_eq!(
             fingerprint_at(&base, Path::new("masked/secret")).unwrap(),
@@ -4870,7 +4950,12 @@ mod tests {
             .unwrap(),
         );
         let core = &fixture.core;
-        assert!(core.resolve(Path::new("project/.ssh/id_ed25519")).is_none());
+        assert_eq!(
+            core.resolve_checked(Path::new("project/.ssh/id_ed25519"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EACCES)
+        );
         assert_eq!(
             core.list_names(Path::new("project")).unwrap(),
             [OsString::from(".env")]
@@ -4903,7 +4988,12 @@ mod tests {
             &crate::FileAccessPolicy::new(vec!["**/id_rsa".into()], vec![]).unwrap(),
         );
         let core = &fixture.core;
-        assert!(core.resolve(Path::new("alias")).is_none());
+        assert_eq!(
+            core.resolve_checked(Path::new("alias"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::EACCES)
+        );
         assert!(core.copy_up(Path::new("alias")).is_err());
         assert!(
             core.hard_link(Path::new("id_rsa"), Path::new("new-alias"))
@@ -4911,7 +5001,12 @@ mod tests {
         );
         core.create_symlink(Path::new("link"), Path::new("id_rsa"))
             .unwrap();
-        assert!(core.resolve(Path::new("link/child")).is_none());
+        assert_eq!(
+            core.resolve_checked(Path::new("link/child"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOTDIR)
+        );
         assert!(core.metadata(Path::new("../id_rsa")).is_err());
         assert!(core.metadata(Path::new("/id_rsa")).is_err());
     }
@@ -4963,7 +5058,8 @@ mod tests {
         );
         let resolved = fixture
             .core
-            .resolve(Path::new("dir/shared"))
+            .resolve_checked(Path::new("dir/shared"))
+            .unwrap()
             .expect("resolved");
         assert_eq!(fs::read(resolved.path).expect("read"), b"top");
     }
@@ -5004,9 +5100,22 @@ mod tests {
             .rename(Path::new("tree"), Path::new("moved"), false)
             .expect("rename");
 
-        assert!(fixture.core.resolve(Path::new("tree")).is_none());
+        assert!(
+            fixture
+                .core
+                .resolve_checked(Path::new("tree"))
+                .unwrap()
+                .is_none()
+        );
         for path in ["moved/a", "moved/b", "moved/nested/c"] {
-            assert!(fixture.core.resolve(Path::new(path)).is_some(), "{path}");
+            assert!(
+                fixture
+                    .core
+                    .resolve_checked(Path::new(path))
+                    .unwrap()
+                    .is_some(),
+                "{path}"
+            );
         }
         assert!(fixture.upper.join("moved").join(OPAQUE_NAME).is_file());
     }
@@ -5018,7 +5127,11 @@ mod tests {
         fs::write(&source, b"payload").expect("write");
         fs::set_permissions(&source, fs::Permissions::from_mode(0o751)).expect("chmod");
         let xattr_supported =
-            sys::set_xattr(&source, OsStr::new("user.pvisor.test"), b"value", 0).is_ok();
+            match sys::set_xattr(&source, OsStr::new("user.pvisor.test"), b"value", 0) {
+                Ok(()) => true,
+                Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => false,
+                Err(error) => panic!("xattr setup failed: {error}"),
+            };
 
         let copied = fixture.core.copy_up(Path::new("file")).expect("copy up");
         let mut contents = Vec::new();
@@ -5145,6 +5258,47 @@ mod tests {
     }
 
     #[test]
+    fn rename_between_hardlink_aliases_preserves_both_names() {
+        for copied in [false, true] {
+            let fixture = Fixture::new();
+            fs::write(fixture.lower2.join("one"), b"original").unwrap();
+            fs::hard_link(fixture.lower2.join("one"), fixture.lower2.join("two")).unwrap();
+            if copied {
+                fixture.core.copy_up(Path::new("one")).unwrap();
+            }
+            fixture
+                .core
+                .rename(Path::new("one"), Path::new("two"), false)
+                .unwrap();
+            for name in ["one", "two"] {
+                assert!(
+                    fixture
+                        .core
+                        .resolve_checked(Path::new(name))
+                        .unwrap()
+                        .is_some()
+                );
+            }
+            assert_eq!(
+                fixture
+                    .core
+                    .rename(Path::new("one"), Path::new("two"), true)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EEXIST)
+            );
+            assert_eq!(
+                fixture
+                    .core
+                    .rename(Path::new("missing"), Path::new("missing"), false)
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::ENOENT)
+            );
+        }
+    }
+
+    #[test]
     fn lower_hard_link_index_survives_rename() {
         let fixture = Fixture::new();
         fs::write(fixture.lower2.join("one"), b"before").expect("one");
@@ -5172,14 +5326,23 @@ mod tests {
             .expect("exchange");
 
         assert_eq!(
-            fs::read(fixture.core.resolve(Path::new("b")).expect("b").path).expect("read"),
+            fs::read(
+                fixture
+                    .core
+                    .resolve_checked(Path::new("b"))
+                    .unwrap()
+                    .expect("b")
+                    .path
+            )
+            .expect("read"),
             b"a"
         );
         assert_eq!(
             fs::read(
                 fixture
                     .core
-                    .resolve(Path::new("a/child"))
+                    .resolve_checked(Path::new("a/child"))
+                    .unwrap()
                     .expect("child")
                     .path
             )
@@ -5205,8 +5368,18 @@ mod tests {
         )
         .unwrap();
 
-        assert!(core.resolve(Path::new("internal")).is_none());
-        assert!(core.resolve(Path::new("internal/nested/control")).is_none());
+        assert_eq!(
+            core.resolve_checked(Path::new("internal"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        assert_eq!(
+            core.resolve_checked(Path::new("internal/nested/control"))
+                .unwrap_err()
+                .raw_os_error(),
+            Some(libc::ENOENT)
+        );
         assert!(
             !core
                 .list_names(Path::new(""))
@@ -5246,18 +5419,90 @@ mod tests {
             .rename(Path::new("source"), Path::new("destination"), false)
             .expect("rename");
 
-        assert!(fixture.core.resolve(Path::new("source")).is_none());
+        assert!(
+            fixture
+                .core
+                .resolve_checked(Path::new("source"))
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             fs::read(
                 fixture
                     .core
-                    .resolve(Path::new("destination/child/file"))
+                    .resolve_checked(Path::new("destination/child/file"))
+                    .unwrap()
                     .expect("file")
                     .path
             )
             .expect("read"),
             b"data"
         );
+    }
+
+    #[test]
+    fn directory_candidates_filter_whiteouts_in_the_upper_scan() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        let upper = temp.path().join("upper");
+        fs::create_dir(&lower).unwrap();
+        for name in ["hidden", "visible"] {
+            fs::write(lower.join(name), b"lower").unwrap();
+        }
+        let raw = OsString::from("原始 名称");
+        fs::write(lower.join(&raw), b"raw name").unwrap();
+        let profile = crate::profile::Profile::enabled("directory-whiteouts");
+        let core = OverlayCore::new(vec![lower], upper.clone(), None)
+            .unwrap()
+            .with_profile(profile.clone());
+        fs::write(upper.join("hidden"), b"upper").unwrap();
+        fs::write(upper.join(".wh.hidden"), b"").unwrap();
+        let mut marker = OsString::from(WHITEOUT_PREFIX);
+        marker.push(&raw);
+        fs::write(upper.join(&marker), b"").unwrap();
+        assert_eq!(
+            core.directory_candidates(Path::new("")).unwrap(),
+            vec![(OsString::from("visible"), libc::DT_REG as u32)]
+        );
+        assert!(
+            !profile
+                .report()
+                .unwrap()
+                .measurements
+                .contains_key("whiteout_probe")
+        );
+        fs::remove_file(upper.join(".wh.hidden")).unwrap();
+        fs::remove_file(upper.join(marker)).unwrap();
+        let names = core
+            .directory_candidates(Path::new(""))
+            .unwrap()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![OsString::from("hidden"), OsString::from("visible"), raw]
+        );
+    }
+
+    #[test]
+    fn legacy_read_loser_retains_the_winners_durable_membership() {
+        let temp = tempfile::tempdir().unwrap();
+        let lower = temp.path().join("lower");
+        fs::create_dir(&lower).unwrap();
+        fs::write(lower.join("file"), b"original").unwrap();
+        let core = OverlayCore::new_with_exclusions_and_preimages(
+            vec![lower],
+            temp.path().join("upper"),
+            None,
+            vec![],
+            Some(temp.path().join("journal")),
+        )
+        .unwrap();
+        let rel = Path::new("file");
+        core.capture_preimage_after_check(rel, false, false, || core.record_preimage(rel))
+            .unwrap();
+        assert!(core.preimage_lock.lock().unwrap().contains(rel));
     }
 
     #[test]
@@ -5289,9 +5534,13 @@ mod tests {
         assert_eq!(entries[0].relative_path(), Path::new("value.txt"));
         assert_eq!(entries[0].state, original);
 
+        drop(core);
         remove_preimages(&journal, &[PathBuf::from("value.txt")]).unwrap();
         fs::remove_file(upper.join("value.txt")).unwrap();
         let rebased = fingerprint_at(&target, Path::new("value.txt")).unwrap();
+        let core =
+            OverlayCore::open_existing(vec![target], upper, None, vec![], Some(journal.clone()))
+                .unwrap();
         core.copy_up(Path::new("value.txt")).unwrap();
         let entries = load_preimages(&journal).unwrap();
         assert_eq!(entries.len(), 1);
@@ -5392,7 +5641,12 @@ fn resolved_metadata_and_directory_entries_preserve_layer_and_visibility() {
     fs::write(upper.join("upper-only"), b"upper").unwrap();
     fs::write(upper.join(".wh.hidden"), b"").unwrap();
     let core = OverlayCore::new(vec![first.clone(), last], upper, None).unwrap();
-    let entries = core.list_entries(Path::new("")).unwrap();
+    let entries = core
+        .directory_candidates(Path::new(""))
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| core.directory_entry(Path::new(""), &name).unwrap().unwrap())
+        .collect::<Vec<_>>();
     assert_eq!(
         entries
             .iter()
@@ -5438,7 +5692,9 @@ fn resolved_metadata_and_directory_entries_preserve_layer_and_visibility() {
             .contains(&OsString::from("shared"))
     );
     assert_eq!(
-        core.list_entries(Path::new("")).unwrap_err().raw_os_error(),
+        core.directory_entry(Path::new(""), OsStr::new("shared"))
+            .unwrap_err()
+            .raw_os_error(),
         Some(libc::EACCES)
     );
 }
@@ -5659,7 +5915,7 @@ mod backing_resolution_tests {
     }
 
     #[test]
-    fn repeated_compact_read_resolves_once_but_refreshes_external_consumption() {
+    fn repeated_compact_read_resolves_once_and_handoff_replays_consumption() {
         let temp = tempfile::tempdir().unwrap();
         let lower = temp.path().join("lower");
         fs::create_dir_all(lower.join("a/b")).unwrap();
@@ -5691,9 +5947,17 @@ mod backing_resolution_tests {
                 .state
                 .matches(&original)
         );
-        // A different owner consumes the old generation. Local membership must
-        // not suppress a new observation, even though the hint still says hit.
+        // Apply consumes the old generation only after the workload releases it.
+        drop(core);
         remove_preimages(&journal, &[rel.to_path_buf()]).unwrap();
+        let core = OverlayCore::open_existing(
+            vec![lower.clone()],
+            temp.path().join("upper"),
+            None,
+            vec![],
+            Some(journal.clone()),
+        )
+        .unwrap();
         core.prepare_file_read(rel).unwrap();
         let current = fingerprint_at(&lower, rel).unwrap();
         assert!(load_preimages(&journal).unwrap()[0].state.matches(&current));

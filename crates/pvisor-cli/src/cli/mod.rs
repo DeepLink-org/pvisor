@@ -1,13 +1,10 @@
 //! Job lifecycle commands and dispatch to first-party companions.
 mod cache;
 mod checkpoint;
+mod docker;
 mod features;
 #[cfg(unix)]
 pub(crate) mod host;
-#[cfg(unix)]
-mod host_cancel;
-#[cfg(unix)]
-mod host_fds;
 #[cfg(any(target_os = "macos", test))]
 mod host_image;
 #[cfg(unix)]
@@ -32,7 +29,7 @@ use std::ffi::OsString;
 #[command(
     name = "pvisor",
     version,
-    about = "Run agents, review changes, and manage Jobs"
+    about = "Run containers and agents in independent environments"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -50,12 +47,17 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    #[command(flatten)]
+    Container(docker::DockerCommand),
+    /// Run Docker-compatible commands in independent rootless VMs.
+    #[command(hide = true)]
+    Docker(docker::DockerArgs),
     /// List runtime experiments.
     Feature(crate::cli::features::FeatureArgs),
     /// Build, publish and query image, rootfs and workspace caches.
     Cache(cache::CacheArgs),
     #[command(about = run::RUN_COMMAND_ABOUT, long_about = run::RUN_COMMAND_LONG_ABOUT)]
-    Run(Box<run::RunArgs>),
+    Spawn(Box<run::RunArgs>),
 
     /// Apply reviewed changes.
     Apply(runtime::ApplyArgs),
@@ -90,7 +92,7 @@ fn root_command() -> anyhow::Result<clap::Command> {
     let groups = grouped_commands(&command);
     Ok(command
         .before_help(groups.trim_end().to_owned())
-        .after_help("Examples:\n  pvisor run --safe -- claude\n  pvisor review last\n  pvisor apply last --path src\n\nUse pvisor -- COMMAND for default execution.\nUse pvisor help COMMAND for command details.")
+        .after_help("Examples:\n  pvisor run --rm alpine:3.20 echo hello\n  pvisor spawn --safe -- claude\n  pvisor review last\n  pvisor apply last --path src\n\nUse pvisor -- COMMAND for default Job execution (spawn).\nUse pvisor help COMMAND for command details.")
         .help_template("{about}\n\n{usage-heading} {usage}\n\n{before-help}Options:\n{options}{after-help}\n"))
 }
 
@@ -98,7 +100,13 @@ fn root_command() -> anyhow::Result<clap::Command> {
 /// for help display without modifying the parser.
 fn grouped_commands(command: &clap::Command) -> String {
     const GROUPS: &[(&str, &[&str])] = &[
-        ("Execution", &["run", "status", "kill"]),
+        (
+            "Commands",
+            &[
+                "run", "spawn", "status", "kill", "pull", "images", "rmi", "exec", "ps", "start",
+                "stop", "rm", "logs",
+            ],
+        ),
         ("Changes", &["review", "apply", "drop", "inspect"]),
         ("Checkpoints", &["checkpoint", "suspend", "resume", "fork"]),
         ("Tools", &["cache", "replay", "tui", "feature", "help"]),
@@ -123,7 +131,7 @@ fn grouped_commands(command: &clap::Command) -> String {
         for sub in members {
             let name = sub.get_name();
             let about = match name {
-                "run" => "Run an agent or command".to_owned(),
+                "spawn" => "Run an agent or command as a Job".to_owned(),
                 _ => sub.get_about().map(ToString::to_string).unwrap_or_default(),
             };
             output.push_str(&format!("  {name:width$}  {about}\n"));
@@ -151,7 +159,7 @@ fn command_offset(args: &[OsString]) -> usize {
     index
 }
 
-fn normalize_default_run(mut args: Vec<OsString>, command: &clap::Command) -> Vec<OsString> {
+fn normalize_default_spawn(mut args: Vec<OsString>, command: &clap::Command) -> Vec<OsString> {
     let offset = command_offset(&args);
     if let Some(first) = args.get(offset).and_then(|arg| arg.to_str())
         && command.find_subcommand(first).is_none()
@@ -159,7 +167,7 @@ fn normalize_default_run(mut args: Vec<OsString>, command: &clap::Command) -> Ve
         && !["ctrl", "service"].contains(&first)
         && !["--help", "-h", "--version", "-V"].contains(&first)
     {
-        args.insert(offset, "run".into());
+        args.insert(offset, "spawn".into());
     }
     // clap propagates globals by replacement across parser levels, not append.
     // Put leading enables on the command level so pre/post-command repetitions
@@ -177,6 +185,9 @@ fn normalize_default_run(mut args: Vec<OsString>, command: &clap::Command) -> Ve
 }
 
 pub fn main() -> anyhow::Result<()> {
+    if pvisor::docker::internal_if_requested()? {
+        return Ok(());
+    }
     if host_service::internal_if_requested()? {
         return Ok(());
     }
@@ -199,7 +210,7 @@ pub fn main() -> anyhow::Result<()> {
         !args.get(1).is_some_and(|arg| arg == "ctrl")
             && !(args.get(1).is_some_and(|arg| arg == "help")
                 && args.get(2).is_some_and(|arg| arg == "ctrl")),
-        "`pvisor ctrl` has been retired; use status, suspend --vm-pause/--vm-offload, or resume --vm-load with --vm-socket, --vm-job-id and --vm-attempt-id"
+        "`pvisor ctrl` has been retired; use status JOB, suspend JOB --vm-pause/--vm-offload, or resume JOB"
     );
     let mut core_command = Cli::command();
     core_command.build();
@@ -245,7 +256,7 @@ pub fn main() -> anyhow::Result<()> {
                     .take_while(|arg| *arg != "--")
                     .any(|arg| arg == "--help" || arg == "-h")
                 || !companions::is_root_command(name),
-            "--feature enables apply to run, not extensions; use pvisor help COMMAND for help"
+            "--feature enables apply to spawn, not extensions; use pvisor help COMMAND for help"
         );
         if companions::is_root_command(name)
             && let Some((path, _)) = companions::find(name)?
@@ -259,7 +270,7 @@ pub fn main() -> anyhow::Result<()> {
             return companions::dispatch(target, &["--help".into()]);
         }
     }
-    let args = normalize_default_run(args, &core_command);
+    let args = normalize_default_spawn(args, &core_command);
     if args.len() == 1 {
         root_command()?.print_help()?;
         println!();
@@ -273,19 +284,53 @@ pub fn main() -> anyhow::Result<()> {
     } else {
         core_command
     };
-    let mut parsed = Cli::from_arg_matches(&command.get_matches_from(args.clone()))?;
+    let matches = match command.try_get_matches_from(args.clone()) {
+        Ok(matches) => matches,
+        Err(error) => {
+            let offset = command_offset(&args);
+            if error.use_stderr()
+                && (args.get(offset).is_some_and(|arg| arg == "run")
+                    || args.get(offset).is_some_and(|arg| arg == "docker")
+                        && args.get(offset + 1).is_some_and(|arg| arg == "run"))
+            {
+                error.print()?;
+                finish(125);
+                return Ok(());
+            }
+            error.exit();
+        }
+    };
+    let mut parsed = Cli::from_arg_matches(&matches)?;
     if let Command::Feature(query) = &parsed.command {
         return query.print(&parsed.features);
+    }
+    if let Command::Docker(args) = parsed.command {
+        parsed.command = Command::Container(args.command);
+    }
+    if let Command::Container(command) = parsed.command {
+        anyhow::ensure!(
+            parsed.features.is_empty(),
+            "--feature enables apply only to spawn or feature queries"
+        );
+        let failure_code = command.failure_exit_code();
+        match docker::run(command) {
+            Ok(code) => finish(code),
+            Err(error) => {
+                eprintln!("pvisor: {error:#}");
+                finish(failure_code);
+            }
+        }
+        return Ok(());
     }
     // Informational invocations return without emitting execution diagnostics.
     pvisor::startup_mark("process.entry");
     pvisor::startup_mark("cli.parsed");
-    if let Command::Run(run) = &mut parsed.command {
+    if let Command::Spawn(run) = &mut parsed.command {
         run.features = parsed.features.clone();
     } else {
         anyhow::ensure!(
             parsed.features.is_empty(),
-            "--feature enables apply only to run or feature queries"
+            "--feature enables apply only to spawn or feature queries"
         );
     }
     if let Some(command) = host::vm_request(&parsed.command)? {
@@ -293,9 +338,12 @@ pub fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     match parsed.command {
+        Command::Container(_) | Command::Docker(_) => {
+            unreachable!("container commands dispatch before Job startup")
+        }
         Command::Feature(_) => unreachable!("feature queries return without contacting Host"),
         Command::Cache(args) => cache::run(args)?,
-        Command::Run(run) => {
+        Command::Spawn(run) => {
             if !terminal::is_child() {
                 let audit = run.audit_requested()?;
                 if run.tui_requested() || audit {
@@ -356,17 +404,53 @@ mod feature_parser_tests {
     fn parse(args: &[&str]) -> Cli {
         let mut command = Cli::command();
         command.build();
-        let args = normalize_default_run(args.iter().map(OsString::from).collect(), &command);
+        let args = normalize_default_spawn(args.iter().map(OsString::from).collect(), &command);
         Cli::from_arg_matches(&command.try_get_matches_from(args).unwrap()).unwrap()
     }
     #[test]
-    fn root_enables_work_before_after_and_with_implicit_run() {
+    fn container_commands_precede_default_spawn_and_keep_workload_flags_literal() {
+        for args in [
+            vec!["pvisor", "run", "alpine", "echo", "--feature", "guest-only"],
+            vec!["pvisor", "pull", "alpine"],
+            vec![
+                "pvisor",
+                "exec",
+                "container",
+                "echo",
+                "--feature",
+                "guest-only",
+            ],
+            vec!["pvisor", "images"],
+            vec!["pvisor", "rmi", "alpine"],
+            vec!["pvisor", "ps"],
+            vec!["pvisor", "start", "container"],
+            vec!["pvisor", "stop", "container"],
+            vec!["pvisor", "rm", "container"],
+            vec!["pvisor", "logs", "container"],
+        ] {
+            let parsed = parse(&args);
+            assert!(matches!(parsed.command, Command::Container(_)), "{args:?}");
+            assert!(parsed.features.is_empty(), "{args:?}");
+        }
+        for args in [
+            vec!["pvisor", "/bin/echo", "--rm"],
+            vec!["pvisor", "--", "run"],
+            vec!["pvisor", "spawn", "--", "pull"],
+        ] {
+            assert!(
+                matches!(parse(&args).command, Command::Spawn(_)),
+                "{args:?}"
+            );
+        }
+    }
+    #[test]
+    fn root_enables_work_before_after_and_with_implicit_spawn() {
         for args in [
             vec![
                 "pvisor",
                 "--feature",
                 "workload-aware-memory-offloading",
-                "run",
+                "spawn",
                 "--executor",
                 "vm",
                 "--",
@@ -374,7 +458,7 @@ mod feature_parser_tests {
             ],
             vec![
                 "pvisor",
-                "run",
+                "spawn",
                 "--feature=workload-aware-memory-offloading",
                 "--executor",
                 "vm",
@@ -399,7 +483,7 @@ mod feature_parser_tests {
             ],
         ] {
             let parsed = parse(&args);
-            assert!(matches!(parsed.command, Command::Run(_)));
+            assert!(matches!(parsed.command, Command::Spawn(_)));
             assert_eq!(
                 parsed.features,
                 [pvisor::features::Feature::WorkloadAwareMemoryOffloading]
@@ -412,11 +496,11 @@ mod feature_parser_tests {
         command.build();
         for args in [
             vec!["pvisor", "--feature", "vm-vcpu-observe", "feature"],
-            vec!["pvisor", "run", "--feature=vm-vcpu-observe", "--", "true"],
+            vec!["pvisor", "spawn", "--feature=vm-vcpu-observe", "--", "true"],
             vec!["pvisor", "--feature", "vm-vcpu-observe", "--", "true"],
         ] {
             let normalized =
-                normalize_default_run(args.iter().map(OsString::from).collect(), &command);
+                normalize_default_spawn(args.iter().map(OsString::from).collect(), &command);
             let error = command
                 .clone()
                 .try_get_matches_from(normalized)
@@ -436,7 +520,7 @@ mod feature_parser_tests {
             "pvisor",
             "--feature",
             "workload-aware-memory-offloading,workload-aware-memory-offloading",
-            "run",
+            "spawn",
             "--feature",
             "workload-aware-memory-offloading",
             "--",
@@ -445,8 +529,8 @@ mod feature_parser_tests {
             "guest-only",
         ]);
         assert_eq!(parsed.features.len(), 3);
-        let Command::Run(run) = &mut parsed.command else {
-            panic!("run")
+        let Command::Spawn(run) = &mut parsed.command else {
+            panic!("spawn")
         };
         run.features = parsed.features;
         let value = serde_json::to_value(host::JobCommand::Run(run.clone())).unwrap();
@@ -484,18 +568,18 @@ mod feature_parser_tests {
                 "--feature",
                 "workload-aware-memory-offloading",
                 "help",
-                "run",
+                "spawn",
             ],
             vec![
                 "pvisor",
-                "run",
+                "spawn",
                 "--feature",
                 "workload-aware-memory-offloading",
                 "--help",
             ],
         ] {
             let normalized =
-                normalize_default_run(args.iter().map(OsString::from).collect(), &command);
+                normalize_default_spawn(args.iter().map(OsString::from).collect(), &command);
             assert_eq!(
                 command
                     .clone()
@@ -512,7 +596,7 @@ mod feature_parser_tests {
             Command::External(_)
         ));
         assert_eq!(
-            normalize_default_run(
+            normalize_default_spawn(
                 vec!["pvisor".into(), "replay".into(), "--help".into()],
                 &command
             )[1],
@@ -520,7 +604,7 @@ mod feature_parser_tests {
         );
         assert!(
             command
-                .try_get_matches_from(["pvisor", "run", "--feature", "unknown", "--", "true"])
+                .try_get_matches_from(["pvisor", "spawn", "--feature", "unknown", "--", "true"])
                 .unwrap_err()
                 .to_string()
                 .contains("unknown feature 'unknown'")

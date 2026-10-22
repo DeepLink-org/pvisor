@@ -3,7 +3,7 @@
 The container executor runs the userspace of an OCI image on the Linux host kernel. It calls `runc` or `crun` directly and does not need Docker or Podman.
 
 ```bash
-pvisor run --executor container \
+pvisor spawn --executor container \
   --container-image ubuntu:24.04 \
   --stage ../stage-container -- /bin/sh
 ```
@@ -16,10 +16,10 @@ The injected executable defaults to the running pVisor. Supply `--container-pvis
 
 ## How it works
 
-pVisor generates a standard OCI bundle, mounts the current or explicitly supplied compatible Linux pVisor binary into the rootfs, and then takes the ordinary `pvisor run --executor host --spec ...` path inside the container. The agent command lives in the RunSpec and is not exposed in the OCI runner's argv; the pVisor inside the container creates its own AgentCtl and returns typed results.
+pVisor generates a standard OCI bundle, mounts the current or explicitly supplied compatible Linux pVisor binary into the rootfs, and then takes the ordinary `pvisor spawn --executor host --spec ...` path inside the container. The agent command lives in the RunSpec and is not exposed in the OCI runner's argv; the pVisor inside the container creates its own AgentCtl and returns typed results.
 
 ```bash
-pvisor run \
+pvisor spawn \
   --container-image example/codex-agent:latest \
   --container-pvisor-binary ./dist/pvisor-linux-amd64 \
   --container-platform linux/amd64 \

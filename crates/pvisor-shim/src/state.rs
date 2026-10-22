@@ -93,6 +93,9 @@ pub struct TaskEntry {
     pub status: TaskStatus,
     pub exit: Option<ExitInfo>,
     pub execs: HashMap<String, ExecEntry>,
+    /// VM tasks: bridged injection ports whose `/run/pvisor-bridge-*`
+    /// sockets must be unlinked when the task goes away.
+    pub bridge_ports: Vec<u16>,
 }
 
 impl TaskEntry {
@@ -116,6 +119,7 @@ impl TaskEntry {
             status: TaskStatus::Created,
             exit: None,
             execs: HashMap::new(),
+            bridge_ports: Vec::new(),
         }
     }
 

@@ -10,6 +10,8 @@
 
 给任务明确的目标和接受条件，例如“修复这个测试，允许修改源码和测试，保留其他文件”。记录开始时的仓库状态，后续审查才有可比较的基线。
 
+原生 Job 使用 `pvisor spawn` 启动；`pvisor run` 用于独立容器命令，不沿用原生 Job 的暂存与审查入口。具体用法见[CLI 参考](../reference/cli.md)。
+
 ## 选择执行边界 {#boundaries}
 
 根据工具需要选择[执行器](executors/index.md)，分别配置[文件访问](policies/files.md)、[网络出口](policies/network.md)与[凭据](policies/credentials.md)。查看实际安装的控制，不能由“有暂存文件”推断网络或读取已经隔离。

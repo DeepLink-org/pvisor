@@ -13,7 +13,7 @@ pub struct CaptureRequest {
     pub request_id: Option<String>,
     pub timeout: Duration,
 }
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CaptureResponse {
     pub job_id: String,
     pub request_id: String,

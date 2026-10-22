@@ -610,6 +610,23 @@ enum FileOrLink {
 }
 
 impl PassthroughFs {
+    pub(in crate::devices::virtio::fs) fn retain_inode(&self, inode: Inode) -> io::Result<()> {
+        let inodes = self.inodes.read().unwrap();
+        let data = inodes.get(&inode).ok_or_else(ebadf)?;
+        data.refcount.fetch_add(1, Ordering::Acquire);
+        Ok(())
+    }
+
+    pub(in crate::devices::virtio::fs) fn preserve_inode(&self, inode: Inode) -> io::Result<()> {
+        // Native Linux inodes already own an O_PATH descriptor.
+        self.inodes
+            .read()
+            .unwrap()
+            .get(&inode)
+            .map(|_| ())
+            .ok_or_else(ebadf)
+    }
+
     /// Read one regular-file child's attributes from its retained native parent.
     /// This reply-only path does not allocate an inode or a leaf descriptor.
     /// Non-regular children retain the ordinary lookup/submount path.
@@ -2638,6 +2655,7 @@ impl PassthroughFs {
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::filesystem::root_context;
     use super::*;
 
     fn buffered_write_fixture(flags: i32) -> (tempfile::TempDir, PassthroughFs, HandleLease) {
@@ -2752,11 +2770,7 @@ mod tests {
     fn buffered_unlocked_qualification_keeps_the_fd_after_release_and_name_reuse() {
         let (root, fs, _unused) = buffered_write_fixture(libc::O_RDWR);
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let handle = fs
             .open(ctx, inode, false, libc::O_RDWR as u32)
@@ -2922,11 +2936,7 @@ mod tests {
         )
         .unwrap();
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let ro = fs
             .open(ctx, inode, false, libc::O_RDONLY as u32)
@@ -3104,11 +3114,7 @@ mod tests {
         )
         .unwrap();
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let readonly = fs
             .open(ctx, inode, false, libc::O_RDONLY as u32)
@@ -3168,11 +3174,7 @@ mod tests {
         )
         .unwrap();
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let inode = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap().inode;
         let ro = fs
             .open(ctx, inode, false, libc::O_RDONLY as u32)
@@ -3234,11 +3236,7 @@ mod tests {
         )
         .unwrap();
         fs.init(FsOptions::empty()).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         let before = std::fs::symlink_metadata(&path).unwrap();
         let (attr, attr_timeout, entry_timeout) = fs
             .regular_lookup_attributes(fuse::ROOT_ID, c"file")
@@ -3308,11 +3306,7 @@ mod tests {
         )
         .unwrap();
         fs.init(FsOptions::SUBMOUNTS).unwrap();
-        let ctx = Context {
-            uid: 0,
-            gid: 0,
-            pid: 1,
-        };
+        let ctx = root_context();
         for name in [c"directory", c"symlink"] {
             assert!(fs
                 .regular_lookup_attributes(fuse::ROOT_ID, name)

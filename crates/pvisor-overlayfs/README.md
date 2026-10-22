@@ -66,6 +66,21 @@ field-level security, platform and ownership contracts.
 `tests/api_contract.rs` checks the syntax boundary and portable public behavior
 without mounting FUSE.
 
+## Read-only stage observers
+
+`read_only` opens an existing upper without initializing its root metadata,
+creating work/journal paths, recovering temporary copies or recording reads.
+The mountpoint may still be created. Work and preimage inputs are ignored;
+compact initialization applies only to writable mounts. Observers may coexist
+with the stage's single writer. Reads can be stale and do not form a consistent
+cross-file snapshot or an authoritative apply baseline. Explicit owned-view
+kernel cache policies below retain their stronger ownership requirements.
+
+Shared backing isolation and same-filesystem checks belong to overlay-core;
+this adapter additionally validates mountpoint overlap and backend constraints.
+ACCESS and FSYNCDIR use checked Core resolution, preserving policy and I/O
+errors instead of reporting every failed probe as ENOENT.
+
 ## Host request scheduling
 
 The FUSE receive thread serves LOOKUP, GETATTR, ACCESS, STATFS, macOS GETXTIMES,
@@ -139,6 +154,11 @@ regression exercises readonly-open admission, backing reads and directory
 enumeration during blocked copy preparation; a separate test checks read-worker drain.
 Private inode tests cover
 FORGET and existing descriptor rebinding; these are not mounted latency results.
+LOOKUP, path-based GETATTR and READDIRPLUS obtain physical and copied-hardlink
+metadata in one Core resolution. Writable OPEN opens the prepared upper directly
+after alias copy-up and existing-handle rebinding, retaining O_NOFOLLOW and native
+open/truncation flags. MKDIR, MKNOD and SYMLINK reuse their post-creation metadata
+for both inode allocation and reply attributes.
 A macOS FSKit mount smoke check also verified stat, read-only open/read and
 directory enumeration completion while a 2 GiB copy remained in progress,
 hardlink sharing, held descriptors and rename. This
@@ -148,8 +168,10 @@ not covered by that check.
 ## Lower stability and cache experiments
 
 Set `api::OverlayMountConfig::lower_mutability` using the shared
-`pvisor_overlay_core::LayerMutability`, in `lower_dirs` order. Construction leaves
-it empty (all mutable); mounting rejects a nonempty length mismatch before path
+`pvisor_overlay_core::LayerMutability`, in `lower_dirs` order. New configurations
+declare every lower Immutable; transparent/live sources must explicitly select
+Mutable. Clearing declarations retains the legacy all-mutable behavior. Mounting
+rejects a nonempty length mismatch before path
 preparation, after the existing macOS backend installation probe. The caller
 must keep physical backing contents, metadata, namespace, ancestors and mount
 identities stable until session teardown; `read_only` is not such proof. Upper
@@ -453,6 +475,10 @@ current pathname/object inode and transfers the snapshot pin if the child was
 replaced. An error reply discards the whole buffered page without acquiring
 lookup references for any of its children; a successful page retains references
 only for entries accepted into its buffer.
+Closing a directory deduplicates candidate inodes, scans remaining handle pins
+once and removes paths through each retired node's own aliases. Object mappings
+are scanned once per batch. Unknown inode zero and already-retired nodes require
+no handle/map scans; pending requests, lookups and live handles still pin nodes.
 
 Copy-up and apply contracts are documented in
 [`pvisor-overlay-core`](../pvisor-overlay-core/README.md).

@@ -18,6 +18,8 @@ mod cache_budget;
 mod config;
 #[doc(hidden)]
 pub mod diagnostics;
+/// Rootless container VM lifecycle and image catalog.
+pub mod docker;
 mod executor;
 pub mod features;
 mod image;
@@ -105,7 +107,7 @@ pub use runtime::{
 pub use util::unix_now_ms;
 
 #[doc(hidden)]
-pub use runtime::{RunRecord, RunRecordState, control_observations};
+pub use runtime::{JobDirectoryLock, RunRecord, RunRecordState, control_observations};
 
 // Explicit frontend/embedding APIs; runtime implementation stays private.
 pub use config::{FilesystemAccessLevel, FilesystemAccessRule, FilesystemMount, GatewayProfile};

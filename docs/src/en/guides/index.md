@@ -10,6 +10,8 @@ For a real agent, use the [agent integration guides](agents/index.md) to check i
 
 Give the task an explicit goal and acceptance criteria, such as “fix this test; allow source and test changes; preserve other files.” Record the starting repository state so review has a baseline to compare against.
 
+Start native Jobs with `pvisor spawn`. The `pvisor run` command starts standalone containers and is separate from the native Job staging and review entry point. See the [CLI reference](../reference/cli.md) for usage.
+
 ## Choose execution boundaries {#boundaries}
 
 Select an [executor](executors/index.md) for the tools you need, and configure [file access](policies/files.md), [network egress](policies/network.md), and [credentials](policies/credentials.md) separately. Inspect installed controls; staged files alone do not establish network or read isolation.

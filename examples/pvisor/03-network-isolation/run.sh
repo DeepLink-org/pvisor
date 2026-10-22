@@ -21,7 +21,7 @@ pvisor_wait_http "$server_url"
 
 echo '1. Allowlist permits the declared destination'
 set +e
-"$pvisor_bin" run --overlaynet-allow "127.0.0.1:$server_port" -- \
+"$pvisor_bin" spawn --overlaynet-allow "127.0.0.1:$server_port" -- \
   bash -ceu '
     exec curl --fail --silent --show-error \
       --proxy "$HTTP_PROXY" --noproxy "" "$1"
@@ -37,7 +37,7 @@ cat "$work_dir/allowed.stderr"
 echo
 echo '2. Deny-all rejects traffic that uses the injected proxy'
 set +e
-"$pvisor_bin" run --overlaynet-deny-all -- \
+"$pvisor_bin" spawn --overlaynet-deny-all -- \
   bash -ceu '
     exec curl --fail-with-body --silent --show-error \
       --proxy "$HTTP_PROXY" --noproxy "" "$1"
@@ -53,7 +53,7 @@ cat "$work_dir/denied.stderr"
 echo
 echo '3. A direct socket can bypass the cooperative proxy'
 set +e
-"$pvisor_bin" run --overlaynet-deny-all -- \
+"$pvisor_bin" spawn --overlaynet-deny-all -- \
   bash -ceu '
     exec curl --fail --silent --show-error --noproxy "*" "$1"
   ' bash "$server_url" \

@@ -460,6 +460,7 @@ mod tests {
         RunRecord {
             attempt_id: None,
             schema_version: 1,
+            live_control: None,
             run_id: "run-source".into(),
             parent_run_id: None,
             task_id: None,

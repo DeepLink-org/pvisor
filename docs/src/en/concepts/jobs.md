@@ -3,11 +3,11 @@
 A **Job** is a persistent unit of work in pVisor: one managed command, its execution evidence, and staged changes.
 
 ```bash
-pvisor run --safe --stage ../stage-001 -- codex
+pvisor spawn --safe --stage ../stage-001 -- codex
 pvisor status --review ../stage-001
 ```
 
-`pvisor run` creates a Job; `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` operate on it directly, with no `job` subcommand. On disk, the directory and Run Bundle use the `run-*` name.
+`pvisor spawn` creates a Job; `status`, `kill`, `inspect`, `fork`, `apply`, and `drop` operate on it directly, with no `job` subcommand. On disk, the directory and Run Bundle use the `run-*` name.
 
 ## Finding it again later
 

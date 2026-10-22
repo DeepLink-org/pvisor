@@ -1,0 +1,4 @@
+# Root build/archive ignores must not omit the pinned upstream fixtures.
+!upstream/
+!upstream/**/
+!upstream/**

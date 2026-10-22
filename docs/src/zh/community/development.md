@@ -107,7 +107,7 @@ crates/pvisor/src/
 └── util.rs                # 少量共享文件与时间工具
 ```
 
-CLI 参数与展示、Host 监听器／worker 归 `pvisor-cli`；
+CLI 参数与展示、前端/owner 启动和终端交接归 `pvisor-cli`；
 具体执行机制归 `pvisor` 的 `executor/`，Run 资源所有权和持久化 Job 服务归 `runtime/`。
 VM 执行器将 Run/Attempt 生命周期适配到 `pvisor_vm::api`；VMM、平台机制、内嵌 guest
 和内核／固件接入属于 `pvisor-vm`。OCI 准备属于 `image/`，供直接加载和缓存服务共用。

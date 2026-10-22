@@ -15,7 +15,7 @@ drop_stage="$PVISOR_RUN_HOME/run-drop"
 
 (
   cd "$base"
-  "$pvisor_bin" run --stage "$apply_stage" --stdio capture -- \
+  "$pvisor_bin" spawn --stage "$apply_stage" --stdio capture -- \
     /bin/sh -c 'printf "accepted\n" > existing.txt; printf "accepted\n" > accepted.txt'
 )
 "$pvisor_bin" status --review --json "$apply_stage" >"$work_dir/apply-review.json"
@@ -28,7 +28,7 @@ cat "$base/accepted.txt"
 
 (
   cd "$base"
-  "$pvisor_bin" run --stage "$drop_stage" --stdio capture -- \
+  "$pvisor_bin" spawn --stage "$drop_stage" --stdio capture -- \
     /bin/sh -c 'printf "rejected\n" > rejected.txt'
 )
 "$pvisor_bin" status --review --json "$drop_stage" >"$work_dir/drop-review.json"

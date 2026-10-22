@@ -106,15 +106,13 @@ macro_rules! run_log {
     }};
 }
 
-fn announce_control_socket(handle: &pvisor::RunHandle) {
-    #[cfg(unix)]
-    if let Ok(path) = handle.control_socket() {
-        let status = handle.status();
+fn announce_job_started(handle: &pvisor::RunHandle) {
+    super::host_service::observe_run(handle);
+    super::host_service::release_source_lock();
+    if handle.status().attempt.executor.kind == pvisor_core::ExecutorKind::VirtualMachine {
+        let job = handle.run_id();
         eprintln!(
-            "pVisor live VM options: --vm-socket {} --vm-job-id {} --vm-attempt-id {} (status; suspend JOB --vm-pause/--vm-offload; resume JOB --vm-load)",
-            path.display(),
-            status.run_id,
-            status.attempt.attempt_id
+            "VM controls: pvisor status {job}; pvisor suspend {job} --vm-pause; pvisor resume {job}"
         );
     }
 }
@@ -180,7 +178,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
 
-    /// Skip personal Agent defaults from $XDG_CONFIG_HOME/pvisor/agents/<program>.toml.
+    /// Skip personal Agent defaults from `$XDG_CONFIG_HOME/pvisor/agents/<program>.toml`.
     #[arg(long)]
     no_agent_defaults: bool,
 
@@ -956,7 +954,6 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     )
     .context("decode delegated RunSpec")?;
     let mut stage_guard = None;
-    let registration_stage = stage_spec.clone();
     let (pvisor, config) = if let Some(stage_path) = stage_spec {
         let cleanup = args.stage.is_none();
         if cleanup {
@@ -1058,9 +1055,9 @@ async fn run_prepared_spec(args: RunArgs) -> anyhow::Result<i32> {
     };
     let managed =
         pvisor::job_service::RuntimeJobService::start_managed(&pvisor, spec, config).await?;
-    announce_control_socket(managed.handle());
+    announce_job_started(managed.handle());
     let agentctl = managed.handle().agentctl();
-    let result = wait_cli_job(managed, registration_stage.as_deref()).await?;
+    let result = wait_cli_job(managed).await?;
     let output = pvisor::DelegatedRunOutput {
         agentctl: agentctl.snapshot(),
         result,
@@ -1204,16 +1201,12 @@ pub(super) fn report_terminal(executor: Arc<dyn RunExecutor>) -> Arc<dyn RunExec
 
 pub(super) async fn wait_cli_job(
     managed: pvisor::job_service::ManagedJobRun,
-    stage: Option<&Path>,
 ) -> anyhow::Result<pvisor_core::RunResult> {
-    managed
-        .wait_with(|handle| async move {
-            if let Some(stage) = stage {
-                super::host_cancel::register(&handle, stage)?;
-            }
-            wait_cli_run(handle).await
-        })
-        .await
+    let result = managed.wait_with(wait_cli_run).await?;
+    if result.state == pvisor_core::RunState::Cancelled {
+        super::host_service::notify_cancel(libc::SIGTERM);
+    }
+    Ok(result)
 }
 
 pub(super) async fn wait_cli_run(
@@ -1225,6 +1218,7 @@ pub(super) async fn wait_cli_run(
     tokio::select! {
         result = &mut wait => Ok(result?),
         _ = cancellation.cancelled() => {
+            super::host_service::notify_cancel(libc::SIGTERM);
             super::host_service::notify_cleanup();
             Ok(wait.await?)
         }
@@ -1238,7 +1232,7 @@ pub(super) async fn wait_cli_run(
 
 async fn delegated_shutdown_signal() {
     #[cfg(unix)]
-    if let Some(token) = super::host_service::worker_cancellation() {
+    if let Some(token) = super::host_service::request_cancellation() {
         token.cancelled().await;
         return;
     }
@@ -1458,7 +1452,7 @@ async fn execute_config(
 
     #[cfg(feature = "gateway")]
     if config.gateway.debug {
-        // `pvisor run` is a foreground CLI: mirror opted-in gateway/network
+        // `pvisor spawn` is a foreground CLI: mirror opted-in gateway/network
         // diagnostics to stderr as well as the Run log, so proxy failures can
         // be diagnosed without locating storage after the child exits.
         pvisor_gateway::runtime::debug::enable_debug_stderr();
@@ -1835,9 +1829,9 @@ async fn execute_config(
     let managed =
         pvisor::job_service::RuntimeJobService::start_managed(&pvisor, spec, config.clone())
             .await?;
-    announce_control_socket(managed.handle());
+    announce_job_started(managed.handle());
     pvisor::startup_mark_run("cli.session_started", &run_id);
-    let result = wait_cli_job(managed, Some(&storage)).await?;
+    let result = wait_cli_job(managed).await?;
     pvisor::startup_mark_run("cli.run_finished", &run_id);
     drop(pvisor);
     if let Some(writer) = json_writer {
@@ -2064,8 +2058,8 @@ fn apply_run_options(config: &mut RunConfig, args: RunArgs) -> anyhow::Result<()
         apply_cli(&mut requested, args.clone())?;
         use clap::Parser;
         let patch = safe::patch(&requested, args.audit);
-        let super::Command::Run(patch) = super::Cli::try_parse_from(
-            ["pvisor".to_owned(), "run".to_owned()]
+        let super::Command::Spawn(patch) = super::Cli::try_parse_from(
+            ["pvisor".to_owned(), "spawn".to_owned()]
                 .into_iter()
                 .chain(patch),
         )?
@@ -3316,11 +3310,11 @@ mod tests {
         }
         #[derive(clap::Subcommand)]
         enum Action {
-            Run(Box<RunArgs>),
+            Spawn(Box<RunArgs>),
         }
         let parsed = Companion::try_parse_from([
             "pvisor-tui",
-            "run",
+            "spawn",
             "--feature",
             "workload-aware-memory-offloading,workload-aware-memory-offloading",
             "--feature=workload-aware-memory-offloading",
@@ -3330,7 +3324,7 @@ mod tests {
             "guest-only",
         ])
         .unwrap();
-        let Action::Run(args) = parsed.action;
+        let Action::Spawn(args) = parsed.action;
         assert_eq!(args.features.len(), 3);
         assert_eq!(args.command, ["echo", "--feature", "guest-only"]);
     }
@@ -3888,10 +3882,13 @@ mod tests {
     use pvisor::FilesystemMount;
 
     fn preset_args(values: &[&str]) -> RunArgs {
-        let crate::cli::Command::Run(args) =
-            Cli::try_parse_from(["pvisor", "run"].into_iter().chain(values.iter().copied()))
-                .unwrap()
-                .command
+        let crate::cli::Command::Spawn(args) = Cli::try_parse_from(
+            ["pvisor", "spawn"]
+                .into_iter()
+                .chain(values.iter().copied()),
+        )
+        .unwrap()
+        .command
         else {
             unreachable!("expected run command")
         };
@@ -4308,7 +4305,7 @@ level = "warn"
         use clap::CommandFactory;
         assert!(
             !Cli::command()
-                .find_subcommand("run")
+                .find_subcommand("spawn")
                 .unwrap()
                 .get_arguments()
                 .any(|arg| arg.get_long() == Some("sandbox"))
@@ -4501,7 +4498,7 @@ sandbox = "required""#
                 "HVF on macOS"
             }));
         }
-        let help = Cli::try_parse_from(["pvisor", "run", "--help"])
+        let help = Cli::try_parse_from(["pvisor", "spawn", "--help"])
             .unwrap_err()
             .to_string();
         let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -4646,7 +4643,7 @@ sandbox = "required""#
         for rootfs_value in ["image=/tmp/rootfs-image", "/tmp/rootfs"] {
             let error = Cli::try_parse_from([
                 "pvisor",
-                "run",
+                "spawn",
                 "--rootfs",
                 "host",
                 "--rootfs",
@@ -4923,7 +4920,7 @@ sandbox = "required""#
 
     #[test]
     fn help_exposes_driver_selection_and_the_simple_network_policy_surface() {
-        let error = Cli::try_parse_from(["pvisor", "run", "--help"]).unwrap_err();
+        let error = Cli::try_parse_from(["pvisor", "spawn", "--help"]).unwrap_err();
         let help = error.to_string();
         assert!(help.contains("--overlaynet-allow"));
         assert!(help.contains("--overlaynet-deny"));
@@ -4955,9 +4952,9 @@ sandbox = "required""#
         use clap::CommandFactory;
 
         let mut command = Cli::command()
-            .mut_subcommand("run", |run| run.long_about(MACOS_RUN_COMMAND_LONG_ABOUT));
+            .mut_subcommand("spawn", |run| run.long_about(MACOS_RUN_COMMAND_LONG_ABOUT));
         let help = command
-            .find_subcommand_mut("run")
+            .find_subcommand_mut("spawn")
             .expect("run subcommand")
             .render_long_help()
             .to_string();
@@ -4984,7 +4981,7 @@ sandbox = "required""#
 
     #[test]
     fn safe_help_describes_the_effective_platform_boundary() {
-        let help = Cli::try_parse_from(["pvisor", "run", "--help"])
+        let help = Cli::try_parse_from(["pvisor", "spawn", "--help"])
             .unwrap_err()
             .to_string();
 
@@ -5004,7 +5001,7 @@ sandbox = "required""#
 
     #[test]
     fn help_exposes_compositional_overlayfs_without_a_mode_switch() {
-        let error = Cli::try_parse_from(["pvisor", "run", "--help"]).unwrap_err();
+        let error = Cli::try_parse_from(["pvisor", "spawn", "--help"]).unwrap_err();
         let help = error.to_string();
         for option in ["--mount", "--access", "--stage", "--overlayfs-max-size"] {
             assert!(help.contains(option), "missing {option}");

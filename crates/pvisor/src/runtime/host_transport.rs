@@ -63,6 +63,353 @@ pub(crate) fn allocate_host_directory(prefix: &str) -> anyhow::Result<tempfile::
     Ok(directory)
 }
 
+/// Wire contract for one running Job owner; independent of its binary digest.
+pub const INSTANCE_CONTROL_PROTOCOL: &str = "pvisor-instance-control-1";
+
+/// Host-only discovery persisted before execution, cleared on terminal publication.
+/// The path is canonical, excluded from guest inputs, and bound to device/inode.
+/// Binary identity diagnoses incompatible owners; it is not a client admission key.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LiveControlRecord {
+    /// Canonical host-only socket address; never a guest locator.
+    pub path: std::path::PathBuf,
+    /// Device sampled after binding the socket.
+    pub device: u64,
+    /// Inode sampled after binding the socket.
+    pub inode: u64,
+    /// Named instance wire contract, checked independently of executable identity.
+    pub protocol: String,
+    /// Starting executable path, reported for protocol incompatibility.
+    pub binary: std::path::PathBuf,
+    /// Starting executable BLAKE3 digest for diagnostics.
+    pub binary_digest: String,
+    /// Owner PID used with socket identity to reject dead discovery records.
+    pub pid: u32,
+}
+
+/// Commands accepted by an instance owner; no terminal descriptors or guest tokens.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InstanceCommand {
+    /// Read native VM status; non-VM executors return Unsupported.
+    Status {},
+    /// Read Job status and owner observations.
+    JobStatus {},
+    /// Request cancellation; completion and resource release remain owner-owned.
+    Terminate {},
+    /// Pause vCPUs of the same live VM Attempt.
+    Pause {},
+    /// Resume/unpause the same live VM Attempt; never restores a checkpoint.
+    Resume {},
+    /// Quiesce the VM and offload RAM using its existing transition lock.
+    Offload {
+        /// Optional host-only RAM file; None reuses current backing.
+        file: Option<std::path::PathBuf>,
+    },
+    /// Capture execution with a scoped receipt; cancellation may follow effects.
+    Capture {
+        /// Stop the Attempt after sealing its checkpoint.
+        suspend: bool,
+        /// Encoding for captured RAM.
+        ram_storage: pvisor_core::operation::SnapshotRamStorage,
+        /// Maximum caller wait in milliseconds; timeout does not undo effects.
+        timeout_ms: u64,
+        /// Scoped durable capture receipt key.
+        request_id: String,
+    },
+    /// Retain a read-only workspace mount in the owner until unmount or exit.
+    Inspect {
+        /// Optional immutable workspace checkpoint; None inspects current stage.
+        checkpoint: Option<String>,
+    },
+    /// Release one owner-created inspect mount.
+    UnmountInspect {
+        /// Mount identity returned by Inspect.
+        id: String,
+    },
+}
+
+/// Create checked, private authority directories for one exact Job/Attempt.
+/// IDs must each be a single normal path component; existing symlinks fail closed.
+pub fn instance_control_path(job: &str, attempt: &str) -> anyhow::Result<std::path::PathBuf> {
+    let mut directory = host_authority_root()?;
+    for name in ["jobs", job, attempt] {
+        let mut components = std::path::Path::new(name).components();
+        anyhow::ensure!(
+            matches!(components.next(), Some(std::path::Component::Normal(_)))
+                && components.next().is_none(),
+            "invalid instance control identity"
+        );
+        directory.push(name);
+        create_authority_root(&directory)?;
+    }
+    Ok(directory.join("control.sock"))
+}
+
+/// Validate all authority ancestors without following symlinks or creating state.
+pub fn validate_instance_socket(path: &std::path::Path) -> anyhow::Result<()> {
+    let root =
+        std::fs::canonicalize("/tmp")?.join(format!("pvisor-host-{}", unsafe { libc::geteuid() }));
+    let relative = path.strip_prefix(&root)?;
+    let mut directory = root;
+    validate_authority_directory(&directory)?;
+    let parent = relative
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("control socket needs a parent"))?;
+    for part in parent.components() {
+        anyhow::ensure!(
+            matches!(part, std::path::Component::Normal(_)),
+            "invalid control socket path"
+        );
+        directory.push(part);
+        validate_authority_directory(&directory)?;
+    }
+    anyhow::ensure!(
+        path.file_name().is_some(),
+        "control socket needs a file name"
+    );
+    Ok(())
+}
+
+/// Resolve a caller's absolute debug path through the standard `/tmp` alias,
+/// then validate every private ancestor without following user-created symlinks.
+/// Existing sockets are not removed or replaced.
+pub fn instance_socket_override(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    let absolute = std::path::absolute(path)?;
+    let path = match absolute.strip_prefix("/tmp") {
+        Ok(relative) => std::fs::canonicalize("/tmp")?.join(relative),
+        Err(_) => absolute,
+    };
+    validate_instance_socket(&path)?;
+    Ok(path)
+}
+
+// Full Job/Attempt paths exceed sockaddr_un even with ordinary UUIDs. Resolve
+// only the checked parent through a directory fd, retaining the canonical record.
+fn with_instance_socket<T: Send + 'static>(
+    path: &std::path::Path,
+    operation: impl FnOnce(&std::path::Path) -> std::io::Result<T> + Send + 'static,
+) -> anyhow::Result<T> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("socket needs a parent"))?;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(parent)?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("socket needs a name"))?
+        .to_owned();
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        Ok(operation(
+            &std::path::PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()))
+                .join(name),
+        )?)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Darwin supports a thread-local cwd. A short-lived thread cannot change
+        // the owner's process cwd or another runtime thread's path resolution.
+        Ok(std::thread::spawn(move || {
+            use std::os::fd::AsRawFd;
+            unsafe extern "C" {
+                fn pthread_fchdir_np(fd: libc::c_int) -> libc::c_int;
+            }
+            if unsafe { pthread_fchdir_np(directory.as_raw_fd()) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            operation(std::path::Path::new(&name))
+        })
+        .join()
+        .map_err(|_| anyhow::anyhow!("instance socket thread panicked"))??)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (directory, name, operation);
+        anyhow::bail!("instance sockets are unsupported");
+    }
+}
+
+/// Bind a checked private endpoint without truncating long canonical paths.
+pub fn bind_instance_socket(
+    path: &std::path::Path,
+) -> anyhow::Result<std::os::unix::net::UnixListener> {
+    validate_instance_socket(path)?;
+    with_instance_socket(path, |path| std::os::unix::net::UnixListener::bind(path))
+}
+
+impl LiveControlRecord {
+    /// Submit one bounded, explicitly targeted command. No automatic replay after
+    /// a write, cancellation or missing response: the operation may have happened.
+    pub fn exchange(
+        &self,
+        job: &str,
+        attempt: &str,
+        command: InstanceCommand,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.exchange_checked(job, attempt, command, None)
+    }
+
+    /// Exchange with caller cancellation checks while awaiting I/O. Cancellation
+    /// closes only this connection, joins its I/O thread, and reports uncertain
+    /// effects without resending. The check must be quick and must not take Job locks.
+    pub fn exchange_checked(
+        &self,
+        job: &str,
+        attempt: &str,
+        command: InstanceCommand,
+        check: Option<&(dyn Fn() -> anyhow::Result<()> + Send + Sync)>,
+    ) -> anyhow::Result<serde_json::Value> {
+        if let Some(check) = check {
+            check()?;
+        }
+        use pvisor_core::host_protocol::{
+            AGENTCTL_HOST_VERSION, AgentCtlHostRequest, AgentCtlHostResponse, AgentCtlTarget,
+        };
+        let request = AgentCtlHostRequest {
+            version: AGENTCTL_HOST_VERSION,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            target: Some(AgentCtlTarget {
+                job_id: job.to_owned(),
+                attempt_id: Some(attempt.to_owned()),
+                generation: None,
+            }),
+            command,
+        };
+        request.validate()?;
+        let mut stream = self.connect()?;
+        stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(315)))?;
+        let interrupt = stream.try_clone()?;
+        let mut exchange = move || -> anyhow::Result<serde_json::Value> {
+            write_host_frame_sync(&mut stream, &request).map_err(|error| {
+                anyhow::anyhow!(
+                    "control request write failed; effects may be uncertain; not retried: {error}"
+                )
+            })?;
+            let response: AgentCtlHostResponse<serde_json::Value> = read_host_frame_sync(&mut stream)
+            .map_err(|error| {
+            anyhow::anyhow!(
+                "control response lost or timed out; effects may be uncertain; not retried: {error}"
+            )
+        })?;
+            response.validate(&request.request_id)?;
+            Ok(response.result?)
+        };
+        let Some(check) = check else {
+            return exchange();
+        };
+        std::thread::scope(|scope| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            scope.spawn(move || {
+                let _ = tx.send(exchange());
+            });
+            loop {
+                match rx.recv_timeout(std::time::Duration::from_millis(10)) {
+                    Ok(result) => return result,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        anyhow::bail!("control I/O failed; effects may be uncertain; not retried")
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if let Err(error) = check() {
+                            let _ = interrupt.shutdown(std::net::Shutdown::Both);
+                            anyhow::bail!(
+                                "control request cancelled; effects may be uncertain; not retried: {error}"
+                            );
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    /// Whether discovery metadata still matches the socket inode and a live PID.
+    /// Connection must still prove listener availability and authenticate its peer;
+    /// this check alone neither grants authority nor rules out PID reuse.
+    pub fn is_available(&self) -> bool {
+        self.check_identity().is_ok()
+    }
+
+    fn check_identity(&self) -> anyhow::Result<()> {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        validate_instance_socket(&self.path)?;
+        let metadata = std::fs::symlink_metadata(&self.path)?;
+        anyhow::ensure!(
+            metadata.file_type().is_socket()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o7777 == 0o600
+                && metadata.dev() == self.device
+                && metadata.ino() == self.inode,
+            "instance control socket changed; refusing connection"
+        );
+        anyhow::ensure!(
+            self.pid > 0
+                && self.pid <= i32::MAX as u32
+                && unsafe { libc::kill(self.pid as i32, 0) } == 0,
+            "instance control owner is no longer alive"
+        );
+        Ok(())
+    }
+
+    /// Connect only to the recorded socket identity and same-UID peer. No retries.
+    /// Missing/dead/replaced owners are unavailable; protocol mismatch identifies
+    /// the owner's executable. A successful connect alone admits no operation.
+    pub fn connect(&self) -> anyhow::Result<std::os::unix::net::UnixStream> {
+        self.check_identity()?;
+        anyhow::ensure!(
+            self.protocol == INSTANCE_CONTROL_PROTOCOL,
+            "incompatible Job control protocol {}; owner binary: {} ({})",
+            self.protocol,
+            self.binary.display(),
+            self.binary_digest
+        );
+        let stream = with_instance_socket(&self.path, |path| {
+            std::os::unix::net::UnixStream::connect(path)
+        })?;
+        authorize_host_peer_sync(&stream)?;
+        self.check_identity()?;
+        Ok(stream)
+    }
+}
+
+/// Synchronous same-effective-UID authentication, matching the async transport.
+pub fn authorize_host_peer_sync(stream: &std::os::unix::net::UnixStream) -> anyhow::Result<()> {
+    use std::os::fd::AsRawFd;
+    #[cfg(target_os = "macos")]
+    {
+        let (mut uid, mut gid) = (0, 0);
+        anyhow::ensure!(
+            unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } == 0
+                && uid == unsafe { libc::geteuid() },
+            "unauthorized host peer"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
+        let mut length = std::mem::size_of_val(&cred) as libc::socklen_t;
+        anyhow::ensure!(
+            unsafe {
+                libc::getsockopt(
+                    stream.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_PEERCRED,
+                    (&mut cred as *mut libc::ucred).cast(),
+                    &mut length,
+                )
+            } == 0
+                && cred.uid == unsafe { libc::geteuid() },
+            "unauthorized host peer"
+        );
+    }
+    Ok(())
+}
+
 fn frame_chunk_length(buffered: usize, chunk: &[u8]) -> anyhow::Result<(usize, bool)> {
     let newline = chunk.iter().position(|byte| *byte == b'\n');
     let length = newline.unwrap_or(chunk.len());
@@ -241,6 +588,67 @@ pub fn validate_host_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_accepted_exchange_reports_uncertainty_without_replay() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        let directory = allocate_host_directory("cancel-control-").unwrap();
+        let path = directory.path().join("control.sock");
+        let listener = bind_instance_socket(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::UnixListener::from_std(listener).unwrap();
+        let metadata = std::fs::symlink_metadata(&path).unwrap();
+        let endpoint = LiveControlRecord {
+            path,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            protocol: INSTANCE_CONTROL_PROTOCOL.into(),
+            binary: std::env::current_exe().unwrap(),
+            binary_digest: "owner".into(),
+            pid: std::process::id(),
+        };
+        let (ready, accepted) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _: pvisor_core::host_protocol::AgentCtlHostRequest<InstanceCommand> =
+                read_host_frame(&mut stream).await.unwrap();
+            ready.send(()).unwrap();
+            let mut remaining = Vec::new();
+            stream.read_to_end(&mut remaining).await.unwrap();
+            assert!(remaining.is_empty());
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let checked = cancelled.clone();
+        let client = tokio::task::spawn_blocking(move || {
+            endpoint.exchange_checked(
+                "job",
+                "attempt",
+                InstanceCommand::Terminate {},
+                Some(&|| {
+                    anyhow::ensure!(!checked.load(Ordering::SeqCst), "caller cancelled");
+                    Ok(())
+                }),
+            )
+        });
+        accepted.await.unwrap();
+        cancelled.store(true, Ordering::SeqCst);
+        let error = client.await.unwrap().unwrap_err().to_string();
+        assert!(
+            error.contains("uncertain") && error.contains("not retried"),
+            "{error}"
+        );
+        server.await.unwrap();
+    }
 
     #[test]
     fn authority_root_rejects_symlinks_public_modes_and_non_directories() {

@@ -14,7 +14,7 @@ Before accepting an edited report, compare staged content with the original. `in
 ```bash
 journey_setup
 printf original > report.txt
-pvisor run --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf proposed > report.txt'
+pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf proposed > report.txt'
 assert_content report.txt original
 pvisor inspect "$CASE_ROOT/draft" -- /bin/cat report.txt > "$CASE_ROOT/view.txt"
 assert_content "$CASE_ROOT/view.txt" proposed
@@ -35,7 +35,7 @@ When an Agent edits a report and an experiment, accept only the report and disca
 <!-- semspec: case id=S-USE-006 -->
 ```bash
 journey_setup
-pvisor run --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf accepted > report.txt; printf scratch > scratch.txt'
+pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf accepted > report.txt; printf scratch > scratch.txt'
 pvisor apply "$CASE_ROOT/draft" --path report.txt
 assert_content report.txt accepted
 assert_absent scratch.txt
@@ -59,7 +59,7 @@ If you edit the same file during review, apply must protect your new content and
 ```bash
 journey_setup
 printf base > report.txt
-pvisor run --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf agent > report.txt'
+pvisor spawn --stage "$CASE_ROOT/draft" -- /bin/sh -c 'printf agent > report.txt'
 printf human > report.txt
 expect_refused pvisor apply "$CASE_ROOT/draft" --all
 assert_content report.txt human
@@ -78,7 +78,7 @@ For a stuck task, kill it, confirm it has stopped, then discard files. Do not ap
 <!-- semspec: case id=S-USE-008 -->
 ```bash
 journey_setup
-pvisor run --stage "$CASE_ROOT/live" -- /bin/sh -c 'printf ready > ready.txt; exec /bin/sleep 30' > "$CASE_ROOT/live.log" 2>&1 &
+pvisor spawn --stage "$CASE_ROOT/live" -- /bin/sh -c 'printf ready > ready.txt; exec /bin/sleep 30' > "$CASE_ROOT/live.log" 2>&1 &
 runner=$!
 trap 'kill "$runner" 2>/dev/null || true; wait "$runner" 2>/dev/null || true' EXIT
 journey_wait_file "$CASE_ROOT/live/upper/ready.txt" "$runner"

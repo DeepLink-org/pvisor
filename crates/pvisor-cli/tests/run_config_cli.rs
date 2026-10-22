@@ -29,7 +29,7 @@ fn unsupported_memory_limit_preserves_observed_file_size_limit() {
         .current_dir(temporary.path())
         .env("PVISOR_RUN_HOME", &runs)
         .args([
-            "run",
+            "spawn",
             "--memory",
             "256MiB",
             "--max-file-size",
@@ -89,7 +89,7 @@ fn safe_preset_reaches_the_run_and_reports_its_limits() {
     std::fs::write(workspace.join(".env"), "warn-only-fixture").unwrap();
     std::os::unix::fs::symlink(".ssh/id_ed25519", workspace.join("alias")).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--safe", "--stage"])
+        .args(["spawn", "--safe", "--stage"])
         .arg(&stage)
         .args([
             "--",
@@ -151,7 +151,7 @@ fn network_run_uses_the_current_workspace_and_external_run_home() {
     let run_home = temporary.path().join("runs");
     drop(listener);
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--overlaynet-listen"])
+        .args(["spawn", "--overlaynet-listen"])
         .arg(&listen)
         .args(["--overlaynet-deny-all", "--", "/usr/bin/true"])
         .env("PVISOR_RUN_HOME", &run_home)
@@ -197,7 +197,7 @@ fn toml_and_cli_share_one_run_configuration() {
     std::fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--config"])
+        .args(["spawn", "--config"])
         .arg(&config_path)
         .args(["--name", "from-cli", "--", "/usr/bin/true"])
         .current_dir(&workspace)
@@ -254,7 +254,7 @@ fn one_workspace_accepts_multiple_independent_runs() {
 
     for _ in 0..2 {
         let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-            .args(["run", "--", "/usr/bin/true"])
+            .args(["spawn", "--", "/usr/bin/true"])
             .current_dir(&workspace)
             .env("PVISOR_RUN_HOME", &run_home)
             .output()
@@ -306,7 +306,7 @@ fn current_directory_selects_the_host_process_working_directory() {
     std::fs::create_dir(&workspace).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--", "/bin/pwd"])
+        .args(["spawn", "--", "/bin/pwd"])
         .current_dir(&workspace)
         .env("PVISOR_RUN_HOME", &run_home)
         .output()
@@ -356,7 +356,7 @@ while [ "$#" -gt 0 ]; do
 done
 spec=$(find "$(dirname "$bundle")" -name run-spec.json -print -quit)
 control=$(dirname "$spec")
-exec "$PVISOR_TEST_PVISOR" run --executor host \
+exec "$PVISOR_TEST_PVISOR" spawn --executor host \
   --spec "$control/run-spec.json" \
   --result-file "$control/run-result.json"
 "#,
@@ -365,7 +365,7 @@ exec "$PVISOR_TEST_PVISOR" run --executor host \
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--executor", "container", "--container-runtime"])
+        .args(["spawn", "--executor", "container", "--container-runtime"])
         .arg(&runtime)
         .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
         .args(["--rootfs"])
@@ -436,7 +436,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$bundle" ] || exit 0
 control=$(dirname "$bundle")
-exec "$PVISOR_TEST_PVISOR" run --executor host --stdio capture \
+exec "$PVISOR_TEST_PVISOR" spawn --executor host --stdio capture \
   --spec "$control/run-spec.json" \
   --result-file "$control/run-result.json"
 "#,
@@ -446,7 +446,7 @@ exec "$PVISOR_TEST_PVISOR" run --executor host --stdio capture \
 
     let started = std::time::Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--timeout", "20ms", "--container-runtime"])
+        .args(["spawn", "--timeout", "20ms", "--container-runtime"])
         .arg(&runtime)
         .args(["--container-pvisor-binary", env!("CARGO_BIN_EXE_pvisor")])
         .arg("--container-rootfs")
@@ -554,7 +554,7 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
     // over the whole public surface without starting a Run.
     for options in cases {
         let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-            .arg("run")
+            .arg("spawn")
             .args(*options)
             .arg("--help")
             .output()
@@ -570,9 +570,9 @@ fn every_public_run_option_is_accepted_by_the_real_cli_parser() {
 
 fn advertised_run_options() -> std::collections::BTreeSet<String> {
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--help"])
+        .args(["spawn", "--help"])
         .output()
-        .expect("render pvisor run --help");
+        .expect("render pvisor spawn --help");
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     let options = help
@@ -614,7 +614,7 @@ fn removed_run_options_stay_off_the_cli_surface() {
     ] {
         assert!(
             !advertised.contains(option),
-            "`pvisor run --help` advertises the removed option {option} again"
+            "`pvisor spawn --help` advertises the removed option {option} again"
         );
     }
 }
@@ -624,7 +624,7 @@ fn recording_uses_one_fact_journal_with_execution_phases() {
     let dir = tempfile::tempdir().unwrap();
     let recording = dir.path().join("recording");
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["run", "--record-destination"])
+        .args(["spawn", "--record-destination"])
         .arg(&recording)
         .args(["--", "/bin/sh", "-c", "exit 0"])
         .current_dir(dir.path())

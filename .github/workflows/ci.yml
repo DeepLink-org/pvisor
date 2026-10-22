@@ -301,9 +301,10 @@ jobs:
       - name: Record isolated core budget
         run: |
           just build release
-          # Agent I/O, memory sharing, main's VM fixes and their contract tests
-          # bring the runtime closure to 214,144 lines; retain 1,856 lines of headroom.
-          just check-core-budget target/release/pvisor --max-dependencies 235 --max-workspace-lines 216000 --max-core-items 301 > target/pvisor-core-budget.json
+          # Per-container VMs, shared guest supervision and the payload
+          # injection / launch-contract extension bring the runtime closure
+          # to ~220,700 lines; retain ~1,300 lines of headroom.
+          just check-core-budget target/release/pvisor --max-dependencies 235 --max-workspace-lines 222000 --max-core-items 301 > target/pvisor-core-budget.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -1,16 +1,11 @@
-#[cfg(target_os = "linux")]
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Context;
 use clap::Args;
-#[cfg(target_os = "linux")]
-use pvisor::LEASE_FILENAME;
 
 use pvisor::{
-    ApplySelection, ReadOnlyOverlayMount, RunRecord, control_mount_inspect, control_ping,
-    control_unmount_inspect, is_live, mount_overlay_record_read_only, resolve_run,
+    ApplySelection, ReadOnlyOverlayMount, RunRecord, mount_overlay_record_read_only, resolve_run,
 };
 
 const DEFAULT_STORAGE: &str = ".pvisor/capture";
@@ -131,6 +126,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
     let pvisor::job_service::StatusResponse {
         record,
         live,
+        live_attempt,
         execution_blocker: blocker,
         checkpoints,
         apply_history,
@@ -149,6 +145,9 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
         record.state.as_str()
     };
     println!("state: {state}");
+    if let Some(attempt) = live_attempt {
+        println!("attempt: {:?}", attempt.state);
+    }
     println!(
         "pid: {}{}",
         record.pid,
@@ -252,7 +251,7 @@ pub fn status(args: StatusArgs) -> anyhow::Result<()> {
 fn status_json(response: &pvisor::job_service::StatusResponse) -> serde_json::Value {
     let record = &response.record;
     serde_json::json!({
-        "run": record, "live": response.live,
+        "run": record, "live": response.live, "live_attempt": response.live_attempt,
         "checkpoint_capability": {"workspace": record.overlay.is_some(), "workspace_capture_requires": "confirmed_stopped", "execution": response.execution_blocker.is_none(), "execution_blocker": response.execution_blocker},
         "execution": response.execution, "checkpoints": response.checkpoints,
         "workspace_generation": record.overlay.as_ref().map(|o| o.generation),
@@ -265,92 +264,55 @@ fn status_json(response: &pvisor::job_service::StatusResponse) -> serde_json::Va
 pub fn kill(args: KillArgs) -> anyhow::Result<()> {
     let record = selected(Some(&args.selector), &args.output_dir)?;
     super::host_service::check_record(&record)?;
-    if pvisor::job_execution::terminate_suspended(&record)? {
-        if args.json {
-            println!(
-                "{}",
-                serde_json::json!({"schema_version":1,"operation":"kill","job_id":record.run_id,"state":"terminated","suspended_head_released":true})
-            );
-        } else {
-            println!("terminated suspended Job {}", record.run_id);
-        }
-        return Ok(());
-    }
-    if record.state.is_stopped() {
-        let _job = super::host::lock_selected_job(&record)?;
-        let (current, _lease) = record.lock_current()?;
-        super::host_service::check_record(&current)?;
-        current.require_stopped()?;
-        if args.json {
-            println!(
-                "{}",
-                serde_json::json!({"schema_version":1,"operation":"kill",
-                "job_id":current.run_id,"state":current.state,"already_stopped":true})
-            );
-        } else {
-            println!("Job {} is already stopped", current.run_id);
-        }
-        return Ok(());
-    }
-    anyhow::ensure!(
-        record.executor.is_some(),
-        "{} is a legacy environment record, not an executable Job",
-        record.run_id
-    );
-    anyhow::ensure!(
-        record.state == pvisor::RunRecordState::Running && is_live(&record.stage_dir())?,
-        "Job {} is not live",
-        record.run_id
-    );
-    let cooperative = super::host_cancel::request(&record)?;
-    if !cooperative {
-        #[cfg(target_os = "linux")]
-        {
-            // Pin before inspecting the lease, then reread the durable identity
-            // under the native Job lock. Never signal a recycled numeric PID.
-            let template = pvisor::job_execution::Job::read(&record)?;
-            let _job_lease = template
-                .as_ref()
-                .map(pvisor::job_execution::Job::lock)
-                .transpose()?;
-            if let Some(template) = template {
-                template.current()?.validate_record_target(&record)?;
+    let endpoint = record
+        .live_control
+        .as_ref()
+        .filter(|endpoint| endpoint.is_available());
+    if endpoint.is_none() {
+        if pvisor::job_execution::terminate_suspended(&record)? {
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({"schema_version":1,"operation":"kill","job_id":record.run_id,"state":"terminated","suspended_head_released":true})
+                );
+            } else {
+                println!("terminated suspended Job {}", record.run_id);
             }
-            let pid = libc::pid_t::try_from(record.pid).context("Job PID does not fit pid_t")?;
-            anyhow::ensure!(
-                pid > 1 && pid != std::process::id() as libc::pid_t,
-                "invalid Job PID {pid}"
-            );
-            let process = super::host_process::StableProcess::open(pid)?;
-            anyhow::ensure!(
-                pid_holds_lease(pid, &record.stage_dir().join(LEASE_FILENAME))?,
-                "Job {} PID {} no longer owns its exclusive storage lease",
-                record.run_id,
-                pid
-            );
-            let current = pvisor::RunRecord::read(&record.stage_dir())?;
-            super::host::check_selected_record(&record, &current)?;
-            super::host_service::check_record(&current)?;
-            anyhow::ensure!(
-                current.pid == record.pid
-                    && current.state == pvisor::RunRecordState::Running
-                    && is_live(&current.stage_dir())?
-                    && process.is_alive(),
-                "Job process ownership changed; termination refused"
-            );
-            process.signal(libc::SIGTERM)?;
+            return Ok(());
         }
-        #[cfg(not(target_os = "linux"))]
-        return Err(pvisor_core::host_protocol::AgentCtlHostError::new(
-            pvisor_core::host_protocol::AgentCtlHostErrorCode::Unsupported,
-            "no cooperative host cancellation endpoint; stable legacy process identity cannot be proven on this platform",
-        ).into());
+        if record.state.is_stopped() {
+            let _job = super::host::lock_selected_job(&record)?;
+            let (current, _lease) = record.lock_current()?;
+            super::host_service::check_record(&current)?;
+            current.require_stopped()?;
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({"schema_version":1,"operation":"kill",
+                "job_id":current.run_id,"state":current.state,"already_stopped":true})
+                );
+            } else {
+                println!("Job {} is already stopped", current.run_id);
+            }
+            return Ok(());
+        }
+        anyhow::bail!("Job has no valid recorded owner; only its durable state is available");
     }
+    let endpoint = endpoint.unwrap();
+    endpoint.exchange_checked(
+        &record.run_id,
+        record
+            .attempt_id
+            .as_deref()
+            .context("Job has no Attempt identity")?,
+        pvisor::host_transport::InstanceCommand::Terminate {},
+        Some(&super::host_service::check_cancelled),
+    )?;
     if args.json {
         println!(
             "{}",
             serde_json::json!({"schema_version":1,"operation":"kill",
-            "job_id":record.run_id,"state":"stopping","termination_requested":true,"cooperative":cooperative})
+            "job_id":record.run_id,"state":"stopping","termination_requested":true,"cooperative":true})
         );
     } else {
         println!(
@@ -361,78 +323,77 @@ pub fn kill(args: KillArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn pid_holds_lease(pid: libc::pid_t, lease: &Path) -> anyhow::Result<bool> {
-    let expected = std::fs::metadata(lease)?;
-    for entry in std::fs::read_dir(format!("/proc/{pid}/fd"))? {
-        let entry = entry?;
-        if let Ok(actual) = std::fs::metadata(entry.path())
-            && actual.dev() == expected.dev()
-            && actual.ino() == expected.ino()
-        {
-            let name = entry.file_name();
-            let info =
-                std::fs::read_to_string(format!("/proc/{pid}/fdinfo/{}", name.to_string_lossy()))?;
-            let owner = pid.to_string();
-            if info
-                .lines()
-                .filter(|line| line.starts_with("lock:"))
-                .any(|line| {
-                    let fields: Vec<_> = line.split_whitespace().collect();
-                    fields
-                        .windows(4)
-                        .any(|fields| fields == ["FLOCK", "ADVISORY", "WRITE", owner.as_str()])
-                })
-            {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
 pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
     let selected = selected(args.selector.as_deref(), &args.output_dir)?;
-    let _job = super::host::lock_selected_job(&selected)?;
-    let (mut record, _lease) = selected.lock_current()?;
-    super::host_service::check_record(&record)?;
-    if let Some(id) = &args.checkpoint {
-        let checkpoint = pvisor::checkpoint::resolve_checkpoint(&record, id)?;
-        record = pvisor::checkpoint::workspace_view(&record, &checkpoint)?;
-    } else {
-        record.require_stopped()?;
-    }
-    let overlay = record
-        .overlay
+    let endpoint = selected
+        .live_control
         .as_ref()
-        .context("this Job has no OverlayFS workspace to inspect")?;
-    let lowers = if record.overlay_lowers.is_empty() {
-        vec![overlay.target.clone()]
-    } else {
-        record.overlay_lowers.clone()
-    };
-    let stage = record.stage_dir();
-    let mount = if control_ping(&stage) {
-        let (id, mountpoint) = control_mount_inspect(&stage)?;
+        .filter(|endpoint| endpoint.is_available())
+        .cloned();
+    let mut record = selected.clone();
+    let mut leases = None;
+    let mount = if let Some(endpoint) = endpoint {
+        let attempt = selected
+            .attempt_id
+            .clone()
+            .context("live Job has no Attempt identity")?;
+        let response = endpoint.exchange_checked(
+            &selected.run_id,
+            &attempt,
+            pvisor::host_transport::InstanceCommand::Inspect {
+                checkpoint: args.checkpoint.clone(),
+            },
+            Some(&super::host_service::check_cancelled),
+        )?;
         InspectMount::Remote {
-            stage,
-            id,
-            mountpoint,
+            endpoint,
+            job: selected.run_id.clone(),
+            attempt,
+            id: response["id"]
+                .as_str()
+                .context("inspect response missing id")?
+                .to_owned(),
+            mountpoint: serde_json::from_value(response["mountpoint"].clone())?,
         }
     } else {
+        let job = super::host::lock_selected_job(&selected)?;
+        let (current, lease) = selected.lock_current()?;
+        super::host::check_selected_record(&selected, &current)?;
+        record = current;
+        super::host_service::check_record(&record)?;
+        if let Some(id) = &args.checkpoint {
+            let checkpoint = pvisor::checkpoint::resolve_checkpoint(&record, id)?;
+            record = pvisor::checkpoint::workspace_view(&record, &checkpoint)?;
+        } else {
+            record.require_stopped()?;
+        }
+        leases = Some((job, lease));
+        let overlay = record
+            .overlay
+            .as_ref()
+            .context("this Job has no OverlayFS workspace to inspect")?;
+        let lowers = if record.overlay_lowers.is_empty() {
+            vec![overlay.target.clone()]
+        } else {
+            record.overlay_lowers.clone()
+        };
         let inspect_root = overlay.stage_dir.join("inspect").join(format!(
             "{}-{}",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let mountpoint = inspect_root.join("merged");
-        let session = mount_overlay_record_read_only(overlay, &lowers, &mountpoint)
-            .with_context(|| format!("mount read-only Job view at {}", mountpoint.display()))?;
+        let session =
+            mount_overlay_record_read_only(overlay, &lowers, &inspect_root.join("merged"))?;
         InspectMount::Local {
             inspect_root,
             session,
         }
     };
+    let _leases = leases;
+    let overlay = record
+        .overlay
+        .as_ref()
+        .context("this Job has no OverlayFS workspace to inspect")?;
 
     let command = if args.command.is_empty() {
         vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into())]
@@ -442,6 +403,7 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
     let (program, command_args) = command.split_first().context("missing inspect command")?;
     use std::os::unix::process::{CommandExt, ExitStatusExt};
     super::host_service::check_cancelled()?;
+    super::host_process::become_subreaper()?;
     let mut child = Command::new(program)
         .args(command_args)
         .current_dir(mount.mountpoint())
@@ -451,12 +413,8 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
         .process_group(0)
         .spawn()
         .with_context(|| format!("execute inspect command `{program}`"))?;
-    let mut tree = super::host_process::OwnedTree::new(
-        child.id() as i32,
-        std::process::id() as i32,
-        false,
-        0,
-    )?;
+    let mut tree =
+        super::host_process::OwnedTree::new(child.id() as i32, std::process::id() as i32, true, 0)?;
     let foreground = super::host_process::TerminalOwner::give_to(child.id() as i32)?;
     let mut deadline = None;
     let status = loop {
@@ -468,7 +426,7 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
             break child.wait()?;
         }
         if deadline.is_none()
-            && super::host_service::worker_cancellation().is_some_and(|token| token.is_cancelled())
+            && super::host_service::request_cancellation().is_some_and(|token| token.is_cancelled())
         {
             tree.signal_root(libc::SIGTERM)?;
             deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
@@ -495,7 +453,9 @@ pub fn inspect(args: InspectArgs) -> anyhow::Result<i32> {
 
 enum InspectMount {
     Remote {
-        stage: PathBuf,
+        endpoint: pvisor::host_transport::LiveControlRecord,
+        job: String,
+        attempt: String,
         id: String,
         mountpoint: PathBuf,
     },
@@ -515,7 +475,19 @@ impl InspectMount {
 
     fn close(self) -> anyhow::Result<()> {
         match self {
-            Self::Remote { stage, id, .. } => control_unmount_inspect(&stage, id),
+            Self::Remote {
+                endpoint,
+                job,
+                attempt,
+                id,
+                ..
+            } => endpoint
+                .exchange(
+                    &job,
+                    &attempt,
+                    pvisor::host_transport::InstanceCommand::UnmountInspect { id },
+                )
+                .map(|_| ()),
             Self::Local {
                 inspect_root,
                 session,
@@ -628,22 +600,6 @@ mod tests {
         assert_eq!(
             shell_join(&["rg".into(), "hello world".into()]),
             "rg \"hello world\""
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn process_must_hold_the_selected_run_lease() {
-        let temporary = tempfile::tempdir().unwrap();
-        let lease = pvisor::RunLease::acquire(temporary.path()).unwrap();
-        let path = temporary.path().join(LEASE_FILENAME);
-        let pid = std::process::id() as libc::pid_t;
-        assert!(pid_holds_lease(pid, &path).unwrap());
-        drop(lease);
-        let _merely_open = std::fs::File::open(&path).unwrap();
-        assert!(
-            !pid_holds_lease(pid, &path).unwrap(),
-            "an open descriptor is not exclusive lease ownership"
         );
     }
 }

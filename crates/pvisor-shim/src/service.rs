@@ -140,6 +140,63 @@ impl PvisorTask {
         Ok(cwd.join(path))
     }
 
+    /// Deliver injections whose targets sit under a directory bind mount
+    /// (upstream's opensandbox-bin emptyDir) by copying them into the
+    /// mount's host source, which the VM's volume share then serves into
+    /// the guest. Injections already present (a real installer's output)
+    /// are left untouched; delivered payloads are marked so the VM runner
+    /// skips rootfs staging that the share would shadow anyway.
+    fn stage_volume_delivered_payloads(plan: &mut crate::plan::ContainerPlan) -> Result<()> {
+        for injection in &mut plan.injections {
+            let Some((source, destination)) = plan
+                .mounts
+                .iter()
+                .filter(|mount| mount.fs_type == "bind" && !mount.from_request)
+                .filter_map(|mount| {
+                    let source = mount.source.as_deref().map(PathBuf::from)?;
+                    let destination = mount.destination.clone();
+                    std::fs::metadata(&source)
+                        .ok()
+                        .filter(|metadata| metadata.is_dir())
+                        .map(|_| (source, destination))
+                })
+                .find(|(_, destination)| injection.target.starts_with(destination))
+            else {
+                continue;
+            };
+            let relative = injection
+                .target
+                .strip_prefix(&destination)
+                .context("prefix checked above")?;
+            let target = source.join(relative);
+            let already_delivered = target
+                .metadata()
+                .ok()
+                .filter(|metadata| metadata.is_file() && metadata.len() > 0);
+            if already_delivered.is_some() {
+                // A real installer (or an earlier delivery) already put the
+                // payload there. Zero-byte stubs from an aborted attempt do
+                // not count.
+                injection.staged = true;
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("create {}", parent.display()))?;
+            }
+            std::fs::copy(&injection.source, &target).with_context(|| {
+                format!(
+                    "deliver {} into volume source {}",
+                    injection.source.display(),
+                    target.display()
+                )
+            })?;
+            set_executable(&target)?;
+            injection.staged = true;
+        }
+        Ok(())
+    }
+
     fn convert_mounts(request_mounts: &[Mount]) -> Vec<MountPlan> {
         request_mounts
             .iter()
@@ -620,6 +677,18 @@ async fn run_exit_watcher(inner: Arc<TaskInner>, mut subscription: Subscription)
     }
 }
 
+/// Copy a file preserving its source mode, then guarantee the executable
+/// bit (payloads must run from the volume share).
+fn set_executable(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path)
+        .with_context(|| format!("stat {}", path.display()))?
+        .permissions()
+        .mode();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o755))
+        .with_context(|| format!("chmod {} +x", path.display()))
+}
+
 #[async_trait]
 impl Task for PvisorTask {
     async fn create(
@@ -651,7 +720,7 @@ impl Task for PvisorTask {
         let spec = load_bundle_spec(&bundle)
             .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, format!("{error:#}")))?;
         let io = io_plan_from(req.terminal, &req.stdin, &req.stdout, &req.stderr);
-        let plan = build_plan(
+        let mut plan = build_plan(
             &spec,
             &req.id,
             &bundle,
@@ -659,6 +728,85 @@ impl Task for PvisorTask {
             io,
         )
         .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error.to_string()))?;
+        // Payload injection (crate::inject): absent annotation changes
+        // nothing; anything requested but unsatisfiable rejects the task.
+        // The container tier materializes payloads as extra read-only bind
+        // mounts; the VM tier stages them from the plan instead.
+        let mut occupied_mounts = plan.mounts.clone();
+        occupied_mounts.extend(plan.rootfs_mounts.iter().cloned());
+        plan.injections = crate::inject::resolve(&plan.annotations, &plan.rootfs, &occupied_mounts)
+            .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, error.to_string()))?;
+        let wants_vm = plan.wants_vm();
+        // Payload delivery for VM pods whose targets sit under a pod volume
+        // (upstream's opensandbox-bin emptyDir at /opt/opensandbox): the
+        // volume becomes a virtio-fs share inside the guest and shadows
+        // anything staged into the rootfs, so the payload must land in the
+        // volume's HOST source. The synthetic installer no longer copies
+        // anything, so this Create does it (a real installer's output is
+        // already there and the copy is skipped).
+        if wants_vm {
+            Self::stage_volume_delivered_payloads(&mut plan)
+                .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
+        }
+        // The egress sidecar publication/gating follows.
+        // OpenSandbox egress delivery. Each container of this pod runs on
+        // its own shim instance (containerd `sandboxer = "shim"`), so the
+        // coordination is purely filesystem, keyed by the CRI sandbox id
+        // (every container's spec carries it as an annotation): the egress
+        // sidecar's Create publishes the pod policy at the gate file, and a
+        // workload that sees the egress-auth pod annotation gates its VM
+        // boot on that file. The sidecar itself always runs on the container
+        // tier (see plan::executor_is_vm).
+        #[cfg(feature = "vm")]
+        let egress_gate = {
+            let rules = spec.process().as_ref().and_then(|process| {
+                process
+                    .env()
+                    .iter()
+                    .flatten()
+                    .find_map(|entry| entry.strip_prefix("OPENSANDBOX_EGRESS_RULES="))
+            });
+            let sandbox_id = plan
+                .annotations
+                .get("io.kubernetes.cri.sandbox-id")
+                .cloned()
+                .unwrap_or_default();
+            if let Some(rules) = rules {
+                if sandbox_id.is_empty() {
+                    return Err(rpc_error(
+                        Code::FAILED_PRECONDITION,
+                        "egress sidecar spec carries no CRI sandbox id",
+                    ));
+                }
+                let path = crate::network::egress_gate_path(&sandbox_id);
+                std::fs::write(&path, rules).map_err(|error| {
+                    rpc_error(Code::INTERNAL, format!("publish egress rules: {error}"))
+                })?;
+                None
+            } else if wants_vm
+                && plan
+                    .annotations
+                    .contains_key("opensandbox.io/egress-auth-token")
+                && !sandbox_id.is_empty()
+            {
+                Some(crate::network::egress_gate_path(&sandbox_id))
+            } else {
+                None
+            }
+        };
+        #[cfg(feature = "vm")]
+        {
+            plan.egress_gate = egress_gate;
+        }
+        #[cfg(not(feature = "vm"))]
+        let _ = &spec;
+        // Synthetic tasks never execute, so their injection bind mounts
+        // would only punch empty mountpoint stubs into shared pod volumes
+        // (the emptyDir) and poison the workload's volume delivery.
+        if !wants_vm && !plan.synthetic {
+            plan.mounts
+                .extend(crate::inject::bind_mount_plans(&plan.injections));
+        }
         for warning in &plan.warnings {
             warn!("task {}: {warning}", req.id);
         }
@@ -674,9 +822,8 @@ impl Task for PvisorTask {
 
         // `io.pvisor.executor=vm` routes the task to the libkrun runner;
         // everything else (lifecycle, events, kill, wait) is identical.
-        let wants_vm = plan.wants_vm();
         #[cfg(feature = "vm")]
-        let vm_network = if wants_vm {
+        let vm_network = if wants_vm && plan.egress_gate.is_none() {
             crate::network::VmNetworkAttachment::start(&plan)
                 .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, format!("{error:#}")))?
         } else {
@@ -722,8 +869,25 @@ impl Task for PvisorTask {
             .as_ref()
             .and_then(|sandbox| sandbox.internal.pid);
 
-        let internal = tokio::task::spawn_blocking({
+        // Host-side descriptors for the injected siblings (null + one log
+        // file per payload). VM tasks log inside the guest rootfs instead,
+        // so they hand over nothing and wait on the start pipe alone.
+        let inject_fds = if !wants_vm && !plan.injections.is_empty() {
+            Some(
+                crate::inject::open_task_fds(&req.id, &plan.injections).map_err(|error| {
+                    rpc_error(
+                        Code::INTERNAL,
+                        format!("open injection descriptors: {error:#}"),
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
+
+        let spawned = tokio::task::spawn_blocking({
             let plan_path = plan_path.clone();
+            let inject_fds = inject_fds.clone();
             move || {
                 if wants_vm {
                     // The VM runner lives for the whole task (it hosts the
@@ -736,7 +900,10 @@ impl Task for PvisorTask {
                         Some(stdio),
                         sandbox_pid,
                         false,
-                        vm_net_fd,
+                        child::SpawnExtras {
+                            vm_net_fd,
+                            inject_fds: None,
+                        },
                     );
                     // The runner owns its descriptor now; closing the
                     // parent-side duplicate leaves the attachment's original
@@ -752,18 +919,29 @@ impl Task for PvisorTask {
                         &plan_bytes,
                         Some(stdio),
                         sandbox_pid,
+                        inject_fds,
                     )
                 }
             }
         })
         .await
-        .map_err(|error| rpc_error(Code::INTERNAL, format!("init join: {error}")))?
-        .map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
+        .map_err(|error| rpc_error(Code::INTERNAL, format!("init join: {error}")))?;
+        // The internal parent holds its own copies (spawn inherited them
+        // without FD_CLOEXEC); drop ours on success and failure alike.
+        if let Some(fds) = &inject_fds {
+            let mut closed = std::collections::BTreeSet::new();
+            for fd in fds {
+                if closed.insert(*fd) {
+                    unsafe { libc::close(*fd) };
+                }
+            }
+        }
+        let internal = spawned.map_err(|error| rpc_error(Code::INTERNAL, format!("{error:#}")))?;
         let pid = internal.pid.unwrap_or(0);
         // The child owns its descriptors now; keep only keepalive/master.
         owned_io.release_child_fds();
 
-        let entry = TaskEntry::new(
+        let mut entry = TaskEntry::new(
             &req.id,
             bundle,
             plan.io.stdin.clone(),
@@ -772,6 +950,13 @@ impl Task for PvisorTask {
             plan.io.terminal,
             Some(pid),
         );
+        if wants_vm {
+            entry.bridge_ports = plan
+                .injections
+                .iter()
+                .filter_map(|injection| injection.bridge)
+                .collect();
+        }
         let (exit_tx, _) = watch::channel(None);
         self.inner.tasks.lock().expect("tasks mutex").insert(
             req.id.clone(),
@@ -1021,6 +1206,9 @@ impl Task for PvisorTask {
                     &plan_bytes,
                     Some(stdio),
                     None,
+                    // Injection is an init-task contract; exec processes
+                    // join the container as-is.
+                    None,
                 )
             }
         })
@@ -1176,6 +1364,9 @@ impl Task for PvisorTask {
         let _ = std::fs::remove_file(live.entry.bundle.join("pvisor-plan.json"));
         if live.vm {
             let _ = std::fs::remove_file(crate::agent::agent_socket_path(&req.id));
+            for port in live.entry.bridge_ports {
+                let _ = std::fs::remove_file(crate::agent::bridge_socket_path(&req.id, port));
+            }
         }
         #[cfg(feature = "vm")]
         if let Some(attachment) = live.vm_network {
@@ -1339,7 +1530,7 @@ impl Sandbox for PvisorSandbox {
                     None,
                     None,
                     false,
-                    None,
+                    child::SpawnExtras::default(),
                 )
             }
         })

@@ -264,7 +264,7 @@ just cases --suite stage --case S-STAGE-008 --keep
 export RUST_LOG=warn
 # Public CLI only; all personal settings and Job records stay in CASE_ROOT.
 pvisor() { XDG_DATA_HOME="$CASE_ROOT/data" XDG_CONFIG_HOME="$CASE_ROOT/config" command "${SUBJECT_BIN:-pvisor}" "$@"; }
-stage() { pvisor run --no-agent-defaults --executor host --gateway-mode off --stage "$1" -- /bin/sh -eu -c "$2"; }
+stage() { pvisor spawn --no-agent-defaults --executor host --gateway-mode off --stage "$1" -- /bin/sh -eu -c "$2"; }
 review_changes() {
   pvisor status --review --json "$1" > "$CASE_ROOT/review.json"
   python3 - "$CASE_ROOT/review.json" <<'PY'

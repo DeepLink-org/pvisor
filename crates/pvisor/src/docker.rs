@@ -1,0 +1,1785 @@
+//! Rootless, per-instance VM lifecycle for the Docker command profile.
+//!
+//! Storage is private to the current user. Each launch has a separate supervisor
+//! and VMM subprocess; no global listener or privileged daemon is required.
+#![deny(missing_docs)]
+use anyhow::{Context, bail, ensure};
+use fs2::FileExt;
+use pvisor_guest::control::{self, Reply, Request, read_frame, write_frame};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Read, Write};
+use std::os::unix::{
+    fs::{MetadataExt, OpenOptionsExt},
+    net::UnixStream,
+    process::{CommandExt, ExitStatusExt},
+};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+pub use crate::image::oci::PullProgress;
+
+fn native_platform() -> String {
+    let architecture = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    };
+    format!("linux/{architecture}")
+}
+
+fn canonical_platform(platform: &str) -> anyhow::Result<&'static str> {
+    match platform {
+        "linux/amd64" => Ok("linux/amd64"),
+        "linux/arm64" | "linux/arm64/v8" => Ok("linux/arm64"),
+        _ => bail!("unsupported platform {platform}; expected linux/amd64 or linux/arm64"),
+    }
+}
+
+fn require_native_platform(platform: &str) -> anyhow::Result<()> {
+    let platform = canonical_platform(platform)?;
+    let native = native_platform();
+    ensure!(
+        platform == native,
+        "cannot run {platform} on a {native} VM: cross-architecture emulation is not implemented; --platform selects an image, not a CPU emulator"
+    );
+    Ok(())
+}
+
+/// Persistent image identity and the image's launch defaults.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Image {
+    /// User-visible image reference, including its tag or digest selector.
+    pub reference: String,
+    /// OCI configuration digest, used as the Docker image ID.
+    pub id: String,
+    /// Selected platform-specific manifest digest.
+    pub digest: String,
+    /// Canonical OCI platform (`linux/amd64` or `linux/arm64`). Older records
+    /// default to the host platform because they only supported native pulls.
+    #[serde(default = "native_platform")]
+    pub platform: String,
+    /// Prepared root filesystem owned by this user's image store.
+    pub rootfs: PathBuf,
+    /// Image environment. Host environment is never implicitly inherited.
+    pub env: BTreeMap<String, String>,
+    /// Executable prefix from image configuration.
+    pub entrypoint: Vec<String>,
+    /// Default arguments from image configuration.
+    pub cmd: Vec<String>,
+    /// Absolute guest working directory.
+    pub cwd: PathBuf,
+    /// Guest user name or UID, optionally with a group.
+    pub user: String,
+    /// Image stop signal; validated before a launch is admitted.
+    pub stop_signal: i32,
+    /// Declared image volume destinations.
+    pub volumes: Vec<PathBuf>,
+    /// Catalog publication time in Unix milliseconds.
+    pub created_ms: u64,
+}
+
+/// One independently mounted host directory; sources are resolved at creation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Mount {
+    /// Existing canonical host directory, or a managed volume directory.
+    pub source: PathBuf,
+    /// Absolute guest destination, excluding guest system/control directories.
+    pub target: PathBuf,
+    /// Whether guest writes must fail at the mount boundary.
+    pub read_only: bool,
+    /// Named or anonymous managed volume; bind mounts use `None`.
+    pub volume: Option<String>,
+}
+
+/// A published IPv4 TCP endpoint. Port zero requests an ephemeral host port.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Port {
+    /// Host bind address. Docker-compatible omission means `0.0.0.0`.
+    pub address: std::net::Ipv4Addr,
+    /// Host port; resolved before the VM starts.
+    pub host: u16,
+    /// Guest service port, always nonzero.
+    pub guest: u16,
+}
+
+/// Fully resolved launch request; validated before instance publication.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Create {
+    /// Optional unique container name.
+    pub name: Option<String>,
+    /// Image reference or local image ID.
+    pub image: String,
+    /// Optional OCI platform assertion. Only the native Linux platform can run;
+    /// unsupported or foreign platforms fail before pulling or publication.
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// CLI command overrides CMD; ENTRYPOINT is retained unless overridden.
+    pub command: Vec<String>,
+    /// `Some(empty)` explicitly clears the image entrypoint.
+    pub entrypoint: Option<String>,
+    /// Explicit environment overrides.
+    pub env: BTreeMap<String, String>,
+    /// Names explicitly unset by CLI environment forwarding.
+    #[serde(default)]
+    pub unset_env: Vec<String>,
+    /// Optional absolute working-directory override.
+    pub cwd: Option<PathBuf>,
+    /// Optional guest identity override.
+    pub user: Option<String>,
+    /// Extra mounts.
+    pub mounts: Vec<Mount>,
+    /// Published TCP endpoints.
+    pub ports: Vec<Port>,
+    /// Guest vCPU count, not a host CPU quota.
+    pub cpus: u8,
+    /// Total guest RAM budget in MiB.
+    pub memory_mib: u32,
+    /// Automatically remove the instance and its anonymous volumes on exit.
+    pub auto_remove: bool,
+    /// Keep guest stdin open for input attachment.
+    pub interactive: bool,
+    /// Optional initial guest terminal dimensions, rows then columns.
+    /// A terminal defaults TERM to xterm; image/explicit values and unsets win.
+    pub tty: Option<[u16; 2]>,
+    /// Install the current public IPv4 TCP/DNS egress profile.
+    pub network: bool,
+}
+
+/// Stable container identity plus the current launch generation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Instance {
+    /// Schema version; unknown versions refuse mutation.
+    pub schema: u32,
+    /// Full 64-hex container ID.
+    pub id: String,
+    /// Unique user-visible name.
+    pub name: String,
+    /// Image pinned at creation; tag updates never change this instance.
+    pub image: Image,
+    /// Effective launch options.
+    pub config: Create,
+    /// Effective argv after entrypoint/CMD resolution.
+    pub argv: Vec<String>,
+    /// Effective launch environment.
+    pub env: BTreeMap<String, String>,
+    /// Effective guest working directory.
+    pub cwd: PathBuf,
+    /// Effective guest identity.
+    pub user: String,
+    /// `created`, `starting`, `running`, or `exited`.
+    pub state: String,
+    /// Unique launch generation; prevents stale control requests after restart.
+    pub generation: String,
+    /// Launch admission time, used only to reconcile abandoned startup records.
+    #[serde(default)]
+    pub started_ms: u64,
+    /// Most recent process/VM exit status.
+    pub exit_code: Option<i32>,
+    /// Creation time in Unix milliseconds.
+    pub created_ms: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Completion {
+    generation: String,
+    code: i32,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// Open log descriptors surviving automatic container removal.
+pub struct Output {
+    stdout: File,
+    stderr: File,
+    result: PathBuf,
+    directory: PathBuf,
+}
+impl Output {
+    /// Drain output until this exact generation has completed, then return its
+    /// exit code. Polling never interprets a previous generation as completion.
+    pub fn follow(
+        mut self,
+        generation: &str,
+        stdout: &mut impl Write,
+        stderr: &mut impl Write,
+    ) -> anyhow::Result<i32> {
+        loop {
+            io::copy(&mut self.stdout, stdout)?;
+            io::copy(&mut self.stderr, stderr)?;
+            stdout.flush()?;
+            stderr.flush()?;
+            if let Ok(file) = File::open(&self.result) {
+                let result: Completion = serde_json::from_reader(file)?;
+                if result.generation == generation {
+                    io::copy(&mut self.stdout, stdout)?;
+                    io::copy(&mut self.stderr, stderr)?;
+                    return Ok(result.code);
+                }
+            }
+            if !lease_active(&self.directory.join("owner.lock"))?
+                && !lease_active(&self.directory.join("vm.lock"))?
+            {
+                io::copy(&mut self.stdout, stdout)?;
+                io::copy(&mut self.stderr, stderr)?;
+                return Ok(137);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+/// User-private catalog and storage facade. No VM runs in this object.
+#[derive(Clone)]
+pub struct Store {
+    root: PathBuf,
+}
+
+fn private_directory(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        let mut builder = fs::DirBuilder::new();
+        use std::os::unix::fs::DirBuilderExt;
+        builder.recursive(true).mode(0o700).create(path)?;
+    }
+    let meta = fs::symlink_metadata(path)?;
+    ensure!(
+        meta.is_dir() && meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o077 == 0,
+        "container storage must be an owned private directory: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name.as_bytes()[0].is_ascii_alphanumeric()
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
+}
+
+fn uuid() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+fn signal(value: &str) -> anyhow::Result<i32> {
+    if let Ok(value) = value.parse::<i32>() {
+        ensure!((1..=64).contains(&value), "invalid signal");
+        return Ok(value);
+    }
+    Ok(match value.strip_prefix("SIG").unwrap_or(value) {
+        "TERM" | "" => 15,
+        "KILL" => 9,
+        "INT" => 2,
+        "QUIT" => 3,
+        "HUP" => 1,
+        "USR1" => 10,
+        "USR2" => 12,
+        "WINCH" => 28,
+        _ => bail!("unsupported image stop signal {value}"),
+    })
+}
+
+impl Store {
+    /// Open user-private storage. `PVISOR_DOCKER_HOME` overrides the default.
+    pub fn discover() -> anyhow::Result<Self> {
+        Self::open(
+            std::env::var_os("PVISOR_DOCKER_HOME")
+                .map(PathBuf::from)
+                .unwrap_or(
+                    dirs::data_local_dir()
+                        .context("no user data directory")?
+                        .join("pvisor/docker"),
+                ),
+        )
+    }
+    /// Open isolated storage for this UID; symlink roots and shared permissions fail.
+    pub fn open(root: PathBuf) -> anyhow::Result<Self> {
+        private_directory(&root)?;
+        let root = root.canonicalize()?;
+        for name in ["instances", "volumes", "images", "results"] {
+            private_directory(&root.join(name))?;
+        }
+        Ok(Self { root })
+    }
+    fn lock(&self) -> anyhow::Result<File> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(self.root.join("catalog.lock"))?;
+        file.lock_exclusive()?;
+        Ok(file)
+    }
+    fn catalog(&self) -> anyhow::Result<Vec<Image>> {
+        let path = self.root.join("images.json");
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        Ok(serde_json::from_reader(File::open(path)?)?)
+    }
+    fn save_catalog(&self, images: &[Image]) -> anyhow::Result<()> {
+        crate::util::write_private_json(&self.root.join("images.json"), &images)
+    }
+    fn directory(&self, id: &str) -> PathBuf {
+        self.root.join("instances").join(id)
+    }
+    fn save(&self, instance: &Instance) -> anyhow::Result<()> {
+        crate::util::write_private_json(
+            &self.directory(&instance.id).join("instance.json"),
+            instance,
+        )
+    }
+    fn all(&self) -> anyhow::Result<Vec<Instance>> {
+        let mut instances = Vec::new();
+        for entry in fs::read_dir(self.root.join("instances"))? {
+            let path = entry?.path().join("instance.json");
+            if path.is_file() {
+                let mut instance: Instance = serde_json::from_reader(File::open(path)?)?;
+                ensure!(
+                    instance.schema == 1
+                        && instance.id.len() == 64
+                        && instance.id.bytes().all(|c| c.is_ascii_hexdigit()),
+                    "unknown container record"
+                );
+                if (instance.state == "running"
+                    || instance.state == "starting"
+                        && crate::unix_now_ms().saturating_sub(instance.started_ms) > 30_000)
+                    && !self.active(&instance)?
+                {
+                    instance.state = "exited".into();
+                    instance.exit_code = Some(137);
+                }
+                instances.push(instance);
+            }
+        }
+        instances.sort_by_key(|i| std::cmp::Reverse(i.created_ms));
+        Ok(instances)
+    }
+    fn active(&self, instance: &Instance) -> anyhow::Result<bool> {
+        if !self.directory(&instance.id).exists() {
+            return Ok(false);
+        }
+        Ok(
+            lease_active(&self.directory(&instance.id).join("owner.lock"))?
+                || lease_active(&self.directory(&instance.id).join("vm.lock"))?,
+        )
+    }
+    /// List catalog images without contacting a registry.
+    pub fn images(&self) -> anyhow::Result<Vec<Image>> {
+        let _guard = self.lock()?;
+        self.catalog()
+    }
+    /// Resolve a native OCI image and refresh its reference. Publication is atomic.
+    pub fn pull(&self, reference: &str) -> anyhow::Result<Image> {
+        self.pull_with_progress(reference, &mut |_| {})
+    }
+    /// Pull with synchronous progress observations. The callback must return
+    /// promptly and must not panic or reenter this store. Completion is reported
+    /// by the result only; on failure the previous catalog entry is preserved.
+    /// Terminal rendering belongs to the caller, and silent `pull` is unchanged.
+    pub fn pull_with_progress(
+        &self,
+        reference: &str,
+        progress: &mut dyn FnMut(PullProgress),
+    ) -> anyhow::Result<Image> {
+        self.pull_for_platform_with_progress(reference, &native_platform(), progress)
+    }
+    /// Pull `linux/amd64`, `linux/arm64`, or its `linux/arm64/v8` alias.
+    /// A foreign image can be downloaded but cannot run without emulation,
+    /// which this runtime does not provide. Invalid platforms fail before I/O.
+    /// One platform is catalogued per reference: success replaces that reference
+    /// atomically; existing instances retain their pinned images. Failure and
+    /// callback contracts match `pull_with_progress`.
+    pub fn pull_for_platform_with_progress(
+        &self,
+        reference: &str,
+        platform: &str,
+        progress: &mut dyn FnMut(PullProgress),
+    ) -> anyhow::Result<Image> {
+        let platform = canonical_platform(platform)?;
+        let arch = platform.strip_prefix("linux/").unwrap();
+        let reference = normalize_reference(reference);
+        let reference = reference.as_str();
+        let store = crate::image::oci::ImageStore::new(Some(self.root.join("images")))?;
+        let prepared = store.prepare_with_progress(reference, arch, true, progress)?;
+        let manifest: serde_json::Value = serde_json::from_reader(File::open(
+            self.root.join("images/metadata/manifests-v1").join(format!(
+                "{}.json",
+                prepared.digest.trim_start_matches("sha256:")
+            )),
+        )?)?;
+        let id = manifest["config"]["digest"]
+            .as_str()
+            .context("missing image config digest")?
+            .to_owned();
+        ensure!(
+            id.starts_with("sha256:")
+                && id.len() == 71
+                && id[7..].bytes().all(|c| c.is_ascii_hexdigit()),
+            "invalid image config digest"
+        );
+        let config: serde_json::Value = serde_json::from_reader(File::open(
+            self.root.join("images/blobs/sha256").join(&id[7..]),
+        )?)?;
+        let config = &config["config"];
+        let cwd = config["WorkingDir"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("/");
+        let image = Image {
+            reference: reference.into(),
+            id,
+            digest: prepared.digest,
+            platform: platform.into(),
+            rootfs: prepared.rootfs,
+            env: prepared.env,
+            entrypoint: prepared.entrypoint,
+            cmd: prepared.cmd,
+            cwd: cwd.into(),
+            user: config["User"].as_str().unwrap_or("").into(),
+            stop_signal: signal(config["StopSignal"].as_str().unwrap_or("SIGTERM"))?,
+            volumes: config["Volumes"]
+                .as_object()
+                .map(|v| v.keys().map(PathBuf::from).collect())
+                .unwrap_or_default(),
+            created_ms: crate::unix_now_ms(),
+        };
+        let _guard = self.lock()?;
+        let mut images = self.catalog()?;
+        images.retain(|i| i.reference != reference);
+        images.push(image.clone());
+        self.save_catalog(&images)?;
+        Ok(image)
+    }
+    /// Remove a local image reference. Images used by any instance are refused.
+    /// Shared OCI blobs remain an internal cache and are not deleted here.
+    pub fn rmi(&self, selector: &str, force: bool) -> anyhow::Result<Vec<String>> {
+        let _guard = self.lock()?;
+        let mut images = self.catalog()?;
+        let selected: Vec<_> = images
+            .iter()
+            .filter(|i| {
+                i.reference == selector
+                    || i.reference == normalize_reference(selector)
+                    || image_matches(&i.id, selector)
+            })
+            .cloned()
+            .collect();
+        ensure!(!selected.is_empty(), "No such image: {selector}");
+        let by_reference = images
+            .iter()
+            .any(|i| i.reference == selector || i.reference == normalize_reference(selector));
+        let ids: std::collections::BTreeSet<_> = selected.iter().map(|i| &i.id).collect();
+        ensure!(
+            by_reference || ids.len() == 1,
+            "ambiguous image ID: {selector}"
+        );
+        let used = self
+            .all()?
+            .iter()
+            .any(|instance| ids.contains(&instance.image.id));
+        ensure!(force || !used, "image is used by an existing container");
+        ensure!(
+            by_reference || force || selected.len() == 1,
+            "image has multiple tags; remove a tag or use --force"
+        );
+        let removed: Vec<_> = selected.iter().map(|i| i.reference.clone()).collect();
+        images.retain(|i| !removed.contains(&i.reference));
+        self.save_catalog(&images)?;
+        Ok(removed)
+    }
+    /// List containers, reconciling vanished owners without signaling saved PIDs.
+    pub fn instances(&self, all: bool) -> anyhow::Result<Vec<Instance>> {
+        let _guard = self.lock()?;
+        Ok(self
+            .all()?
+            .into_iter()
+            .filter(|i| all || i.state == "running")
+            .collect())
+    }
+    /// Resolve an exact name, full ID, or unambiguous ID prefix.
+    pub fn resolve(&self, selector: &str) -> anyhow::Result<Instance> {
+        let instances = self.all()?;
+        if let Some(exact) = instances
+            .iter()
+            .find(|i| i.name == selector || i.id == selector)
+        {
+            return Ok(exact.clone());
+        }
+        let found: Vec<_> = instances
+            .into_iter()
+            .filter(|i| !selector.is_empty() && i.id.starts_with(selector))
+            .collect();
+        ensure!(
+            found.len() == 1,
+            "{} container: {selector}",
+            if found.is_empty() {
+                "No such"
+            } else {
+                "ambiguous"
+            }
+        );
+        Ok(found.into_iter().next().unwrap())
+    }
+    /// Create a stopped instance. A missing image is pulled before publication.
+    pub fn create(&self, config: Create) -> anyhow::Result<Instance> {
+        self.create_with_progress(config, &mut |_| {})
+    }
+    /// Create an instance, observing preparation if its image must be pulled.
+    /// Local images emit no events. Callback and failure contracts match
+    /// `pull_with_progress`; no owner or VM is started by this operation.
+    pub fn create_with_progress(
+        &self,
+        mut config: Create,
+        progress: &mut dyn FnMut(PullProgress),
+    ) -> anyhow::Result<Instance> {
+        if let Some(platform) = &config.platform {
+            require_native_platform(platform)?;
+        }
+        ensure!(
+            config.cpus > 0 && config.memory_mib >= 16,
+            "invalid VM CPU/memory budget"
+        );
+        ensure!(
+            config.network || config.ports.is_empty(),
+            "port publishing with --network none is unsupported"
+        );
+        if let Some(name) = &config.name {
+            ensure!(valid_name(name), "invalid container name");
+        }
+        let images = self.images()?;
+        let candidates: Vec<_> = images
+            .iter()
+            .filter(|i| {
+                i.reference == normalize_reference(&config.image)
+                    || image_matches(&i.id, &config.image)
+            })
+            .collect();
+        let ids: std::collections::BTreeSet<_> = candidates.iter().map(|i| &i.id).collect();
+        ensure!(ids.len() <= 1, "ambiguous image ID: {}", config.image);
+        let image = if let Some(image) = candidates.first() {
+            (*image).clone()
+        } else {
+            self.pull_with_progress(&config.image, progress)?
+        };
+        require_native_platform(&image.platform)?;
+        let argv = resolve_command(&image, &config);
+        ensure!(
+            !argv.is_empty() && !argv[0].is_empty(),
+            "No command specified"
+        );
+        let cwd = config.cwd.clone().unwrap_or_else(|| image.cwd.clone());
+        ensure!(cwd.is_absolute(), "working directory must be absolute");
+        for mount in &config.mounts {
+            ensure!(
+                mount.source.is_absolute() && mount.source.is_dir(),
+                "mount source must be an existing absolute directory"
+            );
+            validate_target(&mount.target)?;
+            ensure!(
+                !(mount.volume.is_some()
+                    && mount.read_only
+                    && fs::read_dir(&mount.source)?.next().is_none()),
+                "initialize an empty managed volume with a writable mount before read-only use"
+            );
+            let source = mount.source.canonicalize()?;
+            let authority = crate::host_transport::host_authority_root()?;
+            let sockets = socket_directory()?;
+            ensure!(
+                !source.starts_with(&authority)
+                    && !authority.starts_with(&source)
+                    && !source.starts_with(&sockets)
+                    && !sockets.starts_with(&source),
+                "mount overlaps private control authority"
+            );
+            ensure!(
+                !source.starts_with(&self.root) && !self.root.starts_with(&source)
+                    || mount.volume.is_some() && source.starts_with(self.root.join("volumes")),
+                "mount overlaps private container storage"
+            );
+        }
+        for port in &config.ports {
+            ensure!(port.guest != 0, "guest port must be nonzero");
+        }
+        let _guard = self.lock()?;
+        let id = format!("{}{}", uuid(), uuid());
+        let name = config
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("pvisor_{}", &id[..12]));
+        ensure!(
+            !self.all()?.iter().any(|i| i.name == name),
+            "container name already in use: {name}"
+        );
+        let directory = self.directory(&id);
+        private_directory(&directory)?;
+        for path in ["upper", "work"] {
+            private_directory(&directory.join(path))?;
+        }
+        for target in &image.volumes {
+            if !config.mounts.iter().any(|m| &m.target == target) {
+                validate_target(target)?;
+                let name = uuid();
+                let source = self.volume(&name)?;
+                config.mounts.push(Mount {
+                    source,
+                    target: target.clone(),
+                    read_only: false,
+                    volume: Some(format!("anonymous:{name}")),
+                });
+            }
+        }
+        config
+            .mounts
+            .sort_by_key(|mount| mount.target.components().count());
+        let mut targets = std::collections::BTreeSet::new();
+        ensure!(
+            config.mounts.iter().all(|m| targets.insert(&m.target)),
+            "duplicate mount destination"
+        );
+        let mut env = image.env.clone();
+        if config.tty.is_some() {
+            env.entry("TERM".into()).or_insert_with(|| "xterm".into());
+        }
+        for key in &config.unset_env {
+            env.remove(key);
+        }
+        env.extend(config.env.clone());
+        env.entry("PATH".into()).or_insert_with(|| {
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()
+        });
+        let user = config.user.clone().unwrap_or_else(|| image.user.clone());
+        let instance = Instance {
+            schema: 1,
+            id,
+            name,
+            image,
+            config,
+            argv,
+            env,
+            cwd,
+            user,
+            state: "created".into(),
+            generation: String::new(),
+            started_ms: 0,
+            exit_code: None,
+            created_ms: crate::unix_now_ms(),
+        };
+        self.save(&instance)?;
+        Ok(instance)
+    }
+    /// Open/create a managed volume directory. Volumes are retained independently.
+    pub fn volume(&self, name: &str) -> anyhow::Result<PathBuf> {
+        ensure!(valid_name(name), "invalid volume name");
+        let path = self.root.join("volumes").join(name);
+        private_directory(&path)?;
+        Ok(path)
+    }
+    /// Launch a new generation; `start` never changes the pinned image or upper.
+    /// Concurrent callers join an already-starting generation and observe its
+    /// bounded readiness/completion result, without holding the catalog lock.
+    pub fn start(&self, selector: &str) -> anyhow::Result<Instance> {
+        let mut instance;
+        {
+            let _guard = self.lock()?;
+            instance = self.resolve(selector)?;
+            require_native_platform(&instance.image.platform)?;
+            if self.active(&instance)? && instance.state == "running" {
+                return Ok(instance);
+            }
+            if instance.state != "starting" {
+                ensure!(
+                    !self.active(&instance)?,
+                    "container is already running or starting"
+                );
+                instance.generation = uuid();
+                instance.started_ms = crate::unix_now_ms();
+                instance.state = "starting".into();
+                instance.exit_code = None;
+                self.save(&instance)?;
+                let mut command = Command::new(std::env::current_exe()?);
+                command
+                    .arg("--pvisor-internal-docker-owner")
+                    .arg(&self.root)
+                    .arg(&instance.id)
+                    .arg(&instance.generation)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::from(self.diagnostic(&instance)?));
+                unsafe {
+                    command.pre_exec(|| {
+                        if libc::setsid() < 0 {
+                            return Err(io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+                if let Err(error) = command.spawn() {
+                    instance.state = "exited".into();
+                    instance.exit_code = Some(125);
+                    self.save(&instance)?;
+                    return Err(error.into());
+                }
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let ready = self
+            .directory(&instance.id)
+            .join(format!("ready-{}", instance.generation));
+        loop {
+            if ready.is_file() {
+                return Ok(self.resolve(&instance.id).unwrap_or(instance));
+            }
+            if let Ok(result) = File::open(
+                self.root
+                    .join("results")
+                    .join(format!("{}.json", instance.id)),
+            ) {
+                let result: Completion = serde_json::from_reader(result)?;
+                if result.generation == instance.generation {
+                    if let Some(error) = result.error {
+                        bail!("container failed to start: {error}");
+                    }
+                    instance.state = "exited".into();
+                    instance.exit_code = Some(result.code);
+                    return Ok(self.resolve(&instance.id).unwrap_or(instance));
+                }
+            }
+            let current = self.resolve(&instance.id)?;
+            if current.state == "exited" {
+                bail!(
+                    "container failed to start: {}",
+                    fs::read_to_string(self.directory(&instance.id).join("diagnostic.log"))
+                        .unwrap_or_default()
+                );
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "container startup timed out; inspect logs before retrying"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    fn diagnostic(&self, instance: &Instance) -> anyhow::Result<File> {
+        Ok(OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .open(self.directory(&instance.id).join("diagnostic.log"))?)
+    }
+    /// Gracefully stop the selected generation, escalating through its owner.
+    /// No signal is sent to a persisted host PID.
+    pub fn stop(
+        &self,
+        selector: &str,
+        timeout: Duration,
+        requested_signal: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let instance = {
+            let _guard = self.lock()?;
+            self.resolve(selector)?
+        };
+        if !self.active(&instance)? {
+            return Ok(());
+        }
+        let request = Request::Stop {
+            signal: requested_signal
+                .map(signal)
+                .transpose()?
+                .unwrap_or(instance.image.stop_signal),
+        };
+        let _ = self.request(&instance, &request);
+        let deadline = Instant::now() + timeout;
+        while self.active(&instance)? {
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        {
+            // Auto-removal uses the same lock; never publish into a removed instance.
+            let _guard = self.lock()?;
+            if !self.active(&instance)? {
+                return Ok(());
+            }
+            crate::util::write_private_json(
+                &self.directory(&instance.id).join("force-stop.json"),
+                &instance.generation,
+            )?;
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.directory(&instance.id).exists() && self.active(&instance)? {
+            ensure!(
+                Instant::now() < deadline,
+                "owner did not confirm VM termination"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Ok(())
+    }
+    /// Delete a stopped container. Named volumes always survive; `volumes` also
+    /// removes its anonymous volumes. Force termination must be requested first.
+    pub fn remove(&self, selector: &str, volumes: bool) -> anyhow::Result<()> {
+        let _guard = self.lock()?;
+        let instance = self.resolve(selector)?;
+        ensure!(
+            !self.active(&instance)? && instance.state != "starting",
+            "cannot remove a running container"
+        );
+        fs::remove_dir_all(self.directory(&instance.id))?;
+        if volumes {
+            for mount in &instance.config.mounts {
+                if let Some(name) = mount
+                    .volume
+                    .as_deref()
+                    .and_then(|n| n.strip_prefix("anonymous:"))
+                    && !self
+                        .all()?
+                        .iter()
+                        .any(|other| other.config.mounts.iter().any(|m| m.source == mount.source))
+                {
+                    fs::remove_dir_all(self.root.join("volumes").join(name))?;
+                }
+            }
+        }
+        Ok(())
+    }
+    /// Open one current-generation guest control connection.
+    pub fn connect(&self, instance: &Instance) -> anyhow::Result<UnixStream> {
+        ensure!(self.active(instance)?, "container is not running");
+        let stream = UnixStream::connect(socket(instance)?)?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+        Ok(stream)
+    }
+    fn request(&self, instance: &Instance, request: &Request) -> anyhow::Result<Reply> {
+        let mut stream = self.connect(instance)?;
+        write_frame(&mut stream, request)?;
+        let reply = read_frame(&mut stream)?;
+        if let Reply::Error { message } = &reply {
+            bail!("{message}");
+        }
+        Ok(reply)
+    }
+    /// Open output before starting a container, retaining descriptors through
+    /// automatic removal. The completion receipt is outside guest-visible trees.
+    pub fn output(&self, instance: &Instance) -> anyhow::Result<Output> {
+        let open = |name| -> anyhow::Result<File> {
+            Ok(OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(self.directory(&instance.id).join(name))?)
+        };
+        Ok(Output {
+            stdout: open("stdout.log")?,
+            stderr: open("stderr.log")?,
+            directory: self.directory(&instance.id),
+            result: self
+                .root
+                .join("results")
+                .join(format!("{}.json", instance.id)),
+        })
+    }
+    /// Stream the current or previous launch's stdout/stderr. The caller owns
+    /// terminal rendering; following ends after owner teardown and a final drain.
+    pub fn logs(
+        &self,
+        selector: &str,
+        follow: bool,
+        stdout: &mut impl Write,
+        stderr: &mut impl Write,
+    ) -> anyhow::Result<i32> {
+        let instance = self.resolve(selector)?;
+        let directory = self.directory(&instance.id);
+        let mut out = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(directory.join("stdout.log"))?;
+        let mut err = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(directory.join("stderr.log"))?;
+        loop {
+            io::copy(&mut out, stdout)?;
+            io::copy(&mut err, stderr)?;
+            stdout.flush()?;
+            stderr.flush()?;
+            let active = directory.exists() && self.active(&instance)?;
+            if !follow || !active {
+                io::copy(&mut out, stdout)?;
+                io::copy(&mut err, stderr)?;
+                return Ok(self
+                    .resolve(&instance.id)
+                    .ok()
+                    .and_then(|i| i.exit_code)
+                    .unwrap_or(0));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+fn lease_file(path: &Path) -> anyhow::Result<File> {
+    Ok(OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?)
+}
+fn acquire_lease(path: &Path) -> anyhow::Result<File> {
+    let file = lease_file(path)?;
+    file.try_lock_exclusive()?;
+    Ok(file)
+}
+fn lease_active(path: &Path) -> anyhow::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let file = match lease_file(path) {
+        Ok(file) => file,
+        Err(_error) if !path.exists() => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    match file.try_lock_exclusive() {
+        Ok(()) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(true),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn normalize_reference(reference: &str) -> String {
+    if reference.contains('@')
+        || reference
+            .rsplit('/')
+            .next()
+            .is_some_and(|tail| tail.contains(':'))
+    {
+        reference.into()
+    } else {
+        format!("{reference}:latest")
+    }
+}
+
+fn image_matches(id: &str, selector: &str) -> bool {
+    let selector = selector.strip_prefix("sha256:").unwrap_or(selector);
+    selector.len() >= 4
+        && selector.bytes().all(|c| c.is_ascii_hexdigit())
+        && id.trim_start_matches("sha256:").starts_with(selector)
+}
+
+fn resolve_command(image: &Image, config: &Create) -> Vec<String> {
+    let mut argv = match &config.entrypoint {
+        Some(s) if s.is_empty() => Vec::new(),
+        Some(s) => vec![s.clone()],
+        None => image.entrypoint.clone(),
+    };
+    if !config.command.is_empty() {
+        argv.extend(config.command.clone());
+    } else if config.entrypoint.is_none() {
+        argv.extend(image.cmd.clone());
+    }
+    argv
+}
+
+fn validate_target(target: &Path) -> anyhow::Result<()> {
+    ensure!(
+        target.is_absolute()
+            && target != Path::new("/")
+            && !target
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir)),
+        "invalid mount destination"
+    );
+    for reserved in ["/proc", "/sys", "/dev", "/.pvisor-guest.json"] {
+        ensure!(
+            !target.starts_with(reserved),
+            "mount covers a guest system path"
+        );
+    }
+    Ok(())
+}
+
+fn socket_directory() -> anyhow::Result<PathBuf> {
+    let directory =
+        PathBuf::from("/tmp").join(format!("pvisor-docker-{}", unsafe { libc::geteuid() }));
+    private_directory(&directory)?;
+    Ok(directory.canonicalize()?)
+}
+
+fn socket(instance: &Instance) -> anyhow::Result<PathBuf> {
+    ensure!(
+        instance.generation.len() == 32
+            && instance.generation.bytes().all(|c| c.is_ascii_hexdigit()),
+        "invalid launch generation"
+    );
+    Ok(socket_directory()?.join(format!(
+        "{}-{}.sock",
+        &instance.id[..12],
+        &instance.generation[..8]
+    )))
+}
+
+/// Dispatch private self-exec modes before threads, Tokio, or normal CLI parsing.
+/// Normal invocations return false. Private modes validate catalog identities.
+/// A VMM mode consumes its process on normal guest exit.
+pub fn internal_if_requested() -> anyhow::Result<bool> {
+    let args: Vec<_> = std::env::args_os().collect();
+    let Some(mode) = args.get(1).and_then(|s| s.to_str()) else {
+        return Ok(false);
+    };
+    if !matches!(
+        mode,
+        "--pvisor-internal-docker-owner" | "--pvisor-internal-docker-vm"
+    ) {
+        return Ok(false);
+    }
+    ensure!(args.len() == 5, "invalid private container invocation");
+    let store = Store::open(PathBuf::from(&args[2]))?;
+    let instance = store.resolve(args[3].to_str().context("invalid ID")?)?;
+    ensure!(
+        instance.generation == args[4].to_str().context("invalid generation")?,
+        "stale container generation"
+    );
+    if mode.ends_with("-owner") {
+        owner(&store, instance)?;
+    } else {
+        run_vm(&store, instance)?;
+    }
+    Ok(true)
+}
+
+struct ChildGuard(std::process::Child);
+impl std::ops::Deref for ChildGuard {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for ChildGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn owner(store: &Store, mut instance: Instance) -> anyhow::Result<()> {
+    let directory = store.directory(&instance.id);
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(directory.join("owner.lock"))?;
+    lock.try_lock_exclusive()
+        .context("container already has an owner")?;
+    let result = (|| -> anyhow::Result<i32> {
+        let mut listeners = Vec::new();
+        for port in &mut instance.config.ports {
+            let listener = std::net::TcpListener::bind((port.address, port.host))?;
+            port.host = listener.local_addr()?.port();
+            listeners.push((listener, port.guest));
+        }
+        {
+            let _guard = store.lock()?;
+            store.save(&instance)?;
+        }
+        let stdout = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .open(directory.join("stdout.log"))?;
+        let stderr = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .open(directory.join("stderr.log"))?;
+        let child = Command::new(std::env::current_exe()?)
+            .arg("--pvisor-internal-docker-vm")
+            .arg(&store.root)
+            .arg(&instance.id)
+            .arg(&instance.generation)
+            .stdin(Stdio::piped())
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn()?;
+        let mut child = ChildGuard(child);
+        let endpoint = socket(&instance)?;
+        let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for (listener, port) in listeners {
+            let endpoint = endpoint.clone();
+            let connections = connections.clone();
+            std::thread::spawn(move || {
+                for client in listener.incoming().flatten() {
+                    use std::sync::atomic::Ordering;
+                    if connections.fetch_add(1, Ordering::AcqRel) >= 32 {
+                        connections.fetch_sub(1, Ordering::AcqRel);
+                        continue;
+                    }
+                    let endpoint = endpoint.clone();
+                    let connections = connections.clone();
+                    std::thread::spawn(move || {
+                        let _ = forward(client, &endpoint, port);
+                        connections.fetch_sub(1, Ordering::AcqRel);
+                    });
+                }
+            });
+        }
+        loop {
+            if let Some(status) = child.try_wait()? {
+                ensure!(
+                    directory
+                        .join(format!("boot-{}", instance.generation))
+                        .is_file(),
+                    "VM failed to start: {}",
+                    fs::read_to_string(directory.join("stderr.log")).unwrap_or_default()
+                );
+                return Ok(status.code().unwrap_or(128 + status.signal().unwrap_or(9)));
+            }
+            if instance.state == "starting"
+                && endpoint.exists()
+                && let Ok(Reply::Ready) = store.request(&instance, &Request::Ping {})
+            {
+                instance.state = "running".into();
+                let _guard = store.lock()?;
+                store.save(&instance)?;
+                fs::write(
+                    directory.join(format!("ready-{}", instance.generation)),
+                    b"ready",
+                )?;
+            }
+            let force = directory.join("force-stop.json");
+            if force.is_file()
+                && serde_json::from_reader::<_, String>(File::open(&force)?)
+                    .ok()
+                    .as_deref()
+                    == Some(&instance.generation)
+            {
+                child.kill()?;
+                let _ = child.wait()?;
+                return Ok(137);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    })();
+    let (code, error) = match result {
+        Ok(code) => (code, None),
+        Err(error) => {
+            writeln!(store.diagnostic(&instance)?, "{error:#}")?;
+            (125, Some(format!("{error:#}")))
+        }
+    };
+    let _guard = store.lock()?;
+    crate::util::write_private_json(
+        &store
+            .root
+            .join("results")
+            .join(format!("{}.json", instance.id)),
+        &Completion {
+            generation: instance.generation.clone(),
+            code,
+            error,
+        },
+    )?;
+    instance.state = "exited".into();
+    instance.exit_code = Some(code);
+    store.save(&instance)?;
+    let _ = fs::remove_file(socket(&instance)?);
+    let auto_remove = instance.config.auto_remove;
+    drop(_guard);
+    drop(lock);
+    if auto_remove {
+        store.remove(&instance.id, true)?;
+    }
+    // Detached owners have no frontend to reap them; the OS adopts them.
+    std::process::exit(0)
+}
+
+fn forward(mut client: std::net::TcpStream, endpoint: &Path, port: u16) -> anyhow::Result<()> {
+    let mut stream = UnixStream::connect(endpoint)?;
+    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    write_frame(&mut stream, &Request::Connect { port })?;
+    ensure!(
+        matches!(read_frame::<Reply>(&mut stream)?, Reply::Ready),
+        "guest connection refused"
+    );
+    stream.set_read_timeout(None)?;
+    let mut input = client.try_clone()?;
+    let mut writer = stream.try_clone()?;
+    let upstream = std::thread::spawn(move || -> io::Result<()> {
+        let mut bytes = [0; 16384];
+        loop {
+            let size = input.read(&mut bytes)?;
+            if size == 0 {
+                return write_frame(&mut writer, &control::StdinFrame::Eof {});
+            }
+            write_frame(
+                &mut writer,
+                &control::StdinFrame::Data {
+                    bytes: bytes[..size].to_vec(),
+                },
+            )?;
+        }
+    });
+    let result = (|| -> anyhow::Result<()> {
+        loop {
+            match read_frame::<Reply>(&mut stream)? {
+                Reply::Output { stream: 1, bytes } => client.write_all(&bytes)?,
+                Reply::Exit { .. } => return Ok(()),
+                _ => bail!("invalid guest TCP tunnel response"),
+            }
+        }
+    })();
+    let _ = client.shutdown(std::net::Shutdown::Both);
+    let _ = upstream.join();
+    result
+}
+
+fn prepare_resolver(rootfs: &Path, resolver: &Path) -> anyhow::Result<()> {
+    use pvisor_overlay_core::{backend::UnixIdentity, sys};
+    use std::ffi::OsStr;
+
+    private_directory(resolver)?;
+    private_directory(&resolver.join("etc"))?;
+    fs::write(resolver.join("etc/resolv.conf"), b"nameserver 192.0.2.1\n")?;
+    let key = OsStr::new("user.containers.override_stat");
+    // Host storage stays 0700; its guest directories retain the image's metadata.
+    // Otherwise this first lower makes guest / and /etc inaccessible after setuid.
+    for relative in ["", "etc"] {
+        let source = rootfs.join(relative);
+        let identity = match fs::symlink_metadata(&source) {
+            Ok(metadata) => {
+                ensure!(
+                    metadata.is_dir(),
+                    "resolver parent is not an image directory: {}",
+                    source.display()
+                );
+                if sys::list_xattrs(&source)?
+                    .iter()
+                    .any(|name| name == key.as_encoded_bytes())
+                {
+                    let value = sys::get_xattr(&source, key)?;
+                    UnixIdentity::parse(&value)?;
+                    value
+                } else {
+                    format!(
+                        "{}:{}:0{:o}",
+                        metadata.uid(),
+                        metadata.gid(),
+                        metadata.mode()
+                    )
+                    .into_bytes()
+                }
+            }
+            Err(error) if relative == "etc" && error.kind() == io::ErrorKind::NotFound => {
+                b"0:0:040755".to_vec()
+            }
+            Err(error) => return Err(error.into()),
+        };
+        sys::set_xattr(&resolver.join(relative), key, &identity, 0)?;
+    }
+    sys::set_xattr(&resolver.join("etc/resolv.conf"), key, b"0:0:0100644", 0)?;
+    Ok(())
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+fn run_vm(store: &Store, instance: Instance) -> anyhow::Result<()> {
+    use pvisor_vm::api::{
+        OverlayConfig, PermissionSemantics, RuntimeSupport, VmBuilder, VmConfiguration, VmPlatform,
+        VmRuntime,
+    };
+    if std::env::var_os("PVISOR_KRUN_LOG").is_some() {
+        VmPlatform::init_logging("debug");
+    }
+    let _lease = acquire_lease(&store.directory(&instance.id).join("vm.lock"))?;
+    let endpoint = socket(&instance)?;
+    let mut vm = VmBuilder::new(instance.config.cpus, instance.config.memory_mib)?;
+    if VmPlatform::embedded_kernel().is_none() {
+        vm.set_firmware_path(VmPlatform::resolve_firmware_path(None)?)?;
+    }
+    let directory = store.directory(&instance.id);
+    let mut lowers = vec![instance.image.rootfs.clone()];
+    if instance.config.network {
+        let resolver = directory.join(format!("resolver-{}", instance.generation));
+        prepare_resolver(&instance.image.rootfs, &resolver)?;
+        lowers.insert(0, resolver);
+    }
+    vm.overlay(
+        "/dev/root",
+        OverlayConfig {
+            lower_mutability: vec![pvisor_overlay_core::LayerMutability::Mutable; lowers.len()],
+            lower_dirs: lowers,
+            upper_dir: directory.join("upper"),
+            work_dir: Some(directory.join("work")),
+            preimage_dir: None,
+            apply_target: None,
+            baseline_lower: None,
+            baseline_content_index: None,
+            excluded_paths: Vec::new(),
+            access_policy: Default::default(),
+            semantics: PermissionSemantics::LinuxComplete,
+        },
+        0,
+    )?;
+    // A private pipe makes owner death terminate the VMM, without a global daemon.
+    std::thread::spawn(|| {
+        let mut byte = [0; 1];
+        let _ = std::io::Read::read(&mut io::stdin(), &mut byte);
+        unsafe {
+            libc::_exit(137);
+        }
+    });
+    let mut guest = pvisor_guest::GuestConfig {
+        argv: instance.argv,
+        env: instance.env,
+        cwd: instance.cwd,
+        stdio_ports: Some([false, true, true]),
+        process: Some(pvisor_guest::ProcessConfig {
+            user: Some(instance.user),
+            // Docker's default bounding set is a host-side compatibility policy.
+            capabilities: Some(vec![0, 1, 3, 4, 5, 6, 7, 8, 10, 13, 18, 27, 29, 31]),
+            new_session: true,
+            stdin: if instance.config.interactive {
+                pvisor_guest::StdinMode::Pipe
+            } else {
+                pvisor_guest::StdinMode::Closed
+            },
+            tty: instance.config.tty,
+            create_workdir: true,
+        }),
+        control: true,
+        ..Default::default()
+    };
+    for (index, mount) in instance.config.mounts.iter().enumerate() {
+        let tag = format!("pvisor-volume-{index}");
+        if mount.read_only {
+            vm.read_only_filesystem(&tag, &mount.source)?;
+        } else {
+            vm.filesystem(&tag, &mount.source, 0)?;
+        }
+        guest.mounts.push(pvisor_guest::Mount {
+            tag,
+            target: mount.target.clone(),
+            read_only: mount.read_only,
+            initialize: mount.volume.is_some(),
+        });
+    }
+    let _network = if instance.config.network {
+        use pvisor_overlaynet::{
+            BandwidthRegistry, EgressContext, EgressRuntime,
+            vm::{VmNetwork, VmNetworkConfig},
+        };
+        let policy = pvisor_core::network::NetworkPolicy::compile(&Default::default())?;
+        let egress = EgressRuntime::with_bandwidth_registry(
+            policy,
+            std::sync::Arc::new(pvisor_core::PolicyControlController),
+            BandwidthRegistry::default(),
+        );
+        let (network, stream) =
+            VmNetwork::start(VmNetworkConfig::new(egress, EgressContext::default()))?;
+        vm.network(stream, pvisor_overlaynet::vm::VM_MAC)?;
+        guest.network = Some(pvisor_guest::NetworkConfig {
+            address: pvisor_overlaynet::vm::GUEST_IPV4.octets(),
+            gateway: pvisor_overlaynet::vm::ROUTER_IPV4.octets(),
+        });
+        Some(network)
+    } else {
+        None
+    };
+    vm.virtual_file(
+        "/dev/root",
+        pvisor_guest::CONFIG_PATH,
+        serde_json::to_vec(&guest)?,
+        0o400,
+        true,
+    )?;
+    vm.vsock_port(control::CONTROL_PORT, endpoint, true)?;
+    vm.task_stdio(-1, 1, 2)?;
+    let ready = directory.join(format!("boot-{}", instance.generation));
+    vm.run(move |_| fs::write(ready, b"ready"))?;
+    Ok(())
+}
+
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+fn run_vm(_: &Store, _: Instance) -> anyhow::Result<()> {
+    bail!("container VMs require Apple Silicon macOS or Linux x86_64")
+}
+
+/// Shared guest protocol for CLI stream adapters.
+pub use pvisor_guest::control::{
+    Reply as GuestReply, Request as GuestRequest, StdinFrame as GuestStdin,
+    read_frame as read_guest_frame, write_frame as write_guest_frame,
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolver_preserves_guest_directory_metadata_without_exposing_host_storage() {
+        use pvisor_overlay_core::{backend::UnixIdentity, sys};
+        use std::ffi::OsStr;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let rootfs = temporary.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        fs::set_permissions(&rootfs, fs::Permissions::from_mode(0o755)).unwrap();
+        let key = OsStr::new("user.containers.override_stat");
+        for custom in [false, true] {
+            if custom {
+                fs::create_dir(rootfs.join("etc")).unwrap();
+                sys::set_xattr(&rootfs, key, b"123:456:040750", 0).unwrap();
+                sys::set_xattr(&rootfs.join("etc"), key, b"234:567:040710", 0).unwrap();
+            }
+            let resolver = temporary.path().join(format!("resolver-{custom}"));
+            prepare_resolver(&rootfs, &resolver).unwrap();
+            let root = UnixIdentity::parse(&sys::get_xattr(&resolver, key).unwrap()).unwrap();
+            let etc =
+                UnixIdentity::parse(&sys::get_xattr(&resolver.join("etc"), key).unwrap()).unwrap();
+            if custom {
+                assert_eq!((root.uid, root.gid, root.mode), (123, 456, 0o40750));
+                assert_eq!((etc.uid, etc.gid, etc.mode), (234, 567, 0o40710));
+            } else {
+                let native = fs::symlink_metadata(&rootfs).unwrap();
+                assert_eq!(
+                    (root.uid, root.gid, root.mode),
+                    (native.uid(), native.gid(), native.mode())
+                );
+                assert_eq!((etc.uid, etc.gid, etc.mode), (0, 0, 0o40755));
+            }
+            for path in [&resolver, &resolver.join("etc")] {
+                assert_eq!(fs::symlink_metadata(path).unwrap().mode() & 0o777, 0o700);
+            }
+            assert_eq!(
+                fs::read(resolver.join("etc/resolv.conf")).unwrap(),
+                b"nameserver 192.0.2.1\n"
+            );
+            let file = UnixIdentity::parse(
+                &sys::get_xattr(&resolver.join("etc/resolv.conf"), key).unwrap(),
+            )
+            .unwrap();
+            assert_eq!((file.uid, file.gid, file.mode), (0, 0, 0o100644));
+        }
+    }
+
+    fn fixture() -> (tempfile::TempDir, Store, Image) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("docker")).unwrap();
+        let rootfs = directory.path().join("rootfs");
+        fs::create_dir(&rootfs).unwrap();
+        let image = Image {
+            reference: "fixture:latest".into(),
+            id: format!("sha256:{}", "1".repeat(64)),
+            digest: format!("sha256:{}", "2".repeat(64)),
+            platform: native_platform(),
+            rootfs,
+            env: BTreeMap::from([("IMAGE_ENV".into(), "image".into())]),
+            entrypoint: vec!["/entry".into()],
+            cmd: vec!["default".into()],
+            cwd: "/work".into(),
+            user: "1000:1000".into(),
+            stop_signal: 15,
+            volumes: Vec::new(),
+            created_ms: 1,
+        };
+        store.save_catalog(std::slice::from_ref(&image)).unwrap();
+        (directory, store, image)
+    }
+    fn request() -> Create {
+        Create {
+            name: Some("test".into()),
+            image: "fixture:latest".into(),
+            platform: None,
+            command: Vec::new(),
+            entrypoint: None,
+            env: BTreeMap::new(),
+            unset_env: Vec::new(),
+            cwd: None,
+            user: None,
+            mounts: Vec::new(),
+            ports: Vec::new(),
+            cpus: 1,
+            memory_mib: 128,
+            auto_remove: false,
+            interactive: false,
+            tty: None,
+            network: false,
+        }
+    }
+    #[test]
+    fn docker_platform_selection_and_legacy_records_preserve_native_defaults() {
+        assert_eq!(canonical_platform("linux/arm64/v8").unwrap(), "linux/arm64");
+        let (_temporary, store, image) = fixture();
+        let mut legacy = serde_json::to_value(&image).unwrap();
+        legacy.as_object_mut().unwrap().remove("platform");
+        let restored: Image = serde_json::from_value(legacy).unwrap();
+        assert_eq!(restored.platform, native_platform());
+        for invalid in [
+            "",
+            "amd64",
+            "windows/amd64",
+            "linux/arm/v7",
+            "linux/arm64/v9",
+        ] {
+            let error = store
+                .pull_for_platform_with_progress("unused", invalid, &mut |_| {
+                    panic!("invalid platform reached image preparation")
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains("unsupported platform"));
+        }
+        assert_eq!(store.images().unwrap()[0].id, image.id);
+        let mut config = request();
+        config.platform = Some(native_platform());
+        assert_eq!(
+            store.create(config).unwrap().image.platform,
+            native_platform()
+        );
+    }
+    #[test]
+    fn docker_foreign_platforms_fail_before_pull_creation_or_start() {
+        let (_temporary, store, mut image) = fixture();
+        let foreign = if native_platform() == "linux/arm64" {
+            "linux/amd64"
+        } else {
+            "linux/arm64"
+        };
+        let mut config = request();
+        config.image = "missing-image".into();
+        config.platform = Some(foreign.into());
+        let error = store
+            .create_with_progress(config, &mut |_| panic!("foreign run tried to pull"))
+            .unwrap_err();
+        assert!(error.to_string().contains("cross-architecture emulation"));
+        assert!(store.instances(true).unwrap().is_empty());
+
+        image.platform = foreign.into();
+        store.save_catalog(&[image.clone()]).unwrap();
+        assert!(
+            store
+                .create(request())
+                .unwrap_err()
+                .to_string()
+                .contains(foreign)
+        );
+        assert!(store.instances(true).unwrap().is_empty());
+
+        image.platform = native_platform();
+        store.save_catalog(&[image]).unwrap();
+        let mut instance = store.create(request()).unwrap();
+        instance.image.platform = foreign.into();
+        store.save(&instance).unwrap();
+        let error = store.start(&instance.id).unwrap_err();
+        assert!(error.to_string().contains("cross-architecture emulation"));
+        let unchanged = store.resolve(&instance.id).unwrap();
+        assert_eq!(unchanged.generation, instance.generation);
+        assert_eq!(unchanged.state, instance.state);
+    }
+    #[test]
+    fn docker_tty_defaults_preserve_image_explicit_and_unset_environment() {
+        for (tty, base, explicit, unset, expected) in [
+            (true, None, None, false, Some("xterm")),
+            (true, Some("image-term"), None, false, Some("image-term")),
+            (true, Some("image-term"), Some(""), false, Some("")),
+            (true, Some("image-term"), None, true, None),
+            (false, None, None, false, None),
+        ] {
+            let (_temporary, store, mut image) = fixture();
+            if let Some(value) = base {
+                image.env.insert("TERM".into(), value.into());
+                store.save_catalog(&[image]).unwrap();
+            }
+            let mut config = request();
+            config.tty = tty.then_some([24, 80]);
+            if let Some(value) = explicit {
+                config.env.insert("TERM".into(), value.into());
+            }
+            if unset {
+                config.unset_env.push("TERM".into());
+            }
+            assert_eq!(
+                store
+                    .create(config)
+                    .unwrap()
+                    .env
+                    .get("TERM")
+                    .map(String::as_str),
+                expected
+            );
+        }
+    }
+    #[test]
+    fn docker_creation_pins_defaults_and_command_overrides() {
+        let (_temporary, store, image) = fixture();
+        let instance = store.create(request()).unwrap();
+        assert_eq!(instance.argv, ["/entry", "default"]);
+        assert_eq!(instance.cwd, Path::new("/work"));
+        assert_eq!(instance.user, "1000:1000");
+        assert_eq!(instance.image.id, image.id);
+        assert!(store.instances(false).unwrap().is_empty());
+        assert_eq!(store.resolve(&instance.id[..12]).unwrap().id, instance.id);
+        assert!(store.create(request()).is_err());
+        let mut config = request();
+        config.name = Some("override".into());
+        config.command = vec!["argument".into()];
+        assert_eq!(
+            store.create(config.clone()).unwrap().argv,
+            ["/entry", "argument"]
+        );
+        config.name = Some("entrypoint".into());
+        config.entrypoint = Some("/other".into());
+        config.command.clear();
+        assert_eq!(store.create(config).unwrap().argv, ["/other"]);
+        let mut config = request();
+        config.name = Some("unset".into());
+        config.unset_env = vec!["IMAGE_ENV".into()];
+        assert!(!store.create(config).unwrap().env.contains_key("IMAGE_ENV"));
+    }
+    #[test]
+    fn docker_start_joins_starting_generation_and_reports_its_failure() {
+        let (_temporary, store, _) = fixture();
+        let mut instance = store.create(request()).unwrap();
+        instance.state = "starting".into();
+        instance.started_ms = crate::unix_now_ms();
+        store.save(&instance).unwrap();
+        crate::util::write_private_json(
+            &store
+                .root
+                .join("results")
+                .join(format!("{}.json", instance.id)),
+            &Completion {
+                generation: instance.generation.clone(),
+                code: 125,
+                error: Some("original launch failed".into()),
+            },
+        )
+        .unwrap();
+        let error = store.start(&instance.id).unwrap_err();
+        assert!(error.to_string().contains("original launch failed"));
+        assert_eq!(
+            store.resolve(&instance.id).unwrap().generation,
+            instance.generation
+        );
+    }
+    #[test]
+    fn docker_remove_refuses_live_owners_and_retains_named_volumes() {
+        let (_temporary, store, _) = fixture();
+        let mut config = request();
+        let named = store.volume("data").unwrap();
+        fs::write(named.join("keep"), b"database").unwrap();
+        config.mounts.push(Mount {
+            source: named.clone(),
+            target: "/data".into(),
+            read_only: false,
+            volume: Some("data".into()),
+        });
+        let instance = store.create(config).unwrap();
+        let vm = acquire_lease(&store.directory(&instance.id).join("vm.lock")).unwrap();
+        assert!(store.remove("test", true).is_err());
+        drop(vm);
+        assert!(store.rmi("fixture:latest", false).is_err());
+        store.remove("test", true).unwrap();
+        assert_eq!(fs::read(named.join("keep")).unwrap(), b"database");
+        store.rmi("fixture:latest", false).unwrap();
+        assert!(store.images().unwrap().is_empty());
+    }
+    #[test]
+    fn docker_stale_generation_cannot_consume_an_old_completion() {
+        let (_temporary, store, _) = fixture();
+        let instance = store.create(request()).unwrap();
+        let mut output = store.output(&instance).unwrap();
+        fs::write(
+            store.directory(&instance.id).join("stdout.log"),
+            b"last output",
+        )
+        .unwrap();
+        crate::util::write_private_json(
+            &output.result,
+            &Completion {
+                generation: "old".into(),
+                code: 0,
+                error: None,
+            },
+        )
+        .unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        // Missing owners terminate the wait, but never reuse an old success.
+        assert_eq!(output.follow("new", &mut stdout, &mut stderr).unwrap(), 137);
+        assert_eq!(stdout, b"last output");
+        output = store.output(&instance).unwrap();
+        crate::util::write_private_json(
+            &output.result,
+            &Completion {
+                generation: "new".into(),
+                code: 7,
+                error: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            output
+                .follow("new", &mut Vec::new(), &mut Vec::new())
+                .unwrap(),
+            7
+        );
+    }
+    #[test]
+    fn docker_storage_and_mounts_reject_authority_aliases() {
+        let (temporary, store, _) = fixture();
+        let alias = temporary.path().join("alias");
+        std::os::unix::fs::symlink(&store.root, &alias).unwrap();
+        assert!(Store::open(alias).is_err());
+        let mut config = request();
+        config.mounts.push(Mount {
+            source: store.root.clone(),
+            target: "/host".into(),
+            read_only: false,
+            volume: None,
+        });
+        assert!(store.create(config).is_err());
+        let mut config = request();
+        config.cwd = Some("relative".into());
+        assert!(store.create(config).is_err());
+        let mut config = request();
+        config.name = Some("../escape".into());
+        assert!(store.create(config).is_err());
+        assert!(validate_target(Path::new("/proc/other")).is_err());
+        let mut instance = store.create(request()).unwrap();
+        instance.generation = uuid();
+        assert!(
+            socket(&instance)
+                .unwrap()
+                .as_os_str()
+                .as_encoded_bytes()
+                .len()
+                < 100
+        );
+    }
+}

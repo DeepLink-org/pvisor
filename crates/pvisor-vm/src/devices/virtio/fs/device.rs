@@ -83,18 +83,12 @@ impl Fs {
         let queue_config =
             vec![QueueConfig::new(defs::QUEUE_SIZE); config.num_request_queues as usize + 1];
 
-        let attr_timeout = if matches!(semantics, PermissionSemantics::LinuxSimplified) {
-            // As uid/gid are context-dependent, attributes can't be cached.
-            Duration::from_secs(0)
-        } else {
-            // The value defined as default in virtio-fs.
-            Duration::from_secs(5)
-        };
-
         let fs_cfg = shared_dir.map(|root_dir| passthrough::Config {
             root_dir,
             semantics,
-            attr_timeout,
+            // Another mount or VM can change the backing inode between opens.
+            attr_timeout: Duration::ZERO,
+            entry_timeout: Duration::ZERO,
             ..Default::default()
         });
 
@@ -362,6 +356,31 @@ impl VirtioDevice for Fs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passthrough_mounts_revalidate_metadata_without_disabling_mmap() {
+        for read_only in [false, true] {
+            for semantics in [
+                PermissionSemantics::LinuxComplete,
+                PermissionSemantics::LinuxSimplified,
+            ] {
+                let fs = Fs::new(
+                    "shared".into(),
+                    semantics,
+                    Some("/shared".into()),
+                    Arc::new(AtomicI32::new(0)),
+                    read_only,
+                    vec![],
+                    None,
+                )
+                .unwrap();
+                let cfg = fs.passthrough_cfg.unwrap();
+                assert_eq!(cfg.attr_timeout, Duration::ZERO);
+                assert_eq!(cfg.entry_timeout, Duration::ZERO);
+                assert_eq!(cfg.cache_policy, passthrough::CachePolicy::Auto);
+            }
+        }
+    }
 
     #[test]
     fn request_queue_configuration_preserves_hiprio_and_rejects_invalid_counts() {
