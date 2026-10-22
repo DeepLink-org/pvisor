@@ -130,10 +130,13 @@ pub trait VmConfiguration: Sized {
     fn embedded_kernel(&mut self, bytes: &[u8], guest_addr: u64, entry_addr: u64)
     -> io::Result<()>;
     /// Opt in to the versioned guest idle handoff. Requires a fresh Linux/KVM
-    /// x86-64 VM with one vCPU and matching patched firmware. Other targets,
+    /// x86-64 VM with one or two vCPUs and matching patched firmware. Other targets,
     /// snapshots and unguarded devices are rejected. Optional RAM offload uses
     /// `GuestIdleControl::offload_guest_idle` after conditional pause. Disabled by
     /// default; configuration alone does not authorize a pause or offload.
+    /// Two vCPUs require ABI v3: every CPU parks and
+    /// revalidates interrupts after the rendezvous; the earliest timer wins.
+    /// Normal PSI and TX-watchdog behavior is retained on two CPUs.
     /// The maintained firmware also enables conservative single-CPU system PSI
     /// idle quiescence: no restart solely for idle sleep without pending pressure
     /// or registered triggers. Accounting, real timers and external wakes remain.
@@ -830,7 +833,7 @@ pub trait RamFileMapping: Sized {
     ) -> io::Result<(Self, File)>;
 }
 
-/// Versioned single-vCPU idle lease state, copied without acquiring VMM/device locks.
+/// Versioned whole-VM idle lease state, copied without acquiring VMM/device locks.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuestIdleStatus {
@@ -846,7 +849,7 @@ pub struct GuestIdleStatus {
     pub sequence: u64,
     /// Whether guest handoff was explicitly configured at boot.
     pub enabled: bool,
-    /// Whether the matching guest has completed a synchronous idle offer.
+    /// Whether all configured CPUs have completed the current idle handoff.
     pub offered: bool,
     /// Whether an atomic conditional pause has claimed the offer.
     pub claimed: bool,
@@ -866,14 +869,16 @@ pub struct GuestIdleStatus {
     /// A skip keeps the claimed pause and its original wake deadline intact.
     pub offload_deadline_skips: u64,
 }
-/// Host ownership of a guest idle handoff. Linux/KVM x86-64, single vCPU.
+/// Host ownership of a guest idle handoff. Linux/KVM x86-64, one or two vCPUs.
 /// No callbacks call lifecycle controls. All notifications are latched independently
 /// of guest RAM. Poll/wait is bounded; cancellation retires a lease but never
 /// overrides an explicit pause. Unsupported calls return errors without effects.
 pub trait GuestIdleControl {
     /// Arm acquisition for >2 ms and at most one second; a new arm requires
-    /// retirement of the previous lease. A successful ABI-v2 offer replaces
-    /// this timeout with the guest timer (or explicit no timer). Returns its
+    /// retirement of the previous lease. An accepted offer replaces this timeout
+    /// with the earliest guest timer (or explicit no timer). Dual-vCPU standby
+    /// witnesses survive arm but both CPUs must revalidate pending interrupts;
+    /// standby alone never grants pause permission. Returns its
     /// epoch. Does not pause the VM. The owner must independently detect
     /// controller failure and service external wake notifications.
     fn arm_guest_idle(&self, maximum: Duration) -> Result<u64, String>;
@@ -897,6 +902,9 @@ pub trait GuestIdleControl {
     /// resume even if a wake raced the pause. Transition errors require termination.
     fn pause_guest_idle(&self, epoch: u64) -> Result<bool, String>;
     /// Optionally offload writable shared file-backed RAM after conditional pause.
+    /// Two-vCPU reclaim requires both validated idle witnesses and uses their
+    /// earliest timer deadline. Any wake before admission skips reclaim; a wake
+    /// after admission stays latched until reclaim and serialized resume finish.
     /// Requires the matching claimed lease, more than the configured minimum
     /// timer budget remaining (or explicit no timer), no previous
     /// offload admission in that lease and an immediately idle device RAM gate.

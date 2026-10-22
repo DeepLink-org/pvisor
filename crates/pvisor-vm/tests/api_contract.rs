@@ -305,8 +305,8 @@ fn invalid_overlay_path_does_not_poison_the_builder() {
 }
 
 #[test]
-fn guest_idle_handoff_is_single_cpu_and_excludes_snapshot_profile() {
-    assert!(VmBuilder::new(2, 128)
+fn guest_idle_handoff_accepts_at_most_two_cpus_and_excludes_snapshot_profile() {
+    assert!(VmBuilder::new(3, 128)
         .unwrap()
         .guest_idle_handoff()
         .is_err());
@@ -323,6 +323,10 @@ fn guest_idle_handoff_is_single_cpu_and_excludes_snapshot_profile() {
             feature = "aws-nitro"
         ))
     )) {
+        VmBuilder::new(2, 128)
+            .unwrap()
+            .guest_idle_handoff()
+            .unwrap();
         vm.guest_idle_handoff().unwrap();
         assert!(vm.snapshot_profile().is_err());
         let mut vm = VmBuilder::new(1, 128).unwrap();
@@ -362,7 +366,11 @@ fn idle_host_policy_validates_budget_and_platform_without_starting_vm() {
     let result = vm.guest_idle_handoff_with_policy(true, Duration::from_secs(1));
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         result.unwrap();
-        let mut smp = VmBuilder::new(2, 128).unwrap();
+        VmBuilder::new(2, 128)
+            .unwrap()
+            .guest_idle_handoff_with_policy(true, Duration::from_secs(1))
+            .unwrap();
+        let mut smp = VmBuilder::new(3, 128).unwrap();
         assert!(smp
             .guest_idle_handoff_with_policy(true, Duration::from_secs(1))
             .is_err());

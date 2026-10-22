@@ -34,6 +34,11 @@ import hashlib, json, os, socket, sys, threading, time, urllib.request
 compaction_proactiveness=int(open("/proc/sys/vm/compaction_proactiveness").read())
 print("guest-boot-policy "+json.dumps(dict(compaction_proactiveness=compaction_proactiveness,cmdline=open("/proc/cmdline").read().strip(),possible_cpus=open("/sys/devices/system/cpu/possible").read().strip())),flush=True)
 scenario, seconds, host, port = sys.argv[1], float(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+cpus=int(sys.argv[5])
+assert os.sched_getaffinity(0)==set(range(cpus))
+if cpus==2:
+    assert os.path.exists('/proc/pressure/cpu')
+    os.sched_setaffinity(0,{0})
 stream = scenario in ('stream','race')
 base=os.environ['OPENAI_BASE_URL'].rstrip('/')
 opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -51,6 +56,7 @@ timer_gaps=[]; timer_spans=[]; network_events=[]
 def send(value):
     with lock: sock.sendall((json.dumps(value)+'\n').encode())
 def network():
+    if cpus==2: os.sched_setaffinity(0,{1})
     for line in reader:
         value=line.decode().strip()
         if value=='T': timer_start.set()
@@ -59,7 +65,17 @@ def network():
             send(dict(kind='network_ack',seq=seq))
         elif value=='Q': break
 worker=threading.Thread(target=network,daemon=True); worker.start()
+busy_worker=None
+if scenario=='busy':
+    assert cpus==2
+    busy_ready=threading.Event()
+    def keep_busy():
+        os.sched_setaffinity(0,{1});busy_ready.set()
+        while not stop.is_set(): hashlib.sha256(memory).digest()
+    busy_worker=threading.Thread(target=keep_busy);busy_worker.start()
+    assert busy_ready.wait(5)
 def timer():
+    if cpus==2: os.sched_setaffinity(0,{1})
     timer_start.wait()
     period=.001 if scenario=='short' else .25
     while not stop.is_set():
@@ -194,9 +210,14 @@ else:
 response_finished=time.monotonic()
 response_ms=(response_finished-started)*1000
 stop.set()
+if busy_worker:
+    busy_worker.join(5);assert not busy_worker.is_alive()
 if timer_worker:
     timer_worker.join(timeout=2); assert not timer_worker.is_alive()
     timer_gaps=[(b-a)*1000 for a,b in timer_spans if b<=response_finished]
+    assert timer_gaps, 'timer made no progress before response'
+    timer_limit=(30 if cpus==1 else 100) if scenario=='short' else 350
+    if scenario!='sched': assert max(timer_gaps)<timer_limit, max(timer_gaps)
 if scheduler_child:
     child_output=scheduler_child.communicate(timeout=8)[0]
     assert scheduler_child.returncode==0, scheduler_child.returncode
@@ -227,8 +248,21 @@ if scenario=='psi-stats':
             assert stats_after[resource][state]['total']>=stats_before[resource][state]['total']
     assert stats_after['cpu']['some']['avg10']<stats_before['cpu']['some']['avg10'], (stats_before,stats_after)
     print('psi-statistics '+json.dumps(dict(before=stats_before,after=stats_after,elapsed_s=time.monotonic()-stats_started)),flush=True)
-restore_start=time.monotonic(); assert hashlib.sha256(memory).hexdigest()==expected
+cpu_scans=[]
+def scan(cpu):
+    os.sched_setaffinity(0,{cpu})
+    before=time.monotonic()
+    digest=hashlib.sha256(memory).hexdigest()
+    cpu_scans.append(dict(cpu=cpu,ms=(time.monotonic()-before)*1000,sha256=digest))
+restore_start=time.monotonic()
+if cpus==2:
+    peer=threading.Thread(target=scan,args=(1,)); peer.start()
+    scan(0);peer.join(10);assert not peer.is_alive()
+    assert len(cpu_scans)==2 and all(x['sha256']==expected for x in cpu_scans)
+else:
+    assert hashlib.sha256(memory).hexdigest()==expected
 scan_ms=(time.monotonic()-restore_start)*1000
+print('per-cpu-scan '+json.dumps(cpu_scans),flush=True)
 send(dict(kind='guest_done',seq=0))
 print(json.dumps(dict(scenario=scenario,kernel=os.uname().release,request_count=int(scenario not in ('download','tunnel','image')),stream=stream,response_ms=response_ms,stream_chunks=len(received),stream_sha256=hashlib.sha256(raw).hexdigest(),payload_bytes=len(raw),timer_gaps_ms=timer_gaps,network_events=network_events,memory_bytes=size,memory_sha256=expected,post_response_scan_ms=scan_ms)),flush=True)
 print('reasoning-rounds-guest-ok',flush=True)
@@ -255,11 +289,35 @@ print('reasoning-rounds-guest-ok',flush=True)
         trace: Trace,
         network: mpsc::Sender<String>,
         paused: watch::Receiver<usize>,
+        reclaim_requested: watch::Receiver<usize>,
     }
     async fn model(State(f): State<Fixture>, Json(body): Json<Value>) -> Response {
         f.trace.record("model_request", 0);
         let _ = f.network.send("T\n".into()).await;
-        let wake = if matches!(f.scenario.as_str(), "network" | "race") {
+        let wake = if f.scenario == "offload-race" {
+            let mut w = f.clone();
+            Some(tokio::spawn(async move {
+                for seq in 0..6 {
+                    let prior = *w.reclaim_requested.borrow_and_update();
+                    let observed =
+                        tokio::time::timeout(Duration::from_secs_f64(w.seconds), async {
+                            while *w.reclaim_requested.borrow_and_update() <= prior {
+                                w.reclaim_requested.changed().await?;
+                            }
+                            Ok::<_, anyhow::Error>(())
+                        })
+                        .await;
+                    if !matches!(observed, Ok(Ok(()))) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis([10, 0, 40][seq % 3])).await;
+                    w.trace.record("network_send", seq);
+                    if w.network.send(format!("W {seq}\n")).await.is_err() {
+                        break;
+                    }
+                }
+            }))
+        } else if matches!(f.scenario.as_str(), "network" | "race") {
             let mut w = f.clone();
             Some(tokio::spawn(async move {
                 for seq in 0..(w.seconds / 1.7) as usize {
@@ -343,6 +401,10 @@ print('reasoning-rounds-guest-ok',flush=True)
     }
 
     pub async fn run() -> anyhow::Result<()> {
+        let cpus: u16 = std::env::var("PVISOR_PROBE_CPUS")
+            .unwrap_or_else(|_| "1".into())
+            .parse()?;
+        ensure!((1..=2).contains(&cpus), "probe supports one or two CPUs");
         let scenario = std::env::args().nth(1).context("scenario required")?;
         let policy = std::env::args()
             .nth(2)
@@ -362,7 +424,9 @@ print('reasoning-rounds-guest-ok',flush=True)
                 "sched",
                 "psi",
                 "psi-late",
-                "psi-stats"
+                "psi-stats",
+                "offload-race",
+                "busy"
             ]
             .contains(&scenario.as_str()),
             "unknown scenario"
@@ -372,6 +436,14 @@ print('reasoning-rounds-guest-ok',flush=True)
             "unknown policy"
         );
         ensure!((3.0..=180.0).contains(&seconds), "seconds 3..180");
+        ensure!(
+            scenario != "busy" || cpus == 2,
+            "busy probe requires two CPUs"
+        );
+        ensure!(
+            scenario != "offload-race" || policy == "offload",
+            "offload-race requires offload policy"
+        );
         let root = PathBuf::from(std::env::var_os("CASE_ROOT").context("CASE_ROOT required")?);
         std::fs::create_dir_all(&root)?;
         let root = root.canonicalize()?;
@@ -412,6 +484,7 @@ print('reasoning-rounds-guest-ok',flush=True)
         let model_listener = tokio::net::TcpListener::bind((host.as_str(), 0)).await?;
         let model_port = model_listener.local_addr()?.port();
         let (paused, paused_rx) = watch::channel(0);
+        let (reclaim_requested, reclaim_rx) = watch::channel(0);
         let stream_initial_delay_ms: u64 =
             std::env::var("PVISOR_PROBE_STREAM_INITIAL_DELAY_MS").map_or(Ok(0), |v| v.parse())?;
         ensure!(
@@ -425,6 +498,7 @@ print('reasoning-rounds-guest-ok',flush=True)
             trace: trace.clone(),
             network: network_tx,
             paused: paused_rx,
+            reclaim_requested: reclaim_rx,
         };
         let model_task = tokio::spawn(async move {
             axum::serve(
@@ -480,7 +554,7 @@ api_key="local-fixture"
                     .into(),
             ),
             library_dir: std::env::var_os("PVISOR_CASE_VM_LIBRARY_DIR").map(Into::into),
-            cpus: 1,
+            cpus,
             memory_mib: 512,
             ram_backing: Some(
                 std::env::var_os("PVISOR_PROBE_RAM_BACKING")
@@ -555,6 +629,7 @@ api_key="local-fixture"
             std::env::var("PVISOR_CASE_VM_PYTHON").unwrap_or("/opt/miniconda3/bin/python".into()),
         );
         spec.runtime.timeout_ms = Some((seconds * 1000.0) as u64 + 90_000);
+        spec.runtime.max_output_bytes = 16 * 1024 * 1024;
         let RunInvocation::Process(p) = &mut spec.invocation;
         p.args = vec![
             "-B".into(),
@@ -565,6 +640,7 @@ api_key="local-fixture"
             seconds.to_string(),
             host.clone(),
             port.to_string(),
+            cpus.to_string(),
         ];
         p.env.insert(
             "PVISOR_PROBE_DOWNLOAD_URL".into(),
@@ -582,20 +658,45 @@ api_key="local-fixture"
         let handle = runtime.run(spec).await?;
         let monitor_sink = sink.clone();
         let monitor = tokio::spawn(async move {
+            let (mut cursor, mut pause_count, mut reclaim_count) = (0, 0, 0);
+            let mut reclaim_candidate = false;
             loop {
-                let count = monitor_sink
-                    .events()
-                    .iter()
-                    .filter(|e| {
-                        e.name() == "vm.control_completed"
-                            && e.observation_payload().is_some_and(|v| {
-                                v["value"]["vm"]["state"] == "paused"
-                                    && v["operation"]["kind"]["op"] == "run.pause"
-                            })
-                    })
-                    .count();
-                if count > *paused.borrow() {
-                    paused.send_replace(count);
+                let events = monitor_sink.events();
+                for event in events.iter().skip(cursor) {
+                    let Some(value) = event.observation_payload() else {
+                        continue;
+                    };
+                    match event.name() {
+                        "vm.guest_idle" => {
+                            // Observation selects the race injection window only.
+                            // Native admission still independently validates the lease.
+                            reclaim_candidate = value["claimed"] == true
+                                && value["offered"] == true
+                                && value["remaining_ns"]
+                                    .as_u64()
+                                    .is_some_and(|ns| ns > minimum_ms * 1_000_000);
+                        }
+                        "vm.control_completed"
+                            if value["value"]["vm"]["state"] == "paused"
+                                && value["operation"]["kind"]["op"] == "run.pause" =>
+                        {
+                            pause_count += 1
+                        }
+                        "vm.control_requested"
+                            if reclaim_candidate
+                                && value["operation"]["kind"]["op"] == "run.offload" =>
+                        {
+                            reclaim_count += 1
+                        }
+                        _ => {}
+                    }
+                }
+                cursor = events.len();
+                if pause_count > *paused.borrow() {
+                    paused.send_replace(pause_count);
+                }
+                if reclaim_count > *reclaim_requested.borrow() {
+                    reclaim_requested.send_replace(reclaim_count);
                 }
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
@@ -656,13 +757,33 @@ api_key="local-fixture"
             .find_map(|l| l.strip_prefix("guest-boot-policy "))
             .context("missing guest boot policy")?;
         let boot_policy: Value = serde_json::from_str(boot_policy)?;
+        if cpus == 2 {
+            let cmdline = boot_policy["cmdline"]
+                .as_str()
+                .context("missing boot command line")?;
+            ensure!(
+                boot_policy["possible_cpus"] == "0-1",
+                "unexpected CPU topology"
+            );
+            ensure!(
+                ![
+                    "psi=0",
+                    "psi_idle_quiesce=1",
+                    "psi_idle_defer=1",
+                    "pvisor_watchdog_defer=1"
+                ]
+                .iter()
+                .any(|flag| cmdline.contains(flag)),
+                "dual-CPU probe must retain normal PSI and watchdog behavior"
+            );
+        }
         if disable_compaction {
             ensure!(
                 boot_policy["compaction_proactiveness"] == 0,
                 "Host compaction policy not applied"
             );
         }
-        let report = json!({"scenario":scenario,"policy":policy,"seconds":seconds,"pauses":pauses,"resumes":resumes,"offloads":offloads,"deadline_skips":deadline_skips,"disable_proactive_compaction":disable_compaction,"offload_minimum_ms":minimum_ms,"guest_boot_policy":boot_policy,"buffer_bytes":65536,"buffer_wait_ms":buffer_wait_ms,"stream_initial_delay_ms":stream_initial_delay_ms,"recheck_ms":100,"offload_cooldown_ms":5000});
+        let report = json!({"cpus":cpus,"scenario":scenario,"policy":policy,"seconds":seconds,"pauses":pauses,"resumes":resumes,"offloads":offloads,"deadline_skips":deadline_skips,"disable_proactive_compaction":disable_compaction,"offload_minimum_ms":minimum_ms,"guest_boot_policy":boot_policy,"buffer_bytes":65536,"buffer_wait_ms":buffer_wait_ms,"stream_initial_delay_ms":stream_initial_delay_ms,"recheck_ms":100,"offload_cooldown_ms":5000});
         std::fs::write(
             root.join("summary.json"),
             serde_json::to_vec_pretty(&report)?,
@@ -691,7 +812,7 @@ api_key="local-fixture"
                 "guest completion disagrees with Gateway cancellation"
             );
         }
-        if matches!(scenario.as_str(), "network" | "race") {
+        if matches!(scenario.as_str(), "network" | "race" | "offload-race") {
             let delivery = trace.rows.lock().unwrap();
             let sent: Vec<_> = delivery
                 .iter()
@@ -708,10 +829,16 @@ api_key="local-fixture"
                 "network delivery incomplete: {sent:?} vs {acked:?}"
             );
         }
-        if policy != "baseline" && scenario != "short" {
+        if scenario == "busy" {
+            ensure!(
+                pauses == 0 && offloads == 0,
+                "busy CPU must prevent pause and reclaim"
+            );
+        }
+        if policy != "baseline" && !matches!(scenario.as_str(), "short" | "busy") {
             ensure!(pauses >= 1, "idle path not exercised");
         }
-        if policy == "offload" && scenario != "short" {
+        if policy == "offload" && !matches!(scenario.as_str(), "short" | "busy") {
             ensure!(
                 offloads > 0 || deadline_skips > 0,
                 "no offload or deadline admission decision"

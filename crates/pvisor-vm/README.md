@@ -1161,16 +1161,17 @@ release 制品与正式配对批次，不由并发单测推导收益。
 并发调度使用 pVisor 内部实现，不复制上游代码；不提供 vhost-user 或
 上游的工作目录切换。只读 DAX 使用上文的独立权限、缓存和冻结契约。
 
-## Single-vCPU guest idle handoff and optional offload (experimental)
+## Guest idle handoff and conditional offload (experimental)
 
 `VmConfiguration::guest_idle_handoff` opts a fresh Linux/KVM x86-64 VM into the
-matching firmware's `pvisor_idle=1` protocol. It rejects SMP, snapshot profiles
-and optional unaudited device features. `GuestIdleControl` arms one bounded
+matching firmware's `pvisor_idle=1` protocol. It accepts one or two vCPUs and
+rejects larger topologies, snapshot profiles and optional unaudited device features. `GuestIdleControl` arms one bounded
 acquisition attempt, reads/waits for copied `GuestIdleStatus`, conditionally pauses by epoch,
 and retires that epoch. Arming alone never authorizes pause. A missing guest
 patch simply supplies no idle offer. Optional `offload_guest_idle(epoch)` reuses
 native writeback/reclaim after conditional pause; unconditional `offload_ram()`
-is still rejected in this profile. This revision requires matching ABI-v2 firmware.
+is still rejected in this profile. The single-CPU path below requires ABI-v2
+firmware; the dual-CPU extension uses ABI v3 as described below.
 
 The guest's synchronous PIO probe/offer uses port `0x5050`, ABI magic
 `0x50564902` and a 32-bit millisecond delta rounded down. `U32_MAX` explicitly
@@ -1207,7 +1208,8 @@ A controller must independently service `wait_guest_idle`, wake on expiration or
 external activity, and resume its claimed pause. Waiting is bounded to 100 ms and
 shortens to the armed deadline. The pvisor runner uses a separate notification
 socket/thread for this; its control socket remains the only transition path.
-This is a cooperative, single-vCPU protocol, not a security proof about arbitrary
+This is a cooperative protocol (ABI v2 single CPU; ABI v3 two CPUs as below),
+not a security proof about arbitrary
 kernels or a hard real-time timer guarantee. An accepted no-timer handoff remains
 valid until revocation. A revoked epoch is never renewed. The native runner
 exchanges independent 500 ms heartbeats; three seconds of controller silence,
@@ -1314,3 +1316,47 @@ with a fresh timeout. All RX, TX completion, TCP, application and other device
 wakes retain their paths. Other devices/unknown states keep their watchdogs.
 This is conditional guest maintenance scheduling controlled by Host policy,
 not Host execution of the guest network stack. See [firmware contracts and tests](../../fw/README.md#conditional-watchdog-deferral-at-idle-handoff).
+
+### Fixed dual-vCPU idle and offload profile
+
+The idle builder accepts one or two vCPUs on Linux x86-64/KVM. Two CPUs negotiate
+ABI v3; old firmware never authorizes a dual-CPU offer. The VMM records a separate
+probe anchor and timer per CPU. Each completed PIO parks only its issuing CPU;
+a partial handoff is never permission to pause the VM. In the opt-in dual profile,
+CPUs may report idle before Host arms a model wait. The VMM retains these standby
+witnesses instead of letting an early CPU fall into an unobserved KVM halt. Real
+timers, pending IPIs and external events release standby CPUs without requiring
+a controller or an active acquisition. Standby never authorizes whole-VM pause.
+
+Arming keeps still-parked CPUs and their original deadlines, clears incomplete
+probes and all validation tickets, and requires both CPUs to recheck interrupts
+under the new epoch. Acquisition expiry still releases the partial rendezvous;
+new standby reports cannot reuse that expired epoch. The single-vCPU ABI-v2
+path, memory reclaim/pager and the KVM ENOMEM workaround are unchanged.
+
+After both CPUs park, both vCPU threads re-read KVM pending events and LAPIC IRR
+under an epoch/generation ticket before the VMM publishes an offer. This catches
+IPIs sent while the peer was still running. Before publication, an interrupt
+releases the whole partial rendezvous and invalidates its validation generation;
+a fresh rendezvous may retry within the original acquisition deadline. After
+publication, interrupts revoke the entire lease. The earliest finite deadline governs the VM; only
+two explicit no-timer reports permit an event-only wait. Device events invalidate
+partial and complete handoffs. Claimed handoffs stay parked through a racing wake
+until explicit serialized resume, including resume-and-rearm. Host fault detection
+is unchanged. Partial-park interrupt polling is bounded to the existing 1 ms host
+wait tick; it does not run guest code or discard pending interrupts.
+
+Dual-CPU optional RAM reclaim uses the same acknowledged all-vCPU pause,
+nonblocking device RAM gate closure and backing writeback/discard path as one CPU.
+Admission rechecks the claimed epoch, both parked/checked masks and the earliest
+CPU deadline against the existing offload minimum (default one second). A wake
+before admission skips reclaim; after admission, it is latched while both CPUs
+stay paused until writeback/publication completes and serialized resume reopens
+the device gate. Repeated reclaim in the same epoch is denied. The existing
+cooldown, failure termination and unsupported backing/pager/device checks remain.
+Normal PSI and TX-watchdog paths remain:
+the Host does not set single-CPU maintenance flags or the diagnostic PSI-disable
+selector for this profile, and the firmware retains its single-possible-CPU guards.
+CPU topology changes and more than two configured CPUs are outside this profile.
+`PVISOR_DIAG_IDLE=1` records parked/checked masks, rendezvous generation and
+per-CPU remaining timer budgets alongside the existing whole-VM epoch.

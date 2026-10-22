@@ -724,14 +724,16 @@ impl VmExecutor {
         }
     }
 
-    /// Opt in to M1 guest idle handoff: fresh Linux/KVM, one vCPU, no paging,
+    /// Opt in to M1 guest idle handoff: fresh Linux/KVM, one or two vCPUs, no paging,
     /// restore or auxiliary vsock ports. Matching patched firmware is required;
     /// missing guest support never permits automatic pause. Optional automatic
     /// offload requires writable shared RAM and a still-valid claimed idle lease.
     pub fn with_guest_idle_handoff(self) -> anyhow::Result<Self> {
         self.with_guest_idle_handoff_policy(false, default_idle_offload_minimum())
     }
-    /// Enable the single-vCPU Linux/KVM idle profile with Host-selected policy.
+    /// Enable the one/two-vCPU Linux/KVM idle profile with Host-selected policy.
+    /// Two vCPUs retain normal PSI/watchdog behavior and use the earliest timer
+    /// from their jointly validated handoff for optional offload admission.
     /// Optionally disable guest proactive compaction at boot, retaining demand
     /// compaction. The offload minimum must be >2 ms and <=24 hours (default 1 s).
     /// Short timer budgets remain paused without reclaim; real timers, external
@@ -750,11 +752,11 @@ impl VmExecutor {
         );
         anyhow::ensure!(
             cfg!(all(target_os = "linux", target_arch = "x86_64"))
-                && self.settings.cpus == 1
+                && (1..=2).contains(&self.settings.cpus)
                 && !self.settings.cold_pager_requested()
                 && !self.settings.ram_dedup
                 && self.vsock_ports.is_empty(),
-            "guest idle M1 requires single-vCPU Linux/KVM without paging/dedup/vsock ports"
+            "guest idle requires one/two-vCPU Linux/KVM without paging/dedup/vsock ports"
         );
         #[cfg(any(
             all(target_os = "linux", target_arch = "x86_64"),

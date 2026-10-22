@@ -1653,7 +1653,7 @@ impl Vcpu {
                 #[cfg(target_arch = "x86_64")]
                 VcpuExit::IoIn(addr, data) => {
                     if addr == crate::guest_idle::PORT && data.len() == 4 {
-                        let value = self.idle.as_ref().map_or(0, |idle| idle.probe());
+                        let value = self.idle.as_ref().map_or(0, |idle| idle.probe_cpu(self.id));
                         data.copy_from_slice(&value.to_le_bytes());
                     } else {
                         self.io_bus.read(0, u64::from(addr), data);
@@ -1768,16 +1768,49 @@ impl Vcpu {
         StateMachine::run(self, Self::paused);
     }
 
+    #[cfg(target_arch = "x86_64")]
+    fn idle_interrupt_pending(&self) -> bool {
+        self.fd.get_vcpu_events().map_or(true, |e| {
+            e.interrupt.injected != 0
+                || e.exception.pending != 0
+                || e.exception.injected != 0
+                || e.nmi.pending != 0
+                || e.nmi.injected != 0
+        }) || self.fd.get_lapic().map_or(true, |lapic| {
+            (0..8).any(|i| {
+                lapic.regs[0x200 + i * 16..0x204 + i * 16]
+                    .iter()
+                    .any(|v| *v != 0)
+            })
+        })
+    }
+
     // This is the main loop of the `Running` state.
     fn running(&mut self) -> StateMachine<Self> {
         // This loop is here just for optimizing the emulation path.
         // No point in ticking the state machine if there are no external events.
         loop {
-            if self.idle.as_ref().is_some_and(|idle| idle.offered()) {
+            if self
+                .idle
+                .as_ref()
+                .is_some_and(|idle| idle.parked_cpu(self.id))
+            {
                 if !self.event_receiver.is_empty() {
                     break;
                 }
                 if let Some(idle) = &self.idle {
+                    #[cfg(target_arch = "x86_64")]
+                    if idle.dual_cpu() {
+                        let ticket = idle.validation_ticket();
+                        // KVM delivers in-kernel APIC IPIs without a sender exit.
+                        // Recheck while partially parked, and again AFTER both
+                        // CPUs rendezvous, before publishing any VM permission.
+                        if self.idle_interrupt_pending() {
+                            idle.wake("vcpu_interrupt");
+                        } else if let Some(ticket) = ticket {
+                            idle.validate_cpu(self.id, ticket);
+                        }
+                    }
                     idle.wait_tick();
                 }
                 continue;
@@ -1789,21 +1822,12 @@ impl Vcpu {
                     self.fd.set_kvm_immediate_exit(1);
                     let completed = matches!(self.fd.run(), Err(e) if e.errno() == libc::EINTR);
                     self.fd.set_kvm_immediate_exit(0);
-                    let pending = self.fd.get_vcpu_events().map_or(true, |e| {
-                        e.interrupt.injected != 0
-                            || e.exception.pending != 0
-                            || e.nmi.pending != 0
-                            || e.nmi.injected != 0
-                    });
-                    let irr = self.fd.get_lapic().map_or(true, |lapic| {
-                        (0..8).any(|i| {
-                            lapic.regs[0x200 + i * 16..0x204 + i * 16]
-                                .iter()
-                                .any(|v| *v != 0)
-                        })
-                    });
                     if let Some(idle) = &self.idle {
-                        idle.offer(millis, completed && !pending && !irr);
+                        idle.offer_cpu(
+                            self.id,
+                            millis,
+                            completed && !self.idle_interrupt_pending(),
+                        );
                     }
                 }
                 // Emulation ran successfully, continue.

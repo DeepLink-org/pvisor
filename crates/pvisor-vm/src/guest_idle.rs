@@ -1,4 +1,4 @@
-//! Single-vCPU opt-in guest idle handoff. All time and wake state lives on host.
+//! One/two-vCPU opt-in guest idle handoff. All time and wake state lives on host.
 //! PIO probe anchors a host timestamp BEFORE the guest reads its timer delta.
 //! The arm timeout bounds acquisition only. ABI v2 reports a real timer or no timer.
 #![cfg_attr(
@@ -14,13 +14,39 @@ use std::time::{Duration, Instant};
 
 pub(crate) const PORT: u16 = 0x5050;
 pub(crate) const MAGIC: u32 = 0x50564902;
+const DUAL_MAGIC: u32 = 0x50564903;
 const MARGIN: Duration = Duration::from_millis(2);
 fn diagnostics_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("PVISOR_DIAG_OFFLOAD").as_deref() == Ok("1"))
 }
 #[derive(Default)]
+struct DualIdle {
+    probes: [Option<Instant>; 2],
+    last_unarmed_probe: [Option<Instant>; 2],
+    deadlines: [Option<Instant>; 2],
+    parked: u8,
+    checked: u8,
+    generation: u64,
+}
+impl DualIdle {
+    fn clear(&mut self) {
+        self.deadlines = [None; 2];
+        self.parked = 0;
+        self.recheck();
+    }
+    fn recheck(&mut self) {
+        self.probes = [None; 2];
+        self.checked = 0;
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("idle generation exhausted");
+    }
+}
+#[derive(Default)]
 struct State {
+    dual: Option<DualIdle>,
     epoch: u64,
     offers_seen: u64,
     offer_sequence: Option<u64>,
@@ -49,7 +75,10 @@ impl IdleGate {
     /// Real queue kicks/completions still go through the normal RAM gate.
     pub(crate) fn defer_maintenance(&self) -> bool {
         let s = self.state.lock().unwrap();
-        s.probe.is_some() || s.offered || s.claimed
+        s.probe.is_some()
+            || s.offered
+            || s.claimed
+            || s.dual.as_ref().is_some_and(|d| d.parked != 0)
     }
     pub(crate) fn host_read(&self, begin: bool) {
         let mut s = self.state.lock().unwrap();
@@ -68,6 +97,15 @@ impl IdleGate {
     pub(crate) fn enable(&self, value: bool) {
         self.enabled.store(value, Ordering::Release);
     }
+    pub(crate) fn configure_cpus(&self, cpus: u8) {
+        assert!((1..=2).contains(&cpus));
+        let mut s = self.state.lock().unwrap();
+        assert_eq!(s.epoch, 0, "topology is immutable after startup");
+        s.dual = (cpus == 2).then(DualIdle::default);
+    }
+    pub(crate) fn dual_cpu(&self) -> bool {
+        self.state.lock().unwrap().dual.is_some()
+    }
     fn invalidate(s: &mut State, reason: &str) {
         if s.until.take().is_some() || s.offered {
             s.sequence += 1;
@@ -75,8 +113,32 @@ impl IdleGate {
         }
         s.probe = None;
         s.offered = false;
+        if let Some(d) = &mut s.dual {
+            d.clear();
+        }
+    }
+    // No observer owns a partial rendezvous. Release its parked CPUs and
+    // discard all validation tickets, but retain the original acquisition
+    // deadline so a transient IPI does not force a new 100 ms host round.
+    fn abort_partial(s: &mut State, reason: &str) {
+        s.dual.as_mut().unwrap().clear();
+        s.sequence += 1;
+        Self::diagnose(s, "dual_retry", Some(reason));
     }
     fn expire(s: &mut State) {
+        // A first CPU may be parked before the other arrives. Its real timer
+        // must still release it, even though no whole-VM offer exists yet.
+        if s.dual
+            .as_ref()
+            .is_some_and(|d| d.deadlines.iter().flatten().any(|t| *t <= Instant::now()))
+        {
+            if s.offered || s.claimed {
+                Self::invalidate(s, "guest_timer");
+                Self::diagnose(s, "expired", Some("guest_timer"));
+                return;
+            }
+            Self::abort_partial(s, "guest_timer");
+        }
         if s.until.is_some_and(|d| Instant::now() >= d) {
             let reason = if s.offered {
                 "guest_timer"
@@ -106,6 +168,12 @@ impl IdleGate {
         s.offered = false;
         s.offload_started = false;
         s.offer_sequence = None;
+        if let Some(d) = &mut s.dual {
+            // A CPU may already be idle before the model request reaches Host.
+            // Keep its completed PIO parked, but discard every old probe and
+            // require fresh interrupt validation under this new epoch.
+            d.recheck();
+        }
         s.reason = None;
         Self::diagnose(&s, "arm", None);
         self.changed.notify_all();
@@ -128,12 +196,21 @@ impl IdleGate {
         s.claimed = false;
         s.offload_started = false;
         s.offer_sequence = None;
+        if let Some(d) = &mut s.dual {
+            d.clear();
+        }
         s.reason = None;
         Self::diagnose(&s, "resume_arm", None);
         self.changed.notify_all();
         Ok(next)
     }
     fn diagnose(s: &State, event: &str, detail: Option<&str>) {
+        Self::diagnose_cpu(s, event, detail, None);
+    }
+    fn diagnose_cpu(s: &State, event: &str, detail: Option<&str>, cpu: Option<u8>) {
+        if s.epoch == 0 {
+            return;
+        }
         static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if !*ENABLED.get_or_init(|| std::env::var("PVISOR_DIAG_IDLE").as_deref() == Ok("1")) {
             return;
@@ -141,10 +218,15 @@ impl IdleGate {
         use std::io::Write;
         static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
         let record = serde_json::json!({
-            "event":event,"detail":detail,"epoch":s.epoch,"sequence":s.sequence,
+            "event":event,"detail":detail,"cpu":cpu,"epoch":s.epoch,"sequence":s.sequence,
             "offer_sequence":s.offer_sequence,"offered":s.offered,"claimed":s.claimed,
             "remaining_ns":s.until.map(|d| d.saturating_duration_since(Instant::now()).as_nanos()),
             "wake_reason":s.reason,"host_pid":std::process::id(),
+            "parked_mask":s.dual.as_ref().map(|d| d.parked),
+            "unarmed_probe_age_ns":s.dual.as_ref().map(|d| d.last_unarmed_probe.map(|t| t.map(|t| t.elapsed().as_nanos()))),
+            "checked_mask":s.dual.as_ref().map(|d| d.checked),
+            "generation":s.dual.as_ref().map(|d| d.generation),
+            "cpu_remaining_ns":s.dual.as_ref().map(|d| d.deadlines.map(|t| t.map(|t| t.saturating_duration_since(Instant::now()).as_nanos()))),
             "mono_ns":START.get_or_init(Instant::now).elapsed().as_nanos(),
             "unix_ns":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
         });
@@ -152,6 +234,143 @@ impl IdleGate {
     }
     pub(crate) fn diagnose_transition(&self, event: &str) {
         Self::diagnose(&self.state.lock().unwrap(), event, None);
+    }
+    pub(crate) fn probe_cpu(&self, cpu: u8) -> u32 {
+        if !self.dual_cpu() {
+            return self.probe();
+        }
+        if !self.enabled() || cpu >= 2 {
+            return 0;
+        }
+        let mut s = self.state.lock().unwrap();
+        Self::expire(&mut s);
+        if s.until.is_none() && !s.offered && !s.claimed {
+            s.dual.as_mut().unwrap().last_unarmed_probe[cpu as usize] = Some(Instant::now());
+        }
+        if s.offered || s.claimed {
+            Self::diagnose_cpu(&s, "dual_probe", Some("lease_owned"), Some(cpu));
+            return 0;
+        }
+        let d = s.dual.as_mut().unwrap();
+        if d.parked & (1 << cpu) != 0 {
+            return 0;
+        }
+        d.probes[cpu as usize] = Some(Instant::now());
+        Self::diagnose_cpu(
+            &s,
+            "dual_probe",
+            Some(if s.until.is_some() {
+                "armed"
+            } else {
+                "standby"
+            }),
+            Some(cpu),
+        );
+        DUAL_MAGIC
+    }
+    pub(crate) fn offer_cpu(&self, cpu: u8, millis: u32, admissible: bool) {
+        if !self.dual_cpu() {
+            self.offer(millis, admissible);
+            return;
+        }
+        if cpu >= 2 {
+            return;
+        }
+        let mut s = self.state.lock().unwrap();
+        Self::expire(&mut s);
+        s.offers_seen = s
+            .offers_seen
+            .checked_add(1)
+            .expect("idle offer ordinal exhausted");
+        if !admissible {
+            if s.offered || s.claimed {
+                Self::invalidate(&mut s, "vcpu_interrupt");
+            } else {
+                Self::abort_partial(&mut s, "vcpu_interrupt");
+            }
+            Self::diagnose_cpu(
+                &s,
+                "dual_rejected",
+                Some("pending_interrupt_or_incomplete_pio"),
+                Some(cpu),
+            );
+            self.changed.notify_all();
+            return;
+        }
+        if s.offered || s.claimed {
+            return;
+        }
+        let d = s.dual.as_mut().unwrap();
+        let Some(anchor) = d.probes[cpu as usize].take() else {
+            Self::diagnose_cpu(&s, "dual_rejected", Some("stale_probe"), Some(cpu));
+            return;
+        };
+        if millis <= 2 {
+            Self::diagnose_cpu(&s, "dual_rejected", Some("short_deadline"), Some(cpu));
+            return;
+        }
+        let deadline = if millis == u32::MAX {
+            None
+        } else {
+            let Some(t) = anchor.checked_add(Duration::from_millis(millis.into())) else {
+                return;
+            };
+            let t = t - MARGIN;
+            if t <= Instant::now() {
+                Self::diagnose_cpu(&s, "dual_rejected", Some("elapsed_deadline"), Some(cpu));
+                return;
+            }
+            Some(t)
+        };
+        d.deadlines[cpu as usize] = deadline;
+        d.parked |= 1 << cpu;
+        s.sequence += 1;
+        Self::diagnose_cpu(&s, "dual_parked", None, Some(cpu));
+        self.changed.notify_all();
+    }
+    pub(crate) fn parked_cpu(&self, cpu: u8) -> bool {
+        if !self.enabled() {
+            return false;
+        }
+        let mut s = self.state.lock().unwrap();
+        Self::expire(&mut s);
+        s.claimed
+            || s.offered
+            || s.dual
+                .as_ref()
+                .is_some_and(|d| cpu < 2 && d.parked & (1 << cpu) != 0)
+    }
+    // Obtain the ticket BEFORE reading KVM's interrupt state. Both CPUs have
+    // completed their PIO exits and cannot execute guest instructions now.
+    pub(crate) fn validation_ticket(&self) -> Option<(u64, u64)> {
+        let mut s = self.state.lock().unwrap();
+        Self::expire(&mut s);
+        s.dual
+            .as_ref()
+            .filter(|d| s.until.is_some() && d.parked == 3 && !s.offered && !s.claimed)
+            .map(|d| (s.epoch, d.generation))
+    }
+    pub(crate) fn validate_cpu(&self, cpu: u8, ticket: (u64, u64)) {
+        let mut s = self.state.lock().unwrap();
+        Self::expire(&mut s);
+        if cpu >= 2 || s.epoch != ticket.0 || s.until.is_none() || s.offered || s.claimed {
+            return;
+        }
+        let Some(d) = &mut s.dual else {
+            return;
+        };
+        if d.generation != ticket.1 || d.parked != 3 {
+            return;
+        }
+        d.checked |= 1 << cpu;
+        if d.checked == 3 {
+            s.until = d.deadlines.iter().flatten().copied().min();
+            s.offered = true;
+            s.offer_sequence = Some(s.offers_seen);
+            s.sequence += 1;
+            Self::diagnose(&s, "dual_offer_accepted", None);
+            self.changed.notify_all();
+        }
     }
     pub(crate) fn probe(&self) -> u32 {
         if !self.enabled.load(Ordering::Acquire) {
@@ -230,8 +449,15 @@ impl IdleGate {
             self.changed.notify_all();
         } else {
             s.probe = None;
+            if s.dual.as_ref().is_some_and(|d| d.parked != 0) {
+                Self::abort_partial(&mut s, reason);
+                self.changed.notify_all();
+            } else if let Some(d) = &mut s.dual {
+                d.clear();
+            }
         }
     }
+    #[cfg(test)]
     pub(crate) fn offered(&self) -> bool {
         if !self.enabled.load(Ordering::Acquire) {
             return false;
@@ -288,6 +514,12 @@ impl IdleGate {
         let remaining = s.until.map(|d| d.saturating_duration_since(Instant::now()));
         let reason = if s.epoch != epoch || !s.claimed || !s.offered || s.offload_started {
             "invalid_or_consumed_epoch"
+        } else if s
+            .dual
+            .as_ref()
+            .is_some_and(|d| d.parked != 3 || d.checked != 3)
+        {
+            "incomplete_dual_handoff"
         } else if remaining.is_some_and(|d| d <= s.offload_minimum.max(MARGIN)) {
             s.offload_deadline_skips = s.offload_deadline_skips.saturating_add(1);
             s.sequence += 1;
@@ -302,6 +534,8 @@ impl IdleGate {
             "current_epoch": s.epoch, "offer_sequence": s.offer_sequence,
             "reason": reason, "remaining_ns": remaining.map(|d| d.as_nanos()),
             "minimum_ns": s.offload_minimum.max(MARGIN).as_nanos(),
+            "parked_mask": s.dual.as_ref().map(|d| d.parked),
+            "checked_mask": s.dual.as_ref().map(|d| d.checked),
             "offered": s.offered, "claimed": s.claimed,
             "unix_ns": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
         }));
@@ -703,5 +937,295 @@ mod deadline_tests {
             Some("handoff_timeout")
         );
         assert_eq!(gate.probe(), 0);
+    }
+}
+
+#[cfg(test)]
+mod dual_tests {
+    use super::*;
+    #[test]
+    fn offload_uses_both_cpu_deadlines_and_consumes_permission_once() {
+        for deadlines in [
+            [500, 30_000],
+            [30_000, 500],
+            [30_000, u32::MAX],
+            [u32::MAX, u32::MAX],
+        ] {
+            let (gate, epoch) = armed();
+            gate.set_offload_minimum(Duration::from_secs(1));
+            offer(&gate, 0, deadlines[0]);
+            assert!(
+                !gate.begin_offload(epoch),
+                "one idle CPU cannot authorize reclaim"
+            );
+            offer(&gate, 1, deadlines[1]);
+            validate(&gate);
+            assert!(!gate.begin_offload(epoch), "publication is not a pause ACK");
+            assert!(gate.claim(epoch));
+            let admitted = !deadlines.contains(&500);
+            assert_eq!(gate.begin_offload(epoch), admitted);
+            assert!(gate.parked_cpu(0) && gate.parked_cpu(1));
+            assert_eq!(gate.status().offload_deadline_skips, u64::from(!admitted));
+            if admitted {
+                assert!(
+                    !gate.begin_offload(epoch),
+                    "no repeated reclaim in one epoch"
+                );
+            }
+        }
+    }
+    #[test]
+    fn wake_racing_dual_reclaim_never_releases_cpu_before_serialized_resume() {
+        for event in ["guest_timer", "vcpu_interrupt", "network_rx", "device_ram"] {
+            for after_admission in [false, true] {
+                let (gate, epoch) = armed();
+                gate.set_offload_minimum(Duration::from_secs(1));
+                offer(&gate, 0, 30_000);
+                offer(&gate, 1, 30_000);
+                validate(&gate);
+                assert!(gate.claim(epoch));
+                if after_admission {
+                    assert!(gate.begin_offload(epoch));
+                }
+                if event == "guest_timer" {
+                    gate.state.lock().unwrap().dual.as_mut().unwrap().deadlines[1] =
+                        Some(Instant::now());
+                } else {
+                    gate.wake(event);
+                }
+                assert!(gate.parked_cpu(0) && gate.parked_cpu(1));
+                assert!(!gate.begin_offload(epoch));
+                assert_eq!(gate.status().wake_reason.as_deref(), Some(event));
+                gate.retire(epoch);
+                let next = gate.resume_arm(epoch, Duration::from_secs(1)).unwrap();
+                assert!(!gate.parked_cpu(0) && !gate.parked_cpu(1));
+                assert!(!gate.begin_offload(next), "resume must reacquire both CPUs");
+                offer(&gate, 0, u32::MAX);
+                offer(&gate, 1, u32::MAX);
+                validate(&gate);
+                assert!(gate.claim(next));
+                assert!(gate.begin_offload(next));
+            }
+        }
+    }
+    fn armed() -> (IdleGate, u64) {
+        let gate = IdleGate::default();
+        gate.configure_cpus(2);
+        gate.enable(true);
+        let epoch = gate.arm(Duration::from_secs(1)).unwrap();
+        (gate, epoch)
+    }
+    fn offer(gate: &IdleGate, cpu: u8, millis: u32) {
+        assert_eq!(gate.probe_cpu(cpu), DUAL_MAGIC);
+        gate.offer_cpu(cpu, millis, true);
+    }
+    fn validate(gate: &IdleGate) {
+        let ticket = gate.validation_ticket().unwrap();
+        gate.validate_cpu(0, ticket);
+        assert!(!gate.status().offered);
+        gate.validate_cpu(1, ticket);
+    }
+    #[test]
+    fn already_idle_cpu_survives_arm_but_both_need_fresh_validation() {
+        for early_cpu in [0, 1] {
+            let gate = IdleGate::default();
+            gate.configure_cpus(2);
+            gate.enable(true);
+            offer(&gate, early_cpu, 30_000);
+            assert!(gate.parked_cpu(early_cpu));
+            assert!(gate.validation_ticket().is_none());
+            assert!(!gate.claim(0), "standby is not whole-VM permission");
+            let deadline =
+                gate.state.lock().unwrap().dual.as_ref().unwrap().deadlines[early_cpu as usize];
+            let epoch = gate.arm(Duration::from_secs(1)).unwrap();
+            assert!(
+                gate.parked_cpu(early_cpu),
+                "arm must not lose the idle witness"
+            );
+            assert_eq!(
+                gate.state.lock().unwrap().dual.as_ref().unwrap().deadlines[early_cpu as usize],
+                deadline
+            );
+            assert!(gate.validation_ticket().is_none(), "peer may still be busy");
+            offer(&gate, 1 - early_cpu, 500);
+            validate(&gate);
+            assert!(gate.claim(epoch));
+            assert!(gate.begin_offload(epoch));
+        }
+    }
+    #[test]
+    fn standby_timer_and_external_events_release_without_controller() {
+        for event in ["guest_timer", "vcpu_interrupt", "network_rx", "device_ram"] {
+            let gate = IdleGate::default();
+            gate.configure_cpus(2);
+            gate.enable(true);
+            offer(&gate, 0, 500);
+            offer(&gate, 1, u32::MAX);
+            assert!(gate.validation_ticket().is_none());
+            if event == "guest_timer" {
+                gate.state.lock().unwrap().dual.as_mut().unwrap().deadlines[0] =
+                    Some(Instant::now());
+            } else {
+                gate.wake(event);
+            }
+            assert!(!gate.parked_cpu(0) && !gate.parked_cpu(1));
+            assert!(!gate.status().offered);
+            let epoch = gate.arm(Duration::from_secs(1)).unwrap();
+            assert!(!gate.claim(epoch));
+        }
+    }
+    #[test]
+    fn arm_discards_inflight_probe_and_retire_discards_validation() {
+        let gate = IdleGate::default();
+        gate.configure_cpus(2);
+        gate.enable(true);
+        offer(&gate, 0, u32::MAX);
+        assert_eq!(gate.probe_cpu(1), DUAL_MAGIC);
+        let epoch = gate.arm(Duration::from_secs(1)).unwrap();
+        gate.offer_cpu(1, 500, true);
+        assert!(
+            !gate.parked_cpu(1),
+            "pre-arm incomplete PIO cannot join the round"
+        );
+        offer(&gate, 1, 500);
+        let ticket = gate.validation_ticket().unwrap();
+        gate.validate_cpu(0, ticket);
+        gate.retire(epoch);
+        // New standby witnesses cannot inherit a retired validation ticket.
+        offer(&gate, 0, u32::MAX);
+        offer(&gate, 1, u32::MAX);
+        gate.validate_cpu(0, ticket);
+        gate.validate_cpu(1, ticket);
+        assert!(!gate.status().offered);
+        assert!(gate.validation_ticket().is_none());
+        let next = gate.arm(Duration::from_secs(1)).unwrap();
+        assert!(gate.parked_cpu(0) && gate.parked_cpu(1));
+        assert!(!gate.claim(next));
+        gate.validate_cpu(0, ticket);
+        gate.validate_cpu(1, ticket);
+        assert!(!gate.claim(next));
+        validate(&gate);
+        assert!(gate.claim(next));
+    }
+    #[test]
+    fn one_busy_cpu_never_authorizes_pause_and_partial_timer_releases_peer() {
+        for cpu in [0, 1] {
+            let (gate, epoch) = armed();
+            offer(&gate, cpu, 500);
+            assert!(gate.parked_cpu(cpu));
+            assert!(!gate.parked_cpu(1 - cpu));
+            assert!(gate.validation_ticket().is_none());
+            assert!(!gate.claim(epoch));
+            gate.state.lock().unwrap().dual.as_mut().unwrap().deadlines[cpu as usize] =
+                Some(Instant::now());
+            assert!(!gate.parked_cpu(cpu));
+            assert!(gate.status().remaining_ns > 0);
+            assert!(!gate.claim(epoch));
+        }
+    }
+    #[test]
+    fn both_cpus_revalidate_after_rendezvous_and_take_earliest_deadline() {
+        for (a, b) in [
+            (30_000, 500),
+            (500, 30_000),
+            (u32::MAX, 500),
+            (500, u32::MAX),
+        ] {
+            let (gate, epoch) = armed();
+            offer(&gate, 0, a);
+            assert!(gate.validation_ticket().is_none());
+            offer(&gate, 1, b);
+            assert!(!gate.claim(epoch), "parking alone is not validation");
+            validate(&gate);
+            assert!(gate.status().remaining_ns <= 500_000_000);
+            assert!(gate.claim(epoch));
+            assert!(gate.begin_offload(epoch));
+        }
+    }
+    #[test]
+    fn ipi_during_partial_or_full_rendezvous_revokes_both_cpus() {
+        for fully_parked in [false, true] {
+            let (gate, epoch) = armed();
+            offer(&gate, 0, u32::MAX);
+            if fully_parked {
+                offer(&gate, 1, u32::MAX);
+            }
+            let ticket = gate.validation_ticket();
+            gate.wake("vcpu_interrupt");
+            if let Some(ticket) = ticket {
+                gate.validate_cpu(0, ticket);
+                gate.validate_cpu(1, ticket);
+            }
+            assert!(!gate.claim(epoch));
+            assert!(!gate.parked_cpu(0) && !gate.parked_cpu(1));
+            assert!(gate.status().remaining_ns > 0);
+            offer(&gate, 0, 500);
+            offer(&gate, 1, 500);
+            if let Some(ticket) = ticket {
+                gate.validate_cpu(0, ticket);
+                gate.validate_cpu(1, ticket);
+                assert!(
+                    !gate.claim(epoch),
+                    "old generation cannot validate fresh offers"
+                );
+            }
+            validate(&gate);
+            assert!(gate.claim(epoch));
+        }
+    }
+    #[test]
+    fn rejected_second_pio_releases_first_and_external_wake_clears_probes() {
+        let (gate, epoch) = armed();
+        offer(&gate, 0, u32::MAX);
+        assert_eq!(gate.probe_cpu(1), DUAL_MAGIC);
+        gate.offer_cpu(1, 500, false);
+        assert!(!gate.claim(epoch));
+        assert!(!gate.parked_cpu(0));
+        assert_eq!(gate.status().epoch, epoch);
+        gate.probe_cpu(0);
+        gate.probe_cpu(1);
+        gate.wake("network_rx");
+        gate.offer_cpu(0, 500, true);
+        gate.offer_cpu(1, 500, true);
+        assert!(!gate.parked_cpu(0) && !gate.parked_cpu(1));
+    }
+    #[test]
+    fn expired_acquisition_and_stale_validation_cannot_publish() {
+        let (gate, epoch) = armed();
+        offer(&gate, 0, u32::MAX);
+        offer(&gate, 1, u32::MAX);
+        let old = gate.validation_ticket().unwrap();
+        gate.state.lock().unwrap().until = Some(Instant::now());
+        gate.validate_cpu(0, old);
+        gate.validate_cpu(1, old);
+        assert!(!gate.claim(epoch));
+        let next = gate.arm(Duration::from_secs(1)).unwrap();
+        offer(&gate, 0, u32::MAX);
+        offer(&gate, 1, u32::MAX);
+        gate.validate_cpu(0, old);
+        gate.validate_cpu(1, old);
+        assert!(!gate.claim(next));
+        validate(&gate);
+        assert_eq!(gate.status().remaining_ns, u64::MAX);
+        assert!(gate.claim(next));
+    }
+    #[test]
+    fn wake_after_claim_keeps_both_parked_until_resume_and_rearm() {
+        let (gate, epoch) = armed();
+        offer(&gate, 0, u32::MAX);
+        offer(&gate, 1, u32::MAX);
+        validate(&gate);
+        assert!(gate.claim(epoch));
+        gate.wake("network_rx");
+        assert!(gate.parked_cpu(0) && gate.parked_cpu(1));
+        assert!(!gate.begin_offload(epoch));
+        gate.retire(epoch);
+        let next = gate.resume_arm(epoch, Duration::from_secs(1)).unwrap();
+        assert!(!gate.parked_cpu(0) && !gate.parked_cpu(1));
+        offer(&gate, 1, u32::MAX);
+        assert!(!gate.claim(next));
+        offer(&gate, 0, u32::MAX);
+        validate(&gate);
+        assert!(gate.claim(next));
     }
 }

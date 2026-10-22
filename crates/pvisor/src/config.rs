@@ -732,7 +732,7 @@ impl Default for ModelWaitRounds {
 #[cfg(feature = "gateway")]
 pub struct CooperativeModelWait {
     /// Must be true: native Host observation requires guest-kernel idle evidence,
-    /// never an Agent assertion. Linux/KVM single-vCPU only; the executor must
+    /// never an Agent assertion. Linux/KVM one/two-vCPU only; the executor must
     /// opt in with `with_guest_idle_handoff`. Only acquisition is limited to one second.
     /// Optional offload rechecks the lease after pause. False fails validation.
     pub require_guest_idle: bool,

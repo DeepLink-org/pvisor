@@ -407,7 +407,9 @@ With the `gateway` Cargo feature, an embedded native VM owner can install an
 Attempt-local wait coordinator. It is disabled by default and is separate from
 the `workload-aware-memory-offloading` observation experiment. The first version
 optimizes one outstanding Host-observed model call per Attempt and requires a
-single-vCPU guest-kernel idle handoff. Agent/client code needs no declaration.
+one/two-vCPU guest-kernel idle handoff. Agent/client code needs no declaration.
+Two vCPUs support pause/resume only, retain normal PSI/TX-watchdog behavior,
+and need matching ABI-v3 firmware. Automatic offload remains single-vCPU.
 Overlapping calls keep forwarding but disable automatic transitions for the
 remainder of that Attempt. There is no new CLI/TOML switch, daemon integration,
 or scheduler-budget release. `CooperativeModelWait` is the historical Rust name;
@@ -1119,7 +1121,7 @@ one Gateway `llm.response.stream`, with no `llm.call.cancelled`. Receiving all e
 text alone must not hide an incomplete provider protocol. Fault fixtures retain
 separate negative expectations rather than weakening Gateway validation.
 `vm_reasoning_rounds` exercises one ordinary model HTTP request inside a real
-single-vCPU Linux/KVM guest, against a deterministic local provider. It needs
+one/two-vCPU Linux/KVM guest, against a deterministic local provider. It needs
 `--features gateway`, the matching idle-handoff firmware and a rootfs with Python.
 The guest keeps and checks a 192 MiB payload, checks ordered streaming deltas and
 reports timer intervals. A separate TCP channel records delivery ACKs solely for
@@ -1139,6 +1141,11 @@ PVISOR_PROBE_RAM_BACKING=/path/to/new-ram-file \
 Scenarios are `long`, `timer` (250 ms), `network`, `stream`, `race` (stream,
 network and timer together), `short` (1 ms), `download` (ordinary proxy GET),
 `tunnel` (opaque HTTP/1 CONNECT transport) and `image` (Host lazy cache reads).
+`busy` (two CPUs) keeps the peer CPU runnable until delivery and requires zero
+pauses/offloads. `offload-race` (offload policy) sends real network traffic
+10/0/40 ms after reclaim requests whose latest observed lease exceeds
+the configured minimum (repeating up to six injections); retained diagnostics determine
+whether each wake preceded admission, raced writeback, or followed commit.
 Image requires `PVISOR_PROBE_LAZY_SOCKET`, a compatible cache server serving the
 fixture manifest and `/payload.bin`; see the engineering result bundle for the
 controlled delayed fixture. Policies are `baseline` (no
@@ -1163,6 +1170,8 @@ They use ordinary guest workloads without an Agent optimization declaration.
 
 Host-only probe settings:
 
+- `PVISOR_PROBE_CPUS=1|2` (default 1). Two CPUs keep normal PSI/watchdog;
+  the two pinned CPUs independently verify the resident payload after delivery.
 - `PVISOR_PROBE_DISABLE_COMPACTION=0|1` (default 1).
 - `PVISOR_PROBE_OFFLOAD_MINIMUM_MS` (default 1000).
 - `PVISOR_PROBE_BUFFER_WAIT_MS=1..60000` (default 250).
@@ -1184,3 +1193,18 @@ sequence, epoch, claimed state and elapsed write time. Host cancellation occurs
 before asynchronous diagnostic publication. A blocked runner stderr pipe can
 delay its fatal diagnostic by at most 20 ms before exit. This does not change
 idle handoff, real timer/event wakeups, offload thresholds or cooldowns.
+
+### Dual-vCPU idle handoff validation
+
+`PVISOR_PROBE_CPUS=2` selects the dual-CPU payload in `vm_idle_handoff`.
+Use `busy`, `ipi`, `timer`, `network`, `race`, `ingress`, and `boundary` modes with a fresh
+CASE_ROOT per run and ABI-v3 firmware. `busy` pins the worker opposite the model
+caller and keeps it runnable until the response; it requires zero pauses.
+`ipi` exchanges messages between pinned CPUs and records RES/CAL interrupt
+counts and wake latency. `timer` arms different deadlines on both CPUs;
+network/race checks use the existing real NIC fixture. `ingress` sends real NIC
+traffic at 0/10/19/20/21/25/50 ms without waiting for pause, exercising
+arrival before and during acquisition as well as after publication. The guest asserts PSI is
+present and single-CPU PSI/watchdog deferral flags are absent. All modes retain
+payload hashing, complete responses, balanced transitions and no-offload checks.
+These are engineering correctness probes, not live SWE or latency guarantees.

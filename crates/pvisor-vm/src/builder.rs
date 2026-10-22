@@ -93,13 +93,13 @@ impl<B: Backend> Builder<B> {
                 feature = "efi",
                 feature = "aws-nitro"
             ))
-            || self.resources.vcpu_config().vcpu_count != 1
+            || !(1..=2).contains(&self.resources.vcpu_config().vcpu_count)
             || self.resources.snapshot_profile
             || !self.vsock_ports.is_empty()
         {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "guest idle requires fresh single-vCPU Linux/KVM without unguarded devices",
+                "guest idle requires fresh one/two-vCPU Linux/KVM without unguarded devices",
             ));
         }
         self.guest_idle = true;
@@ -310,7 +310,7 @@ impl<B: Backend> Builder<B> {
                     .push_str(" sysctl.vm.compaction_proactiveness=0");
             }
         }
-        if self.guest_idle {
+        if self.guest_idle && self.resources.vcpu_config().vcpu_count == 1 {
             // Host profile enables the single-CPU PSI idle fix. Override only for A/B.
             let quiesce = match std::env::var("PVISOR_DIAG_PSI_IDLE_QUIESCE") {
                 Ok(value) => value,
@@ -327,7 +327,7 @@ impl<B: Backend> Builder<B> {
                 .get_or_insert_with(String::new)
                 .push_str(&format!(" psi_idle_quiesce={quiesce}"));
         }
-        if self.guest_idle {
+        if self.guest_idle && self.resources.vcpu_config().vcpu_count == 1 {
             let defer = match std::env::var("PVISOR_DIAG_PSI_IDLE_DEFER") {
                 Ok(value) => value,
                 Err(std::env::VarError::NotPresent) => "1".into(),
@@ -343,7 +343,7 @@ impl<B: Backend> Builder<B> {
                 .get_or_insert_with(String::new)
                 .push_str(&format!(" psi_idle_defer={defer}"));
         }
-        if self.guest_idle {
+        if self.guest_idle && self.resources.vcpu_config().vcpu_count == 1 {
             // Only the authenticated single-vCPU handoff can park an empty check.
             let defer = match std::env::var("PVISOR_DIAG_WATCHDOG_IDLE_DEFER") {
                 Ok(value) => value,
@@ -361,7 +361,9 @@ impl<B: Backend> Builder<B> {
                 .push_str(&format!(" pvisor_watchdog_defer={defer}"));
         }
         // Engineering-only Host selector; never inferred from guest/model input.
-        if let Some(psi) = std::env::var_os("PVISOR_DIAG_GUEST_PSI").filter(|_| self.guest_idle) {
+        if let Some(psi) = std::env::var_os("PVISOR_DIAG_GUEST_PSI")
+            .filter(|_| self.guest_idle && self.resources.vcpu_config().vcpu_count == 1)
+        {
             let psi = psi
                 .to_str()
                 .filter(|s| matches!(*s, "0" | "1"))
@@ -394,6 +396,9 @@ impl<B: Backend> Builder<B> {
             io::Error::other(format!("build {} {} VM: {e:?}", B::NAME, B::Arch::NAME))
         })?;
         let idle = vm.lock().unwrap().device_memory_gate().idle.clone();
+        if self.guest_idle {
+            idle.configure_cpus(self.resources.vcpu_config().vcpu_count);
+        }
         idle.set_offload_minimum(self.idle_offload_minimum);
         idle.enable(self.guest_idle);
         on_ready(VmmHandle {

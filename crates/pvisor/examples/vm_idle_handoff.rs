@@ -1,4 +1,4 @@
-//! Linux/KVM single-vCPU engineering probe; local model fixture, real guest/NIC.
+//! Linux/KVM one/two-vCPU engineering probe; local model fixture, real guest/NIC.
 //! Usage: CASE_ROOT=... PVISOR_CASE_ROOTFS=... IDLE_FIXTURE_HOST=10.0.0.2
 //! cargo run -p pvisor --features gateway --example vm_idle_handoff -- timer 10
 #[cfg(feature = "gateway")]
@@ -25,13 +25,15 @@ key = os.environ['OPENAI_API_KEY']
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 data = bytes(range(256))*4096
 expected = hashlib.sha256(data).hexdigest()
-def busy():
-    end = time.monotonic()+.5
-    while time.monotonic()<end: hashlib.sha256(data).digest()
+def busy(stop, ready):
+    hashlib.sha256(data).digest()
+    ready.send(True)
+    while not stop.value: hashlib.sha256(data).digest()
 print(json.dumps(dict(kernel=os.uname().release, cmdline=open('/proc/cmdline').read(), mode=mode)), flush=True)
 for i in range(rounds):
     times = {}
     worker = None
+    stop = None
     if mode in ('network', 'race', 'timer', 'short'):
         sock = socket.create_connection((address, port), timeout=5)
         assert sock.recv(1)==b'R'
@@ -50,10 +52,17 @@ for i in range(rounds):
             sock.close()
         worker=threading.Thread(target=receive); worker.start()
     elif mode=='busy':
-        worker=mp.get_context('fork').Process(target=busy); worker.start()
+        ctx=mp.get_context('fork')
+        stop=ctx.RawValue('b',False)
+        parent,child=ctx.Pipe()
+        worker=ctx.Process(target=busy,args=(stop,child)); worker.start()
+        assert parent.poll(5) and parent.recv()
     started=time.monotonic()
     req=urllib.request.Request(base+'/chat/completions', data=json.dumps(dict(model='fixture',messages=[dict(role='user',content=str(i))],stream=False)).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+key})
-    with opener.open(req,timeout=10) as response: result=json.load(response)
+    try:
+        with opener.open(req,timeout=10) as response: result=json.load(response)
+    finally:
+        if stop is not None: stop.value=True
     times['model_ms']=(time.monotonic()-started)*1000
     assert result['choices'][0]['message']['content']=='idle-ok'
     if worker:
@@ -71,6 +80,7 @@ print('idle-guest-ok',flush=True)
     #[derive(Clone)]
     struct Fixture {
         mode: String,
+        cpus: u16,
         paused: watch::Receiver<usize>,
         network: Arc<Notify>,
         skipped: Arc<std::sync::Mutex<Vec<String>>>,
@@ -90,7 +100,21 @@ print('idle-guest-ok',flush=True)
             ))
             .await;
         }
-        if matches!(f.mode.as_str(), "timer" | "network" | "race") {
+        if f.mode == "ingress" {
+            let cycle: usize = body["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            // Deliver real NIC traffic independently of pause publication,
+            // including before, during and after the 20 ms acquisition grace.
+            tokio::time::sleep(Duration::from_millis(
+                [0, 10, 19, 20, 21, 25, 50][cycle % 7],
+            ))
+            .await;
+            f.network.notify_one();
+        }
+        if matches!(f.mode.as_str(), "network" | "race") || (f.mode == "timer" && f.cpus == 1) {
             let previous = *f.paused.borrow_and_update();
             let observed = tokio::time::timeout(Duration::from_millis(700), async {
                 while *f.paused.borrow_and_update() <= previous {
@@ -109,6 +133,9 @@ print('idle-guest-ok',flush=True)
                 f.network.notify_one();
             }
         }
+        if f.mode == "ipi" {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
         if !matches!(f.mode.as_str(), "race" | "boundary") {
             tokio::time::sleep(Duration::from_millis(220)).await;
         }
@@ -119,12 +146,21 @@ print('idle-guest-ok',flush=True)
         )
     }
     pub async fn run() -> anyhow::Result<()> {
+        let cpus: u16 = std::env::var("PVISOR_PROBE_CPUS")
+            .unwrap_or("1".into())
+            .parse()?;
+        ensure!((1..=2).contains(&cpus), "probe supports one or two CPUs");
         let mode = std::env::args()
             .nth(1)
-            .context("mode: timer/short/network/race/busy")?;
+            .context("mode: timer/short/network/race/busy/boundary; dual also ipi/ingress")?;
         ensure!(
-            ["timer", "short", "network", "race", "busy", "boundary"].contains(&mode.as_str()),
+            ["timer", "short", "network", "race", "busy", "boundary"].contains(&mode.as_str())
+                || (cpus == 2 && matches!(mode.as_str(), "ipi" | "ingress")),
             "unknown mode"
+        );
+        ensure!(
+            cpus == 1 || mode != "short",
+            "dual short-timer checks use timer mode"
         );
         let rounds: usize = std::env::args().nth(2).unwrap_or("5".into()).parse()?;
         ensure!((1..=100).contains(&rounds), "rounds 1..100");
@@ -156,6 +192,7 @@ print('idle-guest-ok',flush=True)
         let skipped = Arc::new(std::sync::Mutex::new(Vec::new()));
         let fixture = Fixture {
             mode: mode.clone(),
+            cpus,
             paused: paused_rx,
             network: trigger,
             skipped: skipped.clone(),
@@ -188,7 +225,7 @@ api_key="local-fixture"
                     .into(),
             ),
             library_dir: std::env::var_os("PVISOR_CASE_VM_LIBRARY_DIR").map(Into::into),
-            cpus: 1,
+            cpus,
             memory_mib: 512,
             ..Default::default()
         };
@@ -216,7 +253,7 @@ api_key="local-fixture"
                     downloads: false,
                     filesystem_reads: false,
                     stream_buffer: None,
-                    rounds: None,
+                    rounds: (cpus == 2).then(pvisor::ModelWaitRounds::default),
                     pause_after: Duration::from_millis(20),
                     offload_after: None,
                 }),
@@ -233,7 +270,11 @@ api_key="local-fixture"
             "-B".into(),
             "-u".into(),
             "-c".into(),
-            GUEST.into(),
+            if cpus == 2 {
+                include_str!("vm_dual_idle_guest.py").into()
+            } else {
+                GUEST.into()
+            },
             mode.clone(),
             rounds.to_string(),
             host,
@@ -248,6 +289,7 @@ api_key="local-fixture"
             .insert("pvisor.vm.overlay_target".into(), json!("/workspace"));
         spec.metadata
             .insert("pvisor.vm.guest_cwd".into(), json!("/workspace"));
+        spec.runtime.max_output_bytes = 16 * 1024 * 1024;
         let handle = runtime.run(spec).await?;
         let monitor_sink = sink.clone();
         let monitor = tokio::spawn(async move {
@@ -315,7 +357,7 @@ api_key="local-fixture"
             })
             .filter_map(|v| v.get("wake_reason").and_then(Value::as_str))
             .collect();
-        let report = json!({"mode":mode,"rounds":rounds,"pauses":pauses,"resumes":resumes,"wake_reasons":wake_reasons,"unpaused_calls":*skipped.lock().unwrap()});
+        let report = json!({"cpus":cpus,"mode":mode,"rounds":rounds,"pauses":pauses,"resumes":resumes,"wake_reasons":wake_reasons,"unpaused_calls":*skipped.lock().unwrap()});
         std::fs::write(
             root.join("summary.json"),
             serde_json::to_vec_pretty(&report)?,
@@ -327,7 +369,13 @@ api_key="local-fixture"
         );
         ensure!(stdout.contains("idle-guest-ok"), "missing guest completion");
         ensure!(pauses == resumes, "unbalanced pause/resume");
-        if matches!(mode.as_str(), "timer" | "network" | "race") {
+        if cpus == 2 && matches!(mode.as_str(), "network" | "race") {
+            ensure!(
+                skipped.lock().unwrap().is_empty(),
+                "dual-CPU handoff missed a model-wait window"
+            );
+        }
+        if matches!(mode.as_str(), "timer" | "network" | "race" | "ipi") {
             ensure!(pauses > 0, "positive test did not exercise native pause");
         }
         if mode == "timer" {
