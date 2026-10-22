@@ -356,7 +356,7 @@ while [ "$#" -gt 0 ]; do
 done
 spec=$(find "$(dirname "$bundle")" -name run-spec.json -print -quit)
 control=$(dirname "$spec")
-exec "$PVISOR_TEST_PVISOR" run --executor host \
+exec "$PVISOR_TEST_PVISOR" spawn --executor host \
   --spec "$control/run-spec.json" \
   --result-file "$control/run-result.json"
 "#,
@@ -436,7 +436,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$bundle" ] || exit 0
 control=$(dirname "$bundle")
-exec "$PVISOR_TEST_PVISOR" run --executor host --stdio capture \
+exec "$PVISOR_TEST_PVISOR" spawn --executor host --stdio capture \
   --spec "$control/run-spec.json" \
   --result-file "$control/run-result.json"
 "#,
