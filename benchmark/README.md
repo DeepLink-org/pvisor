@@ -901,3 +901,14 @@ Design: 负载、对照、控制变量与有效样本判据。
 - [`replay/`](replay/qwen3.6-results.md)：Qwen3.6 SandboxReplay 实验记录，保留历史样本，不作为产品保证。
 - 用户文档：[`docs/src/zh/benchmarks/`](../docs/src/zh/benchmarks/index.md)。
 - 技术分析：`docs/src/zh/lab-notes/*-performance-analysis.md`。
+
+### B-SWE-RESIDENT-ENG：真实 SWE 工具与模型等待期间的 VM 资源 {#b-swe-resident-eng}
+
+- **角色：** engineering A/B（resident 基线与可选单 vCPU 管理对照）。
+- **Motivation：** 为判断模型等待期间 VM 保留的内存是否值得卸载，先把真实工具调用与宿主资源时间序列对齐。
+- **想要的结论：** 显式选择的一批题目在持久 microVM 内是否可完成 Agent/验证流程，并产出可审计的 CPU、memory、模型请求和工具阶段记录；成功运行前不声明优化收益或解题率。
+- **实验设计：** 首批为 SweEval 的 NodeBB 291、Vuls 666、qutebrowser 667；扩展题目另记批次，不能混合不同配置统计。mini-swe-agent 2.4.6 在宿主调用外部模型，所有工具在每题一台持续运行的 VM 内执行；首批任务资源为 2 vCPU、7168 MiB guest RAM，其他任务沿用任务定义资源，服务 cgroup 另留 2048 MiB VMM/helper 预算、零 swap。串行执行，镜像准备与初始化/验证单列；250 ms 采样，模型等待包含 API 排队、推理和网络。完整保留失败、镜像 digest、原生轨迹和版本。宿主 Agent/外部模型计算不计入 VM cgroup，不能据此推断整个系统资源或纯 reasoning 时间。
+- **入口脚本：** `benchmark/pvisor/sweeval/run.py`；`smoke.py` 和 `trial_smoke.py` 仅为诊断与协议验证，不属于真实 SWE 性能样本。复现见同目录 README。
+
+
+This isolated engineering cohort compares single-vCPU baseline, pause/resume and offload using the same VM-bound Gateway and event-driven worker. It retains task/verifier results, per-transition timing, cgroup and RAM residency; live model variation is not treated as causal latency overhead.

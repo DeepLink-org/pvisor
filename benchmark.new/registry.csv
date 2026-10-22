@@ -45,3 +45,4 @@ B-STARTUP,user-facing,startup/qemu_timing.json,prepared-python-ready-exit
 B-STARTUP,user-facing,startup/qemu_microvm_timing.json,prepared-python-ready-exit
 B-STARTUP,user-facing,startup/timing.json,prepared-python-ready-exit
 B-STARTUP-REVISION-ENG,engineering A/B,startup/revision.json,requires-single-condition-command
+B-SWE-RESIDENT-ENG,engineering A/B,agent/swe_resident.json,requires-single-condition-command

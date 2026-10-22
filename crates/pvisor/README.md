@@ -1116,3 +1116,13 @@ Optional `PVISOR_DIAG_OFFLOAD=1` records admission, cooldown and backing phases;
 `PVISOR_DIAG_IDLE=1` records epoch/offer-linked handoff, wake and resume transitions.
 Watch notifications may coalesce. Ordered diagnostic stderr can perturb timing;
 compare equally instrumented runs and retain uninstrumented controls.
+
+### Idle control failure diagnostics
+
+The private Host/runner idle channel retains its 3-second receive watchdog,
+1-second write timeout and fail-closed runner exit. Failure diagnostics identify
+side, phase, PID, timestamp and errno; runner status-write failures also retain
+sequence, epoch, claimed state and elapsed write time. Host cancellation occurs
+before asynchronous diagnostic publication. A blocked runner stderr pipe can
+delay its fatal diagnostic by at most 20 ms before exit. This does not change
+idle handoff, real timer/event wakeups, offload thresholds or cooldowns.

@@ -1,4 +1,5 @@
 //! Private, independent parent/runner idle channel. No credentials or guest RAM.
+use anyhow::Context;
 use pvisor_vm::api::{GuestIdleControl, GuestIdleStatus, VmmHandle};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -67,6 +68,7 @@ impl IdleClient {
         *self.writer.lock().await = Some(write);
         let mut observations = self.status.subscribe();
         let observation_cancel = cancel.clone();
+        let observation_events = events.clone();
         // Diagnostics may coalesce; journal latency must never block wake delivery.
         tokio::spawn(async move {
             loop {
@@ -76,7 +78,7 @@ impl IdleClient {
                 }
                 let value = observations.borrow_and_update().clone();
                 if let Some(value) = value {
-                    let _ = events
+                    let _ = observation_events
                         .publish("vm.guest_idle", "runtime", serde_json::json!(value))
                         .await;
                 } else {
@@ -88,14 +90,16 @@ impl IdleClient {
         {
             let client = self.clone();
             let stop = cancel.clone();
+            let events = events.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::select! {
                         _ = stop.cancelled() => break,
                         _ = tokio::time::sleep(Duration::from_millis(500)) => {},
                     }
-                    if client.send(&Request::Heartbeat).await.is_err() {
+                    if let Err(error) = client.send(&Request::Heartbeat).await {
                         stop.cancel();
+                        host_failure(&events, "heartbeat_write", &error);
                         break;
                     }
                 }
@@ -114,7 +118,7 @@ impl IdleClient {
                     let n = tokio::select! {
                         _ = cancel.cancelled() => return Ok(()),
                         _ = failed.cancelled() => anyhow::bail!("idle lease cleanup failed"),
-                        n = tokio::time::timeout(Duration::from_secs(3), limited.read_until(b'\n', &mut bytes)) => n??,
+                        n = tokio::time::timeout(Duration::from_secs(3), limited.read_until(b'\n', &mut bytes)) => n.context("status read timed out (3s)")?.context("status read I/O")?,
                     };
                     if n == 0
                         && status
@@ -128,7 +132,7 @@ impl IdleClient {
                         n > 0 && n <= 4096 && bytes.last() == Some(&b'\n'),
                         "idle channel disconnected or oversized"
                     );
-                    let next: GuestIdleStatus = serde_json::from_slice(&bytes)?;
+                    let next: GuestIdleStatus = serde_json::from_slice(&bytes).context("decode idle status")?;
                     if status.borrow().as_ref().is_none_or(|s| s.sequence != next.sequence) {
                         status.send_replace(Some(next));
                     }
@@ -136,8 +140,9 @@ impl IdleClient {
             }
             .await;
             status.send_replace(None);
-            if result.is_err() {
+            if let Err(error) = result {
                 cancel.cancel();
+                host_failure(&events, "status_read", &error);
             }
         });
     }
@@ -148,7 +153,10 @@ impl IdleClient {
             .ok_or_else(|| anyhow::anyhow!("idle channel not attached"))?;
         let mut bytes = serde_json::to_vec(request)?;
         bytes.push(b'\n');
-        tokio::time::timeout(Duration::from_secs(1), writer.write_all(&bytes)).await??;
+        tokio::time::timeout(Duration::from_secs(1), writer.write_all(&bytes))
+            .await
+            .context("idle request write timed out (1s)")?
+            .context("idle request write I/O")?;
         Ok(())
     }
     #[cfg(feature = "gateway")]
@@ -203,7 +211,8 @@ impl IdleClient {
                 let _ = tx.send(None);
                 return;
             };
-            if client.send(&Request::Arm).await.is_err() {
+            if let Err(error) = client.send(&Request::Arm).await {
+                tracing::error!(error = %error, "idle arm request failed");
                 client.failed.cancel();
                 wake.cancel();
                 let _ = tx.send(None);
@@ -271,7 +280,8 @@ impl IdleClient {
 
         }.await;
         wake.cancel();
-        if result.is_err() {
+        if let Err(error) = result {
+            tracing::error!(epoch = expected, error = %error, "idle lease retirement failed");
             self.failed.cancel();
         }
         if let Some(tx) = tx {
@@ -280,48 +290,107 @@ impl IdleClient {
     }
 }
 
+// Diagnostics never publish synchronously on the heartbeat/status read task.
+fn host_failure(
+    events: &crate::runtime::event::RunEventPublisher,
+    phase: &str,
+    error: &anyhow::Error,
+) {
+    let row = failure_row("host", phase, error, serde_json::Value::Null);
+    let events = events.clone();
+    tokio::spawn(async move {
+        let stderr = row.clone();
+        tokio::task::spawn_blocking(move || eprintln!("pvisor idle channel failure: {stderr}"));
+        let _ = events
+            .publish("vm.idle_channel_failure", "runtime", row)
+            .await;
+    });
+}
+fn failure_row(
+    side: &str,
+    phase: &str,
+    error: &anyhow::Error,
+    state: serde_json::Value,
+) -> serde_json::Value {
+    let errno = error
+        .chain()
+        .find_map(|e| e.downcast_ref::<std::io::Error>())
+        .and_then(|e| e.raw_os_error());
+    serde_json::json!({"side":side, "phase":phase, "pid":std::process::id(),
+        "unix_ms":pvisor_core::unix_now_ms(), "error":format!("{error:#}"), "errno":errno, "state":state})
+}
+fn runner_failure(phase: &str, error: anyhow::Error, state: serde_json::Value) -> ! {
+    let row = failure_row("runner", phase, &error, state);
+    // A full stderr pipe must not defeat fail-closed termination. Usually this
+    // completes immediately; a blocked diagnostic gets at most 20 ms to finish.
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let _ = std::thread::Builder::new()
+        .name("idle-failure-log".into())
+        .spawn(move || {
+            eprintln!("pvisor idle channel failure: {row}");
+            let _ = tx.send(());
+        });
+    let _ = rx.recv_timeout(Duration::from_millis(20));
+    std::process::exit(1);
+}
+fn read_request(reader: &mut impl std::io::BufRead) -> anyhow::Result<Request> {
+    use std::io::{BufRead, Read};
+    let mut line = Vec::new();
+    let n = reader
+        .take(4097)
+        .read_until(b'\n', &mut line)
+        .context("controller read I/O or heartbeat timeout (3s)")?;
+    anyhow::ensure!(n != 0, "controller EOF");
+    anyhow::ensure!(
+        n <= 4096 && line.last() == Some(&b'\n'),
+        "controller frame oversized or incomplete"
+    );
+    serde_json::from_slice(&line).context("invalid controller request")
+}
+fn write_status(stream: &mut impl std::io::Write, status: &GuestIdleStatus) -> anyhow::Result<()> {
+    let mut line = serde_json::to_vec(status).context("encode idle status")?;
+    line.push(b'\n');
+    stream
+        .write_all(&line)
+        .context("status write I/O or backpressure timeout (1s)")
+}
 pub(super) fn serve(
-    stream: std::os::unix::net::UnixStream,
+    mut stream: std::os::unix::net::UnixStream,
     handle: VmmHandle,
 ) -> anyhow::Result<()> {
-    use std::io::{BufRead, Read, Write};
     let read = stream.try_clone()?;
     read.set_read_timeout(Some(Duration::from_secs(3)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(1)))?;
     let commands = handle.clone();
     std::thread::Builder::new()
         .name("pvisor-idle-commands".into())
         .spawn(move || {
             let mut reader = std::io::BufReader::new(read);
+            let mut last_request = std::time::Instant::now();
             loop {
-                let mut line = Vec::new();
-                let n = match (&mut reader).take(4097).read_until(b'\n', &mut line) {
-                    Ok(n) => n,
-                    Err(error) => {
-                        eprintln!("pvisor idle controller heartbeat/channel failure: {error}");
-                        std::process::exit(1);
-                    }
-                };
-                if n == 0 || n > 4096 || line.last() != Some(&b'\n') {
-                    std::process::exit(1);
-                }
-                match serde_json::from_slice(&line) {
-                    Ok(Request::Arm) => {
-                        if commands.arm_guest_idle(Duration::from_secs(1)).is_err() {
-                            std::process::exit(1);
+                let request = read_request(&mut reader).unwrap_or_else(|error| {
+                    runner_failure(
+                        "controller_read",
+                        error,
+                        serde_json::json!({
+                        "since_last_request_ms":last_request.elapsed().as_millis()}),
+                    )
+                });
+                last_request = std::time::Instant::now();
+                match request {
+                    Request::Arm => {
+                        if let Err(error) = commands.arm_guest_idle(Duration::from_secs(1)) {
+                            runner_failure("arm", anyhow::anyhow!(error), serde_json::Value::Null);
                         }
                     }
-                    Ok(Request::Heartbeat) => {}
-                    Ok(Request::Retire { epoch }) => commands.retire_guest_idle(epoch),
-                    Err(_) => std::process::exit(1),
+                    Request::Heartbeat => {}
+                    Request::Retire { epoch } => commands.retire_guest_idle(epoch),
                 }
             }
         })?;
     std::thread::Builder::new()
         .name("pvisor-idle-events".into())
         .spawn(move || {
-            let mut stream = stream;
-            // A stopped controller cannot leave a single-vCPU kernel in idle forever.
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
             let mut sequence = u64::MAX;
             let mut heartbeat = std::time::Instant::now();
             loop {
@@ -330,10 +399,15 @@ pub(super) fn serve(
                 {
                     heartbeat = std::time::Instant::now();
                     sequence = status.sequence;
-                    let mut line = serde_json::to_vec(&status).unwrap();
-                    line.push(b'\n');
-                    if stream.write_all(&line).is_err() {
-                        std::process::exit(1);
+                    let started = std::time::Instant::now();
+                    if let Err(error) = write_status(&mut stream, &status) {
+                        runner_failure(
+                            "status_write",
+                            error,
+                            serde_json::json!({
+                            "sequence":status.sequence, "epoch":status.epoch,
+                            "claimed":status.claimed, "write_ms":started.elapsed().as_millis()}),
+                        );
                     }
                 }
             }
@@ -344,6 +418,49 @@ pub(super) fn serve(
 #[cfg(all(test, feature = "gateway"))]
 mod tests {
     use super::*;
+    #[test]
+    fn controller_eof_invalid_and_oversized_frames_are_distinct() {
+        for (input, expected) in [
+            (Vec::new(), "EOF"),
+            (b"not-json\n".to_vec(), "invalid controller request"),
+            (vec![b'x'; 4097], "oversized"),
+        ] {
+            let error = read_request(&mut std::io::Cursor::new(input))
+                .err()
+                .unwrap();
+            assert!(format!("{error:#}").contains(expected));
+        }
+        assert!(matches!(
+            read_request(&mut std::io::Cursor::new(b"{\"op\":\"Heartbeat\"}\n")).unwrap(),
+            Request::Heartbeat
+        ));
+    }
+    #[test]
+    fn stalled_controller_read_and_status_backpressure_remain_bounded() {
+        use std::os::unix::net::UnixStream;
+        let (mut runner, _controller) = UnixStream::pair().unwrap();
+        runner
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let error = read_request(&mut std::io::BufReader::new(runner.try_clone().unwrap()))
+            .err()
+            .unwrap();
+        let row = failure_row("runner", "controller_read", &error, serde_json::Value::Null);
+        assert!(row["errno"].as_i64().is_some());
+        runner
+            .set_write_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        // An unread peer eventually backpressures the real Unix socket.
+        let began = std::time::Instant::now();
+        let error = loop {
+            if let Err(error) = write_status(&mut runner, &status(1, true, 1_000_000_000)) {
+                break error;
+            }
+            assert!(began.elapsed() < Duration::from_secs(3));
+        };
+        assert!(format!("{error:#}").contains("status write"));
+        assert!(began.elapsed() < Duration::from_secs(3));
+    }
     fn status(epoch: u64, offered: bool, remaining_ns: u64) -> GuestIdleStatus {
         GuestIdleStatus {
             offer_sequence: None,

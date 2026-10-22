@@ -82,3 +82,8 @@ required-features = ["gateway"]
 [[example]]
 name = "guest_init_bench"
 path = "../../benchmark/pvisor/guest_init.rs"
+
+[[example]]
+name = "sweeval_resident"
+required-features = ["gateway"]
+test = true
