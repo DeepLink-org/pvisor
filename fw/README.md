@@ -588,3 +588,16 @@ PVISOR_TEST_WATCHDOG_TREE=/path/to/linux \
 
 Tests without the source environment may skip the compiled implementation checks.
 The retained VM probes additionally check timer, network, scheduler and PSI behavior.
+
+### Fixed dual-vCPU idle handoff
+
+`0056-dual-vcpu-idle-handoff.patch` negotiates ABI v3 for exactly two possible
+and online CPUs. Each CPU reports its own programmed nohz clockevent while IRQs
+remain disabled; CPU identity comes from the host KVM thread. Host rendezvous and
+post-rendezvous interrupt checks are required before whole-VM pause. A mismatch
+with old firmware/Host, a different CPU count or an offline CPU declines handoff.
+The single-CPU ABI v2 path is retained. The PSI and watchdog single-possible-CPU
+guards remain intact, so their maintenance behavior is unchanged on two CPUs.
+The same ABI supplies the CPU/timer evidence for Host-controlled conditional
+offload after all-vCPU pause and device-gate closure; no extra guest message is
+needed. Hotplug and more than two possible CPUs remain unsupported.
