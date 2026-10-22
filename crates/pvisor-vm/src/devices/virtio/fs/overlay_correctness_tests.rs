@@ -224,3 +224,36 @@ fn failed_rename_pin_preserves_later_append_and_truncate_flags() {
         .unwrap()
         .is_empty());
 }
+
+
+#[test]
+fn name_only_readdir_is_visible_to_libc_without_preallocating_hardlink_inodes() {
+    let temp = tempfile::tempdir().unwrap();
+    let lower = temp.path().join("lower");
+    std::fs::create_dir(&lower).unwrap();
+    std::fs::write(lower.join("file"), b"data").unwrap();
+    std::fs::hard_link(lower.join("file"), lower.join("alias")).unwrap();
+    let fs = correctness_fixture(temp.path());
+    let ctx = root_context();
+    let handle = fs.opendir(ctx, fuse::ROOT_ID, 0).unwrap().0.unwrap();
+    let read = |offset| {
+        let mut entries = Vec::new();
+        fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, offset, |entry| {
+            entries.push((entry.name.to_vec(), entry.ino, entry.offset, entry.type_));
+            Ok(1)
+        })
+        .unwrap();
+        entries
+    };
+    let entries = read(0);
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|entry| entry.1 != 0), "libc drops zero-inode entries");
+    assert_eq!(entries[0].0, b"alias");
+    assert_eq!(entries[1].0, b"file");
+    assert_eq!(read(entries[0].2), entries[1..]);
+    let file = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
+    let alias = fs.lookup(ctx, fuse::ROOT_ID, c"alias").unwrap();
+    assert_eq!(file.inode, alias.inode);
+    assert_eq!(read(0), entries, "LOOKUP must not change the open directory snapshot");
+    fs.releasedir(ctx, fuse::ROOT_ID, 0, handle).unwrap();
+}

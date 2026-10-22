@@ -11,8 +11,11 @@ fn embed_guest() {
         .parent()
         .unwrap()
         .to_path_buf();
-    for source in ["Cargo.toml", "Cargo.lock", "crates/pvisor-guest"] {
-        println!("cargo:rerun-if-changed={}", root.join(source).display());
+    // Cargo may reuse this script across checkouts sharing CARGO_TARGET_DIR.
+    // Relative watches resolve against the current package, not the previous
+    // checkout whose absolute paths were recorded in cached script output.
+    for source in ["../../Cargo.toml", "../../Cargo.lock", "../pvisor-guest"] {
+        println!("cargo:rerun-if-changed={source}");
     }
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     assert!(
@@ -50,7 +53,7 @@ fn embed_guest() {
         "guest build failed; install its stdlib with: rustup target add {target}"
     );
     let binary = target_dir.join(&target).join("release/pvisor-guest");
-    println!("cargo:rerun-if-changed={}", binary.display());
+    println!("cargo:rerun-if-changed=../../target/pvisor-guest/{target}/release/pvisor-guest");
     println!("cargo:rustc-env=PVISOR_GUEST_BINARY={}", binary.display());
 }
 

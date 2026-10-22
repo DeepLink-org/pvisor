@@ -137,6 +137,7 @@ class PVisorEnvironment(BaseEnvironment):
         event(self.events, 'vm_start', unit=self.unit, config=path.name)
         try:
             for _ in range(1200):
+                self._check_startup_runner()
                 if self.process.returncode is not None:
                     raise RuntimeError('VM service failed; inspect ' + str(self.output / 'driver.log'))
                 if self.group is None:
@@ -151,10 +152,7 @@ class PVisorEnvironment(BaseEnvironment):
                             self.group = group
                             self.sampler = asyncio.create_task(self._sample())
                 boot = self.client.root / 'boot.json'
-                identity = Path(self.config['output']) / 'runner-identity.json'
-                if boot.exists() and self.group is not None and identity.exists():
-                    self.runner_identity = json.loads(identity.read_text())
-                    self.runner = RunnerLiveness(self.runner_identity)
+                if boot.exists() and self.group is not None and self.runner is not None:
                     data = json.loads(self.client.read('boot.json'))
                     if data.get('token') != self.token:
                         raise RuntimeError('VM boot identity mismatch')
@@ -167,6 +165,23 @@ class PVisorEnvironment(BaseEnvironment):
         except BaseException:
             await self.stop()
             raise
+
+    def _check_startup_runner(self):
+        # Identity is published before guest readiness. Attach immediately so a
+        # failed init cannot hide behind blocked driver/event-log finalization.
+        identity = self.output / 'runner-identity.json'
+        try:
+            if self.runner is None and identity.exists():
+                self.runner_identity = json.loads(identity.read_text())
+                self.runner = RunnerLiveness(self.runner_identity)
+            if self.runner is not None and not self.runner():
+                raise RuntimeError('VM runner exited before guest readiness')
+        except (OSError, RuntimeError, ValueError, KeyError) as exc:
+            raise RuntimeError(
+                'VM startup failed: ' + str(exc) + '; inspect ' +
+                str(self.output / 'driver.log') + ' and ' +
+                str(self.output / 'stage/upper/.pvisor-guest-error')
+            ) from exc
 
     async def _initialize_repository(self):
         # Verify the prepared repository (or initialize this private VM overlay).

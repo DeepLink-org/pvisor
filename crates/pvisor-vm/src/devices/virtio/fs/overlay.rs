@@ -3876,8 +3876,10 @@ impl FileSystem for OverlayFs {
                 };
                 if add_entry(DirEntry {
                     // Keep this name/type snapshot unchanged by later LOOKUPs.
-                    // Only LOOKUP/READDIRPLUS allocate overlay identities.
-                    ino: 0,
+                    // glibc skips d_ino == 0 as deleted. Use libfuse's
+                    // FUSE_UNKNOWN_INO for name-only entries; LOOKUP and
+                    // READDIRPLUS still allocate the real overlay identities.
+                    ino: u32::MAX as u64,
                     offset: (index + 1) as u64,
                     type_,
                     name,
@@ -7749,7 +7751,7 @@ mod tests {
         let mut plain = Vec::new();
         fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry| {
             assert_eq!(
-                entry.ino, 0,
+                entry.ino, u32::MAX as u64,
                 "plain READDIR must not register unknown children"
             );
             plain.push((entry.name.to_vec(), entry.type_));
@@ -7767,7 +7769,7 @@ mod tests {
         assert_ne!(fs.lookup(ctx, fuse::ROOT_ID, c"a").unwrap().inode, 0);
         fs.readdir(ctx, fuse::ROOT_ID, handle, 4096, 0, |entry| {
             assert_eq!(
-                entry.ino, 0,
+                entry.ino, u32::MAX as u64,
                 "later LOOKUP must not change the saved directory reply"
             );
             Ok(1)

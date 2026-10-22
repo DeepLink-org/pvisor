@@ -190,6 +190,10 @@ groups remain contained in the VM until teardown; do not equate tool completion
 with absence of guest background work. File downloads use tar's data filter.
 The controller also checks VM process liveness while awaiting a command result,
 so a crashed worker fails promptly instead of waiting for the tool timeout.
+The pidfd is attached as soon as the Host publishes the runner identity, before
+guest readiness. Early init failures therefore report startup failure even when
+the driver is still finalizing; inspect `stage/upper/.pvisor-guest-error` along
+with `driver.log` for guest configuration errors.
 
 ## Validation and scope
 

@@ -570,3 +570,44 @@ def test_environment_does_not_substitute_service_exit_for_runner_exit(tmp_path):
             child.kill()
         child.wait()
         environment.runner.close()
+
+
+def test_startup_detects_runner_exit_before_guest_boot(tmp_path):
+    optional_package('sweeval')
+    from environment import PVisorEnvironment
+
+    child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+    environment = PVisorEnvironment(rootfs=tmp_path, firmware=tmp_path,
+                                   binary='/unused', output=tmp_path / 'vm')
+    try:
+        environment._check_startup_runner()  # Publication may still be pending.
+        assert environment.runner is None
+        (environment.output / 'runner-identity.json').write_text(
+            json.dumps(process_identity(child.pid)))
+        environment._check_startup_runner()
+        assert environment.runner is not None
+        assert not (environment.client.root / 'boot.json').exists()
+        child.kill()
+        child.wait()
+        with pytest.raises(RuntimeError, match='exited before guest readiness'):
+            environment._check_startup_runner()
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+        if environment.runner is not None:
+            environment.runner.close()
+
+
+def test_startup_rejects_runner_that_exited_before_identity_attachment(tmp_path):
+    optional_package('sweeval')
+    from environment import PVisorEnvironment
+
+    environment = PVisorEnvironment(rootfs=tmp_path, firmware=tmp_path,
+                                   binary='/unused', output=tmp_path / 'vm')
+    child = subprocess.Popen([sys.executable, '-c', 'pass'])
+    identity = process_identity(child.pid)
+    child.wait()
+    (environment.output / 'runner-identity.json').write_text(json.dumps(identity))
+    with pytest.raises(RuntimeError, match='VM startup failed.*pvisor-guest-error'):
+        environment._check_startup_runner()

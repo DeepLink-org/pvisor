@@ -31,6 +31,15 @@ VM staged 和 lazy image 均不建立中间宿主文件系统 FUSE 挂载。lazy
 文件内容通过后端读取；copy-up 和完整快照导出会补齐所需内容。
 协议 inode/handle 表和平台权限仍留在入口适配器中。
 
+Guest supervisor 的内嵌构建使用相对当前 crate 的源码和产物依赖；多个 checkout
+共享 `CARGO_TARGET_DIR` 时也必须重建并嵌入当前 checkout 的 guest，不能复用
+旧目录的启动协议实现。固件内核仍按原配置选择。
+
+普通 READDIR 的仅名称快照使用非零的 unknown-inode 占位值（与 libfuse
+`FUSE_UNKNOWN_INO` 一致）；零值会被 glibc 当作已删除目录项跳过。真实对象
+身份仍由 LOOKUP/READDIRPLUS 建立，目录 cookies、名称/类型快照和 hard-link
+身份关系保持不变。
+
 ## 核心接口模型
 
 所有定义集中在 `src/api.rs`，实现集中在私有适配器中。文件系统配置使用 `PathBuf`，UTF-8 校验及内部设备格式转换由运行时完成。
