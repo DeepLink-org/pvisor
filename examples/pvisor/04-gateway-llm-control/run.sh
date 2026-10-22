@@ -23,7 +23,7 @@ mock_pid=$!
 trap 'kill "$mock_pid" 2>/dev/null || true; wait "$mock_pid" 2>/dev/null || true' EXIT
 pvisor_wait_tcp "$mock_port"
 
-"$pvisor_bin" run --config "$work_dir/run.toml" --stdio capture
+"$pvisor_bin" spawn --config "$work_dir/run.toml" --stdio capture
 run_dir="$(find "$PVISOR_RUN_HOME" -mindepth 1 -maxdepth 1 -type d -name 'run-*' -print -quit)"
 test -n "$run_dir"
 

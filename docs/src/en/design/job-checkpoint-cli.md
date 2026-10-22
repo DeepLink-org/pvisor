@@ -49,7 +49,7 @@ pvisor
 │   └── gc                 Collect unreferenced content and leftover staging in the store
 ```
 
-`tui/replay/cache/memory-pool` remain tools; they do not create product instance identities parallel to Jobs. The default execution shorthand `pvisor -- COMMAND` remains equivalent to `pvisor run -- COMMAND`.
+`tui/replay/cache/memory-pool` remain tools; they do not create product instance identities parallel to Jobs. The default execution shorthand `pvisor -- COMMAND` remains equivalent to `pvisor spawn -- COMMAND`.
 
 The target public workflow does not add `job run`, `vm run` or `snapshot run`.
 
@@ -89,7 +89,7 @@ Checkpoint manifests, ownership and references live within the stage; shared con
 ### 4.1 run: the sole startup entry point
 
 ```sh
-pvisor run [现有运行、策略、记录与资源选项] \
+pvisor spawn [现有运行、策略、记录与资源选项] \
   [--stage PATH] [--name NAME] -- COMMAND...
 ```
 
@@ -275,7 +275,7 @@ These commands illustrate the target interface; they do not imply current produc
 ### Accept workspace results: keep the existing workflow
 
 ```sh
-pvisor run --safe --stage ./stage/task -- codex
+pvisor spawn --safe --stage ./stage/task -- codex
 pvisor review ./stage/task --diff
 pvisor fork ./stage/task --stage ./stage/alternative -- codex
 pvisor apply ./stage/task --path src
@@ -286,7 +286,7 @@ pvisor apply ./stage/task --path src
 
 ```sh
 # 终端 A；沿用正常 Job启动路径
-pvisor run --vm --stage ./stage/task \
+pvisor spawn --vm --stage ./stage/task \
   --rootfs /path/to/rootfs -- bash
 
 # 终端 B；保存并释放源 runner

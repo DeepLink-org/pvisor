@@ -291,7 +291,7 @@ def command(directory, row, protocol, handle, script, evidence, tokens):
     require(len(tokens) == 1, "cache authentication context changed within the cohort")
     common = [
         EXECUTABLE,
-        "run",
+        "spawn",
         "--executor",
         "host",
         "--no-agent-defaults",

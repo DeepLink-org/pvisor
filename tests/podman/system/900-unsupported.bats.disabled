@@ -2,7 +2,7 @@
 # These are commented commands, not skipped or passing tests. The complete
 # original assertions remain unchanged in upstream/test/system/.
 # Enable a case only after its commands/options are implemented, then port the
-# original assertions and run them against pvisor docker.
+# original assertions and run them against the pVisor container commands.
 
 # Source: 070-build.bats, 850-compose.bats.
 # run_cli 0 build -t "$NAME" .
@@ -39,14 +39,15 @@
 # run_cli 0 run --network pasta "$IMAGE" true
 # Disabled: no volume/network management CLI, host networking or pasta backend.
 # Named volumes through run -v and bind mounts remain covered by active cases.
-# TCP publication is supported but not yet ported; do not label it unsupported.
+# IPv4 TCP publication and half-close are active in e2e/compatibility_test.go.
 
 # Source: 035-logs.bats, 040-ps.bats, 075-exec.bats, 450-interactive.bats.
 # run_cli 0 logs --tail 1 --since 1000 --timestamps "$NAME"
 # run_cli 0 ps --filter name="$NAME" --format '{{.ID}}'
 # run_cli 0 exec -d "$NAME" true
 # Disabled: these options are absent. TTY allocation itself is supported;
-# live resize and detach key sequences are not. No terminal tests are ported yet.
+# live resize and detach key sequences are not. Basic run/exec TTY and TERM
+# contracts are active in e2e/compatibility_test.go.
 
 # Source: 170-run-userns.bats, 180-blkio.bats, 190-run-ipcns.bats,
 # 195-run-namespaces.bats, 410-selinux.bats, 420-cgroups.bats.

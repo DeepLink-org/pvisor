@@ -16,7 +16,7 @@
 ## 追加规则
 
 ```bash
-pvisor run --safe \
+pvisor spawn --safe \
   --access 'config/secrets/**:deny' \
   --access '**/.env*:warn' \
   -- agent-command
@@ -42,7 +42,7 @@ pvisor run --safe \
 需要让 Agent 读取工作区之外的目录时，用显式共享，而不是 warn 规则：
 
 ```bash
-pvisor run --safe --mount /opt/tool:read -- agent-command
+pvisor spawn --safe --mount /opt/tool:read -- agent-command
 ```
 
 `--mount SOURCE:read` 授予原绝对路径的只读访问，要求 host 执行器和 `--safe` 或 `--ask`；`SOURCE:write` 直接写宿主路径，不经过暂存和 apply。显式共享不经过工作区的 ask 规则，含秘密的目录不要共享。

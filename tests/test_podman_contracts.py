@@ -33,17 +33,17 @@ class PodmanContractsTests(unittest.TestCase):
             self.assertTrue(any(name.startswith(f"test/{suite}/") for name in expected))
 
     def test_pvisor_default_and_literal_binary_path(self):
-        self.assertEqual(adapter.command_prefix({}), ["pvisor", "docker"])
+        self.assertEqual(adapter.command_prefix({}), ["pvisor"])
         self.assertEqual(
             adapter.command_prefix({"PVISOR_BINARY": "/a path/pvisor"}),
-            ["/a path/pvisor", "docker"],
+            ["/a path/pvisor"],
         )
         # Inherited settings from the old dual-engine runner cannot invoke Docker.
         self.assertEqual(
             adapter.command_prefix(
                 {"PVISOR_TEST_ENGINE": "docker", "DOCKER_BINARY": "/unused/docker"}
             ),
-            ["pvisor", "docker"],
+            ["pvisor"],
         )
 
     def test_adapter_preserves_arguments_streams_stdin_and_exit(self):
@@ -52,7 +52,7 @@ class PodmanContractsTests(unittest.TestCase):
             binary.write_text(
                 f"#!{sys.executable}\n"
                 "import sys\n"
-                "assert sys.argv[1:] == ['docker', 'exec', 'literal ; $argument']\n"
+                "assert sys.argv[1:] == ['exec', 'literal ; $argument']\n"
                 "sys.stdout.write(sys.stdin.read())\n"
                 "sys.stderr.write('separate error\\n')\n"
                 "sys.exit(23)\n"

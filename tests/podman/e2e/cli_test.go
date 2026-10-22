@@ -62,21 +62,26 @@ func newEngine(t *testing.T) *engine {
 	}
 	e.env = append(e.env, "PVISOR_DOCKER_HOME="+filepath.Join(dir, "store"))
 	t.Cleanup(func() {
-		code, out, stderr := e.call("", "rm", "-f", "-v", e.name)
-		// --rm may have removed it; still clean up after partial startup.
-		if code != 0 && !strings.Contains(strings.ToLower(out+stderr), "no such container") {
-			t.Errorf("cleanup container %s exit %d: %s%s", e.name, code, out, stderr)
-		}
+		e.cleanup(e.name)
 	})
 	e.want(0, "", "pull", e.image)
 	return e
+}
+
+func (e *engine) cleanup(name string) {
+	e.t.Helper()
+	code, out, stderr := e.call("", "rm", "-f", "-v", name)
+	// --rm may have removed it; still clean up after partial startup.
+	if code != 0 && !strings.Contains(strings.ToLower(out+stderr), "no such container") {
+		e.t.Errorf("cleanup container %s exit %d: %s%s", name, code, out, stderr)
+	}
 }
 
 func (e *engine) call(input string, args ...string) (int, string, string) {
 	e.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, e.binary, append([]string{"docker"}, args...)...)
+	cmd := exec.CommandContext(ctx, e.binary, args...)
 	cmd.Env = e.env
 	cmd.Stdin = strings.NewReader(input)
 	var out, stderr bytes.Buffer

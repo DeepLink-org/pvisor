@@ -142,6 +142,7 @@ pub struct Create {
     /// Keep guest stdin open for input attachment.
     pub interactive: bool,
     /// Optional initial guest terminal dimensions, rows then columns.
+    /// A terminal defaults TERM to xterm; image/explicit values and unsets win.
     pub tty: Option<[u16; 2]>,
     /// Install the current public IPv4 TCP/DNS egress profile.
     pub network: bool,
@@ -644,6 +645,9 @@ impl Store {
             "duplicate mount destination"
         );
         let mut env = image.env.clone();
+        if config.tty.is_some() {
+            env.entry("TERM".into()).or_insert_with(|| "xterm".into());
+        }
         for key in &config.unset_env {
             env.remove(key);
         }
@@ -679,6 +683,8 @@ impl Store {
         Ok(path)
     }
     /// Launch a new generation; `start` never changes the pinned image or upper.
+    /// Concurrent callers join an already-starting generation and observe its
+    /// bounded readiness/completion result, without holding the catalog lock.
     pub fn start(&self, selector: &str) -> anyhow::Result<Instance> {
         let mut instance;
         {
@@ -688,37 +694,39 @@ impl Store {
             if self.active(&instance)? && instance.state == "running" {
                 return Ok(instance);
             }
-            ensure!(
-                !self.active(&instance)? && instance.state != "starting",
-                "container is already running or starting"
-            );
-            instance.generation = uuid();
-            instance.started_ms = crate::unix_now_ms();
-            instance.state = "starting".into();
-            instance.exit_code = None;
-            self.save(&instance)?;
-            let mut command = Command::new(std::env::current_exe()?);
-            command
-                .arg("--pvisor-internal-docker-owner")
-                .arg(&self.root)
-                .arg(&instance.id)
-                .arg(&instance.generation)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::from(self.diagnostic(&instance)?));
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::setsid() < 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-            if let Err(error) = command.spawn() {
-                instance.state = "exited".into();
-                instance.exit_code = Some(125);
+            if instance.state != "starting" {
+                ensure!(
+                    !self.active(&instance)?,
+                    "container is already running or starting"
+                );
+                instance.generation = uuid();
+                instance.started_ms = crate::unix_now_ms();
+                instance.state = "starting".into();
+                instance.exit_code = None;
                 self.save(&instance)?;
-                return Err(error.into());
+                let mut command = Command::new(std::env::current_exe()?);
+                command
+                    .arg("--pvisor-internal-docker-owner")
+                    .arg(&self.root)
+                    .arg(&instance.id)
+                    .arg(&instance.generation)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::from(self.diagnostic(&instance)?));
+                unsafe {
+                    command.pre_exec(|| {
+                        if libc::setsid() < 0 {
+                            return Err(io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+                if let Err(error) = command.spawn() {
+                    instance.state = "exited".into();
+                    instance.exit_code = Some(125);
+                    self.save(&instance)?;
+                    return Err(error.into());
+                }
             }
         }
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -774,7 +782,10 @@ impl Store {
         timeout: Duration,
         requested_signal: Option<&str>,
     ) -> anyhow::Result<()> {
-        let instance = self.resolve(selector)?;
+        let instance = {
+            let _guard = self.lock()?;
+            self.resolve(selector)?
+        };
         if !self.active(&instance)? {
             return Ok(());
         }
@@ -792,19 +803,24 @@ impl Store {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        if self.active(&instance)? {
+        {
+            // Auto-removal uses the same lock; never publish into a removed instance.
+            let _guard = self.lock()?;
+            if !self.active(&instance)? {
+                return Ok(());
+            }
             crate::util::write_private_json(
                 &self.directory(&instance.id).join("force-stop.json"),
                 &instance.generation,
             )?;
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while self.directory(&instance.id).exists() && self.active(&instance)? {
-                ensure!(
-                    Instant::now() < deadline,
-                    "owner did not confirm VM termination"
-                );
-                std::thread::sleep(Duration::from_millis(20));
-            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.directory(&instance.id).exists() && self.active(&instance)? {
+            ensure!(
+                Instant::now() < deadline,
+                "owner did not confirm VM termination"
+            );
+            std::thread::sleep(Duration::from_millis(20));
         }
         Ok(())
     }
@@ -1586,6 +1602,39 @@ mod tests {
         assert_eq!(unchanged.state, instance.state);
     }
     #[test]
+    fn docker_tty_defaults_preserve_image_explicit_and_unset_environment() {
+        for (tty, base, explicit, unset, expected) in [
+            (true, None, None, false, Some("xterm")),
+            (true, Some("image-term"), None, false, Some("image-term")),
+            (true, Some("image-term"), Some(""), false, Some("")),
+            (true, Some("image-term"), None, true, None),
+            (false, None, None, false, None),
+        ] {
+            let (_temporary, store, mut image) = fixture();
+            if let Some(value) = base {
+                image.env.insert("TERM".into(), value.into());
+                store.save_catalog(&[image]).unwrap();
+            }
+            let mut config = request();
+            config.tty = tty.then_some([24, 80]);
+            if let Some(value) = explicit {
+                config.env.insert("TERM".into(), value.into());
+            }
+            if unset {
+                config.unset_env.push("TERM".into());
+            }
+            assert_eq!(
+                store
+                    .create(config)
+                    .unwrap()
+                    .env
+                    .get("TERM")
+                    .map(String::as_str),
+                expected
+            );
+        }
+    }
+    #[test]
     fn docker_creation_pins_defaults_and_command_overrides() {
         let (_temporary, store, image) = fixture();
         let instance = store.create(request()).unwrap();
@@ -1611,6 +1660,32 @@ mod tests {
         config.name = Some("unset".into());
         config.unset_env = vec!["IMAGE_ENV".into()];
         assert!(!store.create(config).unwrap().env.contains_key("IMAGE_ENV"));
+    }
+    #[test]
+    fn docker_start_joins_starting_generation_and_reports_its_failure() {
+        let (_temporary, store, _) = fixture();
+        let mut instance = store.create(request()).unwrap();
+        instance.state = "starting".into();
+        instance.started_ms = crate::unix_now_ms();
+        store.save(&instance).unwrap();
+        crate::util::write_private_json(
+            &store
+                .root
+                .join("results")
+                .join(format!("{}.json", instance.id)),
+            &Completion {
+                generation: instance.generation.clone(),
+                code: 125,
+                error: Some("original launch failed".into()),
+            },
+        )
+        .unwrap();
+        let error = store.start(&instance.id).unwrap_err();
+        assert!(error.to_string().contains("original launch failed"));
+        assert_eq!(
+            store.resolve(&instance.id).unwrap().generation,
+            instance.generation
+        );
     }
     #[test]
     fn docker_remove_refuses_live_owners_and_retains_named_volumes() {

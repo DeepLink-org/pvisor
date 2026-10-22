@@ -723,7 +723,7 @@ def inherited_worker(config, condition, trial, directory):
         frontend = False
         if (
             isinstance(argv, (list, tuple))
-            and "run" in argv
+            and "spawn" in argv
             and any(str(part).endswith("/bin/pvisor") for part in argv)
         ):
             env = kwargs.get("env")

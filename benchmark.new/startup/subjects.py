@@ -35,7 +35,7 @@ SUBJECTS = {
     ],
     "pvisor-host": [
         "@BINARY@",
-        "run",
+        "spawn",
         "--no-agent-defaults",
         "--overlaynet",
         "off",
@@ -52,7 +52,7 @@ SUBJECTS = {
     ],
     "pvisor-staged": [
         "@BINARY@",
-        "run",
+        "spawn",
         "--no-agent-defaults",
         "--overlaynet",
         "off",
@@ -69,7 +69,7 @@ SUBJECTS = {
     ],
     "pvisor-vm": [
         "@BINARY@",
-        "run",
+        "spawn",
         "--no-agent-defaults",
         "--overlaynet",
         "off",

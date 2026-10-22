@@ -33,7 +33,7 @@ chmod +x ../agent.sh
 ## 3. Run unattended within the boundary
 
 ```bash
-pvisor run --safe --overlaynet-deny-all --stage ../stage-001 -- ../agent.sh
+pvisor spawn --safe --overlaynet-deny-all --stage ../stage-001 -- ../agent.sh
 ```
 
 `--safe` requires filesystem and network isolation and rejects `.ssh`, `.gnupg`, and common private-key paths through its preset. It does not choose an executor or silently fall back to an unisolated host process. `--overlaynet-deny-all` independently installs a mandatory network boundary. Keep the stage outside the project and use a fresh directory for each run.
@@ -63,7 +63,7 @@ git status --short
 ## 6. Use your own command
 
 ```bash
-pvisor run --safe --stage ../agent-stage-001 -- codex
+pvisor spawn --safe --stage ../agent-stage-001 -- codex
 pvisor status --review ../agent-stage-001
 ```
 
@@ -74,7 +74,7 @@ Installed Agent CLIs use the same entry point. With `--stage PATH`, pass that pa
 Replace the demo with a narrowly scoped real task: retain the current repository baseline, confirm the agent is installed in the selected execution environment, and configure its model service and credentials—pVisor does not select the agent's provider. For an installed Codex with an explicitly delivered OpenAI key, set `OPENAI_API_KEY` in the host environment first:
 
 ```bash
-pvisor run --safe --pass-env OPENAI_API_KEY --stage ../agent-task-001 -- codex
+pvisor spawn --safe --pass-env OPENAI_API_KEY --stage ../agent-task-001 -- codex
 pvisor status --review ../agent-task-001
 pvisor inspect ../agent-task-001 -- git --no-pager diff -- src
 ```

@@ -44,7 +44,7 @@ def main():
         ('timeout-run', 'printf "candidate\\n" > timed.txt; sleep 2', 1, ['--timeout', '100ms']),
     ]:
         stage = work / name
-        command = ['run', '--safe', '--overlaynet-deny-all', '--stdio', 'capture',
+        command = ['spawn', '--safe', '--overlaynet-deny-all', '--stdio', 'capture',
                    '--stage', str(stage), *options, '--', '/bin/sh', '-c', shell]
         result = invoke(command)
         if result.returncode != expected:

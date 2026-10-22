@@ -3,7 +3,7 @@
 Usually you only need to choose where Runs are stored and explicitly pass the credentials your agent needs. Host variables configure pVisor itself; environment projection determines what the task receives.
 
 ```bash
-PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor run --safe \
+PVISOR_RUN_HOME="$HOME/.pvisor/runs" pvisor spawn --safe \
   --stage ../stage-env-001 --overlaynet-deny-all -- /bin/sh -c 'printf "%s\n" "$PVISOR_RUN_ID"'
 ```
 

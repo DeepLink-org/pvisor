@@ -6,7 +6,7 @@
 
 跨节点调度、全局 DAG 和分布式 lease 由 Kubernetes、Ray 或你的应用管理。daemon 不包含 Controller 或 Worker。
 
-需要本机原生 VM 沙箱生命周期时用 `pvisor-daemon`；公开 Job 与文件审查流程仍用 `pvisor run`。
+需要本机原生 VM 沙箱生命周期时用 `pvisor-daemon`；公开 Job 与文件审查流程仍用 `pvisor spawn`。
 
 !!! warning
     项目**尚未提供 guest bootstrap 或镜像配方，也未做端到端验证**；目前没有 SDK 兼容性验证或密度测量结果。下列每一步都需要自行准备镜像与 vsock 桥接。
@@ -140,7 +140,7 @@ EOF
 
 ## 与原生 Job、缓存和旧 Cluster 的关系 {#native}
 
-daemon sandbox ID 不是 Job ID，不要传给 `pvisor checkpoint`、`fork`、`apply` 或 `drop`。daemon pause 是同一 live Attempt 上已确认的 vCPU pause，不是封存 RAM/CPU/设备/文件系统快照。原生 Job 的文件审查、检查点与模型捕获继续走 `pvisor run` 路径：执行步骤见 [VM 指南](../executors/vm.md)，本机 Job 文件检查点见[检查点与分叉](../fork-checkpoint.md)，模型请求路由和捕获见 [Gateway 指南](../capture.md)。兼容的独立 rootfs、无网络 VM Job 可以使用 execution checkpoint；通过 `pvisor status --json` 检查 capability 与 blockers。
+daemon sandbox ID 不是 Job ID，不要传给 `pvisor checkpoint`、`fork`、`apply` 或 `drop`。daemon pause 是同一 live Attempt 上已确认的 vCPU pause，不是封存 RAM/CPU/设备/文件系统快照。原生 Job 的文件审查、检查点与模型捕获继续走 `pvisor spawn` 路径：执行步骤见 [VM 指南](../executors/vm.md)，本机 Job 文件检查点见[检查点与分叉](../fork-checkpoint.md)，模型请求路由和捕获见 [Gateway 指南](../capture.md)。兼容的独立 rootfs、无网络 VM Job 可以使用 execution checkpoint；通过 `pvisor status --json` 检查 capability 与 blockers。
 
 `pvisor cache prepare/publish/list/stat/read` 保持为独立命令，不是 daemon 子命令；发布、后端、认证和访问见[共享镜像缓存参考](../../reference/shared-image-cache.md)。Daemon 状态与原生 Job 和缓存存储分开保存；Daemon API key 不授权独立缓存或 node 运行时 IPC。
 

@@ -19,7 +19,7 @@ while not os.path.exists(sys.argv[1]): time.sleep(.01)
 print('READY', flush=True)
 while True: time.sleep(1)
 '''
-child = subprocess.Popen([binary, 'run', '--no-agent-defaults', '--overlaynet', 'off', '--', sys.executable, '-c', workload, marker],
+child = subprocess.Popen([binary, 'spawn', '--no-agent-defaults', '--overlaynet', 'off', '--', sys.executable, '-c', workload, marker],
     cwd=root, env=dict(os.environ, PVISOR_RUN_HOME=os.path.join(root, 'runs'), PVISOR_STARTUP_TIMING='0'), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 try:
     ready, _, _ = select.select([child.stdout], [], [], 20)

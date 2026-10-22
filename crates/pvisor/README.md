@@ -69,6 +69,8 @@ including with a prepared rootfs or custom injected pVisor. It does not enable
 cross-platform emulation or artifact auto-discovery. A configured platform also
 requires the container executor rather than being ignored by host/VM execution.
 Without the option, image preparation and container execution use the native platform.
+The OCI executor injects the `pvisor` executable and delegates the Job through
+`spawn --executor host --spec ... --result-file ...` inside the container.
 
 ## Explicit runtime experiments
 
@@ -82,7 +84,7 @@ pvisor feature                       # name / stage / default / enabled / descri
 pvisor feature list --json           # same list as a JSON array
 pvisor --feature workload-aware-memory-offloading feature --json
 pvisor --feature workload-aware-memory-offloading run --executor vm -- /bin/sleep 10
-pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
+pvisor spawn --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
 pvisor --feature workload-aware-memory-offloading --executor vm -- /bin/sleep 10
 ```
 
@@ -185,7 +187,7 @@ are correctness checks, not memory-saving, throughput or density measurements.
 
 ## Job owners and AgentCtl
 
-`pvisor run` starts a terminal frontend and one owner over an inherited private
+`pvisor spawn` starts a terminal frontend and one owner over an inherited private
 socketpair. The owner stays in the original session, in its own process group;
 Linux makes it the subreaper and retains pidfd-based descendant cleanup. For an
 interactive Job the frontend gives the original controlling terminal to the
@@ -334,7 +336,7 @@ Native control authority remains available through the handle/service. The daemo
 supervisor endpoint. Ordinary CLI controls discover the owner from the Job:
 
 ```bash
-pvisor run --executor vm -- /bin/sleep 600
+pvisor spawn --executor vm -- /bin/sleep 600
 pvisor status last --json
 pvisor suspend last --vm-pause
 pvisor resume last
@@ -448,7 +450,7 @@ resource ownership and must release consumers before backing owners.
 
 Linux x86_64 also has default-off experimental instance-local live cold
 compression: `VmSettings.cold_ram_compression` / `[vm].cold_ram_compression` or
-`pvisor run --vm-cold-ram-compression -- COMMAND`. The flag selects VM execution;
+`pvisor spawn --vm-cold-ram-compression -- COMMAND`. The flag selects VM execution;
 the runner automatically starts the runtime-owned userfaultfd pager over private
 anonymous ordinary RAM using `LocalColdRamStore`, without a live backing file,
 FUSE or a service. This is separate from `vm.ram_compression` (FUSE backing).
@@ -481,7 +483,7 @@ prepared-image bootstrap, SDK conformance or density.
 
 The experimental `docker` module owns the user-private image catalog, pinned
 container configuration, writable uppers, managed volumes and launch generation
-records used by `pvisor docker`. The CLI owns Docker argument parsing, rendering
+records used by the top-level container commands. The CLI owns Docker argument parsing, rendering
 and terminal adapters. This profile does not convert ordinary Jobs or alter
 stage/apply, capture or existing daemon APIs.
 `Store::pull_with_progress` and `create_with_progress` emit synchronous OCI
@@ -502,11 +504,18 @@ applications using `docker::Store::start` must dispatch
 parsing. Lifecycle mutations use the catalog lock, and both owner and VMM hold
 independent lifetime leases. A private inherited pipe terminates the VMM when
 its owner dies. Stop escalation goes through the current owner and generation;
-no command signals a host PID saved in metadata. VM setup errors and workload
+lookup and force-stop publication share the removal lock, with no lock held
+while waiting for termination. This prevents `--rm` teardown from racing a
+force-stop record into a deleted instance. No command signals a host PID saved
+in metadata. VM setup errors and workload
 exit codes remain visible in completion records and instance output.
+Concurrent starts join the same starting generation and wait for its bounded
+readiness or failure; they do not spawn a second owner or reject a healthy
+in-progress launch. Waiting never retains the catalog lock.
 
 The host translates Docker defaults into generic guest process/mount options,
-including the Docker capability bounding set. The guest has one launcher and
+including the Docker capability bounding set and `TERM=xterm` for TTYs unless
+an image or explicit value/unset wins. The guest has one launcher and
 PID-1 reaper shared by Jobs, the initial workload and exec. An optional host-CID
 vsock adapter adds same-VM exec, stdin, signal delivery and TCP publication;
 it owns no separate process lifecycle or host filesystem/lifecycle authority.
@@ -699,7 +708,7 @@ of the live workspace:
 ```bash
 pvisor cache prepare-rootfs --rootfs /opt/rootfs-source --base-store /opt/pvisor-bases
 # Use the prepared_rootfs.base.id from the JSON result:
-pvisor run --vm --rootfs-base-store /opt/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
+pvisor spawn --vm --rootfs-base-store /opt/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 
 The source must be quiescent and independent of the store. Initial preparation

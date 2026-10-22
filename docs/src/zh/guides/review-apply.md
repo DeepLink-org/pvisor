@@ -3,7 +3,7 @@
 在项目目录中启动暂存运行：
 
 ```bash
-pvisor run --safe -- codex
+pvisor spawn --safe -- codex
 pvisor status --review last
 pvisor inspect last -- git status --short
 ```

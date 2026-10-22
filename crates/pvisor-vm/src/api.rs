@@ -135,12 +135,17 @@ pub trait VmConfiguration: Sized {
     fn guest_command(&mut self, command: GuestCommand) -> io::Result<()>;
     /// Attach an ordinary writable passthrough directory. `shm_size` must be
     /// zero; nonzero windows return Unsupported before changing configuration.
+    /// Entry/attribute validity is zero so reopened files observe other host/VM
+    /// writers. Data retains close-to-open caching and mmap support; simultaneous
+    /// writes or already-open mappings across VMs require caller synchronization.
     /// Use `immutable_filesystem` for the supported read-only DAX contract.
     fn filesystem(&mut self, tag: &str, path: &Path, shm_size: usize) -> io::Result<()>;
     /// Attach a host-enforced read-only directory without DAX or an immutability
     /// promise. All guest mutation requests fail even if the guest remounts it.
-    /// The caller retains the directory and its mount identity until teardown;
-    /// host content changes remain subject to ordinary passthrough visibility.
+    /// The caller retains the directory and its mount identity until teardown.
+    /// Entry/attribute validity is zero and data uses close-to-open caching;
+    /// reopened files observe host changes. Already-open mappings across VMs
+    /// require caller synchronization, as for writable passthrough attachments.
     /// Requires a nonempty unique tag and an absolute existing UTF-8 directory.
     /// Invalid input leaves existing attachments unchanged. TEE/Nitro builds
     /// return Unsupported. This does not enable immutable-data caching or add

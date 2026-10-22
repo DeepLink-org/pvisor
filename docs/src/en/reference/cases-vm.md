@@ -36,7 +36,7 @@ They do not require resident memory to reach zero.
 ```bash
 require_vm_case
 vm_case_setup
-pvisor run --no-agent-defaults --gateway-mode off --rootfs "$PVISOR_CASE_ROOTFS" \
+pvisor spawn --no-agent-defaults --gateway-mode off --rootfs "$PVISOR_CASE_ROOTFS" \
   --vm-ram-backing "$CASE_ROOT/startup.ram" --stdio capture -- /bin/sh -c 'printf ram-startup-ok'
 bundle_expect run.state completed
 bundle_expect run.exit_code 0
@@ -61,7 +61,7 @@ PY
 require_vm_case
 vm_case_setup
 printf 'keep-existing-ram' > "$CASE_ROOT/startup.ram"
-expect_refused pvisor run --no-agent-defaults --gateway-mode off --rootfs "$PVISOR_CASE_ROOTFS" \
+expect_refused pvisor spawn --no-agent-defaults --gateway-mode off --rootfs "$PVISOR_CASE_ROOTFS" \
   --vm-ram-backing "$CASE_ROOT/startup.ram" --stdio capture -- /bin/sh -c 'printf unexpected-guest'
 assert_content "$CASE_ROOT/startup.ram" 'keep-existing-ram'
 bundle_expect run.state failed

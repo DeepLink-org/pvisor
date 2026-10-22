@@ -237,7 +237,7 @@ impl ContainerExecutor {
                 mapping_entries(requested_user.1, 0, 1),
             )
         };
-        let cfg = serde_json::json!({"ociVersion":"1.0.2","process":{"terminal":false,"cwd":workdir.as_deref().unwrap_or(Path::new("/")),"args":[GUEST_PVISOR,"run","--executor","host","--stdio","capture","--spec",format!("{GUEST_CONTROL_DIR}/{SPEC_FILENAME}"),"--result-file",format!("{GUEST_CONTROL_DIR}/{RESULT_FILENAME}" )],"env":env_json,"user":{"uid":process_user.0,"gid":process_user.1}},"root":{"path":rootfs,"readonly":self.settings.read_only_rootfs},"mounts":mounts_json,"linux":{"namespaces":namespaces,"resources":resources,"devices":devices,"uidMappings":uid_mappings,"gidMappings":gid_mappings},"annotations":{"io.pvisor.run_id":run_id,"io.pvisor.attempt_id":attempt_id}});
+        let cfg = serde_json::json!({"ociVersion":"1.0.2","process":{"terminal":false,"cwd":workdir.as_deref().unwrap_or(Path::new("/")),"args":[GUEST_PVISOR,"spawn","--executor","host","--stdio","capture","--spec",format!("{GUEST_CONTROL_DIR}/{SPEC_FILENAME}"),"--result-file",format!("{GUEST_CONTROL_DIR}/{RESULT_FILENAME}" )],"env":env_json,"user":{"uid":process_user.0,"gid":process_user.1}},"root":{"path":rootfs,"readonly":self.settings.read_only_rootfs},"mounts":mounts_json,"linux":{"namespaces":namespaces,"resources":resources,"devices":devices,"uidMappings":uid_mappings,"gidMappings":gid_mappings},"annotations":{"io.pvisor.run_id":run_id,"io.pvisor.attempt_id":attempt_id}});
         crate::util::write_private_json(&config, &cfg)?;
         let state = control_dir.join("oci-state");
         fs::create_dir_all(&state)?;
@@ -837,6 +837,32 @@ mod tests {
                 .any(|arg| arg.contains("oci-bundle-attempt-one"))
         );
         assert!(!args.iter().any(|arg| arg == "secret-agent"));
+        let config: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                files
+                    .spec_path
+                    .parent()
+                    .unwrap()
+                    .join("oci-bundle-attempt-one/config.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            config["process"]["args"],
+            serde_json::json!([
+                "/opt/pvisor",
+                "spawn",
+                "--executor",
+                "host",
+                "--stdio",
+                "capture",
+                "--spec",
+                "/run/pvisor/run-spec.json",
+                "--result-file",
+                "/run/pvisor/run-result.json",
+            ])
+        );
     }
 
     #[test]

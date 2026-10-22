@@ -3,7 +3,7 @@
 pVisor 用一个统一入口运行现有的 Agent CLI、脚本和自动化命令，不需要修改 Agent。先在所选 executor 内安装命令并配置 Agent 自身的 provider；使用镜像时，宿主安装的 Agent 不会自动出现在镜像中。下面的 `<agent-command>` 要替换为实际命令：
 
 ```bash
-pvisor run --safe -- <agent-command>
+pvisor spawn --safe -- <agent-command>
 pvisor status --review last
 pvisor apply last --path src
 ```
@@ -27,7 +27,7 @@ pvisor apply last --path src
 以 aider 为例：先在所选 executor 内安装 aider，并在 Agent 自身配置里选好 provider，然后显式放行它的 API 目标并传入凭据变量（变量名由 Agent 自身文档定义，如 `OPENAI_API_KEY`、`GEMINI_API_KEY`）：
 
 ```bash
-pvisor run --safe --overlaynet-allow api.openai.com:443 \
+pvisor spawn --safe --overlaynet-allow api.openai.com:443 \
   --pass-env OPENAI_API_KEY -- aider
 pvisor status --review last
 pvisor apply last --path src

@@ -1145,7 +1145,7 @@ class ReleasePackagingTests(unittest.TestCase):
                         assert [name, "--help"] in commands
                     for command in ("prepare", "publish", "read"):
                         assert ["pvisor", "cache", command, "--help"] in commands
-                    for command in ("run", "tui", "replay"):
+                    for command in ("run", "spawn", "tui", "replay"):
                         assert ["pvisor", command, "--help"] in commands
                     assert ["pvisor-daemon", "serve", "--help"] in commands
                     assert ["pvisor-daemon", "protocol"] in commands

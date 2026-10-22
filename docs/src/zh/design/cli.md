@@ -1,16 +1,16 @@
 # pVisor 命令模型
 
-Job 是 CLI 的核心对象，命令保持扁平：`pvisor run` 创建 Job，`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 直接操作它，`replay` 从已有轨迹创建 Job；Job、Run 与 Attempt 的关系见[执行模型](../design/execution-model.md)。
+CLI 有两个执行入口：`pvisor run` 创建独立容器 VM，`pvisor spawn` 创建 Job；省略子命令时默认进入 `spawn`。`status`、`kill`、`inspect`、`fork`、`apply`、`drop` 直接操作 Job，`replay` 从已有轨迹创建 Job；Job、Run 与 Attempt 的关系见[执行模型](../design/execution-model.md)。
 内部仍用 Run 记录保存 Job，配置类型仍是 `RunConfig`；配置文件必须显式传入，
 不会被当作隐式项目策略。
 
-## 使用 `run` 启动
+## 使用 `spawn` 启动
 
 短写法与完整写法等价：
 
 ```bash
 pvisor -- codex
-pvisor run -- codex
+pvisor spawn -- codex
 ```
 
 `--stage PATH` 将 changeset 保留在指定目录。普通 host Job 省略时直接写入工作区；
@@ -73,11 +73,11 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 ## 核心命令与服务边界
 
-顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存命令使用 `pvisor cache`，服务由 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。根帮助保持简洁，按 Execution（`run`、`status`、`kill`）、Changes（`review`、`apply`、`drop`、`inspect`）、Checkpoints（`checkpoint`、`suspend`、`resume`、`fork`）和 Tools（已安装的 `replay`/`tui` 伴随程序、`cache`、`feature`、`help`）分组，提供 run-review-apply 示例，并提示用 `pvisor help COMMAND` 查看详情。
+顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存命令使用 `pvisor cache`，服务由 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。根帮助保持简洁，按 Commands（容器命令及 `spawn`、`status`、`kill`）、Changes（`review`、`apply`、`drop`、`inspect`）、Checkpoints（`checkpoint`、`suspend`、`resume`、`fork`）和 Tools（已安装的 `replay`/`tui` 伴随程序、`cache`、`feature`、`help`）分组，提供 run-review-apply 示例，并提示用 `pvisor help COMMAND` 查看详情。
 
 | 职责 | 入口 |
 |---|---|
-| Job 生命周期与分支 | `run`、`status`、`kill`、`suspend`、`resume`、`fork` |
+| Job 生命周期与分支 | `spawn`、`status`、`kill`、`suspend`、`resume`、`fork` |
 | 查看、审查与接受文件变化 | `inspect`、`review`、`apply`、`drop` |
 | Job 不可变检查点 | `checkpoint` |
 | 轨迹回放与交互前端 | `replay`、`tui` |
@@ -85,9 +85,9 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 | 不可变镜像缓存 | `pvisor cache prepare/publish/list/stat/read`; `pvisor-daemon serve --cache` |
 | 可选 daemon 自有共享页 | `pvisor-daemon serve --sandbox --memory-pool`；独立 `memory-pool --directory DIR` 组件 |
 
-`status --review` 是快捷形式；`review` 是详细审查入口。`run --tui` 是主要交互路径，顶层 `tui` 用于显式前端调用。Job 操作直接使用顶层命令，没有 `job` 命令层。
+`status --review` 是快捷形式；`review` 是详细审查入口。`spawn --tui` 是主要交互路径，顶层 `tui` 用于显式前端调用。Job 操作直接使用顶层命令，没有 `job` 命令层。
 
-资源工具使用各自的可执行文件。原生执行状态捕获、恢复和存储管理使用 Job 命令，能力由实际 VM profile 决定。其他未知名称按普通默认执行规则处理。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor run -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
+资源工具使用各自的可执行文件。原生执行状态捕获、恢复和存储管理使用 Job 命令，能力由实际 VM profile 决定。其他未知名称按普通默认执行规则处理。直接调用 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 会明确拒绝并给出迁移提示，不会按默认规则运行工作负载；`pvisor spawn -- ctrl` 仍表达显式工作负载意图，不是控制 API 别名。
 
 ```bash
 pvisor-daemon serve --help
@@ -103,7 +103,7 @@ Sandbox 生命周期及可选池所有权直接调用 `pvisor-daemon`。缓存�
 核心默认构建不包含 Gateway。启用捕获使用 `--features gateway`；wheel 构建启用该 feature。
 无捕获时，普通显式代理仍由 OverlayNet 授权与转发。请求未编译的捕获或 Gateway debug 能力会报错。
 
-`run` 启动终端前端和一个 Job owner。活控制通过记录中的私有 socket 在 owner
+`spawn` 启动终端前端和一个 Job owner。活控制通过记录中的私有 socket 在 owner
 内执行；已停止 Job 的操作在调用方持有 `job.lock` 时执行。普通命令从 Job
 发现端点。`--vm-socket` 是调试覆盖，要求同时提供两个显式身份参数。
 Live VM flags 仍是子命令局部选项；pause/offload 互斥，`--vm-ram-file`
@@ -131,7 +131,7 @@ Attempt 生命周期由 Session 管理；Guest AgentCtl 保留工作负载协作
 已加载/磁盘 Mach-O UUID 校验。`runtime/host_transport.rs` 共享私有路径、
 有界换行 JSON 与 peer 校验。实例控制使用 `pvisor-instance-control-1`，
 独立于调用方二进制摘要。内部 `JobCommand` DTO 目前覆盖全部命令，只有
-run、fork、resume 用于启动同一二进制的 owner；其他命令直接执行或向 owner
+spawn、fork、resume 用于启动同一二进制的 owner；其他命令直接执行或向 owner
 发送实例协议命令。
 Core 拥有共享 Host envelope 和 supervisor 定义，daemon 准入不变。
 参见 [owner 生命周期](architecture.md#host-job-service)及

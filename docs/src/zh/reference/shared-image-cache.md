@@ -42,7 +42,7 @@ pvisor cache --image-store /tmp/pvisor-publish publish alpine:latest
 export PVISOR_CACHE_READ_ONLY=true
 pvisor cache prepare alpine:latest
 pvisor cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
-pvisor run --executor vm --rootfs image=alpine:latest -- /bin/sh
+pvisor spawn --executor vm --rootfs image=alpine:latest -- /bin/sh
 ```
 
 桶需要预先建立；pVisor 不创建桶。publish 和读写 prepare 都需要 s3:GetObject 与 s3:PutObject：读取 HEAD 的 CAS 令牌，并验证已存在的不可变对象。读取节点只需要 `s3:GetObject`，正常读写不需要 `ListBucket` 或 `DeleteObject`。S3 存储连接由宿主负责，新的缓存配置及其隐式 `AWS_*` 凭据不会投影到 guest；显式传给工作负载的环境变量仍由调用方决定。
@@ -164,7 +164,7 @@ pvisor cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-rele
 
 ## VM 自动懒加载
 
-未选择文件系统或 S3 后端时，当 `pvisor run --executor vm --rootfs image=IMAGE -- COMMAND` 准备 OCI 镜像时，它用一个两秒的 `ping` 握手探测默认 socket。有兼容的服务端在线时自动选择懒加载；socket 缺失或连接被拒（陈旧 socket）时走现有的本地 OCI 准备路径。认证、协议和超时错误会被报告，而不是静默绕过。
+未选择文件系统或 S3 后端时，当 `pvisor spawn --executor vm --rootfs image=IMAGE -- COMMAND` 准备 OCI 镜像时，它用一个两秒的 `ping` 握手探测默认 socket。有兼容的服务端在线时自动选择懒加载；socket 缺失或连接被拒（陈旧 socket）时走现有的本地 OCI 准备路径。认证、协议和超时错误会被报告，而不是静默绕过。
 
 显式设置 `PVISOR_CACHE_SERVER` 时要求该服务可用。设置 `PVISOR_CACHE_SERVER=off` 强制本地准备。显式 rootfs 目录和原生容器执行保持原有行为。
 

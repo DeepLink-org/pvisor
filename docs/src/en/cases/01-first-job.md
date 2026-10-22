@@ -31,7 +31,7 @@ When a script fails, inspect its Job exit code instead of treating a file as suc
 <!-- semspec: case id=S-USE-002 -->
 ```bash
 journey_setup
-expect_exit 7 pvisor run --stdio capture -- /bin/sh -c 'printf failed >&2; exit 7'
+expect_exit 7 pvisor spawn --stdio capture -- /bin/sh -c 'printf failed >&2; exit 7'
 pvisor status last --json > "$CASE_ROOT/status.json"
 json_expect "$CASE_ROOT/status.json" /run/state '"failed"'
 ```
@@ -47,7 +47,7 @@ Use `--timeout` for unattended work to bound a stalled script.
 <!-- semspec: case id=S-USE-003 -->
 ```bash
 journey_setup
-expect_refused pvisor run --timeout 100ms --stdio capture -- /bin/sleep 30
+expect_refused pvisor spawn --timeout 100ms --stdio capture -- /bin/sleep 30
 journey_bundle > "$CASE_ROOT/bundle.json"
 json_expect "$CASE_ROOT/bundle.json" /run/failure/kind '"deadline_exceeded"'
 ```
@@ -68,7 +68,7 @@ cat > task.toml <<'TOML'
 agent = "configured"
 command = ["/bin/sh", "-c", "printf configured"]
 TOML
-pvisor run --config task.toml --name explicit --stdio capture -- /bin/sh -c 'printf override'
+pvisor spawn --config task.toml --name explicit --stdio capture -- /bin/sh -c 'printf override'
 journey_bundle > "$CASE_ROOT/bundle.json"
 json_expect "$CASE_ROOT/bundle.json" /run/agent '"explicit"'
 json_expect "$CASE_ROOT/bundle.json" /run/output/stdout '"override"'

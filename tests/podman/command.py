@@ -8,8 +8,8 @@ import sys
 
 
 def command_prefix(environ):
-    """Resolve pVisor's literal executable path; always invoke its docker profile."""
-    return [environ.get("PVISOR_BINARY", "pvisor"), "docker"]
+    """Resolve pVisor's literal executable path; invoke its top-level container commands."""
+    return [environ.get("PVISOR_BINARY", "pvisor")]
 
 
 def main():

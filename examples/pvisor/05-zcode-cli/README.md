@@ -4,8 +4,8 @@ Install a complete ZCode CLI/TUI distribution first, then use its normal command
 
 ```bash
 zcode
-pvisor run -- zcode
-pvisor run -- zcode --prompt 'Explain this project'
+pvisor spawn -- zcode
+pvisor spawn -- zcode --prompt 'Explain this project'
 ```
 
 Use a complete official CLI/TUI installation, rather than the Electron desktop
@@ -36,7 +36,7 @@ expanded. Preserve ZCode's existing login/provider configuration. The profile
 loads only from trusted personal configuration, never from the project.
 
 This profile enables the staged filesystem, so
-`pvisor run -- zcode` stages project writes without an extra flag. Generic
+`pvisor spawn -- zcode` stages project writes without an extra flag. Generic
 pVisor runs do not enable staging merely by granting runtime paths. **Writes to explicitly granted persistent state
 are immediate and outside `pvisor apply` / `pvisor drop`.** pVisor prints this
 exception when it starts. Never grant the whole home directory. Grants that
@@ -78,7 +78,7 @@ level = "dialogue"
 mode = "proxy"
 ```
 
-Continue using `pvisor run -- zcode`. The host executor binds a Run-local
+Continue using `pvisor spawn -- zcode`. The host executor binds a Run-local
 listener and gives ZCode a read-only snapshot of the installed, non-secret
 built-in provider catalog. Only `account:bigmodel-individual-coding-plan` is
 redirected to Gateway; its provider identity and ZCode-managed credentials
@@ -104,7 +104,7 @@ mode, direct sockets remain outside cooperative network enforcement.
 
 ## Deterministic integration test
 
-This example calls **`pvisor run ... -- zcode ...`** directly. No CLI code is
+This example calls **`pvisor spawn ... -- zcode ...`** directly. No CLI code is
 copied into the project, and no special test launcher sits between pVisor and
 ZCode. A local OpenAI-compatible SSE server supplies deterministic responses;
 the installed ZCode executes the real `Write` and `Bash` tools.

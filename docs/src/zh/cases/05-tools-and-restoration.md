@@ -33,7 +33,7 @@ json_expect "$CASE_ROOT/prepared.json" /replayed_tool_calls 0
 <!-- semspec: case id=S-USE-016 -->
 ```bash
 journey_setup
-pvisor run --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'
+pvisor spawn --stage "$CASE_ROOT/source" -- /bin/sh -c 'printf proposal > report.txt'
 pvisor status "$CASE_ROOT/source" --json > "$CASE_ROOT/status.json"
 json_expect "$CASE_ROOT/status.json" /checkpoint_capability/execution false
 snapshot before "$CASE_ROOT/source"

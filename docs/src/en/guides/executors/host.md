@@ -3,7 +3,7 @@
 Host is the default executor: the command uses the host kernel and installed toolchain directly. It fits best when you want to run an agent unattended on your own machine and review the changes afterward.
 
 ```bash
-pvisor run --executor host --stage ../stage-host -- /bin/sh
+pvisor spawn --executor host --stage ../stage-host -- /bin/sh
 ```
 
 ## Three independent switches

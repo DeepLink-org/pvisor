@@ -43,7 +43,7 @@ fn sandbox_run_can_write_home_aliases_and_sqlite_state() {
         .env("XDG_STATE_HOME", &xdg)
         .env("PVISOR_RUN_HOME", temp.path().join("runs"))
         .args([
-            "run",
+            "spawn",
             "--stdio",
             "capture",
             "--filesystem",
@@ -113,7 +113,7 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
         .env("PVISOR_RUN_HOME", &run_home)
         .current_dir(&workspace)
         .args([
-            "run",
+            "spawn",
             "--filesystem",
             "sandbox",
             "--stdio",
@@ -269,7 +269,7 @@ fn deny_all_blocks_ip_and_host_unix_sockets_on_macos() {
         .env("PVISOR_RUN_HOME", &run_home)
         .env("LOOPBACK_PORT", loopback_port.to_string())
         .args([
-            "run",
+            "spawn",
             "--overlaynet-deny-all",
             "--filesystem",
             "sandbox",
@@ -382,7 +382,7 @@ fn required_sandbox_blocks_original_files_and_direct_sockets_but_allows_its_prox
     command
         .current_dir(&workspace)
         .env("PVISOR_RUN_HOME", &run_home)
-        .args(["run", "--stage"])
+        .args(["spawn", "--stage"])
         .arg(run_home.join("stage"))
         .args([
             "--safe",

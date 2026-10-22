@@ -17,20 +17,20 @@ fn main() -> anyhow::Result<()> {
     }
     #[derive(Subcommand)]
     enum Action {
-        Run(Box<RunArgs>),
+        Spawn(Box<RunArgs>),
         Resume(ResumeArgs),
     }
     terminal::init_child_context();
     let mut args: Vec<_> = std::env::args_os().collect();
     if !args
         .get(1)
-        .is_some_and(|arg| arg == "run" || arg == "resume" || arg == "--version" || arg == "-V")
+        .is_some_and(|arg| arg == "spawn" || arg == "resume" || arg == "--version" || arg == "-V")
     {
-        args.insert(1, "run".into());
+        args.insert(1, "spawn".into());
     }
     let mut parsed = TuiCli::parse_from(&args);
     let audit = match &mut parsed.action {
-        Action::Run(run) => {
+        Action::Spawn(run) => {
             run.enable_tui();
             let audit = run.audit_requested()?;
             anyhow::ensure!(

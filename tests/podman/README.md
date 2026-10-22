@@ -6,7 +6,7 @@ in `system/` (Bats) and `e2e/` (Go). See `UPSTREAM.md` for the exact revision,
 license and adaptation map. The upstream copies are reference material: they
 are not executable pVisor gates and must not be included in normal discovery.
 
-The adapted suites drive `pvisor docker` as a black box and check expected
+The adapted suites drive the top-level pVisor container commands as a black box and check expected
 outputs, exit codes and lifecycle effects, following Podman's system/e2e model.
 They require no Docker executable, daemon, socket or comparison run. Cases that
 specifically interoperate with a real Docker daemon are excluded with reasons.
@@ -21,7 +21,7 @@ From the repository root:
 
 ```sh
 PVISOR_BINARY="$PWD/target/debug/pvisor" bats tests/podman/system
-PVISOR_BINARY="$PWD/target/debug/pvisor" go test -v tests/podman/e2e/cli_test.go
+PVISOR_BINARY="$PWD/target/debug/pvisor" go test -v tests/podman/e2e/*.go
 ```
 
 On Apple Silicon, the executable needs the Hypervisor entitlement and its
@@ -38,8 +38,7 @@ export PVISOR_BINARY="$runtime_dir/pvisor"
 
 These are special external-runtime runners, separate from `just test`.
 `PVISOR_BINARY` selects a single executable path (default: `pvisor` in PATH),
-not a shell command string. Every invocation prepends the `docker` subcommand;
-there is no engine selector. Missing pVisor, image pull failures or unavailable
+not a shell command string. Arguments are passed directly to the top-level CLI; there is no engine selector. Missing pVisor, image pull failures or unavailable
 virtualization fail active cases rather than skip them.
 
 Each test owns a private `PVISOR_DOCKER_HOME`, a unique container name and bounded
@@ -51,20 +50,38 @@ bounded process execution; Go uses `context` deadlines.
 
 ## Coverage and limits
 
-The active profile has 15 Bats cases and 14 Go cases. Each test first pulls its
+The active profile has 29 Bats cases and 73 Go cases. Each test first pulls its
 image; none is skipped based on engine failure.
 
 | Suite | Active contracts |
 | --- | --- |
 | Bats `030-run.bats` | Workload exit, missing executable, stdin/EOF, env/workdir, bind read/write, read-only creation rejection |
 | Bats `031-run-options.bats` | Explicit env vs env-file, successive env-files, host env import, literal entrypoint args, numeric/named user, missing workdir creation, workdir within bind mount, read-only deletion rejection |
+| Bats `032-run-boundaries.bats` | Exit 126 for directories/non-executable files, failed-run name cleanup, host environment isolation, empty values, option-like workload arguments, relative-workdir rejection, no non-loopback interfaces with `--network none` |
+| Bats `033-run-validation.bats` | Repeated/literal environment values, missing host variable removal, CRLF env-files, missing bind source rejection, conflicting mount destinations and paths containing spaces |
 | Go `cli_test.go` | Streams/exit, exec stdin/error, stop/start persistence, auto-removal, duplicate name, exec env/workdir isolation, exec user/streams, 1.7 MB stdin round trip, ps/ID lifecycle, retained logs, images/rmi, named-volume persistence across rm -v, volume image initialization/read-only reuse, running-container rm rejection/force |
+| Go `compatibility_test.go` | Closed stdin, 1 MiB stdout, run/exec TTY and TERM precedence, concurrent exec exit routing after failed spawns, repeated stop, custom stop signal and zero-timeout escalation, multiple-container isolation, partial batch failures, live/stopped `logs -f`, ephemeral IPv4 TCP publication with half-close, in-use image protection, short image IDs and repeated pull identity |
+| Go `lifecycle_test.go` | Anonymous volume restart/isolation, live named-volume sharing including read-only readers and namespace changes, copy-up preservation, volume aliases/order, bind restart and symlinks, read-only mutation families, exact binary/partial logs, log accumulation across starts, running-start idempotence, automatic/forced removal races, TCP port restart/release/conflict and multiple endpoints |
+| Go `process_test.go` | Large exec output, binary stdin, env unsets/literal argv, non-executable/directory/missing-workdir errors, live passwd lookup, inherited run identity, empty TERM, in-flight exec termination, workload exit 125 and signals, umask isolation, full/short image-ID execution, unknown filter, batch/forced rmi, named/numeric primary groups, symlinked workdir, default CMD/empty entrypoint and invalid names |
+
+The continuing source audit, outstanding supported scenarios and proposed
+cost-based deferrals are in [REVIEW.md](REVIEW.md). The audit remains open;
+these counts do not mean the entire imported corpus has been covered.
+
+An independent, opt-in macOS [lightweight chaos runner](CHAOS.md) mixes these
+operations with client disconnects and concurrent starts under fixed resource
+limits. Chaos rounds are not counted as additional Podman contracts. The normal
+Go suite includes its concurrent-start regression, which verifies one entrypoint
+execution for each pair of simultaneous starts.
 
 Together these exercise all ten registered subcommands: `pull`, `images`, `rmi`,
 `run`, `exec`, `ps`, `start`, `stop`, `rm`, `logs`. They do not cover every option.
 The volume-image-content fixture requires an Alpine image containing
 `/etc/alpine-release`, `nobody`, `sh`, `printenv`, `id`, `cat`, `sleep` and `true`.
 Use `PVISOR_TEST_IMAGE` for a pinned Alpine digest, not an arbitrary image.
+The default-command cases expect Alpine's `/bin/sh` CMD and empty entrypoint;
+identity/workdir cases also use its `bin`, `nobody`, `nogroup` entries and
+`/var/run -> /run` symlink. `nogroup` is GID 65533, while `nobody` is 65534.
 
 Explicitly unsupported commands/options are preserved as commented examples in
 `system/900-unsupported.bats.disabled` and `e2e/unsupported_test.go.disabled`,
@@ -72,9 +89,26 @@ with source files and reasons. Their `.disabled` suffix excludes them from test
 discovery; they produce no PASS or SKIP results. Complete upstream sources stay
 unchanged. Build/Compose/API, create/inspect/wait/restart/attach/cp, registry login,
 Podman pods/Kube/Quadlet, management CLIs, extra logs/list flags and host-specific
-namespace/security controls are disabled. TCP publication, basic TTY allocation,
-`logs -f`, anonymous-volume deletion and other supported-but-unported scenarios
+namespace/security controls are disabled. Anonymous-volume deletion, controlling-terminal
+input, publication on non-loopback host addresses and other supported-but-unported scenarios
 remain coverage gaps, not unsupported features.
+
+The TTY cases require default `TERM=xterm`, explicit TERM precedence and no
+mutation of container defaults by `exec -t`. These defaults are applied on the
+host; the generic guest launcher is unchanged. TCP uses the pinned Alpine's
+BusyBox netcat, explicitly bound to guest IPv4 loopback, and verifies the full
+echo after the client closes its write half. No additional image package is
+installed. Go invocations must include all active `*_test.go` files as above.
+
+Shared-volume regressions require reopened files to see completed writes from
+another VM or mount, including changes in file length and directory entries.
+Ordinary passthrough mounts now use zero metadata validity with existing
+close-to-open data caching. This does not establish coherence for already-open
+mappings or unsynchronized concurrent writes. Missing bind sources are rejected
+under pVisor's documented stricter profile; Docker's automatic host-directory
+creation is not claimed. Anonymous-volume storage deletion remains unobserved
+without a public volume listing API; the active cases prove restart persistence
+and isolation, not garbage collection.
 
 A pass means the selected behavior contract held for pVisor. Dynamic IDs and
 human-readable list formatting are not compared with another engine. Unsupported
@@ -114,3 +148,39 @@ ARM64 manifest digest
 
 Linux/KVM execution remains unverified by the local macOS ARM64 VM run. Docker
 comparison is not part of this suite or an acceptance prerequisite.
+
+The expanded profile was validated on 2026-10-21 with Go 1.23.12 and Bats 1.11.0:
+all 53 runtime cases passed (23 Bats, 30 Go), using the pinned ARM64 mirror
+manifest above and a private copy of the rebuilt, Hypervisor-signed executable.
+All 20 selected Rust Docker regressions and four Python adapter/source-integrity
+checks passed; Clippy, rustdoc and formatting checks passed too. The new TTY
+cases exposed missing default TERM in run/exec; the host-side fix preserves
+explicit values and leaves guest supervision unchanged. No active cases were
+skipped, no assertions were weakened, and upstream file hashes remain unchanged.
+
+A second expansion on 2026-10-21 brought the profile to 76 cases (29 Bats,
+47 Go), adding 23 cases to the 53-case profile. All 76 passed on macOS ARM64
+with the same immutable Alpine mirror manifest, Go/Bats versions and a rebuilt,
+Hypervisor-signed private binary. The new volume cases exposed stale metadata
+across shared mounts/VMs; zero passthrough metadata validity fixes reopened-file
+contents/lengths without changing data-cache policy. A complete run also exposed
+force-stop publication racing automatic removal; catalog locking now protects
+lookup/publication while termination waits remain outside the lock. The new
+eight-iteration removal regression passed without retries or relaxed assertions.
+
+All 31 selected Rust Docker/VM contract and boundary tests, both native HVF
+container/Job acceptance cases and all four Python adapter/source-integrity
+checks passed. Clippy, rustdoc with warnings denied, formatting and CI budgets
+passed. Guest code and upstream sources were unchanged. Linux/KVM execution,
+cross-VM open-mapping coherence and performance effects remain unvalidated.
+
+The next batch was validated on 2026-10-22: all 101 runtime contracts passed
+(29 Bats, 72 Go), including 25 added process/identity/image contracts. The same
+signed executable and immutable ARM64 Alpine mirror manifest were used; this
+batch changes tests and audit documentation only. Go vet, gofmt, diff checks
+and all four Python adapter/source-integrity tests passed. Initial fixture
+assumptions were corrected against the image: use BusyBox printf rather than
+an absent `/bin/printf`, and assert Alpine's actual nogroup GID 65533. No
+runtime failure was converted to a skip. The source audit in `REVIEW.md`
+remains open, with further supported cases still to port and deferred areas
+listed separately for human review.

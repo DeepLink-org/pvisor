@@ -37,7 +37,7 @@ Do not apply automatically just because the agent returned 0. Apply has independ
 
 ```bash
 set +e
-pvisor run --safe --overlaynet-deny-all --stdio capture \
+pvisor spawn --safe --overlaynet-deny-all --stdio capture \
   --stage ../stage-exit-001 -- /bin/sh -c 'printf "candidate\n" > result.txt; exit 7'
 run_code=$?
 pvisor status --review --json ../stage-exit-001 > ../stage-exit-001.review.json

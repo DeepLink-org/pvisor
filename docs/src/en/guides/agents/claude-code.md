@@ -1,7 +1,7 @@
 # Claude Code
 
 ```bash
-pvisor run --safe --pass-env ANTHROPIC_API_KEY -- claude
+pvisor spawn --safe --pass-env ANTHROPIC_API_KEY -- claude
 pvisor status --review last
 pvisor apply last --path src   # 或：pvisor drop last
 ```
@@ -27,7 +27,7 @@ On macOS, `--safe` uses a temporary HOME, so any host-side logged-in session sta
 When the agent needs to install dependencies or reach a documentation site, add targets explicitly. `--overlaynet-allow` replaces the preset list, so list the model API alongside them:
 
 ```bash
-pvisor run --safe \
+pvisor spawn --safe \
   --overlaynet-allow api.anthropic.com:443 \
   --overlaynet-allow pypi.org:443 \
   --pass-env ANTHROPIC_API_KEY -- claude

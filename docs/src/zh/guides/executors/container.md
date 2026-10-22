@@ -3,7 +3,7 @@
 container 执行器在 Linux 宿主内核上运行 OCI 镜像的用户空间。它直接调用 `runc` 或 `crun`，不需要 Docker 或 Podman。
 
 ```bash
-pvisor run --executor container \
+pvisor spawn --executor container \
   --container-image ubuntu:24.04 \
   --stage ../stage-container -- /bin/sh
 ```
@@ -16,10 +16,10 @@ pvisor run --executor container \
 
 ## 工作方式
 
-pVisor 生成标准 OCI bundle，把当前或显式提供的兼容 Linux pVisor 二进制挂进 rootfs，再在容器内走普通的 `pvisor run --executor host --spec ...` 路径。Agent 命令放在 RunSpec 中，不暴露在 OCI runner 的 argv 里；容器内的 pVisor 创建自己的 AgentCtl 并返回类型化结果。
+pVisor 生成标准 OCI bundle，把当前或显式提供的兼容 Linux pVisor 二进制挂进 rootfs，再在容器内走普通的 `pvisor spawn --executor host --spec ...` 路径。Agent 命令放在 RunSpec 中，不暴露在 OCI runner 的 argv 里；容器内的 pVisor 创建自己的 AgentCtl 并返回类型化结果。
 
 ```bash
-pvisor run \
+pvisor spawn \
   --container-image example/codex-agent:latest \
   --container-pvisor-binary ./dist/pvisor-linux-amd64 \
   --container-platform linux/amd64 \

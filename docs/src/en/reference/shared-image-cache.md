@@ -42,7 +42,7 @@ pvisor cache --image-store /tmp/pvisor-publish publish alpine:latest
 export PVISOR_CACHE_READ_ONLY=true
 pvisor cache prepare alpine:latest
 pvisor cache read pvisor-v1:YOUR_IMAGE_KEY:linux-amd64:YOUR_REVISION etc/os-release
-pvisor run --executor vm --rootfs image=alpine:latest -- /bin/sh
+pvisor spawn --executor vm --rootfs image=alpine:latest -- /bin/sh
 ```
 
 Create the bucket first; pVisor does not create buckets. Both publish and writable prepare need s3:GetObject and s3:PutObject to observe HEAD CAS tokens and verify existing immutable objects. Readers need only `s3:GetObject`. Normal operations require neither `ListBucket` nor `DeleteObject`. Storage connections remain on the host. New cache configuration and implicit AWS_* storage credentials are not projected into the guest; explicitly supplied workload environment remains the caller's decision.
@@ -163,7 +163,7 @@ Use `--image-store DIR` or `PVISOR_IMAGE_STORE` for existing OCI storage. The se
 
 ## Automatic VM lazy loading
 
-When no filesystem/S3 backend is selected and `pvisor run --executor vm --rootfs image=IMAGE -- COMMAND` prepares an OCI image, it probes the default socket with a two-second `ping` handshake. A compatible server enables lazy loading automatically. Missing/refused sockets (including stale sockets) use local OCI preparation. Authentication, protocol and timeout errors are reported rather than bypassed silently.
+When no filesystem/S3 backend is selected and `pvisor spawn --executor vm --rootfs image=IMAGE -- COMMAND` prepares an OCI image, it probes the default socket with a two-second `ping` handshake. A compatible server enables lazy loading automatically. Missing/refused sockets (including stale sockets) use local OCI preparation. Authentication, protocol and timeout errors are reported rather than bypassed silently.
 
 An explicit `PVISOR_CACHE_SERVER` requires the service. `PVISOR_CACHE_SERVER=off` forces local preparation. Explicit directory rootfs and native containers retain their behavior.
 

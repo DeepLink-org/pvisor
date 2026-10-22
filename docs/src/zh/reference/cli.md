@@ -1,19 +1,19 @@
 # `pvisor` 命令参考
 
-Job 是 pVisor 面向用户的核心对象；`pvisor run` 创建 Job，其余扁平命令直接操作它，不新增 `job` 子命令，
+`pvisor run` 在独立的 rootless Linux VM 中创建容器；`pvisor spawn` 创建 Job，省略子命令也默认进入 `spawn`。
+Job 生命周期和变更审查命令直接操作 Job，不新增 `job` 子命令，
 `replay` 从轨迹创建 Job。Job、Run 与 Attempt 的关系见[执行模型](../design/execution-model.md)；现有 Job ID 和磁盘记录仍保留
 `run-*`、`Run Bundle` 等名称。
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guides/executors/index.md)。
 
-根帮助（`pvisor` 或 `pvisor --help`）按 **Execution**（`run`、`status`、
-`kill`）、**Changes**（`review`、`apply`、`drop`、`inspect`）、
+根帮助（`pvisor` 或 `pvisor --help`）按 **Commands**（容器命令及 `spawn`、`status`、`kill`）、**Changes**（`review`、`apply`、`drop`、`inspect`）、
 **Checkpoints**（`checkpoint`、`suspend`、`resume`、`fork`）和 **Tools**
 （已安装的 `replay`/`tui` 伴随程序、`cache`、`feature`、`help`）分组。帮助提供简短的
 run-review-apply 示例；用 `pvisor help COMMAND` 查看详细选项。
 
 ```bash
-pvisor run --safe -- claude
+pvisor spawn --safe -- claude
 pvisor review last
 pvisor apply last --path src
 pvisor help suspend
@@ -23,9 +23,30 @@ pvisor help suspend
 打出 `process.entry` 和 `cli.parsed`；这些标记不测量完整的进程入口或参数
 解析开销。
 
+## 容器命令 {#container-commands}
+
+`run`、`pull`、`images`、`rmi`、`exec`、`ps`、`start`、`stop`、`rm`、`logs`
+提供 Docker 风格的选项子集，每个容器使用独立 VM，无需全局 daemon。
+用 `pvisor COMMAND --help` 查看支持的参数。原有 `pvisor docker COMMAND` 保留为隐藏兼容入口。
+`--safe`、`--stage`、`--executor` 等 Job 参数属于 `spawn`，不属于容器 `run`。
+
+```bash
+pvisor pull alpine:3.20
+pvisor run --rm alpine:3.20 echo hello
+pvisor run -d --name redis redis:7
+pvisor exec redis redis-cli ping
+pvisor stop redis
+pvisor rm redis
+```
+
+`pull --platform linux/amd64` 或 `linux/arm64` 选择镜像架构，`linux/arm64/v8` 是别名。
+省略时使用原生架构。可以下载异构镜像，但尚未实现 CPU 模拟，`run` 和 `start` 只能运行原生镜像。
+该接口不实现 Docker Engine API、Build、Compose 或 credential helper。
+容器使用独立的镜像存储；review/apply/drop 和 checkpoint 等命令仍操作 Job。
+
 ## Job owner 与持久操作 {#host-agentctl}
 
-`pvisor run` 启动前端和私有 Job owner。活 status、kill、VM 控制与执行捕获
+`pvisor spawn` 启动前端和私有 Job owner。活 status、kill、VM 控制与执行捕获
 连接 Job 记录中的 owner；普通命令不需要 socket 参数。已停止 Job 的 status、
 review、apply、drop 和 inspect 在调用方持有 `job.lock` 时直接执行。
 有效 owner 仍持有 stage 时，apply/drop 拒绝执行。交互执行沿用原终端，允许
@@ -52,10 +73,10 @@ pvisor --feature workload-aware-memory-offloading feature --json
 
 每项包含 `name`、`stage`、`default`、`enabled` 和 `description`。`default` 是注册默认值；`enabled` 是默认值叠加本次查询的 `--feature` 选项。查询不加载 Run 配置，也不检查正在运行的 Job。启用值不代表平台可用或运行成功。
 
-全局 `--feature NAME` 可重复，可放在 `run` 前后，也接受逗号分隔名称。未知名称被拒绝。`--` 后的参数属于工作负载。
+全局 `--feature NAME` 可重复，可放在 `spawn` 前后，也接受逗号分隔名称。未知名称被拒绝。`--` 后的参数属于工作负载。
 
 ```bash
-pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
+pvisor spawn --executor vm --feature workload-aware-memory-offloading -- /bin/sleep 10
 ```
 
 | 特性 | 阶段 | 默认值 | 范围 |
@@ -64,7 +85,7 @@ pvisor run --executor vm --feature workload-aware-memory-offloading -- /bin/slee
 
 `workload-aware-memory-offloading` 要求最终 executor 为 VM，且构建平台为 Linux x86_64/KVM 或 Apple Silicon macOS/HVF。它不替换 executor 选择。HVF 运行验收尚未完成。原生 runner 会实际开启观测；目前没有 live Host 观测查询接口。
 
-特性启用仅适用于 `run` 和特性查询，其他生命周期命令拒绝该选项；execution resume/fork 保留存储的配置。显式 Run 配置中的 `[features]` 也可启用特性；CLI 启用覆盖 `false`，省略保留配置。当前没有 CLI 禁用选项或持久化的 `feature enable` 操作。见[特性配置](config.md#features)。运行时特性与 Cargo 编译特性独立，既有 VM 内存参数保持不变。
+特性启用仅适用于 `spawn` 和特性查询，其他生命周期命令拒绝该选项；execution resume/fork 保留存储的配置。显式 Run 配置中的 `[features]` 也可启用特性；CLI 启用覆盖 `false`，省略保留配置。当前没有 CLI 禁用选项或持久化的 `feature enable` 操作。见[特性配置](config.md#features)。运行时特性与 Cargo 编译特性独立，既有 VM 内存参数保持不变。
 
 ## Daemon 与缓存命令 {#service}
 
@@ -81,12 +102,12 @@ pvisor cache --help
 其他未知名称按默认执行规则处理。已退役的 `ctrl` 是明确例外：
 `pvisor ctrl`、`pvisor ctrl --help` 和 `pvisor help ctrl` 在 Job 准入前
 拒绝并给出迁移提示，不会按默认规则运行名为 `ctrl` 的程序。控制 VM
-使用下方 live VM 命令。`pvisor run -- ctrl` 仍表达显式工作负载意图，
+使用下方 live VM 命令。`pvisor spawn -- ctrl` 仍表达显式工作负载意图，
 不恢复旧控制 API。使用 `pvisor -- COMMAND` 显式执行程序。
 
 ## 按任务查找命令
 
-- **运行命令：** 从[`pvisor run`](../start/first-run.md)开始，再用 `status --review`、
+- **运行命令：** 从[`pvisor spawn`](../start/first-run.md)开始，再用 `status --review`、
   `inspect` 和 `apply` 决定哪些修改进入项目。
 - **理解执行边界：** 使用 `status` 和 `inspect`，然后阅读[执行指南](../guides/executors/index.md)。
 - **继续轨迹：** 只有在已有受支持轨迹时才使用 `replay`，先阅读[回放指南](../guides/replay.md)。
@@ -94,7 +115,7 @@ pvisor cache --help
 第一次使用时，先复制最小闭环：
 
 ```bash
-pvisor run --safe -- codex
+pvisor spawn --safe -- codex
 pvisor status --review last
 pvisor apply last --path src
 ```
@@ -104,7 +125,7 @@ pvisor apply last --path src
 加上 `--tui` 可显示类似 Zellij 的终端边框、底部状态栏和浮动审查面板：
 
 ```bash
-pvisor run --tui -- bash
+pvisor spawn --tui -- bash
 ```
 
 默认键盘输入交给 shell 或 Agent，终端始终保持完整宽度。顶部显示工作目录及文件、网络边界；
@@ -144,10 +165,10 @@ macOS 的 macFUSE 临时工作区默认以启动 pVisor 时的当前目录作为
 `--stage PATH` 仅用于指定存储位置，不是保留改动的前提。
 
 ```bash
-pvisor run --stage ../run-stage -- codex
-pvisor run --safe --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
-pvisor run --access '**/.ssh:deny' -- zcode
-pvisor run --access '.env:ask' -- codex
+pvisor spawn --stage ../run-stage -- codex
+pvisor spawn --safe --mount /opt/zcode:read --mount /var/lib/zcode:write -- zcode
+pvisor spawn --access '**/.ssh:deny' -- zcode
+pvisor spawn --access '.env:ask' -- codex
 ```
 
 `--mount SOURCE:read` 向 host executor 授予原绝对路径的只读访问，要求 `--safe` 或 `--ask`；
@@ -169,8 +190,18 @@ Session 决定写入当前 Job 目录的 `audit-policy.json`，workspace 和 use
 代理网络审计属于协作式边界：未经过代理的直接连接不会触发此弹窗。
 
 ```text
-Execution:
-  run         启动 Job
+Commands:
+  run         在独立 VM 中创建并运行容器
+  spawn       启动 Job
+  pull        下载 OCI 镜像
+  images      列出本地镜像
+  rmi         删除镜像引用
+  exec        在容器 VM 中执行命令
+  ps          列出容器
+  start       启动已停止的容器
+  stop        停止容器
+  rm          删除容器
+  logs        查看容器输出
   status      查看 Job 状态
   kill        终止 Job
 
@@ -189,14 +220,14 @@ Checkpoints:
 Tools:
   replay      回放 Agent 轨迹（安装后可见）
   tui         交互式 Job 终端（安装后可见）
-  feature     查询编译期特性
+  feature     查询运行时实验特性
   help        查看命令详细选项
 ```
 
 ## 安全的第一次运行 {#安全的第一次运行}
 
 ```bash
-pvisor run --safe -- codex
+pvisor spawn --safe -- codex
 pvisor status --review last
 ```
 
@@ -226,7 +257,7 @@ checkpoint 的 Session 报告匹配的 quiesced 状态，快照 raw upper，再�
 
 ## Job 检查点管理
 
-`run` 保持既有选项和默认行为。以下接口已支持停止 Job 的工作区检查点：
+`spawn` 保持既有选项和默认行为。以下接口已支持停止 Job 的工作区检查点：
 
 ```bash
 pvisor checkpoint create ./stage/task --request-id before-refactor --json
@@ -253,7 +284,7 @@ pvisor checkpoint gc ./stage/task --json
 对于支持原生保存的 VM，以下命令封存 CPU、RAM、设备和文件系统状态：
 
 ```bash
-pvisor run --executor vm --rootfs /path/to/rootfs --overlaynet off --stage ./stage/task -- /bin/agent
+pvisor spawn --executor vm --rootfs /path/to/rootfs --overlaynet off --stage ./stage/task -- /bin/agent
 pvisor checkpoint create ./stage/task --kind execution --ram-storage compressed --request-id save-1 --json
 pvisor suspend ./stage/task --ram-storage raw --request-id pause-1 --timeout 2m --json
 pvisor resume ./stage/task --request-id resume-1
@@ -266,21 +297,21 @@ pvisor checkpoint gc ./stage/task --kind execution --json
 
 execution fork 不接受替换命令。指定历史检查点时可以保持父 Job 运行；不指定时，对运行中父 Job 捕获后继续执行，对已暂停父 Job 使用当前 head。子 Job 拥有独立 RAM 和文件系统上层。`--ram-storage raw|compressed` 只影响新捕获，默认 compressed。`resume` 和 execution `fork` 支持 `--eager-ram`，在启动前完整读取 RAM；省略时按需加载。
 
-当前支持 Linux x86_64 和 macOS ARM64 的原生无网络、私有 RAM profile；宿主根目录 `/`、联网设备、共享内存池、可写 RAM backing 和冷页压缩不在这个恢复合同内。`run` 不为保存能力自动关闭网络、DAX 或改变 rootfs；用 `status JOB --json` 查看能力与拒绝原因。恢复要求相同宿主启动、pVisor binary 和固件，不能跨宿主或跨版本恢复。
+当前支持 Linux x86_64 和 macOS ARM64 的原生无网络、私有 RAM profile；宿主根目录 `/`、联网设备、共享内存池、可写 RAM backing 和冷页压缩不在这个恢复合同内。`spawn` 不为保存能力自动关闭网络、DAX 或改变 rootfs；用 `status JOB --json` 查看能力与拒绝原因。恢复要求相同宿主启动、pVisor binary 和固件，不能跨宿主或跨版本恢复。
 
 当 stage 位于工作区内，检查点存储自动放在 guest backing 之外，并记录 Job 归属。必要时恢复副本也使用独立目录，Attempt 记录保留路径供审查和 apply 使用。捕获保存 guest 可见文件，排除 guest 已隐藏的 stage 管理目录；可见文件的内容、元数据及硬链接校验仍然完整。
 
 暂停期间拒绝 `apply/drop` 和工作区捕获；先 `kill JOB` 可撤销恢复权，保留历史检查点，再处理文件变化。execution 检查点的 `list/show/delete` 与工作区检查点共用入口；删除会检查 suspended head、分支引用及存储租约。分支引用保守保留，尚无 Job 删除/归档接口来释放它们。GC 回收本 Job 存储中的未发布事务、删除残留和未引用 RAM 内容，不删除已发布检查点，也不是跨 Job 的全库清理，不清理 daemon 沙箱状态。
 
-原不可变基底管理可通过 `checkpoint import-base JOB ROOTFS --json`、`checkpoint verify-base JOB BASE_ID --json` 使用；导入结果给出独立 rootfs 路径，后续普通 `run --rootfs` 可以使用该路径。独立 `snapshot` 前端保持删除，旧 store 不自动转换为 Job 检查点。实现与验收见[Job 检查点设计](../design/job-checkpoint-cli.md#10-当前实现与验收边界)。
+原不可变基底管理可通过 `checkpoint import-base JOB ROOTFS --json`、`checkpoint verify-base JOB BASE_ID --json` 使用；导入结果给出独立 rootfs 路径，后续普通 `spawn --rootfs` 可以使用该路径。独立 `snapshot` 前端保持删除，旧 store 不自动转换为 Job 检查点。实现与验收见[Job 检查点设计](../design/job-checkpoint-cli.md#10-当前实现与验收边界)。
 
 ## `--safe` 参数预设 {#safe-参数预设}
 
 ```bash
-pvisor run --safe -- claude
-pvisor run --safe --vm --rootfs image=my-agent-image:latest -- codex
-pvisor run --safe -- zcode
-pvisor run --safe --overlaynet-allow inference.example.com:443 -- zcode
+pvisor spawn --safe -- claude
+pvisor spawn --safe --vm --rootfs image=my-agent-image:latest -- codex
+pvisor spawn --safe -- zcode
+pvisor spawn --safe --overlaynet-allow inference.example.com:443 -- zcode
 ```
 
 `--safe` 生成一组命令行参数补丁，经过同一个 CLI 解析器后应用，再应用用户显式参数。
@@ -349,7 +380,7 @@ HOME 状态改动在 Run 结束后丢弃，不包含在工作区 Run Bundle 中�
 ## 文件访问规则
 
 ```bash
-pvisor run --safe --mount /opt/tool:read --access '**/.ssh:deny' --access '**/.env*:warn' -- my-agent
+pvisor spawn --safe --mount /opt/tool:read --access '**/.ssh:deny' --access '**/.env*:warn' -- my-agent
 ```
 
 `--mount SOURCE:read|write` 是 host executor 的显式共享，分别授予只读或持久写入权限；
@@ -473,8 +504,8 @@ Agent 原生的 prepared 或 continued 轨迹可以包含这条用户消息。�
 `disable_thinking` 属于 `[replay]`，也暴露为 `--disable-thinking`。Claude Code
 由协议 bridge 将其应用到上游请求；OpenCode 设置后会省略 `--thinking`。该选项
 不会打开 Gateway capture。可选的 `[run]`、`[overlayfs]` 和 `[overlaynet]` 段会
-创建外层受管 `pvisor run`；它们不改变内部 replay 模型路径。replay 的文件系统
-参数以 `pvisor replay --help` 为准，不能照搬 `run` 的 `--stage/--mount` 写法。
+创建外层受管 `pvisor spawn`；它们不改变内部 replay 模型路径。replay 的文件系统
+参数以 `pvisor replay --help` 为准，不能照搬 `spawn` 的 `--stage/--mount` 写法。
 
 默认情况下，replay 的内部状态、WAL、manifest、新鲜 observation 比较和原生
 工作文件留在 `/tmp/pvisor-sandbox-replay`，并随 sandbox 消失。Replay 不启用
@@ -484,7 +515,7 @@ pVisor Gateway、模型流量 capture store 或 Claude Resume Transport 审计�
 
 ## 一套配置模型
 
-`pvisor run` 只有一份规范 `RunConfig`。CLI 覆盖常用字段，但 `run.inherit_env`
+`pvisor spawn` 只有一份规范 `RunConfig`。CLI 覆盖常用字段，但 `run.inherit_env`
 当前没有对应的直接 CLI 开关。而且 `apply_safe_defaults` 当前会在未指定 `--safe` 的
 非 Codex CLI 命令上清除环境继承；直接 `zcode` 的 host 适配又会重新启用它。
 这些 CLI 路径上的 TOML `inherit_env` 目前不能按配置值生效。
@@ -492,7 +523,7 @@ pVisor Gateway、模型流量 capture store 或 Claude Resume Transport 审计�
 `RunSpec` 用于委托执行，不能与其他 Run 覆盖项组合。pVisor 不会发现隐藏的项目配置文件。
 
 ```bash
-pvisor run \
+pvisor spawn \
   --name my-agent \
   --stage ../stage-001 \
   --mount /opt/tool:stage \
@@ -556,7 +587,7 @@ api_key_env = "OPENAI_API_KEY"
 destination = "./capture"
 ```
 
-用 `pvisor run --config run.toml` 运行。显式 CLI 标量替换 TOML 标量。网络和 Gateway
+用 `pvisor spawn --config run.toml` 运行。显式 CLI 标量替换 TOML 标量。网络和 Gateway
 列表选项替换配置中的完整列表；文件系统的 `--mount` 和 `--access` 追加到配置条目。
 `[overlayfs]` 的序列化字段 `stage`、`mount`、`access`、`max_size`
 分别对应 `--stage`、`--mount`、`--access`、
@@ -566,7 +597,7 @@ destination = "./capture"
 `--container-image IMAGE` 自动选择原生 OCI container executor；
 `--executor container` 让选择显式。传输层生成标准 OCI bundle，使用当前或显式提供的
 兼容 Linux pVisor，挂进 rootfs，设置 process args，并走普通
-`pvisor run --executor host --spec ...` 路径。Agent 命令放在 RunSpec
+`pvisor spawn --executor host --spec ...` 路径。Agent 命令放在 RunSpec
 内，而不是暴露在 OCI runner argv。注入的 pVisor 创建自己的 AgentCtl 并
 返回类型化 RunResult。最终 OverlayFS cwd 和会话 Gateway 配置挂在稳定路径。
 `--container-rootfs PATH` 可直接指定已有 rootfs；否则 pVisor 使用自带 OCI
@@ -574,7 +605,7 @@ image store 准备 `--container-image`。运行时必须是 `runc` 或 `crun`，
 Docker/Podman。用户 mount 是可重复的 TOML inline table，例如：
 
 ```bash
-pvisor run \
+pvisor spawn \
   --container-image example/codex-agent:latest \
   --container-pvisor-binary ./dist/pvisor-linux-amd64 \
   --container-platform linux/amd64 \
@@ -629,7 +660,7 @@ live VM。offload 的新目标路径限于当前 backing 的同一文件系统�
 例如只覆盖去重，不清空其他设置：
 
 ```bash
-pvisor run --config run.toml --executor vm --vm-ram-dedup=false -- /bin/sleep 600
+pvisor spawn --config run.toml --executor vm --vm-ram-dedup=false -- /bin/sleep 600
 ```
 
 省略 `--executor` 时，值为 true 的布尔选项或上述显式路径选项会选择 VM；
@@ -756,7 +787,7 @@ backing/control 路径之外。
 
 ```bash
 pvisor cache prepare-rootfs --rootfs /srv/linux-rootfs --base-store /srv/pvisor-bases
-pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
+pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base BASE_ID -- /bin/sh
 ```
 
 本地准备不使用缓存服务；成功输出包含 `schema_version`、`prepared_rootfs`
@@ -789,7 +820,7 @@ rootfs 的 SDK 调用（包括仅以 `with_rootfs_base` 提供 owner），以及
 ```bash
 pvisor cache prepare-workspace --workspace /srv/project --base-store /srv/pvisor-workspace-bases
 cd /srv/project
-pvisor run --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
+pvisor spawn --vm --rootfs-base-store /srv/pvisor-bases --rootfs-base ROOTFS_ID \
   --workspace-base-store /srv/pvisor-workspace-bases --workspace-base WORKSPACE_ID \
   --stage /srv/pvisor-stages/review-1 -- /bin/sh
 ```
@@ -878,6 +909,6 @@ VM 镜像启动会自动探测默认 socket；服务可用时，将远程镜像�
 完整协议、限制和 SSH 远程访问方式见 [共享镜像缓存协议](shared-image-cache.md)。
 
 
-通过 `pvisor-daemon serve --sandbox --memory-pool` 启用 daemon 自有实验池；独立 `memory-pool --directory DIR` 组件使用 daemon 准备的私有配置。原生 `pvisor run --vm-memory-pool SOCKET` 仍是带有平台／协议限制的显式运行时选项，不是服务启动器。
+通过 `pvisor-daemon serve --sandbox --memory-pool` 启用 daemon 自有实验池；独立 `memory-pool --directory DIR` 组件使用 daemon 准备的私有配置。原生 `pvisor spawn --vm-memory-pool SOCKET` 仍是带有平台／协议限制的显式运行时选项，不是服务启动器。
 
 物理/legacy 池丢失会使依赖 VM 失败；Linux sealed 压缩客户端保留本地恢复，停止新发布，通过 daemon `--memory-pool-mode compressed` 选择。启用与预算见 [daemon 池](../guides/daemon/index.md#memory-pool)；历史 macOS 压缩池结果保留其[版本范围](../design/memory-optimization/proof-of-concept.md#v1-integration)。
