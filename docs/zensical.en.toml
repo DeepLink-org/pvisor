@@ -59,10 +59,7 @@ nav = [
     ] },
   ] },
   { "Foundations and reference" = [
-    { "About pVisor" = [
-      { "What is PolicyVisor?" = "why/index.md" },
-      { "Should you use pVisor?" = "why/comparisons.md" },
-    ] },
+    { "pVisor overview" = "why/index.md" },
     { "Execution concepts" = [
       { "Jobs and storage" = "concepts/jobs.md" },
       { "Staging and apply semantics" = "concepts/staging.md" },

@@ -25,7 +25,7 @@
   "community/governance.md": "ccf42470c2ecacdafaa878114bb2d387a4f5b2fb300d3a26cce346e56b2f6f63",
   "community/index.md": "e7bd392882cfb197fe143ce4890ef30f448c3a59f67a2477703fadf405ed6168",
   "community/releasing.md": "8ea638c738a2a85f49e04edcef06e2e87f6338dc8f2b6daedfa2d36a9b073959",
-  "community/roadmap.md": "7e1b9b629df58056a6d6087ca8d6accb670fe1bb35e3007e64bc5cff7ca33990",
+  "community/roadmap.md": "8cab75ebb0ca657560d9415f06528ff7054777c3f75c1bc608352165853686fe",
   "community/testing.md": "d37f0d56c81044733d93bd677b58d9f9599c7c92bb6cf08ddf7985d698158f72",
   "concepts/capabilities-and-evidence.md": "cc92c913753741bf0c05fc683538931d57b8856c686ba18303344bc4659add1b",
   "concepts/jobs.md": "c26ae9df95389fecc084e280fad3e0a0da8863cf47687dcdff2f38e5bce06f30",
@@ -122,6 +122,6 @@
   "security/threat-model.md": "cb0d5f6a4bfd014e416f36c1dcf48462aee32ca1fb2dfc669aae7ead747c9fcc",
   "start/first-run.md": "bb4cc250fa5e86139adf2ced0a8e0fe274d1bbf375c33ef6c85687a546bfe1ba",
   "start/installation.md": "68b61474df8f178fd7d3bc5b5da452c9959104e1a543c97e75372f2db5adb923",
-  "why/comparisons.md": "31d7a4aa35aedfc5c9dde35de6f693d17f112a8985e2dd66fa0392990e6326a9",
-  "why/index.md": "591cb5cc8c4f7f47de0526685e1c045600b63b540ec5a888cd65d8272b304be8"
+  "why/comparisons.md": "5f7dadab929c7449b227323a58e9e3e118746256d48172b8f32c20a181d0f858",
+  "why/index.md": "9ad2ba90a883091724c078e512cfe3321724e6f6e0be2d05407aa12c74b32ce8"
 }

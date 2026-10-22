@@ -1,52 +1,37 @@
-# What is PolicyVisor?
+# pVisor overview {#overview}
 
-**PolicyVisor (pVisor) provides execution environments, policy controls, and records for agent CLIs, scripts, and tool calls.** Use it to review a local agent's file changes, or integrate it into inference, evaluation, and agentic RL post-training systems to manage task execution and state.
+<span id="what-is-policyvisor"></span>
 
-## Two workflows {#workflows}
+**PolicyVisor (pVisor) is an agent-native sandbox framework that provides file-level oversight of access and modifications, sandbox execution lifecycle management, and image and memory resource optimizations. Together, these capabilities support secure, controlled, high-density agent execution.**
 
-| Scenario | Your task | pVisor's role | Who decides the result |
-| --- | --- | --- | --- |
-| [Local agent workflows](../guides/index.md) | Let an agent modify a project, then choose which changes to accept | With staging enabled, retain candidate files for review, selective apply, and execution evidence | You or a CI review step |
-| [Agent execution infrastructure](../guides/infrastructure/index.md) | Prepare environments, run tools, and deliver results for inference requests, evaluation tasks, or rollouts | Provide executors, lifecycle management, and the state and resource mechanisms exposed by the selected interface | The agent service, evaluator, or trainer |
+**Agent-Native:** pVisor integrates file-level oversight, sandbox lifecycle management, and resource reuse throughout agent execution. It uses files as the unit of management to bound access and modifications, isolate candidate changes, and support review; coordinates sandbox pause, memory offload, and resume through Host-side I/O management to actively reclaim resident memory from idle sandboxes during model waits; and uses on-demand image loading, memory sharing, and compression to reduce redundant resource use during branching exploration and rollback. Together, these mechanisms support secure, controlled, high-density agent execution.
 
-Both workflows can start on one machine. An individual can run several agents in parallel; a platform developer can validate a rollout with one Job. Task volume and human involvement are separate choices.
+<span id="responsibilities-of-the-execution-layer"></span>
 
-## Reduce intervention during execution
+## pVisor's place in an agent system {#system-role}
 
-For local development, define the task's access scope, let the agent execute, then inspect the outcome and candidate changes. Enable staging with `--safe`, `--ask`, or an explicit `--stage`; ordinary host Jobs write directly to the workspace by default. Follow [your first run](../start/first-run.md) for a complete demonstration.
+pVisor integrates agent-oriented management into sandbox execution: it oversees file and network interactions, coordinates sandbox lifecycles, and optimizes image and memory resources on the Host. The VM executor example below shows pVisor as a module within the sandbox execution framework.
 
-During review, apply selected paths or discard candidates that have not been applied. [Staging and apply semantics](../concepts/staging.md) define file acceptance and conflict handling; file staging does not undo remote API calls, database writes, or messages already sent.
+![Agent above a Host sandbox framework containing pVisor and its runtime, with the guest VM below](../assets/diagrams/pvisor/agent-host-guest-en.svg)
 
-## Decouple supervision from execution volume
+The sandbox runtime / VMM runs the VM and its devices. pVisor coordinates the runtime through lifecycle and resource-management integration points, while Host-side [OverlayCore](../design/overlayfs.md) and [OverlayNet](../design/overlaynet.md) manage guest file and network I/O. These module relationships require corresponding runtime integration points; support for automatic waiting management is described in the [experiment record](../design/experimental/vcpu-idle-offload/index.md). The Agent or upper-level system owns decisions, result acceptance, reward computation, and cross-node scheduling.
 
-The execution layer provides three properties you can inspect:
+<span id="decouple-supervision-from-execution-volume"></span>
+<span id="reduce-intervention-during-execution"></span>
+<span id="task-flow"></span>
+<span id="when-to-use"></span>
 
-| Property | Mechanism | What to check |
-| --- | --- | --- |
-| Bounded | Executors install file, network, and resource controls | Controls actually installed on the current platform, and their gaps |
-| Reversible | Unaccepted staged files can be discarded or kept as a branch | Staging scope, applied state, and fork prerequisites |
-| Checkable | Jobs retain identity, outcomes, and execution observations | Exit results, installed controls, and file changes |
+## Use cases {#workflows}
 
-[Capabilities, evidence, and guarantee boundaries](../concepts/capabilities-and-evidence.md) distinguish requested policy from installed controls. Records support human or programmatic decisions; applications still define their own acceptance criteria.
+**Local agent workflows**
 
-Platforms also manage environment preparation, tool execution, model waiting, and failure rework. Image-content reuse, supported execution checkpoints, and memory-sharing or reclamation mechanisms address those stages. See the [infrastructure overview](../guides/infrastructure/index.md) for choices and current evidence.
+To limit an agent's impact on your workspace and review and accept file changes after execution, start with [your first run](../start/first-run.md) and work through execution, review, and apply.
 
-## Responsibilities of the execution layer
+**Agent execution infrastructure**
 
-The agent or application chooses which tools to call. pVisor manages execution lifecycle and access boundaries through the selected interface. Model sampling, reward computation, task queues, and cross-node placement belong to the caller or external orchestration system.
+To manage multiple execution environments for inference, evaluation, or post-training and reduce resource use during model waits and branching exploration, start with the [infrastructure overview](../guides/infrastructure/index.md) to choose an integration interface and runtime configuration.
 
-Native Jobs, the Rust Runtime, the daemon Sandbox API, and the containerd shim have distinct identities and interface scopes. Use the [integration matrix](../guides/infrastructure/integration.md) to choose an entry point; check each capability's exposure even when implementations share underlying mechanisms.
+<span id="trust-ladder"></span>
 
-## Today, and after {#trust-ladder}
-
-Human involvement and execution volume are independent axes:
-
-- **Involvement:** approve individual commands, review after a task, spot-check after automated checks, or audit afterward.
-- **Volume:** one task, local concurrency, or multiple machines scheduled by an external system.
-
-The original L0–L3 labels remain a reference for supervision: L0 approves commands, L1 reviews individual results, L2 spot-checks using policy and evidence, and L3 focuses on audits and exceptions. Increasing concurrency does not establish L2/L3 acceptance rules; those rules and acceptance criteria remain in the [roadmap](../community/roadmap.md).
-
-!!! note "Validate capabilities and benefits separately"
-    Native Job review has an operational workflow; daemon delivery and validation gaps are listed in the [interface matrix](../guides/infrastructure/integration.md#capabilities). Benefits to human supervision time, full RL training throughput, and training quality have not been established. Existing [benchmarks](../benchmarks/index.md) support conclusions only within their own workloads and measurement scopes.
-
-Complete a review through [local workflows](../guides/index.md), or choose an entry point through [execution infrastructure](../guides/infrastructure/index.md). For deciding whether your existing tools suffice, see [fit and comparisons](comparisons.md).
+!!! note "Support scope"
+    Isolating file changes requires [staging](../concepts/staging.md), which does not undo external API calls, database writes, or other external side effects. Isolation and resource management depend on the [executor](../security/executor-boundaries.md), [interface](../guides/infrastructure/integration.md#capabilities), and experimental status; see the corresponding [benchmarks](../benchmarks/index.md) for performance evidence.

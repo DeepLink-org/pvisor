@@ -1,52 +1,37 @@
-# PolicyVisor 是什么
+# pVisor 概览 {#overview}
 
-**PolicyVisor（pVisor）为 Agent CLI、脚本和工具调用提供执行环境、策略控制与运行记录。** 你可以用它审查本地 Agent 的文件改动，也可以把它接入推理、评测和 Agentic RL 后训练系统，管理任务的执行与状态。
+<span id="policyvisor"></span>
 
-## 两种使用场景 {#workflows}
+**PolicyVisor（pVisor）是一个 Agent 原生沙箱框架，提供文件级的访问与修改监管、沙箱执行生命周期管理，以及镜像与内存资源优化，共同支持安全、可控、高密度的 Agent 执行。**
 
-| 场景 | 你需要完成的工作 | pVisor 的作用 | 结果由谁决定 |
-| --- | --- | --- | --- |
-| [本地 Agent 工作流](../guides/index.md) | 让 Agent 修改项目，再选择接受哪些改动 | 启用暂存后保留候选文件，提供审查、选择性合入与执行证据 | 你或 CI 的审查步骤 |
-| [Agent 执行基础设施](../guides/infrastructure/index.md) | 为推理请求、评测任务或 rollout 准备环境、运行工具并交付结果 | 提供执行器、生命周期管理及相应入口支持的状态和资源机制 | 上层 Agent 服务、评测器或训练器 |
+**Agent-Native：** pVisor 将文件级监管、沙箱生命周期管理和资源复用贯穿 Agent 执行过程。以文件为管理粒度，限定访问与修改范围，隔离候选改动并支持审查；通过 Host 侧 I/O 管理协调沙箱暂停、内存卸载与恢复，在模型等待期间主动回收空闲沙箱的驻留内存；通过镜像按需加载、内存共享与压缩，减少分支探索和回退中的重复资源占用。这些机制共同支持安全、可控、高密度的 Agent 执行。
 
-两条路线可以从一台机器开始。个人可以并行运行多个 Agent，平台开发者也可以先用单个 Job 验证一次 rollout；任务数量与人工介入方式分别选择。
+<span id="_3"></span>
 
-## 减少执行过程中的人工介入
+## pVisor 在 Agent 系统中的位置 {#system-role}
 
-本地开发时，先为任务设定访问范围，让 Agent 执行，再检查结果与候选改动。暂存通过 `--safe`、`--ask` 或显式 `--stage` 启用；普通 host Job 默认直接写工作区。完整演示见[第一次运行](../start/first-run.md)。
+pVisor 将面向 Agent 的管理能力接入沙箱执行体系，在 Host 侧监管文件与网络交互、协调沙箱生命周期，并优化镜像与内存资源。下图以 VM 执行器为例，展示 pVisor 在沙箱执行框架中的集成位置。
 
-审查阶段可以选择合入部分路径，或丢弃尚未合入的候选。文件接受的范围与冲突处理由[暂存与 apply 语义](../concepts/staging.md)定义；远程 API、数据库写入和已经发送的消息不由文件暂存撤销。
+![上层 Agent、包含 pVisor 管理模块和运行时的 Host 沙箱执行框架、下层 guest VM](../assets/diagrams/pvisor/agent-host-guest-zh.svg)
 
-## 把监督和执行量解耦
+沙箱运行时 / VMM 承担 VM 的运行与设备执行；pVisor 通过生命周期与资源管理接点协调运行时，通过 Host 侧的 [OverlayCore](../design/overlayfs.md)、[OverlayNet](../design/overlaynet.md) 管理 guest 的文件与网络 I/O。图中的模块关系表示需要相应运行时接点的集成，自动等待管理的支持范围见[实验记录](../design/experimental/vcpu-idle-offload/index.md)。Agent 或上层系统负责决策、结果接受、奖励计算及跨节点调度。
 
-执行层提供三种可检查的性质：
+<span id="_2"></span>
+<span id="_1"></span>
+<span id="task-flow"></span>
+<span id="when-to-use"></span>
 
-| 性质 | 对应机制 | 使用时检查什么 |
-| --- | --- | --- |
-| 有界 | 执行器安装文件、网络与资源控制 | 当前平台实际生效的控制和缺口 |
-| 可逆 | 尚未接受的暂存文件可以丢弃或保留为分支 | 暂存范围、合入状态与分叉前提 |
-| 可查 | Job 保留身份、运行结果和执行观察 | 退出结果、实际控制与文件变化 |
+## 使用场景 {#workflows}
 
-策略要求与实际控制的区别见[能力、证据与保证边界](../concepts/capabilities-and-evidence.md)。记录供人或程序判断结果；应用仍需定义自己的接受条件。
+**本地 Agent 工作流**
 
-平台侧还要管理环境准备、工具执行、模型等待和失败重做的成本。镜像内容复用、受支持的执行检查点及内存共享或回收机制服务于这些阶段；选择方法和当前证据见[基础设施总览](../guides/infrastructure/index.md)。
+当你希望限制 Agent 对工作区的影响，并在执行后审查和接受文件改动时，从[第一次运行](../start/first-run.md)开始，完成一次执行、审查与合入。
 
-## 执行层的职责
+**Agent 执行基础设施**
 
-Agent 或应用决定调用什么工具，pVisor 管理选定入口下的执行生命周期和访问边界。模型采样、奖励计算、任务队列及跨节点放置由调用方或外部编排系统负责。
+当你需要为推理、评测或后训练管理多个执行环境，并降低模型等待与分支探索中的资源占用时，从[基础设施总览](../guides/infrastructure/index.md)开始，选择接入方式与运行配置。
 
-原生 Job、Rust Runtime、daemon Sandbox API 与 containerd shim 有不同的身份和接口范围。[接入方式矩阵](../guides/infrastructure/integration.md)用于选择入口；底层共用机制是否通过某个接口暴露，需要逐项确认。
+<span id="trust-ladder"></span>
 
-## 今天，以及之后 {#trust-ladder}
-
-人工介入与执行规模是两条独立的轴：
-
-- **介入方式**：逐条批准、任务后审查、自动检查后抽查，或事后审计。
-- **执行规模**：单个任务、本机并发，或由外部系统调度多台机器。
-
-原有 L0—L3 描述保留为监督方式的参照：L0 逐条批准，L1 逐项审查，L2 按策略与证据抽查，L3 以审计和例外处理为主。增加并发不会自动建立 L2/L3 的接受规则；这些规则与验收条件仍见[路线图](../community/roadmap.md)。
-
-!!! note "能力与收益分别验证"
-    原生 Job 审查有操作流程；daemon 的交付与验证缺口见[接口矩阵](../guides/infrastructure/integration.md#capabilities)。人工监督时间、完整 RL 训练吞吐与训练质量的收益尚未建立，现有[基准测试](../benchmarks/index.md)只支持各自负载与测量范围内的结论。
-
-从[本地工作流](../guides/index.md)完成一次审查，或从[执行基础设施](../guides/infrastructure/index.md)确定接入入口。已有工具是否足够，见[选型与方案比较](comparisons.md)。
+!!! note "支持范围"
+    文件改动隔离需启用[暂存](../concepts/staging.md)，且不撤销外部 API、数据库等副作用。隔离与资源管理能力以[执行器](../security/executor-boundaries.md)、[接口](../guides/infrastructure/integration.md#capabilities)及实验状态为准；性能收益见对应[基准测试](../benchmarks/index.md)。
