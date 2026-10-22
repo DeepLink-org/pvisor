@@ -1,6 +1,8 @@
 //! Filesystem-backed logical checkpoints for Agent Runs.
 
-use crate::runtime::{OverlayState, RunRecord, restore_overlay_upper, snapshot_overlay_upper};
+use crate::runtime::{
+    OverlayState, RunRecord, UpperCopySite, restore_overlay_upper_as, snapshot_overlay_upper,
+};
 use crate::unix_now_ms;
 use crate::util::write_private_json;
 use pvisor_journal::api::{DurableFiles, Persistence};
@@ -153,7 +155,13 @@ fn create_checkpoint(
         let journal = record.stage_dir().join("preimages");
         if journal.is_dir() {
             pvisor_overlay_core::stage::sync_journal(&journal)?;
-            restore_overlay_upper(&journal, &pending.join("preimages"))?;
+            // Publishing a checkpoint: this copy belongs to the same site as the
+            // upper snapshot above, not to a branch restore.
+            restore_overlay_upper_as(
+                &journal,
+                &pending.join("preimages"),
+                Some(UpperCopySite::CheckpointSnapshot),
+            )?;
         } else {
             Persistence::create_dir_all_durable(&pending.join("preimages"))?;
         }
@@ -355,8 +363,18 @@ pub fn restore_logical_checkpoint(
                 .all(|destination| !overlaps(source, destination))),
         "checkpoint sources and restore destinations must not overlap"
     );
-    restore_overlay_upper(&sources[0], &destinations[0])?;
-    restore_overlay_upper(&sources[1], &destinations[1])?;
+    // Materializing a branch from published snapshots is its own copy site,
+    // distinct from publishing the checkpoint that produced them.
+    restore_overlay_upper_as(
+        &sources[0],
+        &destinations[0],
+        Some(UpperCopySite::RestoreFork),
+    )?;
+    restore_overlay_upper_as(
+        &sources[1],
+        &destinations[1],
+        Some(UpperCopySite::RestoreFork),
+    )?;
     Ok(())
 }
 

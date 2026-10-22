@@ -351,17 +351,87 @@ fn metadata_type(metadata: &fs::Metadata) -> ChangeEntryType {
     }
 }
 
+/// Which upper copy a caller is performing.
+///
+/// The hole-preserving copy candidate gates itself per site so that the
+/// checkpoint snapshot and a branch restore can be attributed separately. In a
+/// default build this is only a label: no copy bytes change.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UpperCopySite {
+    /// Publishing a checkpoint: a stage upper or preimage journal into a
+    /// pending snapshot that is not yet visible as a savepoint.
+    CheckpointSnapshot,
+    /// Materializing a branch: a published checkpoint snapshot into the new
+    /// child's private upper, before the child is admitted.
+    RestoreFork,
+}
+
+/// Compiled-in gate for hole-preserving copies of regular files.
+///
+/// False unless the `sparse-checkpoint-copy` feature is compiled in *and*
+/// the run-time selector names this site. Platform support is part of the gate,
+/// so non-Linux builds never take the candidate.
+fn preserve_holes(site: UpperCopySite) -> bool {
+    #[cfg(all(feature = "sparse-checkpoint-copy", target_os = "linux"))]
+    {
+        crate::sparse_copy::preserve_holes(site)
+    }
+    #[cfg(not(all(feature = "sparse-checkpoint-copy", target_os = "linux")))]
+    {
+        let _ = site;
+        false
+    }
+}
+
+/// Copy a regular file for one labelled site.
+///
+/// Default builds, unselected sites and non-Linux targets copy bytes; only the
+/// hole-preserving path may preserve source holes. Either way the destination is
+/// a new independent inode and metadata/durability stay the caller's responsibility.
+#[cfg(all(feature = "sparse-checkpoint-copy", target_os = "linux"))]
+fn copy_site_regular(source: &Path, destination: &Path, site: UpperCopySite) -> io::Result<()> {
+    crate::sparse_copy::copy_regular_preserving_holes(source, destination, site)
+}
+
+#[cfg(not(all(feature = "sparse-checkpoint-copy", target_os = "linux")))]
+fn copy_site_regular(source: &Path, destination: &Path, _site: UpperCopySite) -> io::Result<()> {
+    fs::copy(source, destination).map(|_| ())
+}
+
 /// Copy the raw upper tree without interpreting whiteouts or opaque markers.
 /// The destination is replaced and can later seed another directory upper.
 pub fn snapshot_overlay_upper(
     record: &OverlayRecord,
     destination: &Path,
 ) -> Result<(), OverlayError> {
-    restore_overlay_upper(record.upper.path(), destination)
+    restore_overlay_upper_as(
+        record.upper.path(),
+        destination,
+        Some(UpperCopySite::CheckpointSnapshot),
+    )
 }
 
 /// Restore a raw upper snapshot into a directory upper.
+///
+/// This keeps the original byte-copy behaviour; callers that publish a
+/// checkpoint or materialize a branch use [`restore_overlay_upper_as`] so the
+/// copy can be attributed to a site.
 pub fn restore_overlay_upper(source: &Path, destination: &Path) -> Result<(), OverlayError> {
+    restore_overlay_upper_as(source, destination, None)
+}
+
+/// Restore a raw upper snapshot for one labelled copy site.
+///
+/// `site: None` is the original byte-for-byte copy. `Some(site)` only changes how
+/// regular-file contents are produced, and only when the hole-preserving copy
+/// candidate is compiled in and selected at run time. Every other entry kind,
+/// the hardlink table, metadata installation, directory syncs and the parent
+/// directory sync stay identical.
+pub fn restore_overlay_upper_as(
+    source: &Path,
+    destination: &Path,
+    site: Option<UpperCopySite>,
+) -> Result<(), OverlayError> {
     if !source.is_dir() {
         return Err(OverlayError::InvalidConfig(format!(
             "snapshot source is not a directory: {}",
@@ -372,8 +442,9 @@ pub fn restore_overlay_upper(source: &Path, destination: &Path) -> Result<(), Ov
         remove_path(destination)?;
     }
     fs::create_dir_all(destination)?;
+    let sparse_site = site.filter(|site| preserve_holes(*site));
     let mut hard_links = HashMap::new();
-    snapshot_directory_raw(source, destination, &mut hard_links)?;
+    snapshot_directory_raw(source, destination, &mut hard_links, sparse_site)?;
     if let Some(parent) = destination.parent() {
         File::open(parent)?.sync_all()?;
     }
@@ -1922,6 +1993,7 @@ fn snapshot_directory_raw(
     source: &Path,
     destination: &Path,
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
+    sparse_site: Option<UpperCopySite>,
 ) -> Result<(), OverlayError> {
     ensure_directory(destination)?;
     for entry in fs::read_dir(source)? {
@@ -1930,6 +2002,7 @@ fn snapshot_directory_raw(
             &entry.path(),
             &destination.join(entry.file_name()),
             hard_links,
+            sparse_site,
         )?;
     }
     copy_snapshot_metadata(source, destination)?;
@@ -1941,11 +2014,12 @@ fn snapshot_entry_raw(
     source: &Path,
     destination: &Path,
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
+    sparse_site: Option<UpperCopySite>,
 ) -> Result<(), OverlayError> {
     let metadata = fs::symlink_metadata(source)?;
     let kind = metadata.file_type();
     if kind.is_dir() {
-        return snapshot_directory_raw(source, destination, hard_links);
+        return snapshot_directory_raw(source, destination, hard_links, sparse_site);
     }
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent)?;
@@ -1961,7 +2035,12 @@ fn snapshot_entry_raw(
             fs::hard_link(existing, destination)?;
             return Ok(());
         }
-        fs::copy(source, destination)?;
+        match sparse_site {
+            Some(site) => copy_site_regular(source, destination, site)?,
+            None => {
+                fs::copy(source, destination)?;
+            }
+        }
         if metadata.nlink() > 1 {
             hard_links.insert(identity, destination.to_path_buf());
         }

@@ -6,6 +6,12 @@ authors.workspace = true
 license.workspace = true
 description = "FUSE-neutral portable overlay filesystem core for pVisor"
 
+[features]
+default = []
+# Hole-preserving copies of regular files. Off by default; the copy sites
+# additionally require an explicit PVISOR_SPARSE_CHECKPOINT_COPY selection.
+sparse-checkpoint-copy = []
+
 [dependencies]
 anyhow.workspace = true
 fs2.workspace = true
