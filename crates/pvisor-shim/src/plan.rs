@@ -734,10 +734,7 @@ impl ContainerPlan {
                 // Intranet mirrors and model hubs commonly resolve to
                 // private space; hostname rules reject private resolutions
                 // unless the task opts in.
-                let allow_private = self
-                    .annotations
-                    .get(format!("{ANNOTATION_PREFIX}vm.network.allow-private").as_str())
-                    .is_some_and(|value| value == "true");
+                let allow_private = vm_network_allow_private_enabled(&self.annotations);
                 let allow = self
                     .annotations
                     .get(format!("{ANNOTATION_PREFIX}vm.network.allow").as_str())
@@ -798,6 +795,17 @@ pub enum VmNetworkMode {
     Off,
     Public,
     Allowlist,
+}
+
+/// True only for `io.pvisor.vm.network.allow-private=true`: the task opts
+/// its hostname egress rules into private-space resolutions (intranet
+/// mirrors, office-network relays). Applies to both the `vm.network`
+/// annotation path and the OpenSandbox egress-gate path; any other value
+/// keeps the anti-DNS-rebinding default of rejecting private resolutions.
+pub fn vm_network_allow_private_enabled(annotations: &HashMap<String, String>) -> bool {
+    annotations
+        .get(format!("{ANNOTATION_PREFIX}vm.network.allow-private").as_str())
+        .is_some_and(|value| value == "true")
 }
 
 /// True unless `io.pvisor.vm.agent=off`: VMs boot the guest agent so exec

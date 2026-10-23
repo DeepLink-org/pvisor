@@ -293,9 +293,22 @@ regression, not a mystery.
   sandbox-scoped gate file; a VM workload that sees the egress-auth pod
   annotation boots its overlaynet attachment from that policy instead of
   the `io.pvisor.vm.network` annotation (deny-by-default rules become an
-  allowlist, allow-by-default keeps the network public with deny rules).
-  The 3-second gate window only spans the sidecar's Create, which kubelet
-  issues milliseconds after the workload's Start.
+  allowlist; allow-by-default keeps the network public with deny rules,
+  where allow entries are redundant — deny rules win and the default
+  already admits everything else — and are dropped at compilation instead
+  of failing the policy). The 3-second gate window only spans the
+  sidecar's Create, which kubelet issues milliseconds after the workload's
+  Start. The gate stays a live channel for the task's lifetime: a runner
+  thread re-reads it and hot-swaps the compiled overlaynet policy on every
+  change (a rule set that fails to compile keeps the previous policy and is
+  logged). The sidecar's own runtime API can only update nftables inside
+  the pod netns, which VM traffic never traverses — republishing the gate
+  file is the dynamic-policy contract for VM workloads. The sidecar rule
+  syntax has no private-address opt-in, so the pod-level
+  `io.pvisor.vm.network.allow-private: "true"` annotation carries it: with
+  it, an explicitly allowed target may resolve into private space
+  (office-network relays, intranet registries); without it hostname rules
+  keep rejecting private resolutions, the anti-DNS-rebinding default.
 - **execd-installer init container** (CRI annotations: container name
   `execd-installer` plus an `/execd` image): under `io.pvisor.executor=vm`
   pods it becomes a **synthetic success** — the task reports readiness,

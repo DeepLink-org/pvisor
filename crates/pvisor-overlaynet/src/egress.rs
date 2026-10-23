@@ -43,18 +43,27 @@ pub(crate) enum EgressError {
 ///
 /// The compiled policy remains an invariant and an injected controller may
 /// only narrow it. The injected registry shares identical bandwidth buckets
-/// with the explicit proxy running in the same Attempt.
+/// with the explicit proxy running in the same Attempt. The policy lives
+/// behind a shared cell so a caller-supplied replacement (for example a
+/// republished egress gate) takes effect for every flow authorized after
+/// the swap; in-flight authorizations may still complete under the previous
+/// policy.
 #[derive(Clone)]
 pub struct EgressRuntime {
-    policy: NetworkPolicy,
+    policy: Arc<std::sync::RwLock<NetworkPolicy>>,
     controller: Arc<dyn ControlController>,
     bandwidth: BandwidthRegistry,
 }
 
 impl std::fmt::Debug for EgressRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let policy = self
+            .policy
+            .read()
+            .map(|policy| format!("{policy:?}"))
+            .unwrap_or_else(|_| "<poisoned>".into());
         f.debug_struct("EgressRuntime")
-            .field("policy", &self.policy)
+            .field("policy", &policy)
             .finish_non_exhaustive()
     }
 }
@@ -66,10 +75,35 @@ impl EgressRuntime {
         bandwidth: BandwidthRegistry,
     ) -> Self {
         Self {
-            policy,
+            policy: Arc::new(std::sync::RwLock::new(policy)),
             controller,
             bandwidth,
         }
+    }
+
+    /// Atomically replace the compiled policy. The caller supplies an
+    /// already-compiled policy (compilation failures never weaken the
+    /// running policy); clones of this runtime observe the swap because the
+    /// cell is shared.
+    pub fn replace_policy(&self, policy: NetworkPolicy) {
+        if let Ok(mut slot) = self.policy.write() {
+            *slot = policy;
+        }
+    }
+
+    fn current_policy(&self) -> NetworkPolicy {
+        self.policy
+            .read()
+            .map(|slot| slot.clone())
+            .unwrap_or_else(|_| {
+                // A poisoned lock only happens after a panic mid-read; the
+                // fail-closed answer is the empty deny policy.
+                NetworkPolicy::compile(&crate::policy::NetworkConfig {
+                    mode: crate::policy::NetworkMode::NoNetwork,
+                    ..Default::default()
+                })
+                .expect("no-network policy compiles")
+            })
     }
 
     pub(crate) async fn authorize_tcp(
@@ -78,6 +112,7 @@ impl EgressRuntime {
         host: &str,
         port: u16,
     ) -> Result<(Vec<SocketAddr>, BandwidthSession), EgressError> {
+        let policy = self.current_policy();
         let request = NetworkAccessRequest {
             run_id: context.run_id.clone().map(RunId),
             attempt_id: context.attempt_id.clone().map(AttemptId),
@@ -88,7 +123,7 @@ impl EgressRuntime {
         };
         let authorized = authorize_target_with_policy(
             self.controller.as_ref(),
-            &self.policy,
+            &policy,
             request,
             ResolvedAddressPolicy::HostConnectorAliases,
         )
@@ -99,10 +134,7 @@ impl EgressRuntime {
         })?;
         let bandwidth = self
             .bandwidth
-            .session(
-                self.policy
-                    .matching_limits(host, Some(port), &authorized.addresses),
-            )
+            .session(policy.matching_limits(host, Some(port), &authorized.addresses))
             .await;
         Ok((authorized.addresses, bandwidth))
     }
@@ -272,5 +304,53 @@ mod tests {
         for host in ["127.0.0.1.example.com", "192.168.1.1", "example.com"] {
             assert!(!is_loopback_destination(host), "{host}");
         }
+    }
+
+    #[tokio::test]
+    async fn policy_replacement_takes_effect_for_new_flows() {
+        use super::{DenyReason, NetworkPolicy};
+        use crate::bandwidth::BandwidthRegistry;
+        use crate::policy::{NetworkAccessRule, NetworkConfig, NetworkMode};
+        use pvisor_core::PolicyControlController;
+
+        let deny = NetworkPolicy::compile(&NetworkConfig {
+            mode: NetworkMode::NoNetwork,
+            ..NetworkConfig::default()
+        })
+        .unwrap();
+        let runtime = super::EgressRuntime::with_bandwidth_registry(
+            deny,
+            std::sync::Arc::new(PolicyControlController),
+            BandwidthRegistry::default(),
+        );
+        let context = super::EgressContext::default();
+        let error = runtime
+            .authorize_tcp(&context, "localhost", 80)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            super::EgressError::Denied(DenyReason::NoNetwork)
+        ));
+
+        let allow = NetworkPolicy::compile(&NetworkConfig {
+            mode: NetworkMode::Allowlist,
+            rules: vec![NetworkAccessRule {
+                host: "localhost".into(),
+                ports: vec![80],
+                transports: Vec::new(),
+                allow_private_ips: true,
+            }],
+            ..NetworkConfig::default()
+        })
+        .unwrap();
+        // A clone shares the policy cell, exactly like the VM backend holding
+        // a clone of the runtime the attachment keeps.
+        runtime.clone().replace_policy(allow);
+        let (addresses, _) = runtime
+            .authorize_tcp(&context, "localhost", 80)
+            .await
+            .unwrap();
+        assert!(!addresses.is_empty());
     }
 }
