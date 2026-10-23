@@ -49,6 +49,7 @@ BACKEND_LABELS = {
     "fc-system": "Firecracker",
     "qemu": "QEMU q35",
     "qemu-microvm": "QEMU microvm",
+    "agentenv": "AgentENV",
 }
 
 
@@ -205,7 +206,14 @@ def collect(protocol, records):
             stderr=record.get("stderr", record.get("stderr_path")),
             error=record.get("error"),
         )
-        for field in ("wrapper_prepare_ns", "job_ns", "exit_after_done_ns"):
+        for field in (
+            "wrapper_prepare_ns",
+            "job_ns",
+            "exit_after_done_ns",
+            "output_export_ns",
+            "host_validation_ns",
+            "cleanup_ns",
+        ):
             if number(record.get(field)):
                 environment[field.removesuffix("_ns") + "_ms"] = record[field] / 1e6
         for field, value in record.get("resource", {}).items():
@@ -298,6 +306,7 @@ def summarize(protocol, records):
         status="complete_exploratory"
         if len(cells) == len(selected) * len(backends)
         else "incomplete_cells_retained",
+        comparison_scope=protocol.get("comparison_scope", {}),
         statistical_scope=dict(
             independent_environments_per_case_backend=samples,
             sample_ids=sample_ids,
@@ -305,7 +314,11 @@ def summarize(protocol, records):
             estimator="median of independent environment observations; sum three rounds inside each environment before the aggregate median",
             comparison="cross-mode descriptive levels; no paired causal speedup or confidence interval",
             ready="launch to payload Ready before case setup; teardown excluded; per-case cohorts, primary M01 only",
-            task="payload work plus declared final synchronization; setup, validation, startup and exit excluded",
+            task=(
+                "common work primary; final synchronization separate; no equal-durability claim"
+                if protocol.get("comparison_scope", {}).get("primary_metric") == "work_ns"
+                else "payload work plus declared final synchronization; setup, validation, startup and exit excluded"
+            ),
             aggregate_score=None,
             tails="not measured; N3 environment means do not establish P95/P99",
             failures="all retained; no medians for an incomplete backend/case cell; no zero filling or replacement",
@@ -565,7 +578,49 @@ def plot(summary, output):
     return paths
 
 
+def common_operations_report(summary):
+    """Keep original backend sync semantics out of the primary operation table."""
+    lines = [
+        "# Common filesystem operations",
+        "",
+        "Primary metric: guest work_ns. Final synchronization is separate; "
+        "backend persistence guarantees are not assumed equal. M10/M12 "
+        "include workload-defined inline fsync in work_ns.",
+        "",
+        "Milliseconds; sum three dependent rounds within each environment, "
+        "then median of three fresh environments. N3 is exploratory. "
+        "No overall score; incomplete cells have no median.",
+        "",
+        "| Case | Backend | Work ms | Final sync ms |",
+        "| --- | --- | ---: | ---: |",
+    ]
+    levels = {(r["case_id"], r["backend"], r["scope"], r["metric"]): r for r in summary["levels"]}
+    for case in summary["catalog"]:
+        for backend in summary["backends"]:
+            values = [
+                levels.get((case["id"], backend, "sum_three_rounds", metric))
+                for metric in ("work_ns", "final_sync_ns")
+            ]
+            cells = [f"{r['median_ms']:.3f}" if r else "incomplete" for r in values]
+            lines.append(f"| {case['id']} {case['name']} | {backend} | " + " | ".join(cells) + " |")
+    lines += [
+        "",
+        "Create/upload, Ready, Bundle+process exit, export, host validation "
+        "and sandbox cleanup are outside work_ns. exit_after_done_ns is a "
+        "combined exit interval, not an isolated Bundle timer. Existing "
+        "completed_ns remains in raw CSV for auditing, not as a ranking.",
+        "",
+        "Counts: " + json.dumps(summary["counts"], sort_keys=True),
+        "",
+        "Failures (all retained):",
+    ]
+    lines += [json.dumps(f) for f in summary["failures"]] or ["None."]
+    return "\n".join(lines) + "\n"
+
+
 def report(summary):
+    if summary.get("comparison_scope", {}).get("primary_metric") == "work_ns":
+        return common_operations_report(summary)
     lines = [
         "# Filesystem cross-mode workload results",
         "",
@@ -631,7 +686,12 @@ def analyze(batch, output=None, *, plots=True):
     output.mkdir(parents=True, exist_ok=False)
     for key in ("levels", "ready", "environments", "raw_rows", "failures"):
         csv_file(output / f"{key}.csv", result[key])
-    result["plots"] = plot(result, output) if plots else []
+    common = result.get("comparison_scope", {}).get("primary_metric") == "work_ns"
+    result["plots"] = plot(result, output) if plots and not common else []
+    if common:
+        result["plot_policy"] = (
+            "Common-operation table and separate sync CSV; no sync-completed ranking plots"
+        )
     (output / "report.md").write_text(report(result))
     (output / "summary.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return result

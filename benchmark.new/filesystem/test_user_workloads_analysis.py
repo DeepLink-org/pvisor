@@ -44,6 +44,16 @@ def environment(backend, pair, values=(1, 1, 1)):
 
 
 class UserWorkloadsAnalysisTests(unittest.TestCase):
+    def test_original_agentenv_report_does_not_rank_sync_completed(self):
+        spec = protocol(("vm-writeback", "agentenv"))
+        spec["comparison_scope"] = {"primary_metric": "work_ns"}
+        records = [environment(b, n) for b in ("vm-writeback", "agentenv") for n in range(3)]
+        summary = ANALYSIS.summarize(spec, records)
+        rendered = ANALYSIS.report(summary)
+        self.assertIn("| Work ms | Final sync ms |", rendered)
+        self.assertNotIn("R1 completed ms", rendered)
+        self.assertTrue(any(r["metric"] == "completed_ns" for r in summary["levels"]))
+
     def test_environment_sum_precedes_median(self):
         records = [
             environment("native", pair, values)
