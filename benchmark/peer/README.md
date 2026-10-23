@@ -56,3 +56,63 @@ with `--release`, then run `run.py --candidate PATH --build-profile release
 --output NEW_DIRECTORY`. Omitting `--baseline` records 3 warmups and 30 candidate
 samples and reports their absolute levels. Keep this batch separate from the
 paired comparison; it does not establish a performance ratio between profiles.
+
+## Four real VMs versus Docker bridge
+
+Registry: [B-FOUR-PEER-ENG](../README.md#b-four-peer-eng). The separate
+`four_node.py` runner needs native Linux/KVM, local Docker, a user systemd manager,
+CPU 4–9 and a release CLI with working local firmware. It creates only dedicated
+resources. Build the dependency-free worker with:
+
+```bash
+rustc --edition=2024 -O --target x86_64-unknown-linux-musl -C linker=rust-lld \
+  benchmark/peer/four_node_worker.rs -o /PRIVATE_CONTEXT/netbench
+```
+
+Use the same `FROM scratch` / `COPY netbench /netbench` context for both engines.
+Build the pVisor image in a new short `PVISOR_DOCKER_HOME` directory and the Docker
+image under a unique tag. Create a dedicated network in each engine using
+`10.231.70.0/24`; first check that the subnet does not conflict with host routes.
+Set Docker's `com.docker.network.driver.mtu=1500`. Freeze the release CLI and
+`libkrunfw.so.5` beside it. Freeze all artifact identities before preflight.
+
+The config JSON supplies `prefix`, absolute `pvisor` path, private `store`,
+`pvisor_network`, `docker_network`, `pvisor_image`, `docker_image`, `daemon_pids`
+(dockerd/containerd name-to-PID map), and `artifact_sha256` (absolute input paths
+to hashes). The raw experiment's `config.json` is a concrete example. Run:
+
+```bash
+python3 benchmark/peer/four_node.py --config CONFIG.json --output NEW_PREFLIGHT --preflight
+python3 benchmark/peer/four_node.py --config CONFIG.json --output NEW_COHORT
+```
+
+Every condition starts four fresh instances and destroys them afterwards.
+Each pVisor scope has a 512 MiB total host-memory hard limit, zero swap, one CPU
+quota and task affinity to logical CPUs 4–7; guest RAM is configured as 384 MiB
+to leave space for VMM/network overhead. Docker containers have 512 MiB/zero
+swap/one CPU quota and cpuset 4–7. The user subtree may lack cpuset delegation;
+all actual scope thread affinities are checked. Limits, guest memory/MTU and
+OOM/max events are validated. The controller and sampler run on CPU 8–9.
+
+The RPC case has all 12 directed links, 500 256-byte echo requests each; bulk
+sends 4 MiB on each link using 64 KiB buffers; ring sends 200 256-byte requests
+from each node through four guest application servers and back. Connections are
+established before the four-client GO barrier. Every byte and response is
+verified. Goodput is total forward application payload divided by the slowest
+client duration. Ring counts original payload once, not each hop. CPU counts
+all four instance cgroups during the operation; it includes guest kernels/VMM
+for pVisor, and does not include Docker's shared host kernel globally. Monitor
+samples are every 50 ms, while kernel `memory.peak` retains shorter peaks.
+Startup, image preparation, client launch and barrier waiting are outside the
+network timings. Cold disk, startup performance and DNS lookup latency are not
+measured. Source, schedule, raw RTTs, cgroups and cleanup evidence are retained.
+
+Preflight additionally validates all 12 DNS directions, a one-second slow
+reader during healthy traffic, healthy three-node RPC while node 1 is stopped,
+and full-mesh recovery after restarting it. Formal sampling has 3 warmup pairs
+and 30 randomized pairs, fixed rpc/bulk/ring case order, no slow-sample exclusions
+and paired bootstrap intervals. Failures stop the batch and retain diagnostics.
+Do not run builds, tests or another experiment concurrently. The rootful Docker
+daemon/containerd are existing host services outside these budgets; their CPU
+and RSS snapshots are reported separately, not silently charged as zero. Clean
+up only this experiment's networks/images/store after preserving evidence.

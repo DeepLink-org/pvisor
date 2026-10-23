@@ -46,8 +46,11 @@ fn scratch_multistage_build_exports_oci_and_publishes_local_launch_defaults() {
     let mut opts = options(&context);
     opts.output = Some(work.path().join("image.tar"));
     let image = build(&store, &opts).unwrap();
+    let opened = store.open_image(&image).unwrap();
+    let rootfs = opened.rootfs();
+    pvisor_overlay_core::backend::materialize_tree(rootfs).unwrap();
     assert_eq!(
-        fs::read(image.rootfs.join("result/file")).unwrap(),
+        fs::read(rootfs.join("result/file")).unwrap(),
         b"binary\0\xffdata"
     );
     assert_eq!(image.user, "123:456");
@@ -56,7 +59,11 @@ fn scratch_multistage_build_exports_oci_and_publishes_local_launch_defaults() {
     assert_eq!(image.env["MESSAGE"], "hello");
     assert!(!image.env.contains_key("BASE"));
     assert_eq!(store.images().unwrap().len(), 1);
-    let layout = image.rootfs.parent().unwrap();
+    let exported = tempfile::tempdir().unwrap();
+    tar::Archive::new(File::open(opts.output.as_ref().unwrap()).unwrap())
+        .unpack(exported.path())
+        .unwrap();
+    let layout = exported.path();
     let index: Value =
         serde_json::from_reader(File::open(layout.join("index.json")).unwrap()).unwrap();
     assert_eq!(index["manifests"][0]["digest"], image.digest);
@@ -309,9 +316,14 @@ fn context_ignore_negation_and_specific_ignore_keep_only_selected_files() {
     )
     .unwrap();
     let store = Store::open(work.path().join("store")).unwrap();
-    let image = build(&store, &options(&context)).unwrap();
-    assert!(image.rootfs.join("data/keep").is_file());
-    assert!(!image.rootfs.join("data/drop").exists());
+    let mut opts = options(&context);
+    opts.output = Some(work.path().join("export.tar"));
+    let image = build(&store, &opts).unwrap();
+    let opened = store.open_image(&image).unwrap();
+    let rootfs = opened.rootfs();
+    pvisor_overlay_core::backend::materialize_tree(rootfs).unwrap();
+    assert!(rootfs.join("data/keep").is_file());
+    assert!(!rootfs.join("data/drop").exists());
 }
 
 #[test]
@@ -327,14 +339,19 @@ fn copy_preserves_context_hardlinks_across_separately_selected_sources() {
     )
     .unwrap();
     let store = Store::open(work.path().join("store")).unwrap();
-    let image = build(&store, &options(&context)).unwrap();
-    let first = fs::metadata(image.rootfs.join("out/first")).unwrap();
-    let second = fs::metadata(image.rootfs.join("out/second")).unwrap();
+    let mut opts = options(&context);
+    opts.output = Some(work.path().join("export.tar"));
+    let image = build(&store, &opts).unwrap();
+    let opened = store.open_image(&image).unwrap();
+    let rootfs = opened.rootfs();
+    pvisor_overlay_core::backend::materialize_tree(rootfs).unwrap();
+    let first = fs::metadata(rootfs.join("out/first")).unwrap();
+    let second = fs::metadata(rootfs.join("out/second")).unwrap();
     let source = fs::metadata(context.join("first")).unwrap();
     assert_eq!((first.dev(), first.ino()), (second.dev(), second.ino()));
     assert_ne!((first.dev(), first.ino()), (source.dev(), source.ino()));
     assert_eq!(
-        fs::read(image.rootfs.join("out/second")).unwrap(),
+        fs::read(rootfs.join("out/second")).unwrap(),
         b"shared bytes"
     );
 }
@@ -355,8 +372,13 @@ fn copied_symlink_exports_guest_root_without_mutating_host_target() {
     )
     .unwrap();
     let store = Store::open(work.path().join("store")).unwrap();
-    let image = build(&store, &options(&context)).unwrap();
-    let link = image.rootfs.join("link");
+    let mut opts = options(&context);
+    opts.output = Some(work.path().join("export.tar"));
+    let image = build(&store, &opts).unwrap();
+    let opened = store.open_image(&image).unwrap();
+    let rootfs = opened.rootfs();
+    pvisor_overlay_core::backend::materialize_tree(rootfs).unwrap();
+    let link = rootfs.join("link");
     assert_eq!(fs::read_link(&link).unwrap(), outside);
     let metadata = fs::symlink_metadata(&link).unwrap();
     assert_eq!(
@@ -369,7 +391,11 @@ fn copied_symlink_exports_guest_root_without_mutating_host_target() {
         (after.uid(), after.gid(), after.mode())
     );
     assert_eq!(fs::read(&outside).unwrap(), b"host bytes");
-    let layout = image.rootfs.parent().unwrap();
+    let exported = tempfile::tempdir().unwrap();
+    tar::Archive::new(File::open(opts.output.as_ref().unwrap()).unwrap())
+        .unpack(exported.path())
+        .unwrap();
+    let layout = exported.path();
     let config: Value = serde_json::from_reader(
         File::open(layout.join("blobs/sha256").join(&image.id[7..])).unwrap(),
     )

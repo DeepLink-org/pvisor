@@ -141,18 +141,32 @@ impl ClientBinding {
     }
 }
 impl CacheClient {
+    pub(super) fn configured_pool(
+        location: &std::path::Path,
+        read_only: bool,
+    ) -> anyhow::Result<Self> {
+        Self::configured(
+            format!("pool+file://{}", location.display()),
+            None,
+            None,
+            read_only,
+        )
+    }
     pub(super) fn is_socket(&self) -> bool {
         matches!(self.transport, CacheTransport::Server { .. })
     }
 
     pub(super) fn local_objects_directory(&self) -> Option<std::path::PathBuf> {
-        if !matches!(self.transport, CacheTransport::Objects(_)) {
+        if !matches!(self.transport, CacheTransport::Objects(_)) || self.is_local_pool() {
             return None;
         }
         dirs::cache_dir().map(|root| {
             root.join("pvisor/cache-v1/objects")
                 .join(&hash(self.address().as_bytes())[7..])
         })
+    }
+    pub(super) fn is_local_pool(&self) -> bool {
+        self.address().starts_with("pool+file://")
     }
     pub(super) fn address(&self) -> &str {
         &self.binding.address
@@ -201,7 +215,17 @@ impl CacheClient {
             read_only,
             pinned_read_retry: None,
         };
-        let transport = if let Some(path) = address.strip_prefix("file://") {
+        let pooled = address.starts_with("pool+file://");
+        let transport = if let Some(path) = address.strip_prefix("pool+file://") {
+            CacheTransport::Objects(PortableCache::new(
+                Storage::Pool(std::sync::Arc::new(super::pool::PoolStorage::open(
+                    path.into(),
+                    !read_only,
+                )?)),
+                local_store,
+                read_only,
+            ))
+        } else if let Some(path) = address.strip_prefix("file://") {
             CacheTransport::Objects(PortableCache::new(
                 Storage::filesystem(path.into(), !read_only)?,
                 local_store,
@@ -236,7 +260,7 @@ impl CacheClient {
                 },
             }
         };
-        let local_objects = dirs::cache_dir().map(|root| {
+        let local_objects = (!pooled).then(dirs::cache_dir).flatten().map(|root| {
             root.join("pvisor/cache-v1/objects")
                 .join(&hash(address.as_bytes())[7..])
         });

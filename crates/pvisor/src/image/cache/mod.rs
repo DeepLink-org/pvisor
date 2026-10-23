@@ -6,6 +6,7 @@ mod client;
 mod config;
 mod direct;
 mod network;
+mod pool;
 mod portable;
 pub mod progress;
 mod protocol;
@@ -44,6 +45,7 @@ fn architecture() -> &'static str {
 pub use direct::DirectImage;
 pub(crate) use direct::{attach_runner_lowers, private_owner as direct_image_owner};
 pub(crate) use network::run_internal_if_requested as run_image_access_internal;
+pub(crate) use pool::{open_local_image, publish_local_image};
 
 /// Serve until process termination, notifying the owner after binding and worker startup.
 /// The callback runs once before accepting connections. Its failure stops startup.

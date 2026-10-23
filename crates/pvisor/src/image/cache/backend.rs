@@ -776,6 +776,30 @@ impl ContentReader {
         if let Some(bytes) = self.hot.lock().unwrap().get(node.attr.ino, index) {
             return Ok((bytes, true));
         }
+        // The local pool is already durable. Never accumulate a second raw
+        // representation on disk; decoded blocks remain bounded in memory.
+        if self.client.is_local_pool() {
+            let offset = index
+                .checked_mul(MAX_READ as u64)
+                .context("block offset overflow")?;
+            let length = node.attr.size.saturating_sub(offset).min(MAX_READ as u64) as u32;
+            let (_, body) = self.client.request(CacheRequest::Read {
+                digest: self.digest.clone(),
+                path: node.path.clone(),
+                offset,
+                length,
+            })?;
+            ensure!(
+                body.len() == length as usize,
+                "local pool returned a short block"
+            );
+            let body: Arc<[u8]> = body.into();
+            self.hot
+                .lock()
+                .unwrap()
+                .insert(node.attr.ino, index, body.clone());
+            return Ok((body, false));
+        }
         let directory = &node.cache;
         fs::create_dir_all(directory)?;
         let path = directory.join(index.to_string());

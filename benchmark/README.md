@@ -727,6 +727,14 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **入口：** `benchmark/peer/run.py` 调用 `crates/pvisor-overlaynet/examples/peer_forwarding.rs`；复现与限制见 `benchmark/peer/README.md`。
 - **发行配置补充：** 默认 `release` 候选可单独采样 3 次预热和至少 30 次正式运行；同样的完整性、亲和性和证据规则。只报告绝对水平，不与独立 `performance` 批次计算变化或归因编译优化。
 
+### B-FOUR-PEER-ENG：512 MiB 上限下四实例的真实网络通信 {#b-four-peer-eng}
+
+- **角色：** engineering A/B；报告 `benchmark/peer/FOUR_NODE_REPORT.md`，原始证据在该目录 `.data/`，不更新用户网络 benchmark 页。
+- **Motivation：** 判断真实四 pVisor 的复杂通信是否稳定，以及相对四 Docker bridge 容器的网络性能成本。
+- **想要的结论：** 每实例宿主 cgroup 内存硬上限 512 MiB、swap 0、1 CPU 配额下，四节点全互连 RPC、12 条有向 TCP 批传输及四跳环形 RPC 的吞吐、RTT、CPU 和内存；同批随机配对差异 bootstrap 95% CI，保留失败和性能短板。
+- **实验设计：** 原生 KVM 四 VM（各 384 MiB guest，VMM/网络/前端计入各自 512 MiB scope）与四 rootful Docker 自定义 bridge 容器（各 512 MiB），同一静态 musl worker、IP、MTU 1500、四逻辑 CPU 亲和性及输入。先真实 guest 正确性与慢接收端/重启预检，再 3 次预热和 30 对 seeded 随机交替；每条件启动四个新实例，启动/准备/控制器不计网络时钟，组内三个正常负载按固定顺序执行。逐字节/数量校验、scope/cgroup 实际限制、guest 内存及 OOM 事件均核对；错误使批次失败，保留全部已完成数据，不剔除慢样本、不拼接失败批次。记录全节点输出、逐 RPC RTT、宿主 CPU/内存曲线、二进制/源码/镜像和环境摘要。Docker daemon/containerd 为宿主既有服务，其开销另观察，不冒充完全受限的整机预算；共享宿主内核与 VM 内核的不同明确披露。不改宿主 sysctl、不操作无关容器/网络，不据小规模结果推导生产密度。
+- **入口：** `benchmark/peer/four_node.py`、`four_node_worker.rs`；复现见 `benchmark/peer/README.md`。
+
 ### B-DENSITY：一台机器能同时跑多少个环境 {#b-density}
 
 - **文档：** `density.md`

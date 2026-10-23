@@ -23,6 +23,7 @@ pub use crate::image::oci::PullProgress;
 
 /// VM-isolated Dockerfile builds and OCI image publication.
 pub mod build;
+mod images;
 /// Persistent Docker-style network management and IPAM.
 pub mod network;
 pub use network::{Network, NetworkCreate};
@@ -67,8 +68,12 @@ pub struct Image {
     /// default to the host platform because they only supported native pulls.
     #[serde(default = "native_platform")]
     pub platform: String,
-    /// Prepared root filesystem owned by this user's image store.
+    /// Legacy prepared root directory. Empty for pooled images; use
+    /// [`Store::open_image`] and retain its owner while accessing files.
     pub rootfs: PathBuf,
+    /// Immutable local content-pool binding. Absent in legacy directory records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<CachedImage>,
     /// Image environment. Host environment is never implicitly inherited.
     pub env: BTreeMap<String, String>,
     /// Executable prefix from image configuration.
@@ -85,6 +90,31 @@ pub struct Image {
     pub volumes: Vec<PathBuf>,
     /// Catalog publication time in Unix milliseconds.
     pub created_ms: u64,
+}
+
+/// A fixed cache revision; tags and later pulls cannot change its contents.
+/// The host-only pool location must remain available while any image or stopped
+/// container references it. Removing a catalog tag does not delete pool objects.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CachedImage {
+    /// Absolute local pool directory, shared by images in this Docker store.
+    pub location: PathBuf,
+    /// Authenticated immutable `pvisor-v1` metadata revision handle.
+    pub handle: String,
+}
+
+/// Owns a usable root directory and its lazy backend through file/VM access.
+/// Dropping it removes a pooled image's temporary projection. Legacy roots stay.
+pub struct ImageRoot {
+    root: PathBuf,
+    _owner: Option<crate::image::cache::DirectImage>,
+}
+impl ImageRoot {
+    /// Root accepted by OverlayCore/VM filesystem adapters. Pooled files must be
+    /// accessed through those adapters; ordinary host reads see placeholders.
+    pub fn rootfs(&self) -> &Path {
+        &self.root
+    }
 }
 
 /// One independently mounted host directory; sources are resolved at creation.
@@ -427,38 +457,54 @@ impl Store {
         let arch = platform.strip_prefix("linux/").unwrap();
         let reference = normalize_reference(reference);
         let reference = reference.as_str();
-        let store = crate::image::oci::ImageStore::new(Some(self.root.join("images")))?;
-        let prepared = store.prepare_with_progress(reference, arch, true, progress)?;
-        let manifest: serde_json::Value = serde_json::from_reader(File::open(
-            self.root.join("images/metadata/manifests-v1").join(format!(
-                "{}.json",
-                prepared.digest.trim_start_matches("sha256:")
-            )),
-        )?)?;
-        let id = manifest["config"]["digest"]
-            .as_str()
-            .context("missing image config digest")?
-            .to_owned();
+        progress(PullProgress::Waiting);
+        let _pull = self.image_pull_lock(reference, arch)?;
+        let staging = tempfile::Builder::new()
+            .prefix(".import-")
+            .tempdir_in(self.root.join("images"))?;
+        let store = crate::image::oci::ImageStore::new(Some(staging.path().into()))?;
+        let resolved = store.resolve_with_progress(reference, arch, progress)?;
+        let cached = self.images()?.into_iter().find(|image| {
+            image.digest == resolved.prepared.digest
+                && image.platform == platform
+                && image.cache.is_some()
+        });
+        if let Some(image) = &cached {
+            let _verified = self.open_image(image)?;
+            ensure!(
+                image.id == resolved.config_digest,
+                "cached image config mismatch"
+            );
+            resolved.report_cached(progress);
+        } else {
+            store.extract_resolved(&resolved, progress)?;
+        }
+        let id = resolved.config_digest;
+        let prepared = resolved.prepared;
         ensure!(
             id.starts_with("sha256:")
                 && id.len() == 71
                 && id[7..].bytes().all(|c| c.is_ascii_hexdigit()),
             "invalid image config digest"
         );
-        let config: serde_json::Value = serde_json::from_reader(File::open(
-            self.root.join("images/blobs/sha256").join(&id[7..]),
-        )?)?;
+        let config_bytes = fs::read(staging.path().join("blobs/sha256").join(&id[7..]))?;
+        let config: serde_json::Value = serde_json::from_slice(&config_bytes)?;
         let config = &config["config"];
         let cwd = config["WorkingDir"]
             .as_str()
             .filter(|s| !s.is_empty())
             .unwrap_or("/");
-        let image = Image {
+        let mut image = Image {
             reference: reference.into(),
             id,
             digest: prepared.digest,
             platform: platform.into(),
-            rootfs: prepared.rootfs,
+            rootfs: if cached.is_some() {
+                PathBuf::new()
+            } else {
+                prepared.rootfs
+            },
+            cache: cached.and_then(|image| image.cache),
             env: prepared.env,
             entrypoint: prepared.entrypoint,
             cmd: prepared.cmd,
@@ -471,6 +517,9 @@ impl Store {
                 .unwrap_or_default(),
             created_ms: crate::unix_now_ms(),
         };
+        if image.cache.is_none() {
+            self.pool_image(&mut image, &store, &config_bytes)?;
+        }
         let _guard = self.lock()?;
         let mut images = self.catalog()?;
         images.retain(|i| i.reference != reference);
@@ -479,7 +528,8 @@ impl Store {
         Ok(image)
     }
     /// Remove a local image reference. Images used by any instance are refused.
-    /// Shared OCI blobs remain an internal cache and are not deleted here.
+    /// Shared pool objects and legacy OCI data are not deleted here; existing
+    /// containers retain their pinned revision even after forced tag removal.
     pub fn rmi(&self, selector: &str, force: bool) -> anyhow::Result<Vec<String>> {
         let _guard = self.lock()?;
         let mut images = self.catalog()?;
@@ -1330,6 +1380,13 @@ fn prepare_resolver(
     // Otherwise this first lower makes guest / and /etc inaccessible after setuid.
     for relative in ["", "etc"] {
         let source = rootfs.join(relative);
+        // Lazy local lowers project attributes before native metadata access.
+        let prepared = pvisor_overlay_core::backend::prepare_metadata(&source);
+        if let Err(error) = prepared
+            && (relative != "etc" || error.kind() != io::ErrorKind::NotFound)
+        {
+            return Err(error.into());
+        }
         let identity = match fs::symlink_metadata(&source) {
             Ok(metadata) => {
                 ensure!(
@@ -1375,17 +1432,18 @@ fn run_vm(store: &Store, instance: Instance) -> anyhow::Result<()> {
         VmPlatform::init_logging("debug");
     }
     let _lease = acquire_lease(&store.directory(&instance.id).join("vm.lock"))?;
+    let image_root = store.open_image(&instance.image)?;
     let endpoint = socket(&instance)?;
     let mut vm = VmBuilder::new(instance.config.cpus, instance.config.memory_mib)?;
     if VmPlatform::embedded_kernel().is_none() {
         vm.set_firmware_path(VmPlatform::resolve_firmware_path(None)?)?;
     }
     let directory = store.directory(&instance.id);
-    let mut lowers = vec![instance.image.rootfs.clone()];
+    let mut lowers = vec![image_root.rootfs().to_owned()];
     if instance.config.network {
         let resolver = directory.join(format!("resolver-{}", instance.generation));
         prepare_resolver(
-            &instance.image.rootfs,
+            image_root.rootfs(),
             &resolver,
             instance
                 .config
@@ -1589,6 +1647,7 @@ mod tests {
             digest: format!("sha256:{}", "2".repeat(64)),
             platform: native_platform(),
             rootfs,
+            cache: None,
             env: BTreeMap::from([("IMAGE_ENV".into(), "image".into())]),
             entrypoint: vec!["/entry".into()],
             cmd: vec!["default".into()],

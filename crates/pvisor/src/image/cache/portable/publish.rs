@@ -131,6 +131,14 @@ impl PortableCache {
                 "invalid source attributes"
             );
             let source_inode = *inode;
+            if matches!(&self.storage, Storage::Pool(_)) {
+                super::super::source::validate_pool_attributes(
+                    store,
+                    &image.digest,
+                    &entry.path,
+                    kind,
+                )?;
+            }
             let portable_inode = inodes.len() as u64 + 1;
             let portable_inode = *inodes.entry(source_inode).or_insert(portable_inode);
             let mut content_digest = None;
@@ -144,6 +152,18 @@ impl PortableCache {
                     super::super::source::parent(store, &image.digest, &entry.path)?;
                 let mut file =
                     super::super::source::open_child(&parent, OsStr::from_bytes(&name), false)?;
+                let before = file.metadata()?;
+                ensure!(
+                    before.is_file()
+                        && before.ino() == source_inode
+                        && before.size() == *size
+                        && serde_json::to_vec(&super::super::source::current_stat(
+                            store,
+                            &image.digest,
+                            &entry.path
+                        )?)? == serde_json::to_vec(&entry.metadata)?,
+                    "source changed during publication"
+                );
                 let mut hash_file = Sha256::new();
                 let mut remaining = *size;
                 let mut chunks = Vec::new();
@@ -166,13 +186,19 @@ impl PortableCache {
                     file.read(&mut extra)? == 0
                         && after.is_file()
                         && after.size() == *size
+                        && after.dev() == before.dev()
                         && after.ino() == source_inode
-                        && after.mode() == *mode
-                        && after.uid() == *uid
-                        && after.gid() == *gid
+                        && after.mode() == before.mode()
+                        && after.uid() == before.uid()
+                        && after.gid() == before.gid()
                         && after.nlink() == *nlink
                         && after.mtime() == *mtime
-                        && after.mtime_nsec() == *mtime_nsec,
+                        && after.mtime_nsec() == *mtime_nsec
+                        && serde_json::to_vec(&super::super::source::current_stat(
+                            store,
+                            &image.digest,
+                            &entry.path
+                        )?)? == serde_json::to_vec(&entry.metadata)?,
                     "source changed during publication"
                 );
                 let digest = format!("sha256:{}", crate::util::encode_hex(&hash_file.finalize()));

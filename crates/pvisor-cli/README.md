@@ -153,7 +153,7 @@ writable mount before it can be mounted read-only. Read-only shares reject
 mutation requests in the host adapter as well as in the guest mount. `stop`/`start` retains the instance upper and volumes; `rm` drops
 the upper, `rm -v` also drops anonymous volumes, and named volumes survive.
 There is not yet a volume-management CLI or image-blob garbage collector;
-`rmi` removes local references while retaining the internal OCI cache.
+`rmi` removes local references while retaining shared pool objects and legacy OCI data.
 
 TTY allocation defaults `TERM` to `xterm` when no image/container or explicit
 value is present; explicit values, empty values and unsets retain precedence.
@@ -168,7 +168,19 @@ that every flag of a registered Docker command is available.
 Storage defaults to the current user's local data directory under
 `pvisor/docker`. `PVISOR_DOCKER_HOME` selects an isolated store, including for
 tests. It must be private to the current user and cannot be a bind-mount source
-or ancestor. Per-generation control sockets live below an owned `0700`
+or ancestor. New pulls and builds use `images/pool-v1`: the existing cache's
+immutable file index and shared content pool, with independently Zstd-compressed
+chunks when beneficial and raw fallback. VM reads go through the direct lazy
+backend; ordinary reads do not accumulate a second raw disk cache. Full OCI
+archives and extracted rootfs trees are temporary import/build inputs, except
+explicit `--output` exports. Original configurations remain under `images/configs`.
+Old directory-based records continue to work and are not automatically removed.
+Pool revisions remain pinned in container records across tag replacement/removal.
+Arbitrary xattrs are rejected because the current pool format cannot preserve
+them. Cold random reads may decode up to a 1 MiB chunk; mmap uses ordinary guest
+page caching, with no new DAX path or measured performance claim. See the
+[runtime storage contract](../pvisor/README.md#independent-container-vm-lifecycle).
+Per-generation control sockets live below an owned `0700`
 `/tmp/pvisor-docker-UID` directory, keeping macOS Unix socket paths short.
 
 ## Prepared VM rootfs
@@ -333,7 +345,7 @@ are not secret storage. Simple `$NAME`/`${NAME}` expansion is supported.
 Each finished stage becomes one flattened OCI layer with guest ownership/mode,
 symlinks, hardlinks and merged deletions preserved. No instruction cache is
 implemented (`--no-cache` is accepted); unchanged base images can be reused.
-Tags are published after the files and directory entries are synced. A failed
+Tags are published after the shared content and immutable index are committed. A failed
 step leaves existing tags unchanged. OCI output must name a new file and contains
 only the standard layout/config/manifest/layer blobs, not the private rootfs.
 Builds and instances share `PVISOR_DOCKER_HOME`; temporary builds do not appear in

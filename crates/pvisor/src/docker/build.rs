@@ -422,6 +422,7 @@ fn scratch(work: &Path) -> anyhow::Result<Built> {
             digest: String::new(),
             platform: native_platform(),
             rootfs: root,
+            cache: None,
             env: BTreeMap::new(),
             entrypoint: vec![],
             cmd: vec![],
@@ -459,23 +460,18 @@ fn base(store: &Store, reference: &str, pull: bool) -> anyhow::Result<Built> {
         store.pull(reference)?
     };
     require_native_platform(&image.platform)?;
-    let config_path = if image
-        .rootfs
-        .parent()
-        .is_some_and(|p| p.join("blobs").exists())
-    {
-        image
-            .rootfs
-            .parent()
-            .unwrap()
-            .join("blobs/sha256")
-            .join(&image.id[7..])
-    } else {
-        store.root.join("images/blobs/sha256").join(&image.id[7..])
-    };
-    let document = match File::open(config_path) {
-        Ok(file) => serde_json::from_reader::<_, Value>(file)?,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+    let config_path = store.image_config_path(&image)?;
+    let document = match fs::read(config_path) {
+        Ok(bytes) => {
+            if image.cache.is_some() {
+                ensure!(
+                    digest(&bytes) == image.id,
+                    "pooled image config digest mismatch"
+                );
+            }
+            serde_json::from_slice::<Value>(&bytes)?
+        }
+        Err(e) if image.cache.is_none() && e.kind() == io::ErrorKind::NotFound => {
             json!({"config":{"Env":image.env.iter().map(|(k,v)|format!("{k}={v}")).collect::<Vec<_>>(),"Cmd":image.cmd,"Entrypoint":image.entrypoint,"WorkingDir":image.cwd,"User":image.user}})
         }
         Err(e) => return Err(e.into()),
@@ -503,14 +499,17 @@ struct Stage {
     config: Value,
     name: String,
     cmd_set: bool,
+    _image_root: ImageRoot,
 }
 impl Stage {
     fn new(
         store: Store,
-        base: Built,
+        mut base: Built,
         name: String,
         options: &BuildOptions,
     ) -> anyhow::Result<Self> {
+        let image_root = store.open_image(&base.image)?;
+        base.image.rootfs = image_root.rootfs().to_owned();
         let id = format!("{}{}", uuid(), uuid());
         let directory = store.directory(&id);
         private_directory(&directory)?;
@@ -563,6 +562,7 @@ impl Stage {
             config: base.config,
             name,
             cmd_set: false,
+            _image_root: image_root,
         };
         stage.core()?;
         let upper = stage.store.directory(&stage.instance.id).join("upper");
@@ -819,6 +819,7 @@ impl Stage {
         self.image.id = config_desc["digest"].as_str().unwrap().into();
         self.image.digest = manifest_desc["digest"].as_str().unwrap().into();
         self.image.rootfs = rootfs;
+        self.image.cache = None;
         self.image.created_ms = crate::unix_now_ms();
         Ok(Built {
             image: self.image.clone(),
@@ -897,18 +898,6 @@ fn import_layer(layer: &Path, root: &Path) -> anyhow::Result<()> {
     }
     Ok(())
 }
-fn seal_tree(path: &Path) -> anyhow::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.is_dir() {
-        for entry in fs::read_dir(path)? {
-            seal_tree(&entry?.path())?;
-        }
-        Persistence::sync_directory(path)?;
-    } else if metadata.is_file() {
-        File::open(path)?.sync_all()?;
-    }
-    Ok(())
-}
 fn export_layout(layout: &Path, output: &Path) -> anyhow::Result<()> {
     let parent = output
         .parent()
@@ -927,28 +916,33 @@ fn export_layout(layout: &Path, output: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 fn publish(store: &Store, built: &Built, tags: &[String]) -> anyhow::Result<Image> {
-    let directory = store.root.join("images/built");
-    private_directory(&directory)?;
-    let target = directory.join(&built.image.digest[7..]);
-    let _guard = store.lock()?;
-    if !target.exists() {
-        fs::write(built.layout.join("complete-v1"), &built.image.digest)?;
-        seal_tree(&built.layout)?;
-        fs::rename(&built.layout, &target)?;
-        Persistence::sync_directory(&directory)?;
-    } else {
-        ensure!(
-            fs::read_to_string(target.join("complete-v1"))? == built.image.digest,
-            "existing build publication is incomplete"
-        );
-    }
+    // Move the finished tree into the existing publisher's confined OCI source
+    // layout. Only metadata and pooled contents survive this temporary owner.
+    let staging = tempfile::Builder::new()
+        .prefix(".import-")
+        .tempdir_in(store.root.join("images"))?;
+    let source = crate::image::oci::ImageStore::new(Some(staging.path().into()))?;
     let mut image = built.image.clone();
-    image.rootfs = target.join("rootfs");
+    image.rootfs = staging
+        .path()
+        .join("rootfs-v3/sha256")
+        .join(&image.digest[7..]);
+    fs::rename(&built.image.rootfs, &image.rootfs)?;
+    let manifests = staging.path().join("metadata/manifests-v1");
+    fs::create_dir_all(&manifests)?;
+    fs::copy(
+        built.layout.join("blobs/sha256").join(&image.digest[7..]),
+        manifests.join(format!("{}.json", &image.digest[7..])),
+    )?;
+    let config = fs::read(built.layout.join("blobs/sha256").join(&image.id[7..]))?;
+    image.reference = format!("pvisor.local/build@{}", image.digest);
+    store.pool_image(&mut image, &source, &config)?;
     let tags = if tags.is_empty() {
         vec![image.id.clone()]
     } else {
         tags.iter().map(|t| normalize_reference(t)).collect()
     };
+    let _guard = store.lock()?;
     let mut catalog = store.catalog()?;
     for tag in &tags {
         catalog.retain(|i| &i.reference != tag);

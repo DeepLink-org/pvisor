@@ -677,6 +677,55 @@ atomically on successful pull; existing instances keep their pinned image.
 `Create.platform` optionally asserts the native platform. Creation and start
 reject foreign images before publication or VM launch; no CPU emulator is supplied.
 
+New Docker pulls and completed builds default to the local immutable cache pool
+under `PVISOR_DOCKER_HOME/images/pool-v1` (beneath the default user-local
+`pvisor/docker` directory when unset). They reuse the cache's V1 file/metadata
+index, authenticated fixed revision, conditional publication and direct VM
+backend. They do not retain a complete extracted rootfs or OCI layer archives.
+Original OCI configuration bytes are retained separately under `images/configs`
+so subsequent builds preserve configuration such as labels and SHELL. A repeated
+pull still resolves the registry manifest/config, but a matching catalogued pool
+revision skips layer download and extraction. Pulls of the same reference/platform
+serialize without holding the catalog lock across network I/O.
+
+`Image.cache` binds the pool location and immutable handle; its legacy `rootfs`
+field is empty. Embedded consumers call `Store::open_image`, retain the returned
+`ImageRoot` through all OverlayCore/VM access, and use its `rootfs()` as the lower.
+That path is a temporary metadata/sparse-file projection: native host reads must
+not bypass the filesystem backend. Ordinary VM reads fetch only needed content
+blocks, with bounded decoded memory caches and no persistent raw block mirror.
+Copy-up may materialize a whole file in the projection before copying into upper;
+normal projection teardown removes it. Legacy records without `cache` continue
+to use their existing directories, including already created containers. No
+existing image directories are automatically deleted or migrated.
+
+Pool data is deduplicated by raw content SHA-256 across files, paths and images.
+Each existing V1 content chunk (at most 1 MiB) is independently encoded using
+Zstd level 3 when it saves more than 64 bytes, otherwise raw, in a versioned
+13-byte envelope containing magic, codec and decoded length. Reads bound input
+and decoded size, then verify the raw digest before returning bytes. Metadata
+remains uncompressed for indexed range reads. `pool-format.json` and the internal
+`pool+file://` binding identify this separate physical encoding. Its physical
+`format.json` also rejects ordinary raw V1 readers/publishers; the pool adapter
+supplies the unchanged logical index format. Ordinary
+filesystem/S3 V1 prefixes remain raw and are not converted in place. This is not
+the proposed small-file-pack V2 format. Current index entry/object limits remain.
+
+Guest mmap uses the existing ordinary virtio-fs/page-cache path; this change does
+not enable DAX or make the mutable physical projection Immutable. A cold small
+read can decode an entire content chunk; warm-cache latency and mmap performance
+need separate workload measurements. Pool compression/deduplication tests are
+not Docker disk-use comparisons. Local pool imports explicitly reject arbitrary
+xattrs other than the existing ownership/mode override rather than dropping
+required attributes. File ownership, modes, timestamps, symlinks and hardlinks
+retain the cache contracts.
+
+Import extraction and intermediate build stages are temporary and are removed
+on ordinary success/failure. Abrupt process death can leave temporary directories.
+Pool data/revisions remain after `rmi` because stopped containers may reference
+them; automatic GC and disk-cache quotas are not implemented. Failed publication
+does not replace existing catalog tags, but can leave unreferenced pool objects.
+
 Each launch self-executes a detached owner and a separate native VMM. Embedding
 applications using `docker::Store::start` must dispatch
 `docker::internal_if_requested` at process entry, before threads or normal CLI
@@ -711,9 +760,9 @@ self-executes the existing container VM path under a private build store, with n
 user mounts, and is killed/reaped before host-side COPY or export. An inherited
 pipe terminates the VMM if the frontend dies. Context capture uses directory
 file descriptors and no-follow opens; destination links resolve against the
-guest root. Completed stages export the merged OverlayCore view as a flat OCI
-layer, reimport it and sync the resulting layout/rootfs before catalog tag
-publication. This reuses logical guest ownership/mode without installing host
+guest root. Completed stages temporarily export the merged OverlayCore view as a flat OCI
+layer and reimport it. Final publication commits the shared local content pool
+before replacing catalog tags; temporary layouts/rootfs trees are then released. This reuses logical guest ownership/mode without installing host
 setuid bits. Context capture and each COPY preserve regular-file hardlinks,
 including links spanning directories or separately selected sources, without
 linking the private snapshot back to host source inodes.

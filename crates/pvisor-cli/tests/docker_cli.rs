@@ -88,22 +88,17 @@ fn pull_and_implicit_run_report_waiting_before_network_or_vm_start() {
         "x86_64" => "amd64",
         other => panic!("unsupported test architecture: {other}"),
     };
-    // Hold the isolated OCI fixture's preparation lock. Neither command can
+    // Hold the isolated Docker pool's preparation lock. Neither command can
     // reach a registry; progress must be flushed while the request is waiting.
-    let key = serde_json::to_vec(&(
-        "registry-1.docker.io",
-        "library/ubuntu",
-        "latest",
-        architecture,
-    ))
-    .unwrap();
-    let locks = home.join("images/locks");
+    let key =
+        serde_json::to_vec(&("registry-1.docker.io/library/ubuntu@latest", architecture)).unwrap();
+    let locks = home.join("images/pull-locks");
     fs::create_dir_all(&locks).unwrap();
     let hash: String = Sha256::digest(key)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    let lock = fs::File::create(locks.join(format!("prepare-{hash}.lock"))).unwrap();
+    let lock = fs::File::create(locks.join(hash)).unwrap();
     lock.lock_exclusive().unwrap();
     for args in [
         vec!["pull", "ubuntu:latest"],
@@ -187,6 +182,7 @@ impl Native {
             }
             .into(),
             rootfs: rootfs.canonicalize().unwrap(),
+            cache: None,
             env: BTreeMap::new(),
             entrypoint: Vec::new(),
             cmd: Vec::new(),
@@ -500,7 +496,16 @@ fn docker_build_cli_exports_scratch_image_and_keeps_tags_on_error() {
     assert_eq!(image.env["MESSAGE"], "custom");
     assert_eq!(image.env["INHERITED"], "custom");
     assert_eq!(image.env["LITERAL"], "${MESSAGE}");
-    assert_eq!(fs::read(image.rootfs.join("payload")).unwrap(), b"hello");
+    let store = pvisor::docker::Store::open(home.clone()).unwrap();
+    let opened = store.open_image(image).unwrap();
+    assert_eq!(
+        pvisor_overlay_core::backend::read_at(&opened.rootfs().join("payload"), 0, 5)
+            .unwrap()
+            .unwrap(),
+        b"hello"
+    );
+    assert!(image.rootfs.as_os_str().is_empty());
+    assert!(image.cache.is_some());
     assert!(archive.is_file());
     fs::write(
         context.join("Dockerfile"),
