@@ -50,3 +50,9 @@ These experiments exclude virtio/KVM and do not compare Docker bridge, kernel
 TCP, cross-process overhead, VM application throughput or cross-host networking.
 Keep original logs, failures, binaries and analysis in `.data/`; report coverage
 gaps explicitly.
+
+To sample the default distribution profile independently, build the example
+with `--release`, then run `run.py --candidate PATH --build-profile release
+--output NEW_DIRECTORY`. Omitting `--baseline` records 3 warmups and 30 candidate
+samples and reports their absolute levels. Keep this batch separate from the
+paired comparison; it does not establish a performance ratio between profiles.

@@ -5,6 +5,7 @@ Motivation: prevent excessive same-host direct-packet forwarding overhead.
 Conclusion sought: verified goodput, RTT and process CPU paired differences + 95% CI.
 Design: frozen binaries; four allowed CPUs; 3 warmup + 30 seeded paired rounds;
 fresh members, identical frames, exact integrity/counts, no sample exclusions.
+An optional standalone release cohort reports candidate absolute levels only.
 """
 
 import argparse
@@ -53,17 +54,20 @@ def summarize(samples):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline", type=Path, required=True)
+    parser.add_argument("--baseline", type=Path, help="omit for a standalone candidate batch")
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cpus", help="comma-separated logical CPUs")
     parser.add_argument("--rounds", type=int, default=30)
+    parser.add_argument(
+        "--build-profile", choices=("performance", "release"), default="performance"
+    )
     args = parser.parse_args()
     if args.rounds < 30:
-        parser.error("at least 30 measurement pairs are required")
+        parser.error("at least 30 measurement rounds are required")
     allowed = sorted(os.sched_getaffinity(0))
     cpus = [int(cpu) for cpu in args.cpus.split(",")] if args.cpus else allowed[:4]
-    if len(cpus) != 4 or not set(cpus).issubset(allowed):
+    if len(cpus) != 4 or len(set(cpus)) != 4 or not set(cpus).issubset(allowed):
         parser.error("choose exactly four allowed logical CPUs")
     os.sched_setaffinity(0, cpus)
     output = args.output.resolve()
@@ -72,6 +76,9 @@ def main():
     sources = [repo / "Cargo.toml", repo / "Cargo.lock", Path(__file__).resolve()]
     sources += sorted((repo / "crates/pvisor-overlaynet").rglob("*.rs"))
     sources += sorted((repo / "crates/pvisor-core").rglob("*.rs"))
+    sources += [
+        repo / "crates" / crate / "Cargo.toml" for crate in ("pvisor-overlaynet", "pvisor-core")
+    ]
     hashes = {}
     for path in sources:
         relative = path.relative_to(repo)
@@ -81,13 +88,15 @@ def main():
         hashes[str(relative)] = digest(destination)
     binaries = {}
     for label in ("baseline", "candidate"):
+        if getattr(args, label) is None:
+            continue
         destination = output / label
         shutil.copy2(getattr(args, label), destination)
         binaries[label] = {"path": str(destination), "sha256": digest(destination)}
     rng = random.Random(20261024)
     schedule = []
     for index in range(args.rounds + 3):
-        order = ["baseline", "candidate"]
+        order = list(binaries)
         rng.shuffle(order)
         schedule.append({"index": index, "warmup": index < 3, "order": order})
     save(
@@ -101,6 +110,9 @@ def main():
             "cgroup": Path("/proc/self/cgroup").read_text(),
             "limits": Path("/proc/self/limits").read_text(),
             "budget": "four logical CPUs affinity; no quota or memory cap",
+            "build_profile": args.build_profile,
+            "rustc": subprocess.check_output(["rustc", "-Vv"], text=True),
+            "cargo": subprocess.check_output(["cargo", "-V"], text=True),
             "binaries": binaries,
             "source_sha256": hashes,
             "schedule": schedule,
@@ -152,15 +164,28 @@ def main():
         if not entry["warmup"]:
             samples.append(pair)
         if entry["index"] % 5 == 0:
-            print(f"completed pair {entry['index'] + 1}/{len(schedule)}", flush=True)
+            print(f"completed round {entry['index'] + 1}/{len(schedule)}", flush=True)
     save(
         output / "summary.json",
         {
             "benchmark": "B-PEER-NET-ENG",
-            "pairs": len(samples),
+            "rounds": len(samples),
             "failures": 0,
             "excluded": 0,
-            "metrics": summarize(samples),
+            "metrics": summarize(samples)
+            if args.baseline
+            else {
+                metric: {
+                    "candidate_median": statistics.median(
+                        pair["candidate"][metric] for pair in samples
+                    ),
+                    "candidate_range": [
+                        min(pair["candidate"][metric] for pair in samples),
+                        max(pair["candidate"][metric] for pair in samples),
+                    ],
+                }
+                for metric in ("goodput_mbps", "rtt_median_us", "rtt_p95_us", "cpu_ns_per_frame")
+            },
         },
     )
     print((output / "summary.json").read_text())

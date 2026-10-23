@@ -725,6 +725,7 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **想要的结论：** 同机冻结基线/候选的有效 Ethernet goodput、往返延迟和全进程 CPU 成本，附配对中位数差异 bootstrap 95% CI；明确不代表 KVM、Docker bridge 或应用 TCP 吞吐。
 - **实验设计：** 公共 `VmNetwork` guest framed stream 与真实 Unix datagram 转发，两个 backend 线程、两个 guest 驱动线程；64-byte ping/pong 和 1514-byte、窗口 8 的有序完整性验证批传输。每样本独立网络目录和 owner，计时前预热；同一四核亲和性、相同负载，3 轮预热后至少 30 轮 seeded 随机配对，不剔除慢样本。所有帧逐字节验证，任何超时/损坏/丢包保留且使批次无效。输出 sent/received/dropped、wall、process CPU、原始 RTT 与宿主/源码/二进制/harness 摘要。故障注入正确性测试独立于计时。
 - **入口：** `benchmark/peer/run.py` 调用 `crates/pvisor-overlaynet/examples/peer_forwarding.rs`；复现与限制见 `benchmark/peer/README.md`。
+- **发行配置补充：** 默认 `release` 候选可单独采样 3 次预热和至少 30 次正式运行；同样的完整性、亲和性和证据规则。只报告绝对水平，不与独立 `performance` 批次计算变化或归因编译优化。
 
 ### B-DENSITY：一台机器能同时跑多少个环境 {#b-density}
 
