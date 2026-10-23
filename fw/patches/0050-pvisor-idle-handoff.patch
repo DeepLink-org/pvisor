@@ -1,0 +1,72 @@
+From: pVisor contributors
+Subject: [PATCH] sched/idle: opt-in single-vCPU pVisor idle handoff v2
+
+Report the programmed nohz deadline at a synchronous PIO handoff.
+The host owns wake notifications and pause/resume; no RAM is reclaimed.
+Disabled without pvisor_idle=1 and a matching host ABI response.
+
+--- a/kernel/sched/idle.c
++++ b/kernel/sched/idle.c
+@@ -162,6 +162,52 @@
+ 	else
+ 		tick_nohz_idle_retain_tick();
+ }
++
++
++#if defined(CONFIG_X86_64) && defined(CONFIG_NO_HZ_COMMON)
++#include <asm/io.h>
++/* Experimental ABI v2, only enabled by the matching pVisor VMM. */
++static bool pvisor_idle_enabled;
++static int __init pvisor_idle_setup(char *value)
++{
++	return kstrtobool(value, &pvisor_idle_enabled);
++}
++early_param("pvisor_idle", pvisor_idle_setup);
++
++static bool pvisor_idle_handoff(void)
++{
++	s64 delta;
++	ktime_t next;
++
++	if (!pvisor_idle_enabled || num_online_cpus() != 1 ||
++	    inl(0x5050) != 0x50564902)
++		return false;
++
++	/* IRQs remain disabled throughout the handoff. The VMM anchors time
++	 * before this clock sample, so IPC/exit latency can only shorten it.
++	 * Read the programmed event AFTER nohz accounts for required work;
++	 * never use a governor prediction or discard the periodic tick.
++	 */
++	tick_nohz_idle_stop_tick();
++	next = tick_nohz_get_next_hrtimer();
++	delta = ktime_to_ns(ktime_sub(next, ktime_get()));
++	if (delta <= 2000000 || current_clr_polling_and_test()) {
++		__current_set_polling();
++		return false;
++	}
++	stop_critical_timings();
++	ct_cpuidle_enter();
++	/* No timer is explicit; finite deltas round down, never past deadline. */
++	outl(next == KTIME_MAX ? U32_MAX :
++	     (u32)min_t(s64, delta / 1000000, U32_MAX - 1), 0x5050);
++	ct_cpuidle_exit();
++	start_critical_timings();
++	local_irq_enable();
++	return true;
++}
++#else
++static bool pvisor_idle_handoff(void) { return false; }
++#endif
+ 
+ /**
+  * cpuidle_idle_call - the main idle function
+@@ -186,6 +232,9 @@
+ 		local_irq_enable();
+ 		return;
+ 	}
++
++	if (pvisor_idle_handoff())
++		goto exit_idle;
+ 
+ 	if (cpuidle_not_available(drv, dev)) {
+ 		idle_call_stop_or_retain_tick(stop_tick);

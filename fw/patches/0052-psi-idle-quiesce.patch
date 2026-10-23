@@ -1,0 +1,94 @@
+From: pVisor contributors
+Subject: [PATCH] psi: avoid pressure-free idle restarts in the single-CPU Host profile
+
+GPL-2.0-only. Opt-in psi_idle_quiesce=1. Preserve all pressure accounting,
+active-trigger behavior, pending work and real activity restarts. Restrict to
+system PSI and one possible CPU; do not infer idle from process names.
+
+--- a/kernel/sched/psi.c
++++ b/kernel/sched/psi.c
+@@ -152,6 +152,17 @@
+ 	return kstrtobool(str, &psi_enable) == 0;
+ }
+ __setup("psi=", setup_psi);
++
++/* Host opt-in, restricted below to system PSI on a single possible CPU. */
++static bool psi_idle_quiesce __read_mostly;
++static u64 psi_idle_sample_ns;
++
++static int __init setup_psi_idle_quiesce(char *str)
++{
++	return kstrtobool(str, &psi_idle_quiesce) == 0;
++}
++__setup("psi_idle_quiesce=", setup_psi_idle_quiesce);
++
+ 
+ /* Running averages - we need to be higher-res than loadavg */
+ #define PSI_FREQ	(2*HZ+1)	/* 2 sec intervals */
+@@ -311,6 +322,11 @@
+ 		if (delta)
+ 			*pchanged_states |= (1 << s);
+ 	}
++
++	/* Publish only after all sampling buckets have been consumed. */
++	if (psi_idle_quiesce && num_possible_cpus() == 1 &&
++	    group == &psi_system && aggregator == PSI_AVGS)
++		WRITE_ONCE(psi_idle_sample_ns, now);
+ 
+ 	/*
+ 	 * When collect_percpu_times() from the avgs_work, we don't want to
+@@ -789,6 +805,44 @@
+ #define for_each_group(iter, group) \
+ 	for (typeof(group) iter = group; iter; iter = iter->parent)
+ 
++
++/*
++ * Do not restart a stopped averages worker merely because the last task went
++ * idle. Unlike the last_func == psi_avgs_work check, this also covers another
++ * work item executed by that worker after psi_avgs_work in the same batch.
++ *
++ * Called with rq locked, after record_times(). On one possible CPU no task can
++ * concurrently change counters, sample buckets or register a system trigger.
++ * Restrict this optimization to system PSI; cgroups and SMP retain old behavior.
++ * Any unconsumed pressure, active trigger, or stale snapshot retains the final
++ * aggregation. Non-idle time alone is not pressure on a single-CPU system.
++ */
++static bool psi_idle_can_quiesce(struct psi_group *group,
++				struct psi_group_cpu *groupc, u64 now)
++{
++	u64 sampled;
++	enum psi_states s;
++
++	if (!psi_idle_quiesce || num_possible_cpus() != 1 ||
++	    group != &psi_system || (groupc->state_mask & BIT(PSI_NONIDLE)))
++		return false;
++
++	sampled = READ_ONCE(psi_idle_sample_ns);
++	/* Bound the age so equal u32 buckets cannot hide a full counter wrap. */
++	if (!sampled || now < sampled || now - sampled >= U32_MAX)
++		return false;
++
++	for (s = 0; s < PSI_NONIDLE; s++) {
++		if (READ_ONCE(group->avg_nr_triggers[s]) ||
++		    READ_ONCE(group->rtpoll_nr_triggers[s]))
++			return false;
++		if (groupc->times[s] != READ_ONCE(groupc->times_prev[PSI_AVGS][s]))
++			return false;
++	}
++
++	return true;
++}
++
+ static void psi_group_change(struct psi_group *group, int cpu,
+ 			     unsigned int clear, unsigned int set,
+ 			     u64 now, bool wake_clock)
+@@ -874,7 +928,8 @@
+ 	if (state_mask & group->rtpoll_states)
+ 		psi_schedule_rtpoll_work(group, 1, false);
+ 
+-	if (wake_clock && !delayed_work_pending(&group->avgs_work))
++	if (wake_clock && !delayed_work_pending(&group->avgs_work) &&
++	    !psi_idle_can_quiesce(group, groupc, now))
+ 		schedule_delayed_work(&group->avgs_work, PSI_FREQ);
+ }
+ 

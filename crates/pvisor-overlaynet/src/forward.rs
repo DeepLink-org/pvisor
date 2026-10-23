@@ -30,6 +30,7 @@ pub(crate) async fn handle_connect_authorized(
     target: ConnectTarget,
     authorized: &AuthorizedTarget,
     bandwidth: BandwidthSession,
+    wait: Option<crate::server::DownloadGuard>,
 ) -> anyhow::Result<Response> {
     let guard = req
         .extensions_mut()
@@ -68,21 +69,24 @@ pub(crate) async fn handle_connect_authorized(
             let _ = destination_write.shutdown().await;
         });
         let stream = futures_util::stream::unfold(
-            (destination_read, bandwidth),
-            |(mut reader, bandwidth)| async move {
+            (destination_read, bandwidth, wait, false),
+            |(mut reader, bandwidth, mut wait, stopped)| async move {
+                if stopped {
+                    return None;
+                }
                 let mut buffer = vec![0_u8; 16 * 1024];
-                match reader.read(&mut buffer).await {
+                match managed_read(&mut reader, &mut buffer, &mut wait).await {
                     Ok(0) => None,
                     Ok(read) => {
                         bandwidth.throttle(read).await;
                         Some((
                             Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buffer[..read])),
-                            (reader, bandwidth),
+                            (reader, bandwidth, wait, false),
                         ))
                     }
                     // A read error terminates the tunnel. Returning the same
                     // reader here would make `Stream` yield the error forever.
-                    Err(_) => None,
+                    Err(error) => Some((Err(error), (reader, bandwidth, wait, true))),
                 }
             },
         );
@@ -122,8 +126,8 @@ pub(crate) async fn handle_connect_authorized(
         let client = TokioIo::new(upgraded);
         let (client_read, client_write) = tokio::io::split(client);
         let (destination_read, destination_write) = destination.split();
-        let upload = copy_limited(client_read, destination_write, bandwidth.clone());
-        let download = copy_limited(destination_read, client_write, bandwidth);
+        let upload = copy_limited(client_read, destination_write, bandwidth.clone(), None);
+        let download = copy_limited(destination_read, client_write, bandwidth, wait);
         let _ = tokio::join!(upload, download);
     });
     Ok(Response::builder()
@@ -185,6 +189,7 @@ pub(crate) async fn transparent_forward_authorized(
     req: Request,
     target: &AuthorizedTarget,
     bandwidth: BandwidthSession,
+    mut wait: Option<crate::server::DownloadGuard>,
 ) -> anyhow::Result<Response<Body>> {
     let (parts, body) = req.into_parts();
     let url = parts.uri.to_string();
@@ -218,11 +223,18 @@ pub(crate) async fn transparent_forward_authorized(
             result
         }
     });
+    if let Some(wait) = &mut wait {
+        wait.0.waiting().await?;
+    }
     let response = request
         .body(reqwest::Body::wrap_stream(upload))
         .send()
         .await
-        .map_err(|error| anyhow::anyhow!("forward request: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("forward request: {error}"));
+    if let Some(wait) = &mut wait {
+        wait.0.ready().await?;
+    }
+    let response = response?;
     let status = response.status();
     let headers = response.headers().clone();
 
@@ -232,24 +244,65 @@ pub(crate) async fn transparent_forward_authorized(
             builder = builder.header(name, value);
         }
     }
-    let download = response.bytes_stream().then(move |result| {
-        let bandwidth = bandwidth.clone();
-        async move {
-            if let Ok(bytes) = &result {
-                bandwidth.throttle(bytes.len()).await;
+    let download = futures_util::stream::unfold(
+        (response.bytes_stream().boxed(), bandwidth, wait, false),
+        |(mut source, bandwidth, mut wait, stopped)| async move {
+            if stopped {
+                return None;
             }
-            result
-        }
-    });
+            let item: anyhow::Result<Option<Bytes>> = async {
+                if let Some(wait) = &mut wait {
+                    wait.0.waiting().await?;
+                }
+                let item = source.next().await.transpose().map_err(anyhow::Error::from);
+                if let Some(wait) = &mut wait {
+                    wait.0.ready().await?;
+                }
+                let item = item?;
+                if let Some(bytes) = &item {
+                    bandwidth.throttle(bytes.len()).await;
+                }
+                Ok(item)
+            }
+            .await;
+            match item {
+                Ok(Some(bytes)) => Some((
+                    Ok::<_, std::io::Error>(bytes),
+                    (source, bandwidth, wait, false),
+                )),
+                Ok(None) => None,
+                Err(error) => Some((
+                    Err(std::io::Error::other(error)),
+                    (source, bandwidth, wait, true),
+                )),
+            }
+        },
+    );
     builder
         .body(Body::from_stream(download))
         .map_err(|error| anyhow::anyhow!("build response: {error}"))
+}
+
+async fn managed_read<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    buffer: &mut [u8],
+    wait: &mut Option<crate::server::DownloadGuard>,
+) -> std::io::Result<usize> {
+    if let Some(wait) = wait {
+        wait.0.waiting().await.map_err(std::io::Error::other)?;
+    }
+    let result = reader.read(buffer).await;
+    if let Some(wait) = wait {
+        wait.0.ready().await.map_err(std::io::Error::other)?;
+    }
+    result
 }
 
 async fn copy_limited<R, W>(
     mut reader: R,
     mut writer: W,
     bandwidth: BandwidthSession,
+    mut wait: Option<crate::server::DownloadGuard>,
 ) -> std::io::Result<u64>
 where
     R: AsyncRead + Unpin,
@@ -258,7 +311,7 @@ where
     let mut copied = 0_u64;
     let mut buffer = vec![0_u8; 16 * 1024];
     loop {
-        let read = reader.read(&mut buffer).await?;
+        let read = managed_read(&mut reader, &mut buffer, &mut wait).await?;
         if read == 0 {
             writer.shutdown().await?;
             return Ok(copied);
@@ -343,7 +396,12 @@ mod tests {
         let (destination_writer, mut destination_reader) = tokio::io::duplex(2_048);
         source_writer.write_all(&vec![b'x'; 1_000]).await.unwrap();
         source_writer.shutdown().await.unwrap();
-        let copy = tokio::spawn(copy_limited(source_reader, destination_writer, bandwidth));
+        let copy = tokio::spawn(copy_limited(
+            source_reader,
+            destination_writer,
+            bandwidth,
+            None,
+        ));
         let read = tokio::spawn(async move {
             let mut bytes = Vec::new();
             destination_reader.read_to_end(&mut bytes).await.unwrap();
@@ -355,5 +413,145 @@ mod tests {
         assert_eq!(copy.await.unwrap().unwrap(), 1_000);
         let bytes = read.await.unwrap();
         assert_eq!(bytes, vec![b'x'; 1_000]);
+    }
+}
+
+#[cfg(test)]
+mod download_wait_tests {
+    use super::*;
+    use crate::server::{DownloadGuard, DownloadWait};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::sync::Semaphore;
+    struct Probe {
+        ready: Arc<Semaphore>,
+        release: Arc<Semaphore>,
+        cancelled: Arc<AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl DownloadWait for Probe {
+        async fn waiting(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn ready(&mut self) -> anyhow::Result<()> {
+            self.ready.add_permits(1);
+            self.release.acquire().await?.forget();
+            Ok(())
+        }
+        fn cancel(&mut self) {
+            self.cancelled.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    async fn fixture() -> (Request, AuthorizedTarget) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc")
+                .await
+                .unwrap();
+        });
+        (
+            Request::builder()
+                .uri(format!("http://{address}/file"))
+                .body(Body::empty())
+                .unwrap(),
+            AuthorizedTarget {
+                host: "127.0.0.1".into(),
+                addresses: vec![address],
+            },
+        )
+    }
+    #[tokio::test]
+    async fn download_headers_and_body_cross_resume_barriers_and_drop_cleans_up() {
+        let (request, target) = fixture().await;
+        let ready = Arc::new(Semaphore::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let cancelled = Arc::new(AtomicUsize::new(0));
+        let guard = DownloadGuard(Box::new(Probe {
+            ready: ready.clone(),
+            release: release.clone(),
+            cancelled: cancelled.clone(),
+        }));
+        let bandwidth = crate::bandwidth::BandwidthRegistry::default()
+            .session(vec![])
+            .await;
+        let task = tokio::spawn(async move {
+            transparent_forward_authorized(request, &target, bandwidth, Some(guard))
+                .await
+                .unwrap()
+        });
+        ready.acquire().await.unwrap().forget();
+        assert!(!task.is_finished(), "headers escaped resume barrier");
+        release.add_permits(1);
+        let response = task.await.unwrap();
+        let body =
+            tokio::spawn(async move { response.into_body().collect().await.unwrap().to_bytes() });
+        ready.acquire().await.unwrap().forget();
+        assert!(!body.is_finished(), "body escaped resume barrier");
+        release.add_permits(10);
+        assert_eq!(body.await.unwrap(), "abc");
+        assert_eq!(cancelled.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn tunnel_bytes_and_eof_wait_for_resume_and_cleanup() {
+        let (mut upstream, reader) = tokio::io::duplex(64);
+        let (writer, mut downstream) = tokio::io::duplex(64);
+        let ready = Arc::new(Semaphore::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let cancelled = Arc::new(AtomicUsize::new(0));
+        let guard = DownloadGuard(Box::new(Probe {
+            ready: ready.clone(),
+            release: release.clone(),
+            cancelled: cancelled.clone(),
+        }));
+        let bandwidth = crate::bandwidth::BandwidthRegistry::default()
+            .session(vec![])
+            .await;
+        let copy = tokio::spawn(copy_limited(reader, writer, bandwidth, Some(guard)));
+        upstream.write_all(b"opaque bytes").await.unwrap();
+        ready.acquire().await.unwrap().forget();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), downstream.read_u8())
+                .await
+                .is_err()
+        );
+        release.add_permits(1);
+        let mut bytes = [0; 12];
+        downstream.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"opaque bytes");
+        upstream.shutdown().await.unwrap();
+        ready.acquire().await.unwrap().forget();
+        assert!(!copy.is_finished(), "EOF escaped resume barrier");
+        release.add_permits(1);
+        assert_eq!(copy.await.unwrap().unwrap(), 12);
+        assert_eq!(downstream.read(&mut bytes).await.unwrap(), 0);
+        assert_eq!(cancelled.load(Ordering::SeqCst), 1);
+    }
+    #[tokio::test]
+    async fn cancelled_download_header_resume_cleans_up_once() {
+        let (request, target) = fixture().await;
+        let ready = Arc::new(Semaphore::new(0));
+        let cancelled = Arc::new(AtomicUsize::new(0));
+        let guard = DownloadGuard(Box::new(Probe {
+            ready: ready.clone(),
+            release: Arc::new(Semaphore::new(0)),
+            cancelled: cancelled.clone(),
+        }));
+        let bandwidth = crate::bandwidth::BandwidthRegistry::default()
+            .session(vec![])
+            .await;
+        let task = tokio::spawn(async move {
+            transparent_forward_authorized(request, &target, bandwidth, Some(guard)).await
+        });
+        ready.acquire().await.unwrap().forget();
+        task.abort();
+        let _ = task.await;
+        assert_eq!(cancelled.load(Ordering::SeqCst), 1);
     }
 }

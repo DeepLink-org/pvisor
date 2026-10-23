@@ -6,7 +6,7 @@ use crate::{
     vmm::{
         resources::{TsiFlags, VmResources},
         vmm_config::{
-            kernel_cmdline::{KernelCmdlineConfig, DEFAULT_KERNEL_CMDLINE},
+            kernel_cmdline::{DEFAULT_KERNEL_CMDLINE, KernelCmdlineConfig},
             machine_config::VmConfig,
             vsock::VsockDeviceConfig,
         },
@@ -15,9 +15,9 @@ use crate::{
 #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 use crate::{
     devices::virtio::fs::{
+        OverlayConfig,
         passthrough::PermissionSemantics,
         virtual_entry::{VirtualDirEntry, VirtualEntry, VirtualEntryContent},
-        OverlayConfig,
     },
     vmm::vmm_config::fs::FsDeviceConfig,
 };
@@ -37,6 +37,9 @@ pub(crate) struct Builder<B: Backend = NativeBackend> {
     kernel: KernelOwner,
     firmware_path: Option<PathBuf>,
     implicit_init: bool,
+    guest_idle: bool,
+    disable_proactive_compaction: bool,
+    idle_offload_minimum: std::time::Duration,
     guest_cmdline: Option<KernelCmdlineConfig>,
     vsock_ports: HashMap<u32, (PathBuf, bool)>,
     backend: PhantomData<B>,
@@ -57,10 +60,52 @@ impl<B: Backend> Builder<B> {
             kernel: KernelOwner::default(),
             firmware_path: None,
             implicit_init: cfg!(feature = "init-blob"),
+            guest_idle: false,
+            disable_proactive_compaction: false,
+            idle_offload_minimum: std::time::Duration::from_secs(1),
             guest_cmdline: None,
             vsock_ports: HashMap::new(),
             backend: PhantomData,
         })
+    }
+    pub(crate) fn guest_idle_handoff(&mut self) -> io::Result<()> {
+        self.guest_idle_handoff_with_policy(false, std::time::Duration::from_secs(1))
+    }
+    pub(crate) fn guest_idle_handoff_with_policy(
+        &mut self,
+        disable_proactive_compaction: bool,
+        offload_minimum: std::time::Duration,
+    ) -> io::Result<()> {
+        if offload_minimum <= std::time::Duration::from_millis(2)
+            || offload_minimum > std::time::Duration::from_secs(86400)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "idle offload minimum must be >2 ms and <=24 hours",
+            ));
+        }
+        if !cfg!(all(target_os = "linux", target_arch = "x86_64"))
+            || cfg!(any(
+                feature = "tee",
+                feature = "gpu",
+                feature = "snd",
+                feature = "input",
+                feature = "efi",
+                feature = "aws-nitro"
+            ))
+            || !(1..=2).contains(&self.resources.vcpu_config().vcpu_count)
+            || self.resources.snapshot_profile
+            || !self.vsock_ports.is_empty()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "guest idle requires fresh one/two-vCPU Linux/KVM without unguarded devices",
+            ));
+        }
+        self.guest_idle = true;
+        self.disable_proactive_compaction = disable_proactive_compaction;
+        self.idle_offload_minimum = offload_minimum;
+        Ok(())
     }
     pub fn set_firmware_path(&mut self, path: PathBuf) -> io::Result<()> {
         if !path.is_absolute() {
@@ -144,7 +189,10 @@ impl<B: Backend> Builder<B> {
     pub fn task_stdio(&mut self, stdin: i32, stdout: i32, stderr: i32) -> io::Result<()> {
         use std::os::fd::RawFd;
         if self.resources.virtio_consoles.iter().any(|console| {
-            matches!(console, crate::vmm::resources::VirtioConsoleConfigMode::Autoconfigure(_))
+            matches!(
+                console,
+                crate::vmm::resources::VirtioConsoleConfigMode::Autoconfigure(_)
+            )
         }) {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -176,6 +224,12 @@ impl<B: Backend> Builder<B> {
         host_path: PathBuf,
         listen: bool,
     ) -> io::Result<()> {
+        if self.guest_idle {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "idle handoff cannot publish auxiliary vsock ports",
+            ));
+        }
         if self.vsock_ports.contains_key(&guest_port) {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -235,16 +289,92 @@ impl<B: Backend> Builder<B> {
         {
             self.install_default_kernel(crate::firmware::embedded_kernel())?;
         }
+        let mut command = self
+            .guest_cmdline
+            .take()
+            .unwrap_or_else(|| KernelCmdlineConfig {
+                prolog: Some(format!("{DEFAULT_KERNEL_CMDLINE} init=/init.krun")),
+                krun_env: Some("     ".into()),
+                epilog: Some(" -- ".into()),
+            });
+        if self.guest_idle {
+            command
+                .prolog
+                .get_or_insert_with(String::new)
+                .push_str(" pvisor_idle=1");
+            if self.disable_proactive_compaction {
+                command
+                    .prolog
+                    .as_mut()
+                    .unwrap()
+                    .push_str(" sysctl.vm.compaction_proactiveness=0");
+            }
+        }
+        if self.guest_idle && self.resources.vcpu_config().vcpu_count == 1 {
+            // Host profile enables the single-CPU PSI idle fix. Override only for A/B.
+            let quiesce = match std::env::var("PVISOR_DIAG_PSI_IDLE_QUIESCE") {
+                Ok(value) => value,
+                Err(std::env::VarError::NotPresent) => "1".into(),
+                Err(_) => return Err(io::Error::other("invalid PSI idle selector encoding")),
+            };
+            if !matches!(quiesce.as_str(), "0" | "1") {
+                return Err(io::Error::other(
+                    "PVISOR_DIAG_PSI_IDLE_QUIESCE must be 0 or 1",
+                ));
+            }
+            command
+                .prolog
+                .get_or_insert_with(String::new)
+                .push_str(&format!(" psi_idle_quiesce={quiesce}"));
+        }
+        if self.guest_idle && self.resources.vcpu_config().vcpu_count == 1 {
+            let defer = match std::env::var("PVISOR_DIAG_PSI_IDLE_DEFER") {
+                Ok(value) => value,
+                Err(std::env::VarError::NotPresent) => "1".into(),
+                Err(_) => return Err(io::Error::other("invalid PSI defer selector encoding")),
+            };
+            if !matches!(defer.as_str(), "0" | "1") {
+                return Err(io::Error::other(
+                    "PVISOR_DIAG_PSI_IDLE_DEFER must be 0 or 1",
+                ));
+            }
+            command
+                .prolog
+                .get_or_insert_with(String::new)
+                .push_str(&format!(" psi_idle_defer={defer}"));
+        }
+        if self.guest_idle && self.resources.vcpu_config().vcpu_count == 1 {
+            // Only the authenticated single-vCPU handoff can park an empty check.
+            let defer = match std::env::var("PVISOR_DIAG_WATCHDOG_IDLE_DEFER") {
+                Ok(value) => value,
+                Err(std::env::VarError::NotPresent) => "1".into(),
+                Err(_) => return Err(io::Error::other("invalid watchdog defer selector encoding")),
+            };
+            if !matches!(defer.as_str(), "0" | "1") {
+                return Err(io::Error::other(
+                    "PVISOR_DIAG_WATCHDOG_IDLE_DEFER must be 0 or 1",
+                ));
+            }
+            command
+                .prolog
+                .get_or_insert_with(String::new)
+                .push_str(&format!(" pvisor_watchdog_defer={defer}"));
+        }
+        // Engineering-only Host selector; never inferred from guest/model input.
+        if let Some(psi) = std::env::var_os("PVISOR_DIAG_GUEST_PSI")
+            .filter(|_| self.guest_idle && self.resources.vcpu_config().vcpu_count == 1)
+        {
+            let psi = psi
+                .to_str()
+                .filter(|s| matches!(*s, "0" | "1"))
+                .ok_or_else(|| io::Error::other("PVISOR_DIAG_GUEST_PSI must be 0 or 1"))?;
+            command
+                .prolog
+                .get_or_insert_with(String::new)
+                .push_str(&format!(" psi={psi}"));
+        }
         self.resources
-            .set_kernel_cmdline(
-                self.guest_cmdline
-                    .take()
-                    .unwrap_or_else(|| KernelCmdlineConfig {
-                        prolog: Some(format!("{DEFAULT_KERNEL_CMDLINE} init=/init.krun")),
-                        krun_env: Some("     ".into()),
-                        epilog: Some(" -- ".into()),
-                    }),
-            )
+            .set_kernel_cmdline(command)
             .map_err(io::Error::other)?;
         self.resources
             .set_vsock_device(VsockDeviceConfig {
@@ -265,7 +395,14 @@ impl<B: Backend> Builder<B> {
         let vm = B::build(&self.resources, &mut events, None, sender).map_err(|e| {
             io::Error::other(format!("build {} {} VM: {e:?}", B::NAME, B::Arch::NAME))
         })?;
+        let idle = vm.lock().unwrap().device_memory_gate().idle.clone();
+        if self.guest_idle {
+            idle.configure_cpus(self.resources.vcpu_config().vcpu_count);
+        }
+        idle.set_offload_minimum(self.idle_offload_minimum);
+        idle.enable(self.guest_idle);
         on_ready(VmmHandle {
+            idle,
             vmm: Arc::downgrade(&vm),
             transition: Arc::new(Mutex::new(())),
             cold_pager_started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -437,7 +574,10 @@ impl<B: Backend> Builder<B> {
             || !path.is_absolute()
             || !path.is_dir()
         {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "DAX requires an absolute directory and a 2 MiB-aligned window between 2 MiB and 1 GiB"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "DAX requires an absolute directory and a 2 MiB-aligned window between 2 MiB and 1 GiB",
+            ));
         }
         if self.resources.snapshot_profile || self.resources.machine_restore.is_some() {
             return Err(io::Error::new(
@@ -557,6 +697,12 @@ impl<B: Backend> Builder<B> {
 ))]
 impl<B: crate::backend::SnapshotBackend> Builder<B> {
     pub fn snapshot_profile(&mut self) -> io::Result<()> {
+        if self.guest_idle {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "idle handoff cannot snapshot",
+            ));
+        }
         #[cfg(not(feature = "tee"))]
         if self.resources.fs.iter().any(|fs| fs.shm_size.is_some()) {
             return Err(io::Error::new(

@@ -81,6 +81,16 @@ impl OverlaySink for GatewayState {
         .await
     }
 
+    fn download_wait(
+        &self,
+        _context: &OverlayRequestContext<Self::RequestContext>,
+    ) -> anyhow::Result<Option<Box<dyn pvisor_overlaynet::server::DownloadWait>>> {
+        match &self.model_wait {
+            Some(lifecycle) => lifecycle.reserve_download(),
+            None => Ok(None),
+        }
+    }
+
     fn accepts(&self, request: &Request) -> bool {
         self.gateway_enabled
             && crate::protocol::ProtocolKind::from_path(request.uri().path())

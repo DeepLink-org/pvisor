@@ -13,16 +13,15 @@ use std::thread;
 use std::time::Instant;
 
 use crate::utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
-use crate::utils::eventfd::{EventFd, EFD_NONBLOCK};
+use crate::utils::eventfd::{EFD_NONBLOCK, EventFd};
 use vm_memory::GuestMemoryMmap;
 
 use super::super::Queue;
 use super::augment_fs::AugmentFs;
 use super::defs::{HPQ_INDEX, REQ_INDEX};
 use super::descriptor_utils::{OwnedDescriptorChain, Reader, Writer};
-#[cfg(test)]
-use super::fuse::ReadIn;
 use super::fuse::{InHeader, Opcode};
+use super::fuse::{OpenIn, ReadIn};
 use super::inode_alloc::InodeAllocator;
 use super::null_fs::NullFs;
 use super::overlay::{Config as OverlayConfig, OverlayFs};
@@ -34,6 +33,11 @@ use super::write_buffer::WriteBufferOptions;
 use crate::devices::virtio::{InterruptTransport, VirtioShmRegion};
 
 mod scheduler;
+
+enum HostReadRequest {
+    Read(ReadIn),
+    Open(OpenIn),
+}
 
 enum FsServer {
     ReadWrite(Server<AugmentFs<PassthroughFs>>),
@@ -61,6 +65,22 @@ impl FsServer {
         }
     }
 
+    fn owned_open(&self, header: InHeader, arg: OpenIn) -> Vec<u8> {
+        match self {
+            Self::ReadWrite(s) => s.owned_open(header, arg),
+            Self::ReadOnly(s) => s.owned_open(header, arg),
+            Self::Null(s) => s.owned_open(header, arg),
+            Self::Overlay(s) => s.owned_open(header, arg),
+        }
+    }
+    fn owned_read(&self, header: InHeader, arg: ReadIn) -> Vec<u8> {
+        match self {
+            Self::ReadWrite(s) => s.owned_read(header, arg),
+            Self::ReadOnly(s) => s.owned_read(header, arg),
+            Self::Null(s) => s.owned_read(header, arg),
+            Self::Overlay(s) => s.owned_read(header, arg),
+        }
+    }
     fn handle_message(
         &self,
         r: (InHeader, Reader),
@@ -142,7 +162,67 @@ impl Execution {
             // without constructing or decoding another header reader.
             .reader_writer_after(&self.mem, std::mem::size_of::<InHeader>());
         match decoded {
-            Ok((reader, writer)) => self.handle_decoded(request.header, reader, writer),
+            Ok((mut reader, writer)) => {
+                if matches!(request.header.opcode, x if x == Opcode::Read as u32 || x == Opcode::Open as u32)
+                {
+                    if let Some(pending) = crate::devices::virtio::memory_gate::host_read(&self.mem)
+                    {
+                        let arg = if request.header.opcode == Opcode::Read as u32 {
+                            reader.read_obj::<ReadIn>().ok().map(HostReadRequest::Read)
+                        } else {
+                            reader
+                                .read_obj::<OpenIn>()
+                                .ok()
+                                .filter(|arg| {
+                                    !pvisor_overlay_core::service::FilesystemService::is_write_open(
+                                        arg.flags as i32,
+                                    ) && arg.open_flags & super::fuse::OPEN_KILL_SUIDGID == 0
+                                })
+                                .map(HostReadRequest::Open)
+                        };
+                        drop(reader);
+                        drop(writer);
+                        if let Some(arg) = arg {
+                            if request.buffers.detach() {
+                                let reply = {
+                                    let _session =
+                                        self.session.read().expect("FUSE session poisoned");
+                                    match arg {
+                                        HostReadRequest::Read(arg) => {
+                                            self.server.owned_read(request.header, arg)
+                                        }
+                                        HostReadRequest::Open(arg) => {
+                                            self.server.owned_open(request.header, arg)
+                                        }
+                                    }
+                                };
+                                drop(pending); // publish wake BEFORE touching/waiting for guest RAM
+                                request.buffers.reattach(&self.mem);
+                                let Ok((_, mut writer)) =
+                                    request.buffers.reader_writer_after(&self.mem, 0)
+                                else {
+                                    return 0;
+                                };
+                                use std::io::Write;
+                                return if writer.write_all(&reply).is_ok() {
+                                    reply.len()
+                                } else {
+                                    0
+                                };
+                            }
+                        }
+                        drop(pending);
+                        let Ok((reader, writer)) = request
+                            .buffers
+                            .reader_writer_after(&self.mem, std::mem::size_of::<InHeader>())
+                        else {
+                            return 0;
+                        };
+                        return self.handle_decoded(request.header, reader, writer);
+                    }
+                }
+                self.handle_decoded(request.header, reader, writer)
+            }
             Err(error) => {
                 error!("invalid filesystem buffers: {error}");
                 0
@@ -333,11 +413,7 @@ impl RequestPool {
         // if arm wins, that worker signals the sleeping owner. Never park with
         // an already queued completion, but still poll stop/kick events first.
         self.awaiting_wake.swap(true, Ordering::AcqRel);
-        if self.completed.is_empty() {
-            -1
-        } else {
-            0
-        }
+        if self.completed.is_empty() { -1 } else { 0 }
     }
 
     fn submit(&mut self, mut request: Request) {
@@ -966,7 +1042,7 @@ impl FsWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::devices::virtio::descriptor_utils::{create_descriptor_chain, DescriptorType};
+    use crate::devices::virtio::descriptor_utils::{DescriptorType, create_descriptor_chain};
     use std::time::Duration;
     use vm_memory::GuestAddress;
 
@@ -1409,12 +1485,14 @@ mod tests {
             });
         }
         assert_eq!(normal.used.idx.get(), 2);
-        assert!(!worker
-            .dispatch_profile
-            .report()
-            .unwrap()
-            .measurements
-            .contains_key("notification_checks"));
+        assert!(
+            !worker
+                .dispatch_profile
+                .report()
+                .unwrap()
+                .measurements
+                .contains_key("notification_checks")
+        );
         worker.notify_completed([false, true]);
         let report = worker.dispatch_profile.report().unwrap();
         assert_eq!(report.measurements["published_completions"].units, 2);

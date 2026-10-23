@@ -1,0 +1,326 @@
+From: pVisor contributors
+Subject: [PATCH] sched/deadline: backport fair-server idle stop and correctness fixes
+
+Backport Linux upstream e636ffb9e31b (time accounting), f5a538c07df2
+(idle stop), and ca1e8eede4fc (runnable-task stop race) to 6.12.109.
+Original authors: Peter Zijlstra <peterz@infradead.org> and
+Gabriele Monaco <gmonaco@redhat.com>. GPL-2.0-only.
+
+Adapt rq->donor to rq->curr (no proxy scheduling in this tree), idle_rq
+to idle_cpu(cpu_of(rq)) (checks current, nr_running and ttwu_pending),
+and retain 6.12's lazy server initialization. Clear dl_defer_idle before
+the active-server early return. No timer filtering, Agent API, PSI or
+network watchdog policy changes.
+
+Upstream:
+https://github.com/torvalds/linux/commit/e636ffb9e31b4f7dde7fef5358669266b9ce02ec
+https://github.com/torvalds/linux/commit/f5a538c07df26f5c601e41f7b9c7ade3e1e75803
+https://github.com/torvalds/linux/commit/ca1e8eede4fc68ce85a9fdce1a6c13ad64933318
+
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -650,20 +650,22 @@
+ 	 *
+ 	 * @dl_server tells if this is a server entity.
+ 	 *
++	 * @dl_server_active tells if the dlserver is active(started).
++	 * dlserver is started on first cfs enqueue on an idle runqueue
++	 * and is stopped when a dequeue results in 0 cfs tasks on the
++	 * runqueue. In other words, dlserver is active only when cpu's
++	 * runqueue has atleast one cfs task.
++	 *
+ 	 * @dl_defer tells if this is a deferred or regular server. For
+ 	 * now only defer server exists.
+ 	 *
+ 	 * @dl_defer_armed tells if the deferrable server is waiting
+ 	 * for the replenishment timer to activate it.
+ 	 *
+-	 * @dl_server_active tells if the dlserver is active(started).
+-	 * dlserver is started on first cfs enqueue on an idle runqueue
+-	 * and is stopped when a dequeue results in 0 cfs tasks on the
+-	 * runqueue. In other words, dlserver is active only when cpu's
+-	 * runqueue has atleast one cfs task.
+-	 *
+ 	 * @dl_defer_running tells if the deferrable server is actually
+ 	 * running, skipping the defer phase.
++	 *
++	 * @dl_defer_idle tracks idle state
+ 	 */
+ 	unsigned int			dl_throttled      : 1;
+ 	unsigned int			dl_yielded        : 1;
+@@ -674,6 +676,7 @@
+ 	unsigned int			dl_defer	  : 1;
+ 	unsigned int			dl_defer_armed	  : 1;
+ 	unsigned int			dl_defer_running  : 1;
++	unsigned int			dl_defer_idle     : 1;
+ 
+ 	/*
+ 	 * Bandwidth enforcement timer. Each -deadline task has its
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -1216,8 +1216,17 @@
+ 		sched_clock_tick();
+ 		update_rq_clock(rq);
+ 
+-		if (!dl_se->dl_runtime)
++		/*
++		 * Make sure current has propagated its pending runtime into
++		 * any relevant server through calling dl_server_update() and
++		 * friends.
++		 */
++		rq->curr->sched_class->update_curr(rq);
++
++		if (dl_se->dl_defer_idle) {
++			dl_server_stop(dl_se);
+ 			return HRTIMER_NORESTART;
++		}
+ 
+ 		if (dl_se->dl_defer_armed) {
+ 			/*
+@@ -1469,10 +1478,12 @@
+ }
+ 
+ static inline void
+-update_stats_dequeue_dl(struct dl_rq *dl_rq, struct sched_dl_entity *dl_se,
+-			int flags);
++update_stats_dequeue_dl(struct dl_rq *dl_rq, struct sched_dl_entity *dl_se, int flags);
++
+ static void update_curr_dl_se(struct rq *rq, struct sched_dl_entity *dl_se, s64 delta_exec)
+ {
++	/* 6.12 equivalent of idle_rq(): also checks nr_running/ttwu_pending. */
++	bool idle = idle_cpu(cpu_of(rq));
+ 	s64 scaled_delta_exec;
+ 
+ 	if (unlikely(delta_exec <= 0)) {
+@@ -1492,6 +1503,9 @@
+ 		scaled_delta_exec = dl_scaled_delta_exec(rq, dl_se, delta_exec);
+ 
+ 	dl_se->runtime -= scaled_delta_exec;
++
++	if (dl_se->dl_defer_idle && !idle)
++		dl_se->dl_defer_idle = 0;
+ 
+ 	/*
+ 	 * The fair server can consume its runtime while throttled (not queued/
+@@ -1502,6 +1516,29 @@
+ 	 * starting a new period, pushing the activation.
+ 	 */
+ 	if (dl_se->dl_defer && dl_se->dl_throttled && dl_runtime_exceeded(dl_se)) {
++		/*
++		 * Non-servers would never get time accounted while throttled.
++		 */
++		WARN_ON_ONCE(!dl_server(dl_se));
++
++		/*
++		 * While the server is marked idle, do not push out the
++		 * activation further, instead wait for the period timer
++		 * to lapse and stop the server.
++		 */
++		if (dl_se->dl_defer_idle && idle) {
++			/*
++			 * The timer is at the zero-laxity point, this means
++			 * dl_server_stop() / dl_server_start() can happen
++			 * while now < deadline. This means update_dl_entity()
++			 * will not replenish. Additionally start_dl_timer()
++			 * will be set for 'deadline - runtime'. Negative
++			 * runtime will not do.
++			 */
++			dl_se->runtime = 0;
++			return;
++		}
++
+ 		/*
+ 		 * If the server was previously activated - the starving condition
+ 		 * took place, it this point it went away because the fair scheduler
+@@ -1513,6 +1550,9 @@
+ 		hrtimer_try_to_cancel(&dl_se->dl_timer);
+ 
+ 		replenish_dl_new_period(dl_se, dl_se->rq);
++
++		if (idle)
++			dl_se->dl_defer_idle = 1;
+ 
+ 		/*
+ 		 * Not being able to start the timer seems problematic. If it could not
+@@ -1594,35 +1634,16 @@
+  * as time available for the fair server, avoiding a penalty for the
+  * rt scheduler that did not consumed that time.
+  */
+-void dl_server_update_idle_time(struct rq *rq, struct task_struct *p)
+-{
+-	s64 delta_exec;
+-
+-	if (!rq->fair_server.dl_defer)
+-		return;
+-
+-	/* no need to discount more */
+-	if (rq->fair_server.runtime < 0)
+-		return;
+-
+-	delta_exec = rq_clock_task(rq) - p->se.exec_start;
+-	if (delta_exec < 0)
+-		return;
+-
+-	rq->fair_server.runtime -= delta_exec;
+-
+-	if (rq->fair_server.runtime < 0) {
+-		rq->fair_server.dl_defer_running = 0;
+-		rq->fair_server.runtime = 0;
+-	}
+-
+-	p->se.exec_start = rq_clock_task(rq);
++void dl_server_update_idle(struct sched_dl_entity *dl_se, s64 delta_exec)
++{
++	if (dl_se->dl_server_active && dl_se->dl_runtime && dl_se->dl_defer)
++		update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
+ }
+ 
+ void dl_server_update(struct sched_dl_entity *dl_se, s64 delta_exec)
+ {
+ 	/* 0 runtime = fair server disabled */
+-	if (dl_se->dl_runtime)
++	if (dl_se->dl_server_active && dl_se->dl_runtime)
+ 		update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
+ }
+ 
+@@ -1643,8 +1664,8 @@
+  * | 8 |       B:zero_laxity-wait       |     |    |
+  * |   |                                | <---+    |
+  * |   +--------------------------------+          |
+- * |     |              ^     ^           2        |
+- * |     | 7            | 2   +--------------------+
++ * |     |              ^         ^       2        |
++ * |     | 7            | 2, 1    +----------------+
+  * |     v              |
+  * |   +-------------+  |
+  * +-- | C:idle-wait | -+
+@@ -1689,8 +1710,11 @@
+  *   dl_defer_idle = 0
+  *
+  *
+- * [1] A->B, A->D
++ * [1] A->B, A->D, C->B
+  * dl_server_start()
++ *   dl_defer_idle = 0;
++ *   if (dl_server_active)
++ *     return; // [B]
+  *   dl_server_active = 1;
+  *   enqueue_dl_entity()
+  *     update_dl_entity(WAKEUP)
+@@ -1805,6 +1829,7 @@
+  *   "B:zero_laxity-wait" -> "C:idle-wait"        [label="7:dl_server_update_idle"]
+  *   "B:zero_laxity-wait" -> "D:running"          [label="3:dl_server_timer"]
+  *   "C:idle-wait" -> "A:init"                    [label="8:dl_server_timer"]
++ *   "C:idle-wait" -> "B:zero_laxity-wait"        [label="1:dl_server_start"]
+  *   "C:idle-wait" -> "B:zero_laxity-wait"        [label="2:dl_server_update"]
+  *   "C:idle-wait" -> "C:idle-wait"               [label="7:dl_server_update_idle"]
+  *   "D:running" -> "A:init"                      [label="4:pick_task_dl"]
+@@ -1846,8 +1871,15 @@
+ 		setup_new_dl_entity(dl_se);
+ 	}
+ 
++	/* A newly runnable fair task cancels the idle-stop decision. */
++	dl_se->dl_defer_idle = 0;
+ 	if (!dl_se->dl_runtime || dl_se->dl_server_active)
+ 		return;
++
++	/*
++	 * Update the current task to 'now'.
++	 */
++	rq->curr->sched_class->update_curr(rq);
+ 
+ 	if (WARN_ON_ONCE(!cpu_online(cpu_of(rq))))
+ 		return;
+@@ -1867,6 +1899,7 @@
+ 	hrtimer_try_to_cancel(&dl_se->dl_timer);
+ 	dl_se->dl_defer_armed = 0;
+ 	dl_se->dl_throttled = 0;
++	dl_se->dl_defer_idle = 0;
+ 	dl_se->dl_server_active = 0;
+ }
+ 
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -1259,8 +1259,7 @@
+ 		 *    against fair_server such that it can account for this time
+ 		 *    and possibly avoid running this period.
+ 		 */
+-		if (dl_server_active(&rq->fair_server))
+-			dl_server_update(&rq->fair_server, delta_exec);
++		dl_server_update(&rq->fair_server, delta_exec);
+ 	}
+ 
+ 	account_cfs_rq_runtime(cfs_rq, delta_exec);
+@@ -7110,12 +7109,8 @@
+ 			goto enqueue_throttle;
+ 	}
+ 
+-	if (!rq_h_nr_queued && rq->cfs.h_nr_queued) {
+-		/* Account for idle runtime */
+-		if (!rq->nr_running)
+-			dl_server_update_idle_time(rq, rq->curr);
++	if (!rq_h_nr_queued && rq->cfs.h_nr_queued)
+ 		dl_server_start(&rq->fair_server);
+-	}
+ 
+ 	/* At this point se is NULL and we are at root level*/
+ 	add_nr_running(rq, 1);
+--- a/kernel/sched/idle.c
++++ b/kernel/sched/idle.c
+@@ -520,9 +520,11 @@
+ 	resched_curr(rq);
+ }
+ 
++static void update_curr_idle(struct rq *rq);
++
+ static void put_prev_task_idle(struct rq *rq, struct task_struct *prev, struct task_struct *next)
+ {
+-	dl_server_update_idle_time(rq, prev);
++	update_curr_idle(rq);
+ 	scx_update_idle(rq, false, true);
+ }
+ 
+@@ -570,6 +572,7 @@
+  */
+ static void task_tick_idle(struct rq *rq, struct task_struct *curr, int queued)
+ {
++	update_curr_idle(rq);
+ }
+ 
+ static void switched_to_idle(struct rq *rq, struct task_struct *p)
+@@ -585,6 +588,17 @@
+ 
+ static void update_curr_idle(struct rq *rq)
+ {
++	struct sched_entity *se = &rq->idle->se;
++	u64 now = rq_clock_task(rq);
++	s64 delta_exec;
++
++	delta_exec = now - se->exec_start;
++	if (unlikely(delta_exec <= 0))
++		return;
++
++	se->exec_start = now;
++
++	dl_server_update_idle(&rq->fair_server, delta_exec);
+ }
+ 
+ /*
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -411,14 +411,13 @@
+  * naturally thottled to once per period, avoiding high context switch
+  * workloads from spamming the hrtimer program/cancel paths.
+  */
++extern void dl_server_update_idle(struct sched_dl_entity *dl_se, s64 delta_exec);
+ extern void dl_server_update(struct sched_dl_entity *dl_se, s64 delta_exec);
+ extern void dl_server_start(struct sched_dl_entity *dl_se);
+ extern void dl_server_stop(struct sched_dl_entity *dl_se);
+ extern void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
+ 		    dl_server_pick_f pick_task);
+ 
+-extern void dl_server_update_idle_time(struct rq *rq,
+-		    struct task_struct *p);
+ extern void fair_server_init(struct rq *rq);
+ extern void __dl_server_attach_root(struct sched_dl_entity *dl_se, struct rq *rq);
+ extern int dl_server_apply_params(struct sched_dl_entity *dl_se,

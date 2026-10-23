@@ -1,8 +1,8 @@
 //! VM-local barrier for device RAM access, including retained descriptor slices.
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     Arc, Condvar, Mutex, OnceLock, Weak,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::{Duration, Instant};
 use vm_memory::{GuestMemory, GuestMemoryMmap};
@@ -108,9 +108,11 @@ impl SharedFreeReports {
     /// Called after remapping and releasing all retired pool references.
     pub(crate) fn complete(&self, report: &Arc<FreeReport>) -> std::io::Result<()> {
         let mut pending = self.0.lock().unwrap();
-        assert!(pending
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, report)));
+        assert!(
+            pending
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, report))
+        );
         *pending = None;
         report.done.store(true, Ordering::Release);
         report.event.write(1)
@@ -123,6 +125,7 @@ impl SharedFreeReports {
 pub use crate::api::MemoryPrepare;
 #[derive(Default)]
 pub struct MemoryGate {
+    pub(crate) idle: Arc<crate::guest_idle::IdleGate>,
     state: Mutex<State>,
     changed: Condvar,
     read_hints_enabled: AtomicBool,
@@ -297,6 +300,7 @@ impl MemoryGate {
         access
     }
     fn enter_unprepared(self: &Arc<Self>) -> Arc<Access> {
+        self.idle.wake("device_ram");
         let mut state = self.state.lock().unwrap();
         while state.closed && state.active == 0 {
             state = self.changed.wait(state).unwrap();
@@ -340,6 +344,7 @@ impl Access {
 }
 impl Drop for Access {
     fn drop(&mut self) {
+        self.gate.idle.wake("device_completion");
         let mut state = self.gate.state.lock().unwrap();
         state.active -= 1;
         if state.active == 0 {
@@ -390,6 +395,44 @@ pub(crate) fn balloon_access(mem: &GuestMemoryMmap) -> Option<Arc<Access>> {
     gate.map(|gate| gate.enter_unprepared())
 }
 
+/// Notify before touching queue memory or waiting on the RAM gate.
+pub(crate) fn external_wake(mem: &GuestMemoryMmap, reason: &str) {
+    let gate = registry()
+        .lock()
+        .unwrap()
+        .get(&key(mem))
+        .and_then(Weak::upgrade);
+    if let Some(gate) = gate {
+        gate.idle.wake(reason);
+    }
+}
+
+/// Bind interrupt delivery to the VM gate before a transport is activated.
+pub(crate) fn idle_gate(mem: &GuestMemoryMmap) -> Option<Arc<crate::guest_idle::IdleGate>> {
+    registry()
+        .lock()
+        .unwrap()
+        .get(&key(mem))
+        .and_then(Weak::upgrade)
+        .map(|gate| gate.idle.clone())
+}
+
+/// Host-only read work may outlive an offload, but never a guest-memory view.
+pub(crate) struct HostRead(Arc<crate::guest_idle::IdleGate>);
+pub(crate) fn host_read(mem: &GuestMemoryMmap) -> Option<HostRead> {
+    let idle = idle_gate(mem)?;
+    if !idle.enabled() {
+        return None;
+    }
+    idle.host_read(true);
+    Some(HostRead(idle))
+}
+impl Drop for HostRead {
+    fn drop(&mut self) {
+        self.0.host_read(false);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -434,9 +477,10 @@ mod tests {
         assert!(Arc::ptr_eq(&access.read_hints().unwrap(), &hints));
         let other = Arc::new(MemoryGate::default());
         assert!(other.enter().read_hints().is_none());
-        assert!(gate
-            .install_read_hints(Arc::new(ReadHints::default()))
-            .is_err());
+        assert!(
+            gate.install_read_hints(Arc::new(ReadHints::default()))
+                .is_err()
+        );
         drop(access);
         gate.close(Duration::ZERO).unwrap();
     }

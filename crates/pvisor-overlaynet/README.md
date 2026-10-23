@@ -41,3 +41,13 @@ just test pvisor-overlaynet
 - [Network control](../../docs/src/zh/guides/network.md)
 - [`pvisor-gateway`](../pvisor-gateway/README.md)
 - [`pvisor-core`](../pvisor-core/README.md)
+
+## Optional Host download waits
+
+`OverlaySink::download_wait` defaults to no hook. After destination authorization,
+GET forwarding and established CONNECT downstream reads may report `waiting`
+and must await `ready` before delivering data, EOF or errors. The owning lifecycle
+must fence and confirm native resume; transport silence alone is not guest idle.
+Drop calls bounded synchronous `cancel`. HTTP/1 and HTTP/2 CONNECT preserve opaque
+bytes with 16 KiB reads; upload remains active. This is Host buffering/backpressure,
+not TLS termination or guest download execution. Disabled hooks retain forwarding.

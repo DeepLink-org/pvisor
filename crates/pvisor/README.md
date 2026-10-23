@@ -401,6 +401,185 @@ savings; compressed exit still does not commit writes after the last resume.
 See the [CLI commands and limits](../../docs/src/en/reference/cli.md#vm-instance-control)
 and [configuration example](../../docs/src/en/reference/config.md#vm-control-memory).
 
+## Cooperative model waits (opt-in Rust API)
+
+With the `gateway` Cargo feature, an embedded native VM owner can install an
+Attempt-local wait coordinator. It is disabled by default and is separate from
+the `workload-aware-memory-offloading` observation experiment. The first version
+optimizes one outstanding Host-observed model call per Attempt and requires a
+one/two-vCPU guest-kernel idle handoff. Agent/client code needs no declaration.
+Two vCPUs support pause/resume only, retain normal PSI/TX-watchdog behavior,
+and need matching ABI-v3 firmware. Automatic offload remains single-vCPU.
+Overlapping calls keep forwarding but disable automatic transitions for the
+remainder of that Attempt. There is no new CLI/TOML switch, daemon integration,
+or scheduler-budget release. `CooperativeModelWait` is the historical Rust name;
+cooperation is between pVisor's VMM and guest kernel, not the Agent application.
+
+```rust,ignore
+use std::time::Duration;
+use pvisor::{CooperativeModelWait, GatewayDriverConfig, ModelStreamBuffer, ModelWaitRounds, PVisor};
+
+// `proxy` is the existing Gateway ProxyConfig; `vm` is a fresh single-vCPU VM.
+let vm = vm.with_guest_idle_handoff()?;
+let gateway = GatewayDriverConfig::new(proxy).cooperative_model_wait(CooperativeModelWait {
+    require_guest_idle: true,
+    downloads: false,        // opt into authorized proxy GET / CONNECT read waits
+    filesystem_reads: false, // opt into Host-owned READ / read-only OPEN waits
+    pause_after: Duration::from_millis(20),
+    offload_after: Some(Duration::from_millis(50)),
+    stream_buffer: Some(ModelStreamBuffer {
+        max_bytes: 256 * 1024,
+        max_wait: Duration::from_millis(250),
+    }),
+    rounds: Some(ModelWaitRounds {
+        recheck_after: Duration::from_millis(100),
+        offload_cooldown: Duration::from_secs(5),
+    }),
+});
+let runtime = PVisor::builder()
+    .gateway(gateway)
+    .executors(vec![std::sync::Arc::new(vm)])
+    .build();
+```
+
+These are example timers, not measured break-even thresholds. Both deadlines
+start at each idle round; offload must not precede pause and timers must be
+nonzero for pause and at most one day. `CooperativeModelWait::default()` uses a
+100 ms pause grace, mandatory guest idle evidence, no offload, no stream buffering,
+and repeated rounds with a 100 ms recheck interval and five-second offload cooldown. Setting
+`require_guest_idle: false` is rejected; an Agent promise is not an alternative.
+Enabled policy requires a VM and an enabled Gateway; a simultaneous custom
+`model_wait` lifecycle or legacy `native_model_wait` selection is rejected before startup.
+
+The Host enables observation per Attempt. Gateway recognizes authorized model
+requests and reports their lifecycle automatically. No client header or explicit
+rollout wait/resume call is required; this mode ignores and strips the legacy
+`x-pvisor-inference-idle` header. The separate `native_model_wait` adapter keeps
+its old explicit-declaration behavior; it cannot be combined with this mode. Model JSON/SSE is unchanged. Model waiting alone cannot
+authorize pause: the patched guest kernel must hand off an idle vCPU and timer.
+On overlap the old wait is woken and native cleanup finishes before responses
+are delivered; new calls are not rejected for being concurrent. Automatic
+optimization stays disabled for the remainder of the Attempt, even after the
+calls become serial again. Manual pause still holds all delivery barriers.
+
+Requests must traverse pVisor's model-aware Gateway, already bound by Host to
+the target Attempt. Opaque TLS traffic or requests bypassing that Gateway do not
+provide model lifecycle evidence. An external rollout's model request cannot be
+mapped to an unrelated VM from timing or caller-supplied session headers. A
+pVisor-owned per-VM route/binding is required; a general external-rollout binding
+adapter is not implemented here. Training algorithms/losses and client inference
+protocols need no change, but network routing and VM association remain prerequisites.
+
+Entry only registers a timer: host upstream dispatch is not delayed by RAM
+writeback. Fast replies cancel the timer. Longer waits pause vCPUs and optionally
+use the existing `RunOffload { file: None }`; native executor setup permits
+automatic offload only for shared file-backed RAM, excluding private/restored
+RAM and cold/external pagers. Other configurations retain pause-only behavior;
+native device checks remain authoritative. Offload completion includes host
+backing publication, not just the runner's reclaim report.
+
+For non-streaming responses, the Gateway barrier wakes at body completion or
+failure. With `stream_buffer: None`, SSE keeps the first-nonempty-chunk boundary,
+including heartbeat/reasoning deltas, EOF or failure. With `Some(ModelStreamBuffer)`,
+the Host retains each raw batch until the first of: byte limit, fixed wait
+limit, EOF, upstream error, or the coordinator's latched wake signal. Timer,
+network/device activity, manual controls, overlap and cancellation still take
+precedence over buffering. No header, model-client wrapper or guest application
+change is needed. The maximum wait starts when successful streaming headers
+arrive for the first batch, then when collection of each new batch begins after
+its predecessor drains. It includes silence before the first byte and never
+resets on a heartbeat.
+It does not cover upstream connection/header latency or extend the guest lease.
+
+`max_bytes` accepts 1 byte through 16 MiB; `max_wait` must be >0 and <=60 seconds.
+These are Host limits, not measured optimal thresholds. The copy buffer contains
+at most `max_bytes` payload bytes. HTTP/TLS transport memory, capture storage and
+one already-received chunk's unread suffix are additional: an oversized chunk
+ends buffering immediately without another upstream read. The suffix is retained
+and replayed once after the copied prefix. This is not a total process RSS or
+node-wide budget. Only the automatic wait receives this policy; passive overlap
+fallbacks do not acquire additional prefix buffers.
+
+Response headers/data wait for acknowledged resume. An already-started pause or
+offload is allowed to finish (including Host backing publication) before resume;
+therefore `max_wait` bounds collection, not end-to-end delivery latency. Each
+batch crosses a resume barrier and uses the existing translation, capture and
+backpressure path. While a batch is queued, a delivery hold prevents rearming.
+An internal marker acknowledges consumption of all prior output queue items by
+the HTTP body writer; it is not a TCP ACK or proof of guest application consumption.
+After that marker, collection restarts and the coordinator may recheck guest idle.
+The request guard stays alive through EOF and final batch drain. Stream drop,
+shutdown or errors cancel it. With buffering disabled, the first chunk resumes
+the VM and the delivery hold stays through EOF (no pauses between raw chunks). Buffered bytes precede a subsequent stream error;
+errors before any bytes retain normal pre-body failure handling. No bytes or SSE
+semantic events are discarded, but transport chunk boundaries may change.
+Heartbeats, reasoning, visible output and tool-call deltas are all delayed alike;
+there is no semantic filtering. Rebatching requires `rounds: Some(...)`.
+EOF ends buffering; an SSE `[DONE]` marker alone does not bypass the size/time bound.
+A real guest timer or external event may wake earlier than `max_wait`.
+Wall-time deadlines and guest clock semantics remain unchanged. Reclaim reports
+are best-effort residency observations, not proof of node capacity or density.
+
+With repeated rounds, timer/device wake retires only the current round. If the
+same request remains eligible and no delivery hold is active, the coordinator
+registers the next listener and uses atomic resume-and-arm: VMM retires the old
+claim, arms fresh acquisition and only then releases devices/vCPU. The fresh
+kernel offer still gates pause; no old permission or timer deadline is reused.
+This path does not wait `recheck_after`/`pause_after` before detecting the next
+idle entry. Initial acquisition, failed acquisition and post-delivery rechecks
+retain those delays; `offload_after`, the real-deadline minimum and offload
+cooldown remain unchanged. Old listener retirement completes before the next
+transition. Delivery racing that transition cancels the published new round and
+waits for its cleanup; native transitions are never dropped halfway. The one-second
+limit now bounds acquisition only. Accepted handoffs use the real guest timer
+or explicit no-timer state; there is no fixed periodic resume. `recheck_after` must
+be 10 ms..60 s. `offload_cooldown` must be >= that interval and <= one day. It is
+measured from completion of an automatic offload attempt (including rejection)
+and persists across model requests in the Attempt. During cooldown rounds may
+pause, but skip offload; they reconsider it in a later round. These defaults are
+policy choices, not measured performance thresholds. `rounds: None` retains
+single-round behavior for comparison. Manual control, overlap and request
+cancellation stop automatic rounds, rather than permitting an automatic retry.
+
+Explicit controls through Run handles, AttemptService and the Host VM endpoint
+share the coordinator. Human pause/offload holds delivery until explicit resume;
+resume invalidates the old wait timers. Checkpoint/save-and-stop conflicts with
+an active wait or a manual pause. Invalid primitives are rejected before effects.
+Control failures after admission conservatively cancel the Attempt because a
+generic error can follow a native effect or failed event publication. Request
+drop/shutdown cleanup is latched and runs on the Session runtime, independently
+of the Gateway runtime. Attempt cancellation/termination never triggers resume;
+this is live-process coordination, not restart or crash recovery.
+
+Coordinator tests cover timer/ownership/cancellation races and real local HTTP
+through Gateway with a simulated VM backend. They do not establish real-guest
+RAM correctness, reclaim amount, density gains, or performance thresholds.
+
+### Other Host wait sources (experimental)
+
+`downloads: true` observes authorized proxy GET waits for upstream headers and
+body chunks, plus established CONNECT downstream reads (including opaque TLS
+bytes). Each ready/error/EOF crosses the same resume barrier. CONNECT has a
+16 KiB read buffer; HTTP uses transport chunks and backpressure. This does not
+transfer guest TLS, decompression, hashing, package installation or arbitrary
+background computation to Host. Direct socket downloads bypassing the proxy
+are not covered. No new HTTP header or Agent integration is required.
+
+`filesystem_reads: true` observes VMM Host-owned READ/read-only OPEN operations,
+including lazy image retrieval and read-only baseline fingerprinting. Host
+finishes the backend fetch while the guest may be offloaded, then signals wake
+before touching guest RAM. This covers a running VM's lazy reads, not initial
+image preparation before a VM exists. Cached/short work normally ends before
+pause grace. Mutations/copy-up retain their existing RAM ownership.
+
+All three hints feed one Attempt-local coordinator and the same kernel idle
+handoff, epoch fences, native pause/offload/resume, cooldown, manual ownership
+and termination paths. A hint alone never proves idleness. Filesystem observation
+skips reservation while another wait owns the coordinator; overlapping explicit
+network/model waits conservatively disable automatic transitions. Policies are
+opt-in Rust API fields, default false for these new sources; there are no new
+CLI/daemon controls or per-source timing thresholds in this revision.
+
 ## Resource ownership and local cold compression
 
 `pvisor-daemon serve --sandbox --memory-pool` enables the daemon-owned experimental pool;
@@ -908,3 +1087,124 @@ selection and kernel preparation match release builds.
 - [`pvisor-overlaynet`](../pvisor-overlaynet/README.md)
 - [`pvisor-gateway`](../pvisor-gateway/README.md)
 - [`pvisor-core`](../pvisor-core/README.md)
+
+### Host idle policy and regression probes
+
+For the opt-in single-vCPU Linux/KVM executor:
+
+```rust,ignore
+let vm = VmExecutor::new(settings)?.with_guest_idle_handoff_policy(
+    true, // disable proactive compaction; retain on-demand compaction
+    std::time::Duration::from_secs(1), // minimum remaining timer budget for offload
+)?;
+```
+
+Keep the Gateway wait configuration described above. The default
+`with_guest_idle_handoff()` preserves compaction defaults and uses the same
+one-second offload minimum. The threshold must be >2 ms and <=24 hours.
+Short timer budgets keep pause-only mode without consuming offload cooldown.
+Admitted backing writeback is non-interruptible and can overrun a deadline.
+[Guest maintenance contracts and source tests](../../fw/README.md#experimental-pvisor-idle-handoff)
+and [VMM handoff/atomic resume](../pvisor-vm/README.md#single-vcpu-guest-idle-handoff-and-optional-offload-experimental)
+describe the safety boundaries.
+
+Build `vm_idle_handoff` with `--features gateway` for single-round regressions
+(`rounds: None`): `timer|short|network|race|boundary|busy 10`. It uses the same
+rootfs/firmware/fixture environment as the repeated-round probe below and a fresh
+`CASE_ROOT`. Both probes use a local provider, not an online model.
+
+### Long-reasoning engineering probe
+
+The streaming fixture supplies a normal per-candidate `finish_reason` before
+`[DONE]`. Success requires both guest content/order/checksum checks and exactly
+one Gateway `llm.response.stream`, with no `llm.call.cancelled`. Receiving all expected
+text alone must not hide an incomplete provider protocol. Fault fixtures retain
+separate negative expectations rather than weakening Gateway validation.
+`vm_reasoning_rounds` exercises one ordinary model HTTP request inside a real
+one/two-vCPU Linux/KVM guest, against a deterministic local provider. It needs
+`--features gateway`, the matching idle-handoff firmware and a rootfs with Python.
+The guest keeps and checks a 192 MiB payload, checks ordered streaming deltas and
+reports timer intervals. A separate TCP channel records delivery ACKs solely for
+measurement; it is not an optimization declaration or a production Agent API.
+
+```bash
+cargo build --locked --release -p pvisor --features gateway --example vm_reasoning_rounds
+CASE_ROOT=/path/to/new-case \
+PVISOR_CASE_ROOTFS=/path/to/rootfs \
+PVISOR_CASE_VM_LIBRARY_DIR=/path/to/firmware \
+PVISOR_CASE_VM_PYTHON=/opt/miniconda3/bin/python \
+IDLE_FIXTURE_HOST=10.0.0.2 \
+PVISOR_PROBE_RAM_BACKING=/path/to/new-ram-file \
+  target/release/examples/vm_reasoning_rounds stream offload 12
+```
+
+Scenarios are `long`, `timer` (250 ms), `network`, `stream`, `race` (stream,
+network and timer together), `short` (1 ms), `download` (ordinary proxy GET),
+`tunnel` (opaque HTTP/1 CONNECT transport) and `image` (Host lazy cache reads).
+`busy` (two CPUs) keeps the peer CPU runnable until delivery and requires zero
+pauses/offloads. `offload-race` (offload policy) sends real network traffic
+10/0/40 ms after reclaim requests whose latest observed lease exceeds
+the configured minimum (repeating up to six injections); retained diagnostics determine
+whether each wake preceded admission, raced writeback, or followed commit.
+Image requires `PVISOR_PROBE_LAZY_SOCKET`, a compatible cache server serving the
+fixture manifest and `/payload.bin`; see the engineering result bundle for the
+controlled delayed fixture. Policies are `baseline` (no
+lifecycle), `pause` and `offload`. Duration is 3..180 seconds. Each case directory
+must have no existing workspace; the explicit backing file must not exist. If
+omitted, backing is `CASE_ROOT/live.ram`. Choose and record the actual backing
+medium; tmpfs cannot establish disk-offload savings. Run through the host's
+existing approved pVisor execution profile where user namespaces require it.
+
+The probe writes `events.json`, `delivery.json`, `result.json` and `summary.json`.
+`delivery.json` uses a Host monotonic clock for provider enqueue to guest ACK;
+that interval includes HTTP, buffering, guest faults and the ACK return path.
+It is not isolated resume latency. Compare with baseline and pause-only runs.
+Record backing residency and process RSS/PSS separately; the native reclaim
+report uses `mincore`, not node capacity. The probe does not establish SWE/model
+quality, concurrency throughput, density, or hard-real-time timer guarantees.
+
+The `sched` scenario checks fair-task and timer progress during a bounded
+SCHED_FIFO spinner and restores the temporary RT-throttling setting. `psi`,
+`psi-late` and `psi-stats` cover pressure/trigger wake and timestamped statistics.
+They use ordinary guest workloads without an Agent optimization declaration.
+
+Host-only probe settings:
+
+- `PVISOR_PROBE_CPUS=1|2` (default 1). Two CPUs keep normal PSI/watchdog;
+  the two pinned CPUs independently verify the resident payload after delivery.
+- `PVISOR_PROBE_DISABLE_COMPACTION=0|1` (default 1).
+- `PVISOR_PROBE_OFFLOAD_MINIMUM_MS` (default 1000).
+- `PVISOR_PROBE_BUFFER_WAIT_MS=1..60000` (default 250).
+- `PVISOR_PROBE_STREAM_INITIAL_DELAY_MS=0..60000` (default 0).
+
+The probe records the guest sysctl/boot command line, deadline skips and actual
+pause/offload operations; short timers may correctly produce zero offloads.
+Optional `PVISOR_DIAG_OFFLOAD=1` records admission, cooldown and backing phases;
+`PVISOR_DIAG_IDLE=1` records epoch/offer-linked handoff, wake and resume transitions.
+Watch notifications may coalesce. Ordered diagnostic stderr can perturb timing;
+compare equally instrumented runs and retain uninstrumented controls.
+
+### Idle control failure diagnostics
+
+The private Host/runner idle channel retains its 3-second receive watchdog,
+1-second write timeout and fail-closed runner exit. Failure diagnostics identify
+side, phase, PID, timestamp and errno; runner status-write failures also retain
+sequence, epoch, claimed state and elapsed write time. Host cancellation occurs
+before asynchronous diagnostic publication. A blocked runner stderr pipe can
+delay its fatal diagnostic by at most 20 ms before exit. This does not change
+idle handoff, real timer/event wakeups, offload thresholds or cooldowns.
+
+### Dual-vCPU idle handoff validation
+
+`PVISOR_PROBE_CPUS=2` selects the dual-CPU payload in `vm_idle_handoff`.
+Use `busy`, `ipi`, `timer`, `network`, `race`, `ingress`, and `boundary` modes with a fresh
+CASE_ROOT per run and ABI-v3 firmware. `busy` pins the worker opposite the model
+caller and keeps it runnable until the response; it requires zero pauses.
+`ipi` exchanges messages between pinned CPUs and records RES/CAL interrupt
+counts and wake latency. `timer` arms different deadlines on both CPUs;
+network/race checks use the existing real NIC fixture. `ingress` sends real NIC
+traffic at 0/10/19/20/21/25/50 ms without waiting for pause, exercising
+arrival before and during acquisition as well as after publication. The guest asserts PSI is
+present and single-CPU PSI/watchdog deferral flags are absent. All modes retain
+payload hashing, complete responses, balanced transitions and no-offload checks.
+These are engineering correctness probes, not live SWE or latency guarantees.

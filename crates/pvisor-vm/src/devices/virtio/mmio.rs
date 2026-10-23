@@ -300,6 +300,7 @@ struct InterruptTransportInner {
     event: EventFd,
     intc: IrqChip,
     irq_line: Option<u32>,
+    idle: Option<Arc<crate::guest_idle::IdleGate>>,
 }
 
 #[derive(Clone)]
@@ -313,6 +314,7 @@ impl InterruptTransport {
             event: EventFd::new(0).map_err(CreateMmioTransportError::CreateInterruptEventFd)?,
             intc,
             irq_line: None,
+            idle: None,
         })))
     }
 
@@ -345,6 +347,9 @@ impl InterruptTransport {
     }
 
     fn try_signal(&self, status: u32) -> Result<(), crate::devices::Error> {
+        if let Some(idle) = &self.0.idle {
+            idle.wake("virtio_interrupt");
+        }
         self.status().fetch_or(status as usize, Ordering::SeqCst);
         self.intc()
             .lock()
@@ -555,8 +560,10 @@ impl MmioTransport {
         let queues = Self::create_queues(&queue_config);
         let queue_evts = Self::create_queue_evts(queue_config.len())?;
 
+        let mut interrupt = InterruptTransport::new(intc, debug_log_target)?;
+        Arc::get_mut(&mut interrupt.0).unwrap().idle = super::memory_gate::idle_gate(&mem);
         Ok(MmioTransport {
-            interrupt: InterruptTransport::new(intc, debug_log_target)?,
+            interrupt,
             device,
             features_select: 0,
             acked_features_select: 0,

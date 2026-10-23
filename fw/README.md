@@ -451,3 +451,153 @@ This library bundles a Linux kernel but does not execute any code from it, actin
 * **Library code, including automatically-generated code**: LGPL-2.1-only
 
 Therefore, distributions of this library in binary form are required to be accompanied by the source code of the Linux kernel bundled in the binary along with the code of the library itself, but other programs linking against this library are not required to be licensed under the GPL-2.0-only nor the LGPL-2.1-only licenses.
+
+## Experimental pVisor idle handoff
+
+Patch `0050-pvisor-idle-handoff.patch` adds an opt-in x86-64 single-online-CPU
+handoff in `cpuidle_idle_call`. It is disabled unless `pvisor_idle=1` is supplied
+and `CONFIG_NO_HZ_COMMON` is available, and the VMM answers the ABI-v2 PIO probe on port `0x5050`. With local IRQs still
+disabled, it stops the nohz tick when permitted and samples the actually
+programmed clockevent deadline using `tick_nohz_get_next_hrtimer`, then reports
+its remaining milliseconds, rounded down. `U32_MAX` explicitly denotes no
+programmed clockevent; finite values saturate at `U32_MAX - 1`. The magic is
+`0x50564902`. There is no one-second cap after a successful handoff. It clears polling and rechecks rescheduling
+before the offer; normal idle processing is retained when no offer is possible.
+
+This patch does not reclaim memory, inspect process names or implement a guest
+agent daemon. A matching Host controller must latch external wakes and timers,
+and perform serialized pause/resume. The first profile permits only one vCPU;
+SMP needs a separate cross-CPU handoff design. The ABI is experimental and must
+be versioned if extended. Build a fresh source tree after patch changes when
+using the standalone Makefile, as described above.
+
+### Fair-server idle stop and timer attribution
+
+`0051-fair-server-idle-stop.patch` adapts upstream scheduler fixes e636ffb9e31b,
+f5a538c07df2 and ca1e8eede4fc to the pinned 6.12.109 tree. Time accounting is
+updated before server transitions; an idle server can stop after a full idle
+period. A newly runnable fair task clears the idle decision before the active
+server early return, and idle detection includes runnable/pending wakeups.
+The backport uses `rq->curr` and `idle_cpu(cpu_of(rq))`, the equivalents available
+in this tree. It retains lazy server initialization, scheduling budgets and
+normal task wakeups. It does not suppress clockevents, PSI or network watchdogs.
+
+### PSI idle restart quiescence
+
+`0052-psi-idle-quiesce.patch` adds `psi_idle_quiesce=1`, enabled by the Host
+idle-handoff profile. The kernel defaults to off. It only suppresses an otherwise
+new averages-work enqueue when system PSI on **one possible CPU** is fully idle,
+all pressure buckets have already been sampled, the sample is less than a u32
+nanosecond wrap old, and no averages or RT trigger is registered. Root-system
+pressure accounting, existing pending work, RT polling and real activity
+restarts remain unchanged. Cgroups and SMP keep the original behavior.
+
+This handles a worker sleeping after another work item replaced `psi_avgs_work`
+as its last function. It neither ignores a programmed timer nor changes the
+Host's one-second minimum offload budget. Trigger-bearing groups conservatively
+keep the original restart behavior. Historical averages still use the existing
+read/next-activity catch-up path; this does not introduce a new PSI ABI.
+
+### PSI aggregation deferred across idle handoff
+
+`0053-psi-idle-defer.patch` adds `psi_idle_defer=1`, selected by the Host idle
+profile (kernel default off). It also requires `psi_idle_quiesce=1`, system PSI,
+one possible CPU, and disabled `CONFIG_IRQ_TIME_ACCOUNTING`. Cgroups, SMP and
+IRQ-pressure accounting retain their normal aggregation paths.
+
+At the authenticated idle handoff, before nohz computes the real clockevent,
+the guest may cancel a pending averages timer only when the system is completely
+idle, no averages/RT trigger or trigger registration exists, and a fresh sampling
+baseline proves the u32 deltas unambiguous. Running/queued workers, expired
+or incompatible deadlines and excessive average carry fall back to normal work.
+It does not cancel maintenance work, application timers, RT polling or external
+interrupts, and it does not change the Host's one-second minimum offload budget.
+
+A single fixed-size checkpoint retains raw counters, capture time, original
+jiffies expiration and its monotonic deadline estimate (jiffy resolution).
+Before-deadline activity restores the original timer and merges the unconsumed
+sample. After-deadline task activity requests the existing averages worker via
+hard irq_work, avoiding workqueue wake recursion under rq locks. One kick owns
+the outstanding record. Reads and trigger registration also drain it under
+avgs_lock. Replay first accounts the old sample at its saved deadline, drains
+bounded carry chronologically, then applies idle decay before sampling new
+activity. The single-CPU weighting/rounding and PSI_POLL buckets remain unchanged.
+No allocation, unbounded history, periodic wake or second averaging worker is
+introduced. Pure IRQ activity without runnable work need not force aggregation.
+
+Trigger registration inhibits parking through catch-up and list publication,
+including psimon creation failure. Registered triggers retain normal deadlines,
+rate limiting and pending-event handling. A canceled timer's next clockevent is
+recomputed by guest nohz; the Host never filters or discards a reported deadline.
+This is an experimental single-vCPU optimization, not an SMP implementation or
+proof of hard real-time wake latency. The diagnostic selector
+`PVISOR_DIAG_PSI_IDLE_DEFER=0|1` isolates this change from 0052 and `psi=0`.
+
+### Fair server callback rearm fix
+
+`0054-fair-server-callback-rearm.patch` prevents an idle server's running
+hrtimer callback from enqueuing another expiration during runtime accounting.
+Accounting and period replenishment still complete. The callback then performs
+its existing idle stop; non-idle callbacks and accounting outside the callback
+retain the original rearm path. This matters because `hrtimer_try_to_cancel()`
+returns -1 while the callback runs, and `HRTIMER_NORESTART` does not remove an
+expiration explicitly queued during that callback. No Host handoff timing,
+PSI semantics, minimum offload budget, cooldown or real event wake is changed.
+
+### Conditional watchdog deferral at idle handoff
+
+`0055-net-watchdog-idle-defer.patch` adds `pvisor_watchdog_defer=1` (kernel
+boot default off, enabled by the Host idle profile). Only the authenticated
+pVisor PIO handoff on one **possible** CPU can temporarily remove a future,
+pending netdev watchdog timer. It does not turn off the NIC, stop RX or change
+TCP/application timers. No Agent or PIO ABI change is required.
+
+Eligibility requires an operational device in init_net with an explicit driver
+snapshot callback, all allocated TX queues neither stopped nor frozen, no qdisc
+backlog/running/scheduled work, and zero outstanding descriptors. The virtio-net
+callback reads ring size and guest-owned free-descriptor accounting without
+consuming completions; used-but-unreclaimed descriptors remain outstanding.
+Unknown/broken queues, unsupported drivers, busy locks, expired checks and
+pending sends retain the ordinary watchdog. No descriptor or packet is dropped.
+
+The original timer expiration and its existing netdev reference are retained.
+IRQs remain disabled across the single-CPU handoff; no guest TX, close, callback
+or queue reconfiguration runs in the interval. On **every** return, including a
+short/rejected handoff, the timer is restored before IRQs/tasks can run. An
+expired original deadline is restored as overdue, not reset to now plus five
+seconds. A Host completion can free work but cannot create a guest TX submission
+while parked. Real device events continue to revoke the Host idle claim.
+
+The option preserves PSI, scheduler budget timers, offload minimum and cooldown.
+`PVISOR_DIAG_WATCHDOG_IDLE_DEFER=0|1` selects the Host command-line value for
+same-firmware A/B. The source-level regression compiles actual guard/enter/exit
+and virtio snapshot functions; it does not establish multi-CPU or production safety.
+
+### Idle-profile regression tests
+
+The source-level tests in `tests/` retain scheduler timer/accounting, PSI restart,
+timestamped replay/trigger registration, and watchdog eligibility/restoration checks.
+Run against the patched kernel tree to exercise the actual C implementations:
+
+```bash
+PVISOR_TEST_FAIR_SOURCE=/path/to/linux/kernel/sched/deadline.c \
+PVISOR_TEST_PSI_SOURCE=/path/to/linux/kernel/sched/psi.c \
+PVISOR_TEST_WATCHDOG_TREE=/path/to/linux \
+  just fw test
+```
+
+Tests without the source environment may skip the compiled implementation checks.
+The retained VM probes additionally check timer, network, scheduler and PSI behavior.
+
+### Fixed dual-vCPU idle handoff
+
+`0056-dual-vcpu-idle-handoff.patch` negotiates ABI v3 for exactly two possible
+and online CPUs. Each CPU reports its own programmed nohz clockevent while IRQs
+remain disabled; CPU identity comes from the host KVM thread. Host rendezvous and
+post-rendezvous interrupt checks are required before whole-VM pause. A mismatch
+with old firmware/Host, a different CPU count or an offline CPU declines handoff.
+The single-CPU ABI v2 path is retained. The PSI and watchdog single-possible-CPU
+guards remain intact, so their maintenance behavior is unchanged on two CPUs.
+The same ABI supplies the CPU/timer evidence for Host-controlled conditional
+offload after all-vCPU pause and device-gate closure; no extra guest message is
+needed. Hotplug and more than two possible CPUs remain unsupported.

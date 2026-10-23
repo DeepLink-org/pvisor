@@ -18,6 +18,8 @@ mod implant;
 pub(crate) mod instance_control;
 pub mod job_execution;
 pub mod job_service;
+#[cfg(feature = "gateway")]
+mod model_wait;
 pub(crate) mod operation;
 mod overlay;
 pub(crate) mod owned_workspace;
@@ -25,6 +27,8 @@ mod proxy;
 mod registry;
 pub(crate) mod run;
 mod supervisor;
+#[cfg(feature = "gateway")]
+mod wait_coordinator;
 pub(crate) mod zcode;
 
 pub(crate) use attempt::VmNetworkAttachment;

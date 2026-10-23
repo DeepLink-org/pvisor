@@ -692,6 +692,135 @@ pub struct GatewayDriverConfig {
     /// Optional native Attempt adapter. Defaults off; conflicts with `model_wait`.
     /// One declared wait is admitted per Attempt; concurrent declarations fail.
     pub native_model_wait: Option<NativeModelWait>,
+    /// Opt-in Host observation and native coordination of model calls per Attempt.
+    /// Mutually exclusive with `model_wait` and `native_model_wait`; does not
+    /// change scheduler reservations.
+    pub cooperative_model_wait: Option<CooperativeModelWait>,
+}
+
+/// Host-only policy for rechecking idle state during a long model request.
+#[derive(Debug, Clone, Copy)]
+#[cfg(feature = "gateway")]
+pub struct ModelWaitRounds {
+    /// Minimum running interval after round cleanup or a drained stream batch.
+    /// A new round also observes `pause_after` before requesting fresh evidence.
+    /// Must be between 10 ms and 60 seconds; defaults to 100 ms.
+    pub recheck_after: std::time::Duration,
+    /// Minimum interval after an automatic offload attempt completes before
+    /// another may start. Shared across requests in this Attempt. Pause remains
+    /// available during cooldown; skipped offloads are reconsidered next round.
+    /// Must be >= `recheck_after` and <= one day; defaults to five seconds.
+    pub offload_cooldown: std::time::Duration,
+}
+
+#[cfg(feature = "gateway")]
+impl Default for ModelWaitRounds {
+    fn default() -> Self {
+        Self {
+            recheck_after: std::time::Duration::from_millis(100),
+            offload_cooldown: std::time::Duration::from_secs(5),
+        }
+    }
+}
+
+/// Experimental Host-side model-wait timers. No Agent/client declaration needed.
+/// The historical type name is retained; cooperation is with the guest kernel.
+/// Disabled unless installed on `GatewayDriverConfig`. A request owns its wait
+/// until final delivery, cancellation or stream EOF; each idle round has an
+/// independent, revocable guest permit.
+#[derive(Debug, Clone, Copy)]
+#[cfg(feature = "gateway")]
+pub struct CooperativeModelWait {
+    /// Must be true: native Host observation requires guest-kernel idle evidence,
+    /// never an Agent assertion. Linux/KVM one/two-vCPU only; the executor must
+    /// opt in with `with_guest_idle_handoff`. Only acquisition is limited to one second.
+    /// Optional offload rechecks the lease after pause. False fails validation.
+    pub require_guest_idle: bool,
+    /// Observe policy-authorized GETs and CONNECT downstream waits through the
+    /// Host proxy. CONNECT/TLS bytes remain opaque. Disabled by
+    /// default. Resume before each delivery; no unbounded download spool. Direct
+    /// sockets bypassing the HTTP proxy are not observed by this hook.
+    pub downloads: bool,
+    /// Observe Host-owned virtio-fs READ/read-only OPEN work, including lazy image
+    /// cache misses and the existing OPEN baseline fingerprinting.
+    /// Disabled by default. A pending read is only a hint; idle handoff and the
+    /// device RAM gate still authorize every pause/offload. No startup VM exists
+    /// during initial image resolution, so that phase has no RAM to offload.
+    pub filesystem_reads: bool,
+    /// Grace before pausing vCPUs, measured from the start of each idle round. Must be nonzero.
+    pub pause_after: std::time::Duration,
+    /// Optional RAM offload deadline from the same round start, at least `pause_after`.
+    /// Unsupported RAM configurations retain pause-only behavior. Offload may
+    /// delay delivery while its non-interruptible writeback completes. In guest
+    /// idle mode, short timer budgets or busy device RAM skip reclaim and keep the
+    /// pause until a real wake/delivery. Expired/revoked leases wake independently.
+    /// The VM Host policy sets the minimum timer budget (default one second);
+    /// writeback already admitted may still outlast the guest timer deadline.
+    pub offload_after: Option<std::time::Duration>,
+    /// Optional Host Gateway buffering of each streaming response batch. None
+    /// resumes at the first nonempty chunk. Size/time limits and external wake
+    /// end buffering before acknowledged resume; never extends the guest lease.
+    pub stream_buffer: Option<pvisor_gateway::model_wait::ModelStreamBuffer>,
+    /// Repeated idle rounds, enabled by default. None preserves one-shot waiting.
+    /// No lease renewal: every round requests new guest-kernel idle evidence.
+    pub rounds: Option<ModelWaitRounds>,
+}
+
+#[cfg(feature = "gateway")]
+impl Default for CooperativeModelWait {
+    fn default() -> Self {
+        Self {
+            require_guest_idle: true,
+            downloads: false,
+            filesystem_reads: false,
+            pause_after: std::time::Duration::from_millis(100),
+            offload_after: None,
+            stream_buffer: None,
+            rounds: Some(ModelWaitRounds::default()),
+        }
+    }
+}
+
+#[cfg(feature = "gateway")]
+impl CooperativeModelWait {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        if let Some(rounds) = self.rounds {
+            use std::time::Duration;
+            anyhow::ensure!(
+                rounds.recheck_after >= Duration::from_millis(10)
+                    && rounds.recheck_after <= Duration::from_secs(60),
+                "model idle recheck interval must be between 10 ms and 60 seconds"
+            );
+            anyhow::ensure!(
+                rounds.offload_cooldown >= rounds.recheck_after
+                    && rounds.offload_cooldown <= Duration::from_secs(86400),
+                "model offload cooldown must be >= recheck interval and <= one day"
+            );
+        }
+        if let Some(buffer) = self.stream_buffer {
+            buffer.validate()?;
+        }
+        anyhow::ensure!(
+            self.require_guest_idle,
+            "Host model waits require guest-kernel idle handoff"
+        );
+        anyhow::ensure!(
+            !self.pause_after.is_zero(),
+            "model wait grace must be nonzero"
+        );
+        anyhow::ensure!(
+            self.offload_after
+                .is_none_or(|delay| delay >= self.pause_after),
+            "model wait offload deadline must not precede pause"
+        );
+        // Avoid Instant overflow and accidental effectively unbounded timers.
+        let limit = std::time::Duration::from_secs(24 * 60 * 60);
+        anyhow::ensure!(
+            self.pause_after <= limit && self.offload_after.is_none_or(|d| d <= limit),
+            "model wait timers must not exceed one day"
+        );
+        Ok(())
+    }
 }
 
 /// Programmatic network-driver configuration. `Auto` selects smoltcp for a
@@ -737,6 +866,7 @@ impl GatewayDriverConfig {
             gateway_enabled: true,
             model_wait: None,
             native_model_wait: None,
+            cooperative_model_wait: None,
         }
     }
 
@@ -762,13 +892,25 @@ impl GatewayDriverConfig {
         self
     }
 
-    /// Install an Attempt-bound cooperative wait/admission lifecycle. Calls
-    /// without the explicit inference-idle declaration retain normal behavior.
+    /// Install an Attempt-bound Host lifecycle for every authorized model call.
+    /// No guest header is required. A custom owner must independently establish
+    /// idleness and coordinate concurrent calls before controlling a VM.
     pub fn model_wait(
         mut self,
         lifecycle: std::sync::Arc<dyn pvisor_gateway::model_wait::ModelWaitLifecycle>,
     ) -> Self {
         self.model_wait = Some(lifecycle);
+        self
+    }
+
+    /// Enable the built-in, Attempt-local Host coordinator. Requires a VM,
+    /// enabled Gateway and guest idle handoff; invalid timers or a simultaneous
+    /// custom `model_wait` fail before starting the Attempt. Ordinary model
+    /// requests need no header. Overlap wakes the VM and disables automatic
+    /// transitions for the remainder of this Attempt without rejecting calls.
+    /// This does not release admission reservations or enable daemon integration.
+    pub fn cooperative_model_wait(mut self, policy: CooperativeModelWait) -> Self {
+        self.cooperative_model_wait = Some(policy);
         self
     }
 }

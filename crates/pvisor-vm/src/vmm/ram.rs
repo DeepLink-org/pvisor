@@ -9,6 +9,47 @@ use vm_memory::{FileOffset, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMem
 
 pub use crate::api::RamReclaim;
 
+// Diagnostics only: keep syscall ordering and errno handling unchanged.
+struct ReclaimPhase {
+    stage: &'static str,
+    offset: u64,
+    bytes: usize,
+    started: Option<std::time::Instant>,
+    complete: bool,
+}
+impl ReclaimPhase {
+    fn new(stage: &'static str, offset: u64, bytes: usize) -> Self {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let enabled =
+            *ENABLED.get_or_init(|| std::env::var("PVISOR_DIAG_OFFLOAD").as_deref() == Ok("1"));
+        Self {
+            stage,
+            offset,
+            bytes,
+            started: enabled.then(std::time::Instant::now),
+            complete: false,
+        }
+    }
+    fn finish(mut self) {
+        self.complete = true;
+    }
+}
+impl Drop for ReclaimPhase {
+    fn drop(&mut self) {
+        if let Some(started) = self.started {
+            let elapsed_ns = started.elapsed().as_nanos() as u64;
+            eprintln!(
+                "pvisor-memory-phase {}",
+                serde_json::json!({
+                    "pid": std::process::id(), "stage": self.stage, "offset": self.offset,
+                    "bytes": self.bytes, "elapsed_ns": elapsed_ns, "complete": self.complete,
+                    "unix_ns": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64,
+                })
+            );
+        }
+    }
+}
+
 pub(crate) fn map(
     ram: &[(GuestAddress, usize)],
     shared: &[(GuestAddress, usize)],
@@ -173,19 +214,24 @@ pub(crate) fn reclaim(memory: &GuestMemoryMmap) -> Result<u64, String> {
         let flags = libc::MS_SYNC;
         #[cfg(target_os = "macos")]
         let flags = flags | libc::MS_INVALIDATE;
+        let phase = ReclaimPhase::new("ram_msync", region.file_offset().unwrap().start(), size);
         if unsafe { libc::msync(address, size, flags) } != 0 {
             return Err(format!(
                 "RAM writeback: {}",
                 std::io::Error::last_os_error()
             ));
         }
+        phase.finish();
+        let phase = ReclaimPhase::new("ram_madvise", region.file_offset().unwrap().start(), size);
         if unsafe { libc::madvise(address, size, libc::MADV_DONTNEED) } != 0 {
             return Err(format!("RAM reclaim: {}", std::io::Error::last_os_error()));
         }
+        phase.finish();
         #[cfg(target_os = "linux")]
         {
             use std::os::fd::AsRawFd;
             let backing = region.file_offset().unwrap();
+            let phase = ReclaimPhase::new("ram_fadvise", backing.start(), size);
             let error = unsafe {
                 libc::posix_fadvise(
                     backing.file().as_raw_fd(),
@@ -200,6 +246,7 @@ pub(crate) fn reclaim(memory: &GuestMemoryMmap) -> Result<u64, String> {
                     std::io::Error::from_raw_os_error(error)
                 ));
             }
+            phase.finish();
         }
         bytes += region.len();
     }

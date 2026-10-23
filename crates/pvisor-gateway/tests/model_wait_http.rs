@@ -13,9 +13,11 @@ use axum::response::Response;
 use bytes::Bytes;
 use pvisor_core::ModelCallRequest;
 use pvisor_gateway::config::{ModelRoute, ProxyConfig};
-use pvisor_gateway::model_wait::{INFERENCE_IDLE_HEADER, ModelWait, ModelWaitLifecycle};
+use pvisor_gateway::model_wait::{
+    INFERENCE_IDLE_HEADER, ModelStreamBuffer, ModelWait, ModelWaitLifecycle,
+};
 use pvisor_gateway::runtime::in_process::{InProcessCapture, InProcessRuntime};
-use pvisor_gateway::sink::NoopCaptureObserver;
+use pvisor_gateway::sink::CallbackObserver;
 use tokio::sync::{Notify, Semaphore, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -34,8 +36,14 @@ struct Admission {
     entries: AtomicUsize,
     resumes: AtomicUsize,
     cancellations: AtomicUsize,
+    legacy_declaration: bool,
     fail_enter: bool,
     fail_resume: bool,
+    stream_buffer: Option<ModelStreamBuffer>,
+    wake: Notify,
+    repeat_batches: bool,
+    batches: AtomicUsize,
+    drained: Notify,
 }
 
 impl Default for Admission {
@@ -49,8 +57,14 @@ impl Default for Admission {
             entries: AtomicUsize::new(0),
             resumes: AtomicUsize::new(0),
             cancellations: AtomicUsize::new(0),
+            legacy_declaration: false,
             fail_enter: false,
             fail_resume: false,
+            stream_buffer: None,
+            wake: Notify::new(),
+            repeat_batches: false,
+            batches: AtomicUsize::new(0),
+            drained: Notify::new(),
         }
     }
 }
@@ -60,6 +74,9 @@ struct Lifecycle(Arc<Admission>);
 struct Wait(Arc<Admission>);
 
 impl ModelWaitLifecycle for Lifecycle {
+    fn requires_idle_declaration(&self) -> bool {
+        self.0.legacy_declaration
+    }
     fn reserve(&self, request: ModelCallRequest) -> anyhow::Result<Box<dyn ModelWait>> {
         assert_eq!(request.attempt_id.unwrap().as_str(), "wait-attempt");
         assert_eq!(request.client_model, "test-model");
@@ -70,6 +87,26 @@ impl ModelWaitLifecycle for Lifecycle {
 
 #[async_trait]
 impl ModelWait for Wait {
+    fn repeat_stream_batches(&self) -> bool {
+        self.0.repeat_batches
+    }
+    async fn before_batch(&mut self) -> anyhow::Result<()> {
+        self.0.delivery.notify_one();
+        self.0.resume_gate.acquire().await.unwrap().forget();
+        anyhow::ensure!(!self.0.fail_resume, "resume rejected");
+        self.0.batches.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+    async fn after_batch(&mut self) -> anyhow::Result<()> {
+        self.0.drained.notify_one();
+        Ok(())
+    }
+    fn stream_buffer(&self) -> Option<ModelStreamBuffer> {
+        self.0.stream_buffer
+    }
+    async fn wait_for_wake(&mut self) {
+        self.0.wake.notified().await;
+    }
     async fn enter(&mut self) -> anyhow::Result<()> {
         self.0.entries.fetch_add(1, Ordering::SeqCst);
         self.0.entered.notify_one();
@@ -91,6 +128,7 @@ impl ModelWait for Wait {
 }
 
 struct Fixture {
+    captured: Arc<std::sync::Mutex<Vec<pvisor_core::event::Event>>>,
     proxy: Option<InProcessCapture>,
     upstream: tokio::task::JoinHandle<()>,
     body: mpsc::Sender<Result<Bytes, std::io::Error>>,
@@ -170,10 +208,15 @@ impl Fixture {
         };
         let storage = tempfile::tempdir().unwrap();
         let admission = Arc::new(admission);
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = captured.clone();
         let proxy = InProcessCapture::start_with_runtime(
             config,
             storage.path().to_owned(),
-            Arc::new(NoopCaptureObserver::new()),
+            Arc::new(CallbackObserver::new(move |event| {
+                observed.lock().unwrap().push(event.clone());
+                Ok(())
+            })),
             InProcessRuntime {
                 controller,
                 attempt_id: Some("wait-attempt".into()),
@@ -184,6 +227,7 @@ impl Fixture {
         )
         .unwrap();
         Self {
+            captured,
             proxy: Some(proxy),
             upstream,
             body,
@@ -251,6 +295,74 @@ impl Fixture {
     }
 }
 
+#[tokio::test]
+async fn repeated_stream_capture_requires_protocol_terminal_even_after_done() {
+    for valid in [false, true] {
+        let mut fixture = Fixture::new(
+            true,
+            StatusCode::OK,
+            Admission {
+                repeat_batches: true,
+                stream_buffer: Some(ModelStreamBuffer {
+                    max_bytes: 32,
+                    max_wait: Duration::from_millis(100),
+                }),
+                ..Default::default()
+            },
+            true,
+        )
+        .await;
+        fixture.admission.enter_gate.add_permits(1);
+        fixture.admission.resume_gate.add_permits(20);
+        let response = fixture.request(true, &[], "test-model");
+        fixture.upstream_received().await;
+        fixture.chunk(FIRST).await;
+        fixture
+            .chunk(if valid { LAST } else { "data: [DONE]\n\n" })
+            .await;
+        fixture.finish_body();
+        let response = tokio::time::timeout(LIMIT, response)
+            .await
+            .unwrap()
+            .unwrap();
+        let body = tokio::time::timeout(LIMIT, response.text()).await.unwrap();
+        if valid {
+            assert_eq!(body.unwrap(), format!("{FIRST}{LAST}"));
+        }
+        tokio::time::timeout(LIMIT, async {
+            loop {
+                let finished = fixture
+                    .captured
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.name(), "llm.response.stream" | "llm.call.cancelled"));
+                if finished {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let events = fixture.captured.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.name() == "llm.response.stream")
+                .count(),
+            usize::from(valid)
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.name() == "llm.call.cancelled")
+                .count(),
+            usize::from(!valid)
+        );
+    }
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         if let Some(proxy) = self.proxy.take() {
@@ -269,7 +381,7 @@ async fn notified(notify: &Notify) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn streaming_waits_for_first_body_then_resume_before_headers_and_preserves_every_chunk() {
     let mut fixture = Fixture::new(true, StatusCode::OK, Admission::default(), true).await;
-    let mut response = fixture.request(true, &["true"], "test-model");
+    let mut response = fixture.request(true, &[], "test-model");
     notified(&fixture.admission.entered).await;
     assert!(fixture.received.try_recv().is_err()); // No supplier dispatch before pause confirmation.
     fixture.admission.enter_gate.add_permits(1);
@@ -311,7 +423,7 @@ async fn streaming_waits_for_first_body_then_resume_before_headers_and_preserves
 async fn buffered_success_and_supplier_error_hold_the_barrier_until_body_eof() {
     for status in [StatusCode::OK, StatusCode::TOO_MANY_REQUESTS] {
         let mut fixture = Fixture::new(false, status, Admission::default(), true).await;
-        let mut response = fixture.request(false, &["true"], "test-model");
+        let mut response = fixture.request(false, &[], "test-model");
         notified(&fixture.admission.entered).await;
         fixture.admission.enter_gate.add_permits(1);
         fixture.upstream_received().await;
@@ -358,9 +470,9 @@ async fn buffered_success_and_supplier_error_hold_the_barrier_until_body_eof() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn absent_or_false_declarations_and_absent_lifecycle_keep_forwarding() {
-    for (headers, install) in [(vec![], true), (vec!["false"], true), (vec!["true"], false)] {
-        let mut fixture = Fixture::new(true, StatusCode::OK, Admission::default(), install).await;
+async fn absent_host_lifecycle_keeps_forwarding_regardless_of_legacy_header() {
+    for headers in [vec![], vec!["false"], vec!["true"]] {
+        let mut fixture = Fixture::new(true, StatusCode::OK, Admission::default(), false).await;
         let response = fixture.request(true, &headers, "test-model");
         fixture.upstream_received().await;
         // Without an active inference-wait lifecycle, headers do not wait for tokens.
@@ -380,12 +492,11 @@ async fn absent_or_false_declarations_and_absent_lifecycle_keep_forwarding() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn malformed_duplicate_and_unauthorized_calls_never_reserve_or_reach_supplier() {
+async fn unauthorized_calls_never_reserve_or_reach_supplier() {
     let mut fixture = Fixture::new(true, StatusCode::OK, Admission::default(), true).await;
     for (headers, model, status) in [
-        (vec!["yes"], "test-model", StatusCode::BAD_REQUEST),
-        (vec!["true", "true"], "test-model", StatusCode::BAD_REQUEST),
-        (vec!["true"], "forbidden-model", StatusCode::BAD_GATEWAY),
+        (vec![], "forbidden-model", StatusCode::BAD_GATEWAY),
+        (vec!["false"], "forbidden-model", StatusCode::BAD_GATEWAY),
     ] {
         assert_eq!(
             fixture
@@ -425,7 +536,7 @@ async fn malformed_duplicate_and_unauthorized_calls_never_reserve_or_reach_suppl
     .await;
     assert_eq!(
         denied
-            .request(true, &["true"], "test-model")
+            .request(true, &[], "test-model")
             .await
             .unwrap()
             .status(),
@@ -439,7 +550,7 @@ async fn malformed_duplicate_and_unauthorized_calls_never_reserve_or_reach_suppl
 async fn shutdown_cancels_once_during_entry_upstream_wait_and_resume_admission() {
     for phase in 0..3 {
         let mut fixture = Fixture::new(true, StatusCode::OK, Admission::default(), true).await;
-        let response = fixture.request(true, &["true"], "test-model");
+        let response = fixture.request(true, &[], "test-model");
         notified(&fixture.admission.entered).await;
         if phase > 0 {
             fixture.admission.enter_gate.add_permits(1);
@@ -471,7 +582,7 @@ async fn rejected_entry_or_resume_never_delivers_supplier_reply_and_cancels_once
             true,
         )
         .await;
-        let response = fixture.request(true, &["true"], "test-model");
+        let response = fixture.request(true, &[], "test-model");
         notified(&fixture.admission.entered).await;
         fixture.admission.enter_gate.add_permits(1);
         if !fail_enter {
@@ -506,7 +617,7 @@ async fn supplier_connect_or_body_failure_reacquires_admission_before_gateway_er
             fixture.upstream.abort();
             assert!((&mut fixture.upstream).await.unwrap_err().is_cancelled());
         }
-        let mut response = fixture.request(false, &["true"], "test-model");
+        let mut response = fixture.request(false, &[], "test-model");
         notified(&fixture.admission.entered).await;
         fixture.admission.enter_gate.add_permits(1);
         if !connect_failure {
@@ -546,7 +657,7 @@ async fn bridged_messages_stream_and_buffered_reply_preserve_the_delivery_barrie
                 "model":"test-model", "stream":stream, "max_tokens":64,
                 "messages":[{"role":"user","content":"hello"}]
             }),
-            &["true"],
+            &[],
         );
         notified(&fixture.admission.entered).await;
         fixture.admission.enter_gate.add_permits(1);
@@ -583,5 +694,179 @@ async fn bridged_messages_stream_and_buffered_reply_preserve_the_delivery_barrie
         }
         assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 1);
         assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn host_observation_ignores_absent_false_invalid_and_duplicate_legacy_headers() {
+    for headers in [vec![], vec!["false"], vec!["yes"], vec!["true", "true"]] {
+        let mut fixture = Fixture::new(false, StatusCode::OK, Admission::default(), true).await;
+        let response = fixture.request(false, &headers, "test-model");
+        notified(&fixture.admission.entered).await;
+        fixture.admission.enter_gate.add_permits(1);
+        fixture.upstream_received().await;
+        fixture.chunk(REPLY).await;
+        fixture.finish_body();
+        notified(&fixture.admission.delivery).await;
+        assert!(!response.is_finished());
+        fixture.admission.resume_gate.add_permits(1);
+        assert_eq!(response.await.unwrap().status(), StatusCode::OK);
+        assert_eq!(fixture.admission.entries.load(Ordering::SeqCst), 1);
+    }
+}
+
+fn buffered_admission(max_bytes: usize, max_wait: Duration) -> Admission {
+    Admission {
+        stream_buffer: Some(ModelStreamBuffer {
+            max_bytes,
+            max_wait,
+        }),
+        ..Default::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn buffered_stream_eof_and_size_limit_still_wait_for_resume_and_preserve_bytes() {
+    for size_limit in [false, true] {
+        let admission =
+            buffered_admission(if size_limit { 5 } else { 4096 }, Duration::from_secs(1));
+        let mut fixture = Fixture::new(true, StatusCode::OK, admission, true).await;
+        let response = fixture.request(true, &[], "test-model");
+        notified(&fixture.admission.entered).await;
+        fixture.admission.enter_gate.add_permits(1);
+        fixture.upstream_received().await;
+        fixture.chunk(FIRST).await;
+        if !size_limit {
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(30),
+                    fixture.admission.delivery.notified()
+                )
+                .await
+                .is_err()
+            );
+            fixture.chunk(LAST).await;
+            fixture.finish_body();
+        }
+        notified(&fixture.admission.delivery).await;
+        assert!(!response.is_finished(), "headers exposed before resume ACK");
+        fixture.admission.resume_gate.add_permits(1);
+        if size_limit {
+            fixture.chunk(LAST).await;
+            fixture.finish_body();
+        }
+        let response = response.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), format!("{FIRST}{LAST}"));
+        assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn buffered_stream_timeout_or_external_wake_delivers_before_upstream_eof() {
+    for external in [false, true] {
+        let admission = buffered_admission(
+            4096,
+            if external {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_millis(100)
+            },
+        );
+        let mut fixture = Fixture::new(true, StatusCode::OK, admission, true).await;
+        let response = fixture.request(true, &[], "test-model");
+        notified(&fixture.admission.entered).await;
+        fixture.admission.enter_gate.add_permits(1);
+        fixture.upstream_received().await;
+        // Even silence before the first byte cannot keep the prefix wait alive.
+        if external {
+            fixture.admission.wake.notify_one();
+        }
+        notified(&fixture.admission.delivery).await;
+        assert!(!response.is_finished());
+        fixture.admission.resume_gate.add_permits(1);
+        let response = response.await.unwrap();
+        fixture.chunk(FIRST).await;
+        fixture.chunk(LAST).await;
+        fixture.finish_body();
+        assert_eq!(response.text().await.unwrap(), format!("{FIRST}{LAST}"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_during_prefix_buffering_cancels_owned_wait_once() {
+    let admission = buffered_admission(4096, Duration::from_secs(2));
+    let mut fixture = Fixture::new(true, StatusCode::OK, admission, true).await;
+    let response = fixture.request(true, &[], "test-model");
+    notified(&fixture.admission.entered).await;
+    fixture.admission.enter_gate.add_permits(1);
+    fixture.upstream_received().await;
+    fixture.chunk(FIRST).await;
+    fixture.stop();
+    notified(&fixture.admission.cancelled).await;
+    assert!(response.await.unwrap().status().is_server_error());
+    assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unmarked_stream_has_multiple_resume_barriers_and_one_final_retirement() {
+    let mut admission = buffered_admission(FIRST.len(), Duration::from_secs(2));
+    admission.repeat_batches = true;
+    let mut fixture = Fixture::new(true, StatusCode::OK, admission, true).await;
+    let response = fixture.request(true, &[], "test-model");
+    notified(&fixture.admission.entered).await;
+    fixture.admission.enter_gate.add_permits(1);
+    fixture.upstream_received().await;
+    fixture.chunk(FIRST).await;
+    notified(&fixture.admission.delivery).await;
+    assert!(!response.is_finished());
+    fixture.admission.resume_gate.add_permits(1);
+    let response = response.await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = tokio::spawn(async move { response.text().await.unwrap() });
+    notified(&fixture.admission.drained).await;
+    assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 0);
+    fixture.chunk(LAST).await;
+    fixture.finish_body();
+    notified(&fixture.admission.delivery).await;
+    assert!(!body.is_finished());
+    fixture.admission.resume_gate.add_permits(1); // Second batch resume.
+    notified(&fixture.admission.delivery).await; // EOF after final batch drain.
+    assert_eq!(fixture.admission.batches.load(Ordering::SeqCst), 2);
+    fixture.admission.resume_gate.add_permits(1);
+    assert_eq!(body.await.unwrap(), format!("{FIRST}{LAST}"));
+    assert_eq!(fixture.admission.entries.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.admission.cancellations.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_adapter_keeps_explicit_declaration_while_host_mode_stays_unmarked() {
+    for (headers, expected) in [(vec![], 0), (vec!["false"], 0), (vec!["true"], 1)] {
+        let mut fixture = Fixture::new(
+            false,
+            StatusCode::OK,
+            Admission {
+                legacy_declaration: true,
+                ..Default::default()
+            },
+            true,
+        )
+        .await;
+        fixture.admission.enter_gate.add_permits(1);
+        fixture.admission.resume_gate.add_permits(1);
+        let response = fixture.request(false, &headers, "test-model");
+        fixture.upstream_received().await;
+        fixture.chunk(REPLY).await;
+        fixture.finish_body();
+        let response = tokio::time::timeout(LIMIT, response)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), REPLY);
+        assert_eq!(fixture.admission.entries.load(Ordering::SeqCst), expected);
+        assert_eq!(fixture.admission.resumes.load(Ordering::SeqCst), expected);
     }
 }

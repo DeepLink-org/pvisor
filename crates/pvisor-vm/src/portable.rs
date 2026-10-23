@@ -95,8 +95,8 @@ fn capabilities() -> Capabilities {
 mod cold_ram_tests {
     use super::*;
     use std::sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     struct UnusedStore {
@@ -139,6 +139,7 @@ mod cold_ram_tests {
 
     fn inactive_handle() -> VmmHandle {
         VmmHandle {
+            idle: Arc::new(crate::guest_idle::IdleGate::default()),
             vmm: Weak::new(),
             transition: Arc::new(Mutex::new(())),
             cold_pager_started: Arc::new(AtomicBool::new(false)),
@@ -238,6 +239,17 @@ fn unsupported(operation: &str) -> io::Error {
 }
 
 impl VmConfiguration for VmBuilder {
+    fn guest_idle_handoff(&mut self) -> io::Result<()> {
+        self.inner.guest_idle_handoff()
+    }
+    fn guest_idle_handoff_with_policy(
+        &mut self,
+        disable_proactive_compaction: bool,
+        offload_minimum: std::time::Duration,
+    ) -> io::Result<()> {
+        self.inner
+            .guest_idle_handoff_with_policy(disable_proactive_compaction, offload_minimum)
+    }
     fn from_config(config: VmConfig) -> io::Result<Self> {
         Self::new(config.cpus, config.memory_mib)
     }
@@ -520,6 +532,9 @@ impl ColdRamControl for VmmHandle {
         store: S,
         options: ColdRamOptions,
     ) -> io::Result<()> {
+        if self.idle.status().enabled {
+            return Err(unsupported("cold RAM pager with guest idle handoff"));
+        }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
             crate::cold_ram::start(self.clone(), store, options)

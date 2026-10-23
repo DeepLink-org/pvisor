@@ -604,6 +604,10 @@ impl Vmm {
 
         for mut vcpu in vcpus.drain(..) {
             vcpu.observation = Some(self.vcpu_observation.clone());
+            #[cfg(target_os = "linux")]
+            {
+                vcpu.idle = Some(self.device_memory_gate.idle.clone());
+            }
             vcpu.set_mmio_bus(self.mmio_device_manager.bus.clone());
 
             self.vcpus_handles

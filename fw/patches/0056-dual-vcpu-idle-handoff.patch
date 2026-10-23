@@ -1,0 +1,30 @@
+From: pVisor contributors
+Subject: [PATCH] sched/idle: negotiate fixed dual-vCPU handoff with host rendezvous
+
+ABI v3 supplies idle evidence. Each CPU reports its own programmed clockevent;
+the host parks that CPU, waits for both CPUs, then rechecks both in-kernel
+APIC interrupt states before publishing a whole-VM offer. No partial offer
+permits VM pause. CPU topology must be fixed; hotplug cannot authorize a lease.
+The single-CPU PSI and TX-watchdog deferrals remain disabled on two CPUs.
+ABI v2 remains unchanged for the single-CPU profile.
+
+--- a/kernel/sched/idle.c
++++ b/kernel/sched/idle.c
+@@ -180,9 +180,15 @@
+ {
+ 	s64 delta;
+ 	ktime_t next;
++	unsigned int cpus = num_possible_cpus();
++	u32 abi;
+ 
+-	if (!pvisor_idle_enabled || num_online_cpus() != 1 ||
+-	    inl(0x5050) != 0x50564902)
++	if (!pvisor_idle_enabled || (cpus != 1 && cpus != 2) ||
++	    num_online_cpus() != cpus)
++		return false;
++	/* CPU identity is supplied by the VMM's KVM vCPU, not guest input. */
++	abi = cpus == 1 ? 0x50564902 : 0x50564903;
++	if (inl(0x5050) != abi)
+ 		return false;
+ 
+ 	/* IRQs remain disabled throughout the handoff. The VMM anchors time

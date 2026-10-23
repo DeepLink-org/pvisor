@@ -34,3 +34,19 @@ cargo nextest run -p pvisor-gateway --test model_api_forwarding --locked
 
 - [`pvisor-gateway`](../README.md)
 - [Capture trajectories](../../../docs/src/zh/guides/capture.md)
+
+
+## Host 模型流缓冲
+
+`model_wait_http` 包含普通无专用 header 请求的 size/EOF/timeout/wake 交付
+屏障、超大首块重放与 shutdown 取消用例。`src/model_wait/stream_buffer.rs`
+的内部用例覆盖前缀大小、超额尾部、固定时间预算、心跳不续期、唤醒竞争、
+部分数据后的错误以及 EOF 后不再读取。它们不构成 VM 内存回收或延迟证据。
+
+
+多轮扩展新增：无专用 header 的同一 HTTP 流经过多个 batch resume 屏障、
+末批排空后才最终退休；内部 `round_stream` 用例覆盖超大块有序交付、
+等待排空时禁止 rearm、断连/停止取消。输出队列的 marker 用例检查 ACK
+确实在 body 消费该标记时发出。上述用例已于 2026-10-17 在 macOS 和
+Linux 的相关测试选择中通过；真实 VM 交付与回收验证范围见
+[`vm_reasoning_rounds` 工程探针](../../pvisor/README.md#long-reasoning-engineering-probe)。

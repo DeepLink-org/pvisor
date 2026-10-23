@@ -12,8 +12,8 @@ use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::mem::size_of;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use vm_memory::ByteValued;
 
@@ -73,6 +73,37 @@ impl io::Write for ZCWriter<'_> {
 
     fn flush(&mut self) -> io::Result<()> {
         self.0.flush()
+    }
+}
+
+/// Bounded Host-owned reply for idle handoff. No guest pointer is retained.
+struct OwnedReadBuffer {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+impl Write for OwnedReadBuffer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.limit.saturating_sub(self.bytes.len()) {
+            return Err(io::Error::from_raw_os_error(libc::EOVERFLOW));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+impl ZeroCopyWriter for &mut OwnedReadBuffer {
+    fn write_from(&mut self, file: &File, count: usize, offset: u64) -> io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        let count = count.min(self.limit.saturating_sub(self.bytes.len()));
+        let mut bytes = vec![0; count];
+        let read = file.read_at(&mut bytes, offset)?;
+        if read == 0 && count != 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        self.write_all(&bytes[..read])?;
+        Ok(read)
     }
 }
 
@@ -672,10 +703,25 @@ impl<F: FileSystem + Sync> Server<F> {
     }
 
     fn open(&self, in_header: InHeader, mut r: Reader, w: Writer) -> Result<usize> {
-        let OpenIn {
-            flags, open_flags, ..
-        } = r.read_obj().map_err(Error::DecodeMessage)?;
+        let arg: OpenIn = r.read_obj().map_err(Error::DecodeMessage)?;
+        match self.open_payload(in_header, arg) {
+            Ok((out, size)) => reply_ok(
+                Some(out),
+                size.as_ref().map(|n| n.as_slice()),
+                in_header.unique,
+                w,
+            ),
+            Err(error) => reply_error(error, in_header.unique, w),
+        }
+    }
 
+    // Keep native and Host-owned OPEN capability negotiation identical.
+    fn open_payload(
+        &self,
+        in_header: InHeader,
+        arg: OpenIn,
+    ) -> io::Result<(OpenOut, Option<[u8; 8]>)> {
+        let OpenIn { flags, open_flags } = arg;
         let kill_priv = open_flags & OPEN_KILL_SUIDGID != 0;
         let data_cap = FsOptions::from_bits_truncate(self.options.load(Ordering::Relaxed))
             .contains(FsOptions::PVISOR_DATA_OBJECT);
@@ -727,15 +773,72 @@ impl<F: FileSystem + Sync> Server<F> {
                 // All OPENs in this negotiated connection have the same reply
                 // shape. CREATE and OPENDIR deliberately retain the base form.
                 let fixed_size = data_object.map_or(0, |object| object.size).to_le_bytes();
-                reply_ok(
-                    Some(out),
-                    data_cap.then_some(fixed_size.as_slice()),
-                    in_header.unique,
-                    w,
-                )
+                Ok((out, data_cap.then_some(fixed_size)))
             }
-            Err(e) => reply_error(e, in_header.unique, w),
+            Err(e) => Err(e),
         }
+    }
+
+    /// Only read-only OPEN without privilege changes may use this path.
+    pub(super) fn owned_open(&self, header: InHeader, arg: OpenIn) -> Vec<u8> {
+        let (error, payload) = match self.open_payload(header, arg) {
+            Ok((out, size)) => {
+                let mut payload = out.as_slice().to_vec();
+                if let Some(size) = size {
+                    payload.extend_from_slice(&size);
+                }
+                (0, payload)
+            }
+            Err(error) => (
+                -linux_error(error).raw_os_error().unwrap_or(libc::EIO),
+                Vec::new(),
+            ),
+        };
+        let out = OutHeader {
+            len: (size_of::<OutHeader>() + payload.len()) as u32,
+            error,
+            unique: header.unique,
+        };
+        let mut bytes = out.as_slice().to_vec();
+        bytes.extend(payload);
+        bytes
+    }
+
+    pub(super) fn owned_read(&self, header: InHeader, arg: ReadIn) -> Vec<u8> {
+        let mut buffer = OwnedReadBuffer {
+            bytes: Vec::new(),
+            limit: arg.size.min(MAX_BUFFER_SIZE) as usize,
+        };
+        let result = if arg.size > MAX_BUFFER_SIZE {
+            Err(io::Error::from_raw_os_error(libc::ENOMEM))
+        } else {
+            self.fs.read(
+                Context::from(header),
+                header.nodeid.into(),
+                arg.fh.into(),
+                &mut buffer,
+                arg.size,
+                arg.offset,
+                (arg.read_flags & READ_LOCKOWNER != 0).then_some(arg.lock_owner),
+                arg.flags,
+            )
+        };
+        let (error, payload) = match result {
+            Ok(count) if count == buffer.bytes.len() => (0, buffer.bytes),
+            Ok(_) => (-libc::EIO, Vec::new()),
+            Err(error) => (
+                -linux_error(error).raw_os_error().unwrap_or(libc::EIO),
+                Vec::new(),
+            ),
+        };
+        let out = OutHeader {
+            len: (size_of::<OutHeader>() + payload.len()) as u32,
+            error,
+            unique: header.unique,
+        };
+        let mut bytes = out.as_slice().to_vec();
+        bytes.extend(payload);
+        bytes
     }
 
     fn read(&self, in_header: InHeader, mut r: Reader, mut w: Writer) -> Result<usize> {
@@ -2049,7 +2152,7 @@ mod guest_cache_tests {
     use super::super::null_fs::NullFs;
     use super::*;
     use crate::devices::virtio::descriptor_utils::{
-        create_descriptor_chain, DescriptorType, OwnedDescriptorChain,
+        DescriptorType, OwnedDescriptorChain, create_descriptor_chain,
     };
     use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
 
@@ -2492,6 +2595,54 @@ mod guest_cache_tests {
                 .kind(),
             io::ErrorKind::Unsupported
         );
+    }
+
+    #[test]
+    fn host_owned_open_preserves_main_capabilities_and_reply_shape() {
+        use super::super::filesystem::LowerDataObject;
+        for capable in [FsOptions::empty(), FsOptions::PVISOR_DATA_OBJECT] {
+            for object in [
+                None,
+                Some(LowerDataObject {
+                    id: 23,
+                    size: 0x1_0000_0005,
+                }),
+            ] {
+                let server = Server::new(DataObjectFs(FsOptions::PVISOR_DATA_OBJECT, object), true);
+                negotiate(&server, capable);
+                let arg = OpenIn {
+                    flags: libc::O_RDONLY as u32,
+                    ..Default::default()
+                };
+                let (header, payload) = request(&server, Opcode::Open, arg.as_slice());
+                let owned = server.owned_open(
+                    InHeader {
+                        nodeid: ROOT_ID,
+                        unique: 1,
+                        ..Default::default()
+                    },
+                    arg,
+                );
+                assert_eq!(&owned[..size_of::<OutHeader>()], header.as_slice());
+                assert_eq!(&owned[size_of::<OutHeader>()..], payload);
+            }
+        }
+        for capable in [FsOptions::empty(), FsOptions::PVISOR_LOCAL_FLUSH] {
+            let server = Server::new(LocalFlushFs(FsOptions::PVISOR_LOCAL_FLUSH), true);
+            negotiate(&server, capable);
+            let arg = OpenIn::default();
+            let (header, payload) = request(&server, Opcode::Open, arg.as_slice());
+            let owned = server.owned_open(
+                InHeader {
+                    nodeid: ROOT_ID,
+                    unique: 1,
+                    ..Default::default()
+                },
+                arg,
+            );
+            assert_eq!(&owned[..size_of::<OutHeader>()], header.as_slice());
+            assert_eq!(&owned[size_of::<OutHeader>()..], payload);
+        }
     }
 
     fn request<F: FileSystem + Sync>(
@@ -3034,6 +3185,53 @@ mod guest_cache_tests {
                 negotiate(&restored, FsOptions::PVISOR_META).contains(FsOptions::PVISOR_META),
                 !enabled
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod host_owned_reply_tests {
+    use super::*;
+    struct PartialFailure;
+    impl FileSystem for PartialFailure {
+        type Inode = u64;
+        type Handle = u64;
+        fn read<W: Write + ZeroCopyWriter>(
+            &self,
+            _: Context,
+            _: u64,
+            _: u64,
+            mut writer: W,
+            _: u32,
+            _: u64,
+            _: Option<u64>,
+            _: u32,
+        ) -> io::Result<usize> {
+            writer.write_all(b"partial")?;
+            Err(io::Error::from_raw_os_error(libc::EIO))
+        }
+    }
+    #[test]
+    fn host_owned_read_discards_partial_payload_on_error_and_bounds_request() {
+        let server = Server::new(PartialFailure, false);
+        let header = InHeader {
+            unique: 42,
+            ..Default::default()
+        };
+        for (size, error) in [(32, -libc::EIO), (MAX_BUFFER_SIZE + 1, -libc::ENOMEM)] {
+            let reply = server.owned_read(
+                header,
+                ReadIn {
+                    size,
+                    ..Default::default()
+                },
+            );
+            let out = OutHeader {
+                len: size_of::<OutHeader>() as u32,
+                error,
+                unique: 42,
+            };
+            assert_eq!(reply, out.as_slice());
         }
     }
 }

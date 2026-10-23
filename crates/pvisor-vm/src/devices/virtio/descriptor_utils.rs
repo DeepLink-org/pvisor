@@ -6,7 +6,7 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::fmt::{self, Display};
 use std::io::{self, Read, Write};
-use std::mem::{size_of, MaybeUninit};
+use std::mem::{MaybeUninit, size_of};
 use std::ops::Deref;
 use std::ptr::copy_nonoverlapping;
 use std::result;
@@ -188,7 +188,7 @@ impl<'a> DescriptorChainConsumer<'a> {
 /// created only inside the receiving thread. Retain this plan through add_used:
 /// its RAM lease also prevents the cold-page pager replacing these mappings.
 pub(crate) struct OwnedDescriptorChain {
-    memory_access: Option<std::sync::Arc<super::memory_gate::Access>>,
+    memory_access: std::sync::Mutex<Option<std::sync::Arc<super::memory_gate::Access>>>,
     readable: Vec<(GuestAddress, u32)>,
     writable: Vec<(GuestAddress, u32)>,
 }
@@ -196,7 +196,7 @@ pub(crate) struct OwnedDescriptorChain {
 impl OwnedDescriptorChain {
     pub(crate) fn new(mut chain: DescriptorChain<'_>) -> Result<Self> {
         let mut plan = Self {
-            memory_access: chain.memory_access.clone(),
+            memory_access: std::sync::Mutex::new(chain.memory_access.clone()),
             readable: Vec::new(),
             writable: Vec::new(),
         };
@@ -231,6 +231,30 @@ impl OwnedDescriptorChain {
         Ok(plan)
     }
 
+    /// Only the owning worker may detach, after dropping every Reader/Writer.
+    /// Captured addresses survive; no volatile slice or RAM pointer may escape.
+    pub(crate) fn detach(&self) -> bool {
+        let mut access = self.memory_access.lock().unwrap();
+        if access
+            .as_ref()
+            .is_some_and(|a| std::sync::Arc::strong_count(a) != 1)
+        {
+            return false;
+        }
+        access.take();
+        true
+    }
+    pub(crate) fn reattach(&self, mem: &GuestMemoryMmap) {
+        let ranges: Vec<_> = self
+            .readable
+            .iter()
+            .chain(&self.writable)
+            .map(|(addr, len)| (addr.raw_value(), *len as usize))
+            .collect();
+        // Wakes before waiting on the gate; resume must precede guest writes.
+        let access = super::memory_gate::access_ranges(mem, &ranges);
+        *self.memory_access.lock().unwrap() = access;
+    }
     /// Decode a fixed-size prefix without constructing descriptor consumers.
     /// The captured plan and its RAM lease have already validated every range,
     /// including writable buffers that this prefix itself does not touch.
@@ -290,7 +314,7 @@ impl OwnedDescriptorChain {
                 return Err(Error::SplitOutOfBounds(requested_skip));
             }
             Ok(DescriptorChainConsumer {
-                memory_access: self.memory_access.clone(),
+                memory_access: self.memory_access.lock().unwrap().clone(),
                 buffers,
                 bytes_consumed: 0,
             })
@@ -1447,5 +1471,71 @@ mod tests {
             writer.write(&buf[..]).expect("failed to write from buffer"),
             48
         );
+    }
+}
+
+#[cfg(test)]
+mod host_read_tests {
+    use super::*;
+    use crate::devices::virtio::{
+        memory_gate,
+        queue::{Descriptor, VIRTQ_DESC_F_WRITE},
+    };
+    use std::{sync::Arc, time::Duration};
+    use vm_memory::{Bytes, GuestAddress};
+    #[test]
+    fn detached_plan_allows_reclaim_and_completion_waits_for_resume() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 8192)]).unwrap();
+        let gate = memory_gate::register(&mem);
+        gate.idle.enable(true);
+        mem.write_obj(
+            Descriptor {
+                addr: 4096,
+                len: 8,
+                flags: VIRTQ_DESC_F_WRITE,
+                next: 0,
+            },
+            GuestAddress(0),
+        )
+        .unwrap();
+        let chain = DescriptorChain::checked_new(&mem, GuestAddress(0), 1, 0).unwrap();
+        let plan = Arc::new(OwnedDescriptorChain::new(chain).unwrap());
+        let (reader, writer) = plan.reader_writer(&mem).unwrap();
+        assert!(!plan.detach(), "live slices prohibit detaching");
+        drop(reader);
+        drop(writer);
+        let pending = memory_gate::host_read(&mem).unwrap();
+        assert_eq!(gate.idle.status().pending_host_reads, 1);
+        assert!(plan.detach());
+        assert!(gate.try_close().unwrap());
+        let epoch = gate.idle.arm(Duration::from_secs(1)).unwrap();
+        gate.idle.probe();
+        gate.idle.offer(u32::MAX, true);
+        assert!(gate.idle.claim(epoch));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let owned = plan.clone();
+        let worker = std::thread::spawn(move || {
+            drop(pending);
+            owned.reattach(&mem);
+            let (_, mut writer) = owned.reader_writer(&mem).unwrap();
+            std::io::Write::write_all(&mut writer, b"restored").unwrap();
+            tx.send(()).unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(30)).is_err());
+        assert_eq!(gate.idle.status().pending_host_reads, 0);
+        assert_eq!(
+            gate.idle.status().wake_reason.as_deref(),
+            Some("host_read_ready")
+        );
+        gate.idle.resumed();
+        gate.open();
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        worker.join().unwrap();
+        assert!(
+            !gate.try_close().unwrap(),
+            "retain completion lease through used ring"
+        );
+        drop(plan);
+        assert!(gate.try_close().unwrap());
     }
 }

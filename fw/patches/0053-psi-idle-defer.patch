@@ -1,0 +1,335 @@
+From: pVisor contributors
+Subject: [PATCH] psi: defer trigger-free single-CPU idle aggregation with timed checkpoint
+
+GPL-2.0-only. Opt-in psi_idle_defer=1, requires psi_idle_quiesce=1 and
+the Host idle handoff. Keep task accounting, trigger paths and real events.
+One bounded checkpoint preserves the original aggregation time.
+
+--- a/kernel/sched/psi.c
++++ b/kernel/sched/psi.c
+@@ -1,4 +1,5 @@
+ // SPDX-License-Identifier: GPL-2.0
++#include <linux/irq_work.h>
+ /*
+  * Pressure stall information for CPU, memory and IO
+  *
+@@ -156,6 +157,73 @@
+ /* Host opt-in, restricted below to system PSI on a single possible CPU. */
+ static bool psi_idle_quiesce __read_mostly;
+ static u64 psi_idle_sample_ns;
++static bool psi_idle_defer __read_mostly;
++static atomic_t psi_defer_trigger_inflight = ATOMIC_INIT(0);
++
++/* One outstanding idle interval; natural task activity must drain it before
++ * another can be parked. No allocation, unbounded history or second worker.
++ * Only system PSI on one possible CPU, with IRQ time accounting disabled.
++ * Producers run IRQ-off in the idle task; consumers hold avgs_lock. A runnable
++ * consumer prevents the idle producer from running on this single CPU.
++ */
++static struct psi_idle_record {
++	bool valid;
++	bool wake_queued;
++	u64 sequence;
++	u64 captured_ns;
++	u64 due_ns;
++	unsigned long expires;
++	u32 times[NR_PSI_STATES];
++} psi_deferred;
++
++static int __init setup_psi_idle_defer(char *str)
++{
++	return kstrtobool(str, &psi_idle_defer) == 0;
++}
++__setup("psi_idle_defer=", setup_psi_idle_defer);
++
++static bool psi_defer_enabled(struct psi_group *group)
++{
++	return psi_idle_defer && psi_idle_quiesce &&
++	       num_possible_cpus() == 1 && group == &psi_system &&
++	       !IS_ENABLED(CONFIG_IRQ_TIME_ACCOUNTING);
++}
++
++/* Queue only after the rq/PSI write critical section has ended. Waking a
++ * workqueue worker directly from psi_group_change could recurse into rq locks.
++ */
++static void psi_defer_kick(struct irq_work *work)
++{
++	mod_delayed_work(system_wq, &psi_system.avgs_work, 0);
++}
++static struct irq_work psi_defer_irqwork = IRQ_WORK_INIT_HARD(psi_defer_kick);
++
++static void psi_defer_wake(struct psi_group *group, u64 now)
++{
++	unsigned long delay = 0;
++
++	if (!psi_defer_enabled(group) || !psi_deferred.valid ||
++	    psi_deferred.wake_queued)
++		return;
++	/* Before the original deadline, merge naturally into the original sample.
++	 * times_prev has not moved, so discarding this checkpoint loses no data.
++	 */
++	if (now < psi_deferred.due_ns) {
++		delay = time_after(psi_deferred.expires, jiffies) ?
++			psi_deferred.expires - jiffies : 1;
++		psi_deferred.valid = false;
++	}
++	/* After the deadline, preserve the record until the existing worker/read
++	 * replays it. Never replace an outstanding record with newer activity.
++	 */
++	if (delay) {
++		if (!delayed_work_pending(&group->avgs_work))
++			schedule_delayed_work(&group->avgs_work, delay);
++	} else {
++		psi_deferred.wake_queued = true;
++		irq_work_queue(&psi_defer_irqwork);
++	}
++}
+ 
+ static int __init setup_psi_idle_quiesce(char *str)
+ {
+@@ -587,6 +655,146 @@
+ 	return avg_next_update;
+ }
+ 
++/* Called with avgs_lock held. Consume old data before sampling new activity.
++ * The recorded sample is attributed to its original timer deadline, followed
++ * by zero-pressure idle periods, rather than to the natural wake time.
++ */
++static void psi_defer_flush(struct psi_group *group, u64 now)
++{
++	struct psi_group_cpu *groupc;
++	unsigned long flags;
++	struct psi_idle_record record;
++	u64 nonidle;
++	int s;
++
++	if (!psi_defer_enabled(group))
++		return;
++	local_irq_save(flags);
++	if (!psi_deferred.valid) {
++		local_irq_restore(flags);
++		return;
++	}
++	record = psi_deferred;
++	psi_deferred.valid = false;
++	local_irq_restore(flags);
++	if (now < record.due_ns) {
++		if (!delayed_work_pending(&group->avgs_work))
++			schedule_delayed_work(&group->avgs_work,
++				time_after(record.expires, jiffies) ?
++				record.expires - jiffies : 1);
++		return;
++	}
++
++	groupc = per_cpu_ptr(group->pcpu, 0);
++	nonidle = nsecs_to_jiffies((u32)(record.times[PSI_NONIDLE] -
++			groupc->times_prev[PSI_AVGS][PSI_NONIDLE]));
++	/* Match collect_percpu_times' single-CPU weighting, including sub-jiffy
++	 * rounding. RT polling buckets and totals are deliberately untouched.
++	 */
++	for (s = 0; s < NR_PSI_STATES; s++) {
++		u32 delta = record.times[s] - groupc->times_prev[PSI_AVGS][s];
++
++		groupc->times_prev[PSI_AVGS][s] = record.times[s];
++		if (s < PSI_NONIDLE && nonidle)
++			group->total[PSI_AVGS][s] += delta;
++	}
++	WRITE_ONCE(psi_idle_sample_ns, record.captured_ns);
++	group->avg_next_update = update_averages(group, record.due_ns);
++
++	/* Overage is carried by the original averaging implementation. Drain it
++	 * chronologically before skipping zero periods; admission bounds this to
++	 * at most four additional periods, independent of idle duration.
++	 */
++	while (group->avg_next_update <= now) {
++		bool carry = false;
++
++		for (s = 0; s < PSI_NONIDLE; s++)
++			carry |= group->total[PSI_AVGS][s] != group->avg_total[s];
++		if (!carry)
++			break;
++		group->avg_next_update = update_averages(group, group->avg_next_update);
++	}
++	if (now >= group->avg_next_update)
++		group->avg_next_update = update_averages(group, now);
++}
++
++/* Called only at the authenticated pVisor idle handoff, before nohz chooses
++ * its real next clockevent. IRQs are disabled; no mutex or sync cancellation.
++ * Existing/running work, pressure, triggers and ambiguous snapshots fall back.
++ */
++void psi_pvisor_idle_defer(void)
++{
++	struct psi_group *group = &psi_system;
++	struct psi_group_cpu *groupc;
++	u64 now, due, sampled;
++	unsigned long expires;
++	int s;
++
++	if (static_branch_likely(&psi_disabled) || !psi_defer_enabled(group))
++		return;
++	lockdep_assert_irqs_disabled();
++	if (psi_deferred.valid || atomic_read(&psi_defer_trigger_inflight))
++		return;
++	groupc = per_cpu_ptr(group->pcpu, 0);
++	if (groupc->state_mask & BIT(PSI_NONIDLE))
++		return;
++	for (s = 0; s < PSI_NONIDLE; s++)
++		if (group->avg_nr_triggers[s] || group->rtpoll_nr_triggers[s])
++			return;
++	if (!timer_pending(&group->avgs_work.timer))
++		return;
++	now = cpu_clock(0);
++	sampled = READ_ONCE(psi_idle_sample_ns);
++	if (!sampled || now < sampled || now - sampled >= U32_MAX)
++		return;
++	expires = group->avgs_work.timer.expires;
++	if (!time_after(expires, jiffies))
++		return;
++	due = now + jiffies_to_nsecs(expires - jiffies);
++	if (due < group->avg_next_update)
++		return;
++	for (s = 0; s < PSI_NONIDLE; s++) {
++		u64 delta = (u32)(groupc->times[s] - groupc->times_prev[PSI_AVGS][s]);
++
++		if (group->total[PSI_AVGS][s] - group->avg_total[s] + delta >
++		    min_t(u64, U32_MAX, 4 * psi_period))
++			return;
++	}
++	if (!cancel_delayed_work(&group->avgs_work))
++		return;
++	psi_deferred.sequence++;
++	psi_deferred.captured_ns = now;
++	psi_deferred.due_ns = due;
++	psi_deferred.expires = expires;
++	memcpy(psi_deferred.times, groupc->times, sizeof(groupc->times));
++	psi_deferred.wake_queued = false;
++	psi_deferred.valid = true;
++}
++
++/* Registration can sleep while creating psimon. Block new deferrals for the
++ * whole transaction, including the gap between catch-up and list publication.
++ * Never nest avgs_lock inside rtpoll_trigger_lock.
++ */
++static bool psi_defer_trigger_begin(struct psi_group *group)
++{
++	if (!psi_defer_enabled(group))
++		return false;
++	atomic_inc(&psi_defer_trigger_inflight);
++	mutex_lock(&group->avgs_lock);
++	psi_defer_flush(group, sched_clock());
++	mutex_unlock(&group->avgs_lock);
++	return true;
++}
++
++static void psi_defer_trigger_end(struct psi_group *group, bool guarded)
++{
++	if (!guarded)
++		return;
++	if (!delayed_work_pending(&group->avgs_work))
++		schedule_delayed_work(&group->avgs_work, 0);
++	atomic_dec(&psi_defer_trigger_inflight);
++}
++
+ static void psi_avgs_work(struct work_struct *work)
+ {
+ 	struct delayed_work *dwork;
+@@ -600,6 +808,7 @@
+ 	mutex_lock(&group->avgs_lock);
+ 
+ 	now = sched_clock();
++	psi_defer_flush(group, now);
+ 
+ 	collect_percpu_times(group, PSI_AVGS, &changed_states);
+ 	/*
+@@ -924,11 +1133,14 @@
+ 	record_times(groupc, now);
+ 
+ 	groupc->state_mask = state_mask;
++	if (state_mask & BIT(PSI_NONIDLE))
++		psi_defer_wake(group, now);
+ 
+ 	if (state_mask & group->rtpoll_states)
+ 		psi_schedule_rtpoll_work(group, 1, false);
+ 
+ 	if (wake_clock && !delayed_work_pending(&group->avgs_work) &&
++	    !(psi_defer_enabled(group) && psi_deferred.valid) &&
+ 	    !psi_idle_can_quiesce(group, groupc, now))
+ 		schedule_delayed_work(&group->avgs_work, PSI_FREQ);
+ }
+@@ -1311,6 +1523,7 @@
+ 	/* Update averages before reporting them */
+ 	mutex_lock(&group->avgs_lock);
+ 	now = sched_clock();
++	psi_defer_flush(group, now);
+ 	collect_percpu_times(group, PSI_AVGS, NULL);
+ 	if (now >= group->avg_next_update)
+ 		group->avg_next_update = update_averages(group, now);
+@@ -1349,6 +1562,7 @@
+ 				       struct kernfs_open_file *of)
+ {
+ 	struct psi_trigger *t;
++	bool defer_guarded;
+ 	enum psi_states state;
+ 	u32 threshold_us;
+ 	bool privileged;
+@@ -1396,6 +1610,7 @@
+ 	if (!t)
+ 		return ERR_PTR(-ENOMEM);
+ 
++	defer_guarded = psi_defer_trigger_begin(group);
+ 	t->group = group;
+ 	t->state = state;
+ 	t->threshold = threshold_us * NSEC_PER_USEC;
+@@ -1421,6 +1636,7 @@
+ 			if (IS_ERR(task)) {
+ 				kfree(t);
+ 				mutex_unlock(&group->rtpoll_trigger_lock);
++				psi_defer_trigger_end(group, defer_guarded);
+ 				return ERR_CAST(task);
+ 			}
+ 			atomic_set(&group->rtpoll_wakeup, 0);
+@@ -1443,6 +1659,7 @@
+ 
+ 		mutex_unlock(&group->avgs_lock);
+ 	}
++	psi_defer_trigger_end(group, defer_guarded);
+ 	return t;
+ }
+ 
+--- a/include/linux/psi.h
++++ b/include/linux/psi.h
+@@ -18,6 +18,7 @@
+ extern struct psi_group psi_system;
+ 
+ void psi_init(void);
++void psi_pvisor_idle_defer(void);
+ 
+ void psi_memstall_enter(unsigned long *flags);
+ void psi_memstall_leave(unsigned long *flags);
+@@ -46,6 +47,7 @@
+ #else /* CONFIG_PSI */
+ 
+ static inline void psi_init(void) {}
++static inline void psi_pvisor_idle_defer(void) {}
+ 
+ static inline void psi_memstall_enter(unsigned long *flags) {}
+ static inline void psi_memstall_leave(unsigned long *flags) {}
+--- a/kernel/sched/idle.c
++++ b/kernel/sched/idle.c
+@@ -166,6 +166,7 @@
+ 
+ #if defined(CONFIG_X86_64) && defined(CONFIG_NO_HZ_COMMON)
+ #include <asm/io.h>
++#include <linux/psi.h>
+ /* Experimental ABI v2, only enabled by the matching pVisor VMM. */
+ static bool pvisor_idle_enabled;
+ static int __init pvisor_idle_setup(char *value)
+@@ -188,6 +189,7 @@
+ 	 * Read the programmed event AFTER nohz accounts for required work;
+ 	 * never use a governor prediction or discard the periodic tick.
+ 	 */
++	psi_pvisor_idle_defer();
+ 	tick_nohz_idle_stop_tick();
+ 	next = tick_nohz_get_next_hrtimer();
+ 

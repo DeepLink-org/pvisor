@@ -115,6 +115,10 @@ impl Session {
             requested_operation,
             network_policy,
         } = resolved;
+        #[cfg(feature = "gateway")]
+        runtime
+            .validate_model_wait(descriptor.kind)
+            .map_err(PVisorError::Prepare)?;
         crate::util::startup_mark_run("session.begin", spec.run_id.as_str());
         let cancellation = CancellationToken::new();
         let vm_control = crate::executor::vm::control::VmControl::new(cancellation.clone());
@@ -166,6 +170,17 @@ impl Session {
             event_sink,
             live_tx,
         );
+        #[cfg(feature = "gateway")]
+        let wait_controls = crate::runtime::run::RunControlHandle::for_wait_coordinator(
+            status_tx.clone(),
+            vm_control.clone(),
+            operation.clone(),
+            events.clone(),
+            cancellation.clone(),
+        );
+        #[cfg(feature = "gateway")]
+        let (runtime, wait_coordinator) =
+            runtime.bind_host_model_wait(wait_controls.clone(), cancellation.clone());
         let mut context = Session {
             spec: Arc::new(spec),
             created_at_unix_ms: now,
@@ -183,6 +198,12 @@ impl Session {
         };
         crate::util::startup_mark_run("session.storage_begin", context.spec.run_id.as_str());
         let control = crate::RunControlHandle::for_session(&context, operation.clone());
+        #[cfg(feature = "gateway")]
+        let control = {
+            let mut control = control;
+            control.wait_coordinator = wait_coordinator.clone();
+            control
+        };
         let prepared = (|| {
             #[cfg(feature = "gateway")]
             let runtime = runtime.bind_model_wait(control.clone())?;
@@ -237,6 +258,10 @@ impl Session {
             return Err(PVisorError::EventSink(error));
         }
         crate::util::startup_mark_run("session.events_ready", context.spec.run_id.as_str());
+        #[cfg(feature = "gateway")]
+        if wait_coordinator.is_some() {
+            wait_controls.monitor_wait_termination();
+        }
         let join = tokio::spawn(async move {
             context
                 .complete(executor, operation, safe_profile_requested)

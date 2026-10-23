@@ -303,3 +303,99 @@ fn invalid_overlay_path_does_not_poison_the_builder() {
     );
     builder.overlay("workspace", valid, 0).unwrap();
 }
+
+#[test]
+fn guest_idle_handoff_accepts_at_most_two_cpus_and_excludes_snapshot_profile() {
+    assert!(VmBuilder::new(3, 128)
+        .unwrap()
+        .guest_idle_handoff()
+        .is_err());
+    let mut vm = VmBuilder::new(1, 128).unwrap();
+    if cfg!(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        not(any(
+            feature = "tee",
+            feature = "gpu",
+            feature = "snd",
+            feature = "input",
+            feature = "efi",
+            feature = "aws-nitro"
+        ))
+    )) {
+        VmBuilder::new(2, 128)
+            .unwrap()
+            .guest_idle_handoff()
+            .unwrap();
+        vm.guest_idle_handoff().unwrap();
+        assert!(vm.snapshot_profile().is_err());
+        let mut vm = VmBuilder::new(1, 128).unwrap();
+        vm.snapshot_profile().unwrap();
+        assert!(vm.guest_idle_handoff().is_err());
+    } else {
+        assert_eq!(
+            vm.guest_idle_handoff().unwrap_err().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+    }
+}
+
+#[test]
+fn guest_idle_offload_has_an_explicit_optional_reclaim_contract() {
+    use pvisor_vm::api::{GuestIdleControl, RamReclaim, VmmHandle};
+    let _method: fn(&VmmHandle, u64) -> Result<Option<RamReclaim>, String> =
+        <VmmHandle as GuestIdleControl>::offload_guest_idle;
+}
+
+#[test]
+fn idle_host_policy_validates_budget_and_platform_without_starting_vm() {
+    use std::time::Duration;
+    let mut vm = VmBuilder::new(1, 128).unwrap();
+    for value in [
+        Duration::ZERO,
+        Duration::from_millis(2),
+        Duration::from_secs(86401),
+    ] {
+        assert_eq!(
+            vm.guest_idle_handoff_with_policy(true, value)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
+    let result = vm.guest_idle_handoff_with_policy(true, Duration::from_secs(1));
+    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        result.unwrap();
+        VmBuilder::new(2, 128)
+            .unwrap()
+            .guest_idle_handoff_with_policy(true, Duration::from_secs(1))
+            .unwrap();
+        let mut smp = VmBuilder::new(3, 128).unwrap();
+        assert!(smp
+            .guest_idle_handoff_with_policy(true, Duration::from_secs(1))
+            .is_err());
+    } else {
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
+    }
+}
+
+#[test]
+fn guest_idle_offer_ordinal_is_optional_observation_on_the_wire() {
+    let mut wire = serde_json::json!({
+        "epoch": 7, "sequence": 9, "enabled": true, "offered": false,
+        "claimed": false, "remaining_ns": 0, "wake_reason": "guest_timer",
+        "pending_host_reads": 0, "offload_minimum_ns": 1000000000u64,
+        "offload_deadline_skips": 0
+    });
+    let old: api::GuestIdleStatus = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(old.offer_sequence, None);
+    wire["offer_sequence"] = serde_json::json!(42);
+    let recorded: api::GuestIdleStatus = serde_json::from_value(wire).unwrap();
+    assert_eq!(recorded.offer_sequence, Some(42));
+    assert!(!recorded.offered);
+    assert_eq!(recorded.wake_reason.as_deref(), Some("guest_timer"));
+    assert_eq!(
+        serde_json::to_value(recorded).unwrap()["offer_sequence"],
+        42
+    );
+}

@@ -31,6 +31,27 @@ pub struct OverlayRequestContext<T> {
     pub sink: T,
 }
 
+/// Optional Host lifecycle for a policy-authorized GET or CONNECT downstream.
+/// Waiting is a hint, not guest-idle proof. Implementations own fencing and
+/// native resume, including cancellation during either asynchronous method.
+// async_trait adds must_use to an already must-use boxed future.
+#[allow(clippy::double_must_use)]
+#[async_trait]
+pub trait DownloadWait: Send {
+    /// Begin/rearm upstream waiting; must not await a future guest pause.
+    async fn waiting(&mut self) -> anyhow::Result<()>;
+    /// Resume and acknowledge native cleanup before headers/data/errors escape.
+    async fn ready(&mut self) -> anyhow::Result<()>;
+    /// Nonblocking cleanup on stream/handler drop, including in-flight calls.
+    fn cancel(&mut self);
+}
+pub(crate) struct DownloadGuard(pub(crate) Box<dyn DownloadWait>);
+impl Drop for DownloadGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
 /// Application sink attached to the generic OverlayNet proxy data plane.
 ///
 /// A sink decides which absolute-URI requests it consumes. Requests it does
@@ -54,6 +75,16 @@ pub trait OverlaySink: Clone + Send + Sync + 'static {
         peer: SocketAddr,
         context: &OverlayRequestContext<Self::RequestContext>,
     ) -> anyhow::Result<Response>;
+
+    /// Called after authorization for forwarded HTTP GET or CONNECT downstream.
+    /// CONNECT bytes stay opaque; a transport wait is not a semantic model hint.
+    /// Defaults to normal forwarding. Context comes from the bound sink.
+    fn download_wait(
+        &self,
+        _context: &OverlayRequestContext<Self::RequestContext>,
+    ) -> anyhow::Result<Option<Box<dyn DownloadWait>>> {
+        Ok(None)
+    }
 
     fn accepts(&self, _request: &Request) -> bool {
         false
@@ -249,20 +280,22 @@ where
         state.sink.on_dispatch(&context, &request, "connect");
         let bandwidth =
             bandwidth_session(state, &context, &host, Some(target.port), Some(&authorized)).await;
-        let response = match handle_connect_authorized(request, target, &authorized, bandwidth)
-            .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                state
-                    .interception_metrics
-                    .target_failed(&host, port, NetworkTransport::TcpTunnel);
-                state
-                    .sink
-                    .on_proxy_error(&context, &authority, &format!("{error:#}"));
-                return Err(error);
-            }
-        };
+        let wait = state.sink.download_wait(&context)?.map(DownloadGuard);
+        let response =
+            match handle_connect_authorized(request, target, &authorized, bandwidth, wait).await {
+                Ok(response) => response,
+                Err(error) => {
+                    state.interception_metrics.target_failed(
+                        &host,
+                        port,
+                        NetworkTransport::TcpTunnel,
+                    );
+                    state
+                        .sink
+                        .on_proxy_error(&context, &authority, &format!("{error:#}"));
+                    return Err(error);
+                }
+            };
         state
             .sink
             .on_proxy_result(&context, &authority, response.status());
@@ -326,18 +359,24 @@ where
         }
         state.sink.on_dispatch(&context, &request, "forward");
         let target = request.uri().to_string();
-        let response = match transparent_forward_authorized(request, &authorized, bandwidth).await {
-            Ok(response) => response.into_response(),
-            Err(error) => {
-                state
-                    .interception_metrics
-                    .target_failed(&host, port, transport);
-                state
-                    .sink
-                    .on_proxy_error(&context, &target, &format!("{error:#}"));
-                return Err(error);
-            }
+        let wait = if request.method() == Method::GET {
+            state.sink.download_wait(&context)?.map(DownloadGuard)
+        } else {
+            None
         };
+        let response =
+            match transparent_forward_authorized(request, &authorized, bandwidth, wait).await {
+                Ok(response) => response.into_response(),
+                Err(error) => {
+                    state
+                        .interception_metrics
+                        .target_failed(&host, port, transport);
+                    state
+                        .sink
+                        .on_proxy_error(&context, &target, &format!("{error:#}"));
+                    return Err(error);
+                }
+            };
         state
             .sink
             .on_proxy_result(&context, &target, response.status());

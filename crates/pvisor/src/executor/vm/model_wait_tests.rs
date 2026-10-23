@@ -125,6 +125,7 @@ impl Fixture {
     async fn ack(&mut self, state: VmState) {
         let bytes = serde_json::to_vec(&ControlReply {
             state: Some(state),
+            idle_epoch: None,
             error: None,
             capture: None,
             checkpoint: None,
