@@ -30,17 +30,30 @@ use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::PeerNetworkConfig;
 use crate::egress::{
     CONNECT_TIMEOUT, EgressContext, EgressError, EgressRuntime, connect_tcp_addresses,
     connect_via_ambient_http_proxy,
 };
 use crate::interception::{InterceptionMetrics, InterceptionSnapshot};
+use crate::peer::{BoundPeer, PeerNetwork};
 use crate::policy::DenyReason;
 use pvisor_core::is_host_connector_alias;
 
 pub const ROUTER_IPV4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 pub const GUEST_IPV4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 2);
 pub const VM_MAC: [u8; 6] = [0x02, 0x50, 0x56, 0x00, 0x00, 0x02];
+
+/// Deterministic locally administered MAC for a guest IPv4 address.
+/// The default address retains [`VM_MAC`]; peers use unique final octets.
+pub fn guest_mac(address: Ipv4Addr) -> [u8; 6] {
+    let [a, b, c, d] = address.octets();
+    if address == GUEST_IPV4 {
+        VM_MAC
+    } else {
+        [0x02, 0x50, a, b, c, d]
+    }
+}
 
 const ROUTER_MAC: EthernetAddress = EthernetAddress([0x02, 0x50, 0x56, 0x00, 0x00, 0x01]);
 const FRAME_MTU: usize = 1514;
@@ -69,6 +82,18 @@ pub struct VmNetworkConfig {
     pub gateway: Option<VmGatewayRoute>,
     pub max_flows: usize,
     pub metrics: InterceptionMetrics,
+    /// Optional same-host packet-network membership. Requires unrestricted
+    /// egress constructed by EgressRuntime::for_peer_network; replaces the
+    /// default guest address with the member address.
+    /// Membership grants TCP/UDP/ICMP to all other members of this directory.
+    pub peer_network: Option<PeerNetworkConfig>,
+}
+
+fn router_address(config: &VmNetworkConfig) -> Ipv4Addr {
+    config
+        .peer_network
+        .as_ref()
+        .map_or(ROUTER_IPV4, |peer| peer.gateway)
 }
 
 impl std::fmt::Debug for VmNetworkConfig {
@@ -89,6 +114,7 @@ impl VmNetworkConfig {
             gateway: None,
             max_flows: DEFAULT_MAX_FLOWS,
             metrics: InterceptionMetrics::default(),
+            peer_network: None,
         }
     }
 }
@@ -107,6 +133,17 @@ impl VmNetwork {
             config.max_flows > 0,
             "VM network max_flows must be non-zero"
         );
+        let peer = config
+            .peer_network
+            .as_ref()
+            .map(|peer| {
+                anyhow::ensure!(
+                    config.egress.permits_peer_network(),
+                    "peer networking requires EgressRuntime::for_peer_network with unrestricted policy and no bandwidth limits"
+                );
+                BoundPeer::bind(peer, config.context.attempt_id.clone())
+            })
+            .transpose()?;
         let (backend, guest) = StdUnixStream::pair().context("create VM network socket pair")?;
         backend
             .set_nonblocking(true)
@@ -121,7 +158,13 @@ impl VmNetwork {
                     .enable_all()
                     .build()
                     .context("build VM network runtime")?;
-                runtime.block_on(run_backend(backend, config, thread_metrics, shutdown_rx))
+                runtime.block_on(run_backend(
+                    backend,
+                    config,
+                    thread_metrics,
+                    shutdown_rx,
+                    peer,
+                ))
             })
             .context("spawn VM network backend")?;
         Ok((
@@ -227,7 +270,14 @@ async fn run_backend(
     config: VmNetworkConfig,
     metrics: InterceptionMetrics,
     mut shutdown: oneshot::Receiver<()>,
+    peer: Option<BoundPeer>,
 ) -> anyhow::Result<()> {
+    let guest_address = config
+        .peer_network
+        .as_ref()
+        .map_or(GUEST_IPV4, |peer| peer.address);
+    let router = router_address(&config);
+    let mut peer = peer.map(|peer| peer.adopt(metrics.clone())).transpose()?;
     let stream = UnixStream::from_std(backend).context("adopt VM network stream")?;
     let (mut reader, mut writer) = stream.into_split();
     let mut frame_reader = FrameReader::default();
@@ -239,20 +289,23 @@ async fn run_backend(
     let mut interface = Interface::new(interface_config, &mut frame_device, Instant::ZERO);
     interface.update_ip_addrs(|addresses| {
         addresses
-            .push(IpCidr::new(IpAddress::Ipv4(ROUTER_IPV4), 24))
+            .push(IpCidr::new(IpAddress::Ipv4(router), 24))
             .expect("one interface address fits");
     });
     interface.set_any_ip(true);
     interface
         .routes_mut()
-        .add_default_ipv4_route(ROUTER_IPV4)
+        .add_default_ipv4_route(router)
         .expect("one default route fits");
 
     let mut sockets = SocketSet::new(Vec::new());
     let dhcp_handle = sockets.add(udp_socket(4, 8192, 4, 8192, 67));
     let dns_handle = sockets.add(udp_socket(16, 65_535, 16, 65_535, 53));
     let mut flows = HashMap::<FlowKey, Flow>::new();
-    let mut dns = SyntheticDns::default();
+    let mut dns = SyntheticDns {
+        peers: config.peer_network.clone(),
+        ..Default::default()
+    };
     let (event_tx, mut event_rx) = mpsc::channel(TCP_CHANNEL_DEPTH);
     let mut poll_delay = Box::pin(tokio::time::sleep(StdDuration::ZERO));
 
@@ -265,12 +318,30 @@ async fn run_backend(
                     apply_flow_event(event, &mut flows, &mut sockets, &metrics);
                 }
             }
+            received = receive_peer(&mut peer), if peer.is_some() => {
+                if let Some(frame) = received.context("receive peer packet")? {
+                    if config.egress.permits_peer_network() {
+                        frame_device.transmit_queue.push_back(frame);
+                    } else {
+                        metrics.peer_dropped();
+                    }
+                }
+            }
             read = frame_reader.read_more(&mut reader) => {
                 match read {
                     Ok(0) => break,
                     Ok(_) => {
                         while let Some(frame) = frame_reader.next_frame()? {
-                            if let Some(key) = initial_tcp_syn(&frame) {
+                            if let Some(peer) = peer.as_mut()
+                                && crate::peer::reserved_frame(&frame, router) {
+                                if config.egress.permits_peer_network() {
+                                    peer.route(&frame);
+                                } else {
+                                    metrics.peer_dropped();
+                                }
+                                continue;
+                            }
+                            if let Some(key) = initial_tcp_syn(&frame, guest_address) {
                                 ensure_listener(
                                     key,
                                     &mut flows,
@@ -280,7 +351,7 @@ async fn run_backend(
                                     &metrics,
                                 );
                             }
-                            if !supported_guest_frame(&frame) {
+                            if !supported_guest_frame(&frame, guest_address) {
                                 metrics.unsupported_packet();
                                 continue;
                             }
@@ -296,7 +367,7 @@ async fn run_backend(
 
         let now = smol_now(clock);
         let _ = interface.poll(now, &mut frame_device, &mut sockets);
-        service_dhcp(&mut sockets, dhcp_handle);
+        service_dhcp(&mut sockets, dhcp_handle, guest_address, router);
         service_dns_udp(&mut sockets, dns_handle, &mut dns, &metrics);
         drive_flows(
             &mut sockets,
@@ -334,6 +405,13 @@ async fn run_backend(
         metrics.tcp_flow_closed();
     }
     Ok(())
+}
+
+async fn receive_peer(peer: &mut Option<PeerNetwork>) -> io::Result<Option<Vec<u8>>> {
+    match peer {
+        Some(peer) => peer.receive().await,
+        None => std::future::pending().await,
+    }
 }
 
 fn udp_socket(
@@ -389,7 +467,7 @@ fn ensure_listener(
     }
     let destination = if key.destination_port == 53 {
         FlowDestination::Dns
-    } else if key.destination_addr == ROUTER_IPV4 {
+    } else if key.destination_addr == router_address(config) {
         match config
             .gateway
             .filter(|gateway| gateway.guest_port == key.destination_port)
@@ -834,7 +912,12 @@ fn reap_closed_flows(
     }
 }
 
-fn service_dhcp(sockets: &mut SocketSet<'static>, handle: SocketHandle) {
+fn service_dhcp(
+    sockets: &mut SocketSet<'static>,
+    handle: SocketHandle,
+    guest_address: Ipv4Addr,
+    router: Ipv4Addr,
+) {
     let socket = sockets.get_mut::<udp::Socket>(handle);
     while socket.can_recv() && socket.can_send() {
         let Ok((request_bytes, _)) = socket.recv() else {
@@ -862,15 +945,15 @@ fn service_dhcp(sockets: &mut SocketSet<'static>, handle: SocketHandle) {
             secs: request.secs,
             client_hardware_address: request.client_hardware_address,
             client_ip: Ipv4Address::UNSPECIFIED,
-            your_ip: GUEST_IPV4,
-            server_ip: ROUTER_IPV4,
-            router: Some(ROUTER_IPV4),
+            your_ip: guest_address,
+            server_ip: router,
+            router: Some(router),
             subnet_mask: Some(Ipv4Address::new(255, 255, 255, 0)),
             relay_agent_ip: Ipv4Address::UNSPECIFIED,
             broadcast: true,
             requested_ip: None,
             client_identifier: request.client_identifier,
-            server_identifier: Some(ROUTER_IPV4),
+            server_identifier: Some(router),
             parameter_request_list: None,
             // libkrun's DHCP init writes resolv.conf when this option is set.
             // pVisor injects the resolver file from its guest root instead.
@@ -888,7 +971,7 @@ fn service_dhcp(sockets: &mut SocketSet<'static>, handle: SocketHandle) {
         }
         let mut metadata =
             UdpMetadata::from(IpEndpoint::new(IpAddress::Ipv4(Ipv4Address::BROADCAST), 68));
-        metadata.local_address = Some(IpAddress::Ipv4(ROUTER_IPV4));
+        metadata.local_address = Some(IpAddress::Ipv4(router));
         if let Ok(buffer) = socket.send(bytes.len(), metadata) {
             buffer.copy_from_slice(&bytes);
         }
@@ -909,9 +992,9 @@ fn service_dns_udp(
         metrics.dns_query();
         let response = dns.answer(query);
         let mut response_meta = UdpMetadata::from(request_meta.endpoint);
-        response_meta.local_address = request_meta
-            .local_address
-            .or(Some(IpAddress::Ipv4(ROUTER_IPV4)));
+        response_meta.local_address = request_meta.local_address.or(Some(IpAddress::Ipv4(
+            dns.peers.as_ref().map_or(ROUTER_IPV4, |peer| peer.gateway),
+        )));
         if let Ok(buffer) = socket.send(response.len(), response_meta) {
             buffer.copy_from_slice(&response);
             metrics.dns_answer();
@@ -921,6 +1004,7 @@ fn service_dns_udp(
 
 #[derive(Default)]
 struct SyntheticDns {
+    peers: Option<PeerNetworkConfig>,
     by_name: HashMap<String, Ipv4Addr>,
     by_address: HashMap<Ipv4Addr, String>,
 }
@@ -952,8 +1036,26 @@ impl SyntheticDns {
             Ok(question) if question.opcode != 0 => (Some(question), 4, None),
             Ok(question) if question.class != 1 => (Some(question), 4, None),
             Ok(question) if question.kind == 1 => {
-                let answer = self.allocate(&question.name);
-                let rcode = if answer.is_some() { 0 } else { 2 };
+                let peer = self
+                    .peers
+                    .as_ref()
+                    .and_then(|config| crate::peer::lookup_peer_name(config, &question.name));
+                let peer_only = self.peers.as_ref().is_some_and(|p| !p.aliases.is_empty())
+                    && !question.name.contains('.');
+                let answer = if peer.is_some() {
+                    peer
+                } else if peer_only {
+                    None
+                } else {
+                    self.allocate(&question.name)
+                };
+                let rcode = if answer.is_some() {
+                    0
+                } else if peer_only {
+                    3
+                } else {
+                    2
+                };
                 (Some(question), rcode, answer)
             }
             Ok(question) if question.kind == 28 => (Some(question), 0, None),
@@ -978,7 +1080,8 @@ impl SyntheticDns {
                 response.extend_from_slice(&[0xc0, 0x0c]);
                 response.extend_from_slice(&1_u16.to_be_bytes());
                 response.extend_from_slice(&1_u16.to_be_bytes());
-                response.extend_from_slice(&60_u32.to_be_bytes());
+                let ttl: u32 = if self.peers.is_some() { 0 } else { 60 };
+                response.extend_from_slice(&ttl.to_be_bytes());
                 response.extend_from_slice(&4_u16.to_be_bytes());
                 response.extend_from_slice(&address.octets());
             }
@@ -1059,14 +1162,14 @@ fn blocked_literal_destination(address: Ipv4Addr) -> bool {
     forbidden_host_address(IpAddr::V4(address))
 }
 
-fn initial_tcp_syn(frame: &[u8]) -> Option<FlowKey> {
+fn initial_tcp_syn(frame: &[u8], guest_address: Ipv4Addr) -> Option<FlowKey> {
     let ethernet = EthernetFrame::new_checked(frame).ok()?;
     if ethernet.ethertype() != EthernetProtocol::Ipv4 {
         return None;
     }
     let ipv4 = Ipv4Packet::new_checked(ethernet.payload()).ok()?;
     if !ipv4.verify_checksum()
-        || ipv4.src_addr() != GUEST_IPV4
+        || ipv4.src_addr() != guest_address
         || ipv4.next_header() != IpProtocol::Tcp
         || ipv4.more_frags()
         || ipv4.frag_offset() != 0
@@ -1088,7 +1191,7 @@ fn initial_tcp_syn(frame: &[u8]) -> Option<FlowKey> {
     })
 }
 
-fn supported_guest_frame(frame: &[u8]) -> bool {
+fn supported_guest_frame(frame: &[u8], guest_address: Ipv4Addr) -> bool {
     let Ok(ethernet) = EthernetFrame::new_checked(frame) else {
         return false;
     };
@@ -1102,7 +1205,7 @@ fn supported_guest_frame(frame: &[u8]) -> bool {
         return false;
     };
     if !ipv4.verify_checksum()
-        || (ipv4.src_addr() != GUEST_IPV4 && !ipv4.src_addr().is_unspecified())
+        || (ipv4.src_addr() != guest_address && !ipv4.src_addr().is_unspecified())
     {
         return false;
     }

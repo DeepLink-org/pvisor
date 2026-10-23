@@ -23,6 +23,9 @@ pub use crate::image::oci::PullProgress;
 
 /// VM-isolated Dockerfile builds and OCI image publication.
 pub mod build;
+/// Persistent Docker-style network management and IPAM.
+pub mod network;
+pub use network::{Network, NetworkCreate};
 
 fn native_platform() -> String {
     let architecture = match std::env::consts::ARCH {
@@ -149,6 +152,18 @@ pub struct Create {
     pub tty: Option<[u16; 2]>,
     /// Install the current public IPv4 TCP/DNS egress profile.
     pub network: bool,
+    /// Docker network selector. None retains the isolated SDK/build link;
+    /// the CLI selects bridge by default. Resolved to an exact name at creation.
+    #[serde(default)]
+    pub network_name: Option<String>,
+    /// Requested static IPv4; supported only on user-defined networks. Automatic
+    /// allocation is retained in peers until container removal, including stops.
+    #[serde(default)]
+    pub ipv4_address: Option<std::net::Ipv4Addr>,
+    /// Optional same-host packet network. Requires network=true; all members
+    /// explicitly trust each other for IPv4 TCP, UDP and ICMP.
+    #[serde(default)]
+    pub peers: Option<crate::PeerNetworkSettings>,
 }
 
 /// Stable container identity plus the current launch generation.
@@ -306,7 +321,9 @@ impl Store {
         for name in ["instances", "volumes", "images", "results"] {
             private_directory(&root.join(name))?;
         }
-        Ok(Self { root })
+        let store = Self { root };
+        store.initialize_networks()?;
+        Ok(store)
     }
     fn lock(&self) -> anyhow::Result<File> {
         let file = OpenOptions::new()
@@ -557,6 +574,15 @@ impl Store {
         if let Some(name) = &config.name {
             ensure!(valid_name(name), "invalid container name");
         }
+        if let Some(selector) = &config.network_name {
+            ensure!(config.peers.is_none(), "conflicting network settings");
+            self.inspect_network(selector)?;
+        } else {
+            ensure!(
+                config.ipv4_address.is_none(),
+                "--ip requires a user-defined network"
+            );
+        }
         let images = self.images()?;
         let candidates: Vec<_> = images
             .iter()
@@ -611,6 +637,13 @@ impl Store {
         for port in &config.ports {
             ensure!(port.guest != 0, "guest port must be nonzero");
         }
+        if let Some(peers) = &config.peers {
+            peers.validate()?;
+            ensure!(
+                config.network,
+                "peer networking conflicts with --network none"
+            );
+        }
         let _guard = self.lock()?;
         let id = format!("{}{}", uuid(), uuid());
         let name = config
@@ -621,6 +654,7 @@ impl Store {
             !self.all()?.iter().any(|i| i.name == name),
             "container name already in use: {name}"
         );
+        self.assign_network(&mut config, &name)?;
         let directory = self.directory(&id);
         private_directory(&directory)?;
         for path in ["upper", "work"] {
@@ -707,6 +741,7 @@ impl Store {
             let _guard = self.lock()?;
             instance = self.resolve(selector)?;
             require_native_platform(&instance.image.platform)?;
+            self.validate_network_attachment(&instance)?;
             if self.active(&instance)? && instance.state == "running" {
                 return Ok(instance);
             }
@@ -1276,13 +1311,20 @@ fn forward(mut client: std::net::TcpStream, endpoint: &Path, port: u16) -> anyho
     result
 }
 
-fn prepare_resolver(rootfs: &Path, resolver: &Path) -> anyhow::Result<()> {
+fn prepare_resolver(
+    rootfs: &Path,
+    resolver: &Path,
+    gateway: std::net::Ipv4Addr,
+) -> anyhow::Result<()> {
     use pvisor_overlay_core::{backend::UnixIdentity, sys};
     use std::ffi::OsStr;
 
     private_directory(resolver)?;
     private_directory(&resolver.join("etc"))?;
-    fs::write(resolver.join("etc/resolv.conf"), b"nameserver 192.0.2.1\n")?;
+    fs::write(
+        resolver.join("etc/resolv.conf"),
+        format!("nameserver {gateway}\n").as_bytes(),
+    )?;
     let key = OsStr::new("user.containers.override_stat");
     // Host storage stays 0700; its guest directories retain the image's metadata.
     // Otherwise this first lower makes guest / and /etc inaccessible after setuid.
@@ -1342,7 +1384,15 @@ fn run_vm(store: &Store, instance: Instance) -> anyhow::Result<()> {
     let mut lowers = vec![instance.image.rootfs.clone()];
     if instance.config.network {
         let resolver = directory.join(format!("resolver-{}", instance.generation));
-        prepare_resolver(&instance.image.rootfs, &resolver)?;
+        prepare_resolver(
+            &instance.image.rootfs,
+            &resolver,
+            instance
+                .config
+                .peers
+                .as_ref()
+                .map_or(pvisor_overlaynet::vm::ROUTER_IPV4, |p| p.gateway),
+        )?;
         lowers.insert(0, resolver);
     }
     vm.overlay(
@@ -1411,17 +1461,41 @@ fn run_vm(store: &Store, instance: Instance) -> anyhow::Result<()> {
             vm::{VmNetwork, VmNetworkConfig},
         };
         let policy = pvisor_core::network::NetworkPolicy::compile(&Default::default())?;
-        let egress = EgressRuntime::with_bandwidth_registry(
-            policy,
-            std::sync::Arc::new(pvisor_core::PolicyControlController),
-            BandwidthRegistry::default(),
+        let egress = if instance.config.peers.is_some() {
+            EgressRuntime::for_peer_network(policy, BandwidthRegistry::default())?
+        } else {
+            EgressRuntime::with_bandwidth_registry(
+                policy,
+                std::sync::Arc::new(pvisor_core::PolicyControlController),
+                BandwidthRegistry::default(),
+            )
+        };
+        let mut config = VmNetworkConfig::new(
+            egress,
+            EgressContext {
+                run_id: Some(instance.id.clone()),
+                attempt_id: Some(instance.generation.clone()),
+            },
         );
-        let (network, stream) =
-            VmNetwork::start(VmNetworkConfig::new(egress, EgressContext::default()))?;
-        vm.network(stream, pvisor_overlaynet::vm::VM_MAC)?;
+        config.peer_network = instance
+            .config
+            .peers
+            .as_ref()
+            .map(crate::PeerNetworkSettings::resolve)
+            .transpose()?;
+        let address = config
+            .peer_network
+            .as_ref()
+            .map_or(pvisor_overlaynet::vm::GUEST_IPV4, |peer| peer.address);
+        let gateway = config
+            .peer_network
+            .as_ref()
+            .map_or(pvisor_overlaynet::vm::ROUTER_IPV4, |p| p.gateway);
+        let (network, stream) = VmNetwork::start(config)?;
+        vm.network(stream, pvisor_overlaynet::vm::guest_mac(address))?;
         guest.network = Some(pvisor_guest::NetworkConfig {
-            address: pvisor_overlaynet::vm::GUEST_IPV4.octets(),
-            gateway: pvisor_overlaynet::vm::ROUTER_IPV4.octets(),
+            address: address.octets(),
+            gateway: gateway.octets(),
         });
         Some(network)
     } else {
@@ -1474,7 +1548,7 @@ mod tests {
                 sys::set_xattr(&rootfs.join("etc"), key, b"234:567:040710", 0).unwrap();
             }
             let resolver = temporary.path().join(format!("resolver-{custom}"));
-            prepare_resolver(&rootfs, &resolver).unwrap();
+            prepare_resolver(&rootfs, &resolver, pvisor_overlaynet::vm::ROUTER_IPV4).unwrap();
             let root = UnixIdentity::parse(&sys::get_xattr(&resolver, key).unwrap()).unwrap();
             let etc =
                 UnixIdentity::parse(&sys::get_xattr(&resolver.join("etc"), key).unwrap()).unwrap();
@@ -1546,8 +1620,86 @@ mod tests {
             interactive: false,
             tty: None,
             network: false,
+            network_name: None,
+            ipv4_address: None,
+            peers: None,
         }
     }
+    #[test]
+    fn docker_network_addresses_are_reserved_across_stops_and_released_on_removal() {
+        let (_directory, store, _) = fixture();
+        let net = store
+            .create_network(NetworkCreate {
+                name: "dev".into(),
+                subnet: Some("172.22.0.0/24".into()),
+                gateway: None,
+            })
+            .unwrap();
+        let config = |name: &str, ip: Option<&str>| {
+            let mut cfg = request();
+            cfg.name = Some(name.into());
+            cfg.network = true;
+            cfg.network_name = Some("dev".into());
+            cfg.ipv4_address = ip.map(|ip| ip.parse().unwrap());
+            cfg
+        };
+        let a = store.create(config("web", None)).unwrap();
+        let b = store.create(config("client", None)).unwrap();
+        assert_eq!(
+            a.config.peers.as_ref().unwrap().address,
+            "172.22.0.2".parse::<std::net::Ipv4Addr>().unwrap()
+        );
+        assert_ne!(
+            a.config.peers.as_ref().unwrap().address,
+            b.config.peers.as_ref().unwrap().address
+        );
+        assert!(
+            store
+                .create(config("duplicate", Some("172.22.0.2")))
+                .is_err()
+        );
+        assert!(store.create(config("outside", Some("172.23.0.2"))).is_err());
+        assert!(store.create(config("router", Some("172.22.0.1"))).is_err());
+        assert!(store.remove_network("dev", true).is_err());
+        assert_eq!(store.network_instances(&net.id).unwrap().len(), 2);
+        store.remove(&a.id, false).unwrap();
+        let c = store.create(config("replacement", None)).unwrap();
+        assert_eq!(
+            c.config.peers.as_ref().unwrap().address,
+            "172.22.0.2".parse::<std::net::Ipv4Addr>().unwrap()
+        );
+        store.remove(&b.id, false).unwrap();
+        store.remove(&c.id, false).unwrap();
+        store.remove_network("dev", false).unwrap();
+    }
+
+    #[test]
+    fn docker_network_concurrent_creation_assigns_unique_addresses() {
+        let (_directory, store, _) = fixture();
+        store
+            .create_network(NetworkCreate {
+                name: "dev".into(),
+                subnet: None,
+                gateway: None,
+            })
+            .unwrap();
+        let workers: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    let mut cfg = request();
+                    cfg.name = Some(format!("worker-{i}"));
+                    cfg.network = true;
+                    cfg.network_name = Some("dev".into());
+                    store.create(cfg).unwrap().config.peers.unwrap().address
+                })
+            })
+            .collect();
+        let addresses: std::collections::BTreeSet<_> =
+            workers.into_iter().map(|w| w.join().unwrap()).collect();
+        assert_eq!(addresses.len(), 8);
+    }
+
     #[test]
     fn docker_platform_selection_and_legacy_records_preserve_native_defaults() {
         assert_eq!(canonical_platform("linux/arm64/v8").unwrap(), "linux/arm64");

@@ -679,3 +679,74 @@ fn docker_build_frontend_death_terminates_its_vm() {
             .all(|i| i.reference != "never:published")
     );
 }
+
+#[test]
+fn docker_network_cli_create_list_inspect_remove_and_reject_unsupported_modes() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("store");
+    for args in [
+        vec!["network", "--help"],
+        vec!["network", "create", "--help"],
+        vec!["network", "ls", "--help"],
+    ] {
+        assert!(command(&home).args(args).output().unwrap().status.success());
+    }
+    assert!(!home.exists());
+    let run = |args: &[&str]| {
+        let output = command(&home).args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    let created = run(&[
+        "network",
+        "create",
+        "--driver",
+        "bridge",
+        "--subnet",
+        "172.25.0.0/24",
+        "--gateway",
+        "172.25.0.254",
+        "dev",
+    ]);
+    let id = String::from_utf8(created.stdout).unwrap().trim().to_owned();
+    assert_eq!(id.len(), 64);
+    let list = run(&["network", "ls"]);
+    assert!(String::from_utf8_lossy(&list.stdout).contains("dev"));
+    let quiet = run(&["network", "ls", "-q", "--no-trunc"]);
+    assert!(
+        String::from_utf8_lossy(&quiet.stdout)
+            .lines()
+            .any(|line| line == id)
+    );
+    let inspect = run(&["network", "inspect", "dev"]);
+    let networks: serde_json::Value = serde_json::from_slice(&inspect.stdout).unwrap();
+    assert_eq!(networks[0]["Name"], "dev");
+    assert_eq!(networks[0]["Id"], id);
+    assert_eq!(networks[0]["IPAM"]["Config"][0]["Gateway"], "172.25.0.254");
+    assert_eq!(networks[0]["IPAM"]["Config"][0]["Subnet"], "172.25.0.0/24");
+    for args in [
+        vec!["network", "create", "dev"],
+        vec!["network", "create", "--subnet", "172.25.0.0/16", "large"],
+        vec!["network", "rm", "bridge"],
+        vec!["network", "connect", "dev", "container"],
+        vec!["run", "--peer-network", "dev", "image"],
+        vec!["run", "--network", "host", "image"],
+    ] {
+        let output = command(&home).args(&args).output().unwrap();
+        assert!(!output.status.success(), "{args:?}");
+    }
+    run(&["network", "rm", &id]);
+    run(&["network", "rm", "--force", "absent"]);
+    assert!(
+        !command(&home)
+            .args(["network", "inspect", "dev"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}

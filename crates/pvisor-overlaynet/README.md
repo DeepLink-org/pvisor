@@ -51,3 +51,71 @@ must fence and confirm native resume; transport silence alone is not guest idle.
 Drop calls bounded synchronous `cancel`. HTTP/1 and HTTP/2 CONNECT preserve opaque
 bytes with 16 KiB reads; upload remains active. This is Host buffering/backpressure,
 not TLS termination or guest download execution. Disabled hooks retain forwarding.
+
+## Same-host peer packet networks
+
+`VmNetworkConfig.peer_network` explicitly joins a private directory-backed
+network. The returned guest stream retains the same length-prefixed Ethernet
+contract. Peer-bound frames are forwarded before smoltcp, directly to the
+other member's Unix datagram socket; TCP remains end-to-end between guests.
+Ordinary external traffic continues through the existing authorized smoltcp
+connector. Packet forwarding does not require a broker, TAP, host bridge or
+network-administration privileges.
+
+The host runtime supplies a guest-excluded, canonical 0700 network directory.
+Each usable host in a configured private IPv4 /24 owns one numeric slot containing
+`lease.lock`, `peer.json` and `net.sock` (0600). The configured gateway is excluded
+from membership. Legacy explicit links use `192.0.2.1` as router. Publication also
+includes gateway and optional DNS aliases, so subnet mismatches fail closed.
+The lifetime flock refuses live duplicates. After socket bind, an atomic record
+publication exposes the protocol, instance identity, IP, MAC, fresh generation
+and socket inode. A new owner holding the lease can replace a crashed owner's
+stale publication. Shutdown removes its own socket and record; persistent slot
+and lock files preserve lock-inode identity. No PID-based liveness decision is
+used. Membership discovery is separate from the datagram packet link; IP-address
+slots allow direct lookup without scanning the directory on every packet.
+Positive and negative entries expire after 250 ms, so an address restart may drop packets
+until refresh. Neither crash recovery nor delivery retries imply exactly-once
+application effects.
+
+The packet header fences source/destination generations. Receivers also check
+the sender's socket pathname, membership lease, record/socket identity, and
+frame source/destination IP and MAC. This is isolation from guests and other
+host UIDs, not from a malicious process running as the same host UID. The
+embedding caller must hide the whole directory from all guests. The pVisor
+runtime places it below its existing guest-excluded host authority root.
+
+Supported peer traffic is IPv4 unicast TCP, UDP and ICMP plus targeted ARP
+requests/replies. Frames are capped at 1514 bytes (IP MTU 1500); VLANs, IPv6,
+IPv4 fragments and general broadcasts/multicasts are dropped. The owning runtime
+allocates addresses; the packet layer only enforces address leases. Nonempty
+`PeerNetworkConfig.aliases` enables live member-name DNS from validated discovery
+records, with zero TTL. An absent bare name returns NXDOMAIN; external domain names
+keep their synthetic DNS path. Empty aliases disable peer DNS on that member. Malformed, absent-member and unsupported
+peer destinations never fall back to host egress. Sends are nonblocking with no
+application retry queue; missing/full peers drop packets rather than stalling
+every VM flow. Each destination gets an independent, lazily bound `tx-<peer>.sock`
+with a requested 16 KiB kernel send buffer (the OS may adjust accounting). There
+are at most 252 outbound links per instance; this bounds descriptors, not total
+process memory. Receivers validate this source pathname against membership.
+Transmit sockets are removed before releasing the address lease and reclaimed
+after crashes. A stopped guest can backpressure its own backend; remote senders
+continue and may drop packets. Peer packet sent/received/dropped counts are
+reported separately from proxy TCP flows and host-egress byte counters.
+`InterceptionProfile.peer_ipv4` reports runtime-installed peer coverage; `udp`
+still describes general host egress, which remains unsupported.
+
+`VmNetwork::start` requires `EgressRuntime::for_peer_network`, which constructs
+default-controller egress and rejects a restrictive policy or bandwidth budget.
+The ordinary caller-supplied-controller constructor cannot admit peer membership. Live policy replacement closes both peer directions while
+restricted, with already-admitted frames retaining ordinary in-flight effects.
+The pVisor runtime additionally refuses custom controllers, host/container
+executors and off/proxy modes: their packet policy semantics are not implemented.
+Explicit membership grants all supported peer protocols to all network members.
+It is not a per-peer or per-port ACL.
+
+`tests/peer_network.rs` exercises the public owner/guest link and separate
+processes, including ARP, TCP/UDP/ICMP forwarding, restart generations, duplicate
+addresses, crash cleanup, policy changes and network isolation. A pair of guest smoltcp stacks also establishes TCP, transfers 256 KiB and
+checks the response; congestion tests isolate a stalled guest from another peer.
+These tests do not establish a real KVM/HVF guest boot, throughput, latency or capacity.

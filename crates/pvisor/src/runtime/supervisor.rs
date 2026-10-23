@@ -280,6 +280,7 @@ impl RuntimeSupervisorBuilder {
             #[cfg(feature = "gateway")]
             sink: self.sink,
             overlay: self.overlay,
+            custom_controller: self.controller.is_some(),
             controller: self
                 .controller
                 .unwrap_or_else(|| Arc::new(PolicyControlController)),
@@ -308,6 +309,7 @@ pub struct RuntimeSupervisor {
     #[cfg(feature = "gateway")]
     sink: Option<Arc<dyn TrajectoryEventSink>>,
     overlay: OverlayHint,
+    custom_controller: bool,
     controller: Arc<dyn ControlController>,
     network: Option<NetworkDriverConfig>,
 }
@@ -466,6 +468,10 @@ impl RuntimeSupervisor {
     ) -> super::attempt::VmNetworkPrepareOpts {
         network.limits.extend_from_slice(supervisor_limits);
         super::attempt::VmNetworkPrepareOpts {
+            peers: self
+                .network
+                .as_ref()
+                .and_then(|network| network.peers.clone()),
             network,
             controller: Arc::clone(&self.controller),
             attempt_id: attempt_id.to_string(),
@@ -538,6 +544,36 @@ impl RuntimeSupervisor {
         Ok(session)
     }
 
+    fn validate_peers(
+        &self,
+        vm_network: bool,
+        network: &pvisor_core::NetworkConfig,
+        supervisor_limits: &[pvisor_core::NetworkBandwidthLimit],
+    ) -> anyhow::Result<()> {
+        let peers = self
+            .network
+            .as_ref()
+            .and_then(|network| network.peers.as_ref());
+        if let Some(peers) = peers {
+            peers.validate()?;
+            anyhow::ensure!(
+                vm_network,
+                "peer networking requires a native VM with overlaynet mode auto"
+            );
+            anyhow::ensure!(
+                !self.custom_controller,
+                "peer networking does not support custom control controllers"
+            );
+            anyhow::ensure!(
+                supervisor_limits.is_empty()
+                    && pvisor_overlaynet::NetworkPolicy::compile(network)?
+                        .allows_unrestricted_packets(),
+                "peer networking requires unrestricted network policy without bandwidth limits"
+            );
+        }
+        Ok(())
+    }
+
     fn prepare_drivers(
         &self,
         spec: &mut RunSpec,
@@ -556,6 +592,7 @@ impl RuntimeSupervisor {
         let network_mode = self.network_mode();
         let network = preparation.network.clone();
         let vm_network = vm_executor && network_mode == OverlayNetMode::Auto;
+        self.validate_peers(vm_network, &network, supervisor_limits)?;
         let is_vm = preparation.executor.kind == pvisor_core::ExecutorKind::VirtualMachine;
         if is_vm && network_mode == OverlayNetMode::Proxy {
             anyhow::bail!(
@@ -605,6 +642,10 @@ impl RuntimeSupervisor {
                     gateway_enabled: self.gateway_enabled,
                     model_wait: self.model_wait.clone(),
                     vm_network,
+                    peers: self
+                        .network
+                        .as_ref()
+                        .and_then(|network| network.peers.clone()),
                     attempt_id: attempt_id.as_str(),
                 },
             )?;
@@ -1026,6 +1067,49 @@ models = []
             error
                 .to_string()
                 .contains("mode `off` makes the VM offline")
+        );
+    }
+}
+
+#[cfg(test)]
+mod peer_admission_tests {
+    use super::*;
+
+    fn driver() -> NetworkDriverConfig {
+        NetworkDriverConfig::default().peer_network(Some(crate::PeerNetworkSettings {
+            network: "test".into(),
+            address: "192.0.2.11".parse().unwrap(),
+            gateway: pvisor_overlaynet::vm::ROUTER_IPV4,
+            aliases: vec![],
+        }))
+    }
+
+    #[test]
+    fn peer_admission_refuses_host_restricted_policy_and_custom_controller() {
+        let runtime = RuntimeSupervisorBuilder::new().network(driver()).build();
+        assert!(
+            runtime
+                .validate_peers(true, &Default::default(), &[])
+                .is_ok()
+        );
+        assert!(
+            runtime
+                .validate_peers(false, &Default::default(), &[])
+                .is_err()
+        );
+        let denied = pvisor_core::NetworkConfig {
+            mode: pvisor_core::NetworkMode::NoNetwork,
+            ..Default::default()
+        };
+        assert!(runtime.validate_peers(true, &denied, &[]).is_err());
+        let runtime = RuntimeSupervisorBuilder::new()
+            .network(driver())
+            .control_controller(Arc::new(PolicyControlController))
+            .build();
+        assert!(
+            runtime
+                .validate_peers(true, &Default::default(), &[])
+                .is_err()
         );
     }
 }

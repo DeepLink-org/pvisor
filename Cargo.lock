@@ -3089,19 +3089,23 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "fs2",
  "futures-util",
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libc",
  "proptest",
  "pvisor-core",
  "reqwest",
  "serde",
  "serde_json",
  "smoltcp",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

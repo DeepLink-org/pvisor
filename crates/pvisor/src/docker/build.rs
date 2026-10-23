@@ -535,6 +535,9 @@ impl Stage {
             interactive: false,
             tty: None,
             network: options.network,
+            peers: None,
+            network_name: None,
+            ipv4_address: None,
         };
         let instance = Instance {
             schema: 1,

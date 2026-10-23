@@ -142,6 +142,36 @@ impl NetworkPolicy {
         }
     }
 
+    /// Whether this policy permits an unrestricted packet network.
+    ///
+    /// Packet transports cannot enforce the proxy's per-flow rules or bandwidth
+    /// budgets. They must refuse admission when this returns false. Only Ambient,
+    /// an empty scoped policy over Ambient, or an unconstrained default-allow
+    /// policy qualifies. This does not authorize an injected controller.
+    pub fn allows_unrestricted_packets(&self) -> bool {
+        fn unrestricted(capability: &NetworkCapability) -> bool {
+            match capability {
+                NetworkCapability::Ambient => true,
+                NetworkCapability::Scoped { layers, fallback } => {
+                    layers.is_empty() && unrestricted(fallback)
+                }
+                NetworkCapability::Policy {
+                    default_action,
+                    allow,
+                    deny,
+                    limits,
+                } => {
+                    *default_action == NetworkDefaultAction::Allow
+                        && allow.is_empty()
+                        && deny.is_empty()
+                        && limits.is_empty()
+                }
+                _ => false,
+            }
+        }
+        self.limits.is_empty() && unrestricted(self.guard.capability())
+    }
+
     pub fn preflight(&self, request: &NetworkAccessRequest) -> Result<(), DenyReason> {
         authorize_egress(&PolicyControlController, self, request)
     }
@@ -772,5 +802,60 @@ mod tests {
             })
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod packet_admission_tests {
+    use super::*;
+
+    #[test]
+    fn packet_admission_requires_an_unrestricted_effective_policy() {
+        let allowed = NetworkPolicy::compile(&NetworkConfig::default()).unwrap();
+        assert!(allowed.allows_unrestricted_packets());
+        for capability in [
+            NetworkCapability::Deny,
+            NetworkCapability::AllowList {
+                hosts: vec!["example.com".into()],
+                rules: vec![],
+            },
+            NetworkCapability::Policy {
+                default_action: NetworkDefaultAction::Allow,
+                allow: vec![],
+                deny: vec![NetworkAccessRule {
+                    host: "example.com".into(),
+                    ports: vec![],
+                    transports: vec![],
+                    allow_private_ips: false,
+                }],
+                limits: vec![],
+            },
+        ] {
+            let policy = NetworkPolicy::compile(&NetworkConfig {
+                capability: Some(capability),
+                ..Default::default()
+            })
+            .unwrap();
+            assert!(!policy.allows_unrestricted_packets());
+        }
+        let limited = NetworkPolicy::compile(&NetworkConfig {
+            limits: vec![NetworkBandwidthLimit {
+                bytes_per_second: 1024,
+                host: None,
+                port: None,
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!limited.allows_unrestricted_packets());
+        let scoped = NetworkPolicy::compile(&NetworkConfig {
+            capability: Some(NetworkCapability::Scoped {
+                layers: vec![],
+                fallback: Box::new(NetworkCapability::Ambient),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(scoped.allows_unrestricted_packets());
     }
 }

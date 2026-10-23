@@ -1234,3 +1234,73 @@ upper directory remains private (0700).
 Managed volume directories retain guest-selected modes across reopen, including
 image copy-up permissions. They must remain owned directories (never symlinks);
 the enclosing store and volumes catalog remain private 0700 directories.
+
+## Explicit same-host VM peer networks
+
+Native VM Jobs and container VMs can join the same user-private network without
+a central forwarding process. For Jobs, add this to each `spawn --config FILE`
+TOML configuration, selecting a different address for every live instance:
+
+```toml
+[run]
+executor = "vm"
+
+[overlaynet]
+mode = "auto"
+policy = "public"
+
+[overlaynet.peers]
+network = "development"
+address = "192.0.2.11"
+```
+
+A second member uses the same `network` with, for example, `192.0.2.12` and can
+connect directly to a service listening on `192.0.2.11` or `0.0.0.0`. The Rust
+API uses `NetworkDriverConfig::peer_network(Some(PeerNetworkSettings { network,
+address, gateway, aliases }))`. `gateway` defaults to `192.0.2.1` in TOML;
+`aliases` defaults empty. These explicit low-level groups are independent of the
+Docker-style network catalog described below.
+
+The low-level group name is 1–24 ASCII letters, digits, underscores or hyphens.
+Explicit groups are scoped to the effective host UID; container network names
+instead resolve through their store-scoped catalog to ID-based groups.
+Directories live under canonical `/tmp/pvisor-host-<UID>/networks/<network>/`;
+each address has a numeric member directory containing `net.sock`, `peer.json`
+and a persistent address lease. This uses the existing host authority root,
+which native executors exclude from guest projections. Discovery metadata is
+not guest authority. The lease refuses duplicate live addresses; fresh packet
+generations fence restarts, and an owner can reclaim stale files after a crash.
+No periodic central registry service is required.
+
+Membership explicitly grants bidirectional IPv4 TCP, UDP and ICMP to every
+member of that network. It requires `auto` native networking, unrestricted
+resolved network policy, no bandwidth budgets and the default controller.
+Deny/allowlist/scoped policies, custom controllers, host/OCI executors and off/
+proxy networking are refused rather than bypassed. Ordinary external egress
+retains its existing TCP/DNS path. Peer ARP is targeted; IPv6, fragmentation,
+general broadcast/multicast are unsupported. Explicit `aliases` publish network-local
+DNS names; an empty list disables peer DNS on this member. Native addresses remain
+explicit; the container catalog supplies automatic address allocation.
+MTU is 1500. Slow/missing peers cause bounded packet drops, not a global wait.
+The Run interception profile records `peer_ipv4`; peer packet counts are separate
+from host-egress/proxy flow counters. No network performance claim follows from
+packet contract tests. See the [transport contract](../pvisor-overlaynet/README.md#same-host-peer-packet-networks).
+
+
+Container networks use `docker::Store::{create_network, networks, inspect_network,
+network_instances, remove_network}` and persistent versioned `networks.json`
+under that store. `Create.network_name` selects a definition and
+`Create.ipv4_address` optionally requests a static IP. The CLI selects shared
+`bridge` by default; omitted SDK selectors and build RUN retain their isolated
+link for compatibility. None networking has no NIC. A user-defined network is
+created explicitly, and its name/ID resolves to a private runtime group keyed by
+the network ID. Config names may contain dots and up to 128 bytes; they never
+become filesystem path components. Subnets are RFC1918 or 192.0.2.0/24, /24 only.
+Catalog serialization reserves unique addresses across concurrent creations and
+stops until container removal; network removal refuses any remaining attachments.
+User-defined networks publish live container names in DNS with zero TTL; missing
+bare member names return NXDOMAIN and never become host egress grants. Default
+bridge permits IP connectivity without member-name DNS. Different stores have
+separate default bridges and network catalogs. The virtual gateway, resolver,
+DHCP and packet classification use the selected subnet/gateway. See the
+[Docker-compatible CLI subset](../pvisor-cli/README.md#same-host-peer-networks).

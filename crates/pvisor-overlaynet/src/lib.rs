@@ -9,6 +9,7 @@ mod egress;
 pub mod forward;
 pub mod headers;
 pub mod interception;
+mod peer;
 pub mod policy;
 mod resolver;
 pub mod server;
@@ -16,6 +17,7 @@ pub mod vm;
 
 pub use bandwidth::BandwidthRegistry;
 pub use egress::{EgressContext, EgressRuntime};
+pub use peer::PeerNetworkConfig;
 
 pub use interception::{
     InterceptionDriver, InterceptionMetrics, InterceptionProfile, InterceptionSnapshot,
