@@ -146,8 +146,8 @@ pub(super) fn snapshot(source: &Path, destination: &Path, ignore: &Ignore) -> an
                 "context changed: {}",
                 io::Error::last_os_error()
             );
-            let kind = st.st_mode as u32 & libc::S_IFMT as u32;
-            if kind == libc::S_IFDIR as u32 {
+            let kind = st.st_mode & libc::S_IFMT;
+            if kind == libc::S_IFDIR {
                 if ignore.excluded(&child) && !ignore.0.iter().any(|(include, _)| *include) {
                     continue;
                 }
@@ -158,7 +158,7 @@ pub(super) fn snapshot(source: &Path, destination: &Path, ignore: &Ignore) -> an
                     fs::remove_dir(&target)?;
                 }
             } else if !ignore.excluded(&child) {
-                if kind == libc::S_IFREG as u32 {
+                if kind == libc::S_IFREG {
                     let mut input = open_at(source, &name, false)?;
                     let before = input.metadata()?;
                     ensure!(before.is_file(), "context source changed type");
@@ -196,7 +196,7 @@ pub(super) fn snapshot(source: &Path, destination: &Path, ignore: &Ignore) -> an
                     if before.nlink() > 1 {
                         links.insert(key, target);
                     }
-                } else if kind == libc::S_IFLNK as u32 {
+                } else if kind == libc::S_IFLNK {
                     let mut bytes = vec![0; 65536];
                     let n = unsafe {
                         libc::readlinkat(
