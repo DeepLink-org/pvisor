@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Benchmark: B-FOUR-PEER-ENG (benchmark/README.md#b-four-peer-eng), engineering A/B.
 
-Motivation: assess four real pVisor VMs against four Docker bridge containers.
+Motivation: assess four real pVisor VMs against Docker bridge or a frozen pVisor baseline.
 Conclusion sought: integrity, recovery, verified goodput/RTT, bounded memory and CPU.
 Design: identical static worker; 512MiB hard host limits, no swap, one CPU per node;
 3 warmups and 30 seeded randomized pairs; fresh four-node groups; retain failures.
@@ -72,6 +72,35 @@ def daemon_snapshot(pids):
     return result
 
 
+def foreign_work(allowed_executables):
+    found = []
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            if process.stat().st_uid != os.getuid():
+                continue
+            executable = str((process / "exe").resolve())
+            if executable in allowed_executables:
+                continue
+            name = (process / "comm").read_text().strip()
+            if name in {"cargo", "cargo-nextest", "rustc", "cc1", "cc1plus"}:
+                found.append({"pid": int(process.name), "name": name, "reason": "build/test"})
+                continue
+            for descriptor in (process / "fd").iterdir():
+                try:
+                    if "kvm" in os.readlink(descriptor):
+                        found.append(
+                            {"pid": int(process.name), "name": name, "reason": "foreign KVM"}
+                        )
+                        break
+                except OSError:
+                    continue
+        except (OSError, ValueError):
+            continue
+    return found
+
+
 class Group:
     def __init__(self, config, arm, label, directory):
         self.config, self.arm, self.directory = config, arm, directory
@@ -79,6 +108,12 @@ class Group:
         self.names = [f"{self.prefix}-{node}" for node in range(4)]
         self.processes, self.units, self.cgroups, self.logs = [], [], [], []
         self.env = dict(os.environ, PVISOR_DOCKER_HOME=config["store"])
+        if config.get("profile_library"):
+            profile = directory / "syscalls"
+            profile.mkdir(parents=True)
+            self.env.update(
+                LD_PRELOAD=config["profile_library"], PVISOR_NET_PROFILE_DIR=str(profile)
+            )
 
     def cli(self, arguments, **kwargs):
         command = [self.config["pvisor"] if self.arm == "pvisor" else "docker", *arguments]
@@ -286,6 +321,12 @@ class Group:
                 except queue.Empty:
                     if any(process.poll() is not None for _, process in processes):
                         raise RuntimeError("client failed before GO")
+            tcp_before = {}
+            if self.config.get("tcp_counters"):
+                for node in nodes:
+                    tcp_before[node] = self.cli(
+                        ["exec", self.names[node], "/netbench", "counters"]
+                    ).stdout
             before = [snapshot(path) for path in self.cgroups]
             daemon_before = daemon_snapshot(self.config["daemon_pids"])
             monitor_thread = threading.Thread(target=monitor)
@@ -311,6 +352,12 @@ class Group:
             )
             after = [snapshot(path) for path in self.cgroups]
             daemon_after = daemon_snapshot(self.config["daemon_pids"])
+            tcp_after = {}
+            if self.config.get("tcp_counters"):
+                for node in nodes:
+                    tcp_after[node] = self.cli(
+                        ["exec", self.names[node], "/netbench", "counters"]
+                    ).stdout
             for previous, current in zip(before, after):
                 assert current["peak"] <= LIMIT and current["swap"] == 0
                 for key in ("oom", "oom_kill", "max"):
@@ -323,6 +370,7 @@ class Group:
             expected = {
                 "rpc": (1500 * 256, 1500),
                 "bulk": (3 * 4194304, 0),
+                "bulk-long": (3 * 33554432, 0),
                 "ring": (200 * 256, 200),
                 "slow": (500 * 256, 500),
                 "healthy": (500 * 256, 500),
@@ -349,6 +397,8 @@ class Group:
                 "after": after,
                 "daemon_before": daemon_before,
                 "daemon_after": daemon_after,
+                "tcp_before": tcp_before,
+                "tcp_after": tcp_after,
             }
             save(directory / "samples.json", samples)
             save(directory / "result.json", summary)
@@ -403,6 +453,26 @@ class Group:
         self.scenario("rpc")
 
     def close(self):
+        # Preserve diagnostics before force-removal, including failures after a
+        # ready marker where the frontend only returns completion code 125.
+        if self.arm == "pvisor":
+            for record in (Path(self.config["store"]) / "instances").glob("*/instance.json"):
+                value = json.loads(record.read_text())
+                if value.get("name") not in self.names:
+                    continue
+                saved = self.directory / "owner-records" / value["name"]
+                saved.mkdir(parents=True, exist_ok=True)
+                for file in record.parent.iterdir():
+                    if file.is_file() and (
+                        file.suffix in {".json", ".log"} or file.name.startswith("boot-")
+                    ):
+                        shutil.copy2(file, saved / file.name)
+                guest_error = record.parent / "upper" / ".pvisor-guest-error"
+                if guest_error.exists():
+                    shutil.copy2(guest_error, saved / "guest-error.txt")
+                result = Path(self.config["store"]) / "results" / f"{value['id']}.json"
+                if result.exists():
+                    shutil.copy2(result, saved / "completion.json")
         failures = []
         for name in self.names:
             result = self.cli(["rm", "-f", name], check=False, timeout=30)
@@ -421,14 +491,14 @@ class Group:
             raise RuntimeError(f"cleanup failed: {failures}")
 
 
-def analyze(pairs):
+def analyze(pairs, arms=("pvisor", "docker"), cases=("rpc", "bulk", "ring")):
     rng = random.Random(4096)
     result = {}
-    for case in ("rpc", "bulk", "ring"):
+    for case in cases:
         result[case] = {}
         for metric in ("goodput_mbps", "rtt_p50_us", "rtt_p95_us", "cpu_seconds"):
-            a = [pair["pvisor"][case][metric] for pair in pairs]
-            b = [pair["docker"][case][metric] for pair in pairs]
+            a = [pair[arms[0]][case][metric] for pair in pairs]
+            b = [pair[arms[1]][case][metric] for pair in pairs]
             if a[0] is None:
                 continue
             differences = [left - right for left, right in zip(a, b)]
@@ -436,12 +506,12 @@ def analyze(pairs):
                 statistics.median(rng.choices(differences, k=len(differences))) for _ in range(5000)
             )
             result[case][metric] = {
-                "pvisor_median": statistics.median(a),
-                "docker_median": statistics.median(b),
-                "pvisor_minus_docker_paired_median": statistics.median(differences),
+                f"{arms[0]}_median": statistics.median(a),
+                f"{arms[1]}_median": statistics.median(b),
+                f"{arms[0]}_minus_{arms[1]}_paired_median": statistics.median(differences),
                 "ci95": [intervals[125], intervals[4874]],
-                "pvisor_range": [min(a), max(a)],
-                "docker_range": [min(b), max(b)],
+                f"{arms[0]}_range": [min(a), max(a)],
+                f"{arms[1]}_range": [min(b), max(b)],
             }
     return result
 
@@ -451,20 +521,33 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--preflight", action="store_true")
+    parser.add_argument(
+        "--cases",
+        nargs="+",
+        choices=("rpc", "bulk", "ring", "bulk-long"),
+        default=["rpc", "bulk", "ring"],
+    )
+    parser.add_argument(
+        "--compare-pvisor", type=Path, help="compare candidate pvisor to this frozen baseline"
+    )
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
+    if config.get("profile_library") and not args.preflight:
+        parser.error("profiling is diagnostic-only; formal timing must omit profile_library")
+    arms = ("candidate", "baseline") if args.compare_pvisor else ("pvisor", "docker")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     os.sched_setaffinity(0, {8, 9})
     rng = random.Random(20261024)
     schedule = []
     for index in range(1 if args.preflight else 33):
-        order = ["pvisor", "docker"]
+        order = list(arms)
         rng.shuffle(order)
         schedule.append(
             {"index": index, "warmup": not args.preflight and index < 3, "order": order}
         )
     source = output / "source"
+    runtime_source = Path(config.get("runtime_source", REPO))
     shutil.copytree(
         REPO / "benchmark/peer",
         source / "benchmark/peer",
@@ -483,12 +566,12 @@ def main():
         "pvisor-gateway",
     ):
         shutil.copytree(
-            REPO / f"crates/{crate}",
+            runtime_source / f"crates/{crate}",
             source / f"crates/{crate}",
             ignore=shutil.ignore_patterns("target"),
         )
     for filename in ("Cargo.toml", "Cargo.lock"):
-        shutil.copy2(REPO / filename, source / filename)
+        shutil.copy2(runtime_source / filename, source / filename)
     hashes = {
         str(path.relative_to(source)): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in source.rglob("*")
@@ -502,6 +585,11 @@ def main():
             "benchmark": "B-FOUR-PEER-ENG",
             "kernel": platform.uname()._asdict(),
             "config": config,
+            "cases": args.cases,
+            "baseline_binary": str(args.compare_pvisor.resolve()) if args.compare_pvisor else None,
+            "baseline_sha256": hashlib.sha256(args.compare_pvisor.read_bytes()).hexdigest()
+            if args.compare_pvisor
+            else None,
             "schedule": schedule,
             "source_sha256": hashes,
             "cpuinfo": Path("/proc/cpuinfo").read_text(),
@@ -512,12 +600,46 @@ def main():
         },
     )
     pairs = []
+    guard_stop = threading.Event()
+    interference = []
+    allowed = {str(Path(config["pvisor"]).resolve())}
+    if args.compare_pvisor:
+        allowed.add(str(args.compare_pvisor.resolve()))
+
+    def guard():
+        with (output / "host-guard.jsonl").open("w") as file:
+            while not guard_stop.is_set():
+                activity = foreign_work(allowed)
+                file.write(json.dumps({"time": time.time(), "activity": activity}) + "\n")
+                file.flush()
+                if activity:
+                    interference.extend(activity)
+                guard_stop.wait(0.5)
+
+    guard_thread = None
     try:
+        if config.get("reject_foreign_work"):
+            initial = foreign_work(allowed)
+            save(output / "host-admission.json", initial)
+            if initial:
+                raise RuntimeError(f"foreign build/test/KVM work at admission: {initial}")
+            guard_thread = threading.Thread(target=guard)
+            guard_thread.start()
         for entry in schedule:
             pair = {}
             for arm in entry["order"]:
+                if interference:
+                    raise RuntimeError(f"host interference invalidates cohort: {interference}")
                 directory = output / f"{entry['index']:02d}-{arm}"
-                group = Group(config, arm, f"{uuid.uuid4().hex[:6]}", directory)
+                selected = config.copy()
+                if args.compare_pvisor and arm == "baseline":
+                    selected["pvisor"] = str(args.compare_pvisor.resolve())
+                group = Group(
+                    selected,
+                    "pvisor" if args.compare_pvisor else arm,
+                    f"{uuid.uuid4().hex[:6]}",
+                    directory,
+                )
                 try:
                     group.start()
                     if args.preflight:
@@ -525,9 +647,11 @@ def main():
                         # Fault checks already used the rpc result directory.
                         pair[arm] = {"bulk": group.scenario("bulk"), "ring": group.scenario("ring")}
                     else:
-                        pair[arm] = {case: group.scenario(case) for case in ("rpc", "bulk", "ring")}
+                        pair[arm] = {case: group.scenario(case) for case in args.cases}
                 finally:
                     group.close()
+                if interference:
+                    raise RuntimeError(f"host interference invalidates cohort: {interference}")
                 save(directory / "result.json", pair[arm])
             if not entry["warmup"]:
                 pairs.append(pair)
@@ -538,13 +662,19 @@ def main():
                 "pairs": len(pairs),
                 "failures": 0,
                 "excluded": 0,
-                "metrics": analyze(pairs) if not args.preflight else {"preflight": "passed"},
+                "metrics": analyze(pairs, arms, args.cases)
+                if not args.preflight
+                else {"preflight": "passed"},
             },
         )
         print((output / "summary.json").read_text(), flush=True)
     except BaseException as error:
         save(output / "failure.json", {"error": repr(error)})
         raise
+    finally:
+        guard_stop.set()
+        if guard_thread is not None:
+            guard_thread.join(timeout=3)
 
 
 if __name__ == "__main__":

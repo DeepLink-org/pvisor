@@ -78,7 +78,10 @@ impl CreateRequest {
             || self.template_id.is_some()
             || self.network_policy.is_some()
             || self.credential_proxy.is_some()
-            || self.secure_access.is_some()
+            || self
+                .secure_access
+                .as_ref()
+                .is_some_and(|value| value != &serde_json::Value::Bool(false))
             || self.volumes.is_some()
             || self.lifecycle.is_some()
             || self.resource_requests.is_some()

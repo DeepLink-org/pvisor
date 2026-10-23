@@ -39,8 +39,9 @@ restart contracts; stopping the service manager does not delete live sandboxes.
 
 Compatibility is pinned to **OpenSandbox 1.1.0**, tag `release-1.1.0`, commit
 `b1a29cf93a823a95913f7943010febb3f29de05c`. See
-[`opensandbox.lock.json`](opensandbox.lock.json). This is a **partial API profile**,
-not a claim of complete OpenSandbox or unmodified SDK end-to-end conformance.
+[`opensandbox.lock.json`](opensandbox.lock.json). This is a **partial API profile**.
+The pinned, unmodified Python SDK runs against real native VMs for the core
+lifecycle, command and file profile described below; full API conformance is not claimed.
 Upgrades require explicit review of schemas, SDK behavior and conventional tests;
 never follow upstream `main` or an image's `latest` tag automatically.
 
@@ -76,7 +77,95 @@ This does not expose a supervisor's loopback mapping as a public endpoint. A
 sandbox token does not authorize lifecycle operations or another sandbox.
 Control credentials are removed before forwarding to the guest. Guest execd
 access tokens, if supplied by the caller, are not replaced by the lifecycle key.
+Otherwise the proxy supplies a private per-sandbox execd token. The managed
+runtime retains it in reserved `PVISOR_EXECD_ACCESS_TOKEN`, which the daemon
+overwrites before admission and persists across restart. It is separate from
+lifecycle, endpoint and supervisor tokens. For managed images the runtime removes
+the raw token from guest launch inputs and uses official `/internal/init` to bind
+its SHA-256 hash, sandbox ID and generation. Readiness verifies that binding and
+both authenticated context-inventory access and unauthenticated rejection. Public proxies
+reject runtime initialization, including percent-encoded paths.
+Managed loopback mappings also require the private execd token before forwarding
+any HTTP request. Their guest-side transport is a private Unix/vsock socket, so
+connecting directly to a loopback port cannot bypass API authentication or reset
+the runtime binding. Request/response bodies, multipart and SSE still stream.
 Signed endpoint expiration is unsupported and explicitly rejected.
+
+## Managed local OpenSandbox
+
+Prepare a template once, then create native VMs directly through the official
+SDK. Preparation uses the same compressed content pool as `pvisor docker`:
+equal file chunks share storage, while each VM has private writes. Create opens
+a pinned pool revision and retains its lazy projection owner until VM teardown;
+it performs no registry pull or complete rootfs extraction. Preparation may use
+temporary unpacked build storage, which is outside the create path.
+Per-VM projection scratch lives under the owned run directory, so confirmed
+cgroup cleanup also reclaims it after a supervisor crash. Pool objects remain shared.
+
+Build the runtime-performance daemon with `just build performance daemon` (the
+binary is staged as `target/performance/pvisor-daemon`). Build the trusted
+**1.1.0** execd once from the pinned upstream commit:
+
+```sh
+git clone --branch release-1.1.0 --depth 1 https://github.com/opensandbox-group/OpenSandbox /tmp/opensandbox
+git -C /tmp/opensandbox rev-parse HEAD  # b1a29cf93a823a95913f7943010febb3f29de05c
+(cd /tmp/opensandbox/components/execd && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /tmp/execd .)
+pvisor-daemon prepare-image --name ubuntu --image ubuntu:24.04 \
+  --execd /tmp/execd --images-dir /srv/pvi
+```
+
+Prefer a digest-pinned base in deployments. `prepare-image` checks Linux x86-64
+ELF/static linkage, embeds the daemon-built static vsock supervisor, builds into
+the shared pool, and atomically publishes `<name>.json` after success. The operator
+is responsible for the trusted execd version/source; ELF checks do not authenticate
+its provenance. Build/pre-publication failures preserve the previous manifest;
+pulled/published cache objects can remain. An error during rename/directory sync
+can leave publication uncertain: inspect the manifest before retrying. Builds require
+the `x86_64-unknown-linux-musl` Rust stdlib for the embedded guest adapter.
+Use a base with `/bin/sh`, `tail` and the tools required by your workloads. No
+Python interpreter or notebook kernel is injected into an Ubuntu base.
+
+Start the daemon with the delegated cgroup and API key in the Run section, then:
+
+```python
+from opensandbox.config import ConnectionConfig
+from opensandbox.sandbox import Sandbox
+
+config = ConnectionConfig(domain="127.0.0.1:8080", protocol="http",
+                          api_key="YOUR_API_KEY", use_server_proxy=True)
+sandbox = await Sandbox.create("ubuntu", connection_config=config)
+try:
+    result = await sandbox.commands.run("printf 'hello from a VM'")
+    print(result.logs.stdout[0].text)
+finally:
+    await sandbox.kill()
+    await sandbox.close()
+```
+
+Install SDK `opensandbox==1.1.0`. Both server-proxy and endpoint-header modes
+work. The managed adapter supervises the real execd with `--init` and bridges
+guest CID 3 port 44772 without interpreting command/SSE/file traffic. Execd
+starts gated on the supervisor's runtime-init handshake; create waits for real `/ping` and bound, initialized `/ready`,
+as well as acknowledged native controls. Parent startup polling is 5 ms rather
+than a fixed 100 ms; no check is bypassed and no warm VM is handed to another user.
+
+The managed profile uses a **native capability adapter** on port 18080, not
+upstream egress. Its `/healthz` checks actual guest execd readiness; all policy
+requests return 501. Native OverlayNet provides the existing outbound profile.
+The current firmware lacks upstream egress's required netfilter support, so
+network policy, credential proxy and secure-access requests remain rejected.
+The official SDK can create and use sandboxes without those features. Snapshot,
+template/pool and arbitrary-port APIs remain unsupported. This is a local
+replacement for the tested core profile, not every OpenSandbox deployment.
+
+The creation design removes registry/unpack work and reduces polling delay.
+The [paired native/Docker experiment](../../benchmark/opensandbox/REPORT.md)
+found faster first creation after API restart and slower steady creation. These
+results use the `performance` build and prepared images, not registry cold pulls.
+VM isolation and Docker container isolation are different contracts; their full
+process-tree memory accounting is also different.
+Private `startup.json` records bounded cumulative supervisor phase times in
+microseconds for diagnosis; it contains no credentials and is never liveness proof.
 
 ## Runtime boundary: native VM and prepared images
 
@@ -113,7 +202,7 @@ physical-memory budget.
 The launch callback joins the identity-bound cgroup **before exec**, using a pre-opened `cgroup.procs` FD under the owner lock and checking started/deletion/tombstone markers. Supervisor startup verifies membership instead of moving an already-running Tokio process; supervisor/Tokio allocations and subsequent VM/helper children are charged inside the sandbox budget. Direct hidden-command invocation outside that cgroup fails closed.
 
 Images are trusted local `images_dir/<key>.json` manifests, not registry
-references. Fields are `rootfs` (absolute independently provisioned Linux tree,
+references. Legacy fields are `rootfs` (absolute independently provisioned Linux tree,
 never host `/` or overlapping daemon state), `entrypoint` (absolute guest
 bootstrap argv), optional `cmd`, optional `env`, and optional absolute
 `library_dir` for firmware. The bootstrap receives requested workload argv, or
@@ -121,7 +210,7 @@ bootstrap argv), optional `cmd`, optional `env`, and optional absolute
 without inheriting host env or shell interpolation. The immutable rootfs is
 served through the native VM path with private writes.
 
-The bootstrap must supervise real OpenSandbox **1.1.0 execd**, egress and the
+For independently provisioned legacy manifests, the bootstrap must supervise real OpenSandbox **1.1.0 execd**, egress and the
 workload, initialize/authenticate services, forward signals and reap children.
 It must provide byte-transparent guest AF_VSOCK listeners on **CID 3**, ports
 **44772/18080**, bridged to those real services. Supervisor loopback TCP
@@ -131,7 +220,7 @@ A stock distribution rootfs or a sleeping process does not satisfy this contract
 Create, Inspect of a Running VM and resume readiness checks verify real execd
 `/ping`, `/ready` (JSON `initialized: true`) and egress `/healthz` through the
 bridges, requiring HTTP
-200 and bounded bodies. Readiness is not manufactured. The daemon does not inject
+200 and bounded bodies. Readiness is not manufactured. For legacy images the daemon does not inject
 `/execd`, call its initialization handshake or synthesize command/SSE/file behavior. The prepared image must complete
 any runtime initialization and configure its service authentication.
 
@@ -141,10 +230,13 @@ not repeat service health probes or full cgroup-limit reconciliation per data
 request; connection failures belong to the API adapter. Native `observation.json`
 caches are neither written nor used as liveness proof.
 
-**The guest bootstrap and image recipe are not supplied or end-to-end validated.**
-An upstream image name alone is not a native bootstrap or vsock adapter.
-Python SDK initialization resolves both endpoints even without a network policy.
-There is no full SDK-conformance or density evidence.
+`prepare-image` supplies the managed bootstrap described above. Its manifest adds
+`pooled_image` (the owning Docker API's pinned image contract) and
+`native_opensandbox: true`; `rootfs` then names its private Docker store, not an
+unpacked directory. The backend is lazy and is not advertised as immutable DAX
+storage. Existing directory-root manifests retain their original upstream-egress
+contract. Python SDK initialization resolves both endpoints even without a
+network policy. There is no full SDK-conformance or density evidence.
 
 Native OverlayNet supplies outbound VM networking; requested OpenSandbox network
 policies remain unsupported and rejected. Do not infer deny-all egress from a VM
@@ -284,8 +376,7 @@ monitoring and event-driven reconciliation are not implemented.
 
 ## Run
 
-This is a deployment example, not a validated
-bootstrap/image or end-to-end SDK recipe. Supply a real delegated cgroup
+After preparing a template, supply a real delegated cgroup
 hierarchy, not an ordinary filesystem directory:
 
 ```sh
@@ -307,8 +398,8 @@ across logout/reboot, and a VM cannot survive host reboot.
 Set `OPEN_SANDBOX_API_KEY` to a strong random secret (at least 32 bytes); avoid
 passing it in argv. Use TLS in a trusted reverse proxy before exposing the service
 outside loopback. Supply `--public-endpoint` for externally routed or wildcard
-listeners. A `--listen ...:0` development binding also requires an explicitly
-correct public endpoint; automatic endpoint publication is not implemented.
+listeners. A loopback `--listen 127.0.0.1:0` development binding publishes its
+actual allocated authority automatically; the listening address is logged.
 
 `pvisor-daemon protocol` prints the pinned baseline. Connect SDK version 1.1.0
 with the chosen domain and protocol, and use a prepared image satisfying the
@@ -447,8 +538,22 @@ successful merge and COW observations. The Linux x86_64/KVM probe passed with
 the adaptive region scheduler on 2026-10-18. It does not compare scan throughput,
 CPU cost or memory savings against linear scanning or UKSM.
 
-These conventional tests do not launch native sandboxes or establish prepared-image,
-SDK, isolation or density validation.
+The opt-in native SDK test launches two real sandboxes concurrently, exercises
+both endpoint modes, streaming output/nonzero exit, env/cwd, transport-secret
+filtering, UTF-8/binary files, private writes, metrics, renewal, pause/resume,
+reconnect and cross-sandbox authentication. It also requires explicit policy 501
+and deletes its own sandboxes. With an isolated daemon and a managed `ubuntu`
+template (at least 2 CPU/1 GiB admission capacity), run:
+
+```sh
+uv run --no-project --with opensandbox==1.1.0 python \
+  crates/pvisor-daemon/tests/opensandbox_sdk.py --domain 127.0.0.1:8080
+```
+
+Keep `OPEN_SANDBOX_API_KEY` in the environment. These tests establish only the
+listed native core profile; isolated-session/bwrap, notebook languages, arbitrary
+applications, network-policy enforcement, hostile-user isolation and production
+density require their own validation.
 
 ## Implementation ownership
 
@@ -461,3 +566,5 @@ SDK, isolation or density validation.
 | `runtime.rs` | Runtime trait, VM-only NativeRuntime, detached supervisor, IPC/cgroup identity and vsock bridges |
 | `memory_pool.rs` | Daemon-owned bounded cold-page pool, private socket and restart reuse |
 | `main.rs` | Daemon CLI/configuration, listener and maintenance lifecycle |
+| `prepared_image.rs` | Operator-side static execd checks, pool template preparation and atomic manifest publication |
+| `sandbox_init.rs` | Embedded guest-only execd supervisor and bounded byte-transparent vsock bridge |

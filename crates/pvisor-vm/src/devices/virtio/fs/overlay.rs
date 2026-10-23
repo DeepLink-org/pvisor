@@ -3201,7 +3201,6 @@ impl FileSystem for OverlayFs {
         self.core
             .prepare_metadata_change(&path)
             .map_err(linux_error)?;
-        let inner = self.writable_inner(ctx, &path)?;
         #[cfg(target_os = "linux")]
         let previous = if self.virtual_metadata {
             Some(self.entry(ctx, &path, inode)?.attr)
@@ -3209,12 +3208,44 @@ impl FileSystem for OverlayFs {
             None
         };
         let requested = attr;
-        let result = self.layers[0].setattr(ctx, inner, attr, None, valid);
+        #[cfg(target_os = "linux")]
+        let mut native_valid = valid;
+        #[cfg(target_os = "macos")]
+        let native_valid = valid;
+        #[cfg(target_os = "linux")]
+        if let Some(previous) = previous {
+            if valid.intersects(SetattrValid::UID | SetattrValid::GID) {
+                // OCI ownership belongs to the guest, not the invoking host
+                // user. Never attempt an unmapped host chown, or swallow its
+                // EPERM. Guest root may assign owners; an unprivileged owner
+                // may retain its UID and select its primary group.
+                // Linux idmapped FUSE requests may omit credentials after the
+                // guest VFS has authorized SETATTR. Both IDs are then invalid;
+                // they are not a guest user to compare with virtual ownership.
+                // This only changes metadata in this private image upper.
+                let kernel_authorized = ctx.uid == u32::MAX && ctx.gid == u32::MAX;
+                if ctx.uid != 0
+                    && !kernel_authorized
+                    && (ctx.uid != previous.st_uid
+                        || (valid.contains(SetattrValid::UID)
+                            && requested.st_uid != previous.st_uid)
+                        || (valid.contains(SetattrValid::GID)
+                            && requested.st_gid != previous.st_gid
+                            && requested.st_gid != ctx.gid))
+                {
+                    return Err(io::Error::from_raw_os_error(libc::EPERM));
+                }
+                native_valid.remove(SetattrValid::UID | SetattrValid::GID);
+            }
+        }
+        let inner = self.writable_inner(ctx, &path)?;
+        let result = self.layers[0].setattr(ctx, inner, attr, None, native_valid);
         self.layers[0].forget(ctx, inner, 1);
         let (mut attr, timeout) = result?;
         #[cfg(target_os = "linux")]
         if let Some(previous) = previous {
-            if pvisor_overlay_core::sys::get_xattr(
+            if valid.intersects(SetattrValid::UID | SetattrValid::GID)
+                || pvisor_overlay_core::sys::get_xattr(
                 &self.core.upper_path(&path),
                 OsStr::new("user.containers.override_stat"),
             )
@@ -3233,6 +3264,13 @@ impl FileSystem for OverlayFs {
                 } else {
                     previous.st_gid
                 };
+                // Native chown normally clears these privilege bits. The
+                // virtual ownership path must retain that guest behavior.
+                if valid.intersects(SetattrValid::UID | SetattrValid::GID)
+                    && attr.st_mode & libc::S_IFMT == libc::S_IFREG
+                {
+                    attr.st_mode &= !(libc::S_ISUID | libc::S_ISGID);
+                }
                 let value = format!("{}:{}:0{:o}", attr.st_uid, attr.st_gid, attr.st_mode);
                 pvisor_overlay_core::sys::set_xattr(
                     &self.core.upper_path(&path),
@@ -4404,6 +4442,71 @@ mod tests {
         #[test]
         fn mkdir_virtual_setgid() {
             mkdir_virtual(true);
+        }
+
+        #[test]
+        fn chown_virtual_upper_retains_host_owner_and_updates_aliases() {
+            let (temp, fs, ctx) = fixture(Some(b"0:0:40755"));
+            // Image mounts have no protected host paths. The general fixture's
+            // private-path policy deliberately rejects hardlinks altogether.
+            let mut config = fs.snapshot_config.clone();
+            config.excluded_paths.clear();
+            config.access_policy = pvisor_overlay_core::FileAccessPolicy::default();
+            drop(fs);
+            let fs = OverlayFs::new(config, Arc::new(InodeAllocator::new())).unwrap();
+            fs.init(FsOptions::empty()).unwrap();
+            let file = temp.path().join("upper/file");
+            let (entry, handle, _) = fs.create(
+                ctx, fuse::ROOT_ID, c"file", libc::S_IFREG | 0o600,
+                false, libc::O_RDWR as u32, 0, Extensions::default(),
+            ).unwrap();
+            fs.release(ctx, entry.inode, libc::O_RDWR as u32, handle.unwrap(), false, false, None).unwrap();
+            let native = std::fs::metadata(&file).unwrap();
+            fs.link(ctx, entry.inode, fuse::ROOT_ID, c"alias").unwrap();
+            let mut requested = entry.attr;
+            requested.st_uid = 123;
+            requested.st_gid = 456;
+            let (updated, _) = fs.setattr(
+                ctx, entry.inode, requested, None, SetattrValid::UID | SetattrValid::GID,
+            ).unwrap();
+            assert_eq!((updated.st_uid, updated.st_gid), (123, 456));
+            let alias = fs.lookup(ctx, fuse::ROOT_ID, c"alias").unwrap();
+            assert_eq!((alias.attr.st_uid, alias.attr.st_gid), (123, 456));
+            let after = std::fs::metadata(&file).unwrap();
+            assert_eq!((after.uid(), after.gid()), (native.uid(), native.gid()));
+            assert_eq!(std::fs::read(&file).unwrap(), b"");
+
+            let unprivileged = Context { uid: 123, gid: 456, ..ctx };
+            requested = updated;
+            requested.st_uid = 789;
+            assert_eq!(fs.setattr(
+                unprivileged, entry.inode, requested, None, SetattrValid::UID,
+            ).unwrap_err().raw_os_error(), Some(libc::EPERM));
+            assert_eq!(fs.getattr(ctx, entry.inode, None).unwrap().0.st_uid, 123);
+        }
+
+        #[test]
+        fn chown_virtual_lower_copies_up_and_clears_privilege_bits() {
+            let (temp, fs, ctx) = fixture(Some(b"0:0:40755"));
+            let lower = temp.path().join("lower/file");
+            std::fs::write(&lower, b"immutable lower").unwrap();
+            pvisor_overlay_core::sys::set_xattr(
+                &lower, OsStr::new("user.containers.override_stat"), b"123:456:106750", 0,
+            ).unwrap();
+            let entry = fs.lookup(ctx, fuse::ROOT_ID, c"file").unwrap();
+            let mut requested = entry.attr;
+            requested.st_uid = 789;
+            let kernel_authorized = Context { uid: u32::MAX, gid: u32::MAX, ..ctx };
+            let (updated, _) = fs.setattr(
+                kernel_authorized, entry.inode, requested, None, SetattrValid::UID,
+            ).unwrap();
+            assert_eq!((updated.st_uid, updated.st_gid), (789, 456));
+            assert_eq!(updated.st_mode & 0o7777, 0o750);
+            assert_eq!(fs.getattr(ctx, entry.inode, None).unwrap().0.st_mode & 0o7777, 0o750);
+            assert_eq!(pvisor_overlay_core::sys::get_xattr(
+                &lower, OsStr::new("user.containers.override_stat"),
+            ).unwrap(), b"123:456:106750");
+            assert_eq!(std::fs::read(temp.path().join("upper/file")).unwrap(), b"immutable lower");
         }
 
         #[test]

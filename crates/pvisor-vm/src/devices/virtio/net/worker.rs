@@ -6,14 +6,14 @@ use crate::devices::virtio::net::unixstream::Unixstream;
 use crate::devices::virtio::net::{MAX_BUFFER_SIZE, QUEUE_SIZE};
 use crate::devices::virtio::{DeviceQueue, InterruptTransport};
 
+use super::VNET_HDR_LEN;
 use super::backend::{NetBackend, ReadError, WriteError};
 use super::device::{FrontendError, RxError, TxError, VirtioNetBackend};
-use super::VNET_HDR_LEN;
 
 use crate::utils::epoll::{ControlOperation, Epoll, EpollEvent, EventSet};
+use std::os::fd::AsRawFd;
 #[cfg(target_os = "macos")]
 use std::os::fd::RawFd;
-use std::os::fd::AsRawFd;
 use std::thread;
 use std::{cmp, result};
 use vm_memory::{Bytes, GuestAddress, GuestMemoryMmap};
@@ -139,8 +139,12 @@ impl NetWorker {
                                 if event_set.contains(EventSet::HANG_UP)
                                     || event_set.contains(EventSet::READ_HANG_UP)
                                 {
-                                    log::error!("Got {event_set:?} on backend fd, virtio-net will stop working");
-                                    eprintln!("LIBKRUN VIRTIO-NET FATAL: Backend process seems to have quit or crashed! Networking is now disabled!");
+                                    log::error!(
+                                        "Got {event_set:?} on backend fd, virtio-net will stop working"
+                                    );
+                                    eprintln!(
+                                        "LIBKRUN VIRTIO-NET FATAL: Backend process seems to have quit or crashed! Networking is now disabled!"
+                                    );
                                 } else {
                                     if event_set.contains(EventSet::IN) {
                                         self.process_backend_socket_readable()
@@ -184,15 +188,9 @@ impl NetWorker {
         if let Err(e) = self.rx_q.event.read() {
             log::error!("Failed to get rx event from queue: {e:?}");
         }
-        if let Err(e) = self.rx_q.queue.disable_notification(&self.mem) {
-            error!("error disabling queue notifications: {e:?}");
-        }
-        if let Err(e) = self.process_rx() {
+        if let Err(e) = self.process_rx_loop() {
             log::error!("Failed to process rx: {e:?} (triggered by queue event)")
         };
-        if let Err(e) = self.rx_q.queue.enable_notification(&self.mem) {
-            error!("error disabling queue notifications: {e:?}");
-        }
     }
 
     pub(crate) fn process_tx_queue_event(&mut self) {
@@ -206,15 +204,9 @@ impl NetWorker {
 
     pub(crate) fn process_backend_socket_readable(&mut self) {
         crate::devices::virtio::memory_gate::external_wake(&self.mem, "network_rx");
-        if let Err(e) = self.rx_q.queue.enable_notification(&self.mem) {
-            error!("error disabling queue notifications: {e:?}");
-        }
-        if let Err(e) = self.process_rx() {
+        if let Err(e) = self.process_rx_loop() {
             log::error!("Failed to process rx: {e:?} (triggered by backend socket readable)");
         };
-        if let Err(e) = self.rx_q.queue.disable_notification(&self.mem) {
-            error!("error disabling queue notifications: {e:?}");
-        }
     }
 
     pub(crate) fn process_backend_socket_writeable(&mut self) {
@@ -233,18 +225,39 @@ impl NetWorker {
         }
     }
 
+    fn process_rx_loop(&mut self) -> result::Result<(), RxError> {
+        loop {
+            self.rx_q
+                .queue
+                .disable_notification(&self.mem)
+                .map_err(RxError::QueueError)?;
+            self.process_rx()?;
+            // Only ask the guest to kick when a deferred frame needs new
+            // buffers. Recheck after arming, closing the replenishment race.
+            if !self.rx_has_deferred_frame
+                || !self
+                    .rx_q
+                    .queue
+                    .enable_notification(&self.mem)
+                    .map_err(RxError::QueueError)?
+            {
+                return Ok(());
+            }
+        }
+    }
+
     fn process_rx(&mut self) -> result::Result<(), RxError> {
+        let mut signal_queue = false;
         // if we have a deferred frame we try to process it first,
         // if that is not possible, we don't continue processing other frames
         if self.rx_has_deferred_frame {
             if self.write_frame_to_guest() {
                 self.rx_has_deferred_frame = false;
+                signal_queue = true;
             } else {
                 return Ok(());
             }
         }
-
-        let mut signal_queue = false;
 
         // Read as many frames as possible.
         let result = loop {
@@ -264,7 +277,13 @@ impl NetWorker {
 
         // At this point we processed as many Rx frames as possible.
         // We have to wake the guest if at least one descriptor chain has been used.
-        if signal_queue {
+        if signal_queue
+            && self
+                .rx_q
+                .queue
+                .needs_notification(&self.mem)
+                .map_err(RxError::QueueError)?
+        {
             self.interrupt
                 .try_signal_used_queue()
                 .map_err(RxError::DeviceError)?;
@@ -382,7 +401,7 @@ impl NetWorker {
                     break;
                 }
                 Err(e @ WriteError::Internal(_) | e @ WriteError::ProcessNotRunning) => {
-                    return Err(TxError::Backend(e))
+                    return Err(TxError::Backend(e));
                 }
             }
         }
@@ -470,5 +489,69 @@ impl NetWorker {
     fn read_into_rx_frame_buf_from_backend(&mut self) -> result::Result<(), ReadError> {
         self.rx_frame_buf_len = self.backend.read_frame(&mut self.rx_frame_buf)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::devices::legacy::DummyIrqChip;
+    use crate::devices::virtio::VirtQueue;
+    use crate::utils::eventfd::{EFD_NONBLOCK, EventFd};
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::sync::{Arc, atomic::Ordering};
+
+    #[test]
+    fn rx_event_index_suppresses_extra_irq_and_deferred_completion_still_notifies() {
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x10000)]).unwrap();
+        let rx = VirtQueue::new(GuestAddress(0), &mem, 8);
+        let tx = VirtQueue::new(GuestAddress(0x1000), &mem, 8);
+        let mut rx_queue = rx.create_queue();
+        rx_queue.set_event_idx(true);
+        let (local, mut peer) = UnixStream::pair().unwrap();
+        let interrupt =
+            InterruptTransport::new(DummyIrqChip::new().into(), "net-test".into()).unwrap();
+        let mut worker = NetWorker::new(
+            DeviceQueue::new(rx_queue, Arc::new(EventFd::new(EFD_NONBLOCK).unwrap())),
+            DeviceQueue::new(
+                tx.create_queue(),
+                Arc::new(EventFd::new(EFD_NONBLOCK).unwrap()),
+            ),
+            interrupt.clone(),
+            mem.clone(),
+            0,
+            VirtioNetBackend::UnixstreamFd(Arc::new(local.into())),
+        )
+        .unwrap();
+        rx.dtable[0].set(0x4000, 2048, 2, 0);
+        rx.avail.ring[0].set(0);
+        rx.avail.idx.set(1);
+        // The guest is already polling and only requests a notification after
+        // the second used entry. The first packet must not inject an IRQ.
+        rx.avail.event.set(1);
+        let mut framed = 66u32.to_be_bytes().to_vec();
+        framed.extend_from_slice(&[0x5a; 66]);
+        peer.write_all(&framed).unwrap();
+        worker.process_backend_socket_readable();
+        assert_eq!(rx.used.idx.get(), 1);
+        assert_eq!(interrupt.status().load(Ordering::SeqCst), 0);
+        // Exhausted RX buffers must arm a guest kick, without losing the frame.
+        peer.write_all(&framed).unwrap();
+        worker.process_backend_socket_readable();
+        assert!(worker.rx_has_deferred_frame);
+        assert_eq!(rx.used.event.get(), 1);
+        rx.dtable[1].set(0x5000, 2048, 2, 0);
+        rx.avail.ring[1].set(1);
+        rx.avail.idx.set(2);
+        worker.rx_q.event.write(1).unwrap();
+        worker.process_rx_queue_event();
+        assert!(!worker.rx_has_deferred_frame);
+        assert_eq!(rx.used.idx.get(), 2);
+        assert_eq!(interrupt.status().load(Ordering::SeqCst), 1);
+        let mut arrived = [0; 66];
+        mem.read_slice(&mut arrived, GuestAddress(0x5000 + VNET_HDR_LEN as u64))
+            .unwrap();
+        assert_eq!(arrived, [0x5a; 66]);
     }
 }

@@ -847,6 +847,41 @@ fn seeded_malformed_datagram_flood_does_not_poison_the_next_packet() {
 }
 
 #[test]
+fn continuous_peer_flood_does_not_starve_router_dns_or_shutdown() {
+    use std::os::unix::net::UnixDatagram;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let root = directory();
+    let (network, mut stream, metrics) = start(root.path(), 11);
+    let tx = UnixDatagram::bind(root.path().join("flood.sock")).unwrap();
+    tx.connect(root.path().join("11/net.sock")).unwrap();
+    tx.set_nonblocking(true).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let signal = stop.clone();
+    let flood = std::thread::spawn(move || {
+        let started = Instant::now();
+        while !signal.load(Ordering::Relaxed) && started.elapsed() < Duration::from_secs(5) {
+            match tx.send(b"invalid peer datagram") {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::yield_now()
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    wait_until(|| metrics.snapshot().peer_packets_dropped > 100);
+    let reply = resolve_name(&mut stream, address(11), address(1), "external.invalid");
+    assert_eq!(&reply[6..8], &[0, 1]);
+    network.shutdown().unwrap();
+    stop.store(true, Ordering::Relaxed);
+    flood.join().unwrap();
+    assert_eq!(metrics.snapshot().dns_answers, 1);
+}
+
+#[test]
 fn receiver_rejects_forged_generations_pathnames_and_oversized_datagrams() {
     let root = directory();
     let (a, _sa, _) = start(root.path(), 11);

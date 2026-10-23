@@ -105,6 +105,22 @@ fn images_share_content_survive_source_removal_and_copy_up_without_raw_mirror() 
     }
     fs::remove_dir_all(&source.root).unwrap();
     for (handle, digest) in handles {
+        // Repeated local reads must not become transfer progress or diagnostics
+        // on the Docker workload's stderr. Remote readers retain their counters.
+        let client = CacheClient::configured_pool(&location, true).unwrap();
+        let mut filesystem = RemoteFs::new(
+            client,
+            handle.clone(),
+            scratch.join("unused-progress-cache"),
+            None,
+            false,
+        )
+        .unwrap();
+        let node = filesystem.child(1, std::ffi::OsStr::new("file")).unwrap();
+        filesystem.read_range(node.attr.ino, 0, 16).unwrap();
+        filesystem.read_range(node.attr.ino, 0, 16).unwrap();
+        let progress = filesystem.downloads.lock().unwrap().snapshot();
+        assert_eq!((progress.downloaded_bytes, progress.cached_bytes), (0, 0));
         let raw = CacheClient::new(format!("file://{}", location.display()), None).unwrap();
         assert!(
             raw.request(Request::Open {

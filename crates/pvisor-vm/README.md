@@ -1368,3 +1368,28 @@ host UID/GID when the server cannot switch identities. This permits managed
 volume initialization without host root privileges. Native host ownership remains
 visible; arbitrary unmapped owners still fail rather than silently losing metadata.
 Overlay-backed image files use their separate virtual metadata contract.
+In that mode Linux CHOWN updates the upper inode's virtual identity without
+changing host ownership. Guest root may assign arbitrary virtual owners; other
+callers must own the file, retain its UID and retain its group or select their
+primary group. Linux idmapped FUSE's omitted-credential sentinel delegates guest
+authorization to the VFS, which checks SETATTR before sending the request.
+Supplementary-group changes with explicit credentials are not supported by this path.
+Copy-up preserves the immutable lower, hardlinks observe the same identity,
+and CHOWN clears regular-file setuid/setgid bits.
+
+### Framed virtio-net transport
+
+The Unix-stream backend retains a bounded read-ahead buffer (at most 65,566
+bytes) across RX calls. Incomplete length prefixes and payloads return without
+blocking the device worker; coalesced frames are parsed from the same read.
+Zero/oversized lengths and truncated EOF fail closed without growing the buffer
+or spinning. The four-byte big-endian framing and public network API are unchanged.
+
+RX checks the negotiated event index before interrupting a guest that is already
+polling. A deferred frame completed after queue replenishment also participates
+in notification. Queue kicks are armed when a deferred frame needs buffers, with
+the standard availability recheck closing the race after rearming. Private tests
+cover bytewise stream fragmentation, coalescing/compaction, maximum frames, EOF,
+notification suppression and deferred completion. Linux/KVM real-guest peer
+experiments are described in `benchmark/peer/README.md`; HVF performance requires
+separate measurement.

@@ -29,11 +29,12 @@ pvisor-core.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time", "process", "io-util"] }
+tempfile.workspace = true
 url.workspace = true
 uuid = { workspace = true, features = ["v4", "serde"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-tempfile.workspace = true
 tower = { version = "0.5", features = ["util"] }

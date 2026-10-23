@@ -1,4 +1,5 @@
 mod cache_component;
+mod prepared_image;
 use clap::{Parser, Subcommand};
 use pvisor_daemon::{
     daemon::{self, Config, Daemon},
@@ -18,6 +19,8 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare a local OpenSandbox template using the shared compressed image pool.
+    PrepareImage(prepared_image::PrepareImage),
     #[command(hide = true)]
     CacheWorker {
         #[arg(long)]
@@ -50,7 +53,7 @@ enum Command {
         /// Sandbox API key; defaults to OPEN_SANDBOX_API_KEY.
         #[arg(long, requires = "sandbox")]
         api_key: Option<String>,
-        /// Trusted local prepared-image manifests and immutable rootfs trees.
+        /// Trusted prepared-image manifests, shared pools or immutable root trees.
         #[arg(long, requires = "sandbox")]
         images_dir: Option<PathBuf>,
         /// Existing delegated cgroup v2 subtree for per-sandbox process-tree limits.
@@ -93,6 +96,9 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let args = Args::parse();
+    if let Command::PrepareImage(options) = args.command {
+        return options.run();
+    }
     if let Command::CacheWorker {
         listen,
         image_store,
@@ -123,7 +129,10 @@ fn main() -> anyhow::Result<()> {
 
 async fn run(command: Command) -> anyhow::Result<()> {
     match command {
-        Command::Protocol | Command::MemoryPool { .. } | Command::CacheWorker { .. } => {
+        Command::PrepareImage(_)
+        | Command::Protocol
+        | Command::MemoryPool { .. }
+        | Command::CacheWorker { .. } => {
             unreachable!()
         }
         Command::NativeSupervisor { sandbox_dir } => {
@@ -162,9 +171,8 @@ async fn run(command: Command) -> anyhow::Result<()> {
                     "timeout limit must be between 60 seconds and one year"
                 );
                 anyhow::ensure!(
-                    (!listen.ip().is_unspecified() && listen.port() != 0)
-                        || public_endpoint.is_some(),
-                    "wildcard or ephemeral listen requires an explicit public endpoint"
+                    !listen.ip().is_unspecified() || public_endpoint.is_some(),
+                    "wildcard listen requires an explicit public endpoint"
                 );
                 let images_dir = images_dir
                     .ok_or_else(|| anyhow::anyhow!("sandbox requires --images-dir"))?
@@ -179,6 +187,9 @@ async fn run(command: Command) -> anyhow::Result<()> {
                 } else {
                     std::env::current_dir()?.join(&state)
                 };
+                // Bind first: local port-zero instances publish their actual
+                // authority and a bind failure never starts detached services.
+                let listener = tokio::net::TcpListener::bind(listen).await?;
                 let config = Config {
                     state_dir: state,
                     api_key: api_key
@@ -186,7 +197,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
                         .ok_or_else(|| {
                             anyhow::anyhow!("sandbox requires --api-key or OPEN_SANDBOX_API_KEY")
                         })?,
-                    public_endpoint: public_endpoint.unwrap_or_else(|| listen.to_string()),
+                    public_endpoint: public_endpoint.unwrap_or(listener.local_addr()?.to_string()),
                     max_sandboxes,
                     cpu_millis,
                     memory_bytes,
@@ -216,7 +227,6 @@ async fn run(command: Command) -> anyhow::Result<()> {
                         as Arc<dyn pvisor_daemon::runtime::Runtime>)
                 })
                 .await?;
-                let listener = tokio::net::TcpListener::bind(listen).await?;
                 Some((daemon, listener))
             } else {
                 None

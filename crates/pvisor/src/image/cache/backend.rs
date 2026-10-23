@@ -875,7 +875,9 @@ impl ContentReader {
             let begin = (cursor % MAX_READ as u64) as usize;
             let count = (end - cursor).min((bytes.len() - begin) as u64) as usize;
             result.extend_from_slice(&bytes[begin..begin + count]);
-            if cached {
+            // Docker's local pool is ordinary host storage, not a user-visible
+            // transfer. Its diagnostics must not enter guest stderr/logs.
+            if cached && !self.client.is_local_pool() {
                 self.downloads.lock().unwrap().cached(&node.path, count);
             }
             cursor += count as u64;

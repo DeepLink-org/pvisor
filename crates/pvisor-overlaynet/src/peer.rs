@@ -474,6 +474,18 @@ impl PeerNetwork {
         }
     }
 
+    pub(crate) fn try_receive(&mut self) -> io::Result<Option<Vec<u8>>> {
+        let mut packet = [0; HEADER + FRAME_LIMIT + 1];
+        let (length, sender) = self.socket.try_recv_from(&mut packet)?;
+        if self.validate_received(&packet[..length], sender.as_pathname()) {
+            self.metrics.peer_received();
+            Ok(Some(packet[HEADER..length].to_vec()))
+        } else {
+            self.metrics.peer_dropped();
+            Ok(None)
+        }
+    }
+
     fn validate_received(&mut self, packet: &[u8], sender: Option<&Path>) -> bool {
         if packet.len() < HEADER
             || packet.len() > HEADER + FRAME_LIMIT

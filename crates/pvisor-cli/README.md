@@ -314,6 +314,14 @@ detached lifetime, stop/start persistence, foreground signal forwarding, orphan
 reaping and concurrent exec exit routing. A separate ordinary Job VM case checks
 the default launch configuration's orphan reaping and exit status.
 
+Set `PVISOR_DOCKER_TEST_IMAGE` to a pinned native Alpine reference to run the
+container/build acceptance cases on freshly pulled compressed-pool images;
+the fixture asserts a pool binding instead of installing a directory-backed
+image. `PVISOR_DOCKER_TEST_ROOTFS` remains required by the separate ordinary Job
+case. `PVISOR_DOCKER_TEST_BINARY` can select the static product executable with
+embedded firmware, independently of Cargo's dynamic test artifact. It is copied
+privately before use; macOS copies retain the existing signing procedure.
+
 
 ## VM-isolated image builds (experimental)
 

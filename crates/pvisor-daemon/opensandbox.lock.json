@@ -9,8 +9,9 @@
     "specs/execd-api.yaml": {"git_blob_sha1": "ecc284f3e8cdd14dfb6a551b83cc09bd526b9705"},
     "specs/egress-api.yaml": {"git_blob_sha1": "08e4885176998e854df62b999914c5eb01855308"}
   },
-  "profile": "partial-single-node-lifecycle-with-prepared-image-data-plane",
+  "profile": "partial-single-node-native-vm-with-managed-execd",
   "sdk_target": "1.1.0",
-  "sdk_end_to_end_verified": false,
-  "unsupported": ["distributed-placement", "business-dag", "snapshots", "templates", "network-policy", "credential-proxy", "secure-access", "volumes", "lifecycle-hooks", "arbitrary-endpoints", "signed-endpoints", "websocket", "native-pvisor-vm", "stage-apply"]
+  "sdk_end_to_end_verified": true,
+  "sdk_verification_scope": "Python 1.1.0, Linux x86-64/KVM, managed Ubuntu template; tests/opensandbox_sdk.py core lifecycle/command/file profile only",
+  "unsupported": ["distributed-placement", "business-dag", "snapshots", "templates", "network-policy", "credential-proxy", "secure-access", "volumes", "lifecycle-hooks", "arbitrary-endpoints", "signed-endpoints", "websocket", "stage-apply"]
 }

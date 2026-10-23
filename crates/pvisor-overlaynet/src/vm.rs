@@ -66,6 +66,7 @@ const TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const MAX_POLL_DELAY: StdDuration = StdDuration::from_millis(100);
 const SYNTHETIC_DNS_CAPACITY: usize = 4096;
 const DNS_MAX_MESSAGE: usize = 4096;
+const FRAME_BATCH: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VmGatewayRoute {
@@ -310,12 +311,13 @@ async fn run_backend(
     let mut poll_delay = Box::pin(tokio::time::sleep(StdDuration::ZERO));
 
     'backend: loop {
+        let mut service_stack = false;
         tokio::select! {
-            biased;
             _ = &mut shutdown => break,
             event = event_rx.recv() => {
                 if let Some(event) = event {
                     apply_flow_event(event, &mut flows, &mut sockets, &metrics);
+                    service_stack = true;
                 }
             }
             received = receive_peer(&mut peer), if peer.is_some() => {
@@ -326,6 +328,17 @@ async fn run_backend(
                         metrics.peer_dropped();
                     }
                 }
+                for _ in 1..FRAME_BATCH {
+                    match peer.as_mut().expect("peer enabled").try_receive() {
+                        Ok(Some(frame)) if config.egress.permits_peer_network() => {
+                            frame_device.transmit_queue.push_back(frame);
+                        }
+                        Ok(Some(_)) => metrics.peer_dropped(),
+                        Ok(None) => {}
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(error) => return Err(error).context("receive peer packet batch"),
+                    }
+                }
             }
             read = frame_reader.read_more(&mut reader) => {
                 match read {
@@ -333,15 +346,15 @@ async fn run_backend(
                     Ok(_) => {
                         while let Some(frame) = frame_reader.next_frame()? {
                             if let Some(peer) = peer.as_mut()
-                                && crate::peer::reserved_frame(&frame, router) {
+                                && crate::peer::reserved_frame(frame, router) {
                                 if config.egress.permits_peer_network() {
-                                    peer.route(&frame);
+                                    peer.route(frame);
                                 } else {
                                     metrics.peer_dropped();
                                 }
                                 continue;
                             }
-                            if let Some(key) = initial_tcp_syn(&frame, guest_address) {
+                            if let Some(key) = initial_tcp_syn(frame, guest_address) {
                                 ensure_listener(
                                     key,
                                     &mut flows,
@@ -351,51 +364,55 @@ async fn run_backend(
                                     &metrics,
                                 );
                             }
-                            if !supported_guest_frame(&frame, guest_address) {
+                            if !supported_guest_frame(frame, guest_address) {
                                 metrics.unsupported_packet();
                                 continue;
                             }
-                            frame_device.receive_queue.push_back(frame);
+                            service_stack = true;
+                            frame_device.receive_queue.push_back(frame.to_vec());
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) => return Err(error).context("read VM Ethernet frame"),
                 }
             }
-            _ = &mut poll_delay => {}
+            _ = &mut poll_delay => { service_stack = true; }
         }
 
-        let now = smol_now(clock);
-        let _ = interface.poll(now, &mut frame_device, &mut sockets);
-        service_dhcp(&mut sockets, dhcp_handle, guest_address, router);
-        service_dns_udp(&mut sockets, dns_handle, &mut dns, &metrics);
-        drive_flows(
-            &mut sockets,
-            &mut flows,
-            &mut dns,
-            &config,
-            &event_tx,
-            &metrics,
-        );
-        let _ = interface.poll(now, &mut frame_device, &mut sockets);
+        if service_stack {
+            let now = smol_now(clock);
+            let _ = interface.poll(now, &mut frame_device, &mut sockets);
+            service_dhcp(&mut sockets, dhcp_handle, guest_address, router);
+            service_dns_udp(&mut sockets, dns_handle, &mut dns, &metrics);
+            drive_flows(
+                &mut sockets,
+                &mut flows,
+                &mut dns,
+                &config,
+                &event_tx,
+                &metrics,
+            );
+            let _ = interface.poll(now, &mut frame_device, &mut sockets);
+            reap_closed_flows(&mut sockets, &mut flows, &metrics);
+            let delay = interface
+                .poll_delay(smol_now(clock), &sockets)
+                .map(|delay| StdDuration::from_micros(delay.total_micros()))
+                .unwrap_or(MAX_POLL_DELAY)
+                .min(MAX_POLL_DELAY);
+            poll_delay
+                .as_mut()
+                .reset(tokio::time::Instant::now() + delay);
+        }
 
-        while let Some(frame) = frame_device.transmit_queue.pop_front() {
+        while !frame_device.transmit_queue.is_empty() {
             let result = tokio::select! {
                 biased;
                 _ = &mut shutdown => break 'backend,
-                result = write_frame(&mut writer, &frame) => result,
+                result = write_frames(&mut writer, &frame_device.transmit_queue) => result,
             };
-            result.context("write VM Ethernet frame")?;
+            let count = result.context("write VM Ethernet frames")?;
+            frame_device.transmit_queue.drain(..count);
         }
-        reap_closed_flows(&mut sockets, &mut flows, &metrics);
-        let delay = interface
-            .poll_delay(smol_now(clock), &sockets)
-            .map(|delay| StdDuration::from_micros(delay.total_micros()))
-            .unwrap_or(MAX_POLL_DELAY)
-            .min(MAX_POLL_DELAY);
-        poll_delay
-            .as_mut()
-            .reset(tokio::time::Instant::now() + delay);
     }
 
     for (_, mut flow) in flows.drain() {
@@ -1243,7 +1260,7 @@ impl FrameReader {
         Ok(read)
     }
 
-    fn next_frame(&mut self) -> anyhow::Result<Option<Vec<u8>>> {
+    fn next_frame(&mut self) -> anyhow::Result<Option<&[u8]>> {
         if self.bytes.len().saturating_sub(self.offset) < 4 {
             return Ok(None);
         }
@@ -1260,21 +1277,28 @@ impl FrameReader {
             return Ok(None);
         }
         let start = self.offset + 4;
-        let frame = self.bytes[start..start + length].to_vec();
         self.offset = start + length;
-        Ok(Some(frame))
+        Ok(Some(&self.bytes[start..start + length]))
     }
 }
 
-async fn write_frame(
+async fn write_frames(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
-    frame: &[u8],
-) -> io::Result<()> {
-    let prefix = (frame.len() as u32).to_be_bytes();
-    let mut slices = [io::IoSlice::new(&prefix), io::IoSlice::new(frame)];
-    let mut remaining = &mut slices[..];
-    // One sendmsg in the common case; preserve framing across short writes
-    // without allocating a second contiguous copy of each Ethernet frame.
+    frames: &VecDeque<Vec<u8>>,
+) -> io::Result<usize> {
+    let count = frames.len().min(FRAME_BATCH);
+    let prefixes: [[u8; 4]; FRAME_BATCH] = std::array::from_fn(|index| {
+        (frames.get(index).map_or(0, |frame| frame.len()) as u32).to_be_bytes()
+    });
+    let mut slices: [io::IoSlice<'_>; FRAME_BATCH * 2] =
+        std::array::from_fn(|_| io::IoSlice::new(&[]));
+    for (index, frame) in frames.iter().take(count).enumerate() {
+        slices[index * 2] = io::IoSlice::new(&prefixes[index]);
+        slices[index * 2 + 1] = io::IoSlice::new(frame);
+    }
+    let mut remaining = &mut slices[..count * 2];
+    // Bounded gather write; no per-batch allocation or payload concatenation.
+    // Short writes may end in either a prefix or payload.
     while !remaining.is_empty() {
         let written = writer.write_vectored(remaining).await?;
         if written == 0 {
@@ -1282,7 +1306,7 @@ async fn write_frame(
         }
         io::IoSlice::advance_slices(&mut remaining, written);
     }
-    Ok(())
+    Ok(count)
 }
 
 #[derive(Default)]
@@ -1573,6 +1597,57 @@ mod tests {
         assert_eq!(reader.next_frame().unwrap().unwrap(), vec![1; 14]);
         assert_eq!(reader.next_frame().unwrap().unwrap(), vec![2; 15]);
         assert!(reader.next_frame().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn batched_guest_writes_preserve_framing_under_socket_backpressure() {
+        use std::os::fd::AsRawFd;
+        let (left, mut right) = UnixStream::pair().unwrap();
+        let bytes: libc::c_int = 1024;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    left.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&bytes as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&bytes) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        let mut frames = VecDeque::new();
+        let mut expected = Vec::new();
+        for sequence in 0..FRAME_BATCH + 7 {
+            let frame = vec![sequence as u8; if sequence % 2 == 0 { 1514 } else { 66 }];
+            expected.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+            expected.extend_from_slice(&frame);
+            frames.push_back(frame);
+        }
+        let task = tokio::spawn(async move {
+            let (_, mut writer) = left.into_split();
+            while !frames.is_empty() {
+                let count = write_frames(&mut writer, &frames).await.unwrap();
+                assert!((1..=FRAME_BATCH).contains(&count));
+                frames.drain(..count);
+            }
+        });
+        let mut arrived = Vec::new();
+        tokio::time::timeout(StdDuration::from_secs(5), async {
+            let mut chunk = [0; 13];
+            loop {
+                let read = right.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                arrived.extend_from_slice(&chunk[..read]);
+                tokio::task::yield_now().await;
+            }
+            task.await.unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(arrived, expected);
     }
 
     #[test]

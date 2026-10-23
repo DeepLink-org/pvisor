@@ -116,3 +116,49 @@ Do not run builds, tests or another experiment concurrently. The rootful Docker
 daemon/containerd are existing host services outside these budgets; their CPU
 and RSS snapshots are reported separately, not silently charged as zero. Clean
 up only this experiment's networks/images/store after preserving evidence.
+
+### Comparing peer forwarding implementations
+
+`four_node.py --compare-pvisor /FROZEN_BASELINE/pvisor` runs candidate/baseline
+four-VM groups with the same resource and sampling protocol. Set `pvisor` in the
+config to the frozen candidate. Include both binaries, firmware and the identical
+worker in `artifact_sha256`. Optional `runtime_source` selects the frozen candidate
+source tree for provenance; keep the baseline source archive separately. Freeze
+only the intended changes onto the baseline source when the main workspace has
+other concurrent edits. This comparison does not use the older Docker cohort to
+calculate optimization percentages. Differences are candidate minus baseline.
+
+```bash
+python3 benchmark/peer/four_node.py --config CONFIG.json --preflight \
+  --compare-pvisor /FROZEN_BASELINE/pvisor --output NEW_PREFLIGHT
+python3 benchmark/peer/four_node.py --config CONFIG.json \
+  --compare-pvisor /FROZEN_BASELINE/pvisor --output NEW_COHORT
+```
+
+Set `reject_foreign_work: true` for optimization cohorts. Admission and a 0.5 s
+sampler reject visible same-user builds/tests or foreign KVM processes, retaining
+the whole failed cohort without killing unrelated work. Unreadable processes
+remain a coverage gap. Instance records, completion and logs are copied before
+owned resources are removed, including when startup fails without guest output.
+
+An independent sustained-throughput cohort can use `--cases bulk-long`: each of
+12 directions sends 32 MiB (384 MiB total). Rebuild the worker and image for both
+arms together and freeze their identities. Optional `tcp_counters: true` saves
+guest `/proc/net/snmp` before and after the operation, outside the network and
+cgroup CPU timing windows. Do not combine this cohort with default 4 MiB samples
+or extend sampling until an interval becomes significant. A startup failure also
+invalidates the whole cohort; completed traffic remains diagnostic evidence.
+
+Linux GNU diagnosis can compile `trace_syscalls.c` with
+`cc -shared -fPIC -O2 -Wall -Wextra -Werror -pthread` and set `profile_library` in
+the config. The library is injected only into owned test processes; `--preflight`
+is mandatory and formal timing rejects this setting. It counts per-thread
+socket/read/write/epoll calls, EAGAIN, bytes and elapsed syscall wall time. It is
+not a CPU stack profiler, and wall time includes blocking/descheduling. It uses
+raw syscalls instead of libc cancellation wrappers and is diagnostic-only.
+Runners can exit without destructors, so cumulative checkpoints are emitted
+every 1,024 calls: take the maximum per pid/tid/op, never sum checkpoints; the
+unflushed tail is a lower bound. Remove `profile_library` for the uninstrumented
+correctness preflight and formal comparison.
+
+Results and limitations: [forwarding optimization report](PEER_OPTIMIZATION_REPORT.md).

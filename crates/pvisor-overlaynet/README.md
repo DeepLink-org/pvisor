@@ -131,3 +131,13 @@ buffer, and guest writes use vectored I/O with short-write handling. The
 binaries through the public framed links with integrity-checked goodput, RTT
 and process CPU accounting. Its backend-thread measurements exclude virtio/KVM
 and do not represent Docker bridge or VM application TCP throughput.
+
+Peer receive bursts and guest gather writes are capped at 32 frames per turn;
+they drain only already-ready packets and never wait to fill a batch. Gather
+writes preserve partial prefixes/payloads without concatenating frame contents.
+Guest peer frames borrow the ingress parser buffer until routing completes,
+avoiding an intermediate frame allocation. Ordinary smoltcp work runs on its
+timer, control events and non-peer guest frames; peer-only traffic does not
+reset that timer. Event selection remains fair under peer floods, with shutdown
+also able to cancel a backpressured guest write. The peer transport still drops
+on congestion and retains per-destination isolation and all validation rules.

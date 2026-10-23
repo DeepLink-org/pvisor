@@ -141,10 +141,14 @@ impl Native {
     fn new() -> Self {
         let temporary = tempfile::tempdir().unwrap();
         let binary = temporary.path().join("pvisor");
-        fs::copy(env!("CARGO_BIN_EXE_pvisor"), &binary).unwrap();
+        let source_binary = std::env::var_os("PVISOR_DOCKER_TEST_BINARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_pvisor")));
+        fs::copy(&source_binary, &binary).unwrap();
         #[cfg(target_os = "macos")]
         {
-            let firmware = Path::new(env!("CARGO_BIN_EXE_pvisor"))
+            let firmware = source_binary
+                .as_path()
                 .parent()
                 .unwrap()
                 .join("libkrunfw.5.dylib")
@@ -167,31 +171,44 @@ impl Native {
         }
         let home = temporary.path().join("store");
         pvisor::docker::Store::open(home.clone()).unwrap();
-        let rootfs = PathBuf::from(
-            std::env::var_os("PVISOR_DOCKER_TEST_ROOTFS")
-                .expect("set PVISOR_DOCKER_TEST_ROOTFS to a native Linux rootfs with sh/cat/sleep"),
-        );
-        let image = pvisor::docker::Image {
-            reference: "fixture:latest".into(),
-            id: format!("sha256:{}", "1".repeat(64)),
-            digest: format!("sha256:{}", "2".repeat(64)),
-            platform: if cfg!(target_arch = "aarch64") {
-                "linux/arm64"
-            } else {
-                "linux/amd64"
+        let mut image = if let Some(reference) = std::env::var_os("PVISOR_DOCKER_TEST_IMAGE") {
+            let image = pvisor::docker::Store::open(home.clone())
+                .unwrap()
+                .pull(reference.to_str().unwrap())
+                .unwrap();
+            assert!(
+                image.cache.is_some(),
+                "native image acceptance must use the local pool"
+            );
+            assert!(image.rootfs.as_os_str().is_empty());
+            image
+        } else {
+            let rootfs = PathBuf::from(std::env::var_os("PVISOR_DOCKER_TEST_ROOTFS").expect(
+                "set PVISOR_DOCKER_TEST_ROOTFS to a native Linux rootfs with sh/cat/sleep",
+            ));
+            pvisor::docker::Image {
+                reference: "fixture:latest".into(),
+                id: format!("sha256:{}", "1".repeat(64)),
+                digest: format!("sha256:{}", "2".repeat(64)),
+                platform: if cfg!(target_arch = "aarch64") {
+                    "linux/arm64"
+                } else {
+                    "linux/amd64"
+                }
+                .into(),
+                rootfs: rootfs.canonicalize().unwrap(),
+                cache: None,
+                env: BTreeMap::new(),
+                entrypoint: Vec::new(),
+                cmd: Vec::new(),
+                cwd: "/".into(),
+                user: String::new(),
+                stop_signal: 15,
+                volumes: Vec::new(),
+                created_ms: 0,
             }
-            .into(),
-            rootfs: rootfs.canonicalize().unwrap(),
-            cache: None,
-            env: BTreeMap::new(),
-            entrypoint: Vec::new(),
-            cmd: Vec::new(),
-            cwd: "/".into(),
-            user: String::new(),
-            stop_signal: 15,
-            volumes: Vec::new(),
-            created_ms: 0,
         };
+        image.reference = "fixture:latest".into();
         // This is an isolated catalog fixture, never a real user's image store.
         fs::write(
             home.join("images.json"),

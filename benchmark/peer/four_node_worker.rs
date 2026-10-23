@@ -175,6 +175,7 @@ fn run(node: usize, scenario: &str, peers: &[String]) {
     let (mode, size, count) = match scenario {
         "rpc" => (1, 256, 500),
         "bulk" => (2, 65536, 64),
+        "bulk-long" => (2, 65536, 512),
         "ring" => (3, 256, 200),
         "slow" => (1, 256, 500),
         "healthy" => (1, 256, 500),
@@ -262,6 +263,10 @@ fn run(node: usize, scenario: &str, peers: &[String]) {
 
 fn main() {
     let arguments: Vec<_> = std::env::args().collect();
+    if arguments[1] == "counters" {
+        print!("{}", std::fs::read_to_string("/proc/net/snmp").unwrap());
+        return;
+    }
     if arguments[1] == "resolve" {
         let addresses: Vec<_> = (arguments[2].as_str(), PORT)
             .to_socket_addrs()
