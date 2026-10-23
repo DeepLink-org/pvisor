@@ -12,8 +12,8 @@ are in
 [Run workloads with pVisor](../guides/executors/index.md).
 
 Root help (`pvisor` or `pvisor --help`) groups commands under **Commands**
-(container commands plus `spawn`, `status`, `kill`), **Changes** (`review`, `apply`, `drop`, `inspect`),
-**Checkpoints** (`checkpoint`, `suspend`, `resume`, `fork`) and **Tools**
+(Docker-compatible container commands), **Agent Commands** (`spawn`, `status`,
+`kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`, `resume`, `fork`) and **Tools**
 (installed `replay`/`tui` companions, `cache`, `feature`, `help`). It shows a short
 run-review-apply example; use `pvisor help COMMAND` for detailed options.
 
@@ -30,10 +30,9 @@ not measure the complete process-entry or argument-parsing overhead.
 
 ## Container commands {#container-commands}
 
-`run`, `pull`, `images`, `rmi`, `exec`, `ps`, `start`, `stop`, `rm` and `logs`
+`run`, `build`, `pull`, `images`, `rmi`, `exec`, `ps`, `start`, `stop`, `rm` and `logs`
 use a Docker-style option subset with one VM per container and no central daemon.
-Use `pvisor COMMAND --help` for supported options. The former `pvisor docker
-COMMAND` spelling remains a hidden compatibility entry point. Job options such
+Use `pvisor COMMAND --help` for supported options. Job options such
 as `--safe`, `--stage` and `--executor` belong to `spawn`, not container `run`.
 
 ```bash
@@ -49,8 +48,46 @@ pvisor rm redis
 `linux/arm64/v8` is an alias. Omission uses the native platform. Foreign-image
 downloads are supported, but `run` and `start` require native images because CPU
 emulation is not implemented. This profile does not implement Docker Engine API,
-Build, Compose or credential helpers. Containers use their own image store;
+Compose or credential helpers. Containers use their own image store;
 Job review/apply/drop and checkpoints continue to address Jobs.
+
+### Image builds
+
+```bash
+pvisor build -t app:local --network=none .
+pvisor run --rm app:local
+pvisor build -f Dockerfile --build-arg VERSION=1 \
+  --output type=oci,dest=app.oci.tar -t app:local .
+```
+
+`build` accepts local contexts, `-f`, repeated `-t`/`--build-arg`, `--target`,
+`--platform` (native only), `--pull`, `--no-cache`, `-q`, `--iidfile`,
+`-o type=oci,dest=PATH`, `--network default/none`, `--cpus`, `-m/--memory`,
+`--timeout` (seconds per RUN, default 600) and `--progress auto/plain`.
+Every RUN uses a fresh VM with a private rootfs overlay. Context files are
+captured privately and copied only by COPY; they are never mounted into RUN.
+Timeout/failure reaps the VMM; frontend death closes its lifetime pipe. Guest
+processes do not survive a RUN boundary. Network defaults to the existing public
+IPv4 TCP/DNS policy; `none` omits the NIC. CPU/RAM flags size the VM.
+
+Supported Dockerfile instructions are FROM/AS, RUN, local COPY, completed-stage
+COPY --from, ARG, ENV, WORKDIR, USER, CMD, ENTRYPOINT, SHELL, LABEL, EXPOSE,
+VOLUME metadata and STOPSIGNAL. COPY supports JSON/globs, numeric --chown and
+octal --chmod; `.dockerignore` and Dockerfile-specific ignores are applied.
+Simple `$NAME`/`${NAME}` substitutions are supported. `--build-arg NAME` forwards
+only that variable; arguments are not secret storage. Images use a single flat
+OCI layer, preserving merged deletes, guest ownership/mode, symlinks and hardlinks.
+A successful build publishes local tags usable by run; ordinary failures clean
+private staging and retain prior tags. Abrupt death can leave unpublished staging.
+OCI output requires a new file. There is no instruction cache; `--no-cache` is
+accepted and every step runs.
+
+This is a Docker build subset: remote/stdin contexts, ADD, ONBUILD, heredocs,
+RUN mounts, secrets/SSH/cache mounts, named COPY owners, external-image COPY,
+extended substitutions, foreign execution, device nodes and file capabilities
+are rejected. COPY sources cannot traverse symlinks. Push, Docker archive output
+and multi-platform builds are not implemented. Apple Silicon/HVF has native
+acceptance coverage; Linux/KVM needs separate runtime acceptance.
 
 ## Job owners and durable operations {#host-agentctl}
 
@@ -253,7 +290,6 @@ the proxy do not trigger this prompt.
 ```text
 Commands:
   run         Create and run a container in its own VM
-  spawn       Start a Job
   pull        Download an OCI image
   images      List local images
   rmi         Remove image references
@@ -263,22 +299,22 @@ Commands:
   stop        Stop containers
   rm          Remove containers
   logs        Fetch container output
+
+Agent Commands:
+  spawn       Start a Job
   status      Show Job status
   kill        Terminate a Job
-
-Changes:
   review      Review staged changes and execution evidence
   apply       Accept selected staged changes
   drop        Discard staged changes
   inspect     Open a read-only Job filesystem view
-
-Checkpoints:
   checkpoint  create, list, show, delete, verify, import-base, verify-base, gc
   suspend     Save execution state and suspend a Job
   resume      Continue a suspended Job
   fork        Branch from staged files or VM execution state
 
 Tools:
+  cache       Build, publish and query caches
   replay      Replay an Agent trajectory (when installed)
   tui         Interactive Job terminal (when installed)
   feature     List runtime experiments

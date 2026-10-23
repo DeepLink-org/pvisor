@@ -706,6 +706,21 @@ An absent image `/etc` uses guest root ownership and `0755`; the injected resolv
 file is guest-root-owned `0644`. This prevents DNS setup from blocking non-root
 `run -u` and `exec -u`, without widening image directory permissions or host access.
 
+`docker::build` constructs native OCI images without a build daemon. Each RUN
+self-executes the existing container VM path under a private build store, with no
+user mounts, and is killed/reaped before host-side COPY or export. An inherited
+pipe terminates the VMM if the frontend dies. Context capture uses directory
+file descriptors and no-follow opens; destination links resolve against the
+guest root. Completed stages export the merged OverlayCore view as a flat OCI
+layer, reimport it and sync the resulting layout/rootfs before catalog tag
+publication. This reuses logical guest ownership/mode without installing host
+setuid bits. Context capture and each COPY preserve regular-file hardlinks,
+including links spanning directories or separately selected sources, without
+linking the private snapshot back to host source inodes.
+Failure never publishes a partial stage. Unsupported special files
+and file capabilities fail explicitly. See the CLI README for the Dockerfile
+subset, lack of instruction caching and platform validation limits.
+
 The supported CLI profile and its explicit differences from Docker are in the
 [application README](../pvisor-cli/README.md#docker-command-profile-experimental).
 A passing catalog or protocol test does not establish Linux/KVM acceptance,

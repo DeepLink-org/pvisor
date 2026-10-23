@@ -17,7 +17,7 @@ fn docker_help_and_empty_queries_are_inert_and_reject_unsupported_commands() {
     let directory = tempfile::tempdir().unwrap();
     let home = directory.path().join("store");
     for name in [
-        "run", "pull", "images", "rmi", "exec", "ps", "start", "stop", "rm", "logs",
+        "run", "build", "pull", "images", "rmi", "exec", "ps", "start", "stop", "rm", "logs",
     ] {
         let output = command(&home).args([name, "--help"]).output().unwrap();
         assert!(
@@ -29,7 +29,7 @@ fn docker_help_and_empty_queries_are_inert_and_reject_unsupported_commands() {
     }
     assert!(!home.exists(), "help created a catalog or owner");
     for args in [
-        vec!["build", "."],
+        vec!["build", "--privileged", "."],
         vec!["run", "--privileged", "image"],
         vec!["compose", "up"],
     ] {
@@ -422,7 +422,6 @@ fn docker_native_vm_lifecycle_streams_terminal_and_persistent_upper() {
     let mut child = Command::new(&native.binary)
         .env("PVISOR_DOCKER_HOME", &native.home)
         .args([
-            "docker",
             "run",
             "--rm",
             "-i",
@@ -456,5 +455,227 @@ fn docker_native_vm_lifecycle_streams_terminal_and_persistent_upper() {
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn docker_build_cli_exports_scratch_image_and_keeps_tags_on_error() {
+    let temporary = tempfile::tempdir().unwrap();
+    let home = temporary.path().join("store");
+    let context = temporary.path().join("context");
+    fs::create_dir(&context).unwrap();
+    fs::write(context.join("payload"), "hello").unwrap();
+    fs::write(context.join("Dockerfile"), "FROM scratch AS source\nARG MESSAGE=default\nENV MESSAGE=$MESSAGE LITERAL='${MESSAGE}'\nCOPY payload /payload\nFROM source AS final\nARG MESSAGE\nENV INHERITED=$MESSAGE\nCMD [\"/payload\"]\n").unwrap();
+    let iid = temporary.path().join("iid");
+    let archive = temporary.path().join("image.tar");
+    let output = command(&home)
+        .args([
+            "build",
+            "--no-cache",
+            "-q",
+            "-t",
+            "built:test",
+            "--build-arg",
+            "MESSAGE=custom",
+            "--iidfile",
+        ])
+        .arg(&iid)
+        .arg("--output")
+        .arg(format!("type=oci,dest={}", archive.display()))
+        .arg(&context)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(fs::read(&iid).unwrap(), output.stdout);
+    let images = pvisor::docker::Store::open(home.clone())
+        .unwrap()
+        .images()
+        .unwrap();
+    let image = images.iter().find(|i| i.reference == "built:test").unwrap();
+    assert_eq!(image.env["MESSAGE"], "custom");
+    assert_eq!(image.env["INHERITED"], "custom");
+    assert_eq!(image.env["LITERAL"], "${MESSAGE}");
+    assert_eq!(fs::read(image.rootfs.join("payload")).unwrap(), b"hello");
+    assert!(archive.is_file());
+    fs::write(
+        context.join("Dockerfile"),
+        "FROM scratch\nCOPY absent /payload\n",
+    )
+    .unwrap();
+    assert!(
+        !command(&home)
+            .args(["build", "-q", "-t", "built:test"])
+            .arg(&context)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(
+        pvisor::docker::Store::open(home).unwrap().images().unwrap()[0].id,
+        image.id
+    );
+}
+
+#[test]
+#[ignore = "requires native virtualization, local sockets and PVISOR_DOCKER_TEST_ROOTFS"]
+fn docker_build_native_vm_multistep_roundtrip_failure_and_timeout() {
+    let native = Native::new();
+    let context = native._temporary.path().join("context");
+    fs::create_dir(&context).unwrap();
+    fs::write(context.join("payload"), "copied").unwrap();
+    let dockerfile = context.join("Dockerfile");
+    fs::write(&dockerfile, "FROM fixture AS compiler\nARG MESSAGE=hello\nCOPY payload /input\nRUN printf '%s' \"$MESSAGE\" > /result; cat /input >> /result; cp /result /removed; ln /result /alias; chmod 0750 /result; chown 123:456 /result\nRUN test -f /result && rm /removed\nRUN (sleep 2; echo leaked > /late) >/dev/null 2>&1 & echo ready > /ready\nRUN sleep 3; test ! -e /late\nFROM fixture\nCOPY --from=compiler /result /output\nCMD [\"/bin/cat\",\"/output\"]\n").unwrap();
+    let context = context.to_str().unwrap();
+    native.call(
+        &[
+            "build",
+            "--network=none",
+            "--timeout=30",
+            "-t",
+            "built:native",
+            context,
+        ],
+        None,
+        0,
+    );
+    let output = native.call(&["run", "--rm", "--network=none", "built:native"], None, 0);
+    assert_eq!(output.stdout, b"hellocopied");
+    let old = pvisor::docker::Store::open(native.home.clone())
+        .unwrap()
+        .images()
+        .unwrap()
+        .into_iter()
+        .find(|i| i.reference == "built:native")
+        .unwrap()
+        .id;
+    fs::write(
+        &dockerfile,
+        "FROM fixture\nRUN echo failed > /not-published; exit 7\n",
+    )
+    .unwrap();
+    let failed = native.call(
+        &["build", "--network=none", "-t", "built:native", context],
+        None,
+        1,
+    );
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("status 7"));
+    fs::write(&dockerfile, "FROM fixture\nRUN sleep 30\n").unwrap();
+    let start = std::time::Instant::now();
+    let failed = native.call(
+        &[
+            "build",
+            "--network=none",
+            "--timeout=2",
+            "-t",
+            "built:native",
+            context,
+        ],
+        None,
+        1,
+    );
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("time budget"));
+    assert!(start.elapsed() < std::time::Duration::from_secs(15));
+    let images = pvisor::docker::Store::open(native.home.clone())
+        .unwrap()
+        .images()
+        .unwrap();
+    assert_eq!(
+        images
+            .iter()
+            .find(|i| i.reference == "built:native")
+            .unwrap()
+            .id,
+        old
+    );
+    assert_eq!(fs::read_dir(native.home.join("builds")).unwrap().count(), 0);
+    assert_eq!(
+        fs::read_dir(native.home.join("instances")).unwrap().count(),
+        0
+    );
+}
+
+#[test]
+#[ignore = "requires native virtualization, process inspection and PVISOR_DOCKER_TEST_ROOTFS"]
+fn docker_build_frontend_death_terminates_its_vm() {
+    let native = Native::new();
+    let context = native._temporary.path().join("context");
+    fs::create_dir(&context).unwrap();
+    fs::write(
+        context.join("Dockerfile"),
+        "FROM fixture\nRUN echo running > /marker; sleep 60\n",
+    )
+    .unwrap();
+    let mut frontend = Command::new(&native.binary)
+        .env("PVISOR_DOCKER_HOME", &native.home)
+        .args(["build", "--network=none", "-t", "never:published"])
+        .arg(&context)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Kill only this test's frontend/VM, identified by both parent PID and private store.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let vm = loop {
+        let listing = Command::new("ps")
+            .args(["-axo", "pid=,ppid=,command="])
+            .output()
+            .unwrap();
+        let pid = String::from_utf8_lossy(&listing.stdout)
+            .lines()
+            .find_map(|line| {
+                let mut fields = line.split_whitespace();
+                let pid: i32 = fields.next()?.parse().ok()?;
+                let parent: u32 = fields.next()?.parse().ok()?;
+                (parent == frontend.id()
+                    && line.contains("--pvisor-internal-docker-vm")
+                    && line.contains(native.home.to_str().unwrap()))
+                .then_some(pid)
+            });
+        if let Some(pid) = pid {
+            break pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "build VM did not start"
+        );
+        assert!(
+            frontend.try_wait().unwrap().is_none(),
+            "build ended prematurely"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    // Allow the self-exec VM to install its lifetime reader, then simulate SIGKILL.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    frontend.kill().unwrap();
+    frontend.wait().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let status = Command::new("ps")
+            .args(["-o", "stat=", "-p", &vm.to_string()])
+            .output()
+            .unwrap();
+        let state = String::from_utf8_lossy(&status.stdout);
+        if state.trim().is_empty() || state.trim().starts_with('Z') {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "VMM survived frontend death: {vm} {state}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        pvisor::docker::Store::open(native.home.clone())
+            .unwrap()
+            .images()
+            .unwrap()
+            .iter()
+            .all(|i| i.reference != "never:published")
     );
 }

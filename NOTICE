@@ -77,5 +77,5 @@ https://github.com/podman-container-tools/podman
 
 Copyright the upstream Podman authors and contributors. Distributed under the
 Apache License, Version 2.0; see `tests/podman/upstream/LICENSE`. Selected scenarios
-are adapted for `pvisor docker` under `tests/podman/system/` and
+are adapted for pVisor's top-level container commands under `tests/podman/system/` and
 `tests/podman/e2e/`. See `tests/podman/UPSTREAM.md` for provenance and changes.

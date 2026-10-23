@@ -24,9 +24,9 @@ durable stage preparation uses its `Persistence` and `DurableFiles` contracts.
 
 ## Command help and live VM controls
 
-Root help starts with **Commands** (container `run`, `pull`, `images`, `rmi`,
-`exec`, `ps`, `start`, `stop`, `rm`, `logs`, plus Job `spawn`, `status`, `kill`), **Changes**
-(`review`, `apply`, `drop`, `inspect`), **Checkpoints** (`checkpoint`, `suspend`,
+Root help starts with **Commands** (container `run`, `build`, `pull`, `images`, `rmi`,
+`exec`, `ps`, `start`, `stop`, `rm`, `logs`), **Agent Commands** (Job `spawn`,
+`status`, `kill`, `review`, `apply`, `drop`, `inspect`, `checkpoint`, `suspend`,
 `resume`, `fork`) and **Tools** (installed `replay`/`tui` companions, `cache`, `feature`,
 `help`). It includes the run-review-apply examples; use `pvisor help COMMAND`
 for command options.
@@ -77,8 +77,7 @@ New CLIs read old records without live control as disk state only.
 `pvisor run` creates a container; `spawn` creates a Job with stage/review/apply
 semantics. Unknown command names and leading Job options default to `spawn`;
 `pvisor -- COMMAND` explicitly selects default Job execution. The former Job
-`run` syntax must now use `spawn`. The old `pvisor docker COMMAND` spelling
-remains a hidden compatibility entry point with the same container dispatcher. Each container
+`run` syntax must now use `spawn`. Each container
 uses its own Linux VM and supervisor, started as the current host user. No
 central Docker daemon, privileged helper or shared Linux VM is required.
 Guest root is independent of host root; the image's `User` is respected.
@@ -113,16 +112,17 @@ the native platform, including for cached images. Each local reference holds one
 platform; pulling the same tag for another platform replaces that reference,
 while existing containers keep their pinned images.
 
-The registered commands are exactly `run`, `pull`, `images`, `rmi`, `exec`,
+The registered commands are `run`, `build`, `pull`, `images`, `rmi`, `exec`,
 `ps`, `start`, `stop`, `rm` and `logs`. Compatibility is limited to the options
 listed in `pvisor COMMAND --help`; unsupported commands/options fail
 rather than being silently ignored. This is not complete Docker CLI or
-Docker Engine API compatibility. There is no `build`, Compose, Docker socket,
+Docker Engine API compatibility. There is no Compose, Docker socket,
 Docker credential-helper integration or cross-architecture emulation.
 
 | Command | Implemented options |
 | --- | --- |
 | `run` | `--platform`, `--name`, `--rm`, `-d`, `-i`, `-t`, `-e`, `--env-file`, `-w`, `-u`, `--entrypoint`, `-v`, `-p`, `--cpus`, `-m/--memory`, `--network bridge/none` |
+| `build` | Local context, `-f`, repeated `-t`/`--build-arg`, `--target`, `--platform`, `--pull`, `--no-cache`, `-q`, `--iidfile`, `-o type=oci,dest=PATH`, `--network default/none`, `--cpus`, `-m`, `--timeout`, `--progress auto/plain` |
 | `pull` | `--platform`, one public OCI image reference |
 | `images` | Optional repository, `-q`, `--no-trunc` |
 | `rmi` | Multiple references/IDs, `-f` |
@@ -299,3 +299,50 @@ It checks startup failure, exit codes, stdout/stderr, stdin EOF, PTY allocation,
 detached lifetime, stop/start persistence, foreground signal forwarding, orphan
 reaping and concurrent exec exit routing. A separate ordinary Job VM case checks
 the default launch configuration's orphan reaping and exit status.
+
+
+## VM-isolated image builds (experimental)
+
+```bash
+pvisor build -t app:local --network=none .
+pvisor run --rm app:local
+pvisor build -f Dockerfile -t app:local --build-arg VERSION=1 \
+  --output type=oci,dest=app.oci.tar .
+```
+
+`build` reuses the image catalog, OverlayCore and the container VM launch path.
+Every `RUN` executes in a fresh native VM as the host's ordinary user, with only
+its private rootfs overlay writable. The build context is captured without
+following symlinks; it is copied by `COPY`, never mounted into a RUN VM. No host
+shell, Docker socket, host bind mount or privileged build mode is exposed.
+The frontend owns each VMM through a private pipe; timeout/error reaps it, and
+frontend death closes the pipe and terminates it. A stage's filesystem persists
+between RUNs; guest processes do not. `--network=none` omits the NIC. The default
+network retains the existing public IPv4 TCP/DNS restrictions.
+
+The Dockerfile subset includes `FROM`/`AS`, completed-stage `COPY --from`,
+`RUN` (shell/JSON), local `COPY` (JSON, globs, numeric `--chown`, octal `--chmod`),
+`ARG`, `ENV`, `WORKDIR`, `USER`, `CMD`, `ENTRYPOINT`, `SHELL`, `LABEL`, `EXPOSE`,
+`VOLUME` metadata and `STOPSIGNAL`. `.dockerignore`, negation and Dockerfile-specific
+ignore files are supported. ARG values are not persisted as image environment;
+explicit `--build-arg NAME` forwards only that host variable. Build arguments
+are not secret storage. Simple `$NAME`/`${NAME}` expansion is supported.
+
+Each finished stage becomes one flattened OCI layer with guest ownership/mode,
+symlinks, hardlinks and merged deletions preserved. No instruction cache is
+implemented (`--no-cache` is accepted); unchanged base images can be reused.
+Tags are published after the files and directory entries are synced. A failed
+step leaves existing tags unchanged. OCI output must name a new file and contains
+only the standard layout/config/manifest/layer blobs, not the private rootfs.
+Builds and instances share `PVISOR_DOCKER_HOME`; temporary builds do not appear in
+`ps` and are removed on ordinary failure/success. Abrupt frontend death can leave
+an unpublished temporary build directory.
+
+This is a bounded Docker build profile, not full BuildKit compatibility. Remote
+or stdin contexts, `ADD`, `ONBUILD`, heredocs, RUN mounts, secrets/SSH/cache mounts,
+external-image `COPY --from`, named COPY owners, extended variable substitutions,
+foreign architectures, device nodes and file capabilities are rejected. Source
+paths traversing a symlink are rejected; copied symlinks remain symlinks. There
+are no registry push, Docker archive output, instruction cache or multi-platform
+builds. Native acceptance is exercised on Apple Silicon/HVF; Linux/KVM requires
+separate acceptance, including symlink ownership xattr support.

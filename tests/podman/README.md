@@ -48,9 +48,29 @@ its test images and named volumes. `PVISOR_TEST_IMAGE` defaults to
 runs and record `pvisor --version` and host architecture. Bats uses Python 3 for
 bounded process execution; Go uses `context` deadlines.
 
+## CI
+
+The required `rust-test` Linux `cli` shard in `.github/workflows/ci.yml` runs all
+active adapted Bats and Go contracts on every covered push/pull request. It
+reuses the product build and KVM permissions from that shard, installs Bats and
+Go 1.23.12, and runs the CLI as the ordinary runner user. The fixture is
+`mirror.gcr.io/library/alpine:3.20`; pull logs record the resolved digest.
+Unavailable KVM, registry failures and contract failures fail the gate, with no
+fallback to a skipped test. Hosted Apple Silicon macOS runners lack nested
+virtualization, so this runtime gate uses Linux/KVM.
+
+Both suites are attempted even when one fails. The combined step is bounded by
+30 minutes; Go has a 20-minute suite timeout and `-count=1` disables cached test
+results. Per-command timeouts and test-owned cleanup remain in effect. The
+`podman-contracts-linux-amd64` artifact contains Bats TAP, Go JSON output and
+environment/version metadata, and is uploaded even on failure. The existing
+required `CI` aggregate includes this shard. A newly added gate still needs an
+actual hosted-runner pass; local macOS acceptance does not establish Linux/KVM
+acceptance.
+
 ## Coverage and limits
 
-The active profile has 29 Bats cases and 73 Go cases. Each test first pulls its
+The active profile has 35 Bats cases and 83 Go cases. Each test first pulls its
 image; none is skipped based on engine failure.
 
 | Suite | Active contracts |
@@ -59,6 +79,8 @@ image; none is skipped based on engine failure.
 | Bats `031-run-options.bats` | Explicit env vs env-file, successive env-files, host env import, literal entrypoint args, numeric/named user, missing workdir creation, workdir within bind mount, read-only deletion rejection |
 | Bats `032-run-boundaries.bats` | Exit 126 for directories/non-executable files, failed-run name cleanup, host environment isolation, empty values, option-like workload arguments, relative-workdir rejection, no non-loopback interfaces with `--network none` |
 | Bats `033-run-validation.bats` | Repeated/literal environment values, missing host variable removal, CRLF env-files, missing bind source rejection, conflicting mount destinations and paths containing spaces |
+| Bats `070-build.bats` | Cached-base build/run/removal, relative external Dockerfile and TMPDIR, ignore-all definition discovery, external definition with ignore-all, symlink context and rejected ignored COPY source |
+| Go `build_test.go` | Basic build/removal, iidfile/full-ID execution, missing definition/file context errors, symlink workdir, copied empty directories/symlinks, ignore filtering, cross-directory COPY hardlinks, default COPY ownership, build arguments and WORKDIR/CMD/ENV/LABEL defaults |
 | Go `cli_test.go` | Streams/exit, exec stdin/error, stop/start persistence, auto-removal, duplicate name, exec env/workdir isolation, exec user/streams, 1.7 MB stdin round trip, ps/ID lifecycle, retained logs, images/rmi, named-volume persistence across rm -v, volume image initialization/read-only reuse, running-container rm rejection/force |
 | Go `compatibility_test.go` | Closed stdin, 1 MiB stdout, run/exec TTY and TERM precedence, concurrent exec exit routing after failed spawns, repeated stop, custom stop signal and zero-timeout escalation, multiple-container isolation, partial batch failures, live/stopped `logs -f`, ephemeral IPv4 TCP publication with half-close, in-use image protection, short image IDs and repeated pull identity |
 | Go `lifecycle_test.go` | Anonymous volume restart/isolation, live named-volume sharing including read-only readers and namespace changes, copy-up preservation, volume aliases/order, bind restart and symlinks, read-only mutation families, exact binary/partial logs, log accumulation across starts, running-start idempotence, automatic/forced removal races, TCP port restart/release/conflict and multiple endpoints |
@@ -74,8 +96,8 @@ limits. Chaos rounds are not counted as additional Podman contracts. The normal
 Go suite includes its concurrent-start regression, which verifies one entrypoint
 execution for each pair of simultaneous starts.
 
-Together these exercise all ten registered subcommands: `pull`, `images`, `rmi`,
-`run`, `exec`, `ps`, `start`, `stop`, `rm`, `logs`. They do not cover every option.
+Together these exercise all eleven registered container/build subcommands: `pull`, `images`, `rmi`,
+`run`, `build`, `exec`, `ps`, `start`, `stop`, `rm`, `logs`. They do not cover every option.
 The volume-image-content fixture requires an Alpine image containing
 `/etc/alpine-release`, `nobody`, `sh`, `printenv`, `id`, `cat`, `sleep` and `true`.
 Use `PVISOR_TEST_IMAGE` for a pinned Alpine digest, not an arbitrary image.
@@ -87,11 +109,21 @@ Explicitly unsupported commands/options are preserved as commented examples in
 `system/900-unsupported.bats.disabled` and `e2e/unsupported_test.go.disabled`,
 with source files and reasons. Their `.disabled` suffix excludes them from test
 discovery; they produce no PASS or SKIP results. Complete upstream sources stay
-unchanged. Build/Compose/API, create/inspect/wait/restart/attach/cp, registry login,
+unchanged. Buildx and unsupported build options, Compose/API, create/inspect/wait/restart/attach/cp, registry login,
 Podman pods/Kube/Quadlet, management CLIs, extra logs/list flags and host-specific
 namespace/security controls are disabled. Anonymous-volume deletion, controlling-terminal
 input, publication on non-loopback host addresses and other supported-but-unported scenarios
 remain coverage gaps, not unsupported features.
+
+Build ports use the documented Docker subset. Podman-specific `--format=docker`,
+`--pull-never`, COMMIT log rendering and Containerfile auto-discovery are not
+claimed. Public `images`/`run` and OCI tar output replace unsupported inspect for
+image identity, filesystem and label observations. Build validation errors use
+Docker-profile exit 1 rather than Podman 125. Remote ADD cases retain only their
+local COPY filtering/link contracts, not remote protocol or ADD coverage.
+The original RUN-exit-code relay case (Podman exit 5) remains unported: pVisor
+currently reports a failed build as exit 1. Adaptations and remaining build gaps
+are recorded in [UPSTREAM.md](UPSTREAM.md) and [REVIEW.md](REVIEW.md).
 
 The TTY cases require default `TERM=xterm`, explicit TERM precedence and no
 mutation of container defaults by `exec -t`. These defaults are applied on the
@@ -184,3 +216,14 @@ an absent `/bin/printf`, and assert Alpine's actual nogroup GID 65533. No
 runtime failure was converted to a skip. The source audit in `REVIEW.md`
 remains open, with further supported cases still to port and deferred areas
 listed separately for human review.
+
+
+The build batch was validated on 2026-10-23 on macOS ARM64/HVF with Go 1.23.12,
+Bats 1.11.0 and the immutable Alpine mirror manifest recorded above. All 16 new
+build contracts passed (6 Bats, 10 Go); this is not a rerun of all 118 active
+contracts. The upstream cross-directory COPY hardlink case found that context
+capture and COPY split hardlinks before export. Both paths now retain private
+inode identity; all original selected inode-equality assertions pass. Nine Rust
+builder regressions, four Python adapter/source-integrity checks, Go vet and
+Clippy passed. Upstream copies and their hash inventory remain unchanged.
+Linux/KVM and the remaining build cases are still unvalidated.

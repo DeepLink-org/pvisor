@@ -745,7 +745,7 @@ fn verify_file_digest(expected: &str, path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<()> {
+pub(crate) fn apply_layer(blob: &Path, media_type: &str, rootfs: &Path) -> anyhow::Result<()> {
     let tar_file = tempfile::NamedTempFile::new()?;
     {
         let input = File::open(blob)?;

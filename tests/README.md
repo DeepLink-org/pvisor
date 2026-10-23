@@ -30,5 +30,6 @@ specifications or change their claims, vocabulary, review ledger or snapshots.
 Bats/Go contracts that run the top-level pVisor container commands and check expected behavior. Docker
 daemon interoperability cases are disabled with reasons. See
 [podman/README.md](podman/README.md) for explicit runtime commands, prerequisites
-and coverage limits. The external-runtime suites are opt-in; normal Python
-regressions verify source integrity and adapter behavior without a daemon.
+and coverage limits. The external-runtime suites are opt-in locally and required
+in the Linux CLI CI shard; normal Python regressions verify source integrity and
+adapter behavior without a daemon.

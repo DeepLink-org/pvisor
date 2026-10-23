@@ -21,6 +21,9 @@ use std::time::{Duration, Instant};
 
 pub use crate::image::oci::PullProgress;
 
+/// VM-isolated Dockerfile builds and OCI image publication.
+pub mod build;
+
 fn native_platform() -> String {
     let architecture = match std::env::consts::ARCH {
         "aarch64" => "arm64",
