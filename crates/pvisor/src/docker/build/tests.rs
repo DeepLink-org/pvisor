@@ -20,6 +20,22 @@ fn options(context: &Path) -> BuildOptions {
 }
 
 #[test]
+fn stage_root_enables_virtual_metadata_without_opening_host_storage() {
+    let work = tempfile::tempdir().unwrap();
+    let context = work.path().join("context");
+    fs::create_dir(&context).unwrap();
+    let base = scratch(work.path()).unwrap();
+    let metadata = fs::symlink_metadata(&base.image.rootfs).unwrap();
+    let expected = filesystem::identity(&base.image.rootfs, &metadata).unwrap();
+    let store = Store::open(work.path().join("store")).unwrap();
+    let stage = Stage::new(store, base, "test".into(), &options(&context)).unwrap();
+    let upper = stage.store.directory(&stage.instance.id).join("upper");
+    let physical = fs::symlink_metadata(&upper).unwrap();
+    assert_eq!(physical.mode() & 0o777, 0o700);
+    assert_eq!(filesystem::identity(&upper, &physical).unwrap(), expected);
+}
+
+#[test]
 fn scratch_multistage_build_exports_oci_and_publishes_local_launch_defaults() {
     let work = tempfile::tempdir().unwrap();
     let context = work.path().join("context");

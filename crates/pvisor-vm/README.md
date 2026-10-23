@@ -1360,3 +1360,11 @@ selector for this profile, and the firmware retains its single-possible-CPU guar
 CPU topology changes and more than two configured CPUs are outside this profile.
 `PVISOR_DIAG_IDLE=1` records parked/checked masks, rendezvous generation and
 per-CPU remaining timer budgets alongside the existing whole-VM epoch.
+
+### Rootless Linux passthrough ownership
+
+Plain writable shares map guest-root CREATE and CHOWN requests to the invoking
+host UID/GID when the server cannot switch identities. This permits managed
+volume initialization without host root privileges. Native host ownership remains
+visible; arbitrary unmapped owners still fail rather than silently losing metadata.
+Overlay-backed image files use their separate virtual metadata contract.

@@ -1942,13 +1942,22 @@ impl FileSystem for PassthroughFs {
 
         if valid.intersects(SetattrValid::UID | SetattrValid::GID) {
             let uid = if valid.contains(SetattrValid::UID) {
-                attr.st_uid
+                // Match CREATE's guest-root mapping without requiring host chown privileges.
+                if attr.st_uid == 0 {
+                    self.my_uid.unwrap_or(0)
+                } else {
+                    attr.st_uid
+                }
             } else {
                 // Cannot use -1 here because these are unsigned values.
                 u32::MAX
             };
             let gid = if valid.contains(SetattrValid::GID) {
-                attr.st_gid
+                if attr.st_gid == 0 {
+                    self.my_gid.unwrap_or(0)
+                } else {
+                    attr.st_gid
+                }
             } else {
                 // Cannot use -1 here because these are unsigned values.
                 u32::MAX
@@ -2684,6 +2693,60 @@ mod tests {
             exported: AtomicBool::new(false),
         }));
         (root, fs, lease)
+    }
+
+    #[test]
+    fn rootless_guest_root_chown_matches_create_mapping() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), b"retained").unwrap();
+        std::fs::create_dir(root.path().join("directory")).unwrap();
+        std::os::unix::fs::symlink("file", root.path().join("link")).unwrap();
+        let fs = PassthroughFs::new(
+            Config {
+                root_dir: root.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            },
+            Arc::new(InodeAllocator::new()),
+        )
+        .unwrap();
+        fs.init(FsOptions::empty()).unwrap();
+        let ctx = root_context();
+        for name in [c"file", c"directory", c"link"] {
+            let entry = fs.lookup(ctx, fuse::ROOT_ID, name).unwrap();
+            let mut attr = entry.attr;
+            attr.st_uid = 0;
+            attr.st_gid = 0;
+            fs.setattr(
+                ctx,
+                entry.inode,
+                attr,
+                None,
+                SetattrValid::UID | SetattrValid::GID,
+            )
+            .unwrap();
+            let metadata =
+                std::fs::symlink_metadata(root.path().join(name.to_str().unwrap())).unwrap();
+            assert_eq!(metadata.uid(), fs.my_uid.unwrap_or(0));
+            assert_eq!(metadata.gid(), fs.my_gid.unwrap_or(0));
+            if fs.my_uid.is_some_and(|uid| uid != 0) {
+                attr.st_uid = u32::MAX - 1;
+                assert_eq!(
+                    fs.setattr(ctx, entry.inode, attr, None, SetattrValid::UID)
+                        .unwrap_err()
+                        .raw_os_error(),
+                    Some(libc::EPERM)
+                );
+            }
+            fs.forget(ctx, entry.inode, 1);
+        }
+        assert_eq!(
+            std::fs::read(root.path().join("file")).unwrap(),
+            b"retained"
+        );
+        assert_eq!(
+            std::fs::read_link(root.path().join("link")).unwrap(),
+            std::path::Path::new("file")
+        );
     }
 
     #[test]

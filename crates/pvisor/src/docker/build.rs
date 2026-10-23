@@ -6,7 +6,7 @@ use pvisor_journal::api::{DurableFiles, Persistence};
 use pvisor_overlay_core::OverlayCore;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, os::unix::fs::PermissionsExt};
 mod dockerfile;
 mod filesystem;
 use dockerfile::{expand, expanded_words, words};
@@ -562,6 +562,17 @@ impl Stage {
             cmd_set: false,
         };
         stage.core()?;
+        let upper = stage.store.directory(&stage.instance.id).join("upper");
+        fs::set_permissions(&upper, fs::Permissions::from_mode(0o700))?;
+        // Enable virtual COPY ownership in RUN even when no resolver layer is attached.
+        let root = &stage.image.rootfs;
+        let (uid, gid, mode) = filesystem::identity(root, &fs::symlink_metadata(root)?)?;
+        pvisor_overlay_core::sys::set_xattr(
+            &upper,
+            std::ffi::OsStr::new("user.containers.override_stat"),
+            format!("{uid}:{gid}:0{mode:o}").as_bytes(),
+            0,
+        )?;
         Ok(stage)
     }
     fn core(&self) -> anyhow::Result<OverlayCore> {

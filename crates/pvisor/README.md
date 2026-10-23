@@ -1226,3 +1226,7 @@ arrival before and during acquisition as well as after publication. The guest as
 present and single-CPU PSI/watchdog deferral flags are absent. All modes retain
 payload hashing, complete responses, balanced transitions and no-offload checks.
 These are engineering correctness probes, not live SWE or latency guarantees.
+
+Build stages mark their private upper root with the base root's logical metadata,
+so COPY ownership is honored during RUN with `--network=none` too. The physical
+upper directory remains private (0700).
