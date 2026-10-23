@@ -345,4 +345,7 @@ foreign architectures, device nodes and file capabilities are rejected. Source
 paths traversing a symlink are rejected; copied symlinks remain symlinks. There
 are no registry push, Docker archive output, instruction cache or multi-platform
 builds. Native acceptance is exercised on Apple Silicon/HVF; Linux/KVM requires
-separate acceptance, including symlink ownership xattr support.
+separate acceptance. Rootless Linux preserves default guest-root symlink owners
+in OCI output without host chown; non-root symlink owners are rejected when the
+host cannot represent them. Guest-visible symlink-owner virtualization is not
+claimed by this build profile.

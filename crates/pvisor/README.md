@@ -717,6 +717,9 @@ publication. This reuses logical guest ownership/mode without installing host
 setuid bits. Context capture and each COPY preserve regular-file hardlinks,
 including links spanning directories or separately selected sources, without
 linking the private snapshot back to host source inodes.
+Rootless Linux exports private host-user-owned symlinks as guest root in OCI
+output, without chowning host files. Non-root symlink ownership is rejected on
+hosts that cannot represent it; this is not full guest symlink-owner support.
 Failure never publishes a partial stage. Unsupported special files
 and file capabilities fail explicitly. See the CLI README for the Dockerfile
 subset, lack of instruction caching and platform validation limits.

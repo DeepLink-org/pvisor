@@ -246,13 +246,16 @@ jobs:
         if: runner.os == 'Linux' && matrix.shard == 'cli'
         timeout-minutes: 30
         env:
-          PVISOR_BINARY: ${{ github.workspace }}/target/debug/pvisor
+          # Native Rust tests rebuild target/debug/pvisor without embedded firmware.
+          # Use the original static product artifact from the smoke-test build.
+          PVISOR_BINARY: ${{ github.workspace }}/target/x86_64-unknown-linux-musl/debug/pvisor
           PVISOR_TEST_IMAGE: mirror.gcr.io/library/alpine:3.20
           CONTRACT_LOGS: ${{ runner.temp }}/podman-contracts
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$CONTRACT_LOGS"
+          test -x "$PVISOR_BINARY"
           test -r /dev/kvm && test -w /dev/kvm
           {
             uname -a

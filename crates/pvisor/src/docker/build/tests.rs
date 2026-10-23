@@ -322,3 +322,65 @@ fn copy_preserves_context_hardlinks_across_separately_selected_sources() {
         b"shared bytes"
     );
 }
+
+#[test]
+fn copied_symlink_exports_guest_root_without_mutating_host_target() {
+    let work = tempfile::tempdir().unwrap();
+    let context = work.path().join("context");
+    fs::create_dir(&context).unwrap();
+    let outside = work.path().join("outside");
+    fs::write(&outside, "host bytes").unwrap();
+    let before = fs::metadata(&outside).unwrap();
+    symlink(&outside, context.join("link")).unwrap();
+    let expected_mode = fs::symlink_metadata(context.join("link")).unwrap().mode();
+    fs::write(
+        context.join("Dockerfile"),
+        "FROM scratch\nCOPY link /link\n",
+    )
+    .unwrap();
+    let store = Store::open(work.path().join("store")).unwrap();
+    let image = build(&store, &options(&context)).unwrap();
+    let link = image.rootfs.join("link");
+    assert_eq!(fs::read_link(&link).unwrap(), outside);
+    let metadata = fs::symlink_metadata(&link).unwrap();
+    assert_eq!(
+        filesystem::identity(&link, &metadata).unwrap(),
+        (0, 0, expected_mode)
+    );
+    let after = fs::metadata(&outside).unwrap();
+    assert_eq!(
+        (before.uid(), before.gid(), before.mode()),
+        (after.uid(), after.gid(), after.mode())
+    );
+    assert_eq!(fs::read(&outside).unwrap(), b"host bytes");
+    let layout = image.rootfs.parent().unwrap();
+    let config: Value = serde_json::from_reader(
+        File::open(layout.join("blobs/sha256").join(&image.id[7..])).unwrap(),
+    )
+    .unwrap();
+    let digest = config["rootfs"]["diff_ids"][0].as_str().unwrap();
+    let mut found = false;
+    for entry in
+        tar::Archive::new(File::open(layout.join("blobs/sha256").join(&digest[7..])).unwrap())
+            .entries()
+            .unwrap()
+    {
+        let entry = entry.unwrap();
+        if entry.path().unwrap() == Path::new("link") {
+            found = true;
+            assert!(entry.header().entry_type().is_symlink());
+            assert_eq!(
+                (entry.header().uid().unwrap(), entry.header().gid().unwrap()),
+                (0, 0)
+            );
+            assert_eq!(entry.link_name().unwrap().unwrap(), outside);
+        }
+    }
+    assert!(found);
+    #[cfg(target_os = "linux")]
+    if unsafe { libc::geteuid() } != 0 {
+        assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+        assert!(filesystem::set_identity(&link, 123, 456, 0o777).is_err());
+        assert_eq!(filesystem::identity(&link, &metadata).unwrap().0, 0);
+    }
+}

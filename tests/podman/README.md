@@ -58,6 +58,10 @@ Go 1.23.12, and runs the CLI as the ordinary runner user. The fixture is
 Unavailable KVM, registry failures and contract failures fail the gate, with no
 fallback to a skipped test. Hosted Apple Silicon macOS runners lack nested
 virtualization, so this runtime gate uses Linux/KVM.
+The selected executable is the original static musl product artifact under
+`target/x86_64-unknown-linux-musl/debug/`, whose firmware is embedded. Native
+Cargo tests can overwrite `target/debug/pvisor` with a dynamically linked test
+build, so that path must not be used for this external-runtime gate.
 
 Both suites are attempted even when one fails. The combined step is bounded by
 30 minutes; Go has a 20-minute suite timeout and `-count=1` disables cached test

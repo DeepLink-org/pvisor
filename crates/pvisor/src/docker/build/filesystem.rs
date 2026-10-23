@@ -314,6 +314,13 @@ pub(super) fn resolve(
 
 pub(super) fn identity(path: &Path, metadata: &fs::Metadata) -> anyhow::Result<(u32, u32, u32)> {
     let mut result = (metadata.uid(), metadata.gid(), metadata.mode());
+    // Linux forbids user xattrs on symlinks. Default root ownership is virtual:
+    // private links remain owned by the invoking user, not privileged host root.
+    #[cfg(target_os = "linux")]
+    if rootless_symlink(metadata) {
+        result.0 = 0;
+        result.1 = 0;
+    }
     match sys::get_xattr(path, OsStr::new("user.containers.override_stat")) {
         Ok(bytes) => {
             let text = std::str::from_utf8(&bytes)?;
@@ -357,9 +364,20 @@ pub(super) fn set_identity(path: &Path, uid: u32, gid: u32, mode: u32) -> anyhow
         format!("{uid}:{gid}:0{full:o}").as_bytes(),
         0,
     );
-    // Linux cannot put user xattrs on symlinks. Preserve native ownership when possible.
+    // Only default guest-root ownership can be represented without host privileges.
     #[cfg(target_os = "linux")]
-    if m.file_type().is_symlink() && result.is_err() {
+    if m.file_type().is_symlink()
+        && result
+            .as_ref()
+            .is_err_and(|e| matches!(e.raw_os_error(), Some(libc::EPERM | libc::ENOTSUP)))
+    {
+        if rootless_symlink(&m) {
+            ensure!(
+                uid == 0 && gid == 0,
+                "cannot preserve non-root symlink ownership on this host"
+            );
+            return Ok(());
+        }
         let p = CString::new(path.as_os_str().as_bytes())?;
         ensure!(
             unsafe { libc::lchown(p.as_ptr(), uid, gid) } == 0 || m.uid() == uid && m.gid() == gid,
@@ -369,6 +387,12 @@ pub(super) fn set_identity(path: &Path, uid: u32, gid: u32, mode: u32) -> anyhow
     }
     result?;
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn rootless_symlink(metadata: &fs::Metadata) -> bool {
+    let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+    uid != 0 && metadata.file_type().is_symlink() && metadata.uid() == uid && metadata.gid() == gid
 }
 
 pub(super) fn mkdir(core: &OverlayCore, path: &Path) -> anyhow::Result<PathBuf> {
