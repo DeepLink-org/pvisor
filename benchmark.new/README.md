@@ -119,6 +119,12 @@ Markdown 单独一行写 `{{ table("../../tools.render.json") }}`；文档构建
 `requires-single-condition-command` 模板显式使用 null，准备时拒绝测量。它们还需从旧
 `benchmark/pvisor/` 拆出单次负载及正确性 hooks，不能用历史统计或任意命令填充。
 
+B-SWE-RESIDENT-ENG 的 `agent/swe_resident.json` 同样保留为未准备模板。
+真实 Agent 运行和 CPU/内存阶段采样仍使用
+[`benchmark/pvisor/sweeval/`](../benchmark/pvisor/sweeval/README.md) 的入口，
+需要显式配置任务、rootfs 和模型 API。尚未提供本表框架的单条件命令及正确性 hooks，
+不能将这些阶段统计作为 hyperfine 的完整命令耗时发布。
+
 `just benchmark [smoke|nightly]` 在构建后走 prepare → semspec bench → audit → render；CI 使用同一
 新 harness 测量候选和基线，并从原始导出执行现有 15% 回归门禁。
 验证：`just test-semspec` 和 `just test-py discover -s benchmark.new/tests`。

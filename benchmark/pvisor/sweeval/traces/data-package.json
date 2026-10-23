@@ -1,0 +1,10 @@
+{
+  "schema": "pvisor.swe-tool-trace-package.v1",
+  "file": "swe-tool-traces-30-v1.tar.gz",
+  "sha256": "8659e15a30f5dc808e312f650483539a4b369b7eb40b5b48fd3dd60b03340246",
+  "bytes": 425707,
+  "tasks": 30,
+  "agent_commands": 2486,
+  "archive_files": 39,
+  "url": "https://github.com/zhaoyuuu0624/pvisor/releases/download/swe-tool-traces-30-v1/swe-tool-traces-30-v1.tar.gz"
+}
