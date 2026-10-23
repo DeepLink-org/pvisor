@@ -233,7 +233,10 @@ pub(crate) struct PeerNetwork {
     // every healthy peer's send budget. At most one link per member address.
     outgoing: HashMap<Ipv4Addr, Outgoing>,
     membership: Membership,
-    cache: HashMap<Ipv4Addr, (Instant, Option<Member>)>,
+    // Packet forwarding only needs the generation from a fully validated
+    // publication. Keep this Copy identity instead of cloning DNS aliases and
+    // other discovery metadata on every send and receive.
+    cache: HashMap<Ipv4Addr, (Instant, Option<[u8; 16]>)>,
     metrics: InterceptionMetrics,
 }
 
@@ -374,7 +377,7 @@ impl BoundPeer {
 }
 
 impl PeerNetwork {
-    fn lookup(&mut self, address: Ipv4Addr) -> Option<Member> {
+    fn lookup(&mut self, address: Ipv4Addr) -> Option<[u8; 16]> {
         if !member_address(address)
             || address.octets()[..3] != self.membership.member.gateway.octets()[..3]
             || address == self.membership.member.gateway
@@ -384,10 +387,14 @@ impl PeerNetwork {
         if let Some((loaded, record)) = self.cache.get(&address)
             && loaded.elapsed() < CACHE_TTL
         {
-            return record.clone();
+            return *record;
         }
-        let record = self.membership.lookup(address).ok();
-        self.cache.insert(address, (Instant::now(), record.clone()));
+        let record = self
+            .membership
+            .lookup(address)
+            .ok()
+            .map(|member| member.generation);
+        self.cache.insert(address, (Instant::now(), record));
         record
     }
 
@@ -404,7 +411,7 @@ impl PeerNetwork {
             self.metrics.peer_dropped();
             return true;
         };
-        let Some(peer) = self.lookup(destination) else {
+        let Some(generation) = self.lookup(destination) else {
             self.metrics.peer_dropped();
             return true;
         };
@@ -412,15 +419,16 @@ impl PeerNetwork {
             self.metrics.peer_dropped();
             return true;
         }
-        let mut packet = Vec::with_capacity(HEADER + frame.len());
-        packet.extend_from_slice(MAGIC);
-        packet.extend_from_slice(&self.membership.member.generation);
-        packet.extend_from_slice(&peer.generation);
-        packet.extend_from_slice(frame);
+        let mut packet = [0; HEADER + FRAME_LIMIT];
+        packet[..4].copy_from_slice(MAGIC);
+        packet[4..20].copy_from_slice(&self.membership.member.generation);
+        packet[20..HEADER].copy_from_slice(&generation);
+        packet[HEADER..HEADER + frame.len()].copy_from_slice(frame);
+        let packet = &packet[..HEADER + frame.len()];
         if self
             .outgoing
             .get(&destination)
-            .is_some_and(|link| link.generation != peer.generation)
+            .is_some_and(|link| link.generation != generation)
         {
             self.outgoing.remove(&destination);
         }
@@ -429,7 +437,7 @@ impl PeerNetwork {
                 .membership
                 .slot
                 .join(format!("tx-{}.sock", destination.octets()[3]));
-            match Outgoing::bind(path, &self.membership.socket(destination), peer.generation) {
+            match Outgoing::bind(path, &self.membership.socket(destination), generation) {
                 Ok(link) => {
                     self.outgoing.insert(destination, link);
                 }
@@ -439,7 +447,7 @@ impl PeerNetwork {
                 }
             }
         }
-        match self.outgoing[&destination].socket.send(&packet) {
+        match self.outgoing[&destination].socket.send(packet) {
             Ok(count) if count == packet.len() => self.metrics.peer_sent(),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 self.metrics.peer_dropped();
@@ -491,17 +499,17 @@ impl PeerNetwork {
         {
             return false;
         }
-        let Some(mut peer) = self.lookup(source) else {
+        let Some(mut generation) = self.lookup(source) else {
             return false;
         };
-        if packet[4..20] != peer.generation {
+        if packet[4..20] != generation {
             self.cache.remove(&source);
             let Some(fresh) = self.lookup(source) else {
                 return false;
             };
-            peer = fresh;
+            generation = fresh;
         }
-        packet[4..20] == peer.generation
+        packet[4..20] == generation
     }
 }
 

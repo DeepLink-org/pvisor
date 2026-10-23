@@ -1644,6 +1644,7 @@ mod tests {
             cfg
         };
         let a = store.create(config("web", None)).unwrap();
+        assert!(store.create(config("WEB", None)).is_err());
         let b = store.create(config("client", None)).unwrap();
         assert_eq!(
             a.config.peers.as_ref().unwrap().address,

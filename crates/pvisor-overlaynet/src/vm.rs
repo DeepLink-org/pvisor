@@ -69,7 +69,7 @@ const DNS_MAX_MESSAGE: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VmGatewayRoute {
-    /// Port exposed to the guest on [`ROUTER_IPV4`].
+    /// Port exposed on the guest's virtual router (default [`ROUTER_IPV4`]).
     pub guest_port: u16,
     /// Attempt-local Gateway listener on the host.
     pub host: SocketAddr,
@@ -1270,10 +1270,19 @@ async fn write_frame(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
     frame: &[u8],
 ) -> io::Result<()> {
-    writer
-        .write_all(&(frame.len() as u32).to_be_bytes())
-        .await?;
-    writer.write_all(frame).await
+    let prefix = (frame.len() as u32).to_be_bytes();
+    let mut slices = [io::IoSlice::new(&prefix), io::IoSlice::new(frame)];
+    let mut remaining = &mut slices[..];
+    // One sendmsg in the common case; preserve framing across short writes
+    // without allocating a second contiguous copy of each Ethernet frame.
+    while !remaining.is_empty() {
+        let written = writer.write_vectored(remaining).await?;
+        if written == 0 {
+            return Err(io::ErrorKind::WriteZero.into());
+        }
+        io::IoSlice::advance_slices(&mut remaining, written);
+    }
+    Ok(())
 }
 
 #[derive(Default)]

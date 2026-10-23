@@ -116,6 +116,18 @@ It is not a per-peer or per-port ACL.
 
 `tests/peer_network.rs` exercises the public owner/guest link and separate
 processes, including ARP, TCP/UDP/ICMP forwarding, restart generations, duplicate
-addresses, crash cleanup, policy changes and network isolation. A pair of guest smoltcp stacks also establishes TCP, transfers 256 KiB and
-checks the response; congestion tests isolate a stalled guest from another peer.
-These tests do not establish a real KVM/HVF guest boot, throughput, latency or capacity.
+addresses, crash cleanup, policy changes and network isolation. A pair of guest
+smoltcp stacks establishes TCP and verifies simultaneous 1 MiB transfers in
+each direction under deterministic loss, duplication and reordering. Additional
+chaos tests exercise four-node concurrent forwarding with fragmented guest
+stream writes, repeated restarts, saturation followed by receiver recovery, and
+malformed-datagram floods. Congestion tests isolate a stalled guest from another
+peer. These tests do not establish a real KVM/HVF guest boot or production capacity.
+
+The packet cache retains only the generation from validated discovery records;
+the TTL and validation rules remain the same. Sends use a bounded stack packet
+buffer, and guest writes use vectored I/O with short-write handling. The
+[peer engineering harness](../../benchmark/peer/README.md) compares frozen
+binaries through the public framed links with integrity-checked goodput, RTT
+and process CPU accounting. Its backend-thread measurements exclude virtio/KVM
+and do not represent Docker bridge or VM application TCP throughput.

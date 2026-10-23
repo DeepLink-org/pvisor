@@ -388,6 +388,15 @@ mod tcp_guests {
             caps
         }
     }
+    #[derive(Default)]
+    struct Faults {
+        enabled: bool,
+        seen: usize,
+        dropped: usize,
+        duplicated: usize,
+        reordered: usize,
+        delayed: Option<Vec<u8>>,
+    }
     struct Guest {
         stream: UnixStream,
         input: Vec<u8>,
@@ -395,6 +404,7 @@ mod tcp_guests {
         interface: Interface,
         sockets: SocketSet<'static>,
         handle: smoltcp::iface::SocketHandle,
+        faults: Faults,
     }
     impl Guest {
         fn new(stream: UnixStream, last: u8) -> Self {
@@ -421,6 +431,7 @@ mod tcp_guests {
                 interface,
                 sockets,
                 handle,
+                faults: Faults::default(),
             }
         }
         fn socket(&mut self) -> &mut tcp::Socket<'static> {
@@ -447,7 +458,33 @@ mod tcp_guests {
             }
             self.interface.poll(now, &mut self.link, &mut self.sockets);
             self.stream.set_nonblocking(false).unwrap();
+            let delayed = self.faults.delayed.take();
+            let mut overtook_delayed = false;
             while let Some(frame) = self.link.tx.pop_front() {
+                if self.faults.enabled {
+                    self.faults.seen += 1;
+                    if self.faults.seen.is_multiple_of(17) {
+                        self.faults.dropped += 1;
+                        continue;
+                    }
+                    if self.faults.seen.is_multiple_of(11) && self.faults.delayed.is_none() {
+                        self.faults.delayed = Some(frame);
+                        continue;
+                    }
+                    if self.faults.seen.is_multiple_of(13) {
+                        send(&mut self.stream, &frame);
+                        self.faults.duplicated += 1;
+                    }
+                }
+                send(&mut self.stream, &frame);
+                overtook_delayed = true;
+            }
+            // Release after newer output, or on the next poll if idle. This
+            // cannot indefinitely withhold the last frame of a TCP exchange.
+            if let Some(frame) = delayed {
+                if overtook_delayed {
+                    self.faults.reordered += 1;
+                }
                 send(&mut self.stream, &frame);
             }
         }
@@ -514,6 +551,183 @@ mod tcp_guests {
         a.shutdown().unwrap();
         b.shutdown().unwrap();
     }
+
+    #[test]
+    fn tcp_duplex_recovers_from_loss_duplication_and_reordering() {
+        let root = directory();
+        let (a, sa, ma) = start(root.path(), 11);
+        let (b, sb, mb) = start(root.path(), 12);
+        let mut left = Guest::new(sa, 11);
+        let mut right = Guest::new(sb, 12);
+        left.faults.enabled = true;
+        right.faults.enabled = true;
+        right.socket().listen(9000).unwrap();
+        left.sockets
+            .get_mut::<tcp::Socket>(left.handle)
+            .connect(left.interface.context(), (address(12), 9000), 49152)
+            .unwrap();
+        let forward: Vec<u8> = (0..1048576u32).map(|n| (n ^ (n >> 9)) as u8).collect();
+        let reverse: Vec<u8> = (0..1048576u32)
+            .map(|n| (n.wrapping_mul(37) ^ (n >> 7)) as u8)
+            .collect();
+        let (mut sent_left, mut sent_right) = (0, 0);
+        let (mut received_left, mut received_right) = (Vec::new(), Vec::new());
+        let started = Instant::now();
+        while received_left.len() < reverse.len() || received_right.len() < forward.len() {
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "TCP failed to recover: left={}/{}, right={}/{}",
+                received_left.len(),
+                reverse.len(),
+                received_right.len(),
+                forward.len()
+            );
+            // Accelerate retransmission time without depending on long sleeps.
+            let now = SmolInstant::from_micros(started.elapsed().as_micros() as i64 * 4);
+            left.poll(now);
+            right.poll(now);
+            for (guest, payload, sent, received) in [
+                (&mut left, &forward, &mut sent_left, &mut received_left),
+                (&mut right, &reverse, &mut sent_right, &mut received_right),
+            ] {
+                if guest.socket().can_send() && *sent < payload.len() {
+                    *sent += guest.socket().send_slice(&payload[*sent..]).unwrap();
+                }
+                if guest.socket().can_recv() {
+                    guest
+                        .socket()
+                        .recv(|bytes| {
+                            received.extend_from_slice(bytes);
+                            (bytes.len(), ())
+                        })
+                        .unwrap();
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(received_left, reverse);
+        assert_eq!(received_right, forward);
+        for guest in [&left, &right] {
+            assert!(guest.faults.dropped > 0);
+            assert!(guest.faults.duplicated > 0);
+            assert!(guest.faults.reordered > 0);
+        }
+        assert_eq!(
+            ma.snapshot().tcp_flows_opened + mb.snapshot().tcp_flows_opened,
+            0
+        );
+        a.shutdown().unwrap();
+        b.shutdown().unwrap();
+    }
+}
+
+fn sequenced_frame(src: u8, dst: u8, length: usize, sequence: u64) -> Vec<u8> {
+    let mut frame = ip_frame(src, dst, IpProtocol::Udp);
+    frame.resize(length, 0);
+    let mut ip = Ipv4Packet::new_unchecked(&mut frame[14..]);
+    ip.set_total_len((length - 14) as u16);
+    for (index, byte) in ip.payload_mut().iter_mut().enumerate() {
+        *byte = ((index as u64 * 37) ^ sequence.rotate_left(7) ^ sequence) as u8;
+    }
+    ip.payload_mut()[..8].copy_from_slice(&sequence.to_be_bytes());
+    ip.fill_checksum();
+    frame
+}
+
+#[test]
+fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
+    let root = directory();
+    let members: Vec<_> = (11..15).map(|last| start(root.path(), last)).collect();
+    let mut owners = Vec::new();
+    let mut workers = Vec::new();
+    for (index, (owner, mut stream, metrics)) in members.into_iter().enumerate() {
+        owners.push((owner, metrics));
+        workers.push(std::thread::spawn(move || {
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let source = 11 + index as u8;
+            let destination = 11 + (index as u8 + 1) % 4;
+            let previous = 11 + (index as u8 + 3) % 4;
+            let mut seed = 0x504e_4554_u64 + index as u64;
+            for batch in 0..256 {
+                for offset in 0..4 {
+                    let sequence = batch * 4 + offset;
+                    let length = if sequence % 2 == 0 { 1514 } else { 66 };
+                    let packet = sequenced_frame(source, destination, length, sequence);
+                    let mut framed = (length as u32).to_be_bytes().to_vec();
+                    framed.extend(packet);
+                    let mut position = 0;
+                    while position < framed.len() {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 7;
+                        seed ^= seed << 17;
+                        let end = (position + 1 + seed as usize % 73).min(framed.len());
+                        stream.write_all(&framed[position..end]).unwrap();
+                        position = end;
+                    }
+                }
+                for offset in 0..4 {
+                    let sequence = batch * 4 + offset;
+                    let length = if sequence % 2 == 0 { 1514 } else { 66 };
+                    assert_eq!(
+                        receive(&mut stream),
+                        sequenced_frame(previous, source, length, sequence)
+                    );
+                }
+            }
+        }));
+    }
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    for (owner, metrics) in owners {
+        let result = owner.shutdown().unwrap();
+        assert_eq!(result.peer_packets_sent, 1024);
+        assert_eq!(result.peer_packets_received, 1024);
+        assert_eq!(result.peer_packets_dropped, 0);
+        assert_eq!(metrics.snapshot().tcp_flows_opened, 0);
+    }
+}
+
+#[test]
+fn repeated_restart_recovers_both_directions_and_reclaims_sender_sockets() {
+    let root = directory();
+    let (a, mut sa, ma) = start(root.path(), 11);
+    let (c, mut sc, _) = start(root.path(), 13);
+    for cycle in 0..12 {
+        let (b, mut sb, _) = start(root.path(), 12);
+        // Previous positive/negative entries and generation may still be cached.
+        std::thread::sleep(Duration::from_millis(275));
+        let packet = sequenced_frame(11, 12, 1514, cycle);
+        send(&mut sa, &packet);
+        assert_eq!(receive(&mut sb), packet);
+        let reply = sequenced_frame(12, 11, 66, cycle);
+        send(&mut sb, &reply);
+        assert_eq!(receive(&mut sa), reply);
+        b.shutdown().unwrap();
+        // No listener: these must drop, without blocking another destination.
+        for _ in 0..32 {
+            send(&mut sa, &packet);
+        }
+        let healthy = sequenced_frame(11, 13, 1514, cycle);
+        send(&mut sa, &healthy);
+        assert_eq!(receive(&mut sc), healthy);
+        let remaining: Vec<_> = std::fs::read_dir(root.path().join("12"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(remaining, [std::ffi::OsString::from("lease.lock")]);
+    }
+    assert!(ma.snapshot().peer_packets_dropped >= 12 * 32);
+    a.shutdown().unwrap();
+    c.shutdown().unwrap();
+    for slot in ["11", "12", "13"] {
+        assert_eq!(
+            std::fs::read_dir(root.path().join(slot)).unwrap().count(),
+            1
+        );
+    }
 }
 
 #[test]
@@ -543,6 +757,93 @@ fn a_stalled_guest_drops_packets_without_blocking_other_peers() {
     a.shutdown().unwrap();
     b.shutdown().unwrap();
     c.shutdown().unwrap();
+}
+
+#[test]
+fn saturated_receiver_resumes_without_corruption_and_can_reply() {
+    let root = directory();
+    let (a, mut sa, ma) = start(root.path(), 11);
+    let (b, mut sb, mb) = start(root.path(), 12);
+    const OFFERED: u64 = 4096;
+    for sequence in 0..OFFERED {
+        send(&mut sa, &sequenced_frame(11, 12, 1514, sequence));
+    }
+    wait_until(|| {
+        let snapshot = ma.snapshot();
+        snapshot.peer_packets_sent + snapshot.peer_packets_dropped == OFFERED
+    });
+    let accepted = ma.snapshot().peer_packets_sent;
+    assert!(accepted > 0 && accepted < OFFERED);
+    let mut previous = None;
+    for _ in 0..accepted {
+        let arrived = receive(&mut sb);
+        assert_eq!(arrived.len(), 1514);
+        let sequence = u64::from_be_bytes(arrived[34..42].try_into().unwrap());
+        assert!(sequence < OFFERED);
+        assert!(
+            previous.is_none_or(|last| sequence > last),
+            "duplicate/reordered datagram"
+        );
+        assert_eq!(arrived, sequenced_frame(11, 12, 1514, sequence));
+        previous = Some(sequence);
+    }
+    wait_until(|| mb.snapshot().peer_packets_received == accepted);
+    let marker = sequenced_frame(11, 12, 66, OFFERED);
+    send(&mut sa, &marker);
+    assert_eq!(receive(&mut sb), marker);
+    let reply = sequenced_frame(12, 11, 1514, OFFERED);
+    send(&mut sb, &reply);
+    assert_eq!(receive(&mut sa), reply);
+    a.shutdown().unwrap();
+    b.shutdown().unwrap();
+}
+
+#[test]
+fn seeded_malformed_datagram_flood_does_not_poison_the_next_packet() {
+    use std::os::unix::net::UnixDatagram;
+    let root = directory();
+    let (a, _sa, _) = start(root.path(), 11);
+    let (b, mut sb, mb) = start(root.path(), 12);
+    let tx = UnixDatagram::bind(root.path().join("11/tx-12.sock")).unwrap();
+    tx.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+    let mut seed = 0x504e_4554_u64;
+    for index in 0..1024 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let mut bytes = vec![0; seed as usize % 2048];
+        for byte in &mut bytes {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            *byte = (seed >> 32) as u8;
+        }
+        // Deterministically invalid magic, including zero-length/truncated and
+        // oversized datagrams. No random accidental valid packet is allowed.
+        if !bytes.is_empty() {
+            bytes[0] = 0;
+        }
+        tx.send_to(&bytes, root.path().join("12/net.sock")).unwrap();
+        if index % 128 == 127 {
+            wait_until(|| mb.snapshot().peer_packets_dropped == index + 1);
+        }
+    }
+    let generation = |slot: &str| -> Vec<u8> {
+        let record: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.path().join(slot).join("peer.json")).unwrap(),
+        )
+        .unwrap();
+        serde_json::from_value(record["generation"].clone()).unwrap()
+    };
+    let frame = sequenced_frame(11, 12, 1514, 1024);
+    let mut valid = b"PVN1".to_vec();
+    valid.extend(generation("11"));
+    valid.extend(generation("12"));
+    valid.extend_from_slice(&frame);
+    tx.send_to(&valid, root.path().join("12/net.sock")).unwrap();
+    assert_eq!(receive(&mut sb), frame);
+    assert_eq!(mb.snapshot().peer_packets_received, 1);
+    assert_eq!(mb.snapshot().peer_packets_dropped, 1024);
+    a.shutdown().unwrap();
+    b.shutdown().unwrap();
 }
 
 #[test]
@@ -663,7 +964,7 @@ fn named_network_uses_its_subnet_gateway_and_live_container_dns() {
     let root = directory();
     let gateway: Ipv4Addr = "172.23.0.254".parse().unwrap();
     let address_a: Ipv4Addr = "172.23.0.11".parse().unwrap();
-    let address_b: Ipv4Addr = "172.23.0.12".parse().unwrap();
+    let address_b: Ipv4Addr = "172.23.0.1".parse().unwrap();
     let named_config = |ip, name: &str| {
         let mut cfg = config(root.path(), 11);
         let peer = cfg.peer_network.as_mut().unwrap();
