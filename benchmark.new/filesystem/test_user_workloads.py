@@ -15,6 +15,15 @@ SPEC.loader.exec_module(RUNNER)
 
 
 class ObserverContractTests(unittest.TestCase):
+    def test_instrumentation_is_rejected_before_launch(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(RUNNER.subprocess, "Popen") as launch,
+        ):
+            with self.assertRaisesRegex(ValueError, "instrumented execution"):
+                RUNNER.one_trial(Path(tmp), {"diagnostic_profile": True}, "M02", 1, "vm-writeback")
+            launch.assert_not_called()
+
     def observe(
         self,
         *,
@@ -95,6 +104,8 @@ class ObserverContractTests(unittest.TestCase):
         self.assertEqual(record["ready_ns"], 15)
         self.assertEqual(record["exit_after_done_ns"], 10)
         self.assertEqual(len(record["rows"]), 3)
+        for field in ("output_export_ns", "host_validation_ns", "cleanup_ns"):
+            self.assertGreaterEqual(record[field], 0)
         verification.assert_called_once()
         self.assertFalse((folder / "work").exists())
         self.assertTrue((folder / "result.json").exists())

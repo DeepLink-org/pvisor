@@ -192,6 +192,13 @@ Design: 负载、对照、控制变量与有效样本判据。
   stock内核来源、virtio-blk与ext4磁盘路径，不能解释为纯VMM开销。
   不沿用历史七工具数字补格。
   工程开关归因和请求计数保留在B-FS-ENG/B-FS-DIAG分析页。
+- **可选 AgentENV 共同操作对照：** `benchmark.new/filesystem/user_workloads_agentenv.py`
+  复用同一19用例入口和原版 AgentENV，E2B 2.50.0 创建、执行、导出与回收沙箱；
+  相同 payload/输入，N3新环境、3轮、2 vCPU/512 MiB、90秒 workload 上限。
+  主指标为 work_ns，final_sync_ns 单列，创建/上传/退出及Bundle/导出不进入操作排名。
+  M10/M12 内联 fsync 仍属 work；不声称两边持久化保证或整系统预算相同。
+  独立服务预算和存储路径必须记录；原有默认九后端不变，失败策略同上。
+  复现见 [AgentENV 后端](../benchmark.new/filesystem/AGENTENV.md)。
 - **历史实验设计（原始样本保持原口径）：**
 - **实验设计：**
   - 七项负载：2,048 个文件的遍历、64 MiB 读取并校验、256 个文件写入、git status、rg、小型 Cargo 编译、离线 npm 安装。每项代表一类常见的 Agent 工具操作。
