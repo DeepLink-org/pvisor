@@ -1230,3 +1230,7 @@ These are engineering correctness probes, not live SWE or latency guarantees.
 Build stages mark their private upper root with the base root's logical metadata,
 so COPY ownership is honored during RUN with `--network=none` too. The physical
 upper directory remains private (0700).
+
+Managed volume directories retain guest-selected modes across reopen, including
+image copy-up permissions. They must remain owned directories (never symlinks);
+the enclosing store and volumes catalog remain private 0700 directories.
