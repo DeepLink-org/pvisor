@@ -438,6 +438,11 @@ docs-serve locale="zh" *args:
 check-core-budget *args:
     python3 scripts/ci/check_core_budget.py "$@"
 
+# 重新生成已提交的预算基线（scripts/ci/core-budget.json）；有意扩大预算的改动在同一次提交里带上基线更新
+[group("11. 架构预算与发行校验")]
+update-core-budget:
+    python3 scripts/ci/check_core_budget.py --write-baseline scripts/ci/core-budget.json
+
 # 检查版本、tag、主干关系与 lockfile；其余参数传给校验器
 [group("11. 架构预算与发行校验")]
 check-release-version *args:

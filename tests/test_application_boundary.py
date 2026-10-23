@@ -197,6 +197,64 @@ class ApplicationBoundaryTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "core dependency budget exceeded"):
                 budget.main()
 
+    def test_baseline_ratchet_fails_only_on_growth_and_names_the_update_command(self):
+        with ExitStack() as resources:
+            budget = _make_budget()
+            tmp_path = Path(
+                resources.enter_context(tempfile.TemporaryDirectory(prefix="pvisor-test-"))
+            ).resolve()
+            captured_stdout = io.StringIO()
+            resources.enter_context(redirect_stdout(captured_stdout))
+            resources.callback(os.chdir, os.getcwd())
+            os.chdir(tmp_path)
+            (tmp_path / "crates" / "pvisor" / "src").mkdir(parents=True)
+            (tmp_path / "crates" / "pvisor" / "src" / "lib.rs").write_text("pub struct Value;\n")
+            (tmp_path / "crates" / "pvisor-core" / "src").mkdir(parents=True)
+            (tmp_path / "crates" / "pvisor-core" / "src" / "lib.rs").write_text(
+                "pub struct Core;\n"
+            )
+            resources.enter_context(
+                mock.patch.object(
+                    budget,
+                    "dependency_closure",
+                    lambda package: {f"{package} v0.3.0", "pvisor-core v0.3.0"},
+                )
+            )
+            resources.enter_context(
+                mock.patch.object(
+                    budget.subprocess, "check_output", lambda *args, **kwargs: "rustc test"
+                )
+            )
+            baseline_path = tmp_path / "core-budget.json"
+            resources.enter_context(
+                mock.patch(
+                    "sys.argv",
+                    ["check_core_budget.py", "--write-baseline", str(baseline_path)],
+                )
+            )
+            budget.main()
+            baseline = json.loads(baseline_path.read_text())
+            assert baseline["dependencies"] == 1
+            assert baseline["workspace_source_lines"] == 2
+            assert baseline["core_public_declarations"] == 1
+            assert "update-core-budget" in baseline["note"]
+            # At or below the recorded baseline the ratchet passes...
+            resources.enter_context(
+                mock.patch(
+                    "sys.argv",
+                    ["check_core_budget.py", "--baseline", str(baseline_path)],
+                )
+            )
+            budget.main()
+            # ...and any growth fails with the regeneration command.
+            (tmp_path / "crates" / "pvisor-core" / "src" / "lib.rs").write_text(
+                "pub struct Core;\npub enum Extra;\n"
+            )
+            with self.assertRaisesRegex(
+                AssertionError, "core_public_declarations 2 exceeds.*update-core-budget"
+            ):
+                budget.main()
+
     def test_documentation_json_provenance_tracks_moved_application_sources(self):
         tree = ast.parse((ROOT / "scripts/record-doc-json.py").read_text())
         sources = next(

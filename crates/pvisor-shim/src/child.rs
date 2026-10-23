@@ -857,8 +857,27 @@ fn vm_runner_main() -> Result<i32> {
     let gated_attachment = match plan.egress_gate.as_ref() {
         Some(gate) => match wait_for_egress_rules(gate, std::time::Duration::from_secs(3)) {
             Ok(Some(rules)) => {
-                match crate::network::VmNetworkAttachment::from_egress_rules(&rules, &plan.id) {
-                    Ok(attachment) => Some(attachment),
+                // The sidecar's rule syntax has no private-address opt-in;
+                // the pod-level `io.pvisor.vm.network.allow-private`
+                // annotation carries it, mirroring the annotation path.
+                let allow_private =
+                    crate::plan::vm_network_allow_private_enabled(&plan.annotations);
+                match crate::network::VmNetworkAttachment::from_egress_rules(
+                    &rules,
+                    &plan.id,
+                    allow_private,
+                ) {
+                    Ok(attachment) => {
+                        // The sidecar's runtime API only updates nftables in
+                        // the pod netns, which VM traffic never traverses;
+                        // republishing the gate is the dynamic-policy channel.
+                        crate::network::watch_gate(
+                            attachment.egress_runtime().clone(),
+                            gate,
+                            allow_private,
+                        );
+                        Some(attachment)
+                    }
                     Err(error) => {
                         eprintln!(
                             "pvisor shim: egress policy compile failed; \
