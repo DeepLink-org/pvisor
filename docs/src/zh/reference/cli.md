@@ -7,8 +7,8 @@ Job 生命周期和变更审查命令直接操作 Job，不新增 `job` 子命�
 Host、OCI VM 和透明 host-rootfs VM 的完整命令示例见
 [使用 pVisor 运行工作负载](../guides/executors/index.md)。
 
-根帮助（`pvisor` 或 `pvisor --help`）按 **Commands**（容器命令及 `spawn`、`status`、`kill`）、**Changes**（`review`、`apply`、`drop`、`inspect`）、
-**Checkpoints**（`checkpoint`、`suspend`、`resume`、`fork`）和 **Tools**
+根帮助（`pvisor` 或 `pvisor --help`）按 **Commands**（兼容 Docker 的容器命令）、
+**Agent Commands**（`spawn`、`status`、`kill`、`review`、`apply`、`drop`、`inspect`、`checkpoint`、`suspend`、`resume`、`fork`）和 **Tools**
 （已安装的 `replay`/`tui` 伴随程序、`cache`、`feature`、`help`）分组。帮助提供简短的
 run-review-apply 示例；用 `pvisor help COMMAND` 查看详细选项。
 
@@ -25,9 +25,9 @@ pvisor help suspend
 
 ## 容器命令 {#container-commands}
 
-`run`、`pull`、`images`、`rmi`、`exec`、`ps`、`start`、`stop`、`rm`、`logs`
+`run`、`build`、`pull`、`images`、`rmi`、`exec`、`ps`、`start`、`stop`、`rm`、`logs`
 提供 Docker 风格的选项子集，每个容器使用独立 VM，无需全局 daemon。
-用 `pvisor COMMAND --help` 查看支持的参数。原有 `pvisor docker COMMAND` 保留为隐藏兼容入口。
+用 `pvisor COMMAND --help` 查看支持的参数。
 `--safe`、`--stage`、`--executor` 等 Job 参数属于 `spawn`，不属于容器 `run`。
 
 ```bash
@@ -41,8 +41,42 @@ pvisor rm redis
 
 `pull --platform linux/amd64` 或 `linux/arm64` 选择镜像架构，`linux/arm64/v8` 是别名。
 省略时使用原生架构。可以下载异构镜像，但尚未实现 CPU 模拟，`run` 和 `start` 只能运行原生镜像。
-该接口不实现 Docker Engine API、Build、Compose 或 credential helper。
+该接口不实现 Docker Engine API、Compose 或 credential helper。
 容器使用独立的镜像存储；review/apply/drop 和 checkpoint 等命令仍操作 Job。
+
+### 镜像构建
+
+```bash
+pvisor build -t app:local --network=none .
+pvisor run --rm app:local
+pvisor build -f Dockerfile --build-arg VERSION=1 \
+  --output type=oci,dest=app.oci.tar -t app:local .
+```
+
+`build` 支持本地上下文、`-f`、可重复的 `-t`/`--build-arg`、`--target`、
+`--platform`（仅原生架构）、`--pull`、`--no-cache`、`-q`、`--iidfile`、
+`-o type=oci,dest=PATH`、`--network default/none`、`--cpus`、`-m/--memory`、
+`--timeout`（每条 RUN 的秒数，默认 600）和 `--progress auto/plain`。
+每条 RUN 使用新 VM，只能写入私有 rootfs overlay。上下文先捕获为私有副本，
+仅由 COPY 复制，RUN 不挂载上下文。超时或失败会回收 VMM；前端死亡会关闭
+生命周期管道并终止 VMM。后台进程不能跨 RUN 存活。默认网络沿用公开 IPv4
+TCP/DNS 策略；`none` 不创建网卡。CPU/内存参数设置整个 VM 的资源。
+
+支持的 Dockerfile 指令包括 FROM/AS、RUN、本地 COPY、已完成阶段的 COPY --from、
+ARG、ENV、WORKDIR、USER、CMD、ENTRYPOINT、SHELL、LABEL、EXPOSE、VOLUME 元数据和
+STOPSIGNAL。COPY 支持 JSON/glob、数字 --chown 和八进制 --chmod；支持
+`.dockerignore` 及 Dockerfile 专用 ignore。变量支持简单 `$NAME`/`${NAME}` 展开。
+`--build-arg NAME` 仅转发指定变量，构建参数不用于存放秘密。
+产物是单个扁平 OCI layer，保留合并后的删除、guest 属主/权限、符号链接和硬链接。
+成功后登记本地标签，可直接 run；普通失败清理私有暂存并保留旧标签。
+前端突然死亡可能留下未发布的暂存目录。OCI 导出必须使用新文件。
+尚无指令缓存，接受 `--no-cache`，每次执行所有步骤。
+
+这是 Docker build 子集：拒绝远程/stdin 上下文、ADD、ONBUILD、heredoc、RUN mount、
+secret/SSH/cache mount、名称形式 COPY 属主、外部镜像 COPY、扩展变量替换、
+异构执行、设备节点和文件 capabilities。COPY 源路径不能穿过符号链接。
+尚不支持 push、Docker archive 导出或多平台构建。Apple Silicon/HVF 有原生验收覆盖，
+Linux/KVM 需要单独进行运行时验收。
 
 ## Job owner 与持久操作 {#host-agentctl}
 
@@ -192,7 +226,6 @@ Session 决定写入当前 Job 目录的 `audit-policy.json`，workspace 和 use
 ```text
 Commands:
   run         在独立 VM 中创建并运行容器
-  spawn       启动 Job
   pull        下载 OCI 镜像
   images      列出本地镜像
   rmi         删除镜像引用
@@ -202,22 +235,22 @@ Commands:
   stop        停止容器
   rm          删除容器
   logs        查看容器输出
+
+Agent Commands:
+  spawn       启动 Job
   status      查看 Job 状态
   kill        终止 Job
-
-Changes:
   review      审查暂存变化与执行证据
   apply       接受选定的暂存变化
   drop        丢弃暂存变化
   inspect     只读查看 Job 文件系统
-
-Checkpoints:
   checkpoint  create, list, show, delete, verify, import-base, verify-base, gc
   suspend     保存执行状态并暂停 Job
   resume      继续暂停的 Job
   fork        从暂存文件或 VM 执行状态创建分支
 
 Tools:
+  cache       构建、发布与查询缓存
   replay      回放 Agent 轨迹（安装后可见）
   tui         交互式 Job 终端（安装后可见）
   feature     查询运行时实验特性

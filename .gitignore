@@ -21,6 +21,8 @@ __pycache__/
 
 .build-tmp/
 build/
+# Rust source for the Dockerfile builder is not a generated build directory.
+!/crates/pvisor/src/docker/build/
 /dist/
 .worktrees/
 review_project/

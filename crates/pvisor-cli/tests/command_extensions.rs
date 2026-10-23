@@ -28,7 +28,7 @@ fn container_run_and_job_spawn_have_distinct_help_and_argument_contracts() {
     assert!(!temporary.path().join("jobs").exists());
     assert!(!temporary.path().join("containers").exists());
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
-        .args(["docker", "images", "-q"])
+        .args(["images", "-q"])
         .env("PVISOR_DOCKER_HOME", temporary.path().join("containers"))
         .output()
         .unwrap();
@@ -101,8 +101,7 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_spawn() {
     assert!(!help.contains("--vm-"), "{help}");
     let headings = [
         "Commands:",
-        "Changes:",
-        "Checkpoints:",
+        "Agent Commands:",
         "Tools:",
         "Options:",
         "Examples:",
@@ -120,33 +119,50 @@ fn kernel_help_discovers_commands_and_default_execution_dispatches_spawn() {
     for (start, end, names) in [
         (
             "Commands:\n",
-            "Changes:\n",
+            "Agent Commands:\n",
             &[
-                "run", "spawn", "status", "kill", "pull", "images", "rmi", "exec", "ps", "start",
-                "stop", "rm", "logs",
+                "run", "build", "pull", "images", "rmi", "exec", "ps", "start", "stop", "rm",
+                "logs",
             ][..],
         ),
         (
-            "Changes:\n",
-            "Checkpoints:\n",
-            &["inspect", "review", "apply", "drop"][..],
-        ),
-        (
-            "Checkpoints:\n",
+            "Agent Commands:\n",
             "Tools:\n",
-            &["checkpoint", "suspend", "resume", "fork"][..],
+            &[
+                "spawn",
+                "status",
+                "kill",
+                "review",
+                "apply",
+                "drop",
+                "inspect",
+                "checkpoint",
+                "suspend",
+                "resume",
+                "fork",
+            ][..],
         ),
+        ("Tools:\n", "Options:\n", &["cache", "feature", "help"][..]),
     ] {
         let section = help.split(start).nth(1).unwrap().split(end).next().unwrap();
         for name in names {
             assert!(section.contains(&format!("  {name} ")), "{section}");
         }
-        assert!(!section.contains("  tui "), "{section}");
+        if start != "Tools:\n" {
+            assert!(!section.contains("  tui "), "{section}");
+        }
     }
     for name in ["service", "daemon", "memory-pool"] {
         assert!(!help.contains(&format!("\n  {name} ")), "{help}");
     }
-    for heading in ["Jobs:", "Filesystems:", "Services:", "Trajectories:"] {
+    for heading in [
+        "Changes:",
+        "Checkpoints:",
+        "Jobs:",
+        "Filesystems:",
+        "Services:",
+        "Trajectories:",
+    ] {
         assert!(!help.contains(heading), "{help}");
     }
     for args in [vec!["--help"], vec!["-h"], vec!["help"]] {
@@ -339,8 +355,8 @@ fn isolated_core_keeps_job_commands_and_runs_without_extensions() {
     assert!(output.status.success());
     let help = String::from_utf8_lossy(&output.stdout);
     for name in [
-        "run", "spawn", "status", "kill", "pull", "images", "rmi", "exec", "ps", "start", "stop",
-        "rm", "logs", "inspect", "fork", "apply", "drop", "cache", "help",
+        "run", "build", "spawn", "status", "kill", "pull", "images", "rmi", "exec", "ps", "start",
+        "stop", "rm", "logs", "inspect", "fork", "apply", "drop", "cache", "help",
     ] {
         assert!(help.contains(&format!("\n  {name} ")), "{help}");
     }
@@ -417,6 +433,7 @@ fn unregistered_names_follow_default_execution_without_command_aliases() {
     let kernel = temporary.path().join("pvisor");
     fs::copy(env!("CARGO_BIN_EXE_pvisor"), &kernel).unwrap();
     for name in [
+        "docker",
         "snapshot",
         "extensions",
         "cluster",

@@ -2,9 +2,12 @@
 // This file is entirely commented and excluded from Go test discovery.
 // Original Ginkgo assertions are preserved under upstream/test/e2e/.
 //
-// Source: build_test.go, buildx_inspect_test.go
-// podmanTest.Podman([]string{"build", "-t", "test", "."})
-// Disabled: pVisor has no build/buildx frontend.
+// Source: buildx_inspect_test.go and unsupported options in build_test.go
+// podmanTest.Podman([]string{"buildx", "inspect"})
+// Disabled: no buildx frontend, remote/stdin contexts, ADD, build mounts/secrets,
+// instruction cache/layer controls or Podman build-specific flags. Local build
+// contracts are active in build_test.go; see UPSTREAM.md for partial-case scope.
+// The original RUN-exit-code relay (5) is unported: pVisor build returns 1.
 //
 // Source: create_test.go, inspect_test.go, wait_test.go, restart_test.go,
 // attach_test.go, cp_test.go, commit_test.go, load_test.go, import_test.go

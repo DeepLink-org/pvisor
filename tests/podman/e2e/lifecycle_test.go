@@ -378,7 +378,7 @@ func TestPublishedPortConflictPreservesOwner(t *testing.T) {
 	address := e.publishedAddress()
 	// Docker-style engine startup failures use 125; Podman's source expects 126.
 	_, stderr := e.want(125, "", "run", "-d", "--name", second, "-p", address+":8080", e.image, "sleep", "300")
-	if !strings.Contains(strings.ToLower(stderr), "address already in use") {
+	if message := strings.ToLower(stderr); !strings.Contains(message, "address already in use") && !strings.Contains(message, "address in use") {
 		t.Fatalf("port collision did not report its cause: %q", stderr)
 	}
 	e.echo(address, "original owner still works")

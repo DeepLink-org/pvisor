@@ -9,17 +9,8 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
+mod build;
 mod progress;
-
-#[derive(Debug, Args)]
-#[command(
-    about = "Docker command subset using one rootless VM per container",
-    long_about = "Docker command subset using one rootless VM per container.\nNo Docker daemon or global Linux VM is required.\nOnly options listed in each command's help are supported; unknown options fail.\nDocker Engine API, build, Compose, UDP, IPv6 and terminal resizing are not implemented."
-)]
-pub(super) struct DockerArgs {
-    #[command(subcommand)]
-    pub(super) command: DockerCommand,
-}
 
 impl DockerCommand {
     pub(super) fn failure_exit_code(&self) -> i32 {
@@ -33,6 +24,8 @@ impl DockerCommand {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum DockerCommand {
+    /// Build a local Dockerfile using VM-isolated RUN instructions.
+    Build(build::Build),
     /// Create and run a new container in its own VM.
     Run(Box<Run>),
     /// Download an image from an OCI registry.
@@ -292,8 +285,12 @@ fn port(value: &str) -> anyhow::Result<docker::Port> {
 }
 
 pub(super) fn run(command: DockerCommand) -> anyhow::Result<i32> {
+    if let DockerCommand::Build(args) = command {
+        return build::run(args);
+    }
     let store = Store::discover()?;
     match command {
+        DockerCommand::Build(_) => unreachable!(),
         DockerCommand::Pull { image, platform } => {
             let image = {
                 let mut display = progress::PullDisplay::new(&image);
@@ -688,20 +685,20 @@ mod tests {
     use clap::Parser;
     #[derive(Debug, Parser)]
     struct Cli {
-        #[command(flatten)]
-        args: DockerArgs,
+        #[command(subcommand)]
+        command: DockerCommand,
     }
     #[test]
     fn docker_platform_options_precede_the_image_and_preserve_guest_flags() {
         let parsed =
-            Cli::try_parse_from(["docker", "pull", "--platform=linux/amd64", "alpine"]).unwrap();
-        let DockerCommand::Pull { platform, image } = parsed.args.command else {
+            Cli::try_parse_from(["pvisor", "pull", "--platform=linux/amd64", "alpine"]).unwrap();
+        let DockerCommand::Pull { platform, image } = parsed.command else {
             panic!()
         };
         assert_eq!(platform.as_deref(), Some("linux/amd64"));
         assert_eq!(image, "alpine");
         let parsed = Cli::try_parse_from([
-            "docker",
+            "pvisor",
             "run",
             "--platform",
             "linux/arm64/v8",
@@ -710,14 +707,14 @@ mod tests {
             "--platform=guest",
         ])
         .unwrap();
-        let DockerCommand::Run(args) = parsed.args.command else {
+        let DockerCommand::Run(args) = parsed.command else {
             panic!()
         };
         assert_eq!(args.platform.as_deref(), Some("linux/arm64/v8"));
         assert_eq!(args.invocation, ["alpine", "echo", "--platform=guest"]);
         for command in ["pull", "run"] {
             assert!(
-                Cli::try_parse_from(["docker", command, "--platform=windows/amd64", "alpine",])
+                Cli::try_parse_from(["pvisor", command, "--platform=windows/amd64", "alpine",])
                     .is_err()
             );
         }
@@ -725,7 +722,7 @@ mod tests {
     #[test]
     fn command_names_and_guest_arguments_have_separate_boundaries() {
         let parsed = Cli::try_parse_from([
-            "docker",
+            "pvisor",
             "run",
             "--name",
             "test",
@@ -735,21 +732,27 @@ mod tests {
             "echo --privileged",
         ])
         .unwrap();
-        let DockerCommand::Run(args) = parsed.args.command else {
+        let DockerCommand::Run(args) = parsed.command else {
             panic!()
         };
         assert_eq!(args.invocation, ["alpine", "sh", "-c", "echo --privileged"]);
-        assert!(Cli::try_parse_from(["docker", "run", "--privileged", "alpine"]).is_err());
-        let parsed = Cli::try_parse_from(["docker", "run", "alpine", "--help"]).unwrap();
-        let DockerCommand::Run(args) = parsed.args.command else {
+        assert!(Cli::try_parse_from(["pvisor", "run", "--privileged", "alpine"]).is_err());
+        let parsed = Cli::try_parse_from(["pvisor", "run", "alpine", "--help"]).unwrap();
+        let DockerCommand::Run(args) = parsed.command else {
             panic!()
         };
         assert_eq!(args.invocation, ["alpine", "--help"]);
-        assert!(Cli::try_parse_from(["docker", "build", "."]).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(["pvisor", "build", "."])
+                .unwrap()
+                .command,
+            DockerCommand::Build(_)
+        ));
+        assert!(Cli::try_parse_from(["pvisor", "build", "--privileged", "."]).is_err());
         for command in [
-            "run", "pull", "images", "rmi", "exec", "ps", "start", "stop", "rm", "logs",
+            "run", "build", "pull", "images", "rmi", "exec", "ps", "start", "stop", "rm", "logs",
         ] {
-            let error = Cli::try_parse_from(["docker", command, "--help"]).unwrap_err();
+            let error = Cli::try_parse_from(["pvisor", command, "--help"]).unwrap_err();
             assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         }
     }

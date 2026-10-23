@@ -10,6 +10,7 @@ pVisor contracts, not the number of unchanged upstream cases passing.
 
 | Source families | Remaining work | State |
 | --- | --- | --- |
+| `070-build.bats`, `build_test.go` | 6 Bats and 10 Go build contracts enabled: basic, paths, iidfile, context errors/filtering/links/ownership and launch configuration; the two source files contain 37 system cases and 45 Ginkgo cases, not all covered | Remaining cases need individual audit; parallel builds, more metadata combinations and the full COPY-ignore vector remain unported. Podman RUN exit-status relay differs from the Docker-profile exit 1 |
 | `075-exec.bats`, `exec_test.go`, `run_exit_test.go`, `run_passwd_test.go` | Error codes, live exec cleanup, current guest passwd, inherited identity, umask, literal argv and binary/large I/O | 25 process/identity/image contracts passed in `e2e/process_test.go`, within the full 101-case profile; remaining identity/group/error variants still need audit |
 | `010-images.bats`, `images_test.go`, `rmi_test.go`, `pull_test.go` | Full/short image selection, force/batch removal, filtering, native/foreign platform pull and cache identity | Existing coverage is partial; platform/ref/filter variants still pending |
 | `030-run.bats`, `run_env_test.go`, `run_entrypoint_test.go`, `run_working_dir_test.go` | Defaults, environment import/removal, entrypoint/CMD precedence, workdir symlinks and identity metadata | Existing coverage is partial; inspect each supported case before concluding |
@@ -23,12 +24,15 @@ pVisor contracts, not the number of unchanged upstream cases passing.
 
 ## Explicitly unsupported: exclude without counting as passing
 
-The current CLI declares exactly ten container commands and their documented
+The current CLI declares eleven container/build commands and their documented
 options. Tests requiring the following absent capabilities are excluded; original
 sources remain untouched. Mixed source files still need supported-case review.
 
-- Build/buildx, Compose, tag/push/save/load/import/export/commit/history/search,
+- Buildx, Compose, tag/push/save/load/import/export/commit/history/search,
   manifest/artifact/trust/signature operations and registry login/credentials.
+- Build contexts over URL/stdin, ADD/ONBUILD, heredocs, secret/SSH/cache mounts,
+  external-image COPY, instruction-cache/layer controls, custom ignore files,
+  Podman-specific build flags and non-OCI output. Supported local builds are active.
 - create/inspect/wait/restart/attach/cp/kill/pause/top/stats/events/diff/rename,
   prune/update, volume/network management, clone and existence convenience APIs.
 - Docker/Podman Engine sockets, remote/SSH/connection APIs, system service,
@@ -50,7 +54,6 @@ These are evaluation items, not permanent exclusions and not passing tests.
 | Area | Why it needs review | What would unblock a useful test |
 | --- | --- | --- |
 | Anonymous-volume physical deletion | No public volume list/inspect API exposes anonymous backing identity; fresh-container isolation does not prove deletion | Approve a separate storage white-box contract, or add a public observation API in a separately scoped change |
-| Custom OCI metadata combinations | Upstream builds many images with USER/WORKDIR/ENTRYPOINT/CMD/Volumes/StopSignal; pVisor has no build/tag/push and the black-box runner must not forge its catalog | Reusable externally hosted immutable fixture images, or an approved local registry fixture; evaluate before deferring individual metadata cases |
 | Registry faults/auth/TLS/mirror fallback/partial downloads | Needs controlled registry/proxy/certificate fixtures; upstream transport configuration is not implemented | Review which public-registry guarantees belong in the supported profile; reuse runtime OCI unit fixtures where appropriate |
 | Exact cross-VM mmap/locking coherence | Separate guest kernels do not share one page cache; close-to-open coverage does not establish coherence of open mappings | Explicit consistency/locking contract and a guest probe; do not silently convert these to ordinary read/write tests |
 | Heavy image/service/toolbox suites | Fedora/systemd/build/toolchains and host kernel/cgroup prerequisites make many original fixtures inappropriate; some commands are unsupported outright | Identify the assertion worth retaining and a small portable fixture; otherwise retain as deferred with the exact source case |

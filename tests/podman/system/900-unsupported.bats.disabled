@@ -4,10 +4,11 @@
 # Enable a case only after its commands/options are implemented, then port the
 # original assertions and run them against the pVisor container commands.
 
-# Source: 070-build.bats, 850-compose.bats.
-# run_cli 0 build -t "$NAME" .
+# Source: 850-compose.bats; unsupported options in 070-build.bats.
 # run_cli 0 compose up -d
-# Disabled: no image build or Compose frontend.
+# Disabled: no Compose frontend. Local build contracts are active in 070-build.bats.
+# Buildx, remote/stdin contexts, ADD, secret/cache/SSH mounts, layer caching,
+# custom --ignorefile and Podman-specific flags remain unsupported; see REVIEW.md.
 
 # Source: 035-logs.bats, 045-start.bats, 065-cp.bats, 120-load.bats,
 # 125-import.bats, 126-commit.bats, 130-kill.bats.

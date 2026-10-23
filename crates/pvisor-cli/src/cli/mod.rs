@@ -49,9 +49,6 @@ struct Cli {
 enum Command {
     #[command(flatten)]
     Container(docker::DockerCommand),
-    /// Run Docker-compatible commands in independent rootless VMs.
-    #[command(hide = true)]
-    Docker(docker::DockerArgs),
     /// List runtime experiments.
     Feature(crate::cli::features::FeatureArgs),
     /// Build, publish and query image, rootfs and workspace caches.
@@ -103,12 +100,26 @@ fn grouped_commands(command: &clap::Command) -> String {
         (
             "Commands",
             &[
-                "run", "spawn", "status", "kill", "pull", "images", "rmi", "exec", "ps", "start",
-                "stop", "rm", "logs",
+                "run", "build", "pull", "images", "rmi", "exec", "ps", "start", "stop", "rm",
+                "logs",
             ],
         ),
-        ("Changes", &["review", "apply", "drop", "inspect"]),
-        ("Checkpoints", &["checkpoint", "suspend", "resume", "fork"]),
+        (
+            "Agent Commands",
+            &[
+                "spawn",
+                "status",
+                "kill",
+                "review",
+                "apply",
+                "drop",
+                "inspect",
+                "checkpoint",
+                "suspend",
+                "resume",
+                "fork",
+            ],
+        ),
         ("Tools", &["cache", "replay", "tui", "feature", "help"]),
     ];
     let width = command
@@ -288,11 +299,7 @@ pub fn main() -> anyhow::Result<()> {
         Ok(matches) => matches,
         Err(error) => {
             let offset = command_offset(&args);
-            if error.use_stderr()
-                && (args.get(offset).is_some_and(|arg| arg == "run")
-                    || args.get(offset).is_some_and(|arg| arg == "docker")
-                        && args.get(offset + 1).is_some_and(|arg| arg == "run"))
-            {
+            if error.use_stderr() && args.get(offset).is_some_and(|arg| arg == "run") {
                 error.print()?;
                 finish(125);
                 return Ok(());
@@ -303,9 +310,6 @@ pub fn main() -> anyhow::Result<()> {
     let mut parsed = Cli::from_arg_matches(&matches)?;
     if let Command::Feature(query) = &parsed.command {
         return query.print(&parsed.features);
-    }
-    if let Command::Docker(args) = parsed.command {
-        parsed.command = Command::Container(args.command);
     }
     if let Command::Container(command) = parsed.command {
         anyhow::ensure!(
@@ -338,7 +342,7 @@ pub fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     match parsed.command {
-        Command::Container(_) | Command::Docker(_) => {
+        Command::Container(_) => {
             unreachable!("container commands dispatch before Job startup")
         }
         Command::Feature(_) => unreachable!("feature queries return without contacting Host"),

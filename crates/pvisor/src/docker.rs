@@ -21,6 +21,9 @@ use std::time::{Duration, Instant};
 
 pub use crate::image::oci::PullProgress;
 
+/// VM-isolated Dockerfile builds and OCI image publication.
+pub mod build;
+
 fn native_platform() -> String {
     let architecture = match std::env::consts::ARCH {
         "aarch64" => "arm64",
@@ -675,11 +678,24 @@ impl Store {
         self.save(&instance)?;
         Ok(instance)
     }
-    /// Open/create a managed volume directory. Volumes are retained independently.
+    /// Open/create an owned managed volume beneath the private store.
+    /// Guest-controlled modes are retained; volumes survive container removal.
     pub fn volume(&self, name: &str) -> anyhow::Result<PathBuf> {
         ensure!(valid_name(name), "invalid volume name");
         let path = self.root.join("volumes").join(name);
-        private_directory(&path)?;
+        use std::os::unix::fs::DirBuilderExt;
+        match fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        // Guest copy-up/chmod controls the volume mode; its parent stays private.
+        let metadata = fs::symlink_metadata(&path)?;
+        ensure!(
+            metadata.is_dir() && metadata.uid() == unsafe { libc::geteuid() },
+            "managed volume must be an owned directory: {}",
+            path.display()
+        );
         Ok(path)
     }
     /// Launch a new generation; `start` never changes the pinned image or upper.
@@ -1687,6 +1703,26 @@ mod tests {
             instance.generation
         );
     }
+    #[test]
+    fn docker_volume_reopen_preserves_guest_modes_and_rejects_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let (_temporary, store, _) = fixture();
+        let volume = store.volume("data").unwrap();
+        fs::write(volume.join("keep"), b"retained").unwrap();
+        fs::set_permissions(&volume, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(store.volume("data").unwrap(), volume);
+        assert_eq!(fs::metadata(&volume).unwrap().mode() & 0o777, 0o755);
+        assert_eq!(fs::read(volume.join("keep")).unwrap(), b"retained");
+        assert_eq!(
+            fs::metadata(volume.parent().unwrap()).unwrap().mode() & 0o777,
+            0o700
+        );
+        symlink(&volume, volume.parent().unwrap().join("link")).unwrap();
+        assert!(store.volume("link").is_err());
+        fs::write(volume.parent().unwrap().join("file"), b"retained").unwrap();
+        assert!(store.volume("file").is_err());
+    }
+
     #[test]
     fn docker_remove_refuses_live_owners_and_retains_named_volumes() {
         let (_temporary, store, _) = fixture();

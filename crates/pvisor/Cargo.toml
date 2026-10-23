@@ -20,6 +20,7 @@ blake3.workspace = true
 dirs.workspace = true
 flate2.workspace = true
 fs2.workspace = true
+globset.workspace = true
 libc.workspace = true
 lru = "0.12.5"
 object_store = { version = "=0.13.2", default-features = false, features = ["aws", "tls-webpki-roots"] }

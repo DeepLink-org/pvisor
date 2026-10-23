@@ -2884,6 +2884,7 @@ dependencies = [
  "flate2",
  "fs2",
  "fuser",
+ "globset",
  "libc",
  "lru",
  "object_store",

@@ -73,7 +73,7 @@ pvisor fork last --state workspace --stage ./stage/branch -- codex
 
 ## 核心命令与服务边界
 
-顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存命令使用 `pvisor cache`，服务由 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。根帮助保持简洁，按 Commands（容器命令及 `spawn`、`status`、`kill`）、Changes（`review`、`apply`、`drop`、`inspect`）、Checkpoints（`checkpoint`、`suspend`、`resume`、`fork`）和 Tools（已安装的 `replay`/`tui` 伴随程序、`cache`、`feature`、`help`）分组，提供 run-review-apply 示例，并提示用 `pvisor help COMMAND` 查看详情。
+顶层按所操作的对象组织：Job 生命周期与工作区命令保持扁平。Sandbox 生命周期及可选池所有权使用独立 `pvisor-daemon` 程序；OCI 缓存命令使用 `pvisor cache`，服务由 `pvisor-daemon serve --cache` 提供。`replay` 从轨迹创建 Job，`tui` 是可选交互前端。根帮助分成三组：Commands 提供兼容 Docker 的容器操作，Agent Commands 提供 Job 执行、审查和检查点操作，Tools 提供缓存、回放、TUI 和特性查询工具。完整命令见 [CLI 参考](../reference/cli.md)，参数用 `pvisor help COMMAND` 查看。
 
 | 职责 | 入口 |
 |---|---|
