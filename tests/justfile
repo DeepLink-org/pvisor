@@ -95,7 +95,7 @@ test-task-routing:
 
     # Public inventory and group order are real Just output, without a mock parser.
     just --justfile "{{ repo }}/justfile" --summary | tr ' ' '\n' | LC_ALL=C sort > "$work/public"
-    printf '%s\n' default ci clean build check wheel fw fmt fmt-rust fmt-py lint lint-rust lint-py lint-workflows test test-rust test-py test-isolation smoke examples cases test-hvf-cold-restore test-vm-snapshot-state benchmark docs-build docs-serve check-core-budget check-release-version check-release-artifacts doctor | LC_ALL=C sort > "$work/expected"
+    printf '%s\n' default ci clean build check wheel fw fmt fmt-rust fmt-py lint lint-rust lint-py lint-workflows test test-rust test-py test-isolation smoke examples cases test-hvf-cold-restore test-vm-snapshot-state benchmark docs-build docs-serve check-core-budget update-core-budget check-release-version check-release-artifacts doctor | LC_ALL=C sort > "$work/expected"
     diff -u "$work/expected" "$work/public"
     just --justfile "{{ repo }}/justfile" --list --unsorted | sed -nE 's/.*\[([0-9]{2})\..*/\1/p' > "$work/groups"
     printf '%s\n' 01 02 03 04 05 06 07 08 09 10 11 12 > "$work/expected"

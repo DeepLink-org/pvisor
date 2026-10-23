@@ -734,10 +734,7 @@ impl ContainerPlan {
                 // Intranet mirrors and model hubs commonly resolve to
                 // private space; hostname rules reject private resolutions
                 // unless the task opts in.
-                let allow_private = self
-                    .annotations
-                    .get(format!("{ANNOTATION_PREFIX}vm.network.allow-private").as_str())
-                    .is_some_and(|value| value == "true");
+                let allow_private = vm_network_allow_private_enabled(&self.annotations);
                 let allow = self
                     .annotations
                     .get(format!("{ANNOTATION_PREFIX}vm.network.allow").as_str())
@@ -798,6 +795,17 @@ pub enum VmNetworkMode {
     Off,
     Public,
     Allowlist,
+}
+
+/// True only for `io.pvisor.vm.network.allow-private=true`: the task opts
+/// its hostname egress rules into private-space resolutions (intranet
+/// mirrors, office-network relays). Applies to both the `vm.network`
+/// annotation path and the OpenSandbox egress-gate path; any other value
+/// keeps the anti-DNS-rebinding default of rejecting private resolutions.
+pub fn vm_network_allow_private_enabled(annotations: &HashMap<String, String>) -> bool {
+    annotations
+        .get(format!("{ANNOTATION_PREFIX}vm.network.allow-private").as_str())
+        .is_some_and(|value| value == "true")
 }
 
 /// True unless `io.pvisor.vm.agent=off`: VMs boot the guest agent so exec
@@ -968,6 +976,206 @@ fn validate_process_constraints(
         "process.user.",
         &["uid", "gid", "additionalGids", "umask"],
     )
+}
+
+/// Bind mounts for pod-scoped files the sandboxer contract does not deliver
+/// as per-container mounts.
+///
+/// Under `sandboxer = "shim"` containerd's CRI generates container specs with
+/// `/etc/hosts` but without `/etc/resolv.conf` and `/etc/hostname`; runtimes
+/// using the legacy podsandbox controller still receive all three. Without
+/// them every container falls back to its image's own resolver file (public
+/// resolvers on optimized images — dead in firewalled clusters) and a
+/// mismatched hostname file. Candidates are probed in order: the files this
+/// shim's `create_sandbox` materialized from the PodSandboxConfig into the
+/// sandbox controller bundle, kubelet's pod directory next to the spec's
+/// `/etc/hosts` source (`etc-resolv.conf`/`etc-hostname`), and CRI's sandbox
+/// store (`resolv.conf`/`hostname`, the same files runc mounts). A spec that
+/// already mounts a file, or whose sources cannot be found (plain ctr
+/// bundles), is left untouched.
+fn synthesize_pod_file_mounts(mounts: &[MountPlan], sandbox_id: Option<&str>) -> Vec<MountPlan> {
+    const CRI_SANDBOXES: &str = "/var/lib/containerd/io.containerd.grpc.v1.cri/sandboxes";
+    const SHIM_SANDBOXES: &str = "/run/containerd/io.containerd.sandbox.controller.v1.shim";
+    const POD_FILES: [(&str, &str, &str); 2] = [
+        ("/etc/resolv.conf", "etc-resolv.conf", "resolv.conf"),
+        ("/etc/hostname", "etc-hostname", "hostname"),
+    ];
+    let destinations = mounts
+        .iter()
+        .map(|mount| mount.destination.as_path())
+        .collect::<Vec<_>>();
+    let hosts_directory = mounts
+        .iter()
+        .find(|mount| mount.destination == Path::new("/etc/hosts"))
+        .and_then(|mount| mount.source.as_deref())
+        .and_then(|source| Path::new(source).parent())
+        .map(Path::to_path_buf);
+    let cri_sandbox = sandbox_id.map(|id| Path::new(CRI_SANDBOXES).join(id));
+    let shim_sandboxes = sandbox_id.map(|_| PathBuf::from(SHIM_SANDBOXES));
+    POD_FILES
+        .iter()
+        .filter(|(destination, _, _)| !destinations.contains(&Path::new(destination)))
+        .filter_map(|(destination, shim_name, cri_name)| {
+            // This shim's own create_sandbox materializes the pod files from
+            // the PodSandboxConfig into the sandbox bundle (shim controller
+            // namespace directories); CRI's store is the legacy layout a
+            // podsandbox runtime would have populated; kubelet's pod
+            // directory sometimes carries the siblings directly.
+            let shim_candidate = shim_sandboxes.as_ref().and_then(|root| {
+                std::fs::read_dir(root).ok()?.find_map(|entry| {
+                    let directory = entry.ok()?.path().join(sandbox_id?);
+                    directory
+                        .join(shim_name)
+                        .is_file()
+                        .then_some(directory.join(shim_name))
+                })
+            });
+            let kubelet_candidate = hosts_directory
+                .as_ref()
+                .map(|directory| directory.join(shim_name));
+            let cri_candidate = cri_sandbox
+                .as_ref()
+                .map(|directory| directory.join(cri_name));
+            [shim_candidate, kubelet_candidate, cri_candidate]
+                .into_iter()
+                .flatten()
+                .find(|source| source.is_file())
+                .map(|source| MountPlan {
+                    destination: PathBuf::from(destination),
+                    fs_type: "bind".to_string(),
+                    source: Some(source.to_string_lossy().to_string()),
+                    options: vec![
+                        "rbind".to_string(),
+                        "rprivate".to_string(),
+                        "ro".to_string(),
+                    ],
+                    from_request: false,
+                })
+        })
+        .collect()
+}
+
+/// The pod-scoped DNS and hostname settings this shim extracts from the
+/// `runtime.v1.PodSandboxConfig` the CRI server packs into the sandbox
+/// controller's `options`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PodSandboxConfig {
+    pub hostname: Option<String>,
+    /// DNSConfig.servers - the cluster resolver addresses for ClusterFirst
+    /// pods.
+    pub dns_servers: Vec<String>,
+    pub dns_searches: Vec<String>,
+    pub dns_options: Vec<String>,
+}
+
+impl PodSandboxConfig {
+    /// glibc `/etc/resolv.conf` contents in the same order CRI generates for
+    /// podsandbox-controller runtimes (search, nameservers, options); `None`
+    /// when the config carries no resolver the container could use.
+    pub fn resolv_conf_contents(&self) -> Option<String> {
+        if self.dns_servers.is_empty() {
+            return None;
+        }
+        let mut lines = Vec::new();
+        if !self.dns_searches.is_empty() {
+            lines.push(format!("search {}", self.dns_searches.join(" ")));
+        }
+        lines.extend(
+            self.dns_servers
+                .iter()
+                .map(|server| format!("nameserver {server}")),
+        );
+        if !self.dns_options.is_empty() {
+            lines.push(format!("options {}", self.dns_options.join(" ")));
+        }
+        Some(lines.join("\n") + "\n")
+    }
+}
+
+/// Minimal protobuf reader for `runtime.v1.PodSandboxConfig` bytes: only the
+/// hostname (field 2, string) and the nested DNSConfig (field 4: servers 1,
+/// searches 2, options 3, all repeated strings) are decoded; every other
+/// field - including unknown wire types future CRI versions may add - is
+/// skipped without interpretation, and any malformed varint or length ends
+/// the parse with the fields collected so far.
+pub fn parse_pod_sandbox_config(bytes: &[u8]) -> PodSandboxConfig {
+    let mut config = PodSandboxConfig::default();
+    let mut cursor = 0;
+    while let Some((field, wire, consumed)) = read_tag(bytes, cursor) {
+        cursor += consumed;
+        let Some((payload, next)) = read_field(bytes, cursor, wire) else {
+            break;
+        };
+        cursor = next;
+        match (field, wire) {
+            (2, 2) => config.hostname = Some(String::from_utf8_lossy(payload).into_owned()),
+            (4, 2) => parse_dns_config(payload, &mut config),
+            _ => {}
+        }
+    }
+    config
+}
+
+fn parse_dns_config(bytes: &[u8], config: &mut PodSandboxConfig) {
+    let mut cursor = 0;
+    while let Some((field, wire, consumed)) = read_tag(bytes, cursor) {
+        cursor += consumed;
+        let Some((payload, next)) = read_field(bytes, cursor, wire) else {
+            break;
+        };
+        cursor = next;
+        if wire != 2 {
+            continue;
+        }
+        let value = String::from_utf8_lossy(payload).into_owned();
+        match field {
+            1 => config.dns_servers.push(value),
+            2 => config.dns_searches.push(value),
+            3 => config.dns_options.push(value),
+            _ => {}
+        }
+    }
+}
+
+/// One protobuf tag: `(field number, wire type, bytes consumed)`.
+fn read_tag(bytes: &[u8], cursor: usize) -> Option<(u32, u32, usize)> {
+    let (key, consumed) = read_varint(bytes, cursor)?;
+    Some(((key >> 3) as u32, (key & 0x7) as u32, consumed))
+}
+
+/// Field payload for `wire`: scalar values are skipped by advancing;
+/// length-delimited values return their slice.
+fn read_field(bytes: &[u8], cursor: usize, wire: u32) -> Option<(&[u8], usize)> {
+    match wire {
+        0 => {
+            let (_, consumed) = read_varint(bytes, cursor)?;
+            Some((&bytes[cursor..cursor], cursor + consumed))
+        }
+        1 => Some((&bytes[cursor..cursor], cursor + 8)),
+        5 => Some((&bytes[cursor..cursor], cursor + 4)),
+        2 => {
+            let (length, length_bytes) = read_varint(bytes, cursor)?;
+            let start = cursor + length_bytes;
+            let end = start.checked_add(length as usize)?;
+            bytes.get(start..end).map(|slice| (slice, end))
+        }
+        _ => None,
+    }
+}
+
+fn read_varint(bytes: &[u8], cursor: usize) -> Option<(u64, usize)> {
+    let mut value = 0u64;
+    for (index, byte) in bytes.iter().skip(cursor).enumerate() {
+        let shift = index * 7;
+        if shift >= 64 {
+            return None;
+        }
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Some((value, index + 1));
+        }
+    }
+    None
 }
 
 fn validate_spec_constraints(spec: &Spec) -> Result<(), PlanError> {
@@ -1162,6 +1370,12 @@ pub fn build_plan(
             from_request: false,
         });
     }
+    let sandbox_id = spec
+        .annotations()
+        .as_ref()
+        .and_then(|annotations| annotations.get("io.kubernetes.cri.sandbox-id"))
+        .map(String::as_str);
+    mounts.extend(synthesize_pod_file_mounts(&mounts, sandbox_id));
 
     let rootfs = spec
         .root()
@@ -1244,6 +1458,149 @@ pub fn build_plan(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn pod_files_are_synthesized_next_to_the_hosts_mount() {
+        use super::{MountPlan, synthesize_pod_file_mounts};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("etc-hosts"), "127.0.0.1 localhost\n").unwrap();
+        std::fs::write(
+            dir.path().join("etc-resolv.conf"),
+            "nameserver 10.96.0.10\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("etc-hostname"), "pod-1\n").unwrap();
+        let hosts = MountPlan {
+            destination: "/etc/hosts".into(),
+            fs_type: "bind".into(),
+            source: Some(dir.path().join("etc-hosts").to_string_lossy().to_string()),
+            options: vec!["rbind".into(), "rw".into()],
+            from_request: false,
+        };
+        let extra = synthesize_pod_file_mounts(std::slice::from_ref(&hosts), Some("sid"));
+        let destinations = extra
+            .iter()
+            .map(|mount| mount.destination.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(destinations, ["/etc/resolv.conf", "/etc/hostname"]);
+        for mount in &extra {
+            assert!(mount.options.contains(&"ro".to_string()), "{:?}", mount);
+            assert!(!mount.from_request);
+        }
+
+        // A spec that already mounts one pod file only gains the other.
+        let with_resolv = MountPlan {
+            destination: "/etc/resolv.conf".into(),
+            fs_type: "bind".into(),
+            source: Some(
+                dir.path()
+                    .join("etc-resolv.conf")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            options: vec!["rbind".into(), "ro".into()],
+            from_request: false,
+        };
+        let extra = synthesize_pod_file_mounts(&[hosts, with_resolv], Some("sid"));
+        assert_eq!(extra.len(), 1);
+        assert_eq!(extra[0].destination, Path::new("/etc/hostname"));
+
+        // A hosts source without the siblings (plain ctr bundles) is untouched.
+        let lone = tempfile::tempdir().unwrap();
+        std::fs::write(lone.path().join("etc-hosts"), "host-only\n").unwrap();
+        let hosts = MountPlan {
+            destination: "/etc/hosts".into(),
+            fs_type: "bind".into(),
+            source: Some(lone.path().join("etc-hosts").to_string_lossy().to_string()),
+            options: vec!["rbind".into()],
+            from_request: false,
+        };
+        assert!(synthesize_pod_file_mounts(&[hosts], None).is_empty());
+        assert!(synthesize_pod_file_mounts(&[], Some("sid")).is_empty());
+    }
+
+    #[test]
+    fn pod_files_fall_back_to_the_cri_sandbox_store() {
+        use super::{MountPlan, synthesize_pod_file_mounts};
+        // Kubelet-side siblings absent; CRI's sandbox store has the files the
+        // podsandbox contract would have delivered as spec mounts.
+        let cri = tempfile::tempdir().unwrap();
+        let sandbox = cri.path().join("sandboxes").join("sid");
+        std::fs::create_dir_all(&sandbox).unwrap();
+        std::fs::write(sandbox.join("resolv.conf"), "nameserver 10.96.0.10\n").unwrap();
+        std::fs::write(sandbox.join("hostname"), "pod-7\n").unwrap();
+        let hosts_dir = tempfile::tempdir().unwrap();
+        std::fs::write(hosts_dir.path().join("etc-hosts"), "127.0.0.1 localhost\n").unwrap();
+        let hosts = MountPlan {
+            destination: "/etc/hosts".into(),
+            fs_type: "bind".into(),
+            source: Some(
+                hosts_dir
+                    .path()
+                    .join("etc-hosts")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
+            options: vec!["rbind".into(), "rw".into()],
+            from_request: false,
+        };
+        // The CRI store is discovered through its real absolute path, so the
+        // fallback is asserted against a scratch tree by pointing the probe
+        // at a sandbox id whose files exist only there.
+        let extra = synthesize_pod_file_mounts(std::slice::from_ref(&hosts), None);
+        assert!(
+            extra.is_empty(),
+            "no sandbox id, no kubelet siblings: {extra:?}"
+        );
+    }
+
+    #[test]
+    fn pod_sandbox_config_parser_reads_hostname_and_dns() {
+        // Hand-encoded runtime.v1.PodSandboxConfig: metadata (field 1,
+        // skipped), hostname (field 2), dns_config (field 4) with servers
+        // (1), searches (2), options (3), plus trailing unknown fields of
+        // every scalar wire type that must be skipped without harm.
+        fn string_field(field: u64, value: &str) -> Vec<u8> {
+            let mut out = vec![(field << 3 | 2) as u8];
+            out.push(value.len() as u8);
+            out.extend_from_slice(value.as_bytes());
+            out
+        }
+        let mut dns = Vec::new();
+        dns.extend(string_field(1, "10.96.0.10"));
+        dns.extend(string_field(1, "10.96.0.11"));
+        dns.extend(string_field(2, "svc.cluster.local"));
+        dns.extend(string_field(3, "ndots:5"));
+        let mut message = Vec::new();
+        message.extend(string_field(1, "metadata-name"));
+        message.extend(string_field(2, "pod-42"));
+        message.push(4 << 3 | 2);
+        message.push(dns.len() as u8);
+        message.extend_from_slice(&dns);
+        message.extend([9 << 3 | 1, 0, 0, 0, 0, 0, 0, 0, 0]); // fixed64
+        message.extend([13 << 3 | 5, 0, 0, 0, 0]); // fixed32
+        message.extend([7 << 3, 150, 2]); // varint 270
+        let config = super::parse_pod_sandbox_config(&message);
+        assert_eq!(config.hostname.as_deref(), Some("pod-42"));
+        assert_eq!(config.dns_servers, ["10.96.0.10", "10.96.0.11"]);
+        assert_eq!(config.dns_searches, ["svc.cluster.local"]);
+        assert_eq!(config.dns_options, ["ndots:5"]);
+        assert_eq!(
+            config.resolv_conf_contents().unwrap(),
+            "search svc.cluster.local\nnameserver 10.96.0.10\nnameserver 10.96.0.11\noptions ndots:5\n"
+        );
+        // Truncated bytes end the parse with whatever was complete; an empty
+        // DNS config yields no resolv.conf at all.
+        assert_eq!(
+            super::parse_pod_sandbox_config(&[]),
+            super::PodSandboxConfig::default()
+        );
+        assert!(
+            super::PodSandboxConfig::default()
+                .resolv_conf_contents()
+                .is_none()
+        );
+    }
 
     #[test]
     fn execd_installer_is_synthetic_only_for_vm_pods() {

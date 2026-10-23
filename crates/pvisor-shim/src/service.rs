@@ -1506,9 +1506,33 @@ impl Sandbox for PvisorSandbox {
         }
 
         // The sandboxer contract carries no OCI spec; the bundle is only a
-        // scratch directory for the holder plan.
+        // scratch directory for the holder plan. The CRI server packs the
+        // runtime.v1.PodSandboxConfig into `options`; its hostname and DNS
+        // settings become the pod-scoped /etc files this shim materializes
+        // for containers (see plan::synthesize_pod_file_mounts).
         let bundle = PvisorTask::resolve_bundle(&req.bundle_path)
             .map_err(|error| rpc_error(Code::INVALID_ARGUMENT, format!("{error:#}")))?;
+        if let Some(options) = req.options.as_ref()
+            && options.type_url.contains("PodSandboxConfig")
+        {
+            let pod_config = crate::plan::parse_pod_sandbox_config(&options.value);
+            if let Some(resolv) = pod_config.resolv_conf_contents()
+                && std::fs::write(bundle.join("etc-resolv.conf"), &resolv).is_err()
+            {
+                warn!(
+                    "sandbox {}: writing the pod resolv.conf failed",
+                    req.sandbox_id
+                );
+            }
+            if let Some(hostname) = pod_config.hostname
+                && std::fs::write(bundle.join("etc-hostname"), format!("{hostname}\n")).is_err()
+            {
+                warn!(
+                    "sandbox {}: writing the pod hostname failed",
+                    req.sandbox_id
+                );
+            }
+        }
 
         let plan = build_sandbox_plan(
             &req.sandbox_id,
