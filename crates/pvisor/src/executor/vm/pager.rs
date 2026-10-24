@@ -137,9 +137,8 @@ pub(crate) fn start_diagnostics(handle: &pvisor_vm::api::VmmHandle) -> io::Resul
             eprintln!("experimental RAM inventory skipped: diagnostic budget exhausted");
         })?;
     }
-    let metrics = std::env::var_os(METRICS_ENV).is_some();
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    if metrics {
+    if std::env::var_os(METRICS_ENV).is_some() {
         let measured = handle.clone();
         std::thread::Builder::new()
             .name("pvisor-ram-metrics".into())
