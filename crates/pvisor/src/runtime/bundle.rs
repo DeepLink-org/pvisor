@@ -15,7 +15,8 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 4;
+pub const RUN_BUNDLE_SCHEMA_VERSION: u32 = 5;
+const LEGACY_RUN_BUNDLE_SCHEMA_VERSION: u32 = 4;
 pub const RUN_BUNDLE_FILENAME: &str = "run-bundle.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -278,7 +279,11 @@ impl RunBundle {
         }
 
         Ok(Self {
-            schema_version: RUN_BUNDLE_SCHEMA_VERSION,
+            schema_version: if record.completion_protocol.is_some() {
+                RUN_BUNDLE_SCHEMA_VERSION
+            } else {
+                LEGACY_RUN_BUNDLE_SCHEMA_VERSION
+            },
             generated_at_unix_ms: unix_now_ms(),
             executor_observations: result.executor_observations.clone(),
             executor_plan: record.executor_plan.clone(),
@@ -360,10 +365,26 @@ impl RunBundle {
     pub fn read(stage_dir: &Path) -> anyhow::Result<Self> {
         let path = Self::path(stage_dir);
         let bytes = super::completion::read_file(&path)?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        anyhow::ensure!(
+            value["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION
+                || value["schema_version"] == LEGACY_RUN_BUNDLE_SCHEMA_VERSION,
+            "unsupported Run Bundle schema {}; expected {} or {}",
+            value["schema_version"],
+            RUN_BUNDLE_SCHEMA_VERSION,
+            LEGACY_RUN_BUNDLE_SCHEMA_VERSION
+        );
         let record_path = stage_dir.join(super::registry::RUN_META_FILENAME);
-        if record_path.try_exists()? {
+        if value["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION || record_path.try_exists()? {
             let record: RunRecord =
                 serde_json::from_slice(&super::completion::read_file(&record_path)?)?;
+            record.validate_schema()?;
+            if value["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION {
+                anyhow::ensure!(
+                    record.completion_protocol == Some(super::completion::VERSION),
+                    "EXECUTION_UNKNOWN: protocol-aware Bundle requires an Attempt completion binding"
+                );
+            }
             if record.completion_protocol.is_some() {
                 anyhow::ensure!(
                     super::completion::Completion::load(&record)?.is_some(),
@@ -371,13 +392,6 @@ impl RunBundle {
                 );
             }
         }
-        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        anyhow::ensure!(
-            value["schema_version"] == RUN_BUNDLE_SCHEMA_VERSION,
-            "unsupported Run Bundle schema {}; expected {}",
-            value["schema_version"],
-            RUN_BUNDLE_SCHEMA_VERSION
-        );
         // Deserialize the original bytes so duplicate typed fields are rejected,
         // rather than silently collapsed by the schema-inspection Value above.
         let bundle: Self = serde_json::from_slice(&bytes)?;
@@ -387,7 +401,10 @@ impl RunBundle {
 
     pub(super) fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.schema_version == RUN_BUNDLE_SCHEMA_VERSION,
+            matches!(
+                self.schema_version,
+                RUN_BUNDLE_SCHEMA_VERSION | LEGACY_RUN_BUNDLE_SCHEMA_VERSION
+            ),
             "unsupported Run Bundle schema"
         );
         anyhow::ensure!(
@@ -605,7 +622,7 @@ mod tests {
     fn unsupported_bundle_schema_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
         let mut fixture: serde_json::Value = serde_json::from_slice(V1_MINIMAL_FIXTURE).unwrap();
-        fixture["schema_version"] = serde_json::json!(RUN_BUNDLE_SCHEMA_VERSION - 1);
+        fixture["schema_version"] = serde_json::json!(LEGACY_RUN_BUNDLE_SCHEMA_VERSION - 1);
         fs::write(
             temp.path().join(RUN_BUNDLE_FILENAME),
             serde_json::to_vec_pretty(&fixture).unwrap(),
@@ -703,12 +720,16 @@ mod tests {
             clients: vec![],
         };
         let bundle = RunBundle::capture(&record, &result, agentctl.clone(), true).unwrap();
+        assert_eq!(bundle.schema_version, LEGACY_RUN_BUNDLE_SCHEMA_VERSION);
         let path = bundle.write(temp.path()).unwrap();
         assert_eq!(RunBundle::read(temp.path()).unwrap().run.run_id, "run-1");
         let valid = serde_json::to_value(&bundle).unwrap();
         let duplicate = serde_json::to_string(&valid).unwrap().replace(
-            &format!("\"schema_version\":{RUN_BUNDLE_SCHEMA_VERSION}"),
-            &format!("\"schema_version\":{RUN_BUNDLE_SCHEMA_VERSION},\"schema_version\":{RUN_BUNDLE_SCHEMA_VERSION}"),
+            &format!("\"schema_version\":{}", bundle.schema_version),
+            &format!(
+                "\"schema_version\":{},\"schema_version\":{}",
+                bundle.schema_version, bundle.schema_version
+            ),
         );
         fs::write(&path, duplicate).unwrap();
         assert!(

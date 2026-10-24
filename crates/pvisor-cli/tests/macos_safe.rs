@@ -87,7 +87,7 @@ print('state-write-ok')
 }
 
 #[test]
-fn safe_profile_stages_reviews_and_applies_on_macos() {
+fn filesystem_sandbox_stages_reviews_and_applies_on_macos() {
     if !macfuse_is_installed() {
         eprintln!(
             "skipping macOS safe-profile smoke test: install macFUSE to exercise staged writes"
@@ -179,7 +179,7 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
             .map(|executor| executor.isolation),
         Some(IsolationKind::SandboxedProcess)
     );
-    assert!(bundle.safety.safe_profile_requested);
+    assert!(!bundle.safety.safe_profile_requested);
     assert!(
         bundle.safety.filesystem_changes_staged,
         "filesystem={:?}; warnings={:?}",
@@ -232,6 +232,7 @@ fn safe_profile_stages_reviews_and_applies_on_macos() {
         .env("PVISOR_RUN_HOME", &run_home)
         .arg("apply")
         .arg(&run)
+        .arg("--all")
         .output()
         .expect("apply macOS Run");
     assert!(
@@ -472,6 +473,7 @@ print('required-sandbox-ok')
         String::from_utf8_lossy(&output.stderr)
     );
     let bundle = RunBundle::read(&only_run(&run_home)).unwrap();
+    assert!(bundle.safety.safe_profile_requested);
     assert!(bundle.safety.filesystem_read_non_bypassable);
     assert!(bundle.safety.filesystem_write_non_bypassable);
     assert!(bundle.safety.network_non_bypassable);
@@ -591,6 +593,7 @@ fn ask_preserves_default_rules_read_only_shares_and_job_changes() {
     let output = Command::new(env!("CARGO_BIN_EXE_pvisor"))
         .arg("apply")
         .arg(&job)
+        .arg("--all")
         .output()
         .unwrap();
     assert!(

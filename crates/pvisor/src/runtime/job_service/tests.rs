@@ -265,7 +265,8 @@ fn embedded_review_refreshes_files_without_rewriting_historical_evidence() {
         "/tests/fixtures/bundles/v1-minimal.json"
     )))
     .unwrap();
-    historical["schema_version"] = serde_json::json!(crate::RUN_BUNDLE_SCHEMA_VERSION);
+    // Historical evidence predates the Attempt completion protocol.
+    historical["schema_version"] = serde_json::json!(4);
     historical["run"]["run_id"] = serde_json::json!(record.run_id);
     historical["agentctl"]["run_id"] = serde_json::json!(record.run_id);
     historical["safety"]["filesystem_changes_staged"] = serde_json::json!(true);

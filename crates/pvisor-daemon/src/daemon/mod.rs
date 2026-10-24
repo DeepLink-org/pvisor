@@ -17,7 +17,9 @@ use std::{
     sync::{Arc, Weak},
     time::Duration,
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, Semaphore};
+
+const MAX_PROXY_STREAMS: usize = 128;
 
 pub const OPENSANDBOX_VERSION: &str = "1.1.0";
 pub const OPENSANDBOX_COMMIT: &str = "b1a29cf93a823a95913f7943010febb3f29de05c";
@@ -41,6 +43,7 @@ pub struct Daemon {
     operations: Mutex<BTreeMap<String, Weak<RwLock<()>>>>,
     runtime: Arc<dyn Runtime>,
     proxy: reqwest::Client,
+    proxy_slots: Arc<Semaphore>,
     storage_failed: std::sync::atomic::AtomicBool,
 }
 
@@ -86,6 +89,7 @@ impl Daemon {
             operations: Mutex::new(BTreeMap::new()),
             storage_failed: std::sync::atomic::AtomicBool::new(false),
             runtime,
+            proxy_slots: Arc::new(Semaphore::new(MAX_PROXY_STREAMS)),
             proxy: reqwest::Client::builder()
                 .no_proxy()
                 .no_gzip()
@@ -427,6 +431,18 @@ impl Daemon {
                 "cannot establish native sandbox state",
             )
         })?;
+        if state == RuntimeState::Missing && record.sandbox.status.state == "Pending" {
+            // Persist cleanup intent before releasing the reservation. A restart
+            // must be able to finish deletion at every intermediate commit.
+            self.delete_locked(id).await?;
+            let mut sandbox = record.sandbox;
+            sandbox.status = SandboxStatus {
+                state: "Failed".into(),
+                message: Some("creation confirmed absent; reservation released".into()),
+                last_transition_at: Some(Utc::now()),
+            };
+            return Ok(sandbox);
+        }
         let state = match state {
             RuntimeState::Running => "Running",
             RuntimeState::Paused => "Paused",
@@ -557,29 +573,34 @@ impl Daemon {
             {
                 return Ok(());
             }
-            this.transition(&id, "Stopping", None).await?;
-            this.runtime.delete(&id).await.map_err(|_| {
-                ApiError::new(
-                    503,
-                    "RUNTIME_UNAVAILABLE",
-                    "native deletion failed; cleanup remains pending",
-                )
-            })?;
-            if this.runtime.inspect(&id).await.map_err(|_| {
-                ApiError::new(503, "RUNTIME_UNAVAILABLE", "native deletion state unknown")
-            })? != RuntimeState::Missing
-            {
-                return Err(ApiError::new(
-                    503,
-                    "RUNTIME_UNAVAILABLE",
-                    "native deletion not confirmed",
-                ));
-            }
-            this.update(&id, |_| Ok((None, ()))).await?;
-            Ok(())
+            this.delete_locked(&id).await
         })
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?
+    }
+
+    // Caller holds the exclusive lifecycle gate.
+    async fn delete_locked(&self, id: &str) -> Result<(), ApiError> {
+        self.transition(id, "Stopping", None).await?;
+        self.runtime.delete(id).await.map_err(|_| {
+            ApiError::new(
+                503,
+                "RUNTIME_UNAVAILABLE",
+                "native deletion failed; cleanup remains pending",
+            )
+        })?;
+        if self.runtime.inspect(id).await.map_err(|_| {
+            ApiError::new(503, "RUNTIME_UNAVAILABLE", "native deletion state unknown")
+        })? != RuntimeState::Missing
+        {
+            return Err(ApiError::new(
+                503,
+                "RUNTIME_UNAVAILABLE",
+                "native deletion not confirmed",
+            ));
+        }
+        self.update(id, |_| Ok((None, ()))).await?;
+        Ok(())
     }
 
     pub async fn renew(

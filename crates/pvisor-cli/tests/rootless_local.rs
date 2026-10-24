@@ -545,6 +545,7 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
         .env("PVISOR_RUN_HOME", &run_home)
         .arg("apply")
         .arg(&run)
+        .arg("--all")
         .output()
         .unwrap();
     assert!(!apply.status.success());

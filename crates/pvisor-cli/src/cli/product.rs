@@ -312,7 +312,10 @@ pub fn review(args: ReviewArgs) -> anyhow::Result<()> {
         println!("Next:");
         println!("  pvisor inspect {}", record.stage_dir().display());
         println!("  pvisor fork {} -- <agent>", record.stage_dir().display());
-        println!("  pvisor apply {}", record.stage_dir().display());
+        println!(
+            "  pvisor apply {} --path <relative-path>  # or --all",
+            record.stage_dir().display()
+        );
         println!("  pvisor drop {}", record.stage_dir().display());
     }
     if args.diff {

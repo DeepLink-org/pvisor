@@ -923,6 +923,28 @@ mod tests {
                 "/run/pvisor/output/run-result.json",
             ])
         );
+        let mounts = config["mounts"].as_array().unwrap();
+        let spec_mount = mounts
+            .iter()
+            .find(|mount| mount["destination"] == "/run/pvisor/run-spec.json")
+            .unwrap();
+        assert!(
+            spec_mount["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|option| option == "ro")
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|mount| mount["destination"] == "/run/pvisor/output")
+        );
+        assert!(
+            !mounts
+                .iter()
+                .any(|mount| mount["destination"] == "/run/pvisor")
+        );
     }
 
     #[test]

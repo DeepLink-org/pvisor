@@ -1870,7 +1870,7 @@ async fn execute_config(
     );
     if bundle.filesystem.is_some() {
         run_log!(
-            "Decide: pvisor apply {} | pvisor drop {}",
+            "Decide: pvisor apply {} --path <relative-path> (or --all) | pvisor drop {}",
             record.stage_dir().display(),
             record.stage_dir().display()
         );

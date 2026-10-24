@@ -46,6 +46,9 @@ enum Command {
         sandbox: bool,
         #[arg(long, default_value = "127.0.0.1:8080", requires = "sandbox")]
         listen: SocketAddr,
+        /// Explicitly allow plaintext non-loopback serving; prefer a TLS proxy on loopback.
+        #[arg(long, requires = "sandbox")]
+        allow_insecure_listen: bool,
         /// Externally reachable host:port, without scheme/path. Required behind a proxy.
         #[arg(long, requires = "sandbox")]
         public_endpoint: Option<String>,
@@ -150,6 +153,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             cache_image_store,
             sandbox,
             listen,
+            allow_insecure_listen,
             public_endpoint,
             state,
             api_key,
@@ -202,6 +206,7 @@ async fn run(command: Command) -> anyhow::Result<()> {
             };
             // Prepare sandbox resources before starting optional components.
             let sandbox_service = if sandbox {
+                validate_listen(listen, allow_insecure_listen)?;
                 anyhow::ensure!(
                     cfg!(all(target_os = "linux", target_arch = "x86_64")),
                     "sandbox service requires Linux x86-64, KVM and delegated cgroup v2"
@@ -335,6 +340,20 @@ async fn run(command: Command) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_listen(listen: SocketAddr, allow_insecure: bool) -> anyhow::Result<()> {
+    let loopback = match listen.ip() {
+        std::net::IpAddr::V4(ip) => ip.is_loopback(),
+        std::net::IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map_or_else(|| ip.is_loopback(), |ip| ip.is_loopback()),
+    };
+    anyhow::ensure!(
+        loopback || allow_insecure,
+        "non-loopback plaintext listening requires --allow-insecure-listen; prefer a trusted TLS proxy with a loopback backend"
+    );
+    Ok(())
+}
+
 async fn wait_pool(socket: Option<PathBuf>) -> anyhow::Result<()> {
     let Some(socket) = socket else {
         return std::future::pending().await;
@@ -381,6 +400,32 @@ fn shutdown() -> std::io::Result<impl std::future::Future<Output = ()>> {
 mod tests {
     use super::*;
     use pvisor_daemon::memory_pool::PoolMode;
+
+    #[test]
+    fn non_loopback_plaintext_requires_explicit_opt_in() {
+        for address in ["127.0.0.1:8080", "[::1]:8080", "[::ffff:127.0.0.1]:8080"] {
+            assert!(validate_listen(address.parse().unwrap(), false).is_ok());
+        }
+        for address in [
+            "0.0.0.0:8080",
+            "[::]:8080",
+            "192.0.2.1:8080",
+            "[2001:db8::1]:8080",
+            "[::ffff:192.0.2.1]:8080",
+        ] {
+            assert!(validate_listen(address.parse().unwrap(), false).is_err());
+            assert!(validate_listen(address.parse().unwrap(), true).is_ok());
+        }
+        assert!(
+            Args::try_parse_from([
+                "pvisor-daemon",
+                "serve",
+                "--cache",
+                "--allow-insecure-listen"
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn composite_service_selection_and_component_options() {

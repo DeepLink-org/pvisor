@@ -56,8 +56,10 @@ another location. HOME and VM rootfs writes have separate lifetimes; see
 [staging and storage](../../docs/src/en/reference/cli.md#staging-and-storage).
 Capture is a Gateway capability, not a second product.
 
-New Attempts use Run record schema 2 and completion protocol 1. Older readers
-reject schema 2 instead of bypassing its completion check. Session durably prepares the Bundle,
+New Attempts use Run record schema 2, Bundle schema 5 and completion protocol 1.
+Older readers reject these schemas instead of bypassing the completion check.
+Schema-1 Run records and schema-4 Bundles remain readable with their legacy rules.
+Session durably prepares the Bundle,
 publishes its terminal events, writes the terminal Run projection, then atomically
 publishes `completion.json` binding the typed result to the Bundle's BLAKE3 digest.
 Only that receipt commits completion. Readers reject missing/changed Bundles and

@@ -302,7 +302,7 @@ impl Drop for JobDirectoryLock {
 }
 
 impl RunRecord {
-    fn validate_schema(&self) -> anyhow::Result<()> {
+    pub(super) fn validate_schema(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             matches!(
                 (self.schema_version, self.completion_protocol),

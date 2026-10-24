@@ -636,7 +636,7 @@ fn write_exit_report(
         }) {
             writeln!(
                 output,
-                "Changes retained. Apply: pvisor apply {} | Discard: pvisor drop {}",
+                "Changes retained. Apply: pvisor apply {} --path <relative-path> (or --all) | Discard: pvisor drop {}",
                 path.display(),
                 path.display()
             )?;

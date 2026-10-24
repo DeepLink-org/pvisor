@@ -122,6 +122,7 @@ fn safe_preset_reaches_the_run_and_reports_its_limits() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("warn-only-fixture"));
     assert!(stderr.contains("cannot distinguish inference"));
     let bundle = RunBundle::read(&stage).unwrap();
+    assert!(bundle.safety.safe_profile_requested);
     assert!(
         bundle
             .filesystem

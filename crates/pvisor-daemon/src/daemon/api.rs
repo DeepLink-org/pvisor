@@ -18,6 +18,7 @@
 //! - Parent request types validate unsupported creation features (snapshot/fsb,
 //!   etc.) rather than silently ignoring them, and use the spec's serde names.
 
+use futures_util::StreamExt;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 #[cfg(test)]
@@ -605,6 +606,15 @@ pub(super) async fn forward(
     }
     // Shared admission permits parallel proxies; exclusive lifecycle writers
     // fence delete/rebind and prevent new readers starving a queued control.
+    let permit = Arc::clone(&daemon.proxy_slots)
+        .try_acquire_owned()
+        .map_err(|_| {
+            ApiError::new(
+                429,
+                "PROXY_CAPACITY_EXCEEDED",
+                "node proxy stream capacity exhausted",
+            )
+        })?;
     let guard = daemon.proxy_guard(id).await?;
     let send = async {
         let upstream = daemon.upstream(id, port).await?;
@@ -672,7 +682,11 @@ pub(super) async fn forward(
     let status = response.status();
     let mut headers = response.headers().clone();
     strip_headers(&mut headers, false);
-    let mut result = Response::new(Body::from_stream(response.bytes_stream()));
+    let stream = futures_util::stream::unfold(
+        (response.bytes_stream(), permit),
+        |(mut stream, permit)| async move { stream.next().await.map(|chunk| (chunk, (stream, permit))) },
+    );
+    let mut result = Response::new(Body::from_stream(stream));
     *result.status_mut() = status;
     *result.headers_mut() = headers;
     Ok(result)

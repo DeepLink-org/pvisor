@@ -1,5 +1,6 @@
 //! Launch contract shared by the host executors and the Linux guest.
 pub mod control;
+pub mod exit_status;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ffi::CString;

@@ -81,6 +81,10 @@ impl Completion {
     fn validate_bundle(&self, bundle: &super::bundle::RunBundle) -> anyhow::Result<()> {
         bundle.validate()?;
         ensure!(
+            bundle.schema_version == super::bundle::RUN_BUNDLE_SCHEMA_VERSION,
+            "completion requires a protocol-aware Run Bundle"
+        );
+        ensure!(
             bundle.run.run_id == self.result.run_id.as_str()
                 && bundle.run.attempt_id == self.result.attempt_id.as_str()
                 && bundle.run.state == self.result.state
@@ -250,6 +254,29 @@ mod tests {
         );
         std::fs::write(path, original).unwrap();
         assert!(Completion::load(&record).unwrap().is_some());
+    }
+
+    #[test]
+    fn protocol_bundle_requires_its_binding_and_rejects_schema_downgrade() {
+        let root = tempfile::tempdir().unwrap();
+        let (record, result) = fixture(root.path());
+        Completion::commit(&record, &result).unwrap();
+        RunBundle::read(root.path()).unwrap();
+        let record_path = root.path().join(super::super::registry::RUN_META_FILENAME);
+        std::fs::remove_file(&record_path).unwrap();
+        assert!(RunBundle::read(root.path()).is_err());
+        let mut legacy = record.clone();
+        legacy.schema_version = 1;
+        legacy.completion_protocol = None;
+        legacy.write().unwrap();
+        assert!(RunBundle::read(root.path()).is_err());
+        record.write().unwrap();
+        let path = RunBundle::path(root.path());
+        let mut bundle: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        bundle["schema_version"] = serde_json::json!(4);
+        std::fs::write(&path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+        assert!(RunBundle::read(root.path()).is_err());
     }
 
     #[test]

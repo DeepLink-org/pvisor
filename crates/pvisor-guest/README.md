@@ -2,6 +2,22 @@
 
 Rust PID 1 supervisor and the platform-independent launch message in `/.pvisor-guest.json`. It initializes Linux virtual filesystems, applies process limits, supervises the workload and reports its exit to the VMM.
 
+Before reading launch configuration or starting any child, PID 1 disables normal
+dump access and claims a host-generated 128-bit exit token on the root virtio-fs
+device. The kernel-supplied caller must be guest root/PID 1; ordinary workloads
+and other shares cannot claim or report. Token bytes stay in PID 1 memory, never
+in launch JSON, argv, environment or an inherited token descriptor. After reaping
+and final synchronization, PID 1 reports that token and a checked `0..=255` code
+once. Missing/failed handshake prevents workload start; there is no legacy ioctl
+fallback. Shared request numbers and byte framing live in `exit_status`.
+
+Whole-VM snapshots preserve the capability in both PID 1 RAM and host device
+state, continuing the captured supervisor rather than rotating its token. Host
+snapshots remain private authority. This relies on a trusted guest kernel and
+PID 1; guest privileges capable of taking over either remain outside the claim.
+The VMM rejects legacy reports, duplicates and invalid codes, and does not let a
+guest success override abnormal vCPU termination.
+
 Linux may reach PID 1 before the initial console can supply standard descriptors.
 On a minimal image without `/dev`, Rust's standard-stream check would then abort
 before `main` could mount devtmpfs or report an error. A PID-1-only libc constructor

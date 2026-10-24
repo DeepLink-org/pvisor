@@ -17,6 +17,39 @@ API 中的 `PermissionSemantics`、`RamReclaim`、`RamMappingSnapshot` 和内存
 
 ## 调用方与运行时的职责
 
+### Guest 退出来源
+
+普通 Rust supervisor 在启动 workload 前，通过根 virtio-fs 设备的
+`_IOR('v', 3, [u8;16])` 领取随机 128-bit token。宿主只接受 guest 内核
+提供的 root/PID 1 请求，其他 share、inode 和旧 `0x7602` 均不授权退出。
+PID 1 禁用普通 dump，token 仅存在于 PID 1 内存，不写 launch JSON 或环境，
+也没有可继承的 token 文件描述符。最终 reap/syncfs 后，PID 1 用固定 20-byte
+`_IOW('v', 4, [u8;20])` 提交 token 与 little-endian `0..=255` 退出码。
+宿主验证并单次提交；错误 token、越界、重复提交均不改变退出状态。
+
+快照将 token 与对应根设备状态保存在宿主私有快照中，和 PID 1 的 RAM 一起
+延续同一个能力；恢复不会轮换 guest 内存尚持有的 token，快照仍需原有的独占
+所有权与可信存储。已提交退出的设备拒绝捕获/恢复。新冷启动领取新 token。
+该协议依赖可信 guest 内核与 PID 1，不能抵抗接管 PID 1 或内核的 guest 权限。
+自定义 init 必须实现同一协议，旧无认证退出报告不再兼容。
+缺失认证状态的正常停机以 125 失败；宿主 vCPU 异常优先于 guest 成功结果，
+不会通过退出码截断将非法数值转换为成功。真实 HVF/KVM 验收与协议单测分别报告。
+
+退出来源真实回归使用 `guest_exit_case`，只创建临时空 rootfs 并注入静态 workload。
+在 Apple Silicon 构建 workload 和宿主用例：
+
+```sh
+rustc --edition=2021 --target aarch64-unknown-linux-musl -C linker=rust-lld \
+  crates/pvisor-vm/src/probes/guest_exit_guest.rs -o /tmp/guest-exit-probe
+cargo build --locked -p pvisor-vm --example guest_exit_case
+```
+
+按现有 `crates/pvisor/macos-hypervisor.entitlements` 签署宿主 example，再运行
+`target/debug/examples/guest_exit_case ABSOLUTE_FIRMWARE /tmp/guest-exit-probe`。
+Linux x86_64 将 guest target 替换为 `x86_64-unknown-linux-musl`，需要 KVM 权限。
+用例确认 guest-root workload 无法 claim/report 或使用旧 ioctl，并核对 0、7、255；
+它不证明被接管 PID 1 的安全性，也不替代真实整机快照恢复验收。
+
 调用方负责独立 runner 的监管、宿主沙箱安装、继承描述符校验、rootfs 的独立副本、快照存储事务、host/boot/build 兼容性与单次执行所有权。
 
 运行时负责配置所有权、架构启动布局、设备和 CPU 生命周期、事件循环与 VM 控制。虚拟文件持有自身字节，网络持有自身描述符。恢复机器先保持暂停；冻结或设备排空失败后保持停止推进，调用方必须终止失败的 runner。

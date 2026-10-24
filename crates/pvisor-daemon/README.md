@@ -34,6 +34,9 @@ daemon. SIGINT/SIGTERM stops API admission, allows up to ten seconds for HTTP
 requests to drain, then terminates/reaps the owned cache worker. Cache requests
 in flight may fail; clients must reconcile uncertain preparation results. The
 worker is an internal implementation component, not a public service command.
+Its environment is an explicit allowlist: process/storage paths, locale, cache
+token, registry configuration, proxy settings and TLS trust configuration.
+Sandbox lifecycle keys and unrelated environment secrets are not inherited.
 An owner pipe stops it even if the daemon crashes. A stale Unix socket can remain;
 the existing lock and socket checks allow safe restart without deleting cache data.
 Detached native VM supervisors and the optional shared pool retain their existing
@@ -486,6 +489,14 @@ No security audit or hostile multi-user assurance is claimed.
   response streams hold no admission and have no total timeout. Idle upstream connection pooling is disabled to avoid
   reusing connections across recycled loopback ports. Host-side external runtime
   manipulation is outside this coordination boundary.
+- OpenSandbox and E2B proxies share a node-local limit of 128 admitted requests
+  and response streams, including upload, header wait and the entire response
+  body. Excess requests return 429/PROXY_CAPACITY_EXCEEDED before endpoint work.
+  EOF, forwarding failure or response-body drop releases the slot. Streaming
+  does not retain the lifecycle gate, so deletion and other control requests
+  remain usable at proxy capacity. This is an HTTP stream count, not a hard
+  node RSS/FD/disk limit or a per-tenant fairness guarantee; the pool and host
+  service processes still require separately provisioned resources.
 - TTL cleanup is best effort, not a hard execution deadline: native commands,
   uploads/header waits and same-sandbox controls can delay it. New proxy requests
   are rejected after expiration. Stream/output quotas remain upstream responsibilities.
@@ -547,6 +558,15 @@ its empty map. Preserve the original header, native marker and records together;
 do not erase reservations or fabricate ownership to bypass the guard.
 
 The list API reports the last durable observation; GET reconciles native state.
+Startup reconciles Pending creations too. A preparation without a durable started
+marker is fenced against late launch, then reclaimed only after the native owner
+lock and cgroup absence proof. Runtime-confirmed Missing Pending creations are
+deleted through the normal confirmed-delete path to release their reservation.
+The Stopping intention is committed first, so interruption during reconciliation
+retains capacity and the next startup resumes deletion.
+Live Running/Paused creations are adopted as observations; unavailable control or
+uncertain cleanup retains its record and capacity. Completed/failed previously
+launched sandboxes keep their existing explicit-deletion contract.
 The maintenance loop retries pending/expired deletion. Continuous native process
 monitoring and event-driven reconciliation are not implemented.
 
@@ -576,6 +596,11 @@ passing it in argv. Use TLS in a trusted reverse proxy before exposing the servi
 outside loopback. Supply `--public-endpoint` for externally routed or wildcard
 listeners. A loopback `--listen 127.0.0.1:0` development binding publishes its
 actual allocated authority automatically; the listening address is logged.
+Non-loopback listeners (including specific IPv4/IPv6 addresses) are rejected by
+default. `--allow-insecure-listen` explicitly opts into plaintext remote binding;
+it does not install TLS or authenticate a reverse proxy. Prefer TLS termination
+with the daemon backend on loopback. IPv4-mapped loopback addresses retain local
+behavior. The sandbox option does not change portable cache endpoint rules.
 
 `pvisor-daemon protocol` prints the pinned baseline. Connect SDK version 1.1.0
 with the chosen domain and protocol, and use a prepared image satisfying the

@@ -609,7 +609,23 @@ pub fn main() {
         std::process::exit(125);
     }
     let root = File::open("/").expect("open root to report guest exit");
-    let mut code = match run() {
+    let token = (|| -> io::Result<_> {
+        check(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) })?;
+        let mut token = [0u8; pvisor_guest::exit_status::TOKEN_BYTES];
+        check(unsafe {
+            libc::ioctl(
+                root.as_raw_fd(),
+                pvisor_guest::exit_status::CLAIM_IOCTL as _,
+                token.as_mut_ptr(),
+            )
+        })?;
+        Ok(token)
+    })();
+    let mut code = match token
+        .as_ref()
+        .map_err(|error| io::Error::other(error.to_string()))
+        .and_then(|_| run())
+    {
         Ok(code) => code,
         Err(error) => {
             eprintln!("pvisor guest: {error}");
@@ -624,8 +640,19 @@ pub fn main() {
         code = 125;
     }
     unsafe { libc::sync() };
-    if unsafe { libc::ioctl(root.as_raw_fd(), 0x7602, code) } < 0 {
-        eprintln!("report guest exit: {}", io::Error::last_os_error());
+    if let Ok(token) = token {
+        let report = pvisor_guest::exit_status::report(&token, code).and_then(|bytes| {
+            check(unsafe {
+                libc::ioctl(
+                    root.as_raw_fd(),
+                    pvisor_guest::exit_status::REPORT_IOCTL as _,
+                    bytes.as_ptr(),
+                )
+            })
+        });
+        if let Err(error) = report {
+            eprintln!("report guest exit: {error}");
+        }
     }
     unsafe {
         libc::reboot(libc::RB_AUTOBOOT);

@@ -642,6 +642,13 @@ impl NativeRuntime {
             return Ok(RuntimeState::Missing);
         };
         let directory = self.directory(id)?;
+        if !directory.join("started").try_exists()? {
+            // A durable preparation without launch intent cannot own a running
+            // workload. Cleanup fences a delayed launcher, locks ownership and
+            // proves the bound group empty before returning Missing.
+            self.cleanup(&identity).await?;
+            return Ok(RuntimeState::Missing);
+        }
         if directory.join("deleted").try_exists()? {
             // Upgrade an older deletion marker only after proving native absence.
             self.cleanup(&identity).await?;
@@ -3721,10 +3728,7 @@ mod tests {
             },
             operations: SandboxLocks::default(),
         };
-        runtime
-            .cleanup(&runtime.identity(ID).unwrap().unwrap())
-            .await
-            .unwrap();
+        // Startup inspection itself reconciles the pre-launch intention.
         assert_eq!(runtime.inspect(ID).await.unwrap(), RuntimeState::Missing);
         assert!(directory.join("deleted").is_file());
     }
@@ -3733,6 +3737,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let (identity, directory) = identity_fixture(temp.path());
         publish_new(&directory.join("identity.json"), &identity).unwrap();
+        mark(&directory, "started").unwrap();
         // A legacy cache is deliberately left behind, but never read as proof.
         publish_new(
             &directory.join("observation.json"),
