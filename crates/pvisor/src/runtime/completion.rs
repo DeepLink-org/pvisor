@@ -26,11 +26,14 @@ pub(crate) fn read_file(path: &Path) -> anyhow::Result<Vec<u8>> {
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
         .open(path)?;
+    let metadata = file.metadata()?;
+    ensure!(metadata.is_file(), "completion data must be a regular file");
     ensure!(
-        file.metadata()?.is_file(),
-        "completion data must be a regular file"
+        metadata.len() <= MAX_BYTES,
+        "completion data exceeds size limit"
     );
-    let mut bytes = Vec::new();
+    // Length is an allocation hint; the bounded read still catches later growth.
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
     ensure!(
         bytes.len() as u64 <= MAX_BYTES,
@@ -189,6 +192,42 @@ pub(crate) fn reconcile(record: &mut RunRecord) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::RunBundle;
+
+    #[test]
+    fn bounded_reader_preserves_bytes_and_rejects_oversized_or_nonregular_files() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("data");
+        for size in [0, 653, 8502, 65536] {
+            let contents: Vec<_> = (0..size).map(|index| (index % 251) as u8).collect();
+            std::fs::write(&path, &contents).unwrap();
+            assert_eq!(read_file(&path).unwrap(), contents);
+        }
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(MAX_BYTES + 1)
+            .unwrap();
+        assert!(
+            read_file(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("size limit")
+        );
+        std::fs::write(&path, b"regular file").unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert!(read_file(&link).is_err());
+        assert!(read_file(root.path()).is_err());
+        let fifo = root.path().join("fifo");
+        use std::os::unix::ffi::OsStrExt;
+        let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(
+            read_file(&fifo)
+                .unwrap_err()
+                .to_string()
+                .contains("regular file")
+        );
+    }
 
     fn fixture(root: &Path) -> (RunRecord, RunResult) {
         let record: RunRecord = serde_json::from_value(serde_json::json!({

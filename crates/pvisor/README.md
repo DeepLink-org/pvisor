@@ -88,6 +88,9 @@ Job metadata lock waits are bounded to five seconds and preserve uncertain outco
 Completion and Bundle reads reject symlinks/nonregular files and are capped at
 64 MiB each. Very large captured results or file inventories can exceed this bound
 and fail finalization while retaining the stage.
+Readers reserve the bounded size reported by the opened file to avoid repeated
+small reads and buffer growth. That size is only an allocation hint; a bounded
+read and final length check still reject growth beyond the limit.
 
 Local sandbox evidence comes from individual control installation receipts on a
 parent-retained inode. The launcher unlinks its pathname and closes the descriptor
