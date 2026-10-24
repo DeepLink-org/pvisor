@@ -13,6 +13,8 @@ on:
       - 'mise.toml'
       - 'mise.lock'
       - 'tests/tasks.toml'
+      - 'scripts/tasks/**'
+      - 'tests/tasks/**'
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/actions/setup-build-env/**'
@@ -29,6 +31,8 @@ on:
       - 'mise.toml'
       - 'mise.lock'
       - 'tests/tasks.toml'
+      - 'scripts/tasks/**'
+      - 'tests/tasks/**'
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/actions/setup-build-env/**'
@@ -51,7 +55,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
         with:
-          native-firmware: "true"
+          tools: python uv rust
+          setup: python
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: docs-semspec

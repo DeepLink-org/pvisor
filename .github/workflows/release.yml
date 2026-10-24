@@ -27,6 +27,9 @@ jobs:
           fetch-depth: 0
 
       - uses: ./.github/actions/setup-build-env
+        with:
+          tools: python rust
+          setup: none
 
       - name: Fetch main release boundary
         run: git fetch --no-tags origin main:refs/remotes/origin/main
@@ -57,6 +60,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/setup-build-env
+        with:
+          tools: python
+          setup: none
 
       - name: Download platform wheels
         uses: actions/download-artifact@v4

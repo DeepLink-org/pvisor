@@ -25,6 +25,12 @@ Tool versions live in `mise.toml`; Python development dependencies use `uv.lock`
 and `.venv`. Platform libraries and virtualization permissions are documented in
 the development guide. Task arguments follow `--`.
 
+`mise run setup -- python` syncs only Python development dependencies, without
+installing guest Rust targets. CI's shared setup action accepts a `tools` subset
+and a `setup` scope (`none`, `python`, or `full`); tool versions stay in `mise.toml`.
+CI disables automatic tool installation after provisioning so nested tasks keep
+the requested scope. Full local setup and build jobs retain the complete tools.
+
 ```bash
 mise run build            # debug build
 mise run test             # Rust tests via cargo nextest, then Python tests

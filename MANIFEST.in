@@ -15,3 +15,4 @@ prune target
 prune fw/linux-*
 prune fw/tarballs
 include tests/tasks.toml
+recursive-include tests/tasks *.sh

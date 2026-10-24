@@ -8,8 +8,9 @@ configuration. CI runs both entries explicitly. Delete superseded Python wrapper
 after moving their behavioral checks; do not retain a second set of recipe or shell-source
 string assertions.
 
-Keep mise routing, Bash vocabulary, firmware Make and shell installer checks in
-`tests/tasks.toml`. Test routing branches, failure handling and publication behavior;
+Declare mise routing, Bash vocabulary, firmware Make and shell installer checks in
+`tests/tasks.toml`; the larger routing regression lives in `tests/tasks/`.
+Test routing branches, failure handling and publication behavior;
 do not repeat each one-line recipe as a mock command assertion.
 Python tests cover Python contracts, structured data, PTY interaction and process
 lifecycle. Do not launch mise or embed Bash checks inside a Python test runner.

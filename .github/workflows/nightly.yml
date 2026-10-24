@@ -24,6 +24,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
+        with:
+          tools: python
+          setup: none
       - id: ver
         shell: bash
         run: |
@@ -50,6 +53,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: ./.github/actions/setup-build-env
+        with:
+          tools: python
+          setup: none
 
       - name: Download wheels
         uses: actions/download-artifact@v4

@@ -179,6 +179,12 @@ manages development tools; `uv.lock` fixes Python development dependencies in
 `.venv`. Use `mise tasks ls` to list tasks and `mise run test` to validate.
 See [contributing](CONTRIBUTING.md) for the development loop and platform prerequisites.
 
+Complex task implementations live in `scripts/tasks/`; `mise.toml` declares their
+names and the shared environment. CI installs tool subsets for Python, semspec,
+documentation and release checks. Guest targets are prepared only by full setup.
+The optional Podman Go contracts retain their pinned `setup-go` environment;
+native libraries and virtualization prerequisites use the host package manager.
+
 ## Guest firmware
 
 The customized libkrunfw sources, guest kernel configurations, patches and

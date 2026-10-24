@@ -1,6 +1,12 @@
 name: Setup pVisor environment
 description: Pinned mise toolchain and Python environment, with opt-in native build prerequisites
 inputs:
+  tools:
+    description: Space-separated mise tool names; empty installs the complete locked toolchain
+    default: ""
+  setup:
+    description: Development setup scope (full, python, or none)
+    default: full
   native-firmware:
     description: Prepare native firmware build prerequisites
     default: "false"
@@ -15,10 +21,21 @@ runs:
       with:
         version: 2026.10.18
         cache: true
+        install_args: --locked ${{ inputs.tools }}
 
-    - name: Prepare development environment
+    - name: Prepare requested development environment
       shell: bash
-      run: mise run setup
+      env:
+        MISE_AUTO_INSTALL: "false"
+        SETUP_SCOPE: ${{ inputs.setup }}
+      run: |
+        # Nested tasks must not expand a lightweight job to the full toolchain.
+        echo 'MISE_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+        case "$SETUP_SCOPE" in
+          none) ;;
+          full|python) mise run setup -- "$SETUP_SCOPE" ;;
+          *) echo "unknown setup scope: $SETUP_SCOPE" >&2; exit 2 ;;
+        esac
 
     - name: Install Linux static musl build tools
       if: runner.os == 'Linux' && inputs.static-musl == 'true'
