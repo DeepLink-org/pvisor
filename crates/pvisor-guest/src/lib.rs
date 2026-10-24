@@ -125,7 +125,7 @@ pub struct Mount {
 /// their own, stdio detached (stdin/stdout null, stderr appended to `log`
 /// inside the guest root, host-visible through virtio-fs), and their spawn
 /// failure or exit never affects the workload or the reported guest exit
-/// code. argv[0] addresses a file staged into the rootfs by the host
+/// code. `argv[0]` addresses a file staged into the rootfs by the host
 /// executor; the supervisor performs no lookup or validation of its own.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

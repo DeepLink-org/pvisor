@@ -35,6 +35,12 @@ Units: ms, P50; N=20 per arm/scenario, with paired 95% CIs for reductions.
 | Steady fresh sandbox: SDK create completion | 149.7 | 100.7 | 32.8% [30.5%, 36.7%] |
 | Steady fresh sandbox: Create → first checked command | 358.8 | 120.9 | 66.3% [65.7%, 67.3%] |
 
+![All matched creation and first-command samples in both scenarios](../assets/benchmarks/opensandbox-startup-distribution.svg)
+
+Each dot is one valid sample; thin lines join the two arms of a randomized trial. Boxes show quartiles and whiskers reach samples within 1.5 IQR; every point remains visible. All four panels share a zero-based vertical scale. Every measured pVisor creation is below its paired Docker creation, so a few slow requests do not drive the difference. Twenty pairs still cannot establish production P99.
+
+The post-creation command path also contributes to the shorter wait. Computing “first command completion − create completion” inside each sample gives steady median additional waits of 19.7 ms for pVisor and 208.9 ms for Docker, a 90.6% reduction [90.1%, 91.0%]. These are observed per-sample intervals; subtracting two P50s would not recover them. pVisor's first and steady creation medians are close, around 101 ms, within these prepared-image and retained-cache API scenarios.
+
 The native guest path reduces observable wait for local agents that repeatedly create sandboxes and run small commands. First request means first after API restart, not cold disk or first download. First-command differences include protocol and stream-completion behavior; they do not imply the same speedup for compilation or inference and do not cover other OpenSandbox backends.
 
 ### Image-pool disk allocation {#disk}
@@ -48,6 +54,10 @@ Units: MiB, medians of three same-input inventories; reductions are relative to 
 | python-3.12-slim-bookworm | 176.68 | 63.20 | 64.2% |
 | python-3.13-slim-bookworm | 172.34 | 61.92 | 64.1% |
 | combined | 363.16 | 121.61 | 66.5% |
+
+![Single-image inventories and the shared four-image pool](../assets/benchmarks/opensandbox-disk-inventory.svg)
+
+The left panel compares four separate single-image inventories; the right uses the actual four-image set. Adding the left-hand Docker bars would not give its combined allocation. The complete compressed-pool path saves space for all four inputs; sharing one pool further removes 47.60 MiB relative to four separate pVisor stores. The measured combined pool is 241.55 MiB below Docker's actual combined store. These differences describe median inventories, not a fixed saving for every additional image.
 
 The Docker column already includes normal layer sharing. Four separate pVisor stores total 169.21 MiB, versus 121.61 MiB in one shared pool, a further 28.1% reduction. The pool retains compressed content and indexes, avoiding full rootfs expansion at creation. This inventory does not measure mmap performance, cold-read CPU, import peaks or deletion GC; it is not a universal ratio for all images or Docker storage drivers.
 
@@ -66,6 +76,10 @@ Complete product-group cgroup charges, MiB; each cell is the median of five fres
 ![Memory medians and ranges across five fresh groups](../assets/benchmarks/opensandbox-memory.svg)
 
 Bars are five-group medians; whiskers are min–max, not confidence intervals. Every configuration includes its background services. One post-write pool group is higher: the table uses a post-hoc 640 MiB split to describe four groups and one group. All five rounds remain in the paired statistics; this small sample cannot establish stable multimodality. Identical data is a shareable synthetic working set; unique data exposes degradation after private writes. Neither represents average real-agent savings.
+
+![Every charged-memory trace in the identical and unique working-set windows](../assets/benchmarks/opensandbox-memory-timeline.svg)
+
+Each color retains five independent traces, directly connecting the roughly 500 ms observations without smoothing or selecting representative rounds. Pale shading marks the final two seconds used for phase statistics. The panels reset their clocks at “identical data ready” and “unique rewrite complete”; allocation, writes and intervening checks are outside them. They cannot be joined into a continuous lifecycle or used to infer write peaks. Physical-pool charges continue falling early in the shared window; unique writes increase usage, followed by release of some transient costs. These finite windows do not establish long-term convergence or stability.
 
 Differences below subtract the right configuration from the left; negative values mean lower charges. Positive reduction percentages mean savings. Intervals describe these five rounds, not production distributions.
 
@@ -88,6 +102,10 @@ The following takes `(phase total − same-group empty-service baseline) / sandb
 | Mean deployment increment per sandbox at N=1 | 100.39 | 88.49 | 79.02 |
 | Mean deployment increment per sandbox at N=4 | 55.54 | 88.46 | 68.41 |
 
+![Complete deployment totals and per-sandbox increments after service-baseline subtraction](../assets/benchmarks/opensandbox-memory-deployment.svg)
+
+Dots retain all five groups; bars are medians and whiskers are min–max. The left panel shows only measured counts 0, 1 and 4, without a capacity curve. The right subtracts each group's own empty-service baseline before amortizing by count. Default pVisor's smaller fixed service charge gives a substantial single-sandbox total advantage. At four sandboxes, Docker's 55.54 MiB amortized increment is below the default VM's 88.46 MiB. The explicit pool lowers the VM value to 68.41 MiB; four instances cannot establish production capacity or a crossover count.
+
 This is an amortized deployment increment, including first-use initialization and caches, not process RSS or the marginal cost of sandbox N+1. VM increments can exceed container increments; smaller background services and cross-instance sharing can still reduce the deployment total. The private Docker daemon's fixed cost is included, so these ratios do not transfer to deployments sharing an existing Docker daemon across users.
 
 The identical-data 30-second window also records scan CPU and the wait for four complete readbacks. Values below are five-group medians and ranges; CPU is in seconds and readback in ms.
@@ -98,6 +116,10 @@ The identical-data 30-second window also records scan CPU and the wait for four 
 | pVisor default | 0.162 [0.156–0.174] | 108.6 [106.1–117.7] |
 | pVisor explicit physical pool | 2.861 [2.577–3.223] | 443.9 [419.4–445.8] |
 
+![Whole-group CPU and full readback costs accompanying memory sharing](../assets/benchmarks/opensandbox-memory-tradeoffs.svg)
+
+Both axes start at zero and retain all five dots and min–max ranges. The explicit pool further reduces identical-working-set memory, while whole-group CPU during the 30-second window rises from the default's 0.162 seconds to 2.861 seconds, and full readback from 108.6 ms to 443.9 ms. Deployment choices should consider shareable content, residency duration and read/write frequency. These results describe that fixed workload's tradeoff, not a prediction of net gains for real agents.
+
 Readback includes complete content checks, SDK calls and stream completion, not pure page-fault or decompression time. The physical pool trades scanning, hashing, mapping management and COW costs for sharing. Fixed windows do not establish convergence, long-term stability or capacity. This pool does not compress unique pages; default startup and pool-enabled memory cannot be combined into one configuration's score.
 
 ### Provenance and scope {#provenance}
@@ -107,5 +129,7 @@ The formal memory cohort contains 15 groups and 60 fresh sandboxes; all data, pr
 Local evidence for startup, disk and memory is respectively `benchmark/.data/opensandbox-native-docker-20261024T020535Z/`, `benchmark/.data/image-storage-6mdz6ljh/` and `benchmark/.data/opensandbox-memory-formal-20261024/`. These directories are not published with the site. Their summary SHA-256 values are `8fc9fd74d6c4450dd9be07af58fbdc80156dbc6cacf4691c97daa416951b5e12`, `ed741f8c85bf14284e69c4f4a374baaea6a09d61461ce8ba78a0863e39be919b` and `13d437b59e56bc4534d48b24999ab44c1dd5ef562ea005a4f0a66664a9ebe067` respectively.
 
 Startup and memory use daemon SHA-256 `74461c7ad588633228d44a8ada5d8335de50ea55ca9c5c543886c6533540f575`; disk uses a separately frozen CLI, SHA-256 `14ab9917e2d9d9c8fad513b490d43646bce1978e6f25f98ac1f641c34b55b73e`. Each cohort retains source/build receipts, input digests, resource settings, every sample and logs. Reproduction is in the [OpenSandbox experiment manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/opensandbox/README.md) and [image-inventory manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/image_storage/README.md).
+
+The five added figures are generated by `benchmark/opensandbox/plot_comparison.py` from those original cohorts, with no new sampling or source-result changes. Per-figure data, SHA-256 hashes of every input and SVG, plotting code and the Matplotlib version remain in local `benchmark/.data/opensandbox-figures-20261024/`, separately from the original memory-bar-chart receipt.
 
 Results support startup and image-inventory advantages in the measured local configurations, plus memory benefits from service amortization and optional physical sharing. They do not establish complete OpenSandbox/E2B conformance, hostile-user security, production density or P99 guarantees. OpenSandbox supports other isolation runtimes, as described in its [official secure-runtime guide](https://github.com/opensandbox-group/OpenSandbox/blob/release-1.1.0/docs/guides/secure-container.md); those paths are outside this performance comparison.

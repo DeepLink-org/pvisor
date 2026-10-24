@@ -149,3 +149,33 @@ preflight groups. Do not merge preliminary data into formal results. The
 engineering synthesis belongs in the bilingual
 `docs/src/{zh,en}/lab-notes/opensandbox-performance-analysis.md`, with startup,
 disk inventory and memory explicitly labeled as separate cohorts.
+
+## Combined report figures
+
+`plot_comparison.py` reads the three retained engineering cohorts for the
+bilingual OpenSandbox report. It generates startup paired distributions,
+single/combined image inventories, complete deployment totals and amortized
+increments, every memory-window trace, and CPU/readback tradeoffs. It performs
+no new measurements and keeps the cohorts separate. Matplotlib with NumPy is
+required; record the actual version with the figure receipt.
+
+```sh
+python3 benchmark/opensandbox/plot_comparison.py \
+  --startup-batch benchmark/.data/opensandbox-native-docker-20261024T020535Z \
+  --disk-summary benchmark/.data/image-storage-6mdz6ljh/summary.json \
+  --memory-batch benchmark/.data/opensandbox-memory-formal-20261024 \
+  --output-dir docs/overrides/assets/benchmarks \
+  --evidence-dir benchmark/.data/opensandbox-figures-NEW \
+  --preview-dir /tmp/opensandbox-figure-previews
+```
+
+Choose a new evidence directory. `figure-data.json` retains each plotted value
+and its scope; `receipt.json` hashes source summaries, samples, memory traces,
+SVGs and the plotter. The retained `opensandbox-figures-20261024/` also contains
+the exact plotter source. Startup excludes the two warmup requests and checks
+the 20 pair identities against audited summaries. Memory plots retain all five
+groups per configuration; bars use medians, dots use individual groups and
+whiskers use min–max, not confidence intervals. Timeline clocks reset per phase,
+with allocation/write/check intervals omitted; lines do not establish a capacity
+curve or convergence-time distribution. Engineering SVGs are the only new public
+assets; figure data and receipts remain local.

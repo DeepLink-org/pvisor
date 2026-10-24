@@ -600,6 +600,24 @@ class ApplicationChaos:
             log.close()
         self.http(self.expected)
 
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as client:
+            client.settimeout(5)
+            client.sendall(b"GET /state HTTP/1.1\r\nHost: app\r\nConnection: close\r\n\r\n")
+            client.shutdown(socket.SHUT_WR)
+            response = http.client.HTTPResponse(client)
+            response.begin()
+            payload = response.read()
+            assert response.status == 200 and payload == self.expected
+            response.close()
+            save(
+                self.output / f"half-close-{self.serial}.json",
+                {
+                    "verified": True,
+                    "bytes": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                },
+            )
+
     def exec_restart(self):
         self.call("exec", self.web, "rm", "-f", "/old-exec-ready")
         directory = self.output / f"old-exec-{self.serial}"

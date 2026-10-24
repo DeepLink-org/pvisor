@@ -85,6 +85,10 @@ Both host and guest use `control`'s shared protocol definitions. Raw vsock
 accept is required: `UnixListener::accept` rejects AF_VSOCK peer addresses.
 Protocol tests reject oversized and unknown-field frames; real VM tests remain
 necessary for terminal, mount, networking and process-lifecycle behavior.
+TCP tunnel completion and errors shut down companion transport operations and
+join the input pump, so cloned control descriptors cannot retain finished
+tunnels. Explicit input EOF remains a TCP write-half close, preserving the full
+response from the guest application.
 Architecture guards keep spawning/signalling/reaping out of the transport
 adapter. Linux supervisor tests cover limits, exit statuses, orphan reaping and
 concurrent exec routing; native CLI acceptance exercises the same behavior in a VM.

@@ -1333,19 +1333,28 @@ fn forward(mut client: std::net::TcpStream, endpoint: &Path, port: u16) -> anyho
     let mut input = client.try_clone()?;
     let mut writer = stream.try_clone()?;
     let upstream = std::thread::spawn(move || -> io::Result<()> {
-        let mut bytes = [0; 16384];
-        loop {
-            let size = input.read(&mut bytes)?;
-            if size == 0 {
-                return write_frame(&mut writer, &control::StdinFrame::Eof {});
+        let result = (|| {
+            let mut bytes = [0; 16384];
+            loop {
+                let size = input.read(&mut bytes)?;
+                if size == 0 {
+                    // An orderly half-close still allows the guest's reply.
+                    return write_frame(&mut writer, &control::StdinFrame::Eof {});
+                }
+                write_frame(
+                    &mut writer,
+                    &control::StdinFrame::Data {
+                        bytes: bytes[..size].to_vec(),
+                    },
+                )?;
             }
-            write_frame(
-                &mut writer,
-                &control::StdinFrame::Data {
-                    bytes: bytes[..size].to_vec(),
-                },
-            )?;
+        })();
+        if result.is_err() {
+            // RST and failed input writes must wake the downstream reader now,
+            // rather than occupying a publication slot until the guest times out.
+            let _ = writer.shutdown(std::net::Shutdown::Both);
         }
+        result
     });
     let result = (|| -> anyhow::Result<()> {
         loop {
@@ -1357,6 +1366,7 @@ fn forward(mut client: std::net::TcpStream, endpoint: &Path, port: u16) -> anyho
         }
     })();
     let _ = client.shutdown(std::net::Shutdown::Both);
+    let _ = stream.shutdown(std::net::Shutdown::Both);
     let _ = upstream.join();
     result
 }
@@ -1587,6 +1597,67 @@ pub use pvisor_guest::control::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn docker_published_tcp_reset_cancels_the_guest_tunnel() {
+        use std::os::fd::AsRawFd;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("guest.sock");
+        let guest = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = guest.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            assert!(matches!(
+                read_frame::<Request>(&mut stream).unwrap(),
+                Request::Connect { port: 8080 }
+            ));
+            write_frame(&mut stream, &Reply::Ready).unwrap();
+            assert!(matches!(
+                read_frame::<control::StdinFrame>(&mut stream).unwrap(),
+                control::StdinFrame::Data { .. }
+            ));
+            sent.send(()).unwrap();
+            let error = read_frame::<control::StdinFrame>(&mut stream).unwrap_err();
+            // Release a broken implementation's downstream reader before asserting.
+            let _ = write_frame(&mut stream, &Reply::Exit { code: 0 });
+            error.kind()
+        });
+        let forwarding = std::thread::spawn(move || forward(accepted, &path, 8080));
+        client.write_all(b"GET /unfinished HTTP/1.1\r\n").unwrap();
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        let linger = libc::linger {
+            l_onoff: 1,
+            l_linger: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    client.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_LINGER,
+                    (&linger as *const libc::linger).cast(),
+                    std::mem::size_of_val(&linger) as _,
+                )
+            },
+            0
+        );
+        drop(client);
+        let kind = server.join().unwrap();
+        let _ = forwarding.join().unwrap();
+        assert!(
+            matches!(
+                kind,
+                io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+            ),
+            "reset did not cancel tunnel: {kind:?}"
+        );
+    }
 
     #[test]
     fn resolver_preserves_guest_directory_metadata_without_exposing_host_storage() {

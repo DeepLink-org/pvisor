@@ -741,6 +741,12 @@ Concurrent starts join the same starting generation and wait for its bounded
 readiness or failure; they do not spawn a second owner or reject a healthy
 in-progress launch. Waiting never retains the catalog lock.
 
+Published TCP relays cancel the guest tunnel on client reset or failed input
+writes, releasing the bounded connection slot without waiting for the guest
+application to time out. Orderly client write-half close still forwards EOF and
+allows the complete guest response. Completion cancels blocked companion pumps
+before joining them; cloned descriptors must not retain finished tunnels.
+
 The host translates Docker defaults into generic guest process/mount options,
 including the Docker capability bounding set and `TERM=xterm` for TTYs unless
 an image or explicit value/unset wins. The guest has one launcher and

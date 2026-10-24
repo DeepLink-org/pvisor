@@ -100,6 +100,12 @@ limits. Chaos rounds are not counted as additional Podman contracts. The normal
 Go suite includes its concurrent-start regression, which verifies one entrypoint
 execution for each pair of simultaneous starts.
 
+The independent Linux/KVM [application chaos runner](APPLICATION_CHAOS.md) adds
+an HTTP application, continuous requests, shared read-only volume observations,
+owner/VMM death, concurrent starts, client resets and image replacement under
+per-instance host cgroup limits. It is opt-in and does not add to the Bats/Go
+contract counts or require a Docker daemon.
+
 Together these exercise all eleven registered container/build subcommands: `pull`, `images`, `rmi`,
 `run`, `build`, `exec`, `ps`, `start`, `stop`, `rm`, `logs`. They do not cover every option.
 The volume-image-content fixture requires an Alpine image containing
