@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-pub const ENGINE_SEMANTICS: &str = "6";
+pub const ENGINE_SEMANTICS: &str = "7";
 pub const ENGINE_TEXT: &str = include_str!("../ENGINE.md");
 pub fn normalize(text: &str) -> String {
     let mut lines: Vec<_> = text.lines().map(str::trim_end).collect();
@@ -17,6 +17,14 @@ pub fn digest(parts: &[&[u8]]) -> String {
 }
 pub fn engine_digest() -> String {
     digest(&[b"semspec/engine/v1\0", ENGINE_SEMANTICS.as_bytes()])
+}
+pub fn execution_digest(text_digest: &str, script: &str) -> String {
+    digest(&[
+        b"semspec/execution/v1\0",
+        text_digest.as_bytes(),
+        b"\0",
+        script.as_bytes(),
+    ])
 }
 pub fn vocab_digest(name: &str, text: &str) -> String {
     digest(&[

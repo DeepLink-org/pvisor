@@ -1,6 +1,8 @@
 //! One freeze transaction spans native capture and host-side publication.
 //! The host seals filesystem inventories outside the runner's user namespace.
 use crate::environment_snapshot::{Compatibility, SnapshotStore, file_hash};
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+use crate::startup_profile;
 use anyhow::{Context, ensure};
 use pvisor_core::operation::{ExecutionCheckpoint, OperationKind, SnapshotRamStorage};
 use pvisor_journal::api::{DurableFiles, Persistence};
@@ -182,14 +184,62 @@ pub(super) fn binding(
 
 #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
 pub(super) fn compatibility(firmware: Option<&Path>) -> anyhow::Result<Compatibility> {
-    let mut compatibility_span = startup_profile::Span::start("vm.checkpoint.compatibility");
+    let mut span = startup_profile::Span::start("vm.checkpoint.compatibility");
+    let identity = compatibility_with(firmware, true)?;
+    span.success(None);
+    Ok(identity)
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+fn compatibility_with(firmware: Option<&Path>, parallel: bool) -> anyhow::Result<Compatibility> {
+    // Independent full-content hashes overlap in the owner, before any capture
+    // transaction. No identity is published until both hashes and boot ID succeed.
+    // The scoped worker is always joined, including invalid-firmware failures.
+    std::thread::scope(|scope| {
+        let worker = parallel.then(|| {
+            std::thread::Builder::new()
+                .name("pvisor-checkpoint-hash".into())
+                .spawn_scoped(scope, executable_hash)
+        });
+        let firmware = firmware_hash(firmware);
+        let host_boot = host_boot_identity();
+        let build = match worker {
+            Some(Ok(worker)) => worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("checkpoint executable hash worker panicked"))?,
+            // Thread limits must not introduce a new launch failure. Keep the
+            // existing serial path when the optional worker cannot be created.
+            Some(Err(_)) | None => executable_hash(),
+        };
+        let firmware = firmware?;
+        let host_boot = host_boot?;
+        let build = build?;
+        Ok(Compatibility {
+            host_boot,
+            build,
+            firmware,
+            profile: "pvisor-job-owned-overlay-v1".into(),
+        })
+    })
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+fn executable_hash() -> anyhow::Result<String> {
+    let mut span = startup_profile::Span::start("vm.checkpoint.executable_hash");
+    let hash = file_hash(&std::env::current_exe()?)?;
+    span.success(None);
+    Ok(hash)
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+fn firmware_hash(firmware: Option<&Path>) -> anyhow::Result<String> {
     let embedded = {
         let mut span = startup_profile::Span::start("vm.checkpoint.embedded_kernel_acquire_init");
         let kernel = pvisor_vm::api::VmPlatform::embedded_kernel();
         span.success(kernel.as_ref().map(|kernel| kernel.bytes.len() as u64));
         kernel
     };
-    let firmware_hash = if let Some(kernel) = embedded {
+    let hash = if let Some(kernel) = embedded {
         use sha2::{Digest, Sha256};
 
         let digest = {
@@ -210,6 +260,11 @@ pub(super) fn compatibility(firmware: Option<&Path>) -> anyhow::Result<Compatibi
         span.success(None);
         hash
     };
+    Ok(hash)
+}
+
+#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+fn host_boot_identity() -> anyhow::Result<String> {
     #[cfg(target_os = "linux")]
     let host_boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
     #[cfg(target_os = "macos")]
@@ -224,214 +279,7 @@ pub(super) fn compatibility(firmware: Option<&Path>) -> anyhow::Result<Compatibi
         !host_boot.trim().is_empty(),
         "host boot identity unavailable"
     );
-    let compatibility = Compatibility {
-        host_boot: host_boot.trim().into(),
-        build: {
-            let mut span = startup_profile::Span::start("vm.checkpoint.executable_hash");
-            let hash = file_hash(&std::env::current_exe()?)?;
-            span.success(None);
-            hash
-        },
-        firmware: firmware_hash,
-        profile: "pvisor-job-owned-overlay-v1".into(),
-    };
-    compatibility_span.success(None);
-    Ok(compatibility)
-}
-
-// Independent opt-in diagnostics, not snapshot identity or benchmark evidence.
-#[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
-mod startup_profile {
-    use serde::Serialize;
-    use std::{
-        io::{self, Write},
-        sync::OnceLock,
-        time::Instant,
-    };
-
-    const PREFIX: &[u8] = b"pvisor-startup-profile ";
-    const MAX_LINE: usize = 768;
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    // Local monotonic epoch begins at the first enabled diagnostic in this process.
-    static ORIGIN: OnceLock<Instant> = OnceLock::new();
-
-    struct Timing {
-        origin: Instant,
-        start: Instant,
-    }
-
-    pub(super) struct Span {
-        stage: &'static str,
-        timing: Option<Timing>,
-        outcome: &'static str,
-        bytes: Option<u64>,
-    }
-
-    impl Span {
-        pub(super) fn start(stage: &'static str) -> Self {
-            let enabled = *ENABLED.get_or_init(|| {
-                std::env::var_os("PVISOR_STARTUP_PROFILE").as_deref()
-                    == Some(std::ffi::OsStr::new("1"))
-            });
-            Self::start_with(stage, enabled, || {
-                let origin = *ORIGIN.get_or_init(Instant::now);
-                Timing {
-                    origin,
-                    start: Instant::now(),
-                }
-            })
-        }
-
-        fn start_with(stage: &'static str, enabled: bool, clock: impl FnOnce() -> Timing) -> Self {
-            Self {
-                stage,
-                timing: enabled.then(clock),
-                outcome: "unknown",
-                bytes: None,
-            }
-        }
-
-        pub(super) fn success(&mut self, bytes: Option<u64>) {
-            self.outcome = "success";
-            self.bytes = bytes;
-        }
-    }
-
-    #[derive(Serialize)]
-    struct Record {
-        schema: u8,
-        pid: u32,
-        role: &'static str,
-        clock: &'static str,
-        stage: &'static str,
-        start_ns: u64,
-        end_ns: u64,
-        duration_ns: u64,
-        outcome: &'static str,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        bytes: Option<u64>,
-    }
-
-    impl Record {
-        fn closed(
-            stage: &'static str,
-            start_ns: u64,
-            end_ns: u64,
-            outcome: &'static str,
-            bytes: Option<u64>,
-        ) -> Self {
-            Self {
-                schema: 1,
-                pid: std::process::id(),
-                role: "host",
-                clock: "host_monotonic_process_relative",
-                stage,
-                start_ns,
-                end_ns,
-                duration_ns: end_ns.saturating_sub(start_ns),
-                outcome,
-                bytes,
-            }
-        }
-
-        fn emit(&self, writer: &mut impl Write) {
-            let mut buffer = [0_u8; MAX_LINE];
-            let mut line = io::Cursor::new(buffer.as_mut_slice());
-            if line.write_all(PREFIX).is_err()
-                || serde_json::to_writer(&mut line, self).is_err()
-                || line.write_all(b"\n").is_err()
-            {
-                return;
-            }
-            let length = line.position() as usize;
-            // Diagnostics must never replace the operation's error, including EAGAIN.
-            let _ = writer.write_all(&buffer[..length]);
-        }
-    }
-
-    impl Drop for Span {
-        fn drop(&mut self) {
-            let Some(timing) = &self.timing else {
-                return;
-            };
-            let end = Instant::now();
-            let ns = |instant: Instant| {
-                instant
-                    .duration_since(timing.origin)
-                    .as_nanos()
-                    .min(u64::MAX as u128) as u64
-            };
-            Record::closed(
-                self.stage,
-                ns(timing.start),
-                ns(end),
-                self.outcome,
-                self.bytes,
-            )
-            .emit(&mut io::stderr().lock());
-        }
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn disabled_span_does_not_read_clock_or_emit() {
-            let mut span =
-                Span::start_with("disabled", false, || panic!("clock read while disabled"));
-            assert!(span.timing.is_none());
-            span.success(Some(42));
-            drop(span);
-        }
-
-        #[test]
-        fn closed_duration_serializes_as_bounded_single_line() {
-            let mut output = Vec::new();
-            Record::closed(
-                "vm.checkpoint.embedded_kernel_sha256",
-                17,
-                59,
-                "success",
-                Some(123),
-            )
-            .emit(&mut output);
-            assert!(output.len() <= MAX_LINE);
-            assert!(output.starts_with(PREFIX));
-            assert_eq!(output.iter().filter(|&&byte| byte == b'\n').count(), 1);
-            let value: serde_json::Value = serde_json::from_slice(&output[PREFIX.len()..]).unwrap();
-            assert_eq!(value["schema"], 1);
-            assert_eq!(value["pid"], std::process::id());
-            assert_eq!(value["role"], "host");
-            assert_eq!(value["clock"], "host_monotonic_process_relative");
-            assert_eq!(value["start_ns"], 17);
-            assert_eq!(value["end_ns"], 59);
-            assert_eq!(value["duration_ns"], 42);
-            assert_eq!(value["outcome"], "success");
-            assert_eq!(value["bytes"], 123);
-        }
-
-        #[test]
-        fn unknown_outcome_omits_unknown_bytes_and_logging_is_best_effort() {
-            let record = Record::closed("vm.checkpoint.compatibility", 0, 1, "unknown", None);
-            let mut output = Vec::new();
-            record.emit(&mut output);
-            let value: serde_json::Value = serde_json::from_slice(&output[PREFIX.len()..]).unwrap();
-            assert_eq!(value["outcome"], "unknown");
-            assert!(value.get("bytes").is_none());
-
-            struct Unavailable;
-            impl Write for Unavailable {
-                fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                    Err(io::Error::from_raw_os_error(libc::EAGAIN))
-                }
-                fn flush(&mut self) -> io::Result<()> {
-                    Ok(())
-                }
-            }
-            record.emit(&mut Unavailable);
-        }
-    }
+    Ok(host_boot.trim().into())
 }
 
 #[derive(Debug)]
@@ -775,6 +623,40 @@ pub(super) fn lookup_request(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[cfg(all(
+        not(target_env = "musl"),
+        not(all(target_os = "macos", target_arch = "x86_64"))
+    ))]
+    #[test]
+    fn parallel_compatibility_matches_serial_full_content_checks() {
+        let directory = tempfile::tempdir().unwrap();
+        let firmware = directory.path().join("selected-firmware");
+        fs::write(&firmware, b"abc").unwrap();
+        let serial = compatibility_with(Some(&firmware), false).unwrap();
+        let parallel = compatibility_with(Some(&firmware), true).unwrap();
+        assert_eq!(serial, parallel);
+        assert_eq!(
+            parallel.firmware,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        fs::write(&firmware, b"abd").unwrap();
+        let changed = compatibility_with(Some(&firmware), true).unwrap();
+        assert_eq!(
+            changed.firmware,
+            "a52d159f262b2c6ddb724a61840befc36eb30c88877a4030b65cbe86298449c9"
+        );
+        assert_eq!(changed.build, serial.build);
+        assert_eq!(changed.host_boot, serial.host_boot);
+        for invalid in [
+            None,
+            Some(directory.path()),
+            Some(Path::new("relative-firmware")),
+        ] {
+            assert!(compatibility_with(invalid, true).is_err());
+            assert!(compatibility_with(invalid, false).is_err());
+        }
+    }
 
     #[cfg(all(
         not(target_env = "musl"),

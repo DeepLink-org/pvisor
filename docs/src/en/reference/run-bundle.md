@@ -4,11 +4,11 @@ A Run Bundle is the handoff record for a task: what ran, how it ended, which cha
 
 Start with `pvisor status --review STAGE` for a summary. Automation can use `--json` and select its reader by `schema_version`. The full file is the `run-bundle.json` path printed with the task output.
 
-## Top-level schema-4 records
+## Top-level schema-5 records
 
 | Field | Source and purpose |
 | --- | --- |
-| `schema_version` / `generated_at_unix_ms` | Format and generation time; current version 4 |
+| `schema_version` / `generated_at_unix_ms` | Format and generation time; current version 5 |
 | `run` | Run/Attempt/Session identity, command, terminal state, times, exit/failure, output, metrics, result artifacts |
 | `executor_plan` | Optional admission plan; not installation evidence |
 | `executor_observations` | Required executor observations; sole enforcement source |
@@ -31,7 +31,7 @@ pvisor status --review --json ../stage-001 > ../bundle-001.json
 jq '{schema_version, run: {id: .run.run_id, state: .run.state}, safety, resources}' ../bundle-001.json
 ```
 
-Bundles are written with mode `0600`. Readers require exactly schema 4 and reject unknown versions or missing required observation contracts instead of manufacturing evidence. Missing fields do not mean safe.
+Bundles are written with mode `0600`. New schema-5 Bundles require the matching schema-2 Run/Attempt and protocol-1 `completion.json` receipt, including the Bundle digest. Legacy schema-4 Bundles retain their original reading rules. Unknown versions, corrupt bindings and missing required observation contracts reject; missing fields do not mean safe. After owner exit, an Attempt without a committed receipt remains Unknown and cannot apply workspace effects.
 
 Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting environment values does not redact the entire Bundle. Inspect it and referenced artifacts before sharing. Types: `crates/pvisor/src/runtime/bundle.rs`; retention: [Jobs](../concepts/jobs.md).
 
@@ -43,7 +43,7 @@ Arguments, paths, stdout/stderr, and capture may contain secrets. Omitting envir
 
 | JSON path | Rust type | Presence | Meaning |
 | --- | --- | --- | --- |
-| `schema_version` | `u32` | required | Exactly 4 for the current reader |
+| `schema_version` | `u32` | required | 5 for new records; legacy 4 is accepted under its original contract |
 | `generated_at_unix_ms` | `u64` | required | Bundle generation wall-clock time, Unix milliseconds |
 | `run` | `BundleRun` | required | Execution outcome and identity |
 | `lineage` | `Option<RunLineage>` | omitted when empty | Parent Run and checkpoint identity, when forked |

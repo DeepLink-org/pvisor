@@ -294,6 +294,131 @@ async fn spawn_proxy_with_controller(
     (format!("http://127.0.0.1:{listen_port}"), tmp, stop_tx)
 }
 
+#[tokio::test]
+async fn session_snapshot_cannot_replace_the_running_network_or_model_policy() {
+    use pvisor_gateway::runtime::run_config::snapshot_proxy_config;
+    use pvisor_gateway::runtime::run_env::write_run_session;
+
+    let original = r#"
+listen = "{{LISTEN}}"
+admin_listen = "{{ADMIN}}"
+agent_id = "t"
+[network]
+mode = "no-network"
+[[models]]
+name = "original-model"
+upstream = "http://127.0.0.1:9/v1"
+"#;
+    let (proxy, storage, stop) = spawn_proxy(original).await;
+    write_run_session(storage.path(), "tamper-test").unwrap();
+    let (upstream, upstream_stop) = spawn_mock_http().await;
+    let target = format!("127.0.0.1:{upstream}");
+    assert_eq!(raw_connect(&proxy, &target).await.0, StatusCode::FORBIDDEN);
+
+    let replacement = ProxyConfig::from_toml_str(&format!(
+        r#"
+listen = "127.0.0.1:0"
+[network]
+mode = "allowlist"
+allowed_hosts = ["127.0.0.1"]
+[[models]]
+name = "injected-model"
+upstream = "http://127.0.0.1:{upstream}/v1"
+api_key = "injected-credential"
+"#
+    ))
+    .unwrap();
+    // The attacker can replace even a syntactically valid snapshot.
+    let snapshot = snapshot_proxy_config(storage.path(), "tamper-test", &replacement).unwrap();
+    std::fs::write(snapshot, replacement.to_toml_string().unwrap()).unwrap();
+    assert_eq!(raw_connect(&proxy, &target).await.0, StatusCode::FORBIDDEN);
+    let response = reqwest::Client::new()
+        .post(format!("{proxy}/v1/chat/completions"))
+        .json(&serde_json::json!({"model":"injected-model", "messages":[]}))
+        .send()
+        .await
+        .unwrap();
+    assert!(!response.status().is_success());
+    let _ = stop.send(());
+    let _ = upstream_stop.send(());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn attempt_gateway_auth_rejects_foreign_tokens_and_never_forwards_the_local_token() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let supplier = tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/v1/chat/completions", post(move |headers: HeaderMap| {
+            let observed = Arc::clone(&observed);
+            async move {
+                assert_eq!(headers.get("authorization").unwrap(), "Bearer supplier-secret");
+                assert!(headers.get("x-api-key").is_none());
+                observed.fetch_add(1, Ordering::SeqCst);
+                axum::Json(serde_json::json!({
+                    "id":"auth-test","object":"chat.completion","model":"test",
+                    "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]
+                }))
+            }
+        }))).await.unwrap();
+    });
+    let cfg = ProxyConfig::from_toml_str(&format!(
+        r#"
+listen = "127.0.0.1:0"
+admin_listen = "127.0.0.1:0"
+[[models]]
+name = "test"
+upstream = "http://{address}/v1"
+api_key = "supplier-secret"
+"#
+    ))
+    .unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let gateway = InProcessCapture::start_with_runtime(
+        cfg,
+        storage.path().into(),
+        Arc::new(NoopCaptureObserver::new()),
+        InProcessRuntime {
+            client_token: Some("attempt-private-token".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let url = format!("http://{}/v1/chat/completions", gateway.listen);
+    for token in [
+        None,
+        Some("foreign-attempt-token"),
+        Some("attempt-private-token"),
+    ] {
+        let mut request = client
+            .post(&url)
+            .json(&serde_json::json!({"model":"test","messages":[]}));
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(
+            response.status(),
+            if token == Some("attempt-private-token") {
+                StatusCode::OK
+            } else {
+                StatusCode::UNAUTHORIZED
+            }
+        );
+        let _ = response.bytes().await.unwrap();
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    gateway.shutdown().unwrap();
+    supplier.abort();
+}
+
 async fn raw_connect(proxy: &str, authority: &str) -> (StatusCode, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

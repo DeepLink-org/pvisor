@@ -97,13 +97,21 @@ impl ContainerExecutor {
             &mut mounts,
             bind_mount(pvisor_binary, Path::new(GUEST_PVISOR), true)?,
         )?;
-        let control_dir = files
-            .spec_path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("delegated RunSpec has no parent directory"))?;
         add_mount(
             &mut mounts,
-            bind_mount(control_dir, Path::new(GUEST_CONTROL_DIR), false)?,
+            bind_mount(
+                &files.spec_path,
+                &Path::new(GUEST_CONTROL_DIR).join(SPEC_FILENAME),
+                true,
+            )?,
+        )?;
+        add_mount(
+            &mut mounts,
+            bind_mount(
+                files.result_path.parent().unwrap(),
+                &Path::new(GUEST_CONTROL_DIR).join("output"),
+                false,
+            )?,
         )?;
 
         let workdir = invocation
@@ -237,7 +245,7 @@ impl ContainerExecutor {
                 mapping_entries(requested_user.1, 0, 1),
             )
         };
-        let cfg = serde_json::json!({"ociVersion":"1.0.2","process":{"terminal":false,"cwd":workdir.as_deref().unwrap_or(Path::new("/")),"args":[GUEST_PVISOR,"spawn","--executor","host","--stdio","capture","--spec",format!("{GUEST_CONTROL_DIR}/{SPEC_FILENAME}"),"--result-file",format!("{GUEST_CONTROL_DIR}/{RESULT_FILENAME}" )],"env":env_json,"user":{"uid":process_user.0,"gid":process_user.1}},"root":{"path":rootfs,"readonly":self.settings.read_only_rootfs},"mounts":mounts_json,"linux":{"namespaces":namespaces,"resources":resources,"devices":devices,"uidMappings":uid_mappings,"gidMappings":gid_mappings},"annotations":{"io.pvisor.run_id":run_id,"io.pvisor.attempt_id":attempt_id}});
+        let cfg = serde_json::json!({"ociVersion":"1.0.2","process":{"terminal":false,"cwd":workdir.as_deref().unwrap_or(Path::new("/")),"args":[GUEST_PVISOR,"spawn","--executor","host","--stdio","capture","--spec",format!("{GUEST_CONTROL_DIR}/{SPEC_FILENAME}"),"--result-file",format!("{GUEST_CONTROL_DIR}/output/{RESULT_FILENAME}" )],"env":env_json,"user":{"uid":process_user.0,"gid":process_user.1}},"root":{"path":rootfs,"readonly":self.settings.read_only_rootfs},"mounts":mounts_json,"linux":{"namespaces":namespaces,"resources":resources,"devices":devices,"uidMappings":uid_mappings,"gidMappings":gid_mappings},"annotations":{"io.pvisor.run_id":run_id,"io.pvisor.attempt_id":attempt_id}});
         crate::util::write_private_json(&config, &cfg)?;
         let state = control_dir.join("oci-state");
         fs::create_dir_all(&state)?;
@@ -460,12 +468,14 @@ impl RunExecutor for ContainerExecutor {
 
         let transport_stdout = join_capture_bounded(stdout_task).await;
         let transport_stderr = join_capture_bounded(stderr_task).await;
-        if matches!(end, End::Exited(_)) && files.result_path.is_file() {
+        if let End::Exited(Ok(status)) = &end {
             match files.read_result(&spec.run_id, context.attempt_id()) {
-                Ok(mut output) => {
-                    context.import_delegated_agentctl(output.agentctl);
-                    output.result.warnings.extend(warnings);
-                    return output.result.into();
+                Ok(output) => {
+                    // Only the host-observed runtime status determines completion.
+                    // Boundary-writable results supply transcript bytes, never controls or evidence.
+                    let mut result = container_exit_output(*status, output.result.output);
+                    result.warnings.extend(warnings);
+                    return result;
                 }
                 Err(error) => warnings.push(format!("decode delegated pVisor result: {error}")),
             }
@@ -533,6 +543,25 @@ impl RunExecutor for ContainerExecutor {
             event_stream_ref: None,
             warnings,
         }
+    }
+}
+
+fn container_exit_output(
+    status: std::process::ExitStatus,
+    output: ProcessOutput,
+) -> ExecutorOutput {
+    let (state, exit_code, failure) = crate::executor::exit_outcome(status);
+    ExecutorOutput {
+        state,
+        exit_code,
+        failure,
+        output,
+        executor_observations: Default::default(),
+        value: None,
+        metrics: Default::default(),
+        artifacts: Vec::new(),
+        event_stream_ref: None,
+        warnings: Vec::new(),
     }
 }
 
@@ -740,6 +769,37 @@ fn container_name(run_id: &str, attempt_id: &str) -> String {
 #[cfg(test)]
 mod tests {
 
+    #[test]
+    fn runtime_exit_status_cannot_be_overridden_by_delegated_success() {
+        use std::os::unix::process::ExitStatusExt;
+        for code in [0, 1, 125] {
+            let output = container_exit_output(
+                std::process::ExitStatus::from_raw(code << 8),
+                ProcessOutput {
+                    stdout: Some("workload transcript".into()),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(output.exit_code, Some(code));
+            assert_eq!(
+                output.state,
+                if code == 0 {
+                    RunState::Completed
+                } else {
+                    RunState::Failed
+                }
+            );
+            assert!(
+                output
+                    .executor_observations
+                    .enforcement
+                    .dimensions
+                    .is_empty()
+            );
+            assert_eq!(output.output.stdout.as_deref(), Some("workload transcript"));
+        }
+    }
+
     #[tokio::test]
     async fn output_capture_has_a_deadline_when_a_descendant_keeps_the_pipe_open() {
         let task = tokio::spawn(std::future::pending::<std::io::Result<Captured>>());
@@ -860,8 +920,30 @@ mod tests {
                 "--spec",
                 "/run/pvisor/run-spec.json",
                 "--result-file",
-                "/run/pvisor/run-result.json",
+                "/run/pvisor/output/run-result.json",
             ])
+        );
+        let mounts = config["mounts"].as_array().unwrap();
+        let spec_mount = mounts
+            .iter()
+            .find(|mount| mount["destination"] == "/run/pvisor/run-spec.json")
+            .unwrap();
+        assert!(
+            spec_mount["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|option| option == "ro")
+        );
+        assert!(
+            mounts
+                .iter()
+                .any(|mount| mount["destination"] == "/run/pvisor/output")
+        );
+        assert!(
+            !mounts
+                .iter()
+                .any(|mount| mount["destination"] == "/run/pvisor")
         );
     }
 

@@ -500,12 +500,10 @@ impl NetworkRule {
                     && host.len() > suffix.len()
                     && host.as_bytes()[host.len() - suffix.len() - 1] == b'.'
             }
-            NetworkHostRule::Ip(allowed) => {
-                host_ip == Some(*allowed) || resolved_ip == Some(*allowed)
-            }
-            NetworkHostRule::Cidr(network) => host_ip
-                .or(resolved_ip)
-                .is_some_and(|ip| network.contains(&ip)),
+            NetworkHostRule::Ip(_) | NetworkHostRule::Cidr(_) => host_ip
+                .into_iter()
+                .chain(resolved_ip)
+                .any(|ip| self.matches_ip(ip)),
         }
     }
 
@@ -522,11 +520,27 @@ impl NetworkRule {
             return true;
         };
         match &self.host {
-            NetworkHostRule::Ip(allowed) => ip == *allowed,
-            NetworkHostRule::Cidr(network) => network.contains(&ip),
+            NetworkHostRule::Ip(_) | NetworkHostRule::Cidr(_) => self.matches_ip(ip),
             NetworkHostRule::Exact(_) | NetworkHostRule::WildcardSuffix(_) => {
                 is_public_egress_ip(ip) || (self.allow_private_ips && is_opt_in_private_ip(ip))
             }
+        }
+    }
+
+    fn matches_ip(&self, ip: IpAddr) -> bool {
+        // IPv4 and its mapped IPv6 spelling reach the same destination.
+        let canonical = |ip| match ip {
+            IpAddr::V6(ip) => ip.to_ipv4_mapped().map_or(IpAddr::V6(ip), IpAddr::V4),
+            ip => ip,
+        };
+        match &self.host {
+            NetworkHostRule::Ip(allowed) => canonical(ip) == canonical(*allowed),
+            NetworkHostRule::Cidr(network) => {
+                let ip = canonical(ip);
+                network.contains(&ip)
+                    || matches!(ip, IpAddr::V4(ip) if network.contains(&IpAddr::V6(ip.to_ipv6_mapped())))
+            }
+            _ => false,
         }
     }
 }

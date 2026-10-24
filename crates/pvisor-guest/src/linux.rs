@@ -12,6 +12,65 @@ mod control;
 mod files;
 mod process;
 mod shares;
+mod startup_profile;
+
+// No Rust std I/O, allocation, panicking or threads are allowed here: this is
+// called from a libc constructor before std::rt::init. Only PID 1 owns guest
+// mounts; executing this binary on the host must have no bootstrap side effects.
+#[cfg(not(test))]
+pub(super) extern "C" fn bootstrap_stdio() {
+    if unsafe { libc::getpid() } != 1 {
+        return;
+    }
+    unsafe { repair_standard_fds() };
+}
+
+/// Supply only missing standard descriptors. Existing console descriptors keep
+/// their identity and flags. Called before threads exist; failure is left to
+/// the Rust runtime's fail-closed standard-descriptor check.
+unsafe fn repair_standard_fds() {
+    let missing = std::array::from_fn::<_, 3, _>(|fd| {
+        (unsafe { libc::fcntl(fd as i32, libc::F_GETFD) }) < 0
+            && unsafe { *libc::__errno_location() } == libc::EBADF
+    });
+    if !missing.iter().any(|missing| *missing) {
+        return;
+    }
+    let mut null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+    if null < 0 {
+        // Minimal images need not contain /dev. The kernel's automatic
+        // devtmpfs mount then fails before it reaches PID 1. Mount it here;
+        // initialize() also accepts EBUSY when it gets to the same mount.
+        unsafe {
+            libc::mkdir(c"/dev".as_ptr(), 0o755);
+            libc::mount(
+                c"devtmpfs".as_ptr(),
+                c"/dev".as_ptr(),
+                c"devtmpfs".as_ptr(),
+                libc::MS_RELATIME,
+                std::ptr::null(),
+            );
+            null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+        }
+    }
+    if null < 0 {
+        return;
+    }
+    for (fd, missing) in missing.into_iter().enumerate() {
+        if missing {
+            // open() may itself have filled this slot. Clear CLOEXEC in that
+            // case too: it must remain a standard stream across exec.
+            if null == fd as i32 {
+                unsafe { libc::fcntl(null, libc::F_SETFD, 0) };
+            } else {
+                unsafe { libc::dup2(null, fd as i32) };
+            }
+        }
+    }
+    if null > 2 {
+        unsafe { libc::close(null) };
+    }
+}
 
 fn check(result: libc::c_int) -> io::Result<()> {
     if result < 0 {
@@ -249,6 +308,7 @@ fn resource(name: &str) -> io::Result<libc::c_int> {
 }
 
 fn workload(config: &GuestConfig) -> io::Result<i32> {
+    let mut startup = startup_profile::Span::start("guest.spawn", startup_profile_enabled(config));
     let processes = process::Processes::default();
     let listener = config.control.then(control::listener).transpose()?;
     let process::Spawned {
@@ -259,6 +319,8 @@ fn workload(config: &GuestConfig) -> io::Result<i32> {
         Ok(spawned) => spawned,
         Err(error) => return process::spawn_error(&error).ok_or(error),
     };
+    startup.complete();
+    drop(startup);
     let pumps: Vec<_> = outputs
         .into_iter()
         .map(|(mut reader, _)| {
@@ -289,7 +351,17 @@ fn workload(config: &GuestConfig) -> io::Result<i32> {
     Ok(code)
 }
 
+fn startup_profile_enabled(config: &GuestConfig) -> bool {
+    config
+        .env
+        .get("PVISOR_STARTUP_PROFILE")
+        .is_some_and(|value| value == "1")
+}
+
 fn run() -> io::Result<i32> {
+    // The opt-in bit lives in the virtual config, unavailable until it is read.
+    // This one entry timestamp also accounts for config I/O when profiling is on.
+    let entry = Instant::now();
     let mut bytes = Vec::new();
     File::open(CONFIG_PATH)?
         .take(1_048_577)
@@ -301,8 +373,17 @@ fn run() -> io::Result<i32> {
         ));
     }
     let config: GuestConfig = serde_json::from_slice(&bytes)?;
+    let profiling = startup_profile_enabled(&config);
+    let mut config_span = startup_profile::Span::since("guest.config", profiling.then_some(entry));
     config.command()?; // Validate before any configuration side effects.
+    config_span.complete();
+    let mut startup = startup_profile::Span::start("guest.initialize", profiling);
     initialize(config.stdio_ports)?;
+    startup.complete();
+    // Config I/O ends before initialization, but emit only after stderr is ready.
+    drop(config_span);
+    drop(startup);
+    let mut startup = startup_profile::Span::start("guest.mounts_network", profiling);
     if let Some(scratch) = &config.temporary_filesystem {
         // Never cover image contents or an existing guest mount. Only this
         // newly created directory may become the private scratch filesystem.
@@ -354,6 +435,9 @@ fn run() -> io::Result<i32> {
     if let Some(network) = &config.network {
         configure_network(network)?;
     }
+    startup.complete();
+    drop(startup);
+    let mut startup = startup_profile::Span::start("guest.helpers", profiling);
     if let Some(argv) = &config.agent {
         let program = argv
             .first()
@@ -430,6 +514,8 @@ fn run() -> io::Result<i32> {
             ),
         }
     }
+    startup.complete();
+    drop(startup);
     workload(&config)
 }
 
@@ -523,7 +609,23 @@ pub fn main() {
         std::process::exit(125);
     }
     let root = File::open("/").expect("open root to report guest exit");
-    let mut code = match run() {
+    let token = (|| -> io::Result<_> {
+        check(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) })?;
+        let mut token = [0u8; pvisor_guest::exit_status::TOKEN_BYTES];
+        check(unsafe {
+            libc::ioctl(
+                root.as_raw_fd(),
+                pvisor_guest::exit_status::CLAIM_IOCTL as _,
+                token.as_mut_ptr(),
+            )
+        })?;
+        Ok(token)
+    })();
+    let mut code = match token
+        .as_ref()
+        .map_err(|error| io::Error::other(error.to_string()))
+        .and_then(|_| run())
+    {
         Ok(code) => code,
         Err(error) => {
             eprintln!("pvisor guest: {error}");
@@ -538,8 +640,19 @@ pub fn main() {
         code = 125;
     }
     unsafe { libc::sync() };
-    if unsafe { libc::ioctl(root.as_raw_fd(), 0x7602, code) } < 0 {
-        eprintln!("report guest exit: {}", io::Error::last_os_error());
+    if let Ok(token) = token {
+        let report = pvisor_guest::exit_status::report(&token, code).and_then(|bytes| {
+            check(unsafe {
+                libc::ioctl(
+                    root.as_raw_fd(),
+                    pvisor_guest::exit_status::REPORT_IOCTL as _,
+                    bytes.as_ptr(),
+                )
+            })
+        });
+        if let Err(error) = report {
+            eprintln!("report guest exit: {error}");
+        }
     }
     unsafe {
         libc::reboot(libc::RB_AUTOBOOT);
@@ -572,6 +685,64 @@ fn sync_virtiofs_mounts() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bootstrap_repairs_every_closed_stdio_combination_without_changing_open_fds() {
+        const CHILD: &str = "PVISOR_TEST_BOOTSTRAP_STDIO";
+        if std::env::var_os(CHILD).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "linux::tests::bootstrap_repairs_every_closed_stdio_combination_without_changing_open_fds",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        // Run in an isolated process: neither another test nor a Rust thread
+        // may open descriptors between close() and this pre-runtime repair.
+        let saved = std::array::from_fn::<_, 3, _>(|fd| unsafe {
+            libc::fcntl(fd as i32, libc::F_DUPFD_CLOEXEC, 3)
+        });
+        assert!(saved.iter().all(|fd| *fd > 2));
+        for mask in 0..8 {
+            for fd in 0..3 {
+                assert_eq!(
+                    unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) },
+                    0
+                );
+                if mask & (1 << fd) != 0 {
+                    assert_eq!(unsafe { libc::close(fd) }, 0);
+                }
+            }
+            unsafe { repair_standard_fds() };
+            for fd in 0..3 {
+                let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+                let missing = mask & (1 << fd) != 0;
+                assert_eq!(flags, if missing { 0 } else { libc::FD_CLOEXEC });
+                let mut actual: libc::stat = unsafe { std::mem::zeroed() };
+                assert_eq!(unsafe { libc::fstat(fd, &mut actual) }, 0);
+                if missing {
+                    assert_eq!(actual.st_mode & libc::S_IFMT, libc::S_IFCHR);
+                    assert_eq!(libc::major(actual.st_rdev), 1);
+                    assert_eq!(libc::minor(actual.st_rdev), 3);
+                } else {
+                    let mut original: libc::stat = unsafe { std::mem::zeroed() };
+                    assert_eq!(unsafe { libc::fstat(saved[fd as usize], &mut original) }, 0);
+                    assert_eq!(
+                        (actual.st_dev, actual.st_ino),
+                        (original.st_dev, original.st_ino)
+                    );
+                }
+                assert_eq!(unsafe { libc::dup2(saved[fd as usize], fd) }, fd);
+            }
+        }
+        for fd in saved {
+            assert_eq!(unsafe { libc::close(fd) }, 0);
+        }
+    }
 
     #[test]
     fn stdio_waits_for_late_port_names_and_new_ports() {

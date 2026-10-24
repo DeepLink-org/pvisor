@@ -255,8 +255,8 @@ assert_content executable executable
 Use chapter 2 to learn stage, review, apply and drop, then run these independent checks for net effects, conflicts and links. macOS requires macFUSE; Linux requires /dev/fuse and user/mount namespaces. Missing prerequisites exit 77; S-STAGE-013 retains its known macOS xfail. Checks and preparation still require human review.
 
 ```bash
-just cases --suite stage
-just cases --suite stage --case S-STAGE-008 --keep
+mise run cases -- --suite stage
+mise run cases -- --suite stage --case S-STAGE-008 --keep
 ```
 
 <!-- semspec: setup -->

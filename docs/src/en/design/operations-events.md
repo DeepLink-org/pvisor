@@ -96,8 +96,8 @@ Run Bundle currently uses schema 4. Old Bundle and Event/Journal formats are rej
 | `pvisor-journal` | Commit, reference validation and recovery |
 
 ```sh
-just test core pvisor-journal
-just test pvisor
+mise run test -- core pvisor-journal
+mise run test -- pvisor
 ```
 
 Operation contract tests cover identity, rewrite/placement separation, terminal states and version rejection. Production-path tests cover fact chains after actual network permission narrowing, causal references and omission of environment values from operation snapshots.

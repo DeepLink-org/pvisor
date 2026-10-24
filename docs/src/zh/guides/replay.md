@@ -77,5 +77,5 @@ pvisor replay \
 ## 实验与开发资料
 
 使用方法和保证以上面的回放语义及固定适配版本为准。
-[Qwen3.6 实验报告](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/replay/qwen3.6-results.md)
+[Qwen3.6 实验报告](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/replay/qwen3.6-results.md)
 保留逐题结果、下一动作比较和当时的 OpenCode 诊断，不作为兼容性或确定性保证。

@@ -2,6 +2,34 @@
 
 Rust PID 1 supervisor and the platform-independent launch message in `/.pvisor-guest.json`. It initializes Linux virtual filesystems, applies process limits, supervises the workload and reports its exit to the VMM.
 
+Before reading launch configuration or starting any child, PID 1 disables normal
+dump access and claims a host-generated 128-bit exit token on the root virtio-fs
+device. The kernel-supplied caller must be guest root/PID 1; ordinary workloads
+and other shares cannot claim or report. Token bytes stay in PID 1 memory, never
+in launch JSON, argv, environment or an inherited token descriptor. After reaping
+and final synchronization, PID 1 reports that token and a checked `0..=255` code
+once. Missing/failed handshake prevents workload start; there is no legacy ioctl
+fallback. Shared request numbers and byte framing live in `exit_status`.
+
+Whole-VM snapshots preserve the capability in both PID 1 RAM and host device
+state, continuing the captured supervisor rather than rotating its token. Host
+snapshots remain private authority. This relies on a trusted guest kernel and
+PID 1; guest privileges capable of taking over either remain outside the claim.
+The VMM rejects legacy reports, duplicates and invalid codes, and does not let a
+guest success override abnormal vCPU termination.
+
+Linux may reach PID 1 before the initial console can supply standard descriptors.
+On a minimal image without `/dev`, Rust's standard-stream check would then abort
+before `main` could mount devtmpfs or report an error. A PID-1-only libc constructor
+runs before that check: it fills only closed standard descriptors from `/dev/null`,
+creating the `/dev` mountpoint and mounting devtmpfs if needed. Existing descriptors
+and their flags are preserved; replacement descriptors survive exec. Normal guest
+initialization still waits for the named virtio ports and redirects workload I/O.
+The constructor uses only allocation-free operations and does nothing outside PID 1.
+Bootstrap failure retains the runtime's fail-closed behavior. The standard-descriptor
+test covers all closed/open combinations; the CLI's ignored minimal-rootfs KVM
+test also exercises the constructor and devtmpfs path through repeated cold boots.
+
 Before reporting workload exit, PID 1 synchronizes every visible virtio-fs
 mount and checks its result. This drains guest writes that outlive ordinary
 file closes. A writeback failure is reported and changes the final status to
@@ -111,3 +139,25 @@ Metadata, permissions and symlink targets come from the guest filesystem.
 credentials. Native failures include Linux errno for host protocol error mapping.
 The guest does not implement HTTP, SSE or E2B Connect; those adapters live in the
 daemon supervisor. Host protocol validation is separate from guest transport tests.
+
+## Startup diagnostics
+
+Host-selected `GuestConfig.env["PVISOR_STARTUP_PROFILE"] = "1"` enables optional
+`pvisor-startup-profile` JSON on guest stderr. The native Job runner copies the host profiling switch into this launch setting,
+including when ordinary environment projection omits host variables. Other
+GuestConfig consumers may explicitly supply it. No launch-message field or guest protocol changes.
+Private spans cover config read/validation, virtual filesystems and console/stdio
+initialization, scratch/workspace/share mounts and networking, helper setup, and
+workload process creation. A process-created marker does not prove application Ready.
+
+The guest uses `clock=guest_monotonic_process_relative`, `epoch=guest-supervisor`
+and guest PID; never align these timestamps with host/runner epochs or subtract
+them from host Ready. Successful spans report `ok`; errors retain `unknown` and
+best-effort logging cannot replace the original error. One entry timestamp is
+captured before reading the config because the switch is not available earlier;
+disabled subsequent spans capture no clock and emit nothing. Config parse failures
+before the switch is known retain the existing error only. Config-read timing is frozen before initialization and emitted after guest stderr
+is connected, so it excludes the subsequent console wait. Logging can perturb
+startup. Collect profiled diagnostics separately
+from uninstrumented performance samples. See the
+[startup diagnostic tool](../../benchmark/startup/startup_profile.py).

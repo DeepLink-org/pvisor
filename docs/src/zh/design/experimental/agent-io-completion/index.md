@@ -165,15 +165,15 @@ let gateway = pvisor::GatewayDriverConfig::new(proxy)
 
 WB=0 的 close 仍通过 FLUSH 排空，因此收益重点是保持打开文件的连续写，不能据此宣称大量 write-close 小文件已跨文件合并。该基础没有实现完整 offload、Agent 任务协议、guest transfer fence 或对象级并行；guest WB=1 的 unlink 错误已由独立的对象退休机制修复，新 host 模式仍与 guest WB=1 互斥。
 
-快速实验沿用五个新环境、每任务内部三轮，保留 Ready 排除退出的独立指标，不加入主机干扰门禁。另记录 accepted、completed、durable、Job 完成各自耗时，统计总 CPU、整个受控进程/cgroup 及内核缓存内存、驻留内存时间积分、offload/load 耗时、唤醒次数和 backing 请求；避免把延后到退出的工作算成收益。测量前按 `benchmark/README.md` 登记或复用协议，原始数据留在 benchmark `.data/`，不混入用户排名。
+快速实验沿用五个新环境、每任务内部三轮，保留 Ready 排除退出的独立指标，不加入主机干扰门禁。另记录 accepted、completed、durable、Job 完成各自耗时，统计总 CPU、整个受控进程/cgroup 及内核缓存内存、驻留内存时间积分、offload/load 耗时、唤醒次数和 backing 请求；避免把延后到退出的工作算成收益。测量前按 `benchmark/REGISTRY.md` 登记或复用协议，原始数据留在 benchmark `.data/`，不混入用户排名。
 
 ### 2.10 当前验证记录 {#validation}
 
 2026-10-17：完成现有 writeback、Gateway、OverlayNet、VM RAM gate 和 Attempt 控制的静态核对，并实现 host 写缓存基础。当时 guest 通道、自动恢复与新性能实验尚未实现；M0 的后续进展见下文。完整 IOCP 的待执行语义检查至少包括阻塞写期间 offload 无 RAM 访问、最后句柄关闭后 unlink/syncfs、完成空洞、短写/ENOSPC、满队列同步退出，以及完成与人工暂停/取消竞争。
 
-host 缓存基础的 Linux 验证：`just test pvisor-vm -- --test-threads=8` 通过 486 项、跳过 8 项（含 25 项新增缓存/协议检查）；文件系统/API/快照子集 192 项通过。沙箱内未暴露 `/dev/kvm` 的硬件检查失败，访问实际 KVM 后完整套件通过。CLI 与 VM shim 消费者编译检查通过。真实 KVM 的既有 `guest_writeback_case` 在 host 缓存开启、guest WB=0 时通过正常全流程及故障流程：256 个文件与 32 MiB 连续写、关闭/读取/重命名/删除/卸载验证通过，文件大小限制造成实际 64 KiB 短写后，最终 guest 状态为 125。以上是正确性记录，不是吞吐或延迟提升的测量。
+host 缓存基础的 Linux 验证：`mise run test -- pvisor-vm -- --test-threads=8` 通过 486 项、跳过 8 项（含 25 项新增缓存/协议检查）；文件系统/API/快照子集 192 项通过。沙箱内未暴露 `/dev/kvm` 的硬件检查失败，访问实际 KVM 后完整套件通过。CLI 与 VM shim 消费者编译检查通过。真实 KVM 的既有 `guest_writeback_case` 在 host 缓存开启、guest WB=0 时通过正常全流程及故障流程：256 个文件与 32 MiB 连续写、关闭/读取/重命名/删除/卸载验证通过，文件大小限制造成实际 64 KiB 短写后，最终 guest 状态为 125。以上是正确性记录，不是吞吐或延迟提升的测量。
 
-2026-10-18：M0 原生适配器通过 Linux 验证。`just test pvisor pvisor-gateway -- --features gateway --test-threads=8` 通过 980 项、跳过 8 项；随后补充的定向原生等待套件 12 项通过，覆盖 ACK 屏障、进入/恢复中丢弃请求、并发和陈旧身份拒绝、人工接管、取消、清理失败及配置冲突。CLI 和 shim 消费者编译通过；关闭 `gateway` 的 runtime 编译通过。
+2026-10-18：M0 原生适配器通过 Linux 验证。`mise run test -- pvisor pvisor-gateway -- --features gateway --test-threads=8` 通过 980 项、跳过 8 项；随后补充的定向原生等待套件 12 项通过，覆盖 ACK 屏障、进入/恢复中丢弃请求、并发和陈旧身份拒绝、人工接管、取消、清理失败及配置冲突。CLI 和 shim 消费者编译通过；关闭 `gateway` 的 runtime 编译通过。
 
 `native_model_wait_case` 在真实 KVM 上通过 `running`、`pause`、`offload`、`manual`、`cancel` 五个用例：guest 经 Gateway 访问本机延迟供应方，普通路径保持运行；自动路径在 upstream dispatch 前收到暂停/卸载 ACK；人工暂停不被完成事件解除；取消后没有自动恢复。成功交付后校验 guest 的 8 MiB 内容摘要。完整 `result.json` 与控制观察保留在本地 `/tmp/pvisor-iocp-m0-*-20261018*/`；固件使用仓库构建缓存 `581b3346…`，对应来源记录保存在 `/tmp/pvisor-iocp-firmware/libkrunfw.SOURCE`。这些用例证明控制和内容完整性，不证明驻留内存减少、密度或性能收益；macOS/HVF 未验收。M1–M4 的剩余门槛仍保留。当前既有对象退休与 host 输入脱离 RAM 的 8 项定向测试也通过；这不是阻塞 backing 下的真实 VM 联合验证。选定 crate 的 `cargo clippy --locked -p pvisor --features gateway --lib --no-deps -- -D warnings` 通过。包含依赖的严格 Clippy 检查在未改动的 `pvisor-vm/src/devices/virtio/fs/guest_index.rs` 遇到 5 项 `unnecessary_cast`，不能记为通过。
 

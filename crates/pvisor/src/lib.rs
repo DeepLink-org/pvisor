@@ -11,6 +11,7 @@
 pub mod environment_snapshot;
 mod runtime;
 pub mod session;
+mod startup_profile;
 pub mod trace;
 pub use session::Session;
 

@@ -13,7 +13,7 @@ fn stable_digests_bind_normalized_text_vocabulary_and_engine() {
     assert_ne!(seal::normalize("é"), seal::normalize("e\u{301}"));
     assert_eq!(
         seal::engine_digest(),
-        "sha256:67dcdab88d011a8c32fc87238c86746a90b5f08d75b9ef8be217c2baadb516c1"
+        "sha256:e52a8afc84076bfcbef36e1ac5d2c3a49e4f6aa3ebe8c4a2a748ebaf3ff1cb29"
     );
     assert_eq!(
         seal::vocab_digest("core.sh", "echo ok \n\n"),
@@ -22,7 +22,7 @@ fn stable_digests_bind_normalized_text_vocabulary_and_engine() {
     let digest = seal::case_digest("语义 \n\n", &["z".into(), "a".into()]);
     assert_eq!(
         digest,
-        "sha256:02542aa200b49050121aec2a48e58d045e98f6cfe1e8d3c54b16ad5bb2d1a4b9"
+        "sha256:c993471965816d4feea5e0fd95433416bc63f06cf898ae32f3fd6e8ab07a180f"
     );
     assert_eq!(
         digest,
@@ -104,11 +104,13 @@ fn ledger_states_and_result_exit_codes_are_independent() {
         ReviewState::Stale { .. }
     ));
     let mut report = RunReport {
-        engine_semantics: "1",
+        benchmarks: vec![],
+        engine_semantics: "1".into(),
         engine_review: ReviewState::Unreviewed,
         vocab_review: vec![],
         platform: "test".into(),
         results: vec![],
+        root: None,
     };
     for (verdict, code) in [
         (Verdict::Pass, 0),
@@ -145,6 +147,7 @@ fn ledger_states_and_result_exit_codes_are_independent() {
             review: ReviewState::Unreviewed,
             duration_ms: 0,
             workdir: None,
+            evidence: None,
         }];
         assert_eq!(report.exit_code(&["S-TEST-001"], false, false), code);
         assert_eq!(
@@ -276,13 +279,16 @@ fn report_gate_requires_exact_nonempty_inventory_without_approving_cases() {
         review: ReviewState::Unreviewed,
         duration_ms: 0,
         workdir: None,
+        evidence: None,
     };
     let mut report = RunReport {
-        engine_semantics: semspec::seal::ENGINE_SEMANTICS,
+        benchmarks: vec![],
+        engine_semantics: semspec::seal::ENGINE_SEMANTICS.into(),
         engine_review: ReviewState::Unreviewed,
         vocab_review: vec![],
         platform: "test".into(),
         results: vec![],
+        root: None,
     };
     let expected = ["S-TEST-001", "S-TEST-002"];
     for ids in [

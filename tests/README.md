@@ -1,18 +1,19 @@
 # Host regression tests
 
-Run `just test` for Rust, native script regressions and Python tests. A Cargo
-package argument selects only Rust tests. `just test-py` runs Python tests;
-`just test-scripts` runs the private recipes imported from `tests/justfile`.
+Run `mise run test` for Rust, native script regressions and Python tests. A Cargo
+package argument selects only Rust tests. `mise run test-py` runs Python tests;
+`mise run test-scripts` runs the private tasks imported from `tests/tasks.toml`.
 Python tests use standard-library `unittest`, without a pytest dependency or
 configuration. CI runs both entries explicitly. Delete superseded Python wrappers
 after moving their behavioral checks; do not retain a second set of recipe or shell-source
 string assertions.
 
-Keep Just routing, Bash vocabulary, firmware Make and shell installer checks in
-`tests/justfile`. Test routing branches, failure handling and publication behavior;
+Declare mise routing, Bash vocabulary, firmware Make and shell installer checks in
+`tests/tasks.toml`; the larger routing regression lives in `tests/tasks/`.
+Test routing branches, failure handling and publication behavior;
 do not repeat each one-line recipe as a mock command assertion.
 Python tests cover Python contracts, structured data, PTY interaction and process
-lifecycle. Do not launch Just or embed Bash checks inside a Python test runner.
+lifecycle. Do not launch mise or embed Bash checks inside a Python test runner.
 Calling a product command or supervising an example process remains part of
 the integration tests.
 

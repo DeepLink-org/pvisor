@@ -10,6 +10,7 @@ mod attempt;
 pub mod audit;
 pub(crate) mod bundle;
 pub mod checkpoint;
+pub(crate) mod completion;
 pub(crate) mod event;
 #[cfg(unix)]
 pub mod host_transport;

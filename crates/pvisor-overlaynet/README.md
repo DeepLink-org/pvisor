@@ -7,6 +7,13 @@ absolute-URI forwarding, access enforcement through
 [`pvisor-core`](../pvisor-core/README.md), request accounting,
 shared proxy header safety, and dispatch to one caller-supplied `OverlaySink`.
 
+Each proxy admits at most 128 concurrent requests/tunnels; excess requests receive
+429 without waiting in an unbounded queue. A permit remains owned by the HTTP body
+or CONNECT tunnel and returns on completion/drop. This is a per-proxy limit, not a
+node-wide memory budget. HTTP upstreams have a ten-minute read-inactivity timeout;
+active responses can exceed ten minutes. CONNECT retains its existing transport
+lifecycle and does not yet have a shared bidirectional inactivity deadline.
+
 Also owns the libkrun VM driver: a non-bypassable virtio-net path whose
 in-process smoltcp stack serves synthetic DNS, then terminates and
 re-originates policy-authorized IPv4 TCP. The Rust guest supervisor configures
@@ -32,7 +39,7 @@ drivers are not implemented.
 ## Develop
 
 ```bash
-just test pvisor-overlaynet
+mise run test -- pvisor-overlaynet
 ```
 
 ## Links
@@ -118,16 +125,24 @@ It is not a per-peer or per-port ACL.
 processes, including ARP, TCP/UDP/ICMP forwarding, restart generations, duplicate
 addresses, crash cleanup, policy changes and network isolation. A pair of guest
 smoltcp stacks establishes TCP and verifies simultaneous 1 MiB transfers in
-each direction under deterministic loss, duplication and reordering. Additional
-chaos tests exercise four-node concurrent forwarding with fragmented guest
+each direction under deterministic loss, duplication and reordering.
+The simulated guests retain partial nonblocking writes so full-duplex
+backpressure cannot block their shared polling thread or bypass the test deadline.
+The timed duplex recovery test reserves the nextest execution pool while it runs,
+so other tests cannot consume its scheduling budget. Its 20-second deadline,
+payloads and fault/integrity assertions remain unchanged.
+Additional chaos tests exercise four-node concurrent forwarding with fragmented guest
 stream writes, repeated restarts, saturation followed by receiver recovery, and
 malformed-datagram floods. Congestion tests isolate a stalled guest from another
 peer. These tests do not establish a real KVM/HVF guest boot or production capacity.
+The fragmented ring test bounds each destination to one four-frame burst with
+timed progress synchronization, including deliberate worker delays. It retains
+all frame/byte/count assertions without assuming arbitrary lossless queueing.
 
 The packet cache retains only the generation from validated discovery records;
 the TTL and validation rules remain the same. Sends reuse bounded packet
 buffers, and guest writes use vectored I/O with short-write handling. The
-[peer engineering harness](../../benchmark/peer/README.md) compares frozen
+[peer engineering harness](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/peer/README.md) compares frozen
 binaries through the public framed links with integrity-checked goodput, RTT
 and process CPU accounting. Its backend-thread measurements exclude virtio/KVM
 and do not represent Docker bridge or VM application TCP throughput.

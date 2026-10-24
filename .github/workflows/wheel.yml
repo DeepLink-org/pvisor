@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-build-env
         with:
-          rust: "true"
+          native-firmware: "true"
       - uses: Swatinem/rust-cache@v2
 
       - name: Apply nightly local version (PEP 440)
@@ -38,19 +38,19 @@ jobs:
         env:
           LOCAL_VERSION: ${{ inputs.local_version }}
         run: |
-          just set-nightly-version "$LOCAL_VERSION"
+          mise run set-nightly-version -- "$LOCAL_VERSION"
 
       - name: Build wheel
-        run: just wheel
+        run: mise run wheel
         env:
           PVISOR_WHEEL_PORTABLE: "1"
           # Run inside the build environment to reuse its immutable firmware cache.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >-
             PVISOR_FW_SOURCE_ARCHIVE=/output/pvisor-firmware-source-linux-x86_64.tar.gz
-            just --justfile {project}/justfile repair-wheel {wheel} {dest_dir}
+            mise -C {project} run repair-wheel -- {wheel} {dest_dir}
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: >-
             PVISOR_FW_SOURCE_ARCHIVE={project}/dist/pvisor-firmware-source-macos-arm64.tar.gz
-            just --justfile {project}/justfile repair-wheel {wheel} {dest_dir}
+            mise -C {project} run repair-wheel -- {wheel} {dest_dir}
 
       - uses: actions/upload-artifact@v4
         with:

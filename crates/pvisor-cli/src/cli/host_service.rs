@@ -413,6 +413,9 @@ fn run_owner(mut channel: UnixStream, request: Request) -> anyhow::Result<()> {
     super::terminal::restore_service_context(context.terminal);
     pvisor::diagnostics::init_inherited();
     super::terminal::init_child_context();
+    // Do this after self-exec and before Tokio shares the descriptor table.
+    // It is optional: a low RLIMIT_NOFILE must not prevent ordinary host Jobs.
+    let _ = pvisor::VmExecutor::prepare_process();
     let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
     let thread_gate = gate.clone();
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -599,10 +602,14 @@ fn launch(
     if interactive {
         TerminalOwner::check_interactive()?;
     }
+    pvisor::startup_mark("cli.owner_image_begin");
     let executable = current_executable()?;
     validate_executable(&executable)?;
+    pvisor::startup_mark("cli.owner_image_ready");
     let (mut channel, owner_channel) = UnixStream::pair()?;
+    pvisor::startup_mark("cli.owner_spawn_begin");
     let child = spawn_owner(&owner_channel, &executable)?;
+    pvisor::startup_mark("cli.owner_spawn_returned");
     drop(owner_channel);
     let request_id = uuid::Uuid::new_v4().to_string();
     let request = Request {
@@ -627,6 +634,7 @@ fn launch(
     };
     channel.set_write_timeout(Some(GRACE))?;
     write_frame(&mut channel, &request)?;
+    pvisor::startup_mark("cli.owner_request_sent");
     let mut reader = channel.try_clone()?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

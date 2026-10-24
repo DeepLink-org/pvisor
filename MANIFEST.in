@@ -1,4 +1,4 @@
-include Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml NOTICE LICENSE
+include Cargo.toml Cargo.lock mise.toml mise.lock uv.lock .cargo/config.toml NOTICE LICENSE
 recursive-include crates *
 recursive-include vendor *
 recursive-include scripts *.py *.sh
@@ -12,5 +12,8 @@ recursive-include fw/tests *.py
 recursive-include fw/utils *
 global-exclude *.pyc *.pyo
 prune target
+prune vendor/*/target
 prune fw/linux-*
 prune fw/tarballs
+include tests/tasks.toml
+recursive-include tests/tasks *.sh

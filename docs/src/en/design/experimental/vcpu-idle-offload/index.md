@@ -1,5 +1,7 @@
 # vCPU idle observation and automatic RAM offload (EXP-001)
 
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).
+
 | Item | Current status |
 |---|---|
 | Stage | **Observation prototype stage (M0); not all exit gates passed** |
@@ -168,7 +170,7 @@ Exit gate: record each support-matrix cell. SMP mocks do not replace real guest 
 
 #### M4: benefit experiments and continuation decision
 
-- [ ] Register the automatic-policy question, role, runner and statistics under `benchmark/README.md`.
+- [ ] Register the automatic-policy question, role, runner and statistics under `benchmark/REGISTRY.md`.
 - [ ] Use identical tasks/hardware/budgets/artifacts, randomized paired on/off runs across rounds; manual policy can be a separate control.
 - [ ] Separate waiting, compute, short blocking, streaming, timer-heavy and restore-storm workloads.
 - [ ] Measure memory-time integral, cgroup/PSS/cache, complete-group peaks, CPU/IO, restore and full-task latency, failures and useful throughput.
@@ -206,9 +208,9 @@ These responsibilities do not predefine new files or dependencies. Implementatio
 
 #### Validation record template
 
-Record date, platform, stage/profile, source SHA and dirty manifest, binary/firmware/rootfs identity, commands, results, failures/skips, uncovered cases, evidence paths and conclusion. See [Initial implementation and validation](#validation) and the [KVM engineering report](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/vcpu_idle_report.md).
+Record date, platform, stage/profile, source SHA and dirty manifest, binary/firmware/rootfs identity, commands, results, failures/skips, uncovered cases, evidence paths and conclusion. See [Initial implementation and validation](#validation) and the [KVM engineering report](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/vcpu_idle_report.md).
 
-Use targeted `just test PACKAGE` by default; real VM/special runners follow existing contracts. PASS and semantic approval stay separate; AI does not edit real ledgers. Update user documentation and formal support matrices after successful experimental implementation.
+Use targeted `mise run test -- PACKAGE` by default; real VM/special runners follow existing contracts. PASS and semantic approval stay separate; AI does not edit real ledgers. Update user documentation and formal support matrices after successful experimental implementation.
 
 ### 2.8 Initial implementation and validation {#validation}
 
@@ -240,7 +242,7 @@ Configured CPU online state reflects backend lifecycle, not guest Linux CPU-onli
 
 #### Experiments and results
 
-Registered as **B-VCPU-IDLE-ENG**, engineering A/B, outside user benchmark articles. See the [Protocol](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/vcpu_idle_plan.md), [Report](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/vcpu_idle_report.md) and [Reproduction entry](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#vcpu-observation-m0).
+Registered as **B-VCPU-IDLE-ENG**, engineering A/B, outside user benchmark articles. See the [Protocol](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/vcpu_idle_plan.md), [Report](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/vcpu_idle_report.md) and [Reproduction entry](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#vcpu-observation-m0).
 
 Matrix: sleep, busy and 2 ms short timers with 1/2 vCPU, plus a 2-vCPU case with only CPU 0 busy. Each fresh VM has 256 MiB RAM, a 3-second workload and 10 ms sampling. Observer off/on uses seeded randomized pairs, five pairs per case, 70 VMs total. Guest multiprocessing and affinity checks prevent GIL serialization; each worker verifies SHA-256, execution interval, exit and output.
 
@@ -260,7 +262,7 @@ Overhead includes collector, sampler and evidence I/O rather than pure integrati
 
 #### Validation and artifact boundaries
 
-- Final `just test pvisor-vm`: 345 passed, 8 skipped, including real KVM busy-loop/OUT/HLT special tests and SMP/session/concurrent-sampling/exit/capacity/statistics regressions.
+- Final `mise run test -- pvisor-vm`: 345 passed, 8 skipped, including real KVM busy-loop/OUT/HLT special tests and SMP/session/concurrent-sampling/exit/capacity/statistics regressions.
 - Python runner: 16 unit tests passed, covering explicit fork with default forkserver, timeout, provenance, topology and output rejection.
 - Example debug build and formatting checks passed; Linux VM library Clippy passed. Tests Clippy was blocked by existing dependency warnings in pvisor; unrelated code was retained.
 - macOS/HVF compilation and runtime remain unvalidated; lost-wakeup, complete timer/deadline and automatic restoration are untested.

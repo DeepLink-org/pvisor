@@ -1,4 +1,4 @@
-"""Read-only semspec table preprocessing for the native Zensical renderer."""
+"""Read-only semspec Markdown preprocessing for the native Zensical renderer."""
 
 import html
 import logging
@@ -18,7 +18,7 @@ class TablePreprocessor(Preprocessor):
 
     def run(self, lines):
         text = "\n".join(lines)
-        if "{{ table(" not in text:
+        if "{{ table(" not in text and "<!-- semspec:" not in text:
             return lines
         live = os.environ.get("PVISOR_DOCS_LIVE") == "1"
         try:
@@ -42,7 +42,15 @@ class TablePreprocessor(Preprocessor):
         root = Path(context.config.get("root_dir", ".")).resolve()
         docs_dir = root / context.config["docs_dir"]
         source = docs_dir / context.page.path
-        command = [os.environ.get("SEMSPEC_BIN", "semspec"), "render", str(source), "--stdin"]
+        command = [
+            os.environ.get("SEMSPEC_BIN", "semspec"),
+            "filter",
+            "--source",
+            str(source),
+            "--stdin",
+        ]
+        if os.environ.get("SEMSPEC_RESULTS"):
+            command.extend(["--results", os.environ["SEMSPEC_RESULTS"]])
         if live:
             command.append("--best-effort")
         result = subprocess.run(
@@ -56,7 +64,7 @@ class TablePreprocessor(Preprocessor):
             timeout=30,
         )
         if result.returncode:
-            raise RuntimeError(f"semspec render failed for {source}: {result.stderr.strip()}")
+            raise RuntimeError(f"semspec filter failed for {source}: {result.stderr.strip()}")
         if result.stderr.strip():
             LOGGER.warning("%s", result.stderr.strip())
         return result.stdout.split("\n")

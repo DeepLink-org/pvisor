@@ -73,7 +73,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn unsupported_ioctl_is_enotty_without_breaking_guest_exit_reporting() {
+    fn unsupported_and_legacy_exit_ioctls_cannot_change_guest_status() {
         let fs = AugmentFs::new(NullFs, &InodeAllocator::new(), vec![]);
         let ctx = root_context();
         let exit = Arc::new(AtomicI32::new(-1));
@@ -83,11 +83,10 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.raw_os_error(), Some(libc::ENOTTY));
         assert_eq!(exit.load(Ordering::SeqCst), -1);
-        assert!(fs
+        assert_eq!(fs
             .ioctl(ctx, fuse::ROOT_ID, 0, 0, 0x7602, 17, 0, 0, &exit)
-            .unwrap()
-            .is_empty());
-        assert_eq!(exit.load(Ordering::SeqCst), 17);
+            .unwrap_err().raw_os_error(), Some(libc::ENOTTY));
+        assert_eq!(exit.load(Ordering::SeqCst), -1);
     }
 
     fn injected_init() -> AugmentFs<NullFs> {

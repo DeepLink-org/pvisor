@@ -2,12 +2,11 @@
 use crate::executor::sandbox::{INTERNAL_SANDBOX_ARG, NetworkIsolation};
 #[cfg(target_os = "macos")]
 use crate::executor::sandbox::{
-    MACOS_SANDBOX_EXEC, SEATBELT_ATTESTATION, SeatbeltPlan, seatbelt_profile,
-    seatbelt_profile_with_reads,
+    MACOS_SANDBOX_EXEC, SeatbeltPlan, seatbelt_profile, seatbelt_profile_with_reads,
 };
-#[cfg(target_os = "linux")]
-use crate::executor::sandbox::{ROOTLESS_ATTESTATION, SandboxPlan, landlock_runtime_available};
 use crate::executor::sandbox::{SANDBOX_ARG0_ENV, SANDBOX_PLAN_ENV, SANDBOX_SETUP_FAILED_WARNING};
+#[cfg(target_os = "linux")]
+use crate::executor::sandbox::{SandboxPlan, landlock_runtime_available};
 use crate::executor::{Captured, ExecutorOutput, RunExecutor, Session, SessionEnd as End, stdio};
 use crate::session::lifecycle::terminate_process_tree;
 use async_trait::async_trait;
@@ -236,14 +235,12 @@ enum SandboxResources {
     Linux {
         root: PathBuf,
         attestation: tempfile::NamedTempFile,
-        controls: CapabilityEnforcementPlan,
         plan: tempfile::NamedTempFile,
     },
     #[cfg(target_os = "macos")]
     MacOS {
         scratch: tempfile::TempDir,
         attestation: tempfile::NamedTempFile,
-        controls: CapabilityEnforcementPlan,
     },
 }
 
@@ -272,7 +269,6 @@ impl SandboxResources {
         Ok(Self::Linux {
             root: path,
             attestation,
-            controls: Default::default(),
             plan,
         })
     }
@@ -319,7 +315,6 @@ impl SandboxResources {
         Ok(Self::MacOS {
             scratch,
             attestation,
-            controls: Default::default(),
         })
     }
 
@@ -340,62 +335,28 @@ impl SandboxResources {
     }
 
     fn observed_controls(&mut self) -> Option<CapabilityEnforcementEvidence> {
-        if !self.setup_attested() {
-            return None;
-        }
-        let controls = match self {
-            Self::None => return Some(Default::default()),
-            #[cfg(target_os = "linux")]
-            Self::Linux { controls, .. } => controls,
-            #[cfg(target_os = "macos")]
-            Self::MacOS { controls, .. } => controls,
-        };
-        let mut observed = CapabilityEnforcementEvidence::default();
-        for (dimension, control) in &controls.dimensions {
-            for mechanism in &control.mechanisms {
-                observed.record(
-                    *dimension,
-                    pvisor_core::EnforcementLevel::Enforced,
-                    mechanism,
-                );
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            use std::io::{Read, Seek};
+            let file = match self {
+                Self::None => return Some(Default::default()),
+                #[cfg(target_os = "linux")]
+                Self::Linux { attestation, .. } => attestation.as_file_mut(),
+                #[cfg(target_os = "macos")]
+                Self::MacOS { attestation, .. } => attestation.as_file_mut(),
+            };
+            file.rewind().ok()?;
+            let mut bytes = Vec::new();
+            file.take(65_537).read_to_end(&mut bytes).ok()?;
+            if bytes.len() > 65_536 {
+                return None;
             }
+            let receipt: crate::executor::sandbox::SandboxAttestation =
+                serde_json::from_slice(&bytes).ok()?;
+            (receipt.version == 1).then_some(receipt.controls)
         }
-        Some(observed)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn setup_attested(&mut self) -> bool {
-        use std::io::{Read, Seek};
-
-        let Self::MacOS { attestation, .. } = self else {
-            return true;
-        };
-        let file = attestation.as_file_mut();
-        if file.rewind().is_err() {
-            return false;
-        }
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents).is_ok() && contents == SEATBELT_ATTESTATION
-    }
-
-    #[cfg(target_os = "linux")]
-    fn setup_attested(&mut self) -> bool {
-        use std::io::{Read, Seek};
-
-        let Self::Linux { attestation, .. } = self else {
-            return true;
-        };
-        let file = attestation.as_file_mut();
-        if file.rewind().is_err() {
-            return false;
-        }
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents).is_ok() && contents == ROOTLESS_ATTESTATION
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    fn setup_attested(&mut self) -> bool {
-        true
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        Some(Default::default())
     }
 }
 
@@ -785,19 +746,6 @@ fn platform_launcher_command(
         network,
         filesystem_isolated,
     )?;
-    if let SandboxResources::Linux { controls, .. } = &mut sandbox_root {
-        if plan.filesystem_isolated {
-            *controls = controls
-                .clone()
-                .planned(CapabilityDimension::FilesystemRead, "linux-synthetic-root")
-                .planned(CapabilityDimension::FilesystemWrite, "linux-synthetic-root");
-        }
-        if plan.network.is_loopback_only() {
-            *controls = controls
-                .clone()
-                .planned(CapabilityDimension::Network, "linux-network-namespace");
-        }
-    }
     let encoded = serde_json::to_vec(&plan).map_err(std::io::Error::other)?;
     let plan_path = sandbox_root
         .write_plan(&encoded)?
@@ -825,7 +773,7 @@ fn platform_launcher_command(
             format!("resolve Agent executable {}: {error}", program.display()),
         )
     })?;
-    let mut resources = SandboxResources::create()?;
+    let resources = SandboxResources::create()?;
     let filesystem_isolated = filesystem_isolation(spec);
     let cwd = invocation
         .cwd
@@ -965,26 +913,6 @@ fn platform_launcher_command(
         network,
         filesystem_isolated,
     };
-    if let SandboxResources::MacOS { controls, .. } = &mut resources {
-        if plan.filesystem_isolated {
-            *controls = controls.clone().planned(
-                CapabilityDimension::FilesystemWrite,
-                "macos-seatbelt-write-policy",
-            );
-        }
-        if plan.restrict_reads {
-            *controls = controls.clone().planned(
-                CapabilityDimension::FilesystemRead,
-                "macos-seatbelt-read-policy",
-            );
-        }
-        if plan.network.is_loopback_only() {
-            *controls = controls.clone().planned(
-                CapabilityDimension::Network,
-                "macos-seatbelt-network-policy",
-            );
-        }
-    }
     let encoded = serde_json::to_string(&plan).map_err(std::io::Error::other)?;
 
     let mut command = Command::new(MACOS_SANDBOX_EXEC);
@@ -1404,6 +1332,7 @@ impl RunExecutor for ProcessExecutor {
     }
 
     async fn execute(&self, context: &Session) -> ExecutorOutput {
+        let mut startup = crate::startup_profile::Span::start("process.prepare");
         let spec = context.spec().clone();
         let RunInvocation::Process(invocation) = &spec.invocation;
         context
@@ -1460,6 +1389,9 @@ impl RunExecutor for ProcessExecutor {
                 None
             }
         };
+        startup.success(None);
+        drop(startup);
+        crate::util::startup_mark_run("process.spawn_begin", context.spec().run_id.as_str());
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -1527,6 +1459,7 @@ impl RunExecutor for ProcessExecutor {
             tokio::spawn(async move { read_limited(stderr, limit, stop).await })
         });
 
+        crate::util::startup_mark_run("process.spawn_ready", context.spec().run_id.as_str());
         context.transition(RunState::Running, None).await;
 
         let end = context
@@ -1676,6 +1609,46 @@ impl RunExecutor for ProcessExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn sandbox_evidence_requires_individual_installation_receipts() {
+        use std::io::{Seek, Write};
+        let mut resources = SandboxResources::create().unwrap();
+        let file = match &mut resources {
+            #[cfg(target_os = "linux")]
+            SandboxResources::Linux { attestation, .. } => attestation.as_file_mut(),
+            #[cfg(target_os = "macos")]
+            SandboxResources::MacOS { attestation, .. } => attestation.as_file_mut(),
+            SandboxResources::None => unreachable!(),
+        };
+        file.write_all(b"pvisor-rootless-ready-v1\n").unwrap();
+        assert!(resources.observed_controls().is_none());
+        let file = match &mut resources {
+            #[cfg(target_os = "linux")]
+            SandboxResources::Linux { attestation, .. } => attestation.as_file_mut(),
+            #[cfg(target_os = "macos")]
+            SandboxResources::MacOS { attestation, .. } => attestation.as_file_mut(),
+            SandboxResources::None => unreachable!(),
+        };
+        file.rewind().unwrap();
+        file.set_len(0).unwrap();
+        serde_json::to_writer(
+            file,
+            &crate::executor::sandbox::SandboxAttestation {
+                version: 1,
+                controls: CapabilityEnforcementEvidence::default().enforced(
+                    CapabilityDimension::FilesystemWrite,
+                    "installed-write-control",
+                ),
+            },
+        )
+        .unwrap();
+        let observed = resources.observed_controls().unwrap();
+        assert!(observed.is_enforced(CapabilityDimension::FilesystemWrite));
+        assert!(!observed.is_enforced(CapabilityDimension::FilesystemRead));
+        assert!(!observed.is_enforced(CapabilityDimension::Network));
+    }
     use std::process::Stdio;
 
     #[cfg(unix)]

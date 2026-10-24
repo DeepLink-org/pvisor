@@ -1,5 +1,7 @@
 # pVisor 与 OpenSandbox：启动、磁盘与内存实测
 
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。
+
 ## Motivation {#motivation}
 
 pVisor 的原生 guest 后端缩短了本地沙箱等待，压缩镜像池降低了镜像库存，较小的服务固定开销有利于少量实例的独立部署。显式物理内存池还可以降低跨实例相同工作集的占用。每实例独立 VM 仍有内核与运行时成本，不能将服务总量的优势解释为每个 VM 都比容器省内存。
@@ -128,7 +130,7 @@ Docker 列已经包含正常的层共享。四个独立 pVisor store 合计 169.
 
 启动、磁盘、内存的本地证据分别为 `benchmark/.data/opensandbox-native-docker-20261024T020535Z/`、`benchmark/.data/image-storage-6mdz6ljh/`、`benchmark/.data/opensandbox-memory-formal-20261024/`。这些目录不随站点发布。对应 summary SHA-256 依次为 `8fc9fd74d6c4450dd9be07af58fbdc80156dbc6cacf4691c97daa416951b5e12`、`ed741f8c85bf14284e69c4f4a374baaea6a09d61461ce8ba78a0863e39be919b`、`13d437b59e56bc4534d48b24999ab44c1dd5ef562ea005a4f0a66664a9ebe067`。
 
-启动和内存使用的 daemon SHA-256 为 `74461c7ad588633228d44a8ada5d8335de50ea55ca9c5c543886c6533540f575`；磁盘实验使用独立冻结 CLI，SHA-256 为 `14ab9917e2d9d9c8fad513b490d43646bce1978e6f25f98ac1f641c34b55b73e`。源码、构建收据、输入 digest、资源配置、所有样本和日志留在各批次。复现见 [OpenSandbox 实验手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/opensandbox/README.md)及[镜像库存手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/image_storage/README.md)。
+启动和内存使用的 daemon SHA-256 为 `74461c7ad588633228d44a8ada5d8335de50ea55ca9c5c543886c6533540f575`；磁盘实验使用独立冻结 CLI，SHA-256 为 `14ab9917e2d9d9c8fad513b490d43646bce1978e6f25f98ac1f641c34b55b73e`。源码、构建收据、输入 digest、资源配置、所有样本和日志留在各批次。复现见 [OpenSandbox 实验手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/opensandbox/README.md)及[镜像库存手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/image_storage/README.md)。
 
 新增五张图由 `benchmark/opensandbox/plot_comparison.py` 从上述原始批次生成，没有增加采样或修改原始结果。逐图数据、所有输入与 SVG 的 SHA-256、绘图代码和 Matplotlib 版本保存在本地 `benchmark/.data/opensandbox-figures-20261024/`，与原内存柱状图的来源收据分开。
 

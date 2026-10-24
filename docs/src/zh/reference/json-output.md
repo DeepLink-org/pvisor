@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `status --json` | 状态与可选文件系统/网络摘要 | 查看存活与暂存概况；不是完整控制证据 |
 | `status --review --json` | 完整、带 schema 版本的 Run Bundle | 结束后的审查与机器消费 |
-| `review --json` | schema-4 Bundle 加 `review_context` | 同一审查入口；`--checkpoint ID` 选择保存的工作区 |
+| `review --json` | schema-5 Bundle 加 `review_context` | 同一审查入口；`--checkpoint ID` 选择保存的工作区 |
 | `kill --json` | schema 1，operation 为 `kill` | 区分终止请求与已经停止的 Job |
 | `checkpoint create/list/show/delete/gc --json` | schema 1，operation 为 `checkpoint.*` | Job 内的 workspace 与 execution checkpoint 管理 |
 

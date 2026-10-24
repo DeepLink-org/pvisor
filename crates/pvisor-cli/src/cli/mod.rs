@@ -196,6 +196,8 @@ fn normalize_default_spawn(mut args: Vec<OsString>, command: &clap::Command) -> 
 }
 
 pub fn main() -> anyhow::Result<()> {
+    let startup_entry = (std::env::var("PVISOR_STARTUP_PROFILE").as_deref() == Ok("1"))
+        .then(std::time::Instant::now);
     if pvisor::docker::internal_if_requested()? {
         return Ok(());
     }
@@ -327,6 +329,16 @@ pub fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     // Informational invocations return without emitting execution diagnostics.
+    if let Some(entry) = startup_entry {
+        let duration = entry.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let record = serde_json::json!({
+            "schema": 1, "pid": std::process::id(), "role": "frontend",
+            "clock": "host_monotonic_process_relative", "epoch": "cli-entry",
+            "stage": "cli.entry_to_parsed", "start_ns": 0, "end_ns": duration,
+            "duration_ns": duration, "outcome": "ok",
+        });
+        pvisor::diagnostics::diagnostic(format_args!("pvisor-startup-profile {record}"));
+    }
     pvisor::startup_mark("process.entry");
     pvisor::startup_mark("cli.parsed");
     if let Command::Spawn(run) = &mut parsed.command {

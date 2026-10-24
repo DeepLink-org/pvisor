@@ -16,7 +16,7 @@ Bats retains its upstream framework.
 
 ## Run
 
-Build pVisor first with `just build`. Install Bats 1.5+, Python 3.10+ and Go 1.20+ separately if needed.
+Build pVisor first with `mise run build`. Install Bats 1.5+, Python 3.10+ and Go 1.20+ separately if needed.
 From the repository root:
 
 ```sh
@@ -36,7 +36,7 @@ export PVISOR_BINARY="$runtime_dir/pvisor"
 # Run either suite using PVISOR_BINARY, then remove runtime_dir.
 ```
 
-These are special external-runtime runners, separate from `just test`.
+These are special external-runtime runners, separate from `mise run test`.
 `PVISOR_BINARY` selects a single executable path (default: `pvisor` in PATH),
 not a shell command string. Arguments are passed directly to the top-level CLI; there is no engine selector. Missing pVisor, image pull failures or unavailable
 virtualization fail active cases rather than skip them.

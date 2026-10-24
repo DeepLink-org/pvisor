@@ -11,11 +11,47 @@ pVisor 的 Rust VM 运行时。VMM、设备、架构支持和虚拟化后端在�
 5. **契约必须写清楚。** 接口文档说明输入校验、资源所有权、调用顺序、生命周期、线程与同步要求、错误后的状态，以及快照冻结、发布和恢复的职责边界。
 6. **底层验证也守住边界。** 需要访问寄存器、设备队列或内部状态的测试放在本 crate 内；其他 crate 的测试使用公开 API。不能为了测试重新公开实现模块。
 
+公开 API 的缺失文档由 `#![deny(missing_docs)]` 强制拒绝；`mise run lint-api-docs`
+对 VM、OverlayFS 与 Journal 运行 warnings-denied rustdoc，并由 CI 执行。
+
 API 中的 `PermissionSemantics`、`RamReclaim`、`RamMappingSnapshot` 和内存回调类型也是内部运行时使用的唯一类型定义；内部不复制等价记录。快照恢复验证和 COW 映射共用 RAM 清单及文件大小校验，映射过程另外检查拓扑和宿主页对齐。
 
 统一的 Rust API 不表示不同架构之间可以互相恢复快照，也不表示机器已具备虚拟化权限。能力描述、运行时安装证据和持久化兼容性校验是不同契约。
 
 ## 调用方与运行时的职责
+
+### Guest 退出来源
+
+普通 Rust supervisor 在启动 workload 前，通过根 virtio-fs 设备的
+`_IOR('v', 3, [u8;16])` 领取随机 128-bit token。宿主只接受 guest 内核
+提供的 root/PID 1 请求，其他 share、inode 和旧 `0x7602` 均不授权退出。
+PID 1 禁用普通 dump，token 仅存在于 PID 1 内存，不写 launch JSON 或环境，
+也没有可继承的 token 文件描述符。最终 reap/syncfs 后，PID 1 用固定 20-byte
+`_IOW('v', 4, [u8;20])` 提交 token 与 little-endian `0..=255` 退出码。
+宿主验证并单次提交；错误 token、越界、重复提交均不改变退出状态。
+
+快照将 token 与对应根设备状态保存在宿主私有快照中，和 PID 1 的 RAM 一起
+延续同一个能力；恢复不会轮换 guest 内存尚持有的 token，快照仍需原有的独占
+所有权与可信存储。已提交退出的设备拒绝捕获/恢复。新冷启动领取新 token。
+该协议依赖可信 guest 内核与 PID 1，不能抵抗接管 PID 1 或内核的 guest 权限。
+自定义 init 必须实现同一协议，旧无认证退出报告不再兼容。
+缺失认证状态的正常停机以 125 失败；宿主 vCPU 异常优先于 guest 成功结果，
+不会通过退出码截断将非法数值转换为成功。真实 HVF/KVM 验收与协议单测分别报告。
+
+退出来源真实回归使用 `guest_exit_case`，只创建临时空 rootfs 并注入静态 workload。
+在 Apple Silicon 构建 workload 和宿主用例：
+
+```sh
+rustc --edition=2021 --target aarch64-unknown-linux-musl -C linker=rust-lld \
+  crates/pvisor-vm/src/probes/guest_exit_guest.rs -o /tmp/guest-exit-probe
+cargo build --locked -p pvisor-vm --example guest_exit_case
+```
+
+按现有 `crates/pvisor/macos-hypervisor.entitlements` 签署宿主 example，再运行
+`target/debug/examples/guest_exit_case ABSOLUTE_FIRMWARE /tmp/guest-exit-probe`。
+Linux x86_64 将 guest target 替换为 `x86_64-unknown-linux-musl`，需要 KVM 权限。
+用例确认 guest-root workload 无法 claim/report 或使用旧 ioctl，并核对 0、7、255；
+它不证明被接管 PID 1 的安全性，也不替代真实整机快照恢复验收。
 
 调用方负责独立 runner 的监管、宿主沙箱安装、继承描述符校验、rootfs 的独立副本、快照存储事务、host/boot/build 兼容性与单次执行所有权。
 
@@ -845,7 +881,7 @@ token 在整个探针中唯一，`scope` 指定该段所属设备；只有该设
 未打补丁的 guest 不置该 flag，行为与逐请求 FUSE 相同。旧宿主不回该
 flag，或对 `FUSE_READINDEX` 返回 `ENOSYS` 时，新 guest 关闭目录镜像。
 该镜像不解析 Lazy Image 的页格式，也不把元数据放进 DAX 窗口。固件需
-重新执行 `just fw build` 后，guest 才会带上这部分 FUSE 改动。
+重新执行 `mise run fw -- build` 后，guest 才会带上这部分 FUSE 改动。
 
 公开 API 的真实 guest 正确性用例为 `readonly_dax_case`：
 
@@ -862,11 +898,11 @@ ROOTFS 须包含 `/usr/bin/python3`，FIRMWARE 是支持 DAX 的 libkrunfw 文�
 
 ## 验证入口
 
-`just test pvisor-vm` 运行设备、快照和接口契约测试；macOS 自动使用仓库既有 Hypervisor entitlement 签署测试程序。真实 HVF/KVM 和本地 socket 测试需要宿主权限。Linux 测试中创建 VM 的用例需要可用 `/dev/kvm`。
+`mise run test -- pvisor-vm` 运行设备、快照和接口契约测试；macOS 自动使用仓库既有 Hypervisor entitlement 签署测试程序。真实 HVF/KVM 和本地 socket 测试需要宿主权限。Linux 测试中创建 VM 的用例需要可用 `/dev/kvm`。
 
 `repository_boundary` 检查所有工作区 manifest 与外部 Rust 调用者，保证 VM 核心组件只在本 crate 内编译。`api_contract` 保证 API 无条件编译、无方法体，并禁止私有适配器另设公开固有方法。
 
-真实 Linux guest 的独立 rootfs/RAM 保存与恢复验证使用 `just test-environment-snapshot`，整机冷恢复使用 `just test-linux-cold-restore`（均为 Apple Silicon HVF 的私有专项入口）。报告保存到 `${CARGO_TARGET_DIR:-target}/vm-validation/`，可传 `--report PATH` 覆盖；固件需先通过 `just fw build` 准备，并将 `PVISOR_CASE_VM_LIBRARY_DIR` 指向生成的 dylib 目录，默认读取构建目录的 `release/`。guest 探针在 `src/probes/guest_linux.rs`，readiness 使用原子 rename 发布，避免把探针写文件的中间状态误判为恢复失败。底层 CPU/RAM 与 VMM-thread CPU/RAM/GIC 检查分别使用 `just test-hvf-cold-restore` 和 `just test-vm-snapshot-state`，它们的报告只描述各自覆盖的范围。Just 负责编译、签名与签名校验；Python 只运行已构建的探针并检查状态和报告。环境快照验证仍为源进程与恢复进程复制同一个已签名 runner 到私有目录。
+真实 Linux guest 的独立 rootfs/RAM 保存与恢复验证使用 `mise run test-environment-snapshot`，整机冷恢复使用 `mise run test-linux-cold-restore`（均为 Apple Silicon HVF 的私有专项入口）。报告保存到 `${CARGO_TARGET_DIR:-target}/vm-validation/`，可传 `--report PATH` 覆盖；固件需先通过 `mise run fw -- build` 准备，并将 `PVISOR_CASE_VM_LIBRARY_DIR` 指向生成的 dylib 目录，默认读取构建目录的 `release/`。guest 探针在 `src/probes/guest_linux.rs`，readiness 使用原子 rename 发布，避免把探针写文件的中间状态误判为恢复失败。底层 CPU/RAM 与 VMM-thread CPU/RAM/GIC 检查分别使用 `mise run test-hvf-cold-restore` 和 `mise run test-vm-snapshot-state`，它们的报告只描述各自覆盖的范围。mise 负责编译、签名与签名校验；Python 只运行已构建的探针并检查状态和报告。环境快照验证仍为源进程与恢复进程复制同一个已签名 runner 到私有目录。
 
 ## Stage snapshot rebinding
 
@@ -995,7 +1031,7 @@ dispatch、overlay 与 Core 累计计数，并输出单行 `pvisor-fs-profile-ph
 根设备 scope 为 `rootfs`，其他设备保留 virtio-fs tag。请求使用独占 session
 guard，等已进入宿主的操作结束；它不触发 flush、capture 或额外物理查询。
 关闭 profiling 时保留普通未知 ioctl 的 ENOTTY 行为，没有新公开 API。
-`benchmark/pvisor/phase_profiles.py` 严格核对各设备的每个 token/实例及全部
+已退役的 [`phase_profiles.py`](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/phase_profiles.py) 严格核对各设备的每个 token/实例及全部
 注册实例的最终记录，原始差分保留，并另行扣除标记自身的一个 IOCTL、
 80 个请求字节和一个 direct dispatch。区间包含整个 `checked()` 的子进程
 启动及原有校验，不能解释为精确的 `worker_ms` 边界；内核异步 FORGET 等
@@ -1180,14 +1216,14 @@ close→unlink→syncfs 返回 ENOENT，旧0044/0045固件均可见；旧制品�
 2026-10-17 的新宿主 SDK 回归在新0048与旧0047固件上均通过完整探针，
 包括 fd 已关闭的 unlink/rename-overwrite 后 syncfs；这验证宿主对象退休修复
 不依赖新压力算法。新宿主+0048的 backing EIO 用例也通过，PID1 以125报告失败。
-本地[正确性收据](../../benchmark.new/filesystem/.data/guest-writeback-correctness-20261017/receipt.json)
+本地[正确性收据](../../benchmark/filesystem/.data/guest-writeback-correctness-20261017/receipt.json)
 关联三组成功与旧组合失败日志，保留为0048历史证据。
 
-0049v2 的[独立正确性收据](../../benchmark.new/filesystem/.data/guest-writeback-tuning-correctness-v2-20261017/receipt.json)
+0049v2 的[独立正确性收据](../../benchmark/filesystem/.data/guest-writeback-tuning-correctness-v2-20261017/receipt.json)
 关联新固件 FULL、故障注入 ERROR、同 inode 多 FD、7项固件合同及当时50项
 filesystem Python 合同；511项 Rust 通过与8项跳过明确复用未变化的宿主实现范围。
 原失败写入历史随后在512 MiB guest／2 GiB父预算下由5个全新 guest 完成，
-[压力验证](../../benchmark.new/filesystem/.data/guest-writeback-memory-v2-20261017/verification.json)
+[压力验证](../../benchmark/filesystem/.data/guest-writeback-memory-v2-20261017/verification.json)
 保留225行、guest与host全字节校验及原分配错误未复现的记录。
 新的四臂 N5 曲线完成20个环境、900行；普通 CLI 则以同一0049v2固件对照
 WB0/1，PRE、独立诊断与 N5正式环境均通过。CLI七工具整体及 Ready 未检出收益，
@@ -1216,7 +1252,7 @@ PVISOR_VM_FS_WRITEBACK=1 target/debug/examples/guest_writeback_case \
 字节区间；这些区间共享4 KiB页，部分写跨页。文件为2 MiB加256字节，累计写入
 6 MiB，交错114次 checked-close/reopen，并在写线程仍活动时短暂空闲15 ms，
 给提交 timer 推进机会。最后显式 fsync、syncfs，guest 与宿主分别核对完整长度及
-全部字节。该新增 full 探针已在0048基线上通过；[独立调用记录](../../benchmark.new/filesystem/.data/guest-writeback-tuning-correctness-20261017/full-baseline-0048.invocation.json)
+全部字节。该新增 full 探针已在0048基线上通过；[独立调用记录](../../benchmark/filesystem/.data/guest-writeback-tuning-correctness-20261017/full-baseline-0048.invocation.json)
 与原0048性能批次分开。0049v2 的新 FULL 也通过该用例，记录在上方的新正确性收据中；
 该正确性结果不用于推导性能收益。
 
@@ -1469,7 +1505,7 @@ in notification. Queue kicks are armed when a deferred frame needs buffers, with
 the standard availability recheck closing the race after rearming. Private tests
 cover bytewise stream fragmentation, coalescing/compaction, maximum frames, EOF,
 notification suppression and deferred completion. Linux/KVM real-guest peer
-experiments are described in `benchmark/peer/README.md`; HVF performance requires
+experiments are described in the [archived peer manual](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/peer/README.md); HVF performance requires
 separate measurement.
 
 Stream TX gathers at most 32 already-available frames into one `sendmsg`.
@@ -1480,3 +1516,19 @@ preserves partial prefixes, payloads and frame boundaries. Pending batches finis
 before accepting another batch; EAGAIN resumes on socket writability without
 waiting to fill a batch. Malformed TX descriptors complete without emitting wire
 bytes. Datagram and TAP backend TX retain their existing per-frame paths.
+
+## 启动耗时诊断
+
+`PVISOR_STARTUP_PROFILE=1` 默认关闭，启用时向 stderr 写出 schema=1 的
+`pvisor-startup-profile` JSON 行。保持现有内核初始化/复制记录，新增：
+`vm.runtime_configure`、`vm.build`、`vm.ready_callback`、`vm.start_worker`，以及
+VMM 的 payload 校验/选择、guest memory 创建与内核加载、hypervisor/CPU/legacy device
+构建、通用设备、virtio-fs、剩余设备、boot system/restore、boot prefault、vCPU 启动。
+`vm.build` 包含内部 `vmm.*`，各阶段成功结束为 `ok`，失败/展开保留 `unknown`，
+不记录 guest 参数、环境或文件内容，不改变 API 或 guest 协议。
+
+每条记录标识 PID 和 `epoch=vm-runtime`；时钟起点是本进程首次 VM profile，不能
+直接与宿主 runtime、frontend 或 guest 时钟对齐。阶段间日志写入的成本不归入下一阶段，
+外层 span 仍包含内层日志成本。诊断会扰动启动，重叠阶段不能相加；未启用时不采集时钟。
+这些阶段覆盖 VMM 准备，guest/application Ready 必须通过独立输出 observer 确认。
+采集和汇总见 [启动诊断工具](../../benchmark/startup/startup_profile.py)。

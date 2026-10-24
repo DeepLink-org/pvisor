@@ -11,12 +11,12 @@ This is the full guide. The repository-root [`CONTRIBUTING.md`](https://github.c
 ## Development loop
 
 ```bash
-just build            # debug 构建
-just test             # 通过 cargo nextest 运行 Rust 测试，再运行 Python 测试
-just test pvisor-core # 只运行一个包的 Rust 测试
-just ci "fmt-rust --check" "fmt-py --check"        # 格式检查
-just lint             # clippy 与 ruff
-just docs-build       # 构建并检查文档站点
+mise run build            # debug 构建
+mise run test             # 通过 cargo nextest 运行 Rust 测试，再运行 Python 测试
+mise run test -- pvisor-core # 只运行一个包的 Rust 测试
+mise run ci -- "fmt-rust --check" "fmt-py --check"        # 格式检查
+mise run lint             # clippy 与 ruff
+mise run docs-build       # 构建并检查文档站点
 ```
 
 See [Development environment and engineering](development.md) for FUSE/macFUSE, KVM/HVF and OCI runtime preparation, and [Testing and semspec](testing.md) for test responsibilities.
@@ -32,7 +32,7 @@ Product promises are semantic specifications under `docs/src/zh/cases/` and [`re
 ## Submit a PR
 
 - Focus each PR on one change; explain behavior and validation;
-- Run `just ci "fmt-rust --check" "fmt-py --check"`, `just lint` and relevant `just test` checks;
+- Run `mise run ci -- "fmt-rust --check" "fmt-py --check"`, `mise run lint` and relevant `mise run test` checks;
 - Update the authoritative page for the behavior, following `docs/README.md`: one authoritative article per subject, with concise links elsewhere.
 
 Contributions are licensed under [Apache License 2.0](https://github.com/DeepLink-org/pvisor/blob/main/LICENSE).

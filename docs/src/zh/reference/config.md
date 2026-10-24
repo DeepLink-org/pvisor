@@ -306,6 +306,7 @@ backing/control 路径。首次准备复制并完整校验，后续认证小记�
 | `policies` | `pvisor_core::SessionPolicies` | `{}` | 额外的 session、workspace、user 约束 |
 | `run.agent` | `String` | `"agent"` | `--name`；保持默认时 CLI 取命令名 |
 | `run.executor` | `RunExecutorKind` | `"host"` | `--executor`：host、container、vm |
+| `run.profile` | `pvisor_core::RunProfile` | `"default"` | `default` 或 `safe`；safe 请求沙箱准入与 CLI safe 预设，不表示选择性代理网络不可绕过 |
 | `run.timeout_ms` | `Option<u64>` | `未设置` | 实际经过时间，毫秒；`--timeout 30s` |
 | `run.stdio` | `RunStdio` | `"inherit"` | inherit 或 capture；`--stdio` |
 | `run.policy` | `RunPolicy` | `"observe"` | observe 或 enforce；`--strict` 选择 enforce |

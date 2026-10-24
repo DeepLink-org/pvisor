@@ -6,13 +6,17 @@ on:
     paths:
       - 'Cargo.*'
       - '.cargo/**'
-      - 'rust-toolchain.toml'
       - 'crates/**'
       - 'vendor/**'
       - 'benchmark/**'
-      - 'benchmark.new/**'
       - 'tools/semspec/**'
-      - 'justfile'
+      - 'mise.toml'
+      - 'mise.lock'
+      - 'tests/tasks.toml'
+      - 'scripts/tasks/**'
+      - 'tests/tasks/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
       - '.github/actions/setup-build-env/**'
       - '.github/workflows/pvisor-benchmark.yml'
   pull_request:
@@ -20,13 +24,17 @@ on:
     paths:
       - 'Cargo.*'
       - '.cargo/**'
-      - 'rust-toolchain.toml'
       - 'crates/**'
       - 'vendor/**'
       - 'benchmark/**'
-      - 'benchmark.new/**'
       - 'tools/semspec/**'
-      - 'justfile'
+      - 'mise.toml'
+      - 'mise.lock'
+      - 'tests/tasks.toml'
+      - 'scripts/tasks/**'
+      - 'tests/tasks/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
       - '.github/actions/setup-build-env/**'
       - '.github/workflows/pvisor-benchmark.yml'
   workflow_dispatch:
@@ -52,7 +60,7 @@ jobs:
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-env
         with:
-          rust: "true"
+          native-firmware: "true"
           static-musl: "true"
 
       - uses: Swatinem/rust-cache@v2
@@ -78,7 +86,7 @@ jobs:
           git worktree add --detach "$baseline_repo" "$baseline_sha"
           echo "repo=$baseline_repo" >> "$GITHUB_OUTPUT"
           echo "sha=$baseline_sha" >> "$GITHUB_OUTPUT"
-          if [[ -f "$baseline_repo/justfile" ]]; then
+          if [[ -f "$baseline_repo/scripts/packaging/stage_wheel_binaries.py" ]]; then
             echo "supported=true" >> "$GITHUB_OUTPUT"
           else
             echo "supported=false" >> "$GITHUB_OUTPUT"
@@ -95,7 +103,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          just benchmark smoke
+          mise run benchmark -- smoke
 
       - name: Stop baseline Host listener before switching binaries
         if: steps.baseline.outputs.supported == 'true'
@@ -108,7 +116,7 @@ jobs:
         env:
           PVISOR_BENCHMARK_OUTPUT: ${{ runner.temp }}/.data/pvisor-benchmark/candidate
           PVISOR_BENCHMARK_BUILD_DIR: ${{ github.workspace }}/target/pvisor-benchmark-candidate
-        run: just benchmark smoke
+        run: mise run benchmark -- smoke
 
       - name: Compare reports
         shell: bash
@@ -118,11 +126,54 @@ jobs:
           baseline="${RUNNER_TEMP}/.data/pvisor-benchmark/main/smoke/in.bench.json"
           output="${RUNNER_TEMP}/.data/pvisor-benchmark/comparison"
           if [[ -f "$baseline" ]]; then
-            just benchmark-compare "$candidate" "$baseline" "$output"
+            mise run benchmark-compare -- "$candidate" "$baseline" "$output"
           else
-            just benchmark-compare "$candidate" "" "$output"
+            mise run benchmark-compare -- "$candidate" "" "$output"
           fi
           cat "$output/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnose failed benchmark outside measurement
+        if: failure()
+        timeout-minutes: 2
+        env:
+          BENCHMARK_DATA: ${{ runner.temp }}/.data/pvisor-benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y strace
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          for cohort in ("main", "candidate"):
+              batch = Path(os.environ["BENCHMARK_DATA"]) / cohort / "smoke"
+              if not (batch / "commands.json").is_file():
+                  print(f"No prepared {cohort} batch; no commands to diagnose")
+                  continue
+              commands = json.loads((batch / "commands.json").read_text())
+              output = batch / "diagnostics"
+              output.mkdir()
+              for name in ("status", "review"):
+                  spec = commands[name]
+                  with (output / f"{name}.profile.stdout").open("wb") as stdout, (output / f"{name}.profile.stderr").open("wb") as stderr:
+                      subprocess.run(
+                          spec["argv"], cwd=spec["cwd"],
+                          env={**os.environ, **spec["env"], "PVISOR_STARTUP_PROFILE": "1"},
+                          stdout=stdout, stderr=stderr, timeout=15, check=True,
+                      )
+                  with (output / f"{name}.stdout").open("wb") as stdout, (output / f"{name}.stderr").open("wb") as stderr:
+                      subprocess.run(
+                          ["strace", "-f", "-ttt", "-T", "-yy", "-o", str(output / f"{name}.strace"), "--", *spec["argv"]],
+                          cwd=spec["cwd"],
+                          env={**os.environ, **spec["env"], "PVISOR_STARTUP_PROFILE": "1"},
+                          stdout=stdout, stderr=stderr, timeout=30, check=True,
+                      )
+          PY
 
       - name: Upload benchmark data and report
         if: always()

@@ -7,6 +7,29 @@ use reqwest::RequestBuilder;
 
 use crate::config::ModelRoute;
 use crate::protocol::ProtocolKind;
+
+pub(super) fn consume_local_token(headers: &mut HeaderMap, expected: &str) -> bool {
+    let authorized = ["authorization", "x-api-key", "x-goog-api-key"]
+        .iter()
+        .any(|name| {
+            let mut values = headers.get_all(*name).iter();
+            let Some(value) = values.next().and_then(|value| value.to_str().ok()) else {
+                return false;
+            };
+            values.next().is_none()
+                && if *name == "authorization" {
+                    value.strip_prefix("Bearer ") == Some(expected)
+                } else {
+                    value == expected
+                }
+        });
+    if authorized {
+        for name in ["authorization", "x-api-key", "x-goog-api-key"] {
+            headers.remove(name);
+        }
+    }
+    authorized
+}
 use crate::provider::ProviderKind;
 use pvisor_overlaynet::headers::skip_upstream_forward_header_for;
 

@@ -5,6 +5,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use pvisor_overlaynet::vm::{VmNetwork, VmNetworkConfig, guest_mac};
@@ -400,6 +404,8 @@ mod tcp_guests {
     struct Guest {
         stream: UnixStream,
         input: Vec<u8>,
+        output: VecDeque<Vec<u8>>,
+        output_offset: usize,
         link: Link,
         interface: Interface,
         sockets: SocketSet<'static>,
@@ -427,6 +433,8 @@ mod tcp_guests {
             Self {
                 stream,
                 input: vec![],
+                output: VecDeque::new(),
+                output_offset: 0,
                 link,
                 interface,
                 sockets,
@@ -436,6 +444,12 @@ mod tcp_guests {
         }
         fn socket(&mut self) -> &mut tcp::Socket<'static> {
             self.sockets.get_mut(self.handle)
+        }
+        fn queue_frame(&mut self, frame: &[u8]) {
+            let mut bytes = Vec::with_capacity(4 + frame.len());
+            bytes.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(frame);
+            self.output.push_back(bytes);
         }
         fn poll(&mut self, now: SmolInstant) {
             self.stream.set_nonblocking(true).unwrap();
@@ -457,7 +471,6 @@ mod tcp_guests {
                 self.input.drain(..4 + length);
             }
             self.interface.poll(now, &mut self.link, &mut self.sockets);
-            self.stream.set_nonblocking(false).unwrap();
             let delayed = self.faults.delayed.take();
             let mut overtook_delayed = false;
             while let Some(frame) = self.link.tx.pop_front() {
@@ -472,11 +485,11 @@ mod tcp_guests {
                         continue;
                     }
                     if self.faults.seen.is_multiple_of(13) {
-                        send(&mut self.stream, &frame);
+                        self.queue_frame(&frame);
                         self.faults.duplicated += 1;
                     }
                 }
-                send(&mut self.stream, &frame);
+                self.queue_frame(&frame);
                 overtook_delayed = true;
             }
             // Release after newer output, or on the next poll if idle. This
@@ -485,7 +498,24 @@ mod tcp_guests {
                 if overtook_delayed {
                     self.faults.reordered += 1;
                 }
-                send(&mut self.stream, &frame);
+                self.queue_frame(&frame);
+            }
+            // Both simulated guests share this thread. Never block writes while
+            // the peer needs its next poll to drain the opposite direction.
+            while let Some(bytes) = self.output.front() {
+                match self.stream.write(&bytes[self.output_offset..]) {
+                    Ok(0) => panic!("guest link stopped accepting frames"),
+                    Ok(count) => {
+                        self.output_offset += count;
+                        if self.output_offset == bytes.len() {
+                            self.output.pop_front();
+                            self.output_offset = 0;
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => panic!("write guest link: {error}"),
+                }
             }
         }
     }
@@ -638,10 +668,12 @@ fn sequenced_frame(src: u8, dst: u8, length: usize, sequence: u64) -> Vec<u8> {
 fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
     let root = directory();
     let members: Vec<_> = (11..15).map(|last| start(root.path(), last)).collect();
+    let completed = Arc::new([const { AtomicU64::new(0) }; 4]);
     let mut owners = Vec::new();
     let mut workers = Vec::new();
     for (index, (owner, mut stream, metrics)) in members.into_iter().enumerate() {
         owners.push((owner, metrics));
+        let completed = completed.clone();
         workers.push(std::thread::spawn(move || {
             stream
                 .set_write_timeout(Some(Duration::from_secs(5)))
@@ -650,7 +682,12 @@ fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
             let destination = 11 + (index as u8 + 1) % 4;
             let previous = 11 + (index as u8 + 3) % 4;
             let mut seed = 0x504e_4554_u64 + index as u64;
+            let started = Instant::now();
             for batch in 0..256 {
+                assert!(started.elapsed() < Duration::from_secs(20));
+                if batch % 64 == index as u64 {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
                 for offset in 0..4 {
                     let sequence = batch * 4 + offset;
                     let length = if sequence % 2 == 0 { 1514 } else { 66 };
@@ -675,6 +712,13 @@ fn seeded_fragmented_streams_forward_concurrent_ring_without_corruption() {
                         sequenced_frame(previous, source, length, sequence)
                     );
                 }
+                // Keep one burst per destination in flight on the lossy packet link.
+                completed[index].store(batch + 1, Ordering::Release);
+                wait_until(|| {
+                    completed
+                        .iter()
+                        .all(|done| done.load(Ordering::Acquire) > batch)
+                });
             }
         }));
     }

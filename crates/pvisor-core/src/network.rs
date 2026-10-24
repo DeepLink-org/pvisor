@@ -213,11 +213,11 @@ impl NetworkPolicy {
     /// A TUI decision grants only this logical host, transport, and port.
     /// Explicit denies, resolved-address safety, and bandwidth limits remain.
     pub fn one_time_grant(&self, request: &NetworkAccessRequest) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            self.preflight(request) != Err(DenyReason::ExplicitDeny),
+            "explicit deny cannot be overridden by approval"
+        );
         if let Some(NetworkCapability::Scoped { layers, fallback }) = &self.source.capability {
-            anyhow::ensure!(
-                self.preflight(request) != Err(DenyReason::ExplicitDeny),
-                "explicit deny cannot be overridden by approval"
-            );
             let mut source = self.source.clone();
             let grant = NetworkAccessRule {
                 host: request.host.clone(),
@@ -250,7 +250,14 @@ impl NetworkPolicy {
             return Self::compile(&source);
         }
         anyhow::ensure!(
-            self.mode == NetworkMode::Allowlist,
+            matches!(
+                self.source.capability,
+                Some(NetworkCapability::AllowList { .. })
+                    | Some(NetworkCapability::Policy {
+                        default_action: NetworkDefaultAction::Deny,
+                        ..
+                    })
+            ) || (self.source.capability.is_none() && self.mode == NetworkMode::Allowlist),
             "only an allowlist can be extended by audit"
         );
         let port = request
@@ -264,6 +271,21 @@ impl NetworkPolicy {
             transports: vec![request.transport],
             allow_private_ips: false,
         }];
+        source.capability = match &self.source.capability {
+            Some(NetworkCapability::AllowList { .. }) => Some(NetworkCapability::AllowList {
+                hosts: Vec::new(),
+                rules: source.rules.clone(),
+            }),
+            Some(NetworkCapability::Policy { deny, limits, .. }) => {
+                Some(NetworkCapability::Policy {
+                    default_action: NetworkDefaultAction::Deny,
+                    allow: source.rules.clone(),
+                    deny: deny.clone(),
+                    limits: limits.clone(),
+                })
+            }
+            _ => None,
+        };
         Self::compile(&source)
     }
 

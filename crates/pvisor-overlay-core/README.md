@@ -15,7 +15,7 @@ they must reject view mutations themselves and do not promise fresh observations
 ## Validation
 
 ```sh
-just test pvisor-overlay-core
+mise run test -- pvisor-overlay-core
 ```
 
 `resolve_checked` is the optional namespace-selection query; it preserves policy,
@@ -93,7 +93,7 @@ requires final cumulative records for the entire registered set and all expected
 component families. A missing instance is unknown work, never a zero request count.
 Legacy logs without registration remain partial evidence. Disabled profiles and
 explicit in-memory test profiles emit no registration.
-The [owned-lower host FUSE experiment](../../benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md)
+The [owned-lower host FUSE experiment](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/IMMUTABLE_LOWER_CACHE_REPORT.md)
 records same-contract cache-off/on engineering measurements; it does not establish
 OCI/VM performance or review-journal costs.
 
@@ -271,6 +271,19 @@ races, composed lowers, remote backing and hardlink ordering.
 
 ## Apply inventory and publication
 
+Excluded paths protect effects as well as visibility. Directory removal,
+replacement, rename and exchange reject physical excluded descendants even
+without deny rules. Apply planning and prepared-intent recovery independently
+reject changes inside excluded paths or recursive replacements of their
+ancestors, including old stages. This ancestor check is conservative even if a
+configured excluded descendant is currently absent. macOS uses the same ASCII
+case-insensitive exclusion matching as the serving view.
+
+Importing lower metadata never copies the three supported overlay opaque xattrs
+into the upper: source metadata must not become overlay control state. Ordinary
+user xattrs remain preserved. Raw upper snapshot/restore retains opaque markers
+because it copies existing overlay state rather than importing lower metadata.
+
 Apply planning collects one request-local upper inventory containing relative
 raw paths, whiteout flags and no-follow metadata. Change classification and
 hardlink dependency closure share that inventory. No inventory survives target
@@ -281,7 +294,11 @@ must not reuse stale metadata across mutation boundaries.
 Entry publication exclusively creates a private random temporary directory;
 reserved-looking host names are never cleanup authority. Interrupted copies can
 leave these directories behind, and retries do not sweep them. Replacement
-backups require a durable ownership receipt before reuse or cleanup. Legacy
+backups publish an initialized, synced ownership receipt by no-replace rename
+before reuse or cleanup. Failed initialization cannot publish the apply ID;
+abandoned private initialization siblings are not adopted or swept. Target locks
+use the fixed `/tmp/pvisor-apply-locks-<effective-uid>` namespace across TMPDIR
+settings and remain private, no-follow, single-link files. Legacy
 backups without that receipt are retained and require manual inspection, not
 automatic adoption. Terminal `overlay.json` publications are authoritative over
 an older matching Run overlay identity/generation. While the apply ledger is

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::io;
 use std::mem;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::AtomicI32;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -865,8 +865,8 @@ impl<T: FileSystem<Inode = Inode, Handle = Handle>> FileSystem for AugmentFs<T> 
 
         match cmd {
             VIRTIO_IOC_EXIT_CODE_REQ => {
-                exit_code.store(arg as i32, Ordering::SeqCst);
-                Ok(Vec::new())
+                // Legacy unauthenticated reports cannot bypass the root server's channel.
+                Err(io::Error::from_raw_os_error(libc::ENOTTY))
             }
             _ => self.inner.ioctl(
                 ctx, inode, handle, flags, cmd, arg, in_size, out_size, exit_code,

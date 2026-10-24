@@ -25,6 +25,12 @@ The separate host-authority endpoint uses [`host_protocol`](src/host_protocol.rs
 
 ## Local resource contracts
 
+`execution::RunProfile` is a typed execution request shared by frontends and
+embedded callers. `RuntimeConfig.profile` defaults to `Default`; `Safe` requires
+runtime sandbox admission before execution. It does not claim that every network
+mechanism is non-bypassable. `PolicyMode::Enforce` and executor installation
+observations retain that separate role.
+
 Core defines native CPU QoS and telemetry through `cpu`, `memory` and execution
 contracts, not distributed scheduling or admission. `node::EnvironmentLayer`
 identifies local image revisions with `handle` / `manifest_digest`; node image/RAM
@@ -32,7 +38,7 @@ ownership and snapshot implementation belong to `pvisor`. The separate
 `pvisor-daemon` owns node-local sandbox admission and lifecycle.
 
 ```sh
-just test core
+mise run test -- core
 ```
 
 [Operation and Event design](../../docs/src/zh/design/operations-events.md) · [System architecture](../../docs/src/zh/design/architecture.md)
@@ -42,3 +48,10 @@ for packet transports that cannot enforce proxy flow/port rules or bandwidth
 budgets. It accepts only unrestricted effective policy; it does not authorize a
 custom controller or prove that a driver installed controls. The peer transport
 and owning runtime remain responsible for packet and lifecycle enforcement.
+
+IP and CIDR authorization treats IPv4 and IPv4-mapped IPv6 as the same
+destination for both literal hosts and resolved addresses, including explicit
+denies and resolved-address safety. Native IPv6 addresses remain distinct.
+An audit grant derives a request-scoped policy from the canonical capability;
+it retains explicit denies and bandwidth limits, and does not mutate the source
+policy or authorize other hosts, ports, transports, or private DNS results.

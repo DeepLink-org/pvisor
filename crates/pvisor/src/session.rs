@@ -67,10 +67,6 @@ impl Session {
         &self.events
     }
 
-    pub(crate) fn import_delegated_agentctl(&self, snapshot: crate::AgentCtlSnapshot) {
-        self.agentctl.import_delegated_snapshot(snapshot);
-    }
-
     pub async fn transition(&self, state: RunState, message: impl Into<Option<String>>) {
         // Terminal publication is reserved for Session completion after resource teardown.
         if state.is_terminal() {

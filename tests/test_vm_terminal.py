@@ -1,4 +1,4 @@
-"""VM interaction regressions: PVISOR_TEST_VM_BIN=target/release/pvisor just test-py tests/test_vm_terminal.py."""
+"""VM interaction regressions: PVISOR_TEST_VM_BIN=target/release/pvisor mise run test-py -- tests/test_vm_terminal.py."""
 
 import fcntl
 import os

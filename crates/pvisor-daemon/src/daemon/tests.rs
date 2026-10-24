@@ -497,9 +497,33 @@ async fn established_proxy_response_stream_does_not_block_delete() {
     .unwrap();
     let response = bounded(proxy).await.unwrap().unwrap();
     assert_eq!(response.status(), 200);
+    assert_eq!(
+        daemon.proxy_slots.available_permits(),
+        super::MAX_PROXY_STREAMS - 1
+    );
+    let occupied = Arc::clone(&daemon.proxy_slots)
+        .acquire_many_owned((super::MAX_PROXY_STREAMS - 1) as u32)
+        .await
+        .unwrap();
+    let request = Request::builder()
+        .uri(format!("/v1/sandboxes/{}/proxy/44772/events", sandbox.id))
+        .header("open-sandbox-api-key", API_KEY)
+        .body(Body::empty())
+        .unwrap();
+    let denied = bounded(super::api::router(daemon.clone()).oneshot(request))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), 429);
+    drop(denied);
     // Keep both the upstream socket and unconsumed response body alive.
     bounded(daemon.delete(&sandbox.id)).await.unwrap();
     drop((response, connection));
+    assert_eq!(daemon.proxy_slots.available_permits(), 1);
+    drop(occupied);
+    assert_eq!(
+        daemon.proxy_slots.available_permits(),
+        super::MAX_PROXY_STREAMS
+    );
 }
 
 #[tokio::test]
@@ -540,6 +564,10 @@ async fn proxy_connections_are_not_reused_across_sandboxes_and_cancellation_rele
             bounded(to_bytes(response.into_body(), 16)).await.unwrap(),
             "ok"
         );
+        assert_eq!(
+            daemon.proxy_slots.available_permits(),
+            super::MAX_PROXY_STREAMS
+        );
         bounded(daemon.delete(&sandbox.id)).await.unwrap();
         connections.push(connection);
     }
@@ -553,6 +581,10 @@ async fn proxy_connections_are_not_reused_across_sandboxes_and_cancellation_rele
     let (connection, _) = bounded(listener.accept()).await.unwrap();
     proxy.abort();
     assert!(bounded(proxy).await.unwrap_err().is_cancelled());
+    assert_eq!(
+        daemon.proxy_slots.available_permits(),
+        super::MAX_PROXY_STREAMS
+    );
     bounded(daemon.delete(&sandbox.id)).await.unwrap();
     drop((connections, connection));
 }
@@ -735,6 +767,67 @@ async fn restart_reconciles_stored_state_against_shared_runtime() {
         daemon.get(&paused.id).await.unwrap().status.state,
         "Running"
     );
+}
+
+#[tokio::test]
+async fn pending_restart_releases_only_confirmed_absence_and_keeps_live_or_uncertain_capacity() {
+    for outcome in ["missing", "running", "unknown", "delete-failed"] {
+        let directory = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(FakeRuntime::default());
+        let mut cfg = config(&directory);
+        cfg.max_sandboxes = 1;
+        let daemon = open(cfg, &runtime).await;
+        let sandbox = create(&daemon).await;
+        daemon
+            .transition(&sandbox.id, "Pending", None)
+            .await
+            .unwrap();
+        {
+            let mut state = runtime.state.lock().unwrap();
+            if outcome != "running" {
+                state.sandboxes.remove(&sandbox.id);
+            }
+            state.inspect_error = outcome == "unknown";
+            if outcome == "delete-failed" {
+                state.delete_outcome = DeleteOutcome::Error;
+            }
+        }
+        drop(daemon);
+        let mut cfg = config(&directory);
+        cfg.max_sandboxes = 1;
+        let daemon = bounded(open(cfg, &runtime)).await;
+        let records = daemon.list().await.unwrap();
+        if outcome == "missing" {
+            assert!(records.is_empty());
+            bounded(create(&daemon)).await;
+        } else {
+            assert_eq!(records.len(), 1, "{outcome}");
+            assert_eq!(
+                records[0].status.state,
+                match outcome {
+                    "running" => "Running",
+                    "unknown" => "Pending",
+                    _ => "Stopping",
+                }
+            );
+            assert_eq!(
+                bounded(daemon.create(request())).await.unwrap_err().status,
+                429
+            );
+            if outcome != "delete-failed" {
+                assert_eq!(runtime.state.lock().unwrap().deletes, 0);
+            }
+            if outcome == "delete-failed" {
+                runtime.state.lock().unwrap().delete_outcome = DeleteOutcome::Confirmed;
+                drop(daemon);
+                let mut cfg = config(&directory);
+                cfg.max_sandboxes = 1;
+                let daemon = bounded(open(cfg, &runtime)).await;
+                assert!(daemon.list().await.unwrap().is_empty());
+                bounded(create(&daemon)).await;
+            }
+        }
+    }
 }
 
 #[tokio::test]
@@ -1303,7 +1396,10 @@ async fn uncertain_commits_fail_stop_and_restart_uses_the_disk_winner() {
         cfg.max_sandboxes = 1;
         let restarted = bounded(open(cfg, &runtime)).await;
         let restored = bounded(restarted.list()).await.unwrap();
-        if matches!(case, BeforeIntention | DeleteIntention | Unlinked) {
+        if matches!(
+            case,
+            BeforeIntention | Intention | DeleteIntention | Unlinked
+        ) {
             assert!(restored.is_empty());
             bounded(create(&restarted)).await;
         } else {
@@ -1313,7 +1409,6 @@ async fn uncertain_commits_fail_stop_and_restart_uses_the_disk_winner() {
             assert_eq!(
                 restored[0].status.state,
                 match case {
-                    Intention => "Failed",
                     PausedState => "Paused",
                     _ => "Running",
                 }

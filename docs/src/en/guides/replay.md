@@ -73,4 +73,4 @@ Execution modes (default continuation, `--replay-only`, `--prepare-only`), step 
 
 ## Experiments and development material
 
-Usage and guarantees are governed by the replay semantics and pinned adapter versions above. The [Qwen3.6 experiment report](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/replay/qwen3.6-results.md) preserves per-task results, next-action comparisons, and the OpenCode diagnostics of the time; it is not a compatibility or determinism guarantee.
+Usage and guarantees are governed by the replay semantics and pinned adapter versions above. The [Qwen3.6 experiment report](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/replay/qwen3.6-results.md) preserves per-task results, next-action comparisons, and the OpenCode diagnostics of the time; it is not a compatibility or determinism guarantee.

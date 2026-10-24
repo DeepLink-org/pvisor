@@ -9,7 +9,8 @@ Current readers check explicit format versions. The following lists interface re
 | Interface | Current rule |
 | --- | --- |
 | CLI / Run TOML | Current `--help`/types define behavior; unknown fields reject; check changelog when upgrading |
-| Run Bundle | Strict schema 4; unknown versions/old observation contracts reject; no automatic migration promise |
+| Run record / completion | New Run schema 2 requires completion protocol 1; missing committed completion yields Unknown after owner exit; schema 1 retains legacy reading rules |
+| Run Bundle | New schema 5 requires a matching Run/Attempt completion receipt and Bundle digest; schema 4 remains readable under legacy rules; unknown versions reject; no automatic migration |
 | Event / Journal | Formal version 5; old JSONL incompatible |
 | Operation | Schema 1; unknown versions reject |
 | Replay | `sandbox-playback.result/v3`; adapter versions pinned in the guide |

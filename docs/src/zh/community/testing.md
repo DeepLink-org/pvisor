@@ -6,18 +6,18 @@ pVisor 把正确性分成两层：代码层面由单元测试和集成测试保�
 
 | 命令 | 作用 |
 | --- | --- |
-| `just test` | 通过 `cargo nextest` 运行全部 Rust 测试（debug 模式）、原生脚本回归和 Python 测试 |
-| `just test pvisor-core` | 只运行一个包；别名 `pvisor`、`core`（`control`、`agentctl`）、`capture`（Gateway）、`shim` |
-| `just test-py -k NAME` | Python unittest 检查；支持 -k/-v、文件或测试名 |
-| `just test-isolation` | Linux rootless/FUSE 严格回归，缺少 user namespace 时不跳过 |
-| `just smoke` | 构建 debug CLI 并检查主要子命令 |
-| `just examples [场景]` | 运行 `examples/pvisor/` 下的端到端示例 |
-| `just cases --suite stage` | 在全新临时工作区运行 STAGE 领域的语义规格 |
-| `just cases` | 运行文档语义规格（S-DOC，来源 [`reference/cases.md`](../reference/cases.md)） |
-| `just semspec lint docs/src/zh/cases` | 静态检查规格格式 |
-| `just test-semspec` | 测试 semspec 工具本身 |
+| `mise run test` | 通过 `cargo nextest` 运行全部 Rust 测试（debug 模式）、原生脚本回归和 Python 测试 |
+| `mise run test -- pvisor-core` | 只运行一个包；别名 `pvisor`、`core`（`control`、`agentctl`）、`capture`（Gateway）、`shim` |
+| `mise run test-py -- -k NAME` | Python unittest 检查；支持 -k/-v、文件或测试名 |
+| `mise run test-isolation` | Linux rootless/FUSE 严格回归，缺少 user namespace 时不跳过 |
+| `mise run smoke` | 构建 debug CLI 并检查主要子命令 |
+| `mise run examples -- [场景]` | 运行 `examples/pvisor/` 下的端到端示例 |
+| `mise run cases -- --suite stage` | 在全新临时工作区运行 STAGE 领域的语义规格 |
+| `mise run cases` | 运行文档语义规格（S-DOC，来源 [`reference/cases.md`](../reference/cases.md)） |
+| `mise run semspec -- lint docs/src/zh/cases` | 静态检查规格格式 |
+| `mise run test-semspec` | 测试 semspec 工具本身 |
 
-`tests/justfile` 中的私有配方检查 Just 参数转发、Bash 断言词汇和离线安装器。单独运行用 `just test-scripts`；CI 同时运行 `just test-scripts` 与 `just test-py`。Python 测试负责 Python 契约、结构化数据、PTY 交互和进程生命周期。
+`tests/tasks.toml` 中的私有任务检查 mise 参数转发、Bash 断言词汇和离线安装器。单独运行用 `mise run test-scripts`；CI 同时运行 `mise run test-scripts` 与 `mise run test-py`。Python 测试负责 Python 契约、结构化数据、PTY 交互和进程生命周期。
 
 只有需要 doctest 或文档明确要求的特殊 runner 时，才直接使用 `cargo test`。
 

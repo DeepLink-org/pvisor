@@ -6,6 +6,7 @@ mod device;
 mod filesystem;
 pub mod fuse;
 mod guest_index;
+mod guest_exit;
 mod inode_alloc;
 #[allow(dead_code)]
 mod multikey;

@@ -118,6 +118,8 @@ impl InitReport {
 pub struct InternalChild {
     /// PID of the workload process, set once the parent reports readiness.
     pub pid: Option<u32>,
+    /// Stable process identity retained after Start.
+    pidfd: Option<std::os::fd::OwnedFd>,
     /// Write end of the start pipe; held until Start (or cleanup).
     start_fd: RawFd,
     /// Processes blocking on the start pipe (init child plus one sibling
@@ -131,8 +133,44 @@ impl InternalChild {
     pub fn exited() -> Self {
         InternalChild {
             pid: None,
+            pidfd: None,
             start_fd: -1,
             start_waiters: 1,
+        }
+    }
+
+    /// Signal only the process identity received before readiness. Group signals
+    /// require Linux 6.9 pidfd group support; never fall back to a numeric PID.
+    pub fn signal(&self, signal: i32, all: bool) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd;
+        let Some(fd) = &self.pidfd else {
+            return if self.pid.is_none() {
+                Ok(())
+            } else {
+                Err(std::io::Error::other("child has no owned pidfd"))
+            };
+        };
+        let flags = if all { 1u32 << 2 } else { 0 };
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                fd.as_raw_fd(),
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                flags,
+            )
+        };
+        if rc == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => Ok(()),
+            Some(libc::EINVAL) if all => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "pidfd process-group signals require Linux 6.9 or newer",
+            )),
+            _ => Err(error),
         }
     }
 
@@ -167,6 +205,101 @@ impl Drop for InternalChild {
     fn drop(&mut self) {
         self.close_start();
     }
+}
+
+// The internal parent still owns an unreaped child when it opens this handle;
+// self-reporting VM/sandbox runners open their own handle. Send it before JSON.
+fn send_pidfd(socket: &fs::File, pid: u32) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    anyhow::ensure!(raw >= 0, "pidfd_open: {}", std::io::Error::last_os_error());
+    let fd = unsafe { fs::File::from_raw_fd(raw as RawFd) };
+    let mut byte = b' ';
+    let mut iov = libc::iovec {
+        iov_base: (&mut byte as *mut u8).cast(),
+        iov_len: 1,
+    };
+    let mut control = [0usize; 8];
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = unsafe { libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) } as _;
+    unsafe {
+        let header = libc::CMSG_FIRSTHDR(&message);
+        (*header).cmsg_level = libc::SOL_SOCKET;
+        (*header).cmsg_type = libc::SCM_RIGHTS;
+        (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
+        std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<RawFd>(), fd.as_raw_fd());
+    }
+    loop {
+        if unsafe { libc::sendmsg(socket.as_raw_fd(), &message, libc::MSG_NOSIGNAL) } == 1 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    }
+}
+
+fn receive_pidfd(socket: &fs::File) -> Result<(u8, Option<std::os::fd::OwnedFd>)> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let mut byte = 0u8;
+    let mut iov = libc::iovec {
+        iov_base: (&mut byte as *mut u8).cast(),
+        iov_len: 1,
+    };
+    let mut control = [0usize; 8];
+    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+    message.msg_iov = &mut iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control.as_mut_ptr().cast();
+    message.msg_controllen = std::mem::size_of_val(&control) as _;
+    loop {
+        let received =
+            unsafe { libc::recvmsg(socket.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
+        if received >= 0 {
+            anyhow::ensure!(received == 1, "internal readiness closed before report");
+            break;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    }
+    let mut descriptors = Vec::new();
+    unsafe {
+        let mut header = libc::CMSG_FIRSTHDR(&message);
+        while !header.is_null() {
+            if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
+                let bytes =
+                    ((*header).cmsg_len as usize).saturating_sub(libc::CMSG_LEN(0) as usize);
+                for index in 0..bytes / std::mem::size_of::<RawFd>() {
+                    let raw = std::ptr::read_unaligned(
+                        libc::CMSG_DATA(header).cast::<RawFd>().add(index),
+                    );
+                    descriptors.push(OwnedFd::from_raw_fd(raw));
+                }
+            }
+            header = libc::CMSG_NXTHDR(&message, header);
+        }
+    }
+    anyhow::ensure!(
+        message.msg_flags & libc::MSG_CTRUNC == 0 && descriptors.len() <= 1,
+        "invalid readiness pidfd transfer"
+    );
+    Ok((byte, descriptors.pop()))
+}
+
+// The child-side end must survive self-exec, unlike UnixStream::pair's
+// CLOEXEC descriptors. Only the shim's read end is marked CLOEXEC below.
+fn make_ready_socket() -> Result<(RawFd, RawFd)> {
+    let mut fds = [-1; 2];
+    if unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("readiness socketpair");
+    }
+    Ok((fds[0], fds[1]))
 }
 
 fn make_pipe() -> Result<(RawFd, RawFd)> {
@@ -272,7 +405,8 @@ pub fn spawn_internal_opts(
 ) -> Result<InternalChild> {
     fs::write(plan_path, plan_bytes).with_context(|| format!("write {}", plan_path.display()))?;
 
-    let (ready_r, ready_w) = make_pipe()?;
+    use std::os::fd::IntoRawFd;
+    let (ready_r, ready_w) = make_ready_socket()?;
     let (start_r, start_w) = make_pipe()?;
     let (fork_r, fork_w) = make_pipe()?;
     // One start byte per blocked process: the init child plus one injected
@@ -334,9 +468,12 @@ pub fn spawn_internal_opts(
         unsafe { libc::close(fd) };
     }
 
-    let mut line = String::new();
+    let start = unsafe { fs::File::from_raw_fd(start_w) };
+    let ready = unsafe { fs::File::from_raw_fd(ready_r) };
+    let (prefix, pidfd) = receive_pidfd(&ready)?;
+    let mut line = String::from(char::from(prefix));
     {
-        let mut reader = BufReader::new(unsafe { fs::File::from_raw_fd(ready_r) });
+        let mut reader = BufReader::new(ready);
         reader.read_line(&mut line).context("read init report")?;
     }
     if wait_parent_exit {
@@ -350,11 +487,11 @@ pub fn spawn_internal_opts(
     match InitReport::parse(&line)? {
         InitReport::Ok { pid } => Ok(InternalChild {
             pid: Some(pid),
-            start_fd: start_w,
+            pidfd: Some(pidfd.context("readiness omitted owned pidfd")?),
+            start_fd: start.into_raw_fd(),
             start_waiters,
         }),
         InitReport::Error { context, errno } => {
-            unsafe { libc::close(start_w) };
             anyhow::bail!("internal process setup failed: {context} (errno {errno})");
         }
     }
@@ -794,6 +931,7 @@ fn vm_runner_main() -> Result<i32> {
         let message = InitReport::Ok {
             pid: std::process::id(),
         };
+        send_pidfd(&ready, std::process::id())?;
         ready
             .write_all(&message.line()?)
             .and_then(|()| ready.flush())
@@ -1026,6 +1164,7 @@ fn sandbox_holder_main() -> Result<()> {
     {
         let mut ready = ready_pipe_from_env().context("ready pipe")?;
         let message = InitReport::Ok { pid: reported_pid };
+        send_pidfd(&ready, reported_pid)?;
         ready
             .write_all(&message.line()?)
             .and_then(|()| ready.flush())
@@ -1110,6 +1249,9 @@ fn relay_fork_report(_write_end: RawFd, child_pid: u32) -> Result<()> {
         error @ InitReport::Error { .. } => error,
     };
     let mut ready = ready_pipe_from_env().context("ready pipe")?;
+    if matches!(relayed, InitReport::Ok { .. }) {
+        send_pidfd(&ready, child_pid)?;
+    }
     ready
         .write_all(&relayed.line()?)
         .and_then(|()| ready.flush())
@@ -1468,6 +1610,9 @@ fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawF
 /// already served by injection, so this only satisfies the container
 /// lifecycle the orchestrator watches. Never returns.
 fn synthetic_init_main(start_fd: RawFd, fork_report_fd: RawFd) -> ! {
+    if let Err(error) = establish_task_session() {
+        report_session_failure(fork_report_fd, error);
+    }
     {
         let message = InitReport::Ok {
             pid: std::process::id(),
@@ -1513,6 +1658,24 @@ fn exec_process_main(plan: &ExecPlan, start_fd: RawFd, fork_report_fd: RawFd) ->
     finish_process(&plan.process, stdio, start_fd, fork_report_fd)
 }
 
+fn establish_task_session() -> std::io::Result<()> {
+    if unsafe { libc::setsid() } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn report_session_failure(report_fd: RawFd, error: std::io::Error) -> ! {
+    let report = InitReport::Error {
+        context: format!("establish task session: {error}"),
+        errno: error.raw_os_error().unwrap_or(1),
+    };
+    let mut file = unsafe { fs::File::from_raw_fd(report_fd) };
+    let _ = file.write_all(&report.line().unwrap_or_default());
+    let _ = file.flush();
+    std::process::exit(1);
+}
+
 /// Shared tail of init and exec processes: stdio, session setup, the
 /// start-gate, process identity, and exec.
 fn finish_process(
@@ -1521,17 +1684,16 @@ fn finish_process(
     start_fd: RawFd,
     fork_report_fd: RawFd,
 ) -> ! {
-    // Detach into a session/process group so signals addressed to the task
-    // reach the workload; terminals also claim a controlling tty.
+    // A session leader cannot move into another task's group after readiness.
+    if let Err(error) = establish_task_session() {
+        report_session_failure(fork_report_fd, error);
+    }
     unsafe {
         if stdio.terminal {
-            libc::setsid();
             let ret = libc::ioctl(stdio.stdin, libc::TIOCSCTTY, 0);
             if ret != 0 {
                 warn!("TIOCSCTTY failed: {}", std::io::Error::last_os_error());
             }
-        } else {
-            libc::setpgid(0, 0);
         }
         libc::dup2(stdio.stdin, libc::STDIN_FILENO);
         libc::dup2(stdio.stdout, libc::STDOUT_FILENO);
@@ -1962,6 +2124,65 @@ mod tests {
     use crate::plan::{IoPlan, NamespacePlan};
 
     #[test]
+    fn transferred_pidfd_signals_only_its_original_process_after_exit() {
+        use std::os::unix::process::CommandExt;
+        let mut command = Command::new("/bin/sleep");
+        command.arg("30");
+        unsafe {
+            command.pre_exec(establish_task_session);
+        }
+        let mut process = command.spawn().unwrap();
+        assert_eq!(
+            unsafe { libc::getpgid(process.id() as i32) },
+            process.id() as i32
+        );
+        assert_eq!(
+            unsafe { libc::getsid(process.id() as i32) },
+            process.id() as i32
+        );
+        let (reader, writer) = make_ready_socket().unwrap();
+        let reader = unsafe { fs::File::from_raw_fd(reader) };
+        let writer = unsafe { fs::File::from_raw_fd(writer) };
+        use std::os::fd::AsRawFd;
+        assert!(
+            Command::new("/bin/sh")
+                .args(["-c", "test -S /proc/self/fd/$PVISOR_TEST_READY_FD"])
+                .env("PVISOR_TEST_READY_FD", writer.as_raw_fd().to_string())
+                .status()
+                .unwrap()
+                .success()
+        );
+        send_pidfd(&writer, process.id()).unwrap();
+        let (_, pidfd) = receive_pidfd(&reader).unwrap();
+        let owner = InternalChild {
+            pid: Some(process.id()),
+            pidfd,
+            start_fd: -1,
+            start_waiters: 1,
+        };
+        match owner.signal(libc::SIGTERM, true) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+                owner.signal(libc::SIGTERM, false).unwrap()
+            }
+            Err(error) => panic!("{error}"),
+        }
+        assert!(!process.wait().unwrap().success());
+        owner.signal(libc::SIGKILL, false).unwrap();
+        if let Err(error) = owner.signal(libc::SIGKILL, true) {
+            assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        }
+        // A missing handle may never be reconstructed from the saved numeric PID.
+        let unowned = InternalChild {
+            pid: Some(std::process::id()),
+            pidfd: None,
+            start_fd: -1,
+            start_waiters: 1,
+        };
+        assert!(unowned.signal(libc::SIGKILL, false).is_err());
+    }
+
+    #[test]
     fn start_writes_one_byte_per_waiter() {
         // Injected siblings share the init child's start pipe; every waiter
         // consumes exactly one byte, so Start must write one per waiter and
@@ -1970,6 +2191,7 @@ mod tests {
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         let mut child = InternalChild {
             pid: None,
+            pidfd: None,
             start_fd: fds[1],
             start_waiters: 3,
         };

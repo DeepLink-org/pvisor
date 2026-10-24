@@ -60,6 +60,8 @@ Podman 使用 host network，提供普通 OCI 对照；pVisor OCI 还经过策�
 
 ### 来源与复现 {#run}
 
-[比较方法](index.md#interpretation) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[比较方法](index.md#interpretation) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md)
 
 完整 CSV/JSON、原始报告、响应计时、命令日志、输入与构建清单，以及逐次输出证据审计保存在对应本地批次或文档数据归档。
+
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。

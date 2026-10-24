@@ -21,7 +21,7 @@ pvisor apply ../stage-reference-001 --path report.txt
 
 ## 核对可执行行为
 
-[场景附录](cases.md)保留产品命令、语义声明与断言，也是 semspec 的 DOC 规格源。代码块中的 runner 夹具不能直接当作普通 shell 命令运行；仓库入口 `just cases` 执行对应检查。检查成功与人工批准分别记录，不因 PASS 改写人工审核账本。
+[场景附录](cases.md)保留产品命令、语义声明与断言，也是 semspec 的 DOC 规格源。代码块中的 runner 夹具不能直接当作普通 shell 命令运行；仓库入口 `mise run cases` 执行对应检查。检查成功与人工批准分别记录，不因 PASS 改写人工审核账本。
 
 ## 场景检查准备
 

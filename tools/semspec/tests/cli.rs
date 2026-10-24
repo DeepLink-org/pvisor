@@ -239,6 +239,7 @@ fn infrastructure_errors_are_not_expected_failures() {
             timeout: std::time::Duration::from_secs(1),
             subject: None,
             keep: false,
+            artifact_root: None,
         },
     )
     .unwrap();

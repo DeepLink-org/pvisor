@@ -49,10 +49,31 @@ pub(crate) const SANDBOX_SETUP_FAILED_WARNING: &str = "pvisor.sandbox.setup_fail
 
 #[cfg(target_os = "macos")]
 pub(crate) const MACOS_SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
-#[cfg(target_os = "macos")]
-pub(crate) const SEATBELT_ATTESTATION: &[u8] = b"pvisor-seatbelt-ready-v1\n";
-#[cfg(target_os = "linux")]
-pub(crate) const ROOTLESS_ATTESTATION: &[u8] = b"pvisor-rootless-ready-v1\n";
+/// Written by trusted setup only after installation, before workload execution.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SandboxAttestation {
+    pub version: u16,
+    pub controls: pvisor_core::CapabilityEnforcementEvidence,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn write_attestation(
+    file: &mut std::fs::File,
+    controls: pvisor_core::CapabilityEnforcementEvidence,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    serde_json::to_writer(
+        &mut *file,
+        &SandboxAttestation {
+            version: 1,
+            controls,
+        },
+    )?;
+    file.flush()?;
+    file.sync_data()
+}
 
 #[cfg(target_os = "linux")]
 const LANDLOCK_ACCESS_FS_EXECUTE: u64 = 1 << 0;
@@ -182,6 +203,9 @@ fn run_internal() -> anyhow::Result<()> {
                 plan.attestation.display()
             )
         })?;
+    // The parent reads its already-open inode. The workload must never be able
+    // to replace installation receipts, including network-only host-file views.
+    std::fs::remove_file(&plan.attestation).context("unlink rootless setup attestation")?;
     let mut plan = plan;
     if plan.filesystem_isolated {
         enter_synthetic_root(&plan).context("construct private sandbox root")?;
@@ -228,7 +252,7 @@ fn run_internal() -> anyhow::Result<()> {
                 },
             );
         }
-        write_rootless_attestation(&mut attestation)
+        write_rootless_attestation(&mut attestation, &plan)
             .context("record installed rootless network controls")?;
         drop(attestation);
         let mut command = std::process::Command::new(program);
@@ -242,7 +266,6 @@ fn run_internal() -> anyhow::Result<()> {
 #[cfg(target_os = "macos")]
 fn run_internal() -> anyhow::Result<()> {
     use anyhow::{Context, bail};
-    use std::io::Write;
     use std::os::unix::process::CommandExt;
 
     let encoded = std::env::var(SANDBOX_PLAN_ENV).context("missing Seatbelt sandbox plan")?;
@@ -270,12 +293,28 @@ fn run_internal() -> anyhow::Result<()> {
                 plan.attestation.display()
             )
         })?;
-    attestation
-        .write_all(SEATBELT_ATTESTATION)
-        .context("write Seatbelt setup attestation")?;
-    attestation
-        .sync_data()
-        .context("sync Seatbelt setup attestation")?;
+    let mut controls = pvisor_core::CapabilityEnforcementEvidence::default();
+    if plan.filesystem_isolated {
+        controls = controls.enforced(
+            pvisor_core::CapabilityDimension::FilesystemWrite,
+            "macos-seatbelt-write-policy",
+        );
+    }
+    if plan.restrict_reads {
+        controls = controls.enforced(
+            pvisor_core::CapabilityDimension::FilesystemRead,
+            "macos-seatbelt-read-policy",
+        );
+    }
+    if plan.network.is_loopback_only() {
+        let mechanism = if matches!(plan.network, NetworkIsolation::ProxyOnly(_)) {
+            "macos-seatbelt-proxy-only"
+        } else {
+            "macos-seatbelt-network-deny"
+        };
+        controls = controls.enforced(pvisor_core::CapabilityDimension::Network, mechanism);
+    }
+    write_attestation(&mut attestation, controls).context("write installed Seatbelt controls")?;
     drop(attestation);
     std::fs::remove_file(&plan.attestation).with_context(|| {
         format!(
@@ -1064,11 +1103,29 @@ fn apply_process_limit(processes: u64) -> std::io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn write_rootless_attestation(attestation: &mut std::fs::File) -> std::io::Result<()> {
-    use std::io::Write;
-
-    attestation.write_all(ROOTLESS_ATTESTATION)?;
-    attestation.sync_data()
+fn write_rootless_attestation(
+    attestation: &mut std::fs::File,
+    plan: &SandboxPlan,
+) -> std::io::Result<()> {
+    let mut controls = pvisor_core::CapabilityEnforcementEvidence::default();
+    if plan.filesystem_isolated {
+        controls = controls
+            .enforced(
+                pvisor_core::CapabilityDimension::FilesystemRead,
+                "linux-synthetic-root-landlock",
+            )
+            .enforced(
+                pvisor_core::CapabilityDimension::FilesystemWrite,
+                "linux-synthetic-root-landlock",
+            );
+    }
+    if plan.network.is_loopback_only() {
+        controls = controls.enforced(
+            pvisor_core::CapabilityDimension::Network,
+            "linux-network-namespace",
+        );
+    }
+    write_attestation(attestation, controls)
 }
 
 #[cfg(target_os = "linux")]
@@ -1745,7 +1802,7 @@ fn supervise_pid_namespace(
             ))
             .context("initialize PID namespace supervisor");
         }
-        if let Err(error) = write_rootless_attestation(&mut attestation) {
+        if let Err(error) = write_rootless_attestation(&mut attestation, plan) {
             unsafe {
                 libc::kill(namespace_init, libc::SIGKILL);
                 libc::waitpid(namespace_init, std::ptr::null_mut(), 0);

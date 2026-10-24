@@ -40,7 +40,7 @@ Mini-SWE-Agent 未触发分簇规则，该行列出全体样本的 P50。分簇�
 
 {{ table("../../../overrides/assets/benchmarks/replay-semspec.render.json") }}
 
-[Hyperfine 数据 CSV](../../../overrides/assets/benchmarks/data/replay/replay-semspec.csv) · [批次来源](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark 复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md#replay)
+[Hyperfine 数据 CSV](../../../overrides/assets/benchmarks/data/replay/replay-semspec.csv) · [批次来源](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark 复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md#replay)
 
 ### 适用边界 {#acceptance}
 
@@ -50,4 +50,6 @@ Mini-SWE-Agent 未触发分簇规则，该行列出全体样本的 P50。分簇�
 
 完整 CSV/JSON 和原始记录保存在对应本地批次或文档数据归档。
 
-[比较方法](index.md#interpretation) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[比较方法](index.md#interpretation) · [复现手册](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md)
+
+> 旧 `benchmark/` 运行器已退役。下文旧路径与命令仅用于历史批次溯源；当前入口见 [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark)。

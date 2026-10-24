@@ -254,7 +254,7 @@ pending apply 存在时不能 drop，以免删掉恢复所需的 upper。已 Dis
 
 ## 4. 实验数据支撑 {#experiments}
 
-`JUST_TEMPDIR=/tmp just test pvisor-overlay-core pvisor-overlayfs` 运行定向测试，覆盖公共 Core/apply 行为以及 FUSE 的实际 `open_inode` / `open_path` 路径。`pvisor` 集成回归还通过 guest descriptor ring 驱动真实 virtio-fs worker，覆盖内容读取、写入、live/frozen 目标布局和设备状态恢复；逻辑 checkpoint 回归检查只读观察在复制/restore 后仍能约束首次修改。它们验证共享实现与适配器接线，不等同真实宿主 FUSE 挂载、KVM/HVF guest 启动或跨平台验收。以下是可复核的覆盖入口，不能将函数数量当作独立故障场景数量。
+`JUST_TEMPDIR=/tmp mise run test -- pvisor-overlay-core pvisor-overlayfs` 运行定向测试，覆盖公共 Core/apply 行为以及 FUSE 的实际 `open_inode` / `open_path` 路径。`pvisor` 集成回归还通过 guest descriptor ring 驱动真实 virtio-fs worker，覆盖内容读取、写入、live/frozen 目标布局和设备状态恢复；逻辑 checkpoint 回归检查只读观察在复制/restore 后仍能约束首次修改。它们验证共享实现与适配器接线，不等同真实宿主 FUSE 挂载、KVM/HVF guest 启动或跨平台验收。以下是可复核的覆盖入口，不能将函数数量当作独立故障场景数量。
 
 | 机制 | 现有可复核测试 |
 |---|---|

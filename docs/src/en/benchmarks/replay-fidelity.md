@@ -40,7 +40,7 @@ This independent cohort measures one fixed synthetic trajectory (task 0) per ada
 
 {{ table("../../../overrides/assets/benchmarks/replay-semspec.render.json") }}
 
-[Hyperfine data CSV](../../../overrides/assets/benchmarks/data/replay/replay-semspec.csv) · [Batch provenance](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/README.md#replay)
+[Hyperfine data CSV](../../../overrides/assets/benchmarks/data/replay/replay-semspec.csv) · [Batch provenance](../assets/benchmarks/replay-semspec.provenance.json) · [JSON benchmark manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/README.md#replay)
 
 ### Scope {#acceptance}
 
@@ -50,4 +50,6 @@ These results support structure, argument and observation fidelity for pinned sh
 
 Complete CSV/JSON and raw records remain in their local cohorts or the documentation data archive.
 
-[Comparison method](index.md#interpretation) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md)
+[Comparison method](index.md#interpretation) · [Runner manual](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md)
+
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).

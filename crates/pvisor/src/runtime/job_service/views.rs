@@ -47,6 +47,21 @@ pub struct ReviewContext {
     pub file_view: &'static str,
     pub execution_evidence: &'static str,
 }
+/// A retained Attempt has no committed completion, so review cannot claim a result.
+/// Read-only status can reconcile an existing receipt; it cannot invent a missing one.
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[error("Job {job_id} review is UNKNOWN: {reason}")]
+pub struct ReviewUnavailable {
+    /// Selected Job identity, checked against the locked current record.
+    pub job_id: String,
+    /// Selected Attempt identity, when the record carries one.
+    pub attempt_id: Option<String>,
+    /// Retained stage; no cleanup or workspace mutation is authorized by this error.
+    pub stage: std::path::PathBuf,
+    /// Why execution evidence cannot currently be reviewed.
+    pub reason: &'static str,
+}
+
 pub struct ReviewResponse {
     pub record: RunRecord,
     pub bundle: RunBundle,
@@ -65,7 +80,7 @@ impl RuntimeJobService {
         context: &ServiceContext<'_>,
         request: StatusRequest,
     ) -> anyhow::Result<StatusResponse> {
-        let record = Self::resolve(context, &request.job)?;
+        let mut record = Self::resolve(context, &request.job)?;
         let endpoint = record
             .live_control
             .as_ref()
@@ -94,6 +109,21 @@ impl RuntimeJobService {
             }
         }
         let live = endpoint.is_some() && super::super::instance_control::owns_record(&record);
+        if !live && record.completion_protocol.is_some() {
+            let _job = super::lock_selected_job(context, &record)?;
+            match record.lock_current() {
+                Ok((mut current, _lease)) => {
+                    context.check(&current)?;
+                    super::super::completion::reconcile(&mut current)?;
+                    record = current;
+                }
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) => {}
+                Err(error) => return Err(error),
+            }
+        }
         let checkpoints = crate::runtime::checkpoint::list_checkpoints(&record)?;
         let blocker = execution_blocker(&record);
         let apply_history = load_apply_records(&record.stage_dir())?;
@@ -163,6 +193,15 @@ impl RuntimeJobService {
         let (mut record, _lease) = selected.lock_current()?;
         check_selected_record(&selected, &record)?;
         context.check(&record)?;
+        if record.state == crate::RunRecordState::Unknown {
+            return Err(ReviewUnavailable {
+                job_id: record.run_id.clone(),
+                attempt_id: record.attempt_id.clone(),
+                stage: record.stage_dir(),
+                reason: "Attempt completion is not committed; execution outcome is unknown",
+            }
+            .into());
+        }
         let bundle_stage = record.stage_dir();
         let checkpoint_id = if let Some(id) = &request.checkpoint {
             let checkpoint = crate::runtime::checkpoint::resolve_checkpoint(&record, id)?;

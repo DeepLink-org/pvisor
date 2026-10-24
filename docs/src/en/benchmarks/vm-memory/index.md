@@ -81,6 +81,6 @@ Both library figures use the same N=1 preflight and whole-group MiB on the verti
 
 ### Sources and configuration {#run}
 
-The [memory experiment record](https://github.com/DeepLink-org/pvisor/blob/main/benchmark.new/memory/README.md#published-curves-and-archived-history) retains current curve provenance and reproduction protocols. Failed attempts, incomplete repeated measurements and post-write evidence remain intact and excluded from successful preflights.
+The [memory experiment record](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/memory/README.md#published-curves-and-archived-history) retains current curve provenance and reproduction protocols. Failed attempts, incomplete repeated measurements and post-write evidence remain intact and excluded from successful preflights.
 
 See the [daemon guide](../../guides/daemon/index.md#memory-pool) to enable the physical pool and [CLI control options](../../reference/cli.md#vm-instance-control) for VM compression, deduplication and offload configuration.

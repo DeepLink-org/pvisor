@@ -34,33 +34,33 @@ cat report.txt
 | 需求 | 工具与入口 | 下一步 |
 |---|---|---|
 | 在终端中审查、审批路径访问 | `pvisor spawn --tui` / `--ask`，派发到同目录的 `pvisor-tui` | [CLI 参考](../reference/cli.md) |
-| 为真实模型请求路由、捕获轨迹 | `pvisor spawn --gateway-mode capture --gateway-route ...` | [捕获指南](../guides/capture.md)，以及 `just examples 04-gateway-llm-control` 的本地 mock 请求测试 |
+| 为真实模型请求路由、捕获轨迹 | `pvisor spawn --gateway-mode capture --gateway-route ...` | [捕获指南](../guides/capture.md)，以及 `mise run examples -- 04-gateway-llm-control` 的本地 mock 请求测试 |
 | 从原生 Agent 轨迹准备恢复 | `pvisor replay`，派发到同目录的 `pvisor-replay` | [第五章](05-tools-and-restoration.md)、[回放指南](../guides/replay.md) |
 | 选择 OCI 容器或 VM 执行 | `pvisor spawn --executor container` / `--executor vm` | [容器](../guides/executors/container.md)、[VM](../guides/executors/vm.md)；需要对应 runtime/rootfs |
 | 保存 CPU、RAM、设备和完整文件树 | 原生 VM execution checkpoint / 快照存储 SDK | [Execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)；要求兼容的独立 rootfs、无网络 Job，不是 daemon 能力 |
 | 管理 OCI 文件缓存或共享冷页池 | `pvisor cache` / `pvisor-daemon serve --sandbox --memory-pool` | [共享镜像缓存](../reference/shared-image-cache.md)、[daemon 池](../guides/daemon/index.md#memory-pool) |
 
-Gateway 捕获需要启用 `gateway` feature 的构建；wheel 和 `just build release` 包含该能力。没有安装伴随二进制时，核心 Job 命令仍能使用；`pvisor --help` 按操作对象列出已安装的可选命令。完整 VM 快照需要 KVM 或 Apple Silicon Hypervisor 和可用 FUSE 后端；普通 VM Job 在兼容的独立 rootfs、无网络 profile 下支持 execution checkpoint；用 `status --json` 检查能力和拒绝原因。
+Gateway 捕获需要启用 `gateway` feature 的构建；wheel 和 `mise run build -- release` 包含该能力。没有安装伴随二进制时，核心 Job 命令仍能使用；`pvisor --help` 按操作对象列出已安装的可选命令。完整 VM 快照需要 KVM 或 Apple Silicon Hypervisor 和可用 FUSE 后端；普通 VM Job 在兼容的独立 rootfs、无网络 profile 下支持 execution checkpoint；用 `status --json` 检查能力和拒绝原因。
 
 ## 同一份文档，执行同一套检查
 
 每条场景的 Bash 检查块前用一行 `<!-- semspec: case id=S-USE-001 -->` 标记（ID 按场景填写）：产品命令、语义断言和失败条件放在一起。准备步骤和检查函数都在下方 Markdown 代码块中，用 `<!-- semspec: setup -->` 标记。case 注释还可填写 `timeout=60s`、`xfail-on=linux` 和配对的 `xfail-reason`。semspec 自动抽取标记后的代码块，标题层级与测试发现无关；普通教程示例不会被执行；复制本目录的 Markdown 文档即可运行，不需要配置文件或外部 shell 脚本。命令行必须明确提供一个或多个 Markdown 文件/目录；semspec 不推断搜索路径。单独运行一章时，自动读取同目录 index.md 的准备块。
 
 ```bash
-just semspec list docs/src/zh/cases --domain USE
-just semspec lint docs/src/zh/cases
-just semspec run docs/src/zh/cases/01-first-job.md
-just semspec run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
-just cases --suite use
-just cases --suite use --case S-USE-005,S-USE-007 --keep
-just cases --suite use --output target/pvisor-learning-report.json
+mise run semspec -- list docs/src/zh/cases --domain USE
+mise run semspec -- lint docs/src/zh/cases
+mise run semspec -- run docs/src/zh/cases/01-first-job.md
+mise run semspec -- run docs/src/zh/cases --domain USE --require-pass --subject-bin target/release/pvisor
+mise run cases -- --suite use
+mise run cases -- --suite use --case S-USE-005,S-USE-007 --keep
+mise run cases -- --suite use --output target/pvisor-learning-report.json
 ```
 
-`just cases --suite use` 构建 release 产品及伴随工具，在独立临时工作区、HOME、XDG 和 Job 数据目录执行全部 16 条场景。Linux CI 预先检查 FUSE 和 user/mount/network namespace。此入口不把缺少前提当成 SKIP；环境或实际执行失败会使门禁失败。输出 `target/pvisor-learning-report.json`，失败保留现场，`--keep` 保留成功现场。逐条选择时门禁检查选定 ID 的精确集合；全量执行时从本目录文档发现全部 S-USE ID，新增场景自动纳入门禁。空报告、漏项、重复 ID、SKIP、XFAIL 或非 PASS 都不能通过。入口直接使用 semspec 的 `--require-pass`；发现、选择和报告校验使用同一份解析结果。指定 `--output` 时，选择校验通过后先清理旧报告，再原子写入本次结果；不依赖额外的验证脚本。
+`mise run cases -- --suite use` 构建 release 产品及伴随工具，在独立临时工作区、HOME、XDG 和 Job 数据目录执行全部 16 条场景。Linux CI 预先检查 FUSE 和 user/mount/network namespace。此入口不把缺少前提当成 SKIP；环境或实际执行失败会使门禁失败。输出 `target/pvisor-learning-report.json`，失败保留现场，`--keep` 保留成功现场。逐条选择时门禁检查选定 ID 的精确集合；全量执行时从本目录文档发现全部 S-USE ID，新增场景自动纳入门禁。空报告、漏项、重复 ID、SKIP、XFAIL 或非 PASS 都不能通过。入口直接使用 semspec 的 `--require-pass`；发现、选择和报告校验使用同一份解析结果。指定 `--output` 时，选择校验通过后先清理旧报告，再原子写入本次结果；不依赖额外的验证脚本。
 
 规格和包含准备块的完整 Markdown 文档都参与 semspec 摘要。新规格保持 UNREVIEWED；执行成功与人工语义批准是两件事。人工完成引擎、词汇和规格审核后，可增加 `--require-reviewed`。测试执行不会批准规格或更新审核账本。
 
-[DOC cases](../reference/cases.md)、[VM 控制 cases](../reference/cases-vm.md)、STAGE 和 USE 场景统一由 `just cases` 执行，用 `--suite doc/stage/use/vm` 选择；`examples/pvisor` 由 `just examples` 执行。CI 同时运行原有隔离回归、网络/Gateway mock 场景和新学习路线。旧独立 snapshot 的硬件记录保留作历史证据；旧 Controller/Worker 验收记录不验证新 daemon。完整原生执行恢复按 [execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)单独验证；daemon 的[运行时边界](../guides/daemon/index.md)不包含 VM 恢复；本学习路线没有把未运行的 VM/Gateway 能力算作成功。
+[DOC cases](../reference/cases.md)、[VM 控制 cases](../reference/cases-vm.md)、STAGE 和 USE 场景统一由 `mise run cases` 执行，用 `--suite doc/stage/use/vm` 选择；`examples/pvisor` 由 `mise run examples` 执行。CI 同时运行原有隔离回归、网络/Gateway mock 场景和新学习路线。旧独立 snapshot 的硬件记录保留作历史证据；旧 Controller/Worker 验收记录不验证新 daemon。完整原生执行恢复按 [execution checkpoint 契约](../reference/cli.md#full-vm-execution-checkpoints)单独验证；daemon 的[运行时边界](../guides/daemon/index.md)不包含 VM 恢复；本学习路线没有把未运行的 VM/Gateway 能力算作成功。
 
 全量执行门禁当前以 Linux 为目标。macOS 可以选择适用的场景运行；本机 loopback 的网络策略与 Linux namespace 不同，S-USE-014 的宿主 loopback 拒绝检查不作为 macOS 承诺。
 

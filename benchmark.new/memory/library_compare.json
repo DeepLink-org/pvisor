@@ -1,3 +1,0 @@
-{
-  "library-curves": "$ python3 @REPO@/benchmark.new/memory/library_compare.py --inputs @INPUTS@ --docker-inputs @DOCKER_INPUTS@ --output @OUTPUT@ --samples @SAMPLES@"
-}

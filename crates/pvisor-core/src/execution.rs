@@ -178,6 +178,12 @@ pub enum StdioMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
+    /// Requested execution profile, shared by all frontends and embedded callers.
+    /// A safe profile requires filesystem confinement and a configured network
+    /// boundary before execution. Selective host proxy policies remain cooperative;
+    /// use `policy_mode = Enforce` to require non-bypassable controls.
+    #[serde(default)]
+    pub profile: RunProfile,
     /// Explicit native Linux VM scheduling class. Unset inherits existing behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_qos: Option<CpuQosClass>,
@@ -202,6 +208,7 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
+            profile: RunProfile::Default,
             cpu_qos: None,
             timeout_ms: None,
             termination_grace_ms: default_termination_grace_ms(),
@@ -210,6 +217,18 @@ impl Default for RuntimeConfig {
             policy_mode: PolicyMode::Audit,
         }
     }
+}
+
+/// Execution requirements independent of CLI spelling or user metadata.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RunProfile {
+    /// Apply the explicitly requested capabilities without a sandbox preset.
+    #[default]
+    Default,
+    /// Require the runtime's sandbox admission checks before starting a workload.
+    /// Installed controls and remaining limitations are reported separately.
+    Safe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -933,6 +952,22 @@ pub struct RunResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn execution_profile_defaults_and_safe_roundtrip_are_typed() {
+        let mut spec = RunSpec::process("profile", "agent", "true");
+        assert_eq!(spec.runtime.profile, RunProfile::Default);
+        spec.runtime.profile = RunProfile::Safe;
+        let wire = serde_json::to_value(&spec).unwrap();
+        assert_eq!(wire["runtime"]["profile"], "safe");
+        assert_eq!(
+            serde_json::from_value::<RunSpec>(wire)
+                .unwrap()
+                .runtime
+                .profile,
+            RunProfile::Safe
+        );
+    }
 
     #[test]
     fn executor_observations_signal_is_optional_and_roundtrips() {

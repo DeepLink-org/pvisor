@@ -32,6 +32,56 @@ fn fixture(root: &Path) -> pvisor::RunRecord {
     record.write().unwrap();
     record
 }
+#[test]
+fn status_review_unknown_is_structured_and_preserves_stage_and_apply_fence() {
+    let root = tempfile::tempdir().unwrap();
+    let mut record = fixture(root.path());
+    record.schema_version = 2;
+    record.completion_protocol = Some(1);
+    record.attempt_id = Some("interrupted-attempt".into());
+    record.write().unwrap();
+    let stage = record.stage_dir();
+    let bytes = std::fs::read(stage.join("upper/file")).unwrap();
+    for args in [
+        vec!["status", "--review", "--json"],
+        vec!["review", "--json"],
+    ] {
+        let output = invoke(&args, Some(&stage));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["state"], "unknown");
+        assert_eq!(value["code"], "COMPLETION_UNCOMMITTED");
+        assert_eq!(value["stage_retained"], true);
+        assert_eq!(value["workspace_mutation_allowed"], false);
+        assert_eq!(value["recovery"]["command"], "status");
+        assert!(value.get("safety").is_none());
+    }
+    let text = invoke(&["status", "--review"], Some(&stage));
+    assert!(text.status.success());
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("outcome: UNKNOWN"));
+    assert!(text.contains("pvisor status"));
+    let status = invoke(&["status", "--json"], Some(&stage));
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    assert_eq!(
+        pvisor::RunRecord::read(&stage).unwrap().state,
+        pvisor::RunRecordState::Unknown
+    );
+    let apply = invoke(&["apply", "--all"], Some(&stage));
+    assert!(!apply.status.success());
+    assert_eq!(std::fs::read(stage.join("upper/file")).unwrap(), bytes);
+    assert!(!root.path().join("target/file").exists());
+    assert!(!stage.join("completion.json").exists());
+}
+
 fn managed_fixture(root: &Path) -> pvisor::RunRecord {
     let stage = root.join("stage");
     let target = root.join("target");

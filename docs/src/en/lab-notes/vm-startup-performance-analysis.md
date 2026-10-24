@@ -1,5 +1,7 @@
 # VM startup: technical analysis and experiment records
 
+> The legacy `benchmark/` runners are retired. Old paths and commands below identify historical cohorts; current entries live in [benchmark](https://github.com/DeepLink-org/pvisor/tree/main/benchmark).
+
 > Note: "local original records" and paths such as `docs/src/assets/benchmarks/.data/` refer to local measurement archives that are not published with the repository or the site; they are kept for batch provenance only.
 
 ## Linux: startup and exit fixes retest, 2026-10-11 {#concurrency-retest}
@@ -22,7 +24,7 @@ All 540 formal runs and 27 warmups passed, with unchanged artifact hashes and no
 
 **Overall performance acceptance still fails:** staged startup is variable, and the [same-artifact filesystem retest](filesystem-performance-analysis.md#concurrency-retest) shows remaining VM write/tool regressions. These require separate diagnosis; host exit gains cannot stand in for other backends or internal task performance.
 
-Full statistics, distributions, paired intervals, artifact and provenance records remain in the local batch or archive. Raw samples, per-trial stdout/timing, Run Bundles, inputs and build receipts are under `benchmark.new/startup/.data/concurrency-retest2-20261011/`. These engineering version comparisons do not overwrite historical cross-runtime user tables or cover cold caches, concurrent workloads, macOS or initial service startup. Polling every 0.5 s may miss brief, inaccessible or unrecognized interference.
+Full statistics, distributions, paired intervals, artifact and provenance records remain in the local batch or archive. Raw samples, per-trial stdout/timing, Run Bundles, inputs and build receipts are under `benchmark/startup/.data/concurrency-retest2-20261011/`. These engineering version comparisons do not overwrite historical cross-runtime user tables or cover cold caches, concurrent workloads, macOS or initial service startup. Polling every 0.5 s may miss brief, inaccessible or unrecognized interference.
 
 ## Capability checks for current generic and trimmed kernels {#kernel-capabilities}
 
@@ -52,7 +54,7 @@ Shell uses 128 MiB guest RAM, tools 16 GiB and networking 1 GiB, under an existi
 
 Both configurations enable SMP, KVM guest, CPU mitigations, seccomp/filter, namespaces, virtio-mmio, virtio-fs, virtio-net and IPv4. Trimming disables PCI, ACPI, guest security/SELinux and audit. Both still enable `CONFIG_BLOCK`, so device trimming cannot be described as removing all block infrastructure. Configuration differences do not establish identical hardening. Validation covers the listed HTTP and private-memory restore workloads, without a complete device, TLS/DNS/UDP/IPv6, escape-resistance or SDK-state restoration guarantee. It establishes no startup, physical-memory or density gain.
 
-Capability and actual-configuration CSVs remain in the local batch or archive, retaining cohort timestamps, sample counts and digest associations. The two independent raw reports, individual outputs, snapshots, input manifests and build/audit receipts stay in local `.data/`. See the [kernel configuration experiment manual](https://github.com/DeepLink-org/pvisor/blob/main/benchmark/pvisor/README.md#paired-kernel-configuration-experiment). Startup and complete-task gains need separate formal paired timing with the current CLI; capability passes or file sizes cannot establish them.
+Capability and actual-configuration CSVs remain in the local batch or archive, retaining cohort timestamps, sample counts and digest associations. The two independent raw reports, individual outputs, snapshots, input manifests and build/audit receipts stay in local `.data/`. See the [kernel configuration experiment manual](https://github.com/DeepLink-org/pvisor/blob/555e750105e8072e0b85030dfb36226c66dae206/benchmark/pvisor/README.md#paired-kernel-configuration-experiment). Startup and complete-task gains need separate formal paired timing with the current CLI; capability passes or file sizes cannot establish them.
 
 ## 1. Conclusions
 

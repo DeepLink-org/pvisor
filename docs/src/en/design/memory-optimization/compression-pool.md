@@ -70,9 +70,9 @@ session's references. These counters do not measure physical-memory savings.
 
 ## Validation and constraints {#direction}
 
-`just test pvisor-daemon` includes actual pool subprocesses, cross-session sharing,
+`mise run test -- pvisor-daemon` includes actual pool subprocesses, cross-session sharing,
 service termination followed by local restore, stale-socket preservation and
-pidfd-confirmed release after client exit. `just test pvisor` covers codecs,
+pidfd-confirmed release after client exit. `mise run test -- pvisor` covers codecs,
 immutable descriptor validation, content comparison, budgets and transport
 ownership. These tests do not exercise guest eviction or KVM/device refault.
 
@@ -104,7 +104,7 @@ physical savings. The five permission-dependent Linux pager tests also passed,
 including real KVM, kernel I/O and balloon reporting:
 
 ```bash
-just test pvisor-vm -- -E 'test(cold_ram_linux::)' --run-ignored all --test-threads=2
+mise run test -- pvisor-vm -- -E 'test(cold_ram_linux::)' --run-ignored all --test-threads=2
 ```
 
 Keep the cold-pager incompatibilities with snapshots, file/FUSE backing,

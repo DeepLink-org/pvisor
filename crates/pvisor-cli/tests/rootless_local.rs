@@ -545,6 +545,7 @@ fn safe_apply_refuses_to_overwrite_a_concurrently_changed_target() {
         .env("PVISOR_RUN_HOME", &run_home)
         .arg("apply")
         .arg(&run)
+        .arg("--all")
         .output()
         .unwrap();
     assert!(!apply.status.success());
@@ -1049,6 +1050,7 @@ fn inherited_nested_state_mount_fixture() {
     fs::write(home.join("unchanged"), b"state lower").unwrap();
     let attestation = temporary.path().join("attestation");
     fs::write(&attestation, b"").unwrap();
+    let mut attestation_reader = fs::File::open(&attestation).unwrap();
     let plan = temporary.path().join("plan.json");
     fs::write(
         &plan,
@@ -1100,9 +1102,12 @@ fn inherited_nested_state_mount_fixture() {
         stderr.contains("os error"),
         "expected original OverlayFS errno: {stderr}"
     );
+    let mut attested = Vec::new();
+    std::io::Read::read_to_end(&mut attestation_reader, &mut attested).unwrap();
+    assert!(attested.is_empty(), "setup must not attest execution");
     assert!(
-        fs::read(&attestation).unwrap().is_empty(),
-        "setup must not attest execution"
+        !attestation.exists(),
+        "attestation must be unlinked before setup"
     );
     assert!(!home.join("agent-executed").exists());
     assert_eq!(fs::read(home.join("unchanged")).unwrap(), b"state lower");

@@ -22,6 +22,7 @@ use crate::forward::{
 use crate::interception::InterceptionMetrics;
 use crate::policy::{DenyReason, NetworkPolicy, forbidden_response};
 use crate::resolver::{AuthorizedTarget, TargetAuthorizationError};
+const MAX_ACTIVE_REQUESTS: usize = 128;
 #[derive(Clone)]
 pub struct OverlayRequestContext<T> {
     pub policy: NetworkPolicy,
@@ -130,6 +131,7 @@ pub struct OverlayServerState<S> {
     active_requests: Arc<AtomicUsize>,
     interception_metrics: InterceptionMetrics,
     bandwidth_registry: BandwidthRegistry,
+    request_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl<S> OverlayServerState<S>
@@ -147,6 +149,7 @@ where
             active_requests,
             interception_metrics: InterceptionMetrics::default(),
             bandwidth_registry: BandwidthRegistry::default(),
+            request_slots: Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_REQUESTS)),
         }
     }
 
@@ -178,7 +181,15 @@ async fn proxy_handler<S>(
 where
     S: OverlaySink,
 {
-    let guard = ActiveRequestGuard::new(Arc::clone(&state.active_requests));
+    let Ok(permit) = Arc::clone(&state.request_slots).try_acquire_owned() else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "proxy concurrency limit reached",
+        )
+            .into_response();
+    };
+    let mut guard = ActiveRequestGuard::new(Arc::clone(&state.active_requests));
+    guard._permit = Some(permit);
     let guard = if request.method() == Method::CONNECT {
         request.extensions_mut().insert(Arc::new(guard));
         None
@@ -241,7 +252,7 @@ where
                     .into_response());
             }
         };
-        let host = crate::policy::host_from_authority(&target.host);
+        let host = target.host.clone();
         let port = target.port;
         let authorized = match authorize(
             state,
@@ -453,12 +464,16 @@ where
 
 pub(crate) struct ActiveRequestGuard {
     counter: Arc<AtomicUsize>,
+    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl ActiveRequestGuard {
     fn new(counter: Arc<AtomicUsize>) -> Self {
         counter.fetch_add(1, Ordering::Relaxed);
-        Self { counter }
+        Self {
+            counter,
+            _permit: None,
+        }
     }
 }
 
@@ -473,6 +488,39 @@ mod tests {
     use super::*;
     use crate::policy::{NetworkConfig, NetworkMode};
     use pvisor_core::PolicyControlController;
+
+    #[tokio::test]
+    async fn overload_is_rejected_and_response_body_drop_returns_the_slot() {
+        let state = OverlayServerState::new(
+            Arc::new(PolicyControlController),
+            PolicySink,
+            Arc::new(AtomicUsize::new(0)),
+        );
+        let occupied = Arc::clone(&state.request_slots)
+            .acquire_many_owned(MAX_ACTIVE_REQUESTS as u32)
+            .await
+            .unwrap();
+        let request = || {
+            Request::builder()
+                .uri("http://example.com/")
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let peer = "127.0.0.1:40000".parse().unwrap();
+        let response = proxy_handler(ConnectInfo(peer), State(state.clone()), request()).await;
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(state.active_requests.load(Ordering::Relaxed), 0);
+        drop(occupied);
+        let response = proxy_handler(ConnectInfo(peer), State(state.clone()), request()).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            state.request_slots.available_permits(),
+            MAX_ACTIVE_REQUESTS - 1
+        );
+        drop(response);
+        assert_eq!(state.request_slots.available_permits(), MAX_ACTIVE_REQUESTS);
+        assert_eq!(state.active_requests.load(Ordering::Relaxed), 0);
+    }
 
     #[derive(Clone)]
     struct EventSink;
@@ -609,6 +657,35 @@ mod tests {
             assert_eq!(snapshot.policy_allowed, 0);
             assert_eq!(snapshot.targets["TCP example.com:443"].denied, 1);
         });
+    }
+
+    #[tokio::test]
+    async fn ipv6_connect_preserves_the_parsed_host_through_authorization() {
+        let metrics = InterceptionMetrics::default();
+        let state = OverlayServerState::new(
+            Arc::new(PolicyControlController),
+            PolicySink,
+            Arc::new(AtomicUsize::new(0)),
+        )
+        .with_interception_metrics(metrics.clone());
+        for authority in ["[::1]:443", "[2001:db8::10]:8443"] {
+            let request = Request::builder()
+                .method(Method::CONNECT)
+                .uri(authority)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let response = dispatch(&state, request, "127.0.0.1:40000".parse().unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        }
+        let targets = metrics.snapshot().targets;
+        assert!(targets.keys().any(|key| key.contains("::1")), "{targets:?}");
+        assert!(
+            targets.keys().any(|key| key.contains("2001:db8::10")),
+            "{targets:?}"
+        );
+        assert_eq!(targets.len(), 2);
     }
 
     #[derive(Clone)]

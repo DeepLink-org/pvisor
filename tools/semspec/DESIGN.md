@@ -1,7 +1,7 @@
-# semspec 设计：人工审核的语义规格测试
+# semspec 设计：Markdown 规格、执行与渲染
 
-semspec 是独立的 Rust CLI：用 Markdown 陈述项目必须保持的行为，配一段黑盒
-Bash 检查。单元测试验证实现意图，语义规格验证产品承诺；PASS 不等于证明或人工批准。
+semspec 是独立的 Rust CLI，也是 Markdown filter：Markdown 同时承载教程、规格和检查。
+默认 Markdown 输入、Markdown 输出；只有显式执行才产生新的观察。单元测试验证实现意图，语义规格验证产品承诺；PASS 不等于证明或人工批准。
 实际工具在 `tools/semspec/`，单包内分模块实现。
 
 ## 1. 目标与边界
@@ -91,7 +91,7 @@ assert_content() {
 ```
 ~~~~
 
-每个 case 先 source 同目录 `index.md` 的准备块，再 source 本文档的准备块；同一文档按源码顺序执行，index 自身只执行一次。准备块在每个独立工作区中重跑。完整准备文档参与摘要并作为 `@vocab:相对路径.md` 审核对象；执行代码从相同规范化文档字节中抽取。准备叙事发生变化也要求重审。
+每个 case 先 source 同目录 `index.md` 的准备块，再 source 本文档的准备块；同一文档按源码顺序执行，index 自身只执行一次。准备块在每个独立工作区中重跑。完整准备文档参与摘要并作为 `@vocab:相对路径.md` 审核对象；执行代码从原始文档抽取，摘要额外绑定精确可执行字节。准备叙事发生变化也要求重审。
 
 Markdown 中的 Bash 在 `set -euo pipefail` 下执行。`source` 和 `.` 仍可用于可信规格，但默认学习路线不引用外部脚本；自行引用文件的项目须另行审核这些依赖。runner 不充当安全沙箱。语法检查用 `bash -n`。
 
@@ -118,6 +118,13 @@ Markdown 中的 Bash 在 `set -euo pipefail` 下执行。`source` 和 `.` 仍可
 ## 7. CLI
 
 ```text
+semspec filter FILE.md [--execute]    直接渲染，显式执行后嵌入实际输出，不要求 result.json
+semspec filter --source FILE --stdin 与其他 Markdown filter / SSG 管线组合
+    --format markdown|json          JSON v1 提供正文、原始字节 edits、dependencies、diagnostics
+    --artifacts NEW_DIR             显式保存 report.json 与保留现场路径
+    --results REPORT_OR_DIR         离线读取；不自动执行，过期显示 STALE
+    --strict                       拒绝缺失或过期证据
+semspec --root ROOT COMMAND         固定审核根，不随文件选择变化
 semspec init DIR                     在指定目录创建 index.md 和 example.md，不创建配置、脚本或台账
 semspec list PATH... [--domain D]     从文档发现 case 和审核状态
 semspec show ITEM PATH...            当前全文、摘要、依赖与审核状态
@@ -152,8 +159,14 @@ case_digest      = SHA256("semspec/case/v1\0" || normalize(case_text)
                           || "\0" || join(sorted(vocab_digests), "\n")
                           || "\0" || ENGINE_SEMANTICS)
 vocab_digest     = SHA256("semspec/vocab/v1\0" || file_name || "\0" || normalize(file_text))
+execution_digest = SHA256("semspec/execution/v1\0" || text_digest || "\0" || executable_bytes)
 engine_digest    = SHA256("semspec/engine/v1\0" || ENGINE_SEMANTICS)
 ```
+
+最终准备摘要为 `execution_digest(vocab_digest, exact_setup_script)`；最终 case 摘要为
+`execution_digest(case_digest, exact_script || "\0" || serialized_expectations)`。
+散列 API 的基础 prose digest 仍规范化文字；执行层必须额外绑定精确脚本和期待输出。
+heredoc 行尾空格等变化不得逃过审核。展示审核对象时同时给出精确执行代码。
 
 - `ENGINE_SEMANTICS` 是引擎源码里的常量字符串（如 `"1"`）。只有当执行语义变化时才升级：
   helper 输出格式、前导脚本、verdict 判定、digest 规范。普通重构和发布不升级它。
@@ -179,13 +192,13 @@ date = "2026-10-02"
 
 ## 10. 执行语义
 
-当前 `ENGINE_SEMANTICS=6`。以下变更需要升级该版本并更新摘要稳定性测试：
+当前 `ENGINE_SEMANTICS=7`。以下变更需要升级该版本并更新摘要稳定性测试：
 
 1. 每个 case 创建独立 CASE_ROOT，空 ws/ 是 cwd；stdin 为 /dev/null。
-2. 子进程独立进程组；超时 TERM，5 秒后 KILL。正常退出也清理剩余子孙进程。
+2. 子进程独立进程组；超时或 CLI SIGINT/SIGTERM 时 TERM，5 秒后 KILL。正常退出也清理剩余子孙进程。
    脱离进程组的进程不受此机制管理，规格不得启动持久脱离进程。
 3. 无超时时，0 为成功，77 为 SKIP；其余非零、信号或超时为失败。
-4. SKIP 优先于 xfail。预期失败平台上，成功为 XPASS，失败为 XFAIL；启动错误为 ERROR。
+4. SKIP 优先于 xfail。预期失败平台上，成功为 XPASS，普通非零退出为 XFAIL；超时、信号、126/127 不得满足 xfail，启动错误为 ERROR。
 5. FAIL/XFAIL/XPASS/ERROR 保留现场及日志；其余自动删除，除非指定 --keep。
 6. 执行结果和审核独立；require-reviewed 检查全部所用对象，包括跳过的 case。
 7. runner 报告必须包含选定 ID 的精确集合，每个只出现一次，空报告、漏项、重复或多余结果都使门禁失败。选定集合来自相同 Markdown 解析结果，不另建解析脚本。
@@ -199,10 +212,10 @@ date = "2026-10-02"
 及 CLI 分模块；不另建工作区子 crate 或执行器抽象。常规测试可以由 AI 维护。
 
 ```sh
-just test-semspec
-just semspec lint docs/src/zh/cases
-just semspec lint docs/src/zh/reference
-just semspec --spec-dir tools/semspec/semantics lint
+mise run test-semspec
+mise run semspec -- lint docs/src/zh/cases
+mise run semspec -- lint docs/src/zh/reference
+mise run semspec -- --spec-dir tools/semspec/semantics lint
 ```
 
 自举规格在 tools/semspec/semantics/review.md，必须人工审核。
@@ -266,7 +279,7 @@ AI 不得执行 approve 或编辑真实 REVIEWED.toml、遗留 .approved 文件�
 传递路径。原始返回 JSON、日志和 kind=script-row/script-cell 保留在 commands；rows/cells
 记录行列到命令的关联。非零退出、非法或嵌套数据、未执行命令和列不一致阻止发布，返回值
 不会递归执行。已知模板错误在执行前拒绝并保留旧结果，执行失败清除旧结果。
-benchmark.new 独立审核逐次单调时钟、准备/校验 hooks、原始样本、有效输出和正常退出，
+benchmark 独立审核逐次单调时钟、准备/校验 hooks、原始样本、有效输出和正常退出，
 重新计算统计并验证输入和代码摘要，再以 Python 时钟口径发布。历史计时数据保留原始口径。
 渲染未展开的行命令报错，不执行。
 
@@ -282,3 +295,44 @@ left/right/center/default；`headers` 可覆盖显示表头，支持重复显示
 这两个子命令独立于 case runner、verdict、digest 与人工审核，不读取或更新台账。
 实验显式运行，文档构建只进行读取与替换。Zensical 的薄 Preprocessor 将替换后的
 Markdown 在内存中交给原有解析器，原始语义规格与源文件保持原样。
+
+## 16. Markdown filter 与实验公共运行库
+
+`filter` 是文档集成主接口，`run` 保留为 CI 的 case 集合执行入口，JSON `bench`
+与 table 宏保持兼容。核心执行结果在内存中完成；`report.json` 只在用户明确选择
+`--artifacts` 时持久化，离线渲染可以用 `--results` 读取。没有结果显示 NOT RUN，
+摘要不匹配显示 STALE；二者都不能伪装成 PASS。结果不认证外部环境或源代码构建关系，
+是可信本地观察，不能替代签名收据或人工批准。
+
+`expect case=S-... stream=stdout|stderr` 紧接 text fence，精确匹配相应输出，含末尾换行。
+每个 stream 只能声明一次，只能关联同文档 case。退出必须先成功，才检查输出。
+filter 保留正文、frontmatter、链接和普通代码块，去掉自身标记并输出普通 Markdown。
+实际 stdout/stderr 用足够长的 fenced text 安全包裹，最多展示每 stream 64 KiB；
+完整匹配不截断。每 case 仍独立工作区，教程先后顺序不隐含共享 notebook kernel。
+
+`--stdin --source` 为 SSG 保留源路径及相对依赖，执行时 stdin 必须等于磁盘原文。
+JSON v1 的 edits 使用原输入 UTF-8 字节偏移；替换 table 时可以返回全文 replacement。
+适配器获取 dependencies 供 watch/cache；experiments 返回已验证的 ID、源码结束位置、摘要和完整计划，准备器可以直接读取同一解析结果而不执行被测程序或另写 Markdown 解析器。核心不依赖任何 SSG。Zensical 只读取和变换，
+可用 SEMSPEC_RESULTS 显式指定旧报告，构建不执行可信代码。
+
+`bench id=NAME` 紧接 TOML fence，声明 argv、cwd、env、warmup、runs、timeout、
+expected_stdout 及 prepare/conclude/cleanup argv。默认 0 预热、30 正式、30 秒超时；
+runs 至少 2，timeout 为正秒数。计时采用 Python perf_counter_ns，进程创建至正常退出，
+包含管道观察，不含 hooks、外部校验和统计；报告 N/中位数/均值/样本标准差/最小/最大。
+每次预热和正式都必须校验成功，不删除慢样本，失败也尝试 cleanup 并保存原始记录。
+直接 `filter --execute` 即可得到表格，不要求配套脚本或结果文件。
+
+已有自有采样协议的实验使用 `table id=NAME` 紧接 JSON fence，复用 JSON bench 的
+行/标量命令语义。每张表内相同表达式只执行一次；不做外层计时或二次采样，超时、
+校验与统计由脚本负责。filter JSON 的 tables 返回同一份已验证定义，准备器无需解析 Markdown。
+显式执行按文档目录运行，直接渲染完整返回表；可选 artifacts 保存原始 JSON 和日志，
+默认成功清理临时目录、失败保留诊断。离线结果绑定源文档和表引擎摘要，变更显示 STALE。
+`bench FILE.md` 只接受一张 table 且没有 case/bench cell，沿用相邻 render/bench JSON 输出；
+filter 支持多 cell。公开实验仍先准备、冻结和预检，执行后完整审计，不能直接跳过发布门禁。
+
+`tools/semspec/runtime.py` 是相同的 stdlib 公共执行层，嵌入独立 Rust 二进制，
+同时由 benchmark 适配器导入。process/replay、startup Ready/Exit、filesystem
+共享采样、统计、证据写入和命令记录审核；fixture、Ready 协议、Bundle 和输入校验
+仍由实验负责。common.py 把公共库纳入制品摘要与冻结 harness。仅迁移这三条稳定链路，
+不把特殊 VM、镜像池、资源观察实验强行改成通用命令，也不改历史时钟与测量数据。
+Markdown bench 是观察，没有 case approval，不能绕过 REGISTRY.md 与现有发布审核。

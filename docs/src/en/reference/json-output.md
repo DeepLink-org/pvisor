@@ -10,7 +10,7 @@ Use JSON to connect tasks to scripts: check the outcome, inspect the actual boun
 | --- | --- | --- |
 | `status --json` | Status and optional filesystem/network summaries | Liveness/stage overview; not complete control evidence |
 | `status --review --json` | Complete versioned Run Bundle | Post-run review and machine consumers |
-| `review --json` | Schema-4 Bundle plus `review_context` | Same review path; `--checkpoint ID` selects a saved workspace |
+| `review --json` | Schema-5 Bundle plus `review_context` | Same review path; `--checkpoint ID` selects a saved workspace |
 | `kill --json` | Schema 1, operation `kill` | Distinguish a termination request from an already stopped Job |
 | `checkpoint create/list/show/delete/gc --json` | Schema 1, operation `checkpoint.*` | Job-scoped workspace and execution checkpoint management |
 
