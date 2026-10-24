@@ -132,6 +132,43 @@ jobs:
           fi
           cat "$output/report.md" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Diagnose failed benchmark outside measurement
+        if: failure()
+        timeout-minutes: 2
+        env:
+          BENCHMARK_DATA: ${{ runner.temp }}/.data/pvisor-benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y strace
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+
+          for cohort in ("main", "candidate"):
+              batch = Path(os.environ["BENCHMARK_DATA"]) / cohort / "smoke"
+              if not (batch / "commands.json").is_file():
+                  print(f"No prepared {cohort} batch; no commands to diagnose")
+                  continue
+              commands = json.loads((batch / "commands.json").read_text())
+              output = batch / "diagnostics"
+              output.mkdir()
+              for name in ("status", "review"):
+                  spec = commands[name]
+                  with (output / f"{name}.stdout").open("wb") as stdout, (output / f"{name}.stderr").open("wb") as stderr:
+                      subprocess.run(
+                          ["strace", "-f", "-ttt", "-T", "-yy", "-o", str(output / f"{name}.strace"), "--", *spec["argv"]],
+                          cwd=spec["cwd"],
+                          env={**os.environ, **spec["env"], "PVISOR_STARTUP_PROFILE": "1"},
+                          stdout=stdout, stderr=stderr, timeout=30, check=True,
+                      )
+          PY
+
       - name: Upload benchmark data and report
         if: always()
         uses: actions/upload-artifact@v4

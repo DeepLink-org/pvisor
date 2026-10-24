@@ -145,6 +145,9 @@ Markdown 单独一行写 `{{ table("../../tools.render.json") }}`；文档构建
 
 `mise run benchmark -- [smoke|nightly]` 在构建后走 prepare → semspec bench → audit → render；CI 使用同一
 新 harness 测量候选和基线，并从原始导出执行现有 15% 回归门禁。
+Linux CI 失败时，在比较之后按各批次冻结的 argv 额外执行 status/review，
+将 strace 与可用的 CLI 入口 profile 写到各批次 `diagnostics/`。
+这些调用不进入样本或阈值计算，不覆盖原始统计；它们只用于 B-PROCESS 工程诊断。
 验证：`mise run test-semspec` 和 `mise run test-py -- discover -s benchmark/tests`。
 
 ## 文档表格
