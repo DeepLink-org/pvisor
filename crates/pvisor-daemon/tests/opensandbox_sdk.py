@@ -55,7 +55,7 @@ async def run(domain, image):
                 raise result
         a, b = results
         output = await a.commands.run("printf 'hello ✓'; printf 'error' >&2")
-        assert stdout(output) == "hello ✓"
+        assert stdout(output) == "hello ✓", repr(output)
         assert "".join(item.text for item in output.logs.stderr) == "error"
         assert (await a.commands.run("exit 7")).exit_code == 7
         output = await a.commands.run(
@@ -67,6 +67,23 @@ async def run(domain, image):
             'test -z "${PVISOR_EXECD_ACCESS_TOKEN+x}" && test -z "${EXECD_ACCESS_TOKEN+x}"'
         )
         assert secret.exit_code == 0, "transport credentials leaked into workload environment"
+        # Background completion acknowledges admission, not process exit.
+        background = await a.commands.run(
+            "sleep 0.1; printf 'background ✓'", opts=RunCommandOpts(background=True)
+        )
+        for _ in range(100):
+            status = await a.commands.get_command_status(background.id)
+            if not status.running:
+                break
+            await asyncio.sleep(0.02)
+        assert not status.running and status.exit_code == 0
+        logs = await a.commands.get_background_command_logs(background.id)
+        assert logs.content == "background ✓"
+        assert (
+            await a.commands.get_background_command_logs(background.id, cursor=logs.cursor)
+        ).content == ""
+        literal = await a.commands.run(["/usr/bin/printf", "%s|%s", "$HOME", ";"])
+        assert stdout(literal) == "$HOME|;"
         binary = bytes(range(256)) * 12289
         await a.files.write_files(
             [

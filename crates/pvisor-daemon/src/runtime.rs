@@ -242,6 +242,10 @@ pub struct PreparedImage {
     /// Requires a pooled image and an E2B resource/version profile.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub native_e2b: bool,
+    /// Use the shared pvisor-guest process/file engine and host protocol adapters.
+    /// No execd/envd is launched. Requires a pooled image; old manifests omit it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub native_guest: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -978,11 +982,16 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
     } else {
         vec![EXECD_PORT, EGRESS_PORT]
     };
+    let native_control = ports_dir.join("guest.sock");
+    if identity.image.native_guest {
+        vsock_ports.insert(pvisor_guest::control::CONTROL_PORT, native_control.clone());
+    }
     for port in ports {
         let path = ports_dir.join(format!("{port}.sock"));
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         endpoints.insert(port, format!("http://{}", listener.local_addr()?));
-        if port == EGRESS_PORT && identity.image.native_opensandbox {
+        if port == EGRESS_PORT && (identity.image.native_opensandbox || identity.image.native_guest)
+        {
             let token = identity
                 .spec
                 .env
@@ -992,6 +1001,40 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
                 listener,
                 endpoints[&EXECD_PORT].clone(),
                 service_health_client("x-execd-access-token", Some(token))?,
+            ));
+        } else if identity.image.native_guest {
+            let mut env = identity.image.env.clone();
+            env.extend(identity.spec.env.clone());
+            env.retain(|key, _| {
+                !key.starts_with("PVISOR_")
+                    && !key.starts_with("KRUN_")
+                    && !key.starts_with("LIBKRUN_")
+                    && key != "EXECD_ACCESS_TOKEN"
+            });
+            if identity.spec.e2b.is_some() {
+                env.insert("E2B_SANDBOX_ID".into(), identity.spec.id.clone());
+            }
+            let token_key = if identity.spec.e2b.is_some() {
+                ENVD_TOKEN_ENV
+            } else {
+                "PVISOR_EXECD_ACCESS_TOKEN"
+            };
+            publications.spawn(crate::native::serve(
+                listener,
+                crate::native::Service::new(
+                    native_control.clone(),
+                    identity
+                        .spec
+                        .env
+                        .get(token_key)
+                        .context("native credential missing")?
+                        .clone(),
+                    identity.spec.id.clone(),
+                    identity.generation.clone(),
+                    execd_generation(&identity)?,
+                    env,
+                    identity.spec.e2b.is_some(),
+                ),
             ));
         } else {
             vsock_ports.insert(u32::from(port), path.clone());
@@ -1100,7 +1143,9 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
         bail!("native live VM control verification failed");
     }
     startup.insert("controls_verified_us", startup_clock.elapsed().as_micros());
-    let client = if identity.image.native_opensandbox {
+    let client = if identity.image.native_opensandbox
+        || (identity.image.native_guest && identity.spec.e2b.is_none())
+    {
         service_health_client(
             "x-execd-access-token",
             identity
@@ -1132,6 +1177,22 @@ pub async fn run_native_supervisor(sandbox_dir: &Path) -> Result<()> {
             service.dispatch(HostAttemptCommand::Terminate).await?;
             let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
             bail!("native execd binding initialization failed");
+        }
+    }
+    if identity.image.native_guest {
+        let initialized = timeout(READY_TIMEOUT, async {
+            loop {
+                if probe_services(&client, &endpoints).await.is_ok() {
+                    break;
+                }
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        if initialized.is_err() {
+            service.dispatch(HostAttemptCommand::Terminate).await?;
+            let _ = timeout(DELETE_TIMEOUT, handle.wait()).await;
+            bail!("native guest engine readiness failed");
         }
     }
     if identity.image.native_e2b {
@@ -1265,14 +1326,16 @@ async fn execute_control(
     let result = timeout(CONTROL_TIMEOUT, service.dispatch(command)).await??;
     let state = native_status(result.status)?;
     if state == RuntimeState::Running
-        && identity.image.native_opensandbox
+        && (identity.image.native_opensandbox
+            || (identity.image.native_guest && identity.spec.e2b.is_none()))
         && !matches!(operation, Operation::Endpoint { .. })
     {
         let ready = probe(client, &format!("{}/ready", endpoints[&EXECD_PORT])).await?;
         validate_execd_binding(&ready, identity)?;
     }
     if state == RuntimeState::Running
-        && identity.image.native_e2b
+        && (identity.image.native_e2b
+            || (identity.image.native_guest && identity.spec.e2b.is_some()))
         && !matches!(operation, Operation::Endpoint { .. })
     {
         let env = envd_environment(client, &endpoints[&ENVD_PORT]).await?;
@@ -1349,7 +1412,11 @@ fn native_status(status: pvisor_core::RunStatus) -> Result<RuntimeState> {
 
 fn make_run_spec(identity: &Identity) -> Result<pvisor_core::RunSpec> {
     let image = &identity.image;
-    let mut argv = image.entrypoint.clone();
+    let mut argv = if image.native_guest {
+        Vec::new()
+    } else {
+        image.entrypoint.clone()
+    };
     argv.extend(
         if identity.spec.entrypoint.is_empty() {
             &image.cmd
@@ -1370,6 +1437,17 @@ fn make_run_spec(identity: &Identity) -> Result<pvisor_core::RunSpec> {
         env.remove("EXECD_ACCESS_TOKEN");
     }
     validate_argv_env(&argv, &env)?;
+    if image.native_guest {
+        env.retain(|key, _| !key.starts_with("PVISOR_") && key != "EXECD_ACCESS_TOKEN");
+        env.insert("PVISOR_NATIVE_SANDBOX_ID".into(), identity.spec.id.clone());
+        env.insert(
+            "PVISOR_NATIVE_GENERATION".into(),
+            identity.generation.clone(),
+        );
+        if identity.spec.e2b.is_some() {
+            env.insert("E2B_SANDBOX_ID".into(), identity.spec.id.clone());
+        }
+    }
     ensure!(!argv.is_empty(), "prepared bootstrap is missing");
     let mut run = pvisor_core::RunSpec::process(
         format!("run-{}", identity.generation),
@@ -2107,6 +2185,11 @@ fn validate_owner(owner: &str) -> Result<()> {
 }
 fn validate_image_shape(image: &PreparedImage, state: &Path) -> Result<()> {
     ensure!(
+        !image.native_guest
+            || (image.pooled_image.is_some() && !image.native_opensandbox && !image.native_e2b),
+        "native guest requires an exclusive pooled engine profile"
+    );
+    ensure!(
         !image.native_e2b
             || (image.pooled_image.is_some() && image.e2b.is_some() && !image.native_opensandbox),
         "managed E2B requires a pooled E2B-only image"
@@ -2144,7 +2227,8 @@ fn validate_image_shape(image: &PreparedImage, state: &Path) -> Result<()> {
         "prepared rootfs must be absolute and independent of host root and daemon state"
     );
     ensure!(
-        !image.entrypoint.is_empty() && image.entrypoint[0].starts_with('/'),
+        (image.native_guest && image.entrypoint.is_empty())
+            || (!image.entrypoint.is_empty() && image.entrypoint[0].starts_with('/')),
         "prepared guest bootstrap must be absolute"
     );
     validate_argv_env(&image.entrypoint, &image.env)?;
@@ -2168,7 +2252,8 @@ fn validate_image(image: &PreparedImage, state: &Path) -> Result<()> {
         "prepared rootfs must be independent of host root and daemon state"
     );
     ensure!(
-        !image.entrypoint.is_empty() && image.entrypoint[0].starts_with('/'),
+        (image.native_guest && image.entrypoint.is_empty())
+            || (!image.entrypoint.is_empty() && image.entrypoint[0].starts_with('/')),
         "prepared guest bootstrap must be absolute"
     );
     validate_argv_env(&image.entrypoint, &image.env)?;
@@ -2302,7 +2387,7 @@ fn admit_supervisor_request(
         ))
     }
 }
-fn constant_time_equal(a: &str, b: &str) -> bool {
+pub(crate) fn constant_time_equal(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -2692,6 +2777,7 @@ mod tests {
                 pooled_image: None,
                 native_opensandbox: false,
                 native_e2b: false,
+                native_guest: false,
             },
             cgroup: temp
                 .join("groups")
@@ -2946,6 +3032,39 @@ mod tests {
         assert!(legacy.get("native_opensandbox").is_none());
         let legacy: PreparedImage = serde_json::from_value(legacy).unwrap();
         assert!(validate_image_shape(&legacy, &temp.path().join("state")).is_ok());
+        identity.image.native_opensandbox = true;
+        assert!(validate_image_shape(&identity.image, &temp.path().join("state")).is_err());
+    }
+
+    #[test]
+    fn native_engine_launches_workload_directly_and_preserves_legacy_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let (mut identity, _) = identity_fixture(temp.path());
+        assert!(!identity.image.native_guest);
+        assert!(
+            serde_json::to_value(&identity.image)
+                .unwrap()
+                .get("native_guest")
+                .is_none()
+        );
+        identity.image.native_guest = true;
+        identity.image.entrypoint.clear();
+        identity.spec.entrypoint = vec!["/bin/sleep".into(), "60".into()];
+        identity
+            .spec
+            .env
+            .insert("PVISOR_EXECD_ACCESS_TOKEN".into(), "secret".into());
+        assert!(
+            validate_image_shape(&identity.image, &temp.path().join("state")).is_err(),
+            "native engine must retain a pinned pool owner"
+        );
+        let run = make_run_spec(&identity).unwrap();
+        let pvisor_core::RunInvocation::Process(process) = run.invocation;
+        assert_eq!(process.program, "/bin/sleep");
+        assert_eq!(process.args, ["60"]);
+        assert!(!process.env.contains_key("PVISOR_EXECD_ACCESS_TOKEN"));
+        assert_eq!(process.env["PVISOR_NATIVE_SANDBOX_ID"], identity.spec.id);
+        assert_eq!(process.env["PVISOR_NATIVE_GENERATION"], identity.generation);
         identity.image.native_opensandbox = true;
         assert!(validate_image_shape(&identity.image, &temp.path().join("state")).is_err());
     }

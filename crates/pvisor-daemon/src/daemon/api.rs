@@ -103,6 +103,7 @@ async fn request_policy(
     mut request: Request,
     next: Next,
 ) -> Response {
+    let http1 = request.version() <= axum::http::Version::HTTP_11;
     let request_id = HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
         .expect("UUID is a valid header value");
     request
@@ -135,6 +136,11 @@ async fn request_policy(
         }
     };
     response.headers_mut().insert("x-request-id", request_id);
+    if http1 && (response.status().is_client_error() || response.status().is_server_error()) {
+        response
+            .headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
+    }
     response
 }
 

@@ -1,5 +1,6 @@
 mod cache_component;
 mod prepared_image;
+use axum::serve::ListenerExt;
 use clap::{Parser, Subcommand};
 use pvisor_daemon::{
     daemon::{self, Config, Daemon},
@@ -19,7 +20,7 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Prepare a local OpenSandbox template using the shared compressed image pool.
+    /// Prepare a pooled native template or an explicitly supplied upstream service.
     PrepareImage(prepared_image::PrepareImage),
     #[command(hide = true)]
     CacheWorker {
@@ -250,11 +251,16 @@ async fn run(command: Command) -> anyhow::Result<()> {
                         "pVisor sandbox service listening on {}",
                         listener.local_addr()?
                     );
-                    axum::serve(listener, daemon::api::router(daemon))
-                        .with_graceful_shutdown(async {
-                            let _ = api_stopped.await;
-                        })
-                        .await?;
+                    axum::serve(
+                        listener.tap_io(|stream| {
+                            let _ = stream.set_nodelay(true);
+                        }),
+                        daemon::api::router(daemon),
+                    )
+                    .with_graceful_shutdown(async {
+                        let _ = api_stopped.await;
+                    })
+                    .await?;
                     return Ok(());
                 }
                 std::future::pending::<anyhow::Result<()>>().await

@@ -15,7 +15,8 @@ use std::{
 
 #[derive(Default)]
 struct State {
-    children: BTreeMap<u32, (mpsc::Sender<i32>, bool)>,
+    children: BTreeMap<u32, (mpsc::Sender<i32>, bool, Option<File>, u64)>,
+    next_generation: u64,
     stopping: bool,
 }
 
@@ -24,11 +25,15 @@ pub(super) struct Processes(Arc<Mutex<State>>);
 
 pub(super) struct Process {
     pid: u32,
+    generation: u64,
     exit: mpsc::Receiver<i32>,
 }
 impl Process {
     pub(super) fn id(&self) -> u32 {
         self.pid
+    }
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
     }
     pub(super) fn wait(self) -> io::Result<i32> {
         self.exit
@@ -65,14 +70,34 @@ fn exited(options: i32) -> io::Result<Option<i32>> {
 }
 
 impl Processes {
-    fn register(&self, child: std::process::Child, state: &mut State, group: bool) -> Process {
+    fn register(
+        &self,
+        child: std::process::Child,
+        state: &mut State,
+        group: bool,
+        terminal: Option<File>,
+    ) -> Process {
         let pid = child.id();
         let (sender, exit) = mpsc::channel();
-        state.children.insert(pid, (sender, group));
+        state.next_generation += 1;
+        let generation = state.next_generation;
+        state
+            .children
+            .insert(pid, (sender, group, terminal, generation));
         // Only supervise() consumes wait statuses; dropping Child never waits.
-        Process { pid, exit }
+        Process {
+            pid,
+            generation,
+            exit,
+        }
     }
     pub(super) fn signal(&self, pid: u32, signal: i32) -> io::Result<()> {
+        self.signal_exact(pid, None, signal)
+    }
+    pub(super) fn signal_tracked(&self, pid: u32, generation: u64, signal: i32) -> io::Result<()> {
+        self.signal_exact(pid, Some(generation), signal)
+    }
+    fn signal_exact(&self, pid: u32, generation: Option<u64>, signal: i32) -> io::Result<()> {
         if !(1..=64).contains(&signal) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -80,11 +105,52 @@ impl Processes {
             ));
         }
         let state = self.0.lock().unwrap();
-        let (_, group) = state
+        let (_, group, _, actual_generation) = state
             .children
             .get(&pid)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "guest process exited"))?;
+        if generation.is_some_and(|value| value != *actual_generation) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "guest process generation expired",
+            ));
+        }
         check(unsafe { libc::kill(if *group { -(pid as i32) } else { pid as i32 }, signal) })
+    }
+    pub(super) fn resize(
+        &self,
+        pid: u32,
+        generation: u64,
+        rows: u16,
+        columns: u16,
+    ) -> io::Result<()> {
+        if rows == 0 || columns == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "PTY dimensions must be nonzero",
+            ));
+        }
+        let state = self.0.lock().unwrap();
+        let (_, _, terminal, actual_generation) = state
+            .children
+            .get(&pid)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "guest process exited"))?;
+        if generation != *actual_generation {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "guest process generation expired",
+            ));
+        }
+        let terminal = terminal
+            .as_ref()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "process has no PTY"))?;
+        let size = libc::winsize {
+            ws_row: rows,
+            ws_col: columns,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        check(unsafe { libc::ioctl(terminal.as_raw_fd(), libc::TIOCSWINSZ, &size) })
     }
     pub(super) fn supervise(&self, main: Process) -> io::Result<i32> {
         let mut main_exit = None;
@@ -103,7 +169,7 @@ impl Processes {
             if state
                 .children
                 .get(&(pid as u32))
-                .is_some_and(|(_, group)| *group)
+                .is_some_and(|(_, group, _, _)| *group)
             {
                 // The leader is still a zombie, so its group ID cannot be reused.
                 unsafe {
@@ -117,7 +183,7 @@ impl Processes {
             } else {
                 128 + libc::WTERMSIG(status)
             };
-            if let Some((sender, _)) = state.children.remove(&(pid as u32)) {
+            if let Some((sender, _, _, _)) = state.children.remove(&(pid as u32)) {
                 let _ = sender.send(code);
             }
             if pid as u32 == main.pid {
@@ -130,7 +196,7 @@ impl Processes {
                         libc::kill(-1, libc::SIGKILL);
                     }
                 } else {
-                    for (pid, (_, group)) in &state.children {
+                    for (pid, (_, group, _, _)) in &state.children {
                         unsafe {
                             libc::kill(
                                 if *group { -(*pid as i32) } else { *pid as i32 },
@@ -318,14 +384,17 @@ impl Processes {
                 .stdin(slave.try_clone()?)
                 .stdout(slave.try_clone()?)
                 .stderr(slave);
-            let child = command.spawn()?;
+            // Acquire every fallible descriptor before spawning: a successful
+            // child must always enter the PID-1 registry, including EMFILE paths.
+            let terminal = master.try_clone()?;
             let input = if interactive {
                 Some(Box::new(master.try_clone()?) as Box<dyn Write + Send>)
             } else {
                 None
             };
+            let child = command.spawn()?;
             Ok(Spawned {
-                process: self.register(child, &mut state, options.new_session),
+                process: self.register(child, &mut state, options.new_session, Some(terminal)),
                 input,
                 outputs: vec![(Box::new(master), 1)],
             })
@@ -358,7 +427,7 @@ impl Processes {
                 Vec::new()
             };
             Ok(Spawned {
-                process: self.register(child, &mut state, options.new_session),
+                process: self.register(child, &mut state, options.new_session, None),
                 input,
                 outputs: output,
             })

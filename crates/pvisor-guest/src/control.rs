@@ -38,10 +38,117 @@ pub enum Request {
         /// Optional terminal dimensions, rows followed by columns.
         tty: Option<[u16; 2]>,
     },
+    /// Start a tracked exec; replies Started, Output*, Exit. Disconnect kills the
+    /// process unless stdin was explicitly closed. Host owns stream retention.
+    Start {
+        /// Validated launch overrides, sharing the ordinary process launcher.
+        launch: ExecLaunch,
+    },
+    /// Signal a registered child through the PID-1 registry (never a reused PID).
+    Signal {
+        /// Guest child PID returned by Started.
+        pid: u32,
+        /// Registration generation returned by Started; stale values fail.
+        generation: u64,
+        /// Signal in 1..=64, delivered to its managed process group.
+        signal: i32,
+    },
+    /// Resize a registered PTY; rejects ordinary pipes and exited/reused PIDs.
+    Resize {
+        /// Live guest child ID returned by Started.
+        pid: u32,
+        /// Registration generation returned by Started.
+        generation: u64,
+        /// Nonzero terminal rows.
+        rows: u16,
+        /// Nonzero terminal columns.
+        columns: u16,
+    },
+    /// Execute file operations inside the guest, using guest paths and root identity.
+    File {
+        /// Read/write stream or metadata operation; see FileRequest.
+        request: FileRequest,
+    },
+    /// Return guest launch binding and actual guest memory/CPU observations.
+    Info {},
     /// Connect to guest loopback TCP, then exchange framed data and EOF.
     Connect {
         /// Nonzero guest TCP port.
         port: u16,
+    },
+}
+
+/// Native tracked exec overrides. Environment values are literal, never shell-expanded.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecLaunch {
+    /// Nonempty executable followed by literal arguments.
+    pub argv: Vec<String>,
+    /// Overrides merged into the launch environment; native transport keys are removed.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Optional absolute guest cwd; omission inherits workload cwd.
+    pub cwd: Option<PathBuf>,
+    /// Existing guest identity; omission inherits launch identity.
+    pub user: Option<String>,
+    /// Optional rows, columns; PTY combines stdout and stderr.
+    pub tty: Option<[u16; 2]>,
+}
+
+/// Root-identity guest file primitives. Paths must be absolute and NUL-free.
+/// Read replies Ready/Output*/Exit; Write consumes Data*/Eof after Ready and
+/// replies Value. Failed writes may leave partial content and must not be retried
+/// blindly. Metadata/list replies Value; lists are bounded to 1024 entries.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "action", deny_unknown_fields)]
+pub enum FileRequest {
+    /// Read an ordinary guest file as bounded Output frames.
+    Read {
+        /// Absolute guest path.
+        path: PathBuf,
+    },
+    /// Truncate/create and stream bytes. Parent directories must already exist.
+    Write {
+        /// Absolute guest path.
+        path: PathBuf,
+        /// Unix permission bits, applied after writing.
+        mode: u32,
+    },
+    /// Observe metadata, following symlinks while reporting their target.
+    Stat {
+        /// Absolute guest path.
+        path: PathBuf,
+    },
+    /// List immediate entries; no recursive traversal or symlink following.
+    List {
+        /// Absolute guest directory.
+        path: PathBuf,
+    },
+    /// Create directories recursively.
+    MakeDir {
+        /// Absolute guest directory.
+        path: PathBuf,
+        /// Unix permission bits.
+        mode: u32,
+    },
+    /// Remove a file, symlink, or recursively a directory. Root is rejected.
+    Remove {
+        /// Absolute guest path other than root.
+        path: PathBuf,
+    },
+    /// Rename using guest filesystem semantics.
+    Move {
+        /// Absolute existing guest source.
+        source: PathBuf,
+        /// Absolute guest destination.
+        destination: PathBuf,
+    },
+    /// Change permission bits using guest filesystem semantics.
+    Chmod {
+        /// Absolute guest path.
+        path: PathBuf,
+        /// Unix permission bits.
+        mode: u32,
     },
 }
 
@@ -64,6 +171,18 @@ pub enum StdinFrame {
 pub enum Reply {
     /// The operation was accepted; subsequent frames depend on the request.
     Ready,
+    /// Tracked exec accepted. PID remains guest-local and is fenced by the reaper.
+    Started {
+        /// Guest child process ID.
+        pid: u32,
+        /// Monotonic registration identity fencing guest PID reuse.
+        generation: u64,
+    },
+    /// Bounded JSON metadata from File or Info. No host paths or credentials.
+    Value {
+        /// Operation-specific metadata; stream transfers use Output instead.
+        value: serde_json::Value,
+    },
     /// A chunk from descriptor 1 or 2.
     Output {
         /// Descriptor 1 for stdout/TCP or 2 for stderr.
@@ -75,6 +194,13 @@ pub enum Reply {
     Exit {
         /// Workload exit code, 128 + signal, or zero for TCP EOF.
         code: i32,
+    },
+    /// Native operation failed; effects already acknowledged may be partial.
+    Failure {
+        /// Linux errno, or EIO for errors without an errno.
+        errno: i32,
+        /// Human-readable detail, never interpreted as a host command.
+        message: String,
     },
     /// The operation failed before acceptance.
     Error {

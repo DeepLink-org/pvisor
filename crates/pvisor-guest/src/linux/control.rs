@@ -81,9 +81,47 @@ fn serve(
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
     let request: Request = read_frame(&mut stream)?;
+    let tracked = matches!(request, Request::Start { .. });
+    let request = if let Request::Start { launch } = request {
+        Request::Exec {
+            argv: launch.argv,
+            env: launch.env,
+            unset_env: Vec::new(),
+            cwd: launch.cwd,
+            user: launch.user,
+            tty: launch.tty,
+        }
+    } else {
+        request
+    };
     stream.set_read_timeout(None)?;
     match request {
         Request::Ping {} => write_frame(&mut stream, &Reply::Ready),
+        Request::Info {} => write_frame(
+            &mut stream,
+            &Reply::Value {
+                value: super::files::info(config)?,
+            },
+        ),
+        Request::File { request } => super::files::serve(&mut stream, request),
+        Request::Signal {
+            pid,
+            generation,
+            signal,
+        } => {
+            processes.signal_tracked(pid, generation, signal)?;
+            write_frame(&mut stream, &Reply::Ready)
+        }
+        Request::Resize {
+            pid,
+            generation,
+            rows,
+            columns,
+        } => {
+            processes.resize(pid, generation, rows, columns)?;
+            write_frame(&mut stream, &Reply::Ready)
+        }
+        Request::Start { .. } => unreachable!("normalized above"),
         Request::Input {} => {
             let mut input = input
                 .lock()
@@ -141,6 +179,11 @@ fn serve(
                 config.env.remove(&key);
             }
             config.env.extend(env);
+            if tracked {
+                config
+                    .env
+                    .retain(|key, _| !key.starts_with("PVISOR_NATIVE_"));
+            }
             if let Some(cwd) = cwd {
                 config.cwd = cwd;
             }
@@ -149,6 +192,9 @@ fn serve(
                 options.user = Some(user);
             }
             options.tty = tty;
+            if tracked {
+                options.new_session = true;
+            }
             options.stdin = pvisor_guest::StdinMode::Pipe;
             options.create_workdir = false;
             let Spawned {
@@ -168,14 +214,29 @@ fn serve(
                     return write_frame(&mut stream, &Reply::Exit { code });
                 }
             };
-            write_frame(&mut stream, &Reply::Ready)?;
+            let exec_pid = process.id();
+            let exec_generation = process.generation();
+            if let Err(error) = write_frame(
+                &mut stream,
+                &if tracked {
+                    Reply::Started {
+                        pid: exec_pid,
+                        generation: exec_generation,
+                    }
+                } else {
+                    Reply::Ready
+                },
+            ) {
+                let _ = processes.signal_tracked(exec_pid, exec_generation, libc::SIGKILL);
+                return Err(error);
+            }
             let mut stdin = input.unwrap();
             let mut input = stream.try_clone()?;
             let exec_pid = process.id();
             let processes = processes.clone();
             std::thread::spawn(move || {
                 if consume_input(&mut input, &mut stdin).is_err() {
-                    let _ = processes.signal(exec_pid, libc::SIGKILL);
+                    let _ = processes.signal_tracked(exec_pid, exec_generation, libc::SIGKILL);
                 }
             });
             let output = Arc::new(Mutex::new(stream.try_clone()?));
@@ -255,7 +316,8 @@ pub(super) fn start(
                 ) {
                     let _ = write_frame(
                         &mut stream,
-                        &Reply::Error {
+                        &Reply::Failure {
+                            errno: error.raw_os_error().unwrap_or(libc::EIO),
                             message: error.to_string(),
                         },
                     );
@@ -264,4 +326,92 @@ pub(super) fn start(
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    #[test]
+    fn tracked_exec_streams_stdin_and_signal_uses_shared_reaper_registry() {
+        let processes = Processes::default();
+        let config = GuestConfig {
+            argv: vec!["/bin/sleep".into(), "60".into()],
+            cwd: "/".into(),
+            env: BTreeMap::from([("PVISOR_NATIVE_GENERATION".into(), "private".into())]),
+            ..Default::default()
+        };
+        let main = processes.spawn(&config, false).unwrap().process;
+        let main_pid = main.id();
+        let reaper = processes.clone();
+        let reaper = std::thread::spawn(move || reaper.supervise(main).unwrap());
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let guest = processes.clone();
+        let launch = config.clone();
+        let worker = std::thread::spawn(move || {
+            serve(
+                server,
+                &launch,
+                &guest,
+                main_pid,
+                &Arc::new(Mutex::new(None)),
+            )
+            .unwrap()
+        });
+        write_frame(
+            &mut client,
+            &Request::Start {
+                launch: pvisor_guest::control::ExecLaunch {
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "read line; printf '%s:%s' \"$line\" \"${PVISOR_NATIVE_GENERATION-unset}\""
+                            .into(),
+                    ],
+                    env: BTreeMap::new(),
+                    cwd: None,
+                    user: None,
+                    tty: None,
+                },
+            },
+        )
+        .unwrap();
+        let Reply::Started { pid, generation } = read_frame(&mut client).unwrap() else {
+            panic!("missing PID");
+        };
+        assert_eq!(
+            processes
+                .signal_tracked(pid, generation + 1, libc::SIGKILL)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        write_frame(
+            &mut client,
+            &StdinFrame::Data {
+                bytes: b"hello\n".to_vec(),
+            },
+        )
+        .unwrap();
+        write_frame(&mut client, &StdinFrame::Eof {}).unwrap();
+        let mut output = Vec::new();
+        loop {
+            match read_frame::<Reply>(&mut client).unwrap() {
+                Reply::Output { bytes, .. } => output.extend(bytes),
+                Reply::Exit { code } => {
+                    assert_eq!(code, 0);
+                    break;
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(output, b"hello:unset");
+        worker.join().unwrap();
+        assert_eq!(
+            processes.signal(pid, 9).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        processes.signal(main_pid, libc::SIGTERM).unwrap();
+        assert_eq!(reaper.join().unwrap(), 143);
+    }
 }

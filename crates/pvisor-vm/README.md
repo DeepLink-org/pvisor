@@ -1393,3 +1393,12 @@ cover bytewise stream fragmentation, coalescing/compaction, maximum frames, EOF,
 notification suppression and deferred completion. Linux/KVM real-guest peer
 experiments are described in `benchmark/peer/README.md`; HVF performance requires
 separate measurement.
+
+Stream TX gathers at most 32 already-available frames into one `sendmsg`.
+Reusable owned buffers retain each frame independently (each at most 65,562
+bytes including the virtio header); guest RAM is copied before publishing its
+used descriptor, and no RAM lease survives socket backpressure. A byte cursor
+preserves partial prefixes, payloads and frame boundaries. Pending batches finish
+before accepting another batch; EAGAIN resumes on socket writability without
+waiting to fill a batch. Malformed TX descriptors complete without emitting wire
+bytes. Datagram and TAP backend TX retain their existing per-frame paths.

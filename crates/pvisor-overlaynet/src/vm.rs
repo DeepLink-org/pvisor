@@ -371,6 +371,7 @@ async fn run_backend(
                             service_stack = true;
                             frame_device.receive_queue.push_back(frame.to_vec());
                         }
+                        if let Some(peer) = peer.as_mut() { peer.flush(); }
                     }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) => return Err(error).context("read VM Ethernet frame"),

@@ -83,6 +83,7 @@ fn one<'a>(headers: &'a HeaderMap, name: &'static str) -> Option<&'a str> {
     headers.get(name)?.to_str().ok().filter(|s| !s.is_empty())
 }
 async fn policy(State(daemon): State<Arc<Daemon>>, request: Request, next: Next) -> Response {
+    let http1 = request.version() <= axum::http::Version::HTTP_11;
     let request_id = HeaderValue::from_str(&uuid::Uuid::new_v4().to_string()).unwrap();
     let data_plane = request.uri().path() == "/e2b" || request.uri().path().starts_with("/e2b/");
     let mut response = if data_plane {
@@ -104,6 +105,14 @@ async fn policy(State(daemon): State<Arc<Daemon>>, request: Request, next: Next)
         }
     };
     response.headers_mut().insert("x-request-id", request_id);
+    // An early data-plane rejection may leave a streamed request body unread.
+    // Tell HTTP/1 clients to discard this connection before their next request.
+    if http1 && (response.status().is_client_error() || response.status().is_server_error()) {
+        response.headers_mut().insert(
+            axum::http::header::CONNECTION,
+            HeaderValue::from_static("close"),
+        );
+    }
     response
 }
 fn body<T>(value: std::result::Result<Json<T>, JsonRejection>) -> Result<T> {
@@ -647,6 +656,48 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "{value}");
         value
     }
+    #[tokio::test]
+    async fn denied_data_plane_posts_close_http1_before_connection_reuse() {
+        let dir = TempDir::new().unwrap();
+        let runtime = Arc::new(Fake::default());
+        let daemon = open(&dir, &runtime).await;
+        let app = super::super::api::router(daemon);
+        let sandbox = create_one(&app).await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        for _ in 0..20 {
+            let denied = client
+                .post(format!("{url}/e2b/init"))
+                .header("e2b-sandbox-id", sandbox["sandboxID"].as_str().unwrap())
+                .header("e2b-sandbox-port", "49983")
+                .header(
+                    "x-access-token",
+                    sandbox["envdAccessToken"].as_str().unwrap(),
+                )
+                .json(&json!({"input":"x".repeat(24000)}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+            assert_eq!(denied.headers().get("connection").unwrap(), "close");
+            assert!(denied.json::<Value>().await.unwrap()["message"].is_string());
+            assert_eq!(
+                client
+                    .get(format!("{url}/sandboxes"))
+                    .header("x-api-key", KEY)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::OK
+            );
+        }
+        assert_eq!(runtime.endpoint_calls.load(Ordering::SeqCst), 0);
+        server.abort();
+    }
+
     #[tokio::test]
     async fn official_sdk_wire_lifecycle_pagination_and_restart() {
         let dir = TempDir::new().unwrap();

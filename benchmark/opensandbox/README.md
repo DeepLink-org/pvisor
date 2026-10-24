@@ -47,3 +47,22 @@ processes, stops them after confirmed sandbox deletion, and saves each server lo
 python benchmark/opensandbox/first_requests.py --configuration CONFIG.json \
   --repetitions 20 --output benchmark/.data/opensandbox-FIRST
 ```
+
+## Native guest engine A/B
+
+`engine_ab.py` serves B-SANDBOX-ENGINE-ENG and compares frozen old/upstream-service
+and new/native-engine daemon artifacts on the same pinned Ubuntu base and shared
+compressed pool. It measures OpenSandbox 1.1.0 and E2B 2.59.0 separately, using
+3 warmup pairs and 20 seeded randomized formal pairs. Every API restart has one
+first create and one subsequent steady create; all VMs are fresh. It preserves
+all failures and confirms output, private files, real cgroup caps and deletion.
+The first-request clock excludes API startup and image preparation. OpenSandbox
+transport construction precedes its SDK create clock; E2B times its full create
+call. Different SDKs are not compared against one another.
+
+Run the driver inside an isolated delegated cgroup scope with `--output`,
+`--before`, `--after`, `--images-dir`, `--opensandbox-python` and `--e2b-python`.
+It uses only its own API/VM state, freezes inputs and execution order before
+sampling, and stores raw data plus paired bootstrap 95% intervals in the output.
+This is an internal product-path A/B, not a Docker comparison, a cold-pull test,
+a concurrency benchmark or proof of complete SDK conformance.

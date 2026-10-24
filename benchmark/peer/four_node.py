@@ -257,7 +257,7 @@ class Group:
                 assert "Linux version 6." in info
             self.cgroups.append(self.group_path(node))
 
-    def scenario(self, case, nodes=range(4)):
+    def scenario(self, case, nodes=range(4), after_go=None):
         directory = self.directory / case
         directory.mkdir()
         events = queue.Queue()
@@ -337,6 +337,8 @@ class Group:
                 process.stdin.flush()
                 process.stdin.close()
             go_skew = time.monotonic() - go
+            if after_go is not None:
+                after_go()
             for node, process in processes:
                 status = process.wait(timeout=max(1, deadline - time.monotonic()))
                 if status:

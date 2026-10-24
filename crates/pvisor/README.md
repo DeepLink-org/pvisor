@@ -1353,3 +1353,11 @@ bridge permits IP connectivity without member-name DNS. Different stores have
 separate default bridges and network catalogs. The virtual gateway, resolver,
 DHCP and packet classification use the selected subnet/gateway. See the
 [Docker-compatible CLI subset](../pvisor-cli/README.md#same-host-peer-networks).
+
+### Explicit guest control publication
+
+`VmExecutor::with_vsock_ports` explicitly publishing reserved control port 1025
+also enables `GuestConfig.control` and a session-owned workload process group.
+This selects the shared host-only guest process/file engine used by the native
+daemon. Other published ports and ordinary Jobs do not enable it. Guest control
+requests stay inside the VM; no host process or filesystem fallback is provided.

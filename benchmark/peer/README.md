@@ -156,9 +156,65 @@ is mandatory and formal timing rejects this setting. It counts per-thread
 socket/read/write/epoll calls, EAGAIN, bytes and elapsed syscall wall time. It is
 not a CPU stack profiler, and wall time includes blocking/descheduling. It uses
 raw syscalls instead of libc cancellation wrappers and is diagnostic-only.
+`sendmmsg`/`recvmmsg` additionally report successfully processed `messages`;
+`bytes` remains payload bytes, not the returned message count. Compare successful
+message counts with calls excluding EAGAIN to inspect actual batch sizes.
 Runners can exit without destructors, so cumulative checkpoints are emitted
 every 1,024 calls: take the maximum per pid/tid/op, never sum checkpoints; the
 unflushed tail is a lower bound. Remove `profile_library` for the uninstrumented
 correctness preflight and formal comparison.
 
 Results and limitations: [forwarding optimization report](PEER_OPTIMIZATION_REPORT.md).
+The subsequent Linux mmsg and VMM TX gather implementation is recorded separately
+in [the packet batching report](PACKET_BATCH_REPORT.md), including its invalid
+formal cohort; do not combine those samples with the earlier optimization.
+The fresh four-VM versus Docker comparison of that batched implementation is in
+[the batched Docker report](FOUR_NODE_BATCHED_DOCKER_REPORT.md); its complete
+cohort and source identities are separate from both earlier comparisons.
+
+## Sustained correctness and fault injection
+
+Registry: [B-PEER-CHAOS-ENG](../README.md#b-peer-chaos-eng), diagnostic. The question
+is whether persistent instances preserve packet/application integrity and isolate
+an unavailable peer during a fixed observation window. This is independent of
+performance sampling and does not establish production reliability.
+
+`chaos.py` uses a frozen CLI/firmware and the same four-node resource limits.
+Build `four_node_worker.rs` as `/netbench` and `udp_worker.rs` as `/udpbench` using
+the static musl command above; include both in a new scratch image. Use a private
+store, unique prefix and dedicated user-defined network. Freeze the exact image
+catalog, both workers, context, runtime source and binary hashes before running.
+The config uses the pVisor fields from `four_node.py`; Docker is not needed.
+
+```bash
+python3 benchmark/peer/chaos.py --config CONFIG.json --output NEW_PREFLIGHT --seconds 30 --faults 4
+python3 benchmark/peer/chaos.py --config CONFIG.json --output NEW_SOAK
+python3 benchmark/peer/audit_chaos.py NEW_SOAK
+```
+
+The default is 1,800 seconds with 30 faults scheduled at equal offsets, rotating
+three-second cgroup freeze, normal stop/start, SIGKILL of the owned KVM process
+via pidfd, and removal/recreation with the same name/IP. The other three VMs stay
+alive. Healthy traffic must complete inside every fault window. The freeze starts
+after the full-mesh connection barrier; all established TCP requests must finish
+after thaw. Crash/recreation requires new connections and all 12 DNS directions
+to recover; old crashed sessions are not expected to survive.
+
+Traffic cycles through full-mesh RPC, 384 MiB full-mesh bulk, four-hop RPC and a
+slow-reader case. Every cycle also checks 12 UDP directions with 32–1,472-byte
+payloads, unique per-run tokens and full-byte verification: 180 requests per flow,
+at most eight attempts each, and 250 ms receive timeouts. Retries and late duplicate
+echoes are reported, not hidden. Three additional TCP connections among the
+healthy nodes remain open for the observation window, continuously exchanging
+variable-length, sequenced and byte-checked payloads.
+
+The runner saves all stdout/stderr, one-second cgroup/FD/thread samples, original
+owner records before restart/removal, final cleanup and a frozen harness. Any
+unexpected failure stops the cohort without a retry; failed preflights are kept
+separately. Host build/KVM activity is recorded, not killed; this correctness
+experiment makes no performance claims. Review resource time series and persistent
+PID/start-time identities as well as the summary. `--seconds` sets a minimum window,
+so a final in-flight operation can extend it. Clean only the owned network and
+instances after preserving evidence. Malformed frames, spoofing, isolation and
+deterministic loss/duplication/reordering remain separate public-interface tests
+in `peer_network.rs`, not claims from the real-guest application probe.

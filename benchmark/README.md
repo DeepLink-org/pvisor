@@ -639,6 +639,14 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **实验设计：** 服务与镜像预先准备，另列首个请求；固定种子随机交替，每臂至少 20 次新建沙箱。服务重启首个请求另用 20 次独立服务进程重启配对，不包含服务启动时间，也不称为磁盘冷缓存。计时 SDK create 返回，再单列首次命令完成时间；必须校验 stdout、私有文件及删除成功，完整保留失败，不剔除慢样本。所有请求相同资源/argv/环境，包含各后端实际 admission/readiness 与 SDK 开销。VM 的 cgroup 限额覆盖 VMM/supervisor，Docker 限额覆盖容器；这是各自本地部署配置，不能视为相同内核隔离或同等可用 guest RAM。无 Docker 基线时只能报告 native 单臂诊断。
 - **入口脚本：** `benchmark/opensandbox/run.py`；准备与原始数据范围见同目录 README。
 
+### B-SANDBOX-ENGINE-ENG：原生 guest 执行后端的启动与命令延迟 {#b-sandbox-engine-eng}
+
+- **角色：** engineering A/B；完整证据保留 `benchmark/.data/sandbox-engine-*`，不进入用户 benchmark 页。
+- **Motivation：** 判断以共享 Rust guest 引擎替代每 VM 官方 execd/envd 后，SDK 首次/稳态创建与命令完成是否改善。
+- **想要的结论：** 同机、同预算、同 SDK 的旧制品/官方服务与新制品/原生引擎配对中位数差异、变化比例及 95% bootstrap 区间；OpenSandbox 与 E2B 分列，不外推 Docker 或完整协议性能。
+- **实验设计：** 冻结已有 performance/musl 制品、源码收据及同 digest Ubuntu 来源模板；两臂使用同一共享压缩池、同文件系统、整棵 supervisor/VMM 进程树 1 CPU/512 MiB、同 guest 1 vCPU。固定 seed 随机交替两臂，3 对预检/预热和 20 对正式轮次；每臂每轮新启 API 进程，分别记录其首个请求与随后的稳态请求，每个请求创建全新 VM。排除镜像准备、API 进程启动及 OpenSandbox transport 对象构造；E2B 记录 SDK create 的实际完整调用口径。相同 argv/环境/命令，计时 create、创建后的首/次命令及同次 create→首条正确命令完成。校验 stdout、私有文件、实际 cgroup 上限及 GET 404 删除确认；失败完整保留，不剔除慢有效样本。记录宿主负载和并发任务，不更改全局策略或停止无关服务；分布分离时列出簇比例，不以单个 P50 掩盖。实现、启动服务和模板内容共同变化，结果只归因于完整产品路径，不声称纯 Rust/Go 语言或单一机制贡献。
+- **入口：** `benchmark/opensandbox/engine_ab.py`；计时驱动与随机顺序、制品摘要、SDK/内核/亲和性和配对统计一并归档。
+
 ### B-STARTUP-ENG：初始化实现的工程 A/B {#b-startup-eng}
 
 - **角色：** engineering A/B
@@ -745,6 +753,16 @@ Design: 负载、对照、控制变量与有效样本判据。
 - **转发优化对照：** 同一当前运行时代码的冻结 baseline/candidate，复用上述四 VM、512 MiB/零 swap/1 CPU、三个负载、3 次预热与 30 对随机协议；`four_node.py --compare-pvisor BASELINE` 比较两个 pVisor 制品，不与旧 Docker 批次计算优化收益。诊断用 `trace_syscalls.c` 的局部 LD_PRELOAD 计数器记录各线程 socket、read/write（包含 eventfd）及 epoll 次数与时间，不采集 ioctl；只注入专属实验进程，诊断结果独立，不计入正式样本。正式对照必须移除计数器。GSO/MTU/协议变化需独立正确性验证，不以放宽校验或扩大未约束队列换取吞吐。
 - **优化批次干扰规则：** `reject_foreign_work` 在入场和每 0.5 秒检查同 UID 的构建、测试及可见 KVM FD，排除本实验冻结可执行文件。发现外部工作使整批无效并停止，保留原始值，不补选较快样本；不终止外部任务。无法读取的进程不作为全宿主安静证明。清理前保存本实验实例状态、completion 和日志，避免无输出退出码丢失诊断。
 - **持续批传输补充：** 每方向 32 MiB（12 方向共 384 MiB），新 worker 相同于两臂，额外采集 guest `/proc/net/snmp` 的 TCP 重传增量。3 对预热与 30 对正式样本独立成批，控制程序在计时和 CPU 窗口外采集计数，不与 4 MiB 样本合并，也不以延长采样直到显著的方式挑选结果。
+- **系统调用批量化：** 以已有 read-ahead/gather-write 优化为基线，仅增加 VMM stream TX gather、Linux peer `sendmmsg/recvmmsg`，保持帧协议、32 帧上限、socket 预算及拥塞丢弃语义。沿用三个默认负载、3 次预热和 30 对正式样本；独立 profile 同时记录 mmsg 调用和成功 message 数，区分“循环排空”和真正系统调用批量化。报告为 `benchmark/peer/PACKET_BATCH_REPORT.md`；其他并行修改不进入冻结候选，失败批次不补选或合并。
+- **批量化版本重测 Docker：** 冻结当前批量 I/O 制品，重新与四 Docker bridge 容器按上述默认三个负载、3 对预热和 30 对随机配对测量。使用新专用网络、相同静态 worker/预算、持续干扰门禁；一次正式批次，错误停止，不用旧 Docker 样本补齐。新报告 `benchmark/peer/FOUR_NODE_BATCHED_DOCKER_REPORT.md` 与旧报告分开保留，不由跨批次差异推算优化百分比。
+
+### B-PEER-CHAOS-ENG：持续流量中的四实例故障隔离与恢复 {#b-peer-chaos-eng}
+
+- **角色：** diagnostic；正确性与有界持续运行检查，不是性能比较，也不进入用户 benchmark 页。
+- **Motivation：** 检查批量转发实现是否在持续通信、节点不可用和地址代际变化下保持数据完整性，并隔离故障节点。
+- **想要的结论：** 固定观察窗内，完整性校验、健康节点可达性、故障后恢复、真实资源限制及失败记录；不将有限时长无故障称为生产可靠性保证。
+- **实验设计：** 同一冻结网络运行时，四个真实 Linux/KVM VM，各 384 MiB guest、512 MiB 宿主硬上限、零 swap、1 CPU 配额、CPU 4–7。默认 30 分钟、30 个预定故障周期，持续交替全互连 TCP RPC、12 向批传输、四跳环形 RPC、变长 UDP 和慢读端；节点 1 依次经历三秒 cgroup 冻结、正常停止/启动、SIGKILL VMM、删除/同名同 IP 重建，其余三节点在故障窗口内必须完成健康通信。冻结时已建立 TCP 必须在解冻后完成；崩溃不承诺旧 TCP 会话延续，重建后新连接、DNS 和 UDP 必须恢复。逐字节验证，不把超时当成功；UDP 允许有界重传但逐项报告实际尝试/重复/超时。每秒采集 cgroup 内存/OOM/swap、进程/线程/FD；节点 0/2/3 持续保留以观察积累。记录宿主干扰但不做性能归因，不终止无关任务。失败停止并保存全部证据，不剔除、不拼接或自动重试整批；短预检独立保存。
+- **入口：** `benchmark/peer/chaos.py`、`udp_worker.rs`，复用 `four_node.py` 和原 TCP worker。公开边界及恶意报文/分片/拥塞/丢包乱序测试另通过 `just test pvisor-overlaynet pvisor-vm -- --features pvisor-vm/net`；二者覆盖范围分别报告。
 
 ### B-DENSITY：一台机器能同时跑多少个环境 {#b-density}
 

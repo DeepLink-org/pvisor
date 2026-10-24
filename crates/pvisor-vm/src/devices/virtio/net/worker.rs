@@ -34,6 +34,7 @@ pub struct NetWorker {
     tx_frame_buf: [u8; MAX_BUFFER_SIZE],
     tx_frame_len: usize,
     tx_has_deferred_frame: bool,
+    stream_tx: Option<super::tx_batch::TxBatch>,
 }
 
 impl NetWorker {
@@ -45,6 +46,11 @@ impl NetWorker {
         _vnet_features: u64,
         cfg_backend: VirtioNetBackend,
     ) -> Result<Self, ConnectError> {
+        let stream_tx = matches!(
+            cfg_backend,
+            VirtioNetBackend::UnixstreamFd(_) | VirtioNetBackend::UnixstreamPath(_)
+        )
+        .then(super::tx_batch::TxBatch::new);
         let backend = match cfg_backend {
             VirtioNetBackend::UnixstreamFd(fd) => {
                 let owned_fd = fd.try_clone().map_err(ConnectError::CloneDescriptor)?;
@@ -81,6 +87,7 @@ impl NetWorker {
             tx_frame_buf: [0u8; MAX_BUFFER_SIZE],
             tx_frame_len: 0,
             tx_iovec: Vec::with_capacity(QUEUE_SIZE as usize),
+            stream_tx,
             tx_has_deferred_frame: false,
         })
     }
@@ -210,6 +217,10 @@ impl NetWorker {
     }
 
     pub(crate) fn process_backend_socket_writeable(&mut self) {
+        if self.stream_tx.is_some() {
+            self.process_tx_loop();
+            return;
+        }
         match self
             .backend
             .try_finish_write(VNET_HDR_LEN, &self.tx_frame_buf[..self.tx_frame_len])
@@ -313,6 +324,9 @@ impl NetWorker {
     }
 
     fn process_tx(&mut self) -> result::Result<(), TxError> {
+        if self.stream_tx.is_some() {
+            return self.process_stream_tx();
+        }
         let tx_queue = &mut self.tx_q.queue;
 
         if self.backend.has_unfinished_write()
@@ -415,6 +429,49 @@ impl NetWorker {
         result
     }
 
+    fn process_stream_tx(&mut self) -> result::Result<(), TxError> {
+        let batch = self.stream_tx.as_mut().expect("stream TX enabled");
+        let mut used = false;
+        let result = (|| {
+            loop {
+                // Always finish an owned partial batch before accepting more
+                // guest buffers. At most 32 bounded frames remain pending.
+                batch
+                    .flush(self.backend.raw_socket_fd())
+                    .map_err(TxError::Backend)?;
+                while !batch.full() {
+                    let Some(head) = self.tx_q.queue.pop(&self.mem) else {
+                        break;
+                    };
+                    let index = head.index;
+                    if let Err(error) = batch.push(&self.mem, head) {
+                        log::warn!("Rejecting malformed TX frame: {error}");
+                    }
+                    self.tx_q
+                        .queue
+                        .add_used(&self.mem, index, 0)
+                        .map_err(TxError::QueueError)?;
+                    used = true;
+                }
+                if batch.empty() {
+                    return Ok(());
+                }
+            }
+        })();
+        if used
+            && self
+                .tx_q
+                .queue
+                .needs_notification(&self.mem)
+                .map_err(TxError::QueueError)?
+        {
+            self.interrupt
+                .try_signal_used_queue()
+                .map_err(TxError::DeviceError)?;
+        }
+        result
+    }
+
     // Copies a single frame from `self.rx_frame_buf` into the guest.
     fn write_frame_to_guest_impl(&mut self) -> result::Result<(), FrontendError> {
         let mut result: std::result::Result<(), FrontendError> = Ok(());
@@ -501,6 +558,91 @@ mod tests {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
     use std::sync::{Arc, atomic::Ordering};
+
+    #[test]
+    fn tx_batches_own_completed_guest_buffers_and_resume_after_backpressure() {
+        use std::io::Read;
+        let mem = GuestMemoryMmap::from_ranges(&[(GuestAddress(0), 0x40000)]).unwrap();
+        let rx = VirtQueue::new(GuestAddress(0), &mem, 64);
+        let tx = VirtQueue::new(GuestAddress(0x1000), &mem, 64);
+        let (local, mut peer) = UnixStream::pair().unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let interrupt =
+            InterruptTransport::new(DummyIrqChip::new().into(), "net-test".into()).unwrap();
+        let mut worker = NetWorker::new(
+            DeviceQueue::new(
+                rx.create_queue(),
+                Arc::new(EventFd::new(EFD_NONBLOCK).unwrap()),
+            ),
+            DeviceQueue::new(
+                tx.create_queue(),
+                Arc::new(EventFd::new(EFD_NONBLOCK).unwrap()),
+            ),
+            interrupt,
+            mem.clone(),
+            0,
+            VirtioNetBackend::UnixstreamFd(Arc::new(local.into())),
+        )
+        .unwrap();
+        let bytes: libc::c_int = 1024;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    worker.backend.raw_socket_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&bytes as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&bytes) as _,
+                )
+            },
+            0
+        );
+        let mut expected = Vec::new();
+        for sequence in 0..40usize {
+            let address = 0x10000 + sequence as u64 * 2048;
+            let mut frame = vec![0; VNET_HDR_LEN];
+            frame.extend_from_slice(&[sequence as u8; 1514]);
+            mem.write_slice(&frame, GuestAddress(address)).unwrap();
+            tx.dtable[sequence].set(address, frame.len() as u32, 0, 0);
+            tx.avail.ring[sequence].set(sequence as u16);
+            expected.extend_from_slice(&1514u32.to_be_bytes());
+            expected.extend_from_slice(&[sequence as u8; 1514]);
+        }
+        // Malformed guest descriptors complete without a panic or wire bytes.
+        tx.dtable[40].set(0x30000, 32, 2, 0);
+        tx.dtable[41].set(0x31000, 1, 0, 0);
+        tx.avail.ring[40].set(40);
+        tx.avail.ring[41].set(41);
+        tx.avail.idx.set(42);
+        worker.tx_q.event.write(1).unwrap();
+        worker.process_tx_queue_event();
+        assert_eq!(tx.used.idx.get(), 32);
+        assert!(worker.tx_has_deferred_frame);
+        // Guest is free to reuse completed buffers, even during a partial send.
+        for sequence in 0..32 {
+            mem.write_slice(&[0xee; 1526], GuestAddress(0x10000 + sequence * 2048))
+                .unwrap();
+        }
+        let mut arrived = Vec::new();
+        for _ in 0..10000 {
+            let mut bytes = [0; 503];
+            loop {
+                match peer.read(&mut bytes) {
+                    Ok(length) => arrived.extend_from_slice(&bytes[..length]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    error => panic!("receive: {error:?}"),
+                }
+            }
+            if arrived.len() == expected.len() {
+                break;
+            }
+            worker.process_backend_socket_writeable();
+        }
+        assert_eq!(arrived, expected);
+        assert_eq!(tx.used.idx.get(), 42);
+        assert!(worker.stream_tx.as_ref().unwrap().empty());
+        assert!(!worker.tx_has_deferred_frame);
+    }
 
     #[test]
     fn rx_event_index_suppresses_extra_irq_and_deferred_completion_still_notifies() {

@@ -12,6 +12,7 @@ pub mod forward;
 pub mod headers;
 pub mod interception;
 mod peer;
+mod peer_batch;
 pub mod policy;
 mod resolver;
 pub mod server;

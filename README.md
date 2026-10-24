@@ -82,8 +82,9 @@ pVisor focuses on bounded, recoverable, checkable execution and high sandbox
 density on a single machine. Native Jobs retain the run-review-apply workflow;
 the separate [`pvisor-daemon`](crates/pvisor-daemon/README.md) provides partial
 OpenSandbox 1.1.0 and E2B Python SDK 2.59.0 profiles through a VM-only
-`NativeRuntime`, with managed execd/envd templates stored in the shared compressed
-image pool. Official SDK core lifecycle, command and file flows are validated on
+`NativeRuntime`, with templates stored in the shared compressed image pool.
+New templates default to the shared Rust guest execution engine and host protocol
+adapters; explicitly supplied execd/envd binaries retain the upstream backend. Official SDK core lifecycle, command and file flows are validated on
 Linux x86_64/KVM with delegated cgroup v2. Detached supervisors retain live VMs
 across API restart. The daemon API does not implement stage/apply or checkpoints,
 does not automatically acquire node sharing resources, and has no full

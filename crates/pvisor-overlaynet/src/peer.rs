@@ -227,6 +227,15 @@ impl Drop for Outgoing {
     }
 }
 
+type MemberCache = HashMap<Ipv4Addr, (Instant, Option<[u8; 16]>)>;
+
+struct PendingPacket {
+    destination: Ipv4Addr,
+    generation: [u8; 16],
+    bytes: [u8; HEADER + FRAME_LIMIT],
+    length: usize,
+}
+
 pub(crate) struct PeerNetwork {
     socket: UnixDatagram,
     // Separate socket send buffers prevent a blocked destination from using
@@ -236,7 +245,10 @@ pub(crate) struct PeerNetwork {
     // Packet forwarding only needs the generation from a fully validated
     // publication. Keep this Copy identity instead of cloning DNS aliases and
     // other discovery metadata on every send and receive.
-    cache: HashMap<Ipv4Addr, (Instant, Option<[u8; 16]>)>,
+    cache: MemberCache,
+    received: crate::peer_batch::ReceiveBatch,
+    pending: Box<[PendingPacket; crate::peer_batch::BATCH]>,
+    pending_count: usize,
     metrics: InterceptionMetrics,
 }
 
@@ -371,30 +383,41 @@ impl BoundPeer {
             outgoing: HashMap::new(),
             membership: self.membership,
             cache: HashMap::new(),
+            received: crate::peer_batch::ReceiveBatch::new(),
+            pending: Box::new(std::array::from_fn(|_| PendingPacket {
+                destination: Ipv4Addr::UNSPECIFIED,
+                generation: [0; 16],
+                bytes: [0; HEADER + FRAME_LIMIT],
+                length: 0,
+            })),
+            pending_count: 0,
             metrics,
         })
     }
 }
 
 impl PeerNetwork {
-    fn lookup(&mut self, address: Ipv4Addr) -> Option<[u8; 16]> {
+    fn lookup(
+        membership: &Membership,
+        cache: &mut MemberCache,
+        address: Ipv4Addr,
+    ) -> Option<[u8; 16]> {
         if !member_address(address)
-            || address.octets()[..3] != self.membership.member.gateway.octets()[..3]
-            || address == self.membership.member.gateway
+            || address.octets()[..3] != membership.member.gateway.octets()[..3]
+            || address == membership.member.gateway
         {
             return None;
         }
-        if let Some((loaded, record)) = self.cache.get(&address)
+        if let Some((loaded, record)) = cache.get(&address)
             && loaded.elapsed() < CACHE_TTL
         {
             return *record;
         }
-        let record = self
-            .membership
+        let record = membership
             .lookup(address)
             .ok()
             .map(|member| member.generation);
-        self.cache.insert(address, (Instant::now(), record));
+        cache.insert(address, (Instant::now(), record));
         record
     }
 
@@ -411,7 +434,7 @@ impl PeerNetwork {
             self.metrics.peer_dropped();
             return true;
         };
-        let Some(generation) = self.lookup(destination) else {
+        let Some(generation) = Self::lookup(&self.membership, &mut self.cache, destination) else {
             self.metrics.peer_dropped();
             return true;
         };
@@ -419,12 +442,6 @@ impl PeerNetwork {
             self.metrics.peer_dropped();
             return true;
         }
-        let mut packet = [0; HEADER + FRAME_LIMIT];
-        packet[..4].copy_from_slice(MAGIC);
-        packet[4..20].copy_from_slice(&self.membership.member.generation);
-        packet[20..HEADER].copy_from_slice(&generation);
-        packet[HEADER..HEADER + frame.len()].copy_from_slice(frame);
-        let packet = &packet[..HEADER + frame.len()];
         if self
             .outgoing
             .get(&destination)
@@ -447,50 +464,120 @@ impl PeerNetwork {
                 }
             }
         }
-        match self.outgoing[&destination].socket.send(packet) {
-            Ok(count) if count == packet.len() => self.metrics.peer_sent(),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                self.metrics.peer_dropped();
-            }
-            _ => {
-                self.outgoing.remove(&destination);
-                self.cache.remove(&destination);
-                self.metrics.peer_dropped();
-            }
+        if self.pending_count == crate::peer_batch::BATCH {
+            self.flush();
         }
+        let packet = &mut self.pending[self.pending_count];
+        packet.destination = destination;
+        packet.generation = generation;
+        packet.length = HEADER + frame.len();
+        packet.bytes[..4].copy_from_slice(MAGIC);
+        packet.bytes[4..20].copy_from_slice(&self.membership.member.generation);
+        packet.bytes[20..HEADER].copy_from_slice(&generation);
+        packet.bytes[HEADER..packet.length].copy_from_slice(frame);
+        self.pending_count += 1;
         true
     }
 
-    pub(crate) async fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
-        let mut packet = [0; HEADER + FRAME_LIMIT + 1];
-        let (length, sender) = self.socket.recv_from(&mut packet).await?;
-        let valid = self.validate_received(&packet[..length], sender.as_pathname());
-        if valid {
-            self.metrics.peer_received();
-            Ok(Some(packet[HEADER..length].to_vec()))
-        } else {
-            self.metrics.peer_dropped();
-            Ok(None)
+    pub(crate) fn flush(&mut self) {
+        let mut handled = 0u32;
+        for first in 0..self.pending_count {
+            if handled & (1 << first) != 0 {
+                continue;
+            }
+            let destination = self.pending[first].destination;
+            let link = self.outgoing.get(&destination);
+            let generation = link.map(|link| link.generation);
+            let fd = link.map(|link| link.socket.as_raw_fd());
+            let mut slices: [io::IoSlice<'_>; crate::peer_batch::BATCH] =
+                std::array::from_fn(|_| io::IoSlice::new(&[]));
+            let mut count = 0;
+            for (index, packet) in self.pending[..self.pending_count]
+                .iter()
+                .enumerate()
+                .skip(first)
+            {
+                if packet.destination != destination {
+                    continue;
+                }
+                handled |= 1 << index;
+                if Some(packet.generation) != generation {
+                    self.metrics.peer_dropped();
+                    continue;
+                }
+                slices[count] = io::IoSlice::new(&packet.bytes[..packet.length]);
+                count += 1;
+            }
+            let mut sent = 0;
+            while sent < count {
+                match crate::peer_batch::send(
+                    fd.expect("validated outgoing link"),
+                    &slices[sent..count],
+                ) {
+                    Ok(progress) => {
+                        sent += progress;
+                        for _ in 0..progress {
+                            self.metrics.peer_sent();
+                        }
+                    }
+                    Err(error) => {
+                        // Retain best-effort nonblocking semantics, including
+                        // independent budgets for healthy and stalled peers.
+                        if error.kind() != io::ErrorKind::WouldBlock {
+                            self.outgoing.remove(&destination);
+                            self.cache.remove(&destination);
+                        }
+                        for _ in sent..count {
+                            self.metrics.peer_dropped();
+                        }
+                        break;
+                    }
+                }
+            }
         }
+        self.pending_count = 0;
+    }
+
+    pub(crate) async fn receive(&mut self) -> io::Result<Option<Vec<u8>>> {
+        while self.received.empty() {
+            self.socket.readable().await?;
+            match self.received.fill(&self.socket) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(self.next_received())
     }
 
     pub(crate) fn try_receive(&mut self) -> io::Result<Option<Vec<u8>>> {
-        let mut packet = [0; HEADER + FRAME_LIMIT + 1];
-        let (length, sender) = self.socket.try_recv_from(&mut packet)?;
-        if self.validate_received(&packet[..length], sender.as_pathname()) {
+        if self.received.empty() {
+            self.received.fill(&self.socket)?;
+        }
+        Ok(self.next_received())
+    }
+
+    fn next_received(&mut self) -> Option<Vec<u8>> {
+        let (packet, sender) = self.received.next();
+        if Self::validate_received(&self.membership, &mut self.cache, packet, sender) {
             self.metrics.peer_received();
-            Ok(Some(packet[HEADER..length].to_vec()))
+            Some(packet[HEADER..].to_vec())
         } else {
             self.metrics.peer_dropped();
-            Ok(None)
+            None
         }
     }
 
-    fn validate_received(&mut self, packet: &[u8], sender: Option<&Path>) -> bool {
+    fn validate_received(
+        membership: &Membership,
+        cache: &mut MemberCache,
+        packet: &[u8],
+        sender: Option<&Path>,
+    ) -> bool {
         if packet.len() < HEADER
             || packet.len() > HEADER + FRAME_LIMIT
             || &packet[..4] != MAGIC
-            || packet[20..36] != self.membership.member.generation
+            || packet[20..36] != membership.member.generation
         {
             return false;
         }
@@ -498,11 +585,11 @@ impl PeerNetwork {
         let Some((source, destination)) = frame_addresses(frame) else {
             return false;
         };
-        if destination != self.membership.member.address
+        if destination != membership.member.address
             || !valid_frame(frame, source, destination)
             || sender
                 != Some(
-                    self.membership
+                    membership
                         .root
                         .join(source.octets()[3].to_string())
                         .join(format!("tx-{}.sock", destination.octets()[3]))
@@ -511,12 +598,12 @@ impl PeerNetwork {
         {
             return false;
         }
-        let Some(mut generation) = self.lookup(source) else {
+        let Some(mut generation) = Self::lookup(membership, cache, source) else {
             return false;
         };
         if packet[4..20] != generation {
-            self.cache.remove(&source);
-            let Some(fresh) = self.lookup(source) else {
+            cache.remove(&source);
+            let Some(fresh) = Self::lookup(membership, cache, source) else {
                 return false;
             };
             generation = fresh;

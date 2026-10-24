@@ -79,7 +79,7 @@ frames support ping, main stdin attachment, process-group signals, exec and
 TCP tunnels to guest loopback services. Exec inherits launch environment and
 working directory unless overridden, keeps stdout/stderr separate without a
 PTY, and reports 126/127 for execution errors. TTY mode combines output on the
-PTY and supports initial dimensions; live resizing is not implemented.
+PTY and supports initial dimensions; tracked native execs support live resizing through the PID-fenced registry.
 
 Both host and guest use `control`'s shared protocol definitions. Raw vsock
 accept is required: `UnixListener::accept` rejects AF_VSOCK peer addresses.
@@ -88,3 +88,22 @@ necessary for terminal, mount, networking and process-lifecycle behavior.
 Architecture guards keep spawning/signalling/reaping out of the transport
 adapter. Linux supervisor tests cover limits, exit statuses, orphan reaping and
 concurrent exec routing; native CLI acceptance exercises the same behavior in a VM.
+
+### Native daemon operations
+
+The optional control adapter also accepts tracked `Start` requests with explicit
+`Started { pid }` acknowledgements, PID-fenced `Signal`/`Resize`, guest-local
+`File` operations and `Info` observations. These use the same process launcher
+and blocking PID-1 reaper as ordinary exec. Native transport binding variables
+are removed from tracked exec environments. Only a matching live registered
+child can be signalled or resized; exited/reused PIDs fail. Main exit still
+closes admissions and cleans up all descendants.
+
+File streams use bounded data frames and explicit EOF, preserve binary bytes and
+run as guest root. Read/write reject special files; write may leave partial
+content after a disconnect/error. Listing is limited to 1,024 immediate entries.
+Metadata, permissions and symlink targets come from the guest filesystem.
+`Info` reports launch binding and actual `/proc` memory/CPU counters, never API
+credentials. Native failures include Linux errno for host protocol error mapping.
+The guest does not implement HTTP, SSE or E2B Connect; those adapters live in the
+daemon supervisor. Host protocol validation is separate from guest transport tests.

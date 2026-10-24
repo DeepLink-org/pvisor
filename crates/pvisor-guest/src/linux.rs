@@ -9,6 +9,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 mod control;
+mod files;
 mod process;
 mod shares;
 

@@ -12,7 +12,7 @@ import importlib.metadata
 import os
 
 import httpx
-from e2b import AsyncSandbox, CommandExitException, Sandbox
+from e2b import AsyncSandbox, CommandExitException, PtySize, Sandbox
 from e2b.sandbox.sandbox_api import SandboxQuery
 
 
@@ -70,6 +70,22 @@ def run(api_url, template):
         )
         handle.send_stdin("input ✓\n")
         assert handle.wait().stdout == "received:input ✓"
+        eof = a.commands.run("cat; printf eof", background=True, stdin=True)
+        eof.send_stdin("before EOF\n")
+        eof.close_stdin()
+        assert eof.wait().stdout == "before EOF\neof"
+        reconnectable = a.commands.run("sleep 0.2; printf retained", background=True)
+        reconnectable.disconnect()
+        assert a.commands.connect(reconnectable.pid).wait().stdout == "retained"
+        # Resize is acknowledged before stty observes the new dimensions.
+        terminal = a.pty.create(PtySize(rows=24, cols=80))
+        try:
+            a.pty.resize(terminal.pid, PtySize(rows=37, cols=91))
+            a.pty.send_stdin(terminal.pid, b"stty size > /tmp/pty-size; exit\n")
+            terminal.wait()
+            assert a.files.read("/tmp/pty-size").strip() == "37 91"
+        finally:
+            terminal.disconnect()
         pending = a.commands.run("sleep 60", background=True)
         assert any(p.pid == pending.pid for p in a.commands.list())
         assert pending.kill()

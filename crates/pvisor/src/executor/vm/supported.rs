@@ -1294,6 +1294,17 @@ impl RunExecutor for VmExecutor {
             &spec.runtime.resource_limits,
             vm_network_enabled,
         );
+        // Publishing the reserved host-only control port explicitly selects the
+        // shared guest process/file engine. Ordinary Jobs retain omission.
+        guest.control = self
+            .vsock_ports
+            .contains_key(&pvisor_guest::control::CONTROL_PORT);
+        if guest.control {
+            guest.process = Some(pvisor_guest::ProcessConfig {
+                new_session: true,
+                ..Default::default()
+            });
+        }
         if let Some(network) = guest.network.as_mut()
             && let Some(value) = spec.metadata.get("pvisor.network.guest_ipv4")
         {

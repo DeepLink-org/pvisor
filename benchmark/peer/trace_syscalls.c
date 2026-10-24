@@ -19,9 +19,9 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { RECV, SEND, RECVFROM, SENDTO, RECVMSG, SENDMSG, READ, WRITE, WRITEV, EPOLL, OPS };
-static const char *names[] = {"recv", "send", "recvfrom", "sendto", "recvmsg", "sendmsg", "read", "write", "writev", "epoll_wait"};
-struct count { _Atomic uint64_t calls, bytes, nanos, again; };
+enum { RECV, SEND, RECVFROM, SENDTO, RECVMSG, SENDMSG, READ, WRITE, WRITEV, EPOLL, SENDMMSG, RECVMMSG, OPS };
+static const char *names[] = {"recv", "send", "recvfrom", "sendto", "recvmsg", "sendmsg", "read", "write", "writev", "epoll_wait", "sendmmsg", "recvmmsg"};
+struct count { _Atomic uint64_t calls, bytes, nanos, again, messages; };
 struct thread { pid_t tid; char name[16]; struct count counters[OPS]; };
 static struct thread threads[256];
 static _Atomic unsigned used;
@@ -33,7 +33,7 @@ static uint64_t now(void) {
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint64_t)t.tv_sec * 1000000000 + t.tv_nsec;
 }
-static void count(unsigned op, uint64_t started, ssize_t result, int error) {
+static void count(unsigned op, uint64_t started, ssize_t result, int error, uint64_t messages) {
     if (!local) {
         unsigned slot = atomic_fetch_add_explicit(&used, 1, memory_order_relaxed);
         if (slot >= 256) return;
@@ -45,6 +45,7 @@ static void count(unsigned op, uint64_t started, ssize_t result, int error) {
     atomic_fetch_add_explicit(&c->calls, 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&c->nanos, now() - started, memory_order_relaxed);
     if (result > 0) atomic_fetch_add_explicit(&c->bytes, result, memory_order_relaxed);
+    atomic_fetch_add_explicit(&c->messages, messages, memory_order_relaxed);
     if (result < 0 && error == EAGAIN) atomic_fetch_add_explicit(&c->again, 1, memory_order_relaxed);
     // VM runners may terminate without ELF destructors. Retain cumulative
     // checkpoints while they are alive; analysis deduplicates by pid/tid/op
@@ -72,9 +73,9 @@ static void checkpoint(struct thread *thread) {
         uint64_t calls = atomic_load(&c->calls);
         if (!calls) continue;
         int length = snprintf(line, sizeof(line),
-            "{\"pid\":%d,\"tid\":%d,\"thread\":\"%s\",\"op\":\"%s\",\"calls\":%lu,\"bytes\":%lu,\"nanos\":%lu,\"again\":%lu}\n",
+            "{\"pid\":%d,\"tid\":%d,\"thread\":\"%s\",\"op\":\"%s\",\"calls\":%lu,\"bytes\":%lu,\"nanos\":%lu,\"again\":%lu,\"messages\":%lu}\n",
             getpid(), thread->tid, thread->name, names[op], calls,
-            atomic_load(&c->bytes), atomic_load(&c->nanos), atomic_load(&c->again));
+            atomic_load(&c->bytes), atomic_load(&c->nanos), atomic_load(&c->again), atomic_load(&c->messages));
         syscall(SYS_write, fd, line, length);
     }
     syscall(SYS_close, fd);
@@ -93,15 +94,15 @@ __attribute__((destructor)) static void finish(void) {
             uint64_t calls = atomic_load(&c->calls);
             if (!calls) continue;
             int length = snprintf(line, sizeof(line),
-                "{\"pid\":%d,\"tid\":%d,\"thread\":\"%s\",\"op\":\"%s\",\"calls\":%lu,\"bytes\":%lu,\"nanos\":%lu,\"again\":%lu}\n",
+                "{\"pid\":%d,\"tid\":%d,\"thread\":\"%s\",\"op\":\"%s\",\"calls\":%lu,\"bytes\":%lu,\"nanos\":%lu,\"again\":%lu,\"messages\":%lu}\n",
                 getpid(), threads[i].tid, threads[i].name, names[op], calls,
-                atomic_load(&c->bytes), atomic_load(&c->nanos), atomic_load(&c->again));
+                atomic_load(&c->bytes), atomic_load(&c->nanos), atomic_load(&c->again), atomic_load(&c->messages));
             syscall(SYS_write, fd, line, length);
         }
     }
     syscall(SYS_close, fd);
 }
-#define TRACE(op, expression) uint64_t t = now(); ssize_t result = (expression); int error = errno; count(op, t, result, error); return result
+#define TRACE(op, expression) uint64_t t = now(); ssize_t result = (expression); int error = errno; count(op, t, result, error, 0); return result
 ssize_t recv(int fd, void *buf, size_t len, int flags) { TRACE(RECV, syscall(SYS_recvfrom, fd, buf, len, flags, NULL, NULL)); }
 ssize_t send(int fd, const void *buf, size_t len, int flags) { TRACE(SEND, syscall(SYS_sendto, fd, buf, len, flags, NULL, 0)); }
 ssize_t recvfrom(int fd, void *buf, size_t len, int flags, struct sockaddr *address, socklen_t *size) { TRACE(RECVFROM, syscall(SYS_recvfrom, fd, buf, len, flags, address, size)); }
@@ -112,3 +113,22 @@ ssize_t read(int fd, void *buf, size_t len) { TRACE(READ, syscall(SYS_read, fd, 
 ssize_t write(int fd, const void *buf, size_t len) { TRACE(WRITE, syscall(SYS_write, fd, buf, len)); }
 ssize_t writev(int fd, const struct iovec *vector, int count_) { TRACE(WRITEV, syscall(SYS_writev, fd, vector, count_)); }
 int epoll_wait(int fd, struct epoll_event *events, int max, int timeout) { TRACE(EPOLL, syscall(SYS_epoll_wait, fd, events, max, timeout)); }
+
+int sendmmsg(int fd, struct mmsghdr *messages, unsigned vlen, int flags) {
+    uint64_t started = now();
+    int result = syscall(SYS_sendmmsg, fd, messages, vlen, flags);
+    int error = errno;
+    ssize_t bytes = 0;
+    for (int i = 0; i < result; ++i) bytes += messages[i].msg_len;
+    count(SENDMMSG, started, result < 0 ? result : bytes, error, result > 0 ? result : 0);
+    return result;
+}
+int recvmmsg(int fd, struct mmsghdr *messages, unsigned vlen, int flags, struct timespec *timeout) {
+    uint64_t started = now();
+    int result = syscall(SYS_recvmmsg, fd, messages, vlen, flags, timeout);
+    int error = errno;
+    ssize_t bytes = 0;
+    for (int i = 0; i < result; ++i) bytes += messages[i].msg_len;
+    count(RECVMMSG, started, result < 0 ? result : bytes, error, result > 0 ? result : 0);
+    return result;
+}

@@ -125,8 +125,8 @@ malformed-datagram floods. Congestion tests isolate a stalled guest from another
 peer. These tests do not establish a real KVM/HVF guest boot or production capacity.
 
 The packet cache retains only the generation from validated discovery records;
-the TTL and validation rules remain the same. Sends use a bounded stack packet
-buffer, and guest writes use vectored I/O with short-write handling. The
+the TTL and validation rules remain the same. Sends reuse bounded packet
+buffers, and guest writes use vectored I/O with short-write handling. The
 [peer engineering harness](../../benchmark/peer/README.md) compares frozen
 binaries through the public framed links with integrity-checked goodput, RTT
 and process CPU accounting. Its backend-thread measurements exclude virtio/KVM
@@ -141,3 +141,19 @@ timer, control events and non-peer guest frames; peer-only traffic does not
 reset that timer. Event selection remains fair under peer floods, with shutdown
 also able to cancel a backpressured guest write. The peer transport still drops
 on congestion and retains per-destination isolation and all validation rules.
+
+On Linux, peer packet I/O uses `sendmmsg`/`recvmmsg` with at most 32 messages per
+syscall. Outgoing frames are grouped by destination on its existing connected
+socket and flushed at the end of the ingress read or when staging reaches 32;
+there is no wait to fill a batch. Partial send progress advances by complete
+datagrams, without resending accepted packets. WouldBlock still drops the
+remaining packets for that destination, and healthy destinations continue;
+there is no new congestion-retry queue or socket-budget increase. Other Unix
+hosts retain single-message packet syscalls behind the same private interface.
+
+Receive staging retains at most 32 bounded packets. Every packet independently
+passes sender-path, generation, membership and frame validation before forwarding.
+Truncated datagrams remain invalid even if their copied prefix looks valid.
+Native receives participate in Tokio readiness clearing, so an exhausted socket
+does not spin or lose its next wake. Guest stream framing and peer wire headers
+are unchanged.
