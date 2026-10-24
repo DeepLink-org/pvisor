@@ -83,7 +83,9 @@ containerd ──ttrpc── PvisorTask (Task service)
   kernel pidfd from the still-owning internal parent (or the runner itself)
   before publishing the numeric PID. The shim retains it after Start and uses
   it for signals; stopped tasks are idempotent and never signal a recycled PID.
-  Host process-group signals require Linux 6.9 pidfd group support and fail
+  Host init/exec (including synthetic init) must establish their own session before
+  readiness; session failure rejects creation, and a session leader cannot join
+  another task's process group. Host process-group signals require Linux 6.9 pidfd group support and fail
   explicitly on older kernels. VM task termination signals the owned runner;
   guest exec termination closes its agent connection.
 - `service.rs` implements the ttrpc Task service and publishes

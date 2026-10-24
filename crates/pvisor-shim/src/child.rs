@@ -1610,6 +1610,9 @@ fn init_process_main(plan: &ContainerPlan, start_fd: RawFd, fork_report_fd: RawF
 /// already served by injection, so this only satisfies the container
 /// lifecycle the orchestrator watches. Never returns.
 fn synthetic_init_main(start_fd: RawFd, fork_report_fd: RawFd) -> ! {
+    if let Err(error) = establish_task_session() {
+        report_session_failure(fork_report_fd, error);
+    }
     {
         let message = InitReport::Ok {
             pid: std::process::id(),
@@ -1655,6 +1658,24 @@ fn exec_process_main(plan: &ExecPlan, start_fd: RawFd, fork_report_fd: RawFd) ->
     finish_process(&plan.process, stdio, start_fd, fork_report_fd)
 }
 
+fn establish_task_session() -> std::io::Result<()> {
+    if unsafe { libc::setsid() } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn report_session_failure(report_fd: RawFd, error: std::io::Error) -> ! {
+    let report = InitReport::Error {
+        context: format!("establish task session: {error}"),
+        errno: error.raw_os_error().unwrap_or(1),
+    };
+    let mut file = unsafe { fs::File::from_raw_fd(report_fd) };
+    let _ = file.write_all(&report.line().unwrap_or_default());
+    let _ = file.flush();
+    std::process::exit(1);
+}
+
 /// Shared tail of init and exec processes: stdio, session setup, the
 /// start-gate, process identity, and exec.
 fn finish_process(
@@ -1663,17 +1684,16 @@ fn finish_process(
     start_fd: RawFd,
     fork_report_fd: RawFd,
 ) -> ! {
-    // Detach into a session/process group so signals addressed to the task
-    // reach the workload; terminals also claim a controlling tty.
+    // A session leader cannot move into another task's group after readiness.
+    if let Err(error) = establish_task_session() {
+        report_session_failure(fork_report_fd, error);
+    }
     unsafe {
         if stdio.terminal {
-            libc::setsid();
             let ret = libc::ioctl(stdio.stdin, libc::TIOCSCTTY, 0);
             if ret != 0 {
                 warn!("TIOCSCTTY failed: {}", std::io::Error::last_os_error());
             }
-        } else {
-            libc::setpgid(0, 0);
         }
         libc::dup2(stdio.stdin, libc::STDIN_FILENO);
         libc::dup2(stdio.stdout, libc::STDOUT_FILENO);
@@ -2109,15 +2129,17 @@ mod tests {
         let mut command = Command::new("/bin/sleep");
         command.arg("30");
         unsafe {
-            command.pre_exec(|| {
-                if libc::setsid() < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
-            });
+            command.pre_exec(establish_task_session);
         }
         let mut process = command.spawn().unwrap();
+        assert_eq!(
+            unsafe { libc::getpgid(process.id() as i32) },
+            process.id() as i32
+        );
+        assert_eq!(
+            unsafe { libc::getsid(process.id() as i32) },
+            process.id() as i32
+        );
         let (reader, writer) = make_ready_socket().unwrap();
         let reader = unsafe { fs::File::from_raw_fd(reader) };
         let writer = unsafe { fs::File::from_raw_fd(writer) };
